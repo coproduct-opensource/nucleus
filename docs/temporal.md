@@ -45,3 +45,8 @@ workflow AgentFlow(input) {
 - Activity stubs for `CreatePod`, `WaitReady`, `RunTool`, `Approve`, `FetchLogs`, `CancelPod`.
 - HTTP client that signs requests (HMAC headers) to node/proxy.
 - Workflow state stores pod ID + proxy address.
+
+## Signer helpers
+
+- Rust: `crates/nucleus-client` provides `sign_http_headers` / `sign_grpc_headers`.
+- TypeScript: `examples/sign_request.ts` contains a minimal signer.

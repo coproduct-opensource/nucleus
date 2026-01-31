@@ -9,8 +9,8 @@
 
 use std::collections::HashSet;
 use std::process::{Command, ExitStatus, Output, Stdio};
-use std::time::Duration;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::approval::{ApprovalRequest, ApprovalToken, Approver, CallbackApprover};
 use crate::budget::AtomicBudget;
@@ -238,11 +238,7 @@ impl<'a> Executor<'a> {
 
     /// Execute a command with a timeout.
     #[cfg(feature = "async")]
-    pub async fn run_with_timeout(
-        &self,
-        command: &str,
-        timeout: Duration,
-    ) -> Result<Output> {
+    pub async fn run_with_timeout(&self, command: &str, timeout: Duration) -> Result<Output> {
         // Check temporal constraints
         if let Some(guard) = self.time_guard {
             guard.check()?;
@@ -281,23 +277,20 @@ impl<'a> Executor<'a> {
         // Build and execute with timeout
         let (program, program_args) = args.split_first().unwrap();
 
-        let mut child = tokio::process::Command::new(program)
+        let child = tokio::process::Command::new(program)
             .args(program_args)
             .current_dir(self.sandbox.root_path())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .kill_on_drop(true)
             .spawn()?;
 
         match tokio::time::timeout(timeout, child.wait_with_output()).await {
             Ok(result) => result.map_err(Into::into),
-            Err(_) => {
-                // Kill the process on timeout
-                child.kill().await.ok();
-                Err(NucleusError::TimeViolation {
-                    reason: format!("command timed out after {:?}", timeout),
-                })
-            }
+            Err(_) => Err(NucleusError::TimeViolation {
+                reason: format!("command timed out after {:?}", timeout),
+            }),
         }
     }
 
@@ -347,23 +340,20 @@ impl<'a> Executor<'a> {
         // Build and execute with timeout
         let (program, program_args) = args.split_first().unwrap();
 
-        let mut child = tokio::process::Command::new(program)
+        let child = tokio::process::Command::new(program)
             .args(program_args)
             .current_dir(self.sandbox.root_path())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .kill_on_drop(true)
             .spawn()?;
 
         match tokio::time::timeout(timeout, child.wait_with_output()).await {
             Ok(result) => result.map_err(Into::into),
-            Err(_) => {
-                // Kill the process on timeout
-                child.kill().await.ok();
-                Err(NucleusError::TimeViolation {
-                    reason: format!("command timed out after {:?}", timeout),
-                })
-            }
+            Err(_) => Err(NucleusError::TimeViolation {
+                reason: format!("command timed out after {:?}", timeout),
+            }),
         }
     }
 
@@ -410,7 +400,6 @@ impl<'a> Executor<'a> {
             }
             CapabilityLevel::LowRisk | CapabilityLevel::Always => Ok(()),
         }
-
     }
 
     /// Check if executing this command would complete the lethal trifecta.
@@ -560,8 +549,7 @@ mod tests {
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
-        let executor = Executor::new(&policy, &sandbox, &budget)
-            .with_time_guard(&guard);
+        let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
         let output = executor.run("echo hello").unwrap();
         assert!(output.status.success());
@@ -577,8 +565,7 @@ mod tests {
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
-        let executor = Executor::new(&policy, &sandbox, &budget)
-            .with_time_guard(&guard);
+        let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
         let result = executor.run("echo hello");
         assert!(matches!(result, Err(NucleusError::BudgetExhausted { .. })));
@@ -594,8 +581,7 @@ mod tests {
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
-        let executor = Executor::new(&policy, &sandbox, &budget)
-            .with_time_guard(&guard);
+        let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
         // rm -rf should be blocked
         let result = executor.run("rm -rf /");
@@ -612,11 +598,13 @@ mod tests {
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
-        let executor = Executor::new(&policy, &sandbox, &budget)
-            .with_time_guard(&guard);
+        let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
         let result = executor.run("echo hello");
-        assert!(matches!(result, Err(NucleusError::InsufficientCapability { .. })));
+        assert!(matches!(
+            result,
+            Err(NucleusError::InsufficientCapability { .. })
+        ));
     }
 
     #[test]
@@ -629,8 +617,7 @@ mod tests {
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
-        let executor = Executor::new(&policy, &sandbox, &budget)
-            .with_time_guard(&guard);
+        let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
         let result = executor.run("echo hello");
         assert!(matches!(result, Err(NucleusError::ApprovalRequired { .. })));
@@ -660,9 +647,9 @@ mod tests {
         let tmp = tempdir().unwrap();
         let policy = PermissionLattice {
             capabilities: CapabilityLattice {
-                read_files: CapabilityLevel::Always,    // Private data
-                web_fetch: CapabilityLevel::LowRisk,    // Untrusted content
-                run_bash: CapabilityLevel::LowRisk,     // Allows curl
+                read_files: CapabilityLevel::Always, // Private data
+                web_fetch: CapabilityLevel::LowRisk, // Untrusted content
+                run_bash: CapabilityLevel::LowRisk,  // Allows curl
                 ..Default::default()
             },
             commands: CommandLattice::permissive(),
@@ -674,8 +661,7 @@ mod tests {
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
-        let executor = Executor::new(&policy, &sandbox, &budget)
-            .with_time_guard(&guard);
+        let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
         // curl is an exfiltration vector, trifecta should block it
         let result = executor.run("curl http://example.com");
@@ -687,9 +673,9 @@ mod tests {
         let tmp = tempdir().unwrap();
         let policy = PermissionLattice {
             capabilities: CapabilityLattice {
-                read_files: CapabilityLevel::Always,    // Private data
-                web_fetch: CapabilityLevel::LowRisk,    // Untrusted content
-                run_bash: CapabilityLevel::LowRisk,     // Allows shell
+                read_files: CapabilityLevel::Always, // Private data
+                web_fetch: CapabilityLevel::LowRisk, // Untrusted content
+                run_bash: CapabilityLevel::LowRisk,  // Allows shell
                 ..Default::default()
             },
             commands: CommandLattice::permissive(),
@@ -701,8 +687,7 @@ mod tests {
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
-        let executor = Executor::new(&policy, &sandbox, &budget)
-            .with_time_guard(&guard);
+        let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
         let result = executor.run("bash -c \"echo hi\"");
         assert!(matches!(result, Err(NucleusError::TrifectaBlocked { .. })));

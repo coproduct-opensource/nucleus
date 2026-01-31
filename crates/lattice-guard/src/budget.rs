@@ -150,8 +150,7 @@ impl BudgetLattice {
             return false;
         }
 
-        let decimal = Decimal::from_str(&format!("{:.6}", cost_usd))
-            .unwrap_or(Decimal::ZERO);
+        let decimal = Decimal::from_str(&format!("{:.6}", cost_usd)).unwrap_or(Decimal::ZERO);
 
         if decimal <= Decimal::ZERO {
             return false;
@@ -254,7 +253,10 @@ mod tests {
         let result = budget.charge(Decimal::from(-1000));
 
         assert!(!result, "Negative charge should be rejected");
-        assert_eq!(budget.consumed_usd, initial_consumed, "Budget should not change");
+        assert_eq!(
+            budget.consumed_usd, initial_consumed,
+            "Budget should not change"
+        );
     }
 
     #[test]
@@ -266,7 +268,10 @@ mod tests {
         let result = budget.charge(Decimal::ZERO);
 
         assert!(!result, "Zero charge should be rejected");
-        assert_eq!(budget.consumed_usd, initial_consumed, "Budget should not change");
+        assert_eq!(
+            budget.consumed_usd, initial_consumed,
+            "Budget should not change"
+        );
     }
 
     #[test]
@@ -278,15 +283,24 @@ mod tests {
         let result = budget.charge_f64(f64::NAN);
 
         assert!(!result, "NaN charge should be rejected");
-        assert_eq!(budget.consumed_usd, initial_consumed, "Budget should not change");
+        assert_eq!(
+            budget.consumed_usd, initial_consumed,
+            "Budget should not change"
+        );
     }
 
     #[test]
     fn test_budget_f64_charge_rejects_infinity() {
         let mut budget = BudgetLattice::with_cost_limit(10.0);
 
-        assert!(!budget.charge_f64(f64::INFINITY), "Infinity should be rejected");
-        assert!(!budget.charge_f64(f64::NEG_INFINITY), "Negative infinity should be rejected");
+        assert!(
+            !budget.charge_f64(f64::INFINITY),
+            "Infinity should be rejected"
+        );
+        assert!(
+            !budget.charge_f64(f64::NEG_INFINITY),
+            "Negative infinity should be rejected"
+        );
     }
 
     #[test]
@@ -297,6 +311,9 @@ mod tests {
         let result = budget.charge_f64(-5.0);
 
         assert!(!result, "Negative f64 charge should be rejected");
-        assert_eq!(budget.consumed_usd, initial_consumed, "Budget should not change");
+        assert_eq!(
+            budget.consumed_usd, initial_consumed,
+            "Budget should not change"
+        );
     }
 }

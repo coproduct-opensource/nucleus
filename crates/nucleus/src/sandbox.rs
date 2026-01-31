@@ -116,25 +116,17 @@ impl Sandbox {
     }
 
     /// Open a file for reading with an approval token.
-    pub fn open_approved(
-        &self,
-        path: impl AsRef<Path>,
-        approval: &ApprovalToken,
-    ) -> Result<File> {
+    pub fn open_approved(&self, path: impl AsRef<Path>, approval: &ApprovalToken) -> Result<File> {
         self.open_internal(path.as_ref(), Some(approval))
     }
 
-    fn open_internal(
-        &self,
-        path: &Path,
-        approval: Option<&ApprovalToken>,
-    ) -> Result<File> {
+    fn open_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<File> {
         self.check_read_capability(path, approval)?;
         self.check_policy(path)?;
 
         self.root.open(path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                NucleusError::Io(e.into())
+                NucleusError::Io(e)
             } else {
                 NucleusError::SandboxEscape {
                     path: path.to_path_buf(),
@@ -168,12 +160,12 @@ impl Sandbox {
         self.check_edit_capability(path, "open_with", approval)?;
         self.check_policy(path)?;
 
-        self.root.open_with(path, options).map_err(|e| {
-            NucleusError::PathDenied {
+        self.root
+            .open_with(path, options)
+            .map_err(|e| NucleusError::PathDenied {
                 path: path.to_path_buf(),
                 reason: e.to_string(),
-            }
-        })
+            })
     }
 
     /// Create a new file for writing.
@@ -196,12 +188,12 @@ impl Sandbox {
         self.check_write_capability(path, "create", approval)?;
         self.check_policy(path)?;
 
-        self.root.create(path).map_err(|e| {
-            NucleusError::PathDenied {
+        self.root
+            .create(path)
+            .map_err(|e| NucleusError::PathDenied {
                 path: path.to_path_buf(),
                 reason: e.to_string(),
-            }
-        })
+            })
     }
 
     /// Read a file's contents as bytes.
@@ -218,19 +210,13 @@ impl Sandbox {
         self.read_internal(path.as_ref(), Some(approval))
     }
 
-    fn read_internal(
-        &self,
-        path: &Path,
-        approval: Option<&ApprovalToken>,
-    ) -> Result<Vec<u8>> {
+    fn read_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<Vec<u8>> {
         self.check_read_capability(path, approval)?;
         self.check_policy(path)?;
 
-        self.root.read(path).map_err(|e| {
-            NucleusError::PathDenied {
-                path: path.to_path_buf(),
-                reason: e.to_string(),
-            }
+        self.root.read(path).map_err(|e| NucleusError::PathDenied {
+            path: path.to_path_buf(),
+            reason: e.to_string(),
         })
     }
 
@@ -256,12 +242,12 @@ impl Sandbox {
         self.check_read_capability(path, approval)?;
         self.check_policy(path)?;
 
-        self.root.read_to_string(path).map_err(|e| {
-            NucleusError::PathDenied {
+        self.root
+            .read_to_string(path)
+            .map_err(|e| NucleusError::PathDenied {
                 path: path.to_path_buf(),
                 reason: e.to_string(),
-            }
-        })
+            })
     }
 
     /// Write bytes to a file (creates if needed, truncates if exists).
@@ -288,12 +274,12 @@ impl Sandbox {
         self.check_policy(path)?;
         self.check_write_or_edit_capability(path, "write", approval)?;
 
-        self.root.write(path, contents).map_err(|e| {
-            NucleusError::PathDenied {
+        self.root
+            .write(path, contents)
+            .map_err(|e| NucleusError::PathDenied {
                 path: path.to_path_buf(),
                 reason: e.to_string(),
-            }
-        })
+            })
     }
 
     /// Create a directory.
@@ -314,12 +300,12 @@ impl Sandbox {
         self.check_write_capability(path, "create_dir", approval)?;
         self.check_policy(path)?;
 
-        self.root.create_dir(path).map_err(|e| {
-            NucleusError::PathDenied {
+        self.root
+            .create_dir(path)
+            .map_err(|e| NucleusError::PathDenied {
                 path: path.to_path_buf(),
                 reason: e.to_string(),
-            }
-        })
+            })
     }
 
     /// Create a directory and all parent directories.
@@ -336,20 +322,16 @@ impl Sandbox {
         self.create_dir_all_internal(path.as_ref(), Some(approval))
     }
 
-    fn create_dir_all_internal(
-        &self,
-        path: &Path,
-        approval: Option<&ApprovalToken>,
-    ) -> Result<()> {
+    fn create_dir_all_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<()> {
         self.check_write_capability(path, "create_dir_all", approval)?;
         self.check_policy(path)?;
 
-        self.root.create_dir_all(path).map_err(|e| {
-            NucleusError::PathDenied {
+        self.root
+            .create_dir_all(path)
+            .map_err(|e| NucleusError::PathDenied {
                 path: path.to_path_buf(),
                 reason: e.to_string(),
-            }
-        })
+            })
     }
 
     /// Remove a file.
@@ -370,12 +352,12 @@ impl Sandbox {
         self.check_edit_capability(path, "remove_file", approval)?;
         self.check_policy(path)?;
 
-        self.root.remove_file(path).map_err(|e| {
-            NucleusError::PathDenied {
+        self.root
+            .remove_file(path)
+            .map_err(|e| NucleusError::PathDenied {
                 path: path.to_path_buf(),
                 reason: e.to_string(),
-            }
-        })
+            })
     }
 
     /// Remove an empty directory.
@@ -396,12 +378,12 @@ impl Sandbox {
         self.check_edit_capability(path, "remove_dir", approval)?;
         self.check_policy(path)?;
 
-        self.root.remove_dir(path).map_err(|e| {
-            NucleusError::PathDenied {
+        self.root
+            .remove_dir(path)
+            .map_err(|e| NucleusError::PathDenied {
                 path: path.to_path_buf(),
                 reason: e.to_string(),
-            }
-        })
+            })
     }
 
     /// Check if a path exists within the sandbox.
@@ -552,20 +534,17 @@ impl Sandbox {
         self.open_dir_internal(path.as_ref(), Some(approval))
     }
 
-    fn open_dir_internal(
-        &self,
-        path: &Path,
-        approval: Option<&ApprovalToken>,
-    ) -> Result<Sandbox> {
+    fn open_dir_internal(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<Sandbox> {
         self.check_read_capability(path, approval)?;
         self.check_policy(path)?;
 
-        let subdir = self.root.open_dir(path).map_err(|e| {
-            NucleusError::PathDenied {
+        let subdir = self
+            .root
+            .open_dir(path)
+            .map_err(|e| NucleusError::PathDenied {
                 path: path.to_path_buf(),
                 reason: e.to_string(),
-            }
-        })?;
+            })?;
 
         Ok(Sandbox {
             root: subdir,
@@ -583,16 +562,20 @@ mod tests {
     use tempfile::tempdir;
 
     fn permissive_policy() -> PermissionLattice {
-        let mut policy = PermissionLattice::default();
-        policy.paths = PathLattice::default();
+        let mut policy = PermissionLattice {
+            paths: PathLattice::default(),
+            ..PermissionLattice::default()
+        };
         policy.capabilities.write_files = CapabilityLevel::LowRisk;
         policy.capabilities.edit_files = CapabilityLevel::LowRisk;
         policy
     }
 
     fn sensitive_policy() -> PermissionLattice {
-        let mut policy = PermissionLattice::default();
-        policy.paths = PathLattice::block_sensitive();
+        let mut policy = PermissionLattice {
+            paths: PathLattice::block_sensitive(),
+            ..PermissionLattice::default()
+        };
         policy.capabilities.write_files = CapabilityLevel::LowRisk;
         policy.capabilities.edit_files = CapabilityLevel::LowRisk;
         policy
@@ -633,7 +616,10 @@ mod tests {
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
 
         let result = sandbox.create("blocked.txt");
-        assert!(matches!(result, Err(NucleusError::InsufficientCapability { .. })));
+        assert!(matches!(
+            result,
+            Err(NucleusError::InsufficientCapability { .. })
+        ));
     }
 
     #[test]
@@ -649,9 +635,7 @@ mod tests {
         let approved = Sandbox::new(&policy, tmp.path())
             .unwrap()
             .with_approval_callback(|_| true);
-        let token = approved
-            .request_approval("create approved.txt")
-            .unwrap();
+        let token = approved.request_approval("create approved.txt").unwrap();
         let result = approved.create_approved("approved.txt", &token);
         assert!(result.is_ok());
     }

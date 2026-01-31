@@ -64,8 +64,8 @@ impl PodRuntime {
 
     /// Attach an approver for AskFirst operations.
     pub fn with_approver(mut self, approver: Arc<dyn Approver>) -> Result<Self> {
-        let sandbox = Sandbox::new(&self.spec.policy, &self.spec.work_dir)?
-            .with_approver(approver.clone());
+        let sandbox =
+            Sandbox::new(&self.spec.policy, &self.spec.work_dir)?.with_approver(approver.clone());
         self.sandbox = sandbox;
         self.approver = Some(approver);
         Ok(self)

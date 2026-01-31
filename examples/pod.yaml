@@ -14,3 +14,10 @@ spec:
   vsock:
     guest_cid: 3
     port: 5005
+  seccomp:
+    mode: default
+  cgroup:
+    path: /sys/fs/cgroup/nucleus/example
+    settings:
+      - file: cpu.max
+        value: "100000 100000"

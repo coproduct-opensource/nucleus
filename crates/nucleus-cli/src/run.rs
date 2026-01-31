@@ -92,7 +92,10 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
         Profile::from_name(&args.profile)
             .map(|p| p.to_lattice())
             .unwrap_or_else(|| {
-                eprintln!("Warning: Unknown profile '{}', using restrictive", args.profile);
+                eprintln!(
+                    "Warning: Unknown profile '{}', using restrictive",
+                    args.profile
+                );
                 PermissionLattice::restrictive()
             })
     };
@@ -310,6 +313,5 @@ fn has_ask_first_capabilities(policy: &PermissionLattice) -> bool {
         policy.capabilities.git_push,
         policy.capabilities.create_pr,
     ]
-    .iter()
-    .any(|&level| level == CapabilityLevel::AskFirst)
+    .contains(&CapabilityLevel::AskFirst)
 }

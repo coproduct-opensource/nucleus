@@ -10,9 +10,9 @@ fn main() {
     // Demonstrate the lethal trifecta detection
     println!("1. Creating a dangerous capability set with all three trifecta elements:");
     let dangerous = CapabilityLattice {
-        read_files: CapabilityLevel::Always,   // Private data access
-        web_fetch: CapabilityLevel::LowRisk,   // Untrusted content exposure
-        git_push: CapabilityLevel::LowRisk,    // Exfiltration vector
+        read_files: CapabilityLevel::Always, // Private data access
+        web_fetch: CapabilityLevel::LowRisk, // Untrusted content exposure
+        git_push: CapabilityLevel::LowRisk,  // Exfiltration vector
         ..Default::default()
     };
     println!("   - read_files: Always (private data access)");
@@ -52,13 +52,22 @@ fn main() {
     // Preset configurations
     println!("\n4. Preset configurations:");
     let readonly = PermissionLattice::read_only();
-    println!("   read_only - can write files: {:?}", readonly.capabilities.write_files);
+    println!(
+        "   read_only - can write files: {:?}",
+        readonly.capabilities.write_files
+    );
 
     let fix = PermissionLattice::fix_issue();
-    println!("   fix_issue - can git push: {:?}", fix.capabilities.git_push);
+    println!(
+        "   fix_issue - can git push: {:?}",
+        fix.capabilities.git_push
+    );
 
     let review = PermissionLattice::code_review();
-    println!("   code_review - can web search: {:?}", review.capabilities.web_search);
+    println!(
+        "   code_review - can web search: {:?}",
+        review.capabilities.web_search
+    );
 
     // Delegation
     println!("\n5. Safe delegation:");

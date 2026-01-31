@@ -3,13 +3,13 @@
 //! These tests verify that the security invariants hold even when
 //! an attacker tries to exploit edge cases or bypass protections.
 
+use lattice_guard::{
+    BudgetLattice, CapabilityLevel, CommandLattice, PathLattice, PermissionLattice,
+};
 use rust_decimal::Decimal;
 use std::path::Path;
 #[cfg(unix)]
 use std::path::PathBuf;
-use lattice_guard::{
-    BudgetLattice, CapabilityLevel, CommandLattice, PathLattice, PermissionLattice,
-};
 
 // ============================================
 // Trifecta Bypass Attempts
@@ -45,8 +45,8 @@ fn trifecta_bypass_via_deserialization_rejected() {
         "created_by": "attacker"
     }"#;
 
-    let perms: PermissionLattice = serde_json::from_str(malicious_json)
-        .expect("Should parse despite malicious payload");
+    let perms: PermissionLattice =
+        serde_json::from_str(malicious_json).expect("Should parse despite malicious payload");
 
     // The constraint should ALWAYS be true after deserialization
     assert!(
@@ -59,14 +59,12 @@ fn trifecta_bypass_via_deserialization_rejected() {
 fn trifecta_cannot_be_disabled_through_meet() {
     // Create permission set with trifecta constraint enabled
     let mut enabled = PermissionLattice::default();
-    enabled.trifecta_constraint = true;
     enabled.capabilities.read_files = CapabilityLevel::Always;
     enabled.capabilities.web_fetch = CapabilityLevel::LowRisk;
     enabled.capabilities.git_push = CapabilityLevel::LowRisk; // Would be trifecta
 
     // Create permission set with trifecta constraint disabled
-    let mut disabled = PermissionLattice::default()
-        .with_trifecta_disabled();
+    let mut disabled = PermissionLattice::default().with_trifecta_disabled();
     disabled.capabilities.read_files = CapabilityLevel::Always;
     disabled.capabilities.web_fetch = CapabilityLevel::LowRisk;
     disabled.capabilities.git_push = CapabilityLevel::LowRisk; // Would be trifecta if enabled
@@ -250,7 +248,10 @@ fn budget_f64_nan_rejected() {
 fn budget_f64_infinity_rejected() {
     let mut budget = BudgetLattice::with_cost_limit(10.0);
 
-    assert!(!budget.charge_f64(f64::INFINITY), "Infinity should be rejected");
+    assert!(
+        !budget.charge_f64(f64::INFINITY),
+        "Infinity should be rejected"
+    );
     assert!(
         !budget.charge_f64(f64::NEG_INFINITY),
         "Negative infinity should be rejected"
@@ -394,9 +395,15 @@ fn delegation_cannot_escalate_capabilities() {
 #[test]
 fn delegation_chain_monotonicity() {
     let root = PermissionLattice::permissive();
-    let level1 = root.delegate_to(&PermissionLattice::default(), "level 1").unwrap();
-    let level2 = level1.delegate_to(&PermissionLattice::default(), "level 2").unwrap();
-    let level3 = level2.delegate_to(&PermissionLattice::default(), "level 3").unwrap();
+    let level1 = root
+        .delegate_to(&PermissionLattice::default(), "level 1")
+        .unwrap();
+    let level2 = level1
+        .delegate_to(&PermissionLattice::default(), "level 2")
+        .unwrap();
+    let level3 = level2
+        .delegate_to(&PermissionLattice::default(), "level 3")
+        .unwrap();
 
     // Each level should be ≤ its parent
     assert!(level1.leq(&root), "level1 ≤ root");
@@ -409,8 +416,10 @@ fn delegation_chain_monotonicity() {
 
 #[test]
 fn delegation_budget_cannot_exceed_remaining() {
-    let mut parent = PermissionLattice::default();
-    parent.budget = BudgetLattice::with_cost_limit(10.0);
+    let mut parent = PermissionLattice {
+        budget: BudgetLattice::with_cost_limit(10.0),
+        ..PermissionLattice::default()
+    };
     parent.budget.charge_f64(8.0); // Use up most of the budget
 
     let requested = PermissionLattice {

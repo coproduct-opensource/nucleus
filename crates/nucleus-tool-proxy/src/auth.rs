@@ -32,6 +32,7 @@ impl AuthConfig {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct AuthContext {
     pub actor: Option<String>,
@@ -50,7 +51,11 @@ pub enum AuthError {
     Skew,
 }
 
-pub fn verify_http(headers: &HeaderMap, body: &[u8], auth: &AuthConfig) -> Result<AuthContext, AuthError> {
+pub fn verify_http(
+    headers: &HeaderMap,
+    body: &[u8],
+    auth: &AuthConfig,
+) -> Result<AuthContext, AuthError> {
     let ts = header_value(headers, HEADER_TIMESTAMP)?;
     let sig = header_value(headers, HEADER_SIGNATURE)?;
     let actor = headers
@@ -74,7 +79,7 @@ pub fn verify_http(headers: &HeaderMap, body: &[u8], auth: &AuthConfig) -> Resul
     Ok(AuthContext { actor, timestamp })
 }
 
-fn header_value(headers: &HeaderMap, name: &'static str) -> Result<&str, AuthError> {
+fn header_value<'a>(headers: &'a HeaderMap, name: &'static str) -> Result<&'a str, AuthError> {
     headers
         .get(name)
         .and_then(|v| v.to_str().ok())
@@ -82,7 +87,8 @@ fn header_value(headers: &HeaderMap, name: &'static str) -> Result<&str, AuthErr
 }
 
 fn parse_timestamp(ts: &str) -> Result<i64, AuthError> {
-    ts.parse::<i64>().map_err(|_| AuthError::InvalidHeader(HEADER_TIMESTAMP))
+    ts.parse::<i64>()
+        .map_err(|_| AuthError::InvalidHeader(HEADER_TIMESTAMP))
 }
 
 fn ensure_skew(timestamp: i64, max_skew: Duration) -> Result<(), AuthError> {
@@ -90,7 +96,7 @@ fn ensure_skew(timestamp: i64, max_skew: Duration) -> Result<(), AuthError> {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64;
-    let skew = (now - timestamp).abs() as u64;
+    let skew = (now - timestamp).unsigned_abs();
     if skew > max_skew.as_secs() {
         return Err(AuthError::Skew);
     }
@@ -99,7 +105,8 @@ fn ensure_skew(timestamp: i64, max_skew: Duration) -> Result<(), AuthError> {
 
 fn verify_signature(secret: &[u8], message: &[u8], signature_hex: &str) -> Result<(), AuthError> {
     let signature = hex::decode(signature_hex).map_err(|_| AuthError::InvalidSignature)?;
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret).map_err(|_| AuthError::InvalidSignature)?;
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(secret).map_err(|_| AuthError::InvalidSignature)?;
     mac.update(message);
     mac.verify_slice(&signature)
         .map_err(|_| AuthError::InvalidSignature)

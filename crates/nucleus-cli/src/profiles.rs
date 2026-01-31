@@ -44,7 +44,13 @@ impl Profile {
     /// Get all profile names
     #[allow(dead_code)]
     pub fn all_names() -> &'static [&'static str] {
-        &["read-only", "code-review", "fix-issue", "full", "restrictive"]
+        &[
+            "read-only",
+            "code-review",
+            "fix-issue",
+            "full",
+            "restrictive",
+        ]
     }
 }
 

@@ -132,6 +132,7 @@ impl MonotonicGuard {
 ///
 /// This is the enforcement equivalent of `GuardedAction` - but instead of being
 /// a proof token, it's an active guard that checks time on each access.
+#[allow(dead_code)]
 pub struct TimedAction<T> {
     /// The wrapped action
     action: T,
@@ -139,6 +140,7 @@ pub struct TimedAction<T> {
     guard: MonotonicGuard,
 }
 
+#[allow(dead_code)]
 impl<T> TimedAction<T> {
     /// Create a new timed action.
     pub fn new(action: T, duration: Duration) -> Self {

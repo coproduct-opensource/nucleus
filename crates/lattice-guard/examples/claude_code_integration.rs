@@ -58,8 +58,7 @@ fn get_permission_mode(perms: &PermissionLattice) -> &'static str {
         caps.git_push,
         caps.create_pr,
     ]
-    .iter()
-    .any(|&level| level == CapabilityLevel::AskFirst);
+    .contains(&CapabilityLevel::AskFirst);
 
     if needs_ask {
         "plan"
@@ -136,7 +135,10 @@ fn main() {
     // Simulate charging
     let mut budget = perms.budget.clone();
     let charge_ok = budget.charge_f64(0.50);
-    println!("\n   Charged $0.50: {}", if charge_ok { "OK" } else { "DENIED" });
+    println!(
+        "\n   Charged $0.50: {}",
+        if charge_ok { "OK" } else { "DENIED" }
+    );
     println!("   Remaining: ${:.2}", budget.remaining_usd());
 
     println!("\n=== Done ===");

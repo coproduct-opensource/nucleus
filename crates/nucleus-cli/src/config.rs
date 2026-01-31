@@ -95,7 +95,14 @@ pub fn show(config_path: &str) -> Result<()> {
     println!("[auth]");
     println!("  use_keychain = {}", config.auth.use_keychain);
     println!();
-    println!("Default profile: {}", if config.default_profile.is_empty() { "restrictive" } else { &config.default_profile });
+    println!(
+        "Default profile: {}",
+        if config.default_profile.is_empty() {
+            "restrictive"
+        } else {
+            &config.default_profile
+        }
+    );
 
     Ok(())
 }

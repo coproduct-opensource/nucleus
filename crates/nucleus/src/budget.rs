@@ -46,8 +46,16 @@ impl AtomicBudget {
     /// The initial consumed amount is taken from the policy (usually 0).
     pub fn new(policy: &BudgetLattice) -> Self {
         // Convert Decimal to micro-dollars for atomic operations
-        let max_micro = policy.max_cost_usd.to_string().parse::<f64>().unwrap_or(0.0);
-        let consumed_micro = policy.consumed_usd.to_string().parse::<f64>().unwrap_or(0.0);
+        let max_micro = policy
+            .max_cost_usd
+            .to_string()
+            .parse::<f64>()
+            .unwrap_or(0.0);
+        let consumed_micro = policy
+            .consumed_usd
+            .to_string()
+            .parse::<f64>()
+            .unwrap_or(0.0);
 
         Self {
             max_micro_usd: (max_micro * 1_000_000.0) as u64,

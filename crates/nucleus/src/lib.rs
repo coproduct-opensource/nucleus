@@ -61,16 +61,16 @@
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
 
+mod approval;
 mod budget;
 mod command;
-mod approval;
 mod error;
 mod pod;
 mod sandbox;
 mod time;
 
-pub use budget::AtomicBudget;
 pub use approval::{ApprovalRequest, ApprovalToken, Approver, CallbackApprover};
+pub use budget::AtomicBudget;
 pub use command::{BudgetModel, Executor};
 pub use error::{NucleusError, Result};
 pub use pod::{PodRuntime, PodSpec};

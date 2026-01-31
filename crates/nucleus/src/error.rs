@@ -79,7 +79,9 @@ pub enum NucleusError {
     },
 
     /// Capability level insufficient.
-    #[error("insufficient capability: '{capability}' level is {actual:?}, need at least {required:?}")]
+    #[error(
+        "insufficient capability: '{capability}' level is {actual:?}, need at least {required:?}"
+    )]
     InsufficientCapability {
         /// The capability that was insufficient.
         capability: String,

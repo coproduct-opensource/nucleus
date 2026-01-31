@@ -150,7 +150,10 @@ pub trait PermissionGuard {
     ///
     /// Returns `Ok(GuardedAction)` if the action is allowed,
     /// or `Err(GuardError)` if denied.
-    fn guard(&self, action: Self::Action) -> Result<GuardedAction<Self::Action>, GuardError<Self::Error>>;
+    fn guard(
+        &self,
+        action: Self::Action,
+    ) -> Result<GuardedAction<Self::Action>, GuardError<Self::Error>>;
 }
 
 /// Type alias for guard functions to reduce complexity.
@@ -309,9 +312,7 @@ mod tests {
 
     #[test]
     fn test_guarded_action_map() {
-        let guard = TestPathGuard {
-            blocked: vec![],
-        };
+        let guard = TestPathGuard { blocked: vec![] };
 
         let result = guard.guard(PathBuf::from("test.txt"));
         let guarded = result.unwrap();

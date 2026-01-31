@@ -54,9 +54,9 @@ impl Default for CommandLattice {
                 "wget | sh",
                 "eval",
                 "exec",
-                "> /dev/sd",   // Block raw disk writes
-                "dd if=",      // Block disk dumps
-                "mkfs",        // Block filesystem creation
+                "> /dev/sd", // Block raw disk writes
+                "dd if=",    // Block disk dumps
+                "mkfs",      // Block filesystem creation
             ]
             .iter()
             .map(|s| s.to_string())
@@ -194,9 +194,7 @@ impl CommandLattice {
 
             // Check if blocked pattern appears as an in-order subsequence
             if let Ok(blocked_words) = shell_words::split(blocked) {
-                if !blocked_words.is_empty()
-                    && is_subsequence(&blocked_words, &words)
-                {
+                if !blocked_words.is_empty() && is_subsequence(&blocked_words, &words) {
                     return false;
                 }
             }
@@ -251,8 +249,9 @@ impl CommandLattice {
 }
 
 fn contains_shell_metacharacters(words: &[String]) -> bool {
-    let metachars: HashSet<&str> =
-        ["|", ";", "&&", "||", ">", ">>", "<", "2>", "&>"].into_iter().collect();
+    let metachars: HashSet<&str> = ["|", ";", "&&", "||", ">", ">>", "<", "2>", "&>"]
+        .into_iter()
+        .collect();
 
     words.iter().any(|w| metachars.contains(w.as_str()))
 }
@@ -391,17 +390,11 @@ mod tests {
     fn test_join_operation() {
         let a = CommandLattice {
             allowed: ["cargo test"].iter().map(|s| s.to_string()).collect(),
-            blocked: ["rm -rf", "sudo"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            blocked: ["rm -rf", "sudo"].iter().map(|s| s.to_string()).collect(),
         };
         let b = CommandLattice {
             allowed: ["cargo build"].iter().map(|s| s.to_string()).collect(),
-            blocked: ["sudo", "chmod"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            blocked: ["sudo", "chmod"].iter().map(|s| s.to_string()).collect(),
         };
 
         let result = a.join(&b);

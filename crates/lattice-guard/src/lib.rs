@@ -69,11 +69,16 @@ mod lattice;
 mod path;
 mod time;
 
+#[cfg(kani)]
+mod kani;
+
 pub use budget::BudgetLattice;
 pub use capability::{CapabilityLattice, CapabilityLevel, IncompatibilityConstraint};
 pub use command::CommandLattice;
 pub use guard::{CompositeGuard, GuardError, GuardFn, GuardedAction, PermissionGuard};
-pub use lattice::{DelegationError, EffectivePermissions, PermissionLattice, PermissionLatticeBuilder};
+pub use lattice::{
+    DelegationError, EffectivePermissions, PermissionLattice, PermissionLatticeBuilder,
+};
 pub use path::PathLattice;
 pub use time::TimeLattice;
 

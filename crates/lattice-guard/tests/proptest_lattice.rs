@@ -3,12 +3,12 @@
 //! These tests use proptest to verify that the lattice operations
 //! satisfy the required algebraic properties.
 
+use lattice_guard::{
+    BudgetLattice, CapabilityLattice, CapabilityLevel, CommandLattice, PathLattice,
+    PermissionLattice, TimeLattice,
+};
 use proptest::prelude::*;
 use rust_decimal::Decimal;
-use lattice_guard::{
-    BudgetLattice, CapabilityLattice, CapabilityLevel, CommandLattice, PathLattice, TimeLattice,
-    PermissionLattice,
-};
 
 // Strategy for generating arbitrary CapabilityLevel
 fn arb_capability_level() -> impl Strategy<Value = CapabilityLevel> {
@@ -68,14 +68,20 @@ fn arb_capability_lattice() -> impl Strategy<Value = CapabilityLattice> {
 
 // Strategy for generating arbitrary BudgetLattice
 fn arb_budget_lattice() -> impl Strategy<Value = BudgetLattice> {
-    (1u64..1000u64, 0u64..1000u64, 1000u64..1_000_000u64, 100u64..100_000u64).prop_map(
-        |(max_cost, consumed, max_input, max_output)| BudgetLattice {
-            max_cost_usd: Decimal::from(max_cost),
-            consumed_usd: Decimal::from(consumed.min(max_cost)),
-            max_input_tokens: max_input,
-            max_output_tokens: max_output,
-        },
+    (
+        1u64..1000u64,
+        0u64..1000u64,
+        1000u64..1_000_000u64,
+        100u64..100_000u64,
     )
+        .prop_map(
+            |(max_cost, consumed, max_input, max_output)| BudgetLattice {
+                max_cost_usd: Decimal::from(max_cost),
+                consumed_usd: Decimal::from(consumed.min(max_cost)),
+                max_input_tokens: max_input,
+                max_output_tokens: max_output,
+            },
+        )
 }
 
 proptest! {
@@ -347,9 +353,11 @@ proptest! {
         a in arb_capability_lattice(),
         enforce in any::<bool>()
     ) {
-        let mut perms = PermissionLattice::default();
-        perms.capabilities = a;
-        perms.trifecta_constraint = enforce;
+        let perms = PermissionLattice {
+            capabilities: a,
+            trifecta_constraint: enforce,
+            ..PermissionLattice::default()
+        };
 
         let once = perms.clone().normalize();
         let twice = once.clone().normalize();
@@ -361,9 +369,11 @@ proptest! {
     fn permission_normalize_is_deflationary_when_enforced(
         a in arb_capability_lattice()
     ) {
-        let mut perms = PermissionLattice::default();
-        perms.capabilities = a;
-        perms.trifecta_constraint = true;
+        let perms = PermissionLattice {
+            capabilities: a,
+            trifecta_constraint: true,
+            ..PermissionLattice::default()
+        };
 
         let normalized = perms.clone().normalize();
         prop_assert!(normalized.capabilities.leq(&perms.capabilities));
@@ -432,7 +442,8 @@ mod command_tests {
         let allowed_set = prop::collection::hash_set("cargo (test|build|check)", 0..5);
         let blocked_set = prop::collection::hash_set("(rm -rf|sudo|chmod)", 0..3);
 
-        (allowed_set, blocked_set).prop_map(|(allowed, blocked)| CommandLattice { allowed, blocked })
+        (allowed_set, blocked_set)
+            .prop_map(|(allowed, blocked)| CommandLattice { allowed, blocked })
     }
 
     proptest! {

@@ -71,6 +71,12 @@ pub struct PodSpecInner {
     /// Optional vsock configuration for VM communication.
     #[serde(default)]
     pub vsock: Option<VsockSpec>,
+    /// Optional seccomp policy for Firecracker.
+    #[serde(default)]
+    pub seccomp: Option<SeccompSpec>,
+    /// Optional cgroup placement for Firecracker process.
+    #[serde(default)]
+    pub cgroup: Option<CgroupSpec>,
 }
 
 impl PodSpecInner {
@@ -95,7 +101,7 @@ pub enum PolicySpec {
     /// Use a named profile.
     Profile { name: String },
     /// Inline permission lattice.
-    Inline { lattice: PermissionLattice },
+    Inline { lattice: Box<PermissionLattice> },
 }
 
 impl Default for PolicySpec {
@@ -115,7 +121,7 @@ impl PolicySpec {
                 "fix_issue" => Ok(PermissionLattice::fix_issue()),
                 other => Err(PolicyError::UnknownProfile(other.to_string())),
             },
-            PolicySpec::Inline { lattice } => Ok(lattice.clone().normalize()),
+            PolicySpec::Inline { lattice } => Ok(lattice.as_ref().clone().normalize()),
         }
     }
 }
@@ -174,6 +180,37 @@ pub struct VsockSpec {
     pub guest_cid: u32,
     /// Guest vsock port to listen on.
     pub port: u32,
+}
+
+/// Seccomp policy for Firecracker.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum SeccompSpec {
+    /// Use Firecracker defaults.
+    Default,
+    /// Disable seccomp entirely (not recommended).
+    Disabled,
+    /// Use a custom seccomp filter.
+    Custom { filter_path: PathBuf },
+}
+
+/// Cgroup placement and settings for the Firecracker process.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CgroupSpec {
+    /// Path to the cgroup directory.
+    pub path: PathBuf,
+    /// Settings to write before placing the process.
+    #[serde(default)]
+    pub settings: Vec<CgroupSetting>,
+}
+
+/// A single cgroup file + value to write.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CgroupSetting {
+    /// File name inside the cgroup directory (e.g. \"cpu.max\").
+    pub file: String,
+    /// Value to write to the file.
+    pub value: String,
 }
 
 /// Errors resolving policies.

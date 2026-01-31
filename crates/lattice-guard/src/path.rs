@@ -142,9 +142,9 @@ impl PathLattice {
         // If we have a work_dir, verify the canonical path is within it
         if let Some(ref work_dir) = self.work_dir {
             // First, try to canonicalize the work_dir
-            let canonical_work_dir = work_dir.canonicalize().unwrap_or_else(|_| {
-                normalize_path_components(work_dir)
-            });
+            let canonical_work_dir = work_dir
+                .canonicalize()
+                .unwrap_or_else(|_| normalize_path_components(work_dir));
 
             // Check if the path starts with the work_dir
             // We need to handle the case where both are normalized but may differ
@@ -353,7 +353,7 @@ fn glob_to_regex(pattern: &str) -> String {
                     chars.next(); // consume second *
                     if chars.peek() == Some(&'/') {
                         chars.next(); // consume /
-                        // **/ matches any prefix including empty
+                                      // **/ matches any prefix including empty
                         regex.push_str("(.*?/)?");
                     } else {
                         // ** at end or before non-/ matches anything
@@ -431,7 +431,9 @@ mod tests {
     #[test]
     fn test_sandbox_blocks_escape() {
         // Use a known temp directory that exists and can be canonicalized
-        let temp_dir = std::env::temp_dir().canonicalize().expect("temp_dir should exist");
+        let temp_dir = std::env::temp_dir()
+            .canonicalize()
+            .expect("temp_dir should exist");
         let lattice = PathLattice::with_work_dir(&temp_dir);
 
         // Paths within the sandbox should work
@@ -469,18 +471,12 @@ mod tests {
     fn test_join_operation() {
         let a = PathLattice {
             allowed: ["src/**"].iter().map(|s| s.to_string()).collect(),
-            blocked: [".env*", "*.key"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            blocked: [".env*", "*.key"].iter().map(|s| s.to_string()).collect(),
             work_dir: None,
         };
         let b = PathLattice {
             allowed: ["tests/**"].iter().map(|s| s.to_string()).collect(),
-            blocked: [".env*", "*.pem"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            blocked: [".env*", "*.pem"].iter().map(|s| s.to_string()).collect(),
             work_dir: None,
         };
 

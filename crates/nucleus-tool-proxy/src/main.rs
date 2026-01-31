@@ -10,13 +10,14 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{middleware, Json, Router};
 use clap::Parser;
-use nucleus::approval::ApprovalRequest;
-use nucleus::command::BudgetModel;
-use nucleus::{CallbackApprover, NucleusError, PodRuntime, PodSpec as RuntimePodSpec};
+use nucleus::{
+    ApprovalRequest, BudgetModel, CallbackApprover, NucleusError, PodRuntime,
+    PodSpec as RuntimePodSpec,
+};
 use nucleus_spec::{BudgetModelSpec, PodSpec};
 use serde::{Deserialize, Serialize};
-use tokio::net::TcpListener;
 use tokio::io::AsyncWriteExt;
+use tokio::net::TcpListener;
 use tracing::info;
 
 mod auth;
@@ -45,7 +46,11 @@ struct Args {
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUTH_SECRET")]
     auth_secret: Option<String>,
     /// Maximum allowed clock skew (seconds) for signed requests.
-    #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUTH_MAX_SKEW_SECS", default_value_t = 60)]
+    #[arg(
+        long,
+        env = "NUCLEUS_TOOL_PROXY_AUTH_MAX_SKEW_SECS",
+        default_value_t = 60
+    )]
     auth_max_skew_secs: u64,
     /// Optional audit log path.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUDIT_LOG")]
@@ -167,9 +172,11 @@ enum ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, kind, operation) = match &self {
-            ApiError::Nucleus(NucleusError::ApprovalRequired { operation }) => {
-                (StatusCode::FORBIDDEN, "approval_required", Some(operation.clone()))
-            }
+            ApiError::Nucleus(NucleusError::ApprovalRequired { operation }) => (
+                StatusCode::FORBIDDEN,
+                "approval_required",
+                Some(operation.clone()),
+            ),
             ApiError::Nucleus(NucleusError::BudgetExhausted { .. }) => {
                 (StatusCode::PAYMENT_REQUIRED, "budget_exhausted", None)
             }
@@ -182,6 +189,9 @@ impl IntoResponse for ApiError {
             ApiError::Nucleus(NucleusError::SandboxEscape { .. }) => {
                 (StatusCode::FORBIDDEN, "sandbox_escape", None)
             }
+            ApiError::Nucleus(NucleusError::Io(_)) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "io_error", None)
+            }
             ApiError::Nucleus(NucleusError::TimeViolation { .. }) => {
                 (StatusCode::REQUEST_TIMEOUT, "time_violation", None)
             }
@@ -191,9 +201,11 @@ impl IntoResponse for ApiError {
             ApiError::Nucleus(NucleusError::InsufficientCapability { .. }) => {
                 (StatusCode::FORBIDDEN, "insufficient_capability", None)
             }
-            ApiError::Nucleus(NucleusError::InvalidApproval { operation }) => {
-                (StatusCode::FORBIDDEN, "invalid_approval", Some(operation.clone()))
-            }
+            ApiError::Nucleus(NucleusError::InvalidApproval { operation }) => (
+                StatusCode::FORBIDDEN,
+                "invalid_approval",
+                Some(operation.clone()),
+            ),
             ApiError::Nucleus(NucleusError::InvalidCharge { .. }) => {
                 (StatusCode::BAD_REQUEST, "invalid_charge", None)
             }
@@ -222,8 +234,8 @@ async fn main() -> Result<(), ApiError> {
 
     let args = Args::parse();
     let spec_contents = tokio::fs::read_to_string(&args.spec).await?;
-    let spec: PodSpec = serde_yaml::from_str(&spec_contents)
-        .map_err(|e| ApiError::Spec(e.to_string()))?;
+    let spec: PodSpec =
+        serde_yaml::from_str(&spec_contents).map_err(|e| ApiError::Spec(e.to_string()))?;
 
     let runtime = build_runtime(&spec)?;
     let approvals = Arc::new(ApprovalRegistry::default());
@@ -233,10 +245,12 @@ async fn main() -> Result<(), ApiError> {
     });
     let runtime = runtime.with_approver(Arc::new(approver))?;
 
-    let auth = args
-        .auth_secret
-        .as_ref()
-        .map(|secret| AuthConfig::new(secret.as_bytes(), Duration::from_secs(args.auth_max_skew_secs)));
+    let auth = args.auth_secret.as_ref().map(|secret| {
+        AuthConfig::new(
+            secret.as_bytes(),
+            Duration::from_secs(args.auth_max_skew_secs),
+        )
+    });
 
     if auth.is_none() {
         info!("nucleus-tool-proxy auth disabled (set NUCLEUS_TOOL_PROXY_AUTH_SECRET to enable)");
@@ -312,7 +326,10 @@ async fn read_file(
     let contents = match state.runtime.sandbox().read_to_string(&path) {
         Ok(contents) => contents,
         Err(NucleusError::ApprovalRequired { operation }) => {
-            let token = state.runtime.sandbox().request_approval(operation.clone())?;
+            let token = state
+                .runtime
+                .sandbox()
+                .request_approval(operation.clone())?;
             state
                 .runtime
                 .sandbox()
@@ -336,7 +353,10 @@ async fn write_file(
     match state.runtime.sandbox().write(&path, contents.as_bytes()) {
         Ok(()) => {}
         Err(NucleusError::ApprovalRequired { operation }) => {
-            let token = state.runtime.sandbox().request_approval(operation.clone())?;
+            let token = state
+                .runtime
+                .sandbox()
+                .request_approval(operation.clone())?;
             state
                 .runtime
                 .sandbox()
@@ -381,14 +401,7 @@ async fn approve_operation(
     Json(req): Json<ApproveRequest>,
 ) -> Result<Json<ApproveResponse>, ApiError> {
     state.approvals.approve(&req.operation, req.count);
-    audit_event(
-        &state,
-        &headers,
-        "approve",
-        &req.operation,
-        "ok",
-    )
-    .await?;
+    audit_event(&state, &headers, "approve", &req.operation, "ok").await?;
     Ok(Json(ApproveResponse { ok: true }))
 }
 
@@ -437,35 +450,40 @@ fn resolve_vsock(args: &Args, spec: &PodSpec) -> Result<Option<VsockConfig>, Api
     }
 }
 
+#[cfg(target_os = "linux")]
 async fn serve_vsock(
     app: Router,
     vsock: VsockConfig,
     announce_path: Option<PathBuf>,
 ) -> Result<(), ApiError> {
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (app, vsock, announce_path);
-        return Err(ApiError::Spec(
-            "vsock requires Linux (run inside the Firecracker VM)".to_string(),
-        ));
+    let addr = tokio_vsock::VsockAddr::new(vsock.cid, vsock.port);
+    let listener = tokio_vsock::VsockListener::bind(addr)?;
+    let local = listener.local_addr()?;
+    if let Some(path) = announce_path {
+        tokio::fs::write(path, format!("vsock://{}:{}", local.cid(), local.port())).await?;
     }
-
-    #[cfg(target_os = "linux")]
-    {
-        let addr = tokio_vsock::VsockAddr::new(vsock.cid, vsock.port);
-        let listener = tokio_vsock::VsockListener::bind(addr)?;
-        let local = listener.local_addr()?;
-        if let Some(path) = announce_path {
-            tokio::fs::write(path, format!("vsock://{}:{}", local.cid(), local.port())).await?;
-        }
-        info!("nucleus-tool-proxy listening on vsock {}:{}", local.cid(), local.port());
-        let listener = VsockAxumListener { inner: listener };
-        axum::serve(listener, app).await?;
-    }
-
+    info!(
+        "nucleus-tool-proxy listening on vsock {}:{}",
+        local.cid(),
+        local.port()
+    );
+    let listener = VsockAxumListener { inner: listener };
+    axum::serve(listener, app).await?;
     Ok(())
 }
 
+#[cfg(not(target_os = "linux"))]
+async fn serve_vsock(
+    _app: Router,
+    _vsock: VsockConfig,
+    _announce_path: Option<PathBuf>,
+) -> Result<(), ApiError> {
+    Err(ApiError::Spec(
+        "vsock requires Linux (run inside the Firecracker VM)".to_string(),
+    ))
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[derive(Debug, Clone, Copy)]
 struct VsockConfig {
     cid: u32,
@@ -498,7 +516,10 @@ impl axum::serve::Listener for VsockAxumListener {
     }
 }
 
-fn build_audit_log(args: &Args, auth: Option<&AuthConfig>) -> Result<Option<Arc<AuditLog>>, ApiError> {
+fn build_audit_log(
+    args: &Args,
+    auth: Option<&AuthConfig>,
+) -> Result<Option<Arc<AuditLog>>, ApiError> {
     let path = match args.audit_log.as_ref() {
         Some(path) => path.clone(),
         None => return Ok(None),
@@ -514,10 +535,7 @@ fn build_audit_log(args: &Args, auth: Option<&AuthConfig>) -> Result<Option<Arc<
         ));
     };
 
-    Ok(Some(Arc::new(AuditLog {
-        path,
-        secret,
-    })))
+    Ok(Some(Arc::new(AuditLog { path, secret })))
 }
 
 async fn audit_event(
@@ -570,8 +588,7 @@ impl AuditLog {
         );
         entry.signature = auth::sign_message(&self.secret, message.as_bytes());
 
-        let line = serde_json::to_string(&entry)
-            .map_err(|e| ApiError::Spec(e.to_string()))?;
+        let line = serde_json::to_string(&entry).map_err(|e| ApiError::Spec(e.to_string()))?;
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)

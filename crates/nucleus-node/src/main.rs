@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use axum::body::{to_bytes, Body, Bytes};
 use axum::extract::{Path as AxumPath, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Response as AxumResponse};
 use axum::routing::{get, post};
 use axum::{middleware, Json, Router};
 use clap::{Parser, ValueEnum};
@@ -16,12 +16,13 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
+use tonic::{Request, Response as GrpcResponse, Status};
 use tracing::{error, info};
 use uuid::Uuid;
-use tonic::{Request, Response, Status};
 
 mod auth;
 use auth::{AuthConfig, AuthError};
+mod cgroup;
 
 pub mod proto {
     tonic::include_proto!("nucleus.node.v1");
@@ -46,7 +47,11 @@ struct Args {
     #[arg(long, env = "NUCLEUS_NODE_DRIVER", value_enum, default_value = "local")]
     driver: DriverKind,
     /// Path to the nucleus-tool-proxy binary (local driver).
-    #[arg(long, env = "NUCLEUS_TOOL_PROXY_PATH", default_value = "nucleus-tool-proxy")]
+    #[arg(
+        long,
+        env = "NUCLEUS_TOOL_PROXY_PATH",
+        default_value = "nucleus-tool-proxy"
+    )]
     tool_proxy_path: PathBuf,
     /// Path to firecracker binary (firecracker driver).
     #[arg(long, env = "NUCLEUS_FIRECRACKER_PATH", default_value = "firecracker")]
@@ -71,6 +76,7 @@ struct NodeState {
     state_dir: PathBuf,
     driver: DriverKind,
     tool_proxy_path: PathBuf,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     firecracker_path: PathBuf,
     auth: Option<AuthConfig>,
 }
@@ -88,6 +94,7 @@ struct PodHandle {
 #[derive(Debug)]
 enum DriverState {
     Local(LocalPod),
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Firecracker(FirecrackerPod),
 }
 
@@ -97,6 +104,7 @@ struct LocalPod {
 }
 
 #[derive(Debug)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct FirecrackerPod {
     child: Mutex<tokio::process::Child>,
 }
@@ -156,7 +164,7 @@ enum ApiError {
 }
 
 impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
+    fn into_response(self) -> AxumResponse {
         let status = match self {
             ApiError::InvalidSpec(_) => StatusCode::BAD_REQUEST,
             ApiError::NotFound => StatusCode::NOT_FOUND,
@@ -189,10 +197,12 @@ async fn main() -> Result<(), ApiError> {
         driver: args.driver.clone(),
         tool_proxy_path: args.tool_proxy_path.clone(),
         firecracker_path: args.firecracker_path.clone(),
-        auth: args
-            .auth_secret
-            .as_ref()
-            .map(|secret| AuthConfig::new(secret.as_bytes(), Duration::from_secs(args.auth_max_skew_secs))),
+        auth: args.auth_secret.as_ref().map(|secret| {
+            AuthConfig::new(
+                secret.as_bytes(),
+                Duration::from_secs(args.auth_max_skew_secs),
+            )
+        }),
     };
 
     if state.auth.is_none() {
@@ -205,7 +215,10 @@ async fn main() -> Result<(), ApiError> {
         .route("/v1/pods/:id/logs", get(pod_logs))
         .route("/v1/pods/:id/cancel", post(cancel_pod))
         .with_state(state.clone())
-        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
 
     if let Some(grpc_listen) = args.grpc_listen.clone() {
         let grpc_state = state.clone();
@@ -234,8 +247,8 @@ async fn create_pod(
     let spec = match serde_yaml::from_slice::<PodSpec>(&body) {
         Ok(spec) => spec,
         Err(_) => {
-            let request: CreatePodRequest = serde_yaml::from_slice(&body)
-                .map_err(|e| ApiError::InvalidSpec(e.to_string()))?;
+            let request: CreatePodRequest =
+                serde_yaml::from_slice(&body).map_err(|e| ApiError::InvalidSpec(e.to_string()))?;
             if let Some(spec) = request.spec {
                 spec
             } else if let Some(yaml) = request.yaml {
@@ -257,7 +270,7 @@ async fn auth_middleware(
     State(state): State<NodeState>,
     request: axum::http::Request<Body>,
     next: middleware::Next,
-) -> Result<Response, ApiError> {
+) -> Result<AxumResponse, ApiError> {
     if let Some(auth) = state.auth.as_ref() {
         let (parts, body) = request.into_parts();
         let bytes = to_bytes(body, MAX_AUTH_BODY_BYTES)
@@ -324,7 +337,9 @@ async fn pod_logs(
     AxumPath(id): AxumPath<Uuid>,
 ) -> Result<String, ApiError> {
     let pod = get_pod(&state, id).await?;
-    let logs = tokio::fs::read_to_string(&pod.log_path).await.unwrap_or_default();
+    let logs = tokio::fs::read_to_string(&pod.log_path)
+        .await
+        .unwrap_or_default();
     Ok(logs)
 }
 
@@ -441,8 +456,8 @@ async fn spawn_local_pod(
         .arg("127.0.0.1:0")
         .arg("--announce-path")
         .arg(&announce_path)
-        .stdout(log_stdout.into())
-        .stderr(log_stderr.into())
+        .stdout(log_stdout)
+        .stderr(log_stderr)
         .spawn()
         .map_err(|e| ApiError::Driver(format!("failed to spawn tool proxy: {e}")))?;
 
@@ -465,9 +480,9 @@ async fn spawn_firecracker_pod(
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (state, pod_dir, spec, id);
-        return Err(ApiError::Driver(
+        Err(ApiError::Driver(
             "firecracker requires Linux; run nucleus-node inside Colima on macOS".to_string(),
-        ));
+        ))
     }
 
     #[cfg(target_os = "linux")]
@@ -502,13 +517,24 @@ async fn spawn_firecracker_pod(
             .append(true)
             .open(&log_path)?;
 
-        let child = Command::new(&state.firecracker_path)
-            .arg("--config-file")
-            .arg(&config_path)
-            .stdout(log_stdout.into())
-            .stderr(log_stderr.into())
+        let mut command = Command::new(&state.firecracker_path);
+        command.arg("--config-file").arg(&config_path);
+        apply_seccomp_flags(&mut command, spec)?;
+        let child = command
+            .stdout(log_stdout)
+            .stderr(log_stderr)
             .spawn()
             .map_err(|e| ApiError::Driver(format!("failed to spawn firecracker: {e}")))?;
+
+        if let Some(ref cgroup_spec) = spec.spec.cgroup {
+            if let Some(pid) = child.id() {
+                cgroup::apply_cgroup(pid, cgroup_spec).await?;
+            } else {
+                return Err(ApiError::Driver(
+                    "firecracker process id unavailable for cgroup placement".to_string(),
+                ));
+            }
+        }
 
         let handle = FirecrackerPod {
             child: Mutex::new(child),
@@ -555,10 +581,7 @@ async fn wait_for_announce(
     })
     .await;
 
-    match wait_result {
-        Ok(addr) => addr,
-        Err(_) => None,
-    }
+    wait_result.unwrap_or_default()
 }
 
 fn now_unix() -> u64 {
@@ -573,13 +596,19 @@ async fn serve_grpc(state: NodeState, listen: String) -> Result<(), ApiError> {
         .parse()
         .map_err(|e| ApiError::Driver(format!("invalid grpc listen addr: {e}")))?;
     let auth = state.auth.clone();
-    let service = NodeServiceServer::with_interceptor(GrpcService { state }, move |mut req: Request<()>| {
-        if let Some(ref auth) = auth {
-            auth::verify_grpc(req.metadata(), req.uri().path(), auth)
-                .map_err(|e| Status::unauthenticated(e.to_string()))?;
-        }
-        Ok(req)
-    });
+    let service =
+        NodeServiceServer::with_interceptor(GrpcService { state }, move |req: Request<()>| {
+            if let Some(ref auth) = auth {
+                let method = req
+                    .metadata()
+                    .get("x-nucleus-method")
+                    .and_then(|value| value.to_str().ok())
+                    .ok_or_else(|| Status::unauthenticated("missing x-nucleus-method"))?;
+                auth::verify_grpc(req.metadata(), method, auth)
+                    .map_err(|e| Status::unauthenticated(e.to_string()))?;
+            }
+            Ok(req)
+        });
     info!("nucleus-node grpc listening on {}", addr);
     tonic::transport::Server::builder()
         .add_service(service)
@@ -599,7 +628,7 @@ impl NodeService for GrpcService {
     async fn create_pod(
         &self,
         request: Request<proto::CreatePodRequest>,
-    ) -> Result<Response<proto::CreatePodResponse>, Status> {
+    ) -> Result<GrpcResponse<proto::CreatePodResponse>, Status> {
         let yaml = request.into_inner().yaml;
         if yaml.trim().is_empty() {
             return Err(Status::invalid_argument("missing pod spec yaml"));
@@ -611,7 +640,7 @@ impl NodeService for GrpcService {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        Ok(Response::new(proto::CreatePodResponse {
+        Ok(GrpcResponse::new(proto::CreatePodResponse {
             id: id.to_string(),
             proxy_addr: proxy_addr.unwrap_or_default(),
         }))
@@ -620,16 +649,16 @@ impl NodeService for GrpcService {
     async fn list_pods(
         &self,
         _request: Request<proto::Empty>,
-    ) -> Result<Response<proto::ListPodsResponse>, Status> {
+    ) -> Result<GrpcResponse<proto::ListPodsResponse>, Status> {
         let infos = collect_pod_infos(&self.state).await;
         let pods = infos.into_iter().map(pod_info_to_grpc).collect();
-        Ok(Response::new(proto::ListPodsResponse { pods }))
+        Ok(GrpcResponse::new(proto::ListPodsResponse { pods }))
     }
 
     async fn pod_logs(
         &self,
         request: Request<proto::PodId>,
-    ) -> Result<Response<proto::PodLogsResponse>, Status> {
+    ) -> Result<GrpcResponse<proto::PodLogsResponse>, Status> {
         let id = Uuid::parse_str(&request.into_inner().id)
             .map_err(|_| Status::invalid_argument("invalid pod id"))?;
         let pod = get_pod(&self.state, id)
@@ -638,13 +667,13 @@ impl NodeService for GrpcService {
         let logs = tokio::fs::read_to_string(&pod.log_path)
             .await
             .unwrap_or_default();
-        Ok(Response::new(proto::PodLogsResponse { logs }))
+        Ok(GrpcResponse::new(proto::PodLogsResponse { logs }))
     }
 
     async fn cancel_pod(
         &self,
         request: Request<proto::PodId>,
-    ) -> Result<Response<proto::CancelPodResponse>, Status> {
+    ) -> Result<GrpcResponse<proto::CancelPodResponse>, Status> {
         let id = Uuid::parse_str(&request.into_inner().id)
             .map_err(|_| Status::invalid_argument("invalid pod id"))?;
         let pod = get_pod(&self.state, id)
@@ -653,7 +682,7 @@ impl NodeService for GrpcService {
         pod.cancel()
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
-        Ok(Response::new(proto::CancelPodResponse {
+        Ok(GrpcResponse::new(proto::CancelPodResponse {
             status: "cancelled".to_string(),
         }))
     }
@@ -662,11 +691,7 @@ impl NodeService for GrpcService {
 fn pod_info_to_grpc(info: PodInfo) -> proto::PodInfo {
     let (state, exit_code, error) = match info.state {
         PodState::Running => ("running".to_string(), 0, String::new()),
-        PodState::Exited { code } => (
-            "exited".to_string(),
-            code.unwrap_or(-1),
-            String::new(),
-        ),
+        PodState::Exited { code } => ("exited".to_string(), code.unwrap_or(-1), String::new()),
         PodState::Error { message } => ("error".to_string(), -1, message),
     };
 
@@ -681,6 +706,7 @@ fn pod_info_to_grpc(info: PodInfo) -> proto::PodInfo {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug, Serialize)]
 struct FirecrackerConfig {
     #[serde(rename = "boot-source")]
@@ -694,6 +720,7 @@ struct FirecrackerConfig {
     logger: Option<LoggerConfig>,
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug, Serialize)]
 struct BootSource {
     kernel_image_path: String,
@@ -701,6 +728,7 @@ struct BootSource {
     boot_args: Option<String>,
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug, Serialize)]
 struct DriveConfig {
     drive_id: String,
@@ -709,6 +737,7 @@ struct DriveConfig {
     is_read_only: bool,
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug, Serialize)]
 struct MachineConfig {
     vcpu_count: i64,
@@ -716,6 +745,7 @@ struct MachineConfig {
     smt: bool,
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug, Serialize)]
 struct LoggerConfig {
     log_path: String,
@@ -724,6 +754,7 @@ struct LoggerConfig {
     show_log_origin: bool,
 }
 
+#[cfg(target_os = "linux")]
 impl FirecrackerConfig {
     fn from_spec(
         spec: &PodSpec,
@@ -744,9 +775,10 @@ impl FirecrackerConfig {
             .and_then(|r| r.memory_mib)
             .unwrap_or(512) as i64;
 
-        let boot_args = image.boot_args.clone().or_else(|| {
-            Some("console=ttyS0 reboot=k panic=1 pci=off".to_string())
-        });
+        let boot_args = image
+            .boot_args
+            .clone()
+            .or_else(|| Some("console=ttyS0 reboot=k panic=1 pci=off".to_string()));
 
         let vsock = spec.spec.vsock.as_ref().map(|vsock| VsockConfig {
             guest_cid: vsock.guest_cid,
@@ -775,12 +807,14 @@ impl FirecrackerConfig {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug, Serialize)]
 struct VsockConfig {
     guest_cid: u32,
     uds_path: String,
 }
 
+#[cfg(target_os = "linux")]
 fn build_drive_config(image: &nucleus_spec::ImageSpec) -> Vec<DriveConfig> {
     let mut drives = vec![DriveConfig {
         drive_id: "rootfs".to_string(),
@@ -799,4 +833,20 @@ fn build_drive_config(image: &nucleus_spec::ImageSpec) -> Vec<DriveConfig> {
     }
 
     drives
+}
+
+#[cfg(target_os = "linux")]
+fn apply_seccomp_flags(command: &mut Command, spec: &PodSpec) -> Result<(), ApiError> {
+    if let Some(ref seccomp) = spec.spec.seccomp {
+        match seccomp {
+            nucleus_spec::SeccompSpec::Default => {}
+            nucleus_spec::SeccompSpec::Disabled => {
+                command.arg("--no-seccomp");
+            }
+            nucleus_spec::SeccompSpec::Custom { filter_path } => {
+                command.arg("--seccomp-filter").arg(filter_path);
+            }
+        }
+    }
+    Ok(())
 }
