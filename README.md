@@ -7,20 +7,9 @@
 
 **Enforced permissions for AI agents** - policy + enforcement in one stack.
 
-## The Problem
+## What It Is
 
-Most AI agent permission systems are **policy-only**: they define what SHOULD happen but don't enforce it. An agent (or malicious prompt injection) can simply ignore the policy checks.
-
-```rust
-// Policy-only approach - easily bypassed
-if permissions.can_write_file(path) {
-    std::fs::write(path, data)?;  // What if we just... skip the if?
-}
-```
-
-## The Solution
-
-Nucleus provides both **policy** (via lattice-guard) and **enforcement** (via nucleus):
+Nucleus pairs a **formal permission model** (lattice-guard) with **runtime enforcement** (nucleus). The key difference from policy-only systems: you cannot perform side effects without going through an enforcing API.
 
 ```rust
 // Enforcement approach - cannot bypass
@@ -30,13 +19,31 @@ sandbox.write("file.txt", data)?;  // Enforced by capability handle
 // There is no sandbox.write_unchecked() - enforcement is the only path
 ```
 
-## Components
+## Capability Model (Current)
 
-| Crate | Purpose | Key Feature |
-|-------|---------|-------------|
-| **lattice-guard** | Policy definition | Quotient lattice, trifecta detection |
-| **nucleus** | Policy enforcement | cap-std sandbox, atomic budget, monotonic time |
-| **nucleus-cli** | CLI tool | Run agents with enforced permissions |
+Permissions are modeled as a product lattice with normalization (ν) that adds approval obligations when the lethal trifecta appears.
+
+**Dimensions**
+- **Capabilities**: per-operation autonomous permission level
+- **Obligations**: per-operation approval requirement (gates execution)
+- **Paths**: allow/block sets + optional work dir sandbox
+- **Commands**: allow/block sets + optional structured argv patterns
+- **Budget**: cost/token limits with atomic tracking
+- **Time**: validity window with monotonic enforcement
+
+**Capability levels**
+- `Never < LowRisk < Always`
+
+**Operations covered**
+- `read_files`, `write_files`, `edit_files`
+- `run_bash`
+- `glob_search`, `grep_search`
+- `web_search`, `web_fetch`
+- `git_commit`, `git_push`, `create_pr`
+
+**Obligations (approvals)**
+- Any operation in `obligations.approvals` requires an approval token to execute.
+- The trifecta constraint adds obligations for exfiltration operations when all three risk axes are present.
 
 ## Quick Start
 
@@ -51,25 +58,24 @@ nucleus run --profile fix-issue "Fix the bug in src/main.rs"
 nucleus profiles
 ```
 
-## The Lethal Trifecta
+## The Lethal Trifecta (Runtime-Enforced)
 
 The core security model prevents the [lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/):
 
 1. **Private Data Access** (reading files, secrets)
 2. **Untrusted Content** (web fetch, external input)
-3. **Exfiltration Vector** (git push, curl, PRs)
+3. **Exfiltration Vector** (git push, PRs, shell commands)
 
-When all three are present at autonomous levels, prompt injection can exfiltrate data.
-
-**Nucleus enforces this at runtime** - not just as a policy check:
+When all three are present at autonomous levels, Nucleus **adds approval obligations** to exfiltration operations at runtime.
 
 ```rust
-// Even if policy allows curl, nucleus requires approval when trifecta would complete
 let guard = MonotonicGuard::minutes(30);
 let executor = Executor::new(&policy, &sandbox, &budget)
     .with_time_guard(&guard);
-executor.run("curl http://evil.com")?;
-// Error: ApprovalRequired { operation: "curl http://evil.com" }
+
+// If trifecta is complete, this requires approval
+executor.run("git push")?;
+// Error: ApprovalRequired { operation: "git push" }
 ```
 
 ## Architecture
@@ -88,34 +94,12 @@ executor.run("curl http://evil.com")?;
 │  └──────────────┘  └──────────────┘  └──────────────────────┘  │
 ├─────────────────────────────────────────────────────────────────┤
 │                      lattice-guard                               │
-│  (PermissionLattice, PathLattice, CommandLattice, BudgetLattice)│
+│  (Capabilities + Obligations + Paths + Commands + Budget + Time)│
 ├─────────────────────────────────────────────────────────────────┤
 │                    Operating System                              │
 │           (cap-std capabilities, atomic ops, quanta)             │
 └─────────────────────────────────────────────────────────────────┘
 ```
-
-## Why This Approach?
-
-### vs. Policy-Only Libraries
-
-| Aspect | Policy-Only | Nucleus |
-|--------|-------------|---------|
-| File access | `can_access()` → bool | `Sandbox::open()` → File |
-| Bypass | Ignore the bool | No bypass path exists |
-| Concurrent budget | Race conditions | Atomic CAS |
-| Time enforcement | Wall clock | Monotonic (quanta) |
-
-### vs. Container Sandboxing
-
-| Aspect | Containers | Nucleus |
-|--------|------------|---------|
-| Granularity | Process-level | Operation-level |
-| Trifecta | Not aware | First-class concept |
-| Budget tracking | External | Integrated |
-| Human approval | External | Approval callback |
-
-**Best practice**: Use both! Nucleus for fine-grained agent control, containers for defense-in-depth.
 
 ## Permission Profiles
 
@@ -146,7 +130,7 @@ git_push = "never"        # Blocked entirely
 web_fetch = "never"       # No untrusted content
 
 [obligations]
-approvals = ["run_bash"]  # Requires approval callback
+approvals = ["run_bash"]  # Requires approval token
 
 [budget]
 max_cost_usd = 2.0
@@ -161,6 +145,26 @@ valid_hours = 1           # Expires after 1 hour
 nucleus run --config permissions.toml "Your task here"
 ```
 
+## Command Policy
+
+Command enforcement supports both:
+- **String allow/block** rules (fast, coarse)
+- **Structured argv** patterns (precise)
+
+```rust
+use lattice_guard::{ArgPattern, CommandLattice, CommandPattern};
+
+let mut cmds = CommandLattice::permissive();
+cmds.allow_rule(CommandPattern::exact("cargo", &["test"]));
+cmds.block_rule(CommandPattern {
+    program: "bash".to_string(),
+    args: vec![ArgPattern::AnyRemaining],
+});
+
+assert!(cmds.can_execute("cargo test --release"));
+assert!(!cmds.can_execute("bash -c 'echo hi'"));
+```
+
 ## Security Model
 
 ### What We Enforce
@@ -169,13 +173,13 @@ nucleus run --config permissions.toml "Your task here"
 - ✅ Command execution validated before spawning (CLI routes through `Executor`)
 - ✅ Budget tracked atomically (no concurrent races)
 - ✅ Time bounds via monotonic clock (manipulation-proof)
-- ✅ Trifecta requires approval for exfiltration
-- ✅ Approvals require actual callback
+- ✅ Trifecta adds approval obligations for exfiltration
+- ✅ Approvals require tokens (not just a boolean)
 
 ### What We Don't Enforce
 
-- ❌ Kernel-level escapes (use containers)
-- ❌ Network-level exfiltration if bash allowed
+- ❌ Kernel-level escapes (use containers/VMs)
+- ❌ Network-level egress control inside the host OS
 - ❌ Human approving bad actions (social engineering)
 - ❌ Side-channel attacks
 
