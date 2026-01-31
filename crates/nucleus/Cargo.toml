@@ -13,8 +13,6 @@ categories = ["os", "filesystem", "command-line-utilities"]
 
 [features]
 default = []
-# Enable network enforcement (HTTP client wrapping)
-network = ["reqwest"]
 # Enable async runtime support
 async = ["tokio"]
 
@@ -40,9 +38,6 @@ thiserror = "2.0"
 
 # Optional: async support
 tokio = { version = "1", features = ["process", "fs", "io-util"], optional = true }
-
-# Optional: network enforcement
-reqwest = { version = "0.13", default-features = false, features = ["rustls"], optional = true }
 
 # Shell parsing for command validation
 shell-words = "1.1"

@@ -173,7 +173,7 @@ nucleus = "0.1"
 lattice-guard = "0.1"
 
 # Optional features
-nucleus = { version = "0.1", features = ["async", "network"] }
+nucleus = { version = "0.1", features = ["async"] }
 ```
 
 ## Architecture
