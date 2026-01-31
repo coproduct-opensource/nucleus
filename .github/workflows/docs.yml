@@ -1,0 +1,44 @@
+name: Docs
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "docs/**"
+      - "book.toml"
+      - ".github/workflows/docs.yml"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+      - name: Install mdBook
+        run: cargo install mdbook --locked
+      - name: Build docs
+        run: mdbook build
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./book
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

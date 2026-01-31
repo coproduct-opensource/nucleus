@@ -1,0 +1,9 @@
+[book]
+title = "Nucleus"
+authors = ["Coproduct"]
+language = "en"
+multilingual = false
+src = "docs"
+
+[build]
+build-dir = "book"
