@@ -9,13 +9,15 @@ on:
 
 permissions:
   contents: read
-  actions: read
-  security-events: write
-  id-token: write
 
 jobs:
   analysis:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+      id-token: write
     steps:
       - uses: actions/checkout@v5
       - uses: ossf/scorecard-action@v2.4.3

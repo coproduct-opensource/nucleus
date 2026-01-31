@@ -83,7 +83,7 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
     );
 
     // Build permission lattice
-    let mut policy = if let Some(ref config_path) = args.config {
+    let policy = if let Some(ref config_path) = args.config {
         // Load custom config
         load_permission_config(config_path)?
     } else {

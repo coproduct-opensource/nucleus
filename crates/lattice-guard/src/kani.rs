@@ -4,7 +4,7 @@ use crate::{
     BudgetLattice, CapabilityLattice, CapabilityLevel, CommandLattice, Obligations, Operation,
     PathLattice, PermissionLattice, TimeLattice,
 };
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 fn level_from_u8(value: u8) -> CapabilityLevel {
@@ -58,8 +58,7 @@ fn obligations_from_masks(mask_base: u16, mask_extra: u16) -> (Obligations, Obli
 }
 
 fn fixed_timestamp() -> DateTime<Utc> {
-    let naive = NaiveDateTime::from_timestamp_opt(0, 0).unwrap();
-    DateTime::<Utc>::from_utc(naive, Utc)
+    DateTime::<Utc>::from_timestamp(0, 0).unwrap()
 }
 
 fn base_permission() -> PermissionLattice {

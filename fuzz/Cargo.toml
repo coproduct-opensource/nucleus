@@ -14,3 +14,21 @@ serde_json = "1.0"
 [dependencies.lattice-guard]
 path = "../crates/lattice-guard"
 features = ["serde"]
+
+[[bin]]
+name = "command_can_execute"
+path = "fuzz_targets/command_can_execute.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "path_can_access"
+path = "fuzz_targets/path_can_access.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "permission_serde"
+path = "fuzz_targets/permission_serde.rs"
+test = false
+doc = false
