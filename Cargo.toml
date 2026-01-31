@@ -1,0 +1,17 @@
+[workspace]
+members = [
+    "crates/lattice-guard",  # Policy: quotient lattice types
+    "crates/nucleus",        # Enforcement: wraps OS APIs with policy checks
+    "crates/nucleus-cli",    # CLI: distributed executor with enforcement
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+license = "MIT OR Apache-2.0"
+authors = ["Coproduct <hello@coproduct.dev>"]
+
+[workspace.lints.clippy]
+type_complexity = "allow"

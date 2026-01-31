@@ -1,0 +1,52 @@
+[package]
+name = "nucleus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "OS-level enforcement of lattice-guard permissions - wraps file, process, and network APIs"
+repository = "https://github.com/coproduct-opensource/nucleus"
+documentation = "https://docs.rs/nucleus"
+readme = "README.md"
+keywords = ["ai", "security", "sandbox", "agents", "enforcement"]
+categories = ["os", "filesystem", "command-line-utilities"]
+
+[features]
+default = []
+# Enable network enforcement (HTTP client wrapping)
+network = ["reqwest"]
+# Enable async runtime support
+async = ["tokio"]
+
+[dependencies]
+# Policy layer - the quotient lattice
+lattice-guard = { path = "../lattice-guard" }
+
+# Atomic budget tracking
+parking_lot = "0.12"
+
+# Monotonic time (not wall clock)
+quanta = "0.12"
+
+# Secure path handling
+cap-std = "3"          # Capability-based filesystem
+cap-tempfile = "3"     # Secure temp files
+
+# Process spawning with sandboxing
+# (using cap-std's command wrapper where available)
+
+# Error handling
+thiserror = "2.0"
+
+# Optional: async support
+tokio = { version = "1", features = ["process", "fs", "io-util"], optional = true }
+
+# Optional: network enforcement
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+
+# Shell parsing for command validation
+shell-words = "1.1"
+
+[dev-dependencies]
+tempfile = "3"
+rust_decimal = "1.36"

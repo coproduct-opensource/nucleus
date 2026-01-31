@@ -1,0 +1,52 @@
+[package]
+name = "nucleus-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "CLI for running AI agents with nucleus enforcement"
+repository = "https://github.com/coproduct-opensource/nucleus"
+documentation = "https://docs.rs/nucleus-cli"
+readme = "README.md"
+keywords = ["ai", "security", "cli", "agents", "sandbox"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "nucleus"
+path = "src/main.rs"
+
+[dependencies]
+# Core enforcement
+nucleus = { path = "../nucleus" }
+lattice-guard = { path = "../lattice-guard" }
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full", "process"] }
+
+# Serialization and config
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Decimal for budget
+rust_decimal = "1.36"
+
+# Utilities
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+shellexpand = "3.1"
+dirs = "6.0"
+
+# macOS Keychain (conditional)
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3.2"
+
+[lints]
+workspace = true

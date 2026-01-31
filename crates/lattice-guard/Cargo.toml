@@ -1,0 +1,38 @@
+[package]
+name = "lattice-guard"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+license = "MIT OR Apache-2.0"
+description = "A quotient lattice for AI agent permissions that prevents the 'lethal trifecta'"
+repository = "https://github.com/coproduct-opensource/nucleus"
+documentation = "https://docs.rs/lattice-guard"
+readme = "README.md"
+keywords = ["ai", "security", "permissions", "agents", "lattice", "quotient"]
+categories = ["authentication", "development-tools"]
+
+[features]
+default = ["serde"]
+serde = ["dep:serde", "dep:serde_json", "rust_decimal/serde", "chrono/serde", "uuid/serde"]
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+sha2 = "0.10"
+uuid = { version = "1.0", features = ["v4"] }
+
+# Optional serde support
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
+
+# Security: proper decimal arithmetic for budget (no f64 exploits)
+rust_decimal = "1.36"
+
+# Security: proper shell command parsing (no injection via quoting)
+shell-words = "1.1"
+
+# Glob pattern matching (audited, stable)
+regex = "1.11"
+
+[dev-dependencies]
+proptest = "1.5"
+serde_json = "1.0"
