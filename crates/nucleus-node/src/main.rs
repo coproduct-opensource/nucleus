@@ -13,6 +13,7 @@ use axum::{middleware, Json, Router};
 use clap::{Parser, ValueEnum};
 use nucleus_spec::PodSpec;
 use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
@@ -559,7 +560,13 @@ async fn spawn_firecracker_pod(
             .await
             .map_err(|e| ApiError::Driver(format!("vsock bridge failed: {e}")))?;
 
-        let proxy_addr = Some(format!("http://{}", bridge.listen_addr()));
+        let proxy_addr = format!("http://{}", bridge.listen_addr());
+        if let Err(err) = wait_for_proxy_health(bridge.listen_addr()).await {
+            bridge.shutdown().await;
+            let mut child = child;
+            let _ = child.kill().await;
+            return Err(err);
+        }
 
         let handle = FirecrackerPod {
             child: Mutex::new(child),
@@ -568,7 +575,7 @@ async fn spawn_firecracker_pod(
 
         info!("spawned firecracker pod {}", id);
 
-        Ok((DriverState::Firecracker(handle), proxy_addr, log_path))
+        Ok((DriverState::Firecracker(handle), Some(proxy_addr), log_path))
     }
 }
 
@@ -625,6 +632,39 @@ async fn wait_for_vsock_socket(path: &Path) -> Result<(), ApiError> {
         "vsock socket not found at {}",
         path.display()
     )))
+}
+
+async fn wait_for_proxy_health(addr: SocketAddr) -> Result<(), ApiError> {
+    let start = std::time::Instant::now();
+    let host = addr.ip();
+    while start.elapsed() < Duration::from_secs(5) {
+        match tokio::net::TcpStream::connect(addr).await {
+            Ok(mut stream) => {
+                let request = format!(
+                    "GET /v1/health HTTP/1.1\\r\\nHost: {host}\\r\\nConnection: close\\r\\n\\r\\n"
+                );
+                if stream.write_all(request.as_bytes()).await.is_err() {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+
+                let mut buf = Vec::new();
+                if stream.read_to_end(&mut buf).await.is_err() {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+                let response = String::from_utf8_lossy(&buf);
+                if response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200") {
+                    return Ok(());
+                }
+            }
+            Err(_) => {}
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    Err(ApiError::Driver("proxy health check timed out".to_string()))
 }
 
 async fn serve_grpc(state: NodeState, listen: String) -> Result<(), ApiError> {
