@@ -1,0 +1,15 @@
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: openclaw-demo
+spec:
+  work_dir: .
+  timeout_seconds: 2700
+  policy:
+    type: profile
+    name: demo
+  budget_model:
+    base_cost_usd: 0.000001
+    cost_per_second_usd: 0.0001
+  seccomp:
+    mode: default

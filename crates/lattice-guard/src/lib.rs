@@ -76,7 +76,7 @@ pub use budget::BudgetLattice;
 pub use capability::{
     CapabilityLattice, CapabilityLevel, IncompatibilityConstraint, Obligations, Operation,
 };
-pub use command::CommandLattice;
+pub use command::{ArgPattern, CommandLattice, CommandPattern};
 pub use guard::{CompositeGuard, GuardError, GuardFn, GuardedAction, PermissionGuard};
 pub use lattice::{
     DelegationError, EffectivePermissions, PermissionLattice, PermissionLatticeBuilder,

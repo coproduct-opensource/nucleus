@@ -11,6 +11,8 @@ pub enum Profile {
     CodeReview,
     /// Fix issue: write + bash + git commit (no push/PR)
     FixIssue,
+    /// Demo: broader commands with approvals
+    Demo,
     /// Full access: everything enabled (trifecta still enforced)
     Full,
     /// Restrictive: minimal permissions
@@ -24,6 +26,7 @@ impl Profile {
             "read-only" | "readonly" => Some(Self::ReadOnly),
             "code-review" | "codereview" | "review" => Some(Self::CodeReview),
             "fix-issue" | "fixissue" | "fix" => Some(Self::FixIssue),
+            "demo" => Some(Self::Demo),
             "full" | "permissive" => Some(Self::Full),
             "restrictive" | "minimal" => Some(Self::Restrictive),
             _ => None,
@@ -36,6 +39,7 @@ impl Profile {
             Self::ReadOnly => PermissionLattice::read_only(),
             Self::CodeReview => PermissionLattice::code_review(),
             Self::FixIssue => PermissionLattice::fix_issue(),
+            Self::Demo => PermissionLattice::demo(),
             Self::Full => PermissionLattice::permissive(),
             Self::Restrictive => PermissionLattice::restrictive(),
         }
@@ -48,6 +52,7 @@ impl Profile {
             "read-only",
             "code-review",
             "fix-issue",
+            "demo",
             "full",
             "restrictive",
         ]
@@ -62,6 +67,7 @@ pub fn list() -> Result<()> {
     println!("  read-only      File reading and search only");
     println!("  code-review    Read + limited web search");
     println!("  fix-issue      Write + bash + git commit (no push/PR)");
+    println!("  demo           Demo-friendly permissions with approvals");
     println!("  full           Everything enabled (trifecta still enforced!)");
     println!("  restrictive    Minimal permissions (default)");
     println!();

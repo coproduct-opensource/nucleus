@@ -1,0 +1,15 @@
+{
+  "plugins": {
+    "entries": {
+      "nucleus": {
+        "enabled": true,
+        "config": {
+          "proxyUrl": "http://127.0.0.1:8080",
+          "authSecret": "demo-secret",
+          "actor": "openclaw-demo",
+          "timeoutMs": 30000
+        }
+      }
+    }
+  }
+}

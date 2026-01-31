@@ -119,6 +119,7 @@ impl PolicySpec {
             PolicySpec::Profile { name } => match name.as_str() {
                 "default" => Ok(PermissionLattice::default()),
                 "fix_issue" => Ok(PermissionLattice::fix_issue()),
+                "demo" => Ok(PermissionLattice::demo()),
                 other => Err(PolicyError::UnknownProfile(other.to_string())),
             },
             PolicySpec::Inline { lattice } => Ok(lattice.as_ref().clone().normalize()),

@@ -17,7 +17,7 @@ use crate::{
     capability::{
         CapabilityLattice, CapabilityLevel, IncompatibilityConstraint, Obligations, Operation,
     },
-    command::CommandLattice,
+    command::{ArgPattern, CommandLattice, CommandPattern},
     path::PathLattice,
     time::TimeLattice,
 };
@@ -541,6 +541,61 @@ impl PermissionLattice {
             paths: PathLattice::block_sensitive(),
             budget: BudgetLattice::with_cost_limit(2.0),
             time: TimeLattice::hours(1),
+            ..Default::default()
+        };
+
+        lattice.normalize()
+    }
+
+    /// Create a demo-friendly permission set for tool-proxy integrations.
+    ///
+    /// This is permissive enough for live demos but still enforces approvals
+    /// on sensitive operations (writes, edits, and trifecta exfil paths).
+    pub fn demo() -> Self {
+        let mut obligations = Obligations::default();
+        obligations.insert(Operation::WriteFiles);
+        obligations.insert(Operation::EditFiles);
+
+        let mut commands = CommandLattice::permissive();
+        for program in [
+            "bash",
+            "sh",
+            "zsh",
+            "fish",
+            "pwsh",
+            "powershell",
+            "python",
+            "python3",
+            "node",
+            "ruby",
+            "perl",
+        ] {
+            commands.block_rule(CommandPattern {
+                program: program.to_string(),
+                args: vec![ArgPattern::AnyRemaining],
+            });
+        }
+
+        let lattice = Self {
+            description: "Demo permissions".to_string(),
+            capabilities: CapabilityLattice {
+                read_files: CapabilityLevel::Always,
+                write_files: CapabilityLevel::LowRisk,
+                edit_files: CapabilityLevel::LowRisk,
+                run_bash: CapabilityLevel::LowRisk,
+                glob_search: CapabilityLevel::Always,
+                grep_search: CapabilityLevel::Always,
+                web_search: CapabilityLevel::LowRisk,
+                web_fetch: CapabilityLevel::LowRisk,
+                git_commit: CapabilityLevel::LowRisk,
+                git_push: CapabilityLevel::LowRisk,
+                create_pr: CapabilityLevel::LowRisk,
+            },
+            obligations,
+            commands,
+            paths: PathLattice::block_sensitive(),
+            budget: BudgetLattice::with_cost_limit(2.0),
+            time: TimeLattice::minutes(45),
             ..Default::default()
         };
 
