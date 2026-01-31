@@ -64,9 +64,11 @@ curl -sS -X POST --data-binary @examples/openclaw-demo/firecracker-pod.yaml \
   http://127.0.0.1:8081/v1/pods
 ```
 
-Use the returned `proxy_addr` as the OpenClaw plugin `proxyUrl`. When using
-`--proxy-auth-secret`, the signed proxy injects auth headers so the OpenClaw
-plugin can omit `authSecret`.
+Use the returned `proxy_addr` as the OpenClaw plugin `proxyUrl`. The signed
+proxy injects auth headers so the OpenClaw plugin can omit `authSecret`.
+
+Note: the tool-proxy inside the VM must have the same secret baked into the
+image (see `TOOL_PROXY_AUTH_SECRET`), or auth enforcement will fail closed.
 
 ## 2) Install the OpenClaw adapter
 

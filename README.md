@@ -58,6 +58,11 @@ nucleus run --profile fix-issue "Fix the bug in src/main.rs"
 nucleus profiles
 ```
 
+## Firecracker Notes
+
+- Firecracker pods require `--proxy-auth-secret` so the signed proxy can enforce auth.
+- The local driver is opt-in via `--allow-local-driver` (no VM isolation).
+
 ## The Lethal Trifecta (Runtime-Enforced)
 
 The core security model prevents the [lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/):

@@ -4,6 +4,7 @@
 - Any filesystem access outside sandbox root is denied (cap-std sandbox).
 - Any command not in allowlist (or structured rules) is denied.
 - Approval-gated operation fails without a recorded approval.
+- Approval grants expire (default TTL, enforced when auth is enabled).
 - Budget exhaustion blocks further side effects.
 - Time window expiry blocks execution.
 
