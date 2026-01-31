@@ -23,6 +23,7 @@ use uuid::Uuid;
 mod auth;
 use auth::{AuthConfig, AuthError};
 mod cgroup;
+mod vsock_bridge;
 
 pub mod proto {
     tonic::include_proto!("nucleus.node.v1");
@@ -107,6 +108,7 @@ struct LocalPod {
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct FirecrackerPod {
     child: Mutex<tokio::process::Child>,
+    bridge: Mutex<Option<vsock_bridge::VsockBridge>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -421,6 +423,9 @@ impl FirecrackerPod {
     }
 
     async fn cancel(&self) -> Result<(), ApiError> {
+        if let Some(bridge) = self.bridge.lock().await.take() {
+            bridge.shutdown().await;
+        }
         let mut child = self.child.lock().await;
         child.kill().await.map_err(ApiError::Io)?;
         Ok(())
@@ -493,11 +498,24 @@ async fn spawn_firecracker_pod(
             ));
         }
 
+        if let Some(network) = spec.spec.network.as_ref() {
+            if !network.allow.is_empty() || !network.deny.is_empty() {
+                return Err(ApiError::Driver(
+                    "network policy not yet implemented for firecracker".to_string(),
+                ));
+            }
+        }
+
         let image = spec
             .spec
             .image
             .as_ref()
             .ok_or_else(|| ApiError::Driver("missing spec.image".to_string()))?;
+        let vsock_spec = spec
+            .spec
+            .vsock
+            .as_ref()
+            .ok_or_else(|| ApiError::Driver("missing spec.vsock".to_string()))?;
 
         let log_path = pod_dir.join("firecracker.log");
         let config_path = pod_dir.join("firecracker.json");
@@ -536,16 +554,19 @@ async fn spawn_firecracker_pod(
             }
         }
 
+        wait_for_vsock_socket(&vsock_path).await?;
+        let bridge = vsock_bridge::VsockBridge::start(vsock_path.clone(), vsock_spec.port)
+            .await
+            .map_err(|e| ApiError::Driver(format!("vsock bridge failed: {e}")))?;
+
+        let proxy_addr = Some(format!("http://{}", bridge.listen_addr()));
+
         let handle = FirecrackerPod {
             child: Mutex::new(child),
+            bridge: Mutex::new(Some(bridge)),
         };
 
         info!("spawned firecracker pod {}", id);
-        let proxy_addr = spec
-            .spec
-            .vsock
-            .as_ref()
-            .map(|vsock| format!("vsock://{}:{}", vsock_path.display(), vsock.port));
 
         Ok((DriverState::Firecracker(handle), proxy_addr, log_path))
     }
@@ -589,6 +610,21 @@ fn now_unix() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(target_os = "linux")]
+async fn wait_for_vsock_socket(path: &Path) -> Result<(), ApiError> {
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(3) {
+        if tokio::fs::metadata(path).await.is_ok() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    Err(ApiError::Driver(format!(
+        "vsock socket not found at {}",
+        path.display()
+    )))
 }
 
 async fn serve_grpc(state: NodeState, listen: String) -> Result<(), ApiError> {
@@ -775,10 +811,17 @@ impl FirecrackerConfig {
             .and_then(|r| r.memory_mib)
             .unwrap_or(512) as i64;
 
-        let boot_args = image
-            .boot_args
-            .clone()
-            .or_else(|| Some("console=ttyS0 reboot=k panic=1 pci=off".to_string()));
+        let default_args = "console=ttyS0 reboot=k panic=1 pci=off init=/init".to_string();
+        let boot_args = match image.boot_args.clone() {
+            Some(args) => {
+                if args.contains("init=") {
+                    Some(args)
+                } else {
+                    Some(format!("{args} init=/init"))
+                }
+            }
+            None => Some(default_args),
+        };
 
         let vsock = spec.spec.vsock.as_ref().map(|vsock| VsockConfig {
             guest_cid: vsock.guest_cid,

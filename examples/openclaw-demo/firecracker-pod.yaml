@@ -1,0 +1,23 @@
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: openclaw-demo
+spec:
+  work_dir: /work
+  timeout_seconds: 2700
+  policy:
+    type: profile
+    name: demo
+  budget_model:
+    base_cost_usd: 0.000001
+    cost_per_second_usd: 0.0001
+  image:
+    kernel_path: ./build/firecracker/vmlinux
+    rootfs_path: ./build/firecracker/rootfs.ext4
+    read_only: true
+    scratch_path: ./build/firecracker/scratch.ext4
+  vsock:
+    guest_cid: 3
+    port: 5005
+  seccomp:
+    mode: default

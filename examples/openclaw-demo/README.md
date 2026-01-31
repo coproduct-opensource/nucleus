@@ -12,6 +12,42 @@ cargo run -p nucleus-tool-proxy -- \
   --audit-log /tmp/nucleus-demo-audit.log
 ```
 
+## (Optional) Firecracker demo path
+
+This runs the proxy inside a Firecracker VM and exposes a local HTTP bridge.
+
+### Build artifacts
+
+```bash
+# Build static proxy (inside the host)
+cargo build -p nucleus-tool-proxy --release --target x86_64-unknown-linux-musl
+
+# Build scratch image
+./scripts/firecracker/build-scratch.sh
+
+# Build rootfs (Debian slim via Docker export by default)
+./scripts/firecracker/build-rootfs.sh
+```
+
+Provide a kernel at `./build/firecracker/vmlinux` (pinned, known-good).
+
+### Start nucleus-node in Firecracker mode
+
+```bash
+cargo run -p nucleus-node -- \
+  --driver firecracker \
+  --listen 127.0.0.1:8081
+```
+
+### Create a Firecracker pod
+
+```bash
+curl -sS -X POST --data-binary @examples/openclaw-demo/firecracker-pod.yaml \
+  http://127.0.0.1:8081/v1/pods
+```
+
+Use the returned `proxy_addr` as the OpenClaw plugin `proxyUrl`.
+
 ## 2) Install the OpenClaw adapter
 
 ```bash
