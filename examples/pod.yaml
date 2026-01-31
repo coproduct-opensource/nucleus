@@ -1,0 +1,16 @@
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: example-pod
+spec:
+  work_dir: .
+  timeout_seconds: 3600
+  policy:
+    type: profile
+    name: fix_issue
+  budget_model:
+    base_cost_usd: 0.000001
+    cost_per_second_usd: 0.0001
+  vsock:
+    guest_cid: 3
+    port: 5005

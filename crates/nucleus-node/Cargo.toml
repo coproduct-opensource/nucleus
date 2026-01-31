@@ -1,0 +1,45 @@
+[package]
+name = "nucleus-node"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Node daemon (kubelet analogue) for nucleus pods"
+repository = "https://github.com/coproduct-opensource/nucleus"
+documentation = "https://docs.rs/nucleus-node"
+readme = "README.md"
+keywords = ["ai", "security", "daemon", "kubelet"]
+categories = ["network-programming", "development-tools"]
+
+[[bin]]
+name = "nucleus-node"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", features = ["macros", "json"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+thiserror = "2.0"
+tokio = { version = "1", features = ["full", "process"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tonic = { version = "0.14", features = ["transport"] }
+prost = "0.14"
+prost-types = "0.14"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+
+nucleus = { path = "../nucleus" }
+nucleus-spec = { path = "../nucleus-spec" }
+
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[lints]
+workspace = true
+
+[build-dependencies]
+tonic-build = "0.14"
+protoc-bin-vendored = "3.2"

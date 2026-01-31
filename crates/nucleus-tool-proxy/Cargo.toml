@@ -1,0 +1,39 @@
+[package]
+name = "nucleus-tool-proxy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Tool proxy server running inside nucleus pods"
+repository = "https://github.com/coproduct-opensource/nucleus"
+documentation = "https://docs.rs/nucleus-tool-proxy"
+readme = "README.md"
+keywords = ["ai", "security", "proxy", "sandbox"]
+categories = ["network-programming", "development-tools"]
+
+[[bin]]
+name = "nucleus-tool-proxy"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", features = ["macros", "json"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+thiserror = "2.0"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+
+nucleus = { path = "../nucleus" }
+nucleus-spec = { path = "../nucleus-spec" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio-vsock = "0.7"
+
+[lints]
+workspace = true

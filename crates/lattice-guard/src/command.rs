@@ -157,6 +157,11 @@ impl CommandLattice {
             return false;
         }
 
+        // Block shell metacharacters unless explicitly allowlisted
+        if self.allowed.is_empty() && contains_shell_metacharacters(&words) {
+            return false;
+        }
+
         let program = &words[0];
 
         // Check blocked patterns against:
@@ -185,6 +190,15 @@ impl CommandLattice {
             let reconstructed = shell_words::join(&words);
             if reconstructed.contains(blocked) {
                 return false;
+            }
+
+            // Check if blocked pattern appears as an in-order subsequence
+            if let Ok(blocked_words) = shell_words::split(blocked) {
+                if !blocked_words.is_empty()
+                    && is_subsequence(&blocked_words, &words)
+                {
+                    return false;
+                }
             }
         }
 
@@ -234,6 +248,26 @@ impl CommandLattice {
     pub fn block(&mut self, pattern: impl Into<String>) {
         self.blocked.insert(pattern.into());
     }
+}
+
+fn contains_shell_metacharacters(words: &[String]) -> bool {
+    let metachars: HashSet<&str> =
+        ["|", ";", "&&", "||", ">", ">>", "<", "2>", "&>"].into_iter().collect();
+
+    words.iter().any(|w| metachars.contains(w.as_str()))
+}
+
+fn is_subsequence(needle: &[String], haystack: &[String]) -> bool {
+    let mut i = 0;
+    for word in haystack {
+        if i < needle.len() && word == &needle[i] {
+            i += 1;
+        }
+        if i == needle.len() {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -306,6 +340,14 @@ mod tests {
         assert!(lattice.can_execute("npm test"));
         assert!(lattice.can_execute("python script.py"));
         assert!(!lattice.can_execute("sudo rm -rf /")); // But blocks dangerous
+    }
+
+    #[test]
+    fn test_permissive_blocks_shell_metacharacters() {
+        let lattice = CommandLattice::permissive();
+        assert!(!lattice.can_execute("echo hi | cat"));
+        assert!(!lattice.can_execute("echo hi > out.txt"));
+        assert!(!lattice.can_execute("echo hi && whoami"));
     }
 
     // Security: Quoting bypass tests

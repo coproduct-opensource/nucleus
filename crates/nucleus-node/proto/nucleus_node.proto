@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package nucleus.node.v1;
+
+message CreatePodRequest {
+  string yaml = 1;
+}
+
+message CreatePodResponse {
+  string id = 1;
+  string proxy_addr = 2;
+}
+
+message PodId {
+  string id = 1;
+}
+
+message PodLogsResponse {
+  string logs = 1;
+}
+
+message CancelPodResponse {
+  string status = 1;
+}
+
+message PodInfo {
+  string id = 1;
+  string name = 2;
+  uint64 created_at_unix = 3;
+  string state = 4;
+  int32 exit_code = 5;
+  string error = 6;
+  string proxy_addr = 7;
+}
+
+message ListPodsResponse {
+  repeated PodInfo pods = 1;
+}
+
+message Empty {}
+
+service NodeService {
+  rpc CreatePod(CreatePodRequest) returns (CreatePodResponse);
+  rpc ListPods(Empty) returns (ListPodsResponse);
+  rpc PodLogs(PodId) returns (PodLogsResponse);
+  rpc CancelPod(PodId) returns (CancelPodResponse);
+}

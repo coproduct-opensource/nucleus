@@ -7,6 +7,7 @@ use proptest::prelude::*;
 use rust_decimal::Decimal;
 use lattice_guard::{
     BudgetLattice, CapabilityLattice, CapabilityLevel, CommandLattice, PathLattice, TimeLattice,
+    PermissionLattice,
 };
 
 // Strategy for generating arbitrary CapabilityLevel
@@ -299,6 +300,73 @@ proptest! {
 
         // Constrained should always be ≤ original
         prop_assert!(constrained.leq(&a));
+    }
+
+    #[test]
+    fn trifecta_constraint_is_idempotent(a in arb_capability_lattice()) {
+        use lattice_guard::IncompatibilityConstraint;
+
+        let constraint = IncompatibilityConstraint::enforcing();
+        let once = constraint.apply(&a);
+        let twice = constraint.apply(&once);
+
+        prop_assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn trifecta_constraint_is_monotone(
+        a in arb_capability_lattice(),
+        b in arb_capability_lattice()
+    ) {
+        use lattice_guard::IncompatibilityConstraint;
+
+        let constraint = IncompatibilityConstraint::enforcing();
+        if a.leq(&b) {
+            let a_nu = constraint.apply(&a);
+            let b_nu = constraint.apply(&b);
+            prop_assert!(a_nu.leq(&b_nu));
+        }
+    }
+
+    #[test]
+    fn trifecta_constraint_preserves_meet(
+        a in arb_capability_lattice(),
+        b in arb_capability_lattice()
+    ) {
+        use lattice_guard::IncompatibilityConstraint;
+
+        let constraint = IncompatibilityConstraint::enforcing();
+        let left = constraint.apply(&a.meet(&b));
+        let right = constraint.apply(&a).meet(&constraint.apply(&b));
+
+        prop_assert_eq!(left, right);
+    }
+
+    #[test]
+    fn permission_normalize_is_idempotent(
+        a in arb_capability_lattice(),
+        enforce in any::<bool>()
+    ) {
+        let mut perms = PermissionLattice::default();
+        perms.capabilities = a;
+        perms.trifecta_constraint = enforce;
+
+        let once = perms.clone().normalize();
+        let twice = once.clone().normalize();
+
+        prop_assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn permission_normalize_is_deflationary_when_enforced(
+        a in arb_capability_lattice()
+    ) {
+        let mut perms = PermissionLattice::default();
+        perms.capabilities = a;
+        perms.trifecta_constraint = true;
+
+        let normalized = perms.clone().normalize();
+        prop_assert!(normalized.capabilities.leq(&perms.capabilities));
     }
 }
 

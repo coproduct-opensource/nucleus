@@ -5,6 +5,8 @@
 
 use rust_decimal::Decimal;
 use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
 use lattice_guard::{
     BudgetLattice, CapabilityLevel, CommandLattice, PathLattice, PermissionLattice,
 };
@@ -169,6 +171,36 @@ fn sensitive_files_blocked_regardless_of_path() {
             path
         );
     }
+}
+
+// ============================================
+// Symlink Escape Attacks (Unix-only)
+// ============================================
+
+#[test]
+#[cfg(unix)]
+fn sandbox_symlink_escape_blocked() {
+    use std::fs;
+    use std::os::unix::fs as unix_fs;
+    use tempfile::tempdir;
+
+    let tmp = tempdir().expect("tempdir");
+    let work_dir = tmp.path().join("work");
+    let outside_dir = tmp.path().join("outside");
+    fs::create_dir(&work_dir).expect("create work_dir");
+    fs::create_dir(&outside_dir).expect("create outside_dir");
+
+    let secret = outside_dir.join("secret.txt");
+    fs::write(&secret, b"secret").expect("write secret");
+
+    let link = work_dir.join("link");
+    unix_fs::symlink(&outside_dir, &link).expect("create symlink");
+
+    let lattice = PathLattice::with_work_dir(&work_dir);
+    let probe = PathBuf::from("link/secret.txt");
+
+    // Should be blocked because canonicalized path escapes work_dir.
+    assert!(!lattice.can_access(&probe));
 }
 
 // ============================================

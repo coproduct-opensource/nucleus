@@ -114,7 +114,7 @@ impl<'de> Deserialize<'de> for PermissionLattice {
         let raw = RawPermissionLattice::deserialize(deserializer)?;
 
         // Security: Always enforce trifecta constraint regardless of input
-        Ok(Self {
+        let lattice = Self {
             id: raw.id,
             description: raw.description,
             derived_from: raw.derived_from,
@@ -126,7 +126,9 @@ impl<'de> Deserialize<'de> for PermissionLattice {
             trifecta_constraint: true, // ALWAYS true after deserialization
             created_at: raw.created_at,
             created_by: raw.created_by,
-        })
+        };
+
+        Ok(lattice.normalize())
     }
 }
 
@@ -136,7 +138,7 @@ fn default_trifecta_constraint() -> bool {
 
 impl Default for PermissionLattice {
     fn default() -> Self {
-        Self {
+        let lattice = Self {
             id: Uuid::new_v4(),
             description: "Default permission set".to_string(),
             derived_from: None,
@@ -148,7 +150,9 @@ impl Default for PermissionLattice {
             trifecta_constraint: true,
             created_at: Utc::now(),
             created_by: "system".to_string(),
-        }
+        };
+
+        lattice.normalize()
     }
 }
 
@@ -199,11 +203,13 @@ impl std::error::Error for DelegationError {}
 impl PermissionLattice {
     /// Create a new permission lattice with the given description.
     pub fn new(description: impl Into<String>) -> Self {
-        Self {
+        let lattice = Self {
             id: Uuid::new_v4(),
             description: description.into(),
             ..Default::default()
-        }
+        };
+
+        lattice.normalize()
     }
 
     /// Create a permission lattice with a builder pattern.
@@ -222,6 +228,18 @@ impl PermissionLattice {
     /// In production, the trifecta constraint should always be enabled.
     pub fn with_trifecta_disabled(mut self) -> Self {
         self.trifecta_constraint = false;
+        self
+    }
+
+    /// Apply the nucleus (ν) to normalize this permission lattice.
+    ///
+    /// If trifecta enforcement is enabled, this demotes exfiltration capabilities
+    /// to break any lethal trifecta configuration.
+    pub fn normalize(mut self) -> Self {
+        if self.trifecta_constraint {
+            let constraint = IncompatibilityConstraint::enforcing();
+            self.capabilities = constraint.apply(&self.capabilities);
+        }
         self
     }
 
@@ -376,7 +394,7 @@ impl PermissionLattice {
 
     /// Create a permissive permission set (for trusted contexts).
     pub fn permissive() -> Self {
-        Self {
+        let lattice = Self {
             description: "Permissive permissions".to_string(),
             capabilities: CapabilityLattice::permissive(),
             budget: BudgetLattice {
@@ -387,12 +405,14 @@ impl PermissionLattice {
             },
             time: TimeLattice::with_duration(Duration::hours(4)),
             ..Default::default()
-        }
+        };
+
+        lattice.normalize()
     }
 
     /// Create a restrictive permission set (for untrusted contexts).
     pub fn restrictive() -> Self {
-        Self {
+        let lattice = Self {
             description: "Restrictive permissions".to_string(),
             capabilities: CapabilityLattice::restrictive(),
             budget: BudgetLattice {
@@ -403,12 +423,14 @@ impl PermissionLattice {
             },
             time: TimeLattice::with_duration(Duration::minutes(10)),
             ..Default::default()
-        }
+        };
+
+        lattice.normalize()
     }
 
     /// Create a read-only permission set.
     pub fn read_only() -> Self {
-        Self {
+        let lattice = Self {
             description: "Read-only permissions".to_string(),
             capabilities: CapabilityLattice {
                 read_files: CapabilityLevel::Always,
@@ -425,12 +447,14 @@ impl PermissionLattice {
             },
             commands: CommandLattice::restrictive(),
             ..Default::default()
-        }
+        };
+
+        lattice.normalize()
     }
 
     /// Create a permission set for code review tasks.
     pub fn code_review() -> Self {
-        Self {
+        let lattice = Self {
             description: "Code review permissions".to_string(),
             capabilities: CapabilityLattice {
                 read_files: CapabilityLevel::Always,
@@ -448,12 +472,14 @@ impl PermissionLattice {
             budget: BudgetLattice::with_cost_limit(1.0),
             time: TimeLattice::minutes(30),
             ..Default::default()
-        }
+        };
+
+        lattice.normalize()
     }
 
     /// Create a permission set for fix/implementation tasks.
     pub fn fix_issue() -> Self {
-        Self {
+        let lattice = Self {
             description: "Fix issue permissions".to_string(),
             capabilities: CapabilityLattice {
                 read_files: CapabilityLevel::Always,
@@ -472,7 +498,9 @@ impl PermissionLattice {
             budget: BudgetLattice::with_cost_limit(2.0),
             time: TimeLattice::hours(1),
             ..Default::default()
-        }
+        };
+
+        lattice.normalize()
     }
 }
 
@@ -545,7 +573,7 @@ impl PermissionLatticeBuilder {
 
     /// Build the permission lattice.
     pub fn build(self) -> PermissionLattice {
-        PermissionLattice {
+        let lattice = PermissionLattice {
             id: Uuid::new_v4(),
             description: self
                 .description
@@ -559,7 +587,9 @@ impl PermissionLatticeBuilder {
             trifecta_constraint: self.trifecta_constraint.unwrap_or(true),
             created_at: Utc::now(),
             created_by: self.created_by.unwrap_or_else(|| "builder".to_string()),
-        }
+        };
+
+        lattice.normalize()
     }
 }
 
@@ -579,6 +609,7 @@ pub struct EffectivePermissions {
 impl EffectivePermissions {
     /// Create effective permissions from a lattice.
     pub fn new(lattice: PermissionLattice) -> Self {
+        let lattice = lattice.normalize();
         let checksum = lattice.checksum();
         Self {
             lattice,

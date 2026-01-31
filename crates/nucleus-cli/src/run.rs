@@ -3,11 +3,13 @@
 use anyhow::{bail, Result};
 use clap::Args;
 use lattice_guard::{BudgetLattice, PermissionLattice};
-use nucleus::{AtomicBudget, Executor, MonotonicGuard, Sandbox};
+use nucleus::{CallbackApprover, PodRuntime, PodSpec};
 use rust_decimal::Decimal;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::time::Duration;
 use tracing::{error, info};
 
 use crate::config::Config;
@@ -108,25 +110,30 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
         policy
     };
 
-    // Create enforcement context
-    let sandbox = Sandbox::new(&policy.paths, &work_dir)?;
-    let budget = AtomicBudget::new(&policy.budget);
-    let time_guard = MonotonicGuard::seconds(args.timeout);
+    // Create pod runtime (kubelet-style instance)
+    let spec = PodSpec::new(
+        policy.clone(),
+        work_dir.clone(),
+        Duration::from_secs(args.timeout),
+    );
+    let mut pod = PodRuntime::new(spec)?;
 
-    // Build executor with approval callback for AskFirst operations
-    // (The executor is available for direct command execution, though currently
-    // we spawn Claude Code as a subprocess)
-    let _executor = Executor::new(&policy, &sandbox, &budget)
-        .with_time_guard(&time_guard)
-        .with_approval_callback(|cmd| {
+    // Attach approver for AskFirst operations only when needed
+    if has_ask_first_capabilities(&policy) {
+        let approver = Arc::new(CallbackApprover::new(|request| {
             // Interactive approval prompt
-            eprint!("Approve command '{}'? [y/N] ", cmd);
+            eprint!("Approve command '{}'? [y/N] ", request.operation());
             io::stderr().flush().ok();
 
             let mut input = String::new();
             io::stdin().read_line(&mut input).ok();
             input.trim().eq_ignore_ascii_case("y")
-        });
+        }));
+        pod = pod.with_approver(approver)?;
+
+        // Build executor for future tool routing (currently unused here)
+        let _executor = pod.executor();
+    }
 
     if args.dry_run {
         println!("Dry run - would execute with:");
@@ -187,7 +194,7 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
     // Charge budget for execution
     // (In a real implementation, we'd parse the actual cost from Claude's output)
     let estimated_cost = 0.01; // Placeholder
-    if let Err(e) = budget.charge_usd(estimated_cost) {
+    if let Err(e) = pod.budget().charge_usd(estimated_cost) {
         error!(error = %e, "Budget charge failed");
     }
 
@@ -199,8 +206,8 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
             "stdout": String::from_utf8_lossy(&output.stdout),
             "stderr": String::from_utf8_lossy(&output.stderr),
             "duration_ms": duration.as_millis(),
-            "budget_consumed": budget.consumed_usd(),
-            "budget_remaining": budget.remaining_usd(),
+            "budget_consumed": pod.budget().consumed_usd(),
+            "budget_remaining": pod.budget().remaining_usd(),
         });
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
@@ -218,8 +225,8 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
 
         eprintln!("\n--- Summary ---");
         eprintln!("Duration: {:?}", duration);
-        eprintln!("Budget consumed: ${:.4}", budget.consumed_usd());
-        eprintln!("Budget remaining: ${:.4}", budget.remaining_usd());
+        eprintln!("Budget consumed: ${:.4}", pod.budget().consumed_usd());
+        eprintln!("Budget remaining: ${:.4}", pod.budget().remaining_usd());
     }
 
     if output.status.success() {

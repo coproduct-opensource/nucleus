@@ -9,12 +9,35 @@
 
 use std::collections::HashSet;
 use std::process::{Command, ExitStatus, Output, Stdio};
+use std::time::Duration;
+use std::sync::Arc;
 
+use crate::approval::{ApprovalRequest, ApprovalToken, Approver, CallbackApprover};
 use crate::budget::AtomicBudget;
 use crate::error::{NucleusError, Result};
 use crate::sandbox::Sandbox;
 use crate::time::MonotonicGuard;
 use lattice_guard::{CapabilityLevel, CommandLattice, PermissionLattice};
+
+const MIN_EXEC_COST_USD: f64 = 0.000001;
+
+/// Budget cost model for command execution.
+#[derive(Debug, Clone, Copy)]
+pub struct BudgetModel {
+    /// Base cost charged for any command execution.
+    pub base_cost_usd: f64,
+    /// Cost charged per second of allowed execution time.
+    pub cost_per_second_usd: f64,
+}
+
+impl Default for BudgetModel {
+    fn default() -> Self {
+        Self {
+            base_cost_usd: MIN_EXEC_COST_USD,
+            cost_per_second_usd: 0.0001,
+        }
+    }
+}
 
 /// Command executor with policy enforcement.
 ///
@@ -29,10 +52,12 @@ pub struct Executor<'a> {
     sandbox: &'a Sandbox,
     /// Budget for charging execution costs
     budget: &'a AtomicBudget,
+    /// Budget model for execution cost
+    budget_model: BudgetModel,
     /// Time guard for temporal constraints
     time_guard: Option<&'a MonotonicGuard>,
-    /// Approval callback for AskFirst operations
-    approval_callback: Option<Box<dyn Fn(&str) -> bool + Send + Sync>>,
+    /// Approver for AskFirst operations
+    approver: Option<Arc<dyn Approver>>,
 }
 
 impl<'a> Executor<'a> {
@@ -47,8 +72,9 @@ impl<'a> Executor<'a> {
             command_policy: &policy.commands,
             sandbox,
             budget,
+            budget_model: BudgetModel::default(),
             time_guard: None,
-            approval_callback: None,
+            approver: None,
         }
     }
 
@@ -58,16 +84,45 @@ impl<'a> Executor<'a> {
         self
     }
 
-    /// Set an approval callback for AskFirst operations.
+    /// Set the budget cost model for command execution.
+    pub fn with_budget_model(mut self, model: BudgetModel) -> Self {
+        self.budget_model = model;
+        self
+    }
+
+    /// Set an approver for AskFirst operations.
+    pub fn with_approver(mut self, approver: Arc<dyn Approver>) -> Self {
+        self.approver = Some(approver);
+        self
+    }
+
+    /// Set a callback-based approver for AskFirst operations.
     ///
-    /// The callback receives the command string and should return `true` if
+    /// The callback receives an approval request and should return `true` if
     /// human approval was granted.
     pub fn with_approval_callback<F>(mut self, callback: F) -> Self
     where
-        F: Fn(&str) -> bool + Send + Sync + 'static,
+        F: Fn(&ApprovalRequest) -> bool + Send + Sync + 'static,
     {
-        self.approval_callback = Some(Box::new(callback));
+        self.approver = Some(Arc::new(CallbackApprover::new(callback)));
         self
+    }
+
+    /// Build an approval request for a command.
+    pub fn approval_request(&self, command: &str) -> ApprovalRequest {
+        ApprovalRequest::new(command)
+    }
+
+    /// Request approval for a command.
+    pub fn request_approval(&self, command: &str) -> Result<ApprovalToken> {
+        let request = self.approval_request(command);
+        if let Some(ref approver) = self.approver {
+            approver.approve(&request)
+        } else {
+            Err(NucleusError::ApprovalRequired {
+                operation: request.operation().to_string(),
+            })
+        }
     }
 
     /// Execute a command and return its output.
@@ -94,7 +149,7 @@ impl<'a> Executor<'a> {
         }
 
         // Check capability level
-        self.check_capability(command, &args)?;
+        self.check_capability(command, &args, None)?;
 
         // Check command policy (allowlist/blocklist)
         if !self.command_policy.can_execute(command) {
@@ -106,6 +161,9 @@ impl<'a> Executor<'a> {
 
         // Check for trifecta completion
         self.check_trifecta(command, &args)?;
+
+        // Enforce budget before spawning any process
+        self.reserve_budget(self.max_duration_for_run())?;
 
         // Build and execute the command
         let (program, program_args) = args.split_first().unwrap();
@@ -125,6 +183,57 @@ impl<'a> Executor<'a> {
     pub fn status(&self, command: &str) -> Result<ExitStatus> {
         let output = self.run(command)?;
         Ok(output.status)
+    }
+
+    /// Execute a command with an approval token for AskFirst operations.
+    pub fn run_with_approval(&self, command: &str, approval: &ApprovalToken) -> Result<Output> {
+        // Check temporal constraints
+        if let Some(guard) = self.time_guard {
+            guard.check()?;
+        }
+
+        // Parse the command
+        let args = shell_words::split(command).map_err(|_| NucleusError::CommandDenied {
+            command: command.to_string(),
+            reason: "malformed command (unbalanced quotes)".into(),
+        })?;
+
+        if args.is_empty() {
+            return Err(NucleusError::CommandDenied {
+                command: command.to_string(),
+                reason: "empty command".into(),
+            });
+        }
+
+        // Check capability level (with approval token)
+        self.check_capability(command, &args, Some(approval))?;
+
+        // Check command policy (allowlist/blocklist)
+        if !self.command_policy.can_execute(command) {
+            return Err(NucleusError::CommandDenied {
+                command: command.to_string(),
+                reason: "blocked by command policy".into(),
+            });
+        }
+
+        // Check for trifecta completion
+        self.check_trifecta(command, &args)?;
+
+        // Enforce budget before spawning any process
+        self.reserve_budget(self.max_duration_for_run())?;
+
+        // Build and execute the command
+        let (program, program_args) = args.split_first().unwrap();
+
+        let output = Command::new(program)
+            .args(program_args)
+            .current_dir(self.sandbox.root_path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()?;
+
+        Ok(output)
     }
 
     /// Execute a command with a timeout.
@@ -153,7 +262,7 @@ impl<'a> Executor<'a> {
         }
 
         // Check capability level
-        self.check_capability(command, &args)?;
+        self.check_capability(command, &args, None)?;
 
         // Check command policy
         if !self.command_policy.can_execute(command) {
@@ -165,6 +274,75 @@ impl<'a> Executor<'a> {
 
         // Check for trifecta completion
         self.check_trifecta(command, &args)?;
+
+        // Enforce budget before spawning any process
+        self.reserve_budget(Some(timeout))?;
+
+        // Build and execute with timeout
+        let (program, program_args) = args.split_first().unwrap();
+
+        let mut child = tokio::process::Command::new(program)
+            .args(program_args)
+            .current_dir(self.sandbox.root_path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+
+        match tokio::time::timeout(timeout, child.wait_with_output()).await {
+            Ok(result) => result.map_err(Into::into),
+            Err(_) => {
+                // Kill the process on timeout
+                child.kill().await.ok();
+                Err(NucleusError::TimeViolation {
+                    reason: format!("command timed out after {:?}", timeout),
+                })
+            }
+        }
+    }
+
+    /// Execute a command with a timeout and an approval token.
+    #[cfg(feature = "async")]
+    pub async fn run_with_timeout_approved(
+        &self,
+        command: &str,
+        timeout: Duration,
+        approval: &ApprovalToken,
+    ) -> Result<Output> {
+        // Check temporal constraints
+        if let Some(guard) = self.time_guard {
+            guard.check()?;
+        }
+
+        // Parse the command
+        let args = shell_words::split(command).map_err(|_| NucleusError::CommandDenied {
+            command: command.to_string(),
+            reason: "malformed command (unbalanced quotes)".into(),
+        })?;
+
+        if args.is_empty() {
+            return Err(NucleusError::CommandDenied {
+                command: command.to_string(),
+                reason: "empty command".into(),
+            });
+        }
+
+        // Check capability level (with approval token)
+        self.check_capability(command, &args, Some(approval))?;
+
+        // Check command policy
+        if !self.command_policy.can_execute(command) {
+            return Err(NucleusError::CommandDenied {
+                command: command.to_string(),
+                reason: "blocked by command policy".into(),
+            });
+        }
+
+        // Check for trifecta completion
+        self.check_trifecta(command, &args)?;
+
+        // Enforce budget before spawning any process
+        self.reserve_budget(Some(timeout))?;
 
         // Build and execute with timeout
         let (program, program_args) = args.split_first().unwrap();
@@ -190,7 +368,12 @@ impl<'a> Executor<'a> {
     }
 
     /// Check if the command requires a certain capability level.
-    fn check_capability(&self, command: &str, args: &[String]) -> Result<()> {
+    fn check_capability(
+        &self,
+        command: &str,
+        args: &[String],
+        approval: Option<&ApprovalToken>,
+    ) -> Result<()> {
         let _program = &args[0];
 
         // Determine required capability based on command type
@@ -205,33 +388,29 @@ impl<'a> Executor<'a> {
         };
 
         match level {
-            CapabilityLevel::Never => {
-                return Err(NucleusError::InsufficientCapability {
-                    capability: capability_name.into(),
-                    actual: level,
-                    required: CapabilityLevel::AskFirst,
-                });
-            }
+            CapabilityLevel::Never => Err(NucleusError::InsufficientCapability {
+                capability: capability_name.into(),
+                actual: level,
+                required: CapabilityLevel::AskFirst,
+            }),
             CapabilityLevel::AskFirst => {
-                // Check if we have an approval callback
-                if let Some(ref callback) = self.approval_callback {
-                    if !callback(command) {
-                        return Err(NucleusError::ApprovalRequired {
+                if let Some(token) = approval {
+                    if token.matches(command) {
+                        Ok(())
+                    } else {
+                        Err(NucleusError::InvalidApproval {
                             operation: command.to_string(),
-                        });
+                        })
                     }
                 } else {
-                    return Err(NucleusError::ApprovalRequired {
+                    Err(NucleusError::ApprovalRequired {
                         operation: command.to_string(),
-                    });
+                    })
                 }
             }
-            CapabilityLevel::LowRisk | CapabilityLevel::Always => {
-                // Allowed
-            }
+            CapabilityLevel::LowRisk | CapabilityLevel::Always => Ok(()),
         }
 
-        Ok(())
     }
 
     /// Check if executing this command would complete the lethal trifecta.
@@ -243,7 +422,8 @@ impl<'a> Executor<'a> {
         // Check if this command is an exfiltration vector
         let is_exfil = is_git_push_command(args)
             || is_pr_command(args)
-            || is_network_command(args);
+            || is_network_command(args)
+            || is_interpreter_command(args);
 
         if !is_exfil {
             return Ok(());
@@ -261,6 +441,21 @@ impl<'a> Executor<'a> {
         }
 
         Ok(())
+    }
+
+    fn max_duration_for_run(&self) -> Option<Duration> {
+        self.time_guard.map(|guard| guard.remaining())
+    }
+
+    fn reserve_budget(&self, max_duration: Option<Duration>) -> Result<()> {
+        let mut cost = self.budget_model.base_cost_usd;
+        if self.budget_model.cost_per_second_usd > 0.0 {
+            let duration = max_duration.ok_or_else(|| NucleusError::TimeViolation {
+                reason: "time guard required for budget reservation".into(),
+            })?;
+            cost += duration.as_secs_f64() * self.budget_model.cost_per_second_usd;
+        }
+        self.budget.charge_usd(cost)
     }
 }
 
@@ -290,12 +485,40 @@ fn is_network_command(args: &[String]) -> bool {
         .unwrap_or(false)
 }
 
+/// Check if the command is an interpreter/shell invocation.
+///
+/// These are treated as potential exfiltration vectors under trifecta because
+/// they can embed network calls in code strings.
+fn is_interpreter_command(args: &[String]) -> bool {
+    let interpreters: HashSet<&str> = [
+        "sh",
+        "bash",
+        "zsh",
+        "dash",
+        "fish",
+        "pwsh",
+        "powershell",
+        "python",
+        "python3",
+        "node",
+        "ruby",
+        "perl",
+        "php",
+    ]
+    .into_iter()
+    .collect();
+
+    args.first()
+        .map(|p| interpreters.contains(p.as_str()))
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::budget::AtomicBudget;
     use crate::sandbox::Sandbox;
-    use lattice_guard::{BudgetLattice, CapabilityLattice, PathLattice};
+    use lattice_guard::{BudgetLattice, CapabilityLattice};
     use rust_decimal::Decimal;
     use tempfile::tempdir;
 
@@ -319,19 +542,46 @@ mod tests {
         }
     }
 
+    fn zero_budget() -> BudgetLattice {
+        BudgetLattice {
+            max_cost_usd: Decimal::ZERO,
+            consumed_usd: Decimal::ZERO,
+            max_input_tokens: 100_000,
+            max_output_tokens: 10_000,
+        }
+    }
+
     #[test]
     fn test_basic_command() {
         let tmp = tempdir().unwrap();
         let policy = test_policy();
         let budget_policy = test_budget();
 
-        let sandbox = Sandbox::new(&PathLattice::default(), tmp.path()).unwrap();
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
-        let executor = Executor::new(&policy, &sandbox, &budget);
+        let guard = MonotonicGuard::seconds(10);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard);
 
         let output = executor.run("echo hello").unwrap();
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("hello"));
+    }
+
+    #[test]
+    fn test_budget_exhausted_blocks_execution() {
+        let tmp = tempdir().unwrap();
+        let policy = test_policy();
+        let budget_policy = zero_budget();
+
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+        let budget = AtomicBudget::new(&budget_policy);
+        let guard = MonotonicGuard::seconds(10);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard);
+
+        let result = executor.run("echo hello");
+        assert!(matches!(result, Err(NucleusError::BudgetExhausted { .. })));
     }
 
     #[test]
@@ -341,9 +591,11 @@ mod tests {
         policy.commands = CommandLattice::default(); // Has blocklist
         let budget_policy = test_budget();
 
-        let sandbox = Sandbox::new(&PathLattice::default(), tmp.path()).unwrap();
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
-        let executor = Executor::new(&policy, &sandbox, &budget);
+        let guard = MonotonicGuard::seconds(10);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard);
 
         // rm -rf should be blocked
         let result = executor.run("rm -rf /");
@@ -357,9 +609,11 @@ mod tests {
         policy.capabilities.run_bash = CapabilityLevel::Never;
         let budget_policy = test_budget();
 
-        let sandbox = Sandbox::new(&PathLattice::default(), tmp.path()).unwrap();
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
-        let executor = Executor::new(&policy, &sandbox, &budget);
+        let guard = MonotonicGuard::seconds(10);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard);
 
         let result = executor.run("echo hello");
         assert!(matches!(result, Err(NucleusError::InsufficientCapability { .. })));
@@ -372,9 +626,11 @@ mod tests {
         policy.capabilities.run_bash = CapabilityLevel::AskFirst;
         let budget_policy = test_budget();
 
-        let sandbox = Sandbox::new(&PathLattice::default(), tmp.path()).unwrap();
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
-        let executor = Executor::new(&policy, &sandbox, &budget);
+        let guard = MonotonicGuard::seconds(10);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard);
 
         let result = executor.run("echo hello");
         assert!(matches!(result, Err(NucleusError::ApprovalRequired { .. })));
@@ -387,12 +643,15 @@ mod tests {
         policy.capabilities.run_bash = CapabilityLevel::AskFirst;
         let budget_policy = test_budget();
 
-        let sandbox = Sandbox::new(&PathLattice::default(), tmp.path()).unwrap();
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
+        let guard = MonotonicGuard::seconds(10);
         let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard)
             .with_approval_callback(|_| true); // Always approve
 
-        let result = executor.run("echo hello");
+        let token = executor.request_approval("echo hello").unwrap();
+        let result = executor.run_with_approval("echo hello", &token);
         assert!(result.is_ok());
     }
 
@@ -412,12 +671,40 @@ mod tests {
         };
         let budget_policy = test_budget();
 
-        let sandbox = Sandbox::new(&PathLattice::default(), tmp.path()).unwrap();
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
-        let executor = Executor::new(&policy, &sandbox, &budget);
+        let guard = MonotonicGuard::seconds(10);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard);
 
         // curl is an exfiltration vector, trifecta should block it
         let result = executor.run("curl http://example.com");
+        assert!(matches!(result, Err(NucleusError::TrifectaBlocked { .. })));
+    }
+
+    #[test]
+    fn test_trifecta_blocks_interpreter_invocation() {
+        let tmp = tempdir().unwrap();
+        let policy = PermissionLattice {
+            capabilities: CapabilityLattice {
+                read_files: CapabilityLevel::Always,    // Private data
+                web_fetch: CapabilityLevel::LowRisk,    // Untrusted content
+                run_bash: CapabilityLevel::LowRisk,     // Allows shell
+                ..Default::default()
+            },
+            commands: CommandLattice::permissive(),
+            trifecta_constraint: true,
+            ..Default::default()
+        };
+        let budget_policy = test_budget();
+
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+        let budget = AtomicBudget::new(&budget_policy);
+        let guard = MonotonicGuard::seconds(10);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard);
+
+        let result = executor.run("bash -c \"echo hi\"");
         assert!(matches!(result, Err(NucleusError::TrifectaBlocked { .. })));
     }
 }

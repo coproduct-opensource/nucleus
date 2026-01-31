@@ -3,6 +3,9 @@ members = [
     "crates/lattice-guard",  # Policy: quotient lattice types
     "crates/nucleus",        # Enforcement: wraps OS APIs with policy checks
     "crates/nucleus-cli",    # CLI: distributed executor with enforcement
+    "crates/nucleus-spec",   # Shared PodSpec definitions
+    "crates/nucleus-node",   # Node daemon (kubelet analogue)
+    "crates/nucleus-tool-proxy", # Tool proxy server (runs inside pod)
 ]
 resolver = "2"
 

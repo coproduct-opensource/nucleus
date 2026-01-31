@@ -29,8 +29,8 @@ parking_lot = "0.12"
 quanta = "0.12"
 
 # Secure path handling
-cap-std = "3"          # Capability-based filesystem
-cap-tempfile = "3"     # Secure temp files
+cap-std = "4"          # Capability-based filesystem
+cap-tempfile = "4"     # Secure temp files
 
 # Process spawning with sandboxing
 # (using cap-std's command wrapper where available)
@@ -42,11 +42,11 @@ thiserror = "2.0"
 tokio = { version = "1", features = ["process", "fs", "io-util"], optional = true }
 
 # Optional: network enforcement
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+reqwest = { version = "0.13", default-features = false, features = ["rustls"], optional = true }
 
 # Shell parsing for command validation
 shell-words = "1.1"
 
 [dev-dependencies]
 tempfile = "3"
-rust_decimal = "1.36"
+rust_decimal = "1.40"

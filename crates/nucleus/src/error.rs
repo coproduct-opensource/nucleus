@@ -71,6 +71,13 @@ pub enum NucleusError {
         operation: String,
     },
 
+    /// Approval token does not match the requested operation.
+    #[error("invalid approval token for operation '{operation}'")]
+    InvalidApproval {
+        /// The operation requiring approval.
+        operation: String,
+    },
+
     /// Capability level insufficient.
     #[error("insufficient capability: '{capability}' level is {actual:?}, need at least {required:?}")]
     InsufficientCapability {

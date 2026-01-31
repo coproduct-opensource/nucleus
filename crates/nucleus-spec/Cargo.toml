@@ -1,0 +1,23 @@
+[package]
+name = "nucleus-spec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "PodSpec definitions for nucleus nodes and tool proxies"
+repository = "https://github.com/coproduct-opensource/nucleus"
+documentation = "https://docs.rs/nucleus-spec"
+readme = "README.md"
+keywords = ["ai", "security", "spec", "yaml", "agents"]
+categories = ["config", "development-tools"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1.0"
+thiserror = "2.0"
+
+lattice-guard = { path = "../lattice-guard", features = ["serde"] }
+
+[lints]
+workspace = true

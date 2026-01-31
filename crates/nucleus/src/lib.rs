@@ -44,7 +44,9 @@
 //! // Create enforcement context (cannot be constructed without policy)
 //! let sandbox = Sandbox::new(&policy, "/path/to/repo")?;
 //! let budget = AtomicBudget::new(&policy.budget);
-//! let executor = Executor::new(&policy, &sandbox, &budget);
+//! let guard = MonotonicGuard::minutes(30);
+//! let executor = Executor::new(&policy, &sandbox, &budget)
+//!     .with_time_guard(&guard);
 //!
 //! // File access - goes through capability handle
 //! let file = sandbox.open("src/main.rs")?;  // Enforces PathLattice
@@ -61,13 +63,17 @@
 
 mod budget;
 mod command;
+mod approval;
 mod error;
+mod pod;
 mod sandbox;
 mod time;
 
 pub use budget::AtomicBudget;
-pub use command::Executor;
+pub use approval::{ApprovalRequest, ApprovalToken, Approver, CallbackApprover};
+pub use command::{BudgetModel, Executor};
 pub use error::{NucleusError, Result};
+pub use pod::{PodRuntime, PodSpec};
 pub use sandbox::Sandbox;
 pub use time::MonotonicGuard;
 

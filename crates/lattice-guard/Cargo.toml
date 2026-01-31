@@ -18,21 +18,22 @@ serde = ["dep:serde", "dep:serde_json", "rust_decimal/serde", "chrono/serde", "u
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 sha2 = "0.10"
-uuid = { version = "1.0", features = ["v4"] }
+uuid = { version = "1.20", features = ["v4"] }
 
 # Optional serde support
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 
 # Security: proper decimal arithmetic for budget (no f64 exploits)
-rust_decimal = "1.36"
+rust_decimal = "1.40"
 
 # Security: proper shell command parsing (no injection via quoting)
 shell-words = "1.1"
 
 # Glob pattern matching (audited, stable)
-regex = "1.11"
+regex = "1.12"
 
 [dev-dependencies]
-proptest = "1.5"
+proptest = "1.9"
 serde_json = "1.0"
+tempfile = "3"
