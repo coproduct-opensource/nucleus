@@ -2,7 +2,6 @@
 title = "Nucleus"
 authors = ["Coproduct"]
 language = "en"
-multilingual = false
 src = "docs"
 
 [build]
