@@ -8,6 +8,9 @@ spec:
   policy:
     type: profile
     name: demo
+  network:
+    allow: []
+    deny: []
   budget_model:
     base_cost_usd: 0.000001
     cost_per_second_usd: 0.0001

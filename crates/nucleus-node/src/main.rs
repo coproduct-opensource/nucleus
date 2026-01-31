@@ -24,6 +24,7 @@ use uuid::Uuid;
 mod auth;
 use auth::{AuthConfig, AuthError};
 mod cgroup;
+mod net;
 mod vsock_bridge;
 
 pub mod proto {
@@ -446,6 +447,10 @@ async fn spawn_local_pod(
     let spec_yaml = serde_yaml::to_string(spec).map_err(ApiError::Serde)?;
     tokio::fs::write(&spec_path, spec_yaml).await?;
 
+    if let Some(network) = spec.spec.network.as_ref() {
+        net::apply_network_policy(pod_dir, Some(network)).await?;
+    }
+
     let log_stdout = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -499,13 +504,7 @@ async fn spawn_firecracker_pod(
             ));
         }
 
-        if let Some(network) = spec.spec.network.as_ref() {
-            if !network.allow.is_empty() || !network.deny.is_empty() {
-                return Err(ApiError::Driver(
-                    "network policy not yet implemented for firecracker".to_string(),
-                ));
-            }
-        }
+        net::apply_network_policy(pod_dir, spec.spec.network.as_ref()).await?;
 
         let image = spec
             .spec

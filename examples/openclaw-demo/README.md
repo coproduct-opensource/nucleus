@@ -2,6 +2,8 @@
 
 This demo routes OpenClaw tool calls through `nucleus-tool-proxy` and shows enforced sandboxing, approvals, and command gating.
 
+Network policy is **default deny** inside the VM; see `net.allow` and `net.deny`.
+
 ## 1) Start the tool proxy
 
 ```bash
@@ -27,6 +29,14 @@ cargo build -p nucleus-tool-proxy --release --target x86_64-unknown-linux-musl
 
 # Build rootfs (Debian slim via Docker export by default)
 ./scripts/firecracker/build-rootfs.sh
+```
+
+To include a network allow/deny list in the image:
+
+```bash
+NET_ALLOW=./examples/openclaw-demo/net.allow \
+NET_DENY=./examples/openclaw-demo/net.deny \
+  ./scripts/firecracker/build-rootfs.sh
 ```
 
 Provide a kernel at `./build/firecracker/vmlinux` (pinned, known-good).

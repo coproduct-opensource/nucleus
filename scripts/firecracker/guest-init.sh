@@ -22,6 +22,12 @@ if [ ! -f /etc/nucleus/pod.yaml ]; then
   exec /bin/sh
 fi
 
+if [ -f /etc/nucleus/net.allow ] || [ -f /etc/nucleus/net.deny ]; then
+  if [ -x /usr/local/bin/guest-net.sh ]; then
+    /usr/local/bin/guest-net.sh || true
+  fi
+fi
+
 export NUCLEUS_TOOL_PROXY_AUDIT_LOG=${NUCLEUS_TOOL_PROXY_AUDIT_LOG:-/tmp/nucleus-audit.log}
 
 exec /usr/local/bin/nucleus-tool-proxy --spec /etc/nucleus/pod.yaml

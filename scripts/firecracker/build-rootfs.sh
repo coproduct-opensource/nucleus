@@ -7,6 +7,8 @@ POD_SPEC=${POD_SPEC:-./examples/openclaw-demo/firecracker-pod.yaml}
 INIT_SRC=${INIT_SRC:-./scripts/firecracker/guest-init.sh}
 PROXY_BIN=${PROXY_BIN:-./target/x86_64-unknown-linux-musl/release/nucleus-tool-proxy}
 DEBIAN_IMAGE=${DEBIAN_IMAGE:-debian:bookworm-slim}
+NET_ALLOW=${NET_ALLOW:-}
+NET_DENY=${NET_DENY:-}
 
 mkdir -p "$ROOTFS_DIR"
 mkdir -p "$(dirname "$ROOTFS_IMG")"
@@ -23,6 +25,11 @@ fi
 
 if [ ! -f "$INIT_SRC" ]; then
   echo "missing $INIT_SRC" >&2
+  exit 1
+fi
+
+if [ ! -f "./scripts/firecracker/guest-net.sh" ]; then
+  echo "missing ./scripts/firecracker/guest-net.sh" >&2
   exit 1
 fi
 
@@ -48,9 +55,17 @@ fi
 
 mkdir -p "$ROOTFS_DIR/etc/nucleus" "$ROOTFS_DIR/usr/local/bin" "$ROOTFS_DIR/work"
 cp "$POD_SPEC" "$ROOTFS_DIR/etc/nucleus/pod.yaml"
+if [ -f "$NET_ALLOW" ]; then
+  cp "$NET_ALLOW" "$ROOTFS_DIR/etc/nucleus/net.allow"
+fi
+if [ -f "$NET_DENY" ]; then
+  cp "$NET_DENY" "$ROOTFS_DIR/etc/nucleus/net.deny"
+fi
 cp "$PROXY_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-tool-proxy"
 cp "$INIT_SRC" "$ROOTFS_DIR/init"
+cp "./scripts/firecracker/guest-net.sh" "$ROOTFS_DIR/usr/local/bin/guest-net.sh"
 chmod +x "$ROOTFS_DIR/init" "$ROOTFS_DIR/usr/local/bin/nucleus-tool-proxy"
+chmod +x "$ROOTFS_DIR/usr/local/bin/guest-net.sh"
 
 # Build ext4 image from directory
 rm -f "$ROOTFS_IMG"
