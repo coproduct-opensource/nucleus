@@ -28,6 +28,10 @@ if [ -f /etc/nucleus/net.allow ] || [ -f /etc/nucleus/net.deny ]; then
   fi
 fi
 
+if [ -f /etc/nucleus/auth.secret ]; then
+  export NUCLEUS_TOOL_PROXY_AUTH_SECRET="$(cat /etc/nucleus/auth.secret)"
+fi
+
 export NUCLEUS_TOOL_PROXY_AUDIT_LOG=${NUCLEUS_TOOL_PROXY_AUDIT_LOG:-/tmp/nucleus-audit.log}
 
 exec /usr/local/bin/nucleus-tool-proxy --spec /etc/nucleus/pod.yaml

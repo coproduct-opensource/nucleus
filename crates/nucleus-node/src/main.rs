@@ -25,6 +25,7 @@ mod auth;
 use auth::{AuthConfig, AuthError};
 mod cgroup;
 mod net;
+mod signed_proxy;
 mod vsock_bridge;
 
 pub mod proto {
@@ -65,6 +66,12 @@ struct Args {
     /// Maximum allowed clock skew (seconds) for signed requests.
     #[arg(long, env = "NUCLEUS_NODE_AUTH_MAX_SKEW_SECS", default_value_t = 60)]
     auth_max_skew_secs: u64,
+    /// Shared secret for signing tool-proxy requests from the host (optional).
+    #[arg(long, env = "NUCLEUS_NODE_PROXY_AUTH_SECRET")]
+    proxy_auth_secret: Option<String>,
+    /// Default actor to use when signing proxy requests.
+    #[arg(long, env = "NUCLEUS_NODE_PROXY_ACTOR", default_value = "nucleus-node")]
+    proxy_actor: String,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -82,6 +89,8 @@ struct NodeState {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     firecracker_path: PathBuf,
     auth: Option<AuthConfig>,
+    proxy_auth_secret: Option<String>,
+    proxy_actor: Option<String>,
 }
 
 #[derive(Debug)]
@@ -104,6 +113,7 @@ enum DriverState {
 #[derive(Debug)]
 struct LocalPod {
     child: Mutex<tokio::process::Child>,
+    signed_proxy: Mutex<Option<signed_proxy::SignedProxy>>,
 }
 
 #[derive(Debug)]
@@ -111,6 +121,7 @@ struct LocalPod {
 struct FirecrackerPod {
     child: Mutex<tokio::process::Child>,
     bridge: Mutex<Option<vsock_bridge::VsockBridge>>,
+    signed_proxy: Mutex<Option<signed_proxy::SignedProxy>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -207,6 +218,8 @@ async fn main() -> Result<(), ApiError> {
                 Duration::from_secs(args.auth_max_skew_secs),
             )
         }),
+        proxy_auth_secret: args.proxy_auth_secret.clone(),
+        proxy_actor: Some(args.proxy_actor.clone()).filter(|actor| !actor.trim().is_empty()),
     };
 
     if state.auth.is_none() {
@@ -404,6 +417,9 @@ impl LocalPod {
     }
 
     async fn cancel(&self) -> Result<(), ApiError> {
+        if let Some(proxy) = self.signed_proxy.lock().await.take() {
+            proxy.shutdown().await;
+        }
         let mut child = self.child.lock().await;
         child.kill().await.map_err(ApiError::Io)?;
         Ok(())
@@ -425,6 +441,9 @@ impl FirecrackerPod {
     }
 
     async fn cancel(&self) -> Result<(), ApiError> {
+        if let Some(proxy) = self.signed_proxy.lock().await.take() {
+            proxy.shutdown().await;
+        }
         if let Some(bridge) = self.bridge.lock().await.take() {
             bridge.shutdown().await;
         }
@@ -460,22 +479,43 @@ async fn spawn_local_pod(
         .append(true)
         .open(&log_path)?;
 
-    let mut child = Command::new(&state.tool_proxy_path)
+    let mut command = Command::new(&state.tool_proxy_path);
+    command
         .arg("--spec")
         .arg(&spec_path)
         .arg("--listen")
         .arg("127.0.0.1:0")
         .arg("--announce-path")
-        .arg(&announce_path)
+        .arg(&announce_path);
+    if let Some(secret) = state.proxy_auth_secret.as_ref() {
+        command.env("NUCLEUS_TOOL_PROXY_AUTH_SECRET", secret);
+    }
+    let mut child = command
         .stdout(log_stdout)
         .stderr(log_stderr)
         .spawn()
         .map_err(|e| ApiError::Driver(format!("failed to spawn tool proxy: {e}")))?;
 
-    let proxy_addr = wait_for_announce(&announce_path, &mut child).await;
+    let mut proxy_addr = wait_for_announce(&announce_path, &mut child).await;
+    let mut signed_proxy = None;
+    if let (Some(secret), Some(addr)) = (state.proxy_auth_secret.as_ref(), proxy_addr.as_ref()) {
+        let target_addr: SocketAddr = addr
+            .parse()
+            .map_err(|e| ApiError::Driver(format!("invalid tool proxy address {addr}: {e}")))?;
+        let proxy = signed_proxy::SignedProxy::start(
+            target_addr,
+            Arc::new(secret.as_bytes().to_vec()),
+            state.proxy_actor.clone(),
+        )
+        .await
+        .map_err(|e| ApiError::Driver(format!("signed proxy failed: {e}")))?;
+        proxy_addr = Some(format!("http://{}", proxy.listen_addr()));
+        signed_proxy = Some(proxy);
+    }
 
     let handle = LocalPod {
         child: Mutex::new(child),
+        signed_proxy: Mutex::new(signed_proxy),
     };
 
     info!("spawned local pod {}", id);
@@ -559,8 +599,28 @@ async fn spawn_firecracker_pod(
             .await
             .map_err(|e| ApiError::Driver(format!("vsock bridge failed: {e}")))?;
 
-        let proxy_addr = format!("http://{}", bridge.listen_addr());
-        if let Err(err) = wait_for_proxy_health(bridge.listen_addr()).await {
+        let mut proxy_addr = format!("http://{}", bridge.listen_addr());
+        let mut signed_proxy = None;
+        let health_addr = if let Some(secret) = state.proxy_auth_secret.as_ref() {
+            let proxy = signed_proxy::SignedProxy::start(
+                bridge.listen_addr(),
+                Arc::new(secret.as_bytes().to_vec()),
+                state.proxy_actor.clone(),
+            )
+            .await
+            .map_err(|e| ApiError::Driver(format!("signed proxy failed: {e}")))?;
+            proxy_addr = format!("http://{}", proxy.listen_addr());
+            let addr = proxy.listen_addr();
+            signed_proxy = Some(proxy);
+            addr
+        } else {
+            bridge.listen_addr()
+        };
+
+        if let Err(err) = wait_for_proxy_health(health_addr).await {
+            if let Some(proxy) = signed_proxy {
+                proxy.shutdown().await;
+            }
             bridge.shutdown().await;
             let mut child = child;
             let _ = child.kill().await;
@@ -570,6 +630,7 @@ async fn spawn_firecracker_pod(
         let handle = FirecrackerPod {
             child: Mutex::new(child),
             bridge: Mutex::new(Some(bridge)),
+            signed_proxy: Mutex::new(signed_proxy),
         };
 
         info!("spawned firecracker pod {}", id);

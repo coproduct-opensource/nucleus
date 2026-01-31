@@ -31,6 +31,13 @@ cargo build -p nucleus-tool-proxy --release --target x86_64-unknown-linux-musl
 ./scripts/firecracker/build-rootfs.sh
 ```
 
+To bake in the tool-proxy auth secret (for signed proxy mode):
+
+```bash
+TOOL_PROXY_AUTH_SECRET=demo-secret \
+  ./scripts/firecracker/build-rootfs.sh
+```
+
 To include a network allow/deny list in the image:
 
 ```bash
@@ -46,7 +53,8 @@ Provide a kernel at `./build/firecracker/vmlinux` (pinned, known-good).
 ```bash
 cargo run -p nucleus-node -- \
   --driver firecracker \
-  --listen 127.0.0.1:8081
+  --listen 127.0.0.1:8081 \
+  --proxy-auth-secret demo-secret
 ```
 
 ### Create a Firecracker pod
@@ -56,7 +64,9 @@ curl -sS -X POST --data-binary @examples/openclaw-demo/firecracker-pod.yaml \
   http://127.0.0.1:8081/v1/pods
 ```
 
-Use the returned `proxy_addr` as the OpenClaw plugin `proxyUrl`.
+Use the returned `proxy_addr` as the OpenClaw plugin `proxyUrl`. When using
+`--proxy-auth-secret`, the signed proxy injects auth headers so the OpenClaw
+plugin can omit `authSecret`.
 
 ## 2) Install the OpenClaw adapter
 

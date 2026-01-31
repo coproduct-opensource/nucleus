@@ -13,6 +13,14 @@ pub struct VsockBridge {
     task: JoinHandle<()>,
 }
 
+impl std::fmt::Debug for VsockBridge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VsockBridge")
+            .field("listen_addr", &self.listen_addr)
+            .finish()
+    }
+}
+
 impl VsockBridge {
     pub async fn start(uds_path: PathBuf, guest_port: u32) -> std::io::Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;

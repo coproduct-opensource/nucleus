@@ -9,6 +9,7 @@ PROXY_BIN=${PROXY_BIN:-./target/x86_64-unknown-linux-musl/release/nucleus-tool-p
 DEBIAN_IMAGE=${DEBIAN_IMAGE:-debian:bookworm-slim}
 NET_ALLOW=${NET_ALLOW:-}
 NET_DENY=${NET_DENY:-}
+TOOL_PROXY_AUTH_SECRET=${TOOL_PROXY_AUTH_SECRET:-}
 
 mkdir -p "$ROOTFS_DIR"
 mkdir -p "$(dirname "$ROOTFS_IMG")"
@@ -60,6 +61,10 @@ if [ -f "$NET_ALLOW" ]; then
 fi
 if [ -f "$NET_DENY" ]; then
   cp "$NET_DENY" "$ROOTFS_DIR/etc/nucleus/net.deny"
+fi
+if [ -n "$TOOL_PROXY_AUTH_SECRET" ]; then
+  printf "%s" "$TOOL_PROXY_AUTH_SECRET" >"$ROOTFS_DIR/etc/nucleus/auth.secret"
+  chmod 600 "$ROOTFS_DIR/etc/nucleus/auth.secret"
 fi
 cp "$PROXY_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-tool-proxy"
 cp "$INIT_SRC" "$ROOTFS_DIR/init"
