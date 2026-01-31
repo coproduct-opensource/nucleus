@@ -698,27 +698,24 @@ async fn wait_for_proxy_health(addr: SocketAddr) -> Result<(), ApiError> {
     let start = std::time::Instant::now();
     let host = addr.ip();
     while start.elapsed() < Duration::from_secs(5) {
-        match tokio::net::TcpStream::connect(addr).await {
-            Ok(mut stream) => {
-                let request = format!(
-                    "GET /v1/health HTTP/1.1\\r\\nHost: {host}\\r\\nConnection: close\\r\\n\\r\\n"
-                );
-                if stream.write_all(request.as_bytes()).await.is_err() {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    continue;
-                }
-
-                let mut buf = Vec::new();
-                if stream.read_to_end(&mut buf).await.is_err() {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    continue;
-                }
-                let response = String::from_utf8_lossy(&buf);
-                if response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200") {
-                    return Ok(());
-                }
+        if let Ok(mut stream) = tokio::net::TcpStream::connect(addr).await {
+            let request = format!(
+                "GET /v1/health HTTP/1.1\\r\\nHost: {host}\\r\\nConnection: close\\r\\n\\r\\n"
+            );
+            if stream.write_all(request.as_bytes()).await.is_err() {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
             }
-            Err(_) => {}
+
+            let mut buf = Vec::new();
+            if stream.read_to_end(&mut buf).await.is_err() {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+            let response = String::from_utf8_lossy(&buf);
+            if response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200") {
+                return Ok(());
+            }
         }
 
         tokio::time::sleep(Duration::from_millis(100)).await;
