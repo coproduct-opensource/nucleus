@@ -7,18 +7,22 @@ mount -t devtmpfs dev /dev
 mount -t tmpfs tmpfs /tmp
 mount -t tmpfs tmpfs /run
 
-mkdir -p /etc/nucleus /work
+umask 077
+mkdir -p /etc/nucleus /work 2>/dev/null || true
 
 if [ -b /dev/vdb ]; then
-  mount /dev/vdb /work || true
+  mount -o rw,nosuid,nodev /dev/vdb /work || true
 fi
 
-if [ ! -f /etc/nucleus/pod.yaml ] && [ -f /pod.yaml ]; then
-  cp /pod.yaml /etc/nucleus/pod.yaml
+POD_SPEC_PATH=/etc/nucleus/pod.yaml
+if [ ! -f "$POD_SPEC_PATH" ] && [ -f /pod.yaml ]; then
+  if ! cp /pod.yaml "$POD_SPEC_PATH" 2>/dev/null; then
+    POD_SPEC_PATH=/pod.yaml
+  fi
 fi
 
-if [ ! -f /etc/nucleus/pod.yaml ]; then
-  echo "missing /etc/nucleus/pod.yaml" >&2
+if [ ! -f "$POD_SPEC_PATH" ]; then
+  echo "missing pod spec (expected /etc/nucleus/pod.yaml or /pod.yaml)" >&2
   exec /bin/sh
 fi
 
@@ -32,6 +36,18 @@ if [ -f /etc/nucleus/auth.secret ]; then
   export NUCLEUS_TOOL_PROXY_AUTH_SECRET="$(cat /etc/nucleus/auth.secret)"
 fi
 
-export NUCLEUS_TOOL_PROXY_AUDIT_LOG=${NUCLEUS_TOOL_PROXY_AUDIT_LOG:-/tmp/nucleus-audit.log}
+if [ -f /etc/nucleus/audit.path ]; then
+  export NUCLEUS_TOOL_PROXY_AUDIT_LOG="$(cat /etc/nucleus/audit.path)"
+else
+  if touch /work/.nucleus_write_test 2>/dev/null; then
+    rm -f /work/.nucleus_write_test
+    mkdir -p /work/audit 2>/dev/null || true
+    export NUCLEUS_TOOL_PROXY_AUDIT_LOG=${NUCLEUS_TOOL_PROXY_AUDIT_LOG:-/work/audit/nucleus-audit.log}
+  else
+    export NUCLEUS_TOOL_PROXY_AUDIT_LOG=${NUCLEUS_TOOL_PROXY_AUDIT_LOG:-/tmp/nucleus-audit.log}
+  fi
+fi
 
-exec /usr/local/bin/nucleus-tool-proxy --spec /etc/nucleus/pod.yaml
+mount -o remount,ro / 2>/dev/null || true
+
+exec /usr/local/bin/nucleus-tool-proxy --spec "$POD_SPEC_PATH"
