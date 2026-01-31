@@ -70,28 +70,58 @@ struct AppState {
 
 #[derive(Default)]
 struct ApprovalRegistry {
-    approvals: Mutex<HashMap<String, usize>>,
+    approvals: Mutex<HashMap<String, ApprovalEntry>>,
+}
+
+#[derive(Clone, Copy)]
+struct ApprovalEntry {
+    count: usize,
+    expires_at_unix: Option<u64>,
 }
 
 impl ApprovalRegistry {
-    fn approve(&self, operation: &str, count: usize) {
+    fn approve(&self, operation: &str, count: usize, expires_at_unix: Option<u64>) {
         let mut guard = self.approvals.lock().unwrap();
-        let entry = guard.entry(operation.to_string()).or_insert(0);
-        *entry += count;
+        let entry = guard.entry(operation.to_string()).or_insert(ApprovalEntry {
+            count: 0,
+            expires_at_unix,
+        });
+        entry.count += count;
+        entry.expires_at_unix = merge_expiry(entry.expires_at_unix, expires_at_unix);
     }
 
     fn consume(&self, operation: &str) -> bool {
         let mut guard = self.approvals.lock().unwrap();
-        if let Some(count) = guard.get_mut(operation) {
-            if *count > 0 {
-                *count -= 1;
-                if *count == 0 {
+        if let Some(entry) = guard.get_mut(operation) {
+            if is_expired(entry.expires_at_unix) {
+                guard.remove(operation);
+                return false;
+            }
+            if entry.count > 0 {
+                entry.count -= 1;
+                if entry.count == 0 {
                     guard.remove(operation);
                 }
                 return true;
             }
         }
         false
+    }
+}
+
+fn merge_expiry(existing: Option<u64>, incoming: Option<u64>) -> Option<u64> {
+    match (existing, incoming) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+fn is_expired(expires_at_unix: Option<u64>) -> bool {
+    match expires_at_unix {
+        Some(ts) => ts <= now_unix(),
+        None => false,
     }
 }
 
@@ -134,11 +164,15 @@ struct ApproveRequest {
     operation: String,
     #[serde(default = "default_approve_count")]
     count: usize,
+    #[serde(default)]
+    expires_at_unix: Option<u64>,
 }
 
 fn default_approve_count() -> usize {
     1
 }
+
+const MAX_APPROVAL_TTL_SECS: u64 = 300;
 
 #[derive(Debug, Serialize)]
 struct ApproveResponse {
@@ -400,9 +434,30 @@ async fn approve_operation(
     headers: HeaderMap,
     Json(req): Json<ApproveRequest>,
 ) -> Result<Json<ApproveResponse>, ApiError> {
-    state.approvals.approve(&req.operation, req.count);
+    let now = now_unix();
+    let expires_at = resolve_approval_expiry(state.auth.as_ref(), req.expires_at_unix, now)?;
+    state
+        .approvals
+        .approve(&req.operation, req.count, expires_at);
     audit_event(&state, &headers, "approve", &req.operation, "ok").await?;
     Ok(Json(ApproveResponse { ok: true }))
+}
+
+fn resolve_approval_expiry(
+    auth: Option<&AuthConfig>,
+    expires_at_unix: Option<u64>,
+    now: u64,
+) -> Result<Option<u64>, ApiError> {
+    let require_expiry = auth.is_some();
+    if require_expiry {
+        let requested = expires_at_unix.unwrap_or(now + MAX_APPROVAL_TTL_SECS);
+        if requested < now {
+            return Err(ApiError::Spec("approval expiry is in the past".to_string()));
+        }
+        let max_allowed = now + MAX_APPROVAL_TTL_SECS;
+        return Ok(Some(requested.min(max_allowed)));
+    }
+    Ok(expires_at_unix)
 }
 
 fn build_runtime(spec: &PodSpec) -> Result<PodRuntime, ApiError> {

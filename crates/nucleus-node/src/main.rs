@@ -50,6 +50,9 @@ struct Args {
     /// Driver backend.
     #[arg(long, env = "NUCLEUS_NODE_DRIVER", value_enum, default_value = "local")]
     driver: DriverKind,
+    /// Allow the local driver (no VM isolation).
+    #[arg(long, env = "NUCLEUS_ALLOW_LOCAL_DRIVER", default_value_t = false)]
+    allow_local_driver: bool,
     /// Path to the nucleus-tool-proxy binary (local driver).
     #[arg(
         long,
@@ -211,6 +214,12 @@ async fn main() -> Result<(), ApiError> {
 
     let args = Args::parse();
     tokio::fs::create_dir_all(&args.state_dir).await?;
+    if matches!(args.driver, DriverKind::Local) && !args.allow_local_driver {
+        return Err(ApiError::Driver(
+            "local driver disabled; pass --allow-local-driver to run without VM isolation"
+                .to_string(),
+        ));
+    }
 
     let state = NodeState {
         pods: Arc::new(Mutex::new(HashMap::new())),
@@ -572,6 +581,11 @@ async fn spawn_firecracker_pod(
         if !Path::new("/dev/kvm").exists() {
             return Err(ApiError::Driver(
                 "firecracker requires /dev/kvm (KVM not available)".to_string(),
+            ));
+        }
+        if state.proxy_auth_secret.is_none() {
+            return Err(ApiError::Driver(
+                "firecracker requires --proxy-auth-secret to enforce signed proxy auth".to_string(),
             ));
         }
 
