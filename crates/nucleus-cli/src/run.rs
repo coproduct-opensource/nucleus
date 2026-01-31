@@ -112,6 +112,7 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
     } else {
         policy
     };
+    let policy = policy.normalize();
 
     // Create pod runtime (kubelet-style instance)
     let spec = PodSpec::new(
@@ -121,8 +122,8 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
     );
     let mut pod = PodRuntime::new(spec)?;
 
-    // Attach approver for AskFirst operations only when needed
-    if has_ask_first_capabilities(&policy) {
+    // Attach approver for approval-gated operations only when needed
+    if has_approval_obligations(&policy) {
         let approver = Arc::new(CallbackApprover::new(|request| {
             // Interactive approval prompt
             eprint!("Approve command '{}'? [y/N] ", request.operation());
@@ -185,8 +186,8 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
     cmd.arg("--max-budget-usd")
         .arg(policy.budget.max_cost_usd.to_string());
 
-    // Add permission mode based on capability levels
-    if has_ask_first_capabilities(&policy) {
+    // Add permission mode based on approval obligations
+    if has_approval_obligations(&policy) {
         cmd.arg("--permission-mode").arg("plan");
     }
 
@@ -301,17 +302,7 @@ fn build_allowed_tools(policy: &PermissionLattice) -> String {
     tools.join(",")
 }
 
-/// Check if any capabilities are at AskFirst level
-fn has_ask_first_capabilities(policy: &PermissionLattice) -> bool {
-    use lattice_guard::CapabilityLevel;
-
-    [
-        policy.capabilities.write_files,
-        policy.capabilities.edit_files,
-        policy.capabilities.run_bash,
-        policy.capabilities.git_commit,
-        policy.capabilities.git_push,
-        policy.capabilities.create_pr,
-    ]
-    .contains(&CapabilityLevel::AskFirst)
+/// Check if any approval obligations are present.
+fn has_approval_obligations(policy: &PermissionLattice) -> bool {
+    !policy.obligations.approvals.is_empty()
 }

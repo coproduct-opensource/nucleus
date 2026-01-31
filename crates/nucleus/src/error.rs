@@ -65,7 +65,7 @@ pub enum NucleusError {
     },
 
     /// Human approval required but not provided.
-    #[error("approval required: '{operation}' requires human approval (AskFirst level)")]
+    #[error("approval required: '{operation}' requires human approval")]
     ApprovalRequired {
         /// The operation requiring approval.
         operation: String,

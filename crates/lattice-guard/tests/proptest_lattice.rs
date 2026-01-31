@@ -4,7 +4,7 @@
 //! satisfy the required algebraic properties.
 
 use lattice_guard::{
-    BudgetLattice, CapabilityLattice, CapabilityLevel, CommandLattice, PathLattice,
+    BudgetLattice, CapabilityLattice, CapabilityLevel, CommandLattice, Operation, PathLattice,
     PermissionLattice, TimeLattice,
 };
 use proptest::prelude::*;
@@ -14,7 +14,6 @@ use rust_decimal::Decimal;
 fn arb_capability_level() -> impl Strategy<Value = CapabilityLevel> {
     prop_oneof![
         Just(CapabilityLevel::Never),
-        Just(CapabilityLevel::AskFirst),
         Just(CapabilityLevel::LowRisk),
         Just(CapabilityLevel::Always),
     ]
@@ -270,82 +269,32 @@ proptest! {
     // ============================================
 
     #[test]
-    fn trifecta_constraint_always_breaks_trifecta(a in arb_capability_lattice()) {
+    fn trifecta_constraint_obligations_only_exfil(a in arb_capability_lattice()) {
         use lattice_guard::IncompatibilityConstraint;
 
         let constraint = IncompatibilityConstraint::enforcing();
-        let constrained = constraint.apply(&a);
+        let obligations = constraint.obligations_for(&a);
 
-        // After applying constraint, trifecta should not be complete
-        prop_assert!(!constraint.is_trifecta_complete(&constrained));
-    }
-
-    #[test]
-    fn trifecta_constraint_preserves_non_exfil_caps(a in arb_capability_lattice()) {
-        use lattice_guard::IncompatibilityConstraint;
-
-        let constraint = IncompatibilityConstraint::enforcing();
-        let constrained = constraint.apply(&a);
-
-        // Non-exfiltration capabilities should be preserved
-        prop_assert_eq!(a.read_files, constrained.read_files);
-        prop_assert_eq!(a.write_files, constrained.write_files);
-        prop_assert_eq!(a.edit_files, constrained.edit_files);
-        prop_assert_eq!(a.glob_search, constrained.glob_search);
-        prop_assert_eq!(a.grep_search, constrained.grep_search);
-        prop_assert_eq!(a.web_search, constrained.web_search);
-        prop_assert_eq!(a.web_fetch, constrained.web_fetch);
-    }
-
-    #[test]
-    fn trifecta_constrained_is_leq_original(a in arb_capability_lattice()) {
-        use lattice_guard::IncompatibilityConstraint;
-
-        let constraint = IncompatibilityConstraint::enforcing();
-        let constrained = constraint.apply(&a);
-
-        // Constrained should always be ≤ original
-        prop_assert!(constrained.leq(&a));
-    }
-
-    #[test]
-    fn trifecta_constraint_is_idempotent(a in arb_capability_lattice()) {
-        use lattice_guard::IncompatibilityConstraint;
-
-        let constraint = IncompatibilityConstraint::enforcing();
-        let once = constraint.apply(&a);
-        let twice = constraint.apply(&once);
-
-        prop_assert_eq!(once, twice);
-    }
-
-    #[test]
-    fn trifecta_constraint_is_monotone(
-        a in arb_capability_lattice(),
-        b in arb_capability_lattice()
-    ) {
-        use lattice_guard::IncompatibilityConstraint;
-
-        let constraint = IncompatibilityConstraint::enforcing();
-        if a.leq(&b) {
-            let a_nu = constraint.apply(&a);
-            let b_nu = constraint.apply(&b);
-            prop_assert!(a_nu.leq(&b_nu));
+        for op in obligations.approvals.iter() {
+            prop_assert!(matches!(
+                op,
+                Operation::GitPush | Operation::CreatePr | Operation::RunBash
+            ));
         }
-    }
 
-    #[test]
-    fn trifecta_constraint_preserves_meet(
-        a in arb_capability_lattice(),
-        b in arb_capability_lattice()
-    ) {
-        use lattice_guard::IncompatibilityConstraint;
-
-        let constraint = IncompatibilityConstraint::enforcing();
-        let left = constraint.apply(&a.meet(&b));
-        let right = constraint.apply(&a).meet(&constraint.apply(&b));
-
-        prop_assert_eq!(left, right);
+        if !constraint.is_trifecta_complete(&a) {
+            prop_assert!(obligations.approvals.is_empty());
+        } else {
+            if a.git_push >= CapabilityLevel::LowRisk {
+                prop_assert!(obligations.requires(Operation::GitPush));
+            }
+            if a.create_pr >= CapabilityLevel::LowRisk {
+                prop_assert!(obligations.requires(Operation::CreatePr));
+            }
+            if a.run_bash >= CapabilityLevel::LowRisk {
+                prop_assert!(obligations.requires(Operation::RunBash));
+            }
+        }
     }
 
     #[test]
@@ -355,6 +304,7 @@ proptest! {
     ) {
         let perms = PermissionLattice {
             capabilities: a,
+            obligations: Default::default(),
             trifecta_constraint: enforce,
             ..PermissionLattice::default()
         };
@@ -371,12 +321,13 @@ proptest! {
     ) {
         let perms = PermissionLattice {
             capabilities: a,
+            obligations: Default::default(),
             trifecta_constraint: true,
             ..PermissionLattice::default()
         };
 
         let normalized = perms.clone().normalize();
-        prop_assert!(normalized.capabilities.leq(&perms.capabilities));
+        prop_assert!(normalized.leq(&perms));
     }
 }
 

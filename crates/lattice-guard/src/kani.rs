@@ -1,17 +1,16 @@
 //! Kani proofs for nucleus properties.
 
 use crate::{
-    BudgetLattice, CapabilityLattice, CapabilityLevel, CommandLattice, PathLattice,
+    BudgetLattice, CapabilityLattice, CapabilityLevel, CommandLattice, Obligations, PathLattice,
     PermissionLattice, TimeLattice,
 };
 use chrono::{TimeZone, Utc};
 use uuid::Uuid;
 
 fn any_level() -> CapabilityLevel {
-    match kani::any::<u8>() % 4 {
+    match kani::any::<u8>() % 3 {
         0 => CapabilityLevel::Never,
-        1 => CapabilityLevel::AskFirst,
-        2 => CapabilityLevel::LowRisk,
+        1 => CapabilityLevel::LowRisk,
         _ => CapabilityLevel::Always,
     }
 }
@@ -38,6 +37,7 @@ fn kani_lattice() -> PermissionLattice {
         description: "kani".to_string(),
         derived_from: None,
         capabilities: any_capabilities(),
+        obligations: Obligations::default(),
         paths: PathLattice::default(),
         budget: BudgetLattice::default(),
         commands: CommandLattice::default(),

@@ -7,7 +7,6 @@
 //! With `Executor`, there is no way to spawn a process without going through
 //! the policy check.
 
-use std::collections::HashSet;
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,7 +16,9 @@ use crate::budget::AtomicBudget;
 use crate::error::{NucleusError, Result};
 use crate::sandbox::Sandbox;
 use crate::time::MonotonicGuard;
-use lattice_guard::{CapabilityLevel, CommandLattice, PermissionLattice};
+use lattice_guard::{
+    CapabilityLattice, CapabilityLevel, CommandLattice, Obligations, Operation, PermissionLattice,
+};
 
 const MIN_EXEC_COST_USD: f64 = 0.000001;
 
@@ -44,10 +45,12 @@ impl Default for BudgetModel {
 /// All process spawning goes through this executor, which validates commands
 /// against the policy before execution.
 pub struct Executor<'a> {
-    /// The full permission policy
-    policy: &'a PermissionLattice,
-    /// The command-specific policy (extracted for convenience)
-    command_policy: &'a CommandLattice,
+    /// Capability policy (normalized)
+    capabilities: CapabilityLattice,
+    /// Approval obligations (normalized)
+    obligations: Obligations,
+    /// The command-specific policy (normalized)
+    command_policy: CommandLattice,
     /// The sandbox for working directory
     sandbox: &'a Sandbox,
     /// Budget for charging execution costs
@@ -56,7 +59,7 @@ pub struct Executor<'a> {
     budget_model: BudgetModel,
     /// Time guard for temporal constraints
     time_guard: Option<&'a MonotonicGuard>,
-    /// Approver for AskFirst operations
+    /// Approver for approval-gated operations
     approver: Option<Arc<dyn Approver>>,
 }
 
@@ -67,9 +70,11 @@ impl<'a> Executor<'a> {
         sandbox: &'a Sandbox,
         budget: &'a AtomicBudget,
     ) -> Self {
+        let normalized = policy.clone().normalize();
         Self {
-            policy,
-            command_policy: &policy.commands,
+            capabilities: normalized.capabilities,
+            obligations: normalized.obligations,
+            command_policy: normalized.commands,
             sandbox,
             budget,
             budget_model: BudgetModel::default(),
@@ -90,13 +95,13 @@ impl<'a> Executor<'a> {
         self
     }
 
-    /// Set an approver for AskFirst operations.
+    /// Set an approver for approval-gated operations.
     pub fn with_approver(mut self, approver: Arc<dyn Approver>) -> Self {
         self.approver = Some(approver);
         self
     }
 
-    /// Set a callback-based approver for AskFirst operations.
+    /// Set a callback-based approver for approval-gated operations.
     ///
     /// The callback receives an approval request and should return `true` if
     /// human approval was granted.
@@ -159,9 +164,6 @@ impl<'a> Executor<'a> {
             });
         }
 
-        // Check for trifecta completion
-        self.check_trifecta(command, &args)?;
-
         // Enforce budget before spawning any process
         self.reserve_budget(self.max_duration_for_run())?;
 
@@ -185,7 +187,7 @@ impl<'a> Executor<'a> {
         Ok(output.status)
     }
 
-    /// Execute a command with an approval token for AskFirst operations.
+    /// Execute a command with an approval token for approval-gated operations.
     pub fn run_with_approval(&self, command: &str, approval: &ApprovalToken) -> Result<Output> {
         // Check temporal constraints
         if let Some(guard) = self.time_guard {
@@ -215,9 +217,6 @@ impl<'a> Executor<'a> {
                 reason: "blocked by command policy".into(),
             });
         }
-
-        // Check for trifecta completion
-        self.check_trifecta(command, &args)?;
 
         // Enforce budget before spawning any process
         self.reserve_budget(self.max_duration_for_run())?;
@@ -267,9 +266,6 @@ impl<'a> Executor<'a> {
                 reason: "blocked by command policy".into(),
             });
         }
-
-        // Check for trifecta completion
-        self.check_trifecta(command, &args)?;
 
         // Enforce budget before spawning any process
         self.reserve_budget(Some(timeout))?;
@@ -331,9 +327,6 @@ impl<'a> Executor<'a> {
             });
         }
 
-        // Check for trifecta completion
-        self.check_trifecta(command, &args)?;
-
         // Enforce budget before spawning any process
         self.reserve_budget(Some(timeout))?;
 
@@ -364,72 +357,50 @@ impl<'a> Executor<'a> {
         args: &[String],
         approval: Option<&ApprovalToken>,
     ) -> Result<()> {
-        let _program = &args[0];
-
         // Determine required capability based on command type
-        let (capability_name, level) = if is_git_push_command(args) {
-            ("git_push", self.policy.capabilities.git_push)
+        let (operation, capability_name, level) = if is_git_push_command(args) {
+            (Operation::GitPush, "git_push", self.capabilities.git_push)
         } else if is_git_commit_command(args) {
-            ("git_commit", self.policy.capabilities.git_commit)
+            (
+                Operation::GitCommit,
+                "git_commit",
+                self.capabilities.git_commit,
+            )
         } else if is_pr_command(args) {
-            ("create_pr", self.policy.capabilities.create_pr)
+            (
+                Operation::CreatePr,
+                "create_pr",
+                self.capabilities.create_pr,
+            )
         } else {
-            ("run_bash", self.policy.capabilities.run_bash)
+            (Operation::RunBash, "run_bash", self.capabilities.run_bash)
         };
 
-        match level {
-            CapabilityLevel::Never => Err(NucleusError::InsufficientCapability {
+        if level == CapabilityLevel::Never {
+            return Err(NucleusError::InsufficientCapability {
                 capability: capability_name.into(),
                 actual: level,
-                required: CapabilityLevel::AskFirst,
-            }),
-            CapabilityLevel::AskFirst => {
-                if let Some(token) = approval {
-                    if token.matches(command) {
-                        Ok(())
-                    } else {
-                        Err(NucleusError::InvalidApproval {
-                            operation: command.to_string(),
-                        })
-                    }
-                } else {
-                    Err(NucleusError::ApprovalRequired {
-                        operation: command.to_string(),
-                    })
-                }
-            }
-            CapabilityLevel::LowRisk | CapabilityLevel::Always => Ok(()),
-        }
-    }
-
-    /// Check if executing this command would complete the lethal trifecta.
-    fn check_trifecta(&self, command: &str, args: &[String]) -> Result<()> {
-        if !self.policy.trifecta_constraint {
-            return Ok(());
-        }
-
-        // Check if this command is an exfiltration vector
-        let is_exfil = is_git_push_command(args)
-            || is_pr_command(args)
-            || is_network_command(args)
-            || is_interpreter_command(args);
-
-        if !is_exfil {
-            return Ok(());
-        }
-
-        // Check if we have private data access AND untrusted content exposure
-        let has_private_data = self.policy.capabilities.read_files >= CapabilityLevel::LowRisk;
-        let has_untrusted = self.policy.capabilities.web_fetch >= CapabilityLevel::LowRisk
-            || self.policy.capabilities.web_search >= CapabilityLevel::LowRisk;
-
-        if has_private_data && has_untrusted {
-            return Err(NucleusError::TrifectaBlocked {
-                operation: command.to_string(),
+                required: CapabilityLevel::LowRisk,
             });
         }
 
-        Ok(())
+        if self.obligations.requires(operation) {
+            if let Some(token) = approval {
+                if token.matches(command) {
+                    Ok(())
+                } else {
+                    Err(NucleusError::InvalidApproval {
+                        operation: command.to_string(),
+                    })
+                }
+            } else {
+                Err(NucleusError::ApprovalRequired {
+                    operation: command.to_string(),
+                })
+            }
+        } else {
+            Ok(())
+        }
     }
 
     fn max_duration_for_run(&self) -> Option<Duration> {
@@ -463,45 +434,6 @@ fn is_pr_command(args: &[String]) -> bool {
     args.len() >= 3 && args[0] == "gh" && args[1] == "pr" && args[2] == "create"
 }
 
-/// Check if the command could send data over the network.
-fn is_network_command(args: &[String]) -> bool {
-    let network_programs: HashSet<&str> = ["curl", "wget", "nc", "netcat", "ssh", "scp", "rsync"]
-        .into_iter()
-        .collect();
-
-    args.first()
-        .map(|p| network_programs.contains(p.as_str()))
-        .unwrap_or(false)
-}
-
-/// Check if the command is an interpreter/shell invocation.
-///
-/// These are treated as potential exfiltration vectors under trifecta because
-/// they can embed network calls in code strings.
-fn is_interpreter_command(args: &[String]) -> bool {
-    let interpreters: HashSet<&str> = [
-        "sh",
-        "bash",
-        "zsh",
-        "dash",
-        "fish",
-        "pwsh",
-        "powershell",
-        "python",
-        "python3",
-        "node",
-        "ruby",
-        "perl",
-        "php",
-    ]
-    .into_iter()
-    .collect();
-
-    args.first()
-        .map(|p| interpreters.contains(p.as_str()))
-        .unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,9 +446,13 @@ mod tests {
     fn test_policy() -> PermissionLattice {
         PermissionLattice {
             capabilities: CapabilityLattice {
+                read_files: CapabilityLevel::Never,
                 run_bash: CapabilityLevel::LowRisk,
+                web_fetch: CapabilityLevel::Never,
+                web_search: CapabilityLevel::Never,
                 ..Default::default()
             },
+            obligations: Obligations::default(),
             commands: CommandLattice::permissive(),
             ..Default::default()
         }
@@ -608,10 +544,10 @@ mod tests {
     }
 
     #[test]
-    fn test_askfirst_without_callback() {
+    fn test_approval_required_without_callback() {
         let tmp = tempdir().unwrap();
         let mut policy = test_policy();
-        policy.capabilities.run_bash = CapabilityLevel::AskFirst;
+        policy.obligations.insert(Operation::RunBash);
         let budget_policy = test_budget();
 
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
@@ -624,10 +560,10 @@ mod tests {
     }
 
     #[test]
-    fn test_askfirst_with_approval() {
+    fn test_approval_with_token() {
         let tmp = tempdir().unwrap();
         let mut policy = test_policy();
-        policy.capabilities.run_bash = CapabilityLevel::AskFirst;
+        policy.obligations.insert(Operation::RunBash);
         let budget_policy = test_budget();
 
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
@@ -643,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trifecta_blocks_exfiltration() {
+    fn test_trifecta_requires_approval_for_exfiltration() {
         let tmp = tempdir().unwrap();
         let policy = PermissionLattice {
             capabilities: CapabilityLattice {
@@ -652,6 +588,7 @@ mod tests {
                 run_bash: CapabilityLevel::LowRisk,  // Allows curl
                 ..Default::default()
             },
+            obligations: Obligations::default(),
             commands: CommandLattice::permissive(),
             trifecta_constraint: true,
             ..Default::default()
@@ -663,13 +600,13 @@ mod tests {
         let guard = MonotonicGuard::seconds(10);
         let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
-        // curl is an exfiltration vector, trifecta should block it
+        // curl is an exfiltration vector, trifecta should require approval
         let result = executor.run("curl http://example.com");
-        assert!(matches!(result, Err(NucleusError::TrifectaBlocked { .. })));
+        assert!(matches!(result, Err(NucleusError::ApprovalRequired { .. })));
     }
 
     #[test]
-    fn test_trifecta_blocks_interpreter_invocation() {
+    fn test_trifecta_requires_approval_for_interpreter_invocation() {
         let tmp = tempdir().unwrap();
         let policy = PermissionLattice {
             capabilities: CapabilityLattice {
@@ -678,6 +615,7 @@ mod tests {
                 run_bash: CapabilityLevel::LowRisk,  // Allows shell
                 ..Default::default()
             },
+            obligations: Obligations::default(),
             commands: CommandLattice::permissive(),
             trifecta_constraint: true,
             ..Default::default()
@@ -690,6 +628,6 @@ mod tests {
         let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
         let result = executor.run("bash -c \"echo hi\"");
-        assert!(matches!(result, Err(NucleusError::TrifectaBlocked { .. })));
+        assert!(matches!(result, Err(NucleusError::ApprovalRequired { .. })));
     }
 }

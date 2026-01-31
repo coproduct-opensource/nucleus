@@ -39,7 +39,7 @@ When an agent has all three at autonomous levels, prompt injection attacks can e
 This crate models permissions as a product lattice **L** with a **lattice-guard** operator that projects onto the quotient lattice **L'** of safe configurations:
 
 ```text
-L  = Capabilities × Paths × Budget × Commands × Time
+L  = Capabilities × Obligations × Paths × Budget × Commands × Time
 L' = { x ∈ L : ν(x) = x }  — the quotient of safe configurations
 
 The lattice-guard ν satisfies:
@@ -48,7 +48,7 @@ The lattice-guard ν satisfies:
 • Meet-preserving: ν(x ∧ y) = ν(x) ∧ ν(y)
 ```
 
-When the trifecta is detected, exfiltration capabilities are automatically demoted to `AskFirst`, requiring human approval. The quotient L' contains only configurations where this invariant holds.
+When the trifecta is detected, exfiltration operations gain approval obligations. The quotient L' contains only configurations where this invariant holds.
 
 See [THREAT_MODEL.md](THREAT_MODEL.md) for what this crate prevents and what it does NOT prevent.
 
@@ -64,7 +64,7 @@ lattice-guard = "0.1"
 Basic usage:
 
 ```rust
-use lattice_guard::{PermissionLattice, CapabilityLevel};
+use lattice_guard::{Operation, PermissionLattice, CapabilityLevel};
 
 // Create a permission set with dangerous capabilities
 let mut perms = PermissionLattice::default();
@@ -72,23 +72,23 @@ perms.capabilities.read_files = CapabilityLevel::Always;    // Private data
 perms.capabilities.web_fetch = CapabilityLevel::LowRisk;    // Untrusted content
 perms.capabilities.git_push = CapabilityLevel::LowRisk;     // Exfiltration
 
-// The meet operation applies the lattice-guard and demotes git_push
+// The meet operation applies the lattice-guard and adds approval obligations
 let safe = perms.meet(&perms);
-assert_eq!(safe.capabilities.git_push, CapabilityLevel::AskFirst);
+assert!(safe.requires_approval(Operation::GitPush));
 ```
 
 ## Capability Levels
 
-Permissions use a four-level lattice:
+Permissions use a three-level lattice for autonomous capability:
 
 | Level | Value | Description |
 |-------|-------|-------------|
-| `Never` | 0 | Never allow, even with approval |
-| `AskFirst` | 1 | Always require human approval |
-| `LowRisk` | 2 | Auto-approve for low-risk operations |
-| `Always` | 3 | Always auto-approve |
+| `Never` | 0 | Never allow |
+| `LowRisk` | 1 | Auto-approve for low-risk operations |
+| `Always` | 2 | Always auto-approve |
 
-The meet operation takes the **minimum** of two levels (most restrictive).
+Approval requirements are modeled separately as **Obligations**. The meet operation
+takes the **minimum** of two capability levels (most restrictive).
 
 ## Lattice Properties
 
@@ -106,7 +106,7 @@ These properties are verified by property-based tests using proptest.
 
 ### CapabilityLattice
 
-Controls what tools/operations the agent can use:
+Controls what tools/operations the agent can use autonomously:
 
 ```rust
 use lattice_guard::{CapabilityLattice, CapabilityLevel};
@@ -118,12 +118,24 @@ let caps = CapabilityLattice {
     run_bash: CapabilityLevel::Never,
     glob_search: CapabilityLevel::Always,
     grep_search: CapabilityLevel::Always,
-    web_search: CapabilityLevel::AskFirst,
-    web_fetch: CapabilityLevel::AskFirst,
+    web_search: CapabilityLevel::LowRisk,
+    web_fetch: CapabilityLevel::LowRisk,
     git_commit: CapabilityLevel::LowRisk,
-    git_push: CapabilityLevel::AskFirst,
-    create_pr: CapabilityLevel::AskFirst,
+    git_push: CapabilityLevel::LowRisk,
+    create_pr: CapabilityLevel::LowRisk,
 };
+```
+
+### Obligations
+
+Obligations specify which operations require human approval:
+
+```rust
+use lattice_guard::{Obligations, Operation};
+
+let mut obligations = Obligations::default();
+obligations.insert(Operation::WebSearch);
+obligations.insert(Operation::GitPush);
 ```
 
 ### PathLattice

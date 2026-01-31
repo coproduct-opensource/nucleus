@@ -33,7 +33,9 @@ use std::sync::Arc;
 
 use crate::approval::{ApprovalRequest, ApprovalToken, Approver, CallbackApprover};
 use crate::error::{NucleusError, Result};
-use lattice_guard::{CapabilityLattice, CapabilityLevel, PathLattice, PermissionLattice};
+use lattice_guard::{
+    CapabilityLattice, CapabilityLevel, Obligations, Operation, PathLattice, PermissionLattice,
+};
 
 /// A capability-based file sandbox.
 ///
@@ -48,7 +50,9 @@ pub struct Sandbox {
     policy: PathLattice,
     /// Capability policy for file operations
     capabilities: CapabilityLattice,
-    /// Approver for AskFirst operations
+    /// Approval obligations for file operations
+    obligations: Obligations,
+    /// Approver for approval-gated operations
     approver: Option<Arc<dyn Approver>>,
 }
 
@@ -60,6 +64,7 @@ impl Sandbox {
     /// Even if a file is within the sandbox root, it can be blocked by pattern.
     pub fn new(policy: &PermissionLattice, root: impl AsRef<Path>) -> Result<Self> {
         let root_path = root.as_ref().to_path_buf();
+        let normalized = policy.clone().normalize();
 
         // Open the root directory - this is our capability handle
         let root_dir = Dir::open_ambient_dir(&root_path, cap_std::ambient_authority())?;
@@ -67,19 +72,20 @@ impl Sandbox {
         Ok(Self {
             root: root_dir,
             root_path,
-            policy: policy.paths.clone(),
-            capabilities: policy.capabilities.clone(),
+            policy: normalized.paths,
+            capabilities: normalized.capabilities,
+            obligations: normalized.obligations,
             approver: None,
         })
     }
 
-    /// Set an approver for AskFirst operations.
+    /// Set an approver for approval-gated operations.
     pub fn with_approver(mut self, approver: Arc<dyn Approver>) -> Self {
         self.approver = Some(approver);
         self
     }
 
-    /// Set a callback-based approver for AskFirst operations.
+    /// Set a callback-based approver for approval-gated operations.
     ///
     /// The callback receives an approval request and should return `true`
     /// if human approval was granted.
@@ -437,6 +443,7 @@ impl Sandbox {
 
     fn check_read_capability(&self, path: &Path, approval: Option<&ApprovalToken>) -> Result<()> {
         self.check_capability(
+            Operation::ReadFiles,
             "read_files",
             self.capabilities.read_files,
             &format!("read {}", path.display()),
@@ -451,6 +458,7 @@ impl Sandbox {
         approval: Option<&ApprovalToken>,
     ) -> Result<()> {
         self.check_capability(
+            Operation::WriteFiles,
             "write_files",
             self.capabilities.write_files,
             &format!("{} {}", op, path.display()),
@@ -465,6 +473,7 @@ impl Sandbox {
         approval: Option<&ApprovalToken>,
     ) -> Result<()> {
         self.check_capability(
+            Operation::EditFiles,
             "edit_files",
             self.capabilities.edit_files,
             &format!("{} {}", op, path.display()),
@@ -487,33 +496,36 @@ impl Sandbox {
 
     fn check_capability(
         &self,
+        op: Operation,
         capability_name: &str,
         level: CapabilityLevel,
         operation: &str,
         approval: Option<&ApprovalToken>,
     ) -> Result<()> {
-        match level {
-            CapabilityLevel::Never => Err(NucleusError::InsufficientCapability {
+        if level == CapabilityLevel::Never {
+            return Err(NucleusError::InsufficientCapability {
                 capability: capability_name.into(),
                 actual: level,
-                required: CapabilityLevel::AskFirst,
-            }),
-            CapabilityLevel::AskFirst => {
-                if let Some(token) = approval {
-                    if token.matches(operation) {
-                        Ok(())
-                    } else {
-                        Err(NucleusError::InvalidApproval {
-                            operation: operation.to_string(),
-                        })
-                    }
+                required: CapabilityLevel::LowRisk,
+            });
+        }
+
+        if self.obligations.requires(op) {
+            if let Some(token) = approval {
+                if token.matches(operation) {
+                    Ok(())
                 } else {
-                    Err(NucleusError::ApprovalRequired {
+                    Err(NucleusError::InvalidApproval {
                         operation: operation.to_string(),
                     })
                 }
+            } else {
+                Err(NucleusError::ApprovalRequired {
+                    operation: operation.to_string(),
+                })
             }
-            CapabilityLevel::LowRisk | CapabilityLevel::Always => Ok(()),
+        } else {
+            Ok(())
         }
     }
 
@@ -551,6 +563,7 @@ impl Sandbox {
             root_path: self.root_path.join(path),
             policy: self.policy.clone(),
             capabilities: self.capabilities.clone(),
+            obligations: self.obligations.clone(),
             approver: self.approver.clone(),
         })
     }
@@ -566,6 +579,7 @@ mod tests {
             paths: PathLattice::default(),
             ..PermissionLattice::default()
         };
+        policy.obligations = Obligations::default();
         policy.capabilities.write_files = CapabilityLevel::LowRisk;
         policy.capabilities.edit_files = CapabilityLevel::LowRisk;
         policy
@@ -576,6 +590,7 @@ mod tests {
             paths: PathLattice::block_sensitive(),
             ..PermissionLattice::default()
         };
+        policy.obligations = Obligations::default();
         policy.capabilities.write_files = CapabilityLevel::LowRisk;
         policy.capabilities.edit_files = CapabilityLevel::LowRisk;
         policy
@@ -623,10 +638,10 @@ mod tests {
     }
 
     #[test]
-    fn test_write_askfirst_requires_approval() {
+    fn test_write_requires_approval() {
         let tmp = tempdir().unwrap();
         let mut policy = permissive_policy();
-        policy.capabilities.write_files = CapabilityLevel::AskFirst;
+        policy.obligations.insert(Operation::WriteFiles);
 
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let result = sandbox.create("needs_approval.txt");

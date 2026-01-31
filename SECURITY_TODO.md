@@ -36,10 +36,10 @@ TODO
 
 DoD (guarantees)
 - Property tests: for any capability state with `write_files < LowRisk`, any write/remove must fail.
-- Unit tests: explicit denial for write/edit/remove when `CapabilityLevel::Never` or `AskFirst` without approval.
+- Unit tests: explicit denial for write/edit/remove when `CapabilityLevel::Never` or approval-required without a token.
 - If approval callbacks are required, type-level enforcement (guard token) or explicit runtime error must be present.
 Status
-- Done (runtime): `Sandbox` enforces read/write/edit capabilities with AskFirst approval callback.
+- Done (runtime): `Sandbox` enforces read/write/edit capabilities with approval callbacks.
 
 ## 3) Command exfiltration detection is program-name only
 
@@ -98,10 +98,10 @@ DoD (guarantees)
 Status
 - Done (runtime): constructors/builders now apply `normalize()` when trifecta is enabled; property tests for ν are added at the capability level.
 
-## 6) AskFirst is trivially auto-approvable
+## 6) Approval requirements are trivially auto-approvable
 
 Deficiency
-- AskFirst approvals can still be automated (e.g., always-approve callbacks), even though execution now requires explicit approval tokens.
+- Approval obligations can still be automated (e.g., always-approve callbacks), even though execution now requires explicit approval tokens.
 Refs: `crates/nucleus/src/command.rs:61`, `crates/nucleus/src/command.rs:383`
 
 Impact
@@ -109,13 +109,13 @@ Impact
 
 TODO
 - Require a structured approval interface (e.g., signed decisions, explicit audit record, or typed approval token).
-- Consider making approval mandatory for AskFirst by requiring a guard token that cannot be constructed externally.
+- Consider making approvals non-bypassable by requiring a guard token that cannot be constructed externally.
 
 DoD (guarantees)
-- Compile-time: AskFirst operations require an approval token type that cannot be forged.
+- Compile-time: approval-gated operations require an approval token type that cannot be forged.
 - Runtime: approvals must be logged with operation details and a verifier.
 Status
-- Done (type-level): AskFirst now requires approval tokens (`ApprovalToken`) to execute; callbacks only mint tokens.
+- Done (type-level): approval-gated operations require approval tokens (`ApprovalToken`) to execute; callbacks only mint tokens.
 
 ## 7) Path sandboxing is string-based in `PathLattice`
 

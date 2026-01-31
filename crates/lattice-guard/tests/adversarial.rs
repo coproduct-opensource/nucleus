@@ -4,7 +4,7 @@
 //! an attacker tries to exploit edge cases or bypass protections.
 
 use lattice_guard::{
-    BudgetLattice, CapabilityLevel, CommandLattice, PathLattice, PermissionLattice,
+    BudgetLattice, CapabilityLevel, CommandLattice, Operation, PathLattice, PermissionLattice,
 };
 use rust_decimal::Decimal;
 use std::path::Path;
@@ -25,17 +25,18 @@ fn trifecta_bypass_via_deserialization_rejected() {
         "derived_from": null,
         "capabilities": {
             "read_files": "always",
-            "write_files": "ask_first",
-            "edit_files": "ask_first",
+            "write_files": "low_risk",
+            "edit_files": "low_risk",
             "run_bash": "never",
             "glob_search": "always",
             "grep_search": "always",
-            "web_search": "ask_first",
-            "web_fetch": "ask_first",
-            "git_commit": "ask_first",
+            "web_search": "low_risk",
+            "web_fetch": "low_risk",
+            "git_commit": "low_risk",
             "git_push": "never",
-            "create_pr": "ask_first"
+            "create_pr": "low_risk"
         },
+        "obligations": {"approvals": []},
         "paths": {"allowed": [], "blocked": [], "work_dir": null},
         "budget": {"max_cost_usd": "5", "consumed_usd": "0", "max_input_tokens": 100000, "max_output_tokens": 10000},
         "commands": {"allowed": [], "blocked": []},
@@ -78,11 +79,10 @@ fn trifecta_cannot_be_disabled_through_meet() {
         "Meet with any enforcing parent should enforce trifecta"
     );
 
-    // Exfiltration should be demoted because trifecta is complete
-    assert_eq!(
-        result.capabilities.git_push,
-        CapabilityLevel::AskFirst,
-        "Git push should be demoted when trifecta is detected"
+    // Exfiltration should require approval because trifecta is complete
+    assert!(
+        result.requires_approval(Operation::GitPush),
+        "Git push should require approval when trifecta is detected"
     );
 }
 

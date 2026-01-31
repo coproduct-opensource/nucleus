@@ -19,3 +19,15 @@ repos:
         language: system
         pass_filenames: false
         stages: [pre-commit]
+      - id: cargo-deny
+        name: cargo deny
+        entry: env CARGO_HOME=/private/tmp/nucleus/.cargo cargo deny --offline check advisories bans licenses sources
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: cargo-audit
+        name: cargo audit
+        entry: env CARGO_HOME=/private/tmp/nucleus/.cargo cargo audit -D warnings --no-fetch -d /private/tmp/nucleus/.cargo/advisory-db
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]

@@ -14,7 +14,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
     budget::BudgetLattice,
-    capability::{CapabilityLattice, CapabilityLevel, IncompatibilityConstraint},
+    capability::{
+        CapabilityLattice, CapabilityLevel, IncompatibilityConstraint, Obligations, Operation,
+    },
     command::CommandLattice,
     path::PathLattice,
     time::TimeLattice,
@@ -25,9 +27,9 @@ use crate::{
 /// The lattice enforces a key security invariant: the "lethal trifecta"
 /// (private data access + untrusted content + exfiltration) cannot exist
 /// at fully autonomous levels. When this combination is detected, the
-/// exfiltration vector is demoted to require human approval.
+/// exfiltration vector gains approval obligations.
 ///
-/// This is modeled as a guarded lattice: L' = { (caps, guard(caps)) | caps ∈ L }
+/// This is modeled as a guarded lattice: L' = { (caps, obligations(caps)) | caps ∈ L }
 /// where `guard` demotes exfiltration capabilities when trifecta is detected.
 ///
 /// # Security
@@ -40,10 +42,11 @@ use crate::{
 /// # Product Lattice Structure
 ///
 /// ```text
-/// PermissionLattice = Caps × Paths × Budget × Commands × Time
+/// PermissionLattice = Caps × Obligations × Paths × Budget × Commands × Time
 ///
 /// Meet Operation (∧):
-/// • Caps: min(level_a, level_b) with trifecta constraint
+/// • Caps: min(level_a, level_b)
+/// • Obligations: union with trifecta constraint
 /// • Paths(allowed): intersection
 /// • Paths(blocked): union
 /// • Budget: min(cap_a, cap_b)
@@ -60,8 +63,10 @@ pub struct PermissionLattice {
     /// ID of the parent permission this was derived from (for audit trail)
     pub derived_from: Option<Uuid>,
 
-    /// Tool capabilities
+    /// Tool capabilities (autonomous)
     pub capabilities: CapabilityLattice,
+    /// Approval obligations for gated operations
+    pub obligations: Obligations,
     /// Path access
     pub paths: PathLattice,
     /// Budget constraints
@@ -71,7 +76,7 @@ pub struct PermissionLattice {
     /// Temporal bounds
     pub time: TimeLattice,
 
-    /// Trifecta constraint - enforces that lethal combinations require human approval
+    /// Trifecta constraint - enforces that lethal combinations require approval
     ///
     /// # Security
     ///
@@ -94,6 +99,8 @@ struct RawPermissionLattice {
     description: String,
     derived_from: Option<Uuid>,
     capabilities: CapabilityLattice,
+    #[serde(default)]
+    obligations: Obligations,
     paths: PathLattice,
     budget: BudgetLattice,
     commands: CommandLattice,
@@ -119,6 +126,7 @@ impl<'de> Deserialize<'de> for PermissionLattice {
             description: raw.description,
             derived_from: raw.derived_from,
             capabilities: raw.capabilities,
+            obligations: raw.obligations,
             paths: raw.paths,
             budget: raw.budget,
             commands: raw.commands,
@@ -138,11 +146,20 @@ fn default_trifecta_constraint() -> bool {
 
 impl Default for PermissionLattice {
     fn default() -> Self {
+        let mut obligations = Obligations::default();
+        obligations.insert(Operation::WriteFiles);
+        obligations.insert(Operation::EditFiles);
+        obligations.insert(Operation::WebSearch);
+        obligations.insert(Operation::WebFetch);
+        obligations.insert(Operation::GitCommit);
+        obligations.insert(Operation::CreatePr);
+
         let lattice = Self {
             id: Uuid::new_v4(),
             description: "Default permission set".to_string(),
             derived_from: None,
             capabilities: CapabilityLattice::default(),
+            obligations,
             paths: PathLattice::default(),
             budget: BudgetLattice::default(),
             commands: CommandLattice::default(),
@@ -233,12 +250,13 @@ impl PermissionLattice {
 
     /// Apply the nucleus (ν) to normalize this permission lattice.
     ///
-    /// If trifecta enforcement is enabled, this demotes exfiltration capabilities
-    /// to break any lethal trifecta configuration.
+    /// If trifecta enforcement is enabled, this adds approval obligations to
+    /// break any lethal trifecta configuration.
     pub fn normalize(mut self) -> Self {
         if self.trifecta_constraint {
             let constraint = IncompatibilityConstraint::enforcing();
-            self.capabilities = constraint.apply(&self.capabilities);
+            let required = constraint.obligations_for(&self.capabilities);
+            self.obligations = self.obligations.union(&required);
         }
         self
     }
@@ -248,8 +266,7 @@ impl PermissionLattice {
     /// This always returns permissions ≤ both inputs, with an additional
     /// constraint: if the result would form a "lethal trifecta" (private data
     /// access + untrusted content exposure + exfiltration capability all at
-    /// autonomous levels), the exfiltration capabilities are demoted to
-    /// require human approval.
+    /// autonomous levels), approval obligations are added.
     ///
     /// This models the guarded lattice L' = { (caps, guard(caps)) | caps ∈ L }
     /// where trifecta-complete configurations are mapped to their
@@ -257,20 +274,23 @@ impl PermissionLattice {
     pub fn meet(&self, other: &Self) -> Self {
         let base_caps = self.capabilities.meet(&other.capabilities);
 
+        let base_obligations = self.obligations.union(&other.obligations);
+
         // Apply trifecta constraint if either input enforces it
         let enforce_trifecta = self.trifecta_constraint || other.trifecta_constraint;
-        let capabilities = if enforce_trifecta {
+        let obligations = if enforce_trifecta {
             let constraint = IncompatibilityConstraint::enforcing();
-            constraint.apply(&base_caps)
+            base_obligations.union(&constraint.obligations_for(&base_caps))
         } else {
-            base_caps
+            base_obligations
         };
 
         Self {
             id: Uuid::new_v4(),
             description: format!("meet({}, {})", self.description, other.description),
             derived_from: Some(self.id),
-            capabilities,
+            capabilities: base_caps,
+            obligations,
             paths: self.paths.meet(&other.paths),
             budget: self.budget.meet(&other.budget),
             commands: self.commands.meet(&other.commands),
@@ -288,20 +308,23 @@ impl PermissionLattice {
     pub fn join(&self, other: &Self) -> Self {
         let base_caps = self.capabilities.join(&other.capabilities);
 
+        let base_obligations = self.obligations.intersection(&other.obligations);
+
         // Apply trifecta constraint only if BOTH inputs enforce it
         let enforce_trifecta = self.trifecta_constraint && other.trifecta_constraint;
-        let capabilities = if enforce_trifecta {
+        let obligations = if enforce_trifecta {
             let constraint = IncompatibilityConstraint::enforcing();
-            constraint.apply(&base_caps)
+            base_obligations.union(&constraint.obligations_for(&base_caps))
         } else {
-            base_caps
+            base_obligations
         };
 
         Self {
             id: Uuid::new_v4(),
             description: format!("join({}, {})", self.description, other.description),
             derived_from: Some(self.id),
-            capabilities,
+            capabilities: base_caps,
+            obligations,
             paths: self.paths.join(&other.paths),
             budget: self.budget.join(&other.budget),
             commands: self.commands.join(&other.commands),
@@ -316,6 +339,11 @@ impl PermissionLattice {
     pub fn is_trifecta_vulnerable(&self) -> bool {
         let constraint = IncompatibilityConstraint::enforcing();
         constraint.is_trifecta_complete(&self.capabilities)
+    }
+
+    /// Check if an operation requires approval.
+    pub fn requires_approval(&self, op: Operation) -> bool {
+        self.obligations.requires(op)
     }
 
     /// Delegate permissions to a subagent.
@@ -358,6 +386,7 @@ impl PermissionLattice {
     /// Check if this lattice is less than or equal to another (partial order).
     pub fn leq(&self, other: &Self) -> bool {
         self.capabilities.leq(&other.capabilities)
+            && self.obligations.leq(&other.obligations)
             && self.paths.leq(&other.paths)
             && self.budget.leq(&other.budget)
             && self.commands.leq(&other.commands)
@@ -397,6 +426,7 @@ impl PermissionLattice {
         let lattice = Self {
             description: "Permissive permissions".to_string(),
             capabilities: CapabilityLattice::permissive(),
+            obligations: Obligations::default(),
             budget: BudgetLattice {
                 max_cost_usd: Decimal::from(10),
                 max_input_tokens: 500_000,
@@ -415,6 +445,7 @@ impl PermissionLattice {
         let lattice = Self {
             description: "Restrictive permissions".to_string(),
             capabilities: CapabilityLattice::restrictive(),
+            obligations: Obligations::default(),
             budget: BudgetLattice {
                 max_cost_usd: Decimal::from_str_exact("0.5").unwrap_or(Decimal::ONE),
                 max_input_tokens: 10_000,
@@ -445,6 +476,7 @@ impl PermissionLattice {
                 git_push: CapabilityLevel::Never,
                 create_pr: CapabilityLevel::Never,
             },
+            obligations: Obligations::default(),
             commands: CommandLattice::restrictive(),
             ..Default::default()
         };
@@ -454,6 +486,9 @@ impl PermissionLattice {
 
     /// Create a permission set for code review tasks.
     pub fn code_review() -> Self {
+        let mut obligations = Obligations::default();
+        obligations.insert(Operation::WebSearch);
+
         let lattice = Self {
             description: "Code review permissions".to_string(),
             capabilities: CapabilityLattice {
@@ -463,12 +498,13 @@ impl PermissionLattice {
                 run_bash: CapabilityLevel::Never,
                 glob_search: CapabilityLevel::Always,
                 grep_search: CapabilityLevel::Always,
-                web_search: CapabilityLevel::AskFirst,
+                web_search: CapabilityLevel::LowRisk,
                 web_fetch: CapabilityLevel::Never,
                 git_commit: CapabilityLevel::Never,
                 git_push: CapabilityLevel::Never,
                 create_pr: CapabilityLevel::Never,
             },
+            obligations,
             budget: BudgetLattice::with_cost_limit(1.0),
             time: TimeLattice::minutes(30),
             ..Default::default()
@@ -479,6 +515,13 @@ impl PermissionLattice {
 
     /// Create a permission set for fix/implementation tasks.
     pub fn fix_issue() -> Self {
+        let mut obligations = Obligations::default();
+        obligations.insert(Operation::WebSearch);
+        obligations.insert(Operation::WebFetch);
+        obligations.insert(Operation::GitCommit);
+        obligations.insert(Operation::GitPush);
+        obligations.insert(Operation::CreatePr);
+
         let lattice = Self {
             description: "Fix issue permissions".to_string(),
             capabilities: CapabilityLattice {
@@ -488,12 +531,13 @@ impl PermissionLattice {
                 run_bash: CapabilityLevel::LowRisk,
                 glob_search: CapabilityLevel::Always,
                 grep_search: CapabilityLevel::Always,
-                web_search: CapabilityLevel::AskFirst,
-                web_fetch: CapabilityLevel::AskFirst,
+                web_search: CapabilityLevel::LowRisk,
+                web_fetch: CapabilityLevel::LowRisk,
                 git_commit: CapabilityLevel::LowRisk,
-                git_push: CapabilityLevel::AskFirst,
-                create_pr: CapabilityLevel::AskFirst,
+                git_push: CapabilityLevel::LowRisk,
+                create_pr: CapabilityLevel::LowRisk,
             },
+            obligations,
             paths: PathLattice::block_sensitive(),
             budget: BudgetLattice::with_cost_limit(2.0),
             time: TimeLattice::hours(1),
@@ -509,6 +553,7 @@ impl PermissionLattice {
 pub struct PermissionLatticeBuilder {
     description: Option<String>,
     capabilities: Option<CapabilityLattice>,
+    obligations: Option<Obligations>,
     paths: Option<PathLattice>,
     budget: Option<BudgetLattice>,
     commands: Option<CommandLattice>,
@@ -527,6 +572,12 @@ impl PermissionLatticeBuilder {
     /// Set the capabilities.
     pub fn capabilities(mut self, capabilities: CapabilityLattice) -> Self {
         self.capabilities = Some(capabilities);
+        self
+    }
+
+    /// Set approval obligations.
+    pub fn obligations(mut self, obligations: Obligations) -> Self {
+        self.obligations = Some(obligations);
         self
     }
 
@@ -580,6 +631,7 @@ impl PermissionLatticeBuilder {
                 .unwrap_or_else(|| "Custom permissions".to_string()),
             derived_from: None,
             capabilities: self.capabilities.unwrap_or_default(),
+            obligations: self.obligations.unwrap_or_default(),
             paths: self.paths.unwrap_or_default(),
             budget: self.budget.unwrap_or_default(),
             commands: self.commands.unwrap_or_default(),
@@ -695,13 +747,14 @@ mod tests {
                 git_push: CapabilityLevel::Always,
                 ..Default::default()
             },
+            obligations: Obligations::default(),
             ..Default::default()
         };
 
         let result = parent.delegate_to(&requested, "test delegation").unwrap();
 
         assert!(result.capabilities.leq(&parent.capabilities));
-        assert_eq!(result.capabilities.git_push, CapabilityLevel::AskFirst);
+        assert!(result.requires_approval(Operation::GitPush));
     }
 
     #[test]
@@ -744,15 +797,16 @@ mod tests {
                 create_pr: CapabilityLevel::LowRisk,
                 ..Default::default()
             },
+            obligations: Obligations::default(),
             trifecta_constraint: true,
             ..Default::default()
         };
 
         let combined = dangerous.meet(&dangerous);
 
-        // Exfiltration should be demoted
-        assert_eq!(combined.capabilities.git_push, CapabilityLevel::AskFirst);
-        assert_eq!(combined.capabilities.create_pr, CapabilityLevel::AskFirst);
+        // Exfiltration should require approval
+        assert!(combined.requires_approval(Operation::GitPush));
+        assert!(combined.requires_approval(Operation::CreatePr));
     }
 
     #[test]
@@ -777,17 +831,18 @@ mod tests {
             "derived_from": null,
             "capabilities": {
                 "read_files": "always",
-                "write_files": "ask_first",
-                "edit_files": "ask_first",
+                "write_files": "low_risk",
+                "edit_files": "low_risk",
                 "run_bash": "never",
                 "glob_search": "always",
                 "grep_search": "always",
-                "web_search": "ask_first",
-                "web_fetch": "ask_first",
-                "git_commit": "ask_first",
+                "web_search": "low_risk",
+                "web_fetch": "low_risk",
+                "git_commit": "low_risk",
                 "git_push": "never",
-                "create_pr": "ask_first"
+                "create_pr": "low_risk"
             },
+            "obligations": {"approvals": []},
             "paths": {"allowed": [], "blocked": [], "work_dir": null},
             "budget": {"max_cost_usd": "5", "consumed_usd": "0", "max_input_tokens": 100000, "max_output_tokens": 10000},
             "commands": {"allowed": [], "blocked": []},

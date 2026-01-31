@@ -29,7 +29,7 @@ impl PodSpec {
     /// Create a pod spec with defaults for budget model.
     pub fn new(policy: PermissionLattice, work_dir: PathBuf, timeout: Duration) -> Self {
         Self {
-            policy,
+            policy: policy.normalize(),
             work_dir,
             timeout,
             budget_model: BudgetModel::default(),
@@ -62,7 +62,7 @@ impl PodRuntime {
         })
     }
 
-    /// Attach an approver for AskFirst operations.
+    /// Attach an approver for approval-gated operations.
     pub fn with_approver(mut self, approver: Arc<dyn Approver>) -> Result<Self> {
         let sandbox =
             Sandbox::new(&self.spec.policy, &self.spec.work_dir)?.with_approver(approver.clone());

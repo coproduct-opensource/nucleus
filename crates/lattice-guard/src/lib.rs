@@ -29,14 +29,14 @@
 //! • Preserves meets: ν(x ∧ y) = ν(x) ∧ ν(y)
 //! ```
 //!
-//! When the trifecta is detected, exfiltration capabilities are automatically
-//! demoted to `AskFirst`, requiring human approval. The quotient L' contains
-//! only configurations where this invariant holds.
+//! When the trifecta is detected, exfiltration operations gain approval
+//! obligations. The quotient L' contains only configurations where this
+//! invariant holds.
 //!
 //! ## Quick Start
 //!
 //! ```rust
-//! use lattice_guard::{PermissionLattice, CapabilityLevel};
+//! use lattice_guard::{Operation, PermissionLattice, CapabilityLevel};
 //!
 //! // Create a permission set with dangerous capabilities
 //! let mut perms = PermissionLattice::default();
@@ -44,9 +44,9 @@
 //! perms.capabilities.web_fetch = CapabilityLevel::LowRisk;    // Untrusted content
 //! perms.capabilities.git_push = CapabilityLevel::LowRisk;     // Exfiltration
 //!
-//! // The meet operation detects the trifecta and demotes git_push
+//! // The meet operation detects the trifecta and adds approval obligations
 //! let safe = perms.meet(&perms);
-//! assert_eq!(safe.capabilities.git_push, CapabilityLevel::AskFirst);
+//! assert!(safe.requires_approval(Operation::GitPush));
 //! ```
 //!
 //! ## Integration with Claude Code / OpenClaw
@@ -73,7 +73,9 @@ mod time;
 mod kani;
 
 pub use budget::BudgetLattice;
-pub use capability::{CapabilityLattice, CapabilityLevel, IncompatibilityConstraint};
+pub use capability::{
+    CapabilityLattice, CapabilityLevel, IncompatibilityConstraint, Obligations, Operation,
+};
 pub use command::CommandLattice;
 pub use guard::{CompositeGuard, GuardError, GuardFn, GuardedAction, PermissionGuard};
 pub use lattice::{

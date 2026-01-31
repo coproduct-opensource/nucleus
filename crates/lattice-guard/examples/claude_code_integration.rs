@@ -3,7 +3,7 @@
 //! This example demonstrates converting a PermissionLattice to
 //! Claude Code CLI flags for the `--allowedTools` argument.
 
-use lattice_guard::{CapabilityLevel, PermissionLattice};
+use lattice_guard::{CapabilityLevel, Operation, PermissionLattice};
 
 /// Convert a PermissionLattice to Claude Code CLI `--allowedTools` flags.
 fn build_allowed_tools(perms: &PermissionLattice) -> Vec<String> {
@@ -47,22 +47,21 @@ fn build_allowed_tools(perms: &PermissionLattice) -> Vec<String> {
 
 /// Get the permission mode for Claude Code CLI.
 fn get_permission_mode(perms: &PermissionLattice) -> &'static str {
-    let caps = &perms.capabilities;
-
-    // If any capability requires asking first, use plan mode
+    // If any operation requires approval, use plan mode
     let needs_ask = [
-        caps.write_files,
-        caps.edit_files,
-        caps.run_bash,
-        caps.git_commit,
-        caps.git_push,
-        caps.create_pr,
+        Operation::WriteFiles,
+        Operation::EditFiles,
+        Operation::RunBash,
+        Operation::GitCommit,
+        Operation::GitPush,
+        Operation::CreatePr,
     ]
-    .contains(&CapabilityLevel::AskFirst);
+    .iter()
+    .any(|op| perms.requires_approval(*op));
 
     if needs_ask {
         "plan"
-    } else if caps.write_files >= CapabilityLevel::LowRisk {
+    } else if perms.capabilities.write_files >= CapabilityLevel::LowRisk {
         "bypassPermissions"
     } else {
         "default"
@@ -115,7 +114,10 @@ fn main() {
         dangerous.capabilities.git_push
     );
     println!("   Effective git_push: {:?}", safe.capabilities.git_push);
-    println!("   Trifecta prevented: exfiltration demoted to AskFirst");
+    println!(
+        "   Trifecta prevented: git_push requires approval = {}",
+        safe.requires_approval(Operation::GitPush)
+    );
 
     let tools = build_allowed_tools(&safe);
     let mode = get_permission_mode(&safe);

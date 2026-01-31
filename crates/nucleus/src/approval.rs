@@ -1,4 +1,4 @@
-//! Approval types for AskFirst operations.
+//! Approval types for approval-gated operations.
 
 use std::sync::Arc;
 

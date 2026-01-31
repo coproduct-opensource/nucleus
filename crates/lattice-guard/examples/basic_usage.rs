@@ -1,7 +1,7 @@
 //! Basic usage example demonstrating trifecta prevention.
 
 use lattice_guard::{
-    CapabilityLattice, CapabilityLevel, IncompatibilityConstraint, PermissionLattice,
+    CapabilityLattice, CapabilityLevel, IncompatibilityConstraint, Operation, PermissionLattice,
 };
 
 fn main() {
@@ -24,21 +24,23 @@ fn main() {
     let is_dangerous = constraint.is_trifecta_complete(&dangerous);
     println!("\n   Trifecta complete: {}", is_dangerous);
 
-    // Apply the constraint
-    println!("\n2. Applying trifecta constraint:");
-    let safe = constraint.apply(&dangerous);
-    println!("   - read_files: {:?} (unchanged)", safe.read_files);
-    println!("   - web_fetch: {:?} (unchanged)", safe.web_fetch);
-    println!("   - git_push: {:?} (demoted!)", safe.git_push);
-
-    // Now trifecta is broken
-    let still_dangerous = constraint.is_trifecta_complete(&safe);
-    println!("\n   Trifecta still complete: {}", still_dangerous);
+    // Compute obligations
+    println!("\n2. Computing trifecta obligations:");
+    let obligations = constraint.obligations_for(&dangerous);
+    println!(
+        "   - approval required for git_push: {}",
+        obligations.requires(Operation::GitPush)
+    );
+    println!(
+        "   - approval required for run_bash: {}",
+        obligations.requires(Operation::RunBash)
+    );
 
     // Using the full permission lattice
     println!("\n3. Using PermissionLattice with automatic trifecta enforcement:");
     let perms = PermissionLattice {
         capabilities: dangerous.clone(),
+        obligations: Default::default(),
         trifecta_constraint: true,
         ..Default::default()
     };
@@ -46,8 +48,14 @@ fn main() {
     // Meet operation automatically applies constraint
     let combined = perms.meet(&perms);
     println!("   After meet operation:");
-    println!("   - git_push: {:?}", combined.capabilities.git_push);
-    println!("   - create_pr: {:?}", combined.capabilities.create_pr);
+    println!(
+        "   - git_push requires approval: {}",
+        combined.requires_approval(Operation::GitPush)
+    );
+    println!(
+        "   - create_pr requires approval: {}",
+        combined.requires_approval(Operation::CreatePr)
+    );
 
     // Preset configurations
     println!("\n4. Preset configurations:");

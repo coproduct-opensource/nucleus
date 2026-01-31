@@ -12,8 +12,14 @@
 .DS_Store
 Thumbs.db
 
+# Local cargo data
+.cargo/
+
 # Cargo lock for libraries (keep for workspace)
 # Cargo.lock
 
 # Test databases
 *.redb
+
+# Proptest regression artifacts
+*.proptest-regressions

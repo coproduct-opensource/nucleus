@@ -5,25 +5,96 @@ use serde::{Deserialize, Serialize};
 
 /// Tool permission levels in lattice ordering.
 ///
-/// The ordering is: `Never < AskFirst < LowRisk < Always`
+/// The ordering is: `Never < LowRisk < Always`
 ///
-/// - `Never`: Never allow, even with approval
-/// - `AskFirst`: Always ask for human approval first
+/// - `Never`: Never allow
 /// - `LowRisk`: Auto-approve for low-risk operations
 /// - `Always`: Always auto-approve
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum CapabilityLevel {
-    /// Never allow, even with approval
-    Never = 0,
-    /// Always ask for human approval first
+    /// Never allow
     #[default]
-    AskFirst = 1,
+    Never = 0,
     /// Auto-approve for low-risk operations
-    LowRisk = 2,
+    LowRisk = 1,
     /// Always auto-approve
-    Always = 3,
+    Always = 2,
+}
+
+/// Operations that can be gated by approval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum Operation {
+    /// Read files from disk
+    ReadFiles,
+    /// Write files to disk
+    WriteFiles,
+    /// Edit files in place
+    EditFiles,
+    /// Run shell commands
+    RunBash,
+    /// Glob search
+    GlobSearch,
+    /// Grep search
+    GrepSearch,
+    /// Web search
+    WebSearch,
+    /// Fetch URLs
+    WebFetch,
+    /// Git commit
+    GitCommit,
+    /// Git push
+    GitPush,
+    /// Create PR
+    CreatePr,
+}
+
+/// Approval obligations that gate autonomous capabilities.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct Obligations {
+    /// Operations that require explicit approval.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub approvals: std::collections::BTreeSet<Operation>,
+}
+
+impl Obligations {
+    /// Check if an operation requires approval.
+    pub fn requires(&self, op: Operation) -> bool {
+        self.approvals.contains(&op)
+    }
+
+    /// Add an approval obligation.
+    pub fn insert(&mut self, op: Operation) {
+        self.approvals.insert(op);
+    }
+
+    /// Union of obligations.
+    pub fn union(&self, other: &Self) -> Self {
+        let mut approvals = self.approvals.clone();
+        approvals.extend(other.approvals.iter().copied());
+        Self { approvals }
+    }
+
+    /// Intersection of obligations.
+    pub fn intersection(&self, other: &Self) -> Self {
+        let approvals = self
+            .approvals
+            .intersection(&other.approvals)
+            .copied()
+            .collect();
+        Self { approvals }
+    }
+
+    /// Check if obligations are less than or equal in the policy order.
+    ///
+    /// More obligations means a more constrained (smaller) policy.
+    pub fn leq(&self, other: &Self) -> bool {
+        self.approvals.is_superset(&other.approvals)
+    }
 }
 
 /// Capability lattice for tool permissions.
@@ -60,16 +131,16 @@ impl Default for CapabilityLattice {
     fn default() -> Self {
         Self {
             read_files: CapabilityLevel::Always,
-            write_files: CapabilityLevel::AskFirst,
-            edit_files: CapabilityLevel::AskFirst,
+            write_files: CapabilityLevel::LowRisk,
+            edit_files: CapabilityLevel::LowRisk,
             run_bash: CapabilityLevel::Never,
             glob_search: CapabilityLevel::Always,
             grep_search: CapabilityLevel::Always,
-            web_search: CapabilityLevel::AskFirst,
-            web_fetch: CapabilityLevel::AskFirst,
-            git_commit: CapabilityLevel::AskFirst,
+            web_search: CapabilityLevel::LowRisk,
+            web_fetch: CapabilityLevel::LowRisk,
+            git_commit: CapabilityLevel::LowRisk,
             git_push: CapabilityLevel::Never,
-            create_pr: CapabilityLevel::AskFirst,
+            create_pr: CapabilityLevel::LowRisk,
         }
     }
 }
@@ -82,7 +153,7 @@ impl Default for CapabilityLattice {
 /// 3. Exfiltration vector (git_push, create_pr, run_bash)
 ///
 /// When all three are present at autonomous levels (≥ LowRisk), this constraint
-/// demotes the exfiltration vector to `AskFirst`, requiring human approval.
+/// adds approval obligations for the exfiltration vector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct IncompatibilityConstraint {
     /// Whether to enforce trifecta prevention
@@ -118,26 +189,23 @@ impl IncompatibilityConstraint {
         has_private_access && has_untrusted && has_exfil
     }
 
-    /// Apply trifecta constraint by demoting exfiltration to AskFirst.
-    ///
-    /// This is the minimal intervention that breaks the attack chain while
-    /// preserving other capabilities.
-    pub fn apply(&self, caps: &CapabilityLattice) -> CapabilityLattice {
+    /// Compute approval obligations required to break a lethal trifecta.
+    pub fn obligations_for(&self, caps: &CapabilityLattice) -> Obligations {
         if !self.is_trifecta_complete(caps) {
-            return caps.clone();
+            return Obligations::default();
         }
 
-        let mut result = caps.clone();
-        if result.git_push >= CapabilityLevel::LowRisk {
-            result.git_push = CapabilityLevel::AskFirst;
+        let mut obligations = Obligations::default();
+        if caps.git_push >= CapabilityLevel::LowRisk {
+            obligations.insert(Operation::GitPush);
         }
-        if result.create_pr >= CapabilityLevel::LowRisk {
-            result.create_pr = CapabilityLevel::AskFirst;
+        if caps.create_pr >= CapabilityLevel::LowRisk {
+            obligations.insert(Operation::CreatePr);
         }
-        if result.run_bash >= CapabilityLevel::LowRisk {
-            result.run_bash = CapabilityLevel::AskFirst;
+        if caps.run_bash >= CapabilityLevel::LowRisk {
+            obligations.insert(Operation::RunBash);
         }
-        result
+        obligations
     }
 }
 
@@ -176,12 +244,6 @@ impl CapabilityLattice {
         }
     }
 
-    /// Meet operation with trifecta constraint enforcement.
-    pub fn meet_constrained(&self, other: &Self, constraint: &IncompatibilityConstraint) -> Self {
-        let base = self.meet(other);
-        constraint.apply(&base)
-    }
-
     /// Check if this lattice is less than or equal to another (partial order).
     pub fn leq(&self, other: &Self) -> bool {
         self.read_files <= other.read_files
@@ -203,13 +265,13 @@ impl CapabilityLattice {
             read_files: CapabilityLevel::Always,
             write_files: CapabilityLevel::Always,
             edit_files: CapabilityLevel::Always,
-            run_bash: CapabilityLevel::LowRisk,
+            run_bash: CapabilityLevel::Always,
             glob_search: CapabilityLevel::Always,
             grep_search: CapabilityLevel::Always,
             web_search: CapabilityLevel::Always,
             web_fetch: CapabilityLevel::Always,
             git_commit: CapabilityLevel::Always,
-            git_push: CapabilityLevel::AskFirst,
+            git_push: CapabilityLevel::Always,
             create_pr: CapabilityLevel::Always,
         }
     }
@@ -238,8 +300,7 @@ mod tests {
 
     #[test]
     fn test_capability_level_ordering() {
-        assert!(CapabilityLevel::Never < CapabilityLevel::AskFirst);
-        assert!(CapabilityLevel::AskFirst < CapabilityLevel::LowRisk);
+        assert!(CapabilityLevel::Never < CapabilityLevel::LowRisk);
         assert!(CapabilityLevel::LowRisk < CapabilityLevel::Always);
     }
 
@@ -271,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trifecta_constraint_demotes_exfiltration() {
+    fn test_trifecta_constraint_adds_obligations() {
         let caps = CapabilityLattice {
             read_files: CapabilityLevel::Always,
             web_fetch: CapabilityLevel::LowRisk,
@@ -281,12 +342,11 @@ mod tests {
         };
 
         let constraint = IncompatibilityConstraint::enforcing();
-        let result = constraint.apply(&caps);
+        let obligations = constraint.obligations_for(&caps);
 
-        assert_eq!(result.git_push, CapabilityLevel::AskFirst);
-        assert_eq!(result.create_pr, CapabilityLevel::AskFirst);
-        assert_eq!(result.read_files, CapabilityLevel::Always);
-        assert_eq!(result.web_fetch, CapabilityLevel::LowRisk);
+        assert!(obligations.requires(Operation::GitPush));
+        assert!(obligations.requires(Operation::CreatePr));
+        assert!(!obligations.requires(Operation::WebFetch));
     }
 
     #[test]
