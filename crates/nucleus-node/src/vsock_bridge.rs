@@ -21,6 +21,7 @@ impl std::fmt::Debug for VsockBridge {
     }
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 impl VsockBridge {
     pub async fn start(uds_path: PathBuf, guest_port: u32) -> std::io::Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -73,6 +74,7 @@ impl VsockBridge {
     }
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 async fn handle_connection(
     mut inbound: TcpStream,
     uds_path: &Path,

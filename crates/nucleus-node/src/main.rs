@@ -694,6 +694,7 @@ async fn wait_for_vsock_socket(path: &Path) -> Result<(), ApiError> {
     )))
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 async fn wait_for_proxy_health(addr: SocketAddr) -> Result<(), ApiError> {
     let start = std::time::Instant::now();
     let host = addr.ip();
