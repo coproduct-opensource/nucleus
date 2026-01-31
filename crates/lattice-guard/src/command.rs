@@ -8,8 +8,10 @@ use serde::{Deserialize, Serialize};
 /// Shell command access lattice.
 ///
 /// Controls which shell commands can be executed. Uses a combination of:
-/// - `allowed`: Whitelist of allowed commands (empty means check blocked only)
-/// - `blocked`: Blacklist of forbidden commands/patterns
+/// - `allowed`: Whitelist of allowed command strings (empty means check blocked only)
+/// - `blocked`: Blacklist of forbidden command strings/patterns
+/// - `allowed_rules`: Structured allowlist (program + args)
+/// - `blocked_rules`: Structured blocklist (program + args)
 ///
 /// In the meet operation:
 /// - allowed: intersection (more restrictive)
@@ -28,6 +30,12 @@ pub struct CommandLattice {
     pub allowed: HashSet<String>,
     /// Blocked commands (blacklist). Union in meet operation.
     pub blocked: HashSet<String>,
+    /// Structured allowlist rules (program + args).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub allowed_rules: Vec<CommandPattern>,
+    /// Structured blocklist rules (program + args).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub blocked_rules: Vec<CommandPattern>,
 }
 
 impl Default for CommandLattice {
@@ -61,6 +69,8 @@ impl Default for CommandLattice {
             .iter()
             .map(|s| s.to_string())
             .collect(),
+            allowed_rules: Vec::new(),
+            blocked_rules: Vec::new(),
         }
     }
 }
@@ -71,6 +81,8 @@ impl CommandLattice {
         Self {
             allowed: HashSet::new(),
             blocked: HashSet::new(),
+            allowed_rules: Vec::new(),
+            blocked_rules: Vec::new(),
         }
     }
 
@@ -79,6 +91,8 @@ impl CommandLattice {
         Self {
             allowed: HashSet::new(), // Empty = all allowed (unless blocked)
             blocked: Self::default().blocked,
+            allowed_rules: Vec::new(),
+            blocked_rules: Vec::new(),
         }
     }
 
@@ -98,6 +112,8 @@ impl CommandLattice {
             .map(|s| s.to_string())
             .collect(),
             blocked: Self::default().blocked,
+            allowed_rules: Vec::new(),
+            blocked_rules: Vec::new(),
         }
     }
 
@@ -114,7 +130,14 @@ impl CommandLattice {
         };
 
         let blocked: HashSet<String> = self.blocked.union(&other.blocked).cloned().collect();
-        Self { allowed, blocked }
+        let allowed_rules = meet_allowed_rules(&self.allowed_rules, &other.allowed_rules);
+        let blocked_rules = meet_blocked_rules(&self.blocked_rules, &other.blocked_rules);
+        Self {
+            allowed,
+            blocked,
+            allowed_rules,
+            blocked_rules,
+        }
     }
 
     /// Join operation: union of allowed, intersection of blocked.
@@ -127,7 +150,14 @@ impl CommandLattice {
             self.blocked.intersection(&other.blocked).cloned().collect()
         };
 
-        Self { allowed, blocked }
+        let allowed_rules = join_allowed_rules(&self.allowed_rules, &other.allowed_rules);
+        let blocked_rules = join_blocked_rules(&self.blocked_rules, &other.blocked_rules);
+        Self {
+            allowed,
+            blocked,
+            allowed_rules,
+            blocked_rules,
+        }
     }
 
     /// Check if a command is allowed.
@@ -158,11 +188,23 @@ impl CommandLattice {
         }
 
         // Block shell metacharacters unless explicitly allowlisted
-        if self.allowed.is_empty() && contains_shell_metacharacters(&words) {
+        if self.allowed.is_empty()
+            && self.allowed_rules.is_empty()
+            && contains_shell_metacharacters(&words)
+        {
             return false;
         }
 
         let program = &words[0];
+
+        // Structured blocked rules take precedence
+        if self
+            .blocked_rules
+            .iter()
+            .any(|rule| rule_matches(rule, &words))
+        {
+            return false;
+        }
 
         // Check blocked patterns against:
         // 1. The full command string
@@ -200,8 +242,18 @@ impl CommandLattice {
             }
         }
 
+        // Structured allowlist rules
+        if !self.allowed_rules.is_empty()
+            && self
+                .allowed_rules
+                .iter()
+                .any(|rule| rule_matches(rule, &words))
+        {
+            return true;
+        }
+
         // If allowed is empty, allow anything not blocked
-        if self.allowed.is_empty() {
+        if self.allowed.is_empty() && self.allowed_rules.is_empty() {
             return true;
         }
 
@@ -234,7 +286,16 @@ impl CommandLattice {
         let allowed_ok = other.allowed.is_empty() || self.allowed.is_subset(&other.allowed);
         // Other's blocked must be subset of ours
         let blocked_ok = other.blocked.is_subset(&self.blocked);
-        allowed_ok && blocked_ok
+        let allowed_rules_ok = other.allowed_rules.is_empty()
+            || self
+                .allowed_rules
+                .iter()
+                .all(|rule| other.allowed_rules.contains(rule));
+        let blocked_rules_ok = other
+            .blocked_rules
+            .iter()
+            .all(|rule| self.blocked_rules.contains(rule));
+        allowed_ok && blocked_ok && allowed_rules_ok && blocked_rules_ok
     }
 
     /// Add a command to the allowed list.
@@ -246,6 +307,53 @@ impl CommandLattice {
     pub fn block(&mut self, pattern: impl Into<String>) {
         self.blocked.insert(pattern.into());
     }
+
+    /// Add a structured rule to the allowlist.
+    pub fn allow_rule(&mut self, rule: CommandPattern) {
+        self.allowed_rules.push(rule);
+    }
+
+    /// Add a structured rule to the blocklist.
+    pub fn block_rule(&mut self, rule: CommandPattern) {
+        self.blocked_rules.push(rule);
+    }
+}
+
+/// Structured command rule (program + args).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct CommandPattern {
+    /// Program name (argv[0]).
+    pub program: String,
+    /// Argument patterns.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub args: Vec<ArgPattern>,
+}
+
+impl CommandPattern {
+    /// Build a command pattern from an exact program and argument sequence.
+    pub fn exact(program: impl Into<String>, args: &[impl AsRef<str>]) -> Self {
+        Self {
+            program: program.into(),
+            args: args
+                .iter()
+                .map(|arg| ArgPattern::Exact(arg.as_ref().to_string()))
+                .collect(),
+        }
+    }
+}
+
+/// Structured argument rule.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum ArgPattern {
+    /// Exact argument match.
+    Exact(String),
+    /// Any single argument.
+    Any,
+    /// Any remaining arguments (zero or more).
+    AnyRemaining,
 }
 
 fn contains_shell_metacharacters(words: &[String]) -> bool {
@@ -254,6 +362,89 @@ fn contains_shell_metacharacters(words: &[String]) -> bool {
         .collect();
 
     words.iter().any(|w| metachars.contains(w.as_str()))
+}
+
+fn rule_matches(rule: &CommandPattern, words: &[String]) -> bool {
+    if words.is_empty() {
+        return false;
+    }
+    if words[0] != rule.program {
+        return false;
+    }
+    let args = &words[1..];
+    let mut idx = 0;
+    for pattern in &rule.args {
+        match pattern {
+            ArgPattern::Exact(expected) => {
+                if args.get(idx) != Some(expected) {
+                    return false;
+                }
+                idx += 1;
+            }
+            ArgPattern::Any => {
+                if args.get(idx).is_none() {
+                    return false;
+                }
+                idx += 1;
+            }
+            ArgPattern::AnyRemaining => {
+                return true;
+            }
+        }
+    }
+    true
+}
+
+fn meet_allowed_rules(a: &[CommandPattern], b: &[CommandPattern]) -> Vec<CommandPattern> {
+    if a.is_empty() && b.is_empty() {
+        return Vec::new();
+    }
+    if a.is_empty() {
+        return b.to_vec();
+    }
+    if b.is_empty() {
+        return a.to_vec();
+    }
+    a.iter().filter(|rule| b.contains(rule)).cloned().collect()
+}
+
+fn join_allowed_rules(a: &[CommandPattern], b: &[CommandPattern]) -> Vec<CommandPattern> {
+    if a.is_empty() && b.is_empty() {
+        return Vec::new();
+    }
+    if a.is_empty() {
+        return b.to_vec();
+    }
+    if b.is_empty() {
+        return a.to_vec();
+    }
+    let mut rules = a.to_vec();
+    for rule in b {
+        if !rules.contains(rule) {
+            rules.push(rule.clone());
+        }
+    }
+    rules
+}
+
+fn meet_blocked_rules(a: &[CommandPattern], b: &[CommandPattern]) -> Vec<CommandPattern> {
+    if a.is_empty() && b.is_empty() {
+        return Vec::new();
+    }
+    let mut rules = a.to_vec();
+    for rule in b {
+        if !rules.contains(rule) {
+            rules.push(rule.clone());
+        }
+    }
+    rules
+}
+
+fn join_blocked_rules(a: &[CommandPattern], b: &[CommandPattern]) -> Vec<CommandPattern> {
+    if a.is_empty() || b.is_empty() {
+        return Vec::new();
+    }
+    a.iter().filter(|rule| b.contains(rule)).cloned().collect()
 }
 
 fn is_subsequence(needle: &[String], haystack: &[String]) -> bool {
@@ -299,10 +490,14 @@ mod tests {
         let a = CommandLattice {
             allowed: HashSet::new(),
             blocked: ["rm -rf"].iter().map(|s| s.to_string()).collect(),
+            allowed_rules: Vec::new(),
+            blocked_rules: Vec::new(),
         };
         let b = CommandLattice {
             allowed: HashSet::new(),
             blocked: ["sudo"].iter().map(|s| s.to_string()).collect(),
+            allowed_rules: Vec::new(),
+            blocked_rules: Vec::new(),
         };
 
         let result = a.meet(&b);
@@ -318,6 +513,8 @@ mod tests {
                 .map(|s| s.to_string())
                 .collect(),
             blocked: HashSet::new(),
+            allowed_rules: Vec::new(),
+            blocked_rules: Vec::new(),
         };
         let b = CommandLattice {
             allowed: ["cargo test", "cargo build"]
@@ -325,6 +522,8 @@ mod tests {
                 .map(|s| s.to_string())
                 .collect(),
             blocked: HashSet::new(),
+            allowed_rules: Vec::new(),
+            blocked_rules: Vec::new(),
         };
 
         let result = a.meet(&b);
@@ -391,10 +590,14 @@ mod tests {
         let a = CommandLattice {
             allowed: ["cargo test"].iter().map(|s| s.to_string()).collect(),
             blocked: ["rm -rf", "sudo"].iter().map(|s| s.to_string()).collect(),
+            allowed_rules: Vec::new(),
+            blocked_rules: Vec::new(),
         };
         let b = CommandLattice {
             allowed: ["cargo build"].iter().map(|s| s.to_string()).collect(),
             blocked: ["sudo", "chmod"].iter().map(|s| s.to_string()).collect(),
+            allowed_rules: Vec::new(),
+            blocked_rules: Vec::new(),
         };
 
         let result = a.join(&b);
@@ -407,5 +610,23 @@ mod tests {
         assert!(result.blocked.contains("sudo"));
         assert!(!result.blocked.contains("rm -rf"));
         assert!(!result.blocked.contains("chmod"));
+    }
+
+    #[test]
+    fn test_structured_allowlist_rule() {
+        let mut lattice = CommandLattice::empty();
+        lattice.allow_rule(CommandPattern::exact("cargo", &["test"]));
+        assert!(lattice.can_execute("cargo test --release"));
+        assert!(!lattice.can_execute("cargo build"));
+    }
+
+    #[test]
+    fn test_structured_blocklist_rule() {
+        let mut lattice = CommandLattice::permissive();
+        lattice.block_rule(CommandPattern {
+            program: "bash".to_string(),
+            args: vec![ArgPattern::AnyRemaining],
+        });
+        assert!(!lattice.can_execute("bash -c 'echo hi'"));
     }
 }

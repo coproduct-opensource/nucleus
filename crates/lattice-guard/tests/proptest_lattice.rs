@@ -393,8 +393,12 @@ mod command_tests {
         let allowed_set = prop::collection::hash_set("cargo (test|build|check)", 0..5);
         let blocked_set = prop::collection::hash_set("(rm -rf|sudo|chmod)", 0..3);
 
-        (allowed_set, blocked_set)
-            .prop_map(|(allowed, blocked)| CommandLattice { allowed, blocked })
+        (allowed_set, blocked_set).prop_map(|(allowed, blocked)| CommandLattice {
+            allowed,
+            blocked,
+            allowed_rules: Vec::new(),
+            blocked_rules: Vec::new(),
+        })
     }
 
     proptest! {

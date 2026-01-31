@@ -44,7 +44,7 @@ sandbox.write("file.txt", data)?;  // Enforced by capability handle
 # Install the CLI
 cargo install nucleus-cli
 
-# Run a task with enforced permissions
+# Run a task with enforced permissions (enforcement is mandatory)
 nucleus run --profile fix-issue "Fix the bug in src/main.rs"
 
 # List available permission profiles
@@ -166,7 +166,7 @@ nucleus run --config permissions.toml "Your task here"
 ### What We Enforce
 
 - ✅ File access via capability handles (symlink-safe)
-- ✅ Command execution validated before spawning
+- ✅ Command execution validated before spawning (CLI routes through `Executor`)
 - ✅ Budget tracked atomically (no concurrent races)
 - ✅ Time bounds via monotonic clock (manipulation-proof)
 - ✅ Trifecta requires approval for exfiltration

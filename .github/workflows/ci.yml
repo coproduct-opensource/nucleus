@@ -43,3 +43,36 @@ jobs:
           cache: true
       - name: cargo test
         run: cargo test --all-features
+
+  kani:
+    name: Kani
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+          components: llvm-tools-preview
+          cache: true
+      - name: install kani
+        run: cargo install kani-verifier --locked
+      - name: cargo kani
+        run: cargo kani -p lattice-guard
+
+  fuzz:
+    name: Fuzz
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+          cache: true
+      - name: install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: run fuzz targets
+        run: |
+          cd fuzz
+          cargo fuzz run command_can_execute -- -max_total_time=30
+          cargo fuzz run path_can_access -- -max_total_time=30
+          cargo fuzz run permission_serde -- -max_total_time=30

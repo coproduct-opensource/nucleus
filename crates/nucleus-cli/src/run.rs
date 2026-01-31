@@ -7,7 +7,6 @@ use nucleus::{CallbackApprover, NucleusError, PodRuntime, PodSpec};
 use rust_decimal::Decimal;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info};
@@ -52,10 +51,6 @@ pub struct RunArgs {
     /// Dry run: show what would be executed without running
     #[arg(long)]
     pub dry_run: bool,
-
-    /// Run the agent command through nucleus enforcement (process spawn guarded)
-    #[arg(long)]
-    pub enforce_runner: bool,
 }
 
 /// Execute the run command
@@ -88,7 +83,7 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
     );
 
     // Build permission lattice
-    let policy = if let Some(ref config_path) = args.config {
+    let mut policy = if let Some(ref config_path) = args.config {
         // Load custom config
         load_permission_config(config_path)?
     } else {
@@ -116,6 +111,8 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
     } else {
         policy
     };
+    let mut policy = policy;
+    policy.commands.allow("claude");
     let policy = policy.normalize();
 
     // Create pod runtime (kubelet-style instance)
@@ -149,7 +146,6 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
         println!("  Budget: ${:.2}", policy.budget.max_cost_usd);
         println!("  Timeout: {}s", args.timeout);
         println!("  Trifecta constraint: {}", policy.trifecta_constraint);
-        println!("  Enforce runner: {}", args.enforce_runner);
         println!();
         println!("Capabilities:");
         println!("  read_files: {:?}", policy.capabilities.read_files);
@@ -166,8 +162,7 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
     info!(
         allowed_tools = %allowed_tools,
         model = %args.model,
-        enforce_runner = args.enforce_runner,
-        "Spawning Claude Code"
+        "Spawning Claude Code via nucleus enforcement"
     );
 
     let mut argv = vec![
@@ -189,24 +184,14 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
     argv.push(prompt.clone());
 
     let start = std::time::Instant::now();
-    let output = if args.enforce_runner {
-        let command = shell_words::join(&argv);
-        match executor.run(&command) {
-            Ok(output) => output,
-            Err(NucleusError::ApprovalRequired { operation }) => {
-                let token = executor.request_approval(&operation)?;
-                executor.run_with_approval(&command, &token)?
-            }
-            Err(err) => return Err(err.into()),
+    let command = shell_words::join(&argv);
+    let output = match executor.run(&command) {
+        Ok(output) => output,
+        Err(NucleusError::ApprovalRequired { operation }) => {
+            let token = executor.request_approval(&operation)?;
+            executor.run_with_approval(&command, &token)?
         }
-    } else {
-        let mut cmd = Command::new("claude");
-        cmd.args(argv.iter().skip(1))
-            .current_dir(&work_dir)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        cmd.output()?
+        Err(err) => return Err(err.into()),
     };
     let duration = start.elapsed();
 

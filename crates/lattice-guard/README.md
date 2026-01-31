@@ -170,7 +170,8 @@ assert_eq!(budget.remaining_usd(), 3.0);
 
 ### CommandLattice
 
-Controls shell command execution with proper parsing:
+Controls shell command execution with proper parsing. Supports both string
+allow/block rules and structured (program + argv) patterns:
 
 ```rust
 use lattice_guard::CommandLattice;
@@ -179,6 +180,16 @@ let cmds = CommandLattice::default();
 assert!(cmds.can_execute("cargo test"));
 assert!(!cmds.can_execute("rm -rf /"));
 assert!(!cmds.can_execute("\"sudo\" apt install"));  // Quoting bypass blocked
+
+// Structured rules (program + args) for precision
+let mut structured = CommandLattice::permissive();
+structured.allow_rule(CommandPattern::exact("cargo", &["test"]));
+structured.block_rule(CommandPattern {
+    program: "bash".to_string(),
+    args: vec![ArgPattern::AnyRemaining],
+});
+assert!(structured.can_execute("cargo test --release"));
+assert!(!structured.can_execute("bash -c 'echo hi'"));
 ```
 
 ### TimeLattice
