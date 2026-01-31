@@ -1,0 +1,38 @@
+name: Cargo Deny
+
+on:
+  push:
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - crates/**/Cargo.toml
+      - deny.toml
+  pull_request:
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - crates/**/Cargo.toml
+      - deny.toml
+  schedule:
+    - cron: "0 7 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  deny:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        checks:
+          - advisories
+          - bans
+          - licenses
+          - sources
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          args: "${{ matrix.checks }}"

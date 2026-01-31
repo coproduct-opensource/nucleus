@@ -1,0 +1,27 @@
+name: Security Audit
+
+on:
+  push:
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - crates/**/Cargo.toml
+  pull_request:
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - crates/**/Cargo.toml
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions-rust-lang/audit@v1
+        with:
+          denyWarnings: true

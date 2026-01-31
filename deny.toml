@@ -1,0 +1,30 @@
+[advisories]
+version = 2
+# See https://github.com/RustSec/advisory-db
+ignore = []
+# These are informational; keep as warnings.
+informational_warnings = ["unmaintained", "unsound", "yanked"]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+deny = []
+
+[licenses]
+# Allow common permissive licenses.
+allow = [
+  "Apache-2.0",
+  "MIT",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "MPL-2.0",
+  "Zlib",
+]
+confidence-threshold = 0.93
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
