@@ -7,7 +7,6 @@ members = [
     "crates/nucleus-spec",   # Shared PodSpec definitions
     "crates/nucleus-node",   # Node daemon (kubelet analogue)
     "crates/nucleus-tool-proxy", # Tool proxy server (runs inside pod)
-    "fuzz",
 ]
 resolver = "2"
 
