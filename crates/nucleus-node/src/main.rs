@@ -15,7 +15,7 @@ use nucleus_spec::PodSpec;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
 use tonic::{Request, Response as GrpcResponse, Status};
 use tracing::{error, info};
@@ -60,6 +60,9 @@ struct Args {
     /// Path to firecracker binary (firecracker driver).
     #[arg(long, env = "NUCLEUS_FIRECRACKER_PATH", default_value = "firecracker")]
     firecracker_path: PathBuf,
+    /// Max concurrent Firecracker pods (0 = unlimited).
+    #[arg(long, env = "NUCLEUS_FIRECRACKER_MAX_PODS", default_value_t = 15)]
+    firecracker_max_pods: usize,
     /// Shared secret for HMAC request signing.
     #[arg(long, env = "NUCLEUS_NODE_AUTH_SECRET")]
     auth_secret: Option<String>,
@@ -88,6 +91,8 @@ struct NodeState {
     tool_proxy_path: PathBuf,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     firecracker_path: PathBuf,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    firecracker_pool: Option<Arc<Semaphore>>,
     auth: Option<AuthConfig>,
     proxy_auth_secret: Option<String>,
     proxy_actor: Option<String>,
@@ -122,6 +127,7 @@ struct FirecrackerPod {
     child: Mutex<tokio::process::Child>,
     bridge: Mutex<Option<vsock_bridge::VsockBridge>>,
     signed_proxy: Mutex<Option<signed_proxy::SignedProxy>>,
+    permit: Mutex<Option<OwnedSemaphorePermit>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -212,6 +218,7 @@ async fn main() -> Result<(), ApiError> {
         driver: args.driver.clone(),
         tool_proxy_path: args.tool_proxy_path.clone(),
         firecracker_path: args.firecracker_path.clone(),
+        firecracker_pool: build_firecracker_pool(&args),
         auth: args.auth_secret.as_ref().map(|secret| {
             AuthConfig::new(
                 secret.as_bytes(),
@@ -245,6 +252,8 @@ async fn main() -> Result<(), ApiError> {
             }
         });
     }
+
+    start_pod_reaper(state.clone());
 
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
     info!("nucleus-node listening on {}", args.listen);
@@ -400,6 +409,13 @@ impl PodHandle {
             DriverState::Firecracker(firecracker) => firecracker.cancel().await,
         }
     }
+
+    async fn cleanup_after_exit(&self) {
+        match &self.driver_state {
+            DriverState::Local(local) => local.cleanup().await,
+            DriverState::Firecracker(firecracker) => firecracker.cleanup().await,
+        }
+    }
 }
 
 impl LocalPod {
@@ -424,6 +440,10 @@ impl LocalPod {
         child.kill().await.map_err(ApiError::Io)?;
         Ok(())
     }
+
+    async fn cleanup(&self) {
+        // Nothing to clean up for local pods beyond process exit.
+    }
 }
 
 impl FirecrackerPod {
@@ -444,12 +464,23 @@ impl FirecrackerPod {
         if let Some(proxy) = self.signed_proxy.lock().await.take() {
             proxy.shutdown().await;
         }
+        self.permit.lock().await.take();
         if let Some(bridge) = self.bridge.lock().await.take() {
             bridge.shutdown().await;
         }
         let mut child = self.child.lock().await;
         child.kill().await.map_err(ApiError::Io)?;
         Ok(())
+    }
+
+    async fn cleanup(&self) {
+        if let Some(proxy) = self.signed_proxy.lock().await.take() {
+            proxy.shutdown().await;
+        }
+        self.permit.lock().await.take();
+        if let Some(bridge) = self.bridge.lock().await.take() {
+            bridge.shutdown().await;
+        }
     }
 }
 
@@ -544,6 +575,16 @@ async fn spawn_firecracker_pod(
             ));
         }
 
+        let permit = match state.firecracker_pool.as_ref() {
+            Some(pool) => Some(
+                pool.clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| ApiError::Driver("firecracker pool closed".to_string()))?,
+            ),
+            None => None,
+        };
+
         net::apply_network_policy(pod_dir, spec.spec.network.as_ref()).await?;
 
         let image = spec
@@ -631,6 +672,7 @@ async fn spawn_firecracker_pod(
             child: Mutex::new(child),
             bridge: Mutex::new(Some(bridge)),
             signed_proxy: Mutex::new(signed_proxy),
+            permit: Mutex::new(permit),
         };
 
         info!("spawned firecracker pod {}", id);
@@ -677,6 +719,36 @@ fn now_unix() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn build_firecracker_pool(args: &Args) -> Option<Arc<Semaphore>> {
+    if !matches!(&args.driver, DriverKind::Firecracker) || args.firecracker_max_pods == 0 {
+        return None;
+    }
+    Some(Arc::new(Semaphore::new(args.firecracker_max_pods)))
+}
+
+fn start_pod_reaper(state: NodeState) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            let pods: Vec<Arc<PodHandle>> = {
+                let guard = state.pods.lock().await;
+                guard.values().cloned().collect()
+            };
+
+            if pods.is_empty() {
+                continue;
+            }
+
+            for pod in pods {
+                let state = pod.status().await;
+                if matches!(state, PodState::Exited { .. } | PodState::Error { .. }) {
+                    pod.cleanup_after_exit().await;
+                }
+            }
+        }
+    });
 }
 
 #[cfg(target_os = "linux")]
