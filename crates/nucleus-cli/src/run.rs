@@ -3,7 +3,7 @@
 use anyhow::{bail, Result};
 use clap::Args;
 use lattice_guard::{BudgetLattice, PermissionLattice};
-use nucleus::{CallbackApprover, PodRuntime, PodSpec};
+use nucleus::{CallbackApprover, NucleusError, PodRuntime, PodSpec};
 use rust_decimal::Decimal;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
@@ -52,6 +52,10 @@ pub struct RunArgs {
     /// Dry run: show what would be executed without running
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Run the agent command through nucleus enforcement (process spawn guarded)
+    #[arg(long)]
+    pub enforce_runner: bool,
 }
 
 /// Execute the run command
@@ -135,9 +139,9 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
         }));
         pod = pod.with_approver(approver)?;
 
-        // Build executor for future tool routing (currently unused here)
-        let _executor = pod.executor();
     }
+
+    let executor = pod.executor();
 
     if args.dry_run {
         println!("Dry run - would execute with:");
@@ -146,6 +150,7 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
         println!("  Budget: ${:.2}", policy.budget.max_cost_usd);
         println!("  Timeout: {}s", args.timeout);
         println!("  Trifecta constraint: {}", policy.trifecta_constraint);
+        println!("  Enforce runner: {}", args.enforce_runner);
         println!();
         println!("Capabilities:");
         println!("  read_files: {:?}", policy.capabilities.read_files);
@@ -156,43 +161,53 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Build Claude Code command
-    // We don't shell out to `claude` directly - we build the allowed tools
-    // based on the policy and pass them through
+    // Build Claude Code command (allowed tools reflect policy, but do not enforce it).
     let allowed_tools = build_allowed_tools(&policy);
 
     info!(
         allowed_tools = %allowed_tools,
         model = %args.model,
-        "Spawning Claude Code with nucleus enforcement"
+        enforce_runner = args.enforce_runner,
+        "Spawning Claude Code"
     );
 
-    // Spawn claude process
-    let mut cmd = Command::new("claude");
-    cmd.arg("--print")
-        .arg("--model")
-        .arg(&args.model)
-        .arg("--allowedTools")
-        .arg(&allowed_tools)
-        .arg("--max-turns")
-        .arg("20")
-        .arg(&prompt)
-        .current_dir(&work_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    // Set budget cap
-    cmd.arg("--max-budget-usd")
-        .arg(policy.budget.max_cost_usd.to_string());
-
-    // Add permission mode based on approval obligations
+    let mut argv = Vec::new();
+    argv.push("claude".to_string());
+    argv.push("--print".to_string());
+    argv.push("--model".to_string());
+    argv.push(args.model.clone());
+    argv.push("--allowedTools".to_string());
+    argv.push(allowed_tools);
+    argv.push("--max-turns".to_string());
+    argv.push("20".to_string());
+    argv.push("--max-budget-usd".to_string());
+    argv.push(policy.budget.max_cost_usd.to_string());
     if has_approval_obligations(&policy) {
-        cmd.arg("--permission-mode").arg("plan");
+        argv.push("--permission-mode".to_string());
+        argv.push("plan".to_string());
     }
+    argv.push(prompt.clone());
 
     let start = std::time::Instant::now();
-    let output = cmd.output()?;
+    let output = if args.enforce_runner {
+        let command = shell_words::join(&argv);
+        match executor.run(&command) {
+            Ok(output) => output,
+            Err(NucleusError::ApprovalRequired { operation }) => {
+                let token = executor.request_approval(&operation)?;
+                executor.run_with_approval(&command, &token)?
+            }
+            Err(err) => return Err(err.into()),
+        }
+    } else {
+        let mut cmd = Command::new("claude");
+        cmd.args(argv.iter().skip(1))
+            .current_dir(&work_dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd.output()?
+    };
     let duration = start.elapsed();
 
     // Charge budget for execution

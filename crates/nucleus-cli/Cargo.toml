@@ -43,6 +43,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 shellexpand = "3.1"
 dirs = "6.0"
+shell-words = "1.1"
 
 # macOS Keychain (conditional)
 [target.'cfg(target_os = "macos")'.dependencies]
