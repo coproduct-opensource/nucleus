@@ -428,9 +428,18 @@ fn map_budget_model(model: &BudgetModelSpec) -> BudgetModel {
 
 #[cfg(target_os = "linux")]
 fn resolve_vsock(args: &Args, spec: &PodSpec) -> Result<Option<VsockConfig>, ApiError> {
-    let port = args
+    let port = match args
         .vsock_port
-        .or_else(|| spec.spec.vsock.as_ref().map(|v| v.port))?;
+        .or_else(|| spec.spec.vsock.as_ref().map(|v| v.port))
+    {
+        Some(port) => port,
+        None => {
+            if args.vsock_cid.is_some() {
+                return Err(ApiError::Spec("vsock_cid requires vsock_port".to_string()));
+            }
+            return Ok(None);
+        }
+    };
     let cid = args
         .vsock_cid
         .or_else(|| spec.spec.vsock.as_ref().map(|v| v.guest_cid))
