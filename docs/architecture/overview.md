@@ -1,19 +1,19 @@
 # Architecture Overview (25k plan)
 
 ## Goals
-- Enforce all side effects via a policy-aware proxy inside a Firecracker VM.
-- Default network egress to deny; explicit allowlists only.
-- Approvals require signed tokens issued by an external authority.
-- Provide verifiable audit logs for every operation.
+- Enforce all side effects via a policy-aware proxy inside a Firecracker VM (Firecracker driver).
+- Default network egress to deny; explicit allowlists only (guest iptables).
+- Approvals require signed tokens issued by an external authority (roadmap).
+- Provide verifiable audit logs for every operation (optional signing today).
 
 ## Trust Boundaries
 
 ```
 Agent / Tool Adapter
-  |  (signed HTTP)
+  |  (optional signed HTTP)
   v
-Host Control Plane (nucleus-node + approval authority)
-  |  (vsock, no TCP)
+Host Control Plane (nucleus-node + optional signed proxy)
+  |  (vsock bridge, no guest TCP)
   v
 Firecracker VM (nucleus-tool-proxy + enforcement runtime)
   |  (cap-std, Executor)
@@ -22,8 +22,8 @@ Side effects (filesystem/commands)
 ```
 
 ### Boundary 1: Agent -> Control Plane
-- All requests are signed (HMAC or asymmetric in later phases).
-- Control plane validates signatures and forwards only to the VM proxy.
+- If enabled, requests are signed (HMAC; asymmetric is roadmap).
+- Control plane forwards only to the VM proxy.
 
 ### Boundary 2: Control Plane -> VM
 - Use vsock only (no guest NIC by default).
@@ -39,16 +39,17 @@ Side effects (filesystem/commands)
 - Pod lifecycle (Firecracker + resources).
 - Starts vsock bridge to the proxy.
 - Applies cgroups/seccomp to the VMM process.
+- Optionally starts a signed proxy on 127.0.0.1.
 
-### approval authority (host, separate process)
+### approval authority (host, separate process, roadmap)
 - Issues signed approval tokens.
 - Logs approvals with signatures.
 - Enforces replay protection and expiration.
 
 ### nucleus-tool-proxy (guest)
 - Enforces permissions (Sandbox + Executor).
-- Requires approval tokens for gated ops.
-- Writes signed audit log entries.
+- Requires approvals for gated ops (counter-based today; tokens are roadmap).
+- Writes audit log entries (optional signing).
 
 ### policy model (shared)
 - Capability lattice + obligations.
@@ -57,17 +58,23 @@ Side effects (filesystem/commands)
 ## Data Flows
 
 ### Tool call
-1. Adapter signs request.
-2. Control plane validates signature.
+1. Adapter signs request (if enabled).
+2. Signed proxy injects auth headers (if enabled).
 3. Proxy enforces policy and executes side effect.
-4. Audit log records action + signature.
+4. Audit log records action (and optional signature).
 
 ### Approval
-1. Agent requests approval (signed).
-2. Authority validates and issues token.
-3. Token is presented to proxy for gated op.
+1. Agent requests approval.
+2. Proxy records approval count for the operation.
+3. Approval count is consumed for gated ops.
 
 ## Non-goals (initial)
 - Multi-tenant scheduling across hosts.
 - Full UI control plane.
 - Zero-knowledge attestation.
+
+## Invariants (current + intended)
+- Side effects should only happen inside `nucleus-tool-proxy` (host should not perform side effects).
+- Firecracker driver should only expose the signed proxy address to adapters.
+- Guest rootfs is read-only and scratch is writable when configured in the image/spec.
+- Network egress is denied by default when `net.allow`/`net.deny` are present in the image.

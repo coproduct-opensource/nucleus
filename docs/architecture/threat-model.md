@@ -10,6 +10,7 @@
 - Firecracker provides VM isolation from the host kernel.
 - Host kernel is not compromised.
 - Cryptographic primitives are implemented correctly.
+ - Local driver is for trusted workloads only.
 
 ## Adversaries
 - Malicious prompt injection within agent inputs.
@@ -25,8 +26,8 @@
 - Tool call parameter tampering.
 
 Mitigations
-- Signed requests, nonce/timestamp with max skew.
-- Approval tokens bound to operation + expiry.
+- Signed requests when enabled, nonce/timestamp with max skew.
+- Approval tokens bound to operation + expiry (roadmap).
 
 ### Control Plane -> VM
 - VM proxy spoofing.
@@ -34,7 +35,7 @@ Mitigations
 
 Mitigations
 - Vsock-only transport.
-- VM-unique secret provisioned at boot.
+- VM-unique secret provisioned at boot (auth secret baked into rootfs).
 
 ### VM -> Host
 - Escapes via shared filesystem.
@@ -44,6 +45,11 @@ Mitigations
 - Read-only rootfs, scratch-only write.
 - Cgroup CPU/memory limits.
 - Seccomp on VMM.
+ - Network egress blocked unless guest net policy is present.
+
+## Host Signed Proxy
+- Threat: host-local callers bypass auth by calling the vsock bridge directly.
+- Mitigation: only expose the signed proxy address to adapters.
 
 ## Non-goals
 - Side-channel resistance.
