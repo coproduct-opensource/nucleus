@@ -138,7 +138,6 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
             input.trim().eq_ignore_ascii_case("y")
         }));
         pod = pod.with_approver(approver)?;
-
     }
 
     let executor = pod.executor();
@@ -171,17 +170,18 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
         "Spawning Claude Code"
     );
 
-    let mut argv = Vec::new();
-    argv.push("claude".to_string());
-    argv.push("--print".to_string());
-    argv.push("--model".to_string());
-    argv.push(args.model.clone());
-    argv.push("--allowedTools".to_string());
-    argv.push(allowed_tools);
-    argv.push("--max-turns".to_string());
-    argv.push("20".to_string());
-    argv.push("--max-budget-usd".to_string());
-    argv.push(policy.budget.max_cost_usd.to_string());
+    let mut argv = vec![
+        "claude".to_string(),
+        "--print".to_string(),
+        "--model".to_string(),
+        args.model.clone(),
+        "--allowedTools".to_string(),
+        allowed_tools,
+        "--max-turns".to_string(),
+        "20".to_string(),
+        "--max-budget-usd".to_string(),
+        policy.budget.max_cost_usd.to_string(),
+    ];
     if has_approval_obligations(&policy) {
         argv.push("--permission-mode".to_string());
         argv.push("plan".to_string());
