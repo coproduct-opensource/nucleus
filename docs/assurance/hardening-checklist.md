@@ -10,11 +10,11 @@ Status key: `DONE`, `PARTIAL`, `TODO`.
 
 - **All side effects go through nucleus-tool-proxy**
   - Pass: CLI/tool adapters can only execute file/command/network ops via the proxy API.
-  - Current: `PARTIAL` (enforced MCP path implemented; unsafe direct mode still exists).
+  - Current: `DONE` (CLI uses node + MCP; no unsafe direct mode).
   - Evidence: `crates/nucleus-cli/src/run.rs`
 - **CLI hard-fail if not enforced**
   - Pass: No unsafe flags; enforced mode is the default path.
-  - Current: `PARTIAL` (enforced is default; unsafe flag still allowed).
+  - Current: `DONE` (unsafe flag removed).
   - Evidence: `crates/nucleus-cli/src/run.rs`
 
 ## 2) Network Egress Control

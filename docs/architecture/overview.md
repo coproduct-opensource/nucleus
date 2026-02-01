@@ -82,7 +82,7 @@ Side effects (filesystem/commands)
 ## Progress Snapshot (Current)
 
 **Working today**
-- Enforced CLI path via MCP + `nucleus-tool-proxy` (read/write/run).
+- Enforced CLI path via `nucleus-node` (Firecracker) + MCP + `nucleus-tool-proxy` (read/write/run).
 - Runtime gating for approvals, budgets, and time windows.
 - Firecracker driver with default‑deny egress in a dedicated netns (Linux).
 - Immutable network policy drift detection (fail‑closed on iptables changes).
