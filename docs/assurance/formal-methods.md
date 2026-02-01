@@ -20,6 +20,7 @@ and nucleus (`ν`) properties, while keeping the spec small and auditable.
 
 ## What Kani Covers (and doesn’t)
 - Kani is used for bounded model checking on Rust implementations.
+- Kani runs as a nightly CI job; merge gating is planned once proofs stabilize.
 - Kani **does not** replace theorem proving; it complements the proof layer.
 
 ## Non-goals (initial)

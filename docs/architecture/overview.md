@@ -91,7 +91,7 @@ Side effects (filesystem/commands)
 **Partial / in progress**
 - Web/search tools not yet wired in enforced mode.
 - Approvals are runtime tokens; signed approvals are planned.
-- Kani proofs exist; CI gating and formal proofs are planned.
+- Kani proofs exist; nightly job runs, merge gating and formal proofs are planned.
 
 **Not yet**
 - DNS allowlisting and IPv6 egress controls.

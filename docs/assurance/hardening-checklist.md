@@ -87,7 +87,7 @@ Status key: `DONE`, `PARTIAL`, `TODO`.
 
 - **ν laws proven in CI**
   - Pass: Kani proof job runs in CI and blocks merges on failure.
-  - Current: `PARTIAL` (Kani proofs exist, CI gate pending).
+  - Current: `PARTIAL` (Kani proofs exist, nightly job runs; merge gate pending).
   - Evidence: `crates/lattice-guard/src/kani.rs`
 - **Fuzzing in CI**
   - Pass: cargo-fuzz targets run with time budget; known bypasses blocked.
