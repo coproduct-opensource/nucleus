@@ -13,9 +13,9 @@
 
 ```
 Agent / Tool Adapter
-  |  (optional signed HTTP)
+  |  (signed HTTP)
   v
-Host Control Plane (nucleus-node + optional signed proxy)
+Host Control Plane (nucleus-node + signed proxy)
   |  (vsock bridge, no guest TCP)
   v
 Firecracker VM (nucleus-tool-proxy + enforcement runtime)
@@ -25,7 +25,7 @@ Side effects (filesystem/commands)
 ```
 
 ### Boundary 1: Agent -> Control Plane
-- If enabled, requests are signed (HMAC; asymmetric is roadmap).
+- Requests are signed (HMAC today; asymmetric is roadmap).
 - Control plane forwards only to the VM proxy.
 
 ### Boundary 2: Control Plane -> VM
@@ -43,7 +43,7 @@ Side effects (filesystem/commands)
 - Pod lifecycle (Firecracker + resources).
 - Starts vsock bridge to the proxy.
 - Applies cgroups/seccomp to the VMM process.
-- Optionally starts a signed proxy on 127.0.0.1.
+- Starts a signed proxy on 127.0.0.1.
 
 ### approval authority (host, separate process, roadmap)
 - Issues signed approval bundles (roadmap).

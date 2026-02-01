@@ -105,6 +105,7 @@ nucleus profiles
 Note: `nucleus run` uses `nucleus-node` (Firecracker) for enforcement and
 connects via MCP to the in‑VM tool proxy. You must provide:
 - `NUCLEUS_NODE_URL`
+- `NUCLEUS_NODE_AUTH_SECRET`
 - `NUCLEUS_FIRECRACKER_KERNEL_PATH`
 - `NUCLEUS_FIRECRACKER_ROOTFS_PATH`
 - `NUCLEUS_FIRECRACKER_VSOCK_CID` and `NUCLEUS_FIRECRACKER_VSOCK_PORT`

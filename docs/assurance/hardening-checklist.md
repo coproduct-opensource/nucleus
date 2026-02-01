@@ -16,6 +16,10 @@ Status key: `DONE`, `PARTIAL`, `TODO`.
   - Pass: No unsafe flags; enforced mode is the default path.
   - Current: `DONE` (unsafe flag removed).
   - Evidence: `crates/nucleus-cli/src/run.rs`
+- **Node API requires signed requests**
+  - Pass: nucleus-node rejects unsigned HTTP/gRPC calls.
+  - Current: `DONE` (auth secret required).
+  - Evidence: `crates/nucleus-node/src/main.rs`, `crates/nucleus-node/src/auth.rs`
 
 ## 2) Network Egress Control
 
