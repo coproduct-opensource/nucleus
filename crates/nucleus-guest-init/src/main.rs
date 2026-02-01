@@ -77,10 +77,10 @@ fn run() -> Result<(), String> {
         configure_network(net);
     }
 
-    if Path::new("/etc/nucleus/net.allow").exists() || Path::new("/etc/nucleus/net.deny").exists() {
-        if Path::new(GUEST_NET_SH).exists() {
-            let _ = Command::new(GUEST_NET_SH).status();
-        }
+    if (Path::new("/etc/nucleus/net.allow").exists() || Path::new("/etc/nucleus/net.deny").exists())
+        && Path::new(GUEST_NET_SH).exists()
+    {
+        let _ = Command::new(GUEST_NET_SH).status();
     }
 
     if let Some(secret) = read_secret("/etc/nucleus/auth.secret") {
