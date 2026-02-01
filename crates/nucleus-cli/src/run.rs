@@ -16,7 +16,81 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::config::Config;
+use crate::keychain::{SecretKind, SecretStore};
 use crate::profiles::Profile;
+
+/// Resolved configuration from args, config file, and Keychain
+struct ResolvedConfig {
+    node_url: String,
+    node_auth_secret: String,
+    node_actor: String,
+    kernel_path: String,
+    rootfs_path: String,
+}
+
+/// Resolve configuration from multiple sources (args > keychain > config > defaults)
+fn resolve_config(args: &RunArgs, config: &Config) -> Result<ResolvedConfig> {
+    // Node URL: args > config > error
+    let node_url = if !args.node_url.is_empty() {
+        args.node_url.clone()
+    } else if !config.node.url.is_empty() {
+        config.node.url.clone()
+    } else {
+        return Err(anyhow!("missing --node-url (NUCLEUS_NODE_URL)"));
+    };
+
+    // Node auth secret: args > keychain > error
+    let node_auth_secret = if !args.node_auth_secret.is_empty() {
+        args.node_auth_secret.clone()
+    } else if config.auth.use_keychain {
+        // Try to get from Keychain
+        match SecretStore::get(SecretKind::NodeAuthSecret)? {
+            Some(secret) => {
+                // Convert bytes to hex string for HMAC signing
+                hex::encode(secret)
+            }
+            None => {
+                return Err(anyhow!(
+                    "Node auth secret not found in Keychain.\n\
+                     Run 'nucleus setup' to generate secrets, or set NUCLEUS_NODE_AUTH_SECRET."
+                ));
+            }
+        }
+    } else {
+        return Err(anyhow!(
+            "missing --node-auth-secret (NUCLEUS_NODE_AUTH_SECRET)"
+        ));
+    };
+
+    // Node actor: args > config
+    let node_actor = if args.node_actor != "nucleus-cli" {
+        args.node_actor.clone()
+    } else {
+        config.node.actor.clone()
+    };
+
+    // Kernel path: args > config
+    let kernel_path = if let Some(ref path) = args.kernel_path {
+        path.clone()
+    } else {
+        config.kernel_path()?.display().to_string()
+    };
+
+    // Rootfs path: args > config
+    let rootfs_path = if let Some(ref path) = args.rootfs_path {
+        path.clone()
+    } else {
+        config.rootfs_path()?.display().to_string()
+    };
+
+    Ok(ResolvedConfig {
+        node_url,
+        node_auth_secret,
+        node_actor,
+        kernel_path,
+        rootfs_path,
+    })
+}
 
 /// Run a task with tool-level enforcement via nucleus-node (Firecracker only).
 #[derive(Args, Debug)]
@@ -95,8 +169,11 @@ pub struct RunArgs {
 
 /// Execute the run command
 pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
-    // Load global config (reserved for future use)
-    let _global_config = Config::load(global_config_path)?;
+    // Load global config
+    let global_config = Config::load(global_config_path)?;
+
+    // Resolve secrets and paths from config/keychain/env
+    let resolved = resolve_config(&args, &global_config)?;
 
     // Read prompt from stdin if "-"
     let prompt = if args.prompt == "-" {
@@ -160,13 +237,9 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
         println!("  Budget: ${:.2}", policy.budget.max_cost_usd);
         println!("  Timeout: {}s", args.timeout);
         println!("  Trifecta constraint: {}", policy.trifecta_constraint);
-        println!("  Node URL: {}", args.node_url);
-        if let Some(kernel) = args.kernel_path.as_ref() {
-            println!("  Kernel: {}", kernel);
-        }
-        if let Some(rootfs) = args.rootfs_path.as_ref() {
-            println!("  Rootfs: {}", rootfs);
-        }
+        println!("  Node URL: {}", resolved.node_url);
+        println!("  Kernel: {}", resolved.kernel_path);
+        println!("  Rootfs: {}", resolved.rootfs_path);
         println!("  Vsock: cid={} port={}", args.vsock_cid, args.vsock_port);
         println!("  Rootfs read-only: {}", args.rootfs_read_only);
         println!();
@@ -179,7 +252,7 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
         return Ok(());
     }
 
-    run_enforced(&args, &policy, &work_dir, &prompt).await
+    run_enforced(&args, &resolved, &policy, &work_dir, &prompt).await
 }
 
 /// Load permission config from a TOML file
@@ -249,31 +322,12 @@ impl Drop for TmpDirGuard {
 
 async fn run_enforced(
     args: &RunArgs,
+    resolved: &ResolvedConfig,
     policy: &PermissionLattice,
     work_dir: &Path,
     prompt: &str,
 ) -> Result<()> {
     warn_unimplemented_caps(policy);
-
-    let node_url = args.node_url.trim();
-    if node_url.is_empty() {
-        return Err(anyhow!("missing --node-url (NUCLEUS_NODE_URL)"));
-    }
-    let node_auth_secret = args.node_auth_secret.trim();
-    if node_auth_secret.is_empty() {
-        return Err(anyhow!(
-            "missing --node-auth-secret (NUCLEUS_NODE_AUTH_SECRET)"
-        ));
-    }
-
-    let kernel_path = args
-        .kernel_path
-        .as_ref()
-        .ok_or_else(|| anyhow!("missing --kernel-path (NUCLEUS_FIRECRACKER_KERNEL_PATH)"))?;
-    let rootfs_path = args
-        .rootfs_path
-        .as_ref()
-        .ok_or_else(|| anyhow!("missing --rootfs-path (NUCLEUS_FIRECRACKER_ROOTFS_PATH)"))?;
 
     let run_id = Uuid::new_v4();
     let tmp_dir = std::env::temp_dir().join(format!("nucleus-cli-{run_id}"));
@@ -283,12 +337,23 @@ async fn run_enforced(
     let spec_path = tmp_dir.join("pod.yaml");
     let mcp_config_path = tmp_dir.join("mcp.json");
 
-    let pod_spec = build_pod_spec(args, policy, work_dir, kernel_path, rootfs_path)?;
+    let pod_spec = build_pod_spec(
+        args,
+        policy,
+        work_dir,
+        &resolved.kernel_path,
+        &resolved.rootfs_path,
+    )?;
     write_pod_spec(&spec_path, &pod_spec)?;
 
     let mcp_command_path = resolve_binary_path(&args.mcp_path)?;
 
-    let proxy_addr = create_pod_via_node(node_url, &pod_spec, node_auth_secret, &args.node_actor)?;
+    let proxy_addr = create_pod_via_node(
+        &resolved.node_url,
+        &pod_spec,
+        &resolved.node_auth_secret,
+        &resolved.node_actor,
+    )?;
     let proxy_url = if proxy_addr.starts_with("http://") || proxy_addr.starts_with("https://") {
         proxy_addr
     } else {
