@@ -22,8 +22,11 @@ use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 mod config;
+mod doctor;
+mod keychain;
 mod profiles;
 mod run;
+mod setup;
 
 /// Nucleus CLI - policy-aware wrapper (tool enforcement via proxy)
 #[derive(Parser)]
@@ -47,6 +50,12 @@ struct Cli {
 enum Commands {
     /// Execute a task with enforced permissions
     Run(Box<run::RunArgs>),
+
+    /// Set up nucleus environment (Lima VM, artifacts, secrets)
+    Setup(setup::SetupArgs),
+
+    /// Check setup status and diagnose issues
+    Doctor,
 
     /// List available permission profiles
     Profiles,
@@ -78,6 +87,8 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Run(args) => run::execute(*args, &config_path).await,
+        Commands::Setup(args) => setup::execute(args).await,
+        Commands::Doctor => doctor::diagnose().await,
         Commands::Profiles => profiles::list(),
         Commands::Config => config::show(&config_path),
     }
