@@ -11,7 +11,9 @@ use axum::response::{IntoResponse, Response as AxumResponse};
 use axum::routing::{get, post};
 use axum::{middleware, Json, Router};
 use clap::{Parser, ValueEnum};
-use nucleus_spec::{NetworkSpec, PodSpec};
+#[cfg(target_os = "linux")]
+use nucleus_spec::NetworkSpec;
+use nucleus_spec::PodSpec;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
@@ -126,7 +128,7 @@ struct PodHandle {
 enum DriverState {
     Local(LocalPod),
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    Firecracker(FirecrackerPod),
+    Firecracker(Box<FirecrackerPod>),
 }
 
 #[derive(Debug)]
@@ -835,7 +837,11 @@ async fn spawn_firecracker_pod(
 
         info!("spawned firecracker pod {}", id);
 
-        Ok((DriverState::Firecracker(handle), Some(proxy_addr), log_path))
+        Ok((
+            DriverState::Firecracker(Box::new(handle)),
+            Some(proxy_addr),
+            log_path,
+        ))
     }
 }
 
