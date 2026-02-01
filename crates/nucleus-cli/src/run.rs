@@ -58,7 +58,11 @@ pub struct RunArgs {
     pub dry_run: bool,
 
     /// Path to nucleus-tool-proxy binary (enforced mode)
-    #[arg(long, env = "NUCLEUS_TOOL_PROXY_PATH", default_value = "nucleus-tool-proxy")]
+    #[arg(
+        long,
+        env = "NUCLEUS_TOOL_PROXY_PATH",
+        default_value = "nucleus-tool-proxy"
+    )]
     pub tool_proxy_path: String,
 
     /// Path to nucleus-mcp binary (enforced mode)
@@ -383,7 +387,11 @@ async fn run_unsafe(
     policy.commands.allow("claude");
     let policy = policy.normalize();
 
-    let spec = PodSpec::new(policy.clone(), work_dir.to_path_buf(), Duration::from_secs(args.timeout));
+    let spec = PodSpec::new(
+        policy.clone(),
+        work_dir.to_path_buf(),
+        Duration::from_secs(args.timeout),
+    );
     let mut pod = PodRuntime::new(spec)?;
 
     if has_approval_obligations(&policy) {
@@ -545,7 +553,10 @@ fn write_mcp_config(
 
     let mut env = std::collections::BTreeMap::new();
     env.insert("NUCLEUS_MCP_PROXY_URL".to_string(), proxy_url.to_string());
-    env.insert("NUCLEUS_MCP_AUTH_SECRET".to_string(), auth_secret.to_string());
+    env.insert(
+        "NUCLEUS_MCP_AUTH_SECRET".to_string(),
+        auth_secret.to_string(),
+    );
     env.insert(
         "NUCLEUS_MCP_SPEC".to_string(),
         spec_path.display().to_string(),

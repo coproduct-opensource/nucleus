@@ -808,7 +808,8 @@ async fn spawn_firecracker_pod(
                 match net::snapshot_iptables(pid).await {
                     Ok(snapshot) => {
                         let baseline_path = pod_dir.join("net.iptables.baseline");
-                        if let Err(err) = tokio::fs::write(&baseline_path, snapshot.as_bytes()).await
+                        if let Err(err) =
+                            tokio::fs::write(&baseline_path, snapshot.as_bytes()).await
                         {
                             let _ = child.kill().await;
                             cleanup_net_resources(&net_plan, &netns_name).await;
@@ -897,13 +898,11 @@ async fn spawn_firecracker_pod(
                         match net::snapshot_iptables(pid).await {
                             Ok(snapshot) => {
                                 if snapshot != baseline {
-                                    let _ = tokio::fs::write(&current_path, snapshot.as_bytes()).await;
+                                    let _ =
+                                        tokio::fs::write(&current_path, snapshot.as_bytes()).await;
                                     let mut child = child.lock().await;
                                     let _ = child.kill().await;
-                                    error!(
-                                        "iptables drift detected; pod netns {} terminated",
-                                        pid
-                                    );
+                                    error!("iptables drift detected; pod netns {} terminated", pid);
                                     break;
                                 }
                             }

@@ -33,7 +33,12 @@ impl NetworkAllocator {
 
     pub fn allocate(&self, pod_id: Uuid, netns: String) -> Result<NetPlan, ApiError> {
         let index = self.next.fetch_add(1, Ordering::SeqCst);
-        let max = 1usize << (NET_POOL_PREFIX - POD_PREFIX) as usize;
+        if POD_PREFIX < NET_POOL_PREFIX {
+            return Err(ApiError::Driver(
+                "invalid network pool: pod prefix must be >= pool prefix".to_string(),
+            ));
+        }
+        let max = 1usize << (POD_PREFIX - NET_POOL_PREFIX) as usize;
         if index >= max {
             return Err(ApiError::Driver(
                 "network pool exhausted; increase base CIDR".to_string(),
@@ -465,7 +470,10 @@ fn normalize_iptables_counters(line: &str) -> String {
 
 #[cfg(target_os = "linux")]
 fn normalize_counter_token(token: &str) -> String {
-    let Some(inner) = token.strip_prefix('[').and_then(|value| value.strip_suffix(']')) else {
+    let Some(inner) = token
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+    else {
         return token.to_string();
     };
     let mut parts = inner.split(':');
