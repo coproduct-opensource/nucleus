@@ -46,6 +46,7 @@ Mitigations
 - Cgroup CPU/memory limits.
 - Seccomp on VMM.
 - Host netns iptables enforce default deny when `--firecracker-netns=true` (even without `spec.network`).
+- Netns iptables are snapshotted and monitored; drift fails closed by terminating the pod.
 - Node provisions per-pod netns + tap to avoid shared host interfaces.
 - Requires `br_netfilter` so bridge traffic hits iptables.
 
