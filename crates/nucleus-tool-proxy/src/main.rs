@@ -58,6 +58,9 @@ struct Args {
     /// Optional audit log signing secret (defaults to auth secret if omitted).
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUDIT_SECRET")]
     audit_secret: Option<String>,
+    /// Optional approval authority secret (separate from tool auth).
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET")]
+    approval_secret: Option<String>,
 }
 
 #[derive(Clone)]
@@ -66,11 +69,30 @@ struct AppState {
     approvals: Arc<ApprovalRegistry>,
     audit: Option<Arc<AuditLog>>,
     auth: Option<AuthConfig>,
+    approval_auth: Option<AuthConfig>,
+    approval_nonces: Arc<ApprovalNonceCache>,
 }
 
 #[derive(Default)]
 struct ApprovalRegistry {
     approvals: Mutex<HashMap<String, ApprovalEntry>>,
+}
+
+#[derive(Default)]
+struct ApprovalNonceCache {
+    entries: Mutex<HashMap<String, u64>>,
+}
+
+impl ApprovalNonceCache {
+    fn check_and_insert(&self, nonce: &str, expires_at_unix: u64, now: u64) -> bool {
+        let mut guard = self.entries.lock().unwrap();
+        guard.retain(|_, exp| *exp > now);
+        if guard.contains_key(nonce) {
+            return false;
+        }
+        guard.insert(nonce.to_string(), expires_at_unix);
+        true
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -166,6 +188,8 @@ struct ApproveRequest {
     count: usize,
     #[serde(default)]
     expires_at_unix: Option<u64>,
+    #[serde(default)]
+    nonce: Option<String>,
 }
 
 fn default_approve_count() -> usize {
@@ -285,6 +309,12 @@ async fn main() -> Result<(), ApiError> {
             Duration::from_secs(args.auth_max_skew_secs),
         )
     });
+    let approval_auth = args.approval_secret.as_ref().map(|secret| {
+        AuthConfig::new(
+            secret.as_bytes(),
+            Duration::from_secs(args.auth_max_skew_secs),
+        )
+    });
 
     if auth.is_none() {
         info!("nucleus-tool-proxy auth disabled (set NUCLEUS_TOOL_PROXY_AUTH_SECRET to enable)");
@@ -297,6 +327,8 @@ async fn main() -> Result<(), ApiError> {
         approvals,
         audit,
         auth,
+        approval_auth,
+        approval_nonces: Arc::new(ApprovalNonceCache::default()),
     };
 
     let app = Router::new()
@@ -327,23 +359,36 @@ async fn main() -> Result<(), ApiError> {
 }
 
 const MAX_AUTH_BODY_BYTES: usize = 10 * 1024 * 1024;
+const APPROVE_PATH: &str = "/v1/approve";
 
 async fn auth_middleware(
     State(state): State<AppState>,
     request: axum::http::Request<Body>,
     next: middleware::Next,
 ) -> Result<Response, ApiError> {
+    let (parts, body) = request.into_parts();
+    let bytes = to_bytes(body, MAX_AUTH_BODY_BYTES)
+        .await
+        .map_err(|e| ApiError::Body(e.to_string()))?;
+
+    if parts.uri.path() == APPROVE_PATH {
+        if let Some(approval_auth) = state.approval_auth.as_ref() {
+            let context = auth::verify_http(&parts.headers, &bytes, approval_auth)?;
+            let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
+            req.extensions_mut().insert(context);
+            return Ok(next.run(req).await);
+        }
+    }
+
     if let Some(auth) = state.auth.as_ref() {
-        let (parts, body) = request.into_parts();
-        let bytes = to_bytes(body, MAX_AUTH_BODY_BYTES)
-            .await
-            .map_err(|e| ApiError::Body(e.to_string()))?;
         let context = auth::verify_http(&parts.headers, &bytes, auth)?;
         let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
         req.extensions_mut().insert(context);
         Ok(next.run(req).await)
     } else {
-        Ok(next.run(request).await)
+        Ok(next
+            .run(axum::http::Request::from_parts(parts, Body::from(bytes)))
+            .await)
     }
 }
 
@@ -435,7 +480,18 @@ async fn approve_operation(
     Json(req): Json<ApproveRequest>,
 ) -> Result<Json<ApproveResponse>, ApiError> {
     let now = now_unix();
-    let expires_at = resolve_approval_expiry(state.auth.as_ref(), req.expires_at_unix, now)?;
+    let expires_at =
+        resolve_approval_expiry(state.approval_auth.as_ref(), req.expires_at_unix, now)?;
+    if state.approval_auth.is_some() {
+        let nonce = req
+            .nonce
+            .as_deref()
+            .ok_or_else(|| ApiError::Spec("approval nonce required".to_string()))?;
+        let expiry = expires_at.unwrap_or(now + MAX_APPROVAL_TTL_SECS);
+        if !state.approval_nonces.check_and_insert(nonce, expiry, now) {
+            return Err(ApiError::Spec("approval nonce replayed".to_string()));
+        }
+    }
     state
         .approvals
         .approve(&req.operation, req.count, expires_at);
@@ -444,11 +500,11 @@ async fn approve_operation(
 }
 
 fn resolve_approval_expiry(
-    auth: Option<&AuthConfig>,
+    approval_auth: Option<&AuthConfig>,
     expires_at_unix: Option<u64>,
     now: u64,
 ) -> Result<Option<u64>, ApiError> {
-    let require_expiry = auth.is_some();
+    let require_expiry = approval_auth.is_some();
     if require_expiry {
         let requested = expires_at_unix.unwrap_or(now + MAX_APPROVAL_TTL_SECS);
         if requested < now {

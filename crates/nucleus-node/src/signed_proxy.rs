@@ -29,6 +29,7 @@ const MAX_PROXY_BODY_BYTES: usize = 10 * 1024 * 1024;
 struct SignedProxyState {
     target: SocketAddr,
     secret: Arc<Vec<u8>>,
+    approval_secret: Option<Arc<Vec<u8>>>,
     default_actor: Option<String>,
 }
 
@@ -50,6 +51,7 @@ impl SignedProxy {
     pub async fn start(
         target: SocketAddr,
         secret: Arc<Vec<u8>>,
+        approval_secret: Option<Arc<Vec<u8>>>,
         default_actor: Option<String>,
     ) -> std::io::Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -59,6 +61,7 @@ impl SignedProxy {
         let state = SignedProxyState {
             target,
             secret,
+            approval_secret,
             default_actor,
         };
 
@@ -104,7 +107,13 @@ async fn proxy_handler(
 
     let actor = extract_actor(&parts.headers, state.default_actor.as_deref());
     let timestamp = now_unix();
-    let signature = sign_request(&state.secret, timestamp, actor.as_deref(), &body_bytes);
+    let path = parts.uri.path();
+    let secret = if path == "/v1/approve" {
+        state.approval_secret.as_ref().unwrap_or(&state.secret)
+    } else {
+        &state.secret
+    };
+    let signature = sign_request(secret, timestamp, actor.as_deref(), &body_bytes);
 
     let uri = build_target_uri(state.target, parts.uri.path_and_query())
         .map_err(|e| proxy_error(StatusCode::BAD_REQUEST, format!("bad uri: {e}")))?;

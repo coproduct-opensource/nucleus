@@ -21,6 +21,8 @@ Add to `~/.openclaw/settings.json` (or your profile settings):
         "config": {
           "proxyUrl": "http://127.0.0.1:8080",
           "authSecret": "<shared-secret>",
+          "approvalSecret": "<optional-approval-secret>",
+          "approvalTtlSecs": 300,
           "actor": "openclaw",
           "timeoutMs": 30000
         }

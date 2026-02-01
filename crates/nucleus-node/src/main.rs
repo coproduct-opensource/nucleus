@@ -75,6 +75,9 @@ struct Args {
     /// Shared secret for signing tool-proxy requests from the host (optional).
     #[arg(long, env = "NUCLEUS_NODE_PROXY_AUTH_SECRET")]
     proxy_auth_secret: Option<String>,
+    /// Optional secret for signing approval requests (if separate from tool auth).
+    #[arg(long, env = "NUCLEUS_NODE_PROXY_APPROVAL_SECRET")]
+    proxy_approval_secret: Option<String>,
     /// Default actor to use when signing proxy requests.
     #[arg(long, env = "NUCLEUS_NODE_PROXY_ACTOR", default_value = "nucleus-node")]
     proxy_actor: String,
@@ -98,6 +101,7 @@ struct NodeState {
     firecracker_pool: Option<Arc<Semaphore>>,
     auth: Option<AuthConfig>,
     proxy_auth_secret: Option<String>,
+    proxy_approval_secret: Option<String>,
     proxy_actor: Option<String>,
 }
 
@@ -235,6 +239,7 @@ async fn main() -> Result<(), ApiError> {
             )
         }),
         proxy_auth_secret: args.proxy_auth_secret.clone(),
+        proxy_approval_secret: args.proxy_approval_secret.clone(),
         proxy_actor: Some(args.proxy_actor.clone()).filter(|actor| !actor.trim().is_empty()),
     };
 
@@ -530,6 +535,9 @@ async fn spawn_local_pod(
     if let Some(secret) = state.proxy_auth_secret.as_ref() {
         command.env("NUCLEUS_TOOL_PROXY_AUTH_SECRET", secret);
     }
+    if let Some(secret) = state.proxy_approval_secret.as_ref() {
+        command.env("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET", secret);
+    }
     let mut child = command
         .stdout(log_stdout)
         .stderr(log_stderr)
@@ -545,6 +553,10 @@ async fn spawn_local_pod(
         let proxy = signed_proxy::SignedProxy::start(
             target_addr,
             Arc::new(secret.as_bytes().to_vec()),
+            state
+                .proxy_approval_secret
+                .as_ref()
+                .map(|value| Arc::new(value.as_bytes().to_vec())),
             state.proxy_actor.clone(),
         )
         .await
@@ -660,6 +672,10 @@ async fn spawn_firecracker_pod(
             let proxy = signed_proxy::SignedProxy::start(
                 bridge.listen_addr(),
                 Arc::new(secret.as_bytes().to_vec()),
+                state
+                    .proxy_approval_secret
+                    .as_ref()
+                    .map(|value| Arc::new(value.as_bytes().to_vec())),
                 state.proxy_actor.clone(),
             )
             .await

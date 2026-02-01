@@ -11,6 +11,7 @@ NET_ALLOW=${NET_ALLOW:-}
 NET_DENY=${NET_DENY:-}
 TOOL_PROXY_AUTH_SECRET=${TOOL_PROXY_AUTH_SECRET:-}
 AUDIT_LOG_PATH=${AUDIT_LOG_PATH:-}
+APPROVAL_SECRET=${APPROVAL_SECRET:-}
 
 mkdir -p "$ROOTFS_DIR"
 mkdir -p "$(dirname "$ROOTFS_IMG")"
@@ -66,6 +67,10 @@ fi
 if [ -n "$TOOL_PROXY_AUTH_SECRET" ]; then
   printf "%s" "$TOOL_PROXY_AUTH_SECRET" >"$ROOTFS_DIR/etc/nucleus/auth.secret"
   chmod 600 "$ROOTFS_DIR/etc/nucleus/auth.secret"
+fi
+if [ -n "$APPROVAL_SECRET" ]; then
+  printf "%s" "$APPROVAL_SECRET" >"$ROOTFS_DIR/etc/nucleus/approval.secret"
+  chmod 600 "$ROOTFS_DIR/etc/nucleus/approval.secret"
 fi
 if [ -n "$AUDIT_LOG_PATH" ]; then
   printf "%s" "$AUDIT_LOG_PATH" >"$ROOTFS_DIR/etc/nucleus/audit.path"

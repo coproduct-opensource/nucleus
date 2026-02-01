@@ -8,7 +8,12 @@ function getConfig(api: any) {
   return {
     proxyUrl: cfg.proxyUrl ?? "http://127.0.0.1:8080",
     authSecret: cfg.authSecret ?? "",
+    approvalSecret: cfg.approvalSecret ?? "",
     actor: cfg.actor ?? "",
+    approvalTtlSecs:
+      typeof cfg.approvalTtlSecs === "number" && cfg.approvalTtlSecs > 0
+        ? cfg.approvalTtlSecs
+        : 300,
     timeoutMs:
       typeof cfg.timeoutMs === "number" && cfg.timeoutMs > 0
         ? cfg.timeoutMs
@@ -50,13 +55,15 @@ function signHttpHeaders(secret: string, body: string, actor?: string) {
 async function postJson(
   api: any,
   path: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  overrideSecret?: string
 ) {
   const cfg = getConfig(api);
   const body = JSON.stringify(payload);
+  const secret = overrideSecret ?? cfg.authSecret;
   const headers: Record<string, string> = {
     "content-type": "application/json",
-    ...signHttpHeaders(cfg.authSecret, body, cfg.actor),
+    ...signHttpHeaders(secret, body, cfg.actor),
   };
 
   const controller = new AbortController();
@@ -193,7 +200,18 @@ export default function (api: any) {
       if (typeof input.count === "number") {
         payload.count = input.count;
       }
-      const result = await postJson(api, "/v1/approve", payload);
+      const cfg = getConfig(api);
+      if (cfg.approvalSecret) {
+        payload.nonce = crypto.randomBytes(16).toString("hex");
+        payload.expires_at_unix =
+          Math.floor(Date.now() / 1000) + cfg.approvalTtlSecs;
+      }
+      const result = await postJson(
+        api,
+        "/v1/approve",
+        payload,
+        cfg.approvalSecret || undefined
+      );
       return toTextPayload(result);
     }
   );

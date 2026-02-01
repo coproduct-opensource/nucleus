@@ -35,6 +35,9 @@ fi
 if [ -f /etc/nucleus/auth.secret ]; then
   export NUCLEUS_TOOL_PROXY_AUTH_SECRET="$(cat /etc/nucleus/auth.secret)"
 fi
+if [ -f /etc/nucleus/approval.secret ]; then
+  export NUCLEUS_TOOL_PROXY_APPROVAL_SECRET="$(cat /etc/nucleus/approval.secret)"
+fi
 
 if [ -f /etc/nucleus/audit.path ]; then
   export NUCLEUS_TOOL_PROXY_AUDIT_LOG="$(cat /etc/nucleus/audit.path)"

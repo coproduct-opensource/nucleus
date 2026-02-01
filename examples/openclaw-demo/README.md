@@ -38,6 +38,13 @@ TOOL_PROXY_AUTH_SECRET=demo-secret \
   ./scripts/firecracker/build-rootfs.sh
 ```
 
+To require a separate approval authority secret:
+
+```bash
+APPROVAL_SECRET=approval-secret \
+  ./scripts/firecracker/build-rootfs.sh
+```
+
 To include a network allow/deny list in the image:
 
 ```bash
@@ -69,6 +76,13 @@ proxy injects auth headers so the OpenClaw plugin can omit `authSecret`.
 
 Note: the tool-proxy inside the VM must have the same secret baked into the
 image (see `TOOL_PROXY_AUTH_SECRET`), or auth enforcement will fail closed.
+If `APPROVAL_SECRET` is set, approval requests must be signed with that secret.
+
+To have the signed proxy handle approval signing, pass:
+
+```bash
+--proxy-approval-secret approval-secret
+```
 
 ## 2) Install the OpenClaw adapter
 

@@ -62,6 +62,7 @@ nucleus profiles
 
 - Firecracker pods require `--proxy-auth-secret` so the signed proxy can enforce auth.
 - The local driver is opt-in via `--allow-local-driver` (no VM isolation).
+- Use `--proxy-approval-secret` if approvals should be signed by a separate authority.
 
 ## The Lethal Trifecta (Runtime-Enforced)
 
