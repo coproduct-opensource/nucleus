@@ -114,7 +114,7 @@ Current enforced tools: read, write, run. Web/search tools are not yet wired.
 ## Firecracker Notes
 
 - Firecracker pods require `--proxy-auth-secret` and `--proxy-approval-secret` for signed tool and approval calls.
-- The local driver is opt-in via `--allow-local-driver` (no VM isolation).
+- The driver defaults to Firecracker; local is opt-in via `--allow-local-driver` (no VM isolation).
 - Firecracker runs in a fresh network namespace by default (`--firecracker-netns=false` to disable); default-deny iptables apply even without `spec.network` (no NIC unless policy is set).
 - Audit logs are hash-chained and signed (tamper-evident; verification tooling pending).
 - Guest init is the Rust binary `nucleus-guest-init`, baked into the rootfs.
