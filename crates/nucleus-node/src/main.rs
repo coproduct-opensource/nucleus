@@ -686,9 +686,7 @@ async fn spawn_firecracker_pod(
 
         if state.firecracker_netns {
             let name = net::netns_name(id);
-            if let Err(err) = net::create_netns(&name).await {
-                return Err(err);
-            }
+            net::create_netns(&name).await?;
             netns_name = Some(name.clone());
 
             if let Some(network) = spec.spec.network.as_ref() {
@@ -777,17 +775,11 @@ async fn spawn_firecracker_pod(
         let mut netns_pid: Option<u32> = None;
 
         if state.firecracker_netns {
-            let mut default_policy: Option<NetworkSpec> = None;
-            let policy = match spec.spec.network.as_ref() {
-                Some(policy) => policy,
-                None => {
-                    default_policy = Some(NetworkSpec {
-                        allow: Vec::new(),
-                        deny: Vec::new(),
-                    });
-                    default_policy.as_ref().expect("default policy missing")
-                }
+            let default_policy = NetworkSpec {
+                allow: Vec::new(),
+                deny: Vec::new(),
             };
+            let policy = spec.spec.network.as_ref().unwrap_or(&default_policy);
             let pid = match pid {
                 Some(pid) => pid,
                 None => {
