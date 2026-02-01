@@ -22,7 +22,7 @@
 - Optional connectivity test uses `nucleus-net-probe` via the tool proxy (`CHECK_CONNECTIVITY=1`).
 
 ## Audit (current)
-- Every tool call produces an audit log record (optional signing).
+- Every tool call produces a signed audit log record (verifiable).
 - Audit entries are hash-chained; tampering breaks the chain.
 - Approval events are logged with operation name and count.
 - Guest init emits a boot report entry on startup.

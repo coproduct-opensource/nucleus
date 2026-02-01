@@ -7,7 +7,7 @@
 - The node provisions a per-pod netns, tap interface, and guest IP; guest init configures eth0 from kernel args.
 - Netns setup enables bridge netfilter (`br_netfilter`) so iptables can enforce guest egress.
 - Approvals require signed tokens issued by an authority (HMAC today; external authority roadmap).
-- Provide verifiable audit logs for every operation (optional signing today).
+- Provide verifiable audit logs for every operation (signed + verified).
 
 ## Trust Boundaries
 
@@ -53,7 +53,7 @@ Side effects (filesystem/commands)
 ### nucleus-tool-proxy (guest)
 - Enforces permissions (Sandbox + Executor).
 - Requires approvals for gated ops (counter-based today; signed requests required; bundles are roadmap).
-- Writes audit log entries (optional signing).
+- Writes signed audit log entries (verifiable with `nucleus-audit`).
 - Guest init (Rust) configures networking from kernel args and then `exec`s the proxy.
 - Guest init emits a boot report into the audit log on startup.
 
@@ -87,7 +87,7 @@ Side effects (filesystem/commands)
 - Firecracker driver with default‑deny egress in a dedicated netns (Linux).
 - Immutable network policy drift detection (fail‑closed on iptables changes).
 - DNS allowlisting with pinned hostname resolution (dnsmasq in netns, Linux).
-- Audit log with hash chaining (tamper‑evident).
+- Audit logs are hash‑chained, signed, and verifiable (`nucleus-audit`).
 
 **Partial / in progress**
 - Web/search tools not yet wired in enforced mode.
@@ -95,7 +95,7 @@ Side effects (filesystem/commands)
 - Kani proofs exist; nightly job runs, merge gating and formal proofs are planned.
 
 **Not yet**
-- Audit signature verification tooling.
+- Remote append‑only audit storage / immutability proofs.
 
 ## Invariants (current + intended)
 - Side effects should only happen inside `nucleus-tool-proxy` (host should not perform side effects).
