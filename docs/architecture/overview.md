@@ -86,6 +86,7 @@ Side effects (filesystem/commands)
 - Runtime gating for approvals, budgets, and time windows.
 - Firecracker driver with default‑deny egress in a dedicated netns (Linux).
 - Immutable network policy drift detection (fail‑closed on iptables changes).
+- DNS allowlisting with pinned hostname resolution (dnsmasq in netns, Linux).
 - Audit log with hash chaining (tamper‑evident).
 
 **Partial / in progress**
@@ -94,7 +95,6 @@ Side effects (filesystem/commands)
 - Kani proofs exist; nightly job runs, merge gating and formal proofs are planned.
 
 **Not yet**
-- DNS allowlisting and IPv6 egress controls.
 - Audit signature verification tooling.
 
 ## Invariants (current + intended)

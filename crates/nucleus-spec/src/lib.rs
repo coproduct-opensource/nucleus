@@ -154,6 +154,9 @@ pub struct NetworkSpec {
     /// Denied egress destinations.
     #[serde(default)]
     pub deny: Vec<String>,
+    /// Allowed DNS hostnames (resolved and pinned at pod start).
+    #[serde(default)]
+    pub dns_allow: Vec<String>,
 }
 
 /// VM image configuration for Firecracker pods.
