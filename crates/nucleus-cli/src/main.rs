@@ -46,7 +46,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Execute a task with enforced permissions
-    Run(run::RunArgs),
+    Run(Box<run::RunArgs>),
 
     /// List available permission profiles
     Profiles,
@@ -77,7 +77,7 @@ async fn main() -> Result<()> {
     info!(config_path = %config_path, "Starting nucleus");
 
     match cli.command {
-        Commands::Run(args) => run::execute(args, &config_path).await,
+        Commands::Run(args) => run::execute(*args, &config_path).await,
         Commands::Profiles => profiles::list(),
         Commands::Config => config::show(&config_path),
     }
