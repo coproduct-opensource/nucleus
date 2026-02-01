@@ -66,8 +66,8 @@ Status key: `DONE`, `PARTIAL`, `TODO`.
   - Evidence: `crates/lattice-guard/src/lattice.rs`, `crates/nucleus-cli/src/run.rs`
 - **Network policy drift detection**
   - Pass: host checks iptables drift and fails closed on deviation.
-  - Current: `TODO`.
-  - Evidence: `crates/nucleus-node/src/net.rs`
+  - Current: `DONE`.
+  - Evidence: `crates/nucleus-node/src/net.rs`, `crates/nucleus-node/src/main.rs`
 - **Seccomp immutability documented**
   - Pass: docs explicitly state seccomp is fixed at Firecracker spawn.
   - Current: `DONE`.

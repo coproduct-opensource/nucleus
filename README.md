@@ -25,6 +25,7 @@ enforced at runtime** through the tool proxy. The envelope is intended to be
 - Enforced CLI path via MCP + `nucleus-tool-proxy` (read/write/run).
 - Runtime gating for approvals, budgets, and time windows.
 - Firecracker driver with default‑deny egress in a dedicated netns (Linux).
+- Immutable network policy drift detection (fail‑closed on iptables changes).
 - Audit log with hash chaining (tamper‑evident).
 
 **Partial / in progress**
@@ -35,7 +36,6 @@ enforced at runtime** through the tool proxy. The envelope is intended to be
 **Not yet**
 - DNS allowlisting and IPv6 egress controls.
 - Audit signature verification tooling.
-- Immutable network policy drift detection.
 
 ```rust
 // Enforcement approach - cannot bypass
@@ -83,7 +83,7 @@ never silently relax. This supports:
 
 Implementation intent:
 - Seccomp is fixed at Firecracker spawn.
-- Network policy is applied once and verified against drift (roadmap).
+- Network policy is applied once and verified against drift (fail‑closed monitor).
 - Permission states are normalized via ν and only tightened after creation.
 - Approvals are scoped, expiring tokens (roadmap).
 
