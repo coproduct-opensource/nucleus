@@ -657,9 +657,9 @@ async fn resolve_dns_allowlist(policy: &NetworkSpec) -> Result<Vec<ResolvedDnsEn
 
 async fn resolve_host_ipv4(host: &str) -> Result<Vec<Ipv4Addr>, ApiError> {
     let mut ips = BTreeSet::new();
-    let addrs = lookup_host((host, 0))
-        .await
-        .map_err(|e| ApiError::InvalidSpec(format!("dns allowlist lookup failed for {host}: {e}")))?;
+    let addrs = lookup_host((host, 0)).await.map_err(|e| {
+        ApiError::InvalidSpec(format!("dns allowlist lookup failed for {host}: {e}"))
+    })?;
     for addr in addrs {
         if let IpAddr::V4(ip) = addr.ip() {
             ips.insert(ip);

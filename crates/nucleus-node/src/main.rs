@@ -851,8 +851,7 @@ async fn spawn_firecracker_pod(
                     }
                     Err(err) => {
                         let _ = child.kill().await;
-                        cleanup_net_resources(&mut net_plan, &mut netns_name, &mut dns_proxy)
-                            .await;
+                        cleanup_net_resources(&mut net_plan, &mut netns_name, &mut dns_proxy).await;
                         return Err(err);
                     }
                 }
