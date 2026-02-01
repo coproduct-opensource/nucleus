@@ -64,7 +64,7 @@ struct Args {
     #[arg(long, env = "NUCLEUS_FIRECRACKER_PATH", default_value = "firecracker")]
     firecracker_path: PathBuf,
     /// Run Firecracker inside a new network namespace (Linux only).
-    #[arg(long, env = "NUCLEUS_FIRECRACKER_NETNS", default_value_t = false)]
+    #[arg(long, env = "NUCLEUS_FIRECRACKER_NETNS", default_value_t = true)]
     firecracker_netns: bool,
     /// Max concurrent Firecracker pods (0 = unlimited).
     #[arg(long, env = "NUCLEUS_FIRECRACKER_MAX_PODS", default_value_t = 15)]

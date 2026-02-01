@@ -64,7 +64,7 @@ nucleus profiles
 - Firecracker pods require `--proxy-auth-secret` so the signed proxy can enforce auth.
 - The local driver is opt-in via `--allow-local-driver` (no VM isolation).
 - Use `--proxy-approval-secret` if approvals should be signed by a separate authority.
-- Enable `--firecracker-netns` to run the VMM in a fresh network namespace.
+- Firecracker runs in a fresh network namespace by default (`--firecracker-netns=false` to disable).
 
 ## The Lethal Trifecta (Runtime-Enforced)
 

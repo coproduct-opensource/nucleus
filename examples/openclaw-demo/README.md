@@ -65,6 +65,8 @@ cargo run -p nucleus-node -- \
   --firecracker-netns
 ```
 
+(`--firecracker-netns` is default; pass `--firecracker-netns=false` to disable.)
+
 ### Create a Firecracker pod
 
 ```bash
