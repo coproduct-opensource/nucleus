@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -18,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tonic::{Request, Response as GrpcResponse, Status};
 use tracing::{error, info};
@@ -68,6 +70,20 @@ struct Args {
     /// Run Firecracker inside a new network namespace (Linux only).
     #[arg(long, env = "NUCLEUS_FIRECRACKER_NETNS", default_value_t = true)]
     firecracker_netns: bool,
+    /// Fail closed if netns iptables drift from the baseline.
+    #[arg(
+        long,
+        env = "NUCLEUS_FIRECRACKER_NETNS_DRIFT_CHECK",
+        default_value_t = true
+    )]
+    firecracker_netns_drift_check: bool,
+    /// Interval (seconds) for netns iptables drift checks.
+    #[arg(
+        long,
+        env = "NUCLEUS_FIRECRACKER_NETNS_DRIFT_INTERVAL_SECS",
+        default_value_t = 10
+    )]
+    firecracker_netns_drift_interval_secs: u64,
     /// Max concurrent Firecracker pods (0 = unlimited).
     #[arg(long, env = "NUCLEUS_FIRECRACKER_MAX_PODS", default_value_t = 15)]
     firecracker_max_pods: usize,
@@ -107,6 +123,10 @@ struct NodeState {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     firecracker_netns: bool,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    firecracker_netns_drift_check: bool,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    firecracker_netns_drift_interval: Duration,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     network_allocator: Arc<net::NetworkAllocator>,
     auth: Option<AuthConfig>,
     proxy_auth_secret: Option<String>,
@@ -140,12 +160,14 @@ struct LocalPod {
 #[derive(Debug)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct FirecrackerPod {
-    child: Mutex<tokio::process::Child>,
+    child: Arc<Mutex<tokio::process::Child>>,
     bridge: Mutex<Option<vsock_bridge::VsockBridge>>,
     signed_proxy: Mutex<Option<signed_proxy::SignedProxy>>,
     permit: Mutex<Option<OwnedSemaphorePermit>>,
     net_plan: Mutex<Option<net::NetPlan>>,
     netns: Mutex<Option<String>>,
+    drift_monitor: Mutex<Option<JoinHandle<()>>>,
+    drift_stop: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -244,6 +266,10 @@ async fn main() -> Result<(), ApiError> {
         firecracker_path: args.firecracker_path.clone(),
         firecracker_pool: build_firecracker_pool(&args),
         firecracker_netns: args.firecracker_netns,
+        firecracker_netns_drift_check: args.firecracker_netns_drift_check,
+        firecracker_netns_drift_interval: Duration::from_secs(
+            args.firecracker_netns_drift_interval_secs,
+        ),
         network_allocator: Arc::new(net::NetworkAllocator::new()),
         auth: args.auth_secret.as_ref().map(|secret| {
             AuthConfig::new(
@@ -491,6 +517,10 @@ impl FirecrackerPod {
         if let Some(proxy) = self.signed_proxy.lock().await.take() {
             proxy.shutdown().await;
         }
+        self.drift_stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.drift_monitor.lock().await.take() {
+            handle.abort();
+        }
         self.permit.lock().await.take();
         if let Some(bridge) = self.bridge.lock().await.take() {
             bridge.shutdown().await;
@@ -508,6 +538,10 @@ impl FirecrackerPod {
     async fn cleanup(&self) {
         if let Some(proxy) = self.signed_proxy.lock().await.take() {
             proxy.shutdown().await;
+        }
+        self.drift_stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.drift_monitor.lock().await.take() {
+            handle.abort();
         }
         self.permit.lock().await.take();
         if let Some(bridge) = self.bridge.lock().await.take() {
@@ -652,9 +686,7 @@ async fn spawn_firecracker_pod(
 
         if state.firecracker_netns {
             let name = net::netns_name(id);
-            if let Err(err) = net::create_netns(&name).await {
-                return Err(err);
-            }
+            net::create_netns(&name).await?;
             netns_name = Some(name.clone());
 
             if let Some(network) = spec.spec.network.as_ref() {
@@ -738,44 +770,58 @@ async fn spawn_firecracker_pod(
                 )));
             }
         };
+        let pid = child.id();
+        let mut netns_baseline: Option<String> = None;
+        let mut netns_pid: Option<u32> = None;
 
         if state.firecracker_netns {
-            let mut default_policy: Option<NetworkSpec> = None;
-            let policy = match spec.spec.network.as_ref() {
-                Some(policy) => policy,
+            let default_policy = NetworkSpec {
+                allow: Vec::new(),
+                deny: Vec::new(),
+            };
+            let policy = spec.spec.network.as_ref().unwrap_or(&default_policy);
+            let pid = match pid {
+                Some(pid) => pid,
                 None => {
-                    default_policy = Some(NetworkSpec {
-                        allow: Vec::new(),
-                        deny: Vec::new(),
-                    });
-                    default_policy.as_ref().expect("default policy missing")
+                    let _ = child.kill().await;
+                    cleanup_net_resources(&net_plan, &netns_name).await;
+                    return Err(ApiError::Driver(
+                        "firecracker process id unavailable for network policy".to_string(),
+                    ));
                 }
             };
-            if let Some(pid) = child.id() {
-                if let Err(err) = net::apply_host_policy(pid, policy).await {
-                    let _ = child.kill().await;
-                    if let Some(plan) = net_plan.as_ref() {
-                        let _ = net::cleanup_network(plan).await;
-                    } else if let Some(ref name) = netns_name {
-                        let _ = net::cleanup_netns(name).await;
-                    }
-                    return Err(err);
-                }
-            } else {
+            netns_pid = Some(pid);
+            if let Err(err) = net::apply_host_policy(pid, policy).await {
                 let _ = child.kill().await;
-                if let Some(plan) = net_plan.as_ref() {
-                    let _ = net::cleanup_network(plan).await;
-                } else if let Some(ref name) = netns_name {
-                    let _ = net::cleanup_netns(name).await;
+                cleanup_net_resources(&net_plan, &netns_name).await;
+                return Err(err);
+            }
+            if state.firecracker_netns_drift_check {
+                match net::snapshot_iptables(pid).await {
+                    Ok(snapshot) => {
+                        let baseline_path = pod_dir.join("net.iptables.baseline");
+                        if let Err(err) =
+                            tokio::fs::write(&baseline_path, snapshot.as_bytes()).await
+                        {
+                            let _ = child.kill().await;
+                            cleanup_net_resources(&net_plan, &netns_name).await;
+                            return Err(ApiError::Driver(format!(
+                                "failed to write iptables baseline: {err}"
+                            )));
+                        }
+                        netns_baseline = Some(snapshot);
+                    }
+                    Err(err) => {
+                        let _ = child.kill().await;
+                        cleanup_net_resources(&net_plan, &netns_name).await;
+                        return Err(err);
+                    }
                 }
-                return Err(ApiError::Driver(
-                    "firecracker process id unavailable for network policy".to_string(),
-                ));
             }
         }
 
         if let Some(ref cgroup_spec) = spec.spec.cgroup {
-            if let Some(pid) = child.id() {
+            if let Some(pid) = pid {
                 cgroup::apply_cgroup(pid, cgroup_spec).await?;
             } else {
                 return Err(ApiError::Driver(
@@ -820,19 +866,67 @@ async fn spawn_firecracker_pod(
                 proxy.shutdown().await;
             }
             bridge.shutdown().await;
-            let mut child = child;
             let _ = child.kill().await;
             cleanup_net_resources(&net_plan, &netns_name).await;
             return Err(err);
         }
 
+        let child = Arc::new(Mutex::new(child));
+        let drift_stop = Arc::new(AtomicBool::new(false));
+        let drift_monitor = if state.firecracker_netns_drift_check {
+            if let (Some(pid), Some(baseline)) = (netns_pid, netns_baseline) {
+                let pod_dir = pod_dir.to_path_buf();
+                let child = Arc::clone(&child);
+                let stop = Arc::clone(&drift_stop);
+                let interval = state.firecracker_netns_drift_interval;
+                Some(tokio::spawn(async move {
+                    let current_path = pod_dir.join("net.iptables.current");
+                    let mut ticker = tokio::time::interval(interval);
+                    loop {
+                        ticker.tick().await;
+                        if stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        match net::snapshot_iptables(pid).await {
+                            Ok(snapshot) => {
+                                if snapshot != baseline {
+                                    let _ =
+                                        tokio::fs::write(&current_path, snapshot.as_bytes()).await;
+                                    let mut child = child.lock().await;
+                                    let _ = child.kill().await;
+                                    error!("iptables drift detected; pod netns {} terminated", pid);
+                                    break;
+                                }
+                            }
+                            Err(err) => {
+                                let _ = tokio::fs::write(&current_path, format!("{err}")).await;
+                                let mut child = child.lock().await;
+                                let _ = child.kill().await;
+                                error!(
+                                    "iptables drift check failed; pod netns {} terminated: {err}",
+                                    pid
+                                );
+                                break;
+                            }
+                        }
+                    }
+                }))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let handle = FirecrackerPod {
-            child: Mutex::new(child),
+            child,
             bridge: Mutex::new(Some(bridge)),
             signed_proxy: Mutex::new(signed_proxy),
             permit: Mutex::new(permit),
             net_plan: Mutex::new(net_plan),
             netns: Mutex::new(netns_name),
+            drift_monitor: Mutex::new(drift_monitor),
+            drift_stop,
         };
 
         info!("spawned firecracker pod {}", id);

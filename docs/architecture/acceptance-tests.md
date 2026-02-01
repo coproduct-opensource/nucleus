@@ -14,6 +14,7 @@
 
 ## Network (current)
 - Host netns iptables enforces default-deny egress for Firecracker pods when `--firecracker-netns=true` (even without `spec.network`).
+- Host monitors iptables drift and fails closed by terminating pods on deviation.
 - Allowlisted egress only for IP/CIDR with optional port (no hostnames).
 - Guest init configures eth0 from kernel args (`nucleus.net=...`) when a network policy is present.
 - Node provisions tap + bridge inside the pod netns only when `spec.network` is set (guest NIC is otherwise absent).

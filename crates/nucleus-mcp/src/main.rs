@@ -1,6 +1,3 @@
-use std::fs;
-use std::io::{self, BufRead, Write};
-use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use lattice_guard::{CapabilityLevel, PermissionLattice};
@@ -8,6 +5,9 @@ use nucleus_client::sign_http_headers;
 use nucleus_spec::PodSpec;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::fs;
+use std::io::{self, BufRead, Write};
+use std::path::{Path, PathBuf};
 
 #[derive(Parser, Debug)]
 #[command(name = "nucleus-mcp")]
@@ -162,13 +162,11 @@ impl ProxyClient {
         }
 
         match request.send_bytes(&body_bytes) {
-            Ok(response) => response
-                .into_json::<R>()
-                .map_err(|e| ProxyError {
-                    kind: "decode_error".to_string(),
-                    message: e.to_string(),
-                    operation: None,
-                }),
+            Ok(response) => response.into_json::<R>().map_err(|e| ProxyError {
+                kind: "decode_error".to_string(),
+                message: e.to_string(),
+                operation: None,
+            }),
             Err(ureq::Error::Status(_, response)) => {
                 let parsed = response.into_json::<ErrorBody>();
                 match parsed {
@@ -281,9 +279,8 @@ fn main() -> Result<()> {
 }
 
 fn load_policy(path: &Path) -> Result<PermissionLattice> {
-    let contents = fs::read_to_string(path).with_context(|| {
-        format!("failed to read pod spec from {}", path.display())
-    })?;
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("failed to read pod spec from {}", path.display()))?;
     let spec: PodSpec = serde_yaml::from_str(&contents)
         .with_context(|| format!("failed to parse pod spec {}", path.display()))?;
     let policy = spec

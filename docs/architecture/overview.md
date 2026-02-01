@@ -85,17 +85,17 @@ Side effects (filesystem/commands)
 - Enforced CLI path via MCP + `nucleus-tool-proxy` (read/write/run).
 - Runtime gating for approvals, budgets, and time windows.
 - Firecracker driver with default‑deny egress in a dedicated netns (Linux).
+- Immutable network policy drift detection (fail‑closed on iptables changes).
 - Audit log with hash chaining (tamper‑evident).
 
 **Partial / in progress**
 - Web/search tools not yet wired in enforced mode.
 - Approvals are runtime tokens; signed approvals are planned.
-- Kani proofs exist; CI gating and formal proofs are planned.
+- Kani proofs exist; nightly job runs, merge gating and formal proofs are planned.
 
 **Not yet**
 - DNS allowlisting and IPv6 egress controls.
 - Audit signature verification tooling.
-- Immutable network policy drift detection.
 
 ## Invariants (current + intended)
 - Side effects should only happen inside `nucleus-tool-proxy` (host should not perform side effects).
@@ -106,5 +106,5 @@ Side effects (filesystem/commands)
 - **Monotone security posture**: permissions and isolation guarantees should only tighten
   (or the pod is terminated), never silently relax after creation.
   - Seccomp is fixed at Firecracker spawn.
-  - Network policy should be applied once and verified for drift (roadmap).
+  - Network policy is applied once and verified for drift (fail‑closed monitor).
   - Permission states are normalized via ν and only tightened after creation.

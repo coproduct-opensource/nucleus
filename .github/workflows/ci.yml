@@ -47,18 +47,6 @@ jobs:
       - name: cargo test
         run: cargo test --all-features
 
-  kani:
-    name: Kani
-    runs-on: ubuntu-20.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v5
-      - uses: Swatinem/rust-cache@v2
-      - name: Run Kani
-        uses: model-checking/kani-github-action@v1
-        with:
-          args: "-p lattice-guard"
-
   fuzz:
     name: Fuzz
     runs-on: ubuntu-latest
