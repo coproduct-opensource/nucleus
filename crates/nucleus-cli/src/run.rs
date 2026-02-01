@@ -3,23 +3,22 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
 use lattice_guard::{BudgetLattice, CapabilityLevel, PermissionLattice};
-use nucleus::{CallbackApprover, NucleusError, PodRuntime, PodSpec};
-use nucleus_spec::{PodSpec as SpecPodSpec, PodSpecInner, PolicySpec};
+use nucleus_client::sign_http_headers;
+use nucleus_spec::{ImageSpec, PodSpec as SpecPodSpec, PodSpecInner, PolicySpec, VsockSpec};
 use rust_decimal::Decimal;
-use serde::Serialize;
-use std::fs::{self, OpenOptions};
+use serde::{Deserialize, Serialize};
+use std::fs::{self};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
+use std::process::Command;
 use std::time::{Duration, Instant};
-use tracing::{error, info};
+use tracing::info;
 use uuid::Uuid;
 
 use crate::config::Config;
 use crate::profiles::Profile;
 
-/// Run a task with tool-level enforcement (unsafe mode optional)
+/// Run a task with tool-level enforcement via nucleus-node (Firecracker only).
 #[derive(Args, Debug)]
 pub struct RunArgs {
     /// Task prompt (use - for stdin)
@@ -57,21 +56,41 @@ pub struct RunArgs {
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Path to nucleus-tool-proxy binary (enforced mode)
-    #[arg(
-        long,
-        env = "NUCLEUS_TOOL_PROXY_PATH",
-        default_value = "nucleus-tool-proxy"
-    )]
-    pub tool_proxy_path: String,
-
     /// Path to nucleus-mcp binary (enforced mode)
     #[arg(long, env = "NUCLEUS_MCP_PATH", default_value = "nucleus-mcp")]
     pub mcp_path: String,
 
-    /// Allow running Claude directly without tool-level enforcement (unsafe)
-    #[arg(long)]
-    pub unsafe_allow_claude: bool,
+    /// nucleus-node base URL (Firecracker required).
+    #[arg(long, env = "NUCLEUS_NODE_URL")]
+    pub node_url: String,
+
+    /// Optional auth secret for nucleus-node API (HMAC).
+    #[arg(long, env = "NUCLEUS_NODE_AUTH_SECRET")]
+    pub node_auth_secret: Option<String>,
+
+    /// Actor name for signed node requests.
+    #[arg(long, env = "NUCLEUS_NODE_ACTOR", default_value = "nucleus-cli")]
+    pub node_actor: String,
+
+    /// Firecracker kernel image path.
+    #[arg(long, env = "NUCLEUS_FIRECRACKER_KERNEL_PATH")]
+    pub kernel_path: Option<String>,
+
+    /// Firecracker rootfs image path.
+    #[arg(long, env = "NUCLEUS_FIRECRACKER_ROOTFS_PATH")]
+    pub rootfs_path: Option<String>,
+
+    /// Firecracker vsock CID.
+    #[arg(long, env = "NUCLEUS_FIRECRACKER_VSOCK_CID", default_value_t = 3)]
+    pub vsock_cid: u32,
+
+    /// Firecracker vsock port.
+    #[arg(long, env = "NUCLEUS_FIRECRACKER_VSOCK_PORT", default_value_t = 5000)]
+    pub vsock_port: u32,
+
+    /// Mount rootfs read-only (recommended).
+    #[arg(long, env = "NUCLEUS_FIRECRACKER_READ_ONLY", default_value_t = true)]
+    pub rootfs_read_only: bool,
 }
 
 /// Execute the run command
@@ -141,14 +160,15 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
         println!("  Budget: ${:.2}", policy.budget.max_cost_usd);
         println!("  Timeout: {}s", args.timeout);
         println!("  Trifecta constraint: {}", policy.trifecta_constraint);
-        println!(
-            "  Mode: {}",
-            if args.unsafe_allow_claude {
-                "unsafe"
-            } else {
-                "enforced"
-            }
-        );
+        println!("  Node URL: {}", args.node_url);
+        if let Some(kernel) = args.kernel_path.as_ref() {
+            println!("  Kernel: {}", kernel);
+        }
+        if let Some(rootfs) = args.rootfs_path.as_ref() {
+            println!("  Rootfs: {}", rootfs);
+        }
+        println!("  Vsock: cid={} port={}", args.vsock_cid, args.vsock_port);
+        println!("  Rootfs read-only: {}", args.rootfs_read_only);
         println!();
         println!("Capabilities:");
         println!("  read_files: {:?}", policy.capabilities.read_files);
@@ -159,11 +179,7 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
         return Ok(());
     }
 
-    if args.unsafe_allow_claude {
-        run_unsafe(&args, &policy, &work_dir, &prompt).await
-    } else {
-        run_enforced(&args, &policy, &work_dir, &prompt).await
-    }
+    run_enforced(&args, &policy, &work_dir, &prompt).await
 }
 
 /// Load permission config from a TOML file
@@ -184,48 +200,6 @@ fn load_permission_config(path: &str) -> Result<PermissionLattice> {
 
     // Default to restrictive
     Ok(PermissionLattice::restrictive())
-}
-
-/// Build --allowedTools string from policy (unsafe direct mode)
-fn build_allowed_tools(policy: &PermissionLattice) -> String {
-    use lattice_guard::CapabilityLevel;
-
-    let mut tools = Vec::new();
-
-    // File operations
-    if policy.capabilities.read_files >= CapabilityLevel::LowRisk {
-        tools.push("Read");
-    }
-    if policy.capabilities.write_files >= CapabilityLevel::LowRisk {
-        tools.push("Write");
-    }
-    if policy.capabilities.edit_files >= CapabilityLevel::LowRisk {
-        tools.push("Edit");
-    }
-    if policy.capabilities.glob_search >= CapabilityLevel::LowRisk {
-        tools.push("Glob");
-    }
-    if policy.capabilities.grep_search >= CapabilityLevel::LowRisk {
-        tools.push("Grep");
-    }
-
-    // Web operations
-    if policy.capabilities.web_search >= CapabilityLevel::LowRisk {
-        tools.push("WebSearch");
-    }
-    if policy.capabilities.web_fetch >= CapabilityLevel::LowRisk {
-        tools.push("WebFetch");
-    }
-
-    // Bash - be careful with trifecta
-    if policy.capabilities.run_bash >= CapabilityLevel::LowRisk {
-        tools.push("Bash");
-    }
-
-    // Task tool for sub-agents
-    tools.push("Task");
-
-    tools.join(",")
 }
 
 /// Check if any approval obligations are present.
@@ -257,35 +231,19 @@ fn resolve_binary_path(path: &str) -> Result<PathBuf> {
     Ok(candidate)
 }
 
-struct ProxyGuard {
-    child: Option<Child>,
-    tmp_dir: PathBuf,
+struct TmpDirGuard {
+    path: PathBuf,
 }
 
-impl ProxyGuard {
-    fn new(child: Child, tmp_dir: PathBuf) -> Self {
-        Self {
-            child: Some(child),
-            tmp_dir,
-        }
-    }
-
-    fn child_mut(&mut self) -> Option<&mut Child> {
-        self.child.as_mut()
-    }
-
-    fn shutdown(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        let _ = fs::remove_dir_all(&self.tmp_dir);
+impl TmpDirGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
     }
 }
 
-impl Drop for ProxyGuard {
+impl Drop for TmpDirGuard {
     fn drop(&mut self) {
-        self.shutdown();
+        let _ = fs::remove_dir_all(&self.path);
     }
 }
 
@@ -297,37 +255,39 @@ async fn run_enforced(
 ) -> Result<()> {
     warn_unimplemented_caps(policy);
 
+    let node_url = args.node_url.trim();
+    if node_url.is_empty() {
+        return Err(anyhow!("missing --node-url (NUCLEUS_NODE_URL)"));
+    }
+
+    let kernel_path = args
+        .kernel_path
+        .as_ref()
+        .ok_or_else(|| anyhow!("missing --kernel-path (NUCLEUS_FIRECRACKER_KERNEL_PATH)"))?;
+    let rootfs_path = args
+        .rootfs_path
+        .as_ref()
+        .ok_or_else(|| anyhow!("missing --rootfs-path (NUCLEUS_FIRECRACKER_ROOTFS_PATH)"))?;
+
     let run_id = Uuid::new_v4();
     let tmp_dir = std::env::temp_dir().join(format!("nucleus-cli-{run_id}"));
     fs::create_dir_all(&tmp_dir)?;
+    let _tmp_guard = TmpDirGuard::new(tmp_dir.clone());
 
     let spec_path = tmp_dir.join("pod.yaml");
-    let announce_path = tmp_dir.join("tool-proxy.addr");
     let mcp_config_path = tmp_dir.join("mcp.json");
-    let tool_proxy_log = tmp_dir.join("tool-proxy.log");
-    let auth_secret = Uuid::new_v4().to_string();
 
-    write_tool_proxy_spec(&spec_path, policy, work_dir, args.timeout)?;
+    let pod_spec = build_pod_spec(args, policy, work_dir, kernel_path, rootfs_path)?;
+    write_pod_spec(&spec_path, &pod_spec)?;
 
-    let tool_proxy_path = resolve_binary_path(&args.tool_proxy_path)?;
     let mcp_command_path = resolve_binary_path(&args.mcp_path)?;
 
-    let proxy_child = spawn_tool_proxy(
-        &tool_proxy_path,
-        &spec_path,
-        &announce_path,
-        &tool_proxy_log,
-        &auth_secret,
+    let proxy_addr = create_pod_via_node(
+        node_url,
+        &pod_spec,
+        args.node_auth_secret.as_deref(),
+        &args.node_actor,
     )?;
-    let mut guard = ProxyGuard::new(proxy_child, tmp_dir.clone());
-
-    let proxy_addr = wait_for_announce(
-        guard
-            .child_mut()
-            .ok_or_else(|| anyhow!("tool-proxy missing child process"))?,
-        &announce_path,
-    )
-    .await?;
     let proxy_url = if proxy_addr.starts_with("http://") || proxy_addr.starts_with("https://") {
         proxy_addr
     } else {
@@ -338,13 +298,12 @@ async fn run_enforced(
         &mcp_config_path,
         &mcp_command_path,
         &proxy_url,
-        &auth_secret,
+        None,
         &spec_path,
     )?;
 
     let allowed_tools = build_mcp_allowed_tools(policy);
     if allowed_tools.is_empty() {
-        guard.shutdown();
         return Err(anyhow!(
             "no allowed MCP tools for enforced mode (policy is too restrictive)"
         ));
@@ -366,164 +325,97 @@ async fn run_enforced(
         work_dir,
     ) {
         Ok(output) => output,
-        Err(err) => {
-            guard.shutdown();
-            return Err(err);
-        }
+        Err(err) => return Err(err),
     };
     let duration = start.elapsed();
-    let result = render_output(&output, duration, args.output.as_str(), None);
-    guard.shutdown();
-    result
+    render_output(&output, duration, args.output.as_str())
 }
 
-async fn run_unsafe(
+fn build_pod_spec(
     args: &RunArgs,
     policy: &PermissionLattice,
     work_dir: &Path,
-    prompt: &str,
-) -> Result<()> {
-    let mut policy = policy.clone();
-    policy.commands.allow("claude");
-    let policy = policy.normalize();
-
-    let spec = PodSpec::new(
-        policy.clone(),
-        work_dir.to_path_buf(),
-        Duration::from_secs(args.timeout),
-    );
-    let mut pod = PodRuntime::new(spec)?;
-
-    if has_approval_obligations(&policy) {
-        let approver = Arc::new(CallbackApprover::new(|request| {
-            eprint!("Approve command '{}'? [y/N] ", request.operation());
-            io::stderr().flush().ok();
-            let mut input = String::new();
-            io::stdin().read_line(&mut input).ok();
-            input.trim().eq_ignore_ascii_case("y")
-        }));
-        pod = pod.with_approver(approver)?;
-    }
-
-    let executor = pod.executor();
-    let allowed_tools = build_allowed_tools(&policy);
-
-    info!(
-        allowed_tools = %allowed_tools,
-        model = %args.model,
-        "Spawning Claude Code (unsafe direct mode)"
-    );
-
-    let mut argv = vec![
-        "claude".to_string(),
-        "--print".to_string(),
-        "--model".to_string(),
-        args.model.clone(),
-        "--allowedTools".to_string(),
-        allowed_tools,
-        "--max-turns".to_string(),
-        "20".to_string(),
-        "--max-budget-usd".to_string(),
-        policy.budget.max_cost_usd.to_string(),
-    ];
-    if has_approval_obligations(&policy) {
-        argv.push("--permission-mode".to_string());
-        argv.push("plan".to_string());
-    }
-    argv.push(prompt.to_string());
-
-    let start = Instant::now();
-    let command = shell_words::join(&argv);
-    let output = match executor.run(&command) {
-        Ok(output) => output,
-        Err(NucleusError::ApprovalRequired { operation }) => {
-            let token = executor.request_approval(&operation)?;
-            executor.run_with_approval(&command, &token)?
-        }
-        Err(err) => return Err(err.into()),
-    };
-    let duration = start.elapsed();
-
-    let estimated_cost = 0.01;
-    if let Err(e) = pod.budget().charge_usd(estimated_cost) {
-        error!(error = %e, "Budget charge failed");
-    }
-
-    render_output(&output, duration, args.output.as_str(), Some(&pod))
-}
-
-fn write_tool_proxy_spec(
-    spec_path: &Path,
-    policy: &PermissionLattice,
-    work_dir: &Path,
-    timeout_secs: u64,
-) -> Result<()> {
-    let spec = SpecPodSpec::new(PodSpecInner {
+    kernel_path: &str,
+    rootfs_path: &str,
+) -> Result<SpecPodSpec> {
+    Ok(SpecPodSpec::new(PodSpecInner {
         work_dir: work_dir.to_path_buf(),
-        timeout_seconds: timeout_secs,
+        timeout_seconds: args.timeout,
         policy: PolicySpec::Inline {
             lattice: Box::new(policy.clone()),
         },
         budget_model: None,
         resources: None,
         network: None,
-        image: None,
-        vsock: None,
+        image: Some(ImageSpec {
+            kernel_path: PathBuf::from(kernel_path),
+            rootfs_path: PathBuf::from(rootfs_path),
+            boot_args: None,
+            read_only: args.rootfs_read_only,
+            scratch_path: None,
+        }),
+        vsock: Some(VsockSpec {
+            guest_cid: args.vsock_cid,
+            port: args.vsock_port,
+        }),
         seccomp: None,
         cgroup: None,
-    });
-    let yaml = serde_yaml::to_string(&spec)?;
+    }))
+}
+
+fn write_pod_spec(spec_path: &Path, spec: &SpecPodSpec) -> Result<()> {
+    let yaml = serde_yaml::to_string(spec)?;
     fs::write(spec_path, yaml)?;
     Ok(())
 }
 
-fn spawn_tool_proxy(
-    tool_proxy_path: &Path,
-    spec_path: &Path,
-    announce_path: &Path,
-    log_path: &Path,
-    auth_secret: &str,
-) -> Result<Child> {
-    let log_file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)?;
-
-    let mut cmd = Command::new(tool_proxy_path);
-    cmd.arg("--spec")
-        .arg(spec_path)
-        .arg("--listen")
-        .arg("127.0.0.1:0")
-        .arg("--announce-path")
-        .arg(announce_path)
-        .arg("--auth-secret")
-        .arg(auth_secret)
-        .stdout(Stdio::from(log_file.try_clone()?))
-        .stderr(Stdio::from(log_file));
-
-    let child = cmd.spawn().context("failed to spawn nucleus-tool-proxy")?;
-    Ok(child)
+#[derive(Deserialize)]
+struct CreatePodResponse {
+    #[serde(rename = "id")]
+    _id: Uuid,
+    proxy_addr: Option<String>,
 }
 
-async fn wait_for_announce(child: &mut Child, announce_path: &Path) -> Result<String> {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if let Ok(contents) = fs::read_to_string(announce_path) {
-            let addr = contents.trim();
-            if !addr.is_empty() {
-                return Ok(addr.to_string());
+#[derive(Deserialize)]
+struct NodeErrorBody {
+    error: String,
+}
+
+fn create_pod_via_node(
+    node_url: &str,
+    spec: &SpecPodSpec,
+    auth_secret: Option<&str>,
+    actor: &str,
+) -> Result<String> {
+    let url = format!("{}/v1/pods", node_url.trim_end_matches('/'));
+    let body = serde_yaml::to_string(spec)?;
+    let mut request = ureq::post(&url).set("content-type", "application/yaml");
+
+    if let Some(secret) = auth_secret {
+        let signed = sign_http_headers(secret.as_bytes(), Some(actor), body.as_bytes());
+        for (key, value) in signed.headers {
+            request = request.set(&key, &value);
+        }
+    }
+
+    match request.send_bytes(body.as_bytes()) {
+        Ok(response) => {
+            let parsed: CreatePodResponse = response
+                .into_json()
+                .map_err(|e| anyhow!("failed to decode node response: {e}"))?;
+            parsed
+                .proxy_addr
+                .ok_or_else(|| anyhow!("node did not return proxy address"))
+        }
+        Err(ureq::Error::Status(_, response)) => {
+            let status = response.status();
+            if let Ok(body) = response.into_json::<NodeErrorBody>() {
+                Err(anyhow!("node error: {}", body.error))
+            } else {
+                Err(anyhow!("node error: {}", status))
             }
         }
-
-        if let Some(status) = child.try_wait()? {
-            return Err(anyhow!("tool-proxy exited early with {status}"));
-        }
-
-        if Instant::now() > deadline {
-            return Err(anyhow!("timed out waiting for tool-proxy to announce"));
-        }
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        Err(err) => Err(anyhow!("node request failed: {err}")),
     }
 }
 
@@ -531,7 +423,7 @@ fn write_mcp_config(
     mcp_path: &Path,
     mcp_command: &Path,
     proxy_url: &str,
-    auth_secret: &str,
+    auth_secret: Option<&str>,
     spec_path: &Path,
 ) -> Result<()> {
     #[derive(Serialize)]
@@ -553,10 +445,9 @@ fn write_mcp_config(
 
     let mut env = std::collections::BTreeMap::new();
     env.insert("NUCLEUS_MCP_PROXY_URL".to_string(), proxy_url.to_string());
-    env.insert(
-        "NUCLEUS_MCP_AUTH_SECRET".to_string(),
-        auth_secret.to_string(),
-    );
+    if let Some(secret) = auth_secret {
+        env.insert("NUCLEUS_MCP_AUTH_SECRET".to_string(), secret.to_string());
+    }
     env.insert(
         "NUCLEUS_MCP_SPEC".to_string(),
         spec_path.display().to_string(),
@@ -650,12 +541,7 @@ fn warn_unimplemented_caps(policy: &PermissionLattice) {
     }
 }
 
-fn render_output(
-    output: &std::process::Output,
-    duration: Duration,
-    mode: &str,
-    pod: Option<&PodRuntime>,
-) -> Result<()> {
+fn render_output(output: &std::process::Output, duration: Duration, mode: &str) -> Result<()> {
     if mode == "json" {
         let result = serde_json::json!({
             "success": output.status.success(),
@@ -663,8 +549,6 @@ fn render_output(
             "stdout": String::from_utf8_lossy(&output.stdout),
             "stderr": String::from_utf8_lossy(&output.stderr),
             "duration_ms": duration.as_millis(),
-            "budget_consumed": pod.map(|p| p.budget().consumed_usd()),
-            "budget_remaining": pod.map(|p| p.budget().remaining_usd()),
         });
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
@@ -680,10 +564,6 @@ fn render_output(
 
         eprintln!("\n--- Summary ---");
         eprintln!("Duration: {:?}", duration);
-        if let Some(pod) = pod {
-            eprintln!("Budget consumed: ${:.4}", pod.budget().consumed_usd());
-            eprintln!("Budget remaining: ${:.4}", pod.budget().remaining_usd());
-        }
     }
 
     if output.status.success() {

@@ -17,9 +17,9 @@ path = "src/main.rs"
 
 [dependencies]
 # Core enforcement
-nucleus = { path = "../nucleus" }
 lattice-guard = { path = "../lattice-guard" }
 nucleus-spec = { path = "../nucleus-spec" }
+nucleus-client = { path = "../nucleus-client" }
 
 # CLI
 clap = { version = "4.5", features = ["derive", "env"] }
@@ -45,8 +45,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 shellexpand = "3.1"
 dirs = "6.0"
-shell-words = "1.1"
 uuid = { version = "1.11", features = ["v4"] }
+ureq = { version = "2.12", features = ["json"] }
 
 # macOS Keychain (conditional)
 [target.'cfg(target_os = "macos")'.dependencies]

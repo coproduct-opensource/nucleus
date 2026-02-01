@@ -1,7 +1,7 @@
 //! Nucleus CLI - Run AI agents with policy-aware defaults
 //!
 //! `nucleus-cli` runs Claude with MCP + nucleus-tool-proxy for tool enforcement.
-//! Use `--unsafe-allow-claude` only for testing without enforcement.
+//! Use `nucleus-node` (Firecracker) for all execution.
 //!
 //! # Examples
 //!

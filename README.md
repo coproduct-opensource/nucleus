@@ -98,16 +98,17 @@ cargo install nucleus-tool-proxy
 # Run a task with Claude (enforced via tool-proxy + MCP)
 nucleus run --profile fix-issue "Fix the bug in src/main.rs"
 
-# Unsafe fallback (no tool enforcement)
-nucleus run --unsafe-allow-claude --profile fix-issue "Fix the bug in src/main.rs"
-
 # List available permission profiles
 nucleus profiles
 ```
 
-Note: enforced mode runs Claude with MCP + `nucleus-tool-proxy` locally. This
-requires a Claude Code CLI that supports `--mcp-config`. For VM
-isolation, use `nucleus-node` with Firecracker and the in-VM tool-proxy.
+Note: `nucleus run` uses `nucleus-node` (Firecracker) for enforcement and
+connects via MCP to the in‑VM tool proxy. You must provide:
+- `NUCLEUS_NODE_URL`
+- `NUCLEUS_FIRECRACKER_KERNEL_PATH`
+- `NUCLEUS_FIRECRACKER_ROOTFS_PATH`
+- `NUCLEUS_FIRECRACKER_VSOCK_CID` and `NUCLEUS_FIRECRACKER_VSOCK_PORT`
+
 Current enforced tools: read, write, run. Web/search tools are not yet wired.
 
 ## Firecracker Notes
