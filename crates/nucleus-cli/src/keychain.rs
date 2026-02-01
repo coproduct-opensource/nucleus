@@ -14,6 +14,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+#[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "com.nucleus.cli";
 const SECRET_LENGTH: usize = 32;
 const ROTATION_DAYS: i64 = 90;
