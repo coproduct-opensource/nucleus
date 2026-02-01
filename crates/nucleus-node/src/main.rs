@@ -855,7 +855,6 @@ async fn spawn_firecracker_pod(
             .map_err(|e| ApiError::Driver(format!("vsock bridge failed: {e}")))?;
 
         let mut proxy_addr = format!("http://{}", bridge.listen_addr());
-        let mut signed_proxy = None;
         let proxy = signed_proxy::SignedProxy::start(
             bridge.listen_addr(),
             Arc::new(state.proxy_auth_secret.as_bytes().to_vec()),
@@ -866,7 +865,7 @@ async fn spawn_firecracker_pod(
         .map_err(|e| ApiError::Driver(format!("signed proxy failed: {e}")))?;
         proxy_addr = format!("http://{}", proxy.listen_addr());
         let health_addr = proxy.listen_addr();
-        signed_proxy = Some(proxy);
+        let signed_proxy = Some(proxy);
 
         if let Err(err) = wait_for_proxy_health(health_addr).await {
             if let Some(proxy) = signed_proxy {
