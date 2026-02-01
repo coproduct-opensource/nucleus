@@ -94,11 +94,10 @@ fn verify_log(path: &Path, secret: &[u8]) -> Result<usize, VerifyError> {
             continue;
         }
         let line_no = idx + 1;
-        let entry: AuditEntry =
-            serde_json::from_str(line).map_err(|source| VerifyError::Json {
-                line: line_no,
-                source,
-            })?;
+        let entry: AuditEntry = serde_json::from_str(line).map_err(|source| VerifyError::Json {
+            line: line_no,
+            source,
+        })?;
         if entry.prev_hash != prev_hash {
             return Err(VerifyError::Invalid {
                 line: line_no,
