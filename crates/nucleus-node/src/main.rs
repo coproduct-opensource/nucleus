@@ -1284,6 +1284,12 @@ impl FirecrackerConfig {
             };
         }
 
+        boot_args = match boot_args.take() {
+            Some(args) if args.contains("ipv6.disable=") => Some(args),
+            Some(args) => Some(format!("{args} ipv6.disable=1")),
+            None => Some("ipv6.disable=1".to_string()),
+        };
+
         let vsock = spec.spec.vsock.as_ref().map(|vsock| VsockConfig {
             guest_cid: vsock.guest_cid,
             uds_path: vsock_path.display().to_string(),

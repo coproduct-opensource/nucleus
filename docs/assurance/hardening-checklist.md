@@ -29,8 +29,8 @@ Status key: `DONE`, `PARTIAL`, `TODO`.
   - Evidence: `crates/nucleus-node/src/main.rs`, `crates/nucleus-node/src/net.rs`
 - **IPv6 is denied or disabled**
   - Pass: ip6tables mirrors default-deny OR guest IPv6 is disabled.
-  - Current: `TODO`.
-  - Evidence: `crates/nucleus-node/src/net.rs`, guest init
+  - Current: `DONE` (guest IPv6 disabled at boot).
+  - Evidence: `crates/nucleus-node/src/main.rs`
 - **DNS allowlisting**
   - Pass: explicit hostname allowlist enforced (ipset/dnsmasq or equivalent).
   - Current: `TODO`.
