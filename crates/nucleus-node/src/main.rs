@@ -52,7 +52,12 @@ struct Args {
     #[arg(long, env = "NUCLEUS_NODE_STATE_DIR", default_value = "./nucleus-node")]
     state_dir: PathBuf,
     /// Driver backend.
-    #[arg(long, env = "NUCLEUS_NODE_DRIVER", value_enum, default_value = "local")]
+    #[arg(
+        long,
+        env = "NUCLEUS_NODE_DRIVER",
+        value_enum,
+        default_value = "firecracker"
+    )]
     driver: DriverKind,
     /// Allow the local driver (no VM isolation).
     #[arg(long, env = "NUCLEUS_ALLOW_LOCAL_DRIVER", default_value_t = false)]
