@@ -6,8 +6,9 @@ on:
       - "v*"
       - "nucleus-node-v*"
 
+# Restrict default permissions - jobs declare what they need
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -47,6 +48,8 @@ jobs:
     name: Create Release
     runs-on: ubuntu-latest
     needs: build
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
