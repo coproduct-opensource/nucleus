@@ -30,7 +30,7 @@ enforced at runtime** through the tool proxy. The envelope is intended to be
 
 **Partial / in progress**
 - Web/search tools not yet wired in enforced mode.
-- Approvals are runtime tokens; signed approvals are planned.
+- Approvals are runtime tokens; preflight approval bundles are planned.
 - Kani proofs exist; CI gating and formal proofs are planned.
 
 **Not yet**
@@ -113,11 +113,10 @@ Current enforced tools: read, write, run. Web/search tools are not yet wired.
 
 ## Firecracker Notes
 
-- Firecracker pods require `--proxy-auth-secret` so the signed proxy can enforce auth.
+- Firecracker pods require `--proxy-auth-secret` and `--proxy-approval-secret` for signed tool and approval calls.
 - The local driver is opt-in via `--allow-local-driver` (no VM isolation).
-- Use `--proxy-approval-secret` if approvals should be signed by a separate authority.
 - Firecracker runs in a fresh network namespace by default (`--firecracker-netns=false` to disable); default-deny iptables apply even without `spec.network` (no NIC unless policy is set).
-- Audit logs are hash-chained when enabled (tamper-evident).
+- Audit logs are hash-chained and signed (tamper-evident; verification tooling pending).
 - Guest init is the Rust binary `nucleus-guest-init`, baked into the rootfs.
 - Run `scripts/firecracker/test-network.sh` to validate egress policy on Linux.
 

@@ -46,7 +46,7 @@ struct Args {
     vsock_port: Option<u32>,
     /// Shared secret for HMAC request signing.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUTH_SECRET")]
-    auth_secret: Option<String>,
+    auth_secret: String,
     /// Maximum allowed clock skew (seconds) for signed requests.
     #[arg(
         long,
@@ -54,24 +54,28 @@ struct Args {
         default_value_t = 60
     )]
     auth_max_skew_secs: u64,
-    /// Optional audit log path.
-    #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUDIT_LOG")]
-    audit_log: Option<PathBuf>,
+    /// Audit log path.
+    #[arg(
+        long,
+        env = "NUCLEUS_TOOL_PROXY_AUDIT_LOG",
+        default_value = "/tmp/nucleus-audit.log"
+    )]
+    audit_log: PathBuf,
     /// Optional audit log signing secret (defaults to auth secret if omitted).
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUDIT_SECRET")]
     audit_secret: Option<String>,
-    /// Optional approval authority secret (separate from tool auth).
+    /// Approval authority secret (separate from tool auth).
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET")]
-    approval_secret: Option<String>,
+    approval_secret: String,
 }
 
 #[derive(Clone)]
 struct AppState {
     runtime: Arc<PodRuntime>,
     approvals: Arc<ApprovalRegistry>,
-    audit: Option<Arc<AuditLog>>,
-    auth: Option<AuthConfig>,
-    approval_auth: Option<AuthConfig>,
+    audit: Arc<AuditLog>,
+    auth: AuthConfig,
+    approval_auth: AuthConfig,
     approval_nonces: Arc<ApprovalNonceCache>,
 }
 
@@ -305,24 +309,16 @@ async fn main() -> Result<(), ApiError> {
     });
     let runtime = runtime.with_approver(Arc::new(approver))?;
 
-    let auth = args.auth_secret.as_ref().map(|secret| {
-        AuthConfig::new(
-            secret.as_bytes(),
-            Duration::from_secs(args.auth_max_skew_secs),
-        )
-    });
-    let approval_auth = args.approval_secret.as_ref().map(|secret| {
-        AuthConfig::new(
-            secret.as_bytes(),
-            Duration::from_secs(args.auth_max_skew_secs),
-        )
-    });
+    let auth = AuthConfig::new(
+        args.auth_secret.as_bytes(),
+        Duration::from_secs(args.auth_max_skew_secs),
+    );
+    let approval_auth = AuthConfig::new(
+        args.approval_secret.as_bytes(),
+        Duration::from_secs(args.auth_max_skew_secs),
+    );
 
-    if auth.is_none() {
-        info!("nucleus-tool-proxy auth disabled (set NUCLEUS_TOOL_PROXY_AUTH_SECRET to enable)");
-    }
-
-    let audit = build_audit_log(&args, auth.as_ref())?;
+    let audit = build_audit_log(&args, &auth)?;
 
     let state = AppState {
         runtime: Arc::new(runtime),
@@ -378,24 +374,16 @@ async fn auth_middleware(
         .map_err(|e| ApiError::Body(e.to_string()))?;
 
     if parts.uri.path() == APPROVE_PATH {
-        if let Some(approval_auth) = state.approval_auth.as_ref() {
-            let context = auth::verify_http(&parts.headers, &bytes, approval_auth)?;
-            let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
-            req.extensions_mut().insert(context);
-            return Ok(next.run(req).await);
-        }
-    }
-
-    if let Some(auth) = state.auth.as_ref() {
-        let context = auth::verify_http(&parts.headers, &bytes, auth)?;
+        let context = auth::verify_http(&parts.headers, &bytes, &state.approval_auth)?;
         let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
         req.extensions_mut().insert(context);
-        Ok(next.run(req).await)
-    } else {
-        Ok(next
-            .run(axum::http::Request::from_parts(parts, Body::from(bytes)))
-            .await)
+        return Ok(next.run(req).await);
     }
+
+    let context = auth::verify_http(&parts.headers, &bytes, &state.auth)?;
+    let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
+    req.extensions_mut().insert(context);
+    Ok(next.run(req).await)
 }
 
 async fn health() -> Json<serde_json::Value> {
@@ -486,17 +474,14 @@ async fn approve_operation(
     Json(req): Json<ApproveRequest>,
 ) -> Result<Json<ApproveResponse>, ApiError> {
     let now = now_unix();
-    let expires_at =
-        resolve_approval_expiry(state.approval_auth.as_ref(), req.expires_at_unix, now)?;
-    if state.approval_auth.is_some() {
-        let nonce = req
-            .nonce
-            .as_deref()
-            .ok_or_else(|| ApiError::Spec("approval nonce required".to_string()))?;
-        let expiry = expires_at.unwrap_or(now + MAX_APPROVAL_TTL_SECS);
-        if !state.approval_nonces.check_and_insert(nonce, expiry, now) {
-            return Err(ApiError::Spec("approval nonce replayed".to_string()));
-        }
+    let expires_at = resolve_approval_expiry(req.expires_at_unix, now)?;
+    let nonce = req
+        .nonce
+        .as_deref()
+        .ok_or_else(|| ApiError::Spec("approval nonce required".to_string()))?;
+    let expiry = expires_at.unwrap_or(now + MAX_APPROVAL_TTL_SECS);
+    if !state.approval_nonces.check_and_insert(nonce, expiry, now) {
+        return Err(ApiError::Spec("approval nonce replayed".to_string()));
     }
     state
         .approvals
@@ -506,20 +491,15 @@ async fn approve_operation(
 }
 
 fn resolve_approval_expiry(
-    approval_auth: Option<&AuthConfig>,
     expires_at_unix: Option<u64>,
     now: u64,
 ) -> Result<Option<u64>, ApiError> {
-    let require_expiry = approval_auth.is_some();
-    if require_expiry {
-        let requested = expires_at_unix.unwrap_or(now + MAX_APPROVAL_TTL_SECS);
-        if requested < now {
-            return Err(ApiError::Spec("approval expiry is in the past".to_string()));
-        }
-        let max_allowed = now + MAX_APPROVAL_TTL_SECS;
-        return Ok(Some(requested.min(max_allowed)));
+    let requested = expires_at_unix.unwrap_or(now + MAX_APPROVAL_TTL_SECS);
+    if requested < now {
+        return Err(ApiError::Spec("approval expiry is in the past".to_string()));
     }
-    Ok(expires_at_unix)
+    let max_allowed = now + MAX_APPROVAL_TTL_SECS;
+    Ok(Some(requested.min(max_allowed)))
 }
 
 fn build_runtime(spec: &PodSpec) -> Result<PodRuntime, ApiError> {
@@ -642,31 +622,20 @@ impl axum::serve::Listener for VsockAxumListener {
     }
 }
 
-fn build_audit_log(
-    args: &Args,
-    auth: Option<&AuthConfig>,
-) -> Result<Option<Arc<AuditLog>>, ApiError> {
-    let path = match args.audit_log.as_ref() {
-        Some(path) => path.clone(),
-        None => return Ok(None),
-    };
-
+fn build_audit_log(args: &Args, auth: &AuthConfig) -> Result<Arc<AuditLog>, ApiError> {
+    let path = args.audit_log.clone();
     let secret = if let Some(secret) = args.audit_secret.as_ref() {
         secret.as_bytes().to_vec()
-    } else if let Some(auth) = auth {
-        auth.secret().to_vec()
     } else {
-        return Err(ApiError::Spec(
-            "audit log requires audit secret or auth secret".to_string(),
-        ));
+        auth.secret().to_vec()
     };
 
     let last_hash = load_last_hash(&path).unwrap_or_default();
-    Ok(Some(Arc::new(AuditLog {
+    Ok(Arc::new(AuditLog {
         path,
         secret,
         last_hash: Mutex::new(last_hash),
-    })))
+    }))
 }
 
 async fn audit_event(
@@ -676,24 +645,23 @@ async fn audit_event(
     subject: &str,
     result: &str,
 ) -> Result<(), ApiError> {
-    if let Some(ref audit) = state.audit {
-        let actor = headers
-            .get("x-nucleus-actor")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
-        audit
-            .log(AuditEntry {
-                timestamp_unix: now_unix(),
-                actor,
-                event: event.to_string(),
-                subject: subject.to_string(),
-                result: result.to_string(),
-                prev_hash: String::new(),
-                hash: String::new(),
-                signature: String::new(),
-            })
-            .await?;
-    }
+    let actor = headers
+        .get("x-nucleus-actor")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    state
+        .audit
+        .log(AuditEntry {
+            timestamp_unix: now_unix(),
+            actor,
+            event: event.to_string(),
+            subject: subject.to_string(),
+            result: result.to_string(),
+            prev_hash: String::new(),
+            hash: String::new(),
+            signature: String::new(),
+        })
+        .await?;
     Ok(())
 }
 
@@ -704,20 +672,19 @@ async fn emit_boot_report(state: &AppState) -> Result<(), ApiError> {
     };
     let actor = std::env::var("NUCLEUS_TOOL_PROXY_BOOT_ACTOR").ok();
 
-    if let Some(ref audit) = state.audit {
-        audit
-            .log(AuditEntry {
-                timestamp_unix: now_unix(),
-                actor,
-                event: "boot".to_string(),
-                subject: report,
-                result: "ok".to_string(),
-                prev_hash: String::new(),
-                hash: String::new(),
-                signature: String::new(),
-            })
-            .await?;
-    }
+    state
+        .audit
+        .log(AuditEntry {
+            timestamp_unix: now_unix(),
+            actor,
+            event: "boot".to_string(),
+            subject: report,
+            result: "ok".to_string(),
+            prev_hash: String::new(),
+            hash: String::new(),
+            signature: String::new(),
+        })
+        .await?;
 
     Ok(())
 }

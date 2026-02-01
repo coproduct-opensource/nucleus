@@ -6,7 +6,7 @@
 - Default network egress to deny; explicit allowlists only (host netns iptables + guest defense).
 - The node provisions a per-pod netns, tap interface, and guest IP; guest init configures eth0 from kernel args.
 - Netns setup enables bridge netfilter (`br_netfilter`) so iptables can enforce guest egress.
-- Approvals require signed tokens issued by an external authority (roadmap).
+- Approvals require signed tokens issued by an authority (HMAC today; external authority roadmap).
 - Provide verifiable audit logs for every operation (optional signing today).
 
 ## Trust Boundaries
@@ -46,13 +46,13 @@ Side effects (filesystem/commands)
 - Optionally starts a signed proxy on 127.0.0.1.
 
 ### approval authority (host, separate process, roadmap)
-- Issues signed approval tokens.
+- Issues signed approval bundles (roadmap).
 - Logs approvals with signatures.
 - Enforces replay protection and expiration.
 
 ### nucleus-tool-proxy (guest)
 - Enforces permissions (Sandbox + Executor).
-- Requires approvals for gated ops (counter-based today; tokens are roadmap).
+- Requires approvals for gated ops (counter-based today; signed requests required; bundles are roadmap).
 - Writes audit log entries (optional signing).
 - Guest init (Rust) configures networking from kernel args and then `exec`s the proxy.
 - Guest init emits a boot report into the audit log on startup.
@@ -90,7 +90,7 @@ Side effects (filesystem/commands)
 
 **Partial / in progress**
 - Web/search tools not yet wired in enforced mode.
-- Approvals are runtime tokens; signed approvals are planned.
+- Approvals are runtime tokens; signed approvals are required. Preflight bundles are planned.
 - Kani proofs exist; nightly job runs, merge gating and formal proofs are planned.
 
 **Not yet**

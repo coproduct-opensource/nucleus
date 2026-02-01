@@ -93,12 +93,12 @@ struct Args {
     /// Maximum allowed clock skew (seconds) for signed requests.
     #[arg(long, env = "NUCLEUS_NODE_AUTH_MAX_SKEW_SECS", default_value_t = 60)]
     auth_max_skew_secs: u64,
-    /// Shared secret for signing tool-proxy requests from the host (optional).
+    /// Shared secret for signing tool-proxy requests from the host.
     #[arg(long, env = "NUCLEUS_NODE_PROXY_AUTH_SECRET")]
-    proxy_auth_secret: Option<String>,
-    /// Optional secret for signing approval requests (if separate from tool auth).
+    proxy_auth_secret: String,
+    /// Secret for signing approval requests (separate from tool auth).
     #[arg(long, env = "NUCLEUS_NODE_PROXY_APPROVAL_SECRET")]
-    proxy_approval_secret: Option<String>,
+    proxy_approval_secret: String,
     /// Default actor to use when signing proxy requests.
     #[arg(long, env = "NUCLEUS_NODE_PROXY_ACTOR", default_value = "nucleus-node")]
     proxy_actor: String,
@@ -129,8 +129,8 @@ struct NodeState {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     network_allocator: Arc<net::NetworkAllocator>,
     auth: Option<AuthConfig>,
-    proxy_auth_secret: Option<String>,
-    proxy_approval_secret: Option<String>,
+    proxy_auth_secret: String,
+    proxy_approval_secret: String,
     proxy_actor: Option<String>,
 }
 
@@ -254,6 +254,17 @@ async fn main() -> Result<(), ApiError> {
     if matches!(args.driver, DriverKind::Local) && !args.allow_local_driver {
         return Err(ApiError::Driver(
             "local driver disabled; pass --allow-local-driver to run without VM isolation"
+                .to_string(),
+        ));
+    }
+    if args.proxy_auth_secret.trim().is_empty() {
+        return Err(ApiError::Driver(
+            "proxy auth secret is required (set NUCLEUS_NODE_PROXY_AUTH_SECRET)".to_string(),
+        ));
+    }
+    if args.proxy_approval_secret.trim().is_empty() {
+        return Err(ApiError::Driver(
+            "proxy approval secret is required (set NUCLEUS_NODE_PROXY_APPROVAL_SECRET)"
                 .to_string(),
         ));
     }
@@ -591,12 +602,19 @@ async fn spawn_local_pod(
         .arg("127.0.0.1:0")
         .arg("--announce-path")
         .arg(&announce_path);
-    if let Some(secret) = state.proxy_auth_secret.as_ref() {
-        command.env("NUCLEUS_TOOL_PROXY_AUTH_SECRET", secret);
-    }
-    if let Some(secret) = state.proxy_approval_secret.as_ref() {
-        command.env("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET", secret);
-    }
+    command.env(
+        "NUCLEUS_TOOL_PROXY_AUTH_SECRET",
+        state.proxy_auth_secret.as_str(),
+    );
+    command.env(
+        "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET",
+        state.proxy_approval_secret.as_str(),
+    );
+    let audit_path = pod_dir.join("audit.log");
+    command.env(
+        "NUCLEUS_TOOL_PROXY_AUDIT_LOG",
+        audit_path.to_string_lossy().as_ref(),
+    );
     let mut child = command
         .stdout(log_stdout)
         .stderr(log_stderr)
@@ -605,17 +623,14 @@ async fn spawn_local_pod(
 
     let mut proxy_addr = wait_for_announce(&announce_path, &mut child).await;
     let mut signed_proxy = None;
-    if let (Some(secret), Some(addr)) = (state.proxy_auth_secret.as_ref(), proxy_addr.as_ref()) {
+    if let Some(addr) = proxy_addr.as_ref() {
         let target_addr: SocketAddr = addr
             .parse()
             .map_err(|e| ApiError::Driver(format!("invalid tool proxy address {addr}: {e}")))?;
         let proxy = signed_proxy::SignedProxy::start(
             target_addr,
-            Arc::new(secret.as_bytes().to_vec()),
-            state
-                .proxy_approval_secret
-                .as_ref()
-                .map(|value| Arc::new(value.as_bytes().to_vec())),
+            Arc::new(state.proxy_auth_secret.as_bytes().to_vec()),
+            Some(Arc::new(state.proxy_approval_secret.as_bytes().to_vec())),
             state.proxy_actor.clone(),
         )
         .await
@@ -654,9 +669,9 @@ async fn spawn_firecracker_pod(
                 "firecracker requires /dev/kvm (KVM not available)".to_string(),
             ));
         }
-        if state.proxy_auth_secret.is_none() {
+        if state.proxy_approval_secret.trim().is_empty() {
             return Err(ApiError::Driver(
-                "firecracker requires --proxy-auth-secret to enforce signed proxy auth".to_string(),
+                "proxy approval secret is required to enforce signed approvals".to_string(),
             ));
         }
 
@@ -840,26 +855,17 @@ async fn spawn_firecracker_pod(
             .map_err(|e| ApiError::Driver(format!("vsock bridge failed: {e}")))?;
 
         let mut proxy_addr = format!("http://{}", bridge.listen_addr());
-        let mut signed_proxy = None;
-        let health_addr = if let Some(secret) = state.proxy_auth_secret.as_ref() {
-            let proxy = signed_proxy::SignedProxy::start(
-                bridge.listen_addr(),
-                Arc::new(secret.as_bytes().to_vec()),
-                state
-                    .proxy_approval_secret
-                    .as_ref()
-                    .map(|value| Arc::new(value.as_bytes().to_vec())),
-                state.proxy_actor.clone(),
-            )
-            .await
-            .map_err(|e| ApiError::Driver(format!("signed proxy failed: {e}")))?;
-            proxy_addr = format!("http://{}", proxy.listen_addr());
-            let addr = proxy.listen_addr();
-            signed_proxy = Some(proxy);
-            addr
-        } else {
-            bridge.listen_addr()
-        };
+        let proxy = signed_proxy::SignedProxy::start(
+            bridge.listen_addr(),
+            Arc::new(state.proxy_auth_secret.as_bytes().to_vec()),
+            Some(Arc::new(state.proxy_approval_secret.as_bytes().to_vec())),
+            state.proxy_actor.clone(),
+        )
+        .await
+        .map_err(|e| ApiError::Driver(format!("signed proxy failed: {e}")))?;
+        proxy_addr = format!("http://{}", proxy.listen_addr());
+        let health_addr = proxy.listen_addr();
+        let signed_proxy = Some(proxy);
 
         if let Err(err) = wait_for_proxy_health(health_addr).await {
             if let Some(proxy) = signed_proxy {

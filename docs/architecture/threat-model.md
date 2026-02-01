@@ -26,8 +26,8 @@
 - Tool call parameter tampering.
 
 Mitigations
-- Signed requests when enabled, nonce/timestamp with max skew.
-- Approval tokens bound to operation + expiry (roadmap).
+- Signed requests required, nonce/timestamp with max skew.
+- Signed approval requests require nonce + expiry; preflight bundles are roadmap.
 
 ### Control Plane -> VM
 - VM proxy spoofing.
