@@ -81,8 +81,8 @@ Status key: `DONE`, `PARTIAL`, `TODO`.
 
 - **Audit log signatures**
   - Pass: log entries are signed; verification tool exists.
-  - Current: `PARTIAL` (signatures enforced; verifier pending).
-  - Evidence: `crates/nucleus-tool-proxy/src/main.rs`
+  - Current: `DONE` (signatures enforced; verifier available).
+  - Evidence: `crates/nucleus-tool-proxy/src/main.rs`, `crates/nucleus-audit/src/main.rs`
 - **Remote append-only storage**
   - Pass: logs shipped to append-only store (or immutability proof).
   - Current: `TODO`.

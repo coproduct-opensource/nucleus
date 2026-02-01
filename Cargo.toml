@@ -10,6 +10,7 @@ members = [
     "crates/nucleus-guest-init", # Guest init for Firecracker images
     "crates/nucleus-net-probe", # TCP probe for network policy tests
     "crates/nucleus-mcp", # MCP server bridging Claude to tool-proxy
+    "crates/nucleus-audit", # Audit log verifier CLI
 ]
 resolver = "2"
 
