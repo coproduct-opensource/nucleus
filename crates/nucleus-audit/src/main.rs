@@ -65,7 +65,7 @@ fn resolve_secret(args: &Args) -> Result<String, VerifyError> {
         return Ok(secret.clone());
     }
     if let Some(path) = args.secret_file.as_ref() {
-        return Ok(read_secret_file(path)?);
+        return read_secret_file(path);
     }
     if let Some(secret) = args.auth_secret.as_ref() {
         return Ok(secret.clone());
