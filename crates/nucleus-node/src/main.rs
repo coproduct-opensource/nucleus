@@ -126,7 +126,7 @@ struct PodHandle {
 
 #[derive(Debug)]
 enum DriverState {
-    Local(LocalPod),
+    Local(Box<LocalPod>),
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Firecracker(Box<FirecrackerPod>),
 }
@@ -596,7 +596,7 @@ async fn spawn_local_pod(
     };
 
     info!("spawned local pod {}", id);
-    Ok((DriverState::Local(handle), proxy_addr, log_path))
+    Ok((DriverState::Local(Box::new(handle)), proxy_addr, log_path))
 }
 
 async fn spawn_firecracker_pod(
