@@ -277,16 +277,7 @@ async fn run_enforced(
     let spec_path = tmp_dir.join("pod.yaml");
     let mcp_config_path = tmp_dir.join("mcp.json");
 
-    let pod_spec = build_pod_spec(
-        policy,
-        work_dir,
-        args.timeout,
-        kernel_path,
-        rootfs_path,
-        args.rootfs_read_only,
-        args.vsock_cid,
-        args.vsock_port,
-    )?;
+    let pod_spec = build_pod_spec(args, policy, work_dir, kernel_path, rootfs_path)?;
     write_pod_spec(&spec_path, &pod_spec)?;
 
     let mcp_command_path = resolve_binary_path(&args.mcp_path)?;
@@ -341,18 +332,15 @@ async fn run_enforced(
 }
 
 fn build_pod_spec(
+    args: &RunArgs,
     policy: &PermissionLattice,
     work_dir: &Path,
-    timeout_secs: u64,
     kernel_path: &str,
     rootfs_path: &str,
-    rootfs_read_only: bool,
-    vsock_cid: u32,
-    vsock_port: u32,
 ) -> Result<SpecPodSpec> {
     Ok(SpecPodSpec::new(PodSpecInner {
         work_dir: work_dir.to_path_buf(),
-        timeout_seconds: timeout_secs,
+        timeout_seconds: args.timeout,
         policy: PolicySpec::Inline {
             lattice: Box::new(policy.clone()),
         },
@@ -363,12 +351,12 @@ fn build_pod_spec(
             kernel_path: PathBuf::from(kernel_path),
             rootfs_path: PathBuf::from(rootfs_path),
             boot_args: None,
-            read_only: rootfs_read_only,
+            read_only: args.rootfs_read_only,
             scratch_path: None,
         }),
         vsock: Some(VsockSpec {
-            guest_cid: vsock_cid,
-            port: vsock_port,
+            guest_cid: args.vsock_cid,
+            port: args.vsock_port,
         }),
         seccomp: None,
         cgroup: None,
