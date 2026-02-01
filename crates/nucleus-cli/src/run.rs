@@ -64,9 +64,9 @@ pub struct RunArgs {
     #[arg(long, env = "NUCLEUS_NODE_URL")]
     pub node_url: String,
 
-    /// Optional auth secret for nucleus-node API (HMAC).
+    /// Auth secret for nucleus-node API (HMAC).
     #[arg(long, env = "NUCLEUS_NODE_AUTH_SECRET")]
-    pub node_auth_secret: Option<String>,
+    pub node_auth_secret: String,
 
     /// Actor name for signed node requests.
     #[arg(long, env = "NUCLEUS_NODE_ACTOR", default_value = "nucleus-cli")]
@@ -259,6 +259,12 @@ async fn run_enforced(
     if node_url.is_empty() {
         return Err(anyhow!("missing --node-url (NUCLEUS_NODE_URL)"));
     }
+    let node_auth_secret = args.node_auth_secret.trim();
+    if node_auth_secret.is_empty() {
+        return Err(anyhow!(
+            "missing --node-auth-secret (NUCLEUS_NODE_AUTH_SECRET)"
+        ));
+    }
 
     let kernel_path = args
         .kernel_path
@@ -282,12 +288,7 @@ async fn run_enforced(
 
     let mcp_command_path = resolve_binary_path(&args.mcp_path)?;
 
-    let proxy_addr = create_pod_via_node(
-        node_url,
-        &pod_spec,
-        args.node_auth_secret.as_deref(),
-        &args.node_actor,
-    )?;
+    let proxy_addr = create_pod_via_node(node_url, &pod_spec, node_auth_secret, &args.node_actor)?;
     let proxy_url = if proxy_addr.starts_with("http://") || proxy_addr.starts_with("https://") {
         proxy_addr
     } else {
@@ -384,18 +385,16 @@ struct NodeErrorBody {
 fn create_pod_via_node(
     node_url: &str,
     spec: &SpecPodSpec,
-    auth_secret: Option<&str>,
+    auth_secret: &str,
     actor: &str,
 ) -> Result<String> {
     let url = format!("{}/v1/pods", node_url.trim_end_matches('/'));
     let body = serde_yaml::to_string(spec)?;
     let mut request = ureq::post(&url).set("content-type", "application/yaml");
 
-    if let Some(secret) = auth_secret {
-        let signed = sign_http_headers(secret.as_bytes(), Some(actor), body.as_bytes());
-        for (key, value) in signed.headers {
-            request = request.set(&key, &value);
-        }
+    let signed = sign_http_headers(auth_secret.as_bytes(), Some(actor), body.as_bytes());
+    for (key, value) in signed.headers {
+        request = request.set(&key, &value);
     }
 
     match request.send_bytes(body.as_bytes()) {

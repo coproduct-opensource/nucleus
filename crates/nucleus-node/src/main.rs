@@ -89,7 +89,7 @@ struct Args {
     firecracker_max_pods: usize,
     /// Shared secret for HMAC request signing.
     #[arg(long, env = "NUCLEUS_NODE_AUTH_SECRET")]
-    auth_secret: Option<String>,
+    auth_secret: String,
     /// Maximum allowed clock skew (seconds) for signed requests.
     #[arg(long, env = "NUCLEUS_NODE_AUTH_MAX_SKEW_SECS", default_value_t = 60)]
     auth_max_skew_secs: u64,
@@ -128,7 +128,7 @@ struct NodeState {
     firecracker_netns_drift_interval: Duration,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     network_allocator: Arc<net::NetworkAllocator>,
-    auth: Option<AuthConfig>,
+    auth: AuthConfig,
     proxy_auth_secret: String,
     proxy_approval_secret: String,
     proxy_actor: Option<String>,
@@ -257,6 +257,11 @@ async fn main() -> Result<(), ApiError> {
                 .to_string(),
         ));
     }
+    if args.auth_secret.trim().is_empty() {
+        return Err(ApiError::Driver(
+            "node auth secret is required (set NUCLEUS_NODE_AUTH_SECRET)".to_string(),
+        ));
+    }
     if args.proxy_auth_secret.trim().is_empty() {
         return Err(ApiError::Driver(
             "proxy auth secret is required (set NUCLEUS_NODE_PROXY_AUTH_SECRET)".to_string(),
@@ -282,20 +287,14 @@ async fn main() -> Result<(), ApiError> {
             args.firecracker_netns_drift_interval_secs,
         ),
         network_allocator: Arc::new(net::NetworkAllocator::new()),
-        auth: args.auth_secret.as_ref().map(|secret| {
-            AuthConfig::new(
-                secret.as_bytes(),
-                Duration::from_secs(args.auth_max_skew_secs),
-            )
-        }),
+        auth: AuthConfig::new(
+            args.auth_secret.as_bytes(),
+            Duration::from_secs(args.auth_max_skew_secs),
+        ),
         proxy_auth_secret: args.proxy_auth_secret.clone(),
         proxy_approval_secret: args.proxy_approval_secret.clone(),
         proxy_actor: Some(args.proxy_actor.clone()).filter(|actor| !actor.trim().is_empty()),
     };
-
-    if state.auth.is_none() {
-        info!("nucleus-node auth disabled (set NUCLEUS_NODE_AUTH_SECRET to enable)");
-    }
 
     let app = Router::new()
         .route("/v1/health", get(health))
@@ -361,18 +360,14 @@ async fn auth_middleware(
     request: axum::http::Request<Body>,
     next: middleware::Next,
 ) -> Result<AxumResponse, ApiError> {
-    if let Some(auth) = state.auth.as_ref() {
-        let (parts, body) = request.into_parts();
-        let bytes = to_bytes(body, MAX_AUTH_BODY_BYTES)
-            .await
-            .map_err(|e| ApiError::Body(e.to_string()))?;
-        let context = auth::verify_http(&parts.headers, &bytes, auth)?;
-        let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
-        req.extensions_mut().insert(context);
-        Ok(next.run(req).await)
-    } else {
-        Ok(next.run(request).await)
-    }
+    let (parts, body) = request.into_parts();
+    let bytes = to_bytes(body, MAX_AUTH_BODY_BYTES)
+        .await
+        .map_err(|e| ApiError::Body(e.to_string()))?;
+    let context = auth::verify_http(&parts.headers, &bytes, &state.auth)?;
+    let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
+    req.extensions_mut().insert(context);
+    Ok(next.run(req).await)
 }
 
 async fn create_pod_internal(
@@ -1077,15 +1072,13 @@ async fn serve_grpc(state: NodeState, listen: String) -> Result<(), ApiError> {
     let auth = state.auth.clone();
     let service =
         NodeServiceServer::with_interceptor(GrpcService { state }, move |req: Request<()>| {
-            if let Some(ref auth) = auth {
-                let method = req
-                    .metadata()
-                    .get("x-nucleus-method")
-                    .and_then(|value| value.to_str().ok())
-                    .ok_or_else(|| Status::unauthenticated("missing x-nucleus-method"))?;
-                auth::verify_grpc(req.metadata(), method, auth)
-                    .map_err(|e| Status::unauthenticated(e.to_string()))?;
-            }
+            let method = req
+                .metadata()
+                .get("x-nucleus-method")
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| Status::unauthenticated("missing x-nucleus-method"))?;
+            auth::verify_grpc(req.metadata(), method, &auth)
+                .map_err(|e| Status::unauthenticated(e.to_string()))?;
             Ok(req)
         });
     info!("nucleus-node grpc listening on {}", addr);
