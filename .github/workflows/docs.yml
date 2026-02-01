@@ -3,7 +3,7 @@ name: Docs
 on:
   workflow_dispatch:
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - "docs/**"
       - "book.toml"
