@@ -26,16 +26,17 @@ enforced at runtime** through the tool proxy. The envelope is intended to be
 - Runtime gating for approvals, budgets, and time windows.
 - Firecracker driver with default‑deny egress in a dedicated netns (Linux).
 - Immutable network policy drift detection (fail‑closed on iptables changes).
-- Audit log with hash chaining (tamper‑evident).
+- DNS allowlisting with pinned hostname resolution (Linux).
+- Audit logs are hash‑chained, signed, and verifiable (`nucleus-audit`).
 
 **Partial / in progress**
 - Web/search tools not yet wired in enforced mode.
 - Approvals are runtime tokens; preflight approval bundles are planned.
+- Seccomp verification/attestation for Firecracker is planned.
 - Kani proofs exist; CI gating and formal proofs are planned.
 
 **Not yet**
-- DNS allowlisting and IPv6 egress controls.
-- Audit signature verification tooling.
+- Remote append‑only audit storage / immutability proofs.
 
 ```rust
 // Enforcement approach - cannot bypass
@@ -94,6 +95,7 @@ Implementation intent:
 cargo install nucleus-cli
 cargo install nucleus-mcp
 cargo install nucleus-tool-proxy
+cargo install nucleus-audit
 
 # Run a task with Claude (enforced via tool-proxy + MCP)
 nucleus run --profile fix-issue "Fix the bug in src/main.rs"
@@ -117,7 +119,9 @@ Current enforced tools: read, write, run. Web/search tools are not yet wired.
 - Firecracker pods require `--proxy-auth-secret` and `--proxy-approval-secret` for signed tool and approval calls.
 - The driver defaults to Firecracker; local is opt-in via `--allow-local-driver` (no VM isolation).
 - Firecracker runs in a fresh network namespace by default (`--firecracker-netns=false` to disable); default-deny iptables apply even without `spec.network` (no NIC unless policy is set).
-- Audit logs are hash-chained and signed (tamper-evident; verification tooling pending).
+- DNS allowlisting is enforced via `spec.network.dns_allow` (pinned at pod start).
+- Guest IPv6 is disabled at boot.
+- Audit logs are hash-chained and signed (verify with `nucleus-audit`).
 - Guest init is the Rust binary `nucleus-guest-init`, baked into the rootfs.
 - Run `scripts/firecracker/test-network.sh` to validate egress policy on Linux.
 
