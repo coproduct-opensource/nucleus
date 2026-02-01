@@ -65,13 +65,25 @@ jobs:
     name: Publish to crates.io
     runs-on: ubuntu-latest
     needs: release
-    if: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
     steps:
+      - name: Check publish token
+        id: publish_gate
+        run: |
+          if [ -n "${CARGO_REGISTRY_TOKEN}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       - uses: actions/checkout@v5
+        if: ${{ steps.publish_gate.outputs.enabled == 'true' }}
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+        if: ${{ steps.publish_gate.outputs.enabled == 'true' }}
         with:
           cache: true
       - name: Publish nucleus-node
+        if: ${{ steps.publish_gate.outputs.enabled == 'true' }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish -p nucleus-node --locked
@@ -80,18 +92,31 @@ jobs:
     name: Update Homebrew Tap
     runs-on: ubuntu-latest
     needs: release
-    if: ${{ secrets.HOMEBREW_TAP != '' && secrets.HOMEBREW_TOKEN != '' }}
     steps:
+      - name: Check Homebrew secrets
+        id: brew_gate
+        run: |
+          if [ -n "${HOMEBREW_TAP}" ] && [ -n "${HOMEBREW_TOKEN}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          HOMEBREW_TAP: ${{ secrets.HOMEBREW_TAP }}
+          HOMEBREW_TOKEN: ${{ secrets.HOMEBREW_TOKEN }}
       - uses: actions/download-artifact@v4
+        if: ${{ steps.brew_gate.outputs.enabled == 'true' }}
         with:
           path: dist
       - name: Collect assets
+        if: ${{ steps.brew_gate.outputs.enabled == 'true' }}
         run: |
           mkdir -p release
           find dist -type f -name "*.tar.gz" -exec mv {} release/ \;
           ls -lah release
       - name: Compute checksums
         id: shas
+        if: ${{ steps.brew_gate.outputs.enabled == 'true' }}
         run: |
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#nucleus-node-v}"
@@ -104,12 +129,14 @@ jobs:
           echo "mac_x64_sha=$(sha256sum release/${MAC_X64} | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
           echo "mac_arm_sha=$(sha256sum release/${MAC_ARM} | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
       - name: Checkout tap
+        if: ${{ steps.brew_gate.outputs.enabled == 'true' }}
         uses: actions/checkout@v5
         with:
           repository: ${{ secrets.HOMEBREW_TAP }}
           token: ${{ secrets.HOMEBREW_TOKEN }}
           path: tap
       - name: Write formula
+        if: ${{ steps.brew_gate.outputs.enabled == 'true' }}
         run: |
           VERSION="${{ steps.shas.outputs.version }}"
           BASE_URL="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}"
@@ -146,6 +173,7 @@ jobs:
           end
           EOF
       - name: Commit and push
+        if: ${{ steps.brew_gate.outputs.enabled == 'true' }}
         env:
           VERSION: ${{ steps.shas.outputs.version }}
         run: |
