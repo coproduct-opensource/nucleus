@@ -61,7 +61,8 @@ Provide a kernel at `./build/firecracker/vmlinux` (pinned, known-good).
 cargo run -p nucleus-node -- \
   --driver firecracker \
   --listen 127.0.0.1:8081 \
-  --proxy-auth-secret demo-secret
+  --proxy-auth-secret demo-secret \
+  --firecracker-netns
 ```
 
 ### Create a Firecracker pod

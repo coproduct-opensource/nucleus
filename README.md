@@ -4,6 +4,7 @@
 [![Security Audit](https://github.com/coproduct-opensource/nucleus/actions/workflows/audit.yml/badge.svg)](https://github.com/coproduct-opensource/nucleus/actions/workflows/audit.yml)
 [![Cargo Deny](https://github.com/coproduct-opensource/nucleus/actions/workflows/deny.yml/badge.svg)](https://github.com/coproduct-opensource/nucleus/actions/workflows/deny.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/coproduct-opensource/nucleus/badge)](https://securityscorecards.dev/viewer/?uri=github.com/coproduct-opensource/nucleus)
+[![Docs](https://img.shields.io/badge/docs-github.io-blue)](https://coproduct-opensource.github.io/nucleus/)
 
 **Enforced permissions for AI agents** - policy + enforcement in one stack.
 
@@ -63,6 +64,7 @@ nucleus profiles
 - Firecracker pods require `--proxy-auth-secret` so the signed proxy can enforce auth.
 - The local driver is opt-in via `--allow-local-driver` (no VM isolation).
 - Use `--proxy-approval-secret` if approvals should be signed by a separate authority.
+- Enable `--firecracker-netns` to run the VMM in a fresh network namespace.
 
 ## The Lethal Trifecta (Runtime-Enforced)
 

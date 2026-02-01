@@ -15,6 +15,7 @@
 ## Network (current)
 - Default: no network egress from the VM when `net.allow`/`net.deny` are present.
 - Allowlisted egress only when explicitly configured.
+- Optional host netns isolation keeps the VMM in a network-less namespace.
 
 ## Audit (current)
 - Every tool call produces an audit log record (optional signing).

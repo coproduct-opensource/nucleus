@@ -63,6 +63,9 @@ struct Args {
     /// Path to firecracker binary (firecracker driver).
     #[arg(long, env = "NUCLEUS_FIRECRACKER_PATH", default_value = "firecracker")]
     firecracker_path: PathBuf,
+    /// Run Firecracker inside a new network namespace (Linux only).
+    #[arg(long, env = "NUCLEUS_FIRECRACKER_NETNS", default_value_t = false)]
+    firecracker_netns: bool,
     /// Max concurrent Firecracker pods (0 = unlimited).
     #[arg(long, env = "NUCLEUS_FIRECRACKER_MAX_PODS", default_value_t = 15)]
     firecracker_max_pods: usize,
@@ -99,6 +102,8 @@ struct NodeState {
     firecracker_path: PathBuf,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     firecracker_pool: Option<Arc<Semaphore>>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    firecracker_netns: bool,
     auth: Option<AuthConfig>,
     proxy_auth_secret: Option<String>,
     proxy_approval_secret: Option<String>,
@@ -232,6 +237,7 @@ async fn main() -> Result<(), ApiError> {
         tool_proxy_path: args.tool_proxy_path.clone(),
         firecracker_path: args.firecracker_path.clone(),
         firecracker_pool: build_firecracker_pool(&args),
+        firecracker_netns: args.firecracker_netns,
         auth: args.auth_secret.as_ref().map(|secret| {
             AuthConfig::new(
                 secret.as_bytes(),
@@ -642,7 +648,22 @@ async fn spawn_firecracker_pod(
             .append(true)
             .open(&log_path)?;
 
-        let mut command = Command::new(&state.firecracker_path);
+        let mut command = if state.firecracker_netns {
+            if std::process::Command::new("unshare")
+                .arg("--help")
+                .output()
+                .is_err()
+            {
+                return Err(ApiError::Driver(
+                    "firecracker netns enabled but `unshare` not available".to_string(),
+                ));
+            }
+            let mut cmd = Command::new("unshare");
+            cmd.arg("-n").arg("--").arg(&state.firecracker_path);
+            cmd
+        } else {
+            Command::new(&state.firecracker_path)
+        };
         command.arg("--config-file").arg(&config_path);
         apply_seccomp_flags(&mut command, spec)?;
         let child = command
