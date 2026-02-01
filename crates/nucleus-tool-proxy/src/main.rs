@@ -714,16 +714,21 @@ struct AuditLog {
 impl AuditLog {
     async fn log(&self, mut entry: AuditEntry) -> Result<(), ApiError> {
         let actor = entry.actor.clone().unwrap_or_default();
-        let mut last_hash = self.last_hash.lock().unwrap();
-        let prev_hash = last_hash.clone();
-        let message = format!(
-            "{}|{}|{}|{}|{}|{}",
-            entry.timestamp_unix, actor, entry.event, entry.subject, entry.result, prev_hash
-        );
+        let (prev_hash, hash, signature) = {
+            let mut last_hash = self.last_hash.lock().unwrap();
+            let prev_hash = last_hash.clone();
+            let message = format!(
+                "{}|{}|{}|{}|{}|{}",
+                entry.timestamp_unix, actor, entry.event, entry.subject, entry.result, prev_hash
+            );
+            let signature = auth::sign_message(&self.secret, message.as_bytes());
+            let hash = sha256_hex(&format!("{}|{}", message, signature));
+            *last_hash = hash.clone();
+            (prev_hash, hash, signature)
+        };
         entry.prev_hash = prev_hash;
-        entry.signature = auth::sign_message(&self.secret, message.as_bytes());
-        entry.hash = sha256_hex(&format!("{}|{}", message, entry.signature));
-        *last_hash = entry.hash.clone();
+        entry.signature = signature;
+        entry.hash = hash;
 
         let line = serde_json::to_string(&entry).map_err(|e| ApiError::Spec(e.to_string()))?;
         let mut file = tokio::fs::OpenOptions::new()
