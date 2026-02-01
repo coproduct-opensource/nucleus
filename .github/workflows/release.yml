@@ -39,7 +39,7 @@ jobs:
           mkdir -p dist
           tar -C target/release -czf "dist/nucleus-node-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-node
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: nucleus-node-${{ matrix.target }}
           path: dist/*.tar.gz
