@@ -1,0 +1,155 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "nucleus-node-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-14
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+      - name: Build
+        run: cargo build -p nucleus-node --release
+      - name: Package
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#nucleus-node-v}"
+          VERSION="${VERSION#v}"
+          mkdir -p dist
+          tar -C target/release -czf "dist/nucleus-node-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-node
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nucleus-node-${{ matrix.target }}
+          path: dist/*.tar.gz
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Collect assets
+        run: |
+          mkdir -p release
+          find dist -type f -name "*.tar.gz" -exec mv {} release/ \;
+          ls -lah release
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.tar.gz
+
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    needs: release
+    if: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+      - name: Publish nucleus-node
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p nucleus-node --locked
+
+  homebrew:
+    name: Update Homebrew Tap
+    runs-on: ubuntu-latest
+    needs: release
+    if: ${{ secrets.HOMEBREW_TAP != '' && secrets.HOMEBREW_TOKEN != '' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Collect assets
+        run: |
+          mkdir -p release
+          find dist -type f -name "*.tar.gz" -exec mv {} release/ \;
+          ls -lah release
+      - name: Compute checksums
+        id: shas
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#nucleus-node-v}"
+          VERSION="${VERSION#v}"
+          LINUX="nucleus-node-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          MAC_X64="nucleus-node-${VERSION}-x86_64-apple-darwin.tar.gz"
+          MAC_ARM="nucleus-node-${VERSION}-aarch64-apple-darwin.tar.gz"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "linux_sha=$(sha256sum release/${LINUX} | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "mac_x64_sha=$(sha256sum release/${MAC_X64} | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "mac_arm_sha=$(sha256sum release/${MAC_ARM} | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Checkout tap
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ secrets.HOMEBREW_TAP }}
+          token: ${{ secrets.HOMEBREW_TOKEN }}
+          path: tap
+      - name: Write formula
+        run: |
+          VERSION="${{ steps.shas.outputs.version }}"
+          BASE_URL="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}"
+          FORMULA_PATH="tap/Formula/nucleus-node.rb"
+          cat > "${FORMULA_PATH}" <<EOF
+          class NucleusNode < Formula
+            desc "Node daemon (kubelet analogue) for nucleus pods"
+            homepage "https://github.com/${{ github.repository }}"
+            version "${VERSION}"
+            license "MIT OR Apache-2.0"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "${BASE_URL}/nucleus-node-${VERSION}-aarch64-apple-darwin.tar.gz"
+                sha256 "${{ steps.shas.outputs.mac_arm_sha }}"
+              else
+                url "${BASE_URL}/nucleus-node-${VERSION}-x86_64-apple-darwin.tar.gz"
+                sha256 "${{ steps.shas.outputs.mac_x64_sha }}"
+              end
+            end
+
+            on_linux do
+              url "${BASE_URL}/nucleus-node-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+              sha256 "${{ steps.shas.outputs.linux_sha }}"
+            end
+
+            def install
+              bin.install "nucleus-node"
+            end
+
+            test do
+              system "#{bin}/nucleus-node", "--help"
+            end
+          end
+          EOF
+      - name: Commit and push
+        env:
+          VERSION: ${{ steps.shas.outputs.version }}
+        run: |
+          cd tap
+          git add Formula/nucleus-node.rb
+          git commit -m "nucleus-node ${VERSION}"
+          git push
