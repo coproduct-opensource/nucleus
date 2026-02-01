@@ -5,7 +5,7 @@
 - Any command not in allowlist (or structured rules) is denied.
 - Approval-gated operation fails without a recorded approval.
 - Approval grants expire (default TTL, enforced when auth is enabled).
-- Approval requests can be gated by a separate approval secret and nonce.
+- Approval requests are gated by a separate approval secret and nonce.
 - Budget exhaustion blocks further side effects.
 - Time window expiry blocks execution.
 

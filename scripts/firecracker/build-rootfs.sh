@@ -71,14 +71,18 @@ fi
 if [ -f "$NET_DENY" ]; then
   cp "$NET_DENY" "$ROOTFS_DIR/etc/nucleus/net.deny"
 fi
-if [ -n "$TOOL_PROXY_AUTH_SECRET" ]; then
-  printf "%s" "$TOOL_PROXY_AUTH_SECRET" >"$ROOTFS_DIR/etc/nucleus/auth.secret"
-  chmod 600 "$ROOTFS_DIR/etc/nucleus/auth.secret"
+if [ -z "$TOOL_PROXY_AUTH_SECRET" ]; then
+  echo "TOOL_PROXY_AUTH_SECRET is required to build a secure rootfs." >&2
+  exit 1
 fi
-if [ -n "$APPROVAL_SECRET" ]; then
-  printf "%s" "$APPROVAL_SECRET" >"$ROOTFS_DIR/etc/nucleus/approval.secret"
-  chmod 600 "$ROOTFS_DIR/etc/nucleus/approval.secret"
+if [ -z "$APPROVAL_SECRET" ]; then
+  echo "APPROVAL_SECRET is required to build a secure rootfs." >&2
+  exit 1
 fi
+printf "%s" "$TOOL_PROXY_AUTH_SECRET" >"$ROOTFS_DIR/etc/nucleus/auth.secret"
+chmod 600 "$ROOTFS_DIR/etc/nucleus/auth.secret"
+printf "%s" "$APPROVAL_SECRET" >"$ROOTFS_DIR/etc/nucleus/approval.secret"
+chmod 600 "$ROOTFS_DIR/etc/nucleus/approval.secret"
 if [ -n "$AUDIT_LOG_PATH" ]; then
   printf "%s" "$AUDIT_LOG_PATH" >"$ROOTFS_DIR/etc/nucleus/audit.path"
   chmod 600 "$ROOTFS_DIR/etc/nucleus/audit.path"

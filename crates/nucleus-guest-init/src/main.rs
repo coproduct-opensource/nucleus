@@ -83,12 +83,12 @@ fn run() -> Result<(), String> {
         let _ = Command::new(GUEST_NET_SH).status();
     }
 
-    if let Some(secret) = read_secret("/etc/nucleus/auth.secret") {
-        std::env::set_var("NUCLEUS_TOOL_PROXY_AUTH_SECRET", secret);
-    }
-    if let Some(secret) = read_secret("/etc/nucleus/approval.secret") {
-        std::env::set_var("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET", secret);
-    }
+    let auth_secret = read_secret("/etc/nucleus/auth.secret")
+        .ok_or_else(|| "missing /etc/nucleus/auth.secret".to_string())?;
+    let approval_secret = read_secret("/etc/nucleus/approval.secret")
+        .ok_or_else(|| "missing /etc/nucleus/approval.secret".to_string())?;
+    std::env::set_var("NUCLEUS_TOOL_PROXY_AUTH_SECRET", auth_secret);
+    std::env::set_var("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET", approval_secret);
 
     let audit_path = resolve_audit_path();
     std::env::set_var("NUCLEUS_TOOL_PROXY_AUDIT_LOG", audit_path.clone());

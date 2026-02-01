@@ -36,11 +36,11 @@ Status key: `DONE`, `PARTIAL`, `TODO`.
 
 - **Approvals are cryptographically signed**
   - Pass: approvals require signed tokens with nonce + expiry, verified in proxy.
-  - Current: `TODO` (counter-based approvals only).
+  - Current: `DONE` (approval secret required; nonce + expiry enforced).
   - Evidence: `crates/nucleus-tool-proxy/src/main.rs`
 - **Approval replay protection**
   - Pass: nonce cache + expiry enforced for all approvals.
-  - Current: `PARTIAL` (nonce cache present for signed approvals only).
+  - Current: `DONE` (nonce required for approvals).
   - Evidence: `crates/nucleus-tool-proxy/src/main.rs`
 
 ## 4) Isolation (VM Boundary)
@@ -77,7 +77,7 @@ Status key: `DONE`, `PARTIAL`, `TODO`.
 
 - **Audit log signatures**
   - Pass: log entries are signed; verification tool exists.
-  - Current: `TODO`.
+  - Current: `PARTIAL` (signatures enforced; verifier pending).
   - Evidence: `crates/nucleus-tool-proxy/src/main.rs`
 - **Remote append-only storage**
   - Pass: logs shipped to append-only store (or immutability proof).

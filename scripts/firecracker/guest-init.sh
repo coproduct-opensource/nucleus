@@ -61,9 +61,15 @@ fi
 
 if [ -f /etc/nucleus/auth.secret ]; then
   export NUCLEUS_TOOL_PROXY_AUTH_SECRET="$(cat /etc/nucleus/auth.secret)"
+else
+  echo "missing /etc/nucleus/auth.secret" >&2
+  exit 1
 fi
 if [ -f /etc/nucleus/approval.secret ]; then
   export NUCLEUS_TOOL_PROXY_APPROVAL_SECRET="$(cat /etc/nucleus/approval.secret)"
+else
+  echo "missing /etc/nucleus/approval.secret" >&2
+  exit 1
 fi
 
 if [ -f /etc/nucleus/audit.path ]; then
