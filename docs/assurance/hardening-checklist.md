@@ -33,7 +33,7 @@ Status key: `DONE`, `PARTIAL`, `TODO`.
   - Evidence: `crates/nucleus-node/src/net.rs`, guest init
 - **DNS allowlisting**
   - Pass: explicit hostname allowlist enforced (ipset/dnsmasq or equivalent).
-  - Current: `TODO`.
+  - Current: `DONE` (dnsmasq proxy with pinned hostname resolution).
   - Evidence: `crates/nucleus-node/src/net.rs`, `crates/nucleus-spec/src/lib.rs`
 
 ## 3) Approvals (AskFirst)

@@ -1,5 +1,6 @@
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
+use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 #[cfg(target_os = "linux")]
@@ -9,6 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use ipnet::IpNet;
 use nucleus_spec::NetworkSpec;
 use tokio::io::AsyncWriteExt;
+use tokio::net::lookup_host;
 use uuid::Uuid;
 
 use crate::ApiError;
@@ -117,6 +119,19 @@ struct NetRule {
     port: Option<u16>,
 }
 
+#[derive(Clone, Debug)]
+pub struct ResolvedDnsEntry {
+    pub host: String,
+    pub port: Option<u16>,
+    pub ips: Vec<Ipv4Addr>,
+}
+
+#[derive(Debug)]
+pub struct DnsProxyState {
+    pub child: tokio::process::Child,
+    pub entries: Vec<ResolvedDnsEntry>,
+}
+
 pub async fn write_policy_files(
     pod_dir: &Path,
     policy: Option<&NetworkSpec>,
@@ -140,12 +155,84 @@ pub async fn write_policy_files(
         file.write_all(denylist.as_bytes()).await?;
     }
 
+    if !policy.dns_allow.is_empty() {
+        let allowlist = policy.dns_allow.join("\n");
+        let path = pod_dir.join("net.dns.allow");
+        let mut file = tokio::fs::File::create(&path).await?;
+        file.write_all(allowlist.as_bytes()).await?;
+    }
+
     Ok(())
 }
 
 pub fn validate_policy(policy: &NetworkSpec) -> Result<(), ApiError> {
     let _ = parse_rules(policy)?;
+    validate_dns_allowlist(policy)?;
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub async fn start_dns_proxy(
+    plan: &mut NetPlan,
+    policy: &NetworkSpec,
+    pod_dir: &Path,
+) -> Result<Option<DnsProxyState>, ApiError> {
+    if policy.dns_allow.is_empty() {
+        return Ok(None);
+    }
+    ensure_command("dnsmasq")?;
+    let entries = resolve_dns_allowlist(policy).await?;
+    if entries.is_empty() {
+        return Ok(None);
+    }
+
+    plan.dns = plan.gateway_ip;
+
+    let config_path = pod_dir.join("dnsmasq.conf");
+    let log_path = pod_dir.join("dnsmasq.log");
+
+    let mut config = String::new();
+    config.push_str("no-resolv\n");
+    config.push_str("no-hosts\n");
+    config.push_str("bind-interfaces\n");
+    config.push_str(&format!("listen-address={}\n", plan.gateway_ip));
+    config.push_str("port=53\n");
+    for entry in &entries {
+        for ip in &entry.ips {
+            config.push_str(&format!("address=/{}/{}\n", entry.host, ip));
+        }
+    }
+    tokio::fs::write(&config_path, config).await?;
+
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(ApiError::Io)?;
+
+    let mut command = tokio::process::Command::new("ip");
+    command
+        .args(["netns", "exec", &plan.netns, "--"])
+        .arg("dnsmasq")
+        .arg("--no-daemon")
+        .arg("--conf-file")
+        .arg(&config_path)
+        .stdout(log_file.try_clone().map_err(ApiError::Io)?)
+        .stderr(log_file);
+
+    let child = command.spawn().map_err(ApiError::Io)?;
+    Ok(Some(DnsProxyState { child, entries }))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn start_dns_proxy(
+    _plan: &mut NetPlan,
+    _policy: &NetworkSpec,
+    _pod_dir: &Path,
+) -> Result<Option<DnsProxyState>, ApiError> {
+    Err(ApiError::Driver(
+        "dns allowlisting requires Linux".to_string(),
+    ))
 }
 
 #[cfg(target_os = "linux")]
@@ -334,10 +421,30 @@ pub async fn setup_network(_plan: &NetPlan) -> Result<(), ApiError> {
 }
 
 #[cfg(target_os = "linux")]
-pub async fn apply_host_policy(pid: u32, policy: &NetworkSpec) -> Result<(), ApiError> {
+pub async fn apply_host_policy(
+    pid: u32,
+    policy: &NetworkSpec,
+    dns_entries: Option<&[ResolvedDnsEntry]>,
+    dns_server: Option<Ipv4Addr>,
+) -> Result<(), ApiError> {
     ensure_command("nsenter")?;
     ensure_command("iptables")?;
-    let rules = parse_rules(policy)?;
+    let mut rules = parse_rules(policy)?;
+    if let Some(entries) = dns_entries {
+        let mut seen = BTreeSet::new();
+        for entry in entries {
+            for ip in &entry.ips {
+                let key = (*ip, entry.port);
+                if seen.insert(key) {
+                    rules.push(NetRule {
+                        kind: RuleKind::Allow,
+                        net: IpNet::from(IpAddr::V4(*ip)),
+                        port: entry.port,
+                    });
+                }
+            }
+        }
+    }
 
     run_nsenter(pid, &["iptables", "-w", "-F"]).await?;
     run_nsenter(pid, &["iptables", "-w", "-X"]).await?;
@@ -404,6 +511,15 @@ pub async fn apply_host_policy(pid: u32, policy: &NetworkSpec) -> Result<(), Api
     )
     .await?;
 
+    if let Some(server) = dns_server {
+        let rule = NetRule {
+            kind: RuleKind::Allow,
+            net: IpNet::from(IpAddr::V4(server)),
+            port: Some(53),
+        };
+        apply_rule(pid, "INPUT", &rule, "ACCEPT").await?;
+    }
+
     for rule in rules.iter().filter(|rule| rule.kind == RuleKind::Deny) {
         apply_rule(pid, "OUTPUT", rule, "DROP").await?;
         apply_rule(pid, "FORWARD", rule, "DROP").await?;
@@ -437,7 +553,12 @@ pub async fn snapshot_iptables(pid: u32) -> Result<String, ApiError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub async fn apply_host_policy(_pid: u32, _policy: &NetworkSpec) -> Result<(), ApiError> {
+pub async fn apply_host_policy(
+    _pid: u32,
+    _policy: &NetworkSpec,
+    _dns_entries: Option<&[ResolvedDnsEntry]>,
+    _dns_server: Option<Ipv4Addr>,
+) -> Result<(), ApiError> {
     Err(ApiError::Driver(
         "host network policy requires Linux".to_string(),
     ))
@@ -515,6 +636,69 @@ fn parse_rules(policy: &NetworkSpec) -> Result<Vec<NetRule>, ApiError> {
         });
     }
     Ok(rules)
+}
+
+fn validate_dns_allowlist(policy: &NetworkSpec) -> Result<(), ApiError> {
+    for entry in &policy.dns_allow {
+        let _ = parse_dns_entry(entry)?;
+    }
+    Ok(())
+}
+
+async fn resolve_dns_allowlist(policy: &NetworkSpec) -> Result<Vec<ResolvedDnsEntry>, ApiError> {
+    let mut resolved = Vec::new();
+    for entry in &policy.dns_allow {
+        let (host, port) = parse_dns_entry(entry)?;
+        let ips = resolve_host_ipv4(&host).await?;
+        resolved.push(ResolvedDnsEntry { host, port, ips });
+    }
+    Ok(resolved)
+}
+
+async fn resolve_host_ipv4(host: &str) -> Result<Vec<Ipv4Addr>, ApiError> {
+    let mut ips = BTreeSet::new();
+    let addrs = lookup_host((host, 0))
+        .await
+        .map_err(|e| ApiError::InvalidSpec(format!("dns allowlist lookup failed for {host}: {e}")))?;
+    for addr in addrs {
+        if let IpAddr::V4(ip) = addr.ip() {
+            ips.insert(ip);
+        }
+    }
+    if ips.is_empty() {
+        return Err(ApiError::InvalidSpec(format!(
+            "dns allowlist entry {host} resolved to no IPv4 addresses"
+        )));
+    }
+    Ok(ips.into_iter().collect())
+}
+
+fn parse_dns_entry(entry: &str) -> Result<(String, Option<u16>), ApiError> {
+    let (host, port) = split_port(entry)?;
+    let host = host.trim();
+    if host.is_empty() {
+        return Err(invalid_dns_entry(entry));
+    }
+    if host.contains('*') {
+        return Err(ApiError::InvalidSpec(format!(
+            "dns allowlist does not support wildcards (got {entry})"
+        )));
+    }
+    if host.contains('/') {
+        return Err(invalid_dns_entry(entry));
+    }
+    if host.parse::<IpAddr>().is_ok() {
+        return Err(ApiError::InvalidSpec(format!(
+            "dns allowlist entries must be hostnames; use allow/deny for IPs (got {entry})"
+        )));
+    }
+    Ok((host.to_string(), port))
+}
+
+fn invalid_dns_entry(entry: &str) -> ApiError {
+    ApiError::InvalidSpec(format!(
+        "dns allowlist entry must be hostname with optional :port (got {entry})"
+    ))
 }
 
 fn parse_entry(entry: &str) -> Result<(IpNet, Option<u16>), ApiError> {
@@ -787,6 +971,19 @@ mod tests {
         let (net, port) = parse_entry("2001:db8::/64").unwrap();
         assert_eq!(net.to_string(), "2001:db8::/64");
         assert_eq!(port, None);
+    }
+
+    #[test]
+    fn parse_dns_hostname_with_port() {
+        let (host, port) = parse_dns_entry("example.com:443").unwrap();
+        assert_eq!(host, "example.com");
+        assert_eq!(port, Some(443));
+    }
+
+    #[test]
+    fn parse_dns_rejects_ip() {
+        let err = parse_dns_entry("10.0.0.1").unwrap_err();
+        assert!(err.to_string().contains("hostnames"));
     }
 
     #[cfg(target_os = "linux")]
