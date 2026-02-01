@@ -13,14 +13,18 @@
 - When private data + untrusted content + exfil path are all enabled, approvals are required for exfil operations.
 
 ## Network (current)
-- Default: no network egress from the VM when `net.allow`/`net.deny` are present.
-- Allowlisted egress only when explicitly configured.
-- Host netns isolation keeps the VMM in a network-less namespace (default).
+- Host netns iptables enforces default-deny egress for Firecracker pods when `--firecracker-netns=true` (even without `spec.network`).
+- Allowlisted egress only for IP/CIDR with optional port (no hostnames).
+- Guest init configures eth0 from kernel args (`nucleus.net=...`) when a network policy is present.
+- Node provisions tap + bridge inside the pod netns only when `spec.network` is set (guest NIC is otherwise absent).
+- Integration: `scripts/firecracker/test-network.sh` boots a VM and verifies cmdline + iptables rules.
+- Optional connectivity test uses `nucleus-net-probe` via the tool proxy (`CHECK_CONNECTIVITY=1`).
 
 ## Audit (current)
 - Every tool call produces an audit log record (optional signing).
 - Audit entries are hash-chained; tampering breaks the chain.
 - Approval events are logged with operation name and count.
+- Guest init emits a boot report entry on startup.
 
 ## VM Isolation (current)
 - Rootfs is read-only when configured in the image/spec.
@@ -30,4 +34,4 @@
 ## Roadmap Tests
 - Approval tokens must be signed, bounded to op + expiry + nonce.
 - Audits must include cryptographic signatures and issuer identity.
-- Network egress must be enforced via cgroup/eBPF filters (not just guest iptables).
+- Network egress should be enforced via cgroup/eBPF filters (beyond iptables).

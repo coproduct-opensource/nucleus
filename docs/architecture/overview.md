@@ -2,7 +2,10 @@
 
 ## Goals
 - Enforce all side effects via a policy-aware proxy inside a Firecracker VM (Firecracker driver).
-- Default network egress to deny; explicit allowlists only (guest iptables).
+- Treat permission state as a static envelope around a dynamic agent.
+- Default network egress to deny; explicit allowlists only (host netns iptables + guest defense).
+- The node provisions a per-pod netns, tap interface, and guest IP; guest init configures eth0 from kernel args.
+- Netns setup enables bridge netfilter (`br_netfilter`) so iptables can enforce guest egress.
 - Approvals require signed tokens issued by an external authority (roadmap).
 - Provide verifiable audit logs for every operation (optional signing today).
 
@@ -26,8 +29,9 @@ Side effects (filesystem/commands)
 - Control plane forwards only to the VM proxy.
 
 ### Boundary 2: Control Plane -> VM
-- Use vsock only (no guest NIC by default).
-- The guest sees only proxy traffic, not host network.
+- Use vsock only by default; guest NIC requires an explicit network policy and host enforcement.
+- Host enforcement uses `nsenter` + `iptables` inside the Firecracker netns (Linux only).
+- By default the guest sees only proxy traffic; optional network egress is allowlisted.
 
 ### Boundary 3: VM -> Host
 - No host filesystem access except mounted scratch.
@@ -50,6 +54,8 @@ Side effects (filesystem/commands)
 - Enforces permissions (Sandbox + Executor).
 - Requires approvals for gated ops (counter-based today; tokens are roadmap).
 - Writes audit log entries (optional signing).
+- Guest init (Rust) configures networking from kernel args and then `exec`s the proxy.
+- Guest init emits a boot report into the audit log on startup.
 
 ### policy model (shared)
 - Capability lattice + obligations.
@@ -73,8 +79,32 @@ Side effects (filesystem/commands)
 - Full UI control plane.
 - Zero-knowledge attestation.
 
+## Progress Snapshot (Current)
+
+**Working today**
+- Enforced CLI path via MCP + `nucleus-tool-proxy` (read/write/run).
+- Runtime gating for approvals, budgets, and time windows.
+- Firecracker driver with default‑deny egress in a dedicated netns (Linux).
+- Audit log with hash chaining (tamper‑evident).
+
+**Partial / in progress**
+- Web/search tools not yet wired in enforced mode.
+- Approvals are runtime tokens; signed approvals are planned.
+- Kani proofs exist; CI gating and formal proofs are planned.
+
+**Not yet**
+- DNS allowlisting and IPv6 egress controls.
+- Audit signature verification tooling.
+- Immutable network policy drift detection.
+
 ## Invariants (current + intended)
 - Side effects should only happen inside `nucleus-tool-proxy` (host should not perform side effects).
 - Firecracker driver should only expose the signed proxy address to adapters.
 - Guest rootfs is read-only and scratch is writable when configured in the image/spec.
-- Network egress is denied by default when `net.allow`/`net.deny` are present in the image.
+- Network egress is denied by default for Firecracker pods when `--firecracker-netns=true`;
+  if no `network` policy is provided, the guest has no NIC and iptables still default-denies.
+- **Monotone security posture**: permissions and isolation guarantees should only tighten
+  (or the pod is terminated), never silently relax after creation.
+  - Seccomp is fixed at Firecracker spawn.
+  - Network policy should be applied once and verified for drift (roadmap).
+  - Permission states are normalized via ν and only tightened after creation.

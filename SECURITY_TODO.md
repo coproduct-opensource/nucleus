@@ -58,7 +58,7 @@ DoD (guarantees)
 - Adversarial tests: `bash -c 'curl ...'`, `python -c '...requests...'`, `node -e '...fetch...'` are blocked under trifecta.
 - Fuzz: generate command strings; ensure any network-capable flow under trifecta is denied.
 Status
-- Partial: interpreter/shell invocations are now treated as exfiltration under trifecta; broader coverage and fuzzing pending.
+- Partial: default command lattice now blocks common interpreter flags (`bash -c`, `python -c`, `node -e`, etc.); broader coverage and fuzzing pending.
 
 ## 4) Command allowlist/blocklist is string-based and permissive mode is bypassable
 
@@ -152,7 +152,7 @@ DoD (guarantees)
 - Integration tests: commands that violate policy are blocked even if the model attempts them.
 - End-to-end tests in CI: forbidden operations never occur in CLI execution.
 Status
-- Not started: CLI still uses `--allowedTools` without runtime enforcement.
+- Partial: enforced CLI path now runs Claude via MCP + `nucleus-tool-proxy`; unsafe direct mode remains behind `--unsafe-allow-claude`.
 
 ## 9) Formalization and proofs are missing
 
@@ -164,7 +164,8 @@ Impact
 - Subtle regressions can silently break lattice guarantees.
 
 TODO
-- Add a small formal spec (e.g., Lean/Coq/Isabelle or Kani/Prusti for Rust) of the core lattice + ν.
+- Add a small formal spec (Lean/Coq/Isabelle) of the core lattice + ν and map it to Rust.
+  See `docs/assurance/formal-methods.md` for the target plan.
 
 DoD (guarantees)
 - Machine-checked proofs for ν laws.

@@ -4,8 +4,10 @@ set -euo pipefail
 ROOTFS_DIR=${ROOTFS_DIR:-./build/firecracker/rootfs}
 ROOTFS_IMG=${ROOTFS_IMG:-./build/firecracker/rootfs.ext4}
 POD_SPEC=${POD_SPEC:-./examples/openclaw-demo/firecracker-pod.yaml}
+GUEST_INIT_BIN=${GUEST_INIT_BIN:-./target/x86_64-unknown-linux-musl/release/nucleus-guest-init}
 INIT_SRC=${INIT_SRC:-./scripts/firecracker/guest-init.sh}
 PROXY_BIN=${PROXY_BIN:-./target/x86_64-unknown-linux-musl/release/nucleus-tool-proxy}
+NET_PROBE_BIN=${NET_PROBE_BIN:-./target/x86_64-unknown-linux-musl/release/nucleus-net-probe}
 DEBIAN_IMAGE=${DEBIAN_IMAGE:-debian:bookworm-slim}
 NET_ALLOW=${NET_ALLOW:-}
 NET_DENY=${NET_DENY:-}
@@ -21,13 +23,18 @@ if [ ! -f "$PROXY_BIN" ]; then
   exit 1
 fi
 
+if [ ! -f "$NET_PROBE_BIN" ]; then
+  echo "missing $NET_PROBE_BIN (build with: cargo build -p nucleus-net-probe --release --target x86_64-unknown-linux-musl)" >&2
+  exit 1
+fi
+
 if [ ! -f "$POD_SPEC" ]; then
   echo "missing $POD_SPEC" >&2
   exit 1
 fi
 
-if [ ! -f "$INIT_SRC" ]; then
-  echo "missing $INIT_SRC" >&2
+if [ ! -f "$GUEST_INIT_BIN" ] && [ ! -f "$INIT_SRC" ]; then
+  echo "missing $GUEST_INIT_BIN (build with: cargo build -p nucleus-guest-init --release --target x86_64-unknown-linux-musl)" >&2
   exit 1
 fi
 
@@ -77,9 +84,14 @@ if [ -n "$AUDIT_LOG_PATH" ]; then
   chmod 600 "$ROOTFS_DIR/etc/nucleus/audit.path"
 fi
 cp "$PROXY_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-tool-proxy"
-cp "$INIT_SRC" "$ROOTFS_DIR/init"
+cp "$NET_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-net-probe"
+if [ -f "$GUEST_INIT_BIN" ]; then
+  cp "$GUEST_INIT_BIN" "$ROOTFS_DIR/init"
+else
+  cp "$INIT_SRC" "$ROOTFS_DIR/init"
+fi
 cp "./scripts/firecracker/guest-net.sh" "$ROOTFS_DIR/usr/local/bin/guest-net.sh"
-chmod +x "$ROOTFS_DIR/init" "$ROOTFS_DIR/usr/local/bin/nucleus-tool-proxy"
+chmod +x "$ROOTFS_DIR/init" "$ROOTFS_DIR/usr/local/bin/nucleus-tool-proxy" "$ROOTFS_DIR/usr/local/bin/nucleus-net-probe"
 chmod +x "$ROOTFS_DIR/usr/local/bin/guest-net.sh"
 
 # Build ext4 image from directory

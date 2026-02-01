@@ -1,0 +1,16 @@
+[package]
+name = "nucleus-guest-init"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Guest init for Firecracker images"
+repository = "https://github.com/coproduct-opensource/nucleus"
+readme = "README.md"
+
+[[bin]]
+name = "nucleus-guest-init"
+path = "src/main.rs"
+
+[dependencies]
+nix = { version = "0.28", default-features = false, features = ["mount", "fs"] }

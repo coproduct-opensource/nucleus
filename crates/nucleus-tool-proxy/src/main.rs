@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
-use tracing::info;
+use tracing::{info, warn};
 
 mod auth;
 use auth::{AuthConfig, AuthError};
@@ -332,6 +332,10 @@ async fn main() -> Result<(), ApiError> {
         approval_auth,
         approval_nonces: Arc::new(ApprovalNonceCache::default()),
     };
+
+    if let Err(err) = emit_boot_report(&state).await {
+        warn!("failed to emit boot report: {err}");
+    }
 
     let app = Router::new()
         .route("/v1/health", get(health))
@@ -690,6 +694,31 @@ async fn audit_event(
             })
             .await?;
     }
+    Ok(())
+}
+
+async fn emit_boot_report(state: &AppState) -> Result<(), ApiError> {
+    let report = match std::env::var("NUCLEUS_TOOL_PROXY_BOOT_REPORT") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => return Ok(()),
+    };
+    let actor = std::env::var("NUCLEUS_TOOL_PROXY_BOOT_ACTOR").ok();
+
+    if let Some(ref audit) = state.audit {
+        audit
+            .log(AuditEntry {
+                timestamp_unix: now_unix(),
+                actor,
+                event: "boot".to_string(),
+                subject: report,
+                result: "ok".to_string(),
+                prev_hash: String::new(),
+                hash: String::new(),
+                signature: String::new(),
+            })
+            .await?;
+    }
+
     Ok(())
 }
 

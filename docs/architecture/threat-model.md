@@ -45,7 +45,9 @@ Mitigations
 - Read-only rootfs, scratch-only write.
 - Cgroup CPU/memory limits.
 - Seccomp on VMM.
- - Network egress blocked unless guest net policy is present.
+- Host netns iptables enforce default deny when `--firecracker-netns=true` (even without `spec.network`).
+- Node provisions per-pod netns + tap to avoid shared host interfaces.
+- Requires `br_netfilter` so bridge traffic hits iptables.
 
 ## Host Signed Proxy
 - Threat: host-local callers bypass auth by calling the vsock bridge directly.

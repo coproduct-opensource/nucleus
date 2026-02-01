@@ -1,0 +1,15 @@
+[package]
+name = "nucleus-net-probe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Minimal TCP probe used for network policy tests"
+repository = "https://github.com/coproduct-opensource/nucleus"
+readme = "README.md"
+
+[[bin]]
+name = "nucleus-net-probe"
+path = "src/main.rs"
+
+[dependencies]

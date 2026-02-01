@@ -1,4 +1,5 @@
 #!/bin/sh
+# Deprecated: replaced by crates/nucleus-guest-init (Rust).
 set -eu
 
 mount -t proc proc /proc
@@ -24,6 +25,32 @@ fi
 if [ ! -f "$POD_SPEC_PATH" ]; then
   echo "missing pod spec (expected /etc/nucleus/pod.yaml or /pod.yaml)" >&2
   exec /bin/sh
+fi
+
+NET_CONFIG=$(sed -n 's/.*nucleus.net=\([^ ]*\).*/\1/p' /proc/cmdline || true)
+if [ -n "$NET_CONFIG" ]; then
+  OLD_IFS=$IFS
+  IFS=,
+  # shellcheck disable=SC2086
+  set -- $NET_CONFIG
+  IFS=$OLD_IFS
+  ADDR=$1
+  GW=${2#gw=}
+  DNS=${3#dns=}
+  if command -v ip >/dev/null 2>&1; then
+    ip link set eth0 up || true
+    if [ -n "$ADDR" ]; then
+      ip addr add "$ADDR" dev eth0 || true
+    fi
+    if [ -n "$GW" ] && [ "$GW" != "$2" ]; then
+      ip route add default via "$GW" || true
+    fi
+  else
+    echo "ip not found; skipping network config" >&2
+  fi
+  if [ -n "$DNS" ] && [ "$DNS" != "$3" ]; then
+    echo "nameserver $DNS" > /etc/resolv.conf
+  fi
 fi
 
 if [ -f /etc/nucleus/net.allow ] || [ -f /etc/nucleus/net.deny ]; then

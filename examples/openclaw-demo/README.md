@@ -2,7 +2,9 @@
 
 This demo routes OpenClaw tool calls through `nucleus-tool-proxy` and shows enforced sandboxing, approvals, and command gating.
 
-Network policy is **default deny** inside the VM; see `net.allow` and `net.deny`.
+Network policy is **default deny** and enforced in the host netns (iptables) when `spec.network` is set; `net.allow`/`net.deny` are optional guest defense-in-depth.
+Allow/deny entries must be IP/CIDR with optional `:port` (no hostnames).
+The node provisions tap + guest IP when `spec.network` is set.
 
 ## 1) Start the tool proxy
 
@@ -23,6 +25,12 @@ This runs the proxy inside a Firecracker VM and exposes a local HTTP bridge.
 ```bash
 # Build static proxy (inside the host)
 cargo build -p nucleus-tool-proxy --release --target x86_64-unknown-linux-musl
+
+# Build guest init
+cargo build -p nucleus-guest-init --release --target x86_64-unknown-linux-musl
+
+# Build TCP probe
+cargo build -p nucleus-net-probe --release --target x86_64-unknown-linux-musl
 
 # Build scratch image
 ./scripts/firecracker/build-scratch.sh
@@ -45,7 +53,7 @@ APPROVAL_SECRET=approval-secret \
   ./scripts/firecracker/build-rootfs.sh
 ```
 
-To include a network allow/deny list in the image:
+To include a network allow/deny list in the image (optional guest defense):
 
 ```bash
 NET_ALLOW=./examples/openclaw-demo/net.allow \

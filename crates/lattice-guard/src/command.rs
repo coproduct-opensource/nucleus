@@ -70,7 +70,7 @@ impl Default for CommandLattice {
             .map(|s| s.to_string())
             .collect(),
             allowed_rules: Vec::new(),
-            blocked_rules: Vec::new(),
+            blocked_rules: default_blocked_rules(),
         }
     }
 }
@@ -92,7 +92,7 @@ impl CommandLattice {
             allowed: HashSet::new(), // Empty = all allowed (unless blocked)
             blocked: Self::default().blocked,
             allowed_rules: Vec::new(),
-            blocked_rules: Vec::new(),
+            blocked_rules: default_blocked_rules(),
         }
     }
 
@@ -113,7 +113,7 @@ impl CommandLattice {
             .collect(),
             blocked: Self::default().blocked,
             allowed_rules: Vec::new(),
-            blocked_rules: Vec::new(),
+            blocked_rules: default_blocked_rules(),
         }
     }
 
@@ -364,6 +364,66 @@ fn contains_shell_metacharacters(words: &[String]) -> bool {
     words.iter().any(|w| metachars.contains(w.as_str()))
 }
 
+fn default_blocked_rules() -> Vec<CommandPattern> {
+    let mut rules = Vec::new();
+    for program in ["bash", "sh", "zsh", "fish"] {
+        rules.push(CommandPattern {
+            program: program.to_string(),
+            args: vec![
+                ArgPattern::Exact("-c".to_string()),
+                ArgPattern::AnyRemaining,
+            ],
+        });
+    }
+    for program in ["pwsh", "powershell"] {
+        rules.push(CommandPattern {
+            program: program.to_string(),
+            args: vec![
+                ArgPattern::Exact("-Command".to_string()),
+                ArgPattern::AnyRemaining,
+            ],
+        });
+    }
+    for program in ["python", "python3"] {
+        rules.push(CommandPattern {
+            program: program.to_string(),
+            args: vec![
+                ArgPattern::Exact("-c".to_string()),
+                ArgPattern::AnyRemaining,
+            ],
+        });
+    }
+    rules.push(CommandPattern {
+        program: "node".to_string(),
+        args: vec![
+            ArgPattern::Exact("-e".to_string()),
+            ArgPattern::AnyRemaining,
+        ],
+    });
+    rules.push(CommandPattern {
+        program: "ruby".to_string(),
+        args: vec![
+            ArgPattern::Exact("-e".to_string()),
+            ArgPattern::AnyRemaining,
+        ],
+    });
+    rules.push(CommandPattern {
+        program: "perl".to_string(),
+        args: vec![
+            ArgPattern::Exact("-e".to_string()),
+            ArgPattern::AnyRemaining,
+        ],
+    });
+    rules.push(CommandPattern {
+        program: "php".to_string(),
+        args: vec![
+            ArgPattern::Exact("-r".to_string()),
+            ArgPattern::AnyRemaining,
+        ],
+    });
+    rules
+}
+
 fn rule_matches(rule: &CommandPattern, words: &[String]) -> bool {
     if words.is_empty() {
         return false;
@@ -546,6 +606,15 @@ mod tests {
         assert!(!lattice.can_execute("echo hi | cat"));
         assert!(!lattice.can_execute("echo hi > out.txt"));
         assert!(!lattice.can_execute("echo hi && whoami"));
+    }
+
+    #[test]
+    fn test_default_blocks_interpreter_flags() {
+        let lattice = CommandLattice::default();
+        assert!(!lattice.can_execute("bash -c 'echo hi'"));
+        assert!(!lattice.can_execute("sh -c 'echo hi'"));
+        assert!(!lattice.can_execute("python -c 'print(1)'"));
+        assert!(!lattice.can_execute("node -e \"console.log('x')\""));
     }
 
     // Security: Quoting bypass tests

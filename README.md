@@ -12,6 +12,31 @@
 
 Nucleus pairs a **formal permission model** (lattice-guard) with **runtime enforcement** (nucleus). The key difference from policy-only systems: you cannot perform side effects without going through an enforcing API.
 
+## Vision: Static Envelope, Dynamic Agent
+
+Nucleus treats permission state as a **static envelope** around a dynamic agent:
+policy invariants are normalized up front (ν), and **all side effects are
+enforced at runtime** through the tool proxy. The envelope is intended to be
+**monotone**: it can only tighten or terminate, never silently relax.
+
+## Honest Progress (Current)
+
+**Working today**
+- Enforced CLI path via MCP + `nucleus-tool-proxy` (read/write/run).
+- Runtime gating for approvals, budgets, and time windows.
+- Firecracker driver with default‑deny egress in a dedicated netns (Linux).
+- Audit log with hash chaining (tamper‑evident).
+
+**Partial / in progress**
+- Web/search tools not yet wired in enforced mode.
+- Approvals are runtime tokens; signed approvals are planned.
+- Kani proofs exist; CI gating and formal proofs are planned.
+
+**Not yet**
+- DNS allowlisting and IPv6 egress controls.
+- Audit signature verification tooling.
+- Immutable network policy drift detection.
+
 ```rust
 // Enforcement approach - cannot bypass
 let sandbox = Sandbox::new(&policy, work_dir)?;
@@ -46,26 +71,54 @@ Permissions are modeled as a product lattice with normalization (ν) that adds a
 - Any operation in `obligations.approvals` requires an approval token to execute.
 - The trifecta constraint adds obligations for exfiltration operations when all three risk axes are present.
 
+## Immutability Pitch (Monotone Security)
+
+Security posture is intended to be **monotone**: once a pod is created, its
+permissions and isolation guarantees should only tighten or be terminated,
+never silently relax. This supports:
+
+- **No privilege drift**: debugging exceptions don’t become permanent backdoors.
+- **Auditability**: posture is explained by the creation spec + approval log.
+- **Predictability**: you can bound worst‑case behavior without guessing runtime changes.
+
+Implementation intent:
+- Seccomp is fixed at Firecracker spawn.
+- Network policy is applied once and verified against drift (roadmap).
+- Permission states are normalized via ν and only tightened after creation.
+- Approvals are scoped, expiring tokens (roadmap).
+
 ## Quick Start
 
 ```bash
-# Install the CLI
+# Install the CLI + enforced tools
 cargo install nucleus-cli
+cargo install nucleus-mcp
+cargo install nucleus-tool-proxy
 
-# Run a task with enforced permissions (enforcement is mandatory)
+# Run a task with Claude (enforced via tool-proxy + MCP)
 nucleus run --profile fix-issue "Fix the bug in src/main.rs"
+
+# Unsafe fallback (no tool enforcement)
+nucleus run --unsafe-allow-claude --profile fix-issue "Fix the bug in src/main.rs"
 
 # List available permission profiles
 nucleus profiles
 ```
+
+Note: enforced mode runs Claude with MCP + `nucleus-tool-proxy` locally. This
+requires a Claude Code CLI that supports `--mcp-config`. For VM
+isolation, use `nucleus-node` with Firecracker and the in-VM tool-proxy.
+Current enforced tools: read, write, run. Web/search tools are not yet wired.
 
 ## Firecracker Notes
 
 - Firecracker pods require `--proxy-auth-secret` so the signed proxy can enforce auth.
 - The local driver is opt-in via `--allow-local-driver` (no VM isolation).
 - Use `--proxy-approval-secret` if approvals should be signed by a separate authority.
-- Firecracker runs in a fresh network namespace by default (`--firecracker-netns=false` to disable).
+- Firecracker runs in a fresh network namespace by default (`--firecracker-netns=false` to disable); default-deny iptables apply even without `spec.network` (no NIC unless policy is set).
 - Audit logs are hash-chained when enabled (tamper-evident).
+- Guest init is the Rust binary `nucleus-guest-init`, baked into the rootfs.
+- Run `scripts/firecracker/test-network.sh` to validate egress policy on Linux.
 
 ## The Lethal Trifecta (Runtime-Enforced)
 
@@ -94,7 +147,7 @@ executor.run("git push")?;
 │                        Your Agent                                │
 ├─────────────────────────────────────────────────────────────────┤
 │                       nucleus-cli                                │
-│              (CLI with interactive approval)                     │
+│     (Claude wrapper, enforced via MCP + tool-proxy by default)    │
 ├─────────────────────────────────────────────────────────────────┤
 │                         nucleus                                  │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
@@ -109,6 +162,21 @@ executor.run("git push")?;
 │           (cap-std capabilities, atomic ops, quanta)             │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+## Why Not Just Firecracker or gVisor?
+
+Isolation alone doesn't express *semantic* policy. Nucleus adds:
+- **Trifecta detection** (risk-aware gating, not just isolation)
+- **Budgets** (time/cost ceilings enforced before side effects)
+- **Approvals** (typed tokens + audit trail for sensitive ops)
+- **Policy lattice** (composable, explicit permission states)
+
+Firecracker/gVisor remain the execution boundary; Nucleus is the policy engine.
+
+## Assurance Roadmap
+
+Formal methods plan and minimal proof targets are tracked in `docs/assurance/formal-methods.md`.
+Demo hardening criteria are tracked in `docs/assurance/hardening-checklist.md`.
 
 ## Permission Profiles
 
@@ -184,11 +252,12 @@ assert!(!cmds.can_execute("bash -c 'echo hi'"));
 - ✅ Time bounds via monotonic clock (manipulation-proof)
 - ✅ Trifecta adds approval obligations for exfiltration
 - ✅ Approvals require tokens (not just a boolean)
+- ✅ Host-level egress allow/deny for Firecracker netns (Linux + iptables)
 
 ### What We Don't Enforce
 
 - ❌ Kernel-level escapes (use containers/VMs)
-- ❌ Network-level egress control inside the host OS
+- ❌ Host-level egress control for local driver or non-Linux
 - ❌ Human approving bad actions (social engineering)
 - ❌ Side-channel attacks
 

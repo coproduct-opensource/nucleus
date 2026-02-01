@@ -7,6 +7,9 @@ members = [
     "crates/nucleus-spec",   # Shared PodSpec definitions
     "crates/nucleus-node",   # Node daemon (kubelet analogue)
     "crates/nucleus-tool-proxy", # Tool proxy server (runs inside pod)
+    "crates/nucleus-guest-init", # Guest init for Firecracker images
+    "crates/nucleus-net-probe", # TCP probe for network policy tests
+    "crates/nucleus-mcp", # MCP server bridging Claude to tool-proxy
 ]
 resolver = "2"
 

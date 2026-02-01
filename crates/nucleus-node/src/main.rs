@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Response as AxumResponse};
 use axum::routing::{get, post};
 use axum::{middleware, Json, Router};
 use clap::{Parser, ValueEnum};
-use nucleus_spec::PodSpec;
+use nucleus_spec::{NetworkSpec, PodSpec};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
@@ -104,6 +104,8 @@ struct NodeState {
     firecracker_pool: Option<Arc<Semaphore>>,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     firecracker_netns: bool,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    network_allocator: Arc<net::NetworkAllocator>,
     auth: Option<AuthConfig>,
     proxy_auth_secret: Option<String>,
     proxy_approval_secret: Option<String>,
@@ -140,6 +142,8 @@ struct FirecrackerPod {
     bridge: Mutex<Option<vsock_bridge::VsockBridge>>,
     signed_proxy: Mutex<Option<signed_proxy::SignedProxy>>,
     permit: Mutex<Option<OwnedSemaphorePermit>>,
+    net_plan: Mutex<Option<net::NetPlan>>,
+    netns: Mutex<Option<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -238,6 +242,7 @@ async fn main() -> Result<(), ApiError> {
         firecracker_path: args.firecracker_path.clone(),
         firecracker_pool: build_firecracker_pool(&args),
         firecracker_netns: args.firecracker_netns,
+        network_allocator: Arc::new(net::NetworkAllocator::new()),
         auth: args.auth_secret.as_ref().map(|secret| {
             AuthConfig::new(
                 secret.as_bytes(),
@@ -488,6 +493,11 @@ impl FirecrackerPod {
         if let Some(bridge) = self.bridge.lock().await.take() {
             bridge.shutdown().await;
         }
+        if let Some(plan) = self.net_plan.lock().await.take() {
+            let _ = net::cleanup_network(&plan).await;
+        } else if let Some(name) = self.netns.lock().await.take() {
+            let _ = net::cleanup_netns(&name).await;
+        }
         let mut child = self.child.lock().await;
         child.kill().await.map_err(ApiError::Io)?;
         Ok(())
@@ -500,6 +510,11 @@ impl FirecrackerPod {
         self.permit.lock().await.take();
         if let Some(bridge) = self.bridge.lock().await.take() {
             bridge.shutdown().await;
+        }
+        if let Some(plan) = self.net_plan.lock().await.take() {
+            let _ = net::cleanup_network(&plan).await;
+        } else if let Some(name) = self.netns.lock().await.take() {
+            let _ = net::cleanup_netns(&name).await;
         }
     }
 }
@@ -517,8 +532,10 @@ async fn spawn_local_pod(
     let spec_yaml = serde_yaml::to_string(spec).map_err(ApiError::Serde)?;
     tokio::fs::write(&spec_path, spec_yaml).await?;
 
-    if let Some(network) = spec.spec.network.as_ref() {
-        net::apply_network_policy(pod_dir, Some(network)).await?;
+    if spec.spec.network.is_some() {
+        return Err(ApiError::Driver(
+            "network policy requires firecracker driver".to_string(),
+        ));
     }
 
     let log_stdout = std::fs::OpenOptions::new()
@@ -617,8 +634,6 @@ async fn spawn_firecracker_pod(
             None => None,
         };
 
-        net::apply_network_policy(pod_dir, spec.spec.network.as_ref()).await?;
-
         let image = spec
             .spec
             .image
@@ -630,47 +645,132 @@ async fn spawn_firecracker_pod(
             .as_ref()
             .ok_or_else(|| ApiError::Driver("missing spec.vsock".to_string()))?;
 
+        let mut net_plan: Option<net::NetPlan> = None;
+        let mut netns_name: Option<String> = None;
+
+        if state.firecracker_netns {
+            let name = net::netns_name(id);
+            if let Err(err) = net::create_netns(&name).await {
+                return Err(err);
+            }
+            netns_name = Some(name.clone());
+
+            if let Some(network) = spec.spec.network.as_ref() {
+                if let Err(err) = net::validate_policy(network) {
+                    let _ = net::cleanup_netns(&name).await;
+                    return Err(err);
+                }
+                let plan = match state.network_allocator.allocate(id, name.clone()) {
+                    Ok(plan) => plan,
+                    Err(err) => {
+                        let _ = net::cleanup_netns(&name).await;
+                        return Err(err);
+                    }
+                };
+                if let Err(err) = net::setup_network(&plan).await {
+                    let _ = net::cleanup_network(&plan).await;
+                    return Err(err);
+                }
+                if let Err(err) = net::write_policy_files(pod_dir, Some(network)).await {
+                    let _ = net::cleanup_network(&plan).await;
+                    return Err(err);
+                }
+                net_plan = Some(plan);
+            }
+        } else if spec.spec.network.is_some() {
+            return Err(ApiError::Driver(
+                "network policy requires --firecracker-netns=true".to_string(),
+            ));
+        }
+
         let log_path = pod_dir.join("firecracker.log");
         let config_path = pod_dir.join("firecracker.json");
         let vsock_path = pod_dir.join("vsock.sock");
 
-        let config = FirecrackerConfig::from_spec(spec, &log_path, &vsock_path, image);
-        let config_json = serde_json::to_vec_pretty(&config)
-            .map_err(|e| ApiError::Driver(format!("config serialize failed: {e}")))?;
-        tokio::fs::write(&config_path, config_json).await?;
+        let config =
+            FirecrackerConfig::from_spec(spec, &log_path, &vsock_path, image, net_plan.as_ref());
+        let config_json = match serde_json::to_vec_pretty(&config) {
+            Ok(data) => data,
+            Err(err) => {
+                cleanup_net_resources(&net_plan, &netns_name).await;
+                return Err(ApiError::Driver(format!("config serialize failed: {err}")));
+            }
+        };
+        if let Err(err) = tokio::fs::write(&config_path, config_json).await {
+            cleanup_net_resources(&net_plan, &netns_name).await;
+            return Err(ApiError::Driver(format!("config write failed: {err}")));
+        }
 
         let log_stdout = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&log_path)?;
+            .open(&log_path)
+            .map_err(|err| ApiError::Driver(format!("failed to open firecracker log: {err}")))?;
         let log_stderr = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&log_path)?;
+            .open(&log_path)
+            .map_err(|err| ApiError::Driver(format!("failed to open firecracker log: {err}")))?;
 
         let mut command = if state.firecracker_netns {
-            if std::process::Command::new("unshare")
-                .arg("--help")
-                .output()
-                .is_err()
-            {
+            let Some(ref name) = netns_name else {
                 return Err(ApiError::Driver(
-                    "firecracker netns enabled but `unshare` not available".to_string(),
+                    "network namespace name missing".to_string(),
                 ));
-            }
-            let mut cmd = Command::new("unshare");
-            cmd.arg("-n").arg("--").arg(&state.firecracker_path);
+            };
+            let mut cmd = Command::new("ip");
+            cmd.args(["netns", "exec", name, "--"]);
+            cmd.arg(&state.firecracker_path);
             cmd
         } else {
             Command::new(&state.firecracker_path)
         };
         command.arg("--config-file").arg(&config_path);
         apply_seccomp_flags(&mut command, spec)?;
-        let child = command
-            .stdout(log_stdout)
-            .stderr(log_stderr)
-            .spawn()
-            .map_err(|e| ApiError::Driver(format!("failed to spawn firecracker: {e}")))?;
+        let mut child = match command.stdout(log_stdout).stderr(log_stderr).spawn() {
+            Ok(child) => child,
+            Err(err) => {
+                cleanup_net_resources(&net_plan, &netns_name).await;
+                return Err(ApiError::Driver(format!(
+                    "failed to spawn firecracker: {err}"
+                )));
+            }
+        };
+
+        if state.firecracker_netns {
+            let mut default_policy: Option<NetworkSpec> = None;
+            let policy = match spec.spec.network.as_ref() {
+                Some(policy) => policy,
+                None => {
+                    default_policy = Some(NetworkSpec {
+                        allow: Vec::new(),
+                        deny: Vec::new(),
+                    });
+                    default_policy.as_ref().expect("default policy missing")
+                }
+            };
+            if let Some(pid) = child.id() {
+                if let Err(err) = net::apply_host_policy(pid, policy).await {
+                    let _ = child.kill().await;
+                    if let Some(plan) = net_plan.as_ref() {
+                        let _ = net::cleanup_network(plan).await;
+                    } else if let Some(ref name) = netns_name {
+                        let _ = net::cleanup_netns(name).await;
+                    }
+                    return Err(err);
+                }
+            } else {
+                let _ = child.kill().await;
+                if let Some(plan) = net_plan.as_ref() {
+                    let _ = net::cleanup_network(plan).await;
+                } else if let Some(ref name) = netns_name {
+                    let _ = net::cleanup_netns(name).await;
+                }
+                return Err(ApiError::Driver(
+                    "firecracker process id unavailable for network policy".to_string(),
+                ));
+            }
+        }
 
         if let Some(ref cgroup_spec) = spec.spec.cgroup {
             if let Some(pid) = child.id() {
@@ -682,7 +782,11 @@ async fn spawn_firecracker_pod(
             }
         }
 
-        wait_for_vsock_socket(&vsock_path).await?;
+        if let Err(err) = wait_for_vsock_socket(&vsock_path).await {
+            let _ = child.kill().await;
+            cleanup_net_resources(&net_plan, &netns_name).await;
+            return Err(err);
+        }
         let bridge = vsock_bridge::VsockBridge::start(vsock_path.clone(), vsock_spec.port)
             .await
             .map_err(|e| ApiError::Driver(format!("vsock bridge failed: {e}")))?;
@@ -716,6 +820,7 @@ async fn spawn_firecracker_pod(
             bridge.shutdown().await;
             let mut child = child;
             let _ = child.kill().await;
+            cleanup_net_resources(&net_plan, &netns_name).await;
             return Err(err);
         }
 
@@ -724,11 +829,22 @@ async fn spawn_firecracker_pod(
             bridge: Mutex::new(Some(bridge)),
             signed_proxy: Mutex::new(signed_proxy),
             permit: Mutex::new(permit),
+            net_plan: Mutex::new(net_plan),
+            netns: Mutex::new(netns_name),
         };
 
         info!("spawned firecracker pod {}", id);
 
         Ok((DriverState::Firecracker(handle), Some(proxy_addr), log_path))
+    }
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+async fn cleanup_net_resources(net_plan: &Option<net::NetPlan>, netns_name: &Option<String>) {
+    if let Some(plan) = net_plan {
+        let _ = net::cleanup_network(plan).await;
+    } else if let Some(name) = netns_name {
+        let _ = net::cleanup_netns(name).await;
     }
 }
 
@@ -971,6 +1087,8 @@ struct FirecrackerConfig {
     drives: Vec<DriveConfig>,
     #[serde(rename = "machine-config")]
     machine_config: MachineConfig,
+    #[serde(rename = "network-interfaces", skip_serializing_if = "Vec::is_empty")]
+    network_interfaces: Vec<NetworkInterface>,
     #[serde(skip_serializing_if = "Option::is_none")]
     vsock: Option<VsockConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1004,6 +1122,14 @@ struct MachineConfig {
 
 #[cfg(target_os = "linux")]
 #[derive(Debug, Serialize)]
+struct NetworkInterface {
+    iface_id: String,
+    host_dev_name: String,
+    guest_mac: String,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Serialize)]
 struct LoggerConfig {
     log_path: String,
     level: String,
@@ -1018,6 +1144,7 @@ impl FirecrackerConfig {
         log_path: &Path,
         vsock_path: &Path,
         image: &nucleus_spec::ImageSpec,
+        net_plan: Option<&net::NetPlan>,
     ) -> Self {
         let vcpu_count = spec
             .spec
@@ -1033,7 +1160,7 @@ impl FirecrackerConfig {
             .unwrap_or(512) as i64;
 
         let default_args = "console=ttyS0 reboot=k panic=1 pci=off init=/init".to_string();
-        let boot_args = match image.boot_args.clone() {
+        let mut boot_args = match image.boot_args.clone() {
             Some(args) => {
                 if args.contains("init=") {
                     Some(args)
@@ -1044,10 +1171,28 @@ impl FirecrackerConfig {
             None => Some(default_args),
         };
 
+        if let Some(plan) = net_plan {
+            let extra = plan.kernel_arg();
+            boot_args = match boot_args.take() {
+                Some(args) if args.contains("nucleus.net=") => Some(args),
+                Some(args) => Some(format!("{args} {extra}")),
+                None => Some(extra),
+            };
+        }
+
         let vsock = spec.spec.vsock.as_ref().map(|vsock| VsockConfig {
             guest_cid: vsock.guest_cid,
             uds_path: vsock_path.display().to_string(),
         });
+
+        let network_interfaces = match net_plan {
+            Some(plan) => vec![NetworkInterface {
+                iface_id: "eth0".to_string(),
+                host_dev_name: plan.tap_name.clone(),
+                guest_mac: plan.guest_mac.clone(),
+            }],
+            None => Vec::new(),
+        };
 
         Self {
             boot_source: BootSource {
@@ -1060,6 +1205,7 @@ impl FirecrackerConfig {
                 mem_size_mib,
                 smt: false,
             },
+            network_interfaces,
             vsock,
             logger: Some(LoggerConfig {
                 log_path: log_path.display().to_string(),

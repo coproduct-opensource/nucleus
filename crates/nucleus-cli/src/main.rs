@@ -1,7 +1,7 @@
-//! Nucleus CLI - Run AI agents with enforced permissions
+//! Nucleus CLI - Run AI agents with policy-aware defaults
 //!
-//! Unlike other agent runners that only check permissions, nucleus-cli
-//! enforces them at the OS level using capability-based sandboxing.
+//! `nucleus-cli` runs Claude with MCP + nucleus-tool-proxy for tool enforcement.
+//! Use `--unsafe-allow-claude` only for testing without enforcement.
 //!
 //! # Examples
 //!
@@ -25,7 +25,7 @@ mod config;
 mod profiles;
 mod run;
 
-/// Nucleus - AI agent executor with enforced permissions
+/// Nucleus CLI - policy-aware wrapper (tool enforcement via proxy)
 #[derive(Parser)]
 #[command(name = "nucleus")]
 #[command(version, about, long_about = None)]

@@ -35,6 +35,7 @@ tonic-prost = "0.14"
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
+ipnet = "2.9"
 
 nucleus = { path = "../nucleus" }
 nucleus-spec = { path = "../nucleus-spec" }
