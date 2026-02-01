@@ -65,6 +65,7 @@ nucleus profiles
 - The local driver is opt-in via `--allow-local-driver` (no VM isolation).
 - Use `--proxy-approval-secret` if approvals should be signed by a separate authority.
 - Firecracker runs in a fresh network namespace by default (`--firecracker-netns=false` to disable).
+- Audit logs are hash-chained when enabled (tamper-evident).
 
 ## The Lethal Trifecta (Runtime-Enforced)
 

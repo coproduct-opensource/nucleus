@@ -19,6 +19,7 @@
 
 ## Audit (current)
 - Every tool call produces an audit log record (optional signing).
+- Audit entries are hash-chained; tampering breaks the chain.
 - Approval events are logged with operation name and count.
 
 ## VM Isolation (current)

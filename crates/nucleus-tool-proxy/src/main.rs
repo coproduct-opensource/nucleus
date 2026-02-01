@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -16,6 +17,7 @@ use nucleus::{
 };
 use nucleus_spec::{BudgetModelSpec, PodSpec};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tracing::info;
@@ -655,7 +657,12 @@ fn build_audit_log(
         ));
     };
 
-    Ok(Some(Arc::new(AuditLog { path, secret })))
+    let last_hash = load_last_hash(&path).unwrap_or_default();
+    Ok(Some(Arc::new(AuditLog {
+        path,
+        secret,
+        last_hash: Mutex::new(last_hash),
+    })))
 }
 
 async fn audit_event(
@@ -677,6 +684,8 @@ async fn audit_event(
                 event: event.to_string(),
                 subject: subject.to_string(),
                 result: result.to_string(),
+                prev_hash: String::new(),
+                hash: String::new(),
                 signature: String::new(),
             })
             .await?;
@@ -684,29 +693,37 @@ async fn audit_event(
     Ok(())
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct AuditEntry {
     timestamp_unix: u64,
     actor: Option<String>,
     event: String,
     subject: String,
     result: String,
+    prev_hash: String,
+    hash: String,
     signature: String,
 }
 
 struct AuditLog {
     path: PathBuf,
     secret: Vec<u8>,
+    last_hash: Mutex<String>,
 }
 
 impl AuditLog {
     async fn log(&self, mut entry: AuditEntry) -> Result<(), ApiError> {
         let actor = entry.actor.clone().unwrap_or_default();
+        let mut last_hash = self.last_hash.lock().unwrap();
+        let prev_hash = last_hash.clone();
         let message = format!(
-            "{}|{}|{}|{}|{}",
-            entry.timestamp_unix, actor, entry.event, entry.subject, entry.result
+            "{}|{}|{}|{}|{}|{}",
+            entry.timestamp_unix, actor, entry.event, entry.subject, entry.result, prev_hash
         );
+        entry.prev_hash = prev_hash;
         entry.signature = auth::sign_message(&self.secret, message.as_bytes());
+        entry.hash = sha256_hex(&format!("{}|{}", message, entry.signature));
+        *last_hash = entry.hash.clone();
 
         let line = serde_json::to_string(&entry).map_err(|e| ApiError::Spec(e.to_string()))?;
         let mut file = tokio::fs::OpenOptions::new()
@@ -725,4 +742,35 @@ fn now_unix() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn sha256_hex(message: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(message.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+fn load_last_hash(path: &Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    if metadata.len() == 0 {
+        return None;
+    }
+    let read_len = metadata.len().min(8192) as usize;
+    let mut file = file;
+    let start = metadata.len().saturating_sub(read_len as u64);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return None;
+    }
+    let mut buf = vec![0u8; read_len];
+    if file.read_exact(&mut buf).is_err() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&buf);
+    let line = text.lines().rev().find(|line| !line.trim().is_empty())?;
+    let entry: AuditEntry = serde_json::from_str(line).ok()?;
+    if entry.hash.is_empty() {
+        return None;
+    }
+    Some(entry.hash)
 }
