@@ -28,6 +28,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+url = "2.5"
 
 nucleus = { path = "../nucleus" }
 nucleus-spec = { path = "../nucleus-spec" }
