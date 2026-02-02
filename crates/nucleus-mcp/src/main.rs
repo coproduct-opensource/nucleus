@@ -178,11 +178,14 @@ impl ProxyClient {
                         }),
                     }
                 } else {
-                    response.body_mut().read_json::<R>().map_err(|e| ProxyError {
-                        kind: "decode_error".to_string(),
-                        message: e.to_string(),
-                        operation: None,
-                    })
+                    response
+                        .body_mut()
+                        .read_json::<R>()
+                        .map_err(|e| ProxyError {
+                            kind: "decode_error".to_string(),
+                            message: e.to_string(),
+                            operation: None,
+                        })
                 }
             }
             Err(err) => Err(ProxyError {

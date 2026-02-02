@@ -448,7 +448,9 @@ async fn check_node_connectivity() -> bool {
     let agent: ureq::Agent = config.into();
 
     match agent.get(node_url).call() {
-        Ok(resp) if resp.status().as_u16() == 200 => print_check("nucleus-node", Status::Ok, "reachable"),
+        Ok(resp) if resp.status().as_u16() == 200 => {
+            print_check("nucleus-node", Status::Ok, "reachable")
+        }
         Ok(resp) => print_check(
             "nucleus-node",
             Status::Warning,
