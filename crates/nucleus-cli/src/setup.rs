@@ -431,11 +431,7 @@ fn generate_lima_config(args: &SetupArgs, chip: &AppleChip) -> Result<String> {
 
     // Nested virtualization only works on Apple Silicon M3+ with macOS 15+
     // Intel Macs cannot do nested virt in Lima
-    let nested_virt = if is_intel {
-        "false"
-    } else {
-        "true"
-    };
+    let nested_virt = if is_intel { "false" } else { "true" };
 
     let config = format!(
         r#"# Lima configuration for Nucleus

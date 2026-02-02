@@ -30,7 +30,10 @@ pub async fn execute(args: StopArgs) -> Result<()> {
     let vm_status = get_lima_vm_status(&args.vm_name)?;
 
     if vm_status.is_empty() {
-        println!("Lima VM '{}' does not exist. Nothing to stop.", args.vm_name);
+        println!(
+            "Lima VM '{}' does not exist. Nothing to stop.",
+            args.vm_name
+        );
         return Ok(());
     }
 
@@ -94,14 +97,7 @@ fn stop_nucleus_node(args: &StopArgs) -> Result<()> {
 
         // Also check for any running nucleus-node processes
         let output = Command::new("limactl")
-            .args([
-                "shell",
-                &args.vm_name,
-                "--",
-                "pgrep",
-                "-x",
-                "nucleus-node",
-            ])
+            .args(["shell", &args.vm_name, "--", "pgrep", "-x", "nucleus-node"])
             .output()
             .context("Failed to check for nucleus-node process")?;
 
@@ -210,7 +206,10 @@ fn print_success_message(args: &StopArgs) {
         println!("Lima VM '{}' has been stopped.", args.vm_name);
         println!("To restart: nucleus start");
     } else {
-        println!("nucleus-node has been stopped, but Lima VM '{}' is still running.", args.vm_name);
+        println!(
+            "nucleus-node has been stopped, but Lima VM '{}' is still running.",
+            args.vm_name
+        );
         println!("To restart nucleus-node: nucleus start");
         println!("To stop the VM: nucleus stop --stop-vm");
     }

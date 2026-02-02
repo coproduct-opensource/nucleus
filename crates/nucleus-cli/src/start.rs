@@ -139,7 +139,9 @@ fn ensure_nucleus_node_available(vm_name: &str) -> Result<()> {
         println!();
         println!("To install nucleus-node in the VM:");
         println!("  1. Build: cargo build --release -p nucleus-node");
-        println!("  2. Copy to VM: limactl copy nucleus target/release/nucleus-node :/usr/local/bin/");
+        println!(
+            "  2. Copy to VM: limactl copy nucleus target/release/nucleus-node :/usr/local/bin/"
+        );
         println!();
         println!("Or use the cross-compiled binary:");
         println!("  1. Build: scripts/cross-build.sh");
