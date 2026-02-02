@@ -77,6 +77,7 @@ struct AppState {
     auth: AuthConfig,
     approval_auth: AuthConfig,
     approval_nonces: Arc<ApprovalNonceCache>,
+    approval_rate_limiter: Arc<ApprovalRateLimiter>,
 }
 
 #[derive(Default)]
@@ -98,6 +99,57 @@ impl ApprovalNonceCache {
         }
         guard.insert(nonce.to_string(), expires_at_unix);
         true
+    }
+}
+
+/// Simple token bucket rate limiter for the approval endpoint.
+/// Prevents DoS attacks by limiting approval requests per second.
+struct ApprovalRateLimiter {
+    /// Maximum tokens (burst capacity)
+    max_tokens: u32,
+    /// Tokens added per second
+    refill_rate: u32,
+    /// Current token count and last refill timestamp
+    state: Mutex<(u32, u64)>,
+}
+
+impl ApprovalRateLimiter {
+    fn new(max_tokens: u32, refill_rate: u32) -> Self {
+        Self {
+            max_tokens,
+            refill_rate,
+            state: Mutex::new((max_tokens, now_unix())),
+        }
+    }
+
+    /// Try to consume a token. Returns true if allowed, false if rate limited.
+    fn try_acquire(&self) -> bool {
+        let mut guard = self.state.lock().unwrap();
+        let (tokens, last_refill) = &mut *guard;
+        let now = now_unix();
+
+        // Refill tokens based on elapsed time
+        let elapsed = now.saturating_sub(*last_refill);
+        if elapsed > 0 {
+            let refill = (elapsed as u32).saturating_mul(self.refill_rate);
+            *tokens = (*tokens).saturating_add(refill).min(self.max_tokens);
+            *last_refill = now;
+        }
+
+        // Try to consume a token
+        if *tokens > 0 {
+            *tokens -= 1;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl Default for ApprovalRateLimiter {
+    fn default() -> Self {
+        // Allow 10 approvals per second with burst of 20
+        Self::new(20, 10)
     }
 }
 
@@ -231,6 +283,8 @@ enum ApiError {
     Auth(#[from] AuthError),
     #[error("request body error: {0}")]
     Body(String),
+    #[error("rate limited: too many approval requests")]
+    RateLimited,
 }
 
 impl IntoResponse for ApiError {
@@ -278,6 +332,7 @@ impl IntoResponse for ApiError {
             ApiError::Serde(_) => (StatusCode::BAD_REQUEST, "serde_error", None),
             ApiError::Auth(_) => (StatusCode::UNAUTHORIZED, "auth_error", None),
             ApiError::Body(_) => (StatusCode::BAD_REQUEST, "body_error", None),
+            ApiError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited", None),
         };
 
         let body = Json(ErrorBody {
@@ -327,6 +382,7 @@ async fn main() -> Result<(), ApiError> {
         auth,
         approval_auth,
         approval_nonces: Arc::new(ApprovalNonceCache::default()),
+        approval_rate_limiter: Arc::new(ApprovalRateLimiter::default()),
     };
 
     if let Err(err) = emit_boot_report(&state).await {
@@ -473,6 +529,11 @@ async fn approve_operation(
     headers: HeaderMap,
     Json(req): Json<ApproveRequest>,
 ) -> Result<Json<ApproveResponse>, ApiError> {
+    // Rate limit approval requests to prevent DoS
+    if !state.approval_rate_limiter.try_acquire() {
+        return Err(ApiError::RateLimited);
+    }
+
     let now = now_unix();
     let expires_at = resolve_approval_expiry(req.expires_at_unix, now)?;
     let nonce = req
@@ -774,4 +835,72 @@ fn load_last_hash(path: &Path) -> Option<String> {
         return None;
     }
     Some(entry.hash)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rate_limiter_allows_burst() {
+        let limiter = ApprovalRateLimiter::new(5, 1);
+        // Should allow burst of 5
+        for i in 0..5 {
+            assert!(limiter.try_acquire(), "request {} should be allowed", i);
+        }
+        // 6th should be rejected
+        assert!(!limiter.try_acquire(), "request 6 should be rate limited");
+    }
+
+    #[test]
+    fn test_rate_limiter_default_config() {
+        let limiter = ApprovalRateLimiter::default();
+        // Default is 20 burst, 10/sec refill
+        for i in 0..20 {
+            assert!(limiter.try_acquire(), "request {} should be allowed", i);
+        }
+        assert!(!limiter.try_acquire(), "request 21 should be rate limited");
+    }
+
+    #[test]
+    fn test_nonce_cache_rejects_replay() {
+        let cache = ApprovalNonceCache::default();
+        let now = 1000;
+        let expiry = 2000;
+
+        // First use should succeed
+        assert!(cache.check_and_insert("nonce-1", expiry, now));
+        // Replay should fail
+        assert!(!cache.check_and_insert("nonce-1", expiry, now));
+        // Different nonce should succeed
+        assert!(cache.check_and_insert("nonce-2", expiry, now));
+    }
+
+    #[test]
+    fn test_nonce_cache_expires_old_entries() {
+        let cache = ApprovalNonceCache::default();
+        let now = 1000;
+        let expiry = 1500;
+
+        assert!(cache.check_and_insert("nonce-old", expiry, now));
+
+        // Time passes, entry expires
+        let later = 2000;
+        // Old nonce was cleaned up, so this should succeed
+        assert!(cache.check_and_insert("nonce-old", 3000, later));
+    }
+
+    #[test]
+    fn test_approval_registry_consume() {
+        let registry = ApprovalRegistry::default();
+
+        // Approve 2 uses
+        registry.approve("read /etc/passwd", 2, None);
+
+        // Should consume successfully twice
+        assert!(registry.consume("read /etc/passwd"));
+        assert!(registry.consume("read /etc/passwd"));
+        // Third should fail
+        assert!(!registry.consume("read /etc/passwd"));
+    }
 }
