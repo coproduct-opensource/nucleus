@@ -16,12 +16,5 @@ rustflags = ["-C", "target-feature=+crt-static"]
 # Uncomment to set default target:
 # target = "aarch64-unknown-linux-musl"
 
-[profile.release]
-# Optimize for size in release builds (important for rootfs)
-lto = true
-codegen-units = 1
-strip = true
-
-[profile.release-small]
-inherits = "release"
-opt-level = "z"
+# NOTE: Do NOT add [profile.release] with lto=true here!
+# It breaks cargo-fuzz. Use --profile release-rootfs for rootfs builds instead.
