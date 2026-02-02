@@ -204,10 +204,7 @@ fn check_lima() -> bool {
     println!("-------");
 
     // Check if Lima is installed and get version
-    let lima_output = Command::new("limactl")
-        .arg("--version")
-        .output()
-        .ok();
+    let lima_output = Command::new("limactl").arg("--version").output().ok();
 
     let (lima_installed, lima_version) = match lima_output {
         Some(output) if output.status.success() => {
