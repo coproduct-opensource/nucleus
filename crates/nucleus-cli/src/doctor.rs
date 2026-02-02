@@ -68,6 +68,10 @@ pub async fn diagnose() -> Result<()> {
     all_ok &= check_config();
     println!();
 
+    // Network policy capability check
+    all_ok &= check_network_policy_capability();
+    println!();
+
     // Node connectivity (if configured)
     all_ok &= check_node_connectivity().await;
     println!();
@@ -589,6 +593,53 @@ async fn check_node_connectivity() -> bool {
             Status::Warning,
             "not reachable (start with: nucleus-node)",
         ),
+    }
+}
+
+fn check_network_policy_capability() -> bool {
+    println!("Network Security");
+    println!("----------------");
+
+    let os = std::env::consts::OS;
+
+    if os == "linux" {
+        // On Linux, check for iptables
+        let iptables_ok = Command::new("iptables")
+            .args(["--version"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        print_check(
+            "Network policy",
+            if iptables_ok {
+                Status::Ok
+            } else {
+                Status::Warning
+            },
+            if iptables_ok {
+                "iptables available (full network isolation)"
+            } else {
+                "iptables not found (network policies may not be enforced)"
+            },
+        )
+    } else {
+        // On macOS, network policies run inside the Lima VM
+        print_check(
+            "Network policy",
+            Status::Warning,
+            "host-level iptables not available (network policy enforced inside Lima VM only)",
+        );
+
+        // Additional warning about the security model
+        println!(
+            "  Note: On macOS, network security relies on the Lima VM's isolation."
+        );
+        println!(
+            "        For production workloads with strict network requirements, use Linux."
+        );
+
+        true // Don't fail the check, just warn
     }
 }
 

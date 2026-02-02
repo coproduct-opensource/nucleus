@@ -79,6 +79,26 @@ struct RunResponse {
     stderr: String,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct WebFetchRequest {
+    url: String,
+    #[serde(default)]
+    method: Option<String>,
+    #[serde(default)]
+    headers: Option<std::collections::HashMap<String, String>>,
+    #[serde(default)]
+    body: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WebFetchResponse {
+    status: u16,
+    headers: std::collections::HashMap<String, String>,
+    body: String,
+    #[serde(default)]
+    truncated: Option<bool>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct ApproveRequest {
     operation: String,
@@ -315,6 +335,9 @@ fn build_tool_defs(policy: Option<&PermissionLattice>) -> Vec<ToolDefinition> {
                 || p.capabilities.create_pr >= CapabilityLevel::LowRisk
         })
         .unwrap_or(true);
+    let allow_web_fetch = policy
+        .map(|p| p.capabilities.web_fetch >= CapabilityLevel::LowRisk)
+        .unwrap_or(true);
 
     if allow_read {
         tools.push(ToolDefinition {
@@ -349,6 +372,22 @@ fn build_tool_defs(policy: Option<&PermissionLattice>) -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": { "command": { "type": "string" } },
                 "required": ["command"]
+            }),
+        });
+    }
+    if allow_web_fetch {
+        tools.push(ToolDefinition {
+            name: "web_fetch".to_string(),
+            description: "Fetch a URL (respects dns_allow policy)".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "URL to fetch" },
+                    "method": { "type": "string", "description": "HTTP method (default: GET)" },
+                    "headers": { "type": "object", "description": "Optional request headers" },
+                    "body": { "type": "string", "description": "Optional request body" }
+                },
+                "required": ["url"]
             }),
         });
     }
@@ -408,6 +447,33 @@ fn call_tool(client: &ProxyClient, call: &ToolCallParams, approval_prompt: bool)
             Ok(format!(
                 "status: {}\nsuccess: {}\nstdout:\n{}\nstderr:\n{}",
                 response.status, response.success, response.stdout, response.stderr
+            ))
+        }
+        "web_fetch" => {
+            let req: WebFetchRequest = serde_json::from_value(call.arguments.clone())
+                .map_err(|e| anyhow!("invalid web_fetch args: {e}"))?;
+            let response: WebFetchResponse = call_with_approval(
+                client,
+                approval_prompt,
+                || client.post_json("/v1/web_fetch", &req),
+                || {
+                    let req = WebFetchRequest {
+                        url: req.url.clone(),
+                        method: req.method.clone(),
+                        headers: req.headers.clone(),
+                        body: req.body.clone(),
+                    };
+                    client.post_json("/v1/web_fetch", &req)
+                },
+            )?;
+            let truncated_note = if response.truncated == Some(true) {
+                " (truncated)"
+            } else {
+                ""
+            };
+            Ok(format!(
+                "status: {}{}\nheaders: {:?}\nbody:\n{}",
+                response.status, truncated_note, response.headers, response.body
             ))
         }
         other => Err(anyhow!("unknown tool: {other}")),
@@ -539,11 +605,12 @@ mod tests {
     #[test]
     fn test_build_tool_defs_permissive() {
         let tools = build_tool_defs(None);
-        assert_eq!(tools.len(), 3);
+        assert_eq!(tools.len(), 4);
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"read"));
         assert!(names.contains(&"write"));
         assert!(names.contains(&"run"));
+        assert!(names.contains(&"web_fetch"));
     }
 
     #[test]
