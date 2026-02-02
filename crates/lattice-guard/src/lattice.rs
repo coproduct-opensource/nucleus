@@ -484,6 +484,67 @@ impl PermissionLattice {
         lattice.normalize()
     }
 
+    /// Create a filesystem read-only permission set with sensitive paths blocked.
+    pub fn filesystem_readonly() -> Self {
+        let mut lattice = Self::read_only();
+        lattice.description = "Filesystem read-only permissions".to_string();
+        lattice.paths = PathLattice::block_sensitive();
+        lattice.normalize()
+    }
+
+    /// Create a network-only permission set (no filesystem or execution).
+    pub fn network_only() -> Self {
+        let lattice = Self {
+            description: "Network-only permissions".to_string(),
+            capabilities: CapabilityLattice {
+                read_files: CapabilityLevel::Never,
+                write_files: CapabilityLevel::Never,
+                edit_files: CapabilityLevel::Never,
+                run_bash: CapabilityLevel::Never,
+                glob_search: CapabilityLevel::Never,
+                grep_search: CapabilityLevel::Never,
+                web_search: CapabilityLevel::LowRisk,
+                web_fetch: CapabilityLevel::LowRisk,
+                git_commit: CapabilityLevel::Never,
+                git_push: CapabilityLevel::Never,
+                create_pr: CapabilityLevel::Never,
+            },
+            obligations: Obligations::default(),
+            budget: BudgetLattice::with_cost_limit(1.0),
+            time: TimeLattice::minutes(30),
+            commands: CommandLattice::restrictive(),
+            ..Default::default()
+        };
+
+        lattice.normalize()
+    }
+
+    /// Create a web research permission set (read + web, no writes or exec).
+    pub fn web_research() -> Self {
+        let lattice = Self {
+            description: "Web research permissions".to_string(),
+            capabilities: CapabilityLattice {
+                read_files: CapabilityLevel::LowRisk,
+                write_files: CapabilityLevel::Never,
+                edit_files: CapabilityLevel::Never,
+                run_bash: CapabilityLevel::Never,
+                glob_search: CapabilityLevel::Always,
+                grep_search: CapabilityLevel::Always,
+                web_search: CapabilityLevel::LowRisk,
+                web_fetch: CapabilityLevel::LowRisk,
+                git_commit: CapabilityLevel::Never,
+                git_push: CapabilityLevel::Never,
+                create_pr: CapabilityLevel::Never,
+            },
+            obligations: Obligations::default(),
+            budget: BudgetLattice::with_cost_limit(1.5),
+            time: TimeLattice::minutes(45),
+            ..Default::default()
+        };
+
+        lattice.normalize()
+    }
+
     /// Create a permission set for code review tasks.
     pub fn code_review() -> Self {
         let mut obligations = Obligations::default();
@@ -507,6 +568,61 @@ impl PermissionLattice {
             obligations,
             budget: BudgetLattice::with_cost_limit(1.0),
             time: TimeLattice::minutes(30),
+            ..Default::default()
+        };
+
+        lattice.normalize()
+    }
+
+    /// Create an edit-only permission set (no exec, no web).
+    pub fn edit_only() -> Self {
+        let lattice = Self {
+            description: "Edit-only permissions".to_string(),
+            capabilities: CapabilityLattice {
+                read_files: CapabilityLevel::Always,
+                write_files: CapabilityLevel::LowRisk,
+                edit_files: CapabilityLevel::LowRisk,
+                run_bash: CapabilityLevel::Never,
+                glob_search: CapabilityLevel::Always,
+                grep_search: CapabilityLevel::Always,
+                web_search: CapabilityLevel::Never,
+                web_fetch: CapabilityLevel::Never,
+                git_commit: CapabilityLevel::Never,
+                git_push: CapabilityLevel::Never,
+                create_pr: CapabilityLevel::Never,
+            },
+            obligations: Obligations::default(),
+            paths: PathLattice::block_sensitive(),
+            budget: BudgetLattice::with_cost_limit(1.5),
+            time: TimeLattice::minutes(45),
+            ..Default::default()
+        };
+
+        lattice.normalize()
+    }
+
+    /// Create a local dev permission set (shell + edits, no web).
+    pub fn local_dev() -> Self {
+        let lattice = Self {
+            description: "Local dev permissions".to_string(),
+            capabilities: CapabilityLattice {
+                read_files: CapabilityLevel::Always,
+                write_files: CapabilityLevel::LowRisk,
+                edit_files: CapabilityLevel::LowRisk,
+                run_bash: CapabilityLevel::LowRisk,
+                glob_search: CapabilityLevel::Always,
+                grep_search: CapabilityLevel::Always,
+                web_search: CapabilityLevel::Never,
+                web_fetch: CapabilityLevel::Never,
+                git_commit: CapabilityLevel::LowRisk,
+                git_push: CapabilityLevel::Never,
+                create_pr: CapabilityLevel::Never,
+            },
+            obligations: Obligations::default(),
+            paths: PathLattice::block_sensitive(),
+            commands: CommandLattice::permissive(),
+            budget: BudgetLattice::with_cost_limit(3.0),
+            time: TimeLattice::hours(2),
             ..Default::default()
         };
 
@@ -539,6 +655,73 @@ impl PermissionLattice {
             },
             obligations,
             paths: PathLattice::block_sensitive(),
+            budget: BudgetLattice::with_cost_limit(2.0),
+            time: TimeLattice::hours(1),
+            ..Default::default()
+        };
+
+        lattice.normalize()
+    }
+
+    /// Create a release/publish permission set (approvals on exfil).
+    pub fn release() -> Self {
+        let mut obligations = Obligations::default();
+        obligations.insert(Operation::GitPush);
+        obligations.insert(Operation::CreatePr);
+
+        let lattice = Self {
+            description: "Release permissions".to_string(),
+            capabilities: CapabilityLattice {
+                read_files: CapabilityLevel::Always,
+                write_files: CapabilityLevel::LowRisk,
+                edit_files: CapabilityLevel::LowRisk,
+                run_bash: CapabilityLevel::LowRisk,
+                glob_search: CapabilityLevel::Always,
+                grep_search: CapabilityLevel::Always,
+                web_search: CapabilityLevel::LowRisk,
+                web_fetch: CapabilityLevel::LowRisk,
+                git_commit: CapabilityLevel::LowRisk,
+                git_push: CapabilityLevel::LowRisk,
+                create_pr: CapabilityLevel::LowRisk,
+            },
+            obligations,
+            paths: PathLattice::block_sensitive(),
+            commands: CommandLattice::permissive(),
+            budget: BudgetLattice::with_cost_limit(5.0),
+            time: TimeLattice::hours(2),
+            ..Default::default()
+        };
+
+        lattice.normalize()
+    }
+
+    /// Create a database client permission set (CLI access only).
+    pub fn database_client() -> Self {
+        let mut commands = CommandLattice::permissive();
+        for program in ["psql", "mysql", "sqlite3", "redis-cli", "mongosh"] {
+            commands.allow_rule(CommandPattern {
+                program: program.to_string(),
+                args: vec![ArgPattern::AnyRemaining],
+            });
+        }
+
+        let lattice = Self {
+            description: "Database client permissions".to_string(),
+            capabilities: CapabilityLattice {
+                read_files: CapabilityLevel::Never,
+                write_files: CapabilityLevel::Never,
+                edit_files: CapabilityLevel::Never,
+                run_bash: CapabilityLevel::LowRisk,
+                glob_search: CapabilityLevel::Never,
+                grep_search: CapabilityLevel::Never,
+                web_search: CapabilityLevel::Never,
+                web_fetch: CapabilityLevel::Never,
+                git_commit: CapabilityLevel::Never,
+                git_push: CapabilityLevel::Never,
+                create_pr: CapabilityLevel::Never,
+            },
+            obligations: Obligations::default(),
+            commands,
             budget: BudgetLattice::with_cost_limit(2.0),
             time: TimeLattice::hours(1),
             ..Default::default()

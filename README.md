@@ -190,9 +190,16 @@ Demo hardening criteria are tracked in `docs/assurance/hardening-checklist.md`.
 nucleus profiles
 
 # Available profiles:
-#   read-only      File reading and search only
-#   code-review    Read + limited web search
-#   fix-issue      Write + bash + git commit (no push/PR)
+#   filesystem-readonly  Read + search; blocks sensitive paths
+#   read-only            File reading and search only
+#   network-only         Web access only (no filesystem/exec)
+#   web-research         Read + web search/fetch
+#   code-review          Read + limited web search
+#   edit-only            Write + edit without exec or web
+#   local-dev            Write + shell without web
+#   fix-issue            Write + bash + git commit (no push/PR)
+#   release              Git push/PR with approvals
+#   database-client      DB CLI only (psql/mysql/redis)
 #   full           Everything (trifecta still enforced!)
 #   restrictive    Minimal permissions (default)
 ```
