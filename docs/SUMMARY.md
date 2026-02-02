@@ -15,3 +15,4 @@
   - [Enterprise AI Agents](use-cases/enterprise-ai-agents.md)
 - [Terminology](terminology.md)
 - [Temporal Workflow](temporal.md)
+- [Theoretical Foundations](THEORY.md)
