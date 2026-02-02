@@ -83,10 +83,20 @@ fn run() -> Result<(), String> {
         let _ = Command::new(GUEST_NET_SH).status();
     }
 
-    let auth_secret = read_secret("/etc/nucleus/auth.secret")
-        .ok_or_else(|| "missing /etc/nucleus/auth.secret".to_string())?;
-    let approval_secret = read_secret("/etc/nucleus/approval.secret")
-        .ok_or_else(|| "missing /etc/nucleus/approval.secret".to_string())?;
+    // Read secrets from kernel command line (preferred) or files (legacy/fallback)
+    let cmdline = fs::read_to_string("/proc/cmdline").unwrap_or_default();
+
+    let auth_secret = parse_cmdline_secret(&cmdline, "nucleus.auth_secret")
+        .or_else(|| read_secret("/etc/nucleus/auth.secret"))
+        .ok_or_else(|| {
+            "missing auth secret (set nucleus.auth_secret in boot args or /etc/nucleus/auth.secret)"
+                .to_string()
+        })?;
+
+    let approval_secret = parse_cmdline_secret(&cmdline, "nucleus.approval_secret")
+        .or_else(|| read_secret("/etc/nucleus/approval.secret"))
+        .ok_or_else(|| "missing approval secret (set nucleus.approval_secret in boot args or /etc/nucleus/approval.secret)".to_string())?;
+
     std::env::set_var("NUCLEUS_TOOL_PROXY_AUTH_SECRET", auth_secret);
     std::env::set_var("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET", approval_secret);
 
@@ -280,4 +290,17 @@ fn command_exists(name: &str) -> bool {
         cmd.arg("--version");
     }
     cmd.output().is_ok()
+}
+
+/// Parse a secret from kernel command line (format: key=value)
+fn parse_cmdline_secret(cmdline: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    for token in cmdline.split_whitespace() {
+        if let Some(value) = token.strip_prefix(&prefix) {
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
 }

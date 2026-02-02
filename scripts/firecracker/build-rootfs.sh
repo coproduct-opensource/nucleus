@@ -52,9 +52,10 @@ PROXY_BIN="${PROXY_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-tool-proxy}"
 NET_PROBE_BIN="${NET_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-net-probe}"
 NET_ALLOW="${NET_ALLOW:-}"
 NET_DENY="${NET_DENY:-}"
-TOOL_PROXY_AUTH_SECRET="${TOOL_PROXY_AUTH_SECRET:-}"
+# NOTE: Secrets are now injected at runtime via kernel command line (nucleus.auth_secret, nucleus.approval_secret)
+# The guest-init binary reads these from /proc/cmdline and sets them as environment variables.
+# This removes the security risk of secrets being baked into the rootfs image.
 AUDIT_LOG_PATH="${AUDIT_LOG_PATH:-}"
-APPROVAL_SECRET="${APPROVAL_SECRET:-}"
 
 # Image size (in MB)
 ROOTFS_SIZE_MB="${ROOTFS_SIZE_MB:-256}"
@@ -69,8 +70,7 @@ Options:
     --arch ARCH             Architecture: aarch64 or x86_64 (default: auto-detect)
     --output PATH           Output rootfs.ext4 path (default: build/firecracker/ARCH/rootfs.ext4)
     --pod-spec PATH         Pod spec YAML file (default: examples/openclaw-demo/firecracker-pod.yaml)
-    --auth-secret SECRET    Tool proxy auth secret (required)
-    --approval-secret SECRET  Approval secret (required)
+    --legacy-secrets        Bake secrets into rootfs (deprecated, insecure)
     --net-allow PATH        Network allow list file
     --net-deny PATH         Network deny list file
     --audit-path PATH       Audit log path inside VM
@@ -80,16 +80,17 @@ Options:
 
 Environment Variables:
     ARCH                    Architecture (aarch64 or x86_64)
-    TOOL_PROXY_AUTH_SECRET  Auth secret for tool proxy
-    APPROVAL_SECRET         Secret for approval requests
     DEBIAN_TARBALL          Path to Debian rootfs tarball (skips Docker)
+
+Secrets are injected at runtime via kernel command line by nucleus-node.
+This is more secure than baking secrets into the rootfs image.
 
 Examples:
     # Build for current architecture
-    $(basename "$0") --auth-secret \$AUTH --approval-secret \$APPROVAL
+    $(basename "$0")
 
     # Build for specific architecture
-    $(basename "$0") --arch x86_64 --auth-secret \$AUTH --approval-secret \$APPROVAL
+    $(basename "$0") --arch x86_64
 
     # Verify binaries exist
     $(basename "$0") --verify --arch aarch64
@@ -97,9 +98,26 @@ EOF
 }
 
 VERIFY_ONLY=false
+LEGACY_SECRETS=false
+TOOL_PROXY_AUTH_SECRET=""
+APPROVAL_SECRET=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --legacy-secrets)
+            LEGACY_SECRETS=true
+            shift
+            ;;
+        --auth-secret)
+            # Legacy option - only used with --legacy-secrets
+            TOOL_PROXY_AUTH_SECRET="$2"
+            shift 2
+            ;;
+        --approval-secret)
+            # Legacy option - only used with --legacy-secrets
+            APPROVAL_SECRET="$2"
+            shift 2
+            ;;
         --arch)
             ARCH="$2"
             # Re-derive target from new ARCH
@@ -132,14 +150,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --pod-spec)
             POD_SPEC="$2"
-            shift 2
-            ;;
-        --auth-secret)
-            TOOL_PROXY_AUTH_SECRET="$2"
-            shift 2
-            ;;
-        --approval-secret)
-            APPROVAL_SECRET="$2"
             shift 2
             ;;
         --net-allow)
@@ -228,16 +238,19 @@ if [ ! -f "$SCRIPT_DIR/guest-net.sh" ]; then
     exit 1
 fi
 
-if [ -z "$TOOL_PROXY_AUTH_SECRET" ]; then
-    echo "TOOL_PROXY_AUTH_SECRET is required to build a secure rootfs." >&2
-    echo "Set via --auth-secret or TOOL_PROXY_AUTH_SECRET env var" >&2
-    exit 1
-fi
-
-if [ -z "$APPROVAL_SECRET" ]; then
-    echo "APPROVAL_SECRET is required to build a secure rootfs." >&2
-    echo "Set via --approval-secret or APPROVAL_SECRET env var" >&2
-    exit 1
+# Legacy secrets mode validation
+if [ "$LEGACY_SECRETS" = true ]; then
+    if [ -z "$TOOL_PROXY_AUTH_SECRET" ]; then
+        echo "TOOL_PROXY_AUTH_SECRET is required with --legacy-secrets." >&2
+        echo "Set via --auth-secret or TOOL_PROXY_AUTH_SECRET env var" >&2
+        exit 1
+    fi
+    if [ -z "$APPROVAL_SECRET" ]; then
+        echo "APPROVAL_SECRET is required with --legacy-secrets." >&2
+        echo "Set via --approval-secret or APPROVAL_SECRET env var" >&2
+        exit 1
+    fi
+    echo "WARNING: --legacy-secrets is deprecated. Secrets should be injected at runtime." >&2
 fi
 
 echo "Building rootfs for architecture: $ARCH"
@@ -285,11 +298,14 @@ if [ -n "$NET_DENY" ] && [ -f "$NET_DENY" ]; then
     cp "$NET_DENY" "$ROOTFS_DIR/etc/nucleus/net.deny"
 fi
 
-# Write secrets with restricted permissions
-printf "%s" "$TOOL_PROXY_AUTH_SECRET" >"$ROOTFS_DIR/etc/nucleus/auth.secret"
-chmod 600 "$ROOTFS_DIR/etc/nucleus/auth.secret"
-printf "%s" "$APPROVAL_SECRET" >"$ROOTFS_DIR/etc/nucleus/approval.secret"
-chmod 600 "$ROOTFS_DIR/etc/nucleus/approval.secret"
+# Write secrets only if legacy mode is enabled (deprecated)
+if [ "$LEGACY_SECRETS" = true ]; then
+    echo "Writing secrets to rootfs (DEPRECATED - use runtime injection instead)"
+    printf "%s" "$TOOL_PROXY_AUTH_SECRET" >"$ROOTFS_DIR/etc/nucleus/auth.secret"
+    chmod 600 "$ROOTFS_DIR/etc/nucleus/auth.secret"
+    printf "%s" "$APPROVAL_SECRET" >"$ROOTFS_DIR/etc/nucleus/approval.secret"
+    chmod 600 "$ROOTFS_DIR/etc/nucleus/approval.secret"
+fi
 
 # Write audit path if configured
 if [ -n "$AUDIT_LOG_PATH" ]; then

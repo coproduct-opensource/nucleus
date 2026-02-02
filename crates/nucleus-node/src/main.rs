@@ -768,8 +768,15 @@ async fn spawn_firecracker_pod(
         let config_path = pod_dir.join("firecracker.json");
         let vsock_path = pod_dir.join("vsock.sock");
 
-        let config =
-            FirecrackerConfig::from_spec(spec, &log_path, &vsock_path, image, net_plan.as_ref());
+        let config = FirecrackerConfig::from_spec(
+            spec,
+            &log_path,
+            &vsock_path,
+            image,
+            net_plan.as_ref(),
+            &state.proxy_auth_secret,
+            &state.proxy_approval_secret,
+        );
         let config_json = match serde_json::to_vec_pretty(&config) {
             Ok(data) => data,
             Err(err) => {
@@ -1352,6 +1359,8 @@ impl FirecrackerConfig {
         vsock_path: &Path,
         image: &nucleus_spec::ImageSpec,
         net_plan: Option<&net::NetPlan>,
+        auth_secret: &str,
+        approval_secret: &str,
     ) -> Self {
         let vcpu_count = spec
             .spec
@@ -1391,6 +1400,17 @@ impl FirecrackerConfig {
             Some(args) if args.contains("ipv6.disable=") => Some(args),
             Some(args) => Some(format!("{args} ipv6.disable=1")),
             None => Some("ipv6.disable=1".to_string()),
+        };
+
+        // Inject secrets via kernel command line (read by nucleus-guest-init)
+        // This is more secure than baking secrets into the rootfs image
+        boot_args = match boot_args.take() {
+            Some(args) => Some(format!(
+                "{args} nucleus.auth_secret={auth_secret} nucleus.approval_secret={approval_secret}"
+            )),
+            None => Some(format!(
+                "nucleus.auth_secret={auth_secret} nucleus.approval_secret={approval_secret}"
+            )),
         };
 
         let vsock = spec.spec.vsock.as_ref().map(|vsock| VsockConfig {

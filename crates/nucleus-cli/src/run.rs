@@ -582,16 +582,18 @@ fn build_mcp_allowed_tools(policy: &PermissionLattice) -> Vec<String> {
     {
         tools.push("mcp__nucleus__run".to_string());
     }
+    if policy.capabilities.web_fetch >= CapabilityLevel::LowRisk {
+        tools.push("mcp__nucleus__web_fetch".to_string());
+    }
     tools
 }
 
 fn warn_unimplemented_caps(policy: &PermissionLattice) {
+    // Capabilities that exist in the policy model but have no MCP tool implementation
+    // Note: web_fetch IS implemented - don't warn about it
     let mut missing = Vec::new();
     if policy.capabilities.web_search >= CapabilityLevel::LowRisk {
         missing.push("web_search");
-    }
-    if policy.capabilities.web_fetch >= CapabilityLevel::LowRisk {
-        missing.push("web_fetch");
     }
     if policy.capabilities.glob_search >= CapabilityLevel::LowRisk {
         missing.push("glob_search");
