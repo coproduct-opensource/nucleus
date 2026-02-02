@@ -8,6 +8,9 @@ use crate::keychain::{self, SecretKind, SecretStore};
 #[cfg(target_os = "macos")]
 use crate::setup::{AppleChip, MacOSVersion};
 
+/// Expected Firecracker version
+const EXPECTED_FIRECRACKER_VERSION: &str = "1.14.1";
+
 /// Check status indicator
 #[derive(Debug, Clone, Copy)]
 enum Status {
@@ -48,6 +51,10 @@ pub async fn diagnose() -> Result<()> {
         all_ok &= check_kvm();
         println!();
     }
+
+    // Docker check (needed for rootfs building)
+    all_ok &= check_docker();
+    println!();
 
     // Secrets checks
     all_ok &= check_secrets();
@@ -264,11 +271,61 @@ fn check_lima() -> bool {
                 Status::Warning
             },
             if kvm_check {
-                "/dev/kvm available"
+                "/dev/kvm available (native Firecracker performance)"
             } else {
-                "/dev/kvm not available (emulation mode)"
+                "/dev/kvm not available (emulation mode - slower)"
             },
         );
+
+        // Check Firecracker version in VM
+        let fc_output = Command::new("limactl")
+            .args(["shell", "nucleus", "--", "firecracker", "--version"])
+            .output()
+            .ok();
+
+        if let Some(output) = fc_output {
+            if output.status.success() {
+                let version_str = String::from_utf8_lossy(&output.stdout);
+                let version = version_str.lines().next().unwrap_or("").trim();
+
+                let version_ok = version.contains(EXPECTED_FIRECRACKER_VERSION);
+                print_check(
+                    "Firecracker",
+                    if version_ok {
+                        Status::Ok
+                    } else {
+                        Status::Warning
+                    },
+                    version,
+                );
+            } else {
+                print_check(
+                    "Firecracker",
+                    Status::Error,
+                    "not installed in VM (run: nucleus setup)",
+                );
+            }
+        }
+
+        // Check Docker in VM (needed for rootfs building inside VM)
+        let docker_check = Command::new("limactl")
+            .args(["shell", "nucleus", "--", "docker", "--version"])
+            .output()
+            .ok();
+
+        if let Some(output) = docker_check {
+            if output.status.success() {
+                let version_str = String::from_utf8_lossy(&output.stdout);
+                let version = version_str.lines().next().unwrap_or("").trim();
+                print_check("Docker in VM", Status::Ok, version);
+            } else {
+                print_check(
+                    "Docker in VM",
+                    Status::Warning,
+                    "not installed (needed for rootfs building)",
+                );
+            }
+        }
     }
 
     vm_ok
@@ -292,6 +349,48 @@ fn check_kvm() -> bool {
             "not found (enable KVM in BIOS)"
         },
     )
+}
+
+fn check_docker() -> bool {
+    println!("Docker");
+    println!("------");
+
+    // Check if Docker is installed
+    let docker_output = Command::new("docker").args(["--version"]).output().ok();
+
+    match docker_output {
+        Some(output) if output.status.success() => {
+            let version = String::from_utf8_lossy(&output.stdout);
+            let version_line = version.lines().next().unwrap_or("").trim();
+            print_check("Docker CLI", Status::Ok, version_line);
+
+            // Check if Docker daemon is running
+            let daemon_check = Command::new("docker")
+                .args(["info"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+
+            print_check(
+                "Docker daemon",
+                if daemon_check {
+                    Status::Ok
+                } else {
+                    Status::Warning
+                },
+                if daemon_check {
+                    "running"
+                } else {
+                    "not running (start Docker Desktop)"
+                },
+            )
+        }
+        _ => print_check(
+            "Docker CLI",
+            Status::Warning,
+            "not installed (optional, needed for cross-compilation)",
+        ),
+    }
 }
 
 fn check_secrets() -> bool {

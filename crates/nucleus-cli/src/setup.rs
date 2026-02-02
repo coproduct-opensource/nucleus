@@ -367,7 +367,34 @@ async fn setup_lima_vm(args: &SetupArgs, chip: &AppleChip) -> Result<()> {
     }
 
     println!("Lima VM '{}' is running", args.vm_name);
+
+    // Verify KVM availability after VM starts
+    verify_kvm_in_vm(&args.vm_name);
+
     Ok(())
+}
+
+/// Verify KVM is available inside the Lima VM
+fn verify_kvm_in_vm(vm_name: &str) {
+    let kvm_check = Command::new("limactl")
+        .args(["shell", vm_name, "--", "test", "-c", "/dev/kvm"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if kvm_check {
+        info!("KVM available in VM - native Firecracker performance enabled");
+        println!("\nKVM Status: /dev/kvm available");
+        println!("  Firecracker microVMs will run with native performance.");
+    } else {
+        warn!("KVM not available in VM - Firecracker will use emulation");
+        println!("\nKVM Status: /dev/kvm NOT available");
+        println!("  Firecracker microVMs will run in emulation mode (slower).");
+        println!("  For native performance, you need:");
+        println!("    - Apple Silicon M3/M4 Mac");
+        println!("    - macOS 15+ (Sequoia)");
+        println!("    - Or: Use a Linux host with KVM support");
+    }
 }
 
 fn is_lima_installed() -> bool {
