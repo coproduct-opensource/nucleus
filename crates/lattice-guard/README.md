@@ -249,11 +249,32 @@ use lattice_guard::PermissionLattice;
 // Read-only: file reading and search only
 let readonly = PermissionLattice::read_only();
 
+// Filesystem read-only: read + search with sensitive paths blocked
+let fs_readonly = PermissionLattice::filesystem_readonly();
+
+// Web research: read + web search/fetch
+let research = PermissionLattice::web_research();
+
 // Code review: read + limited web search
 let review = PermissionLattice::code_review();
 
+// Edit-only: write + edit without exec or web
+let edit_only = PermissionLattice::edit_only();
+
+// Local dev: write + shell without web
+let local_dev = PermissionLattice::local_dev();
+
 // Fix issue: write + bash + git commit (PR requires approval)
 let fix = PermissionLattice::fix_issue();
+
+// Release: git push/PR with approvals
+let release = PermissionLattice::release();
+
+// Network-only: web access only
+let network_only = PermissionLattice::network_only();
+
+// Database client: CLI access for db tools
+let db_client = PermissionLattice::database_client();
 
 // Permissive: for trusted contexts (lattice-guard still enforced!)
 let trusted = PermissionLattice::permissive();

@@ -60,6 +60,15 @@ capabilities:
 
 ## Built-in Profiles
 
+### `filesystem-readonly`
+Read-only with sensitive paths blocked.
+
+```
+read_files: always    web_search: never     git_push: never
+write_files: never    web_fetch: never      create_pr: never
+edit_files: never     git_commit: never     run_bash: never
+```
+
 ### `read-only`
 Safe for exploration. No writes, no network, no git.
 
@@ -69,6 +78,24 @@ write_files: never    web_fetch: never      create_pr: never
 edit_files: never     git_commit: never
 ```
 
+### `network-only`
+Web-only access, no filesystem or execution.
+
+```
+read_files: never     web_search: low_risk  git_push: never
+write_files: never    web_fetch: low_risk   create_pr: never
+edit_files: never     git_commit: never     run_bash: never
+```
+
+### `web-research`
+Read + web search/fetch, no writes or exec.
+
+```
+read_files: low_risk  web_search: low_risk  git_push: never
+write_files: never    web_fetch: low_risk   create_pr: never
+edit_files: never     git_commit: never     run_bash: never
+```
+
 ### `code-review`
 Read code, search web for context, but no modifications.
 
@@ -76,6 +103,24 @@ Read code, search web for context, but no modifications.
 read_files: always    web_search: low_risk  git_push: never
 write_files: never    web_fetch: never      create_pr: never
 edit_files: never     git_commit: never
+```
+
+### `edit-only`
+Write + edit without shell or web.
+
+```
+read_files: always    web_search: never     git_push: never
+write_files: low_risk web_fetch: never      create_pr: never
+edit_files: low_risk  git_commit: never     run_bash: never
+```
+
+### `local-dev`
+Local development workflow without web access.
+
+```
+read_files: always    web_search: never     git_push: never
+write_files: low_risk web_fetch: never      create_pr: never
+edit_files: low_risk  git_commit: low_risk  run_bash: low_risk
 ```
 
 ### `fix-issue`
@@ -88,6 +133,26 @@ edit_files: low_risk  git_commit: low_risk
 run_bash: low_risk
 
 * Requires approval due to trifecta detection
+```
+
+### `release`
+Release/publish workflow with approvals on exfiltration.
+
+```
+read_files: always    web_search: low_risk  git_push: low_risk*
+write_files: low_risk web_fetch: low_risk   create_pr: low_risk*
+edit_files: low_risk  git_commit: low_risk  run_bash: low_risk
+
+* Requires approval
+```
+
+### `database-client`
+Database CLI access only (psql/mysql/redis).
+
+```
+read_files: never     web_search: never     git_push: never
+write_files: never    web_fetch: never      create_pr: never
+edit_files: never     git_commit: never     run_bash: low_risk
 ```
 
 ### `demo`
@@ -253,11 +318,18 @@ This is enforced mathematically via lattice meet operation.
 ├─────────────────────────────────────────────────────────────┤
 │                    BUILT-IN PROFILES                        │
 ├─────────────────────────────────────────────────────────────┤
-│  read-only     Explore only, no writes                      │
-│  code-review   Read + web search, no modifications          │
-│  fix-issue     Full dev workflow, trifecta protected        │
-│  demo          For demos, blocks interpreters               │
-│  permissive    Everything allowed (trusted only)            │
-│  restrictive   Minimal permissions                          │
+│  filesystem-readonly  Read + search; blocks sensitive paths │
+│  read-only            Explore only, no writes               │
+│  network-only         Web-only access                       │
+│  web-research         Read + web search/fetch               │
+│  code-review          Read + web search, no modifications   │
+│  edit-only            Write/edit, no exec or web            │
+│  local-dev            Write + shell, no web                 │
+│  fix-issue            Full dev workflow, trifecta protected │
+│  release              Push/PR with approvals                │
+│  database-client      DB CLI only                           │
+│  demo                 For demos, blocks interpreters        │
+│  permissive           Everything allowed (trusted only)     │
+│  restrictive          Minimal permissions                   │
 └─────────────────────────────────────────────────────────────┘
 ```
