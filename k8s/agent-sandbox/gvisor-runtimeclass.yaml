@@ -1,0 +1,21 @@
+# gVisor RuntimeClass for Agent Sandbox
+#
+# Prerequisites:
+# - runsc binary installed at /usr/local/bin/runsc
+# - containerd-shim-runsc-v1 installed at /usr/local/bin/containerd-shim-runsc-v1
+# - containerd configured with runsc runtime
+#
+# See: https://gvisor.dev/docs/user_guide/containerd/quick_start/
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+  labels:
+    app.kubernetes.io/name: gvisor
+    app.kubernetes.io/component: runtime
+handler: runsc
+# Optional: Add overhead for scheduling calculations
+# overhead:
+#   podFixed:
+#     memory: "50Mi"
+#     cpu: "100m"
