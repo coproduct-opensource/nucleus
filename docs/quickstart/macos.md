@@ -4,12 +4,29 @@ This guide walks you through setting up Nucleus on macOS with full Firecracker m
 
 ## Prerequisites
 
+### All Macs
+
 - **macOS 13+** (macOS 15+ recommended for nested virtualization)
 - **Lima** (`brew install lima`)
 - **Docker** (for building rootfs images)
 - **Rust toolchain** (for building nucleus binaries)
+- **cross** (`cargo install cross`) for cross-compiling Linux binaries
 
-### Optimal Setup
+### Intel Mac Additional Requirements
+
+Intel Macs require QEMU for the Lima VM (Apple Virtualization.framework only supports ARM64):
+
+```bash
+# Install QEMU
+brew install qemu
+
+# Fix cross-rs toolchain issue (required for cross-compilation)
+rustup toolchain install stable-x86_64-unknown-linux-gnu --force-non-host
+```
+
+**Note**: Intel Macs cannot use hardware-accelerated nested virtualization. Firecracker microVMs will run via QEMU emulation, which is slower but fully functional.
+
+### Optimal Setup (Apple Silicon)
 
 For the best experience with native nested virtualization:
 - **Apple M3 or M4** chip
@@ -169,6 +186,27 @@ This warning appears when nested virtualization isn't working. Causes:
 - **M1/M2 Macs**: Don't support nested virt (works via emulation, slower)
 - **macOS < 15**: Upgrade to macOS Sequoia for nested virt support
 - **Intel Macs**: Use QEMU emulation (slowest)
+
+### Intel Mac: "QEMU binary not found"
+
+Install QEMU:
+```bash
+brew install qemu
+```
+
+### Intel Mac: cross-rs "toolchain may not be able to run on this system"
+
+This error occurs when cross-compiling for Linux on Intel Mac:
+```
+error: toolchain 'stable-x86_64-unknown-linux-gnu' may not be able to run on this system
+```
+
+Fix by installing the toolchain with the `--force-non-host` flag:
+```bash
+rustup toolchain install stable-x86_64-unknown-linux-gnu --force-non-host
+```
+
+See: [cross-rs/cross#1687](https://github.com/cross-rs/cross/issues/1687)
 
 ### "Lima VM failed to start"
 
