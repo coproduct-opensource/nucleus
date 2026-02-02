@@ -6,95 +6,82 @@
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/coproduct-opensource/nucleus/badge)](https://securityscorecards.dev/viewer/?uri=github.com/coproduct-opensource/nucleus)
 [![Docs](https://img.shields.io/badge/docs-github.io-blue)](https://coproduct-opensource.github.io/nucleus/)
 
-**Enforced permissions for AI agents** - policy + enforcement in one stack.
+**Enforced permission envelopes for AI agents** — policy *and* enforcement, in one stack.
 
-## What It Is
+Nucleus is built around a blunt observation: **policy without enforcement is theater**.
+If an agent can still read secrets, fetch untrusted content, and exfiltrate—your YAML is just vibes.
 
-Nucleus pairs a **formal permission model** (lattice-guard) with **runtime enforcement** (nucleus). The key difference from policy-only systems: you cannot perform side effects without going through an enforcing API.
+## What It Does
 
-## Vision: Static Envelope, Dynamic Agent
+Nucleus runs each agent task inside an isolated runtime (Firecracker microVMs) and exposes side effects only through an enforcing tool proxy.
 
-Nucleus treats permission state as a **static envelope** around a dynamic agent:
-policy invariants are normalized up front (ν), and **all side effects are
-enforced at runtime** through the tool proxy. The envelope is intended to be
-**monotone**: it can only tighten or terminate, never silently relax.
+**Core properties**
+- **Enforced side effects:** file IO, command execution, and network are only reachable through the proxy.
+- **Non-escalating envelope:** permissions can only **tighten** or the task is **terminated**—never silently relaxed.
+- **Composable policy:** permissions compose predictably across a workflow; dangerous combinations trigger additional gates.
 
-## Honest Progress (Current)
+*("Non-escalating" is monotone in the order-theory sense: movement is constrained to one direction.)*
 
-**Working today**
-- Enforced CLI path via MCP + `nucleus-tool-proxy` — currently exposes **read, write, run** only.
-- Runtime gating for approvals (HMAC-signed tokens with nonce replay protection).
-- Atomic budget tracking (lock-free, no races).
-- Time windows enforced via monotonic clock.
-- Trifecta detection: when all three risk axes present, adds approval obligations.
-- Firecracker driver with default‑deny egress in a dedicated netns (Linux).
-- iptables drift detection — kills pod if network policy changes (fail‑closed).
-- DNS allowlisting with pinned hostname resolution (Linux).
-- Audit logs are hash‑chained and verifiable (`nucleus-audit`).
+## What Works Today
 
-**Partial / in progress**
-- `web_fetch` endpoint exists in tool-proxy but MCP doesn't expose it yet.
-- `web_search`, `glob_search`, `grep_search` — capabilities in lattice but no enforcement path.
-- Approvals are runtime tokens; preflight approval bundles are planned.
-- Seccomp filter applied but not verified/attested.
+### Runtime-Enforced (Real Controls, Not Config-Only)
 
-**Not yet**
-- Remote append‑only audit storage.
-- Formal proofs in CI (Kani proofs exist locally).
+- ✅ **MCP tool proxy:** `read`, `write`, `run` (enforced in the microVM)
+- ✅ **Firecracker isolation** with default-deny egress in a dedicated netns (Linux)
+- ✅ **DNS allowlisting** with pinned resolution (Linux)
+- ✅ **iptables drift detection:** if policy changes, the pod is killed (fail-closed)
+- ✅ **Time windows** enforced via monotonic clock
+- ✅ **Atomic budget tracking** (cost/token limits, lock-free)
+- ✅ **Hash-chained audit logs** (`nucleus-audit`)
+
+### Gated Execution
+
+- ✅ **HMAC-signed approval tokens** with nonce replay protection
+
+### Defined But Not Fully Wired Yet
+
+- 🟡 `web_fetch` endpoint exists but MCP doesn't expose it yet
+- 🟡 `web_search`, `glob_search`, `grep_search` exist in the policy model but aren't enforced yet
+- 🟡 Seccomp is applied but not yet verified/attested
+- 🟡 Kani proofs exist locally, not in CI
+
+## What It Is Not
+
+- **Not a general agent platform:** the enforced tool surface is intentionally small right now.
+- **Not a host-compromise solution:** the threat model assumes the enforcement stack is trusted.
+- **Not kernel-escape prevention:** use microVMs/containers appropriately; harden the host.
+
+## The Safety Primitive: Lethal Trifecta Gating
+
+Nucleus bakes in a guardrail against the [lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/):
+
+1. **Private data access** (reading files, secrets)
+2. **Untrusted content** (web fetch, external input)
+3. **Exfiltration vector** (git push, PRs, shell commands)
+
+When all three are present at autonomous levels, Nucleus **adds approval obligations** to exfiltration operations.
 
 ```rust
-// Enforcement approach - cannot bypass
-let sandbox = Sandbox::new(&policy, work_dir)?;
-sandbox.write("file.txt", data)?;  // Enforced by capability handle
+let executor = Executor::new(&policy, &sandbox, &budget);
 
-// There is no sandbox.write_unchecked() - enforcement is the only path
+// If trifecta is complete, this requires approval
+executor.run("git push")?;
+// Error: ApprovalRequired { operation: "git_push" }
 ```
 
-## Capability Model (Current)
+## Threat Model
 
-Permissions are modeled as a product lattice with normalization (ν) that adds approval obligations when the lethal trifecta appears.
+**Protects against:**
+- Prompt injection attempting side effects outside the envelope
+- Misconfigured tool permissions (enforced at runtime, not advisory)
+- Drift in network policy inside the runtime (fail-closed)
+- Budget exhaustion attacks (atomic tracking)
 
-**Dimensions**
-- **Capabilities**: per-operation autonomous permission level
-- **Obligations**: per-operation approval requirement (gates execution)
-- **Paths**: allow/block sets + optional work dir sandbox
-- **Commands**: allow/block sets + optional structured argv patterns
-- **Budget**: cost/token limits with atomic tracking
-- **Time**: validity window with monotonic enforcement
-
-**Capability levels**
-- `Never < LowRisk < Always`
-
-**Operations in lattice** (not all wired to enforcement yet)
-- `read_files`, `write_files`, `edit_files` — **enforced via MCP**
-- `run_bash` — **enforced via MCP**
-- `glob_search`, `grep_search` — defined but not wired
-- `web_search`, `web_fetch` — proxy endpoint exists, MCP not wired
-- `git_commit`, `git_push`, `create_pr` — enforced via `run_bash` command policy
-
-**Obligations (approvals)**
-- Any operation in `obligations.approvals` requires an approval token to execute.
-- The trifecta constraint adds obligations for exfiltration operations when all three risk axes are present.
-
-## Monotone Security (Design Goal)
-
-Security posture is designed to be **monotone**: once a pod is created, its
-permissions should only tighten or be terminated, never silently relax.
-
-**What this means in practice:**
-- **No privilege drift**: no API to relax permissions after creation.
-- **Auditability**: posture = creation spec + approval log (no hidden state).
-- **Predictability**: bound worst‑case behavior from the spec alone.
-
-**How it's enforced:**
-- Network policy applied once, drift detection kills pod if iptables change.
-- Permission lattice has `meet` (tighten) but delegation cannot exceed parent.
-- Budget/time only decrease, never increase.
-- Approvals are scoped, expiring tokens.
-
-**Honest caveat:** Monotonicity is enforced by API design (no relaxation methods),
-not by Rust's type system preventing mutation. Internal code could bypass if
-modified. The threat model assumes the enforcement stack is trusted.
+**Does not protect against:**
+- Compromised host or kernel (enforcement stack is trusted)
+- Malicious human approvals (social engineering)
+- Side-channel attacks
+- Kernel escapes from the microVM
 
 ## Quick Start
 
@@ -113,106 +100,38 @@ nucleus profiles
 ```
 
 Note: `nucleus run` uses `nucleus-node` (Firecracker) for enforcement and
-connects via MCP to the in‑VM tool proxy. You must provide:
+connects via MCP to the in-VM tool proxy. You must provide:
 - `NUCLEUS_NODE_URL`
 - `NUCLEUS_NODE_AUTH_SECRET`
 - `NUCLEUS_FIRECRACKER_KERNEL_PATH`
 - `NUCLEUS_FIRECRACKER_ROOTFS_PATH`
 - `NUCLEUS_FIRECRACKER_VSOCK_CID` and `NUCLEUS_FIRECRACKER_VSOCK_PORT`
 
-**Current enforced tools:** read, write, run. That's it for now—web/search tools exist in the lattice but aren't wired to MCP yet.
+**Current enforced tools:** read, write, run. That's it for now—other tools exist in the policy model but aren't wired to MCP yet.
 
 **macOS users:** See [docs/quickstart/macos.md](docs/quickstart/macos.md) for Lima + Firecracker setup.
-
-## Firecracker Notes
-
-- Firecracker pods require `--proxy-auth-secret` and `--proxy-approval-secret` for signed tool and approval calls.
-- The driver defaults to Firecracker; local is opt-in via `--allow-local-driver` (no VM isolation).
-- Firecracker runs in a fresh network namespace by default (`--firecracker-netns=false` to disable); default-deny iptables apply even without `spec.network` (no NIC unless policy is set).
-- DNS allowlisting is enforced via `spec.network.dns_allow` (pinned at pod start).
-- Guest IPv6 is disabled at boot.
-- Audit logs are hash-chained and signed (verify with `nucleus-audit`).
-- Guest init is the Rust binary `nucleus-guest-init`, baked into the rootfs.
-- Run `scripts/firecracker/test-network.sh` to validate egress policy on Linux.
-
-## The Lethal Trifecta (Runtime-Enforced)
-
-The core security model prevents the [lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/):
-
-1. **Private Data Access** (reading files, secrets)
-2. **Untrusted Content** (web fetch, external input)
-3. **Exfiltration Vector** (git push, PRs, shell commands)
-
-When all three are present at autonomous levels, Nucleus **adds approval obligations** to exfiltration operations at runtime.
-
-```rust
-let guard = MonotonicGuard::minutes(30);
-let executor = Executor::new(&policy, &sandbox, &budget)
-    .with_time_guard(&guard);
-
-// If trifecta is complete, this requires approval
-executor.run("git push")?;
-// Error: ApprovalRequired { operation: "git push" }
-```
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Your Agent                                │
-├─────────────────────────────────────────────────────────────────┤
-│                       nucleus-cli                                │
-│     (Claude wrapper, enforced via MCP + tool-proxy by default)    │
-├─────────────────────────────────────────────────────────────────┤
-│                         nucleus                                  │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
-│  │   Sandbox    │  │   Executor   │  │   AtomicBudget       │  │
-│  │  (cap-std)   │  │  (process)   │  │   (lock-free)        │  │
-│  └──────────────┘  └──────────────┘  └──────────────────────┘  │
-├─────────────────────────────────────────────────────────────────┤
-│                      lattice-guard                               │
-│  (Capabilities + Obligations + Paths + Commands + Budget + Time)│
-├─────────────────────────────────────────────────────────────────┤
-│                    Operating System                              │
-│           (cap-std capabilities, atomic ops, quanta)             │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-## Why Not Just Firecracker or gVisor?
-
-Isolation alone doesn't express *semantic* policy. Nucleus adds:
-- **Trifecta detection** (risk-aware gating, not just isolation)
-- **Budgets** (time/cost ceilings enforced before side effects)
-- **Approvals** (typed tokens + audit trail for sensitive ops)
-- **Policy lattice** (composable, explicit permission states)
-
-Firecracker/gVisor remain the execution boundary; Nucleus is the policy engine.
-
-## Assurance Roadmap
-
-Formal methods plan and minimal proof targets are tracked in `docs/assurance/formal-methods.md`.
-Demo hardening criteria are tracked in `docs/assurance/hardening-checklist.md`.
 
 ## Permission Profiles
 
 ```bash
-# List all profiles
 nucleus profiles
 
 # Available profiles:
-#   filesystem-readonly  Read + search; blocks sensitive paths
-#   read-only            File reading and search only
-#   network-only         Web access only (no filesystem/exec)
-#   web-research         Read + web search/fetch
-#   code-review          Read + limited web search
-#   edit-only            Write + edit without exec or web
-#   local-dev            Write + shell without web
-#   fix-issue            Write + bash + git commit (no push/PR)
-#   release              Git push/PR with approvals
-#   database-client      DB CLI only (psql/mysql/redis)
-#   full           Everything (trifecta still enforced!)
-#   restrictive    Minimal permissions (default)
+#   ✅ read-only       File reading and search only
+#   ✅ fix-issue       Write + bash + git commit (no push/PR)
+#   ✅ restrictive     Minimal permissions (default)
+#   🟡 code-review     Read + limited web search (web not wired)
+#   🟡 web-research    Read + web search/fetch (web not wired)
+#   🟡 full            Everything (trifecta still enforced!)
 ```
+
+✅ = works now | 🟡 = policy defined, partial enforcement
+
+## Modes
+
+- **Approval-free mode (default):** obligations cause hard-deny if no approval system is configured.
+- **Approval-token mode:** obligations require a scoped, expiring HMAC token.
+- **Break-glass mode (future):** elevated friction + extra audit for emergency access.
 
 ## Custom Permissions
 
@@ -244,6 +163,63 @@ valid_hours = 1           # Expires after 1 hour
 nucleus run --config permissions.toml "Your task here"
 ```
 
+## Firecracker Notes
+
+- Firecracker pods require `--proxy-auth-secret` and `--proxy-approval-secret` for signed tool and approval calls.
+- The driver defaults to Firecracker; local is opt-in via `--allow-local-driver` (no VM isolation).
+- Firecracker runs in a fresh network namespace by default (`--firecracker-netns=false` to disable).
+- Default-deny iptables apply even without `spec.network` (no NIC unless policy is set).
+- DNS allowlisting is enforced via `spec.network.dns_allow` (pinned at pod start).
+- Guest IPv6 is disabled at boot.
+- Audit logs are hash-chained and signed (verify with `nucleus-audit`).
+- Guest init is the Rust binary `nucleus-guest-init`, baked into the rootfs.
+- Run `scripts/firecracker/test-network.sh` to validate egress policy on Linux.
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Your Agent                                │
+├─────────────────────────────────────────────────────────────────┤
+│                       nucleus-cli                                │
+│     (Claude wrapper, enforced via MCP + tool-proxy by default)   │
+├─────────────────────────────────────────────────────────────────┤
+│                         nucleus                                  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
+│  │   Sandbox    │  │   Executor   │  │   AtomicBudget       │  │
+│  │  (cap-std)   │  │  (process)   │  │   (lock-free)        │  │
+│  └──────────────┘  └──────────────┘  └──────────────────────┘  │
+├─────────────────────────────────────────────────────────────────┤
+│                      lattice-guard                               │
+│  (Capabilities + Obligations + Paths + Commands + Budget + Time) │
+├─────────────────────────────────────────────────────────────────┤
+│                    Operating System                              │
+│           (cap-std capabilities, atomic ops, quanta)             │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Why a Lattice? (For the Curious)
+
+The policy model uses a **permission lattice**—security-speak translation:
+
+- **Composable policy** = predictable aggregate posture across a workflow
+- **Meet operation** = tightening across composition (intersection of capabilities)
+- **Monotone delegation** = no escalation beyond parent envelope
+
+The lattice is an implementation detail. What matters: permissions compose predictably, and dangerous combinations (the trifecta) trigger additional gates automatically.
+
+For the PL theory motivation (graded monads, algebraic effects), see [docs/THEORY.md](docs/THEORY.md).
+
+## Why Not Just Firecracker or gVisor?
+
+Isolation alone doesn't express *semantic* policy. Nucleus adds:
+- **Trifecta detection** (risk-aware gating, not just isolation)
+- **Budgets** (time/cost ceilings enforced before side effects)
+- **Approvals** (typed tokens + audit trail for sensitive ops)
+- **Policy composition** (predictable across workflows)
+
+Firecracker/gVisor remain the execution boundary; Nucleus is the policy engine.
+
 ## Command Policy
 
 Command enforcement supports both:
@@ -264,24 +240,10 @@ assert!(cmds.can_execute("cargo test --release"));
 assert!(!cmds.can_execute("bash -c 'echo hi'"));
 ```
 
-## Security Model
+## Assurance Roadmap
 
-### What We Enforce
-
-- ✅ File access via capability handles (symlink-safe)
-- ✅ Command execution validated before spawning (CLI routes through `Executor`)
-- ✅ Budget tracked atomically (no concurrent races)
-- ✅ Time bounds via monotonic clock (manipulation-proof)
-- ✅ Trifecta adds approval obligations for exfiltration
-- ✅ Approvals require tokens (not just a boolean)
-- ✅ Host-level egress allow/deny for Firecracker netns (Linux + iptables)
-
-### What We Don't Enforce
-
-- ❌ Kernel-level escapes (use containers/VMs)
-- ❌ Host-level egress control for local driver or non-Linux
-- ❌ Human approving bad actions (social engineering)
-- ❌ Side-channel attacks
+Formal methods plan and minimal proof targets are tracked in `docs/assurance/formal-methods.md`.
+Demo hardening criteria are tracked in `docs/assurance/hardening-checklist.md`.
 
 ## Development
 
