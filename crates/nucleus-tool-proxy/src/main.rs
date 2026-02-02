@@ -620,11 +620,14 @@ async fn web_fetch(
     }
 
     // Parse and validate URL
-    let url = url::Url::parse(&url_str).map_err(|e| ApiError::WebFetch(format!("invalid URL: {e}")))?;
+    let url =
+        url::Url::parse(&url_str).map_err(|e| ApiError::WebFetch(format!("invalid URL: {e}")))?;
 
     // Check DNS allow list (if configured)
     if !state.dns_allow.is_empty() {
-        let host = url.host_str().ok_or_else(|| ApiError::WebFetch("URL has no host".into()))?;
+        let host = url
+            .host_str()
+            .ok_or_else(|| ApiError::WebFetch("URL has no host".into()))?;
         let port = url.port_or_known_default().unwrap_or(443);
         let host_port = format!("{}:{}", host, port);
 
@@ -639,11 +642,7 @@ async fn web_fetch(
     }
 
     // Build the request
-    let method = req
-        .method
-        .as_deref()
-        .unwrap_or("GET")
-        .to_uppercase();
+    let method = req.method.as_deref().unwrap_or("GET").to_uppercase();
     let method = reqwest::Method::from_bytes(method.as_bytes())
         .map_err(|_| ApiError::WebFetch(format!("invalid method: {}", method)))?;
 
@@ -674,7 +673,9 @@ async fn web_fetch(
         .headers()
         .iter()
         .filter_map(|(k, v)| {
-            v.to_str().ok().map(|v| (k.as_str().to_string(), v.to_string()))
+            v.to_str()
+                .ok()
+                .map(|v| (k.as_str().to_string(), v.to_string()))
         })
         .collect();
 
