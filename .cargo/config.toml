@@ -1,0 +1,20 @@
+# Cargo configuration for Nucleus
+# Configures musl linkers for static Linux binaries
+
+# aarch64 Linux (musl) - for Apple Silicon Lima VMs
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-linux-musl-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# x86_64 Linux (musl) - for Intel Mac Lima VMs
+[target.x86_64-unknown-linux-musl]
+linker = "x86_64-linux-musl-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# Build configuration
+[build]
+# Uncomment to set default target:
+# target = "aarch64-unknown-linux-musl"
+
+# NOTE: Do NOT add [profile.release] with lto=true here!
+# It breaks cargo-fuzz. Use --profile release-rootfs for rootfs builds instead.

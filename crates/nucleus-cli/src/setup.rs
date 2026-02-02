@@ -60,7 +60,7 @@ pub enum Platform {
     Other(String),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AppleChip {
     M1,
     M2,
@@ -73,6 +73,23 @@ pub enum AppleChip {
 impl AppleChip {
     pub fn supports_nested_virt(&self) -> bool {
         matches!(self, AppleChip::M3 | AppleChip::M4)
+    }
+
+    /// Returns the Linux architecture for this chip
+    pub fn linux_arch(&self) -> &'static str {
+        match self {
+            AppleChip::Intel => "x86_64",
+            _ => "aarch64",
+        }
+    }
+
+    /// Returns the Rust target triple for musl builds
+    #[allow(dead_code)] // Used by cross-build.sh documentation
+    pub fn musl_target(&self) -> &'static str {
+        match self {
+            AppleChip::Intel => "x86_64-unknown-linux-musl",
+            _ => "aarch64-unknown-linux-musl",
+        }
     }
 }
 
@@ -106,7 +123,7 @@ pub async fn execute(args: SetupArgs) -> Result<()> {
 
             // Step 2: Set up Lima VM
             if !args.skip_vm {
-                setup_lima_vm(&args).await?;
+                setup_lima_vm(&args, chip).await?;
             } else {
                 println!("Skipping Lima VM setup (--skip-vm)");
             }
@@ -202,8 +219,11 @@ fn print_platform_info(platform: &Platform) {
         Platform::MacOS { chip, version } => {
             println!("Platform: macOS {}.{}", version.major, version.minor);
             println!("Chip: {:?}", chip);
+            println!("Target architecture: {}", chip.linux_arch());
             if chip.supports_nested_virt() && version.supports_nested_virt() {
-                println!("Nested virtualization: Supported");
+                println!("Nested virtualization: Supported (native KVM)");
+            } else if *chip == AppleChip::Intel {
+                println!("Nested virtualization: Emulated (QEMU)");
             } else {
                 println!("Nested virtualization: Limited (see below)");
             }
@@ -222,7 +242,10 @@ fn warn_nested_virt_limitations(chip: &AppleChip, version: &MacOSVersion) {
     println!("WARNING: Limited nested virtualization support");
     println!("=========================================");
 
-    if !chip.supports_nested_virt() {
+    if *chip == AppleChip::Intel {
+        println!("  Intel Macs use QEMU emulation for the Lima VM.");
+        println!("  Performance will be slower than Apple Silicon with native vz.");
+    } else if !chip.supports_nested_virt() {
         println!(
             "  Your chip ({:?}) does not support nested virtualization.",
             chip
@@ -230,7 +253,7 @@ fn warn_nested_virt_limitations(chip: &AppleChip, version: &MacOSVersion) {
         println!("  Nested virt requires Apple M3 or newer.");
     }
 
-    if !version.supports_nested_virt() {
+    if !version.supports_nested_virt() && *chip != AppleChip::Intel {
         println!(
             "  Your macOS version ({}.{}) does not support nested virtualization.",
             version.major, version.minor
@@ -241,7 +264,9 @@ fn warn_nested_virt_limitations(chip: &AppleChip, version: &MacOSVersion) {
     println!();
     println!("Options:");
     println!("  1. Use a cloud Linux VM with KVM support");
-    println!("  2. Upgrade to Apple M3+ and macOS 15+");
+    if *chip != AppleChip::Intel {
+        println!("  2. Upgrade to Apple M3+ and macOS 15+");
+    }
     println!("  3. Continue anyway (Lima will use slower emulation)");
     println!();
 }
@@ -271,7 +296,7 @@ fn verify_kvm_access() -> Result<()> {
     }
 }
 
-async fn setup_lima_vm(args: &SetupArgs) -> Result<()> {
+async fn setup_lima_vm(args: &SetupArgs, chip: &AppleChip) -> Result<()> {
     println!("\nSetting up Lima VM...");
 
     // Check if Lima is installed
@@ -299,7 +324,7 @@ async fn setup_lima_vm(args: &SetupArgs) -> Result<()> {
     }
 
     // Generate Lima config
-    let lima_config = generate_lima_config(args)?;
+    let lima_config = generate_lima_config(args, chip)?;
     let config_path = get_lima_config_path()?;
 
     // Ensure parent directory exists
@@ -387,27 +412,45 @@ fn get_artifacts_dir() -> Result<PathBuf> {
     Ok(config_dir.join("nucleus").join("artifacts"))
 }
 
-fn generate_lima_config(args: &SetupArgs) -> Result<String> {
+fn generate_lima_config(args: &SetupArgs, chip: &AppleChip) -> Result<String> {
     let artifacts_dir = get_artifacts_dir()?;
     let home_dir = dirs::home_dir().ok_or_else(|| anyhow!("Could not determine home directory"))?;
+
+    let arch = chip.linux_arch();
+    let is_intel = *chip == AppleChip::Intel;
+
+    // Intel Macs require QEMU; Apple Silicon uses Virtualization.framework
+    let vm_type = if is_intel { "qemu" } else { "vz" };
+
+    // Image URL differs by architecture
+    let image_url = if is_intel {
+        "https://cloud-images.ubuntu.com/releases/24.10/release/ubuntu-24.10-server-cloudimg-amd64.img"
+    } else {
+        "https://cloud-images.ubuntu.com/releases/24.10/release/ubuntu-24.10-server-cloudimg-arm64.img"
+    };
+
+    // Nested virtualization only works on Apple Silicon M3+ with macOS 15+
+    // Intel Macs cannot do nested virt in Lima
+    let nested_virt = if is_intel { "false" } else { "true" };
 
     let config = format!(
         r#"# Lima configuration for Nucleus
 # Generated by: nucleus setup
+# Architecture: {arch}
 
-vmType: vz
-arch: aarch64
+vmType: {vm_type}
+arch: {arch}
 
 cpus: {cpus}
 memory: "{memory}GiB"
 disk: "{disk}GiB"
 
-# Nested virtualization (requires M3+ and macOS 15+)
-nestedVirtualization: true
+# Nested virtualization (requires M3+ and macOS 15+, disabled for Intel)
+nestedVirtualization: {nested_virt}
 
 images:
-  - location: "https://cloud-images.ubuntu.com/releases/24.10/release/ubuntu-24.10-server-cloudimg-arm64.img"
-    arch: "aarch64"
+  - location: "{image_url}"
+    arch: "{arch}"
 
 mounts:
   # Read-only mount of nucleus artifacts
@@ -428,6 +471,10 @@ portForwards:
   - guestPort: 9080
     hostPort: 9080
     proto: tcp
+  # gRPC port (HTTP port + 1000)
+  - guestPort: 9180
+    hostPort: 9180
+    proto: tcp
 
 # Provisioning script
 provision:
@@ -443,34 +490,79 @@ provision:
       # Verify KVM
       if [ ! -e /dev/kvm ]; then
         echo "WARNING: /dev/kvm not available. Nested virtualization may not be working."
+        echo "Firecracker microVMs will not work without KVM."
+      else
+        echo "KVM is available"
+        # Ensure Lima user can access KVM
+        chmod 666 /dev/kvm
       fi
 
       # Download Firecracker
       FC_VERSION="{fc_version}"
-      FC_ARCH="aarch64"
+      FC_ARCH="{arch}"
+      echo "Downloading Firecracker v${{FC_VERSION}} for ${{FC_ARCH}}..."
       curl -fsSL -o /usr/local/bin/firecracker \
         "https://github.com/firecracker-microvm/firecracker/releases/download/v${{FC_VERSION}}/firecracker-v${{FC_VERSION}}-${{FC_ARCH}}"
       chmod +x /usr/local/bin/firecracker
 
+      # Download jailer
+      curl -fsSL -o /usr/local/bin/jailer \
+        "https://github.com/firecracker-microvm/firecracker/releases/download/v${{FC_VERSION}}/jailer-v${{FC_VERSION}}-${{FC_ARCH}}"
+      chmod +x /usr/local/bin/jailer
+
       # Download kernel
+      mkdir -p /nucleus/artifacts
       curl -fsSL -o /nucleus/artifacts/vmlinux \
         "https://github.com/firecracker-microvm/firecracker/releases/download/v${{FC_VERSION}}/vmlinux-v${{FC_VERSION}}-${{FC_ARCH}}.bin"
 
+      # Create nucleus-node systemd service
+      cat > /etc/systemd/system/nucleus-node.service << 'SYSTEMD_EOF'
+[Unit]
+Description=Nucleus Node - Firecracker orchestrator
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/nucleus-node
+Restart=on-failure
+RestartSec=5
+Environment=NUCLEUS_NODE_LISTEN_ADDR=0.0.0.0:8080
+Environment=NUCLEUS_NODE_METRICS_ADDR=0.0.0.0:9080
+Environment=NUCLEUS_NODE_GRPC_ADDR=0.0.0.0:9180
+Environment=NUCLEUS_NODE_ARTIFACTS_DIR=/nucleus/artifacts
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target
+SYSTEMD_EOF
+
+      systemctl daemon-reload
+      # Don't enable/start yet - nucleus-node binary needs to be installed first
+
       echo "Firecracker setup complete"
+      echo "Architecture: ${{FC_ARCH}}"
+      echo "Firecracker: $(firecracker --version 2>/dev/null || echo 'installed')"
 
 containerd:
   system: false
   user: false
 
 ssh:
-  overVsock: true
+  overVsock: {ssh_vsock}
 "#,
+        arch = arch,
+        vm_type = vm_type,
         cpus = args.vm_cpus,
         memory = args.vm_memory_gib,
         disk = args.vm_disk_gib,
+        nested_virt = nested_virt,
+        image_url = image_url,
         artifacts = artifacts_dir.display(),
         home = home_dir.display(),
         fc_version = FIRECRACKER_VERSION,
+        // vsock is only available with vz (Apple Silicon)
+        ssh_vsock = if is_intel { "false" } else { "true" },
     );
 
     Ok(config)
@@ -519,12 +611,19 @@ async fn setup_artifacts(args: &SetupArgs, platform: &Platform) -> Result<()> {
     println!("Artifacts directory: {}", artifacts_dir.display());
 
     match platform {
-        Platform::MacOS { .. } => {
+        Platform::MacOS { chip, .. } => {
             if args.skip_vm {
                 println!("  Skipping artifact setup (--skip-vm implies artifacts are managed externally)");
             } else {
                 println!("  Artifacts will be downloaded by Lima VM provisioning script");
-                println!("  Run 'limactl shell {}' to verify", args.vm_name);
+                println!("  Target architecture: {}", chip.linux_arch());
+                println!();
+                println!("  After VM starts, build rootfs with:");
+                println!(
+                    "    limactl shell {} -- /nucleus/artifacts/build-rootfs.sh --arch {}",
+                    args.vm_name,
+                    chip.linux_arch()
+                );
             }
         }
         Platform::Linux => {
@@ -561,6 +660,22 @@ async fn download_artifacts_linux(artifacts_dir: &std::path::Path) -> Result<()>
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&fc_path, std::fs::Permissions::from_mode(0o755))?;
+    }
+
+    // Download jailer
+    let jailer_url = format!(
+        "https://github.com/firecracker-microvm/firecracker/releases/download/v{}/jailer-v{}-{}",
+        FIRECRACKER_VERSION, FIRECRACKER_VERSION, fc_arch
+    );
+    let jailer_path = artifacts_dir.join("jailer");
+
+    println!("  Downloading jailer...");
+    download_file(&jailer_url, &jailer_path).await?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&jailer_path, std::fs::Permissions::from_mode(0o755))?;
     }
 
     // Download kernel
@@ -622,6 +737,8 @@ disk_gib = {disk}
 [node]
 # nucleus-node endpoint (forwarded from Lima VM)
 url = "http://127.0.0.1:8080"
+# gRPC endpoint for internal communication
+grpc_url = "http://127.0.0.1:9180"
 # Actor name for signed requests
 actor = "nucleus-cli"
 
@@ -670,10 +787,16 @@ fn print_setup_summary(args: &SetupArgs, platform: &Platform) {
 
     match platform {
         Platform::MacOS { chip, version } => {
+            let arch = chip.linux_arch();
             if chip.supports_nested_virt() && version.supports_nested_virt() {
                 println!(
-                    "Lima VM '{}' is ready with nested virtualization.",
-                    args.vm_name
+                    "Lima VM '{}' is ready with nested virtualization ({}).",
+                    args.vm_name, arch
+                );
+            } else if *chip == AppleChip::Intel {
+                println!(
+                    "Lima VM '{}' is ready with QEMU emulation ({}).",
+                    args.vm_name, arch
                 );
             } else {
                 println!(
@@ -690,16 +813,21 @@ fn print_setup_summary(args: &SetupArgs, platform: &Platform) {
 
     println!();
     println!("Next steps:");
-    println!("  1. Build rootfs (requires Docker):");
+    println!();
+    println!("  1. Cross-compile binaries for rootfs:");
+    println!("     scripts/cross-build.sh");
+    println!();
+    println!("  2. Build rootfs (in Lima VM with Docker):");
     println!(
-        "     limactl shell {} -- /nucleus/artifacts/build-rootfs.sh",
+        "     limactl shell {} -- /host/.../scripts/firecracker/build-rootfs.sh \\",
         args.vm_name
     );
+    println!("       --auth-secret \"$AUTH\" --approval-secret \"$APPROVAL\"");
     println!();
-    println!("  2. Start nucleus-node in the VM:");
-    println!("     limactl shell {} -- nucleus-node", args.vm_name);
+    println!("  3. Start nucleus:");
+    println!("     nucleus start");
     println!();
-    println!("  3. Run a task:");
+    println!("  4. Run a task:");
     println!("     nucleus run \"Your task here\"");
     println!();
     println!("For diagnostics, run: nucleus doctor");
@@ -710,7 +838,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_lima_config_generation() {
+    fn test_lima_config_generation_aarch64() {
         let args = SetupArgs {
             force: false,
             skip_vm: false,
@@ -722,10 +850,48 @@ mod tests {
             skip_artifacts: false,
         };
 
-        let config = generate_lima_config(&args).unwrap();
+        let config = generate_lima_config(&args, &AppleChip::M3).unwrap();
         assert!(config.contains("vmType: vz"));
+        assert!(config.contains("arch: aarch64"));
         assert!(config.contains("cpus: 2"));
         assert!(config.contains("memory: \"4GiB\""));
         assert!(config.contains("nestedVirtualization: true"));
+        assert!(config.contains("arm64.img"));
+    }
+
+    #[test]
+    fn test_lima_config_generation_x86_64() {
+        let args = SetupArgs {
+            force: false,
+            skip_vm: false,
+            vm_name: "test".to_string(),
+            vm_cpus: 2,
+            vm_memory_gib: 4,
+            vm_disk_gib: 20,
+            rotate_secrets: false,
+            skip_artifacts: false,
+        };
+
+        let config = generate_lima_config(&args, &AppleChip::Intel).unwrap();
+        assert!(config.contains("vmType: qemu"));
+        assert!(config.contains("arch: x86_64"));
+        assert!(config.contains("nestedVirtualization: false"));
+        assert!(config.contains("amd64.img"));
+    }
+
+    #[test]
+    fn test_apple_chip_arch() {
+        assert_eq!(AppleChip::M1.linux_arch(), "aarch64");
+        assert_eq!(AppleChip::M2.linux_arch(), "aarch64");
+        assert_eq!(AppleChip::M3.linux_arch(), "aarch64");
+        assert_eq!(AppleChip::M4.linux_arch(), "aarch64");
+        assert_eq!(AppleChip::Intel.linux_arch(), "x86_64");
+        assert_eq!(AppleChip::Unknown.linux_arch(), "aarch64");
+    }
+
+    #[test]
+    fn test_apple_chip_musl_target() {
+        assert_eq!(AppleChip::M3.musl_target(), "aarch64-unknown-linux-musl");
+        assert_eq!(AppleChip::Intel.musl_target(), "x86_64-unknown-linux-musl");
     }
 }

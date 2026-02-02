@@ -1,0 +1,25 @@
+# Cross-compilation configuration for Nucleus
+# See: https://github.com/cross-rs/cross
+
+[build.env]
+passthrough = [
+    "CARGO_TERM_COLOR",
+]
+
+# aarch64-unknown-linux-musl (Apple Silicon Macs)
+[target.aarch64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-musl:main"
+
+[target.aarch64-unknown-linux-musl.env]
+passthrough = [
+    "CARGO_TERM_COLOR",
+]
+
+# x86_64-unknown-linux-musl (Intel Macs)
+[target.x86_64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-musl:main"
+
+[target.x86_64-unknown-linux-musl.env]
+passthrough = [
+    "CARGO_TERM_COLOR",
+]
