@@ -1,0 +1,27 @@
+# Kata Containers + Firecracker RuntimeClass for Agent Sandbox
+#
+# Prerequisites:
+# - Kata Containers installed with Firecracker hypervisor
+# - Nodes with /dev/kvm access labeled: katacontainers.io/kata-runtime=true
+#
+# Install via Helm:
+#   helm install kata-fc kata-containers/kata-deploy \
+#     --namespace kata-system --create-namespace \
+#     --set hypervisor=fc
+#
+# See: https://katacontainers.io/docs/
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: kata-fc
+  labels:
+    app.kubernetes.io/name: kata-containers
+    app.kubernetes.io/component: runtime
+handler: kata-fc
+overhead:
+  podFixed:
+    memory: "130Mi"
+    cpu: "250m"
+scheduling:
+  nodeSelector:
+    katacontainers.io/kata-runtime: "true"

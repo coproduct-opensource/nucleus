@@ -1,0 +1,48 @@
+# Kustomization for Agent Sandbox manifests
+#
+# Usage:
+#   # Apply all resources
+#   kubectl apply -k k8s/agent-sandbox/
+#
+#   # Preview what will be applied
+#   kubectl kustomize k8s/agent-sandbox/
+#
+# Overlays:
+#   Create environment-specific overlays in subdirectories:
+#   - overlays/local/     (gVisor for development)
+#   - overlays/staging/   (kata-fc for pre-prod)
+#   - overlays/prod/      (kata-fc with stricter limits)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: agent-sandbox
+  labels:
+    app.kubernetes.io/name: agent-sandbox
+    app.kubernetes.io/part-of: nucleus
+
+# Common labels applied to all resources
+commonLabels:
+  app.kubernetes.io/managed-by: kustomize
+
+resources:
+  # RuntimeClasses - choose one based on your environment
+  # - gvisor-runtimeclass.yaml      # For local/no-KVM environments
+  # - kata-fc-runtimeclass.yaml     # For KVM-enabled clusters
+
+  # Example Sandboxes - uncomment to deploy
+  # - sandbox-gvisor-example.yaml
+  # - sandbox-firecracker-example.yaml
+
+# Configuration for different environments
+# Uncomment and modify as needed:
+#
+# patches:
+#   # Override resource limits for production
+#   - patch: |-
+#       - op: replace
+#         path: /spec/podTemplate/spec/containers/0/resources/limits/memory
+#         value: "4Gi"
+#     target:
+#       kind: Sandbox
+#       name: firecracker-example

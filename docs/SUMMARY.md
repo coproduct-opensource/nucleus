@@ -5,6 +5,7 @@
   - [Local (Linux)](quickstart/local.md)
   - [macOS](quickstart/macos.md)
   - [Kubernetes](quickstart/kubernetes.md)
+  - [Agent Sandbox](quickstart/agent-sandbox.md)
 - [Permissions Guide](permissions.md)
 - [Architecture](architecture/overview.md)
   - [Threat Model](architecture/threat-model.md)
