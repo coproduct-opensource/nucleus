@@ -27,6 +27,8 @@ mod keychain;
 mod profiles;
 mod run;
 mod setup;
+mod start;
+mod stop;
 
 /// Nucleus CLI - policy-aware wrapper (tool enforcement via proxy)
 #[derive(Parser)]
@@ -53,6 +55,12 @@ enum Commands {
 
     /// Set up nucleus environment (Lima VM, artifacts, secrets)
     Setup(setup::SetupArgs),
+
+    /// Start nucleus-node in the Lima VM
+    Start(start::StartArgs),
+
+    /// Stop nucleus-node and optionally the Lima VM
+    Stop(stop::StopArgs),
 
     /// Check setup status and diagnose issues
     Doctor,
@@ -88,6 +96,8 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Run(args) => run::execute(*args, &config_path).await,
         Commands::Setup(args) => setup::execute(args).await,
+        Commands::Start(args) => start::execute(args).await,
+        Commands::Stop(args) => stop::execute(args).await,
         Commands::Doctor => doctor::diagnose().await,
         Commands::Profiles => profiles::list(),
         Commands::Config => config::show(&config_path),

@@ -1,0 +1,27 @@
+# Cargo configuration for Nucleus
+# Configures musl linkers for static Linux binaries
+
+# aarch64 Linux (musl) - for Apple Silicon Lima VMs
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-linux-musl-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# x86_64 Linux (musl) - for Intel Mac Lima VMs
+[target.x86_64-unknown-linux-musl]
+linker = "x86_64-linux-musl-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# Build configuration
+[build]
+# Uncomment to set default target:
+# target = "aarch64-unknown-linux-musl"
+
+[profile.release]
+# Optimize for size in release builds (important for rootfs)
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.release-small]
+inherits = "release"
+opt-level = "z"
