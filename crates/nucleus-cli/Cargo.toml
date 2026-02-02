@@ -46,8 +46,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 shellexpand = "3.1"
 dirs = "6.0"
 uuid = { version = "1.11", features = ["v4"] }
-ureq = { version = "2.12", features = ["json"] }
-rand = "0.8"
+ureq = { version = "3.1", features = ["json"] }
+rand = "0.9"
 chrono = { version = "0.4", features = ["serde"] }
 hex = "0.4"
 

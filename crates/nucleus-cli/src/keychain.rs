@@ -107,9 +107,9 @@ pub struct SecretStore;
 impl SecretStore {
     /// Generate a cryptographically secure HMAC secret
     pub fn generate_secret() -> Vec<u8> {
-        use rand::RngCore;
+        use rand::Rng;
         let mut secret = vec![0u8; SECRET_LENGTH];
-        rand::rngs::OsRng.fill_bytes(&mut secret);
+        rand::rng().fill(&mut secret[..]);
         secret
     }
 

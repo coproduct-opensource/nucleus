@@ -13,4 +13,4 @@ name = "nucleus-guest-init"
 path = "src/main.rs"
 
 [dependencies]
-nix = { version = "0.28", default-features = false, features = ["mount", "fs"] }
+nix = { version = "0.30", default-features = false, features = ["mount", "fs"] }

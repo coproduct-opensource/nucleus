@@ -441,15 +441,20 @@ async fn check_node_connectivity() -> bool {
     // Try to connect to default node URL
     let node_url = "http://127.0.0.1:8080/health";
 
-    match ureq::get(node_url)
-        .timeout(std::time::Duration::from_secs(2))
-        .call()
-    {
-        Ok(resp) if resp.status() == 200 => print_check("nucleus-node", Status::Ok, "reachable"),
+    // Create agent with timeout
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(2)))
+        .build();
+    let agent: ureq::Agent = config.into();
+
+    match agent.get(node_url).call() {
+        Ok(resp) if resp.status().as_u16() == 200 => {
+            print_check("nucleus-node", Status::Ok, "reachable")
+        }
         Ok(resp) => print_check(
             "nucleus-node",
             Status::Warning,
-            &format!("responded with status {}", resp.status()),
+            &format!("responded with status {}", resp.status().as_u16()),
         ),
         Err(_) => print_check(
             "nucleus-node",
