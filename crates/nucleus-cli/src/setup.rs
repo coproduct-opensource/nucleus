@@ -11,7 +11,7 @@ use tracing::{info, warn};
 use crate::keychain::{self, SecretKind, SecretStore};
 
 /// Version of Firecracker to download
-const FIRECRACKER_VERSION: &str = "1.10.1";
+const FIRECRACKER_VERSION: &str = "1.14.1";
 
 /// Set up nucleus environment (Lima VM, artifacts, secrets)
 #[derive(Args, Debug)]
@@ -422,11 +422,11 @@ fn generate_lima_config(args: &SetupArgs, chip: &AppleChip) -> Result<String> {
     // Intel Macs require QEMU; Apple Silicon uses Virtualization.framework
     let vm_type = if is_intel { "qemu" } else { "vz" };
 
-    // Image URL differs by architecture
+    // Image URL differs by architecture - use Ubuntu 24.04 LTS for stability
     let image_url = if is_intel {
-        "https://cloud-images.ubuntu.com/releases/24.10/release/ubuntu-24.10-server-cloudimg-amd64.img"
+        "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
     } else {
-        "https://cloud-images.ubuntu.com/releases/24.10/release/ubuntu-24.10-server-cloudimg-arm64.img"
+        "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
     };
 
     // Nested virtualization only works on Apple Silicon M3+ with macOS 15+
@@ -497,45 +497,43 @@ provision:
         chmod 666 /dev/kvm
       fi
 
-      # Download Firecracker
+      # Download Firecracker (v1.14+ uses tarball format)
       FC_VERSION="{fc_version}"
       FC_ARCH="{arch}"
       echo "Downloading Firecracker v${{FC_VERSION}} for ${{FC_ARCH}}..."
-      curl -fsSL -o /usr/local/bin/firecracker \
-        "https://github.com/firecracker-microvm/firecracker/releases/download/v${{FC_VERSION}}/firecracker-v${{FC_VERSION}}-${{FC_ARCH}}"
-      chmod +x /usr/local/bin/firecracker
+      curl -fsSL -o /tmp/firecracker.tgz \
+        "https://github.com/firecracker-microvm/firecracker/releases/download/v${{FC_VERSION}}/firecracker-v${{FC_VERSION}}-${{FC_ARCH}}.tgz"
+      tar xzf /tmp/firecracker.tgz -C /tmp
+      mv /tmp/release-v${{FC_VERSION}}-${{FC_ARCH}}/firecracker-v${{FC_VERSION}}-${{FC_ARCH}} /usr/local/bin/firecracker
+      mv /tmp/release-v${{FC_VERSION}}-${{FC_ARCH}}/jailer-v${{FC_VERSION}}-${{FC_ARCH}} /usr/local/bin/jailer
+      chmod +x /usr/local/bin/firecracker /usr/local/bin/jailer
+      rm -rf /tmp/firecracker.tgz /tmp/release-v${{FC_VERSION}}-${{FC_ARCH}}
 
-      # Download jailer
-      curl -fsSL -o /usr/local/bin/jailer \
-        "https://github.com/firecracker-microvm/firecracker/releases/download/v${{FC_VERSION}}/jailer-v${{FC_VERSION}}-${{FC_ARCH}}"
-      chmod +x /usr/local/bin/jailer
+      # Download kernel from AWS S3 (Firecracker no longer ships kernels)
+      mkdir -p /var/lib/nucleus/artifacts
+      curl -fsSL -o /var/lib/nucleus/artifacts/vmlinux \
+        "https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/${{FC_ARCH}}/kernels/vmlinux.bin"
 
-      # Download kernel
-      mkdir -p /nucleus/artifacts
-      curl -fsSL -o /nucleus/artifacts/vmlinux \
-        "https://github.com/firecracker-microvm/firecracker/releases/download/v${{FC_VERSION}}/vmlinux-v${{FC_VERSION}}-${{FC_ARCH}}.bin"
-
-      # Create nucleus-node systemd service
-      cat > /etc/systemd/system/nucleus-node.service << 'SYSTEMD_EOF'
-[Unit]
-Description=Nucleus Node - Firecracker orchestrator
-After=network.target docker.service
-Wants=docker.service
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/nucleus-node
-Restart=on-failure
-RestartSec=5
-Environment=NUCLEUS_NODE_LISTEN_ADDR=0.0.0.0:8080
-Environment=NUCLEUS_NODE_METRICS_ADDR=0.0.0.0:9080
-Environment=NUCLEUS_NODE_GRPC_ADDR=0.0.0.0:9180
-Environment=NUCLEUS_NODE_ARTIFACTS_DIR=/nucleus/artifacts
-Environment=RUST_LOG=info
-
-[Install]
-WantedBy=multi-user.target
-SYSTEMD_EOF
+      # Create nucleus-node systemd service (using printf to avoid YAML parsing issues)
+      printf '%s\n' '[Unit]' \
+        'Description=Nucleus Node - Firecracker orchestrator' \
+        'After=network.target docker.service' \
+        'Wants=docker.service' \
+        '' \
+        '[Service]' \
+        'Type=simple' \
+        'ExecStart=/usr/local/bin/nucleus-node' \
+        'Restart=on-failure' \
+        'RestartSec=5' \
+        'Environment=NUCLEUS_NODE_LISTEN_ADDR=0.0.0.0:8080' \
+        'Environment=NUCLEUS_NODE_METRICS_ADDR=0.0.0.0:9080' \
+        'Environment=NUCLEUS_NODE_GRPC_ADDR=0.0.0.0:9180' \
+        'Environment=NUCLEUS_NODE_ARTIFACTS_DIR=/var/lib/nucleus/artifacts' \
+        'Environment=RUST_LOG=info' \
+        '' \
+        '[Install]' \
+        'WantedBy=multi-user.target' \
+        > /etc/systemd/system/nucleus-node.service
 
       systemctl daemon-reload
       # Don't enable/start yet - nucleus-node binary needs to be installed first
