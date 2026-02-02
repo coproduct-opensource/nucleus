@@ -174,6 +174,8 @@ struct FirecrackerPod {
     dns_proxy: Mutex<Option<net::DnsProxyState>>,
     drift_monitor: Mutex<Option<JoinHandle<()>>>,
     drift_stop: Arc<AtomicBool>,
+    /// Reference to network allocator for releasing indices on cleanup
+    network_allocator: Arc<net::NetworkAllocator>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -541,6 +543,7 @@ impl FirecrackerPod {
             bridge.shutdown().await;
         }
         if let Some(plan) = self.net_plan.lock().await.take() {
+            self.network_allocator.release(plan.index);
             let _ = net::cleanup_network(&plan).await;
         } else if let Some(name) = self.netns.lock().await.take() {
             let _ = net::cleanup_netns(&name).await;
@@ -566,6 +569,7 @@ impl FirecrackerPod {
             bridge.shutdown().await;
         }
         if let Some(plan) = self.net_plan.lock().await.take() {
+            self.network_allocator.release(plan.index);
             let _ = net::cleanup_network(&plan).await;
         } else if let Some(name) = self.netns.lock().await.take() {
             let _ = net::cleanup_netns(&name).await;
@@ -710,6 +714,14 @@ async fn spawn_firecracker_pod(
         if state.firecracker_netns {
             let name = net::netns_name(id);
             net::create_netns(&name).await?;
+
+            // Apply default-deny iptables policy BEFORE any process spawns.
+            // This closes the race window where a process could exfiltrate
+            // data before the full policy is applied.
+            if let Err(err) = net::apply_default_deny(&name).await {
+                let _ = net::cleanup_netns(&name).await;
+                return Err(err);
+            }
             netns_name = Some(name.clone());
 
             if let Some(network) = spec.spec.network.as_ref() {
@@ -725,10 +737,12 @@ async fn spawn_firecracker_pod(
                     }
                 };
                 if let Err(err) = net::setup_network(&plan).await {
+                    state.network_allocator.release(plan.index);
                     let _ = net::cleanup_network(&plan).await;
                     return Err(err);
                 }
                 if let Err(err) = net::write_policy_files(pod_dir, Some(network)).await {
+                    state.network_allocator.release(plan.index);
                     let _ = net::cleanup_network(&plan).await;
                     return Err(err);
                 }
@@ -737,6 +751,7 @@ async fn spawn_firecracker_pod(
                         dns_proxy = proxy;
                     }
                     Err(err) => {
+                        state.network_allocator.release(plan.index);
                         let _ = net::cleanup_network(&plan).await;
                         return Err(err);
                     }
@@ -758,12 +773,24 @@ async fn spawn_firecracker_pod(
         let config_json = match serde_json::to_vec_pretty(&config) {
             Ok(data) => data,
             Err(err) => {
-                cleanup_net_resources(&mut net_plan, &mut netns_name, &mut dns_proxy).await;
+                cleanup_net_resources(
+                    &state.network_allocator,
+                    &mut net_plan,
+                    &mut netns_name,
+                    &mut dns_proxy,
+                )
+                .await;
                 return Err(ApiError::Driver(format!("config serialize failed: {err}")));
             }
         };
         if let Err(err) = tokio::fs::write(&config_path, config_json).await {
-            cleanup_net_resources(&mut net_plan, &mut netns_name, &mut dns_proxy).await;
+            cleanup_net_resources(
+                &state.network_allocator,
+                &mut net_plan,
+                &mut netns_name,
+                &mut dns_proxy,
+            )
+            .await;
             return Err(ApiError::Driver(format!("config write failed: {err}")));
         }
 
@@ -796,7 +823,13 @@ async fn spawn_firecracker_pod(
         let mut child = match command.stdout(log_stdout).stderr(log_stderr).spawn() {
             Ok(child) => child,
             Err(err) => {
-                cleanup_net_resources(&mut net_plan, &mut netns_name, &mut dns_proxy).await;
+                cleanup_net_resources(
+                    &state.network_allocator,
+                    &mut net_plan,
+                    &mut netns_name,
+                    &mut dns_proxy,
+                )
+                .await;
                 return Err(ApiError::Driver(format!(
                     "failed to spawn firecracker: {err}"
                 )));
@@ -817,7 +850,13 @@ async fn spawn_firecracker_pod(
                 Some(pid) => pid,
                 None => {
                     let _ = child.kill().await;
-                    cleanup_net_resources(&mut net_plan, &mut netns_name, &mut dns_proxy).await;
+                    cleanup_net_resources(
+                        &state.network_allocator,
+                        &mut net_plan,
+                        &mut netns_name,
+                        &mut dns_proxy,
+                    )
+                    .await;
                     return Err(ApiError::Driver(
                         "firecracker process id unavailable for network policy".to_string(),
                     ));
@@ -830,7 +869,13 @@ async fn spawn_firecracker_pod(
                 .and_then(|_| net_plan.as_ref().map(|plan| plan.gateway_ip));
             if let Err(err) = net::apply_host_policy(pid, policy, dns_entries, dns_server).await {
                 let _ = child.kill().await;
-                cleanup_net_resources(&mut net_plan, &mut netns_name, &mut dns_proxy).await;
+                cleanup_net_resources(
+                    &state.network_allocator,
+                    &mut net_plan,
+                    &mut netns_name,
+                    &mut dns_proxy,
+                )
+                .await;
                 return Err(err);
             }
             if state.firecracker_netns_drift_check {
@@ -841,8 +886,13 @@ async fn spawn_firecracker_pod(
                             tokio::fs::write(&baseline_path, snapshot.as_bytes()).await
                         {
                             let _ = child.kill().await;
-                            cleanup_net_resources(&mut net_plan, &mut netns_name, &mut dns_proxy)
-                                .await;
+                            cleanup_net_resources(
+                                &state.network_allocator,
+                                &mut net_plan,
+                                &mut netns_name,
+                                &mut dns_proxy,
+                            )
+                            .await;
                             return Err(ApiError::Driver(format!(
                                 "failed to write iptables baseline: {err}"
                             )));
@@ -851,7 +901,13 @@ async fn spawn_firecracker_pod(
                     }
                     Err(err) => {
                         let _ = child.kill().await;
-                        cleanup_net_resources(&mut net_plan, &mut netns_name, &mut dns_proxy).await;
+                        cleanup_net_resources(
+                            &state.network_allocator,
+                            &mut net_plan,
+                            &mut netns_name,
+                            &mut dns_proxy,
+                        )
+                        .await;
                         return Err(err);
                     }
                 }
@@ -870,7 +926,13 @@ async fn spawn_firecracker_pod(
 
         if let Err(err) = wait_for_vsock_socket(&vsock_path).await {
             let _ = child.kill().await;
-            cleanup_net_resources(&mut net_plan, &mut netns_name, &mut dns_proxy).await;
+            cleanup_net_resources(
+                &state.network_allocator,
+                &mut net_plan,
+                &mut netns_name,
+                &mut dns_proxy,
+            )
+            .await;
             return Err(err);
         }
         let bridge = vsock_bridge::VsockBridge::start(vsock_path.clone(), vsock_spec.port)
@@ -896,7 +958,13 @@ async fn spawn_firecracker_pod(
             }
             bridge.shutdown().await;
             let _ = child.kill().await;
-            cleanup_net_resources(&mut net_plan, &mut netns_name, &mut dns_proxy).await;
+            cleanup_net_resources(
+                &state.network_allocator,
+                &mut net_plan,
+                &mut netns_name,
+                &mut dns_proxy,
+            )
+            .await;
             return Err(err);
         }
 
@@ -957,6 +1025,7 @@ async fn spawn_firecracker_pod(
             dns_proxy: Mutex::new(dns_proxy),
             drift_monitor: Mutex::new(drift_monitor),
             drift_stop,
+            network_allocator: state.network_allocator.clone(),
         };
 
         info!("spawned firecracker pod {}", id);
@@ -971,6 +1040,7 @@ async fn spawn_firecracker_pod(
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 async fn cleanup_net_resources(
+    allocator: &net::NetworkAllocator,
     net_plan: &mut Option<net::NetPlan>,
     netns_name: &mut Option<String>,
     dns_proxy: &mut Option<net::DnsProxyState>,
@@ -979,6 +1049,8 @@ async fn cleanup_net_resources(
         let _ = proxy.child.kill().await;
     }
     if let Some(plan) = net_plan.take() {
+        // Release the index back to the pool for reuse
+        allocator.release(plan.index);
         let _ = net::cleanup_network(&plan).await;
     } else if let Some(name) = netns_name.take() {
         let _ = net::cleanup_netns(&name).await;
