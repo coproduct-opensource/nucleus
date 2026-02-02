@@ -173,7 +173,10 @@ fn test_lima_vm_running() {
     println!("VM Type: {}", vm_info.vm_type);
 
     assert_eq!(vm_info.status, "Running", "VM must be running");
-    assert_eq!(vm_info.vm_type, "vz", "VM must use Apple Virtualization.framework (vz)");
+    assert_eq!(
+        vm_info.vm_type, "vz",
+        "VM must use Apple Virtualization.framework (vz)"
+    );
 }
 
 #[test]
@@ -188,8 +191,8 @@ fn test_kvm_available_in_vm() {
 #[test]
 #[ignore = "requires M3/M4 Mac with macOS 15+ and Lima VM running"]
 fn test_firecracker_installed_in_vm() {
-    let version = get_firecracker_version_in_vm("nucleus")
-        .expect("Firecracker should be installed in VM");
+    let version =
+        get_firecracker_version_in_vm("nucleus").expect("Firecracker should be installed in VM");
 
     println!("Firecracker version: {}", version);
 
@@ -228,12 +231,17 @@ fn test_full_m3m4_stack() {
     );
 
     // 4. Firecracker check
-    let fc_version = get_firecracker_version_in_vm("nucleus")
-        .expect("Firecracker should be installed");
+    let fc_version =
+        get_firecracker_version_in_vm("nucleus").expect("Firecracker should be installed");
     assert!(fc_version.contains("1.14"), "Firecracker 1.14.x required");
 
     println!("\n=== M3/M4 Native Testing Stack Validated ===");
-    println!("Platform: {} macOS {}.{}", detect_apple_chip(), detect_macos_version().0, detect_macos_version().1);
+    println!(
+        "Platform: {} macOS {}.{}",
+        detect_apple_chip(),
+        detect_macos_version().0,
+        detect_macos_version().1
+    );
     println!("Lima VM: {} ({})", vm_info.name, vm_info.vm_type);
     println!("KVM: Available (native performance)");
     println!("Firecracker: {}", fc_version);
