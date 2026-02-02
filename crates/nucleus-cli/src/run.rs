@@ -455,28 +455,30 @@ fn create_pod_via_node(
 ) -> Result<String> {
     let url = format!("{}/v1/pods", node_url.trim_end_matches('/'));
     let body = serde_yaml::to_string(spec)?;
-    let mut request = ureq::post(&url).set("content-type", "application/yaml");
+    let mut request = ureq::post(&url).header("content-type", "application/yaml");
 
     let signed = sign_http_headers(auth_secret.as_bytes(), Some(actor), body.as_bytes());
     for (key, value) in signed.headers {
-        request = request.set(&key, &value);
+        request = request.header(&key, &value);
     }
 
-    match request.send_bytes(body.as_bytes()) {
-        Ok(response) => {
-            let parsed: CreatePodResponse = response
-                .into_json()
-                .map_err(|e| anyhow!("failed to decode node response: {e}"))?;
-            parsed
-                .proxy_addr
-                .ok_or_else(|| anyhow!("node did not return proxy address"))
-        }
-        Err(ureq::Error::Status(_, response)) => {
-            let status = response.status();
-            if let Ok(body) = response.into_json::<NodeErrorBody>() {
-                Err(anyhow!("node error: {}", body.error))
+    match request.send(body.as_bytes()) {
+        Ok(mut response) => {
+            if response.status().as_u16() >= 400 {
+                let status = response.status();
+                if let Ok(body) = response.body_mut().read_json::<NodeErrorBody>() {
+                    Err(anyhow!("node error: {}", body.error))
+                } else {
+                    Err(anyhow!("node error: status {}", status))
+                }
             } else {
-                Err(anyhow!("node error: {}", status))
+                let parsed: CreatePodResponse = response
+                    .body_mut()
+                    .read_json()
+                    .map_err(|e| anyhow!("failed to decode node response: {e}"))?;
+                parsed
+                    .proxy_addr
+                    .ok_or_else(|| anyhow!("node did not return proxy address"))
             }
         }
         Err(err) => Err(anyhow!("node request failed: {err}")),

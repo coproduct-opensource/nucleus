@@ -152,34 +152,37 @@ impl ProxyClient {
             self.base_url.trim_end_matches('/'),
             path.trim_start_matches('/')
         );
-        let mut request = ureq::post(&url).set("content-type", "application/json");
+        let mut request = ureq::post(&url).header("content-type", "application/json");
 
         if let Some(secret) = self.auth_secret.as_ref() {
             let signed = sign_http_headers(secret, self.actor.as_deref(), &body_bytes);
             for (key, value) in signed.headers {
-                request = request.set(&key, &value);
+                request = request.header(&key, &value);
             }
         }
 
-        match request.send_bytes(&body_bytes) {
-            Ok(response) => response.into_json::<R>().map_err(|e| ProxyError {
-                kind: "decode_error".to_string(),
-                message: e.to_string(),
-                operation: None,
-            }),
-            Err(ureq::Error::Status(_, response)) => {
-                let parsed = response.into_json::<ErrorBody>();
-                match parsed {
-                    Ok(body) => Err(ProxyError {
-                        kind: body.kind,
-                        message: body.error,
-                        operation: body.operation,
-                    }),
-                    Err(err) => Err(ProxyError {
-                        kind: "http_error".to_string(),
-                        message: err.to_string(),
+        match request.send(&body_bytes) {
+            Ok(mut response) => {
+                if response.status().as_u16() >= 400 {
+                    // Try to parse error body
+                    match response.body_mut().read_json::<ErrorBody>() {
+                        Ok(body) => Err(ProxyError {
+                            kind: body.kind,
+                            message: body.error,
+                            operation: body.operation,
+                        }),
+                        Err(err) => Err(ProxyError {
+                            kind: "http_error".to_string(),
+                            message: format!("status {}: {}", response.status(), err),
+                            operation: None,
+                        }),
+                    }
+                } else {
+                    response.body_mut().read_json::<R>().map_err(|e| ProxyError {
+                        kind: "decode_error".to_string(),
+                        message: e.to_string(),
                         operation: None,
-                    }),
+                    })
                 }
             }
             Err(err) => Err(ProxyError {
