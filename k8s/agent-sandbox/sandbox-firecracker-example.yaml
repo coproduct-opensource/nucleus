@@ -1,0 +1,63 @@
+# Example Sandbox with Firecracker isolation via Kata Containers
+#
+# Use this for production environments requiring hardware VM isolation.
+# Firecracker provides full VM isolation with minimal overhead.
+#
+# Prerequisites:
+# - Kata Containers with Firecracker hypervisor installed
+# - kata-fc RuntimeClass configured (see kata-fc-runtimeclass.yaml)
+# - Nodes with KVM support labeled: katacontainers.io/kata-runtime=true
+# - Agent Sandbox controller installed
+apiVersion: agents.x-k8s.io/v1alpha1
+kind: Sandbox
+metadata:
+  name: firecracker-example
+  labels:
+    app.kubernetes.io/name: agent-sandbox
+    app.kubernetes.io/component: sandbox
+    nucleus.io/runtime: firecracker
+spec:
+  podTemplate:
+    spec:
+      runtimeClassName: kata-fc
+      containers:
+      - name: agent
+        image: python:3.12-slim
+        command: ["python", "-c", "import time; time.sleep(3600)"]
+        env:
+        # Example: Inject API keys from secrets
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agent-secrets
+              key: anthropic-api-key
+              optional: true
+        resources:
+          # Firecracker VMs have ~130Mi overhead, plan accordingly
+          requests:
+            memory: "384Mi"  # 256Mi app + ~130Mi Kata overhead
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "2"
+        volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+      volumes:
+      - name: workspace
+        emptyDir:
+          sizeLimit: 5Gi
+
+  # Persistent storage example (uncomment to use)
+  # volumeClaimTemplates:
+  # - metadata:
+  #     name: persistent-workspace
+  #   spec:
+  #     accessModes: ["ReadWriteOnce"]
+  #     storageClassName: standard
+  #     resources:
+  #       requests:
+  #         storage: 10Gi
+
+  # Lifecycle: Retain pod data when Sandbox is deleted (for debugging)
+  shutdownPolicy: Delete
