@@ -88,7 +88,10 @@ fn run() -> Result<(), String> {
 
     let auth_secret = parse_cmdline_secret(&cmdline, "nucleus.auth_secret")
         .or_else(|| read_secret("/etc/nucleus/auth.secret"))
-        .ok_or_else(|| "missing auth secret (set nucleus.auth_secret in boot args or /etc/nucleus/auth.secret)".to_string())?;
+        .ok_or_else(|| {
+            "missing auth secret (set nucleus.auth_secret in boot args or /etc/nucleus/auth.secret)"
+                .to_string()
+        })?;
 
     let approval_secret = parse_cmdline_secret(&cmdline, "nucleus.approval_secret")
         .or_else(|| read_secret("/etc/nucleus/approval.secret"))

@@ -632,12 +632,8 @@ fn check_network_policy_capability() -> bool {
         );
 
         // Additional warning about the security model
-        println!(
-            "  Note: On macOS, network security relies on the Lima VM's isolation."
-        );
-        println!(
-            "        For production workloads with strict network requirements, use Linux."
-        );
+        println!("  Note: On macOS, network security relies on the Lima VM's isolation.");
+        println!("        For production workloads with strict network requirements, use Linux.");
 
         true // Don't fail the check, just warn
     }
