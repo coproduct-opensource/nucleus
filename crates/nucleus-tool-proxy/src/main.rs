@@ -11,6 +11,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{middleware, Json, Router};
 use clap::Parser;
+use nucleus::lattice_guard::{CapabilityLevel, Operation};
 use nucleus::{
     ApprovalRequest, BudgetModel, CallbackApprover, NucleusError, PodRuntime,
     PodSpec as RuntimePodSpec,
@@ -67,6 +68,24 @@ struct Args {
     /// Approval authority secret (separate from tool auth).
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET")]
     approval_secret: String,
+    /// Optional webhook URL for remote audit log delivery.
+    /// Entries are POSTed as JSON with HMAC signature in X-Nucleus-Signature header.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUDIT_WEBHOOK")]
+    audit_webhook: Option<String>,
+    /// Timeout in seconds for web fetch requests.
+    #[arg(
+        long,
+        env = "NUCLEUS_TOOL_PROXY_WEB_FETCH_TIMEOUT_SECS",
+        default_value_t = 30
+    )]
+    web_fetch_timeout_secs: u64,
+    /// Maximum response body size in bytes for web fetch.
+    #[arg(
+        long,
+        env = "NUCLEUS_TOOL_PROXY_WEB_FETCH_MAX_BYTES",
+        default_value_t = 10 * 1024 * 1024
+    )]
+    web_fetch_max_bytes: usize,
 }
 
 #[derive(Clone)]
@@ -78,6 +97,9 @@ struct AppState {
     approval_auth: AuthConfig,
     approval_nonces: Arc<ApprovalNonceCache>,
     approval_rate_limiter: Arc<ApprovalRateLimiter>,
+    web_client: reqwest::Client,
+    web_fetch_max_bytes: usize,
+    dns_allow: Vec<String>,
 }
 
 #[derive(Default)]
@@ -261,6 +283,26 @@ struct ApproveResponse {
     ok: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct WebFetchRequest {
+    url: String,
+    #[serde(default)]
+    method: Option<String>,
+    #[serde(default)]
+    headers: Option<HashMap<String, String>>,
+    #[serde(default)]
+    body: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct WebFetchResponse {
+    status: u16,
+    headers: HashMap<String, String>,
+    body: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    truncated: Option<bool>,
+}
+
 #[derive(Debug, Serialize)]
 struct ErrorBody {
     error: String,
@@ -285,6 +327,10 @@ enum ApiError {
     Body(String),
     #[error("rate limited: too many approval requests")]
     RateLimited,
+    #[error("web fetch error: {0}")]
+    WebFetch(String),
+    #[error("url not in dns_allow list: {0}")]
+    DnsNotAllowed(String),
 }
 
 impl IntoResponse for ApiError {
@@ -333,6 +379,8 @@ impl IntoResponse for ApiError {
             ApiError::Auth(_) => (StatusCode::UNAUTHORIZED, "auth_error", None),
             ApiError::Body(_) => (StatusCode::BAD_REQUEST, "body_error", None),
             ApiError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited", None),
+            ApiError::WebFetch(_) => (StatusCode::BAD_GATEWAY, "web_fetch_error", None),
+            ApiError::DnsNotAllowed(_) => (StatusCode::FORBIDDEN, "dns_not_allowed", None),
         };
 
         let body = Json(ErrorBody {
@@ -375,6 +423,21 @@ async fn main() -> Result<(), ApiError> {
 
     let audit = build_audit_log(&args, &auth)?;
 
+    // Build HTTP client for web fetch
+    let web_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(args.web_fetch_timeout_secs))
+        .user_agent("nucleus-tool-proxy/0.1")
+        .build()
+        .map_err(|e| ApiError::Spec(format!("failed to build HTTP client: {e}")))?;
+
+    // Extract DNS allow list from spec
+    let dns_allow = spec
+        .spec
+        .network
+        .as_ref()
+        .map(|n| n.dns_allow.clone())
+        .unwrap_or_default();
+
     let state = AppState {
         runtime: Arc::new(runtime),
         approvals,
@@ -383,6 +446,9 @@ async fn main() -> Result<(), ApiError> {
         approval_auth,
         approval_nonces: Arc::new(ApprovalNonceCache::default()),
         approval_rate_limiter: Arc::new(ApprovalRateLimiter::default()),
+        web_client,
+        web_fetch_max_bytes: args.web_fetch_max_bytes,
+        dns_allow,
     };
 
     if let Err(err) = emit_boot_report(&state).await {
@@ -394,6 +460,7 @@ async fn main() -> Result<(), ApiError> {
         .route("/v1/read", post(read_file))
         .route("/v1/write", post(write_file))
         .route("/v1/run", post(run_command))
+        .route("/v1/web_fetch", post(web_fetch))
         .route("/v1/approve", post(approve_operation))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state, auth_middleware));
@@ -521,6 +588,119 @@ async fn run_command(
         success: output.status.success(),
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    }))
+}
+
+async fn web_fetch(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<WebFetchRequest>,
+) -> Result<Json<WebFetchResponse>, ApiError> {
+    let url_str = req.url.clone();
+
+    // Check web_fetch capability
+    let policy = state.runtime.policy();
+    let level = policy.capabilities.web_fetch;
+    if level == CapabilityLevel::Never {
+        return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+            capability: "web_fetch".into(),
+            actual: level,
+            required: CapabilityLevel::LowRisk,
+        }));
+    }
+
+    // Check if trifecta requires approval for web_fetch
+    if policy.requires_approval(Operation::WebFetch) {
+        // For now, just check if we have an approval token
+        if !state.approvals.consume("web_fetch") {
+            return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
+                operation: format!("web_fetch {}", url_str),
+            }));
+        }
+    }
+
+    // Parse and validate URL
+    let url =
+        url::Url::parse(&url_str).map_err(|e| ApiError::WebFetch(format!("invalid URL: {e}")))?;
+
+    // Check DNS allow list (if configured)
+    if !state.dns_allow.is_empty() {
+        let host = url
+            .host_str()
+            .ok_or_else(|| ApiError::WebFetch("URL has no host".into()))?;
+        let port = url.port_or_known_default().unwrap_or(443);
+        let host_port = format!("{}:{}", host, port);
+
+        let allowed = state.dns_allow.iter().any(|pattern| {
+            // Match exact host:port or host (any port)
+            pattern == &host_port || pattern == host || pattern.starts_with(&format!("{}:", host))
+        });
+
+        if !allowed {
+            return Err(ApiError::DnsNotAllowed(host_port));
+        }
+    }
+
+    // Build the request
+    let method = req.method.as_deref().unwrap_or("GET").to_uppercase();
+    let method = reqwest::Method::from_bytes(method.as_bytes())
+        .map_err(|_| ApiError::WebFetch(format!("invalid method: {}", method)))?;
+
+    let mut request = state.web_client.request(method, url);
+
+    // Add custom headers
+    if let Some(hdrs) = req.headers {
+        for (key, value) in hdrs {
+            request = request.header(&key, &value);
+        }
+    }
+
+    // Add body if present
+    if let Some(body) = req.body {
+        request = request.body(body);
+    }
+
+    // Execute request
+    let response = request
+        .send()
+        .await
+        .map_err(|e| ApiError::WebFetch(format!("request failed: {e}")))?;
+
+    let status = response.status().as_u16();
+
+    // Collect response headers
+    let response_headers: HashMap<String, String> = response
+        .headers()
+        .iter()
+        .filter_map(|(k, v)| {
+            v.to_str()
+                .ok()
+                .map(|v| (k.as_str().to_string(), v.to_string()))
+        })
+        .collect();
+
+    // Read body with size limit
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| ApiError::WebFetch(format!("failed to read response: {e}")))?;
+
+    let (body, truncated) = if bytes.len() > state.web_fetch_max_bytes {
+        let truncated_bytes = &bytes[..state.web_fetch_max_bytes];
+        (
+            String::from_utf8_lossy(truncated_bytes).to_string(),
+            Some(true),
+        )
+    } else {
+        (String::from_utf8_lossy(&bytes).to_string(), None)
+    };
+
+    audit_event(&state, &headers, "web_fetch", &url_str, "ok").await?;
+    Ok(Json(WebFetchResponse {
+        status,
+        headers: response_headers,
+        body,
+        truncated,
     }))
 }
 
@@ -692,10 +872,27 @@ fn build_audit_log(args: &Args, auth: &AuthConfig) -> Result<Arc<AuditLog>, ApiE
     };
 
     let last_hash = load_last_hash(&path).unwrap_or_default();
+
+    // Set up webhook sink if configured
+    let webhook = if let Some(url) = args.audit_webhook.as_ref() {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .map_err(|e| ApiError::Spec(format!("failed to build webhook client: {e}")))?;
+        info!("audit webhook configured: {}", url);
+        Some(WebhookSink {
+            url: url.clone(),
+            client,
+        })
+    } else {
+        None
+    };
+
     Ok(Arc::new(AuditLog {
         path,
         secret,
         last_hash: Mutex::new(last_hash),
+        webhook,
     }))
 }
 
@@ -766,6 +963,12 @@ struct AuditLog {
     path: PathBuf,
     secret: Vec<u8>,
     last_hash: Mutex<String>,
+    webhook: Option<WebhookSink>,
+}
+
+struct WebhookSink {
+    url: String,
+    client: reqwest::Client,
 }
 
 impl AuditLog {
@@ -784,10 +987,12 @@ impl AuditLog {
             (prev_hash, hash, signature)
         };
         entry.prev_hash = prev_hash;
-        entry.signature = signature;
+        entry.signature = signature.clone();
         entry.hash = hash;
 
         let line = serde_json::to_string(&entry).map_err(|e| ApiError::Spec(e.to_string()))?;
+
+        // Write to local file
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -795,6 +1000,31 @@ impl AuditLog {
             .await?;
         file.write_all(line.as_bytes()).await?;
         file.write_all(b"\n").await?;
+
+        // Send to webhook if configured
+        if let Some(webhook) = &self.webhook {
+            // Fire and forget - don't block on webhook delivery
+            // In production, you'd want retry logic and a buffer
+            let url = webhook.url.clone();
+            let client = webhook.client.clone();
+            let body = line.clone();
+            let sig = signature;
+
+            tokio::spawn(async move {
+                let result = client
+                    .post(&url)
+                    .header("Content-Type", "application/json")
+                    .header("X-Nucleus-Signature", &sig)
+                    .body(body)
+                    .send()
+                    .await;
+
+                if let Err(e) = result {
+                    tracing::warn!("failed to send audit entry to webhook: {e}");
+                }
+            });
+        }
+
         Ok(())
     }
 }
