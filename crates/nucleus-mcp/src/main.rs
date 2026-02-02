@@ -430,11 +430,12 @@ where
             if err.kind == "approval_required" && approval_prompt {
                 if let Some(operation) = err.operation.as_ref() {
                     if prompt_approval(operation)? {
+                        let nonce = uuid::Uuid::new_v4().to_string();
                         let approve = ApproveRequest {
                             operation: operation.clone(),
                             count: 1,
                             expires_at_unix: None,
-                            nonce: None,
+                            nonce: Some(nonce),
                         };
                         let _resp: ApproveResponse = client.post_json("/v1/approve", &approve)?;
                         let _ = _resp.ok;
@@ -491,4 +492,85 @@ fn write_error(stdout: &mut impl Write, id: Option<Value>, code: i64, message: &
     writeln!(stdout, "{}", serde_json::to_string(&response)?)?;
     stdout.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_approve_request_with_nonce() {
+        let nonce = uuid::Uuid::new_v4().to_string();
+        let req = ApproveRequest {
+            operation: "read /etc/passwd".to_string(),
+            count: 1,
+            expires_at_unix: Some(1234567890),
+            nonce: Some(nonce.clone()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(&nonce));
+        assert!(json.contains("read /etc/passwd"));
+    }
+
+    #[test]
+    fn test_approve_request_nonce_uniqueness() {
+        let nonce1 = uuid::Uuid::new_v4().to_string();
+        let nonce2 = uuid::Uuid::new_v4().to_string();
+        assert_ne!(nonce1, nonce2);
+        assert_eq!(nonce1.len(), 36); // UUID v4 format
+    }
+
+    #[test]
+    fn test_tool_call_params_parsing() {
+        let json = r#"{"name": "read", "arguments": {"path": "/tmp/test"}}"#;
+        let params: ToolCallParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.name, "read");
+        assert_eq!(params.arguments["path"], "/tmp/test");
+    }
+
+    #[test]
+    fn test_tool_call_params_default_arguments() {
+        let json = r#"{"name": "run"}"#;
+        let params: ToolCallParams = serde_json::from_str(json).unwrap();
+        assert_eq!(params.name, "run");
+        assert!(params.arguments.is_null());
+    }
+
+    #[test]
+    fn test_build_tool_defs_permissive() {
+        let tools = build_tool_defs(None);
+        assert_eq!(tools.len(), 3);
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"read"));
+        assert!(names.contains(&"write"));
+        assert!(names.contains(&"run"));
+    }
+
+    #[test]
+    fn test_write_result_format() {
+        let mut output = Vec::new();
+        write_result(&mut output, Some(json!(1)), json!({"status": "ok"})).unwrap();
+        let result: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(result["jsonrpc"], "2.0");
+        assert_eq!(result["id"], 1);
+        assert_eq!(result["result"]["status"], "ok");
+    }
+
+    #[test]
+    fn test_write_error_format() {
+        let mut output = Vec::new();
+        write_error(&mut output, Some(json!(42)), -32601, "method not found").unwrap();
+        let result: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(result["jsonrpc"], "2.0");
+        assert_eq!(result["id"], 42);
+        assert_eq!(result["error"]["code"], -32601);
+        assert_eq!(result["error"]["message"], "method not found");
+    }
+
+    #[test]
+    fn test_write_result_skips_notification() {
+        let mut output = Vec::new();
+        write_result(&mut output, None, json!({"data": "test"})).unwrap();
+        assert!(output.is_empty());
+    }
 }

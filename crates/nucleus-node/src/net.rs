@@ -6,6 +6,7 @@ use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use ipnet::IpNet;
 use nucleus_spec::NetworkSpec;
@@ -21,31 +22,52 @@ const POD_PREFIX: u8 = 30;
 const POD_STRIDE: u8 = 4;
 const DEFAULT_DNS: Ipv4Addr = Ipv4Addr::new(1, 1, 1, 1);
 
+/// Network address pool with reclamation support.
+/// Allocates /30 subnets from the pool and returns them when pods terminate.
 #[derive(Debug)]
 pub struct NetworkAllocator {
+    /// Available indices in the pool (returned indices are recycled)
+    available: Mutex<Vec<usize>>,
+    /// Next index to use when pool is empty (monotonic growth)
     next: AtomicUsize,
+    /// Maximum number of allocations (computed from CIDR)
+    max: usize,
 }
 
 impl NetworkAllocator {
     pub fn new() -> Self {
+        if POD_PREFIX < NET_POOL_PREFIX {
+            // This is a compile-time configuration error
+            panic!("invalid network pool: pod prefix must be >= pool prefix");
+        }
+        let max = 1usize << (POD_PREFIX - NET_POOL_PREFIX) as usize;
         Self {
+            available: Mutex::new(Vec::new()),
             next: AtomicUsize::new(0),
+            max,
         }
     }
 
     pub fn allocate(&self, pod_id: Uuid, netns: String) -> Result<NetPlan, ApiError> {
-        let index = self.next.fetch_add(1, Ordering::SeqCst);
-        if POD_PREFIX < NET_POOL_PREFIX {
-            return Err(ApiError::Driver(
-                "invalid network pool: pod prefix must be >= pool prefix".to_string(),
-            ));
-        }
-        let max = 1usize << (POD_PREFIX - NET_POOL_PREFIX) as usize;
-        if index >= max {
-            return Err(ApiError::Driver(
-                "network pool exhausted; increase base CIDR".to_string(),
-            ));
-        }
+        // Try to reuse a released index first
+        let index = {
+            let mut available = self.available.lock().unwrap();
+            if let Some(idx) = available.pop() {
+                idx
+            } else {
+                // No released indices available, allocate a new one
+                let idx = self.next.fetch_add(1, Ordering::SeqCst);
+                if idx >= self.max {
+                    // Roll back the increment and return error
+                    self.next.fetch_sub(1, Ordering::SeqCst);
+                    return Err(ApiError::Driver(
+                        "network pool exhausted; increase base CIDR".to_string(),
+                    ));
+                }
+                idx
+            }
+        };
+
         let offset = (index as u32) * u32::from(POD_STRIDE);
         let base = add_ipv4(NET_BASE, offset);
         let host_ip = add_ipv4(base, 1);
@@ -61,6 +83,7 @@ impl NetworkAllocator {
         let bridge = format!("br{short}");
 
         Ok(NetPlan {
+            index,
             netns,
             host_veth,
             peer_veth,
@@ -75,10 +98,21 @@ impl NetworkAllocator {
             dns: DEFAULT_DNS,
         })
     }
+
+    /// Release an index back to the pool for reuse.
+    pub fn release(&self, index: usize) {
+        let mut available = self.available.lock().unwrap();
+        // Avoid duplicates
+        if !available.contains(&index) {
+            available.push(index);
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct NetPlan {
+    /// Pool index for this allocation (used for reclamation)
+    pub index: usize,
     pub netns: String,
     pub host_veth: String,
     pub peer_veth: String,
@@ -254,6 +288,78 @@ pub async fn create_netns(name: &str) -> Result<(), ApiError> {
 pub async fn create_netns(_name: &str) -> Result<(), ApiError> {
     Err(ApiError::Driver(
         "network namespaces require Linux".to_string(),
+    ))
+}
+
+/// Apply default-deny iptables policy to a named network namespace.
+/// This must be called BEFORE spawning any process in the netns to prevent
+/// race conditions where a process could exfiltrate data before policy applies.
+#[cfg(target_os = "linux")]
+pub async fn apply_default_deny(netns: &str) -> Result<(), ApiError> {
+    ensure_command("iptables")?;
+
+    // Flush any existing rules
+    run_netns(netns, &["iptables", "-w", "-F"]).await?;
+    run_netns(netns, &["iptables", "-w", "-X"]).await?;
+
+    // Set default policies to DROP (deny-all)
+    run_netns(netns, &["iptables", "-w", "-P", "INPUT", "DROP"]).await?;
+    run_netns(netns, &["iptables", "-w", "-P", "OUTPUT", "DROP"]).await?;
+    run_netns(netns, &["iptables", "-w", "-P", "FORWARD", "DROP"]).await?;
+
+    // Allow loopback traffic
+    run_netns(
+        netns,
+        &["iptables", "-w", "-A", "OUTPUT", "-o", "lo", "-j", "ACCEPT"],
+    )
+    .await?;
+    run_netns(
+        netns,
+        &["iptables", "-w", "-A", "INPUT", "-i", "lo", "-j", "ACCEPT"],
+    )
+    .await?;
+
+    // Allow established/related connections (needed for reply traffic)
+    run_netns(
+        netns,
+        &[
+            "iptables",
+            "-w",
+            "-A",
+            "OUTPUT",
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "ESTABLISHED,RELATED",
+            "-j",
+            "ACCEPT",
+        ],
+    )
+    .await?;
+    run_netns(
+        netns,
+        &[
+            "iptables",
+            "-w",
+            "-A",
+            "INPUT",
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "ESTABLISHED,RELATED",
+            "-j",
+            "ACCEPT",
+        ],
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn apply_default_deny(_netns: &str) -> Result<(), ApiError> {
+    Err(ApiError::Driver(
+        "default-deny policy requires Linux".to_string(),
     ))
 }
 
@@ -984,6 +1090,62 @@ mod tests {
     fn parse_dns_rejects_ip() {
         let err = parse_dns_entry("10.0.0.1").unwrap_err();
         assert!(err.to_string().contains("hostnames"));
+    }
+
+    #[test]
+    fn network_allocator_reclaims_indices() {
+        let allocator = NetworkAllocator::new();
+        let pod1 = Uuid::new_v4();
+        let pod2 = Uuid::new_v4();
+        let pod3 = Uuid::new_v4();
+
+        // Allocate three networks
+        let plan1 = allocator.allocate(pod1, "ns1".into()).unwrap();
+        let plan2 = allocator.allocate(pod2, "ns2".into()).unwrap();
+        let plan3 = allocator.allocate(pod3, "ns3".into()).unwrap();
+
+        // Indices should be different
+        assert_eq!(plan1.index, 0);
+        assert_eq!(plan2.index, 1);
+        assert_eq!(plan3.index, 2);
+
+        // IPs should be different
+        assert_ne!(plan1.guest_ip, plan2.guest_ip);
+        assert_ne!(plan2.guest_ip, plan3.guest_ip);
+
+        // Release plan2
+        allocator.release(plan2.index);
+
+        // Next allocation should reuse the released index
+        let pod4 = Uuid::new_v4();
+        let plan4 = allocator.allocate(pod4, "ns4".into()).unwrap();
+        assert_eq!(plan4.index, 1); // Reused!
+        assert_eq!(plan4.guest_ip, plan2.guest_ip); // Same IP range
+
+        // Next new allocation should get index 3
+        let pod5 = Uuid::new_v4();
+        let plan5 = allocator.allocate(pod5, "ns5".into()).unwrap();
+        assert_eq!(plan5.index, 3);
+    }
+
+    #[test]
+    fn network_allocator_release_is_idempotent() {
+        let allocator = NetworkAllocator::new();
+        let pod = Uuid::new_v4();
+        let plan = allocator.allocate(pod, "ns".into()).unwrap();
+
+        // Release twice should not cause duplicates
+        allocator.release(plan.index);
+        allocator.release(plan.index);
+
+        // Should only get one reuse
+        let pod2 = Uuid::new_v4();
+        let plan2 = allocator.allocate(pod2, "ns2".into()).unwrap();
+        assert_eq!(plan2.index, 0);
+
+        let pod3 = Uuid::new_v4();
+        let plan3 = allocator.allocate(pod3, "ns3".into()).unwrap();
+        assert_eq!(plan3.index, 1); // Not 0 again
     }
 
     #[cfg(target_os = "linux")]
