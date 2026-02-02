@@ -51,7 +51,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: dist
       - name: Collect assets
@@ -107,7 +107,7 @@ jobs:
         env:
           HOMEBREW_TAP: ${{ secrets.HOMEBREW_TAP }}
           HOMEBREW_TOKEN: ${{ secrets.HOMEBREW_TOKEN }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         if: ${{ steps.brew_gate.outputs.enabled == 'true' }}
         with:
           path: dist
