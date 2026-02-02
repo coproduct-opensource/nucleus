@@ -84,6 +84,7 @@ impl AppleChip {
     }
 
     /// Returns the Rust target triple for musl builds
+    #[allow(dead_code)] // Used by cross-build.sh documentation
     pub fn musl_target(&self) -> &'static str {
         match self {
             AppleChip::Intel => "x86_64-unknown-linux-musl",
