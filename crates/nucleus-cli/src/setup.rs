@@ -582,7 +582,7 @@ async fn download_file(url: &str, path: &PathBuf) -> Result<()> {
         .call()
         .map_err(|e| anyhow!("Download failed: {}", e))?;
 
-    let mut reader = response.into_reader();
+    let mut reader = response.into_parts().1.into_reader();
     let mut file = std::fs::File::create(path)?;
     std::io::copy(&mut reader, &mut file)?;
 
