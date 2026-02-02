@@ -26,13 +26,93 @@ rustup toolchain install stable-x86_64-unknown-linux-gnu --force-non-host
 
 **Note**: Intel Macs cannot use hardware-accelerated nested virtualization. Firecracker microVMs will run via QEMU emulation, which is slower but fully functional.
 
-### Optimal Setup (Apple Silicon)
+### Optimal Setup (Apple Silicon M3/M4)
 
 For the best experience with native nested virtualization:
 - **Apple M3 or M4** chip
 - **macOS 15 (Sequoia)** or newer
 
 This combination provides hardware-accelerated KVM inside the Lima VM, giving near-native performance for Firecracker microVMs.
+
+## Native Testing on M3/M4 (Recommended)
+
+If you have an M3 or M4 Mac running macOS 15+, you get native Firecracker performance with full KVM acceleration.
+
+### Verify Your Setup
+
+```bash
+nucleus doctor
+```
+
+Look for these indicators of full native support:
+```
+Platform
+--------
+[OK] Operating System: macos (aarch64)
+[OK] Apple Chip: M4 (nested virt supported)
+[OK] macOS Version: 15.2 (nested virt supported)
+
+Lima VM
+-------
+[OK] Lima installed: yes
+[OK] nucleus VM: running
+[OK] KVM in VM: /dev/kvm available (native Firecracker performance)
+[OK] Firecracker: Firecracker v1.14.1
+```
+
+If you see `[WARN] KVM in VM: /dev/kvm not available`, you're running in emulation mode.
+
+### Why M3/M4 Matters
+
+| Feature | M1/M2 | M3/M4 + macOS 15+ |
+|---------|-------|-------------------|
+| Lima VM | Native (vz) | Native (vz) |
+| /dev/kvm | Emulated | Hardware accelerated |
+| Firecracker boot | ~2-3 seconds | ~100-200ms |
+| microVM performance | Emulated | Near-native |
+
+### Testing the Full Stack
+
+```bash
+# 1. Setup (creates Lima VM with nested virt)
+nucleus setup
+
+# 2. Verify KVM is available (should show "native Firecracker performance")
+limactl shell nucleus -- ls -la /dev/kvm
+# Should show: crw-rw-rw- 1 root kvm ...
+
+# 3. Start nucleus
+nucleus start
+
+# 4. Run test workload
+nucleus run "uname -a"
+# Should show: Linux ... aarch64 GNU/Linux
+
+# 5. Verify Firecracker process (if you have tasks running)
+limactl shell nucleus -- ps aux | grep firecracker
+```
+
+### Troubleshooting M3/M4
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| KVM not available | macOS < 15 | Upgrade to macOS 15 (Sequoia) |
+| KVM not available | Lima using QEMU | Delete VM and run `nucleus setup --force` |
+| Slow microVM start | Falling back to emulation | Check `limactl info nucleus` shows `vmType: vz` |
+| Nested virt disabled | Lima config issue | Verify `nestedVirtualization: true` in lima.yaml |
+
+### Verifying Nested Virtualization
+
+```bash
+# Check Lima VM configuration
+limactl info nucleus | grep -E "(vmType|nestedVirt)"
+# Should show:
+#   vmType: vz
+#   nestedVirtualization: true
+
+# Check KVM inside VM
+limactl shell nucleus -- test -c /dev/kvm && echo "KVM OK" || echo "KVM missing"
+```
 
 ## Architecture
 
