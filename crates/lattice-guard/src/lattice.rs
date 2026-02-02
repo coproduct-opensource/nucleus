@@ -784,6 +784,117 @@ impl PermissionLattice {
 
         lattice.normalize()
     }
+
+    /// Create a permission set for PR review tasks.
+    ///
+    /// This profile is designed for automated PR review agents that:
+    /// - Read files to analyze code changes
+    /// - Access web (GitHub API) to fetch PR details and post comments
+    /// - Cannot write files, execute bash, or push changes
+    ///
+    /// **Trifecta Analysis**: No exfiltration capability (git_push=Never, create_pr=Never,
+    /// run_bash=Never), so trifecta protection is not triggered.
+    ///
+    /// Note: run_bash is disabled because it's an exfiltration vector. The agent
+    /// can still analyze diffs using file reads and web fetch for GitHub API.
+    pub fn pr_review() -> Self {
+        let lattice = Self {
+            description: "PR review permissions".to_string(),
+            capabilities: CapabilityLattice {
+                read_files: CapabilityLevel::Always,
+                write_files: CapabilityLevel::Never,
+                edit_files: CapabilityLevel::Never,
+                run_bash: CapabilityLevel::Never,
+                glob_search: CapabilityLevel::Always,
+                grep_search: CapabilityLevel::Always,
+                web_search: CapabilityLevel::LowRisk,
+                web_fetch: CapabilityLevel::LowRisk,
+                git_commit: CapabilityLevel::Never,
+                git_push: CapabilityLevel::Never,
+                create_pr: CapabilityLevel::Never,
+            },
+            obligations: Obligations::default(),
+            paths: PathLattice::block_sensitive(),
+            budget: BudgetLattice::with_cost_limit(1.5),
+            time: TimeLattice::minutes(30),
+            ..Default::default()
+        };
+
+        lattice.normalize()
+    }
+
+    /// Create a permission set for code generation tasks.
+    ///
+    /// This profile is designed for isolated code generation agents that:
+    /// - Read and write files to implement features
+    /// - Run bash commands for testing/building
+    /// - Commit changes locally
+    /// - Have NO network access (fully isolated)
+    ///
+    /// **Trifecta Analysis**: No untrusted content exposure (web_fetch=Never, web_search=Never),
+    /// so trifecta protection is not triggered despite having write capabilities.
+    pub fn codegen() -> Self {
+        let lattice = Self {
+            description: "Code generation permissions (network-isolated)".to_string(),
+            capabilities: CapabilityLattice {
+                read_files: CapabilityLevel::Always,
+                write_files: CapabilityLevel::LowRisk,
+                edit_files: CapabilityLevel::LowRisk,
+                run_bash: CapabilityLevel::LowRisk,
+                glob_search: CapabilityLevel::Always,
+                grep_search: CapabilityLevel::Always,
+                web_search: CapabilityLevel::Never,
+                web_fetch: CapabilityLevel::Never,
+                git_commit: CapabilityLevel::LowRisk,
+                git_push: CapabilityLevel::Never,
+                create_pr: CapabilityLevel::Never,
+            },
+            obligations: Obligations::default(),
+            paths: PathLattice::block_sensitive(),
+            commands: CommandLattice::permissive(),
+            budget: BudgetLattice::with_cost_limit(5.0),
+            time: TimeLattice::hours(1),
+            ..Default::default()
+        };
+
+        lattice.normalize()
+    }
+
+    /// Create a permission set for PR approval tasks.
+    ///
+    /// This profile is designed for automated PR approval agents that:
+    /// - Read files to verify implementation
+    /// - Access web (GitHub API) to check CI status
+    /// - Push/merge approved PRs
+    ///
+    /// **Trifecta Analysis**: Has all three components (read + web + git_push),
+    /// so git_push will require approval. This is intentional - approval should
+    /// be gated on CI status verification.
+    pub fn pr_approve() -> Self {
+        let lattice = Self {
+            description: "PR approval permissions (CI-gated)".to_string(),
+            capabilities: CapabilityLattice {
+                read_files: CapabilityLevel::Always,
+                write_files: CapabilityLevel::Never,
+                edit_files: CapabilityLevel::Never,
+                run_bash: CapabilityLevel::LowRisk,
+                glob_search: CapabilityLevel::Always,
+                grep_search: CapabilityLevel::Always,
+                web_search: CapabilityLevel::LowRisk,
+                web_fetch: CapabilityLevel::LowRisk,
+                git_commit: CapabilityLevel::Never,
+                git_push: CapabilityLevel::LowRisk,
+                create_pr: CapabilityLevel::Never,
+            },
+            obligations: Obligations::default(),
+            paths: PathLattice::block_sensitive(),
+            budget: BudgetLattice::with_cost_limit(1.0),
+            time: TimeLattice::minutes(15),
+            ..Default::default()
+        };
+
+        lattice.normalize()
+    }
 }
 
 /// Builder for constructing `PermissionLattice` instances.
@@ -1096,6 +1207,209 @@ mod tests {
         assert!(
             perms.trifecta_constraint,
             "Trifecta constraint should always be true after deserialization"
+        );
+    }
+
+    // ========================================================================
+    // Workflow Profile Tests (pr_review, codegen, pr_approve)
+    // ========================================================================
+
+    #[test]
+    fn test_pr_review_no_trifecta() {
+        // pr_review has read + web access, but NO exfiltration capability
+        // (git_push=Never, create_pr=Never, run_bash=Never), so trifecta is not complete
+        let perms = PermissionLattice::pr_review();
+
+        // Verify capabilities match expected profile
+        assert_eq!(perms.capabilities.read_files, CapabilityLevel::Always);
+        assert_eq!(perms.capabilities.web_fetch, CapabilityLevel::LowRisk);
+        assert_eq!(perms.capabilities.web_search, CapabilityLevel::LowRisk);
+        assert_eq!(perms.capabilities.git_push, CapabilityLevel::Never);
+        assert_eq!(perms.capabilities.create_pr, CapabilityLevel::Never);
+        assert_eq!(perms.capabilities.run_bash, CapabilityLevel::Never);
+        assert_eq!(perms.capabilities.write_files, CapabilityLevel::Never);
+        assert_eq!(perms.capabilities.edit_files, CapabilityLevel::Never);
+
+        // Trifecta should NOT be detected (no exfil capability)
+        assert!(
+            !perms.is_trifecta_vulnerable(),
+            "pr_review should NOT trigger trifecta (no exfiltration capability)"
+        );
+
+        // No approvals should be required
+        assert!(
+            !perms.requires_approval(Operation::GitPush),
+            "git_push is Never, so no approval needed"
+        );
+    }
+
+    #[test]
+    fn test_codegen_no_trifecta() {
+        // codegen has read + write + bash, but NO untrusted content exposure
+        // (web_fetch=Never, web_search=Never), so trifecta is not complete
+        let perms = PermissionLattice::codegen();
+
+        // Verify capabilities match expected profile
+        assert_eq!(perms.capabilities.read_files, CapabilityLevel::Always);
+        assert_eq!(perms.capabilities.write_files, CapabilityLevel::LowRisk);
+        assert_eq!(perms.capabilities.edit_files, CapabilityLevel::LowRisk);
+        assert_eq!(perms.capabilities.run_bash, CapabilityLevel::LowRisk);
+        assert_eq!(perms.capabilities.git_commit, CapabilityLevel::LowRisk);
+        assert_eq!(perms.capabilities.web_fetch, CapabilityLevel::Never);
+        assert_eq!(perms.capabilities.web_search, CapabilityLevel::Never);
+        assert_eq!(perms.capabilities.git_push, CapabilityLevel::Never);
+        assert_eq!(perms.capabilities.create_pr, CapabilityLevel::Never);
+
+        // Trifecta should NOT be detected (no untrusted content)
+        assert!(
+            !perms.is_trifecta_vulnerable(),
+            "codegen should NOT trigger trifecta (no untrusted content exposure)"
+        );
+
+        // No approvals should be required for bash since no trifecta
+        assert!(
+            !perms.requires_approval(Operation::RunBash),
+            "run_bash should not require approval (no trifecta)"
+        );
+    }
+
+    #[test]
+    fn test_pr_approve_has_trifecta() {
+        // pr_approve has all three: read + web + git_push
+        // This SHOULD trigger trifecta protection
+        let perms = PermissionLattice::pr_approve();
+
+        // Verify capabilities match expected profile
+        assert_eq!(perms.capabilities.read_files, CapabilityLevel::Always);
+        assert_eq!(perms.capabilities.web_fetch, CapabilityLevel::LowRisk);
+        assert_eq!(perms.capabilities.web_search, CapabilityLevel::LowRisk);
+        assert_eq!(perms.capabilities.git_push, CapabilityLevel::LowRisk);
+        assert_eq!(perms.capabilities.write_files, CapabilityLevel::Never);
+        assert_eq!(perms.capabilities.edit_files, CapabilityLevel::Never);
+        assert_eq!(perms.capabilities.create_pr, CapabilityLevel::Never);
+
+        // Trifecta SHOULD be detected
+        assert!(
+            perms.is_trifecta_vulnerable(),
+            "pr_approve SHOULD trigger trifecta (has read + web + git_push)"
+        );
+
+        // git_push should require approval due to trifecta
+        assert!(
+            perms.requires_approval(Operation::GitPush),
+            "git_push should require approval in pr_approve (CI-gated)"
+        );
+
+        // run_bash also requires approval since it's an exfil vector
+        assert!(
+            perms.requires_approval(Operation::RunBash),
+            "run_bash should require approval in pr_approve (trifecta active)"
+        );
+    }
+
+    #[test]
+    fn test_workflow_profiles_block_sensitive_paths() {
+        // All workflow profiles should block sensitive paths by default
+        let profiles = [
+            PermissionLattice::pr_review(),
+            PermissionLattice::codegen(),
+            PermissionLattice::pr_approve(),
+        ];
+
+        for perms in &profiles {
+            // Should block common sensitive patterns
+            assert!(
+                !perms.paths.blocked.is_empty(),
+                "Workflow profile '{}' should have blocked paths",
+                perms.description
+            );
+        }
+    }
+
+    #[test]
+    fn test_codegen_is_fully_network_isolated() {
+        let perms = PermissionLattice::codegen();
+
+        // Verify complete network isolation
+        assert_eq!(
+            perms.capabilities.web_fetch,
+            CapabilityLevel::Never,
+            "codegen must be network-isolated (web_fetch=Never)"
+        );
+        assert_eq!(
+            perms.capabilities.web_search,
+            CapabilityLevel::Never,
+            "codegen must be network-isolated (web_search=Never)"
+        );
+        assert_eq!(
+            perms.capabilities.git_push,
+            CapabilityLevel::Never,
+            "codegen cannot push (git_push=Never)"
+        );
+        assert_eq!(
+            perms.capabilities.create_pr,
+            CapabilityLevel::Never,
+            "codegen cannot create PRs (create_pr=Never)"
+        );
+    }
+
+    #[test]
+    fn test_pr_review_cannot_modify_code() {
+        let perms = PermissionLattice::pr_review();
+
+        // Verify read-only for code
+        assert_eq!(
+            perms.capabilities.write_files,
+            CapabilityLevel::Never,
+            "pr_review cannot write files"
+        );
+        assert_eq!(
+            perms.capabilities.edit_files,
+            CapabilityLevel::Never,
+            "pr_review cannot edit files"
+        );
+        assert_eq!(
+            perms.capabilities.git_commit,
+            CapabilityLevel::Never,
+            "pr_review cannot commit"
+        );
+        assert_eq!(
+            perms.capabilities.git_push,
+            CapabilityLevel::Never,
+            "pr_review cannot push"
+        );
+        assert_eq!(
+            perms.capabilities.run_bash,
+            CapabilityLevel::Never,
+            "pr_review cannot run bash (exfil vector)"
+        );
+    }
+
+    #[test]
+    fn test_pr_approve_cannot_modify_code() {
+        let perms = PermissionLattice::pr_approve();
+
+        // Verify read-only for code (only git_push is allowed for merging)
+        assert_eq!(
+            perms.capabilities.write_files,
+            CapabilityLevel::Never,
+            "pr_approve cannot write files"
+        );
+        assert_eq!(
+            perms.capabilities.edit_files,
+            CapabilityLevel::Never,
+            "pr_approve cannot edit files"
+        );
+        assert_eq!(
+            perms.capabilities.git_commit,
+            CapabilityLevel::Never,
+            "pr_approve cannot commit"
+        );
+        // But CAN push (for merging)
+        assert_eq!(
+            perms.capabilities.git_push,
+            CapabilityLevel::LowRisk,
+            "pr_approve CAN push (for merging)"
         );
     }
 }
