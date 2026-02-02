@@ -13,8 +13,13 @@ cargo run -p nucleus-tool-proxy -- \
   --spec examples/openclaw-demo/pod.yaml \
   --listen 127.0.0.1:8080 \
   --auth-secret demo-secret \
+  --approval-secret approval-secret \
   --audit-log /tmp/nucleus-demo-audit.log
 ```
+
+Note: The `demo` profile has the trifecta (read + web + bash), so all bash commands
+require approval. This is the secure default when an agent has access to both
+private data and untrusted web content.
 
 ## (Optional) Firecracker demo path
 

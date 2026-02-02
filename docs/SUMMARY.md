@@ -1,7 +1,8 @@
 # Summary
 
 - [Overview](index.md)
-- [Quickstart](quickstart/kubernetes.md)
+- [Quickstart](quickstart/local.md)
+  - [Local Testing](quickstart/local.md)
   - [Kubernetes](quickstart/kubernetes.md)
 - [Permissions Guide](permissions.md)
 - [Architecture](architecture/overview.md)
