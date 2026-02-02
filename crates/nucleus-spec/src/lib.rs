@@ -120,6 +120,24 @@ impl PolicySpec {
                 "default" => Ok(PermissionLattice::default()),
                 "fix_issue" => Ok(PermissionLattice::fix_issue()),
                 "demo" => Ok(PermissionLattice::demo()),
+                // Workflow profiles for orchestrated agent tasks
+                "pr_review" | "pr-review" => Ok(PermissionLattice::pr_review()),
+                "codegen" => Ok(PermissionLattice::codegen()),
+                "pr_approve" | "pr-approve" => Ok(PermissionLattice::pr_approve()),
+                // Other profiles
+                "read_only" | "read-only" => Ok(PermissionLattice::read_only()),
+                "permissive" => Ok(PermissionLattice::permissive()),
+                "restrictive" => Ok(PermissionLattice::restrictive()),
+                "local_dev" | "local-dev" => Ok(PermissionLattice::local_dev()),
+                "code_review" | "code-review" => Ok(PermissionLattice::code_review()),
+                "web_research" | "web-research" => Ok(PermissionLattice::web_research()),
+                "network_only" | "network-only" => Ok(PermissionLattice::network_only()),
+                "edit_only" | "edit-only" => Ok(PermissionLattice::edit_only()),
+                "release" => Ok(PermissionLattice::release()),
+                "database_client" | "database-client" => Ok(PermissionLattice::database_client()),
+                "filesystem_readonly" | "filesystem-readonly" => {
+                    Ok(PermissionLattice::filesystem_readonly())
+                }
                 other => Err(PolicyError::UnknownProfile(other.to_string())),
             },
             PolicySpec::Inline { lattice } => Ok(lattice.as_ref().clone().normalize()),
@@ -223,4 +241,97 @@ pub enum PolicyError {
     /// The named profile was not found.
     #[error("unknown policy profile: {0}")]
     UnknownProfile(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_workflow_profile_resolution() {
+        // Test workflow profile aliases
+        let profiles = [
+            ("pr_review", "PR review permissions"),
+            ("pr-review", "PR review permissions"),
+            ("codegen", "Code generation permissions (network-isolated)"),
+            ("pr_approve", "PR approval permissions (CI-gated)"),
+            ("pr-approve", "PR approval permissions (CI-gated)"),
+        ];
+
+        for (name, expected_prefix) in profiles {
+            let spec = PolicySpec::Profile {
+                name: name.to_string(),
+            };
+            let result = spec.resolve();
+            assert!(
+                result.is_ok(),
+                "Profile '{}' should resolve successfully",
+                name
+            );
+            let lattice = result.unwrap();
+            assert!(
+                lattice.description.starts_with(expected_prefix),
+                "Profile '{}' should have description starting with '{}', got '{}'",
+                name,
+                expected_prefix,
+                lattice.description
+            );
+        }
+    }
+
+    #[test]
+    fn test_all_profiles_resolve() {
+        let profile_names = [
+            "default",
+            "fix_issue",
+            "demo",
+            "pr_review",
+            "pr-review",
+            "codegen",
+            "pr_approve",
+            "pr-approve",
+            "read_only",
+            "read-only",
+            "permissive",
+            "restrictive",
+            "local_dev",
+            "local-dev",
+            "code_review",
+            "code-review",
+            "web_research",
+            "web-research",
+            "network_only",
+            "network-only",
+            "edit_only",
+            "edit-only",
+            "release",
+            "database_client",
+            "database-client",
+            "filesystem_readonly",
+            "filesystem-readonly",
+        ];
+
+        for name in profile_names {
+            let spec = PolicySpec::Profile {
+                name: name.to_string(),
+            };
+            let result = spec.resolve();
+            assert!(
+                result.is_ok(),
+                "Profile '{}' should resolve successfully, got: {:?}",
+                name,
+                result.err()
+            );
+        }
+    }
+
+    #[test]
+    fn test_unknown_profile_error() {
+        let spec = PolicySpec::Profile {
+            name: "nonexistent".to_string(),
+        };
+        let result = spec.resolve();
+        assert!(result.is_err());
+        assert!(matches!(result, Err(PolicyError::UnknownProfile(_))));
+    }
 }

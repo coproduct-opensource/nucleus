@@ -167,6 +167,57 @@ run_bash: low_risk    (blocked: python, node, bash, etc.)
 
 ---
 
+## Workflow Profiles (Orchestrated Agents)
+
+These profiles are designed for multi-agent workflows where different agents have
+specialized roles. They're optimized for security through architectural constraints.
+
+### `pr-review` (alias: `pr_review`)
+For automated PR review agents. Read-only + web access, no exfiltration.
+
+```
+read_files: always    web_search: low_risk  git_push: never
+write_files: never    web_fetch: low_risk   create_pr: never
+edit_files: never     git_commit: never     run_bash: never
+```
+
+**Trifecta status**: NOT vulnerable (no exfiltration capability)
+
+Use case: Review PRs, post comments via GitHub API, analyze diffs.
+Note: run_bash is disabled because it's an exfil vector when combined with web access.
+
+### `codegen`
+For isolated code generation agents. Full dev capabilities, NO network access.
+
+```
+read_files: always    web_search: never     git_push: never
+write_files: low_risk web_fetch: never      create_pr: never
+edit_files: low_risk  git_commit: low_risk  run_bash: low_risk
+```
+
+**Trifecta status**: NOT vulnerable (no untrusted content exposure)
+
+Use case: Implement features in a Firecracker microVM, run tests, commit locally.
+Network isolation prevents prompt injection attacks from web content.
+
+### `pr-approve` (alias: `pr_approve`)
+For automated PR approval agents. Can merge PRs after CI verification.
+
+```
+read_files: always    web_search: low_risk  git_push: low_risk*
+write_files: never    web_fetch: low_risk   create_pr: never
+edit_files: never     git_commit: never     run_bash: low_risk*
+
+* Requires approval (trifecta-gated)
+```
+
+**Trifecta status**: VULNERABLE → git_push and run_bash require approval
+
+Use case: Verify CI status via GitHub API, then merge approved PRs.
+The trifecta protection means git_push is gated on human/CI approval.
+
+---
+
 ## Trifecta Detection
 
 When nucleus detects the lethal trifecta, it **automatically adds approval obligations** to exfiltration vectors:
@@ -331,5 +382,11 @@ This is enforced mathematically via lattice meet operation.
 │  demo                 For demos, blocks interpreters        │
 │  permissive           Everything allowed (trusted only)     │
 │  restrictive          Minimal permissions                   │
+├─────────────────────────────────────────────────────────────┤
+│                   WORKFLOW PROFILES                         │
+├─────────────────────────────────────────────────────────────┤
+│  pr-review            Read + web, NO exfil (safe)           │
+│  codegen              Write + bash, NO network (isolated)   │
+│  pr-approve           Read + web + push (CI-gated approval) │
 └─────────────────────────────────────────────────────────────┘
 ```
