@@ -197,7 +197,7 @@ fn start_nucleus_node_service(vm_name: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Fallback: start directly
+    // Fallback: start directly using a shell to interpret redirection
     println!("systemd service failed, starting nucleus-node directly...");
     let result = Command::new("limactl")
         .args([
@@ -205,12 +205,9 @@ fn start_nucleus_node_service(vm_name: &str) -> Result<()> {
             vm_name,
             "--",
             "sudo",
-            "nohup",
-            "/usr/local/bin/nucleus-node",
-            ">",
-            "/var/log/nucleus-node.log",
-            "2>&1",
-            "&",
+            "sh",
+            "-c",
+            "nohup /usr/local/bin/nucleus-node > /var/log/nucleus-node.log 2>&1 &",
         ])
         .output()
         .context("Failed to start nucleus-node directly")?;
