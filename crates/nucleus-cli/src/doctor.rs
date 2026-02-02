@@ -203,28 +203,60 @@ fn check_lima() -> bool {
     println!("Lima VM");
     println!("-------");
 
-    // Check if Lima is installed
-    let lima_installed = Command::new("limactl")
+    // Check if Lima is installed and get version
+    let lima_output = Command::new("limactl")
         .arg("--version")
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+        .ok();
 
-    if !print_check(
-        "Lima installed",
-        if lima_installed {
-            Status::Ok
-        } else {
-            Status::Error
-        },
-        if lima_installed {
-            "yes"
-        } else {
-            "no (install with: brew install lima)"
-        },
-    ) {
+    let (lima_installed, lima_version) = match lima_output {
+        Some(output) if output.status.success() => {
+            let version_str = String::from_utf8_lossy(&output.stdout);
+            // Parse "limactl version 2.0.3" -> "2.0.3"
+            let version = version_str
+                .trim()
+                .strip_prefix("limactl version ")
+                .unwrap_or("")
+                .to_string();
+            (true, version)
+        }
+        _ => (false, String::new()),
+    };
+
+    if !lima_installed {
+        print_check(
+            "Lima installed",
+            Status::Error,
+            "no (install with: brew install lima)",
+        );
         return false;
     }
+
+    // Check Lima version (2.0+ required for nested virt)
+    let version_parts: Vec<u32> = lima_version
+        .split('.')
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    let major_version = version_parts.first().copied().unwrap_or(0);
+
+    let version_ok = major_version >= 2;
+    print_check(
+        "Lima version",
+        if version_ok {
+            Status::Ok
+        } else {
+            Status::Warning
+        },
+        &format!(
+            "{}{}",
+            lima_version,
+            if version_ok {
+                " (nested virt supported)"
+            } else {
+                " (upgrade to 2.0+ for nested virt)"
+            }
+        ),
+    );
 
     // Check for nucleus VM
     let vm_output = Command::new("limactl")

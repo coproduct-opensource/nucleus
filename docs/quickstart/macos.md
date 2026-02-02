@@ -7,10 +7,16 @@ This guide walks you through setting up Nucleus on macOS with full Firecracker m
 ### All Macs
 
 - **macOS 13+** (macOS 15+ recommended for nested virtualization)
-- **Lima** (`brew install lima`)
+- **Lima 2.0+** (`brew install lima`) - required for nested virtualization support
 - **Docker** (for building rootfs images)
 - **Rust toolchain** (for building nucleus binaries)
 - **cross** (`cargo install cross`) for cross-compiling Linux binaries
+
+Verify Lima version:
+```bash
+limactl --version
+# Should show: limactl version 2.0.0 or higher
+```
 
 ### Intel Mac Additional Requirements
 
