@@ -1,10 +1,16 @@
 # Summary
 
 - [Overview](index.md)
+- [Quickstart](quickstart/kubernetes.md)
+  - [Kubernetes](quickstart/kubernetes.md)
+- [Permissions Guide](permissions.md)
 - [Architecture](architecture/overview.md)
   - [Threat Model](architecture/threat-model.md)
   - [Acceptance Tests](architecture/acceptance-tests.md)
 - [Assurance](assurance/formal-methods.md)
   - [Hardening Checklist](assurance/hardening-checklist.md)
+- [Use Cases](use-cases/README.md)
+  - [OpenClaw Hardening](use-cases/openclaw-hardening.md)
+  - [Enterprise AI Agents](use-cases/enterprise-ai-agents.md)
 - [Terminology](terminology.md)
 - [Temporal Workflow](temporal.md)
