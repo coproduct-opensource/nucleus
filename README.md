@@ -22,21 +22,25 @@ enforced at runtime** through the tool proxy. The envelope is intended to be
 ## Honest Progress (Current)
 
 **Working today**
-- Enforced CLI path via MCP + `nucleus-tool-proxy` (read/write/run).
-- Runtime gating for approvals, budgets, and time windows.
+- Enforced CLI path via MCP + `nucleus-tool-proxy` — currently exposes **read, write, run** only.
+- Runtime gating for approvals (HMAC-signed tokens with nonce replay protection).
+- Atomic budget tracking (lock-free, no races).
+- Time windows enforced via monotonic clock.
+- Trifecta detection: when all three risk axes present, adds approval obligations.
 - Firecracker driver with default‑deny egress in a dedicated netns (Linux).
-- Immutable network policy drift detection (fail‑closed on iptables changes).
+- iptables drift detection — kills pod if network policy changes (fail‑closed).
 - DNS allowlisting with pinned hostname resolution (Linux).
-- Audit logs are hash‑chained, signed, and verifiable (`nucleus-audit`).
+- Audit logs are hash‑chained and verifiable (`nucleus-audit`).
 
 **Partial / in progress**
-- Web/search tools not yet wired in enforced mode.
+- `web_fetch` endpoint exists in tool-proxy but MCP doesn't expose it yet.
+- `web_search`, `glob_search`, `grep_search` — capabilities in lattice but no enforcement path.
 - Approvals are runtime tokens; preflight approval bundles are planned.
-- Seccomp verification/attestation for Firecracker is planned.
-- Kani proofs exist; CI gating and formal proofs are planned.
+- Seccomp filter applied but not verified/attested.
 
 **Not yet**
-- Remote append‑only audit storage / immutability proofs.
+- Remote append‑only audit storage.
+- Formal proofs in CI (Kani proofs exist locally).
 
 ```rust
 // Enforcement approach - cannot bypass
@@ -61,32 +65,36 @@ Permissions are modeled as a product lattice with normalization (ν) that adds a
 **Capability levels**
 - `Never < LowRisk < Always`
 
-**Operations covered**
-- `read_files`, `write_files`, `edit_files`
-- `run_bash`
-- `glob_search`, `grep_search`
-- `web_search`, `web_fetch`
-- `git_commit`, `git_push`, `create_pr`
+**Operations in lattice** (not all wired to enforcement yet)
+- `read_files`, `write_files`, `edit_files` — **enforced via MCP**
+- `run_bash` — **enforced via MCP**
+- `glob_search`, `grep_search` — defined but not wired
+- `web_search`, `web_fetch` — proxy endpoint exists, MCP not wired
+- `git_commit`, `git_push`, `create_pr` — enforced via `run_bash` command policy
 
 **Obligations (approvals)**
 - Any operation in `obligations.approvals` requires an approval token to execute.
 - The trifecta constraint adds obligations for exfiltration operations when all three risk axes are present.
 
-## Immutability Pitch (Monotone Security)
+## Monotone Security (Design Goal)
 
-Security posture is intended to be **monotone**: once a pod is created, its
-permissions and isolation guarantees should only tighten or be terminated,
-never silently relax. This supports:
+Security posture is designed to be **monotone**: once a pod is created, its
+permissions should only tighten or be terminated, never silently relax.
 
-- **No privilege drift**: debugging exceptions don’t become permanent backdoors.
-- **Auditability**: posture is explained by the creation spec + approval log.
-- **Predictability**: you can bound worst‑case behavior without guessing runtime changes.
+**What this means in practice:**
+- **No privilege drift**: no API to relax permissions after creation.
+- **Auditability**: posture = creation spec + approval log (no hidden state).
+- **Predictability**: bound worst‑case behavior from the spec alone.
 
-Implementation intent:
-- Seccomp is fixed at Firecracker spawn.
-- Network policy is applied once and verified against drift (fail‑closed monitor).
-- Permission states are normalized via ν and only tightened after creation.
-- Approvals are scoped, expiring tokens (roadmap).
+**How it's enforced:**
+- Network policy applied once, drift detection kills pod if iptables change.
+- Permission lattice has `meet` (tighten) but delegation cannot exceed parent.
+- Budget/time only decrease, never increase.
+- Approvals are scoped, expiring tokens.
+
+**Honest caveat:** Monotonicity is enforced by API design (no relaxation methods),
+not by Rust's type system preventing mutation. Internal code could bypass if
+modified. The threat model assumes the enforcement stack is trusted.
 
 ## Quick Start
 
@@ -112,7 +120,9 @@ connects via MCP to the in‑VM tool proxy. You must provide:
 - `NUCLEUS_FIRECRACKER_ROOTFS_PATH`
 - `NUCLEUS_FIRECRACKER_VSOCK_CID` and `NUCLEUS_FIRECRACKER_VSOCK_PORT`
 
-Current enforced tools: read, write, run. Web/search tools are not yet wired.
+**Current enforced tools:** read, write, run. That's it for now—web/search tools exist in the lattice but aren't wired to MCP yet.
+
+**macOS users:** See [docs/quickstart/macos.md](docs/quickstart/macos.md) for Lima + Firecracker setup.
 
 ## Firecracker Notes
 
