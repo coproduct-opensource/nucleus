@@ -1,0 +1,96 @@
+# Lima VM template for Nucleus on Intel Mac
+# This template uses QEMU for x86_64 emulation (slower than Apple Silicon native).
+#
+# Usage:
+#   limactl create --name nucleus nucleus-x86_64.yaml
+#   limactl start nucleus
+
+# Ubuntu 24.04 LTS cloud image for x86_64
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+    arch: "x86_64"
+
+# VM resources - adjust based on workload
+cpus: 4
+memory: "8GiB"
+disk: "50GiB"
+
+# Use QEMU for Intel Mac (Apple vz only supports ARM64)
+vmType: "qemu"
+
+# Mount the host filesystem read-only by default
+mounts:
+  - location: "~"
+    writable: false
+  - location: "/tmp/lima"
+    writable: true
+
+# Port forwarding for nucleus services
+portForwards:
+  # nucleus-node HTTP API
+  - guestPort: 8080
+    hostPort: 8080
+  # nucleus-node metrics
+  - guestPort: 9080
+    hostPort: 9080
+  # gRPC port (HTTP + 1000)
+  - guestPort: 4002
+    hostPort: 4002
+
+# Provision the VM with required packages
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -euo pipefail
+
+      # Update package lists
+      apt-get update
+
+      # Install required packages
+      apt-get install -y \
+        ca-certificates \
+        curl \
+        iptables \
+        iproute2 \
+        dnsmasq \
+        e2fsprogs
+
+      # Create nucleus directories
+      mkdir -p /var/lib/nucleus/artifacts
+      mkdir -p /var/lib/nucleus/pods
+      mkdir -p /var/log/nucleus
+
+      # Download Firecracker if not present
+      if [ ! -f /usr/local/bin/firecracker ]; then
+        FIRECRACKER_VERSION="v1.10.1"
+        curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/${FIRECRACKER_VERSION}/firecracker-${FIRECRACKER_VERSION}-x86_64.tgz" | \
+          tar -xz -C /tmp
+        mv /tmp/release-${FIRECRACKER_VERSION}-x86_64/firecracker-${FIRECRACKER_VERSION}-x86_64 /usr/local/bin/firecracker
+        mv /tmp/release-${FIRECRACKER_VERSION}-x86_64/jailer-${FIRECRACKER_VERSION}-x86_64 /usr/local/bin/jailer
+        chmod +x /usr/local/bin/firecracker /usr/local/bin/jailer
+        rm -rf /tmp/release-${FIRECRACKER_VERSION}-x86_64
+      fi
+
+      # Download kernel if not present
+      if [ ! -f /var/lib/nucleus/artifacts/vmlinux ]; then
+        curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.10/x86_64/vmlinux-6.1.102" \
+          -o /var/lib/nucleus/artifacts/vmlinux
+      fi
+
+# Message shown after VM creation
+message: |
+  Nucleus Lima VM created successfully!
+
+  NOTE: Intel Mac uses QEMU emulation. Firecracker will run but performance
+  will be slower than on Apple Silicon with hardware-accelerated KVM.
+
+  To complete setup:
+    1. Copy nucleus-node binary:
+       limactl cp nucleus-node nucleus:/usr/local/bin/
+
+    2. Copy rootfs image:
+       limactl cp rootfs.ext4 nucleus:/var/lib/nucleus/artifacts/
+
+    3. Start nucleus-node:
+       limactl shell nucleus -- sudo nucleus-node

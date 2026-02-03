@@ -44,10 +44,125 @@ jobs:
           name: nucleus-node-${{ matrix.target }}
           path: dist/*.tar.gz
 
+  # Build static musl binaries for Lima VM (Linux inside macOS)
+  build-musl:
+    name: Build Musl (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            target: aarch64-unknown-linux-musl
+          - arch: x86_64
+            target: x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+      - name: Install cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+      - name: Build nucleus-node (musl)
+        run: cross build -p nucleus-node --release --target ${{ matrix.target }}
+      - name: Build guest binaries (musl)
+        run: |
+          cross build -p nucleus-guest-init --release --target ${{ matrix.target }}
+          cross build -p nucleus-tool-proxy --release --target ${{ matrix.target }}
+          cross build -p nucleus-net-probe --release --target ${{ matrix.target }}
+      - name: Package nucleus-node
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#nucleus-node-v}"
+          VERSION="${VERSION#v}"
+          mkdir -p dist
+          tar -C target/${{ matrix.target }}/release -czf "dist/nucleus-node-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-node
+      - name: Upload nucleus-node artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: nucleus-node-${{ matrix.target }}
+          path: dist/*.tar.gz
+      - name: Upload guest binaries for rootfs build
+        uses: actions/upload-artifact@v6
+        with:
+          name: guest-binaries-${{ matrix.arch }}
+          path: |
+            target/${{ matrix.target }}/release/nucleus-guest-init
+            target/${{ matrix.target }}/release/nucleus-tool-proxy
+            target/${{ matrix.target }}/release/nucleus-net-probe
+
+  # Build pre-built rootfs images
+  build-rootfs:
+    name: Build Rootfs (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    needs: build-musl
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            target: aarch64-unknown-linux-musl
+            debian_image: arm64v8/debian:bookworm-slim
+          - arch: x86_64
+            target: x86_64-unknown-linux-musl
+            debian_image: debian:bookworm-slim
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download guest binaries
+        uses: actions/download-artifact@v7
+        with:
+          name: guest-binaries-${{ matrix.arch }}
+          path: target/${{ matrix.target }}/release
+      - name: Set executable permissions
+        run: |
+          chmod +x target/${{ matrix.target }}/release/nucleus-guest-init
+          chmod +x target/${{ matrix.target }}/release/nucleus-tool-proxy
+          chmod +x target/${{ matrix.target }}/release/nucleus-net-probe
+      - name: Set up QEMU
+        if: matrix.arch == 'aarch64'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - name: Build rootfs
+        run: |
+          ARCH=${{ matrix.arch }} DEBIAN_IMAGE=${{ matrix.debian_image }} ./scripts/firecracker/build-rootfs.sh
+      - name: Package rootfs
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#nucleus-node-v}"
+          VERSION="${VERSION#v}"
+          mkdir -p dist
+          gzip -9 -c build/firecracker/${{ matrix.arch }}/rootfs.ext4 > "dist/nucleus-rootfs-${VERSION}-${{ matrix.arch }}.ext4.gz"
+      - name: Upload rootfs artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: rootfs-${{ matrix.arch }}
+          path: dist/*.ext4.gz
+
+  # Upload Lima templates
+  upload-lima-templates:
+    name: Upload Lima Templates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Package Lima templates
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#nucleus-node-v}"
+          VERSION="${VERSION#v}"
+          mkdir -p dist
+          cp scripts/lima/nucleus-aarch64.yaml "dist/nucleus-lima-${VERSION}-aarch64.yaml"
+          cp scripts/lima/nucleus-x86_64.yaml "dist/nucleus-lima-${VERSION}-x86_64.yaml"
+      - name: Upload Lima templates
+        uses: actions/upload-artifact@v6
+        with:
+          name: lima-templates
+          path: dist/*.yaml
+
   release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, build-musl, build-rootfs, upload-lima-templates]
     permissions:
       contents: write
     steps:
@@ -57,12 +172,12 @@ jobs:
       - name: Collect assets
         run: |
           mkdir -p release
-          find dist -type f -name "*.tar.gz" -exec mv {} release/ \;
+          find dist -type f \( -name "*.tar.gz" -o -name "*.ext4.gz" -o -name "*.yaml" \) -exec mv {} release/ \;
           ls -lah release
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: release/*.tar.gz
+          files: release/*
 
   publish:
     name: Publish to crates.io

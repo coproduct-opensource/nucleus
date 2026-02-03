@@ -2,6 +2,33 @@
 
 This guide walks you through setting up Nucleus on macOS with full Firecracker microVM isolation.
 
+## One-Line Install (Recommended)
+
+For M3/M4 Mac with macOS 15+, get started instantly:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/coproduct-opensource/nucleus/main/scripts/install.sh | bash
+```
+
+This will:
+- Install Lima (if not present)
+- Download pre-built binaries and rootfs
+- Create a Lima VM with nested virtualization
+- Configure secrets in macOS Keychain
+- Start nucleus-node
+
+After installation, verify with:
+```bash
+nucleus doctor
+nucleus run "uname -a"  # Should print: Linux ... aarch64 GNU/Linux
+```
+
+---
+
+## Manual Installation
+
+If you prefer manual setup or need to customize the installation, follow the steps below.
+
 ## Prerequisites
 
 ### All Macs
