@@ -33,6 +33,10 @@ url = "2.5"
 
 nucleus = { path = "../nucleus" }
 nucleus-spec = { path = "../nucleus-spec" }
+nucleus-identity = { path = "../nucleus-identity" }
+x509-parser = "0.17"
+tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio-vsock = "0.7"

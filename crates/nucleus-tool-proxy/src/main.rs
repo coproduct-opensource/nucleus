@@ -23,8 +23,13 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 
+mod attestation;
 mod auth;
+mod mtls;
+
+use attestation::{AttestationConfig, AttestationVerifier};
 use auth::{AuthConfig, AuthError};
+use mtls::{ClientCertInfo, MtlsConfig, MtlsConnectInfo, MtlsListener};
 
 #[derive(Parser, Debug)]
 #[command(name = "nucleus-tool-proxy")]
@@ -86,6 +91,39 @@ struct Args {
         default_value_t = 10 * 1024 * 1024
     )]
     web_fetch_max_bytes: usize,
+    /// Require attestation for all requests.
+    /// When enabled, requests must include valid VM attestation.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_REQUIRE_ATTESTATION")]
+    require_attestation: bool,
+    /// Comma-separated list of allowed kernel hashes (SHA-256, hex).
+    /// If empty, any kernel hash is accepted when attestation is present.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_ALLOWED_KERNEL_HASHES")]
+    allowed_kernel_hashes: Option<String>,
+    /// Comma-separated list of allowed rootfs hashes (SHA-256, hex).
+    /// If empty, any rootfs hash is accepted when attestation is present.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_ALLOWED_ROOTFS_HASHES")]
+    allowed_rootfs_hashes: Option<String>,
+    /// Comma-separated list of allowed config hashes (SHA-256, hex).
+    /// If empty, any config hash is accepted when attestation is present.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_ALLOWED_CONFIG_HASHES")]
+    allowed_config_hashes: Option<String>,
+
+    // === mTLS Configuration ===
+    /// Enable mTLS mode. Requires --tls-cert and --tls-key and --trust-bundle.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_MTLS")]
+    mtls: bool,
+    /// Path to server certificate PEM file (for mTLS).
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_TLS_CERT")]
+    tls_cert: Option<std::path::PathBuf>,
+    /// Path to server private key PEM file (for mTLS).
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_TLS_KEY")]
+    tls_key: Option<std::path::PathBuf>,
+    /// Path to trust bundle PEM file (for mTLS client verification).
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_TRUST_BUNDLE")]
+    trust_bundle: Option<std::path::PathBuf>,
+    /// Trust domain for SPIFFE identity verification.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_TRUST_DOMAIN")]
+    trust_domain: Option<String>,
 }
 
 #[derive(Clone)]
@@ -100,6 +138,7 @@ struct AppState {
     web_client: reqwest::Client,
     web_fetch_max_bytes: usize,
     dns_allow: Vec<String>,
+    attestation_verifier: AttestationVerifier,
 }
 
 #[derive(Default)]
@@ -331,6 +370,8 @@ enum ApiError {
     WebFetch(String),
     #[error("url not in dns_allow list: {0}")]
     DnsNotAllowed(String),
+    #[error("attestation verification failed: {0}")]
+    AttestationFailed(String),
 }
 
 impl IntoResponse for ApiError {
@@ -381,6 +422,7 @@ impl IntoResponse for ApiError {
             ApiError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited", None),
             ApiError::WebFetch(_) => (StatusCode::BAD_GATEWAY, "web_fetch_error", None),
             ApiError::DnsNotAllowed(_) => (StatusCode::FORBIDDEN, "dns_not_allowed", None),
+            ApiError::AttestationFailed(_) => (StatusCode::FORBIDDEN, "attestation_failed", None),
         };
 
         let body = Json(ErrorBody {
@@ -438,6 +480,26 @@ async fn main() -> Result<(), ApiError> {
         .map(|n| n.dns_allow.clone())
         .unwrap_or_default();
 
+    // Build attestation verifier
+    let attestation_config = {
+        let mut config = if args.require_attestation {
+            AttestationConfig::required()
+        } else {
+            AttestationConfig::default()
+        };
+        if let Some(ref hashes) = args.allowed_kernel_hashes {
+            config = config.with_kernel_hashes(hashes);
+        }
+        if let Some(ref hashes) = args.allowed_rootfs_hashes {
+            config = config.with_rootfs_hashes(hashes);
+        }
+        if let Some(ref hashes) = args.allowed_config_hashes {
+            config = config.with_config_hashes(hashes);
+        }
+        config
+    };
+    let attestation_verifier = AttestationVerifier::new(attestation_config);
+
     let state = AppState {
         runtime: Arc::new(runtime),
         approvals,
@@ -449,6 +511,7 @@ async fn main() -> Result<(), ApiError> {
         web_client,
         web_fetch_max_bytes: args.web_fetch_max_bytes,
         dns_allow,
+        attestation_verifier,
     };
 
     if let Err(err) = emit_boot_report(&state).await {
@@ -473,18 +536,81 @@ async fn main() -> Result<(), ApiError> {
     let listener = TcpListener::bind(&args.listen).await?;
     let addr = listener.local_addr()?;
 
-    if let Some(path) = args.announce_path {
+    if let Some(path) = args.announce_path.as_ref() {
         tokio::fs::write(path, addr.to_string()).await?;
     }
 
-    info!("nucleus-tool-proxy listening on {}", addr);
-    axum::serve(listener, app).await?;
+    // Check if mTLS is enabled
+    if args.mtls {
+        let mtls_config = build_mtls_config(&args).await?;
+        let mtls_listener = MtlsListener::new(listener, &mtls_config)
+            .map_err(|e| ApiError::Spec(format!("failed to create mTLS listener: {}", e)))?;
+
+        info!(
+            "nucleus-tool-proxy listening on {} (mTLS enabled, trust_domain={})",
+            addr,
+            args.trust_domain.as_deref().unwrap_or("not set")
+        );
+
+        // Use into_make_service_with_connect_info to inject MtlsConnectInfo
+        axum::serve(
+            mtls_listener,
+            app.into_make_service_with_connect_info::<MtlsConnectInfo>(),
+        )
+        .await?;
+    } else {
+        info!("nucleus-tool-proxy listening on {}", addr);
+        axum::serve(listener, app).await?;
+    }
 
     Ok(())
 }
 
+/// Builds mTLS configuration from CLI arguments.
+async fn build_mtls_config(args: &Args) -> Result<MtlsConfig, ApiError> {
+    use nucleus_identity::{TrustBundle, WorkloadCertificate};
+
+    let cert_path = args
+        .tls_cert
+        .as_ref()
+        .ok_or_else(|| ApiError::Spec("--tls-cert required when --mtls is enabled".to_string()))?;
+
+    let key_path = args
+        .tls_key
+        .as_ref()
+        .ok_or_else(|| ApiError::Spec("--tls-key required when --mtls is enabled".to_string()))?;
+
+    let bundle_path = args.trust_bundle.as_ref().ok_or_else(|| {
+        ApiError::Spec("--trust-bundle required when --mtls is enabled".to_string())
+    })?;
+
+    // Read certificate and key
+    let cert_pem = tokio::fs::read_to_string(cert_path)
+        .await
+        .map_err(|e| ApiError::Spec(format!("failed to read TLS cert: {}", e)))?;
+
+    let key_pem = tokio::fs::read_to_string(key_path)
+        .await
+        .map_err(|e| ApiError::Spec(format!("failed to read TLS key: {}", e)))?;
+
+    let bundle_pem = tokio::fs::read_to_string(bundle_path)
+        .await
+        .map_err(|e| ApiError::Spec(format!("failed to read trust bundle: {}", e)))?;
+
+    // Parse certificate and trust bundle
+    let server_cert = WorkloadCertificate::from_pem(&cert_pem, &key_pem)
+        .map_err(|e| ApiError::Spec(format!("failed to parse server certificate: {}", e)))?;
+
+    let trust_bundle = TrustBundle::from_pem(&bundle_pem)
+        .map_err(|e| ApiError::Spec(format!("failed to parse trust bundle: {}", e)))?;
+
+    Ok(MtlsConfig::new(server_cert, trust_bundle))
+}
+
 const MAX_AUTH_BODY_BYTES: usize = 10 * 1024 * 1024;
 const APPROVE_PATH: &str = "/v1/approve";
+const HEALTH_PATH: &str = "/v1/health";
+const HEADER_ATTESTATION: &str = "x-nucleus-attestation";
 
 async fn auth_middleware(
     State(state): State<AppState>,
@@ -495,6 +621,78 @@ async fn auth_middleware(
     let bytes = to_bytes(body, MAX_AUTH_BODY_BYTES)
         .await
         .map_err(|e| ApiError::Body(e.to_string()))?;
+
+    // Skip attestation check for health endpoint
+    if parts.uri.path() == HEALTH_PATH {
+        let req = axum::http::Request::from_parts(parts, Body::from(bytes));
+        return Ok(next.run(req).await);
+    }
+
+    // Verify attestation if required
+    if state.attestation_verifier.is_required() {
+        // Try to get client certificate from mTLS connection first
+        // Check both direct ClientCertInfo and MtlsConnectInfo
+        let client_cert_der = parts
+            .extensions
+            .get::<MtlsConnectInfo>()
+            .and_then(|info| info.client_cert.as_ref())
+            .or_else(|| parts.extensions.get::<ClientCertInfo>())
+            .map(|cert| cert.der());
+
+        let attestation_result = if let Some(cert_der) = client_cert_der {
+            // mTLS mode: extract attestation from client certificate
+            let spiffe_id = parts
+                .extensions
+                .get::<MtlsConnectInfo>()
+                .and_then(|info| info.client_cert.as_ref())
+                .and_then(|cert| cert.spiffe_id.clone());
+            tracing::info!(
+                spiffe_id = ?spiffe_id,
+                path = %parts.uri.path(),
+                method = %parts.method,
+                event = "attestation_verify_mtls",
+                "verifying attestation from client certificate"
+            );
+            state.attestation_verifier.verify_certificate(cert_der)
+        } else if let Some(att_header) = parts.headers.get(HEADER_ATTESTATION) {
+            // Fallback: attestation passed via header (base64-encoded DER)
+            // This is less secure as headers can be spoofed
+            tracing::warn!(
+                path = %parts.uri.path(),
+                method = %parts.method,
+                event = "attestation_verify_header",
+                "attestation via header (not mTLS) - consider enabling mTLS for production"
+            );
+            let att_value = att_header.to_str().map_err(|_| {
+                ApiError::AttestationFailed("invalid attestation header encoding".to_string())
+            })?;
+            state.attestation_verifier.verify_header(att_value)
+        } else {
+            // No attestation provided
+            attestation::AttestationResult {
+                attestation_present: false,
+                attestation: None,
+                matches_requirements: false,
+                rejection_reason: Some("attestation required but not provided (enable mTLS or send x-nucleus-attestation header)".to_string()),
+            }
+        };
+
+        if !attestation_result.matches_requirements {
+            let reason = attestation_result
+                .rejection_reason
+                .unwrap_or_else(|| "unknown attestation failure".to_string());
+            return Err(ApiError::AttestationFailed(reason));
+        }
+
+        // Log successful attestation verification
+        if let Some(ref info) = attestation_result.attestation {
+            tracing::debug!(
+                kernel_hash = %&info.kernel_hash[..16],
+                rootfs_hash = %&info.rootfs_hash[..16],
+                "attestation verified"
+            );
+        }
+    }
 
     if parts.uri.path() == APPROVE_PATH {
         let context = auth::verify_http(&parts.headers, &bytes, &state.approval_auth)?;

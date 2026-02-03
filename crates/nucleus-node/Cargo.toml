@@ -38,9 +38,14 @@ hex = "0.4"
 ipnet = "2.9"
 
 nucleus = { path = "../nucleus" }
+nucleus-identity = { path = "../nucleus-identity" }
 nucleus-spec = { path = "../nucleus-spec" }
 
 uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio-test = "0.4"
 
 [lints]
 workspace = true

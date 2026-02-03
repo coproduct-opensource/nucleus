@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 #[derive(Parser, Debug)]
 #[command(name = "nucleus-mcp")]
@@ -28,6 +29,10 @@ struct Args {
     /// Prompt on approval-required operations (uses /dev/tty).
     #[arg(long, default_value_t = true)]
     approval_prompt: bool,
+    /// Session ID for audit correlation (UUID v7 format). Auto-generated if not provided.
+    /// All tool calls within this MCP session will include this ID for tracing.
+    #[arg(long, env = "NUCLEUS_MCP_SESSION_ID")]
+    session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -146,15 +151,34 @@ struct ProxyClient {
     base_url: String,
     auth_secret: Option<Vec<u8>>,
     actor: Option<String>,
+    /// Session ID for audit correlation across tool calls.
+    session_id: String,
 }
 
 impl ProxyClient {
-    fn new(base_url: String, auth_secret: Option<String>, actor: Option<String>) -> Self {
+    fn new(
+        base_url: String,
+        auth_secret: Option<String>,
+        actor: Option<String>,
+        session_id: Option<String>,
+    ) -> Self {
+        // Use provided session ID or generate UUID v7 for time-ordering
+        let session_id = session_id.unwrap_or_else(|| {
+            // Generate UUID v7 (time-ordered) for session correlation
+            // Falls back to v4 if v7 generation fails
+            generate_session_id()
+        });
         Self {
             base_url,
             auth_secret: auth_secret.map(|s| s.into_bytes()),
             actor,
+            session_id,
         }
+    }
+
+    /// Returns the session ID for this client.
+    fn session_id(&self) -> &str {
+        &self.session_id
     }
 
     fn post_json<T: Serialize, R: for<'de> Deserialize<'de>>(
@@ -172,7 +196,10 @@ impl ProxyClient {
             self.base_url.trim_end_matches('/'),
             path.trim_start_matches('/')
         );
-        let mut request = ureq::post(&url).header("content-type", "application/json");
+        let mut request = ureq::post(&url)
+            .header("content-type", "application/json")
+            // Always include session ID for audit correlation
+            .header("x-nucleus-session-id", &self.session_id);
 
         if let Some(secret) = self.auth_secret.as_ref() {
             let signed = sign_http_headers(secret, self.actor.as_deref(), &body_bytes);
@@ -217,6 +244,45 @@ impl ProxyClient {
     }
 }
 
+/// Generates a session ID using UUID v7 format for time-ordering.
+///
+/// UUID v7 embeds a Unix timestamp in the first 48 bits, enabling:
+/// - Natural chronological sorting of sessions
+/// - Rough timestamp extraction from the ID
+/// - Global uniqueness without coordination
+fn generate_session_id() -> String {
+    // UUID v7 implementation: timestamp_ms (48 bits) + version (4 bits) + random (12 bits) + variant (2 bits) + random (62 bits)
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let timestamp_ms = now.as_millis() as u64;
+
+    // Build UUID v7 bytes
+    let mut bytes = [0u8; 16];
+
+    // First 6 bytes: timestamp in milliseconds (big-endian)
+    bytes[0] = (timestamp_ms >> 40) as u8;
+    bytes[1] = (timestamp_ms >> 32) as u8;
+    bytes[2] = (timestamp_ms >> 24) as u8;
+    bytes[3] = (timestamp_ms >> 16) as u8;
+    bytes[4] = (timestamp_ms >> 8) as u8;
+    bytes[5] = timestamp_ms as u8;
+
+    // Random bytes for uniqueness
+    let random = Uuid::new_v4();
+    let random_bytes = random.as_bytes();
+
+    // Bytes 6-7: version (7) + random
+    bytes[6] = 0x70 | (random_bytes[6] & 0x0f); // version 7
+    bytes[7] = random_bytes[7];
+
+    // Bytes 8-15: variant (RFC 4122) + random
+    bytes[8] = 0x80 | (random_bytes[8] & 0x3f); // variant bits
+    bytes[9..16].copy_from_slice(&random_bytes[9..16]);
+
+    Uuid::from_bytes(bytes).to_string()
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     let policy = match args.spec.as_ref() {
@@ -228,6 +294,14 @@ fn main() -> Result<()> {
         args.proxy_url.clone(),
         args.auth_secret.clone(),
         Some(args.actor.clone()),
+        args.session_id.clone(),
+    );
+
+    // Log session ID to stderr for debugging/correlation
+    eprintln!(
+        "[nucleus-mcp] session_id={} actor={}",
+        client.session_id(),
+        args.actor
     );
 
     let stdin = io::stdin();
@@ -639,5 +713,67 @@ mod tests {
         let mut output = Vec::new();
         write_result(&mut output, None, json!({"data": "test"})).unwrap();
         assert!(output.is_empty());
+    }
+
+    #[test]
+    fn test_generate_session_id_format() {
+        let session_id = generate_session_id();
+        // Should be a valid UUID format (36 chars with hyphens)
+        assert_eq!(session_id.len(), 36);
+        assert!(session_id.chars().filter(|&c| c == '-').count() == 4);
+        // Should parse as valid UUID
+        let parsed = Uuid::parse_str(&session_id).unwrap();
+        // Should be version 7
+        assert_eq!(parsed.get_version_num(), 7);
+    }
+
+    #[test]
+    fn test_generate_session_id_uniqueness() {
+        let id1 = generate_session_id();
+        let id2 = generate_session_id();
+        assert_ne!(id1, id2, "session IDs should be unique");
+    }
+
+    #[test]
+    fn test_generate_session_id_ordering() {
+        // UUID v7 should be time-ordered
+        let id1 = generate_session_id();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let id2 = generate_session_id();
+
+        // When sorted lexicographically, id1 should come before id2
+        // (because UUID v7 puts timestamp in most significant bits)
+        assert!(
+            id1 < id2,
+            "UUID v7 should be time-ordered: {} should < {}",
+            id1,
+            id2
+        );
+    }
+
+    #[test]
+    fn test_proxy_client_session_id_provided() {
+        let client = ProxyClient::new(
+            "http://localhost:8080".to_string(),
+            None,
+            Some("test-actor".to_string()),
+            Some("custom-session-123".to_string()),
+        );
+        assert_eq!(client.session_id(), "custom-session-123");
+    }
+
+    #[test]
+    fn test_proxy_client_session_id_generated() {
+        let client = ProxyClient::new(
+            "http://localhost:8080".to_string(),
+            None,
+            Some("test-actor".to_string()),
+            None,
+        );
+        // Should auto-generate a UUID v7
+        let session_id = client.session_id();
+        assert_eq!(session_id.len(), 36);
+        let parsed = Uuid::parse_str(session_id).unwrap();
+        assert_eq!(parsed.get_version_num(), 7);
     }
 }

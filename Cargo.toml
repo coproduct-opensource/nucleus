@@ -11,6 +11,7 @@ members = [
     "crates/nucleus-net-probe", # TCP probe for network policy tests
     "crates/nucleus-mcp", # MCP server bridging Claude to tool-proxy
     "crates/nucleus-audit", # Audit log verifier CLI
+    "crates/nucleus-identity", # SPIFFE-based workload identity
 ]
 resolver = "2"
 

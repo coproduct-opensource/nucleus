@@ -26,6 +26,8 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 mod auth;
+mod identity;
+mod workload_api_vsock;
 use auth::{AuthConfig, AuthError};
 mod cgroup;
 mod net;
@@ -107,6 +109,26 @@ struct Args {
     /// Default actor to use when signing proxy requests.
     #[arg(long, env = "NUCLEUS_NODE_PROXY_ACTOR", default_value = "nucleus-node")]
     proxy_actor: String,
+    /// SPIFFE trust domain for workload identity.
+    #[arg(
+        long,
+        env = "NUCLEUS_IDENTITY_TRUST_DOMAIN",
+        default_value = "nucleus.local"
+    )]
+    identity_trust_domain: String,
+    /// Certificate TTL in seconds (default: 1 hour).
+    #[arg(long, env = "NUCLEUS_IDENTITY_CERT_TTL_SECS", default_value_t = 3600)]
+    identity_cert_ttl_secs: u64,
+    /// Unix socket path for the Workload API server.
+    #[arg(long, env = "NUCLEUS_IDENTITY_WORKLOAD_API_SOCKET")]
+    identity_workload_api_socket: Option<PathBuf>,
+    /// Vsock port for guest-to-host Workload API connections.
+    #[arg(
+        long,
+        env = "NUCLEUS_IDENTITY_WORKLOAD_API_VSOCK_PORT",
+        default_value_t = 15012
+    )]
+    identity_workload_api_vsock_port: u32,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -137,6 +159,12 @@ struct NodeState {
     proxy_auth_secret: String,
     proxy_approval_secret: String,
     proxy_actor: Option<String>,
+    /// Identity manager for SPIFFE certificates (experimental, not yet wired to Firecracker).
+    #[allow(dead_code)]
+    identity_manager: Option<identity::IdentityManager>,
+    /// Vsock port for guest-to-host Workload API connections.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    identity_vsock_port: u32,
 }
 
 #[derive(Debug)]
@@ -176,6 +204,13 @@ struct FirecrackerPod {
     drift_stop: Arc<AtomicBool>,
     /// Reference to network allocator for releasing indices on cleanup
     network_allocator: Arc<net::NetworkAllocator>,
+    /// SPIFFE identity for this pod (if identity management is enabled)
+    #[allow(dead_code)]
+    identity: Option<nucleus_identity::Identity>,
+    /// Reference to identity manager for cleanup
+    identity_manager: Option<identity::IdentityManager>,
+    /// Workload API vsock bridge for this pod
+    workload_api_bridge: Mutex<Option<workload_api_vsock::WorkloadApiVsockBridge>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -282,6 +317,31 @@ async fn main() -> Result<(), ApiError> {
         ));
     }
 
+    // Initialize identity manager (optional, enabled if socket path is specified)
+    let identity_manager = if let Some(ref socket_path) = args.identity_workload_api_socket {
+        let cert_ttl = Duration::from_secs(args.identity_cert_ttl_secs);
+        let manager = identity::IdentityManager::new(&args.identity_trust_domain, cert_ttl)
+            .map_err(|e| ApiError::Driver(format!("failed to create identity manager: {e}")))?;
+
+        // Start the Workload API server
+        manager
+            .start_workload_api_server(socket_path)
+            .await
+            .map_err(|e| ApiError::Driver(format!("failed to start workload API: {e}")))?;
+
+        // Start certificate refresh loop
+        manager.start_refresh_loop();
+
+        info!(
+            "identity manager initialized with trust domain '{}', workload API at {}",
+            args.identity_trust_domain,
+            socket_path.display()
+        );
+        Some(manager)
+    } else {
+        None
+    };
+
     let state = NodeState {
         pods: Arc::new(Mutex::new(HashMap::new())),
         state_dir: args.state_dir.clone(),
@@ -302,6 +362,8 @@ async fn main() -> Result<(), ApiError> {
         proxy_auth_secret: args.proxy_auth_secret.clone(),
         proxy_approval_secret: args.proxy_approval_secret.clone(),
         proxy_actor: Some(args.proxy_actor.clone()).filter(|actor| !actor.trim().is_empty()),
+        identity_manager,
+        identity_vsock_port: args.identity_workload_api_vsock_port,
     };
 
     let app = Router::new()
@@ -528,6 +590,7 @@ impl FirecrackerPod {
     }
 
     async fn cancel(&self) -> Result<(), ApiError> {
+        self.cleanup_identity().await;
         if let Some(proxy) = self.signed_proxy.lock().await.take() {
             proxy.shutdown().await;
         }
@@ -554,6 +617,7 @@ impl FirecrackerPod {
     }
 
     async fn cleanup(&self) {
+        self.cleanup_identity().await;
         if let Some(proxy) = self.signed_proxy.lock().await.take() {
             proxy.shutdown().await;
         }
@@ -573,6 +637,19 @@ impl FirecrackerPod {
             let _ = net::cleanup_network(&plan).await;
         } else if let Some(name) = self.netns.lock().await.take() {
             let _ = net::cleanup_netns(&name).await;
+        }
+    }
+
+    /// Cleans up identity resources (unregister from VM registry, forget certificate).
+    async fn cleanup_identity(&self) {
+        // Shut down workload API bridge
+        if let Some(bridge) = self.workload_api_bridge.lock().await.take() {
+            bridge.shutdown().await;
+        }
+
+        if let (Some(ref identity), Some(ref manager)) = (&self.identity, &self.identity_manager) {
+            manager.unregister_pod(&identity.to_spiffe_uri()).await;
+            manager.forget_certificate(identity).await;
         }
     }
 }
@@ -768,6 +845,10 @@ async fn spawn_firecracker_pod(
         let config_path = pod_dir.join("firecracker.json");
         let vsock_path = pod_dir.join("vsock.sock");
 
+        let workload_api_port = state
+            .identity_manager
+            .as_ref()
+            .map(|_| state.identity_vsock_port);
         let config = FirecrackerConfig::from_spec(
             spec,
             &log_path,
@@ -776,6 +857,7 @@ async fn spawn_firecracker_pod(
             net_plan.as_ref(),
             &state.proxy_auth_secret,
             &state.proxy_approval_secret,
+            workload_api_port,
         );
         let config_json = match serde_json::to_vec_pretty(&config) {
             Ok(data) => data,
@@ -1022,6 +1104,102 @@ async fn spawn_firecracker_pod(
             None
         };
 
+        // Create and register SPIFFE identity if identity management is enabled
+        let (pod_identity, identity_manager, workload_api_bridge) =
+            if let Some(ref manager) = state.identity_manager {
+                // Use pod name or labels for namespace/service_account context
+                // Since Metadata doesn't have namespace, we default to "default"
+                let namespace = "default";
+                let service_account = spec.metadata.name.as_deref().unwrap_or("");
+                let identity = manager.identity_for_pod(id, namespace, service_account);
+
+                // Register the pod identity
+                manager.register_pod(id.to_string(), identity.clone()).await;
+
+                // Compute launch attestation for this pod
+                // This captures integrity measurements of kernel, rootfs, and config
+                let pod_id_str = id.to_string();
+                let config_bytes = serde_json::to_vec(spec).unwrap_or_default();
+                match manager
+                    .compute_attestation(
+                        &pod_id_str,
+                        &image.kernel_path,
+                        &image.rootfs_path,
+                        &config_bytes,
+                    )
+                    .await
+                {
+                    Ok(attestation) => {
+                        info!(
+                            "computed launch attestation for pod {}: {}",
+                            id,
+                            attestation.to_hex_summary()
+                        );
+                        // Fetch attested certificate (includes attestation in X.509 extension)
+                        if let Err(e) = manager
+                            .fetch_attested_certificate(&identity, &pod_id_str)
+                            .await
+                        {
+                            tracing::warn!(
+                                "failed to fetch attested certificate for pod {}: {}",
+                                id,
+                                e
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                        "failed to compute attestation for pod {}, using standard certificate: {}",
+                        id,
+                        e
+                    );
+                        // Fall back to standard certificate without attestation
+                        if let Err(e) = manager.prefetch_certificate(&identity).await {
+                            tracing::warn!("failed to prefetch certificate for pod {}: {}", id, e);
+                        }
+                    }
+                }
+
+                // Start workload API vsock bridge for this pod
+                // Uses Firecracker's naming convention: {vsock_uds_path}_{port}
+                // Guest connects to CID 2 (host) on the workload API port via AF_VSOCK
+                let bridge = match workload_api_vsock::WorkloadApiVsockBridge::start(
+                    &vsock_path,
+                    state.identity_vsock_port,
+                    id,
+                    manager.clone(),
+                )
+                .await
+                {
+                    Ok(b) => {
+                        info!(
+                            "started workload API vsock bridge at {} for pod {}",
+                            b.socket_path().display(),
+                            id
+                        );
+                        Some(b)
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "failed to start workload API vsock bridge for pod {}: {}",
+                            id,
+                            e
+                        );
+                        None
+                    }
+                };
+
+                info!(
+                    "registered identity {} for pod {}",
+                    identity.to_spiffe_uri(),
+                    id
+                );
+
+                (Some(identity), Some(manager.clone()), bridge)
+            } else {
+                (None, None, None)
+            };
+
         let handle = FirecrackerPod {
             child,
             bridge: Mutex::new(Some(bridge)),
@@ -1033,6 +1211,9 @@ async fn spawn_firecracker_pod(
             drift_monitor: Mutex::new(drift_monitor),
             drift_stop,
             network_allocator: state.network_allocator.clone(),
+            identity: pod_identity,
+            identity_manager,
+            workload_api_bridge: Mutex::new(workload_api_bridge),
         };
 
         info!("spawned firecracker pod {}", id);
@@ -1353,6 +1534,7 @@ struct LoggerConfig {
 
 #[cfg(target_os = "linux")]
 impl FirecrackerConfig {
+    #[allow(clippy::too_many_arguments)]
     fn from_spec(
         spec: &PodSpec,
         log_path: &Path,
@@ -1361,6 +1543,7 @@ impl FirecrackerConfig {
         net_plan: Option<&net::NetPlan>,
         auth_secret: &str,
         approval_secret: &str,
+        workload_api_port: Option<u32>,
     ) -> Self {
         let vcpu_count = spec
             .spec
@@ -1412,6 +1595,14 @@ impl FirecrackerConfig {
                 "nucleus.auth_secret={auth_secret} nucleus.approval_secret={approval_secret}"
             )),
         };
+
+        // Inject workload API port if identity management is enabled
+        if let Some(port) = workload_api_port {
+            boot_args = match boot_args.take() {
+                Some(args) => Some(format!("{args} nucleus.workload_api_port={port}")),
+                None => Some(format!("nucleus.workload_api_port={port}")),
+            };
+        }
 
         let vsock = spec.spec.vsock.as_ref().map(|vsock| VsockConfig {
             guest_cid: vsock.guest_cid,
