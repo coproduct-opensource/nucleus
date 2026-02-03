@@ -219,7 +219,10 @@ struct SpiffeServerCertVerifier {
 
 impl SpiffeServerCertVerifier {
     fn new(roots: Arc<RootCertStore>, trust_domain: String) -> Self {
-        Self { roots, trust_domain }
+        Self {
+            roots,
+            trust_domain,
+        }
     }
 
     /// Extracts SPIFFE URI from certificate's Subject Alternative Name extension.
@@ -262,8 +265,9 @@ impl ServerCertVerifier for SpiffeServerCertVerifier {
         now: UnixTime,
     ) -> std::result::Result<ServerCertVerified, rustls::Error> {
         // Step 1: Parse the end-entity certificate for webpki verification
-        let cert = webpki::EndEntityCert::try_from(end_entity)
-            .map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))?;
+        let cert = webpki::EndEntityCert::try_from(end_entity).map_err(|_| {
+            rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding)
+        })?;
 
         // Step 2: Convert rustls TrustAnchors to webpki TrustAnchors
         // The RootCertStore.roots field contains TrustAnchor<'static> with public fields
@@ -327,13 +331,17 @@ impl ServerCertVerifier for SpiffeServerCertVerifier {
 
         // Step 7: Verify SPIFFE URI in the certificate matches our trust domain
         // This is the SPIFFE-specific check that replaces DNS name verification
-        let spiffe_uri = self.extract_spiffe_uri(end_entity.as_ref()).ok_or_else(|| {
-            tracing::debug!(
-                "certificate missing SPIFFE URI for trust domain: {}",
-                self.trust_domain
-            );
-            rustls::Error::InvalidCertificate(rustls::CertificateError::ApplicationVerificationFailure)
-        })?;
+        let spiffe_uri = self
+            .extract_spiffe_uri(end_entity.as_ref())
+            .ok_or_else(|| {
+                tracing::debug!(
+                    "certificate missing SPIFFE URI for trust domain: {}",
+                    self.trust_domain
+                );
+                rustls::Error::InvalidCertificate(
+                    rustls::CertificateError::ApplicationVerificationFailure,
+                )
+            })?;
 
         tracing::debug!("verified SPIFFE identity: {}", spiffe_uri);
         Ok(ServerCertVerified::assertion())
@@ -400,7 +408,9 @@ fn parse_cert_chain(pem: &str) -> Result<Vec<CertificateDer<'static>>> {
     }
 
     if certs.is_empty() {
-        return Err(Error::Certificate("no certificates found in PEM".to_string()));
+        return Err(Error::Certificate(
+            "no certificates found in PEM".to_string(),
+        ));
     }
 
     Ok(certs)
@@ -494,22 +504,26 @@ mod tests {
     fn create_test_cert() -> (WorkloadCertificate, TrustBundle) {
         let ca = SelfSignedCa::new("nucleus.local").unwrap();
         let identity = Identity::new("nucleus.local", "default", "test-service");
-        let cert_sign = CsrOptions::new(identity.to_spiffe_uri()).generate().unwrap();
+        let cert_sign = CsrOptions::new(identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
 
-        let cert = rt.block_on(async {
-            ca.sign_csr(
-                cert_sign.csr(),
-                cert_sign.private_key(),
-                &identity,
-                Duration::from_secs(3600),
-            )
-            .await
-        }).unwrap();
+        let cert = rt
+            .block_on(async {
+                ca.sign_csr(
+                    cert_sign.csr(),
+                    cert_sign.private_key(),
+                    &identity,
+                    Duration::from_secs(3600),
+                )
+                .await
+            })
+            .unwrap();
 
         let bundle = ca.trust_bundle().clone();
         (cert, bundle)

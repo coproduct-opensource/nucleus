@@ -47,7 +47,6 @@ pub struct AttestationConfig {
     pub allowed_config_hashes: HashSet<String>,
 }
 
-
 impl AttestationConfig {
     /// Creates a new attestation config with attestation required.
     pub fn required() -> Self {
@@ -291,7 +290,10 @@ impl AttestationVerifier {
     fn validate_attestation(&self, info: &AttestationInfo) -> (bool, Option<String>) {
         // Check kernel hash if restrictions are configured
         if !self.config.allowed_kernel_hashes.is_empty()
-            && !self.config.allowed_kernel_hashes.contains(&info.kernel_hash)
+            && !self
+                .config
+                .allowed_kernel_hashes
+                .contains(&info.kernel_hash)
         {
             return (
                 false,
@@ -304,7 +306,10 @@ impl AttestationVerifier {
 
         // Check rootfs hash if restrictions are configured
         if !self.config.allowed_rootfs_hashes.is_empty()
-            && !self.config.allowed_rootfs_hashes.contains(&info.rootfs_hash)
+            && !self
+                .config
+                .allowed_rootfs_hashes
+                .contains(&info.rootfs_hash)
         {
             return (
                 false,
@@ -317,7 +322,10 @@ impl AttestationVerifier {
 
         // Check config hash if restrictions are configured
         if !self.config.allowed_config_hashes.is_empty()
-            && !self.config.allowed_config_hashes.contains(&info.config_hash)
+            && !self
+                .config
+                .allowed_config_hashes
+                .contains(&info.config_hash)
         {
             return (
                 false,
@@ -347,8 +355,8 @@ fn extract_attestation_from_cert(cert_der: &[u8]) -> Result<Option<LaunchAttesta
 
     // Construct our attestation OID for comparison
     // OID: 1.3.6.1.4.1.57212.1.1
-    let attestation_oid = oid_registry::Oid::from(ATTESTATION_OID)
-        .expect("invalid attestation OID");
+    let attestation_oid =
+        oid_registry::Oid::from(ATTESTATION_OID).expect("invalid attestation OID");
 
     // Look for our custom attestation extension
     for ext in cert.extensions() {
@@ -490,11 +498,7 @@ mod tests {
 
     #[test]
     fn test_attestation_info_from_launch_attestation() {
-        let attestation = LaunchAttestation::from_hashes(
-            [0xaa; 32],
-            [0xbb; 32],
-            [0xcc; 32],
-        );
+        let attestation = LaunchAttestation::from_hashes([0xaa; 32], [0xbb; 32], [0xcc; 32]);
 
         let info = AttestationInfo::from(&attestation);
         assert_eq!(info.kernel_hash, "aa".repeat(32));
@@ -521,8 +525,7 @@ mod tests {
 
     #[test]
     fn test_validate_attestation_kernel_hash_mismatch() {
-        let config = AttestationConfig::required()
-            .with_kernel_hashes(&"dd".repeat(32));
+        let config = AttestationConfig::required().with_kernel_hashes(&"dd".repeat(32));
         let verifier = AttestationVerifier::new(config);
 
         let info = AttestationInfo {
@@ -541,8 +544,7 @@ mod tests {
     #[test]
     fn test_validate_attestation_kernel_hash_match() {
         let kernel_hash = "aa".repeat(32);
-        let config = AttestationConfig::required()
-            .with_kernel_hashes(&kernel_hash);
+        let config = AttestationConfig::required().with_kernel_hashes(&kernel_hash);
         let verifier = AttestationVerifier::new(config);
 
         let info = AttestationInfo {
@@ -559,11 +561,7 @@ mod tests {
 
     #[test]
     fn test_verify_header_valid_attestation() {
-        let attestation = LaunchAttestation::from_hashes(
-            [0x11; 32],
-            [0x22; 32],
-            [0x33; 32],
-        );
+        let attestation = LaunchAttestation::from_hashes([0x11; 32], [0x22; 32], [0x33; 32]);
         let der = attestation.to_der();
         let encoded = base64_encode(&der);
 

@@ -461,7 +461,9 @@ fn decode_length(data: &[u8], pos: &mut usize) -> Result<usize> {
         // Long form
         let num_bytes = (first & 0x7f) as usize;
         if num_bytes == 0 || num_bytes > 4 {
-            return Err(Error::Certificate("invalid DER length encoding".to_string()));
+            return Err(Error::Certificate(
+                "invalid DER length encoding".to_string(),
+            ));
         }
         if *pos + num_bytes > data.len() {
             return Err(Error::Certificate("truncated DER length".to_string()));
@@ -546,7 +548,9 @@ fn decode_fwid(data: &[u8], pos: &mut usize) -> Result<Hash256> {
 
     // Decode OCTET STRING
     if inner_pos >= fwid_content.len() || fwid_content[inner_pos] != TAG_OCTET_STRING {
-        return Err(Error::Certificate("expected OCTET STRING in FWID".to_string()));
+        return Err(Error::Certificate(
+            "expected OCTET STRING in FWID".to_string(),
+        ));
     }
     inner_pos += 1;
     let digest_len = decode_length(&fwid_content, &mut inner_pos)?;
@@ -569,7 +573,9 @@ fn decode_fwid(data: &[u8], pos: &mut usize) -> Result<Hash256> {
 /// Decodes a GeneralizedTime.
 fn decode_generalized_time(data: &[u8], pos: &mut usize) -> Result<DateTime<Utc>> {
     if *pos >= data.len() || data[*pos] != TAG_GENERALIZED_TIME {
-        return Err(Error::Certificate("expected GeneralizedTime tag".to_string()));
+        return Err(Error::Certificate(
+            "expected GeneralizedTime tag".to_string(),
+        ));
     }
     *pos += 1;
 
@@ -672,8 +678,7 @@ mod tests {
 
     #[test]
     fn test_attestation_der_roundtrip() {
-        let attestation =
-            LaunchAttestation::from_hashes([1u8; 32], [2u8; 32], [3u8; 32]);
+        let attestation = LaunchAttestation::from_hashes([1u8; 32], [2u8; 32], [3u8; 32]);
 
         let der = attestation.to_der();
 
@@ -687,14 +692,15 @@ mod tests {
         assert_eq!(parsed.config_hash, attestation.config_hash);
 
         // Timestamps may differ slightly due to truncation, but should be close
-        let diff = (parsed.timestamp - attestation.timestamp).num_seconds().abs();
+        let diff = (parsed.timestamp - attestation.timestamp)
+            .num_seconds()
+            .abs();
         assert!(diff <= 1, "timestamps should match within 1 second");
     }
 
     #[test]
     fn test_attestation_der_structure() {
-        let attestation =
-            LaunchAttestation::from_hashes([0xaa; 32], [0xbb; 32], [0xcc; 32]);
+        let attestation = LaunchAttestation::from_hashes([0xaa; 32], [0xbb; 32], [0xcc; 32]);
 
         let der = attestation.to_der();
 
@@ -734,22 +740,18 @@ mod tests {
 
     #[test]
     fn test_attestation_combined_hash() {
-        let attestation =
-            LaunchAttestation::from_hashes([1u8; 32], [2u8; 32], [3u8; 32]);
+        let attestation = LaunchAttestation::from_hashes([1u8; 32], [2u8; 32], [3u8; 32]);
 
         let combined = attestation.combined_hash();
         assert_ne!(combined, [0u8; 32]);
 
         // Same inputs should produce same combined hash
-        let attestation2 =
-            LaunchAttestation::from_hashes([1u8; 32], [2u8; 32], [3u8; 32]);
+        let attestation2 = LaunchAttestation::from_hashes([1u8; 32], [2u8; 32], [3u8; 32]);
         assert_eq!(attestation.combined_hash(), attestation2.combined_hash());
 
         // Different inputs should produce different combined hash
         let attestation3 = LaunchAttestation::from_hashes(
-            [1u8; 32],
-            [2u8; 32],
-            [4u8; 32], // Different config
+            [1u8; 32], [2u8; 32], [4u8; 32], // Different config
         );
         assert_ne!(attestation.combined_hash(), attestation3.combined_hash());
     }

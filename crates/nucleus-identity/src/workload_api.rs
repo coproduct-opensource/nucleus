@@ -256,13 +256,9 @@ impl<C: CaClient + 'static> WorkloadApiServer<C> {
                     tokio::spawn(async move {
                         match acceptor.accept(stream).await {
                             Ok(tls_stream) => {
-                                if let Err(e) = handle_tls_connection(
-                                    tls_stream,
-                                    manager,
-                                    ca,
-                                    conn_identity,
-                                )
-                                .await
+                                if let Err(e) =
+                                    handle_tls_connection(tls_stream, manager, ca, conn_identity)
+                                        .await
                                 {
                                     error!("mTLS workload API connection error: {}", e);
                                 }
@@ -703,21 +699,19 @@ impl MtlsWorkloadApiClient {
     /// Sends a command to the Workload API over mTLS and returns the response.
     async fn send_command(&self, command: &str) -> Result<String> {
         // Build TLS connector with SPIFFE verification
-        let connector = TlsClientConfig::new(
-            self.client_cert.clone(),
-            self.trust_bundle.clone(),
-        )
-        .with_spiffe_trust_domain(&self.trust_domain)
-        .build_connector()?;
+        let connector = TlsClientConfig::new(self.client_cert.clone(), self.trust_bundle.clone())
+            .with_spiffe_trust_domain(&self.trust_domain)
+            .build_connector()?;
 
         // Connect Unix socket
         let stream = UnixStream::connect(&self.socket_path).await?;
 
         // Wrap with TLS
         let server_name = server_name_from_trust_domain(&self.trust_domain)?;
-        let tls_stream = connector.connect(server_name, stream).await.map_err(|e| {
-            Error::Internal(format!("TLS handshake failed: {}", e))
-        })?;
+        let tls_stream = connector
+            .connect(server_name, stream)
+            .await
+            .map_err(|e| Error::Internal(format!("TLS handshake failed: {}", e)))?;
 
         let (reader, mut writer) = tokio::io::split(tls_stream);
         let mut reader = BufReader::new(reader);
@@ -883,12 +877,8 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Test mTLS client
-        let client = MtlsWorkloadApiClient::new(
-            &socket_path,
-            client_cert,
-            trust_bundle,
-            "nucleus.local",
-        );
+        let client =
+            MtlsWorkloadApiClient::new(&socket_path, client_cert, trust_bundle, "nucleus.local");
 
         // Test ping
         client.ping().await.unwrap();

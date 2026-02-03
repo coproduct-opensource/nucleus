@@ -409,7 +409,8 @@ impl CaClient for SelfSignedCa {
         ttl: Duration,
     ) -> Result<WorkloadCertificate> {
         // Delegate to the existing secure method that properly handles CSR + private key
-        self.sign_csr_with_key(csr, private_key, identity, ttl).await
+        self.sign_csr_with_key(csr, private_key, identity, ttl)
+            .await
     }
 
     async fn sign_attested_csr(
@@ -449,12 +450,8 @@ impl CaClient for SelfSignedCa {
         let attestation_ext = Self::create_attestation_extension(attestation);
 
         // Sign with the workload's own key pair and attestation extension
-        let chain = self.sign_with_keypair_and_extensions(
-            &key_pair,
-            identity,
-            ttl,
-            vec![attestation_ext],
-        )?;
+        let chain =
+            self.sign_with_keypair_and_extensions(&key_pair, identity, ttl, vec![attestation_ext])?;
 
         let expiry = chain[0].not_after()?;
         let private_key_obj = PrivateKey::from_pem(private_key)?;
@@ -529,7 +526,12 @@ mod tests {
         let cert_sign = csr_options.generate().unwrap();
 
         let cert = ca
-            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(3600))
+            .sign_csr(
+                cert_sign.csr(),
+                cert_sign.private_key(),
+                &identity,
+                Duration::from_secs(3600),
+            )
             .await
             .unwrap();
 
@@ -550,7 +552,12 @@ mod tests {
         let cert_sign = csr_options.generate().unwrap();
 
         let result = ca
-            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(3600))
+            .sign_csr(
+                cert_sign.csr(),
+                cert_sign.private_key(),
+                &identity,
+                Duration::from_secs(3600),
+            )
             .await;
 
         assert!(matches!(result, Err(Error::TrustDomainMismatch { .. })));
@@ -605,10 +612,20 @@ mod tests {
         // Both CSRs should successfully validate since they have valid signatures
         // (This just confirms the signature verification is working)
         let result1 = ca
-            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(3600))
+            .sign_csr(
+                cert_sign.csr(),
+                cert_sign.private_key(),
+                &identity,
+                Duration::from_secs(3600),
+            )
             .await;
         let result2 = ca
-            .sign_csr(other_cert_sign.csr(), other_cert_sign.private_key(), &identity, Duration::from_secs(3600))
+            .sign_csr(
+                other_cert_sign.csr(),
+                other_cert_sign.private_key(),
+                &identity,
+                Duration::from_secs(3600),
+            )
             .await;
 
         assert!(result1.is_ok(), "valid CSR 1 should be accepted");
@@ -628,7 +645,12 @@ mod tests {
         let invalid_csr = "-----BEGIN CERTIFICATE REQUEST-----\nYm9ndXMgZGF0YQ==\n-----END CERTIFICATE REQUEST-----";
 
         let result = ca
-            .sign_csr(invalid_csr, cert_sign.private_key(), &identity, Duration::from_secs(3600))
+            .sign_csr(
+                invalid_csr,
+                cert_sign.private_key(),
+                &identity,
+                Duration::from_secs(3600),
+            )
             .await;
 
         // Should fail during parsing
@@ -651,7 +673,12 @@ mod tests {
         let cert_sign = csr_options.generate().unwrap();
 
         let cert = ca
-            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(3600))
+            .sign_csr(
+                cert_sign.csr(),
+                cert_sign.private_key(),
+                &identity,
+                Duration::from_secs(3600),
+            )
             .await
             .unwrap();
 
@@ -670,7 +697,12 @@ mod tests {
 
         // Request a 1 hour TTL
         let cert = ca
-            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(3600))
+            .sign_csr(
+                cert_sign.csr(),
+                cert_sign.private_key(),
+                &identity,
+                Duration::from_secs(3600),
+            )
             .await
             .unwrap();
 
@@ -753,11 +785,7 @@ mod tests {
     async fn test_attestation_extension_creation() {
         use crate::attestation::LaunchAttestation;
 
-        let attestation = LaunchAttestation::from_hashes(
-            [0x11; 32],
-            [0x22; 32],
-            [0x33; 32],
-        );
+        let attestation = LaunchAttestation::from_hashes([0x11; 32], [0x22; 32], [0x33; 32]);
 
         let ext = SelfSignedCa::create_attestation_extension(&attestation);
 
@@ -772,6 +800,9 @@ mod tests {
         let content = ext.content();
         assert!(!content.is_empty());
         // Should start with SEQUENCE tag (0x30)
-        assert_eq!(content[0], 0x30, "attestation DER should start with SEQUENCE tag");
+        assert_eq!(
+            content[0], 0x30,
+            "attestation DER should start with SEQUENCE tag"
+        );
     }
 }

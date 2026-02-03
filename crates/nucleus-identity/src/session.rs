@@ -299,7 +299,8 @@ impl std::str::FromStr for SessionId {
     type Err = crate::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::parse(s).ok_or_else(|| crate::Error::InvalidSpiffeUri(format!("invalid session ID: {}", s)))
+        Self::parse(s)
+            .ok_or_else(|| crate::Error::InvalidSpiffeUri(format!("invalid session ID: {}", s)))
     }
 }
 

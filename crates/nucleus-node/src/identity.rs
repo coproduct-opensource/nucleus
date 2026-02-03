@@ -271,7 +271,13 @@ impl IdentityManager {
                 // Sign with attestation using configured TTL
                 let cert = self
                     .ca
-                    .sign_attested_csr(cert_sign.csr(), cert_sign.private_key(), identity, self.cert_ttl, &att)
+                    .sign_attested_csr(
+                        cert_sign.csr(),
+                        cert_sign.private_key(),
+                        identity,
+                        self.cert_ttl,
+                        &att,
+                    )
                     .await
                     .map_err(|e| format!("attested signing failed: {e}"))?;
 

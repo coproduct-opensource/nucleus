@@ -553,8 +553,11 @@ async fn main() -> Result<(), ApiError> {
         );
 
         // Use into_make_service_with_connect_info to inject MtlsConnectInfo
-        axum::serve(mtls_listener, app.into_make_service_with_connect_info::<MtlsConnectInfo>())
-            .await?;
+        axum::serve(
+            mtls_listener,
+            app.into_make_service_with_connect_info::<MtlsConnectInfo>(),
+        )
+        .await?;
     } else {
         info!("nucleus-tool-proxy listening on {}", addr);
         axum::serve(listener, app).await?;
@@ -660,9 +663,9 @@ async fn auth_middleware(
                 event = "attestation_verify_header",
                 "attestation via header (not mTLS) - consider enabling mTLS for production"
             );
-            let att_value = att_header
-                .to_str()
-                .map_err(|_| ApiError::AttestationFailed("invalid attestation header encoding".to_string()))?;
+            let att_value = att_header.to_str().map_err(|_| {
+                ApiError::AttestationFailed("invalid attestation header encoding".to_string())
+            })?;
             state.attestation_verifier.verify_header(att_value)
         } else {
             // No attestation provided

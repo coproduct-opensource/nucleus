@@ -263,7 +263,12 @@ mod trust_domain_violations {
         let cert_sign = csr_options.generate().unwrap();
 
         let cert = ca
-            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(3600))
+            .sign_csr(
+                cert_sign.csr(),
+                cert_sign.private_key(),
+                &identity,
+                Duration::from_secs(3600),
+            )
             .await
             .unwrap();
 
@@ -358,10 +363,17 @@ INVALID_BASE64_DATA_HERE_TO_CORRUPT_SIGNATURE
 -----END CERTIFICATE REQUEST-----"#;
 
         // Generate a valid private key to pair with the malformed CSR (though it won't match)
-        let valid_csr = CsrOptions::new(identity.to_spiffe_uri()).generate().unwrap();
+        let valid_csr = CsrOptions::new(identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
 
         let result = ca
-            .sign_csr(malformed_csr, valid_csr.private_key(), &identity, Duration::from_secs(3600))
+            .sign_csr(
+                malformed_csr,
+                valid_csr.private_key(),
+                &identity,
+                Duration::from_secs(3600),
+            )
             .await;
 
         assert!(result.is_err(), "Malformed CSR should be rejected");
@@ -424,7 +436,12 @@ mod chain_validation {
         let cert_sign = csr_options.generate().unwrap();
 
         let rogue_cert = rogue_ca
-            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(3600))
+            .sign_csr(
+                cert_sign.csr(),
+                cert_sign.private_key(),
+                &identity,
+                Duration::from_secs(3600),
+            )
             .await
             .unwrap();
 
@@ -609,7 +626,12 @@ mod chaos {
 
         // 1 second TTL
         let cert = ca
-            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(1))
+            .sign_csr(
+                cert_sign.csr(),
+                cert_sign.private_key(),
+                &identity,
+                Duration::from_secs(1),
+            )
             .await
             .unwrap();
 
@@ -633,7 +655,10 @@ mod chaos {
 
         // 10 year TTL
         let ttl = Duration::from_secs(10 * 365 * 24 * 60 * 60);
-        let cert = ca.sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, ttl).await.unwrap();
+        let cert = ca
+            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, ttl)
+            .await
+            .unwrap();
 
         assert!(!cert.is_expired());
     }
@@ -672,7 +697,12 @@ mod chaos {
                     let cert_sign = csr_options.generate().unwrap();
 
                     let cert = ca
-                        .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(3600))
+                        .sign_csr(
+                            cert_sign.csr(),
+                            cert_sign.private_key(),
+                            &identity,
+                            Duration::from_secs(3600),
+                        )
                         .await
                         .unwrap();
 
@@ -713,7 +743,12 @@ mod regressions {
 
         // This should succeed because CSR signature is valid
         let result = ca
-            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(3600))
+            .sign_csr(
+                cert_sign.csr(),
+                cert_sign.private_key(),
+                &identity,
+                Duration::from_secs(3600),
+            )
             .await;
 
         assert!(
@@ -735,11 +770,21 @@ mod regressions {
         let csr2 = CsrOptions::new(id2.to_spiffe_uri()).generate().unwrap();
 
         let cert1 = ca
-            .sign_csr(csr1.csr(), csr1.private_key(), &id1, Duration::from_secs(3600))
+            .sign_csr(
+                csr1.csr(),
+                csr1.private_key(),
+                &id1,
+                Duration::from_secs(3600),
+            )
             .await
             .unwrap();
         let cert2 = ca
-            .sign_csr(csr2.csr(), csr2.private_key(), &id2, Duration::from_secs(3600))
+            .sign_csr(
+                csr2.csr(),
+                csr2.private_key(),
+                &id2,
+                Duration::from_secs(3600),
+            )
             .await
             .unwrap();
 
@@ -770,7 +815,12 @@ mod regressions {
 
         // Trying to sign victim's CSR for attacker's identity should fail
         let result = ca
-            .sign_csr(victim_csr.csr(), victim_csr.private_key(), &attacker, Duration::from_secs(3600))
+            .sign_csr(
+                victim_csr.csr(),
+                victim_csr.private_key(),
+                &attacker,
+                Duration::from_secs(3600),
+            )
             .await;
 
         assert!(result.is_err(), "Cannot sign CSR for different identity");
@@ -783,7 +833,7 @@ mod regressions {
 // Test the attestation system for forgery, replay, and bypass attacks.
 
 mod attestation_security {
-    use nucleus_identity::{LaunchAttestation, AttestationRequirements};
+    use nucleus_identity::{AttestationRequirements, LaunchAttestation};
     use proptest::prelude::*;
 
     /// Malformed DER payloads should be rejected gracefully
@@ -827,7 +877,7 @@ mod attestation_security {
         // Length claiming more bytes than available
         let malformed = vec![
             0x30, 0x82, 0xFF, 0xFF, // SEQUENCE claiming 65535 bytes
-            0x01, 0x02, 0x03,       // Only 3 bytes follow
+            0x01, 0x02, 0x03, // Only 3 bytes follow
         ];
         assert!(
             LaunchAttestation::from_der(&malformed).is_err(),
@@ -902,7 +952,9 @@ mod attestation_security {
         let mut fwid = vec![0x30]; // SEQUENCE
         let mut fwid_content = vec![];
         // OID for SHA-256
-        fwid_content.extend_from_slice(&[0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01]);
+        fwid_content.extend_from_slice(&[
+            0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01,
+        ]);
         // OCTET STRING with only 16 bytes (should be 32)
         fwid_content.extend_from_slice(&[0x04, 0x10]); // 16 bytes
         fwid_content.extend_from_slice(&[0xaa; 16]);
@@ -934,19 +986,28 @@ mod attestation_security {
         let mut wrong_kernel = [0xaa; 32];
         wrong_kernel[31] = 0xab; // Last byte different
         let att = LaunchAttestation::from_hashes(wrong_kernel, [0xbb; 32], [0xcc; 32]);
-        assert!(req.verify(&att).is_err(), "Single byte kernel difference should fail");
+        assert!(
+            req.verify(&att).is_err(),
+            "Single byte kernel difference should fail"
+        );
 
         // Single byte difference in rootfs should fail
         let mut wrong_rootfs = [0xbb; 32];
         wrong_rootfs[0] = 0xbc; // First byte different
         let att = LaunchAttestation::from_hashes([0xaa; 32], wrong_rootfs, [0xcc; 32]);
-        assert!(req.verify(&att).is_err(), "Single byte rootfs difference should fail");
+        assert!(
+            req.verify(&att).is_err(),
+            "Single byte rootfs difference should fail"
+        );
 
         // Single byte difference in config should fail
         let mut wrong_config = [0xcc; 32];
         wrong_config[15] = 0xcd; // Middle byte different
         let att = LaunchAttestation::from_hashes([0xaa; 32], [0xbb; 32], wrong_config);
-        assert!(req.verify(&att).is_err(), "Single byte config difference should fail");
+        assert!(
+            req.verify(&att).is_err(),
+            "Single byte config difference should fail"
+        );
     }
 
     /// Test requirements with empty allowed lists (should accept any)
@@ -956,12 +1017,11 @@ mod attestation_security {
 
         // Any random attestation should be accepted
         for _ in 0..10 {
-            let att = LaunchAttestation::from_hashes(
-                rand_hash(),
-                rand_hash(),
-                rand_hash(),
+            let att = LaunchAttestation::from_hashes(rand_hash(), rand_hash(), rand_hash());
+            assert!(
+                req.verify(&att).is_ok(),
+                "Empty requirements should accept any attestation"
             );
-            assert!(req.verify(&att).is_ok(), "Empty requirements should accept any attestation");
         }
     }
 
@@ -1035,7 +1095,7 @@ mod attestation_security {
     /// Parse hash utility function tests
     #[test]
     fn test_parse_hash_security() {
-        use nucleus_identity::attestation::{parse_hash, format_hash};
+        use nucleus_identity::attestation::{format_hash, parse_hash};
 
         // Valid 64-char hex should work
         let hex = "aa".repeat(32);
@@ -1138,9 +1198,9 @@ mod attestation_security {
 // Test the session identity system for security vulnerabilities.
 
 mod session_security {
-    use nucleus_identity::{Identity, SessionIdentity, SessionId};
-    use std::time::Duration;
+    use nucleus_identity::{Identity, SessionId, SessionIdentity};
     use proptest::prelude::*;
+    use std::time::Duration;
 
     /// Session ID uniqueness test
     #[test]
@@ -1167,11 +1227,7 @@ mod session_security {
     #[test]
     fn test_session_id_parse_injection() {
         // SQL injection attempts
-        let sql_payloads = [
-            "'; DROP TABLE sessions; --",
-            "1' OR '1'='1",
-            "admin'--",
-        ];
+        let sql_payloads = ["'; DROP TABLE sessions; --", "1' OR '1'='1", "admin'--"];
 
         for payload in sql_payloads {
             assert!(
@@ -1205,8 +1261,7 @@ mod session_security {
         let null_with_extra = "01234567\x0089abcdef0123456789abcdefFF";
         let clean_extra = "0123456789abcdef0123456789abcdefFF"; // 66 hex chars
         assert!(
-            SessionId::parse(null_with_extra).is_none() ||
-            SessionId::parse(clean_extra).is_none(),
+            SessionId::parse(null_with_extra).is_none() || SessionId::parse(clean_extra).is_none(),
             "Strings with wrong length after filtering should not parse"
         );
 
@@ -1227,7 +1282,10 @@ mod session_security {
         // This tests that is_expired() correctly computes expiry
         // We can't directly set created_at, but we can verify the logic
         assert!(!session.is_expired(), "Fresh session should not be expired");
-        assert!(session.remaining().is_some(), "Fresh session should have remaining time");
+        assert!(
+            session.remaining().is_some(),
+            "Fresh session should have remaining time"
+        );
 
         // Session with 0 TTL should be immediately expired
         // Note: This depends on timing - session created at T, expires at T+0 = T
@@ -1257,8 +1315,12 @@ mod session_security {
         );
 
         // Should contain valid UUID
-        let uuid_part = uri.split('/').last().unwrap();
-        assert_eq!(uuid_part.len(), 36, "UUID should be 36 characters with hyphens");
+        let uuid_part = uri.split('/').next_back().unwrap();
+        assert_eq!(
+            uuid_part.len(),
+            36,
+            "UUID should be 36 characters with hyphens"
+        );
         assert!(
             uuid_part.chars().all(|c| c.is_ascii_hexdigit() || c == '-'),
             "UUID should only contain hex digits and hyphens"
@@ -1344,7 +1406,7 @@ mod session_security {
 // attestation context.
 
 mod owasp_llm_attestation {
-    use nucleus_identity::{LaunchAttestation, AttestationRequirements};
+    use nucleus_identity::{AttestationRequirements, LaunchAttestation};
 
     /// LLM01: Prompt Injection via attestation metadata
     /// Attackers might try to embed malicious instructions in attestation data
@@ -1352,11 +1414,7 @@ mod owasp_llm_attestation {
     fn test_prompt_injection_in_attestation() {
         // Attestation only stores hashes, not arbitrary data
         // But test that hash display doesn't enable injection
-        let attestation = LaunchAttestation::from_hashes(
-            [0x00; 32],
-            [0x00; 32],
-            [0x00; 32],
-        );
+        let attestation = LaunchAttestation::from_hashes([0x00; 32], [0x00; 32], [0x00; 32]);
 
         let summary = attestation.to_hex_summary();
         // Summary should only contain hex and field labels
@@ -1373,11 +1431,7 @@ mod owasp_llm_attestation {
     /// LLM02: Insecure Output Handling - verify attestation output is safe
     #[test]
     fn test_attestation_output_sanitization() {
-        let attestation = LaunchAttestation::from_hashes(
-            [0xaa; 32],
-            [0xbb; 32],
-            [0xcc; 32],
-        );
+        let attestation = LaunchAttestation::from_hashes([0xaa; 32], [0xbb; 32], [0xcc; 32]);
 
         let summary = attestation.to_hex_summary();
 
@@ -1401,23 +1455,16 @@ mod owasp_llm_attestation {
         let malicious_config_hash = [0x22; 32];
 
         // Requirements allow only legitimate config
-        let req = AttestationRequirements::any()
-            .allow_config(legitimate_config_hash);
+        let req = AttestationRequirements::any().allow_config(legitimate_config_hash);
 
         // Legitimate config should pass
-        let legitimate = LaunchAttestation::from_hashes(
-            [0xaa; 32],
-            [0xbb; 32],
-            legitimate_config_hash,
-        );
+        let legitimate =
+            LaunchAttestation::from_hashes([0xaa; 32], [0xbb; 32], legitimate_config_hash);
         assert!(req.verify(&legitimate).is_ok());
 
         // Malicious config should fail
-        let malicious = LaunchAttestation::from_hashes(
-            [0xaa; 32],
-            [0xbb; 32],
-            malicious_config_hash,
-        );
+        let malicious =
+            LaunchAttestation::from_hashes([0xaa; 32], [0xbb; 32], malicious_config_hash);
         assert!(
             req.verify(&malicious).is_err(),
             "Tampered config should be rejected"
@@ -1440,30 +1487,20 @@ mod owasp_llm_attestation {
             .allow_rootfs(trusted_rootfs);
 
         // Trusted attestation passes
-        let trusted = LaunchAttestation::from_hashes(
-            trusted_kernel,
-            trusted_rootfs,
-            [0x00; 32],
-        );
+        let trusted = LaunchAttestation::from_hashes(trusted_kernel, trusted_rootfs, [0x00; 32]);
         assert!(req.verify(&trusted).is_ok());
 
         // Compromised kernel rejected
-        let bad_kernel = LaunchAttestation::from_hashes(
-            compromised_kernel,
-            trusted_rootfs,
-            [0x00; 32],
-        );
+        let bad_kernel =
+            LaunchAttestation::from_hashes(compromised_kernel, trusted_rootfs, [0x00; 32]);
         assert!(
             req.verify(&bad_kernel).is_err(),
             "Compromised kernel should be rejected"
         );
 
         // Compromised rootfs rejected
-        let bad_rootfs = LaunchAttestation::from_hashes(
-            trusted_kernel,
-            compromised_rootfs,
-            [0x00; 32],
-        );
+        let bad_rootfs =
+            LaunchAttestation::from_hashes(trusted_kernel, compromised_rootfs, [0x00; 32]);
         assert!(
             req.verify(&bad_rootfs).is_err(),
             "Compromised rootfs should be rejected"
@@ -1474,18 +1511,10 @@ mod owasp_llm_attestation {
     #[test]
     fn test_attestation_policy_enforcement() {
         // Strict requirements
-        let strict = AttestationRequirements::exact(
-            [0x11; 32],
-            [0x22; 32],
-            [0x33; 32],
-        );
+        let strict = AttestationRequirements::exact([0x11; 32], [0x22; 32], [0x33; 32]);
 
         // Only exact match passes
-        let exact_match = LaunchAttestation::from_hashes(
-            [0x11; 32],
-            [0x22; 32],
-            [0x33; 32],
-        );
+        let exact_match = LaunchAttestation::from_hashes([0x11; 32], [0x22; 32], [0x33; 32]);
         assert!(strict.verify(&exact_match).is_ok());
 
         // Any deviation fails
@@ -1515,15 +1544,11 @@ mod owasp_llm_attestation {
         let code_executor_config = [0x02; 32];
 
         // Web scraper requirements
-        let web_scraper_req = AttestationRequirements::any()
-            .allow_config(web_scraper_config);
+        let web_scraper_req = AttestationRequirements::any().allow_config(web_scraper_config);
 
         // Code executor attestation should NOT pass web scraper requirements
-        let code_executor_att = LaunchAttestation::from_hashes(
-            [0xaa; 32],
-            [0xbb; 32],
-            code_executor_config,
-        );
+        let code_executor_att =
+            LaunchAttestation::from_hashes([0xaa; 32], [0xbb; 32], code_executor_config);
 
         assert!(
             web_scraper_req.verify(&code_executor_att).is_err(),
@@ -1539,11 +1564,7 @@ mod owasp_llm_attestation {
         // Additional checks (like identity verification) are still needed
 
         // This is a documentation test - attestation is ONE layer of defense
-        let attestation = LaunchAttestation::from_hashes(
-            [0xaa; 32],
-            [0xbb; 32],
-            [0xcc; 32],
-        );
+        let attestation = LaunchAttestation::from_hashes([0xaa; 32], [0xbb; 32], [0xcc; 32]);
 
         // Attestation passes empty requirements
         let any_req = AttestationRequirements::any();

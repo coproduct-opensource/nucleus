@@ -1147,10 +1147,10 @@ async fn spawn_firecracker_pod(
                     }
                     Err(e) => {
                         tracing::warn!(
-                            "failed to compute attestation for pod {}, using standard certificate: {}",
-                            id,
-                            e
-                        );
+                        "failed to compute attestation for pod {}, using standard certificate: {}",
+                        id,
+                        e
+                    );
                         // Fall back to standard certificate without attestation
                         if let Err(e) = manager.prefetch_certificate(&identity).await {
                             tracing::warn!("failed to prefetch certificate for pod {}: {}", id, e);

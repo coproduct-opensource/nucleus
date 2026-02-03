@@ -183,9 +183,10 @@ impl<C: CaClient + 'static> SecretManager<C> {
             let certs = self.session_certs.read().await;
             if let Some(state) = certs.get(&cache_key) {
                 match state {
-                    SessionCertState::Available { cert, session_identity }
-                        if !cert.is_expired() && !session_identity.is_expired() =>
-                    {
+                    SessionCertState::Available {
+                        cert,
+                        session_identity,
+                    } if !cert.is_expired() && !session_identity.is_expired() => {
                         return Ok(cert.clone());
                     }
                     SessionCertState::Initializing(rx) => {
@@ -271,7 +272,12 @@ impl<C: CaClient + 'static> SecretManager<C> {
 
         let cert = match self
             .ca_client
-            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &cert_identity, effective_ttl)
+            .sign_csr(
+                cert_sign.csr(),
+                cert_sign.private_key(),
+                &cert_identity,
+                effective_ttl,
+            )
             .await
         {
             Ok(c) => Arc::new(c),
@@ -321,7 +327,10 @@ impl<C: CaClient + 'static> SecretManager<C> {
     pub async fn forget_session_certificate(&self, parent: &Identity, session_id: &SessionId) {
         let mut certs = self.session_certs.write().await;
         certs.remove(&(parent.clone(), session_id.clone()));
-        debug!("forgot session certificate for {} session {}", parent, session_id);
+        debug!(
+            "forgot session certificate for {} session {}",
+            parent, session_id
+        );
     }
 
     /// Returns all cached session identities as (parent, session_id) pairs.
@@ -445,7 +454,12 @@ impl<C: CaClient + 'static> SecretManager<C> {
 
         let cert = match self
             .ca_client
-            .sign_csr(cert_sign.csr(), cert_sign.private_key(), identity, self.default_ttl)
+            .sign_csr(
+                cert_sign.csr(),
+                cert_sign.private_key(),
+                identity,
+                self.default_ttl,
+            )
             .await
         {
             Ok(c) => Arc::new(c),

@@ -6,7 +6,9 @@
 //! 3. Client certificate is extracted and verified
 //! 4. Requests are processed with identity context
 
-use nucleus_identity::{CaClient, CsrOptions, Identity, SelfSignedCa, TrustBundle, WorkloadCertificate};
+use nucleus_identity::{
+    CaClient, CsrOptions, Identity, SelfSignedCa, TrustBundle, WorkloadCertificate,
+};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -14,7 +16,12 @@ use tokio::net::TcpListener;
 /// Helper to create a test CA and certificates.
 async fn create_test_certs(
     trust_domain: &str,
-) -> (Arc<SelfSignedCa>, WorkloadCertificate, WorkloadCertificate, TrustBundle) {
+) -> (
+    Arc<SelfSignedCa>,
+    WorkloadCertificate,
+    WorkloadCertificate,
+    TrustBundle,
+) {
     let ca = Arc::new(SelfSignedCa::new(trust_domain).unwrap());
     let trust_bundle = ca.trust_bundle().clone();
 
@@ -111,8 +118,8 @@ async fn test_mtls_handshake_succeeds() {
             .build_connector()
             .unwrap();
 
-        let server_name = rustls::pki_types::ServerName::try_from("mtls.nucleus.local".to_string())
-            .unwrap();
+        let server_name =
+            rustls::pki_types::ServerName::try_from("mtls.nucleus.local".to_string()).unwrap();
 
         let mut tls_stream = connector.connect(server_name, stream).await.unwrap();
 
@@ -246,7 +253,10 @@ async fn test_client_spiffe_id_extraction() {
 
         assert!(certs.is_some(), "client should present certificate");
         let client_certs = certs.unwrap();
-        assert!(!client_certs.is_empty(), "certificate chain should not be empty");
+        assert!(
+            !client_certs.is_empty(),
+            "certificate chain should not be empty"
+        );
 
         // Parse the client certificate and extract SPIFFE ID
         let client_cert_der = client_certs[0].as_ref();

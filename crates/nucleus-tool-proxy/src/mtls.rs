@@ -19,6 +19,7 @@
 //! ```
 
 use axum::extract::connect_info::Connected;
+#[allow(unused_imports)]
 use axum::Router;
 use nucleus_identity::{TlsServerConfig, TrustBundle, WorkloadCertificate};
 use std::io;
@@ -53,6 +54,7 @@ impl MtlsConfig {
 
 /// Client certificate information extracted from mTLS handshake.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct ClientCertInfo {
     /// The DER-encoded client certificate.
     pub cert_der: Vec<u8>,
@@ -60,11 +62,15 @@ pub struct ClientCertInfo {
     pub spiffe_id: Option<String>,
 }
 
+#[allow(dead_code)]
 impl ClientCertInfo {
     /// Creates a new ClientCertInfo from a DER-encoded certificate.
     pub fn from_der(cert_der: Vec<u8>) -> Self {
         let spiffe_id = extract_spiffe_id(&cert_der);
-        Self { cert_der, spiffe_id }
+        Self {
+            cert_der,
+            spiffe_id,
+        }
     }
 
     /// Returns the DER-encoded certificate bytes.
@@ -108,6 +114,7 @@ pub struct MtlsListener {
     tls_acceptor: tokio_rustls::TlsAcceptor,
 }
 
+#[allow(dead_code)]
 impl MtlsListener {
     /// Creates a new mTLS listener.
     pub fn new(
@@ -129,6 +136,7 @@ impl MtlsListener {
 
 /// Connection info that includes both peer address and client certificate.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct MtlsConnectInfo {
     /// The peer socket address.
     pub peer_addr: SocketAddr,
@@ -142,6 +150,7 @@ pub struct MtlsStream {
     connect_info: MtlsConnectInfo,
 }
 
+#[allow(dead_code)]
 impl MtlsStream {
     /// Returns the client certificate info, if present.
     pub fn client_cert(&self) -> Option<&ClientCertInfo> {
@@ -293,6 +302,7 @@ fn extract_client_cert_from_tls(tls_stream: &TlsStream<TcpStream>) -> Option<Cli
 ///
 /// This function wraps TCP connections with TLS, requiring and verifying
 /// client certificates against the configured trust bundle.
+#[allow(dead_code)]
 pub async fn serve_mtls(
     listener: TcpListener,
     app: Router,
@@ -318,6 +328,7 @@ impl<'a> Connected<axum::serve::IncomingStream<'a, MtlsListener>> for MtlsConnec
 }
 
 /// Extension trait to access client certificate from axum request extensions.
+#[allow(dead_code)]
 pub trait ClientCertExt {
     /// Gets the client certificate info from the request, if present.
     fn client_cert(&self) -> Option<&ClientCertInfo>;
@@ -365,10 +376,17 @@ mod tests {
 
         // Create a server identity and certificate
         let identity = Identity::new(trust_domain, "servers", "proxy-server");
-        let csr = CsrOptions::new(identity.to_spiffe_uri()).generate().unwrap();
+        let csr = CsrOptions::new(identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
 
         let cert = ca
-            .sign_csr(csr.csr(), csr.private_key(), &identity, Duration::from_secs(3600))
+            .sign_csr(
+                csr.csr(),
+                csr.private_key(),
+                &identity,
+                Duration::from_secs(3600),
+            )
             .await
             .unwrap();
 
@@ -387,10 +405,17 @@ mod tests {
         let ca = SelfSignedCa::new(trust_domain).unwrap();
 
         let identity = Identity::new(trust_domain, "agents", "claude");
-        let csr = CsrOptions::new(identity.to_spiffe_uri()).generate().unwrap();
+        let csr = CsrOptions::new(identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
 
         let cert = ca
-            .sign_csr(csr.csr(), csr.private_key(), &identity, Duration::from_secs(3600))
+            .sign_csr(
+                csr.csr(),
+                csr.private_key(),
+                &identity,
+                Duration::from_secs(3600),
+            )
             .await
             .unwrap();
 
@@ -412,10 +437,17 @@ mod tests {
         let ca = SelfSignedCa::new(trust_domain).unwrap();
 
         let identity = Identity::new(trust_domain, "workloads", "test-worker");
-        let csr = CsrOptions::new(identity.to_spiffe_uri()).generate().unwrap();
+        let csr = CsrOptions::new(identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
 
         let cert = ca
-            .sign_csr(csr.csr(), csr.private_key(), &identity, Duration::from_secs(3600))
+            .sign_csr(
+                csr.csr(),
+                csr.private_key(),
+                &identity,
+                Duration::from_secs(3600),
+            )
             .await
             .unwrap();
 

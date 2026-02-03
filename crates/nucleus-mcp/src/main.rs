@@ -743,7 +743,12 @@ mod tests {
 
         // When sorted lexicographically, id1 should come before id2
         // (because UUID v7 puts timestamp in most significant bits)
-        assert!(id1 < id2, "UUID v7 should be time-ordered: {} should < {}", id1, id2);
+        assert!(
+            id1 < id2,
+            "UUID v7 should be time-ordered: {} should < {}",
+            id1,
+            id2
+        );
     }
 
     #[test]
