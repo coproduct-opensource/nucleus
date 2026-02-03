@@ -1107,7 +1107,9 @@ async fn spawn_firecracker_pod(
         // Create and register SPIFFE identity if identity management is enabled
         let (pod_identity, identity_manager, workload_api_bridge) =
             if let Some(ref manager) = state.identity_manager {
-                let namespace = spec.metadata.namespace.as_deref().unwrap_or("default");
+                // Use pod name or labels for namespace/service_account context
+                // Since Metadata doesn't have namespace, we default to "default"
+                let namespace = "default";
                 let service_account = spec.metadata.name.as_deref().unwrap_or("");
                 let identity = manager.identity_for_pod(id, namespace, service_account);
 
@@ -1164,6 +1166,7 @@ async fn spawn_firecracker_pod(
                 let bridge = match workload_api_vsock::WorkloadApiVsockBridge::start(
                     &vsock_path,
                     state.identity_vsock_port,
+                    id,
                     manager.clone(),
                 )
                 .await
