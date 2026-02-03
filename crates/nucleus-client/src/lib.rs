@@ -317,10 +317,7 @@ mod tests {
             .headers
             .iter()
             .any(|(k, _)| k == "x-nucleus-timestamp"));
-        assert!(headers
-            .headers
-            .iter()
-            .any(|(k, _)| k == "x-nucleus-actor"));
+        assert!(headers.headers.iter().any(|(k, _)| k == "x-nucleus-actor"));
     }
 
     #[test]
@@ -331,10 +328,7 @@ mod tests {
         let headers = sign_http_headers(secret, None, body);
 
         assert!(headers.actor.is_none());
-        assert!(!headers
-            .headers
-            .iter()
-            .any(|(k, _)| k == "x-nucleus-actor"));
+        assert!(!headers.headers.iter().any(|(k, _)| k == "x-nucleus-actor"));
     }
 
     #[test]

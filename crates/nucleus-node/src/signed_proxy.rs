@@ -160,8 +160,13 @@ async fn proxy_handler(
         if let Some(ref drand_client) = state.drand_client {
             match drand_client.current_round().await {
                 Ok(round) => {
-                    let sig =
-                        sign_request_with_drand(secret, round, timestamp, actor.as_deref(), &body_bytes);
+                    let sig = sign_request_with_drand(
+                        secret,
+                        round,
+                        timestamp,
+                        actor.as_deref(),
+                        &body_bytes,
+                    );
                     (sig, Some(round))
                 }
                 Err(e) => {
@@ -181,18 +186,27 @@ async fn proxy_handler(
                             // its cache, so if we're here, the cache is too old.
                             // We fall back to non-drand signing as a last resort.
                             warn!("drand unavailable and cache expired, falling back to non-anchored signing: {e}");
-                            (sign_request(secret, timestamp, actor.as_deref(), &body_bytes), None)
+                            (
+                                sign_request(secret, timestamp, actor.as_deref(), &body_bytes),
+                                None,
+                            )
                         }
                     }
                 }
             }
         } else {
             // No drand client configured, use standard signing
-            (sign_request(secret, timestamp, actor.as_deref(), &body_bytes), None)
+            (
+                sign_request(secret, timestamp, actor.as_deref(), &body_bytes),
+                None,
+            )
         }
     } else {
         // Non-approval requests use standard signing
-        (sign_request(secret, timestamp, actor.as_deref(), &body_bytes), None)
+        (
+            sign_request(secret, timestamp, actor.as_deref(), &body_bytes),
+            None,
+        )
     };
 
     let uri = build_target_uri(state.target, parts.uri.path_and_query())
@@ -229,8 +243,9 @@ async fn proxy_handler(
     if let Some(round) = drand_round {
         headers.insert(
             HEADER_DRAND_ROUND,
-            HeaderValue::from_str(&round.to_string())
-                .map_err(|e| proxy_error(StatusCode::BAD_REQUEST, format!("bad drand round: {e}")))?,
+            HeaderValue::from_str(&round.to_string()).map_err(|e| {
+                proxy_error(StatusCode::BAD_REQUEST, format!("bad drand round: {e}"))
+            })?,
         );
     }
 

@@ -29,8 +29,8 @@ mod mtls;
 
 use attestation::{AttestationConfig, AttestationVerifier};
 use auth::{AuthConfig, AuthError};
-use nucleus_client::drand::{DrandConfig, DrandFailMode};
 use mtls::{ClientCertInfo, MtlsConfig, MtlsConnectInfo, MtlsListener};
+use nucleus_client::drand::{DrandConfig, DrandFailMode};
 
 #[derive(Parser, Debug)]
 #[command(name = "nucleus-tool-proxy")]

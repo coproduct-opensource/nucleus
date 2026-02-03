@@ -59,7 +59,8 @@ pub const DEFAULT_ROUND_TOLERANCE: u64 = 1;
 /// Chain hash for the League of Entropy mainnet (pedersen-bls-chained).
 /// This identifies the specific drand network and prevents accepting beacons
 /// from test networks or other chains.
-pub const DRAND_CHAIN_HASH: &str = "8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce";
+pub const DRAND_CHAIN_HASH: &str =
+    "8990e7a9aaed2ffed73dbd7092123d6f289930540d7651336225dc172e51b2ce";
 
 /// Public key for the League of Entropy mainnet (pedersen-bls-chained).
 /// This is used to verify BLS signatures on beacons.
@@ -152,8 +153,8 @@ impl DrandConfig {
             .map(|v| v.to_lowercase() != "false" && v != "0")
             .unwrap_or(true);
 
-        let api_url = std::env::var("NUCLEUS_DRAND_URL")
-            .unwrap_or_else(|_| DRAND_API_URL.to_string());
+        let api_url =
+            std::env::var("NUCLEUS_DRAND_URL").unwrap_or_else(|_| DRAND_API_URL.to_string());
 
         let round_tolerance = std::env::var("NUCLEUS_DRAND_TOLERANCE")
             .ok()
@@ -453,10 +454,7 @@ mod async_client {
                 .map_err(|e| DrandError::Network(e.to_string()))?;
 
             if !response.status().is_success() {
-                return Err(DrandError::Network(format!(
-                    "HTTP {}",
-                    response.status()
-                )));
+                return Err(DrandError::Network(format!("HTTP {}", response.status())));
             }
 
             let beacon: DrandBeacon = response
@@ -501,9 +499,7 @@ mod async_client {
             // For pedersen-bls-chained, the message is the previous signature
             let is_valid = if prev_sig_bytes.is_empty() {
                 // Unchained mode: message is the round number
-                pubkey
-                    .verify(beacon.round, &[], &signature_bytes)
-                    .is_ok()
+                pubkey.verify(beacon.round, &[], &signature_bytes).is_ok()
             } else {
                 // Chained mode: message is the previous signature
                 pubkey

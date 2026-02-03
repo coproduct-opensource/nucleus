@@ -382,8 +382,8 @@ mod tests {
         let signature = sign_message(secret, message.as_bytes());
 
         let headers = make_drand_headers(ts, round, &signature, Some(actor));
-        let auth = AuthConfig::new(secret, Duration::from_secs(60))
-            .with_drand(DrandConfig::default());
+        let auth =
+            AuthConfig::new(secret, Duration::from_secs(60)).with_drand(DrandConfig::default());
 
         let result = verify_http_with_drand(&headers, body, &auth);
         assert!(result.is_ok(), "expected success, got {:?}", result);
@@ -412,8 +412,8 @@ mod tests {
         let signature = sign_message(secret, message.as_bytes());
 
         let headers = make_drand_headers(ts, old_round, &signature, Some(actor));
-        let auth = AuthConfig::new(secret, Duration::from_secs(60))
-            .with_drand(DrandConfig::default());
+        let auth =
+            AuthConfig::new(secret, Duration::from_secs(60)).with_drand(DrandConfig::default());
 
         let result = verify_http_with_drand(&headers, body, &auth);
         assert!(matches!(result, Err(AuthError::DrandRoundExpired { .. })));
@@ -462,7 +462,10 @@ mod tests {
         });
 
         let result = verify_http_with_drand(&headers, body, &auth);
-        assert!(result.is_ok(), "cached mode should accept without drand during fallback");
+        assert!(
+            result.is_ok(),
+            "cached mode should accept without drand during fallback"
+        );
 
         let ctx = result.unwrap();
         assert!(ctx.drand_round.is_none());
@@ -480,8 +483,8 @@ mod tests {
         let signature = sign_message(secret, message.as_bytes());
 
         let headers = make_headers(ts, &signature, Some(actor));
-        let auth = AuthConfig::new(secret, Duration::from_secs(60))
-            .with_drand(DrandConfig::disabled());
+        let auth =
+            AuthConfig::new(secret, Duration::from_secs(60)).with_drand(DrandConfig::disabled());
 
         let result = verify_http_with_drand(&headers, body, &auth);
         assert!(result.is_ok());
