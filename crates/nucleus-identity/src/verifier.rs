@@ -440,7 +440,7 @@ mod tests {
         let cert_sign = csr_options.generate().unwrap();
 
         let cert = ca
-            .sign_csr(cert_sign.csr(), &identity, Duration::from_secs(3600))
+            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(3600))
             .await
             .unwrap();
 
@@ -458,7 +458,7 @@ mod tests {
         let cert_sign = csr_options.generate().unwrap();
 
         let cert = ca
-            .sign_csr(cert_sign.csr(), &identity, Duration::from_secs(3600))
+            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(3600))
             .await
             .unwrap();
 
@@ -477,7 +477,7 @@ mod tests {
         let cert_sign = csr_options.generate().unwrap();
 
         let cert = ca
-            .sign_csr(cert_sign.csr(), &actual, Duration::from_secs(3600))
+            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &actual, Duration::from_secs(3600))
             .await
             .unwrap();
 
@@ -499,7 +499,7 @@ mod tests {
         let csr_options = crate::CsrOptions::new(identity.to_spiffe_uri());
         let cert_sign = csr_options.generate().unwrap();
         let rogue_cert = rogue_ca
-            .sign_csr(cert_sign.csr(), &identity, Duration::from_secs(3600))
+            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(3600))
             .await
             .unwrap();
 
@@ -529,7 +529,7 @@ mod tests {
         let csr_options = crate::CsrOptions::new(identity.to_spiffe_uri());
         let cert_sign = csr_options.generate().unwrap();
         let cert = ca
-            .sign_csr(cert_sign.csr(), &identity, Duration::from_secs(3600))
+            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(3600))
             .await
             .unwrap();
 

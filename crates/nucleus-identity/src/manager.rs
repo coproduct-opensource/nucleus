@@ -24,6 +24,7 @@
 use crate::ca::CaClient;
 use crate::certificate::WorkloadCertificate;
 use crate::identity::Identity;
+use crate::session::{SessionId, SessionIdentity};
 use crate::{Error, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -47,6 +48,8 @@ pub struct SecretManager<C: CaClient> {
     ca_client: Arc<C>,
     /// Cached certificates by identity.
     certs: RwLock<HashMap<Identity, CertState>>,
+    /// Cached session certificates by (parent identity, session ID).
+    session_certs: RwLock<HashMap<(Identity, SessionId), SessionCertState>>,
     /// Default TTL for certificates.
     default_ttl: Duration,
     /// Shutdown signal for the refresh loop.
@@ -71,6 +74,23 @@ enum CertState {
     },
 }
 
+/// State of a session certificate in the cache.
+enum SessionCertState {
+    /// Certificate is being initialized; receivers will get the result.
+    Initializing(watch::Receiver<Option<Arc<WorkloadCertificate>>>),
+    /// Certificate is available.
+    Available {
+        cert: Arc<WorkloadCertificate>,
+        session_identity: SessionIdentity,
+    },
+    /// Certificate fetch failed.
+    Unavailable {
+        #[allow(dead_code)]
+        error: String,
+        last_attempt: Instant,
+    },
+}
+
 impl<C: CaClient + 'static> SecretManager<C> {
     /// Creates a new secret manager with the given CA client.
     pub fn new(ca_client: Arc<C>, default_ttl: Duration) -> Arc<Self> {
@@ -79,6 +99,7 @@ impl<C: CaClient + 'static> SecretManager<C> {
         Arc::new(Self {
             ca_client,
             certs: RwLock::new(HashMap::new()),
+            session_certs: RwLock::new(HashMap::new()),
             default_ttl,
             shutdown: shutdown_tx,
         })
@@ -130,6 +151,183 @@ impl<C: CaClient + 'static> SecretManager<C> {
         identity: &Identity,
     ) -> Result<Arc<WorkloadCertificate>> {
         self.fetch_new_certificate(identity).await
+    }
+
+    /// Fetches a session-scoped certificate derived from a parent workload identity.
+    ///
+    /// Session certificates enable audit correlation across multiple tool calls within
+    /// an AI agent conversation. The certificate's identity encodes both the parent
+    /// workload and the unique session ID.
+    ///
+    /// # Arguments
+    ///
+    /// * `session` - The session identity containing parent, session ID, and TTL
+    ///
+    /// # Returns
+    ///
+    /// A certificate valid for `min(session_ttl, parent_cert_remaining_ttl)`.
+    /// The certificate is cached by `(parent_identity, session_id)`.
+    pub async fn fetch_session_certificate(
+        &self,
+        session: &SessionIdentity,
+    ) -> Result<Arc<WorkloadCertificate>> {
+        // Check if session has expired
+        if session.is_expired() {
+            return Err(Error::CertificateExpired);
+        }
+
+        let cache_key = (session.parent().clone(), session.session_id().clone());
+
+        // Fast path: check cache
+        {
+            let certs = self.session_certs.read().await;
+            if let Some(state) = certs.get(&cache_key) {
+                match state {
+                    SessionCertState::Available { cert, session_identity }
+                        if !cert.is_expired() && !session_identity.is_expired() =>
+                    {
+                        return Ok(cert.clone());
+                    }
+                    SessionCertState::Initializing(rx) => {
+                        let mut rx = rx.clone();
+                        drop(certs);
+                        loop {
+                            if let Some(cert) = rx.borrow().as_ref() {
+                                return Ok(cert.clone());
+                            }
+                            if rx.changed().await.is_err() {
+                                return Err(Error::CertificateNotFound(session.to_string()));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Slow path: fetch new session certificate
+        self.fetch_new_session_certificate(session).await
+    }
+
+    /// Fetches a new session certificate from the CA.
+    async fn fetch_new_session_certificate(
+        &self,
+        session: &SessionIdentity,
+    ) -> Result<Arc<WorkloadCertificate>> {
+        let cache_key = (session.parent().clone(), session.session_id().clone());
+        let (tx, rx) = watch::channel(None);
+
+        {
+            let mut certs = self.session_certs.write().await;
+
+            // Check if another task is already initializing
+            if let Some(SessionCertState::Initializing(existing_rx)) = certs.get(&cache_key) {
+                let mut rx = existing_rx.clone();
+                drop(certs);
+                loop {
+                    if let Some(cert) = rx.borrow().as_ref() {
+                        return Ok(cert.clone());
+                    }
+                    if rx.changed().await.is_err() {
+                        return Err(Error::CertificateNotFound(session.to_string()));
+                    }
+                }
+            }
+
+            // Check rate limiting
+            if let Some(SessionCertState::Unavailable { last_attempt, .. }) = certs.get(&cache_key)
+            {
+                if last_attempt.elapsed() < MIN_REFRESH_INTERVAL {
+                    return Err(Error::Internal(
+                        "refresh rate limited; try again later".to_string(),
+                    ));
+                }
+            }
+
+            certs.insert(cache_key.clone(), SessionCertState::Initializing(rx));
+        }
+
+        // Use the certificate identity which embeds session ID in service account.
+        // This creates a SPIFFE-compatible identity where the session ID is part of
+        // the service account name: spiffe://domain/ns/namespace/sa/service-{session-id}
+        let cert_identity = session.to_certificate_identity();
+
+        // Calculate effective TTL: min(session_ttl, default_ttl)
+        let effective_ttl = session
+            .remaining()
+            .map(|r| r.min(self.default_ttl))
+            .unwrap_or(self.default_ttl);
+
+        // Generate CSR with the certificate identity's SPIFFE URI (must match for CA validation)
+        let csr_options = crate::CsrOptions::new(cert_identity.to_spiffe_uri());
+        let cert_sign = match csr_options.generate() {
+            Ok(cs) => cs,
+            Err(e) => {
+                self.mark_session_unavailable(&cache_key, e.to_string())
+                    .await;
+                return Err(e);
+            }
+        };
+
+        let cert = match self
+            .ca_client
+            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &cert_identity, effective_ttl)
+            .await
+        {
+            Ok(c) => Arc::new(c),
+            Err(e) => {
+                self.mark_session_unavailable(&cache_key, e.to_string())
+                    .await;
+                return Err(e);
+            }
+        };
+
+        // Update cache
+        {
+            let mut certs = self.session_certs.write().await;
+            certs.insert(
+                cache_key,
+                SessionCertState::Available {
+                    cert: cert.clone(),
+                    session_identity: session.clone(),
+                },
+            );
+        }
+
+        // Notify waiters
+        let _ = tx.send(Some(cert.clone()));
+
+        info!(
+            "fetched session certificate for {} (session {})",
+            session.parent(),
+            session.session_id()
+        );
+        Ok(cert)
+    }
+
+    /// Marks a session certificate as unavailable after a fetch failure.
+    async fn mark_session_unavailable(&self, key: &(Identity, SessionId), error: String) {
+        let mut certs = self.session_certs.write().await;
+        certs.insert(
+            key.clone(),
+            SessionCertState::Unavailable {
+                error,
+                last_attempt: Instant::now(),
+            },
+        );
+    }
+
+    /// Removes a session certificate from the cache.
+    pub async fn forget_session_certificate(&self, parent: &Identity, session_id: &SessionId) {
+        let mut certs = self.session_certs.write().await;
+        certs.remove(&(parent.clone(), session_id.clone()));
+        debug!("forgot session certificate for {} session {}", parent, session_id);
+    }
+
+    /// Returns all cached session identities as (parent, session_id) pairs.
+    pub async fn cached_session_identities(&self) -> Vec<(Identity, SessionId)> {
+        let certs = self.session_certs.read().await;
+        certs.keys().cloned().collect()
     }
 
     /// Removes a certificate from the cache.
@@ -247,7 +445,7 @@ impl<C: CaClient + 'static> SecretManager<C> {
 
         let cert = match self
             .ca_client
-            .sign_csr(cert_sign.csr(), identity, self.default_ttl)
+            .sign_csr(cert_sign.csr(), cert_sign.private_key(), identity, self.default_ttl)
             .await
         {
             Ok(c) => Arc::new(c),
@@ -322,6 +520,7 @@ impl<C: CaClient> std::fmt::Debug for SecretManager<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::SessionIdentity;
     use crate::SelfSignedCa;
 
     #[tokio::test]
@@ -433,5 +632,108 @@ mod tests {
             let cert = manager.fetch_certificate(id).await.unwrap();
             assert_eq!(cert.identity(), id);
         }
+    }
+
+    #[tokio::test]
+    async fn test_fetch_session_certificate() {
+        let ca = Arc::new(SelfSignedCa::new("nucleus.local").unwrap());
+        let manager = SecretManager::new(ca, Duration::from_secs(3600));
+
+        let parent = Identity::new("nucleus.local", "agents", "claude");
+        let session = SessionIdentity::new(parent.clone(), Duration::from_secs(3600));
+
+        let cert = manager.fetch_session_certificate(&session).await.unwrap();
+
+        // Session cert identity should contain the session ID
+        let cert_identity = cert.identity();
+        assert!(
+            cert_identity.service_account().starts_with("claude-"),
+            "session cert should embed session ID in service account"
+        );
+        assert!(!cert.is_expired());
+    }
+
+    #[tokio::test]
+    async fn test_session_certificate_caching() {
+        let ca = Arc::new(SelfSignedCa::new("nucleus.local").unwrap());
+        let manager = SecretManager::new(ca, Duration::from_secs(3600));
+
+        let parent = Identity::new("nucleus.local", "agents", "claude");
+        let session = SessionIdentity::new(parent, Duration::from_secs(3600));
+
+        let cert1 = manager.fetch_session_certificate(&session).await.unwrap();
+        let cert2 = manager.fetch_session_certificate(&session).await.unwrap();
+
+        // Should return the same cached certificate
+        assert!(Arc::ptr_eq(&cert1, &cert2));
+    }
+
+    #[tokio::test]
+    async fn test_different_sessions_different_certs() {
+        let ca = Arc::new(SelfSignedCa::new("nucleus.local").unwrap());
+        let manager = SecretManager::new(ca, Duration::from_secs(3600));
+
+        let parent = Identity::new("nucleus.local", "agents", "claude");
+        let session1 = SessionIdentity::new(parent.clone(), Duration::from_secs(3600));
+        let session2 = SessionIdentity::new(parent, Duration::from_secs(3600));
+
+        let cert1 = manager.fetch_session_certificate(&session1).await.unwrap();
+        let cert2 = manager.fetch_session_certificate(&session2).await.unwrap();
+
+        // Different sessions should have different certificates
+        assert!(!Arc::ptr_eq(&cert1, &cert2));
+        assert_ne!(cert1.identity(), cert2.identity());
+    }
+
+    #[tokio::test]
+    async fn test_forget_session_certificate() {
+        let ca = Arc::new(SelfSignedCa::new("nucleus.local").unwrap());
+        let manager = SecretManager::new(ca, Duration::from_secs(3600));
+
+        let parent = Identity::new("nucleus.local", "agents", "claude");
+        let session = SessionIdentity::new(parent.clone(), Duration::from_secs(3600));
+
+        let cert1 = manager.fetch_session_certificate(&session).await.unwrap();
+        manager
+            .forget_session_certificate(&parent, session.session_id())
+            .await;
+        let cert2 = manager.fetch_session_certificate(&session).await.unwrap();
+
+        // Should be different certificates after forget
+        assert!(!Arc::ptr_eq(&cert1, &cert2));
+    }
+
+    #[tokio::test]
+    async fn test_cached_session_identities() {
+        let ca = Arc::new(SelfSignedCa::new("nucleus.local").unwrap());
+        let manager = SecretManager::new(ca, Duration::from_secs(3600));
+
+        let parent = Identity::new("nucleus.local", "agents", "claude");
+        let session1 = SessionIdentity::new(parent.clone(), Duration::from_secs(3600));
+        let session2 = SessionIdentity::new(parent.clone(), Duration::from_secs(3600));
+
+        manager.fetch_session_certificate(&session1).await.unwrap();
+        manager.fetch_session_certificate(&session2).await.unwrap();
+
+        let cached = manager.cached_session_identities().await;
+        assert_eq!(cached.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_expired_session_rejected() {
+        let ca = Arc::new(SelfSignedCa::new("nucleus.local").unwrap());
+        let manager = SecretManager::new(ca, Duration::from_secs(3600));
+
+        let parent = Identity::new("nucleus.local", "agents", "claude");
+        // Create an already-expired session
+        let session = SessionIdentity {
+            parent,
+            session_id: crate::session::SessionId::new_v7(),
+            created_at: chrono::Utc::now() - chrono::Duration::seconds(10),
+            ttl: Duration::from_secs(5),
+        };
+
+        let result = manager.fetch_session_certificate(&session).await;
+        assert!(matches!(result, Err(Error::CertificateExpired)));
     }
 }

@@ -2,17 +2,25 @@
 //!
 //! This module integrates the nucleus-identity crate to provide SPIFFE-based
 //! workload identity for Firecracker VMs.
+//!
+//! # Launch Attestation
+//!
+//! When a Firecracker VM is launched, the identity manager can compute
+//! launch attestation based on the kernel, rootfs, and config hashes.
+//! This attestation is embedded in the SPIFFE certificate as an X.509
+//! extension, enabling verifiers to ensure the workload is running in
+//! an attested environment.
 
 use nucleus_identity::{
-    CaClient, Identity, SecretManager, SelfSignedCa, VmRegistry, WorkloadApiClient,
-    WorkloadApiServer,
+    CaClient, Identity, LaunchAttestation, SecretManager, SelfSignedCa, VmRegistry,
+    WorkloadApiClient, WorkloadApiServer,
 };
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use tracing::{error, info};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 /// Identity manager for the node daemon.
@@ -29,6 +37,10 @@ pub struct IdentityManager {
     vm_registry: Arc<VmRegistry>,
     /// Trust domain for this node.
     trust_domain: String,
+    /// Registry mapping pod IDs to their launch attestations.
+    attestation_registry: Arc<RwLock<HashMap<String, LaunchAttestation>>>,
+    /// Default certificate TTL.
+    cert_ttl: Duration,
 }
 
 impl IdentityManager {
@@ -49,6 +61,8 @@ impl IdentityManager {
             ca,
             vm_registry,
             trust_domain,
+            attestation_registry: Arc::new(RwLock::new(HashMap::new())),
+            cert_ttl,
         })
     }
 
@@ -162,6 +176,117 @@ impl IdentityManager {
         self.ca.trust_bundle()
     }
 
+    /// Computes and stores launch attestation for a pod.
+    ///
+    /// This should be called before launching a Firecracker VM to capture
+    /// the integrity measurements of the kernel, rootfs, and configuration.
+    ///
+    /// # Arguments
+    ///
+    /// * `pod_id` - Unique identifier for the pod
+    /// * `kernel_path` - Path to the kernel image
+    /// * `rootfs_path` - Path to the root filesystem
+    /// * `config` - Serialized pod configuration (PodSpec + policy)
+    ///
+    /// # Returns
+    ///
+    /// The computed attestation, or an error if hashing fails.
+    #[allow(dead_code)]
+    pub async fn compute_attestation(
+        &self,
+        pod_id: &str,
+        kernel_path: &Path,
+        rootfs_path: &Path,
+        config: &[u8],
+    ) -> Result<LaunchAttestation, String> {
+        info!(
+            "computing launch attestation for pod {} (kernel={}, rootfs={})",
+            pod_id,
+            kernel_path.display(),
+            rootfs_path.display()
+        );
+
+        let attestation = LaunchAttestation::compute(kernel_path, rootfs_path, config)
+            .await
+            .map_err(|e| format!("failed to compute attestation: {e}"))?;
+
+        debug!(
+            "attestation computed for pod {}: {}",
+            pod_id,
+            attestation.to_hex_summary()
+        );
+
+        // Store in registry
+        let mut registry = self.attestation_registry.write().await;
+        registry.insert(pod_id.to_string(), attestation.clone());
+
+        Ok(attestation)
+    }
+
+    /// Retrieves stored attestation for a pod.
+    #[allow(dead_code)]
+    pub async fn get_attestation(&self, pod_id: &str) -> Option<LaunchAttestation> {
+        let registry = self.attestation_registry.read().await;
+        registry.get(pod_id).cloned()
+    }
+
+    /// Removes stored attestation for a pod.
+    #[allow(dead_code)]
+    pub async fn forget_attestation(&self, pod_id: &str) {
+        let mut registry = self.attestation_registry.write().await;
+        if registry.remove(pod_id).is_some() {
+            debug!("forgot attestation for pod {}", pod_id);
+        }
+    }
+
+    /// Fetches an attested certificate for the given identity and pod.
+    ///
+    /// If attestation exists for the pod, it will be embedded in the certificate
+    /// as an X.509 extension.
+    #[allow(dead_code)]
+    pub async fn fetch_attested_certificate(
+        &self,
+        identity: &Identity,
+        pod_id: &str,
+    ) -> Result<std::sync::Arc<nucleus_identity::WorkloadCertificate>, String> {
+        // Check if we have attestation for this pod
+        let attestation = {
+            let registry = self.attestation_registry.read().await;
+            registry.get(pod_id).cloned()
+        };
+
+        match attestation {
+            Some(att) => {
+                info!(
+                    "fetching attested certificate for {} (pod {})",
+                    identity, pod_id
+                );
+
+                // Generate CSR
+                let csr_options = nucleus_identity::CsrOptions::new(identity.to_spiffe_uri());
+                let cert_sign = csr_options
+                    .generate()
+                    .map_err(|e| format!("CSR generation failed: {e}"))?;
+
+                // Sign with attestation using configured TTL
+                let cert = self
+                    .ca
+                    .sign_attested_csr(cert_sign.csr(), cert_sign.private_key(), identity, self.cert_ttl, &att)
+                    .await
+                    .map_err(|e| format!("attested signing failed: {e}"))?;
+
+                Ok(Arc::new(cert))
+            }
+            None => {
+                warn!(
+                    "no attestation found for pod {}, using standard certificate",
+                    pod_id
+                );
+                self.fetch_certificate(identity).await
+            }
+        }
+    }
+
     /// Creates a Workload API client for the given socket path.
     #[allow(dead_code)]
     pub fn client(socket_path: impl Into<std::path::PathBuf>) -> WorkloadApiClient {
@@ -236,5 +361,113 @@ mod tests {
 
         // Should succeed - CA will sign the certificate
         manager.prefetch_certificate(&identity).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_compute_attestation() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
+
+        // Create temp files for kernel and rootfs
+        let mut kernel = NamedTempFile::new().unwrap();
+        kernel.write_all(b"fake kernel image").unwrap();
+
+        let mut rootfs = NamedTempFile::new().unwrap();
+        rootfs.write_all(b"fake rootfs image").unwrap();
+
+        let config = b"pod spec yaml content";
+        let pod_id = "test-pod-123";
+
+        // Compute attestation
+        let attestation = manager
+            .compute_attestation(pod_id, kernel.path(), rootfs.path(), config)
+            .await
+            .unwrap();
+
+        // Verify attestation is non-trivial
+        assert_ne!(attestation.kernel_hash(), &[0u8; 32]);
+        assert_ne!(attestation.rootfs_hash(), &[0u8; 32]);
+        assert_ne!(attestation.config_hash(), &[0u8; 32]);
+
+        // Verify it's stored in registry
+        let stored = manager.get_attestation(pod_id).await;
+        assert!(stored.is_some());
+        assert_eq!(stored.unwrap().kernel_hash(), attestation.kernel_hash());
+    }
+
+    #[tokio::test]
+    async fn test_forget_attestation() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
+
+        let mut kernel = NamedTempFile::new().unwrap();
+        kernel.write_all(b"kernel").unwrap();
+
+        let mut rootfs = NamedTempFile::new().unwrap();
+        rootfs.write_all(b"rootfs").unwrap();
+
+        let pod_id = "pod-to-forget";
+
+        // Compute and store
+        manager
+            .compute_attestation(pod_id, kernel.path(), rootfs.path(), b"config")
+            .await
+            .unwrap();
+        assert!(manager.get_attestation(pod_id).await.is_some());
+
+        // Forget
+        manager.forget_attestation(pod_id).await;
+        assert!(manager.get_attestation(pod_id).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_attested_certificate() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
+
+        let mut kernel = NamedTempFile::new().unwrap();
+        kernel.write_all(b"kernel").unwrap();
+
+        let mut rootfs = NamedTempFile::new().unwrap();
+        rootfs.write_all(b"rootfs").unwrap();
+
+        let pod_id = "attested-pod";
+        let identity = Identity::new("test.local", "default", "attested-service");
+
+        // Compute attestation first
+        manager
+            .compute_attestation(pod_id, kernel.path(), rootfs.path(), b"config")
+            .await
+            .unwrap();
+
+        // Fetch attested certificate
+        let cert = manager
+            .fetch_attested_certificate(&identity, pod_id)
+            .await
+            .unwrap();
+
+        assert_eq!(cert.identity(), &identity);
+        assert!(!cert.is_expired());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_attested_certificate_no_attestation() {
+        let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
+        let identity = Identity::new("test.local", "default", "non-attested-service");
+        let pod_id = "no-attestation-pod";
+
+        // Should still work, just without attestation extension
+        let cert = manager
+            .fetch_attested_certificate(&identity, pod_id)
+            .await
+            .unwrap();
+
+        assert_eq!(cert.identity(), &identity);
     }
 }

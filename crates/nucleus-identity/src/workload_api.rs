@@ -33,13 +33,15 @@
 //! ```
 
 use crate::ca::CaClient;
+use crate::certificate::{TrustBundle, WorkloadCertificate};
 use crate::identity::Identity;
 use crate::manager::SecretManager;
+use crate::tls::{server_name_from_trust_domain, TlsClientConfig, TlsServerConfig};
 use crate::{Error, Result};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info};
@@ -200,6 +202,83 @@ impl<C: CaClient + 'static> WorkloadApiServer<C> {
         )
         .await
     }
+
+    /// Starts the mTLS Workload API server on the given Unix socket path.
+    ///
+    /// This is the secure production method that wraps Unix socket connections
+    /// with mutual TLS authentication. Both server and client must present
+    /// valid SPIFFE certificates.
+    ///
+    /// # Arguments
+    ///
+    /// * `socket_path` - Path for the Unix socket
+    /// * `identity` - The identity this server serves
+    /// * `server_cert` - Server's workload certificate for TLS
+    /// * `trust_bundle` - Trust bundle for client certificate validation
+    ///
+    /// # Security
+    ///
+    /// - Requires client certificates (mutual TLS)
+    /// - Validates client certs against trust bundle
+    /// - Explicit identity binding prevents confusion attacks
+    pub async fn serve_mtls(
+        &self,
+        socket_path: impl AsRef<Path>,
+        identity: Identity,
+        server_cert: WorkloadCertificate,
+        trust_bundle: TrustBundle,
+    ) -> Result<()> {
+        let path = socket_path.as_ref();
+
+        // Build TLS acceptor
+        let acceptor = TlsServerConfig::new(server_cert, trust_bundle).build_acceptor()?;
+
+        // Remove existing socket if present
+        if path.exists() {
+            tokio::fs::remove_file(path).await?;
+        }
+
+        let listener = UnixListener::bind(path)?;
+        info!(
+            "mTLS workload API server listening on {} for identity {}",
+            path.display(),
+            identity.to_spiffe_uri()
+        );
+
+        loop {
+            match listener.accept().await {
+                Ok((stream, _addr)) => {
+                    let manager = self.secret_manager.clone();
+                    let ca = self.ca_client.clone();
+                    let conn_identity = identity.clone();
+                    let acceptor = acceptor.clone();
+
+                    tokio::spawn(async move {
+                        match acceptor.accept(stream).await {
+                            Ok(tls_stream) => {
+                                if let Err(e) = handle_tls_connection(
+                                    tls_stream,
+                                    manager,
+                                    ca,
+                                    conn_identity,
+                                )
+                                .await
+                                {
+                                    error!("mTLS workload API connection error: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                error!("TLS handshake failed: {}", e);
+                            }
+                        }
+                    });
+                }
+                Err(e) => {
+                    error!("mTLS workload API accept error: {}", e);
+                }
+            }
+        }
+    }
 }
 
 impl<C: CaClient> std::fmt::Debug for WorkloadApiServer<C> {
@@ -219,6 +298,99 @@ async fn handle_connection_with_identity<C: CaClient + 'static>(
     identity: Identity,
 ) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        let bytes_read = reader.read_line(&mut line).await?;
+
+        if bytes_read == 0 {
+            // Connection closed
+            break;
+        }
+
+        let command = line.trim();
+        debug!(
+            "workload API received command: {} for {}",
+            command, identity
+        );
+
+        let response = match command {
+            "FETCH_SVID" => match manager.fetch_certificate(&identity).await {
+                Ok(cert) => {
+                    let response = SvidResponse {
+                        spiffe_id: identity.to_spiffe_uri(),
+                        certificate_chain: cert.chain_pem(),
+                        private_key: cert.private_key_pem().to_string(),
+                        expires_at: cert.expiry().timestamp(),
+                    };
+                    serde_json::to_string(&response)
+                        .unwrap_or_else(|e| format!(r#"{{"error":"serialization failed: {}"}}"#, e))
+                }
+                Err(e) => {
+                    format!(r#"{{"error":"{}"}}"#, e)
+                }
+            },
+
+            "FETCH_BUNDLE" => {
+                let bundle = ca.trust_bundle();
+                let pem: String = bundle
+                    .roots()
+                    .iter()
+                    .map(|c| c.to_pem().to_string())
+                    .collect();
+                let response = BundleResponse {
+                    trust_domain: ca.trust_domain().to_string(),
+                    bundle_pem: pem,
+                };
+                serde_json::to_string(&response)
+                    .unwrap_or_else(|e| format!(r#"{{"error":"serialization failed: {}"}}"#, e))
+            }
+
+            "PING" => r#"{"status":"ok"}"#.to_string(),
+
+            _ => {
+                format!(r#"{{"error":"unknown command: {}"}}"#, command)
+            }
+        };
+
+        writer.write_all(response.as_bytes()).await?;
+        writer.write_all(b"\n").await?;
+        writer.flush().await?;
+    }
+
+    Ok(())
+}
+
+/// Handles a TLS-wrapped Workload API connection.
+///
+/// This is the secure version for mTLS connections.
+async fn handle_tls_connection<S, C>(
+    stream: S,
+    manager: Arc<SecretManager<C>>,
+    ca: Arc<C>,
+    identity: Identity,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    C: CaClient + 'static,
+{
+    handle_generic_connection(stream, manager, ca, identity).await
+}
+
+/// Generic connection handler that works with any async read/write stream.
+async fn handle_generic_connection<S, C>(
+    stream: S,
+    manager: Arc<SecretManager<C>>,
+    ca: Arc<C>,
+    identity: Identity,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    C: CaClient + 'static,
+{
+    let (reader, mut writer) = tokio::io::split(stream);
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
 
@@ -460,10 +632,111 @@ impl WorkloadApiClient {
     }
 }
 
+/// mTLS client for connecting to the Workload API.
+///
+/// This client uses mutual TLS authentication, requiring both the client
+/// to present a certificate and verifying the server's certificate.
+pub struct MtlsWorkloadApiClient {
+    socket_path: std::path::PathBuf,
+    client_cert: WorkloadCertificate,
+    trust_bundle: TrustBundle,
+    trust_domain: String,
+}
+
+impl MtlsWorkloadApiClient {
+    /// Creates a new mTLS client for the given socket path.
+    ///
+    /// # Arguments
+    ///
+    /// * `socket_path` - Path to the Unix socket
+    /// * `client_cert` - Client's workload certificate
+    /// * `trust_bundle` - Trust bundle for server verification
+    /// * `trust_domain` - Trust domain (used as server name for TLS)
+    pub fn new(
+        socket_path: impl Into<std::path::PathBuf>,
+        client_cert: WorkloadCertificate,
+        trust_bundle: TrustBundle,
+        trust_domain: impl Into<String>,
+    ) -> Self {
+        Self {
+            socket_path: socket_path.into(),
+            client_cert,
+            trust_bundle,
+            trust_domain: trust_domain.into(),
+        }
+    }
+
+    /// Fetches the X.509 SVID from the Workload API over mTLS.
+    pub async fn fetch_svid(&self) -> Result<crate::WorkloadCertificate> {
+        let response = self.send_command("FETCH_SVID").await?;
+
+        let svid: SvidResponse = serde_json::from_str(&response)
+            .map_err(|e| Error::Internal(format!("failed to parse SVID response: {}", e)))?;
+
+        if svid.spiffe_id.is_empty() {
+            return Err(Error::Internal("empty SVID response".to_string()));
+        }
+
+        crate::WorkloadCertificate::from_pem(&svid.certificate_chain, &svid.private_key)
+    }
+
+    /// Fetches the trust bundle from the Workload API over mTLS.
+    pub async fn fetch_bundle(&self) -> Result<crate::certificate::TrustBundle> {
+        let response = self.send_command("FETCH_BUNDLE").await?;
+
+        let bundle: BundleResponse = serde_json::from_str(&response)
+            .map_err(|e| Error::Internal(format!("failed to parse bundle response: {}", e)))?;
+
+        crate::certificate::TrustBundle::from_pem(&bundle.bundle_pem)
+    }
+
+    /// Pings the Workload API to check connectivity over mTLS.
+    pub async fn ping(&self) -> Result<()> {
+        let response = self.send_command("PING").await?;
+        if response.contains("ok") {
+            Ok(())
+        } else {
+            Err(Error::Internal(format!("ping failed: {}", response)))
+        }
+    }
+
+    /// Sends a command to the Workload API over mTLS and returns the response.
+    async fn send_command(&self, command: &str) -> Result<String> {
+        // Build TLS connector with SPIFFE verification
+        let connector = TlsClientConfig::new(
+            self.client_cert.clone(),
+            self.trust_bundle.clone(),
+        )
+        .with_spiffe_trust_domain(&self.trust_domain)
+        .build_connector()?;
+
+        // Connect Unix socket
+        let stream = UnixStream::connect(&self.socket_path).await?;
+
+        // Wrap with TLS
+        let server_name = server_name_from_trust_domain(&self.trust_domain)?;
+        let tls_stream = connector.connect(server_name, stream).await.map_err(|e| {
+            Error::Internal(format!("TLS handshake failed: {}", e))
+        })?;
+
+        let (reader, mut writer) = tokio::io::split(tls_stream);
+        let mut reader = BufReader::new(reader);
+
+        writer.write_all(command.as_bytes()).await?;
+        writer.write_all(b"\n").await?;
+        writer.flush().await?;
+
+        let mut response = String::new();
+        reader.read_line(&mut response).await?;
+
+        Ok(response.trim().to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SelfSignedCa;
+    use crate::{CsrOptions, SelfSignedCa};
     use std::time::Duration;
     use tempfile::tempdir;
 
@@ -542,6 +815,176 @@ mod tests {
         // Test fetch SVID
         let cert = client.fetch_svid().await.unwrap();
         assert_eq!(cert.identity(), &identity);
+
+        // Cleanup
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_mtls_workload_api_client_server() {
+        let temp_dir = tempdir().unwrap();
+        let socket_path = temp_dir.path().join("mtls-workload-api.sock");
+
+        let ca = Arc::new(SelfSignedCa::new("nucleus.local").unwrap());
+        let manager = SecretManager::new(ca.clone(), Duration::from_secs(3600));
+        let registry = Arc::new(RwLock::new(HashMap::new()));
+
+        // Create server identity and certificate
+        let server_identity = Identity::new("nucleus.local", "default", "workload-api-server");
+        let server_cert_sign = CsrOptions::new(server_identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        let server_cert = ca
+            .sign_csr(
+                server_cert_sign.csr(),
+                server_cert_sign.private_key(),
+                &server_identity,
+                Duration::from_secs(3600),
+            )
+            .await
+            .unwrap();
+
+        // Create client identity and certificate
+        let client_identity = Identity::new("nucleus.local", "default", "workload-api-client");
+        let client_cert_sign = CsrOptions::new(client_identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        let client_cert = ca
+            .sign_csr(
+                client_cert_sign.csr(),
+                client_cert_sign.private_key(),
+                &client_identity,
+                Duration::from_secs(3600),
+            )
+            .await
+            .unwrap();
+
+        let trust_bundle = ca.trust_bundle().clone();
+
+        let server = WorkloadApiServer::new(manager, ca.clone(), registry);
+
+        // Start mTLS server in background
+        let socket_path_clone = socket_path.clone();
+        let server_cert_clone = server_cert.clone();
+        let trust_bundle_clone = trust_bundle.clone();
+        let served_identity = server_identity.clone();
+        let server_handle = tokio::spawn(async move {
+            server
+                .serve_mtls(
+                    &socket_path_clone,
+                    served_identity,
+                    server_cert_clone,
+                    trust_bundle_clone,
+                )
+                .await
+        });
+
+        // Wait for server to start
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Test mTLS client
+        let client = MtlsWorkloadApiClient::new(
+            &socket_path,
+            client_cert,
+            trust_bundle,
+            "nucleus.local",
+        );
+
+        // Test ping
+        client.ping().await.unwrap();
+
+        // Test fetch bundle
+        let bundle = client.fetch_bundle().await.unwrap();
+        assert!(!bundle.roots().is_empty());
+
+        // Test fetch SVID - should return the server's served identity
+        let cert = client.fetch_svid().await.unwrap();
+        assert_eq!(cert.identity(), &server_identity);
+
+        // Cleanup
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_mtls_rejects_untrusted_client() {
+        let temp_dir = tempdir().unwrap();
+        let socket_path = temp_dir.path().join("mtls-reject-test.sock");
+
+        // Create server CA
+        let server_ca = Arc::new(SelfSignedCa::new("nucleus.local").unwrap());
+        let manager = SecretManager::new(server_ca.clone(), Duration::from_secs(3600));
+        let registry = Arc::new(RwLock::new(HashMap::new()));
+
+        // Create server identity and certificate
+        let server_identity = Identity::new("nucleus.local", "default", "workload-api-server");
+        let server_cert_sign = CsrOptions::new(server_identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        let server_cert = server_ca
+            .sign_csr(
+                server_cert_sign.csr(),
+                server_cert_sign.private_key(),
+                &server_identity,
+                Duration::from_secs(3600),
+            )
+            .await
+            .unwrap();
+
+        // Create a DIFFERENT CA for the client (untrusted)
+        let untrusted_ca = SelfSignedCa::new("untrusted.local").unwrap();
+        let client_identity = Identity::new("untrusted.local", "evil", "attacker");
+        let client_cert_sign = CsrOptions::new(client_identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        let client_cert = untrusted_ca
+            .sign_csr(
+                client_cert_sign.csr(),
+                client_cert_sign.private_key(),
+                &client_identity,
+                Duration::from_secs(3600),
+            )
+            .await
+            .unwrap();
+
+        let server_trust_bundle = server_ca.trust_bundle().clone();
+        let untrusted_bundle = untrusted_ca.trust_bundle().clone();
+
+        let server = WorkloadApiServer::new(manager, server_ca.clone(), registry);
+
+        // Start mTLS server in background
+        let socket_path_clone = socket_path.clone();
+        let server_cert_clone = server_cert.clone();
+        let trust_bundle_clone = server_trust_bundle.clone();
+        let served_identity = server_identity.clone();
+        let server_handle = tokio::spawn(async move {
+            server
+                .serve_mtls(
+                    &socket_path_clone,
+                    served_identity,
+                    server_cert_clone,
+                    trust_bundle_clone,
+                )
+                .await
+        });
+
+        // Wait for server to start
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Try connecting with untrusted client cert
+        // Client uses the untrusted CA's bundle (so it won't trust server)
+        // Server uses server CA's bundle (so it won't trust client)
+        let client = MtlsWorkloadApiClient::new(
+            &socket_path,
+            client_cert,
+            untrusted_bundle,
+            "untrusted.local",
+        );
+
+        // This should fail because:
+        // 1. Server won't trust the client's certificate (different CA)
+        // 2. Client won't trust the server's certificate (different CA)
+        let result = client.ping().await;
+        assert!(result.is_err());
 
         // Cleanup
         server_handle.abort();

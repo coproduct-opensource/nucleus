@@ -40,14 +40,15 @@
 //! # });
 //! ```
 
+use crate::attestation::LaunchAttestation;
 use crate::ca::CaClient;
 use crate::certificate::{Certificate, PrivateKey, TrustBundle, WorkloadCertificate};
 use crate::identity::Identity;
 use crate::{Error, Result};
 use async_trait::async_trait;
 use rcgen::{
-    BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa,
-    KeyPair, KeyUsagePurpose, SanType,
+    BasicConstraints, CertificateParams, CustomExtension, DistinguishedName, DnType,
+    ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, SanType,
 };
 use std::time::Duration;
 use time::{Duration as TimeDuration, OffsetDateTime};
@@ -320,6 +321,17 @@ impl SelfSignedCa {
         identity: &Identity,
         ttl: Duration,
     ) -> Result<Vec<Certificate>> {
+        self.sign_with_keypair_and_extensions(key_pair, identity, ttl, vec![])
+    }
+
+    /// Signs a certificate using the provided key pair with custom extensions.
+    fn sign_with_keypair_and_extensions(
+        &self,
+        key_pair: &KeyPair,
+        identity: &Identity,
+        ttl: Duration,
+        custom_extensions: Vec<CustomExtension>,
+    ) -> Result<Vec<Certificate>> {
         // Build certificate parameters
         let mut params = CertificateParams::new(vec![])
             .map_err(|e| Error::CaSigning(format!("failed to create params: {e}")))?;
@@ -352,6 +364,9 @@ impl SelfSignedCa {
             .map_err(|e| Error::CaSigning(format!("invalid SAN: {e}")))?;
         params.subject_alt_names = vec![SanType::URI(san)];
 
+        // Add custom extensions (e.g., attestation)
+        params.custom_extensions = custom_extensions;
+
         // Create an issuer from the root CA params and key
         let issuer = rcgen::Issuer::from_params(&self.root_params, &self.root_key);
 
@@ -367,74 +382,20 @@ impl SelfSignedCa {
         Ok(vec![leaf_cert, self.root_certificate.clone()])
     }
 
-    /// Signs a workload certificate for the given identity.
+    /// Creates a custom X.509 extension for launch attestation.
     ///
-    /// **Deprecated**: This method generates a new key pair, which is a security
-    /// anti-pattern. Use `sign_csr_with_key` instead.
-    #[deprecated(note = "use sign_csr_with_key instead to avoid key escrow")]
-    fn sign_workload_cert(
-        &self,
-        identity: &Identity,
-        ttl: Duration,
-    ) -> Result<(Vec<Certificate>, KeyPair)> {
-        // Validate trust domain
-        if identity.trust_domain() != self.trust_domain {
-            return Err(Error::TrustDomainMismatch {
-                expected: self.trust_domain.clone(),
-                actual: identity.trust_domain().to_string(),
-            });
-        }
+    /// OID: 1.3.6.1.4.1.57212.1.1 (Nucleus Launch Attestation)
+    /// Content: DER-encoded attestation per TCG DICE conventions
+    fn create_attestation_extension(attestation: &LaunchAttestation) -> CustomExtension {
+        // OID components: 1.3.6.1.4.1.57212.1.1
+        // (iso.org.dod.internet.private.enterprise.57212.attestation.launch)
+        let oid: &[u64] = &[1, 3, 6, 1, 4, 1, 57212, 1, 1];
+        let content = attestation.to_der();
 
-        // Generate a new key pair for the workload
-        let workload_key = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)
-            .map_err(|e| Error::CaSigning(format!("workload key generation failed: {e}")))?;
-
-        // Build certificate parameters with empty SAN list initially
-        let mut params = CertificateParams::new(vec![])
-            .map_err(|e| Error::CaSigning(format!("failed to create params: {e}")))?;
-
-        // Set distinguished name
-        let mut dn = DistinguishedName::new();
-        dn.push(DnType::CommonName, identity.service_account());
-        dn.push(DnType::OrganizationalUnitName, identity.namespace());
-        params.distinguished_name = dn;
-
-        // Set validity
-        let now = OffsetDateTime::now_utc();
-        let ttl_duration = TimeDuration::new(ttl.as_secs() as i64, 0);
-        params.not_before = now;
-        params.not_after = now + ttl_duration;
-
-        // Set as end-entity certificate
-        params.is_ca = IsCa::NoCa;
-        params.key_usages = vec![
-            KeyUsagePurpose::DigitalSignature,
-            KeyUsagePurpose::KeyEncipherment,
-        ];
-        params.extended_key_usages = vec![
-            ExtendedKeyUsagePurpose::ServerAuth,
-            ExtendedKeyUsagePurpose::ClientAuth,
-        ];
-
-        // Set SPIFFE URI as SAN
-        let san = rcgen::string::Ia5String::try_from(identity.to_spiffe_uri())
-            .map_err(|e| Error::CaSigning(format!("invalid SAN: {e}")))?;
-        params.subject_alt_names = vec![SanType::URI(san)];
-
-        // Create an issuer from the root CA params and key
-        let issuer = rcgen::Issuer::from_params(&self.root_params, &self.root_key);
-
-        // Sign the certificate
-        let signed_cert = params
-            .signed_by(&workload_key, &issuer)
-            .map_err(|e| Error::CaSigning(format!("certificate signing failed: {e}")))?;
-
-        let leaf_der = signed_cert.der().to_vec();
-        let leaf_cert = Certificate::from_der(leaf_der);
-
-        // Return chain (leaf + root) and the key pair
-        let chain = vec![leaf_cert, self.root_certificate.clone()];
-        Ok((chain, workload_key))
+        let mut ext = CustomExtension::from_oid_content(oid, content);
+        // Mark as non-critical so verifiers that don't understand it can still process the cert
+        ext.set_criticality(false);
+        ext
     }
 }
 
@@ -443,8 +404,21 @@ impl CaClient for SelfSignedCa {
     async fn sign_csr(
         &self,
         csr: &str,
+        private_key: &str,
         identity: &Identity,
         ttl: Duration,
+    ) -> Result<WorkloadCertificate> {
+        // Delegate to the existing secure method that properly handles CSR + private key
+        self.sign_csr_with_key(csr, private_key, identity, ttl).await
+    }
+
+    async fn sign_attested_csr(
+        &self,
+        csr: &str,
+        private_key: &str,
+        identity: &Identity,
+        ttl: Duration,
+        attestation: &LaunchAttestation,
     ) -> Result<WorkloadCertificate> {
         // Validate the CSR and extract the SPIFFE URI
         let csr_spiffe_uri = self.validate_csr(csr)?;
@@ -466,22 +440,28 @@ impl CaClient for SelfSignedCa {
             });
         }
 
-        // NOTE: Due to rcgen's API limitations, we generate a new key pair here.
-        // This is a security limitation - in production, use sign_csr_with_key()
-        // or a proper CA that can sign with just the public key from the CSR.
-        //
-        // The CSR validation above still provides value:
-        // - Verifies the requester has a valid private key (CSR signature check)
-        // - Verifies the SPIFFE URI in the CSR matches what's requested
-        #[allow(deprecated)]
-        let (chain, key_pair) = self.sign_workload_cert(identity, ttl)?;
+        // Load the private key as a KeyPair (required by rcgen)
+        // The workload provides their own key - CA never generates keys
+        let key_pair = KeyPair::from_pem(private_key)
+            .map_err(|e| Error::CaSigning(format!("failed to load private key: {e}")))?;
+
+        // Create attestation extension
+        let attestation_ext = Self::create_attestation_extension(attestation);
+
+        // Sign with the workload's own key pair and attestation extension
+        let chain = self.sign_with_keypair_and_extensions(
+            &key_pair,
+            identity,
+            ttl,
+            vec![attestation_ext],
+        )?;
 
         let expiry = chain[0].not_after()?;
-        let private_key = PrivateKey::from_pem(&key_pair.serialize_pem())?;
+        let private_key_obj = PrivateKey::from_pem(private_key)?;
 
         Ok(WorkloadCertificate::new(
             chain,
-            private_key,
+            private_key_obj,
             expiry,
             identity.clone(),
         ))
@@ -549,13 +529,16 @@ mod tests {
         let cert_sign = csr_options.generate().unwrap();
 
         let cert = ca
-            .sign_csr(cert_sign.csr(), &identity, Duration::from_secs(3600))
+            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(3600))
             .await
             .unwrap();
 
         assert_eq!(cert.identity(), &identity);
         assert!(!cert.is_expired());
         assert_eq!(cert.chain().len(), 2); // Leaf + root
+
+        // Verify the certificate uses the workload's own key (no key escrow)
+        assert_eq!(cert.private_key_pem(), cert_sign.private_key());
     }
 
     #[tokio::test]
@@ -567,7 +550,7 @@ mod tests {
         let cert_sign = csr_options.generate().unwrap();
 
         let result = ca
-            .sign_csr(cert_sign.csr(), &identity, Duration::from_secs(3600))
+            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(3600))
             .await;
 
         assert!(matches!(result, Err(Error::TrustDomainMismatch { .. })));
@@ -588,6 +571,7 @@ mod tests {
         let result = ca
             .sign_csr(
                 cert_sign.csr(),
+                cert_sign.private_key(),
                 &requested_identity,
                 Duration::from_secs(3600),
             )
@@ -621,10 +605,10 @@ mod tests {
         // Both CSRs should successfully validate since they have valid signatures
         // (This just confirms the signature verification is working)
         let result1 = ca
-            .sign_csr(cert_sign.csr(), &identity, Duration::from_secs(3600))
+            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(3600))
             .await;
         let result2 = ca
-            .sign_csr(other_cert_sign.csr(), &identity, Duration::from_secs(3600))
+            .sign_csr(other_cert_sign.csr(), other_cert_sign.private_key(), &identity, Duration::from_secs(3600))
             .await;
 
         assert!(result1.is_ok(), "valid CSR 1 should be accepted");
@@ -636,11 +620,15 @@ mod tests {
         let ca = SelfSignedCa::new("nucleus.local").unwrap();
         let identity = Identity::new("nucleus.local", "default", "my-service");
 
+        // Generate a valid key to pass along
+        let csr_options = crate::CsrOptions::new(identity.to_spiffe_uri());
+        let cert_sign = csr_options.generate().unwrap();
+
         // Test with completely invalid CSR data
         let invalid_csr = "-----BEGIN CERTIFICATE REQUEST-----\nYm9ndXMgZGF0YQ==\n-----END CERTIFICATE REQUEST-----";
 
         let result = ca
-            .sign_csr(invalid_csr, &identity, Duration::from_secs(3600))
+            .sign_csr(invalid_csr, cert_sign.private_key(), &identity, Duration::from_secs(3600))
             .await;
 
         // Should fail during parsing
@@ -663,7 +651,7 @@ mod tests {
         let cert_sign = csr_options.generate().unwrap();
 
         let cert = ca
-            .sign_csr(cert_sign.csr(), &identity, Duration::from_secs(3600))
+            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(3600))
             .await
             .unwrap();
 
@@ -682,7 +670,7 @@ mod tests {
 
         // Request a 1 hour TTL
         let cert = ca
-            .sign_csr(cert_sign.csr(), &identity, Duration::from_secs(3600))
+            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(3600))
             .await
             .unwrap();
 
@@ -717,5 +705,73 @@ mod tests {
 
         // The returned certificate should use the same private key we provided
         assert_eq!(cert.private_key_pem(), original_private_key);
+    }
+
+    #[tokio::test]
+    async fn test_sign_attested_csr() {
+        use crate::attestation::LaunchAttestation;
+
+        let ca = SelfSignedCa::new("nucleus.local").unwrap();
+        let identity = Identity::new("nucleus.local", "default", "attested-service");
+
+        let csr_options = crate::CsrOptions::new(identity.to_spiffe_uri());
+        let cert_sign = csr_options.generate().unwrap();
+
+        // Create test attestation
+        let attestation = LaunchAttestation::from_hashes(
+            [0xaa; 32], // kernel
+            [0xbb; 32], // rootfs
+            [0xcc; 32], // config
+        );
+
+        let cert = ca
+            .sign_attested_csr(
+                cert_sign.csr(),
+                cert_sign.private_key(),
+                &identity,
+                Duration::from_secs(3600),
+                &attestation,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(cert.identity(), &identity);
+        assert!(!cert.is_expired());
+
+        // The certificate should contain the attestation extension
+        // (We can verify this by checking the DER includes our OID)
+        let leaf_der = cert.leaf().der();
+        // OID 1.3.6.1.4.1.57212.1.1 encodes to these bytes in DER
+        // The attestation content (0xaa, 0xbb, 0xcc patterns) should be present
+        assert!(
+            leaf_der.windows(3).any(|w| w == [0xaa, 0xaa, 0xaa]),
+            "certificate should contain attestation extension with kernel hash"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_attestation_extension_creation() {
+        use crate::attestation::LaunchAttestation;
+
+        let attestation = LaunchAttestation::from_hashes(
+            [0x11; 32],
+            [0x22; 32],
+            [0x33; 32],
+        );
+
+        let ext = SelfSignedCa::create_attestation_extension(&attestation);
+
+        // Check OID components
+        let oid_components: Vec<u64> = ext.oid_components().collect();
+        assert_eq!(oid_components, vec![1, 3, 6, 1, 4, 1, 57212, 1, 1]);
+
+        // Check criticality is false (non-critical extension)
+        assert!(!ext.criticality());
+
+        // Check content is valid DER
+        let content = ext.content();
+        assert!(!content.is_empty());
+        // Should start with SEQUENCE tag (0x30)
+        assert_eq!(content[0], 0x30, "attestation DER should start with SEQUENCE tag");
     }
 }

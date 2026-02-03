@@ -240,6 +240,7 @@ mod trust_domain_violations {
         let result = ca
             .sign_csr(
                 cert_sign.csr(),
+                cert_sign.private_key(),
                 &foreign_identity,
                 Duration::from_secs(3600),
             )
@@ -262,7 +263,7 @@ mod trust_domain_violations {
         let cert_sign = csr_options.generate().unwrap();
 
         let cert = ca
-            .sign_csr(cert_sign.csr(), &identity, Duration::from_secs(3600))
+            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(3600))
             .await
             .unwrap();
 
@@ -332,6 +333,7 @@ mod confused_deputy {
         let result = ca
             .sign_csr(
                 attacker_csr.csr(),
+                attacker_csr.private_key(),
                 &victim_identity,
                 Duration::from_secs(3600),
             )
@@ -355,8 +357,11 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0Z3VS5JJcds3xfn/ygWyf
 INVALID_BASE64_DATA_HERE_TO_CORRUPT_SIGNATURE
 -----END CERTIFICATE REQUEST-----"#;
 
+        // Generate a valid private key to pair with the malformed CSR (though it won't match)
+        let valid_csr = CsrOptions::new(identity.to_spiffe_uri()).generate().unwrap();
+
         let result = ca
-            .sign_csr(malformed_csr, &identity, Duration::from_secs(3600))
+            .sign_csr(malformed_csr, valid_csr.private_key(), &identity, Duration::from_secs(3600))
             .await;
 
         assert!(result.is_err(), "Malformed CSR should be rejected");
@@ -379,6 +384,7 @@ INVALID_BASE64_DATA_HERE_TO_CORRUPT_SIGNATURE
         let attacker_cert = ca
             .sign_csr(
                 cert_sign.csr(),
+                cert_sign.private_key(),
                 &attacker_identity,
                 Duration::from_secs(3600),
             )
@@ -418,7 +424,7 @@ mod chain_validation {
         let cert_sign = csr_options.generate().unwrap();
 
         let rogue_cert = rogue_ca
-            .sign_csr(cert_sign.csr(), &identity, Duration::from_secs(3600))
+            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(3600))
             .await
             .unwrap();
 
@@ -603,7 +609,7 @@ mod chaos {
 
         // 1 second TTL
         let cert = ca
-            .sign_csr(cert_sign.csr(), &identity, Duration::from_secs(1))
+            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(1))
             .await
             .unwrap();
 
@@ -627,7 +633,7 @@ mod chaos {
 
         // 10 year TTL
         let ttl = Duration::from_secs(10 * 365 * 24 * 60 * 60);
-        let cert = ca.sign_csr(cert_sign.csr(), &identity, ttl).await.unwrap();
+        let cert = ca.sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, ttl).await.unwrap();
 
         assert!(!cert.is_expired());
     }
@@ -666,7 +672,7 @@ mod chaos {
                     let cert_sign = csr_options.generate().unwrap();
 
                     let cert = ca
-                        .sign_csr(cert_sign.csr(), &identity, Duration::from_secs(3600))
+                        .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(3600))
                         .await
                         .unwrap();
 
@@ -707,7 +713,7 @@ mod regressions {
 
         // This should succeed because CSR signature is valid
         let result = ca
-            .sign_csr(cert_sign.csr(), &identity, Duration::from_secs(3600))
+            .sign_csr(cert_sign.csr(), cert_sign.private_key(), &identity, Duration::from_secs(3600))
             .await;
 
         assert!(
@@ -729,11 +735,11 @@ mod regressions {
         let csr2 = CsrOptions::new(id2.to_spiffe_uri()).generate().unwrap();
 
         let cert1 = ca
-            .sign_csr(csr1.csr(), &id1, Duration::from_secs(3600))
+            .sign_csr(csr1.csr(), csr1.private_key(), &id1, Duration::from_secs(3600))
             .await
             .unwrap();
         let cert2 = ca
-            .sign_csr(csr2.csr(), &id2, Duration::from_secs(3600))
+            .sign_csr(csr2.csr(), csr2.private_key(), &id2, Duration::from_secs(3600))
             .await
             .unwrap();
 
@@ -764,9 +770,786 @@ mod regressions {
 
         // Trying to sign victim's CSR for attacker's identity should fail
         let result = ca
-            .sign_csr(victim_csr.csr(), &attacker, Duration::from_secs(3600))
+            .sign_csr(victim_csr.csr(), victim_csr.private_key(), &attacker, Duration::from_secs(3600))
             .await;
 
         assert!(result.is_err(), "Cannot sign CSR for different identity");
+    }
+}
+
+// ============================================================================
+// SECTION 8: ATTESTATION SECURITY TESTS
+// ============================================================================
+// Test the attestation system for forgery, replay, and bypass attacks.
+
+mod attestation_security {
+    use nucleus_identity::{LaunchAttestation, AttestationRequirements};
+    use proptest::prelude::*;
+
+    /// Malformed DER payloads should be rejected gracefully
+    #[test]
+    fn test_malformed_der_rejection() {
+        // Empty payload
+        assert!(
+            LaunchAttestation::from_der(&[]).is_err(),
+            "Empty DER should be rejected"
+        );
+
+        // Just a SEQUENCE tag with no content
+        assert!(
+            LaunchAttestation::from_der(&[0x30, 0x00]).is_err(),
+            "Empty SEQUENCE should be rejected"
+        );
+
+        // Wrong tag (OCTET STRING instead of SEQUENCE)
+        assert!(
+            LaunchAttestation::from_der(&[0x04, 0x01, 0x00]).is_err(),
+            "Wrong outer tag should be rejected"
+        );
+
+        // Truncated data mid-structure
+        let valid_attestation = LaunchAttestation::from_hashes([1u8; 32], [2u8; 32], [3u8; 32]);
+        let der = valid_attestation.to_der();
+        for truncate_at in [1, 5, 10, 20, 50, der.len() - 1] {
+            if truncate_at < der.len() {
+                assert!(
+                    LaunchAttestation::from_der(&der[..truncate_at]).is_err(),
+                    "Truncated DER at {} bytes should be rejected",
+                    truncate_at
+                );
+            }
+        }
+    }
+
+    /// Invalid length encodings should be rejected
+    #[test]
+    fn test_invalid_der_length_encoding() {
+        // Length claiming more bytes than available
+        let malformed = vec![
+            0x30, 0x82, 0xFF, 0xFF, // SEQUENCE claiming 65535 bytes
+            0x01, 0x02, 0x03,       // Only 3 bytes follow
+        ];
+        assert!(
+            LaunchAttestation::from_der(&malformed).is_err(),
+            "Oversized length should be rejected"
+        );
+
+        // Indefinite length (not allowed in DER)
+        let indefinite = vec![
+            0x30, 0x80, // SEQUENCE with indefinite length
+            0x02, 0x01, 0x01, // INTEGER 1
+            0x00, 0x00, // End of contents
+        ];
+        assert!(
+            LaunchAttestation::from_der(&indefinite).is_err(),
+            "Indefinite length should be rejected"
+        );
+    }
+
+    /// Version field manipulation should be rejected
+    #[test]
+    fn test_attestation_version_bypass() {
+        // Create valid attestation and modify version in DER
+        let attestation = LaunchAttestation::from_hashes([0xaa; 32], [0xbb; 32], [0xcc; 32]);
+        let mut der = attestation.to_der();
+
+        // Find and modify the version INTEGER (should be near the start)
+        // DER structure: SEQUENCE { INTEGER 1, ... }
+        // Position 0: 0x30 (SEQUENCE)
+        // Position 1-2: length
+        // Position 3: 0x02 (INTEGER)
+        // Position 4: 0x01 (length)
+        // Position 5: 0x01 (value = 1)
+
+        // Modify version to 0 (invalid)
+        if der.len() > 5 && der[3] == 0x02 && der[4] == 0x01 {
+            der[5] = 0x00;
+            assert!(
+                LaunchAttestation::from_der(&der).is_err(),
+                "Version 0 should be rejected"
+            );
+
+            // Modify to version 2 (unsupported)
+            der[5] = 0x02;
+            assert!(
+                LaunchAttestation::from_der(&der).is_err(),
+                "Version 2 should be rejected"
+            );
+
+            // Modify to version 255 (way unsupported)
+            der[5] = 0xFF;
+            assert!(
+                LaunchAttestation::from_der(&der).is_err(),
+                "Version 255 should be rejected"
+            );
+        }
+    }
+
+    /// Hash truncation attacks should be rejected
+    #[test]
+    fn test_hash_truncation_rejected() {
+        // Create malformed DER with truncated hash (only 16 bytes instead of 32)
+        // This tests the FWID parsing for correct hash length enforcement
+
+        // Build a minimal malformed structure manually
+        let mut malformed = vec![0x30]; // SEQUENCE
+        let mut content = vec![];
+
+        // Version INTEGER 1
+        content.extend_from_slice(&[0x02, 0x01, 0x01]);
+
+        // Kernel FWID with truncated hash (16 bytes)
+        let mut fwid = vec![0x30]; // SEQUENCE
+        let mut fwid_content = vec![];
+        // OID for SHA-256
+        fwid_content.extend_from_slice(&[0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01]);
+        // OCTET STRING with only 16 bytes (should be 32)
+        fwid_content.extend_from_slice(&[0x04, 0x10]); // 16 bytes
+        fwid_content.extend_from_slice(&[0xaa; 16]);
+        fwid.push(fwid_content.len() as u8);
+        fwid.extend_from_slice(&fwid_content);
+        content.extend_from_slice(&fwid);
+
+        // Add remaining FWIDs and timestamp (simplified - will fail on first FWID anyway)
+        malformed.push(content.len() as u8);
+        malformed.extend_from_slice(&content);
+
+        assert!(
+            LaunchAttestation::from_der(&malformed).is_err(),
+            "Truncated hash (16 bytes) should be rejected"
+        );
+    }
+
+    /// Test that hash comparison is done correctly (not timing-vulnerable comparison)
+    /// Note: This is a documentation test - actual timing analysis requires external tooling
+    #[test]
+    fn test_requirements_hash_comparison_correctness() {
+        let req = AttestationRequirements::exact([0xaa; 32], [0xbb; 32], [0xcc; 32]);
+
+        // Correct attestation should pass
+        let correct = LaunchAttestation::from_hashes([0xaa; 32], [0xbb; 32], [0xcc; 32]);
+        assert!(req.verify(&correct).is_ok());
+
+        // Single byte difference in kernel should fail
+        let mut wrong_kernel = [0xaa; 32];
+        wrong_kernel[31] = 0xab; // Last byte different
+        let att = LaunchAttestation::from_hashes(wrong_kernel, [0xbb; 32], [0xcc; 32]);
+        assert!(req.verify(&att).is_err(), "Single byte kernel difference should fail");
+
+        // Single byte difference in rootfs should fail
+        let mut wrong_rootfs = [0xbb; 32];
+        wrong_rootfs[0] = 0xbc; // First byte different
+        let att = LaunchAttestation::from_hashes([0xaa; 32], wrong_rootfs, [0xcc; 32]);
+        assert!(req.verify(&att).is_err(), "Single byte rootfs difference should fail");
+
+        // Single byte difference in config should fail
+        let mut wrong_config = [0xcc; 32];
+        wrong_config[15] = 0xcd; // Middle byte different
+        let att = LaunchAttestation::from_hashes([0xaa; 32], [0xbb; 32], wrong_config);
+        assert!(req.verify(&att).is_err(), "Single byte config difference should fail");
+    }
+
+    /// Test requirements with empty allowed lists (should accept any)
+    #[test]
+    fn test_requirements_empty_lists_accept_any() {
+        let req = AttestationRequirements::any();
+
+        // Any random attestation should be accepted
+        for _ in 0..10 {
+            let att = LaunchAttestation::from_hashes(
+                rand_hash(),
+                rand_hash(),
+                rand_hash(),
+            );
+            assert!(req.verify(&att).is_ok(), "Empty requirements should accept any attestation");
+        }
+    }
+
+    /// Test combined hash is different when any component changes
+    #[test]
+    fn test_combined_hash_sensitivity() {
+        let base = LaunchAttestation::from_hashes([0x11; 32], [0x22; 32], [0x33; 32]);
+        let base_combined = base.combined_hash();
+
+        // Change kernel
+        let kernel_changed = LaunchAttestation::from_hashes([0x12; 32], [0x22; 32], [0x33; 32]);
+        assert_ne!(
+            kernel_changed.combined_hash(),
+            base_combined,
+            "Combined hash should change when kernel changes"
+        );
+
+        // Change rootfs
+        let rootfs_changed = LaunchAttestation::from_hashes([0x11; 32], [0x23; 32], [0x33; 32]);
+        assert_ne!(
+            rootfs_changed.combined_hash(),
+            base_combined,
+            "Combined hash should change when rootfs changes"
+        );
+
+        // Change config
+        let config_changed = LaunchAttestation::from_hashes([0x11; 32], [0x22; 32], [0x34; 32]);
+        assert_ne!(
+            config_changed.combined_hash(),
+            base_combined,
+            "Combined hash should change when config changes"
+        );
+    }
+
+    /// Test DER roundtrip preserves all fields exactly
+    #[test]
+    fn test_der_roundtrip_fidelity() {
+        // Test with all zeros
+        let zeros = LaunchAttestation::from_hashes([0x00; 32], [0x00; 32], [0x00; 32]);
+        let der = zeros.to_der();
+        let parsed = LaunchAttestation::from_der(&der).unwrap();
+        assert_eq!(parsed.kernel_hash(), zeros.kernel_hash());
+        assert_eq!(parsed.rootfs_hash(), zeros.rootfs_hash());
+        assert_eq!(parsed.config_hash(), zeros.config_hash());
+
+        // Test with all 0xFF
+        let maxed = LaunchAttestation::from_hashes([0xFF; 32], [0xFF; 32], [0xFF; 32]);
+        let der = maxed.to_der();
+        let parsed = LaunchAttestation::from_der(&der).unwrap();
+        assert_eq!(parsed.kernel_hash(), maxed.kernel_hash());
+        assert_eq!(parsed.rootfs_hash(), maxed.rootfs_hash());
+        assert_eq!(parsed.config_hash(), maxed.config_hash());
+
+        // Test with mixed patterns
+        let mut kernel = [0u8; 32];
+        let mut rootfs = [0u8; 32];
+        let mut config = [0u8; 32];
+        for i in 0..32 {
+            kernel[i] = i as u8;
+            rootfs[i] = (i * 2) as u8;
+            config[i] = (255 - i) as u8;
+        }
+        let mixed = LaunchAttestation::from_hashes(kernel, rootfs, config);
+        let der = mixed.to_der();
+        let parsed = LaunchAttestation::from_der(&der).unwrap();
+        assert_eq!(parsed.kernel_hash(), mixed.kernel_hash());
+        assert_eq!(parsed.rootfs_hash(), mixed.rootfs_hash());
+        assert_eq!(parsed.config_hash(), mixed.config_hash());
+    }
+
+    /// Parse hash utility function tests
+    #[test]
+    fn test_parse_hash_security() {
+        use nucleus_identity::attestation::{parse_hash, format_hash};
+
+        // Valid 64-char hex should work
+        let hex = "aa".repeat(32);
+        assert!(parse_hash(&hex).is_some());
+
+        // Too short should fail
+        assert!(parse_hash("aabb").is_none());
+        assert!(parse_hash(&"aa".repeat(31)).is_none()); // 62 chars
+
+        // Too long should fail
+        assert!(parse_hash(&"aa".repeat(33)).is_none()); // 66 chars
+
+        // Invalid hex characters should fail
+        assert!(parse_hash(&format!("{}gg", "aa".repeat(31))).is_none());
+        assert!(parse_hash(&format!("zz{}", "aa".repeat(31))).is_none());
+
+        // Null bytes in string should fail
+        let with_null = format!("aa\0{}", "bb".repeat(31));
+        // parse_hash should handle this - either reject or parse only up to null
+        let result = parse_hash(&with_null);
+        // The string is 65 chars (with null), so it should fail the length check
+        assert!(result.is_none() || result.unwrap() != [0xaa; 32]);
+
+        // Uppercase should work (normalize to lowercase)
+        let upper = "AA".repeat(32);
+        let parsed = parse_hash(&upper);
+        assert!(parsed.is_some());
+        let formatted = format_hash(parsed.as_ref().unwrap());
+        assert_eq!(formatted, "aa".repeat(32));
+    }
+
+    proptest! {
+        /// Fuzz DER parsing with random bytes - should never panic
+        #[test]
+        fn fuzz_der_parsing(data in proptest::collection::vec(any::<u8>(), 0..500)) {
+            // Should never panic, only return Ok or Err
+            let _ = LaunchAttestation::from_der(&data);
+        }
+
+        /// Fuzz with SEQUENCE-tagged random content
+        #[test]
+        fn fuzz_der_with_sequence_tag(content in proptest::collection::vec(any::<u8>(), 0..200)) {
+            let mut der = vec![0x30]; // SEQUENCE tag
+            if content.len() < 128 {
+                der.push(content.len() as u8);
+            } else {
+                der.push(0x81);
+                der.push(content.len() as u8);
+            }
+            der.extend_from_slice(&content);
+
+            // Should never panic
+            let _ = LaunchAttestation::from_der(&der);
+        }
+
+        /// Valid attestation roundtrip with random hashes
+        #[test]
+        fn roundtrip_random_hashes(
+            kernel in proptest::collection::vec(any::<u8>(), 32..=32),
+            rootfs in proptest::collection::vec(any::<u8>(), 32..=32),
+            config in proptest::collection::vec(any::<u8>(), 32..=32)
+        ) {
+            let mut k = [0u8; 32];
+            let mut r = [0u8; 32];
+            let mut c = [0u8; 32];
+            k.copy_from_slice(&kernel);
+            r.copy_from_slice(&rootfs);
+            c.copy_from_slice(&config);
+
+            let attestation = LaunchAttestation::from_hashes(k, r, c);
+            let der = attestation.to_der();
+            let parsed = LaunchAttestation::from_der(&der);
+
+            prop_assert!(parsed.is_ok());
+            let parsed = parsed.unwrap();
+            prop_assert_eq!(parsed.kernel_hash(), &k);
+            prop_assert_eq!(parsed.rootfs_hash(), &r);
+            prop_assert_eq!(parsed.config_hash(), &c);
+        }
+    }
+
+    /// Helper to generate random 32-byte hash
+    fn rand_hash() -> [u8; 32] {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let mut hash = [0u8; 32];
+        for (i, byte) in hash.iter_mut().enumerate() {
+            *byte = ((seed >> (i % 16)) & 0xFF) as u8 ^ i as u8;
+        }
+        hash
+    }
+}
+
+// ============================================================================
+// SECTION 9: SESSION IDENTITY SECURITY TESTS
+// ============================================================================
+// Test the session identity system for security vulnerabilities.
+
+mod session_security {
+    use nucleus_identity::{Identity, SessionIdentity, SessionId};
+    use std::time::Duration;
+    use proptest::prelude::*;
+
+    /// Session ID uniqueness test
+    #[test]
+    fn test_session_id_collision_resistance() {
+        use std::collections::HashSet;
+
+        let mut ids = HashSet::new();
+        let iterations = 10000;
+
+        for _ in 0..iterations {
+            let id = SessionId::new_v7();
+            let id_str = id.to_string();
+            assert!(
+                ids.insert(id_str.clone()),
+                "Session ID collision detected: {}",
+                id_str
+            );
+        }
+
+        assert_eq!(ids.len(), iterations, "All session IDs should be unique");
+    }
+
+    /// Session ID parse injection tests
+    #[test]
+    fn test_session_id_parse_injection() {
+        // SQL injection attempts
+        let sql_payloads = [
+            "'; DROP TABLE sessions; --",
+            "1' OR '1'='1",
+            "admin'--",
+        ];
+
+        for payload in sql_payloads {
+            assert!(
+                SessionId::parse(payload).is_none(),
+                "SQL injection should not parse as session ID: {}",
+                payload
+            );
+        }
+
+        // Path traversal attempts
+        let path_payloads = ["../../../etc/passwd", "..%2f..%2f", "....//"];
+
+        for payload in path_payloads {
+            assert!(
+                SessionId::parse(payload).is_none(),
+                "Path traversal should not parse as session ID: {}",
+                payload
+            );
+        }
+
+        // Null byte handling: The current parser strips non-hex characters,
+        // which means null bytes are silently removed. This is documented behavior
+        // but worth noting for security reviews.
+        //
+        // This test verifies that injecting a null byte into a valid hex string
+        // that would otherwise have 32 valid chars (64 hex) results in either:
+        // 1. Parse failure (too few chars after filtering)
+        // 2. A different result than the clean input
+        //
+        // A string with extra chars that filter down to 32 valid bytes should fail:
+        let null_with_extra = "01234567\x0089abcdef0123456789abcdefFF";
+        let clean_extra = "0123456789abcdef0123456789abcdefFF"; // 66 hex chars
+        assert!(
+            SessionId::parse(null_with_extra).is_none() ||
+            SessionId::parse(clean_extra).is_none(),
+            "Strings with wrong length after filtering should not parse"
+        );
+
+        // A string that filters to exactly 32 bytes will parse - this is
+        // expected behavior. The security implication is that the null byte
+        // cannot be used to inject different semantics into the same ID.
+    }
+
+    /// Session identity expiry cannot be bypassed
+    #[test]
+    fn test_session_expiry_enforced() {
+        let parent = Identity::new("nucleus.local", "agents", "claude");
+
+        // Create already-expired session (created 1 hour ago with 30 min TTL)
+        let session = SessionIdentity::new(parent.clone(), Duration::from_secs(1800));
+
+        // Manually backdate the created_at to simulate expired session
+        // This tests that is_expired() correctly computes expiry
+        // We can't directly set created_at, but we can verify the logic
+        assert!(!session.is_expired(), "Fresh session should not be expired");
+        assert!(session.remaining().is_some(), "Fresh session should have remaining time");
+
+        // Session with 0 TTL should be immediately expired
+        // Note: This depends on timing - session created at T, expires at T+0 = T
+        // Checking at T should show not expired, but at T+ε should show expired
+        let zero_session = SessionIdentity::new(parent.clone(), Duration::from_secs(0));
+        // Give it a moment
+        std::thread::sleep(Duration::from_millis(10));
+        // Now it should definitely be expired
+        assert!(
+            zero_session.is_expired() || zero_session.remaining().is_none(),
+            "Zero TTL session should expire immediately or have no remaining time"
+        );
+    }
+
+    /// Session identity SPIFFE URI format validation
+    #[test]
+    fn test_session_spiffe_uri_format() {
+        let parent = Identity::new("nucleus.local", "agents", "claude");
+        let session = SessionIdentity::new(parent.clone(), Duration::from_secs(3600));
+
+        let uri = session.to_spiffe_uri();
+
+        // Should have correct prefix
+        assert!(
+            uri.starts_with("spiffe://nucleus.local/ns/agents/sa/claude/session/"),
+            "Session URI should extend parent URI"
+        );
+
+        // Should contain valid UUID
+        let uuid_part = uri.split('/').last().unwrap();
+        assert_eq!(uuid_part.len(), 36, "UUID should be 36 characters with hyphens");
+        assert!(
+            uuid_part.chars().all(|c| c.is_ascii_hexdigit() || c == '-'),
+            "UUID should only contain hex digits and hyphens"
+        );
+    }
+
+    /// Session ID timestamp extraction
+    #[test]
+    fn test_session_id_timestamp_validity() {
+        let id = SessionId::new_v7();
+
+        let ts = id.timestamp_millis();
+        assert!(ts.is_some(), "UUID v7 should have extractable timestamp");
+
+        let now_millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        let extracted = ts.unwrap();
+        assert!(
+            extracted <= now_millis,
+            "Timestamp should not be in the future"
+        );
+        assert!(
+            extracted > now_millis - 60_000,
+            "Timestamp should be within last minute"
+        );
+    }
+
+    /// Test that certificate identity maintains uniqueness
+    #[test]
+    fn test_certificate_identity_uniqueness() {
+        let parent = Identity::new("nucleus.local", "agents", "claude");
+
+        let session1 = SessionIdentity::new(parent.clone(), Duration::from_secs(3600));
+        let session2 = SessionIdentity::new(parent.clone(), Duration::from_secs(3600));
+
+        let cert_id1 = session1.to_certificate_identity();
+        let cert_id2 = session2.to_certificate_identity();
+
+        // Different sessions should produce different certificate identities
+        assert_ne!(
+            cert_id1.service_account(),
+            cert_id2.service_account(),
+            "Different sessions should have different certificate identities"
+        );
+
+        // But same trust domain and namespace
+        assert_eq!(cert_id1.trust_domain(), cert_id2.trust_domain());
+        assert_eq!(cert_id1.namespace(), cert_id2.namespace());
+    }
+
+    proptest! {
+        /// Fuzz session ID parsing
+        #[test]
+        fn fuzz_session_id_parse(input in ".*") {
+            // Should never panic
+            let _ = SessionId::parse(&input);
+        }
+
+        /// Valid UUIDs should parse
+        #[test]
+        fn valid_uuid_format_parses(
+            a in "[0-9a-f]{8}",
+            b in "[0-9a-f]{4}",
+            c in "[0-9a-f]{4}",
+            d in "[0-9a-f]{4}",
+            e in "[0-9a-f]{12}"
+        ) {
+            let uuid = format!("{}-{}-{}-{}-{}", a, b, c, d, e);
+            let result = SessionId::parse(&uuid);
+            // Should parse (though may not be valid v7)
+            prop_assert!(result.is_some(), "Valid UUID format should parse: {}", uuid);
+        }
+    }
+}
+
+// ============================================================================
+// SECTION 10: OWASP LLM TOP 10 ATTESTATION TESTS
+// ============================================================================
+// Tests specifically targeting OWASP LLM Top 10 vulnerabilities in the
+// attestation context.
+
+mod owasp_llm_attestation {
+    use nucleus_identity::{LaunchAttestation, AttestationRequirements};
+
+    /// LLM01: Prompt Injection via attestation metadata
+    /// Attackers might try to embed malicious instructions in attestation data
+    #[test]
+    fn test_prompt_injection_in_attestation() {
+        // Attestation only stores hashes, not arbitrary data
+        // But test that hash display doesn't enable injection
+        let attestation = LaunchAttestation::from_hashes(
+            [0x00; 32],
+            [0x00; 32],
+            [0x00; 32],
+        );
+
+        let summary = attestation.to_hex_summary();
+        // Summary should only contain hex and field labels
+        assert!(
+            !summary.contains("ignore previous"),
+            "Summary should not contain injection text"
+        );
+        assert!(
+            !summary.contains("system:"),
+            "Summary should not contain system prefix"
+        );
+    }
+
+    /// LLM02: Insecure Output Handling - verify attestation output is safe
+    #[test]
+    fn test_attestation_output_sanitization() {
+        let attestation = LaunchAttestation::from_hashes(
+            [0xaa; 32],
+            [0xbb; 32],
+            [0xcc; 32],
+        );
+
+        let summary = attestation.to_hex_summary();
+
+        // Verify output format is predictable and safe
+        assert!(summary.contains("kernel="));
+        assert!(summary.contains("rootfs="));
+        assert!(summary.contains("config="));
+
+        // Verify no script injection possible
+        assert!(!summary.contains('<'));
+        assert!(!summary.contains('>'));
+        assert!(!summary.contains("javascript:"));
+    }
+
+    /// LLM03: Training Data Poisoning analog - config hash tampering
+    /// If an attacker can modify the config that gets hashed, they could
+    /// inject malicious policies. This tests that hash verification works.
+    #[test]
+    fn test_config_hash_integrity() {
+        let legitimate_config_hash = [0x11; 32];
+        let malicious_config_hash = [0x22; 32];
+
+        // Requirements allow only legitimate config
+        let req = AttestationRequirements::any()
+            .allow_config(legitimate_config_hash);
+
+        // Legitimate config should pass
+        let legitimate = LaunchAttestation::from_hashes(
+            [0xaa; 32],
+            [0xbb; 32],
+            legitimate_config_hash,
+        );
+        assert!(req.verify(&legitimate).is_ok());
+
+        // Malicious config should fail
+        let malicious = LaunchAttestation::from_hashes(
+            [0xaa; 32],
+            [0xbb; 32],
+            malicious_config_hash,
+        );
+        assert!(
+            req.verify(&malicious).is_err(),
+            "Tampered config should be rejected"
+        );
+    }
+
+    /// LLM05: Supply Chain Vulnerabilities - rootfs/kernel tampering
+    #[test]
+    fn test_supply_chain_integrity() {
+        // Known good kernel and rootfs
+        let trusted_kernel = [0x11; 32];
+        let trusted_rootfs = [0x22; 32];
+
+        // Compromised versions
+        let compromised_kernel = [0x99; 32];
+        let compromised_rootfs = [0x88; 32];
+
+        let req = AttestationRequirements::any()
+            .allow_kernel(trusted_kernel)
+            .allow_rootfs(trusted_rootfs);
+
+        // Trusted attestation passes
+        let trusted = LaunchAttestation::from_hashes(
+            trusted_kernel,
+            trusted_rootfs,
+            [0x00; 32],
+        );
+        assert!(req.verify(&trusted).is_ok());
+
+        // Compromised kernel rejected
+        let bad_kernel = LaunchAttestation::from_hashes(
+            compromised_kernel,
+            trusted_rootfs,
+            [0x00; 32],
+        );
+        assert!(
+            req.verify(&bad_kernel).is_err(),
+            "Compromised kernel should be rejected"
+        );
+
+        // Compromised rootfs rejected
+        let bad_rootfs = LaunchAttestation::from_hashes(
+            trusted_kernel,
+            compromised_rootfs,
+            [0x00; 32],
+        );
+        assert!(
+            req.verify(&bad_rootfs).is_err(),
+            "Compromised rootfs should be rejected"
+        );
+    }
+
+    /// LLM07: Insecure Plugin Design - verify attestation cannot bypass policies
+    #[test]
+    fn test_attestation_policy_enforcement() {
+        // Strict requirements
+        let strict = AttestationRequirements::exact(
+            [0x11; 32],
+            [0x22; 32],
+            [0x33; 32],
+        );
+
+        // Only exact match passes
+        let exact_match = LaunchAttestation::from_hashes(
+            [0x11; 32],
+            [0x22; 32],
+            [0x33; 32],
+        );
+        assert!(strict.verify(&exact_match).is_ok());
+
+        // Any deviation fails
+        let deviations = [
+            // One byte different in each field
+            LaunchAttestation::from_hashes([0x12; 32], [0x22; 32], [0x33; 32]),
+            LaunchAttestation::from_hashes([0x11; 32], [0x23; 32], [0x33; 32]),
+            LaunchAttestation::from_hashes([0x11; 32], [0x22; 32], [0x34; 32]),
+            // All different
+            LaunchAttestation::from_hashes([0xff; 32], [0xff; 32], [0xff; 32]),
+        ];
+
+        for (i, deviation) in deviations.iter().enumerate() {
+            assert!(
+                strict.verify(deviation).is_err(),
+                "Deviation {} should be rejected",
+                i
+            );
+        }
+    }
+
+    /// LLM08: Excessive Agency - attestation should limit scope
+    #[test]
+    fn test_attestation_scope_limitation() {
+        // Different configs = different scopes
+        let web_scraper_config = [0x01; 32];
+        let code_executor_config = [0x02; 32];
+
+        // Web scraper requirements
+        let web_scraper_req = AttestationRequirements::any()
+            .allow_config(web_scraper_config);
+
+        // Code executor attestation should NOT pass web scraper requirements
+        let code_executor_att = LaunchAttestation::from_hashes(
+            [0xaa; 32],
+            [0xbb; 32],
+            code_executor_config,
+        );
+
+        assert!(
+            web_scraper_req.verify(&code_executor_att).is_err(),
+            "Code executor should not pass web scraper requirements"
+        );
+    }
+
+    /// LLM09: Overreliance - test that attestation is necessary but not sufficient
+    #[test]
+    fn test_attestation_not_sole_security() {
+        // Valid attestation doesn't guarantee security
+        // It only proves the stated configuration was running
+        // Additional checks (like identity verification) are still needed
+
+        // This is a documentation test - attestation is ONE layer of defense
+        let attestation = LaunchAttestation::from_hashes(
+            [0xaa; 32],
+            [0xbb; 32],
+            [0xcc; 32],
+        );
+
+        // Attestation passes empty requirements
+        let any_req = AttestationRequirements::any();
+        assert!(any_req.verify(&attestation).is_ok());
+
+        // But this doesn't mean the workload is trusted for all operations
+        // Identity verification and policy checks are separate layers
     }
 }

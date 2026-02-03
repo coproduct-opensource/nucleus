@@ -1114,9 +1114,48 @@ async fn spawn_firecracker_pod(
                 // Register the pod identity
                 manager.register_pod(id.to_string(), identity.clone()).await;
 
-                // Pre-fetch certificate to warm the cache
-                if let Err(e) = manager.prefetch_certificate(&identity).await {
-                    tracing::warn!("failed to prefetch certificate for pod {}: {}", id, e);
+                // Compute launch attestation for this pod
+                // This captures integrity measurements of kernel, rootfs, and config
+                let pod_id_str = id.to_string();
+                let config_bytes = serde_json::to_vec(spec).unwrap_or_default();
+                match manager
+                    .compute_attestation(
+                        &pod_id_str,
+                        &image.kernel_path,
+                        &image.rootfs_path,
+                        &config_bytes,
+                    )
+                    .await
+                {
+                    Ok(attestation) => {
+                        info!(
+                            "computed launch attestation for pod {}: {}",
+                            id,
+                            attestation.to_hex_summary()
+                        );
+                        // Fetch attested certificate (includes attestation in X.509 extension)
+                        if let Err(e) = manager
+                            .fetch_attested_certificate(&identity, &pod_id_str)
+                            .await
+                        {
+                            tracing::warn!(
+                                "failed to fetch attested certificate for pod {}: {}",
+                                id,
+                                e
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "failed to compute attestation for pod {}, using standard certificate: {}",
+                            id,
+                            e
+                        );
+                        // Fall back to standard certificate without attestation
+                        if let Err(e) = manager.prefetch_certificate(&identity).await {
+                            tracing::warn!("failed to prefetch certificate for pod {}: {}", id, e);
+                        }
+                    }
                 }
 
                 // Start workload API vsock bridge for this pod

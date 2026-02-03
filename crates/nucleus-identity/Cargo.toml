@@ -20,6 +20,7 @@ ring = "0.17"
 
 # Async
 tokio = { version = "1", features = ["sync", "time", "io-util", "net", "rt", "macros", "fs"] }
+tokio-rustls = "0.26"
 async-trait = "0.1"
 
 # Serialization
