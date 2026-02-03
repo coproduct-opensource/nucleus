@@ -1534,6 +1534,7 @@ struct LoggerConfig {
 
 #[cfg(target_os = "linux")]
 impl FirecrackerConfig {
+    #[allow(clippy::too_many_arguments)]
     fn from_spec(
         spec: &PodSpec,
         log_path: &Path,
