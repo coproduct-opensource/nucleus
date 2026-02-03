@@ -34,6 +34,7 @@ url = "2.5"
 nucleus = { path = "../nucleus" }
 nucleus-spec = { path = "../nucleus-spec" }
 nucleus-identity = { path = "../nucleus-identity" }
+nucleus-client = { path = "../nucleus-client" }
 x509-parser = "0.17"
 tokio-rustls = "0.26"
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }

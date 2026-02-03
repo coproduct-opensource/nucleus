@@ -12,6 +12,7 @@ use axum::response::{IntoResponse, Response as AxumResponse};
 use axum::routing::{get, post};
 use axum::{middleware, Json, Router};
 use clap::{Parser, ValueEnum};
+use nucleus_client::drand::{DrandConfig, DrandFailMode};
 #[cfg(target_os = "linux")]
 use nucleus_spec::NetworkSpec;
 use nucleus_spec::PodSpec;
@@ -129,6 +130,22 @@ struct Args {
         default_value_t = 15012
     )]
     identity_workload_api_vsock_port: u32,
+    /// Enable drand anchoring for approval signatures.
+    #[arg(long, env = "NUCLEUS_NODE_DRAND_ENABLED", default_value_t = true)]
+    drand_enabled: bool,
+    /// Drand API endpoint URL.
+    #[arg(
+        long,
+        env = "NUCLEUS_NODE_DRAND_URL",
+        default_value = "https://api.drand.sh/public/latest"
+    )]
+    drand_url: String,
+    /// Number of previous drand rounds to accept (tolerance for network latency).
+    #[arg(long, env = "NUCLEUS_NODE_DRAND_TOLERANCE", default_value_t = 1)]
+    drand_tolerance: u64,
+    /// Drand failure mode: strict (reject) or cached (use stale for up to 60s).
+    #[arg(long, env = "NUCLEUS_NODE_DRAND_FAIL_MODE", default_value = "strict")]
+    drand_fail_mode: String,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -159,6 +176,8 @@ struct NodeState {
     proxy_auth_secret: String,
     proxy_approval_secret: String,
     proxy_actor: Option<String>,
+    /// Drand configuration for anchoring approval signatures.
+    drand_config: Option<DrandConfig>,
     /// Identity manager for SPIFFE certificates (experimental, not yet wired to Firecracker).
     #[allow(dead_code)]
     identity_manager: Option<identity::IdentityManager>,
@@ -342,6 +361,25 @@ async fn main() -> Result<(), ApiError> {
         None
     };
 
+    // Build drand config if enabled
+    let drand_config = if args.drand_enabled {
+        let fail_mode = match args.drand_fail_mode.to_lowercase().as_str() {
+            "cached" => DrandFailMode::Cached,
+            _ => DrandFailMode::Strict, // "degraded" is no longer supported
+        };
+        Some(DrandConfig {
+            enabled: true,
+            api_url: args.drand_url.clone(),
+            round_tolerance: args.drand_tolerance,
+            cache_ttl: Duration::from_secs(25),
+            fail_mode,
+            chain_hash: None, // Use defaults from drand module
+            public_key: None, // Use defaults from drand module
+        })
+    } else {
+        None
+    };
+
     let state = NodeState {
         pods: Arc::new(Mutex::new(HashMap::new())),
         state_dir: args.state_dir.clone(),
@@ -362,6 +400,7 @@ async fn main() -> Result<(), ApiError> {
         proxy_auth_secret: args.proxy_auth_secret.clone(),
         proxy_approval_secret: args.proxy_approval_secret.clone(),
         proxy_actor: Some(args.proxy_actor.clone()).filter(|actor| !actor.trim().is_empty()),
+        drand_config,
         identity_manager,
         identity_vsock_port: args.identity_workload_api_vsock_port,
     };
@@ -715,11 +754,12 @@ async fn spawn_local_pod(
         let target_addr: SocketAddr = addr
             .parse()
             .map_err(|e| ApiError::Driver(format!("invalid tool proxy address {addr}: {e}")))?;
-        let proxy = signed_proxy::SignedProxy::start(
+        let proxy = signed_proxy::SignedProxy::start_with_drand(
             target_addr,
             Arc::new(state.proxy_auth_secret.as_bytes().to_vec()),
             Some(Arc::new(state.proxy_approval_secret.as_bytes().to_vec())),
             state.proxy_actor.clone(),
+            state.drand_config.clone(),
         )
         .await
         .map_err(|e| ApiError::Driver(format!("signed proxy failed: {e}")))?;
@@ -1029,11 +1069,12 @@ async fn spawn_firecracker_pod(
             .map_err(|e| ApiError::Driver(format!("vsock bridge failed: {e}")))?;
 
         let mut proxy_addr = format!("http://{}", bridge.listen_addr());
-        let proxy = signed_proxy::SignedProxy::start(
+        let proxy = signed_proxy::SignedProxy::start_with_drand(
             bridge.listen_addr(),
             Arc::new(state.proxy_auth_secret.as_bytes().to_vec()),
             Some(Arc::new(state.proxy_approval_secret.as_bytes().to_vec())),
             state.proxy_actor.clone(),
+            state.drand_config.clone(),
         )
         .await
         .map_err(|e| ApiError::Driver(format!("signed proxy failed: {e}")))?;

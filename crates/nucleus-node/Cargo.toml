@@ -40,6 +40,7 @@ ipnet = "2.9"
 nucleus = { path = "../nucleus" }
 nucleus-identity = { path = "../nucleus-identity" }
 nucleus-spec = { path = "../nucleus-spec" }
+nucleus-client = { path = "../nucleus-client", features = ["async-drand"] }
 
 uuid = { version = "1", features = ["v4", "serde"] }
 

@@ -13,16 +13,18 @@ use hyper::body::Incoming;
 use hyper::client::conn::http1;
 use hyper::Request;
 use hyper_util::rt::TokioIo;
+use nucleus_client::drand::{DrandClient, DrandConfig, DrandFailMode};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::auth::sign_message;
 
 const HEADER_TIMESTAMP: &str = "x-nucleus-timestamp";
 const HEADER_SIGNATURE: &str = "x-nucleus-signature";
 const HEADER_ACTOR: &str = "x-nucleus-actor";
+const HEADER_DRAND_ROUND: &str = "x-nucleus-drand-round";
 const MAX_PROXY_BODY_BYTES: usize = 10 * 1024 * 1024;
 
 #[derive(Clone)]
@@ -31,6 +33,8 @@ struct SignedProxyState {
     secret: Arc<Vec<u8>>,
     approval_secret: Option<Arc<Vec<u8>>>,
     default_actor: Option<String>,
+    /// Drand client for anchoring approval signatures.
+    drand_client: Option<Arc<DrandClient>>,
 }
 
 pub struct SignedProxy {
@@ -48,21 +52,55 @@ impl std::fmt::Debug for SignedProxy {
 }
 
 impl SignedProxy {
+    /// Start the signed proxy without drand anchoring.
+    ///
+    /// This method maintains backward compatibility. For drand-anchored approval
+    /// signatures, use [`start_with_drand`] instead.
+    #[allow(dead_code)]
     pub async fn start(
         target: SocketAddr,
         secret: Arc<Vec<u8>>,
         approval_secret: Option<Arc<Vec<u8>>>,
         default_actor: Option<String>,
     ) -> std::io::Result<Self> {
+        Self::start_with_drand(target, secret, approval_secret, default_actor, None).await
+    }
+
+    /// Start the signed proxy with optional drand anchoring for approval requests.
+    ///
+    /// When `drand_config` is provided and enabled, approval requests (`/v1/approve`)
+    /// will include a drand round number in the signature. This prevents pre-computation
+    /// attacks even if the HMAC secret is compromised.
+    ///
+    /// # Drand Anchoring
+    ///
+    /// With drand anchoring:
+    /// - Message format: `"{round}.{timestamp}.{actor}.{body}"`
+    /// - Adds header: `x-nucleus-drand-round: <round>`
+    ///
+    /// Without drand anchoring (or for non-approval requests):
+    /// - Message format: `"{timestamp}.{actor}.{body}"`
+    pub async fn start_with_drand(
+        target: SocketAddr,
+        secret: Arc<Vec<u8>>,
+        approval_secret: Option<Arc<Vec<u8>>>,
+        default_actor: Option<String>,
+        drand_config: Option<DrandConfig>,
+    ) -> std::io::Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let listen_addr = listener.local_addr()?;
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        let drand_client = drand_config
+            .filter(|c| c.enabled)
+            .map(|c| Arc::new(DrandClient::new(c)));
 
         let state = SignedProxyState {
             target,
             secret,
             approval_secret,
             default_actor,
+            drand_client,
         };
 
         let app = Router::new().fallback(any(proxy_handler)).with_state(state);
@@ -108,12 +146,54 @@ async fn proxy_handler(
     let actor = extract_actor(&parts.headers, state.default_actor.as_deref());
     let timestamp = now_unix();
     let path = parts.uri.path();
-    let secret = if path == "/v1/approve" {
+
+    // Determine secret and whether to use drand anchoring
+    let is_approval = path == "/v1/approve";
+    let secret = if is_approval {
         state.approval_secret.as_ref().unwrap_or(&state.secret)
     } else {
         &state.secret
     };
-    let signature = sign_request(secret, timestamp, actor.as_deref(), &body_bytes);
+
+    // For approval requests, try to anchor with drand
+    let (signature, drand_round) = if is_approval {
+        if let Some(ref drand_client) = state.drand_client {
+            match drand_client.current_round().await {
+                Ok(round) => {
+                    let sig =
+                        sign_request_with_drand(secret, round, timestamp, actor.as_deref(), &body_bytes);
+                    (sig, Some(round))
+                }
+                Err(e) => {
+                    // Handle based on fail mode
+                    // Note: The DrandClient handles Cached mode internally by using
+                    // recently cached rounds (up to 60s old). If we get an error here,
+                    // it means even the cache is unavailable or too stale.
+                    match drand_client.config().fail_mode {
+                        DrandFailMode::Strict => {
+                            return Err(proxy_error(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                format!("drand unavailable: {e}"),
+                            ));
+                        }
+                        DrandFailMode::Cached => {
+                            // Cached mode fallback: the DrandClient already tried to use
+                            // its cache, so if we're here, the cache is too old.
+                            // We fall back to non-drand signing as a last resort.
+                            warn!("drand unavailable and cache expired, falling back to non-anchored signing: {e}");
+                            (sign_request(secret, timestamp, actor.as_deref(), &body_bytes), None)
+                        }
+                    }
+                }
+            }
+        } else {
+            // No drand client configured, use standard signing
+            (sign_request(secret, timestamp, actor.as_deref(), &body_bytes), None)
+        }
+    } else {
+        // Non-approval requests use standard signing
+        (sign_request(secret, timestamp, actor.as_deref(), &body_bytes), None)
+    };
 
     let uri = build_target_uri(state.target, parts.uri.path_and_query())
         .map_err(|e| proxy_error(StatusCode::BAD_REQUEST, format!("bad uri: {e}")))?;
@@ -146,6 +226,13 @@ async fn proxy_handler(
                 .map_err(|e| proxy_error(StatusCode::BAD_REQUEST, format!("bad actor: {e}")))?,
         );
     }
+    if let Some(round) = drand_round {
+        headers.insert(
+            HEADER_DRAND_ROUND,
+            HeaderValue::from_str(&round.to_string())
+                .map_err(|e| proxy_error(StatusCode::BAD_REQUEST, format!("bad drand round: {e}")))?,
+        );
+    }
 
     let mut outbound = Request::builder()
         .method(parts.method)
@@ -169,6 +256,7 @@ fn filter_headers(headers: &HeaderMap) -> HeaderMap {
             || name.as_str().eq_ignore_ascii_case(HEADER_TIMESTAMP)
             || name.as_str().eq_ignore_ascii_case(HEADER_SIGNATURE)
             || name.as_str().eq_ignore_ascii_case(HEADER_ACTOR)
+            || name.as_str().eq_ignore_ascii_case(HEADER_DRAND_ROUND)
         {
             continue;
         }
@@ -209,6 +297,34 @@ fn sign_request(secret: &[u8], timestamp: i64, actor: Option<&str>, body: &[u8])
     let actor_value = actor.unwrap_or("");
     let ts = timestamp.to_string();
     let mut message = Vec::with_capacity(ts.len() + actor_value.len() + 2 + body.len());
+    message.extend_from_slice(ts.as_bytes());
+    message.push(b'.');
+    message.extend_from_slice(actor_value.as_bytes());
+    message.push(b'.');
+    message.extend_from_slice(body);
+    sign_message(secret, &message)
+}
+
+/// Sign a request with drand anchoring.
+///
+/// Message format: `"{round}.{timestamp}.{actor}.{body}"`
+///
+/// This prevents pre-computation attacks because the drand round cannot be
+/// predicted in advance.
+fn sign_request_with_drand(
+    secret: &[u8],
+    drand_round: u64,
+    timestamp: i64,
+    actor: Option<&str>,
+    body: &[u8],
+) -> String {
+    let actor_value = actor.unwrap_or("");
+    let round_str = drand_round.to_string();
+    let ts = timestamp.to_string();
+    let mut message =
+        Vec::with_capacity(round_str.len() + ts.len() + actor_value.len() + 3 + body.len());
+    message.extend_from_slice(round_str.as_bytes());
+    message.push(b'.');
     message.extend_from_slice(ts.as_bytes());
     message.push(b'.');
     message.extend_from_slice(actor_value.as_bytes());
