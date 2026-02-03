@@ -30,6 +30,7 @@ mod mtls;
 use attestation::{AttestationConfig, AttestationVerifier};
 use auth::{AuthConfig, AuthError};
 use mtls::{ClientCertInfo, MtlsConfig, MtlsConnectInfo, MtlsListener};
+use nucleus_client::drand::{DrandConfig, DrandFailMode};
 
 #[derive(Parser, Debug)]
 #[command(name = "nucleus-tool-proxy")]
@@ -124,6 +125,33 @@ struct Args {
     /// Trust domain for SPIFFE identity verification.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_TRUST_DOMAIN")]
     trust_domain: Option<String>,
+
+    // === Drand Configuration ===
+    /// Enable drand anchoring for approval signatures.
+    /// When enabled, approval requests must include a valid drand round number
+    /// to prevent pre-computation attacks.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_DRAND_ENABLED", default_value_t = true)]
+    drand_enabled: bool,
+    /// Drand API endpoint URL.
+    #[arg(
+        long,
+        env = "NUCLEUS_TOOL_PROXY_DRAND_URL",
+        default_value = "https://api.drand.sh/public/latest"
+    )]
+    drand_url: String,
+    /// Number of previous drand rounds to accept (tolerance for network latency).
+    /// With tolerance=1, both current round N and previous round N-1 are valid.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_DRAND_TOLERANCE", default_value_t = 1)]
+    drand_tolerance: u64,
+    /// Drand failure mode when beacon is unavailable.
+    /// - "strict": Reject requests (fail closed) - recommended for production
+    /// - "cached": Use cached round for 60 seconds max
+    #[arg(
+        long,
+        env = "NUCLEUS_TOOL_PROXY_DRAND_FAIL_MODE",
+        default_value = "strict"
+    )]
+    drand_fail_mode: String,
 }
 
 #[derive(Clone)]
@@ -458,10 +486,37 @@ async fn main() -> Result<(), ApiError> {
         args.auth_secret.as_bytes(),
         Duration::from_secs(args.auth_max_skew_secs),
     );
-    let approval_auth = AuthConfig::new(
-        args.approval_secret.as_bytes(),
-        Duration::from_secs(args.auth_max_skew_secs),
-    );
+
+    // Build drand config for approval signatures
+    let drand_config = if args.drand_enabled {
+        let fail_mode = match args.drand_fail_mode.to_lowercase().as_str() {
+            "cached" => DrandFailMode::Cached,
+            _ => DrandFailMode::Strict, // "degraded" is no longer supported, defaults to strict
+        };
+        Some(DrandConfig {
+            enabled: true,
+            api_url: args.drand_url.clone(),
+            round_tolerance: args.drand_tolerance,
+            cache_ttl: Duration::from_secs(25),
+            fail_mode,
+            chain_hash: None, // Verification happens on signer side
+            public_key: None,
+        })
+    } else {
+        None
+    };
+
+    let approval_auth = {
+        let config = AuthConfig::new(
+            args.approval_secret.as_bytes(),
+            Duration::from_secs(args.auth_max_skew_secs),
+        );
+        if let Some(drand) = drand_config {
+            config.with_drand(drand)
+        } else {
+            config
+        }
+    };
 
     let audit = build_audit_log(&args, &auth)?;
 
@@ -695,7 +750,14 @@ async fn auth_middleware(
     }
 
     if parts.uri.path() == APPROVE_PATH {
-        let context = auth::verify_http(&parts.headers, &bytes, &state.approval_auth)?;
+        // Use drand-aware verification for approval requests
+        let context = auth::verify_http_with_drand(&parts.headers, &bytes, &state.approval_auth)?;
+        if context.drand_round.is_some() {
+            tracing::info!(
+                drand_round = context.drand_round,
+                "approval request verified with drand anchoring"
+            );
+        }
         let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
         req.extensions_mut().insert(context);
         return Ok(next.run(req).await);
