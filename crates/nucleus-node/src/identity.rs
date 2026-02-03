@@ -53,11 +53,13 @@ impl IdentityManager {
     }
 
     /// Returns the trust domain.
+    #[allow(dead_code)]
     pub fn trust_domain(&self) -> &str {
         &self.trust_domain
     }
 
     /// Creates a SPIFFE identity for a pod.
+    #[allow(dead_code)]
     pub fn identity_for_pod(
         &self,
         pod_id: Uuid,
@@ -74,12 +76,14 @@ impl IdentityManager {
     }
 
     /// Registers a pod's identity in the VM registry.
+    #[allow(dead_code)]
     pub async fn register_pod(&self, connection_id: impl Into<String>, identity: Identity) {
         let mut registry = self.vm_registry.write().await;
         registry.insert(connection_id.into(), identity);
     }
 
     /// Unregisters a pod from the VM registry.
+    #[allow(dead_code)]
     pub async fn unregister_pod(&self, connection_id: &str) {
         let mut registry = self.vm_registry.write().await;
         registry.remove(connection_id);
@@ -88,6 +92,7 @@ impl IdentityManager {
     /// Starts the Workload API server on a Unix socket.
     ///
     /// This should be called once at startup and the server runs in the background.
+    #[allow(dead_code)]
     pub async fn start_workload_api_server(&self, socket_path: &Path) -> Result<(), String> {
         let server = WorkloadApiServer::new(
             self.secret_manager.clone(),
@@ -98,6 +103,7 @@ impl IdentityManager {
         let socket_path_for_spawn = socket_path.to_path_buf();
         let socket_path_display = socket_path.display().to_string();
         tokio::spawn(async move {
+            #[allow(deprecated)]
             if let Err(e) = server.serve(&socket_path_for_spawn).await {
                 error!("workload API server error: {}", e);
             }
@@ -108,6 +114,7 @@ impl IdentityManager {
     }
 
     /// Starts the certificate refresh loop in the background.
+    #[allow(dead_code)]
     pub fn start_refresh_loop(&self) {
         let manager = self.secret_manager.clone();
         tokio::spawn(async move {
@@ -118,6 +125,7 @@ impl IdentityManager {
     /// Pre-fetches a certificate for the given identity.
     ///
     /// This is useful to warm the cache before the VM starts requesting certificates.
+    #[allow(dead_code)]
     pub async fn prefetch_certificate(&self, identity: &Identity) -> Result<(), String> {
         self.secret_manager
             .fetch_certificate(identity)
@@ -129,6 +137,7 @@ impl IdentityManager {
     /// Fetches a certificate for the given identity, returning the certificate.
     ///
     /// Uses the cache if available, otherwise generates a new certificate.
+    #[allow(dead_code)]
     pub async fn fetch_certificate(
         &self,
         identity: &Identity,
@@ -142,16 +151,19 @@ impl IdentityManager {
     /// Forgets a certificate for the given identity.
     ///
     /// Called when a pod is terminated to clean up cached certificates.
+    #[allow(dead_code)]
     pub async fn forget_certificate(&self, identity: &Identity) {
         self.secret_manager.forget_certificate(identity).await;
     }
 
     /// Returns the trust bundle (root CA certificates).
+    #[allow(dead_code)]
     pub fn trust_bundle(&self) -> &nucleus_identity::TrustBundle {
         self.ca.trust_bundle()
     }
 
     /// Creates a Workload API client for the given socket path.
+    #[allow(dead_code)]
     pub fn client(socket_path: impl Into<std::path::PathBuf>) -> WorkloadApiClient {
         WorkloadApiClient::new(socket_path)
     }

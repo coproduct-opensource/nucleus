@@ -9,6 +9,7 @@ use std::path::Path;
 use vsock::VsockStream;
 
 /// Default vsock port for the Workload API.
+#[allow(dead_code)]
 pub const DEFAULT_WORKLOAD_API_PORT: u32 = 15012;
 
 /// Host CID for vsock connections (always 2 in Firecracker).
@@ -164,6 +165,7 @@ pub fn parse_workload_api_port(cmdline: &str) -> Option<u32> {
 }
 
 /// Returns true if identity should be fetched (port is configured).
+#[allow(dead_code)]
 pub fn should_fetch_identity(cmdline: &str) -> bool {
     parse_workload_api_port(cmdline).is_some()
 }

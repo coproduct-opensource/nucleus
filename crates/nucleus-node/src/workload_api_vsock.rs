@@ -32,6 +32,7 @@ use tracing::{debug, error, info};
 use crate::identity::IdentityManager;
 
 /// Default port for the Workload API vsock server.
+#[allow(dead_code)]
 pub const DEFAULT_WORKLOAD_API_PORT: u32 = 15012;
 
 /// Vsock bridge for the Workload API.
@@ -46,6 +47,7 @@ pub struct WorkloadApiVsockBridge {
     task: JoinHandle<()>,
     socket_path: PathBuf,
     /// The pod ID this bridge serves (used for unique identity per pod).
+    #[allow(dead_code)]
     pod_id: uuid::Uuid,
 }
 
@@ -76,6 +78,7 @@ impl WorkloadApiVsockBridge {
     /// the bridge will listen on `/tmp/pod/vsock.sock_15012`.
     ///
     /// Each pod gets its own bridge with a unique SPIFFE identity based on `pod_id`.
+    #[allow(dead_code)]
     pub async fn start(
         vsock_uds_path: impl AsRef<Path>,
         port: u32,
@@ -142,11 +145,13 @@ impl WorkloadApiVsockBridge {
     }
 
     /// Returns the pod ID this bridge serves.
+    #[allow(dead_code)]
     pub fn pod_id(&self) -> uuid::Uuid {
         self.pod_id
     }
 
     /// Returns the socket path.
+    #[allow(dead_code)]
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
     }
@@ -163,6 +168,7 @@ impl WorkloadApiVsockBridge {
 }
 
 /// Handles a single Workload API connection from a guest.
+#[allow(dead_code)]
 async fn handle_connection(
     stream: tokio::net::UnixStream,
     manager: IdentityManager,
@@ -206,6 +212,7 @@ async fn handle_connection(
 ///
 /// Each pod gets a unique SPIFFE identity based on its pod_id:
 /// `spiffe://{trust_domain}/ns/pods/sa/{pod_id}`
+#[allow(dead_code)]
 async fn handle_fetch_svid(manager: &IdentityManager, pod_id: uuid::Uuid) -> String {
     // Create a unique identity for this specific pod
     // The identity is based on the pod's UUID, ensuring isolation between pods
@@ -241,6 +248,7 @@ async fn handle_fetch_svid(manager: &IdentityManager, pod_id: uuid::Uuid) -> Str
 }
 
 /// Handles FETCH_BUNDLE command - returns the trust bundle (CA certificates).
+#[allow(dead_code)]
 fn handle_fetch_bundle(manager: &IdentityManager) -> String {
     #[derive(serde::Serialize)]
     struct BundleResponse {

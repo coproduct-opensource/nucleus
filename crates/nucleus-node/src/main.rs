@@ -159,7 +159,8 @@ struct NodeState {
     proxy_auth_secret: String,
     proxy_approval_secret: String,
     proxy_actor: Option<String>,
-    /// Identity manager for SPIFFE certificates.
+    /// Identity manager for SPIFFE certificates (experimental, not yet wired to Firecracker).
+    #[allow(dead_code)]
     identity_manager: Option<identity::IdentityManager>,
     /// Vsock port for guest-to-host Workload API connections.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]

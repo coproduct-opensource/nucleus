@@ -78,9 +78,8 @@ mod spiffe_uri_injection {
             let result = Identity::try_new("nucleus.local", payload, "service");
             // These should either be rejected or safely escaped
             // The current implementation rejects special chars
-            if result.is_ok() {
+            if let Ok(id) = result {
                 // If accepted, verify it round-trips safely
-                let id = result.unwrap();
                 let uri = id.to_spiffe_uri();
                 let parsed = Identity::from_spiffe_uri(&uri);
                 // Either parsing fails OR the parsed value matches exactly
@@ -256,7 +255,7 @@ mod trust_domain_violations {
     #[tokio::test]
     async fn test_verifier_rejects_wrong_trust_domain() {
         let ca = SelfSignedCa::new("nucleus.local").unwrap();
-        let verifier = TrustDomainVerifier::new("different.domain", ca.trust_bundle()).unwrap();
+        let _verifier = TrustDomainVerifier::new("different.domain", ca.trust_bundle()).unwrap();
 
         let identity = Identity::new("nucleus.local", "default", "service");
         let csr_options = CsrOptions::new(identity.to_spiffe_uri());
@@ -370,7 +369,7 @@ INVALID_BASE64_DATA_HERE_TO_CORRUPT_SIGNATURE
 
         // Create expected identity list (what we're willing to talk to)
         let expected = vec![Identity::new("nucleus.local", "production", "api-server")];
-        let verifier = IdentityVerifier::new(expected.clone(), ca.trust_bundle()).unwrap();
+        let _verifier = IdentityVerifier::new(expected.clone(), ca.trust_bundle()).unwrap();
 
         // Attacker gets valid certificate for THEIR identity
         let attacker_identity = Identity::new("nucleus.local", "attacker-ns", "evil-service");
@@ -655,7 +654,7 @@ mod chaos {
     /// Concurrent certificate requests should be isolated
     #[tokio::test]
     async fn test_concurrent_requests_isolated() {
-        let ca = SelfSignedCa::new("nucleus.local").unwrap();
+        let _ca = SelfSignedCa::new("nucleus.local").unwrap();
 
         let handles: Vec<_> = (0..10)
             .map(|i| {
