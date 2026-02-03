@@ -15,7 +15,6 @@ categories = ["cryptography", "network-programming"]
 # Crypto
 rcgen = "0.14"
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
-rustls-pemfile = "2.2"
 x509-parser = { version = "0.17", features = ["verify"] }
 ring = "0.17"
 
