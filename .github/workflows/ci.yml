@@ -47,6 +47,18 @@ jobs:
       - name: cargo test
         run: cargo test --all-features
 
+  owasp-gauntlet:
+    name: OWASP LLM Security Gauntlet
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+      - name: Run OWASP LLM Top 10 security tests
+        run: cargo test -p lattice-guard --test owasp_llm_gauntlet --all-features
+
   fuzz:
     name: Fuzz
     runs-on: ubuntu-latest
