@@ -4,6 +4,8 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
 
+mod identity;
+
 #[cfg(target_os = "linux")]
 use nix::mount::{mount, MsFlags};
 #[cfg(target_os = "linux")]
@@ -85,6 +87,19 @@ fn run() -> Result<(), String> {
 
     // Read secrets from kernel command line (preferred) or files (legacy/fallback)
     let cmdline = fs::read_to_string("/proc/cmdline").unwrap_or_default();
+
+    // Fetch SPIFFE identity from host if configured
+    if let Some(port) = identity::parse_workload_api_port(&cmdline) {
+        match identity::fetch_identity(port) {
+            Ok(spiffe_id) => {
+                eprintln!("fetched identity: {spiffe_id}");
+            }
+            Err(err) => {
+                eprintln!("failed to fetch identity: {err}");
+                // Continue without identity - not fatal for now
+            }
+        }
+    }
 
     let auth_secret = parse_cmdline_secret(&cmdline, "nucleus.auth_secret")
         .or_else(|| read_secret("/etc/nucleus/auth.secret"))
