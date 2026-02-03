@@ -174,6 +174,7 @@ impl<C: CaClient + 'static> WorkloadApiServer<C> {
                     let registry = self.vm_registry.clone();
 
                     tokio::spawn(async move {
+                        #[allow(deprecated)]
                         if let Err(e) = handle_connection(stream, manager, ca, registry).await {
                             error!("workload API connection error: {}", e);
                         }
@@ -522,6 +523,7 @@ mod tests {
 
         // Start server in background
         let socket_path_clone = socket_path.clone();
+        #[allow(deprecated)]
         let server_handle = tokio::spawn(async move { server.serve(&socket_path_clone).await });
 
         // Wait for server to start
@@ -547,6 +549,8 @@ mod tests {
 }
 
 // Minimal UUID implementation for connection IDs
+// Currently unused but kept for future vsock-based identity binding
+#[allow(dead_code)]
 mod uuid {
     use ring::rand::SecureRandom;
 

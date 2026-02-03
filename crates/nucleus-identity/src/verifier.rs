@@ -164,7 +164,8 @@ impl ClientCertVerifier for TrustDomainVerifier {
 pub struct IdentityVerifier {
     /// The identities we expect to connect to (empty = accept any valid identity).
     expected_identities: Vec<Identity>,
-    /// Root certificate store for chain validation.
+    /// Root certificate store for chain validation (kept for potential future use).
+    #[allow(dead_code)]
     root_store: Arc<RootCertStore>,
     /// Trust anchors for webpki verification (owned for 'static lifetime).
     trust_anchors: Vec<TrustAnchor<'static>>,
@@ -214,7 +215,7 @@ impl IdentityVerifier {
     ) -> Self {
         // Clone trust anchors from the root store
         // RootCertStore.roots contains TrustAnchor<'static> values
-        let trust_anchors: Vec<TrustAnchor<'static>> = root_store.roots.iter().cloned().collect();
+        let trust_anchors: Vec<TrustAnchor<'static>> = root_store.roots.to_vec();
 
         Self {
             expected_identities,
