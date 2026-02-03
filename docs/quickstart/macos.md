@@ -35,9 +35,10 @@ If you prefer manual setup or need to customize the installation, follow the ste
 
 - **macOS 13+** (macOS 15+ recommended for nested virtualization)
 - **Lima 2.0+** (`brew install lima`) - required for nested virtualization support
-- **Docker** (for building rootfs images)
 - **Rust toolchain** (for building nucleus binaries)
 - **cross** (`cargo install cross`) for cross-compiling Linux binaries
+
+> **Note**: Docker Desktop is **not required**. Lima VMs include Docker, so rootfs images are built inside the VM.
 
 Verify Lima version:
 ```bash
@@ -204,15 +205,11 @@ This will:
 # Cross-compile binaries for the rootfs
 ./scripts/cross-build.sh
 
-# Get secrets from Keychain
-AUTH_SECRET=$(security find-generic-password -s nucleus-auth -w)
-APPROVAL_SECRET=$(security find-generic-password -s nucleus-approval -w)
-
-# Build rootfs in Lima VM (has Docker)
-limactl shell nucleus -- /host/path/to/nucleus/scripts/firecracker/build-rootfs.sh \
-  --auth-secret "$AUTH_SECRET" \
-  --approval-secret "$APPROVAL_SECRET"
+# Build rootfs in Lima VM (Lima includes Docker - no Docker Desktop needed!)
+limactl shell nucleus -- make rootfs
 ```
+
+The rootfs build happens inside the Lima VM which has Docker pre-installed. Secrets are injected at runtime via kernel command line - they're not baked into the rootfs image.
 
 ### 4. Install nucleus-node
 
