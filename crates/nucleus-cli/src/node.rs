@@ -14,7 +14,11 @@ use std::time::Duration;
 #[derive(Args, Debug)]
 pub struct NodeArgs {
     /// nucleus-node HTTP URL
-    #[arg(long, default_value = "http://127.0.0.1:8080", env = "NUCLEUS_NODE_URL")]
+    #[arg(
+        long,
+        default_value = "http://127.0.0.1:8080",
+        env = "NUCLEUS_NODE_URL"
+    )]
     pub url: String,
 
     /// Path to secrets.env file (or use --auth-secret)
@@ -97,7 +101,17 @@ pub async fn execute(args: NodeArgs) -> Result<()> {
             pod_id,
             follow,
             offset,
-        } => stream_logs(&args.url, &auth_secret, &args.actor, &pod_id, follow, offset).await,
+        } => {
+            stream_logs(
+                &args.url,
+                &auth_secret,
+                &args.actor,
+                &pod_id,
+                follow,
+                offset,
+            )
+            .await
+        }
         NodeCommand::Sign { method, body } => {
             sign_request(&auth_secret, &args.actor, &method, body.as_deref())
         }

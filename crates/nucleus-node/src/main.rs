@@ -1519,8 +1519,8 @@ impl NodeService for GrpcService {
         request: Request<proto::StreamLogsRequest>,
     ) -> Result<GrpcResponse<Self::StreamPodLogsStream>, Status> {
         let req = request.into_inner();
-        let id = Uuid::parse_str(&req.pod_id)
-            .map_err(|_| Status::invalid_argument("invalid pod id"))?;
+        let id =
+            Uuid::parse_str(&req.pod_id).map_err(|_| Status::invalid_argument("invalid pod id"))?;
         let pod = get_pod(&self.state, id)
             .await
             .map_err(|_| Status::not_found("pod not found"))?;
@@ -1548,8 +1548,8 @@ impl NodeService for GrpcService {
         request: Request<proto::WatchPodRequest>,
     ) -> Result<GrpcResponse<Self::WatchPodStateStream>, Status> {
         let req = request.into_inner();
-        let id = Uuid::parse_str(&req.pod_id)
-            .map_err(|_| Status::invalid_argument("invalid pod id"))?;
+        let id =
+            Uuid::parse_str(&req.pod_id).map_err(|_| Status::invalid_argument("invalid pod id"))?;
         let pod = get_pod(&self.state, id)
             .await
             .map_err(|_| Status::not_found("pod not found"))?;
@@ -1561,9 +1561,7 @@ impl NodeService for GrpcService {
 
         // Spawn task to watch pod state
         tokio::spawn(async move {
-            if let Err(e) =
-                watch_pod_state_to_channel(pod, pod_id_str, include_initial, tx).await
-            {
+            if let Err(e) = watch_pod_state_to_channel(pod, pod_id_str, include_initial, tx).await {
                 error!("pod state watching error: {e}");
             }
         });
@@ -1683,7 +1681,10 @@ async fn watch_pod_state_to_channel(
             }
 
             // If pod has exited or errored, stop watching
-            if matches!(current_state, PodState::Exited { .. } | PodState::Error { .. }) {
+            if matches!(
+                current_state,
+                PodState::Exited { .. } | PodState::Error { .. }
+            ) {
                 break;
             }
 
