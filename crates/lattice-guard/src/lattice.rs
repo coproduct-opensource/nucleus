@@ -237,12 +237,15 @@ impl PermissionLattice {
     /// Create a version with trifecta constraint explicitly disabled.
     ///
     /// # Security Warning
+    /// Disable trifecta constraint enforcement.
+    ///
+    /// # Security Warning
     ///
     /// This method disables the core security invariant of this crate.
-    /// Only use this for testing or in fully trusted environments where
-    /// the trifecta attack is not a concern.
+    /// Only available with the `testing` feature enabled.
     ///
-    /// In production, the trifecta constraint should always be enabled.
+    /// **DO NOT** use in production code.
+    #[cfg(feature = "testing")]
     pub fn with_trifecta_disabled(mut self) -> Self {
         self.trifecta_constraint = false;
         self

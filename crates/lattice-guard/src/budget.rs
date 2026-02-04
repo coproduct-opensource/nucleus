@@ -128,15 +128,19 @@ impl BudgetLattice {
     /// - Rejects negative charges (prevents budget inflation attacks)
     /// - Rejects zero charges (no-op, potential abuse vector)
     /// - Uses Decimal for precision (no f64 exploits)
+    /// - **Atomic**: Only mutates state on successful charge (monoid action property)
     pub fn charge(&mut self, cost_usd: Decimal) -> bool {
         // Security: reject negative or zero charges
         if cost_usd <= Decimal::ZERO {
             return false;
         }
 
-        let within_budget = self.consumed_usd + cost_usd <= self.max_cost_usd;
-        self.consumed_usd += cost_usd;
-        within_budget
+        let new_consumed = self.consumed_usd + cost_usd;
+        if new_consumed > self.max_cost_usd {
+            return false; // Don't mutate on failure - preserves monoid action property
+        }
+        self.consumed_usd = new_consumed;
+        true
     }
 
     /// Record a cost charge against the budget using f64 (convenience method).
@@ -314,6 +318,36 @@ mod tests {
         assert_eq!(
             budget.consumed_usd, initial_consumed,
             "Budget should not change"
+        );
+    }
+
+    #[test]
+    fn test_budget_charge_is_atomic() {
+        // Verifies the monoid action property: charge only mutates on success
+        let mut budget = BudgetLattice::with_cost_limit(5.0);
+
+        // Successful charge mutates
+        assert!(budget.charge(Decimal::from(3)));
+        assert_eq!(budget.consumed_usd, Decimal::from(3));
+
+        // Failed charge (exceeds budget) must NOT mutate
+        let before = budget.consumed_usd;
+        assert!(!budget.charge(Decimal::from(10))); // Would exceed 5.0 limit
+        assert_eq!(
+            budget.consumed_usd, before,
+            "Failed charge must not mutate consumed_usd (atomicity violation)"
+        );
+
+        // Budget should still allow charges up to remaining
+        assert!(budget.charge(Decimal::from(2))); // 3 + 2 = 5, at limit
+        assert_eq!(budget.consumed_usd, Decimal::from(5));
+
+        // Now at limit, any positive charge should fail without mutation
+        let at_limit = budget.consumed_usd;
+        assert!(!budget.charge(Decimal::from_str("0.01").unwrap()));
+        assert_eq!(
+            budget.consumed_usd, at_limit,
+            "Charge at limit must not mutate"
         );
     }
 }

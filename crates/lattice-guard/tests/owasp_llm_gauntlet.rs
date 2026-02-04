@@ -148,6 +148,7 @@ mod llm01_prompt_injection {
     }
 
     #[test]
+    #[cfg(feature = "testing")]
     fn trifecta_enforcement_in_meet_is_infectious() {
         // If either parent enforces trifecta, the child must too
         let enforcing = PermissionLattice::builder()

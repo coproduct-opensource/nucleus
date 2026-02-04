@@ -147,6 +147,44 @@ impl Default for CapabilityLattice {
 
 /// Incompatibility constraint that enforces trifecta prevention.
 ///
+/// Graded risk level for trifecta completeness.
+///
+/// This implements a graded topology (fuzzy subobject classifier) rather than
+/// a binary one, enabling proportional response to risk levels.
+///
+/// The ordering forms a bounded lattice: `None < Low < Medium < Complete`
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum TrifectaRisk {
+    /// No trifecta components present (0 of 3)
+    #[default]
+    None = 0,
+    /// One component present (1 of 3) - low risk
+    Low = 1,
+    /// Two components present (2 of 3) - medium risk, escalation likely
+    Medium = 2,
+    /// All three components present - complete trifecta, requires intervention
+    Complete = 3,
+}
+
+impl TrifectaRisk {
+    /// Returns true if this risk level requires approval obligations
+    pub fn requires_intervention(&self) -> bool {
+        *self == TrifectaRisk::Complete
+    }
+
+    /// Meet operation: takes the minimum risk level
+    pub fn meet(&self, other: &Self) -> Self {
+        std::cmp::min(*self, *other)
+    }
+
+    /// Join operation: takes the maximum risk level
+    pub fn join(&self, other: &Self) -> Self {
+        std::cmp::max(*self, *other)
+    }
+}
+
 /// The "lethal trifecta" is the combination of:
 /// 1. Private data access (read_files)
 /// 2. Untrusted content exposure (web_fetch, web_search)
@@ -168,6 +206,35 @@ impl IncompatibilityConstraint {
         }
     }
 
+    /// Compute the graded trifecta risk level.
+    ///
+    /// Returns a `TrifectaRisk` indicating how many of the three trifecta
+    /// components are present at autonomous levels (≥ LowRisk):
+    /// - `None`: 0 components
+    /// - `Low`: 1 component
+    /// - `Medium`: 2 components
+    /// - `Complete`: all 3 components (intervention required)
+    pub fn trifecta_risk(&self, caps: &CapabilityLattice) -> TrifectaRisk {
+        if !self.enforce_trifecta {
+            return TrifectaRisk::None;
+        }
+
+        let has_private_access = caps.read_files >= CapabilityLevel::LowRisk;
+        let has_untrusted = caps.web_fetch >= CapabilityLevel::LowRisk
+            || caps.web_search >= CapabilityLevel::LowRisk;
+        let has_exfil = caps.git_push >= CapabilityLevel::LowRisk
+            || caps.create_pr >= CapabilityLevel::LowRisk
+            || caps.run_bash >= CapabilityLevel::LowRisk;
+
+        let count = has_private_access as u8 + has_untrusted as u8 + has_exfil as u8;
+        match count {
+            0 => TrifectaRisk::None,
+            1 => TrifectaRisk::Low,
+            2 => TrifectaRisk::Medium,
+            _ => TrifectaRisk::Complete,
+        }
+    }
+
     /// Check if capabilities form a complete trifecta at autonomous levels.
     ///
     /// Returns true if:
@@ -175,6 +242,13 @@ impl IncompatibilityConstraint {
     /// 2. Untrusted content exposure (web_fetch OR web_search) >= LowRisk
     /// 3. Exfiltration vector (git_push OR create_pr OR run_bash) >= LowRisk
     pub fn is_trifecta_complete(&self, caps: &CapabilityLattice) -> bool {
+        self.trifecta_risk(caps) == TrifectaRisk::Complete
+    }
+
+    /// Check if capabilities form a complete trifecta at autonomous levels.
+    /// (Legacy alias for backward compatibility)
+    #[deprecated(since = "0.2.0", note = "Use trifecta_risk() for graded assessment")]
+    pub fn is_trifecta_complete_legacy(&self, caps: &CapabilityLattice) -> bool {
         if !self.enforce_trifecta {
             return false;
         }

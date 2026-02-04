@@ -15,10 +15,16 @@ categories = ["authentication", "development-tools"]
 default = ["serde"]
 serde = ["dep:serde", "dep:serde_json", "rust_decimal/serde", "chrono/serde", "uuid/serde"]
 
+# SECURITY: Enable this feature ONLY for testing. It exposes methods that
+# bypass security constraints (e.g., disabling trifecta enforcement).
+# DO NOT enable in production builds.
+testing = []
+
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 sha2 = "0.10"
 uuid = { version = "1.20", features = ["v4"] }
+tracing = "0.1"
 
 # Optional serde support
 serde = { version = "1.0", features = ["derive"], optional = true }

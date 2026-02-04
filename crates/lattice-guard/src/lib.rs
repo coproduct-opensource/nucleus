@@ -64,8 +64,15 @@
 mod budget;
 mod capability;
 mod command;
+pub mod escalation;
+pub mod frame;
+pub mod galois;
+pub mod graded;
 pub mod guard;
+pub mod heyting;
+pub mod identity;
 mod lattice;
+pub mod modal;
 mod path;
 mod time;
 
@@ -75,12 +82,21 @@ mod kani;
 pub use budget::BudgetLattice;
 pub use capability::{
     CapabilityLattice, CapabilityLevel, IncompatibilityConstraint, Obligations, Operation,
+    TrifectaRisk,
 };
 pub use command::{ArgPattern, CommandLattice, CommandPattern};
+pub use frame::{
+    BoundedLattice, CompleteLattice, DistributiveLattice, Frame, Lattice, Nucleus,
+    SafePermissionLattice, TrifectaQuotient,
+};
+pub use galois::{GaloisConnection, GaloisVerificationError, TrustDomainBridge};
+pub use graded::{Graded, GradedPermissionCheck, RiskGrade};
 pub use guard::{CompositeGuard, GuardError, GuardFn, GuardedAction, PermissionGuard};
+pub use heyting::{ConditionalPermission, HeytingAlgebra};
 pub use lattice::{
     DelegationError, EffectivePermissions, PermissionLattice, PermissionLatticeBuilder,
 };
+pub use modal::{CapabilityModal, ModalContext, ModalPermissions};
 pub use path::PathLattice;
 pub use time::TimeLattice;
 

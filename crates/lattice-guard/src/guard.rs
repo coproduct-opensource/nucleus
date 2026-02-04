@@ -51,12 +51,49 @@ impl<A> GuardedAction<A> {
         self.action
     }
 
-    /// Map the action to a new type.
+    /// Map the action to a new type (functor).
     pub fn map<B, F>(self, f: F) -> GuardedAction<B>
     where
         F: FnOnce(A) -> B,
     {
         GuardedAction::new(f(self.action))
+    }
+
+    /// Chain with another fallible guard operation (monad bind).
+    ///
+    /// This enables composing multiple permission checks:
+    /// ```ignore
+    /// guard.guard(read_path)?
+    ///     .and_then(|path| guard.guard(write_path))?
+    ///     .and_then(|path| guard.guard(execute))?
+    /// ```
+    ///
+    /// The monadic structure ensures:
+    /// - Each check is performed only if previous checks passed
+    /// - The proof chain is preserved (cannot skip intermediate checks)
+    /// - Errors propagate correctly through the chain
+    pub fn and_then<B, E, F>(self, f: F) -> Result<GuardedAction<B>, GuardError<E>>
+    where
+        F: FnOnce(A) -> Result<GuardedAction<B>, GuardError<E>>,
+    {
+        f(self.action)
+    }
+
+    /// Chain with another fallible operation that returns a plain result.
+    ///
+    /// Useful when the next operation isn't a guard check but still needs
+    /// the proof that the previous operation was guarded.
+    pub fn try_map<B, E, F>(self, f: F) -> Result<GuardedAction<B>, GuardError<E>>
+    where
+        F: FnOnce(A) -> Result<B, E>,
+        E: std::fmt::Display,
+    {
+        match f(self.action) {
+            Ok(b) => Ok(GuardedAction::new(b)),
+            Err(e) => Err(GuardError::CheckFailed {
+                error: e,
+            }),
+        }
     }
 }
 
@@ -320,5 +357,50 @@ mod tests {
         // Map to string
         let string_action = guarded.map(|p| p.to_string_lossy().to_string());
         assert_eq!(string_action.into_action(), "test.txt");
+    }
+
+    #[test]
+    fn test_guarded_action_and_then() {
+        let guard = TestPathGuard {
+            blocked: vec![".env".to_string()],
+        };
+
+        // Successful chain: read src, then read lib
+        let result = guard
+            .guard(PathBuf::from("src/main.rs"))
+            .and_then(|_| guard.guard(PathBuf::from("lib/utils.rs")));
+        assert!(result.is_ok());
+
+        // Chain fails on second guard
+        let result = guard
+            .guard(PathBuf::from("src/main.rs"))
+            .and_then(|_| guard.guard(PathBuf::from(".env")));
+        assert!(result.is_err());
+
+        // Chain fails on first guard (second never runs)
+        let result = guard
+            .guard(PathBuf::from(".env"))
+            .and_then(|_| guard.guard(PathBuf::from("src/main.rs")));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_guarded_action_try_map() {
+        let guard = TestPathGuard { blocked: vec![] };
+
+        // Successful try_map
+        let result: Result<GuardedAction<String>, GuardError<String>> = guard
+            .guard(PathBuf::from("test.txt"))
+            .unwrap()
+            .try_map(|p| Ok::<_, String>(p.to_string_lossy().to_string()));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().into_action(), "test.txt");
+
+        // Failed try_map
+        let result: Result<GuardedAction<String>, GuardError<String>> = guard
+            .guard(PathBuf::from("test.txt"))
+            .unwrap()
+            .try_map(|_| Err::<String, _>("io error".to_string()));
+        assert!(matches!(result, Err(GuardError::CheckFailed { .. })));
     }
 }
