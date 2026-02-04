@@ -17,11 +17,12 @@ use nucleus_client::drand::{DrandConfig, DrandFailMode};
 use nucleus_spec::NetworkSpec;
 use nucleus_spec::PodSpec;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response as GrpcResponse, Status};
 use tracing::{error, info};
 use uuid::Uuid;
@@ -408,8 +409,8 @@ async fn main() -> Result<(), ApiError> {
     let app = Router::new()
         .route("/v1/health", get(health))
         .route("/v1/pods", post(create_pod).get(list_pods))
-        .route("/v1/pods/:id/logs", get(pod_logs))
-        .route("/v1/pods/:id/cancel", post(cancel_pod))
+        .route("/v1/pods/{id}/logs", get(pod_logs))
+        .route("/v1/pods/{id}/cancel", post(cancel_pod))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -1494,6 +1495,220 @@ impl NodeService for GrpcService {
         Ok(GrpcResponse::new(proto::CancelPodResponse {
             status: "cancelled".to_string(),
         }))
+    }
+
+    async fn get_pod(
+        &self,
+        request: Request<proto::GetPodRequest>,
+    ) -> Result<GrpcResponse<proto::GetPodResponse>, Status> {
+        let id = Uuid::parse_str(&request.into_inner().pod_id)
+            .map_err(|_| Status::invalid_argument("invalid pod id"))?;
+        let handle = get_pod(&self.state, id)
+            .await
+            .map_err(|_| Status::not_found("pod not found"))?;
+        let info = handle.info().await;
+        Ok(GrpcResponse::new(proto::GetPodResponse {
+            pod: Some(pod_info_to_grpc(info)),
+        }))
+    }
+
+    type StreamPodLogsStream = ReceiverStream<Result<proto::LogEntry, Status>>;
+
+    async fn stream_pod_logs(
+        &self,
+        request: Request<proto::StreamLogsRequest>,
+    ) -> Result<GrpcResponse<Self::StreamPodLogsStream>, Status> {
+        let req = request.into_inner();
+        let id =
+            Uuid::parse_str(&req.pod_id).map_err(|_| Status::invalid_argument("invalid pod id"))?;
+        let pod = get_pod(&self.state, id)
+            .await
+            .map_err(|_| Status::not_found("pod not found"))?;
+
+        let log_path = pod.log_path.clone();
+        let follow = req.follow;
+        let offset_bytes = req.offset_bytes;
+
+        let (tx, rx) = tokio::sync::mpsc::channel(128);
+
+        // Spawn task to stream logs
+        tokio::spawn(async move {
+            if let Err(e) = stream_logs_to_channel(log_path, offset_bytes, follow, tx).await {
+                error!("log streaming error: {e}");
+            }
+        });
+
+        Ok(GrpcResponse::new(ReceiverStream::new(rx)))
+    }
+
+    type WatchPodStateStream = ReceiverStream<Result<proto::PodStateChange, Status>>;
+
+    async fn watch_pod_state(
+        &self,
+        request: Request<proto::WatchPodRequest>,
+    ) -> Result<GrpcResponse<Self::WatchPodStateStream>, Status> {
+        let req = request.into_inner();
+        let id =
+            Uuid::parse_str(&req.pod_id).map_err(|_| Status::invalid_argument("invalid pod id"))?;
+        let pod = get_pod(&self.state, id)
+            .await
+            .map_err(|_| Status::not_found("pod not found"))?;
+
+        let include_initial = req.include_initial;
+        let pod_id_str = id.to_string();
+
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+
+        // Spawn task to watch pod state
+        tokio::spawn(async move {
+            if let Err(e) = watch_pod_state_to_channel(pod, pod_id_str, include_initial, tx).await {
+                error!("pod state watching error: {e}");
+            }
+        });
+
+        Ok(GrpcResponse::new(ReceiverStream::new(rx)))
+    }
+}
+
+/// Stream log file contents to a channel
+async fn stream_logs_to_channel(
+    log_path: PathBuf,
+    offset_bytes: u64,
+    follow: bool,
+    tx: tokio::sync::mpsc::Sender<Result<proto::LogEntry, Status>>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let file = tokio::fs::File::open(&log_path).await?;
+    let mut reader = BufReader::new(file);
+
+    // Seek to offset if specified
+    if offset_bytes > 0 {
+        reader.seek(std::io::SeekFrom::Start(offset_bytes)).await?;
+    }
+
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let bytes_read = reader.read_line(&mut line).await?;
+
+        if bytes_read == 0 {
+            if follow {
+                // No more data, wait and try again
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            } else {
+                // EOF and not following
+                break;
+            }
+        }
+
+        // Parse log level from line if it looks like structured log
+        let level = if line.contains("\"level\":\"error\"") || line.contains("[ERROR]") {
+            "error"
+        } else if line.contains("\"level\":\"warn\"") || line.contains("[WARN]") {
+            "warn"
+        } else if line.contains("\"level\":\"debug\"") || line.contains("[DEBUG]") {
+            "debug"
+        } else {
+            "info"
+        };
+
+        let entry = proto::LogEntry {
+            timestamp_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            line: line.trim_end().to_string(),
+            level: level.to_string(),
+        };
+
+        if tx.send(Ok(entry)).await.is_err() {
+            // Receiver dropped
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+/// Watch pod state changes and send to channel
+async fn watch_pod_state_to_channel(
+    pod: Arc<PodHandle>,
+    pod_id: String,
+    include_initial: bool,
+    tx: tokio::sync::mpsc::Sender<Result<proto::PodStateChange, Status>>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut last_state = pod.status().await;
+
+    // Send initial state if requested
+    if include_initial {
+        let (state_str, exit_code, error) = pod_state_to_strings(&last_state);
+        let change = proto::PodStateChange {
+            pod_id: pod_id.clone(),
+            previous_state: String::new(),
+            new_state: state_str,
+            timestamp_unix: now_unix(),
+            exit_code,
+            error,
+        };
+        if tx.send(Ok(change)).await.is_err() {
+            return Ok(());
+        }
+    }
+
+    // Poll for state changes
+    loop {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let current_state = pod.status().await;
+        let state_changed = !states_equal(&last_state, &current_state);
+
+        if state_changed {
+            let (prev_str, _, _) = pod_state_to_strings(&last_state);
+            let (new_str, exit_code, error) = pod_state_to_strings(&current_state);
+
+            let change = proto::PodStateChange {
+                pod_id: pod_id.clone(),
+                previous_state: prev_str,
+                new_state: new_str.clone(),
+                timestamp_unix: now_unix(),
+                exit_code,
+                error,
+            };
+
+            if tx.send(Ok(change)).await.is_err() {
+                // Receiver dropped
+                break;
+            }
+
+            // If pod has exited or errored, stop watching
+            if matches!(
+                current_state,
+                PodState::Exited { .. } | PodState::Error { .. }
+            ) {
+                break;
+            }
+
+            last_state = current_state;
+        }
+    }
+
+    Ok(())
+}
+
+fn pod_state_to_strings(state: &PodState) -> (String, i32, String) {
+    match state {
+        PodState::Running => ("running".to_string(), 0, String::new()),
+        PodState::Exited { code } => ("exited".to_string(), code.unwrap_or(-1), String::new()),
+        PodState::Error { message } => ("error".to_string(), -1, message.clone()),
+    }
+}
+
+fn states_equal(a: &PodState, b: &PodState) -> bool {
+    match (a, b) {
+        (PodState::Running, PodState::Running) => true,
+        (PodState::Exited { code: a }, PodState::Exited { code: b }) => a == b,
+        (PodState::Error { message: a }, PodState::Error { message: b }) => a == b,
+        _ => false,
     }
 }
 

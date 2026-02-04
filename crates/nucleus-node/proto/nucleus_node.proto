@@ -39,9 +39,71 @@ message ListPodsResponse {
 
 message Empty {}
 
+// Streaming log entry for real-time log observation
+message LogEntry {
+  // Unix timestamp in milliseconds
+  uint64 timestamp_ms = 1;
+  // Log line content
+  string line = 2;
+  // Log level (info, warn, error, debug)
+  string level = 3;
+}
+
+// Pod state change notification for observability
+message PodStateChange {
+  // Pod identifier
+  string pod_id = 1;
+  // Previous state (running, pending, etc.)
+  string previous_state = 2;
+  // New state
+  string new_state = 3;
+  // Unix timestamp of state change
+  uint64 timestamp_unix = 4;
+  // Exit code (only set when state is "exited")
+  int32 exit_code = 5;
+  // Error message (only set when state is "error")
+  string error = 6;
+}
+
+// Request for streaming logs with optional offset
+message StreamLogsRequest {
+  // Pod identifier
+  string pod_id = 1;
+  // Start from this byte offset (0 = beginning)
+  uint64 offset_bytes = 2;
+  // Whether to follow the log (like tail -f)
+  bool follow = 3;
+}
+
+// Request for watching pod state changes
+message WatchPodRequest {
+  // Pod identifier
+  string pod_id = 1;
+  // Include initial state in first message
+  bool include_initial = 2;
+}
+
+// Get pod info request (single pod)
+message GetPodRequest {
+  string pod_id = 1;
+}
+
+// Get pod info response
+message GetPodResponse {
+  PodInfo pod = 1;
+}
+
 service NodeService {
+  // Pod lifecycle management
   rpc CreatePod(CreatePodRequest) returns (CreatePodResponse);
   rpc ListPods(Empty) returns (ListPodsResponse);
-  rpc PodLogs(PodId) returns (PodLogsResponse);
+  rpc GetPod(GetPodRequest) returns (GetPodResponse);
   rpc CancelPod(PodId) returns (CancelPodResponse);
+
+  // Non-streaming logs (existing)
+  rpc PodLogs(PodId) returns (PodLogsResponse);
+
+  // Streaming observability for orchestrators
+  rpc StreamPodLogs(StreamLogsRequest) returns (stream LogEntry);
+  rpc WatchPodState(WatchPodRequest) returns (stream PodStateChange);
 }

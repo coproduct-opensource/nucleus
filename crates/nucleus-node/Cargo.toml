@@ -26,6 +26,7 @@ serde_json = "1.0"
 serde_yaml = "0.9"
 thiserror = "2.0"
 tokio = { version = "1", features = ["full", "process"] }
+tokio-stream = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tonic = { version = "0.14", features = ["transport"] }
