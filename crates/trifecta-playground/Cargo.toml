@@ -1,0 +1,19 @@
+[package]
+name = "trifecta-playground"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Interactive TUI demonstrating the Lethal Trifecta prevention system"
+repository = "https://github.com/coproduct-opensource/nucleus"
+keywords = ["ai", "security", "tui", "demo"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "trifecta-playground"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+lattice-guard = { path = "../lattice-guard" }

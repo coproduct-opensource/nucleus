@@ -12,13 +12,14 @@ members = [
     "crates/nucleus-mcp", # MCP server bridging Claude to tool-proxy
     "crates/nucleus-audit", # Audit log verifier CLI
     "crates/nucleus-identity", # SPIFFE-based workload identity
+    "crates/trifecta-playground", # Interactive TUI demo for HN
 ]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.70"
+rust-version = "1.80"
 license = "MIT OR Apache-2.0"
 authors = ["Coproduct <hello@coproduct.dev>"]
 
