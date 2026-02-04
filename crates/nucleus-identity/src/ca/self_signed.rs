@@ -46,15 +46,17 @@ use crate::certificate::{Certificate, PrivateKey, TrustBundle, WorkloadCertifica
 use crate::identity::Identity;
 use crate::{Error, Result};
 use async_trait::async_trait;
+use rcgen::PublicKeyData;
 use rcgen::{
     BasicConstraints, CertificateParams, CustomExtension, DistinguishedName, DnType,
-    ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, SanType,
+    ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, SanType, SignatureAlgorithm,
 };
 use std::time::Duration;
 use time::{Duration as TimeDuration, OffsetDateTime};
 use x509_parser::certification_request::X509CertificationRequest;
 use x509_parser::extensions::{GeneralName, ParsedExtension};
 use x509_parser::prelude::FromDer;
+use x509_parser::x509::AlgorithmIdentifier;
 
 /// A self-signed Certificate Authority for development and testing.
 pub struct SelfSignedCa {
@@ -397,6 +399,126 @@ impl SelfSignedCa {
         ext.set_criticality(false);
         ext
     }
+
+    /// Signs a certificate using only a public key (no private key needed).
+    ///
+    /// This is used for CSR-only signing flows (like OIDC) where the client
+    /// generates and keeps its private key locally.
+    fn sign_with_public_key(
+        &self,
+        public_key: &CsrPublicKey,
+        identity: &Identity,
+        ttl: Duration,
+    ) -> Result<Vec<Certificate>> {
+        // Build certificate parameters
+        let mut params = CertificateParams::new(vec![])
+            .map_err(|e| Error::CaSigning(format!("failed to create params: {e}")))?;
+
+        // Set distinguished name
+        let mut dn = DistinguishedName::new();
+        dn.push(DnType::CommonName, identity.service_account());
+        dn.push(DnType::OrganizationalUnitName, identity.namespace());
+        params.distinguished_name = dn;
+
+        // Set SPIFFE URI as SAN
+        let san = rcgen::string::Ia5String::try_from(identity.to_spiffe_uri())
+            .map_err(|e| Error::CaSigning(format!("invalid SAN: {e}")))?;
+        params.subject_alt_names = vec![SanType::URI(san)];
+
+        // Configure workload certificate properties
+        params.is_ca = IsCa::NoCa;
+        params.key_usages = vec![
+            KeyUsagePurpose::DigitalSignature,
+            KeyUsagePurpose::KeyEncipherment,
+        ];
+        params.extended_key_usages = vec![
+            ExtendedKeyUsagePurpose::ServerAuth,
+            ExtendedKeyUsagePurpose::ClientAuth,
+        ];
+
+        // Set validity period
+        let now = OffsetDateTime::now_utc();
+        let ttl_duration = TimeDuration::new(ttl.as_secs() as i64, 0);
+        params.not_before = now;
+        params.not_after = now + ttl_duration;
+
+        // Create an issuer from the root CA params and key
+        let issuer = rcgen::Issuer::from_params(&self.root_params, &self.root_key);
+
+        // Sign the certificate using the public key from the CSR
+        let signed_cert = params
+            .signed_by(public_key, &issuer)
+            .map_err(|e| Error::CaSigning(format!("failed to sign certificate: {e}")))?;
+
+        // Convert to our Certificate type
+        let leaf_der = signed_cert.der().to_vec();
+        let leaf_cert = Certificate::from_der(leaf_der);
+
+        // Build chain: workload cert -> CA cert
+        let root_cert = self.root_certificate.clone();
+
+        Ok(vec![leaf_cert, root_cert])
+    }
+}
+
+/// Public key extracted from a CSR, implementing rcgen's PublicKeyData trait.
+///
+/// This allows signing certificates using only the public key from a CSR,
+/// without requiring the corresponding private key.
+struct CsrPublicKey {
+    /// DER-encoded SubjectPublicKeyInfo from the CSR.
+    spki_der: Vec<u8>,
+    /// The signature algorithm for this public key.
+    algorithm: &'static SignatureAlgorithm,
+}
+
+impl PublicKeyData for CsrPublicKey {
+    fn der_bytes(&self) -> &[u8] {
+        &self.spki_der
+    }
+
+    fn algorithm(&self) -> &'static SignatureAlgorithm {
+        self.algorithm
+    }
+}
+
+use x509_parser::oid_registry::asn1_rs::oid;
+
+/// Detect the rcgen SignatureAlgorithm from an x509_parser AlgorithmIdentifier.
+fn detect_algorithm(alg: &AlgorithmIdentifier<'_>) -> Option<&'static SignatureAlgorithm> {
+    // Known OIDs for public key algorithms
+    let rsa_oid = oid!(1.2.840.113549.1.1.1);       // RSA encryption
+    let ec_oid = oid!(1.2.840.10045.2.1);           // id-ecPublicKey
+    let ed25519_oid = oid!(1.3.101.112);            // Ed25519
+    let secp256r1_oid = oid!(1.2.840.10045.3.1.7);  // secp256r1/prime256v1
+    let secp384r1_oid = oid!(1.3.132.0.34);         // secp384r1
+
+    // Check for Ed25519
+    if alg.algorithm == ed25519_oid {
+        return Some(&rcgen::PKCS_ED25519);
+    }
+
+    // Check for RSA
+    if alg.algorithm == rsa_oid {
+        return Some(&rcgen::PKCS_RSA_SHA256);
+    }
+
+    // Check for EC keys - need to check the curve parameter
+    if alg.algorithm == ec_oid {
+        // Parse parameters to determine curve
+        if let Some(params) = &alg.parameters {
+            if let Ok(curve_oid) = params.as_oid() {
+                if curve_oid == secp256r1_oid {
+                    return Some(&rcgen::PKCS_ECDSA_P256_SHA256);
+                }
+                if curve_oid == secp384r1_oid {
+                    return Some(&rcgen::PKCS_ECDSA_P384_SHA384);
+                }
+            }
+        }
+    }
+
+    None
 }
 
 #[async_trait]
@@ -462,6 +584,65 @@ impl CaClient for SelfSignedCa {
             expiry,
             identity.clone(),
         ))
+    }
+
+    async fn sign_csr_only(
+        &self,
+        csr: &str,
+        identity: &Identity,
+        ttl: Duration,
+    ) -> Result<String> {
+        // Validate the CSR and extract the SPIFFE URI
+        let csr_spiffe_uri = self.validate_csr(csr)?;
+
+        // Verify the CSR's SPIFFE URI matches the requested identity
+        let expected_uri = identity.to_spiffe_uri();
+        if csr_spiffe_uri != expected_uri {
+            return Err(Error::VerificationFailed(format!(
+                "CSR SPIFFE URI mismatch: expected {}, got {}",
+                expected_uri, csr_spiffe_uri
+            )));
+        }
+
+        // Validate trust domain
+        if identity.trust_domain() != self.trust_domain {
+            return Err(Error::TrustDomainMismatch {
+                expected: self.trust_domain.clone(),
+                actual: identity.trust_domain().to_string(),
+            });
+        }
+
+        // Parse CSR and extract public key
+        let csr_der = Self::pem_to_der(csr, "CERTIFICATE REQUEST")?;
+        let (_, parsed_csr) = X509CertificationRequest::from_der(&csr_der)
+            .map_err(|e| Error::CsrGeneration(format!("failed to parse CSR: {e}")))?;
+
+        // Extract the SubjectPublicKeyInfo from the CSR
+        let csr_info = &parsed_csr.certification_request_info;
+        let spki = &csr_info.subject_pki;
+        let spki_der = spki.raw.to_vec();
+
+        // Detect the algorithm from the CSR's public key
+        let algorithm = detect_algorithm(&spki.algorithm)
+            .ok_or_else(|| Error::CaSigning("unsupported public key algorithm in CSR".to_string()))?;
+
+        // Create a wrapper that implements PublicKeyData
+        let public_key = CsrPublicKey {
+            spki_der,
+            algorithm,
+        };
+
+        // Sign using the public key from the CSR
+        let chain = self.sign_with_public_key(&public_key, identity, ttl)?;
+
+        // Convert certificate chain to PEM
+        let pem = chain
+            .iter()
+            .map(|c| c.to_pem())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        Ok(pem)
     }
 
     fn trust_bundle(&self) -> &TrustBundle {

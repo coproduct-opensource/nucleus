@@ -29,6 +29,8 @@ pub mod workload_api;
 
 pub use attestation::{AttestationRequirements, LaunchAttestation};
 pub use ca::{CaClient, SelfSignedCa};
+#[cfg(feature = "spire")]
+pub use ca::{auto_detect_ca, SpireCaClient, DEFAULT_SPIRE_SOCKET, SPIFFE_ENDPOINT_ENV};
 pub use certificate::{TrustBundle, WorkloadCertificate};
 pub use csr::{CertSign, CsrOptions};
 pub use identity::Identity;
@@ -80,6 +82,10 @@ pub enum Error {
     /// Internal error.
     #[error("internal error: {0}")]
     Internal(String),
+
+    /// Operation not supported by this implementation.
+    #[error("not supported: {0}")]
+    NotSupported(String),
 }
 
 /// Result type for nucleus-identity operations.

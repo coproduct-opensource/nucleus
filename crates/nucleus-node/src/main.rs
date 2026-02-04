@@ -28,7 +28,9 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 mod auth;
+mod grpc_tls;
 mod identity;
+mod oidc;
 mod workload_api_vsock;
 use auth::{AuthConfig, AuthError};
 mod cgroup;
@@ -147,6 +149,43 @@ struct Args {
     /// Drand failure mode: strict (reject) or cached (use stale for up to 60s).
     #[arg(long, env = "NUCLEUS_NODE_DRAND_FAIL_MODE", default_value = "strict")]
     drand_fail_mode: String,
+
+    // gRPC TLS/mTLS configuration
+    /// Path to server certificate PEM file for gRPC TLS.
+    #[arg(long, env = "NUCLEUS_NODE_GRPC_TLS_CERT")]
+    grpc_tls_cert: Option<PathBuf>,
+    /// Path to server private key PEM file for gRPC TLS.
+    #[arg(long, env = "NUCLEUS_NODE_GRPC_TLS_KEY")]
+    grpc_tls_key: Option<PathBuf>,
+    /// Path to CA certificate PEM for client verification (enables mTLS).
+    /// When set, clients must present valid certificates signed by this CA.
+    #[arg(long, env = "NUCLEUS_NODE_GRPC_TLS_CA")]
+    grpc_tls_ca: Option<PathBuf>,
+
+    // GitHub OIDC configuration
+    /// Enable GitHub OIDC token exchange for CI/CD authentication.
+    #[arg(long, env = "NUCLEUS_NODE_OIDC_GITHUB_ENABLED", default_value_t = false)]
+    oidc_github_enabled: bool,
+    /// Expected audience in GitHub OIDC tokens.
+    #[arg(
+        long,
+        env = "NUCLEUS_NODE_OIDC_GITHUB_AUDIENCE",
+        default_value = "nucleus"
+    )]
+    oidc_github_audience: String,
+    /// Comma-separated list of allowed GitHub repositories (e.g., "org/repo1,org/repo2").
+    #[arg(long, env = "NUCLEUS_NODE_OIDC_GITHUB_ALLOWED_REPOS")]
+    oidc_github_allowed_repos: Option<String>,
+    /// Comma-separated list of allowed GitHub organizations (all repos in these orgs are allowed).
+    #[arg(long, env = "NUCLEUS_NODE_OIDC_GITHUB_ALLOWED_ORGS")]
+    oidc_github_allowed_orgs: Option<String>,
+    /// Certificate TTL in seconds for GitHub OIDC-issued certificates (default: 1 hour).
+    #[arg(
+        long,
+        env = "NUCLEUS_NODE_OIDC_GITHUB_CERT_TTL_SECS",
+        default_value_t = 3600
+    )]
+    oidc_github_cert_ttl_secs: u64,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -185,6 +224,10 @@ struct NodeState {
     /// Vsock port for guest-to-host Workload API connections.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     identity_vsock_port: u32,
+    /// GitHub OIDC validator for CI/CD authentication.
+    github_oidc: Option<Arc<oidc::GitHubOidcValidator>>,
+    /// Authorization policy for SPIFFE-based access control.
+    authz_policy: auth::AuthorizationPolicy,
 }
 
 #[derive(Debug)]
@@ -307,6 +350,11 @@ impl IntoResponse for ApiError {
 
 #[tokio::main]
 async fn main() -> Result<(), ApiError> {
+    // Install the ring crypto provider for rustls (must be done before any TLS operations)
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .json()
@@ -404,10 +452,12 @@ async fn main() -> Result<(), ApiError> {
         drand_config,
         identity_manager,
         identity_vsock_port: args.identity_workload_api_vsock_port,
+        github_oidc: build_github_oidc(&args),
+        authz_policy: auth::AuthorizationPolicy::new(&args.identity_trust_domain),
     };
 
-    let app = Router::new()
-        .route("/v1/health", get(health))
+    // Routes that require HMAC auth
+    let authenticated_routes = Router::new()
         .route("/v1/pods", post(create_pod).get(list_pods))
         .route("/v1/pods/{id}/logs", get(pod_logs))
         .route("/v1/pods/{id}/cancel", post(cancel_pod))
@@ -417,10 +467,50 @@ async fn main() -> Result<(), ApiError> {
             auth_middleware,
         ));
 
+    // Routes that don't require auth (OIDC has its own token validation)
+    let public_routes = Router::new()
+        .route("/v1/health", get(health))
+        .route("/v1/oidc/github", post(oidc_github_exchange))
+        .with_state(state.clone());
+
+    let app = public_routes.merge(authenticated_routes);
+
     if let Some(grpc_listen) = args.grpc_listen.clone() {
+        // Load TLS config if certificate paths are provided
+        let tls_config = match (&args.grpc_tls_cert, &args.grpc_tls_key) {
+            (Some(cert_path), Some(key_path)) => {
+                match grpc_tls::GrpcTlsConfig::from_paths(
+                    cert_path,
+                    key_path,
+                    args.grpc_tls_ca.as_deref(),
+                )
+                .await
+                {
+                    Ok(config) => {
+                        let mode = if config.mtls_enabled() {
+                            "mTLS"
+                        } else {
+                            "TLS"
+                        };
+                        info!("gRPC {} enabled", mode);
+                        Some(config)
+                    }
+                    Err(e) => {
+                        return Err(ApiError::Driver(format!("gRPC TLS config failed: {e}")));
+                    }
+                }
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                return Err(ApiError::Driver(
+                    "both --grpc-tls-cert and --grpc-tls-key must be provided for TLS".to_string(),
+                ));
+            }
+            (None, None) => None,
+        };
+
         let grpc_state = state.clone();
         tokio::spawn(async move {
-            if let Err(err) = serve_grpc(grpc_state, grpc_listen).await {
+            if let Err(err) = serve_grpc(grpc_state, grpc_listen, tls_config).await {
                 error!("grpc server error: {err}");
             }
         });
@@ -437,6 +527,180 @@ async fn main() -> Result<(), ApiError> {
 
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({"status": "ok"}))
+}
+
+/// GitHub OIDC token exchange endpoint.
+///
+/// Accepts a GitHub OIDC token and a client-generated CSR.
+/// Returns a signed X.509 certificate with a SPIFFE identity based on the repository.
+///
+/// # Security
+///
+/// The client generates and keeps its private key locally - it is never sent to
+/// or stored by the server. Only the CSR (containing the public key) is transmitted.
+///
+/// The workflow is:
+/// 1. Client generates a key pair
+/// 2. Client creates a CSR with the SPIFFE ID they expect to receive
+/// 3. Client sends GitHub OIDC token + CSR to this endpoint
+/// 4. Server validates token, verifies CSR's SPIFFE ID matches token claims
+/// 5. Server returns only the certificate chain (no private key)
+async fn oidc_github_exchange(
+    State(state): State<NodeState>,
+    headers: axum::http::HeaderMap,
+    Json(request): Json<oidc::OidcExchangeRequest>,
+) -> Result<Json<oidc::OidcExchangeResponse>, OidcApiError> {
+    // Check if OIDC is enabled
+    let validator = state.github_oidc.as_ref().ok_or(OidcApiError::NotEnabled)?;
+
+    // Extract token from Authorization header
+    let auth_header = headers
+        .get("Authorization")
+        .and_then(|h| h.to_str().ok())
+        .ok_or(OidcApiError::MissingToken)?;
+
+    let token = auth_header
+        .strip_prefix("Bearer ")
+        .ok_or(OidcApiError::InvalidFormat)?;
+
+    // Validate the token (includes replay protection)
+    let claims = validator.validate(token).await.map_err(OidcApiError::Oidc)?;
+
+    // Get the SPIFFE ID for this identity based on token claims
+    let spiffe_id = validator.spiffe_id(&claims);
+
+    // Issue a certificate using the identity manager
+    let identity_mgr = state.identity_manager.as_ref().ok_or_else(|| {
+        OidcApiError::Internal("Identity manager not configured".to_string())
+    })?;
+
+    // Parse SPIFFE ID into Identity
+    let identity = parse_spiffe_to_identity(&spiffe_id)?;
+
+    // Sign the client's CSR (CSR must contain matching SPIFFE ID)
+    let cert_ttl = validator.cert_ttl();
+    let certificate_pem = identity_mgr
+        .ca()
+        .sign_csr_only(&request.csr, &identity, cert_ttl)
+        .await
+        .map_err(|e| OidcApiError::Internal(format!("Certificate signing failed: {e}")))?;
+
+    // Get trust bundle
+    let trust_bundle_pem = identity_mgr
+        .ca()
+        .trust_bundle()
+        .roots()
+        .iter()
+        .map(|c| c.to_pem())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Calculate expiration
+    let expires_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        + cert_ttl.as_secs();
+
+    info!(
+        repository = %claims.repository,
+        actor = %claims.actor,
+        spiffe_id = %spiffe_id,
+        expires_at = expires_at,
+        "Issued certificate for GitHub OIDC identity (client-side key)"
+    );
+
+    Ok(Json(oidc::OidcExchangeResponse {
+        certificate: certificate_pem,
+        spiffe_id,
+        expires_at,
+        trust_bundle: trust_bundle_pem,
+    }))
+}
+
+/// Parse a SPIFFE ID into a nucleus Identity.
+fn parse_spiffe_to_identity(spiffe_id: &str) -> Result<nucleus_identity::Identity, OidcApiError> {
+    // Format: spiffe://trust-domain/ns/github/sa/{org}/{repo}
+    let rest = spiffe_id
+        .strip_prefix("spiffe://")
+        .ok_or_else(|| OidcApiError::Internal("Invalid SPIFFE URI".to_string()))?;
+
+    let parts: Vec<&str> = rest.split('/').collect();
+    if parts.len() < 5 || parts[1] != "ns" || parts[3] != "sa" {
+        return Err(OidcApiError::Internal("Invalid SPIFFE path format".to_string()));
+    }
+
+    let trust_domain = parts[0];
+    let namespace = parts[2];
+    // Combine org and repo for service account name (repo already sanitized)
+    let service_account = if parts.len() >= 6 {
+        format!("{}-{}", parts[4], parts[5])
+    } else {
+        parts[4].to_string()
+    };
+
+    Ok(nucleus_identity::Identity::new(trust_domain, namespace, &service_account))
+}
+
+/// Error type for OIDC API endpoint.
+#[derive(Debug)]
+enum OidcApiError {
+    NotEnabled,
+    MissingToken,
+    InvalidFormat,
+    Oidc(oidc::OidcError),
+    Internal(String),
+}
+
+impl IntoResponse for OidcApiError {
+    fn into_response(self) -> AxumResponse {
+        let (status, error, description) = match &self {
+            OidcApiError::NotEnabled => (
+                StatusCode::NOT_FOUND,
+                "not_enabled",
+                Some("GitHub OIDC is not enabled on this server"),
+            ),
+            OidcApiError::MissingToken => (
+                StatusCode::UNAUTHORIZED,
+                "missing_token",
+                Some("Authorization header with Bearer token required"),
+            ),
+            OidcApiError::InvalidFormat => (
+                StatusCode::UNAUTHORIZED,
+                "invalid_format",
+                Some("Authorization header must be 'Bearer <token>'"),
+            ),
+            OidcApiError::Oidc(e) => {
+                let (status, desc) = match e {
+                    oidc::OidcError::RepoNotAllowed(_) => (StatusCode::FORBIDDEN, e.to_string()),
+                    oidc::OidcError::ValidationFailed(_) => (StatusCode::UNAUTHORIZED, e.to_string()),
+                    _ => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+                };
+                return (
+                    status,
+                    Json(oidc::OidcErrorResponse {
+                        error: "oidc_error".to_string(),
+                        error_description: Some(desc),
+                    }),
+                )
+                    .into_response();
+            }
+            OidcApiError::Internal(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                Some(msg.as_str()),
+            ),
+        };
+
+        (
+            status,
+            Json(oidc::OidcErrorResponse {
+                error: error.to_string(),
+                error_description: description.map(|s| s.to_string()),
+            }),
+        )
+            .into_response()
+    }
 }
 
 async fn create_pod(
@@ -1334,6 +1598,40 @@ fn build_firecracker_pool(args: &Args) -> Option<Arc<Semaphore>> {
     Some(Arc::new(Semaphore::new(args.firecracker_max_pods)))
 }
 
+fn build_github_oidc(args: &Args) -> Option<Arc<oidc::GitHubOidcValidator>> {
+    if !args.oidc_github_enabled {
+        return None;
+    }
+
+    let mut config = oidc::GitHubOidcConfig::new(&args.identity_trust_domain)
+        .enabled()
+        .with_audience(&args.oidc_github_audience)
+        .with_cert_ttl(Duration::from_secs(args.oidc_github_cert_ttl_secs));
+
+    if let Some(ref repos) = args.oidc_github_allowed_repos {
+        config = config.with_allowed_repos(repos);
+    }
+    if let Some(ref orgs) = args.oidc_github_allowed_orgs {
+        config = config.with_allowed_orgs(orgs);
+    }
+
+    // Require at least one allowed repo or org
+    if config.allowed_repos.is_empty() && config.allowed_orgs.is_empty() {
+        error!("GitHub OIDC enabled but no repos or orgs allowed. Set --oidc-github-allowed-repos or --oidc-github-allowed-orgs");
+        return None;
+    }
+
+    info!(
+        repos = ?config.allowed_repos,
+        orgs = ?config.allowed_orgs,
+        audience = %config.audience,
+        cert_ttl_secs = config.cert_ttl.as_secs(),
+        "GitHub OIDC enabled"
+    );
+
+    Some(Arc::new(oidc::GitHubOidcValidator::new(config)))
+}
+
 fn start_pod_reaper(state: NodeState) {
     tokio::spawn(async move {
         loop {
@@ -1403,24 +1701,54 @@ async fn wait_for_proxy_health(addr: SocketAddr) -> Result<(), ApiError> {
     Err(ApiError::Driver("proxy health check timed out".to_string()))
 }
 
-async fn serve_grpc(state: NodeState, listen: String) -> Result<(), ApiError> {
+async fn serve_grpc(
+    state: NodeState,
+    listen: String,
+    tls_config: Option<grpc_tls::GrpcTlsConfig>,
+) -> Result<(), ApiError> {
     let addr: SocketAddr = listen
         .parse()
         .map_err(|e| ApiError::Driver(format!("invalid grpc listen addr: {e}")))?;
-    let auth = state.auth.clone();
+    let auth_config = state.auth.clone();
+    let mtls_enabled = tls_config.as_ref().is_some_and(|c| c.mtls_enabled());
+
     let service =
-        NodeServiceServer::with_interceptor(GrpcService { state }, move |req: Request<()>| {
+        NodeServiceServer::with_interceptor(GrpcService { state }, move |mut req: Request<()>| {
+            // Authenticate the request using mTLS (preferred) or HMAC (fallback)
             let method = req
                 .metadata()
                 .get("x-nucleus-method")
                 .and_then(|value| value.to_str().ok())
-                .ok_or_else(|| Status::unauthenticated("missing x-nucleus-method"))?;
-            auth::verify_grpc(req.metadata(), method, &auth)
+                .unwrap_or("unknown");
+
+            let auth_ctx = auth::authenticate_grpc_request(&req, method, &auth_config, mtls_enabled)
                 .map_err(|e| Status::unauthenticated(e.to_string()))?;
+
+            // Store the auth context in request extensions for use in handlers
+            req.extensions_mut().insert(auth_ctx);
+
             Ok(req)
         });
-    info!("nucleus-node grpc listening on {}", addr);
-    tonic::transport::Server::builder()
+
+    let mut server = tonic::transport::Server::builder();
+
+    // Apply TLS configuration if provided
+    if let Some(tls) = tls_config {
+        let tls_config = tls.build_server_tls_config();
+        server = server
+            .tls_config(tls_config)
+            .map_err(|e| ApiError::Driver(format!("gRPC TLS setup failed: {e}")))?;
+
+        let mode = if mtls_enabled { "mTLS" } else { "TLS" };
+        info!("nucleus-node grpc listening on {} ({})", addr, mode);
+    } else {
+        info!(
+            "nucleus-node grpc listening on {} (no TLS - HMAC auth required)",
+            addr
+        );
+    }
+
+    server
         .add_service(service)
         .serve(addr)
         .await
@@ -1439,6 +1767,9 @@ impl NodeService for GrpcService {
         &self,
         request: Request<proto::CreatePodRequest>,
     ) -> Result<GrpcResponse<proto::CreatePodResponse>, Status> {
+        // Check authorization
+        auth::authorize_grpc_operation(&request, &self.state.authz_policy, auth::Operation::CreatePod)?;
+
         let yaml = request.into_inner().yaml;
         if yaml.trim().is_empty() {
             return Err(Status::invalid_argument("missing pod spec yaml"));
@@ -1458,8 +1789,11 @@ impl NodeService for GrpcService {
 
     async fn list_pods(
         &self,
-        _request: Request<proto::Empty>,
+        request: Request<proto::Empty>,
     ) -> Result<GrpcResponse<proto::ListPodsResponse>, Status> {
+        // Check authorization
+        auth::authorize_grpc_operation(&request, &self.state.authz_policy, auth::Operation::ListPods)?;
+
         let infos = collect_pod_infos(&self.state).await;
         let pods = infos.into_iter().map(pod_info_to_grpc).collect();
         Ok(GrpcResponse::new(proto::ListPodsResponse { pods }))
@@ -1469,6 +1803,9 @@ impl NodeService for GrpcService {
         &self,
         request: Request<proto::PodId>,
     ) -> Result<GrpcResponse<proto::PodLogsResponse>, Status> {
+        // Check authorization
+        auth::authorize_grpc_operation(&request, &self.state.authz_policy, auth::Operation::StreamLogs)?;
+
         let id = Uuid::parse_str(&request.into_inner().id)
             .map_err(|_| Status::invalid_argument("invalid pod id"))?;
         let pod = get_pod(&self.state, id)
@@ -1484,6 +1821,9 @@ impl NodeService for GrpcService {
         &self,
         request: Request<proto::PodId>,
     ) -> Result<GrpcResponse<proto::CancelPodResponse>, Status> {
+        // Check authorization
+        auth::authorize_grpc_operation(&request, &self.state.authz_policy, auth::Operation::CancelPod)?;
+
         let id = Uuid::parse_str(&request.into_inner().id)
             .map_err(|_| Status::invalid_argument("invalid pod id"))?;
         let pod = get_pod(&self.state, id)
@@ -1501,6 +1841,9 @@ impl NodeService for GrpcService {
         &self,
         request: Request<proto::GetPodRequest>,
     ) -> Result<GrpcResponse<proto::GetPodResponse>, Status> {
+        // Check authorization
+        auth::authorize_grpc_operation(&request, &self.state.authz_policy, auth::Operation::GetPod)?;
+
         let id = Uuid::parse_str(&request.into_inner().pod_id)
             .map_err(|_| Status::invalid_argument("invalid pod id"))?;
         let handle = get_pod(&self.state, id)
@@ -1518,6 +1861,9 @@ impl NodeService for GrpcService {
         &self,
         request: Request<proto::StreamLogsRequest>,
     ) -> Result<GrpcResponse<Self::StreamPodLogsStream>, Status> {
+        // Check authorization
+        auth::authorize_grpc_operation(&request, &self.state.authz_policy, auth::Operation::StreamLogs)?;
+
         let req = request.into_inner();
         let id =
             Uuid::parse_str(&req.pod_id).map_err(|_| Status::invalid_argument("invalid pod id"))?;
@@ -1547,6 +1893,9 @@ impl NodeService for GrpcService {
         &self,
         request: Request<proto::WatchPodRequest>,
     ) -> Result<GrpcResponse<Self::WatchPodStateStream>, Status> {
+        // Check authorization (watching state is similar to getting pod info)
+        auth::authorize_grpc_operation(&request, &self.state.authz_policy, auth::Operation::GetPod)?;
+
         let req = request.into_inner();
         let id =
             Uuid::parse_str(&req.pod_id).map_err(|_| Status::invalid_argument("invalid pod id"))?;

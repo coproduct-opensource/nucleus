@@ -72,6 +72,11 @@ impl IdentityManager {
         &self.trust_domain
     }
 
+    /// Returns a reference to the CA client.
+    pub fn ca(&self) -> &dyn CaClient {
+        self.ca.as_ref()
+    }
+
     /// Creates a SPIFFE identity for a pod.
     #[allow(dead_code)]
     pub fn identity_for_pod(

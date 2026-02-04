@@ -426,6 +426,7 @@ fn build_pod_spec(
         }),
         seccomp: None,
         cgroup: None,
+        credentials: None,
     }))
 }
 
