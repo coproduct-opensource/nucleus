@@ -24,6 +24,7 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 mod config;
 mod doctor;
 mod keychain;
+mod node;
 mod profiles;
 mod run;
 mod setup;
@@ -70,6 +71,9 @@ enum Commands {
 
     /// Show current configuration
     Config,
+
+    /// Interact with a running nucleus-node (test utilities)
+    Node(node::NodeArgs),
 }
 
 fn init_logging(verbose: bool) {
@@ -101,5 +105,6 @@ async fn main() -> Result<()> {
         Commands::Doctor => doctor::diagnose().await,
         Commands::Profiles => profiles::list(),
         Commands::Config => config::show(&config_path),
+        Commands::Node(args) => node::execute(args).await,
     }
 }
