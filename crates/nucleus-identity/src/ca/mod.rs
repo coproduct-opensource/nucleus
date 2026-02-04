@@ -4,7 +4,7 @@
 //! Implementations include:
 //!
 //! - [`SelfSignedCa`] - Self-signed CA for development and testing
-//! - Future: `SpireCaClient` - SPIRE Server integration for production
+//! - [`SpireCaClient`] - SPIRE Server integration for production (requires `spire` feature)
 //!
 //! # Security Note
 //!
@@ -16,8 +16,12 @@
 //! - Trust domain membership
 
 mod self_signed;
+#[cfg(feature = "spire")]
+mod spire;
 
 pub use self_signed::SelfSignedCa;
+#[cfg(feature = "spire")]
+pub use spire::{auto_detect_ca, SpireCaClient, DEFAULT_SPIRE_SOCKET, SPIFFE_ENDPOINT_ENV};
 
 use crate::attestation::LaunchAttestation;
 use crate::certificate::WorkloadCertificate;
@@ -109,6 +113,33 @@ pub trait CaClient: Send + Sync {
         // Implementations should override to embed attestation as X.509 extension
         self.sign_csr(csr, private_key, identity, ttl).await
     }
+
+    /// Signs a CSR and returns only the certificate chain (not the private key).
+    ///
+    /// This is used for OIDC token exchange flows where the client generates
+    /// and retains its own private key. The server validates the CSR but never
+    /// sees or stores the private key.
+    ///
+    /// # Arguments
+    ///
+    /// * `csr` - PEM-encoded Certificate Signing Request
+    /// * `identity` - The SPIFFE identity for the certificate
+    /// * `ttl` - Requested time-to-live for the certificate
+    ///
+    /// # Security
+    ///
+    /// This method validates that:
+    /// 1. The CSR signature is valid (proof of private key possession)
+    /// 2. The SPIFFE URI in the CSR matches the requested identity
+    /// 3. The identity's trust domain matches this CA's trust domain
+    ///
+    /// The client keeps its private key locally; this method only returns the
+    /// certificate chain, not a full WorkloadCertificate with embedded key.
+    ///
+    /// # Returns
+    ///
+    /// PEM-encoded certificate chain (leaf cert + intermediates).
+    async fn sign_csr_only(&self, csr: &str, identity: &Identity, ttl: Duration) -> Result<String>;
 
     /// Returns the trust bundle (root CA certificates) for this CA.
     fn trust_bundle(&self) -> &crate::certificate::TrustBundle;

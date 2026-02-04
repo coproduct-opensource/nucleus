@@ -77,6 +77,13 @@ pub struct PodSpecInner {
     /// Optional cgroup placement for Firecracker process.
     #[serde(default)]
     pub cgroup: Option<CgroupSpec>,
+    /// Optional credentials to inject into the pod.
+    /// These are passed as environment variables to the pod's workload.
+    ///
+    /// SECURITY NOTE: Credentials should never be logged. Implementations
+    /// must redact credential values in any debug output or audit logs.
+    #[serde(default)]
+    pub credentials: Option<CredentialsSpec>,
 }
 
 impl PodSpecInner {
@@ -235,6 +242,60 @@ pub struct CgroupSetting {
     pub value: String,
 }
 
+/// Credentials to inject into a pod.
+///
+/// Credentials are passed securely to the pod's workload as environment variables.
+/// Values are stored in memory-mapped tmpfs and never written to persistent storage.
+///
+/// SECURITY NOTE: This struct implements a custom `Debug` that redacts secret values.
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct CredentialsSpec {
+    /// Environment variables containing credentials.
+    /// Keys are the variable names (e.g., `LLM_API_TOKEN`), values are the secrets.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for CredentialsSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Redact all credential values for safe debug output
+        let redacted: BTreeMap<&str, &str> = self
+            .env
+            .keys()
+            .map(|k| (k.as_str(), "[REDACTED]"))
+            .collect();
+        f.debug_struct("CredentialsSpec")
+            .field("env", &redacted)
+            .finish()
+    }
+}
+
+impl CredentialsSpec {
+    /// Create a new empty credentials spec.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add an environment variable credential.
+    pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env.insert(key.into(), value.into());
+        self
+    }
+
+    /// Check if credentials are empty.
+    pub fn is_empty(&self) -> bool {
+        self.env.is_empty()
+    }
+
+    /// Get a redacted representation for logging.
+    pub fn redacted(&self) -> BTreeMap<&str, &str> {
+        self.env
+            .keys()
+            .map(|k| (k.as_str(), "[REDACTED]"))
+            .collect()
+    }
+}
+
 /// Errors resolving policies.
 #[derive(Debug, Error)]
 pub enum PolicyError {
@@ -333,5 +394,191 @@ mod tests {
         let result = spec.resolve();
         assert!(result.is_err());
         assert!(matches!(result, Err(PolicyError::UnknownProfile(_))));
+    }
+
+    #[test]
+    fn test_credentials_spec_debug_redacts_values() {
+        let creds = CredentialsSpec::new()
+            .with_env("LLM_API_TOKEN", "super-secret-token-12345")
+            .with_env("GITHUB_TOKEN", "ghp_abcdefghijklmnop");
+
+        let debug_output = format!("{:?}", creds);
+
+        // Debug output should NOT contain actual secret values
+        assert!(
+            !debug_output.contains("super-secret-token-12345"),
+            "Debug output must not contain credential value: {}",
+            debug_output
+        );
+        assert!(
+            !debug_output.contains("ghp_abcdefghijklmnop"),
+            "Debug output must not contain GitHub token: {}",
+            debug_output
+        );
+
+        // Debug output should contain the key names (so we know what's configured)
+        assert!(
+            debug_output.contains("LLM_API_TOKEN"),
+            "Debug output should show key names: {}",
+            debug_output
+        );
+        assert!(
+            debug_output.contains("GITHUB_TOKEN"),
+            "Debug output should show key names: {}",
+            debug_output
+        );
+
+        // Debug output should show [REDACTED]
+        assert!(
+            debug_output.contains("[REDACTED]"),
+            "Debug output should show [REDACTED]: {}",
+            debug_output
+        );
+    }
+
+    #[test]
+    fn test_credentials_spec_values_accessible() {
+        let creds = CredentialsSpec::new().with_env("LLM_API_TOKEN", "super-secret-token-12345");
+
+        // The actual value should still be accessible for runtime use
+        assert_eq!(
+            creds.env.get("LLM_API_TOKEN"),
+            Some(&"super-secret-token-12345".to_string())
+        );
+    }
+
+    #[test]
+    fn test_credentials_spec_redacted_helper() {
+        let creds = CredentialsSpec::new()
+            .with_env("TOKEN_A", "secret1")
+            .with_env("TOKEN_B", "secret2");
+
+        let redacted = creds.redacted();
+
+        // Keys should be present
+        assert!(redacted.contains_key("TOKEN_A"));
+        assert!(redacted.contains_key("TOKEN_B"));
+
+        // Values should all be [REDACTED]
+        assert_eq!(redacted.get("TOKEN_A"), Some(&"[REDACTED]"));
+        assert_eq!(redacted.get("TOKEN_B"), Some(&"[REDACTED]"));
+    }
+
+    #[test]
+    fn test_credentials_spec_is_empty() {
+        let empty = CredentialsSpec::new();
+        assert!(empty.is_empty());
+
+        let with_env = CredentialsSpec::new().with_env("KEY", "value");
+        assert!(!with_env.is_empty());
+    }
+
+    #[test]
+    fn test_credentials_spec_yaml_serialization() {
+        let creds = CredentialsSpec::new().with_env("LLM_API_TOKEN", "test-token");
+
+        let yaml = serde_yaml::to_string(&creds).expect("should serialize");
+
+        // YAML should contain the actual value (for transmission to nucleus-node)
+        assert!(yaml.contains("test-token"));
+        assert!(yaml.contains("LLM_API_TOKEN"));
+    }
+
+    #[test]
+    fn test_pod_spec_with_credentials_parses() {
+        let yaml = r#"
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: test-pod
+spec:
+  work_dir: /tmp
+  timeout_seconds: 300
+  policy:
+    type: profile
+    name: default
+  credentials:
+    env:
+      LLM_API_TOKEN: "secret-token-12345"
+      GITHUB_TOKEN: "ghp_test"
+"#;
+
+        let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
+
+        // Credentials should be parsed
+        assert!(spec.spec.credentials.is_some());
+        let creds = spec.spec.credentials.unwrap();
+        assert_eq!(
+            creds.env.get("LLM_API_TOKEN"),
+            Some(&"secret-token-12345".to_string())
+        );
+        assert_eq!(creds.env.get("GITHUB_TOKEN"), Some(&"ghp_test".to_string()));
+    }
+
+    #[test]
+    fn test_pod_spec_without_credentials_parses() {
+        let yaml = r#"
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: test-pod
+spec:
+  work_dir: /tmp
+  policy:
+    type: profile
+    name: default
+"#;
+
+        let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
+
+        // Credentials should be None when not specified
+        assert!(spec.spec.credentials.is_none());
+    }
+
+    #[test]
+    fn test_pod_spec_debug_redacts_credentials() {
+        // Create a PodSpec with credentials
+        let yaml = r#"
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: test-pod
+spec:
+  work_dir: /tmp
+  policy:
+    type: profile
+    name: default
+  credentials:
+    env:
+      LLM_API_TOKEN: "sk-secret-12345-abcdef"
+      GITHUB_TOKEN: "ghp_supersecret"
+"#;
+
+        let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
+
+        // Debug format the entire PodSpec
+        let debug_output = format!("{:?}", spec);
+
+        // The debug output must NOT contain the actual secret values
+        assert!(
+            !debug_output.contains("sk-secret-12345-abcdef"),
+            "PodSpec debug must not leak LLM_API_TOKEN: {}",
+            debug_output
+        );
+        assert!(
+            !debug_output.contains("ghp_supersecret"),
+            "PodSpec debug must not leak GITHUB_TOKEN: {}",
+            debug_output
+        );
+
+        // But it should show that credentials exist and show key names
+        assert!(
+            debug_output.contains("credentials"),
+            "Debug should mention credentials field"
+        );
+        assert!(
+            debug_output.contains("[REDACTED]"),
+            "Debug should show redacted markers"
+        );
     }
 }

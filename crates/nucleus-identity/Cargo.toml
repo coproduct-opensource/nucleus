@@ -11,6 +11,11 @@ readme = "README.md"
 keywords = ["spiffe", "identity", "mtls", "security", "workload"]
 categories = ["cryptography", "network-programming"]
 
+[features]
+default = []
+# Enable SPIRE integration for production deployments
+spire = ["dep:spiffe"]
+
 [dependencies]
 # Crypto
 rcgen = "0.14"
@@ -36,6 +41,9 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 time = "0.3"
 thiserror = "2"
 tracing = "0.1"
+
+# SPIRE integration (optional)
+spiffe = { version = "0.11", optional = true, features = ["workload-api-x509"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
