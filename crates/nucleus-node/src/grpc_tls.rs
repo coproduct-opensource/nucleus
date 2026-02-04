@@ -84,6 +84,7 @@ impl GrpcTlsConfig {
     /// Creates a TLS configuration from a nucleus-identity WorkloadCertificate.
     ///
     /// This is useful when using SPIRE to obtain certificates dynamically.
+    #[allow(dead_code)] // Used in tests, will be used when SPIRE integration is wired
     pub fn from_workload_cert(
         cert: &WorkloadCertificate,
         trust_bundle: Option<&TrustBundle>,
@@ -143,8 +144,10 @@ impl GrpcTlsConfig {
 /// This is extracted from the client certificate's Subject Alternative Name
 /// and can be used for authorization decisions.
 #[derive(Clone, Debug)]
+#[allow(dead_code)] // Used in tests and future gRPC interceptor
 pub struct ClientSpiffeId(pub String);
 
+#[allow(dead_code)] // Methods used in tests and future authorization
 impl ClientSpiffeId {
     /// Returns the trust domain from the SPIFFE ID.
     pub fn trust_domain(&self) -> Option<&str> {

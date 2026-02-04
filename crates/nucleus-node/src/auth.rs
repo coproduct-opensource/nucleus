@@ -135,7 +135,7 @@ impl AuthContext {
         // Extract actor from SPIFFE path (last segment)
         let actor = spiffe_id
             .strip_prefix("spiffe://")
-            .and_then(|rest| rest.split('/').last())
+            .and_then(|rest| rest.split('/').next_back())
             .map(|s| s.to_string());
 
         let timestamp = SystemTime::now()
@@ -314,6 +314,7 @@ impl Default for AuthorizationPolicy {
     }
 }
 
+#[allow(dead_code)] // Builder methods used in tests and future config
 impl AuthorizationPolicy {
     /// Create a new authorization policy for the given trust domain.
     pub fn new(trust_domain: impl Into<String>) -> Self {

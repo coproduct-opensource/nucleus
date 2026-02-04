@@ -110,6 +110,7 @@ impl Default for GitHubOidcConfig {
     }
 }
 
+#[allow(dead_code)] // Builder methods used in tests and CLI configuration
 impl GitHubOidcConfig {
     /// Create a new config with the given settings.
     pub fn new(trust_domain: impl Into<String>) -> Self {
@@ -236,6 +237,7 @@ pub struct GitHubClaims {
     pub environment: Option<String>,
 }
 
+#[allow(dead_code)] // Helper methods used in tests and validation
 impl GitHubClaims {
     /// Get the organization from the repository.
     pub fn org(&self) -> &str {

@@ -270,7 +270,6 @@ impl std::fmt::Debug for CredentialsSpec {
     }
 }
 
-
 impl CredentialsSpec {
     /// Create a new empty credentials spec.
     pub fn new() -> Self {

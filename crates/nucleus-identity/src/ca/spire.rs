@@ -139,7 +139,7 @@ impl SpireCaClient {
     /// # Arguments
     ///
     /// * `endpoint` - SPIFFE endpoint string, e.g., `unix:/tmp/spire-agent/public/api.sock`
-    ///                or `tcp:127.0.0.1:8081`
+    ///   or `tcp:127.0.0.1:8081`
     ///
     /// # Example
     ///
@@ -394,7 +394,7 @@ impl SpireCaClient {
             pem.push('\n');
         }
 
-        write!(pem, "-----END {label}-----\n").unwrap();
+        writeln!(pem, "-----END {label}-----").unwrap();
         pem
     }
 
