@@ -50,19 +50,27 @@ fn example_frame_and_nucleus() {
     // Project through the nucleus
     let projected = nucleus.apply(&dangerous);
     println!("\nAfter nucleus projection:");
-    println!("  - Requires approval for GitPush: {}", projected.requires_approval(Operation::GitPush));
+    println!(
+        "  - Requires approval for GitPush: {}",
+        projected.requires_approval(Operation::GitPush)
+    );
     println!("  - Is fixed point: {}", nucleus.is_fixed_point(&projected));
 
     // Create a SafePermissionLattice (compile-time guarantee)
     let safe = SafePermissionLattice::from_nucleus(&nucleus, dangerous);
     println!("\nSafePermissionLattice created (type-level safety guarantee)");
-    println!("  - Inner lattice is trifecta-safe: {}", nucleus.is_fixed_point(safe.inner()));
+    println!(
+        "  - Inner lattice is trifecta-safe: {}",
+        nucleus.is_fixed_point(safe.inner())
+    );
 
     // Demonstrate idempotence (compare capabilities, not UUIDs)
     let twice = nucleus.apply(&nucleus.apply(&PermissionLattice::default()));
     let once = nucleus.apply(&PermissionLattice::default());
-    println!("\nIdempotence verified: j(j(x)) = j(x): {}",
-        once.capabilities == twice.capabilities && once.obligations == twice.obligations);
+    println!(
+        "\nIdempotence verified: j(j(x)) = j(x): {}",
+        once.capabilities == twice.capabilities && once.obligations == twice.obligations
+    );
 
     println!();
 }
@@ -94,16 +102,28 @@ fn example_heyting_implication() {
 
     // Check entailment
     println!("Entailment (a → b = ⊤ means a ≤ b):");
-    println!("  - read_only entails with_web: {}", entails(&read_only, &with_web));
-    println!("  - with_web entails read_only: {}", entails(&with_web, &read_only));
-    println!("  - bottom entails anything: {}", entails(&CapabilityLattice::bottom(), &with_web));
+    println!(
+        "  - read_only entails with_web: {}",
+        entails(&read_only, &with_web)
+    );
+    println!(
+        "  - with_web entails read_only: {}",
+        entails(&with_web, &read_only)
+    );
+    println!(
+        "  - bottom entails anything: {}",
+        entails(&CapabilityLattice::bottom(), &with_web)
+    );
 
     // Compute the permission gap
     println!("\nPermission gap (what's needed to go from current to target):");
     let gap = permission_gap(&read_only, &with_web);
     println!("  - Gap for web_search: {:?}", gap.web_search);
     println!("  - Gap for web_fetch: {:?}", gap.web_fetch);
-    println!("  - Gap for read_files: {:?} (already satisfied)", gap.read_files);
+    println!(
+        "  - Gap for read_files: {:?} (already satisfied)",
+        gap.read_files
+    );
 
     // Conditional permission rules
     println!("\nConditional permissions (if-then rules):");
@@ -120,8 +140,14 @@ fn example_heyting_implication() {
         "Read access implies search access",
     );
     println!("  Rule: {}", rule.description);
-    println!("  Applies to read_only: {}", rule.apply(&read_only).is_some());
-    println!("  Does NOT apply to bottom (condition not met): {}", rule.apply(&CapabilityLattice::bottom()).is_none());
+    println!(
+        "  Applies to read_only: {}",
+        rule.apply(&read_only).is_some()
+    );
+    println!(
+        "  Does NOT apply to bottom (condition not met): {}",
+        rule.apply(&CapabilityLattice::bottom()).is_none()
+    );
 
     println!();
 }
@@ -135,24 +161,20 @@ fn example_galois_connections() {
     println!("A Galois connection (α, γ) satisfies: α(l) ≤ r  ⟺  l ≤ γ(r)\n");
 
     // Create bridges for different trust domains
-    let internal_external = presets::internal_external(
-        "spiffe://internal.corp",
-        "spiffe://partner.org",
-    );
+    let internal_external =
+        presets::internal_external("spiffe://internal.corp", "spiffe://partner.org");
 
-    let human_agent = presets::human_agent(
-        "spiffe://corp/human/alice",
-        "spiffe://corp/agent/coder-001",
-    );
+    let human_agent =
+        presets::human_agent("spiffe://corp/human/alice", "spiffe://corp/agent/coder-001");
 
     // Internal to external translation
     println!("Internal → External domain translation:");
     let internal_perms = PermissionLattice::permissive();
     let external_perms = internal_external.to_target(&internal_perms);
-    println!("  Internal: {} capabilities", "full");
-    println!("  External: read_files={:?}, web_fetch={:?}",
-        external_perms.capabilities.read_files,
-        external_perms.capabilities.web_fetch
+    println!("  Internal: full capabilities");
+    println!(
+        "  External: read_files={:?}, web_fetch={:?}",
+        external_perms.capabilities.read_files, external_perms.capabilities.web_fetch
     );
 
     // Human to agent delegation
@@ -166,9 +188,18 @@ fn example_galois_connections() {
     // Round-trip (closure operator)
     println!("\nRound-trip (γ ∘ α) shows information loss:");
     let round_trip = internal_external.round_trip(&internal_perms);
-    println!("  Original read_files: {:?}", internal_perms.capabilities.read_files);
-    println!("  After round-trip: {:?}", round_trip.capabilities.read_files);
-    println!("  Information preserved: {}", round_trip.capabilities.leq(&internal_perms.capabilities));
+    println!(
+        "  Original read_files: {:?}",
+        internal_perms.capabilities.read_files
+    );
+    println!(
+        "  After round-trip: {:?}",
+        round_trip.capabilities.read_files
+    );
+    println!(
+        "  Information preserved: {}",
+        round_trip.capabilities.leq(&internal_perms.capabilities)
+    );
 
     println!();
 }
@@ -198,20 +229,27 @@ fn example_modal_operators() {
     let possible = perms.possibility(&ceiling);
     println!("\nPossibility (◇) - what's achievable:");
     println!("  - git_push: {:?}", possible.capabilities.git_push);
-    println!("  - All capabilities: {:?}", possible.capabilities == ceiling.capabilities);
+    println!(
+        "  - All capabilities: {:?}",
+        possible.capabilities == ceiling.capabilities
+    );
 
     // Modal context for comprehensive analysis
     let context = ModalContext::new(perms.clone());
     println!("\nModal Context Analysis:");
     println!("  - Requires escalation: {}", context.requires_escalation());
-    println!("  - Operations needing approval: {:?}", context.escalation_required_for());
+    println!(
+        "  - Operations needing approval: {:?}",
+        context.escalation_required_for()
+    );
     println!("  - Is tight (no gap): {}", context.is_tight());
 
     // Per-capability modal analysis
     println!("\nPer-capability modal breakdown:");
     let modals = all_capability_modals(&perms);
     for modal in modals.iter().filter(|m| m.requires_approval) {
-        println!("  - {:?}: level={:?}, needs_approval={}",
+        println!(
+            "  - {:?}: level={:?}, needs_approval={}",
             modal.operation, modal.level, modal.requires_approval
         );
     }
@@ -254,7 +292,10 @@ fn example_graded_monad() {
     println!("\nFinal result:");
     println!("  - Value: {}", result.value);
     println!("  - Accumulated risk: {:?}", result.grade);
-    println!("  - Requires intervention: {}", result.requires_intervention());
+    println!(
+        "  - Requires intervention: {}",
+        result.requires_intervention()
+    );
 
     // Evaluate permission with risk grading
     println!("\nEvaluating permission profiles with risk:");
@@ -272,8 +313,14 @@ fn example_graded_monad() {
     println!("\nRisk grade monoid laws:");
     let a = TrifectaRisk::Low;
     let b = TrifectaRisk::Medium;
-    println!("  - identity * a = a: {}", TrifectaRisk::identity().compose(&a) == a);
-    println!("  - a * identity = a: {}", a.compose(&TrifectaRisk::identity()) == a);
+    println!(
+        "  - identity * a = a: {}",
+        TrifectaRisk::identity().compose(&a) == a
+    );
+    println!(
+        "  - a * identity = a: {}",
+        a.compose(&TrifectaRisk::identity()) == a
+    );
     println!("  - Low.compose(Medium) = {:?}", a.compose(&b));
 
     println!();

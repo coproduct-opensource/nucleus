@@ -236,7 +236,10 @@ impl SafePermissionLattice {
     ///
     /// This is the canonical way to construct a `SafePermissionLattice`,
     /// ensuring the trifecta invariant holds.
-    pub fn from_nucleus<N: Nucleus<PermissionLattice>>(nucleus: &N, perms: PermissionLattice) -> Self {
+    pub fn from_nucleus<N: Nucleus<PermissionLattice>>(
+        nucleus: &N,
+        perms: PermissionLattice,
+    ) -> Self {
         Self(nucleus.apply(&perms))
     }
 
@@ -290,7 +293,6 @@ impl SafePermissionLattice {
         self.0.delegate_to(requested, reason).map(Self)
     }
 }
-
 
 // Implement Lattice for PermissionLattice (delegate to existing methods)
 impl Lattice for PermissionLattice {
@@ -442,8 +444,12 @@ mod tests {
         let result = PermissionLattice::meet_all(lattices);
 
         // Meet of all should have capabilities ≤ each individual lattice
-        assert!(result.capabilities.leq(&PermissionLattice::permissive().capabilities));
-        assert!(result.capabilities.leq(&PermissionLattice::restrictive().capabilities));
+        assert!(result
+            .capabilities
+            .leq(&PermissionLattice::permissive().capabilities));
+        assert!(result
+            .capabilities
+            .leq(&PermissionLattice::restrictive().capabilities));
     }
 
     #[test]

@@ -90,9 +90,7 @@ impl<A> GuardedAction<A> {
     {
         match f(self.action) {
             Ok(b) => Ok(GuardedAction::new(b)),
-            Err(e) => Err(GuardError::CheckFailed {
-                error: e,
-            }),
+            Err(e) => Err(GuardError::CheckFailed { error: e }),
         }
     }
 }

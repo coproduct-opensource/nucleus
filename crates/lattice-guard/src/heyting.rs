@@ -359,8 +359,8 @@ mod tests {
         // If current > target for a field, gap = target (need to drop to target level)
 
         let current = CapabilityLattice {
-            read_files: CapabilityLevel::LowRisk,  // LowRisk < Always
-            write_files: CapabilityLevel::Never,   // Never < LowRisk
+            read_files: CapabilityLevel::LowRisk, // LowRisk < Always
+            write_files: CapabilityLevel::Never,  // Never < LowRisk
             ..CapabilityLattice::bottom()
         };
 
@@ -404,11 +404,8 @@ mod tests {
             ..CapabilityLattice::bottom()
         };
 
-        let rule = ConditionalPermission::new(
-            condition,
-            consequence,
-            "Read access implies glob search",
-        );
+        let rule =
+            ConditionalPermission::new(condition, consequence, "Read access implies glob search");
 
         // A permission with read access should be able to apply the rule
         let perms_with_read = CapabilityLattice {

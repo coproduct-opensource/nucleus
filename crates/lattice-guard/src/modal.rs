@@ -166,7 +166,10 @@ impl ModalContext {
     /// Create a modal context from a SPIFFE trace chain.
     ///
     /// The chain's ceiling becomes the escalation ceiling.
-    pub fn from_trace_chain(chain: &SpiffeTraceChain, escalation_ceiling: &PermissionLattice) -> Self {
+    pub fn from_trace_chain(
+        chain: &SpiffeTraceChain,
+        escalation_ceiling: &PermissionLattice,
+    ) -> Self {
         let base = chain.ceiling().unwrap_or_default();
         let necessary = base.necessity();
         let possible = base.possibility(escalation_ceiling);

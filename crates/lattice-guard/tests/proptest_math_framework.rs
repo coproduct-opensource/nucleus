@@ -6,7 +6,7 @@
 //! - Graded monad laws
 
 use lattice_guard::{
-    frame::{BoundedLattice, Frame, Lattice, Nucleus, TrifectaQuotient},
+    frame::{BoundedLattice, Lattice, Nucleus, TrifectaQuotient},
     graded::{Graded, RiskGrade},
     heyting::HeytingAlgebra,
     CapabilityLattice, CapabilityLevel, PermissionLattice, TrifectaRisk,

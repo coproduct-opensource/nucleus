@@ -264,7 +264,11 @@ impl TrustDomainBridge {
     }
 
     /// Verify the Galois connection property.
-    pub fn verify(&self, source_perms: &PermissionLattice, target_perms: &PermissionLattice) -> bool {
+    pub fn verify(
+        &self,
+        source_perms: &PermissionLattice,
+        target_perms: &PermissionLattice,
+    ) -> bool {
         self.connection.verify(source_perms, target_perms)
     }
 
@@ -427,10 +431,7 @@ mod tests {
 
     #[test]
     fn test_trust_domain_bridge_restriction() {
-        let bridge = presets::internal_external(
-            "spiffe://internal.corp",
-            "spiffe://partner.org",
-        );
+        let bridge = presets::internal_external("spiffe://internal.corp", "spiffe://partner.org");
 
         let internal = PermissionLattice::permissive();
         let external = bridge.to_target(&internal);
@@ -444,10 +445,7 @@ mod tests {
 
     #[test]
     fn test_trust_domain_bridge_embedding() {
-        let bridge = presets::internal_external(
-            "spiffe://internal.corp",
-            "spiffe://partner.org",
-        );
+        let bridge = presets::internal_external("spiffe://internal.corp", "spiffe://partner.org");
 
         // External permissions coming in
         let external = PermissionLattice::permissive();
@@ -482,10 +480,7 @@ mod tests {
 
     #[test]
     fn test_round_trip_is_deflating() {
-        let bridge = presets::internal_external(
-            "spiffe://internal.corp",
-            "spiffe://external.org",
-        );
+        let bridge = presets::internal_external("spiffe://internal.corp", "spiffe://external.org");
 
         let perms = PermissionLattice::permissive();
         let round_trip = bridge.round_trip(&perms);
@@ -496,10 +491,8 @@ mod tests {
 
     #[test]
     fn test_human_agent_bridge() {
-        let bridge = presets::human_agent(
-            "spiffe://corp/human/alice",
-            "spiffe://corp/agent/coder-001",
-        );
+        let bridge =
+            presets::human_agent("spiffe://corp/human/alice", "spiffe://corp/agent/coder-001");
 
         let human_perms = PermissionLattice::permissive();
         let agent_perms = bridge.to_target(&human_perms);
@@ -516,10 +509,7 @@ mod tests {
     fn test_galois_closure_is_deflating() {
         // For a Galois connection, the closure γ ∘ α is deflationary
         // (round-trip loses information)
-        let bridge = presets::read_only(
-            "spiffe://source",
-            "spiffe://target",
-        );
+        let bridge = presets::read_only("spiffe://source", "spiffe://target");
 
         let perms = PermissionLattice::permissive();
         let round_trip = bridge.round_trip(&perms);

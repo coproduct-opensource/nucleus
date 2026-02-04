@@ -188,7 +188,10 @@ pub fn sequence<G: RiskGrade, A>(graded_values: Vec<Graded<G, A>>) -> Graded<G, 
         values.push(g.value);
     }
 
-    Graded { grade, value: values }
+    Graded {
+        grade,
+        value: values,
+    }
 }
 
 /// Traverse a list with a graded function, accumulating risk.
