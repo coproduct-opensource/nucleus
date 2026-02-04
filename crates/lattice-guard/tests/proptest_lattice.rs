@@ -264,6 +264,10 @@ proptest! {
         prop_assert!(m.leq(&b));
     }
 
+    // Note: BudgetLattice is NOT a distributive lattice due to consumed_usd
+    // tracking which uses max/min semantics that don't distribute.
+    // We intentionally skip distributivity tests for BudgetLattice.
+
     // ============================================
     // Trifecta Constraint Invariants
     // ============================================
@@ -328,6 +332,75 @@ proptest! {
 
         let normalized = perms.clone().normalize();
         prop_assert!(normalized.leq(&perms));
+    }
+
+    // ============================================
+    // Nucleus Operator Properties
+    // ============================================
+    // The normalize function is a "nucleus operator" in categorical terms.
+    // A nucleus j: L → L must satisfy:
+    // 1. Idempotent: j(j(x)) = j(x) ✓ (tested above)
+    // 2. Inflationary or Deflationary: x ≤ j(x) or j(x) ≤ x ✓ (tested above)
+    // 3. Meet-preserving: j(x ∧ y) = j(x) ∧ j(y)
+
+    #[test]
+    fn permission_normalize_preserves_meet(
+        a in arb_capability_lattice(),
+        b in arb_capability_lattice()
+    ) {
+        // Build two permission lattices with trifecta constraint enforced
+        let perms_a = PermissionLattice {
+            capabilities: a,
+            obligations: Default::default(),
+            trifecta_constraint: true,
+            ..PermissionLattice::default()
+        };
+        let perms_b = PermissionLattice {
+            capabilities: b,
+            obligations: Default::default(),
+            trifecta_constraint: true,
+            ..PermissionLattice::default()
+        };
+
+        // Nucleus operator property: j(a ∧ b) = j(a) ∧ j(b)
+        let lhs = perms_a.clone().meet(&perms_b).normalize();
+        let rhs = perms_a.normalize().meet(&perms_b.normalize());
+
+        // We check capabilities equality (the core lattice structure)
+        // Obligations may differ due to union semantics in meet, but
+        // capabilities should be identical
+        prop_assert_eq!(lhs.capabilities, rhs.capabilities);
+    }
+
+    // ============================================
+    // Distributivity Laws
+    // ============================================
+    // A distributive lattice satisfies:
+    // - a ∧ (b ∨ c) = (a ∧ b) ∨ (a ∧ c)  (meet distributes over join)
+    // - a ∨ (b ∧ c) = (a ∨ b) ∧ (a ∨ c)  (join distributes over meet)
+
+    #[test]
+    fn capability_meet_distributes_over_join(
+        a in arb_capability_lattice(),
+        b in arb_capability_lattice(),
+        c in arb_capability_lattice()
+    ) {
+        // a ∧ (b ∨ c) = (a ∧ b) ∨ (a ∧ c)
+        let lhs = a.meet(&b.join(&c));
+        let rhs = a.meet(&b).join(&a.meet(&c));
+        prop_assert_eq!(lhs, rhs);
+    }
+
+    #[test]
+    fn capability_join_distributes_over_meet(
+        a in arb_capability_lattice(),
+        b in arb_capability_lattice(),
+        c in arb_capability_lattice()
+    ) {
+        // a ∨ (b ∧ c) = (a ∨ b) ∧ (a ∨ c)
+        let lhs = a.join(&b.meet(&c));
+        let rhs = a.join(&b).meet(&a.join(&c));
+        prop_assert_eq!(lhs, rhs);
     }
 }
 

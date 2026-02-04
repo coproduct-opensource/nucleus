@@ -30,11 +30,14 @@ sha2 = "0.10"
 hex = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 url = "2.5"
+uuid = { version = "1.10", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
 
 nucleus = { path = "../nucleus" }
 nucleus-spec = { path = "../nucleus-spec" }
 nucleus-identity = { path = "../nucleus-identity" }
-nucleus-client = { path = "../nucleus-client" }
+nucleus-client = { path = "../nucleus-client", features = ["async-drand"] }
+lattice-guard = { path = "../lattice-guard", features = ["serde"] }
 x509-parser = "0.17"
 tokio-rustls = "0.26"
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }

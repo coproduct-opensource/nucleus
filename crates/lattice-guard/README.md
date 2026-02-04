@@ -283,6 +283,149 @@ let trusted = PermissionLattice::permissive();
 let minimal = PermissionLattice::restrictive();
 ```
 
+## Mathematical Framework Extensions
+
+The crate provides advanced mathematical structures for principled permission modeling:
+
+### Frame Theory and Nucleus Operators
+
+The nucleus operator is formalized as a proper frame-theoretic construct, enabling type-safe quotient lattices:
+
+```rust
+use lattice_guard::{
+    frame::{Nucleus, TrifectaQuotient, SafePermissionLattice},
+    PermissionLattice,
+};
+
+// Create the trifecta quotient nucleus
+let nucleus = TrifectaQuotient::new();
+
+// Project through the nucleus to get compile-time safety guarantee
+let dangerous = PermissionLattice::permissive();
+let safe = SafePermissionLattice::from_nucleus(&nucleus, dangerous);
+
+// The inner lattice is guaranteed to be trifecta-safe
+assert!(nucleus.is_fixed_point(safe.inner()));
+```
+
+The nucleus satisfies:
+- **Idempotent**: `j(j(x)) = j(x)`
+- **Deflationary**: `j(x) ≤ x`
+- **Meet-preserving**: `j(x ∧ y) = j(x) ∧ j(y)`
+
+### Heyting Algebra (Intuitionistic Implication)
+
+Conditional permissions using the Heyting adjunction `(c ∧ a) ≤ b ⟺ c ≤ (a → b)`:
+
+```rust
+use lattice_guard::{
+    heyting::{HeytingAlgebra, entails, permission_gap, ConditionalPermission},
+    CapabilityLattice, CapabilityLevel,
+};
+
+let current = CapabilityLattice {
+    read_files: CapabilityLevel::Always,
+    ..CapabilityLattice::bottom()
+};
+
+let target = CapabilityLattice {
+    read_files: CapabilityLevel::Always,
+    web_fetch: CapabilityLevel::LowRisk,
+    ..CapabilityLattice::bottom()
+};
+
+// Check entailment (does current imply target?)
+assert!(entails(&current, &target) == false);
+
+// Compute what's missing to reach target
+let gap = permission_gap(&current, &target);
+```
+
+### Galois Connections (Trust Domain Translation)
+
+Principled security label translation across trust domains:
+
+```rust
+use lattice_guard::{galois::presets, PermissionLattice};
+
+// Create a bridge between internal and external domains
+let bridge = presets::internal_external(
+    "spiffe://internal.corp",
+    "spiffe://partner.org",
+);
+
+// Translate permissions (security-preserving)
+let internal = PermissionLattice::permissive();
+let external = bridge.to_target(&internal);
+
+// Round-trip shows information loss (deflationary closure)
+let round_trip = bridge.round_trip(&internal);
+assert!(round_trip.capabilities.leq(&internal.capabilities));
+```
+
+Available presets: `internal_external`, `production_staging`, `human_agent`, `read_only`.
+
+### Modal Operators (Necessity and Possibility)
+
+Distinguish what is **guaranteed** (□) from what is **achievable** (◇):
+
+```rust
+use lattice_guard::{
+    modal::{ModalPermissions, ModalContext},
+    PermissionLattice,
+};
+
+let perms = PermissionLattice::fix_issue();
+let context = ModalContext::new(perms);
+
+// Necessity: what can be done without approval
+let guaranteed = context.necessary;
+
+// Possibility: what could be achieved with escalation
+let achievable = context.possible;
+
+// Check if escalation is required
+if context.requires_escalation() {
+    println!("Operations needing approval: {:?}", context.escalation_required_for());
+}
+```
+
+### Graded Monad (Composable Risk Tracking)
+
+Track risk through computation chains with proper monad laws:
+
+```rust
+use lattice_guard::{
+    graded::{Graded, RiskGrade, evaluate_with_risk},
+    TrifectaRisk, PermissionLattice,
+};
+
+// Pure computation (no risk)
+let safe: Graded<TrifectaRisk, i32> = Graded::pure(42);
+
+// Chain computations, risk accumulates via composition
+let result = safe
+    .and_then(|x| Graded::new(TrifectaRisk::Low, x * 2))
+    .and_then(|x| Graded::new(TrifectaRisk::Medium, x + 1));
+
+assert_eq!(result.grade, TrifectaRisk::Medium); // max of grades
+
+// Evaluate permission profile with automatic risk grading
+let perms = PermissionLattice::fix_issue();
+let graded = evaluate_with_risk(&perms, |p| p.description.clone());
+```
+
+The graded monad satisfies:
+- **Left identity**: `pure(a).and_then(f) = f(a)`
+- **Right identity**: `m.and_then(pure) = m`
+- **Associativity**: `(m.and_then(f)).and_then(g) = m.and_then(|x| f(x).and_then(g))`
+
+### Running the Examples
+
+```bash
+cargo run --example math_framework -p lattice-guard
+```
+
 ## Type-Safe Enforcement
 
 Use `PermissionGuard` for compile-time enforcement:
@@ -331,6 +474,17 @@ at your option.
 
 ## References
 
+### Security
+
 - [The Lethal Trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/) - Simon Willison
 - [Container Hardening Against Agentic AI](https://securitytheatre.substack.com/p/container-hardening-against-agentic)
-- [Nuclei in Locale Theory](https://ncatlab.org/nlab/show/lattice-guard) - nLab
+- [Lattice-based Access Control](https://en.wikipedia.org/wiki/Lattice-based_access_control) - Denning 1976, Sandhu 1993
+
+### Mathematical Foundations
+
+- [Nuclei in Locale Theory](https://ncatlab.org/nlab/show/nucleus) - nLab
+- [Heyting Algebra](https://ncatlab.org/nlab/show/Heyting+algebra) - nLab
+- [Galois Connections](https://en.wikipedia.org/wiki/Galois_connection) - Wikipedia
+- [Graded Monads](https://ncatlab.org/nlab/show/graded+monad) - nLab
+- [Modal Logic S4](https://plato.stanford.edu/entries/logic-modal/) - Stanford Encyclopedia
+- [Sheaf Semantics for Noninterference](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.FSCD.2022.5) - Sterling & Harper

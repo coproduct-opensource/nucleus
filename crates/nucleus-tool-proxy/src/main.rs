@@ -11,7 +11,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{middleware, Json, Router};
 use clap::Parser;
-use nucleus::lattice_guard::{CapabilityLevel, Operation};
+use nucleus::lattice_guard::escalation::{
+    EscalationError, EscalationGrant, EscalationRequest, SpiffeTraceChain, SpiffeTraceLink,
+};
+use nucleus::lattice_guard::{CapabilityLevel, Operation, PermissionLattice};
 use nucleus::{
     ApprovalRequest, BudgetModel, CallbackApprover, NucleusError, PodRuntime,
     PodSpec as RuntimePodSpec,
@@ -26,11 +29,13 @@ use tracing::{info, warn};
 mod attestation;
 mod auth;
 mod mtls;
+mod policy;
 
 use attestation::{AttestationConfig, AttestationVerifier};
 use auth::{AuthConfig, AuthError};
 use mtls::{ClientCertInfo, MtlsConfig, MtlsConnectInfo, MtlsListener};
 use nucleus_client::drand::{DrandConfig, DrandFailMode};
+use policy::PolicyEngine;
 
 #[derive(Parser, Debug)]
 #[command(name = "nucleus-tool-proxy")]
@@ -126,6 +131,17 @@ struct Args {
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_TRUST_DOMAIN")]
     trust_domain: Option<String>,
 
+    // === Policy Configuration ===
+    /// Path to identity-based policy YAML file.
+    /// When provided, enables zero-prompt authorization for SPIFFE identities.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_POLICY")]
+    policy_file: Option<std::path::PathBuf>,
+
+    /// Enable zero-prompt mode (requires --policy-file).
+    /// When enabled, operations matching SPIFFE identity policies are auto-approved.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_ZERO_PROMPT")]
+    zero_prompt: bool,
+
     // === Drand Configuration ===
     /// Enable drand anchoring for approval signatures.
     /// When enabled, approval requests must include a valid drand round number
@@ -167,6 +183,7 @@ struct AppState {
     web_fetch_max_bytes: usize,
     dns_allow: Vec<String>,
     attestation_verifier: AttestationVerifier,
+    policy_engine: PolicyEngine,
 }
 
 #[derive(Default)]
@@ -370,6 +387,83 @@ struct WebFetchResponse {
     truncated: Option<bool>,
 }
 
+/// Request to escalate permissions for an agent.
+#[derive(Debug, Deserialize)]
+struct EscalateRequest {
+    /// The requesting agent's SPIFFE trace chain (serialized).
+    requestor_chain: SerializedTraceChain,
+    /// The approver's SPIFFE trace chain (serialized).
+    ///
+    /// SECURITY: The approver MUST submit their full chain for proper verification.
+    /// The server validates that:
+    /// 1. The chain's leaf identity matches the mTLS authenticated identity
+    /// 2. The chain is valid (non-expired, monotonically decreasing permissions)
+    /// 3. The chain has no overlap with the requestor's chain (anti-self-escalation)
+    approver_chain: SerializedTraceChain,
+    /// Requested permission preset (e.g., "fix_issue", "permissive").
+    requested_preset: String,
+    /// Justification for the escalation.
+    reason: String,
+    /// TTL in seconds for the escalated permissions.
+    ttl_seconds: u64,
+    /// Unique nonce to prevent replay attacks.
+    ///
+    /// SECURITY: Required. Each escalation request must have a unique nonce.
+    /// The server rejects requests with previously-seen nonces within the
+    /// drand tolerance window (~60 seconds).
+    nonce: String,
+}
+
+/// Serialized trace chain for transport.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SerializedTraceChain {
+    /// Chain ID.
+    id: String,
+    /// Links in the chain.
+    links: Vec<SerializedTraceLink>,
+}
+
+/// Serialized trace link for transport.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SerializedTraceLink {
+    /// Link ID.
+    id: String,
+    /// SPIFFE ID.
+    spiffe_id: String,
+    /// Permission preset name (for reconstruction).
+    preset: String,
+    /// Drand round when created.
+    drand_round: u64,
+    /// Creation timestamp (Unix seconds).
+    created_at: u64,
+    /// Expiry timestamp (Unix seconds), if any.
+    expires_at: Option<u64>,
+    /// Reason for this link.
+    reason: String,
+}
+
+/// Response from an escalation request.
+#[derive(Debug, Serialize)]
+struct EscalateResponse {
+    /// Whether the escalation was granted.
+    granted: bool,
+    /// The grant ID (if granted).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    grant_id: Option<String>,
+    /// Granted permission preset (if granted).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    granted_preset: Option<String>,
+    /// Expiry timestamp (Unix seconds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expires_at: Option<u64>,
+    /// Drand round of the grant.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    drand_round: Option<u64>,
+    /// Error message (if denied).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct ErrorBody {
     error: String,
@@ -400,6 +494,8 @@ enum ApiError {
     DnsNotAllowed(String),
     #[error("attestation verification failed: {0}")]
     AttestationFailed(String),
+    #[error("escalation error: {0}")]
+    Escalation(String),
 }
 
 impl IntoResponse for ApiError {
@@ -451,6 +547,7 @@ impl IntoResponse for ApiError {
             ApiError::WebFetch(_) => (StatusCode::BAD_GATEWAY, "web_fetch_error", None),
             ApiError::DnsNotAllowed(_) => (StatusCode::FORBIDDEN, "dns_not_allowed", None),
             ApiError::AttestationFailed(_) => (StatusCode::FORBIDDEN, "attestation_failed", None),
+            ApiError::Escalation(_) => (StatusCode::FORBIDDEN, "escalation_denied", None),
         };
 
         let body = Json(ErrorBody {
@@ -555,6 +652,39 @@ async fn main() -> Result<(), ApiError> {
     };
     let attestation_verifier = AttestationVerifier::new(attestation_config);
 
+    // Build policy engine for identity-based authorization
+    let policy_engine = if let Some(policy_path) = &args.policy_file {
+        if !args.zero_prompt {
+            warn!(
+                "policy file specified but --zero-prompt not enabled; policy will not be enforced"
+            );
+        }
+        let policy_config = policy::load_policy_file(policy_path).await.map_err(|e| {
+            ApiError::Spec(format!(
+                "failed to load policy file {}: {}",
+                policy_path.display(),
+                e
+            ))
+        })?;
+        info!(
+            "loaded policy file with {} rules (zero_prompt={})",
+            policy_config.policies.len(),
+            args.zero_prompt
+        );
+        if args.zero_prompt {
+            PolicyEngine::from_config(&policy_config)
+        } else {
+            PolicyEngine::disabled()
+        }
+    } else {
+        if args.zero_prompt {
+            return Err(ApiError::Spec(
+                "--zero-prompt requires --policy-file".to_string(),
+            ));
+        }
+        PolicyEngine::disabled()
+    };
+
     let state = AppState {
         runtime: Arc::new(runtime),
         approvals,
@@ -567,6 +697,7 @@ async fn main() -> Result<(), ApiError> {
         web_fetch_max_bytes: args.web_fetch_max_bytes,
         dns_allow,
         attestation_verifier,
+        policy_engine,
     };
 
     if let Err(err) = emit_boot_report(&state).await {
@@ -580,6 +711,7 @@ async fn main() -> Result<(), ApiError> {
         .route("/v1/run", post(run_command))
         .route("/v1/web_fetch", post(web_fetch))
         .route("/v1/approve", post(approve_operation))
+        .route("/v1/escalate", post(escalate_permissions))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state, auth_middleware));
 
@@ -749,12 +881,29 @@ async fn auth_middleware(
         }
     }
 
+    // Try SPIFFE mTLS authentication first (most secure, no shared secrets)
+    if let Some(spiffe_id) = auth::extract_spiffe_id_from_extensions(&parts.extensions) {
+        tracing::info!(
+            spiffe_id = %spiffe_id,
+            path = %parts.uri.path(),
+            method = %parts.method,
+            event = "auth_spiffe_mtls",
+            "request authenticated via SPIFFE mTLS"
+        );
+        let context = auth::verify_spiffe_mtls(&spiffe_id);
+        let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
+        req.extensions_mut().insert(context);
+        return Ok(next.run(req).await);
+    }
+
+    // Fall back to HMAC-based authentication (legacy mode)
     if parts.uri.path() == APPROVE_PATH {
         // Use drand-aware verification for approval requests
         let context = auth::verify_http_with_drand(&parts.headers, &bytes, &state.approval_auth)?;
         if context.drand_round.is_some() {
             tracing::info!(
                 drand_round = context.drand_round,
+                auth_method = ?context.auth_method,
                 "approval request verified with drand anchoring"
             );
         }
@@ -773,76 +922,178 @@ async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({"status": "ok"}))
 }
 
+/// Check if a SPIFFE identity has permission for an operation via policy.
+/// Returns true if the operation should be auto-approved (zero-prompt).
+fn check_identity_policy(
+    state: &AppState,
+    auth: Option<&auth::AuthContext>,
+    operation: &str,
+) -> bool {
+    // Only check policy for SPIFFE mTLS authenticated requests
+    let auth = match auth {
+        Some(a) if a.auth_method == auth::AuthMethod::SpiffeMtls => a,
+        _ => return false,
+    };
+
+    // Get SPIFFE ID
+    let spiffe_id = match &auth.spiffe_id {
+        Some(id) => id,
+        None => return false,
+    };
+
+    // Check if policy engine is enabled and has a matching policy
+    if !state.policy_engine.is_zero_prompt_enabled() {
+        return false;
+    }
+
+    // Get permissions for this identity
+    let permissions = match state.policy_engine.permissions_for(spiffe_id) {
+        Some(p) => p,
+        None => return false,
+    };
+
+    // Check capabilities based on operation type
+    // This is a simplified check - a full implementation would parse the operation
+    // and check specific capabilities and path patterns
+    let requires_approval = match operation.split_whitespace().next() {
+        Some("read") => {
+            permissions.capabilities.read_files == CapabilityLevel::Never
+                || permissions.requires_approval(Operation::ReadFiles)
+        }
+        Some("write") => {
+            permissions.capabilities.write_files == CapabilityLevel::Never
+                || permissions.requires_approval(Operation::WriteFiles)
+        }
+        Some("run") | Some("execute") => {
+            permissions.capabilities.run_bash == CapabilityLevel::Never
+                || permissions.requires_approval(Operation::RunBash)
+        }
+        Some("web_fetch") => {
+            permissions.capabilities.web_fetch == CapabilityLevel::Never
+                || permissions.requires_approval(Operation::WebFetch)
+        }
+        _ => true, // Unknown operations require approval
+    };
+
+    if !requires_approval {
+        tracing::info!(
+            spiffe_id = %spiffe_id,
+            operation = %operation,
+            event = "zero_prompt_authorized",
+            "operation authorized via SPIFFE identity policy"
+        );
+    }
+
+    !requires_approval
+}
+
 async fn read_file(
     State(state): State<AppState>,
     headers: HeaderMap,
+    auth: Option<axum::Extension<auth::AuthContext>>,
     Json(req): Json<ReadRequest>,
 ) -> Result<Json<ReadResponse>, ApiError> {
     let path = req.path.clone();
+    let auth_ctx = auth.map(|e| e.0);
+    let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
+
     let contents = match state.runtime.sandbox().read_to_string(&path) {
         Ok(contents) => contents,
         Err(NucleusError::ApprovalRequired { operation }) => {
-            let token = state
-                .runtime
-                .sandbox()
-                .request_approval(operation.clone())?;
-            state
-                .runtime
-                .sandbox()
-                .read_to_string_approved(&path, &token)?
+            // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
+            if check_identity_policy(&state, auth_ctx.as_ref(), &format!("read {}", path))
+                || state.approvals.consume(&operation)
+            {
+                let token = state
+                    .runtime
+                    .sandbox()
+                    .request_approval(operation.clone())?;
+                state
+                    .runtime
+                    .sandbox()
+                    .read_to_string_approved(&path, &token)?
+            } else {
+                return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
+                    operation,
+                }));
+            }
         }
         Err(err) => return Err(ApiError::Nucleus(err)),
     };
 
-    audit_event(&state, &headers, "read", &path, "ok").await?;
+    audit_event_with_context(&state, &headers, "read", &path, "ok", audit_ctx).await?;
     Ok(Json(ReadResponse { contents }))
 }
 
 async fn write_file(
     State(state): State<AppState>,
     headers: HeaderMap,
+    auth: Option<axum::Extension<auth::AuthContext>>,
     Json(req): Json<WriteRequest>,
 ) -> Result<Json<WriteResponse>, ApiError> {
     let path = req.path.clone();
     let contents = req.contents.clone();
+    let auth_ctx = auth.map(|e| e.0);
+    let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
 
     match state.runtime.sandbox().write(&path, contents.as_bytes()) {
         Ok(()) => {}
         Err(NucleusError::ApprovalRequired { operation }) => {
-            let token = state
-                .runtime
-                .sandbox()
-                .request_approval(operation.clone())?;
-            state
-                .runtime
-                .sandbox()
-                .write_approved(&path, contents.as_bytes(), &token)?;
+            // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
+            if check_identity_policy(&state, auth_ctx.as_ref(), &format!("write {}", path))
+                || state.approvals.consume(&operation)
+            {
+                let token = state
+                    .runtime
+                    .sandbox()
+                    .request_approval(operation.clone())?;
+                state
+                    .runtime
+                    .sandbox()
+                    .write_approved(&path, contents.as_bytes(), &token)?;
+            } else {
+                return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
+                    operation,
+                }));
+            }
         }
         Err(err) => return Err(ApiError::Nucleus(err)),
     }
 
-    audit_event(&state, &headers, "write", &path, "ok").await?;
+    audit_event_with_context(&state, &headers, "write", &path, "ok", audit_ctx).await?;
     Ok(Json(WriteResponse { ok: true }))
 }
 
 async fn run_command(
     State(state): State<AppState>,
     headers: HeaderMap,
+    auth: Option<axum::Extension<auth::AuthContext>>,
     Json(req): Json<RunRequest>,
 ) -> Result<Json<RunResponse>, ApiError> {
     let command = req.command.clone();
     let executor = state.runtime.executor();
+    let auth_ctx = auth.map(|e| e.0);
+    let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
 
     let output = match executor.run(&command) {
         Ok(output) => output,
         Err(NucleusError::ApprovalRequired { operation }) => {
-            let token = executor.request_approval(&operation)?;
-            executor.run_with_approval(&command, &token)?
+            // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
+            if check_identity_policy(&state, auth_ctx.as_ref(), &format!("execute {}", command))
+                || state.approvals.consume(&operation)
+            {
+                let token = executor.request_approval(&operation)?;
+                executor.run_with_approval(&command, &token)?
+            } else {
+                return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
+                    operation,
+                }));
+            }
         }
         Err(err) => return Err(ApiError::Nucleus(err)),
     };
 
-    audit_event(&state, &headers, "run", &command, "ok").await?;
+    audit_event_with_context(&state, &headers, "run", &command, "ok", audit_ctx).await?;
     Ok(Json(RunResponse {
         status: output.status.code().unwrap_or(-1),
         success: output.status.success(),
@@ -854,9 +1105,12 @@ async fn run_command(
 async fn web_fetch(
     State(state): State<AppState>,
     headers: HeaderMap,
+    auth: Option<axum::Extension<auth::AuthContext>>,
     Json(req): Json<WebFetchRequest>,
 ) -> Result<Json<WebFetchResponse>, ApiError> {
     let url_str = req.url.clone();
+    let auth_ctx = auth.map(|e| e.0);
+    let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
 
     // Check web_fetch capability
     let policy = state.runtime.policy();
@@ -871,8 +1125,11 @@ async fn web_fetch(
 
     // Check if trifecta requires approval for web_fetch
     if policy.requires_approval(Operation::WebFetch) {
-        // For now, just check if we have an approval token
-        if !state.approvals.consume("web_fetch") {
+        // Check if policy allows this operation (zero-prompt mode)
+        let policy_allows =
+            check_identity_policy(&state, auth_ctx.as_ref(), &format!("web_fetch {}", url_str));
+
+        if !policy_allows && !state.approvals.consume("web_fetch") {
             return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
                 operation: format!("web_fetch {}", url_str),
             }));
@@ -955,7 +1212,7 @@ async fn web_fetch(
         (String::from_utf8_lossy(&bytes).to_string(), None)
     };
 
-    audit_event(&state, &headers, "web_fetch", &url_str, "ok").await?;
+    audit_event_with_context(&state, &headers, "web_fetch", &url_str, "ok", audit_ctx).await?;
     Ok(Json(WebFetchResponse {
         status,
         headers: response_headers,
@@ -989,6 +1246,371 @@ async fn approve_operation(
         .approve(&req.operation, req.count, expires_at);
     audit_event(&state, &headers, "approve", &req.operation, "ok").await?;
     Ok(Json(ApproveResponse { ok: true }))
+}
+
+/// Escalate permissions for an agent using SPIFFE trace chains.
+///
+/// This endpoint allows agents to request elevated permissions, bounded by:
+/// 1. The approver's ceiling (their trace chain's meet)
+/// 2. The escalation policy's max_grant
+/// 3. Time limits defined by the policy
+///
+/// The request must be made by an authenticated SPIFFE identity (via mTLS)
+/// that matches an approver pattern in the escalation policy.
+async fn escalate_permissions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<axum::Extension<auth::AuthContext>>,
+    Json(req): Json<EscalateRequest>,
+) -> Result<Json<EscalateResponse>, ApiError> {
+    // Rate limit escalation requests
+    if !state.approval_rate_limiter.try_acquire() {
+        return Err(ApiError::RateLimited);
+    }
+
+    // SECURITY: Validate nonce to prevent replay attacks
+    // This is critical - without nonce protection, an attacker can replay
+    // a captured escalation request within the drand tolerance window (~60s)
+    if req.nonce.is_empty() {
+        return Err(ApiError::Escalation(
+            "escalation nonce required".to_string(),
+        ));
+    }
+
+    let now = now_unix();
+    // Use a longer expiry for escalation nonces (5 minutes) since escalations
+    // are higher-value targets than regular approvals
+    let nonce_expiry = now + 300; // 5 minutes
+    if !state
+        .approval_nonces
+        .check_and_insert(&req.nonce, nonce_expiry, now)
+    {
+        tracing::warn!(
+            nonce = %req.nonce,
+            "REJECTING: escalation nonce already used (potential replay attack)"
+        );
+        return Err(ApiError::Escalation(
+            "escalation nonce already used (potential replay attack)".to_string(),
+        ));
+    }
+
+    // Check if escalation policies are configured
+    if !state.policy_engine.has_escalation_policies() {
+        return Err(ApiError::Escalation(
+            "no escalation policies configured".to_string(),
+        ));
+    }
+
+    // Extract approver's SPIFFE identity from mTLS
+    let auth_ctx = auth.map(|e| e.0);
+    let approver_spiffe_id = auth_ctx
+        .as_ref()
+        .and_then(|a| a.spiffe_id.clone())
+        .ok_or_else(|| {
+            ApiError::Escalation("escalation requires SPIFFE mTLS authentication".to_string())
+        })?;
+
+    // Reconstruct the requestor's trace chain
+    let requestor_chain = deserialize_trace_chain(&req.requestor_chain)?;
+
+    // Reconstruct the approver's trace chain from the request
+    // SECURITY: The approver MUST submit their full chain - we don't construct it server-side
+    let approver_chain = deserialize_trace_chain(&req.approver_chain)?;
+
+    // SECURITY: Verify the submitted approver chain's leaf matches the mTLS identity
+    // This prevents an attacker from submitting someone else's chain
+    let approver_chain_leaf = approver_chain.current_spiffe_id().ok_or_else(|| {
+        ApiError::Escalation("approver chain must have at least one link".to_string())
+    })?;
+
+    if approver_chain_leaf != approver_spiffe_id {
+        tracing::warn!(
+            submitted_leaf = %approver_chain_leaf,
+            authenticated_id = %approver_spiffe_id,
+            "approver chain leaf does not match authenticated identity"
+        );
+        return Err(ApiError::Escalation(
+            "approver chain leaf must match authenticated SPIFFE identity".to_string(),
+        ));
+    }
+
+    // SECURITY: Verify the approver chain is valid (non-expired, monotonic)
+    if !approver_chain.verify() {
+        let result = approver_chain.verify_detailed();
+        let reason = match result {
+            lattice_guard::escalation::ChainVerificationResult::Invalid { reason, .. } => reason,
+            _ => "unknown".to_string(),
+        };
+        tracing::warn!(
+            chain_id = %approver_chain.id,
+            reason = %reason,
+            "approver chain verification failed"
+        );
+        return Err(ApiError::Escalation(format!(
+            "approver chain is invalid: {}",
+            reason
+        )));
+    }
+
+    // Get the requested permissions
+    let requested = preset_to_permissions(&req.requested_preset);
+
+    // Fetch current drand round for cryptographic timestamping
+    let drand_round = if let Some(ref audit_log) = state.audit.drand_client {
+        match audit_log.current_round().await {
+            Ok(round) => round,
+            Err(e) => {
+                tracing::warn!("failed to fetch drand round for escalation: {e}");
+                return Err(ApiError::Escalation(
+                    "failed to fetch drand round for cryptographic timestamp".to_string(),
+                ));
+            }
+        }
+    } else {
+        return Err(ApiError::Escalation(
+            "drand anchoring required for escalation but not configured".to_string(),
+        ));
+    };
+
+    // Create the escalation request
+    let escalation_request = EscalationRequest::new(
+        requestor_chain.clone(),
+        requested,
+        &req.reason,
+        req.ttl_seconds,
+    );
+
+    // Validate against escalation policies
+    let policy_result = state
+        .policy_engine
+        .escalation_policies()
+        .validate_escalation(&escalation_request, &approver_chain);
+
+    match policy_result {
+        Ok(_policy) => {
+            // Create the grant
+            match EscalationGrant::new(&escalation_request, approver_chain, drand_round) {
+                Ok(grant) => {
+                    let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
+                    let audit_subject = format!(
+                        "escalation:{} -> {} (ttl={}s)",
+                        requestor_chain.current_spiffe_id().unwrap_or("unknown"),
+                        req.requested_preset,
+                        req.ttl_seconds
+                    );
+                    audit_event_with_context(
+                        &state,
+                        &headers,
+                        "escalate",
+                        &audit_subject,
+                        "granted",
+                        audit_ctx,
+                    )
+                    .await?;
+
+                    tracing::info!(
+                        requestor = %requestor_chain.current_spiffe_id().unwrap_or("unknown"),
+                        approver = %approver_spiffe_id,
+                        preset = %req.requested_preset,
+                        ttl_seconds = %req.ttl_seconds,
+                        drand_round = %drand_round,
+                        grant_id = %grant.id,
+                        event = "escalation_granted",
+                        "escalation request approved"
+                    );
+
+                    Ok(Json(EscalateResponse {
+                        granted: true,
+                        grant_id: Some(grant.id.to_string()),
+                        granted_preset: Some(req.requested_preset.clone()),
+                        expires_at: Some(grant.expires_at.timestamp() as u64),
+                        drand_round: Some(drand_round),
+                        error: None,
+                    }))
+                }
+                Err(e) => {
+                    let error_msg = escalation_error_to_string(&e);
+                    tracing::warn!(
+                        requestor = %requestor_chain.current_spiffe_id().unwrap_or("unknown"),
+                        approver = %approver_spiffe_id,
+                        error = %error_msg,
+                        event = "escalation_denied",
+                        "escalation grant creation failed"
+                    );
+
+                    Ok(Json(EscalateResponse {
+                        granted: false,
+                        grant_id: None,
+                        granted_preset: None,
+                        expires_at: None,
+                        drand_round: None,
+                        error: Some(error_msg),
+                    }))
+                }
+            }
+        }
+        Err(e) => {
+            let error_msg = escalation_error_to_string(&e);
+            let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
+            let audit_subject = format!(
+                "escalation:{} -> {} (denied: {})",
+                requestor_chain.current_spiffe_id().unwrap_or("unknown"),
+                req.requested_preset,
+                error_msg
+            );
+            audit_event_with_context(
+                &state,
+                &headers,
+                "escalate",
+                &audit_subject,
+                "denied",
+                audit_ctx,
+            )
+            .await?;
+
+            tracing::warn!(
+                requestor = %requestor_chain.current_spiffe_id().unwrap_or("unknown"),
+                approver = %approver_spiffe_id,
+                error = %error_msg,
+                event = "escalation_denied",
+                "escalation request denied by policy"
+            );
+
+            Ok(Json(EscalateResponse {
+                granted: false,
+                grant_id: None,
+                granted_preset: None,
+                expires_at: None,
+                drand_round: None,
+                error: Some(error_msg),
+            }))
+        }
+    }
+}
+
+/// Deserialize a trace chain from the request format.
+///
+/// SECURITY: UUIDs are ALWAYS generated server-side. Client-provided IDs are
+/// logged for audit purposes but never used. This prevents:
+/// - Replay attacks using pre-computed IDs
+/// - Collision attacks on chain/link identifiers
+/// - ID prediction for future grants
+fn deserialize_trace_chain(chain: &SerializedTraceChain) -> Result<SpiffeTraceChain, ApiError> {
+    use chrono::{TimeZone, Utc};
+
+    if chain.links.is_empty() {
+        return Err(ApiError::Escalation(
+            "trace chain must have at least one link".to_string(),
+        ));
+    }
+
+    let first_link = &chain.links[0];
+    let first_permissions = preset_to_permissions(&first_link.preset);
+    let mut trace_chain = SpiffeTraceChain::new_root(
+        &first_link.spiffe_id,
+        first_permissions,
+        first_link.drand_round,
+    );
+
+    // SECURITY: Log client-provided ID for audit but NEVER use it
+    // Server always generates fresh UUIDs to prevent replay/collision attacks
+    // NOTE: Logged at WARN level to ensure visibility in production logs
+    if !chain.id.is_empty() {
+        tracing::warn!(
+            client_provided_chain_id = %chain.id,
+            server_chain_id = %trace_chain.id,
+            security_event = "client_id_ignored",
+            "client provided chain ID ignored - using server-generated ID (potential attack indicator)"
+        );
+    }
+
+    // Add remaining links
+    for link in chain.links.iter().skip(1) {
+        let permissions = preset_to_permissions(&link.preset);
+        let mut trace_link = SpiffeTraceLink::new(&link.spiffe_id, permissions, link.drand_round)
+            .with_reason(&link.reason);
+
+        if let Some(expires_at) = link.expires_at {
+            if let Some(dt) = Utc.timestamp_opt(expires_at as i64, 0).single() {
+                trace_link = trace_link.with_expiry(dt);
+            }
+        }
+
+        // SECURITY: Log client-provided ID for audit but NEVER use it
+        // NOTE: Logged at WARN level to ensure visibility in production logs
+        if !link.id.is_empty() {
+            tracing::warn!(
+                client_provided_link_id = %link.id,
+                server_link_id = %trace_link.id,
+                security_event = "client_id_ignored",
+                "client provided link ID ignored - using server-generated ID (potential attack indicator)"
+            );
+        }
+
+        trace_chain.extend(trace_link);
+    }
+
+    Ok(trace_chain)
+}
+
+/// Convert an EscalationError to a user-friendly string.
+fn escalation_error_to_string(e: &EscalationError) -> String {
+    match e {
+        EscalationError::RequestExpired => "escalation request has expired".to_string(),
+        EscalationError::InvalidRequestorChain => "requestor's trace chain is invalid".to_string(),
+        EscalationError::InvalidApproverChain => "approver's trace chain is invalid".to_string(),
+        EscalationError::ExceedsCeiling { requested, ceiling } => {
+            format!(
+                "requested '{}' exceeds approver's ceiling '{}'",
+                requested, ceiling
+            )
+        }
+        EscalationError::ExceedsPolicyMax => {
+            "requested permissions exceed policy maximum".to_string()
+        }
+        EscalationError::TtlExceedsPolicy { requested, max } => {
+            format!(
+                "requested TTL ({} seconds) exceeds policy maximum ({} seconds)",
+                requested, max
+            )
+        }
+        EscalationError::NoMatchingPolicy => "no matching escalation policy found".to_string(),
+        EscalationError::PolicyMismatch { reason } => format!("policy mismatch: {}", reason),
+        EscalationError::SelfEscalation => "self-escalation not allowed".to_string(),
+        EscalationError::InvalidTtl => "invalid TTL: must be positive".to_string(),
+        EscalationError::ChainVerificationFailed { reason } => {
+            format!("chain verification failed: {}", reason)
+        }
+        EscalationError::AttestationRequired { chain_type, status } => {
+            format!(
+                "attestation required: {} chain has status '{}' but full attestation is mandatory",
+                chain_type, status
+            )
+        }
+    }
+}
+
+/// Convert a preset name to a PermissionLattice (local helper, mirrors policy.rs).
+fn preset_to_permissions(preset: &str) -> PermissionLattice {
+    match preset.to_lowercase().as_str() {
+        "codegen" => PermissionLattice::codegen(),
+        "pr_review" | "pr-review" => PermissionLattice::pr_review(),
+        "pr_approve" | "pr-approve" => PermissionLattice::pr_approve(),
+        "code_review" | "code-review" => PermissionLattice::code_review(),
+        "web_research" | "web-research" | "research" => PermissionLattice::web_research(),
+        "restrictive" => PermissionLattice::restrictive(),
+        "permissive" => PermissionLattice::permissive(),
+        "network_only" | "network-only" => PermissionLattice::network_only(),
+        "read_only" | "read-only" => PermissionLattice::read_only(),
+        "filesystem_readonly" | "filesystem-readonly" => PermissionLattice::filesystem_readonly(),
+        "edit_only" | "edit-only" => PermissionLattice::edit_only(),
+        "local_dev" | "local-dev" => PermissionLattice::local_dev(),
+        "fix_issue" | "fix-issue" => PermissionLattice::fix_issue(),
+        "release" => PermissionLattice::release(),
+        "database_client" | "database-client" => PermissionLattice::database_client(),
+        "demo" => PermissionLattice::demo(),
+        _ => PermissionLattice::restrictive(),
+    }
 }
 
 fn resolve_approval_expiry(
@@ -1124,6 +1746,8 @@ impl axum::serve::Listener for VsockAxumListener {
 }
 
 fn build_audit_log(args: &Args, auth: &AuthConfig) -> Result<Arc<AuditLog>, ApiError> {
+    use nucleus_client::drand::{DrandClient, DrandConfig, DrandFailMode};
+
     let path = args.audit_log.clone();
     let secret = if let Some(secret) = args.audit_secret.as_ref() {
         secret.as_bytes().to_vec()
@@ -1148,12 +1772,66 @@ fn build_audit_log(args: &Args, auth: &AuthConfig) -> Result<Arc<AuditLog>, ApiE
         None
     };
 
+    // Set up drand client for cryptographic time anchoring if drand is enabled
+    let drand_client = if args.drand_enabled {
+        let fail_mode = match args.drand_fail_mode.to_lowercase().as_str() {
+            "cached" => DrandFailMode::Cached,
+            _ => DrandFailMode::Strict,
+        };
+        let config = DrandConfig {
+            enabled: true,
+            api_url: args.drand_url.clone(),
+            round_tolerance: args.drand_tolerance,
+            cache_ttl: Duration::from_secs(25),
+            fail_mode,
+            chain_hash: None, // Use default
+            public_key: None, // Use default
+        };
+        info!(
+            "drand anchoring enabled for audit logs (url={}, tolerance={})",
+            args.drand_url, args.drand_tolerance
+        );
+        Some(Arc::new(DrandClient::new(config)))
+    } else {
+        None
+    };
+
     Ok(Arc::new(AuditLog {
         path,
         secret,
         last_hash: Mutex::new(last_hash),
         webhook,
+        drand_client,
     }))
+}
+
+/// Extended audit context for richer logging.
+struct AuditContext {
+    spiffe_id: Option<String>,
+    policy_rule: Option<String>,
+}
+
+impl AuditContext {
+    fn empty() -> Self {
+        Self {
+            spiffe_id: None,
+            policy_rule: None,
+        }
+    }
+
+    fn from_auth(auth: Option<&auth::AuthContext>, state: &AppState) -> Self {
+        let spiffe_id = auth.and_then(|a| a.spiffe_id.clone());
+        let policy_rule = spiffe_id.as_ref().and_then(|id| {
+            state
+                .policy_engine
+                .matching_policy(id)
+                .map(|p| p.pattern.clone())
+        });
+        Self {
+            spiffe_id,
+            policy_rule,
+        }
+    }
 }
 
 async fn audit_event(
@@ -1162,6 +1840,25 @@ async fn audit_event(
     event: &str,
     subject: &str,
     result: &str,
+) -> Result<(), ApiError> {
+    audit_event_with_context(
+        state,
+        headers,
+        event,
+        subject,
+        result,
+        AuditContext::empty(),
+    )
+    .await
+}
+
+async fn audit_event_with_context(
+    state: &AppState,
+    headers: &HeaderMap,
+    event: &str,
+    subject: &str,
+    result: &str,
+    ctx: AuditContext,
 ) -> Result<(), ApiError> {
     let actor = headers
         .get("x-nucleus-actor")
@@ -1178,6 +1875,9 @@ async fn audit_event(
             prev_hash: String::new(),
             hash: String::new(),
             signature: String::new(),
+            drand_round: None, // Will be filled by AuditLog::log
+            spiffe_id: ctx.spiffe_id,
+            policy_rule: ctx.policy_rule,
         })
         .await?;
     Ok(())
@@ -1201,6 +1901,9 @@ async fn emit_boot_report(state: &AppState) -> Result<(), ApiError> {
             prev_hash: String::new(),
             hash: String::new(),
             signature: String::new(),
+            drand_round: None, // Will be filled by AuditLog::log
+            spiffe_id: None,
+            policy_rule: None,
         })
         .await?;
 
@@ -1217,6 +1920,15 @@ struct AuditEntry {
     prev_hash: String,
     hash: String,
     signature: String,
+    /// Drand round number for cryptographic time anchoring.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    drand_round: Option<u64>,
+    /// SPIFFE identity of the authenticated requester.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    spiffe_id: Option<String>,
+    /// Policy rule that authorized this operation (if zero-prompt).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    policy_rule: Option<String>,
 }
 
 struct AuditLog {
@@ -1224,6 +1936,8 @@ struct AuditLog {
     secret: Vec<u8>,
     last_hash: Mutex<String>,
     webhook: Option<WebhookSink>,
+    /// Optional drand client for cryptographic time anchoring.
+    drand_client: Option<Arc<nucleus_client::drand::DrandClient>>,
 }
 
 struct WebhookSink {
@@ -1233,13 +1947,37 @@ struct WebhookSink {
 
 impl AuditLog {
     async fn log(&self, mut entry: AuditEntry) -> Result<(), ApiError> {
+        // Fetch drand round for cryptographic time anchoring
+        if let Some(ref drand) = self.drand_client {
+            match drand.current_round().await {
+                Ok(round) => {
+                    entry.drand_round = Some(round);
+                }
+                Err(e) => {
+                    tracing::warn!("failed to fetch drand round for audit: {e}");
+                    // Continue without drand anchoring - don't block audit logging
+                }
+            }
+        }
+
         let actor = entry.actor.clone().unwrap_or_default();
         let (prev_hash, hash, signature) = {
             let mut last_hash = self.last_hash.lock().unwrap();
             let prev_hash = last_hash.clone();
+            // Include drand_round in message if available for stronger binding
+            let drand_part = entry
+                .drand_round
+                .map(|r| format!("|drand:{}", r))
+                .unwrap_or_default();
             let message = format!(
-                "{}|{}|{}|{}|{}|{}",
-                entry.timestamp_unix, actor, entry.event, entry.subject, entry.result, prev_hash
+                "{}|{}|{}|{}|{}|{}{}",
+                entry.timestamp_unix,
+                actor,
+                entry.event,
+                entry.subject,
+                entry.result,
+                prev_hash,
+                drand_part
             );
             let signature = auth::sign_message(&self.secret, message.as_bytes());
             let hash = sha256_hex(&format!("{}|{}", message, signature));

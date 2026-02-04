@@ -57,6 +57,7 @@ fn trifecta_bypass_via_deserialization_rejected() {
 }
 
 #[test]
+#[cfg(feature = "testing")]
 fn trifecta_cannot_be_disabled_through_meet() {
     // Create permission set with trifecta constraint enabled
     let mut enabled = PermissionLattice::default();

@@ -1367,6 +1367,7 @@ dependencies = [
  "sha2 0.10.9",
  "shell-words",
  "tempfile",
+ "tracing",
  "uuid",
 ]
 
@@ -1729,9 +1730,11 @@ name = "nucleus-tool-proxy"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "chrono",
  "clap",
  "hex",
  "hmac",
+ "lattice-guard",
  "nucleus",
  "nucleus-client",
  "nucleus-identity",
@@ -1749,6 +1752,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "uuid",
  "x509-parser 0.17.0",
 ]
 

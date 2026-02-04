@@ -1,8 +1,22 @@
 //! Request authentication and signature verification.
 //!
-//! This module provides HMAC-based authentication for tool-proxy requests.
-//! It supports both standard timestamp-based signatures and drand-anchored
-//! signatures that prevent pre-computation attacks.
+//! This module provides multiple authentication modes for tool-proxy requests:
+//!
+//! 1. **HMAC-based auth**: Traditional shared-secret signatures with optional
+//!    drand anchoring to prevent pre-computation attacks.
+//!
+//! 2. **SPIFFE mTLS auth**: Zero-secret authentication using SPIFFE workload
+//!    identity certificates. The client's identity is derived from their
+//!    X.509 certificate's SPIFFE URI SAN, not from static secrets.
+//!
+//! # Security Model
+//!
+//! - **HMAC mode**: Requires shared secrets, vulnerable to secret extraction
+//! - **mTLS mode**: No secrets to extract; identity is attested by CA
+//! - **Drand anchoring**: Limits HMAC attack window to ~60 seconds
+//!
+//! The recommended configuration is mTLS mode with SPIFFE certificates,
+//! which eliminates static secrets entirely.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -70,15 +84,31 @@ impl AuthConfig {
 }
 
 /// Context extracted from a verified request.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct AuthContext {
     /// The actor (user/service) that made the request.
+    #[allow(dead_code)]
     pub actor: Option<String>,
     /// The Unix timestamp from the request.
+    #[allow(dead_code)]
     pub timestamp: i64,
     /// The drand round, if the request was drand-anchored.
     pub drand_round: Option<u64>,
+    /// The SPIFFE identity, if authenticated via mTLS.
+    pub spiffe_id: Option<String>,
+    /// The authentication method used.
+    pub auth_method: AuthMethod,
+}
+
+/// The method used to authenticate the request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthMethod {
+    /// HMAC-based signature verification (legacy).
+    Hmac,
+    /// HMAC with drand anchoring (prevents pre-computation).
+    HmacDrand,
+    /// SPIFFE mTLS certificate (no shared secrets).
+    SpiffeMtls,
 }
 
 /// Errors that can occur during authentication.
@@ -145,6 +175,8 @@ pub fn verify_http(
         actor,
         timestamp,
         drand_round: None,
+        spiffe_id: None,
+        auth_method: AuthMethod::Hmac,
     })
 }
 
@@ -223,6 +255,8 @@ pub fn verify_http_with_drand(
                         actor,
                         timestamp,
                         drand_round: Some(round),
+                        spiffe_id: None,
+                        auth_method: AuthMethod::HmacDrand,
                     });
                 }
                 None => {
@@ -258,7 +292,65 @@ pub fn verify_http_with_drand(
         actor,
         timestamp,
         drand_round: None,
+        spiffe_id: None,
+        auth_method: AuthMethod::Hmac,
     })
+}
+
+/// Verify a request using SPIFFE mTLS identity.
+///
+/// This function validates that a SPIFFE identity was extracted from the
+/// client's mTLS certificate. No HMAC signature verification is required
+/// because the identity is cryptographically attested by the CA.
+///
+/// # Arguments
+///
+/// * `spiffe_id` - The SPIFFE ID extracted from the client certificate
+///
+/// # Returns
+///
+/// An `AuthContext` with the SPIFFE identity as the actor.
+///
+/// # Security Note
+///
+/// This is the most secure authentication method because:
+/// 1. No static secrets that can be extracted
+/// 2. Identity is attested by the CA, not self-declared
+/// 3. Certificates auto-rotate, limiting compromise window
+pub fn verify_spiffe_mtls(spiffe_id: &str) -> AuthContext {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    AuthContext {
+        actor: Some(spiffe_id.to_string()),
+        timestamp: now,
+        drand_round: None,
+        spiffe_id: Some(spiffe_id.to_string()),
+        auth_method: AuthMethod::SpiffeMtls,
+    }
+}
+
+/// Check if a request has valid SPIFFE mTLS credentials.
+///
+/// Returns the SPIFFE ID if present and valid, None otherwise.
+pub fn extract_spiffe_id_from_extensions(extensions: &axum::http::Extensions) -> Option<String> {
+    use crate::mtls::{ClientCertInfo, MtlsConnectInfo};
+
+    // Try MtlsConnectInfo first (standard path)
+    if let Some(info) = extensions.get::<MtlsConnectInfo>() {
+        if let Some(ref cert) = info.client_cert {
+            return cert.spiffe_id.clone();
+        }
+    }
+
+    // Fall back to direct ClientCertInfo
+    if let Some(cert) = extensions.get::<ClientCertInfo>() {
+        return cert.spiffe_id.clone();
+    }
+
+    None
 }
 
 fn header_value<'a>(headers: &'a HeaderMap, name: &'static str) -> Result<&'a str, AuthError> {
@@ -488,5 +580,69 @@ mod tests {
 
         let result = verify_http_with_drand(&headers, body, &auth);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_verify_spiffe_mtls() {
+        let spiffe_id = "spiffe://nucleus.local/ns/default/sa/test-agent";
+        let ctx = verify_spiffe_mtls(spiffe_id);
+
+        assert_eq!(ctx.actor, Some(spiffe_id.to_string()));
+        assert_eq!(ctx.spiffe_id, Some(spiffe_id.to_string()));
+        assert_eq!(ctx.auth_method, AuthMethod::SpiffeMtls);
+        assert!(ctx.drand_round.is_none());
+    }
+
+    #[test]
+    fn test_auth_method_equality() {
+        assert_eq!(AuthMethod::Hmac, AuthMethod::Hmac);
+        assert_eq!(AuthMethod::HmacDrand, AuthMethod::HmacDrand);
+        assert_eq!(AuthMethod::SpiffeMtls, AuthMethod::SpiffeMtls);
+        assert_ne!(AuthMethod::Hmac, AuthMethod::SpiffeMtls);
+        assert_ne!(AuthMethod::HmacDrand, AuthMethod::SpiffeMtls);
+    }
+
+    #[test]
+    fn test_verify_http_returns_hmac_auth_method() {
+        let secret = b"test-secret";
+        let body = b"test body";
+        let ts = current_timestamp();
+        let actor = "test-actor";
+
+        let message = format!("{}.{}.{}", ts, actor, String::from_utf8_lossy(body));
+        let signature = sign_message(secret, message.as_bytes());
+
+        let headers = make_headers(ts, &signature, Some(actor));
+        let auth = AuthConfig::new(secret, Duration::from_secs(60));
+
+        let ctx = verify_http(&headers, body, &auth).unwrap();
+        assert_eq!(ctx.auth_method, AuthMethod::Hmac);
+        assert!(ctx.spiffe_id.is_none());
+    }
+
+    #[test]
+    fn test_verify_http_with_drand_returns_hmac_drand_auth_method() {
+        let secret = b"test-secret";
+        let body = b"test body";
+        let ts = current_timestamp();
+        let actor = "test-actor";
+        let round = drand::current_expected_round();
+
+        let message = format!(
+            "{}.{}.{}.{}",
+            round,
+            ts,
+            actor,
+            String::from_utf8_lossy(body)
+        );
+        let signature = sign_message(secret, message.as_bytes());
+
+        let headers = make_drand_headers(ts, round, &signature, Some(actor));
+        let auth =
+            AuthConfig::new(secret, Duration::from_secs(60)).with_drand(DrandConfig::default());
+
+        let ctx = verify_http_with_drand(&headers, body, &auth).unwrap();
+        assert_eq!(ctx.auth_method, AuthMethod::HmacDrand);
+        assert!(ctx.spiffe_id.is_none());
     }
 }
