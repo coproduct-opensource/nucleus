@@ -248,7 +248,7 @@ pub struct CgroupSetting {
 /// Values are stored in memory-mapped tmpfs and never written to persistent storage.
 ///
 /// SECURITY NOTE: This struct implements a custom `Debug` that redacts secret values.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct CredentialsSpec {
     /// Environment variables containing credentials.
     /// Keys are the variable names (e.g., `LLM_API_TOKEN`), values are the secrets.
@@ -270,13 +270,6 @@ impl std::fmt::Debug for CredentialsSpec {
     }
 }
 
-impl Default for CredentialsSpec {
-    fn default() -> Self {
-        Self {
-            env: BTreeMap::new(),
-        }
-    }
-}
 
 impl CredentialsSpec {
     /// Create a new empty credentials spec.
@@ -446,8 +439,7 @@ mod tests {
 
     #[test]
     fn test_credentials_spec_values_accessible() {
-        let creds = CredentialsSpec::new()
-            .with_env("LLM_API_TOKEN", "super-secret-token-12345");
+        let creds = CredentialsSpec::new().with_env("LLM_API_TOKEN", "super-secret-token-12345");
 
         // The actual value should still be accessible for runtime use
         assert_eq!(
@@ -484,8 +476,7 @@ mod tests {
 
     #[test]
     fn test_credentials_spec_yaml_serialization() {
-        let creds = CredentialsSpec::new()
-            .with_env("LLM_API_TOKEN", "test-token");
+        let creds = CredentialsSpec::new().with_env("LLM_API_TOKEN", "test-token");
 
         let yaml = serde_yaml::to_string(&creds).expect("should serialize");
 
@@ -518,7 +509,10 @@ spec:
         // Credentials should be parsed
         assert!(spec.spec.credentials.is_some());
         let creds = spec.spec.credentials.unwrap();
-        assert_eq!(creds.env.get("LLM_API_TOKEN"), Some(&"secret-token-12345".to_string()));
+        assert_eq!(
+            creds.env.get("LLM_API_TOKEN"),
+            Some(&"secret-token-12345".to_string())
+        );
         assert_eq!(creds.env.get("GITHUB_TOKEN"), Some(&"ghp_test".to_string()));
     }
 

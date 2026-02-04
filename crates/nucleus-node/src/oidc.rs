@@ -327,6 +327,7 @@ pub struct JwksResponse {
 
 /// A single JSON Web Key.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // Fields used for deserialization, may be used for validation later
 pub struct Jwk {
     pub kty: String,
     #[serde(rename = "use")]
@@ -584,8 +585,7 @@ impl GitHubOidcValidator {
         }
 
         // Decode header to get key ID
-        let header =
-            decode_header(token).map_err(|e| OidcError::InvalidToken(e.to_string()))?;
+        let header = decode_header(token).map_err(|e| OidcError::InvalidToken(e.to_string()))?;
 
         let kid = header.kid.ok_or(OidcError::MissingKeyId)?;
 
@@ -606,7 +606,9 @@ impl GitHubOidcValidator {
         let claims = token_data.claims;
 
         // Replay protection: check if this JTI has been used before
-        self.jti_cache.check_and_mark(&claims.jti, claims.exp).await?;
+        self.jti_cache
+            .check_and_mark(&claims.jti, claims.exp)
+            .await?;
 
         // Verify repository is allowed
         self.verify_allowed(&claims)?;
@@ -661,6 +663,7 @@ impl GitHubOidcValidator {
 
 /// Errors that can occur during OIDC validation.
 #[derive(Debug, thiserror::Error)]
+#[allow(dead_code)] // CertificateError variant reserved for future certificate signing
 pub enum OidcError {
     #[error("GitHub OIDC is not enabled")]
     NotEnabled,

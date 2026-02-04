@@ -139,12 +139,7 @@ pub trait CaClient: Send + Sync {
     /// # Returns
     ///
     /// PEM-encoded certificate chain (leaf cert + intermediates).
-    async fn sign_csr_only(
-        &self,
-        csr: &str,
-        identity: &Identity,
-        ttl: Duration,
-    ) -> Result<String>;
+    async fn sign_csr_only(&self, csr: &str, identity: &Identity, ttl: Duration) -> Result<String>;
 
     /// Returns the trust bundle (root CA certificates) for this CA.
     fn trust_bundle(&self) -> &crate::certificate::TrustBundle;

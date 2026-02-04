@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::http::HeaderMap;
@@ -266,6 +266,7 @@ pub fn sign_message(secret: &[u8], message: &[u8]) -> String {
 
 /// Operations that can be authorized.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // PodManagement is used in match arms for grouping
 pub enum Operation {
     /// Create a new pod.
     CreatePod,
@@ -277,7 +278,7 @@ pub enum Operation {
     CancelPod,
     /// Stream logs from a pod.
     StreamLogs,
-    /// Any pod management operation.
+    /// Any pod management operation (used for matching).
     PodManagement,
 }
 
@@ -308,9 +309,7 @@ impl Default for AuthorizationPolicy {
                 "spiffe://nucleus.local/ns/default/sa/".to_string(),
                 "spiffe://nucleus.local/ns/workstream-kg/sa/".to_string(),
             ],
-            cicd_prefixes: vec![
-                "spiffe://nucleus.local/ns/github/sa/".to_string(),
-            ],
+            cicd_prefixes: vec!["spiffe://nucleus.local/ns/github/sa/".to_string()],
         }
     }
 }
@@ -324,9 +323,7 @@ impl AuthorizationPolicy {
                 format!("spiffe://{}/ns/default/sa/", trust_domain),
                 format!("spiffe://{}/ns/workstream-kg/sa/", trust_domain),
             ],
-            cicd_prefixes: vec![
-                format!("spiffe://{}/ns/github/sa/", trust_domain),
-            ],
+            cicd_prefixes: vec![format!("spiffe://{}/ns/github/sa/", trust_domain)],
             trust_domain,
             ..Default::default()
         }
@@ -370,9 +367,7 @@ impl AuthorizationPolicy {
                 );
                 Ok(())
             }
-            AuthMethod::Spiffe { spiffe_id } => {
-                self.authorize_spiffe(spiffe_id, op)
-            }
+            AuthMethod::Spiffe { spiffe_id } => self.authorize_spiffe(spiffe_id, op),
         }
     }
 
@@ -404,8 +399,12 @@ impl AuthorizationPolicy {
             if spiffe_id.starts_with(prefix) {
                 // CI/CD identities can only perform pod management operations
                 match op {
-                    Operation::CreatePod | Operation::GetPod | Operation::CancelPod |
-                    Operation::StreamLogs | Operation::ListPods | Operation::PodManagement => {
+                    Operation::CreatePod
+                    | Operation::GetPod
+                    | Operation::CancelPod
+                    | Operation::StreamLogs
+                    | Operation::ListPods
+                    | Operation::PodManagement => {
                         tracing::debug!(
                             spiffe_id = %spiffe_id,
                             operation = ?op,
@@ -432,16 +431,10 @@ pub enum AuthorizationError {
     HmacNotAllowed,
 
     #[error("identity from wrong trust domain: expected {expected}, got {got}")]
-    WrongTrustDomain {
-        expected: String,
-        got: String,
-    },
+    WrongTrustDomain { expected: String, got: String },
 
     #[error("identity {identity} is not authorized for operation {operation}")]
-    NotAuthorized {
-        identity: String,
-        operation: String,
-    },
+    NotAuthorized { identity: String, operation: String },
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -561,10 +554,11 @@ pub fn authorize_grpc_operation<T>(
     policy: &AuthorizationPolicy,
     operation: Operation,
 ) -> Result<(), tonic::Status> {
-    let auth_ctx = get_auth_context(request)
-        .ok_or_else(|| tonic::Status::internal("missing auth context"))?;
+    let auth_ctx =
+        get_auth_context(request).ok_or_else(|| tonic::Status::internal("missing auth context"))?;
 
-    policy.authorize(auth_ctx, operation)
+    policy
+        .authorize(auth_ctx, operation)
         .map_err(|e| tonic::Status::permission_denied(e.to_string()))
 }
 
@@ -579,7 +573,10 @@ mod tests {
         };
         assert!(method.is_spiffe());
         assert!(!method.is_hmac());
-        assert_eq!(method.spiffe_id(), Some("spiffe://nucleus.local/ns/default/sa/worker"));
+        assert_eq!(
+            method.spiffe_id(),
+            Some("spiffe://nucleus.local/ns/default/sa/worker")
+        );
         assert_eq!(method.trust_domain(), Some("nucleus.local"));
     }
 
@@ -594,7 +591,9 @@ mod tests {
 
     #[test]
     fn test_auth_context_from_spiffe() {
-        let ctx = AuthContext::from_spiffe("spiffe://nucleus.local/ns/workstream-kg/sa/orchestrator".to_string());
+        let ctx = AuthContext::from_spiffe(
+            "spiffe://nucleus.local/ns/workstream-kg/sa/orchestrator".to_string(),
+        );
         assert_eq!(ctx.actor, Some("orchestrator".to_string()));
         assert!(matches!(ctx.method, AuthMethod::Spiffe { .. }));
     }
@@ -602,7 +601,8 @@ mod tests {
     #[test]
     fn test_authorization_policy_orchestrator_allowed() {
         let policy = AuthorizationPolicy::new("nucleus.local");
-        let ctx = AuthContext::from_spiffe("spiffe://nucleus.local/ns/default/sa/worker".to_string());
+        let ctx =
+            AuthContext::from_spiffe("spiffe://nucleus.local/ns/default/sa/worker".to_string());
 
         // Orchestrator should be allowed all operations
         assert!(policy.authorize(&ctx, Operation::CreatePod).is_ok());
@@ -615,7 +615,9 @@ mod tests {
     #[test]
     fn test_authorization_policy_cicd_allowed() {
         let policy = AuthorizationPolicy::new("nucleus.local");
-        let ctx = AuthContext::from_spiffe("spiffe://nucleus.local/ns/github/sa/myorg/myrepo".to_string());
+        let ctx = AuthContext::from_spiffe(
+            "spiffe://nucleus.local/ns/github/sa/myorg/myrepo".to_string(),
+        );
 
         // CI/CD should be allowed pod management operations
         assert!(policy.authorize(&ctx, Operation::CreatePod).is_ok());
@@ -628,22 +630,30 @@ mod tests {
     #[test]
     fn test_authorization_policy_wrong_trust_domain() {
         let policy = AuthorizationPolicy::new("nucleus.local");
-        let ctx = AuthContext::from_spiffe("spiffe://other.domain/ns/default/sa/worker".to_string());
+        let ctx =
+            AuthContext::from_spiffe("spiffe://other.domain/ns/default/sa/worker".to_string());
 
         let result = policy.authorize(&ctx, Operation::CreatePod);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), AuthorizationError::WrongTrustDomain { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            AuthorizationError::WrongTrustDomain { .. }
+        ));
     }
 
     #[test]
     fn test_authorization_policy_unknown_identity() {
         let policy = AuthorizationPolicy::new("nucleus.local");
         // An identity that doesn't match any known prefix
-        let ctx = AuthContext::from_spiffe("spiffe://nucleus.local/ns/unknown/sa/worker".to_string());
+        let ctx =
+            AuthContext::from_spiffe("spiffe://nucleus.local/ns/unknown/sa/worker".to_string());
 
         let result = policy.authorize(&ctx, Operation::CreatePod);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), AuthorizationError::NotAuthorized { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            AuthorizationError::NotAuthorized { .. }
+        ));
     }
 
     #[test]
@@ -662,7 +672,10 @@ mod tests {
 
         let result = policy.authorize(&ctx, Operation::CreatePod);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), AuthorizationError::HmacNotAllowed));
+        assert!(matches!(
+            result.unwrap_err(),
+            AuthorizationError::HmacNotAllowed
+        ));
     }
 
     #[test]
@@ -672,11 +685,15 @@ mod tests {
             .with_cicd_prefix("spiffe://nucleus.local/ns/jenkins/sa/");
 
         // Custom orchestrator prefix
-        let ctx = AuthContext::from_spiffe("spiffe://nucleus.local/ns/custom/sa/my-orchestrator".to_string());
+        let ctx = AuthContext::from_spiffe(
+            "spiffe://nucleus.local/ns/custom/sa/my-orchestrator".to_string(),
+        );
         assert!(policy.authorize(&ctx, Operation::CreatePod).is_ok());
 
         // Custom CI/CD prefix
-        let ctx = AuthContext::from_spiffe("spiffe://nucleus.local/ns/jenkins/sa/build-agent".to_string());
+        let ctx = AuthContext::from_spiffe(
+            "spiffe://nucleus.local/ns/jenkins/sa/build-agent".to_string(),
+        );
         assert!(policy.authorize(&ctx, Operation::CreatePod).is_ok());
     }
 }

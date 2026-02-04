@@ -487,11 +487,11 @@ use x509_parser::oid_registry::asn1_rs::oid;
 /// Detect the rcgen SignatureAlgorithm from an x509_parser AlgorithmIdentifier.
 fn detect_algorithm(alg: &AlgorithmIdentifier<'_>) -> Option<&'static SignatureAlgorithm> {
     // Known OIDs for public key algorithms
-    let rsa_oid = oid!(1.2.840.113549.1.1.1);       // RSA encryption
-    let ec_oid = oid!(1.2.840.10045.2.1);           // id-ecPublicKey
-    let ed25519_oid = oid!(1.3.101.112);            // Ed25519
-    let secp256r1_oid = oid!(1.2.840.10045.3.1.7);  // secp256r1/prime256v1
-    let secp384r1_oid = oid!(1.3.132.0.34);         // secp384r1
+    let rsa_oid = oid!(1.2.840 .113549 .1 .1 .1); // RSA encryption
+    let ec_oid = oid!(1.2.840 .10045 .2 .1); // id-ecPublicKey
+    let ed25519_oid = oid!(1.3.101 .112); // Ed25519
+    let secp256r1_oid = oid!(1.2.840 .10045 .3 .1 .7); // secp256r1/prime256v1
+    let secp384r1_oid = oid!(1.3.132 .0 .34); // secp384r1
 
     // Check for Ed25519
     if alg.algorithm == ed25519_oid {
@@ -586,12 +586,7 @@ impl CaClient for SelfSignedCa {
         ))
     }
 
-    async fn sign_csr_only(
-        &self,
-        csr: &str,
-        identity: &Identity,
-        ttl: Duration,
-    ) -> Result<String> {
+    async fn sign_csr_only(&self, csr: &str, identity: &Identity, ttl: Duration) -> Result<String> {
         // Validate the CSR and extract the SPIFFE URI
         let csr_spiffe_uri = self.validate_csr(csr)?;
 
@@ -623,8 +618,9 @@ impl CaClient for SelfSignedCa {
         let spki_der = spki.raw.to_vec();
 
         // Detect the algorithm from the CSR's public key
-        let algorithm = detect_algorithm(&spki.algorithm)
-            .ok_or_else(|| Error::CaSigning("unsupported public key algorithm in CSR".to_string()))?;
+        let algorithm = detect_algorithm(&spki.algorithm).ok_or_else(|| {
+            Error::CaSigning("unsupported public key algorithm in CSR".to_string())
+        })?;
 
         // Create a wrapper that implements PublicKeyData
         let public_key = CsrPublicKey {

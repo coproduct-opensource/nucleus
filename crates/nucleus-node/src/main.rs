@@ -164,7 +164,11 @@ struct Args {
 
     // GitHub OIDC configuration
     /// Enable GitHub OIDC token exchange for CI/CD authentication.
-    #[arg(long, env = "NUCLEUS_NODE_OIDC_GITHUB_ENABLED", default_value_t = false)]
+    #[arg(
+        long,
+        env = "NUCLEUS_NODE_OIDC_GITHUB_ENABLED",
+        default_value_t = false
+    )]
     oidc_github_enabled: bool,
     /// Expected audience in GitHub OIDC tokens.
     #[arg(
@@ -487,11 +491,7 @@ async fn main() -> Result<(), ApiError> {
                 .await
                 {
                     Ok(config) => {
-                        let mode = if config.mtls_enabled() {
-                            "mTLS"
-                        } else {
-                            "TLS"
-                        };
+                        let mode = if config.mtls_enabled() { "mTLS" } else { "TLS" };
                         info!("gRPC {} enabled", mode);
                         Some(config)
                     }
@@ -564,15 +564,19 @@ async fn oidc_github_exchange(
         .ok_or(OidcApiError::InvalidFormat)?;
 
     // Validate the token (includes replay protection)
-    let claims = validator.validate(token).await.map_err(OidcApiError::Oidc)?;
+    let claims = validator
+        .validate(token)
+        .await
+        .map_err(OidcApiError::Oidc)?;
 
     // Get the SPIFFE ID for this identity based on token claims
     let spiffe_id = validator.spiffe_id(&claims);
 
     // Issue a certificate using the identity manager
-    let identity_mgr = state.identity_manager.as_ref().ok_or_else(|| {
-        OidcApiError::Internal("Identity manager not configured".to_string())
-    })?;
+    let identity_mgr = state
+        .identity_manager
+        .as_ref()
+        .ok_or_else(|| OidcApiError::Internal("Identity manager not configured".to_string()))?;
 
     // Parse SPIFFE ID into Identity
     let identity = parse_spiffe_to_identity(&spiffe_id)?;
@@ -627,7 +631,9 @@ fn parse_spiffe_to_identity(spiffe_id: &str) -> Result<nucleus_identity::Identit
 
     let parts: Vec<&str> = rest.split('/').collect();
     if parts.len() < 5 || parts[1] != "ns" || parts[3] != "sa" {
-        return Err(OidcApiError::Internal("Invalid SPIFFE path format".to_string()));
+        return Err(OidcApiError::Internal(
+            "Invalid SPIFFE path format".to_string(),
+        ));
     }
 
     let trust_domain = parts[0];
@@ -639,7 +645,11 @@ fn parse_spiffe_to_identity(spiffe_id: &str) -> Result<nucleus_identity::Identit
         parts[4].to_string()
     };
 
-    Ok(nucleus_identity::Identity::new(trust_domain, namespace, &service_account))
+    Ok(nucleus_identity::Identity::new(
+        trust_domain,
+        namespace,
+        &service_account,
+    ))
 }
 
 /// Error type for OIDC API endpoint.
@@ -673,7 +683,9 @@ impl IntoResponse for OidcApiError {
             OidcApiError::Oidc(e) => {
                 let (status, desc) = match e {
                     oidc::OidcError::RepoNotAllowed(_) => (StatusCode::FORBIDDEN, e.to_string()),
-                    oidc::OidcError::ValidationFailed(_) => (StatusCode::UNAUTHORIZED, e.to_string()),
+                    oidc::OidcError::ValidationFailed(_) => {
+                        (StatusCode::UNAUTHORIZED, e.to_string())
+                    }
                     _ => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
                 };
                 return (
@@ -1721,8 +1733,9 @@ async fn serve_grpc(
                 .and_then(|value| value.to_str().ok())
                 .unwrap_or("unknown");
 
-            let auth_ctx = auth::authenticate_grpc_request(&req, method, &auth_config, mtls_enabled)
-                .map_err(|e| Status::unauthenticated(e.to_string()))?;
+            let auth_ctx =
+                auth::authenticate_grpc_request(&req, method, &auth_config, mtls_enabled)
+                    .map_err(|e| Status::unauthenticated(e.to_string()))?;
 
             // Store the auth context in request extensions for use in handlers
             req.extensions_mut().insert(auth_ctx);
@@ -1768,7 +1781,11 @@ impl NodeService for GrpcService {
         request: Request<proto::CreatePodRequest>,
     ) -> Result<GrpcResponse<proto::CreatePodResponse>, Status> {
         // Check authorization
-        auth::authorize_grpc_operation(&request, &self.state.authz_policy, auth::Operation::CreatePod)?;
+        auth::authorize_grpc_operation(
+            &request,
+            &self.state.authz_policy,
+            auth::Operation::CreatePod,
+        )?;
 
         let yaml = request.into_inner().yaml;
         if yaml.trim().is_empty() {
@@ -1792,7 +1809,11 @@ impl NodeService for GrpcService {
         request: Request<proto::Empty>,
     ) -> Result<GrpcResponse<proto::ListPodsResponse>, Status> {
         // Check authorization
-        auth::authorize_grpc_operation(&request, &self.state.authz_policy, auth::Operation::ListPods)?;
+        auth::authorize_grpc_operation(
+            &request,
+            &self.state.authz_policy,
+            auth::Operation::ListPods,
+        )?;
 
         let infos = collect_pod_infos(&self.state).await;
         let pods = infos.into_iter().map(pod_info_to_grpc).collect();
@@ -1804,7 +1825,11 @@ impl NodeService for GrpcService {
         request: Request<proto::PodId>,
     ) -> Result<GrpcResponse<proto::PodLogsResponse>, Status> {
         // Check authorization
-        auth::authorize_grpc_operation(&request, &self.state.authz_policy, auth::Operation::StreamLogs)?;
+        auth::authorize_grpc_operation(
+            &request,
+            &self.state.authz_policy,
+            auth::Operation::StreamLogs,
+        )?;
 
         let id = Uuid::parse_str(&request.into_inner().id)
             .map_err(|_| Status::invalid_argument("invalid pod id"))?;
@@ -1822,7 +1847,11 @@ impl NodeService for GrpcService {
         request: Request<proto::PodId>,
     ) -> Result<GrpcResponse<proto::CancelPodResponse>, Status> {
         // Check authorization
-        auth::authorize_grpc_operation(&request, &self.state.authz_policy, auth::Operation::CancelPod)?;
+        auth::authorize_grpc_operation(
+            &request,
+            &self.state.authz_policy,
+            auth::Operation::CancelPod,
+        )?;
 
         let id = Uuid::parse_str(&request.into_inner().id)
             .map_err(|_| Status::invalid_argument("invalid pod id"))?;
@@ -1842,7 +1871,11 @@ impl NodeService for GrpcService {
         request: Request<proto::GetPodRequest>,
     ) -> Result<GrpcResponse<proto::GetPodResponse>, Status> {
         // Check authorization
-        auth::authorize_grpc_operation(&request, &self.state.authz_policy, auth::Operation::GetPod)?;
+        auth::authorize_grpc_operation(
+            &request,
+            &self.state.authz_policy,
+            auth::Operation::GetPod,
+        )?;
 
         let id = Uuid::parse_str(&request.into_inner().pod_id)
             .map_err(|_| Status::invalid_argument("invalid pod id"))?;
@@ -1862,7 +1895,11 @@ impl NodeService for GrpcService {
         request: Request<proto::StreamLogsRequest>,
     ) -> Result<GrpcResponse<Self::StreamPodLogsStream>, Status> {
         // Check authorization
-        auth::authorize_grpc_operation(&request, &self.state.authz_policy, auth::Operation::StreamLogs)?;
+        auth::authorize_grpc_operation(
+            &request,
+            &self.state.authz_policy,
+            auth::Operation::StreamLogs,
+        )?;
 
         let req = request.into_inner();
         let id =
@@ -1894,7 +1931,11 @@ impl NodeService for GrpcService {
         request: Request<proto::WatchPodRequest>,
     ) -> Result<GrpcResponse<Self::WatchPodStateStream>, Status> {
         // Check authorization (watching state is similar to getting pod info)
-        auth::authorize_grpc_operation(&request, &self.state.authz_policy, auth::Operation::GetPod)?;
+        auth::authorize_grpc_operation(
+            &request,
+            &self.state.authz_policy,
+            auth::Operation::GetPod,
+        )?;
 
         let req = request.into_inner();
         let id =

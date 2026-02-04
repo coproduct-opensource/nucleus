@@ -28,9 +28,9 @@ pub mod verifier;
 pub mod workload_api;
 
 pub use attestation::{AttestationRequirements, LaunchAttestation};
-pub use ca::{CaClient, SelfSignedCa};
 #[cfg(feature = "spire")]
 pub use ca::{auto_detect_ca, SpireCaClient, DEFAULT_SPIRE_SOCKET, SPIFFE_ENDPOINT_ENV};
+pub use ca::{CaClient, SelfSignedCa};
 pub use certificate::{TrustBundle, WorkloadCertificate};
 pub use csr::{CertSign, CsrOptions};
 pub use identity::Identity;

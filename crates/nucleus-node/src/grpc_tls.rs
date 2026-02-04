@@ -37,6 +37,7 @@ pub struct GrpcTlsConfig {
 
 /// Error type for TLS configuration.
 #[derive(Debug, thiserror::Error)]
+#[allow(dead_code)] // Certificate variant may be used for future validation errors
 pub enum TlsConfigError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

@@ -252,7 +252,9 @@ impl SpireCaClient {
             .collect();
 
         if cert_chain.is_empty() {
-            return Err(Error::Certificate("SVID has empty certificate chain".to_string()));
+            return Err(Error::Certificate(
+                "SVID has empty certificate chain".to_string(),
+            ));
         }
 
         // Extract expiry from leaf certificate
@@ -287,9 +289,10 @@ impl SpireCaClient {
             .strip_prefix("spiffe://")
             .ok_or_else(|| Error::InvalidSpiffeUri(spiffe_uri.to_string()))?;
 
-        let trust_domain = uri.split('/').next().ok_or_else(|| {
-            Error::InvalidSpiffeUri(format!("no trust domain in: {spiffe_uri}"))
-        })?;
+        let trust_domain = uri
+            .split('/')
+            .next()
+            .ok_or_else(|| Error::InvalidSpiffeUri(format!("no trust domain in: {spiffe_uri}")))?;
 
         if trust_domain.is_empty() {
             return Err(Error::InvalidSpiffeUri(format!(
@@ -610,8 +613,7 @@ mod tests {
         assert_eq!(identity.service_account(), "my-service");
 
         // Single segment path
-        let identity =
-            SpireCaClient::parse_spiffe_id("spiffe://example.org/my-workload").unwrap();
+        let identity = SpireCaClient::parse_spiffe_id("spiffe://example.org/my-workload").unwrap();
         assert_eq!(identity.trust_domain(), "example.org");
         assert_eq!(identity.namespace(), "default");
         assert_eq!(identity.service_account(), "my-workload");
