@@ -2,7 +2,7 @@
 name = "lattice-guard"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.70"
+rust-version = "1.80"
 license = "MIT OR Apache-2.0"
 description = "A quotient lattice for AI agent permissions that prevents the 'lethal trifecta'"
 repository = "https://github.com/coproduct-opensource/nucleus"
