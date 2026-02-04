@@ -15,20 +15,21 @@ use std::sync::LazyLock;
 
 /// Permission presets with full PermissionLattice for Hasse diagram and meet operations.
 /// These are ordered to form a partial order for the Hasse diagram.
-pub static PERMISSION_PRESETS: LazyLock<Vec<(&'static str, PermissionLattice)>> = LazyLock::new(|| {
-    vec![
-        ("PERMISSIVE", PermissionLattice::permissive()),
-        ("RESTRICTIVE", PermissionLattice::restrictive()),
-        ("CODEGEN", PermissionLattice::codegen()),
-        ("PR_REVIEW", PermissionLattice::pr_review()),
-        ("PR_APPROVE", PermissionLattice::pr_approve()),
-        ("FIX_ISSUE", PermissionLattice::fix_issue()),
-        ("RELEASE", PermissionLattice::release()),
-        ("READ_ONLY", PermissionLattice::read_only()),
-        ("NETWORK_ONLY", PermissionLattice::network_only()),
-        ("LOCAL_DEV", PermissionLattice::local_dev()),
-    ]
-});
+pub static PERMISSION_PRESETS: LazyLock<Vec<(&'static str, PermissionLattice)>> =
+    LazyLock::new(|| {
+        vec![
+            ("PERMISSIVE", PermissionLattice::permissive()),
+            ("RESTRICTIVE", PermissionLattice::restrictive()),
+            ("CODEGEN", PermissionLattice::codegen()),
+            ("PR_REVIEW", PermissionLattice::pr_review()),
+            ("PR_APPROVE", PermissionLattice::pr_approve()),
+            ("FIX_ISSUE", PermissionLattice::fix_issue()),
+            ("RELEASE", PermissionLattice::release()),
+            ("READ_ONLY", PermissionLattice::read_only()),
+            ("NETWORK_ONLY", PermissionLattice::network_only()),
+            ("LOCAL_DEV", PermissionLattice::local_dev()),
+        ]
+    });
 
 /// Get edges for the Hasse diagram (direct covering relations).
 /// Returns pairs of indices (child, parent) where child < parent and there's no intermediate.
@@ -60,71 +61,86 @@ pub fn get_hasse_edges(presets: &[(&str, PermissionLattice)]) -> Vec<(usize, usi
 
 /// Available presets with their capability configurations.
 pub const PRESETS: &[(&str, CapabilityLattice)] = &[
-    ("Safe: Read Only", CapabilityLattice {
-        read_files: CapabilityLevel::Always,
-        write_files: CapabilityLevel::Never,
-        edit_files: CapabilityLevel::Never,
-        run_bash: CapabilityLevel::Never,
-        glob_search: CapabilityLevel::Always,
-        grep_search: CapabilityLevel::Always,
-        web_search: CapabilityLevel::Never,
-        web_fetch: CapabilityLevel::Never,
-        git_commit: CapabilityLevel::Never,
-        git_push: CapabilityLevel::Never,
-        create_pr: CapabilityLevel::Never,
-    }),
-    ("Safe: Web Research", CapabilityLattice {
-        read_files: CapabilityLevel::Never,
-        write_files: CapabilityLevel::Never,
-        edit_files: CapabilityLevel::Never,
-        run_bash: CapabilityLevel::Never,
-        glob_search: CapabilityLevel::Never,
-        grep_search: CapabilityLevel::Never,
-        web_search: CapabilityLevel::Always,
-        web_fetch: CapabilityLevel::Always,
-        git_commit: CapabilityLevel::Never,
-        git_push: CapabilityLevel::Never,
-        create_pr: CapabilityLevel::Never,
-    }),
-    ("Safe: Local Dev", CapabilityLattice {
-        read_files: CapabilityLevel::Always,
-        write_files: CapabilityLevel::Always,
-        edit_files: CapabilityLevel::Always,
-        run_bash: CapabilityLevel::LowRisk,
-        glob_search: CapabilityLevel::Always,
-        grep_search: CapabilityLevel::Always,
-        web_search: CapabilityLevel::Never,
-        web_fetch: CapabilityLevel::Never,
-        git_commit: CapabilityLevel::LowRisk,
-        git_push: CapabilityLevel::Never,
-        create_pr: CapabilityLevel::Never,
-    }),
-    ("DANGEROUS: Full Access", CapabilityLattice {
-        read_files: CapabilityLevel::Always,
-        write_files: CapabilityLevel::Always,
-        edit_files: CapabilityLevel::Always,
-        run_bash: CapabilityLevel::Always,
-        glob_search: CapabilityLevel::Always,
-        grep_search: CapabilityLevel::Always,
-        web_search: CapabilityLevel::Always,
-        web_fetch: CapabilityLevel::Always,
-        git_commit: CapabilityLevel::Always,
-        git_push: CapabilityLevel::Always,
-        create_pr: CapabilityLevel::Always,
-    }),
-    ("Trifecta Demo", CapabilityLattice {
-        read_files: CapabilityLevel::Always,    // Private data
-        write_files: CapabilityLevel::Never,
-        edit_files: CapabilityLevel::Never,
-        run_bash: CapabilityLevel::Never,
-        glob_search: CapabilityLevel::Always,
-        grep_search: CapabilityLevel::Always,
-        web_search: CapabilityLevel::Never,
-        web_fetch: CapabilityLevel::LowRisk,    // Untrusted content
-        git_commit: CapabilityLevel::Never,
-        git_push: CapabilityLevel::LowRisk,     // Exfiltration
-        create_pr: CapabilityLevel::Never,
-    }),
+    (
+        "Safe: Read Only",
+        CapabilityLattice {
+            read_files: CapabilityLevel::Always,
+            write_files: CapabilityLevel::Never,
+            edit_files: CapabilityLevel::Never,
+            run_bash: CapabilityLevel::Never,
+            glob_search: CapabilityLevel::Always,
+            grep_search: CapabilityLevel::Always,
+            web_search: CapabilityLevel::Never,
+            web_fetch: CapabilityLevel::Never,
+            git_commit: CapabilityLevel::Never,
+            git_push: CapabilityLevel::Never,
+            create_pr: CapabilityLevel::Never,
+        },
+    ),
+    (
+        "Safe: Web Research",
+        CapabilityLattice {
+            read_files: CapabilityLevel::Never,
+            write_files: CapabilityLevel::Never,
+            edit_files: CapabilityLevel::Never,
+            run_bash: CapabilityLevel::Never,
+            glob_search: CapabilityLevel::Never,
+            grep_search: CapabilityLevel::Never,
+            web_search: CapabilityLevel::Always,
+            web_fetch: CapabilityLevel::Always,
+            git_commit: CapabilityLevel::Never,
+            git_push: CapabilityLevel::Never,
+            create_pr: CapabilityLevel::Never,
+        },
+    ),
+    (
+        "Safe: Local Dev",
+        CapabilityLattice {
+            read_files: CapabilityLevel::Always,
+            write_files: CapabilityLevel::Always,
+            edit_files: CapabilityLevel::Always,
+            run_bash: CapabilityLevel::LowRisk,
+            glob_search: CapabilityLevel::Always,
+            grep_search: CapabilityLevel::Always,
+            web_search: CapabilityLevel::Never,
+            web_fetch: CapabilityLevel::Never,
+            git_commit: CapabilityLevel::LowRisk,
+            git_push: CapabilityLevel::Never,
+            create_pr: CapabilityLevel::Never,
+        },
+    ),
+    (
+        "DANGEROUS: Full Access",
+        CapabilityLattice {
+            read_files: CapabilityLevel::Always,
+            write_files: CapabilityLevel::Always,
+            edit_files: CapabilityLevel::Always,
+            run_bash: CapabilityLevel::Always,
+            glob_search: CapabilityLevel::Always,
+            grep_search: CapabilityLevel::Always,
+            web_search: CapabilityLevel::Always,
+            web_fetch: CapabilityLevel::Always,
+            git_commit: CapabilityLevel::Always,
+            git_push: CapabilityLevel::Always,
+            create_pr: CapabilityLevel::Always,
+        },
+    ),
+    (
+        "Trifecta Demo",
+        CapabilityLattice {
+            read_files: CapabilityLevel::Always, // Private data
+            write_files: CapabilityLevel::Never,
+            edit_files: CapabilityLevel::Never,
+            run_bash: CapabilityLevel::Never,
+            glob_search: CapabilityLevel::Always,
+            grep_search: CapabilityLevel::Always,
+            web_search: CapabilityLevel::Never,
+            web_fetch: CapabilityLevel::LowRisk, // Untrusted content
+            git_commit: CapabilityLevel::Never,
+            git_push: CapabilityLevel::LowRisk, // Exfiltration
+            create_pr: CapabilityLevel::Never,
+        },
+    ),
 ];
 
 /// An attack scenario for demonstration.

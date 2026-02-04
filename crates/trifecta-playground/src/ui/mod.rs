@@ -5,13 +5,15 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, Wrap,
-              canvas::{Canvas, Line as CanvasLine}},
+    widgets::{
+        canvas::{Canvas, Line as CanvasLine},
+        Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, Wrap,
+    },
     Frame,
 };
 
 use crate::app::{App, MeetSide, Screen, SelectedCapability};
-use crate::demo::{preset_descriptions, get_hasse_edges, ATTACK_SCENARIOS, PERMISSION_PRESETS};
+use crate::demo::{get_hasse_edges, preset_descriptions, ATTACK_SCENARIOS, PERMISSION_PRESETS};
 
 /// Main draw function that dispatches to the current screen.
 pub fn draw(f: &mut Frame, app: &App) {
@@ -36,17 +38,21 @@ fn draw_trifecta(f: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(3),  // Title
-            Constraint::Length(7),  // Trifecta indicator
-            Constraint::Min(10),    // Capabilities
-            Constraint::Length(5),  // Obligations
-            Constraint::Length(3),  // Footer
+            Constraint::Length(3), // Title
+            Constraint::Length(7), // Trifecta indicator
+            Constraint::Min(10),   // Capabilities
+            Constraint::Length(5), // Obligations
+            Constraint::Length(3), // Footer
         ])
         .split(f.area());
 
     // Title
     let title = Paragraph::new("Trifecta Guard Playground")
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::BOTTOM));
     f.render_widget(title, chunks[0]);
@@ -88,7 +94,10 @@ fn draw_trifecta_indicator(f: &mut Frame, app: &App, area: Rect) {
     let private_box = Paragraph::new(vec![
         Line::from(Span::styled("PRIVATE", private_style)),
         Line::from(Span::styled("DATA", private_style)),
-        Line::from(Span::styled(if has_private { "[ON]" } else { "[OFF]" }, private_style)),
+        Line::from(Span::styled(
+            if has_private { "[ON]" } else { "[OFF]" },
+            private_style,
+        )),
     ])
     .alignment(Alignment::Center)
     .block(Block::default().borders(Borders::ALL).title("1"));
@@ -99,14 +108,19 @@ fn draw_trifecta_indicator(f: &mut Frame, app: &App, area: Rect) {
 
     // Untrusted content box
     let untrusted_style = if has_untrusted {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
     let untrusted_box = Paragraph::new(vec![
         Line::from(Span::styled("UNTRUSTED", untrusted_style)),
         Line::from(Span::styled("CONTENT", untrusted_style)),
-        Line::from(Span::styled(if has_untrusted { "[ON]" } else { "[OFF]" }, untrusted_style)),
+        Line::from(Span::styled(
+            if has_untrusted { "[ON]" } else { "[OFF]" },
+            untrusted_style,
+        )),
     ])
     .alignment(Alignment::Center)
     .block(Block::default().borders(Borders::ALL).title("2"));
@@ -114,14 +128,19 @@ fn draw_trifecta_indicator(f: &mut Frame, app: &App, area: Rect) {
 
     // Exfiltration box
     let exfil_style = if has_exfil {
-        Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
     let exfil_box = Paragraph::new(vec![
         Line::from(Span::styled("EXFIL", exfil_style)),
         Line::from(Span::styled("VECTOR", exfil_style)),
-        Line::from(Span::styled(if has_exfil { "[ON]" } else { "[OFF]" }, exfil_style)),
+        Line::from(Span::styled(
+            if has_exfil { "[ON]" } else { "[OFF]" },
+            exfil_style,
+        )),
     ])
     .alignment(Alignment::Center)
     .block(Block::default().borders(Borders::ALL).title("3"));
@@ -129,16 +148,28 @@ fn draw_trifecta_indicator(f: &mut Frame, app: &App, area: Rect) {
 
     // Status box
     let (status_text, status_style) = match risk {
-        TrifectaRisk::None => ("SAFE", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        TrifectaRisk::None => (
+            "SAFE",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
         TrifectaRisk::Low => ("LOW RISK", Style::default().fg(Color::Green)),
         TrifectaRisk::Medium => ("MEDIUM", Style::default().fg(Color::Yellow)),
-        TrifectaRisk::Complete => ("GATED", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        TrifectaRisk::Complete => (
+            "GATED",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
     };
     let status_box = Paragraph::new(vec![
         Line::from(Span::styled("=", Style::default().fg(Color::White))),
         Line::from(Span::styled(status_text, status_style)),
         Line::from(Span::styled(
-            if risk == TrifectaRisk::Complete { "Auto-gated" } else { "" },
+            if risk == TrifectaRisk::Complete {
+                "Auto-gated"
+            } else {
+                ""
+            },
             Style::default().fg(Color::DarkGray),
         )),
     ])
@@ -180,7 +211,9 @@ fn draw_capabilities(f: &mut Frame, app: &App, area: Rect) {
             };
 
             let style = if is_selected {
-                Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -258,8 +291,14 @@ fn draw_footer(f: &mut Frame, _app: &App, area: Rect) {
         .collect();
 
     let mut footer_spans = preset_hints;
-    footer_spans.push(Span::styled("[6]matrix ", Style::default().fg(Color::Green)));
-    footer_spans.push(Span::styled("[t]race ", Style::default().fg(Color::Magenta)));
+    footer_spans.push(Span::styled(
+        "[6]matrix ",
+        Style::default().fg(Color::Green),
+    ));
+    footer_spans.push(Span::styled(
+        "[t]race ",
+        Style::default().fg(Color::Magenta),
+    ));
     footer_spans.push(Span::styled("[c]hain ", Style::default().fg(Color::Yellow)));
     footer_spans.push(Span::styled("[?]help ", Style::default().fg(Color::White)));
     footer_spans.push(Span::styled("[q]uit", Style::default().fg(Color::DarkGray)));
@@ -276,17 +315,21 @@ fn draw_trace_chain(f: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(3),  // Title
-            Constraint::Min(10),    // Chain visualization
-            Constraint::Length(5),  // Ceiling
-            Constraint::Length(3),  // Status
-            Constraint::Length(3),  // Footer
+            Constraint::Length(3), // Title
+            Constraint::Min(10),   // Chain visualization
+            Constraint::Length(5), // Ceiling
+            Constraint::Length(3), // Status
+            Constraint::Length(3), // Footer
         ])
         .split(f.area());
 
     // Title
     let title = Paragraph::new("SPIFFE Trace Chain")
-        .style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
+        .style(
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        )
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::BOTTOM));
     f.render_widget(title, chunks[0]);
@@ -299,7 +342,11 @@ fn draw_trace_chain(f: &mut Frame, app: &App) {
     let mut lines = vec![];
     for (i, link) in app.trace_chain.links.iter().enumerate() {
         let indent: String = "  ".repeat(i);
-        let connector = if i == 0 { "".to_string() } else { "└─► ".to_string() };
+        let connector = if i == 0 {
+            "".to_string()
+        } else {
+            "└─► ".to_string()
+        };
         let spiffe_id = link.spiffe_id.clone();
 
         lines.push(Line::from(vec![
@@ -315,22 +362,26 @@ fn draw_trace_chain(f: &mut Frame, app: &App) {
         } else {
             "RESTRICTED"
         };
-        let sub_indent = if i == 0 { "  ".to_string() } else { "    ".to_string() };
+        let sub_indent = if i == 0 {
+            "  ".to_string()
+        } else {
+            "    ".to_string()
+        };
         lines.push(Line::from(vec![
             Span::raw(indent.clone()),
             Span::raw(sub_indent.clone()),
             Span::styled("perms: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                perms_label,
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled(perms_label, Style::default().fg(Color::Yellow)),
         ]));
 
         lines.push(Line::from(vec![
             Span::raw(indent.clone()),
             Span::raw(sub_indent),
             Span::styled("drand: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("#{}", link.drand_round), Style::default().fg(Color::Green)),
+            Span::styled(
+                format!("#{}", link.drand_round),
+                Style::default().fg(Color::Green),
+            ),
         ]));
 
         lines.push(Line::from(""));
@@ -351,14 +402,17 @@ fn draw_trace_chain(f: &mut Frame, app: &App) {
         None => "EMPTY CHAIN",
     };
     let ceiling_text = Paragraph::new(vec![
-        Line::from(vec![
-            Span::styled("effective_perms(agent) ≤ meet(trace_chain)", Style::default().fg(Color::White)),
-        ]),
+        Line::from(vec![Span::styled(
+            "effective_perms(agent) ≤ meet(trace_chain)",
+            Style::default().fg(Color::White),
+        )]),
         Line::from(vec![
             Span::styled("Current ceiling: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 ceiling_label,
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
     ])
@@ -416,7 +470,9 @@ fn draw_attacks(f: &mut Frame, app: &App) {
         .map(|(i, scenario)| {
             let is_selected = i == app.selected_attack;
             let style = if is_selected {
-                Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -432,15 +488,15 @@ fn draw_attacks(f: &mut Frame, app: &App) {
     f.render_widget(list, chunks[1]);
 
     // Result
-    let result_block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Result ");
+    let result_block = Block::default().borders(Borders::ALL).title(" Result ");
 
     let scenario = &ATTACK_SCENARIOS[app.selected_attack];
 
     let result_content = if let Some(ref result) = app.attack_result {
         let status_style = if result.blocked {
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
         };
@@ -453,15 +509,23 @@ fn draw_attacks(f: &mut Frame, app: &App) {
             Line::from(vec![
                 Span::styled("Status: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
-                    if result.blocked { "██ BLOCKED" } else { "!! ALLOWED" },
+                    if result.blocked {
+                        "██ BLOCKED"
+                    } else {
+                        "!! ALLOWED"
+                    },
                     status_style,
                 ),
             ]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("Defense: ", Style::default().fg(Color::Cyan)),
-            ]),
-            Line::from(Span::styled(&result.defense, Style::default().fg(Color::White))),
+            Line::from(vec![Span::styled(
+                "Defense: ",
+                Style::default().fg(Color::Cyan),
+            )]),
+            Line::from(Span::styled(
+                &result.defense,
+                Style::default().fg(Color::White),
+            )),
         ]
     } else {
         vec![
@@ -470,12 +534,19 @@ fn draw_attacks(f: &mut Frame, app: &App) {
                 Span::styled(scenario.name, Style::default().fg(Color::White)),
             ]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("Description: ", Style::default().fg(Color::DarkGray)),
-            ]),
-            Line::from(Span::styled(scenario.description, Style::default().fg(Color::White))),
+            Line::from(vec![Span::styled(
+                "Description: ",
+                Style::default().fg(Color::DarkGray),
+            )]),
+            Line::from(Span::styled(
+                scenario.description,
+                Style::default().fg(Color::White),
+            )),
             Line::from(""),
-            Line::from(Span::styled("Press [Enter] to run attack", Style::default().fg(Color::Yellow))),
+            Line::from(Span::styled(
+                "Press [Enter] to run attack",
+                Style::default().fg(Color::Yellow),
+            )),
         ]
     };
 
@@ -507,15 +578,30 @@ fn draw_help_popup(f: &mut Frame) {
         .style(Style::default().bg(Color::Black));
 
     let help_text = vec![
-        Line::from(Span::styled("Trifecta Guard Playground", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "Trifecta Guard Playground",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
-        Line::from(Span::styled("The Lethal Trifecta", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "The Lethal Trifecta",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
         Line::from("Three capabilities that together enable prompt injection:"),
         Line::from("  1. Private data access (read files)"),
         Line::from("  2. Untrusted content (web fetch/search)"),
         Line::from("  3. Exfiltration vector (git push, bash, PR)"),
         Line::from(""),
-        Line::from(Span::styled("Screens", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "Screens",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
         Line::from("  t/Tab  Trace chain view"),
         Line::from("  a      Attack simulator"),
         Line::from("  m/6    Capability matrix"),
@@ -523,19 +609,32 @@ fn draw_help_popup(f: &mut Frame) {
         Line::from("  M      Meet playground (compute meets)"),
         Line::from("  c      Chain builder"),
         Line::from(""),
-        Line::from(Span::styled("Navigation", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "Navigation",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
         Line::from("  ↑/↓ j/k    Select / navigate"),
         Line::from("  ←/→ h/l    Change level / navigate"),
         Line::from("  Enter      Confirm / compute"),
         Line::from("  1-5        Load preset"),
         Line::from("  q          Quit"),
         Line::from(""),
-        Line::from(Span::styled("The Math", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "The Math",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
         Line::from("When trifecta is complete, the nucleus operator ν"),
         Line::from("adds approval obligations. Meet (∧) computes the"),
         Line::from("greatest lower bound of two permission sets."),
         Line::from(""),
-        Line::from(Span::styled("Press any key to close", Style::default().fg(Color::DarkGray))),
+        Line::from(Span::styled(
+            "Press any key to close",
+            Style::default().fg(Color::DarkGray),
+        )),
     ];
 
     let paragraph = Paragraph::new(help_text)
@@ -571,15 +670,19 @@ fn draw_capability_matrix(f: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(3),  // Title
-            Constraint::Min(15),    // Matrix table
-            Constraint::Length(3),  // Footer
+            Constraint::Length(3), // Title
+            Constraint::Min(15),   // Matrix table
+            Constraint::Length(3), // Footer
         ])
         .split(f.area());
 
     // Title
     let title = Paragraph::new("Capability Matrix")
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::BOTTOM));
     f.render_widget(title, chunks[0]);
@@ -588,16 +691,29 @@ fn draw_capability_matrix(f: &mut Frame, app: &App) {
     let presets = &*PERMISSION_PRESETS;
 
     // Header row
-    let header_cells = std::iter::once(Cell::from("Capability"))
-        .chain(presets.iter().map(|(name, _)| {
-            Cell::from(*name).style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+    let header_cells =
+        std::iter::once(Cell::from("Capability")).chain(presets.iter().map(|(name, _)| {
+            Cell::from(*name).style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
         }));
     let header = Row::new(header_cells).height(1).bottom_margin(1);
 
     // Capability rows - 11 capabilities
     let capability_names = [
-        "read_files", "write_files", "edit_files", "run_bash", "glob_search",
-        "grep_search", "web_search", "web_fetch", "git_commit", "git_push", "create_pr",
+        "read_files",
+        "write_files",
+        "edit_files",
+        "run_bash",
+        "glob_search",
+        "grep_search",
+        "web_search",
+        "web_fetch",
+        "git_commit",
+        "git_push",
+        "create_pr",
     ];
 
     let rows: Vec<Row> = capability_names
@@ -611,17 +727,17 @@ fn draw_capability_matrix(f: &mut Frame, app: &App) {
                 Style::default()
             };
 
-            let cells = std::iter::once(
-                Cell::from(*cap_name).style(Style::default().fg(Color::White))
-            ).chain(presets.iter().map(|(_, perms)| {
-                let level = get_capability_level(&perms.capabilities, cap_name);
-                let (symbol, color) = match level {
-                    CapabilityLevel::Never => ("⊥", Color::DarkGray),
-                    CapabilityLevel::LowRisk => ("◐", Color::Yellow),
-                    CapabilityLevel::Always => ("⊤", Color::Green),
-                };
-                Cell::from(symbol).style(Style::default().fg(color))
-            }));
+            let cells =
+                std::iter::once(Cell::from(*cap_name).style(Style::default().fg(Color::White)))
+                    .chain(presets.iter().map(|(_, perms)| {
+                        let level = get_capability_level(&perms.capabilities, cap_name);
+                        let (symbol, color) = match level {
+                            CapabilityLevel::Never => ("⊥", Color::DarkGray),
+                            CapabilityLevel::LowRisk => ("◐", Color::Yellow),
+                            CapabilityLevel::Always => ("⊤", Color::Green),
+                        };
+                        Cell::from(symbol).style(Style::default().fg(color))
+                    }));
 
             Row::new(cells).style(row_style)
         })
@@ -633,9 +749,11 @@ fn draw_capability_matrix(f: &mut Frame, app: &App) {
         widths.push(Constraint::Length(12));
     }
 
-    let table = Table::new(rows, widths)
-        .header(header)
-        .block(Block::default().borders(Borders::ALL).title(" Presets × Capabilities "));
+    let table = Table::new(rows, widths).header(header).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Presets × Capabilities "),
+    );
 
     f.render_widget(table, chunks[1]);
 
@@ -675,10 +793,10 @@ fn draw_hasse_diagram(f: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(3),  // Title
-            Constraint::Min(15),    // Diagram
-            Constraint::Length(5),  // Details panel
-            Constraint::Length(3),  // Footer
+            Constraint::Length(3), // Title
+            Constraint::Min(15),   // Diagram
+            Constraint::Length(5), // Details panel
+            Constraint::Length(3), // Footer
         ])
         .split(f.area());
 
@@ -689,7 +807,11 @@ fn draw_hasse_diagram(f: &mut Frame, app: &App) {
         "Hasse Diagram"
     };
     let title = Paragraph::new(title_text)
-        .style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
+        .style(
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        )
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::BOTTOM));
     f.render_widget(title, chunks[0]);
@@ -699,7 +821,11 @@ fn draw_hasse_diagram(f: &mut Frame, app: &App) {
 
     // Draw the diagram using Canvas
     let canvas = Canvas::default()
-        .block(Block::default().borders(Borders::ALL).title(" Partial Order "))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Partial Order "),
+        )
         .x_bounds([0.0, 100.0])
         .y_bounds([0.0, 100.0])
         .paint(|ctx| {
@@ -712,7 +838,10 @@ fn draw_hasse_diagram(f: &mut Frame, app: &App) {
                 let (x1, y1) = node_positions[*child];
                 let (x2, y2) = node_positions[*parent];
                 ctx.draw(&CanvasLine {
-                    x1, y1, x2, y2,
+                    x1,
+                    y1,
+                    x2,
+                    y2,
                     color: Color::DarkGray,
                 });
             }
@@ -745,7 +874,12 @@ fn draw_hasse_diagram(f: &mut Frame, app: &App) {
     let detail_lines = vec![
         Line::from(vec![
             Span::styled("Selected: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(*name, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                *name,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(vec![
             Span::styled("Trifecta: ", Style::default().fg(Color::DarkGray)),
@@ -838,7 +972,11 @@ fn draw_meet_playground(f: &mut Frame, app: &App) {
 
     // Title
     let title = Paragraph::new("Meet Playground (∧)")
-        .style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+        .style(
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::BOTTOM));
     f.render_widget(title, chunks[0]);
@@ -882,7 +1020,10 @@ fn draw_meet_playground(f: &mut Frame, app: &App) {
 
     let right_block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" Right {} ", if right_selected { "▶" } else { " " }))
+        .title(format!(
+            " Right {} ",
+            if right_selected { "▶" } else { " " }
+        ))
         .border_style(right_style);
 
     let right_content = format_permission_summary(right_name, right_perms);
@@ -896,13 +1037,16 @@ fn draw_meet_playground(f: &mut Frame, app: &App) {
     f.render_widget(meet_text, chunks[2]);
 
     // Result panel
-    let result_block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Result ");
+    let result_block = Block::default().borders(Borders::ALL).title(" Result ");
 
     let result_content = if let Some(ref result) = app.meet_playground.result {
         let mut lines = vec![
-            Line::from(Span::styled("COMPUTED MEET", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))),
+            Line::from(Span::styled(
+                "COMPUTED MEET",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )),
             Line::from(""),
         ];
 
@@ -922,7 +1066,15 @@ fn draw_meet_playground(f: &mut Frame, app: &App) {
         let result_caps = &result.capabilities;
 
         let mut reduced = Vec::new();
-        for cap in ["read_files", "write_files", "edit_files", "run_bash", "web_fetch", "git_push", "create_pr"] {
+        for cap in [
+            "read_files",
+            "write_files",
+            "edit_files",
+            "run_bash",
+            "web_fetch",
+            "git_push",
+            "create_pr",
+        ] {
             let l = get_capability_level(left_caps, cap);
             let r = get_capability_level(right_caps, cap);
             let res = get_capability_level(result_caps, cap);
@@ -933,7 +1085,10 @@ fn draw_meet_playground(f: &mut Frame, app: &App) {
 
         if !reduced.is_empty() {
             lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled("Reduced capabilities:", Style::default().fg(Color::Yellow))));
+            lines.push(Line::from(Span::styled(
+                "Reduced capabilities:",
+                Style::default().fg(Color::Yellow),
+            )));
             for cap in reduced {
                 lines.push(Line::from(format!("  • {}", cap)));
             }
@@ -941,9 +1096,10 @@ fn draw_meet_playground(f: &mut Frame, app: &App) {
 
         lines
     } else {
-        vec![
-            Line::from(Span::styled("Press [Enter] to compute meet", Style::default().fg(Color::DarkGray))),
-        ]
+        vec![Line::from(Span::styled(
+            "Press [Enter] to compute meet",
+            Style::default().fg(Color::DarkGray),
+        ))]
     };
 
     let result_para = Paragraph::new(result_content).block(result_block);
@@ -964,7 +1120,12 @@ fn draw_meet_playground(f: &mut Frame, app: &App) {
 /// Format a permission summary for display.
 fn format_permission_summary(name: &str, perms: &PermissionLattice) -> Vec<Line<'static>> {
     vec![
-        Line::from(Span::styled(name.to_string(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            name.to_string(),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
         Line::from(format!("read: {:?}", perms.capabilities.read_files)),
         Line::from(format!("web:  {:?}", perms.capabilities.web_fetch)),
@@ -979,16 +1140,20 @@ fn draw_chain_builder(f: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(3),  // Title
-            Constraint::Min(15),    // Chain visualization
-            Constraint::Length(6),  // Ceiling panel
-            Constraint::Length(3),  // Footer
+            Constraint::Length(3), // Title
+            Constraint::Min(15),   // Chain visualization
+            Constraint::Length(6), // Ceiling panel
+            Constraint::Length(3), // Footer
         ])
         .split(f.area());
 
     // Title
     let title = Paragraph::new("SPIFFE Delegation Chain Builder")
-        .style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
+        .style(
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        )
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::BOTTOM));
     f.render_widget(title, chunks[0]);
@@ -1007,14 +1172,20 @@ fn draw_chain_builder(f: &mut Frame, app: &App) {
         let (preset_name, _perms) = &presets[link.preset_index];
 
         let style = if is_selected {
-            Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
 
         // Indent based on chain depth
         let indent: String = "  ".repeat(i);
-        let connector = if i == 0 { "ROOT:".to_string() } else { "└─► LINK:".to_string() };
+        let connector = if i == 0 {
+            "ROOT:".to_string()
+        } else {
+            "└─► LINK:".to_string()
+        };
 
         lines.push(Line::from(vec![
             Span::styled(indent.clone(), style),
@@ -1025,22 +1196,13 @@ fn draw_chain_builder(f: &mut Frame, app: &App) {
         lines.push(Line::from(vec![
             Span::raw(format!("{}    ", indent)),
             Span::styled("perms: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!("[{}]", preset_name),
-                style.fg(Color::Yellow),
-            ),
+            Span::styled(format!("[{}]", preset_name), style.fg(Color::Yellow)),
         ]));
 
         if i < app.chain_builder.chain.len() - 1 {
-            lines.push(Line::from(vec![
-                Span::raw(format!("{}  │", indent)),
-            ]));
-            lines.push(Line::from(vec![
-                Span::raw(format!("{}  ∧ meet", indent)),
-            ]));
-            lines.push(Line::from(vec![
-                Span::raw(format!("{}  ▼", indent)),
-            ]));
+            lines.push(Line::from(vec![Span::raw(format!("{}  │", indent))]));
+            lines.push(Line::from(vec![Span::raw(format!("{}  ∧ meet", indent))]));
+            lines.push(Line::from(vec![Span::raw(format!("{}  ▼", indent))]));
         }
 
         lines.push(Line::from(""));
@@ -1056,31 +1218,50 @@ fn draw_chain_builder(f: &mut Frame, app: &App) {
 
     let ceiling_content = if let Some(ref ceiling) = app.chain_builder.ceiling {
         vec![
-            Line::from(vec![
-                Span::styled("effective_perms(agent) ≤ meet(trace_chain)", Style::default().fg(Color::White)),
-            ]),
+            Line::from(vec![Span::styled(
+                "effective_perms(agent) ≤ meet(trace_chain)",
+                Style::default().fg(Color::White),
+            )]),
             Line::from(""),
             Line::from(vec![
                 Span::styled("Computed ceiling: ", Style::default().fg(Color::DarkGray)),
                 if ceiling.is_trifecta_vulnerable() {
-                    Span::styled("TRIFECTA GATED", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+                    Span::styled(
+                        "TRIFECTA GATED",
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    )
                 } else {
-                    Span::styled("SAFE", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+                    Span::styled(
+                        "SAFE",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    )
                 },
             ]),
             Line::from(vec![
                 Span::styled("  read: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(format!("{:?}", ceiling.capabilities.read_files), Style::default().fg(Color::White)),
+                Span::styled(
+                    format!("{:?}", ceiling.capabilities.read_files),
+                    Style::default().fg(Color::White),
+                ),
                 Span::styled("  web: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(format!("{:?}", ceiling.capabilities.web_fetch), Style::default().fg(Color::White)),
+                Span::styled(
+                    format!("{:?}", ceiling.capabilities.web_fetch),
+                    Style::default().fg(Color::White),
+                ),
                 Span::styled("  push: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(format!("{:?}", ceiling.capabilities.git_push), Style::default().fg(Color::White)),
+                Span::styled(
+                    format!("{:?}", ceiling.capabilities.git_push),
+                    Style::default().fg(Color::White),
+                ),
             ]),
         ]
     } else {
-        vec![
-            Line::from(Span::styled("Press [v] to verify/compute ceiling", Style::default().fg(Color::DarkGray))),
-        ]
+        vec![Line::from(Span::styled(
+            "Press [v] to verify/compute ceiling",
+            Style::default().fg(Color::DarkGray),
+        ))]
     };
 
     let ceiling_para = Paragraph::new(ceiling_content).block(ceiling_block);

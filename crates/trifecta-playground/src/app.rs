@@ -1,9 +1,9 @@
 //! Application state and logic.
 
 use lattice_guard::{
-    CapabilityLattice, CapabilityLevel, IncompatibilityConstraint, Obligations,
-    PermissionLattice, TrifectaRisk,
     escalation::{SpiffeTraceChain, SpiffeTraceLink},
+    CapabilityLattice, CapabilityLevel, IncompatibilityConstraint, Obligations, PermissionLattice,
+    TrifectaRisk,
 };
 
 use crate::demo::{ATTACK_SCENARIOS, PRESETS};
@@ -129,12 +129,10 @@ pub struct ChainBuilderState {
 impl Default for ChainBuilderState {
     fn default() -> Self {
         Self {
-            chain: vec![
-                ChainLink {
-                    spiffe_id: "spiffe://nucleus.local/human/alice".to_string(),
-                    preset_index: 0, // Permissive
-                },
-            ],
+            chain: vec![ChainLink {
+                spiffe_id: "spiffe://nucleus.local/human/alice".to_string(),
+                preset_index: 0, // Permissive
+            }],
             selected_link: 0,
             editing: false,
             ceiling: None,
@@ -232,7 +230,10 @@ pub enum SelectedCapability {
 impl SelectedCapability {
     pub fn all() -> &'static [SelectedCapability] {
         use SelectedCapability::*;
-        &[ReadFiles, WriteFiles, EditFiles, RunBash, WebSearch, WebFetch, GitCommit, GitPush, CreatePr]
+        &[
+            ReadFiles, WriteFiles, EditFiles, RunBash, WebSearch, WebFetch, GitCommit, GitPush,
+            CreatePr,
+        ]
     }
 
     pub fn name(&self) -> &'static str {
