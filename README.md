@@ -22,42 +22,27 @@ Nucleus runs each agent task inside an isolated runtime (Firecracker microVMs) a
 
 *("Non-escalating" is monotone in the order-theory sense: movement is constrained to one direction.)*
 
-## What Works Today
-
-### Runtime-Enforced (Real Controls, Not Config-Only)
-
-- ✅ **MCP tool proxy:** `read`, `write`, `run` (enforced in the microVM)
-- ✅ **Firecracker isolation** with default-deny egress in a dedicated netns (Linux)
-- ✅ **DNS allowlisting** with pinned resolution (Linux)
-- ✅ **iptables drift detection:** if policy changes, the pod is killed (fail-closed)
-- ✅ **Time windows** enforced via monotonic clock
-- ✅ **Atomic budget tracking** (cost/token limits, lock-free)
-- ✅ **Hash-chained audit logs** (`nucleus-audit`)
-
-### Gated Execution
-
-- ✅ **HMAC-signed approval tokens** with nonce replay protection
-
-### Defined But Not Fully Wired Yet
-
-- 🟡 `web_fetch` endpoint exists but MCP doesn't expose it yet
-- 🟡 `web_search`, `glob_search`, `grep_search` exist in the policy model but aren't enforced yet
-- 🟡 Seccomp is applied but not yet verified/attested
-- 🟡 Kani proofs exist locally, not in CI
-
-## What It Is Not
-
-- **Not a general agent platform:** the enforced tool surface is intentionally small right now.
-- **Not a host-compromise solution:** the threat model assumes the enforcement stack is trusted.
-- **Not kernel-escape prevention:** use microVMs/containers appropriately; harden the host.
-
 ## The Safety Primitive: Lethal Trifecta Gating
 
 Nucleus bakes in a guardrail against the [lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/):
 
-1. **Private data access** (reading files, secrets)
-2. **Untrusted content** (web fetch, external input)
-3. **Exfiltration vector** (git push, PRs, shell commands)
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    THE LETHAL TRIFECTA                          │
+│                                                                 │
+│   ┌──────────────┐    ┌──────────────┐    ┌──────────────┐     │
+│   │   Private    │    │  Untrusted   │    │ Exfiltration │     │
+│   │    Data      │ +  │   Content    │ +  │    Vector    │     │
+│   │   Access     │    │  Exposure    │    │              │     │
+│   └──────────────┘    └──────────────┘    └──────────────┘     │
+│         ↓                    ↓                   ↓              │
+│   read_files ≥ LowRisk   web_fetch ≥ LowRisk   git_push ≥ LowRisk │
+│                          web_search ≥ LowRisk  create_pr ≥ LowRisk│
+│                                                run_bash ≥ LowRisk │
+│                                                                 │
+│   When ALL THREE are autonomous → Prompt injection = Data theft │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 When all three are present at autonomous levels, Nucleus **adds approval obligations** to exfiltration operations.
 
@@ -69,19 +54,59 @@ executor.run("git push")?;
 // Error: ApprovalRequired { operation: "git_push" }
 ```
 
-## Threat Model
+## Crates
 
-**Protects against:**
-- Prompt injection attempting side effects outside the envelope
-- Misconfigured tool permissions (enforced at runtime, not advisory)
-- Drift in network policy inside the runtime (fail-closed)
-- Budget exhaustion attacks (atomic tracking)
+| Crate | Description |
+|-------|-------------|
+| **lattice-guard** | Quotient lattice for permissions with mathematical framework (Heyting algebra, Galois connections, graded monads, modal operators) |
+| **nucleus** | Core enforcement: wraps OS APIs with policy checks |
+| **nucleus-cli** | CLI for running tasks with enforced permissions |
+| **nucleus-node** | Node daemon (kubelet analogue) managing Firecracker VMs |
+| **nucleus-identity** | SPIFFE-based workload identity with mTLS and certificate management |
+| **nucleus-tool-proxy** | Tool proxy server running inside pods |
+| **nucleus-mcp** | MCP server bridging to tool-proxy |
+| **nucleus-audit** | Hash-chained audit log verifier |
+| **nucleus-spec** | Shared PodSpec definitions |
+| **nucleus-client** | Client signing utilities |
+| **nucleus-guest-init** | Guest init for Firecracker rootfs |
+| **nucleus-net-probe** | TCP probe for network policy tests |
+| **trifecta-playground** | Interactive TUI demonstrating the permission lattice |
 
-**Does not protect against:**
-- Compromised host or kernel (enforcement stack is trusted)
-- Malicious human approvals (social engineering)
-- Side-channel attacks
-- Kernel escapes from the microVM
+## What Works Today
+
+### Runtime-Enforced (Real Controls, Not Config-Only)
+
+- **MCP tool proxy:** `read`, `write`, `run` (enforced in the microVM)
+- **Firecracker isolation** with default-deny egress in a dedicated netns (Linux)
+- **DNS allowlisting** with pinned resolution (Linux)
+- **iptables drift detection:** if policy changes, the pod is killed (fail-closed)
+- **Time windows** enforced via monotonic clock
+- **Atomic budget tracking** (cost/token limits, lock-free)
+- **Hash-chained audit logs** (`nucleus-audit`)
+- **HMAC-signed approval tokens** with nonce replay protection
+- **SPIFFE workload identity** with mTLS support
+
+### Mathematical Framework (lattice-guard)
+
+- **Frame-theoretic nucleus operators** for type-safe quotient lattices
+- **Heyting algebra** for conditional permissions via intuitionistic implication
+- **Galois connections** for principled trust domain translation
+- **Modal operators** (necessity □ / possibility ◇) for guaranteed vs achievable permissions
+- **Graded monad** for composable risk tracking through computation chains
+- **Property-tested lattice laws** (commutative, associative, idempotent, absorption)
+
+### Defined But Not Fully Wired Yet
+
+- `web_fetch` endpoint exists but MCP doesn't expose it yet
+- `web_search`, `glob_search`, `grep_search` exist in the policy model but aren't enforced yet
+- Seccomp is applied but not yet verified/attested
+- Kani proofs exist locally, not in CI
+
+## What It Is Not
+
+- **Not a general agent platform:** the enforced tool surface is intentionally small right now.
+- **Not a host-compromise solution:** the threat model assumes the enforcement stack is trusted.
+- **Not kernel-escape prevention:** use microVMs/containers appropriately; harden the host.
 
 ## Quick Start
 
@@ -111,6 +136,22 @@ connects via MCP to the in-VM tool proxy. You must provide:
 
 **macOS users:** See [docs/quickstart/macos.md](docs/quickstart/macos.md) for Lima + Firecracker setup.
 
+## Interactive Demo
+
+The `trifecta-playground` TUI provides an interactive demonstration of the permission lattice:
+
+```bash
+cargo run -p trifecta-playground
+```
+
+Features:
+- **Trifecta screen:** Toggle capabilities and watch risk levels change in real-time
+- **Matrix view:** See all 11 capabilities across preset profiles
+- **Hasse diagram:** Visualize the partial order of permission presets
+- **Meet playground:** Compute the meet (∧) of two permission sets
+- **Chain builder:** Build SPIFFE delegation chains and verify the ceiling theorem
+- **Attack simulator:** See how common attack patterns are blocked
+
 ## Permission Profiles
 
 ```bash
@@ -126,12 +167,6 @@ nucleus profiles
 ```
 
 ✅ = works now | 🟡 = policy defined, partial enforcement
-
-## Modes
-
-- **Approval-free mode (default):** obligations cause hard-deny if no approval system is configured.
-- **Approval-token mode:** obligations require a scoped, expiring HMAC token.
-- **Break-glass mode (future):** elevated friction + extra audit for emergency access.
 
 ## Custom Permissions
 
@@ -163,17 +198,21 @@ valid_hours = 1           # Expires after 1 hour
 nucleus run --config permissions.toml "Your task here"
 ```
 
-## Firecracker Notes
+## Threat Model
 
-- Firecracker pods require `--proxy-auth-secret` and `--proxy-approval-secret` for signed tool and approval calls.
-- The driver defaults to Firecracker; local is opt-in via `--allow-local-driver` (no VM isolation).
-- Firecracker runs in a fresh network namespace by default (`--firecracker-netns=false` to disable).
-- Default-deny iptables apply even without `spec.network` (no NIC unless policy is set).
-- DNS allowlisting is enforced via `spec.network.dns_allow` (pinned at pod start).
-- Guest IPv6 is disabled at boot.
-- Audit logs are hash-chained and signed (verify with `nucleus-audit`).
-- Guest init is the Rust binary `nucleus-guest-init`, baked into the rootfs.
-- Run `scripts/firecracker/test-network.sh` to validate egress policy on Linux.
+**Protects against:**
+- Prompt injection attempting side effects outside the envelope
+- Misconfigured tool permissions (enforced at runtime, not advisory)
+- Drift in network policy inside the runtime (fail-closed)
+- Budget exhaustion attacks (atomic tracking)
+- Privilege escalation via delegation (ceiling theorem)
+- Trust domain confusion (Galois connections)
+
+**Does not protect against:**
+- Compromised host or kernel (enforcement stack is trusted)
+- Malicious human approvals (social engineering)
+- Side-channel attacks
+- Kernel escapes from the microVM
 
 ## Architecture
 
@@ -191,34 +230,52 @@ nucleus run --config permissions.toml "Your task here"
 │  └──────────────┘  └──────────────┘  └──────────────────────┘  │
 ├─────────────────────────────────────────────────────────────────┤
 │                      lattice-guard                               │
-│  (Capabilities + Obligations + Paths + Commands + Budget + Time) │
+│   Capabilities × Obligations × Paths × Commands × Budget × Time  │
+│   + Heyting Algebra + Galois Connections + Graded Monad + Modal  │
+├─────────────────────────────────────────────────────────────────┤
+│                    nucleus-identity                              │
+│           SPIFFE workload identity + mTLS + cert rotation        │
 ├─────────────────────────────────────────────────────────────────┤
 │                    Operating System                              │
 │           (cap-std capabilities, atomic ops, quanta)             │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## Why a Lattice? (For the Curious)
+## Why a Lattice?
 
 The policy model uses a **permission lattice**—security-speak translation:
 
 - **Composable policy** = predictable aggregate posture across a workflow
 - **Meet operation** = tightening across composition (intersection of capabilities)
-- **Monotone delegation** = no escalation beyond parent envelope
+- **Monotone delegation** = no escalation beyond parent envelope (ceiling theorem)
 
 The lattice is an implementation detail. What matters: permissions compose predictably, and dangerous combinations (the trifecta) trigger additional gates automatically.
 
+### Mathematical Extensions
+
+The `lattice-guard` crate provides advanced structures for principled permission modeling:
+
+| Structure | Purpose |
+|-----------|---------|
+| **Frame/Nucleus** | Type-safe quotient lattices via the trifecta nucleus operator |
+| **Heyting Algebra** | Conditional permissions: `(c ∧ a) ≤ b ⟺ c ≤ (a → b)` |
+| **Galois Connections** | Security-preserving translation across trust domains |
+| **Modal Operators** | Distinguish guaranteed (□) from achievable (◇) permissions |
+| **Graded Monad** | Track risk through computation chains with monad laws |
+
 For the PL theory motivation (graded monads, algebraic effects), see [docs/THEORY.md](docs/THEORY.md).
 
-## Why Not Just Firecracker or gVisor?
+## Firecracker Notes
 
-Isolation alone doesn't express *semantic* policy. Nucleus adds:
-- **Trifecta detection** (risk-aware gating, not just isolation)
-- **Budgets** (time/cost ceilings enforced before side effects)
-- **Approvals** (typed tokens + audit trail for sensitive ops)
-- **Policy composition** (predictable across workflows)
-
-Firecracker/gVisor remain the execution boundary; Nucleus is the policy engine.
+- Firecracker pods require `--proxy-auth-secret` and `--proxy-approval-secret` for signed tool and approval calls.
+- The driver defaults to Firecracker; local is opt-in via `--allow-local-driver` (no VM isolation).
+- Firecracker runs in a fresh network namespace by default (`--firecracker-netns=false` to disable).
+- Default-deny iptables apply even without `spec.network` (no NIC unless policy is set).
+- DNS allowlisting is enforced via `spec.network.dns_allow` (pinned at pod start).
+- Guest IPv6 is disabled at boot.
+- Audit logs are hash-chained and signed (verify with `nucleus-audit`).
+- Guest init is the Rust binary `nucleus-guest-init`, baked into the rootfs.
+- Run `scripts/firecracker/test-network.sh` to validate egress policy on Linux.
 
 ## Command Policy
 
@@ -240,11 +297,6 @@ assert!(cmds.can_execute("cargo test --release"));
 assert!(!cmds.can_execute("bash -c 'echo hi'"));
 ```
 
-## Assurance Roadmap
-
-Formal methods plan and minimal proof targets are tracked in `docs/assurance/formal-methods.md`.
-Demo hardening criteria are tracked in `docs/assurance/hardening-checklist.md`.
-
 ## Development
 
 ```bash
@@ -254,9 +306,17 @@ cargo build --workspace
 # Run tests
 cargo test --workspace
 
+# Run the interactive demo
+cargo run -p trifecta-playground
+
 # Run CLI in development
 cargo run -p nucleus-cli -- run --profile fix-issue "Test task"
 ```
+
+## Assurance Roadmap
+
+Formal methods plan and minimal proof targets are tracked in `docs/assurance/formal-methods.md`.
+Demo hardening criteria are tracked in `docs/assurance/hardening-checklist.md`.
 
 ## License
 
@@ -266,4 +326,5 @@ Licensed under either of Apache License, Version 2.0 or MIT license at your opti
 
 - [The Lethal Trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/) - Simon Willison
 - [Container Hardening Against Agentic AI](https://securitytheatre.substack.com/p/container-hardening-against-agentic)
+- [Lattice-based Access Control](https://en.wikipedia.org/wiki/Lattice-based_access_control) - Denning 1976, Sandhu 1993
 - [cap-std](https://github.com/bytecodealliance/cap-std) - Capability-based filesystem
