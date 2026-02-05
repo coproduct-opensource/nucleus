@@ -8,6 +8,7 @@
   - [Agent Sandbox](quickstart/agent-sandbox.md)
 - [Permissions Guide](permissions.md)
 - [Architecture](architecture/overview.md)
+  - [Isolation Levels](architecture/isolation-levels.md)
   - [Threat Model](architecture/threat-model.md)
   - [Acceptance Tests](architecture/acceptance-tests.md)
 - [Assurance](assurance/formal-methods.md)

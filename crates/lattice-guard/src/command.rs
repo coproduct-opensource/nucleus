@@ -421,6 +421,21 @@ fn default_blocked_rules() -> Vec<CommandPattern> {
             ArgPattern::AnyRemaining,
         ],
     });
+    // Block gh CLI credential manipulation commands
+    rules.push(CommandPattern {
+        program: "gh".to_string(),
+        args: vec![
+            ArgPattern::Exact("auth".to_string()),
+            ArgPattern::AnyRemaining,
+        ],
+    });
+    rules.push(CommandPattern {
+        program: "gh".to_string(),
+        args: vec![
+            ArgPattern::Exact("config".to_string()),
+            ArgPattern::AnyRemaining,
+        ],
+    });
     rules
 }
 
@@ -697,5 +712,35 @@ mod tests {
             args: vec![ArgPattern::AnyRemaining],
         });
         assert!(!lattice.can_execute("bash -c 'echo hi'"));
+    }
+
+    #[test]
+    fn test_gh_auth_blocked() {
+        let lattice = CommandLattice::default();
+        // gh auth commands should be blocked (credential manipulation)
+        assert!(!lattice.can_execute("gh auth login"));
+        assert!(!lattice.can_execute("gh auth logout"));
+        assert!(!lattice.can_execute("gh auth status"));
+        assert!(!lattice.can_execute("gh auth token"));
+    }
+
+    #[test]
+    fn test_gh_config_blocked() {
+        let lattice = CommandLattice::default();
+        // gh config commands should be blocked (credential manipulation)
+        assert!(!lattice.can_execute("gh config set git_protocol ssh"));
+        assert!(!lattice.can_execute("gh config get git_protocol"));
+    }
+
+    #[test]
+    fn test_gh_regular_commands_allowed_in_permissive() {
+        let lattice = CommandLattice::permissive();
+        // Regular gh commands should be allowed in permissive mode
+        assert!(lattice.can_execute("gh pr list"));
+        assert!(lattice.can_execute("gh issue view 123"));
+        assert!(lattice.can_execute("gh pr create --fill"));
+        // But auth/config still blocked
+        assert!(!lattice.can_execute("gh auth login"));
+        assert!(!lattice.can_execute("gh config set editor vim"));
     }
 }
