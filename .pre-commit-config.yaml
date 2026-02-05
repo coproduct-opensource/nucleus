@@ -1,33 +1,56 @@
+# Pre-commit hooks for nucleus
+# Install: prek install && prek install --hook-type pre-push
+# Run manually: prek run --all-files
+
 repos:
+  # Fast builtin hooks (Rust-native, no network)
+  - repo: builtin
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-toml
+      - id: check-yaml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: detect-private-key
+        exclude: ^crates/(nucleus-identity|nucleus-node)/
+
+  # Rust toolchain hooks
   - repo: local
     hooks:
       - id: cargo-fmt
         name: cargo fmt
-        entry: cargo fmt --all
+        entry: cargo fmt --all -- --check
         language: system
+        types: [rust]
         pass_filenames: false
-        stages: [pre-commit]
+
       - id: cargo-clippy
         name: cargo clippy
         entry: cargo clippy --all-targets --all-features -- -D warnings
         language: system
+        types: [rust]
         pass_filenames: false
-        stages: [pre-commit, pre-push]
+
       - id: cargo-test
         name: cargo test
-        entry: cargo test --all-features
+        entry: cargo test --all-features --lib
         language: system
+        types: [rust]
         pass_filenames: false
-        stages: [pre-commit]
+        stages: [pre-push]
+
       - id: cargo-deny
         name: cargo deny
-        entry: env CARGO_HOME=/private/tmp/nucleus/.cargo cargo deny --offline check advisories bans licenses sources
+        entry: cargo deny check advisories bans licenses sources
         language: system
         pass_filenames: false
-        stages: [pre-commit]
+        stages: [pre-push]
+
       - id: cargo-audit
         name: cargo audit
-        entry: env CARGO_HOME=/private/tmp/nucleus/.cargo cargo audit -D warnings --no-fetch -d /private/tmp/nucleus/.cargo/advisory-db
+        entry: cargo audit -D warnings --no-fetch
         language: system
         pass_filenames: false
-        stages: [pre-commit]
+        stages: [pre-push]
