@@ -30,6 +30,7 @@ mod attestation;
 mod auth;
 mod mtls;
 mod policy;
+mod validation;
 
 use attestation::{AttestationConfig, AttestationVerifier};
 use auth::{AuthConfig, AuthError};
@@ -332,9 +333,25 @@ struct WriteResponse {
     ok: bool,
 }
 
+/// Run command request using secure array-based format.
+///
+/// The array form prevents shell injection by executing commands directly
+/// without shell interpretation. Each array element is passed as a separate
+/// argument to the process.
 #[derive(Debug, Deserialize)]
 struct RunRequest {
-    command: String,
+    /// Command as array, e.g. ["ls", "-la", "/tmp"]
+    args: Vec<String>,
+    /// Optional input to pass to command stdin
+    #[serde(default)]
+    stdin: Option<String>,
+    /// Optional working directory (relative to sandbox)
+    #[serde(default)]
+    directory: Option<String>,
+    /// Optional timeout in seconds (clamped to policy limit)
+    #[serde(default)]
+    #[allow(dead_code)] // Reserved for future timeout implementation
+    timeout_seconds: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -385,6 +402,107 @@ struct WebFetchResponse {
     body: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     truncated: Option<bool>,
+}
+
+/// Glob pattern search request.
+#[derive(Debug, Deserialize)]
+struct GlobRequest {
+    /// Glob pattern to match (e.g., "**/*.rs", "src/*.json")
+    pattern: String,
+    /// Optional directory to search in (relative to sandbox root)
+    #[serde(default)]
+    directory: Option<String>,
+    /// Maximum number of results to return
+    #[serde(default)]
+    max_results: Option<usize>,
+}
+
+/// Glob search response.
+#[derive(Debug, Serialize)]
+struct GlobResponse {
+    /// Matching file paths (relative to sandbox)
+    matches: Vec<String>,
+    /// True if results were truncated due to max_results
+    #[serde(skip_serializing_if = "Option::is_none")]
+    truncated: Option<bool>,
+}
+
+/// Grep (content search) request.
+#[derive(Debug, Deserialize)]
+struct GrepRequest {
+    /// Regex pattern to search for
+    pattern: String,
+    /// Optional file path to search in (relative to sandbox)
+    #[serde(default)]
+    path: Option<String>,
+    /// Optional glob pattern to filter files
+    #[serde(default, rename = "glob")]
+    file_glob: Option<String>,
+    /// Number of context lines before/after match
+    #[serde(default)]
+    context_lines: Option<usize>,
+    /// Maximum number of matches to return
+    #[serde(default)]
+    max_matches: Option<usize>,
+    /// Case-insensitive search
+    #[serde(default)]
+    case_insensitive: Option<bool>,
+}
+
+/// A single grep match result.
+#[derive(Debug, Serialize)]
+struct GrepMatch {
+    /// File path (relative to sandbox)
+    file: String,
+    /// Line number (1-indexed)
+    line: usize,
+    /// Matching line content
+    content: String,
+    /// Optional context lines before
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_before: Option<Vec<String>>,
+    /// Optional context lines after
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_after: Option<Vec<String>>,
+}
+
+/// Grep search response.
+#[derive(Debug, Serialize)]
+struct GrepResponse {
+    /// Matching results
+    matches: Vec<GrepMatch>,
+    /// True if results were truncated due to max_matches
+    #[serde(skip_serializing_if = "Option::is_none")]
+    truncated: Option<bool>,
+}
+
+/// Web search request.
+#[derive(Debug, Deserialize)]
+struct WebSearchRequest {
+    /// Search query
+    query: String,
+    /// Maximum number of results
+    #[serde(default)]
+    max_results: Option<usize>,
+}
+
+/// A single web search result.
+#[derive(Debug, Serialize)]
+struct WebSearchResult {
+    /// Result title
+    title: String,
+    /// Result URL
+    url: String,
+    /// Result snippet/description
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snippet: Option<String>,
+}
+
+/// Web search response.
+#[derive(Debug, Serialize)]
+struct WebSearchResponse {
+    /// Search results
+    results: Vec<WebSearchResult>,
 }
 
 /// Request to escalate permissions for an agent.
@@ -496,6 +614,8 @@ enum ApiError {
     AttestationFailed(String),
     #[error("escalation error: {0}")]
     Escalation(String),
+    #[error("validation error: {0}")]
+    Validation(#[from] validation::ValidationError),
 }
 
 impl IntoResponse for ApiError {
@@ -548,10 +668,15 @@ impl IntoResponse for ApiError {
             ApiError::DnsNotAllowed(_) => (StatusCode::FORBIDDEN, "dns_not_allowed", None),
             ApiError::AttestationFailed(_) => (StatusCode::FORBIDDEN, "attestation_failed", None),
             ApiError::Escalation(_) => (StatusCode::FORBIDDEN, "escalation_denied", None),
+            ApiError::Validation(_) => (StatusCode::BAD_REQUEST, "validation_error", None),
         };
 
+        // Sanitize error message to prevent information disclosure
+        // Note: We don't have access to sandbox root here, so we use generic sanitization
+        let sanitized_error = validation::sanitize_error_message(&self.to_string(), None);
+
         let body = Json(ErrorBody {
-            error: self.to_string(),
+            error: sanitized_error,
             kind: kind.to_string(),
             operation,
         });
@@ -710,6 +835,9 @@ async fn main() -> Result<(), ApiError> {
         .route("/v1/write", post(write_file))
         .route("/v1/run", post(run_command))
         .route("/v1/web_fetch", post(web_fetch))
+        .route("/v1/glob", post(glob_search))
+        .route("/v1/grep", post(grep_search))
+        .route("/v1/web_search", post(web_search))
         .route("/v1/approve", post(approve_operation))
         .route("/v1/escalate", post(escalate_permissions))
         .with_state(state.clone())
@@ -993,6 +1121,21 @@ async fn read_file(
     auth: Option<axum::Extension<auth::AuthContext>>,
     Json(req): Json<ReadRequest>,
 ) -> Result<Json<ReadResponse>, ApiError> {
+    // Validate inputs before any processing
+    if let Err(e) = validation::validate_path(&req.path) {
+        let audit_ctx = AuditContext::from_auth(auth.as_ref().map(|a| &a.0), &state);
+        audit_failure(
+            &state,
+            &headers,
+            "read",
+            &req.path,
+            "validation_error",
+            audit_ctx,
+        )
+        .await;
+        return Err(ApiError::Validation(e));
+    }
+
     let path = req.path.clone();
     let auth_ctx = auth.map(|e| e.0);
     let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
@@ -1013,12 +1156,32 @@ async fn read_file(
                     .sandbox()
                     .read_to_string_approved(&path, &token)?
             } else {
+                audit_failure(
+                    &state,
+                    &headers,
+                    "read",
+                    &path,
+                    "approval_required",
+                    audit_ctx.clone(),
+                )
+                .await;
                 return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
                     operation,
                 }));
             }
         }
-        Err(err) => return Err(ApiError::Nucleus(err)),
+        Err(err) => {
+            audit_failure(
+                &state,
+                &headers,
+                "read",
+                &path,
+                &format!("{:?}", err),
+                audit_ctx.clone(),
+            )
+            .await;
+            return Err(ApiError::Nucleus(err));
+        }
     };
 
     audit_event_with_context(&state, &headers, "read", &path, "ok", audit_ctx).await?;
@@ -1031,6 +1194,21 @@ async fn write_file(
     auth: Option<axum::Extension<auth::AuthContext>>,
     Json(req): Json<WriteRequest>,
 ) -> Result<Json<WriteResponse>, ApiError> {
+    // Validate inputs before any processing
+    if let Err(e) = validation::validate_path(&req.path) {
+        let audit_ctx = AuditContext::from_auth(auth.as_ref().map(|a| &a.0), &state);
+        audit_failure(
+            &state,
+            &headers,
+            "write",
+            &req.path,
+            "validation_error",
+            audit_ctx,
+        )
+        .await;
+        return Err(ApiError::Validation(e));
+    }
+
     let path = req.path.clone();
     let contents = req.contents.clone();
     let auth_ctx = auth.map(|e| e.0);
@@ -1052,12 +1230,32 @@ async fn write_file(
                     .sandbox()
                     .write_approved(&path, contents.as_bytes(), &token)?;
             } else {
+                audit_failure(
+                    &state,
+                    &headers,
+                    "write",
+                    &path,
+                    "approval_required",
+                    audit_ctx.clone(),
+                )
+                .await;
                 return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
                     operation,
                 }));
             }
         }
-        Err(err) => return Err(ApiError::Nucleus(err)),
+        Err(err) => {
+            audit_failure(
+                &state,
+                &headers,
+                "write",
+                &path,
+                &format!("{:?}", err),
+                audit_ctx.clone(),
+            )
+            .await;
+            return Err(ApiError::Nucleus(err));
+        }
     }
 
     audit_event_with_context(&state, &headers, "write", &path, "ok", audit_ctx).await?;
@@ -1070,30 +1268,102 @@ async fn run_command(
     auth: Option<axum::Extension<auth::AuthContext>>,
     Json(req): Json<RunRequest>,
 ) -> Result<Json<RunResponse>, ApiError> {
-    let command = req.command.clone();
+    // Build display command for logging/auditing
+    let display_command = req.args.join(" ");
+
+    // Validate inputs before any processing
+    if let Err(e) = validation::validate_command_args(&req.args) {
+        let audit_ctx = AuditContext::from_auth(auth.as_ref().map(|a| &a.0), &state);
+        audit_failure(
+            &state,
+            &headers,
+            "run",
+            &display_command,
+            "validation_error",
+            audit_ctx,
+        )
+        .await;
+        return Err(ApiError::Validation(e));
+    }
+    if let Err(e) = validation::validate_stdin(req.stdin.as_deref()) {
+        let audit_ctx = AuditContext::from_auth(auth.as_ref().map(|a| &a.0), &state);
+        audit_failure(
+            &state,
+            &headers,
+            "run",
+            &display_command,
+            "validation_error",
+            audit_ctx,
+        )
+        .await;
+        return Err(ApiError::Validation(e));
+    }
+    if let Some(ref dir) = req.directory {
+        if let Err(e) = validation::validate_path(dir) {
+            let audit_ctx = AuditContext::from_auth(auth.as_ref().map(|a| &a.0), &state);
+            audit_failure(
+                &state,
+                &headers,
+                "run",
+                &display_command,
+                "validation_error",
+                audit_ctx,
+            )
+            .await;
+            return Err(ApiError::Validation(e));
+        }
+    }
+
     let executor = state.runtime.executor();
     let auth_ctx = auth.map(|e| e.0);
     let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
 
-    let output = match executor.run(&command) {
+    // Extract optional parameters
+    let stdin = req.stdin.as_deref();
+    let directory = req.directory.as_deref();
+
+    let output = match executor.run_args(&req.args, stdin, directory) {
         Ok(output) => output,
         Err(NucleusError::ApprovalRequired { operation }) => {
             // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
-            if check_identity_policy(&state, auth_ctx.as_ref(), &format!("execute {}", command))
-                || state.approvals.consume(&operation)
+            if check_identity_policy(
+                &state,
+                auth_ctx.as_ref(),
+                &format!("execute {}", display_command),
+            ) || state.approvals.consume(&operation)
             {
                 let token = executor.request_approval(&operation)?;
-                executor.run_with_approval(&command, &token)?
+                executor.run_args_with_approval(&req.args, stdin, directory, &token)?
             } else {
+                audit_failure(
+                    &state,
+                    &headers,
+                    "run",
+                    &display_command,
+                    "approval_required",
+                    audit_ctx.clone(),
+                )
+                .await;
                 return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
                     operation,
                 }));
             }
         }
-        Err(err) => return Err(ApiError::Nucleus(err)),
+        Err(err) => {
+            audit_failure(
+                &state,
+                &headers,
+                "run",
+                &display_command,
+                &format!("{:?}", err),
+                audit_ctx.clone(),
+            )
+            .await;
+            return Err(ApiError::Nucleus(err));
+        }
     };
 
-    audit_event_with_context(&state, &headers, "run", &command, "ok", audit_ctx).await?;
+    audit_event_with_context(&state, &headers, "run", &display_command, "ok", audit_ctx).await?;
     Ok(Json(RunResponse {
         status: output.status.code().unwrap_or(-1),
         success: output.status.success(),
@@ -1109,6 +1379,22 @@ async fn web_fetch(
     Json(req): Json<WebFetchRequest>,
 ) -> Result<Json<WebFetchResponse>, ApiError> {
     let url_str = req.url.clone();
+
+    // Validate inputs before any processing
+    if let Err(e) = validation::validate_url(&req.url) {
+        let audit_ctx = AuditContext::from_auth(auth.as_ref().map(|a| &a.0), &state);
+        audit_failure(
+            &state,
+            &headers,
+            "web_fetch",
+            &url_str,
+            "validation_error",
+            audit_ctx,
+        )
+        .await;
+        return Err(ApiError::Validation(e));
+    }
+
     let auth_ctx = auth.map(|e| e.0);
     let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
 
@@ -1116,6 +1402,15 @@ async fn web_fetch(
     let policy = state.runtime.policy();
     let level = policy.capabilities.web_fetch;
     if level == CapabilityLevel::Never {
+        audit_failure(
+            &state,
+            &headers,
+            "web_fetch",
+            &url_str,
+            "insufficient_capability",
+            audit_ctx.clone(),
+        )
+        .await;
         return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
             capability: "web_fetch".into(),
             actual: level,
@@ -1130,6 +1425,15 @@ async fn web_fetch(
             check_identity_policy(&state, auth_ctx.as_ref(), &format!("web_fetch {}", url_str));
 
         if !policy_allows && !state.approvals.consume("web_fetch") {
+            audit_failure(
+                &state,
+                &headers,
+                "web_fetch",
+                &url_str,
+                "approval_required",
+                audit_ctx.clone(),
+            )
+            .await;
             return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
                 operation: format!("web_fetch {}", url_str),
             }));
@@ -1219,6 +1523,461 @@ async fn web_fetch(
         body,
         truncated,
     }))
+}
+
+/// Glob pattern search within the sandbox.
+async fn glob_search(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<axum::Extension<auth::AuthContext>>,
+    Json(req): Json<GlobRequest>,
+) -> Result<Json<GlobResponse>, ApiError> {
+    // Validate inputs before any processing
+    validation::validate_pattern(&req.pattern).map_err(ApiError::Validation)?;
+    if let Some(ref dir) = req.directory {
+        validation::validate_path(dir).map_err(ApiError::Validation)?;
+    }
+
+    let auth_ctx = auth.map(|e| e.0);
+    let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
+
+    // Check glob_search capability
+    let policy = state.runtime.policy();
+    let level = policy.capabilities.glob_search;
+    if level == CapabilityLevel::Never {
+        audit_failure(
+            &state,
+            &headers,
+            "glob",
+            &req.pattern,
+            "insufficient_capability",
+            audit_ctx.clone(),
+        )
+        .await;
+        return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+            capability: "glob_search".into(),
+            actual: level,
+            required: CapabilityLevel::LowRisk,
+        }));
+    }
+
+    // Check if trifecta requires approval
+    if policy.requires_approval(Operation::GlobSearch) {
+        let policy_allows =
+            check_identity_policy(&state, auth_ctx.as_ref(), &format!("glob {}", req.pattern));
+        if !policy_allows && !state.approvals.consume("glob_search") {
+            audit_failure(
+                &state,
+                &headers,
+                "glob",
+                &req.pattern,
+                "approval_required",
+                audit_ctx.clone(),
+            )
+            .await;
+            return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
+                operation: format!("glob {}", req.pattern),
+            }));
+        }
+    }
+
+    // Determine search root
+    let sandbox_root = state.runtime.sandbox().root_path();
+    let sandbox_canonical = sandbox_root
+        .canonicalize()
+        .map_err(|e| ApiError::Spec(format!("sandbox root not accessible: {e}")))?;
+
+    let search_root = if let Some(ref dir) = req.directory {
+        // Reject absolute paths immediately
+        if Path::new(dir).is_absolute() {
+            return Err(ApiError::Nucleus(NucleusError::SandboxEscape {
+                path: PathBuf::from(dir),
+            }));
+        }
+        let resolved = sandbox_root.join(dir);
+        // Canonicalize to resolve symlinks and .. components (path must exist)
+        let canonical = resolved.canonicalize().map_err(|_| {
+            ApiError::Nucleus(NucleusError::SandboxEscape {
+                path: resolved.clone(),
+            })
+        })?;
+        // Security: ensure canonicalized path is within sandbox
+        if !canonical.starts_with(&sandbox_canonical) {
+            return Err(ApiError::Nucleus(NucleusError::SandboxEscape {
+                path: resolved,
+            }));
+        }
+        canonical
+    } else {
+        sandbox_canonical.clone()
+    };
+
+    // Build full glob pattern
+    let full_pattern = search_root.join(&req.pattern);
+    let pattern_str = full_pattern.to_string_lossy();
+
+    // Perform glob search
+    let max_results = req.max_results.unwrap_or(1000);
+    let mut matches = Vec::new();
+    let mut truncated = false;
+
+    for entry in glob::glob(&pattern_str)
+        .map_err(|e| ApiError::Spec(format!("invalid glob pattern: {e}")))?
+    {
+        match entry {
+            Ok(path) => {
+                // Security: canonicalize and verify path is within sandbox
+                // This prevents symlink-based escapes
+                let canonical = match path.canonicalize() {
+                    Ok(c) => c,
+                    Err(_) => continue, // Skip inaccessible paths
+                };
+                if !canonical.starts_with(&sandbox_canonical) {
+                    continue;
+                }
+                // Convert to relative path (use canonical sandbox root)
+                if let Ok(relative) = canonical.strip_prefix(&sandbox_canonical) {
+                    matches.push(relative.to_string_lossy().to_string());
+                    if matches.len() >= max_results {
+                        truncated = true;
+                        break;
+                    }
+                }
+            }
+            Err(_) => continue, // Skip inaccessible paths
+        }
+    }
+
+    audit_event_with_context(&state, &headers, "glob", &req.pattern, "ok", audit_ctx).await?;
+    Ok(Json(GlobResponse {
+        matches,
+        truncated: if truncated { Some(true) } else { None },
+    }))
+}
+
+/// Grep (regex content search) within the sandbox.
+async fn grep_search(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<axum::Extension<auth::AuthContext>>,
+    Json(req): Json<GrepRequest>,
+) -> Result<Json<GrepResponse>, ApiError> {
+    use regex::RegexBuilder;
+    use std::io::{BufRead, BufReader};
+    use walkdir::WalkDir;
+
+    // Validate inputs before any processing
+    validation::validate_pattern(&req.pattern).map_err(ApiError::Validation)?;
+    if let Some(ref path) = req.path {
+        validation::validate_path(path).map_err(ApiError::Validation)?;
+    }
+    if let Some(ref glob_pattern) = req.file_glob {
+        validation::validate_pattern(glob_pattern).map_err(ApiError::Validation)?;
+    }
+
+    let auth_ctx = auth.map(|e| e.0);
+    let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
+
+    // Check grep_search capability
+    let policy = state.runtime.policy();
+    let level = policy.capabilities.grep_search;
+    if level == CapabilityLevel::Never {
+        audit_failure(
+            &state,
+            &headers,
+            "grep",
+            &req.pattern,
+            "insufficient_capability",
+            audit_ctx.clone(),
+        )
+        .await;
+        return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+            capability: "grep_search".into(),
+            actual: level,
+            required: CapabilityLevel::LowRisk,
+        }));
+    }
+
+    // Check if trifecta requires approval
+    if policy.requires_approval(Operation::GrepSearch) {
+        let policy_allows =
+            check_identity_policy(&state, auth_ctx.as_ref(), &format!("grep {}", req.pattern));
+        if !policy_allows && !state.approvals.consume("grep_search") {
+            audit_failure(
+                &state,
+                &headers,
+                "grep",
+                &req.pattern,
+                "approval_required",
+                audit_ctx.clone(),
+            )
+            .await;
+            return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
+                operation: format!("grep {}", req.pattern),
+            }));
+        }
+    }
+
+    // Build regex
+    let regex = RegexBuilder::new(&req.pattern)
+        .case_insensitive(req.case_insensitive.unwrap_or(false))
+        .build()
+        .map_err(|e| ApiError::Spec(format!("invalid regex pattern: {e}")))?;
+
+    let sandbox_root = state.runtime.sandbox().root_path();
+    let sandbox_canonical = sandbox_root
+        .canonicalize()
+        .map_err(|e| ApiError::Spec(format!("sandbox root not accessible: {e}")))?;
+    let max_matches = req.max_matches.unwrap_or(100);
+    let context_lines = req.context_lines.unwrap_or(0);
+    let mut matches = Vec::new();
+    let mut truncated = false;
+
+    // Collect files to search
+    let files: Vec<std::path::PathBuf> = if let Some(ref path) = req.path {
+        // Reject absolute paths immediately
+        if Path::new(path).is_absolute() {
+            return Err(ApiError::Nucleus(NucleusError::SandboxEscape {
+                path: PathBuf::from(path),
+            }));
+        }
+        // Search single file
+        let full_path = sandbox_root.join(path);
+        // Canonicalize to verify we're within sandbox (handles symlinks and ..)
+        let canonical = full_path.canonicalize().map_err(|_| {
+            ApiError::Nucleus(NucleusError::SandboxEscape {
+                path: full_path.clone(),
+            })
+        })?;
+        if !canonical.starts_with(&sandbox_canonical) {
+            return Err(ApiError::Nucleus(NucleusError::SandboxEscape {
+                path: full_path,
+            }));
+        }
+        if canonical.is_file() {
+            vec![canonical]
+        } else {
+            vec![]
+        }
+    } else {
+        // Walk directory and optionally filter by glob
+        let glob_pattern = req
+            .file_glob
+            .as_ref()
+            .and_then(|g| glob::Pattern::new(g).ok());
+
+        WalkDir::new(&sandbox_canonical)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            // Security: skip symlinks that could point outside sandbox
+            .filter(|e| !e.file_type().is_symlink())
+            .filter(|e| {
+                // Double-check canonical path is within sandbox
+                e.path()
+                    .canonicalize()
+                    .map(|c| c.starts_with(&sandbox_canonical))
+                    .unwrap_or(false)
+            })
+            .filter(|e| {
+                if let Some(ref pat) = glob_pattern {
+                    pat.matches_path(e.path())
+                } else {
+                    true
+                }
+            })
+            .map(|e| e.into_path())
+            .collect()
+    };
+
+    // Search each file
+    'outer: for file_path in files {
+        let file = match std::fs::File::open(&file_path) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        let reader = BufReader::new(file);
+        let lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
+
+        for (idx, line) in lines.iter().enumerate() {
+            if regex.is_match(line) {
+                let relative = file_path
+                    .strip_prefix(&sandbox_canonical)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| file_path.to_string_lossy().to_string());
+
+                let context_before = if context_lines > 0 {
+                    let start = idx.saturating_sub(context_lines);
+                    Some(lines[start..idx].to_vec())
+                } else {
+                    None
+                };
+
+                let context_after = if context_lines > 0 {
+                    let end = (idx + 1 + context_lines).min(lines.len());
+                    Some(lines[idx + 1..end].to_vec())
+                } else {
+                    None
+                };
+
+                matches.push(GrepMatch {
+                    file: relative,
+                    line: idx + 1, // 1-indexed
+                    content: line.clone(),
+                    context_before,
+                    context_after,
+                });
+
+                if matches.len() >= max_matches {
+                    truncated = true;
+                    break 'outer;
+                }
+            }
+        }
+    }
+
+    audit_event_with_context(&state, &headers, "grep", &req.pattern, "ok", audit_ctx).await?;
+    Ok(Json(GrepResponse {
+        matches,
+        truncated: if truncated { Some(true) } else { None },
+    }))
+}
+
+/// Web search using configured backend.
+async fn web_search(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<axum::Extension<auth::AuthContext>>,
+    Json(req): Json<WebSearchRequest>,
+) -> Result<Json<WebSearchResponse>, ApiError> {
+    // Validate inputs before any processing
+    validation::validate_query(&req.query).map_err(ApiError::Validation)?;
+
+    let auth_ctx = auth.map(|e| e.0);
+    let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
+
+    // Check web_search capability
+    let policy = state.runtime.policy();
+    let level = policy.capabilities.web_search;
+    if level == CapabilityLevel::Never {
+        audit_failure(
+            &state,
+            &headers,
+            "web_search",
+            &req.query,
+            "insufficient_capability",
+            audit_ctx.clone(),
+        )
+        .await;
+        return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+            capability: "web_search".into(),
+            actual: level,
+            required: CapabilityLevel::LowRisk,
+        }));
+    }
+
+    // Check if trifecta requires approval
+    if policy.requires_approval(Operation::WebSearch) {
+        let policy_allows = check_identity_policy(
+            &state,
+            auth_ctx.as_ref(),
+            &format!("web_search {}", req.query),
+        );
+        if !policy_allows && !state.approvals.consume("web_search") {
+            audit_failure(
+                &state,
+                &headers,
+                "web_search",
+                &req.query,
+                "approval_required",
+                audit_ctx.clone(),
+            )
+            .await;
+            return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
+                operation: format!("web_search {}", req.query),
+            }));
+        }
+    }
+
+    // Web search requires a configured backend URL
+    // For now, return an error indicating the backend must be configured
+    // A real implementation would read NUCLEUS_WEB_SEARCH_URL from env/config
+    let search_url = std::env::var("NUCLEUS_WEB_SEARCH_URL").ok();
+
+    if search_url.is_none() {
+        return Err(ApiError::Spec(
+            "web_search requires NUCLEUS_WEB_SEARCH_URL to be configured".to_string(),
+        ));
+    }
+
+    let search_url = search_url.unwrap();
+
+    // Check DNS allow list
+    let url = url::Url::parse(&search_url)
+        .map_err(|e| ApiError::Spec(format!("invalid search backend URL: {e}")))?;
+
+    if !state.dns_allow.is_empty() {
+        let host = url
+            .host_str()
+            .ok_or_else(|| ApiError::Spec("search URL has no host".into()))?;
+        let port = url.port_or_known_default().unwrap_or(443);
+        let host_port = format!("{}:{}", host, port);
+
+        let allowed = state.dns_allow.iter().any(|pattern| {
+            pattern == &host_port || pattern == host || pattern.starts_with(&format!("{}:", host))
+        });
+
+        if !allowed {
+            return Err(ApiError::DnsNotAllowed(host_port));
+        }
+    }
+
+    // Perform search request
+    let max_results = req.max_results.unwrap_or(10);
+    let response = state
+        .web_client
+        .get(&search_url)
+        .query(&[("q", &req.query), ("num", &max_results.to_string())])
+        .send()
+        .await
+        .map_err(|e| ApiError::WebFetch(format!("search request failed: {e}")))?;
+
+    if !response.status().is_success() {
+        return Err(ApiError::WebFetch(format!(
+            "search backend returned status {}",
+            response.status()
+        )));
+    }
+
+    // Parse response - this is a generic JSON structure
+    // Real implementations would adapt to specific search APIs
+    let body = response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| ApiError::WebFetch(format!("failed to parse search response: {e}")))?;
+
+    // Try to extract results from common formats
+    let results = if let Some(items) = body.get("results").and_then(|r| r.as_array()) {
+        items
+            .iter()
+            .filter_map(|item| {
+                Some(WebSearchResult {
+                    title: item.get("title")?.as_str()?.to_string(),
+                    url: item.get("url")?.as_str()?.to_string(),
+                    snippet: item
+                        .get("snippet")
+                        .and_then(|s| s.as_str())
+                        .map(String::from),
+                })
+            })
+            .take(max_results)
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    audit_event_with_context(&state, &headers, "web_search", &req.query, "ok", audit_ctx).await?;
+    Ok(Json(WebSearchResponse { results }))
 }
 
 async fn approve_operation(
@@ -1806,6 +2565,7 @@ fn build_audit_log(args: &Args, auth: &AuthConfig) -> Result<Arc<AuditLog>, ApiE
 }
 
 /// Extended audit context for richer logging.
+#[derive(Clone)]
 struct AuditContext {
     spiffe_id: Option<String>,
     policy_rule: Option<String>,
@@ -1850,6 +2610,31 @@ async fn audit_event(
         AuditContext::empty(),
     )
     .await
+}
+
+/// Log an audit event for a failed operation.
+///
+/// This is called when an operation fails due to policy denial, validation errors,
+/// or other reasons. The error kind is included in the result field.
+async fn audit_failure(
+    state: &AppState,
+    headers: &HeaderMap,
+    event: &str,
+    subject: &str,
+    error_kind: &str,
+    ctx: AuditContext,
+) {
+    // Failures are logged but we don't propagate audit errors for failed ops
+    // (the original error takes precedence)
+    let _ = audit_event_with_context(
+        state,
+        headers,
+        event,
+        subject,
+        &format!("denied:{}", error_kind),
+        ctx,
+    )
+    .await;
 }
 
 async fn audit_event_with_context(
@@ -2130,5 +2915,96 @@ mod tests {
         assert!(registry.consume("read /etc/passwd"));
         // Third should fail
         assert!(!registry.consume("read /etc/passwd"));
+    }
+
+    #[test]
+    fn test_run_request_array_form() {
+        let json = r#"{"args": ["ls", "-la", "/tmp"]}"#;
+        let req: RunRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.args, vec!["ls", "-la", "/tmp"]);
+        assert!(req.stdin.is_none());
+        assert!(req.directory.is_none());
+        assert!(req.timeout_seconds.is_none());
+    }
+
+    #[test]
+    fn test_run_request_with_all_fields() {
+        let json =
+            r#"{"args": ["cat"], "stdin": "hello", "directory": "subdir", "timeout_seconds": 30}"#;
+        let req: RunRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.args, vec!["cat"]);
+        assert_eq!(req.stdin, Some("hello".to_string()));
+        assert_eq!(req.directory, Some("subdir".to_string()));
+        assert_eq!(req.timeout_seconds, Some(30));
+    }
+
+    #[test]
+    fn test_glob_request_parsing() {
+        let json = r#"{"pattern": "**/*.rs", "directory": "src", "max_results": 100}"#;
+        let req: GlobRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.pattern, "**/*.rs");
+        assert_eq!(req.directory, Some("src".to_string()));
+        assert_eq!(req.max_results, Some(100));
+    }
+
+    #[test]
+    fn test_glob_request_minimal() {
+        let json = r#"{"pattern": "*.txt"}"#;
+        let req: GlobRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.pattern, "*.txt");
+        assert!(req.directory.is_none());
+        assert!(req.max_results.is_none());
+    }
+
+    #[test]
+    fn test_grep_request_parsing() {
+        let json = r#"{"pattern": "fn main", "path": "src/main.rs", "context_lines": 2}"#;
+        let req: GrepRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.pattern, "fn main");
+        assert_eq!(req.path, Some("src/main.rs".to_string()));
+        assert_eq!(req.context_lines, Some(2));
+    }
+
+    #[test]
+    fn test_grep_request_with_glob() {
+        let json = r#"{"pattern": "TODO", "glob": "**/*.rs", "case_insensitive": true}"#;
+        let req: GrepRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.pattern, "TODO");
+        assert_eq!(req.file_glob, Some("**/*.rs".to_string()));
+        assert_eq!(req.case_insensitive, Some(true));
+    }
+
+    #[test]
+    fn test_web_search_request_parsing() {
+        let json = r#"{"query": "rust async await", "max_results": 5}"#;
+        let req: WebSearchRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.query, "rust async await");
+        assert_eq!(req.max_results, Some(5));
+    }
+
+    #[test]
+    fn test_glob_response_serialization() {
+        let resp = GlobResponse {
+            matches: vec!["src/main.rs".to_string(), "src/lib.rs".to_string()],
+            truncated: None,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("src/main.rs"));
+        assert!(!json.contains("truncated"));
+    }
+
+    #[test]
+    fn test_grep_match_serialization() {
+        let m = GrepMatch {
+            file: "src/main.rs".to_string(),
+            line: 42,
+            content: "fn main() {".to_string(),
+            context_before: Some(vec!["// entry point".to_string()]),
+            context_after: None,
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(json.contains("src/main.rs"));
+        assert!(json.contains("42"));
+        assert!(json.contains("entry point"));
     }
 }
