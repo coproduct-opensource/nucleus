@@ -186,12 +186,16 @@ impl TrifectaRisk {
 }
 
 /// The "lethal trifecta" is the combination of:
-/// 1. Private data access (read_files)
+/// 1. Private data access (read_files, glob_search, grep_search)
 /// 2. Untrusted content exposure (web_fetch, web_search)
 /// 3. Exfiltration vector (git_push, create_pr, run_bash)
 ///
 /// When all three are present at autonomous levels (≥ LowRisk), this constraint
 /// adds approval obligations for the exfiltration vector.
+///
+/// Note: glob_search and grep_search are included as information disclosure vectors
+/// because they can reveal file structure and contents, which combined with
+/// untrusted content and exfiltration could enable prompt injection attacks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct IncompatibilityConstraint {
     /// Whether to enforce trifecta prevention
@@ -219,7 +223,10 @@ impl IncompatibilityConstraint {
             return TrifectaRisk::None;
         }
 
-        let has_private_access = caps.read_files >= CapabilityLevel::LowRisk;
+        // Information disclosure: reading files OR searching file structure/contents
+        let has_private_access = caps.read_files >= CapabilityLevel::LowRisk
+            || caps.glob_search >= CapabilityLevel::LowRisk
+            || caps.grep_search >= CapabilityLevel::LowRisk;
         let has_untrusted = caps.web_fetch >= CapabilityLevel::LowRisk
             || caps.web_search >= CapabilityLevel::LowRisk;
         let has_exfil = caps.git_push >= CapabilityLevel::LowRisk
@@ -253,7 +260,10 @@ impl IncompatibilityConstraint {
             return false;
         }
 
-        let has_private_access = caps.read_files >= CapabilityLevel::LowRisk;
+        // Information disclosure: reading files OR searching file structure/contents
+        let has_private_access = caps.read_files >= CapabilityLevel::LowRisk
+            || caps.glob_search >= CapabilityLevel::LowRisk
+            || caps.grep_search >= CapabilityLevel::LowRisk;
         let has_untrusted = caps.web_fetch >= CapabilityLevel::LowRisk
             || caps.web_search >= CapabilityLevel::LowRisk;
         let has_exfil = caps.git_push >= CapabilityLevel::LowRisk
@@ -457,5 +467,57 @@ mod tests {
 
         assert_eq!(result.write_files, CapabilityLevel::LowRisk);
         assert_eq!(result.run_bash, CapabilityLevel::LowRisk);
+    }
+
+    #[test]
+    fn test_trifecta_with_glob_search() {
+        // glob_search should count as information disclosure
+        let caps = CapabilityLattice {
+            read_files: CapabilityLevel::Never,    // No direct file reading
+            glob_search: CapabilityLevel::LowRisk, // But can see file structure
+            web_fetch: CapabilityLevel::LowRisk,
+            run_bash: CapabilityLevel::LowRisk, // Exfil vector
+            ..Default::default()
+        };
+
+        let constraint = IncompatibilityConstraint::enforcing();
+        assert!(constraint.is_trifecta_complete(&caps));
+    }
+
+    #[test]
+    fn test_trifecta_with_grep_search() {
+        // grep_search should count as information disclosure
+        let caps = CapabilityLattice {
+            read_files: CapabilityLevel::Never,    // No direct file reading
+            grep_search: CapabilityLevel::LowRisk, // But can search file contents
+            web_fetch: CapabilityLevel::LowRisk,
+            git_push: CapabilityLevel::LowRisk, // Exfil vector
+            ..Default::default()
+        };
+
+        let constraint = IncompatibilityConstraint::enforcing();
+        assert!(constraint.is_trifecta_complete(&caps));
+    }
+
+    #[test]
+    fn test_trifecta_risk_with_search_only() {
+        // Just search capabilities should count as 1 component (private access)
+        // Must disable all other capabilities to avoid false positives
+        let caps = CapabilityLattice {
+            read_files: CapabilityLevel::Never,
+            write_files: CapabilityLevel::Never,
+            edit_files: CapabilityLevel::Never,
+            run_bash: CapabilityLevel::Never,
+            glob_search: CapabilityLevel::LowRisk, // Only this counts
+            grep_search: CapabilityLevel::LowRisk, // Only this counts
+            web_search: CapabilityLevel::Never,
+            web_fetch: CapabilityLevel::Never,
+            git_commit: CapabilityLevel::Never,
+            git_push: CapabilityLevel::Never,
+            create_pr: CapabilityLevel::Never,
+        };
+
+        let constraint = IncompatibilityConstraint::enforcing();
+        assert_eq!(constraint.trifecta_risk(&caps), TrifectaRisk::Low);
     }
 }
