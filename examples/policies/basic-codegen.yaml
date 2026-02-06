@@ -1,0 +1,40 @@
+# Basic Code Generation Policy
+#
+# A permissive policy for AI agents doing code generation tasks.
+# Trifecta enforcement is enabled by default.
+
+name: basic-codegen
+description: Policy for code generation with workspace boundaries
+
+# Built-in trifecta enforcement (private data + untrusted content + exfiltration)
+enforce_trifecta: true
+
+constraints:
+  # Require approval for writes outside workspace
+  - name: workspace-writes
+    description: Restrict file writes to workspace directory
+    condition: |
+      operation == "write_files" && !path.startsWith("/workspace/")
+    obligations:
+      - write_files
+
+  # Require approval for reading sensitive files
+  - name: sensitive-reads
+    description: Require approval for accessing sensitive files
+    condition: |
+      operation == "read_files" &&
+      (path.contains("/.ssh/") ||
+       path.contains("/.aws/") ||
+       path.contains("/.env") ||
+       path.startsWith("/etc/passwd") ||
+       path.startsWith("/etc/shadow"))
+    obligations:
+      - read_files
+
+  # Require approval for bash commands outside workspace
+  - name: workspace-bash
+    description: Restrict bash execution to workspace context
+    condition: |
+      operation == "run_bash" && !path.startsWith("/workspace/")
+    obligations:
+      - run_bash

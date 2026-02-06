@@ -1,0 +1,57 @@
+# Isolation-Aware Policy
+#
+# Demonstrates constraints based on execution isolation level.
+# Different operations require different levels of isolation.
+
+name: isolation-aware
+description: Policy with isolation-based constraints
+
+enforce_trifecta: true
+
+constraints:
+  # Bash requires at least namespace isolation
+  - name: bash-requires-isolation
+    description: Bash execution requires process isolation
+    condition: |
+      operation == "run_bash" && isolation.process == "shared"
+    obligations:
+      - run_bash
+
+  # Web access requires microVM isolation (strongest)
+  - name: web-in-vm-only
+    description: Web access requires microVM isolation
+    condition: |
+      operation in ["web_fetch", "web_search"] &&
+      isolation.process != "microvm"
+    obligations:
+      - web_fetch
+      - web_search
+
+  # Sensitive file access requires file sandboxing
+  - name: sensitive-files-sandboxed
+    description: Credential files require sandboxed filesystem
+    condition: |
+      operation == "read_files" &&
+      (path.contains("/.ssh/") || path.contains("/.aws/") || path.contains("/.env")) &&
+      isolation.file == "unrestricted"
+    obligations:
+      - read_files
+
+  # Git push requires network filtering (not just any network)
+  - name: git-push-filtered-network
+    description: Git push requires filtered network (not host)
+    condition: |
+      operation == "git_push" &&
+      isolation.network == "host"
+    obligations:
+      - git_push
+
+  # Writes require sandboxed filesystem at minimum
+  - name: writes-require-sandbox
+    description: File writes require sandboxed filesystem
+    condition: |
+      operation in ["write_files", "edit_files"] &&
+      isolation.file == "unrestricted"
+    obligations:
+      - write_files
+      - edit_files

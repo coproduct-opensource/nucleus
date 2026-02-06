@@ -57,6 +57,29 @@
 //!
 //! See `THREAT_MODEL.md` for a complete description of what this crate prevents
 //! and what it does not prevent.
+//!
+//! ## User-Defined Policies (CEL)
+//!
+//! With the `cel` feature enabled, you can define policies with CEL constraints:
+//!
+//! ```rust,ignore
+//! use lattice_guard::constraint::{Constraint, Policy, PolicyContext};
+//! use lattice_guard::frame::Nucleus;
+//! use lattice_guard::{Operation, PermissionLattice};
+//!
+//! // Create a policy with custom constraints
+//! let policy = Policy::new("secure-workspace")
+//!     .with_constraint(
+//!         Constraint::new(
+//!             "workspace-only",
+//!             r#"operation == "write_files" && !path.startsWith("/workspace/")"#,
+//!         )?.with_obligation(Operation::WriteFiles)
+//!     );
+//!
+//! // Apply the policy as a nucleus
+//! let perms = PermissionLattice::permissive();
+//! let safe = policy.apply(&perms);
+//! ```
 
 #![deny(missing_docs)]
 #![deny(unsafe_code)]
@@ -64,6 +87,7 @@
 mod budget;
 mod capability;
 mod command;
+pub mod constraint;
 pub mod escalation;
 pub mod frame;
 pub mod galois;
@@ -71,6 +95,7 @@ pub mod graded;
 pub mod guard;
 pub mod heyting;
 pub mod identity;
+pub mod isolation;
 mod lattice;
 pub mod modal;
 mod path;
@@ -93,6 +118,7 @@ pub use galois::{GaloisConnection, GaloisVerificationError, TrustDomainBridge};
 pub use graded::{Graded, GradedPermissionCheck, RiskGrade};
 pub use guard::{CompositeGuard, GuardError, GuardFn, GuardedAction, PermissionGuard};
 pub use heyting::{ConditionalPermission, HeytingAlgebra};
+pub use isolation::{FileIsolation, IsolationLattice, NetworkIsolation, ProcessIsolation};
 pub use lattice::{
     DelegationError, EffectivePermissions, PermissionLattice, PermissionLatticeBuilder,
 };

@@ -23,6 +23,16 @@ pub enum CapabilityLevel {
     Always = 2,
 }
 
+impl std::fmt::Display for CapabilityLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CapabilityLevel::Never => write!(f, "never"),
+            CapabilityLevel::LowRisk => write!(f, "low_risk"),
+            CapabilityLevel::Always => write!(f, "always"),
+        }
+    }
+}
+
 /// Operations that can be gated by approval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -62,6 +72,13 @@ pub struct Obligations {
 }
 
 impl Obligations {
+    /// Create obligations for a single operation.
+    pub fn for_operation(op: Operation) -> Self {
+        let mut approvals = std::collections::BTreeSet::new();
+        approvals.insert(op);
+        Self { approvals }
+    }
+
     /// Check if an operation requires approval.
     pub fn requires(&self, op: Operation) -> bool {
         self.approvals.contains(&op)
@@ -70,6 +87,16 @@ impl Obligations {
     /// Add an approval obligation.
     pub fn insert(&mut self, op: Operation) {
         self.approvals.insert(op);
+    }
+
+    /// Get the number of obligations.
+    pub fn len(&self) -> usize {
+        self.approvals.len()
+    }
+
+    /// Check if there are no obligations.
+    pub fn is_empty(&self) -> bool {
+        self.approvals.is_empty()
     }
 
     /// Union of obligations.

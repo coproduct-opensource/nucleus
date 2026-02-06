@@ -1,0 +1,45 @@
+# Trifecta Demonstration Policy
+#
+# This policy demonstrates the "lethal trifecta" constraint:
+#   1. Private data access (read_files)
+#   2. Untrusted content (web_fetch)
+#   3. Exfiltration capability (git_push, create_pr)
+#
+# When all three are present, the exfiltration operations
+# require explicit approval - even if individually allowed.
+#
+# The trifecta constraint is ALWAYS enforced by default.
+# This policy adds additional contextual constraints.
+
+name: trifecta-demo
+description: Demonstrates the lethal trifecta security model
+
+# This is true by default, shown explicitly for documentation
+enforce_trifecta: true
+
+constraints:
+  # Explicit approval when trifecta is detected
+  - name: trifecta-complete-warning
+    description: Extra logging when complete trifecta detected
+    condition: |
+      trifecta_risk == "complete"
+    obligations:
+      - git_push
+      - create_pr
+
+  # Medium risk still warrants caution
+  - name: trifecta-medium-warning
+    description: Approval for network when trifecta building up
+    condition: |
+      trifecta_risk == "medium" &&
+      (operation == "web_fetch" || operation == "web_search")
+    obligations:
+      - web_fetch
+      - web_search
+
+  # Approval already granted unlocks operations
+  - name: approval-bypass
+    description: Skip constraints if human approved
+    condition: |
+      has_approval && trifecta_risk != "complete"
+    obligations: []

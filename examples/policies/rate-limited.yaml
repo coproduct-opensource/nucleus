@@ -1,0 +1,39 @@
+# Rate Limited Policy
+#
+# Demonstrates rate limiting constraints. When request rates
+# exceed thresholds, operations require approval.
+
+name: rate-limited
+description: Policy with rate limiting constraints
+
+enforce_trifecta: true
+
+constraints:
+  # Rate limit web fetches
+  - name: web-rate-limit
+    description: Rate limit external web requests
+    condition: |
+      operation == "web_fetch" && request_rate > 30
+    obligations:
+      - web_fetch
+
+  # Rate limit web searches
+  - name: search-rate-limit
+    description: Rate limit web search operations
+    condition: |
+      operation == "web_search" && request_rate > 10
+    obligations:
+      - web_search
+
+  # Slow down when budget is low
+  - name: low-budget-approval
+    description: Require approval when budget is nearly exhausted
+    condition: |
+      budget_remaining < 0.1
+    obligations:
+      - read_files
+      - write_files
+      - edit_files
+      - run_bash
+      - web_fetch
+      - web_search
