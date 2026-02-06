@@ -1,0 +1,10 @@
+# cargo-audit configuration
+# https://rustsec.org/advisories/
+
+[advisories]
+ignore = [
+    # paste is unmaintained but has no known security issues.
+    # It's a transitive dependency of cel-interpreter used for CEL policy constraints.
+    # TODO: Watch for cel-interpreter updates that remove paste dependency.
+    "RUSTSEC-2024-0436",
+]
