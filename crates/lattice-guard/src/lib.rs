@@ -84,6 +84,7 @@
 #![deny(missing_docs)]
 #![deny(unsafe_code)]
 
+pub mod audit;
 mod budget;
 mod capability;
 mod command;
@@ -97,9 +98,12 @@ pub mod heyting;
 pub mod identity;
 pub mod isolation;
 mod lattice;
+pub mod metrics;
 pub mod modal;
 mod path;
+pub mod permissive;
 mod time;
+pub mod weakening;
 
 #[cfg(kani)]
 mod kani;
@@ -124,7 +128,21 @@ pub use lattice::{
 };
 pub use modal::{CapabilityModal, ModalContext, ModalPermissions};
 pub use path::PathLattice;
+pub use permissive::{
+    ExecutionDenied, PermissiveExecution, PermissiveExecutionResult, PermissiveExecutor,
+    PermissiveExecutorBuilder,
+};
 pub use time::TimeLattice;
+pub use weakening::{
+    WeakeningCost, WeakeningCostConfig, WeakeningDimension, WeakeningGap, WeakeningRequest,
+};
+
+// Re-export key audit and metrics types
+pub use audit::{AuditEntry, AuditLog, IdentityAuditSummary, PermissionEvent, RetentionPolicy};
+pub use metrics::{
+    build_deviation_report, DeviationDetail, DeviationReport, InMemoryMetrics, MetricEvent,
+    MetricsCollector, MetricsReport, ReputationMetrics, ReputationWeights,
+};
 
 /// Check if a glob pattern matches a path.
 pub fn glob_match(pattern: &str, path: &str) -> bool {
