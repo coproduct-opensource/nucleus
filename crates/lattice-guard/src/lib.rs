@@ -99,7 +99,9 @@ pub mod isolation;
 mod lattice;
 pub mod modal;
 mod path;
+pub mod permissive;
 mod time;
+pub mod weakening;
 
 #[cfg(kani)]
 mod kani;
@@ -124,7 +126,14 @@ pub use lattice::{
 };
 pub use modal::{CapabilityModal, ModalContext, ModalPermissions};
 pub use path::PathLattice;
+pub use permissive::{
+    ExecutionDenied, PermissiveExecution, PermissiveExecutionResult, PermissiveExecutor,
+    PermissiveExecutorBuilder,
+};
 pub use time::TimeLattice;
+pub use weakening::{
+    WeakeningCost, WeakeningCostConfig, WeakeningDimension, WeakeningGap, WeakeningRequest,
+};
 
 /// Check if a glob pattern matches a path.
 pub fn glob_match(pattern: &str, path: &str) -> bool {

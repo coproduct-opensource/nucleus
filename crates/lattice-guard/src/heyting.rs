@@ -431,4 +431,18 @@ mod tests {
         let biimpl = a.biimplies(&b);
         assert_eq!(biimpl, CapabilityLattice::top());
     }
+
+    #[test]
+    fn test_capability_gap_for_weakening() {
+        // Gap from restrictive to permissive - should be non-trivial
+        let floor = CapabilityLattice::bottom();
+        let ceiling = CapabilityLattice::permissive();
+
+        let gap = permission_gap(&floor, &ceiling);
+
+        // floor → ceiling should be ceiling (since floor is bottom)
+        // Actually, ⊥ → anything = ⊤ (ex falso quodlibet)
+        // But for our cost computation we care about floor < ceiling
+        assert_eq!(gap, CapabilityLattice::top());
+    }
 }
