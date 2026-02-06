@@ -25,7 +25,7 @@
 //! # Example
 //!
 //! ```rust
-//! use lattice_guard::metrics::{MetricsCollector, InMemoryMetrics, MetricEvent};
+//! use lattice_guard::metrics::{MetricsCollector, InMemoryMetrics, MetricEvent, ReputationMetrics};
 //! use lattice_guard::Operation;
 //!
 //! // Create a metrics collector
@@ -37,7 +37,7 @@
 //!     MetricEvent::OperationAttempted { operation: Operation::GitPush },
 //! );
 //!
-//! // Query metrics
+//! // Query metrics (requires ReputationMetrics trait in scope)
 //! let deviation_rate = metrics.deviation_rate("spiffe://nucleus.local/ns/default/sa/coder-001");
 //! ```
 
