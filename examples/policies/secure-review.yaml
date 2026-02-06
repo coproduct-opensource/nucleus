@@ -1,0 +1,45 @@
+# Secure Code Review Policy
+#
+# A read-heavy policy for code review tasks. More restrictive
+# than codegen - writes and network operations require approval.
+
+name: secure-review
+description: Read-heavy policy for code review tasks
+
+enforce_trifecta: true
+
+constraints:
+  # All file writes require approval in review mode
+  - name: require-write-approval
+    description: All writes need explicit approval during review
+    condition: |
+      operation == "write_files"
+    obligations:
+      - write_files
+
+  # All edits require approval in review mode
+  - name: require-edit-approval
+    description: All edits need explicit approval during review
+    condition: |
+      operation == "edit_files"
+    obligations:
+      - edit_files
+
+  # Git operations always require approval
+  - name: git-approval
+    description: All git operations need approval during review
+    condition: |
+      operation == "git_commit" || operation == "git_push" || operation == "create_pr"
+    obligations:
+      - git_commit
+      - git_push
+      - create_pr
+
+  # Web operations require approval (prevents exfiltration)
+  - name: web-approval
+    description: Web operations need approval to prevent exfiltration
+    condition: |
+      operation == "web_fetch" || operation == "web_search"
+    obligations:
+      - web_fetch
+      - web_search

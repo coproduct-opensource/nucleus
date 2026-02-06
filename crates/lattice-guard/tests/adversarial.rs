@@ -504,3 +504,190 @@ fn extreme_time_bounds_handled() {
     let default = lattice_guard::TimeLattice::default();
     let _ = lattice.meet(&default);
 }
+
+// ============================================
+// Isolation Bypass Attempts
+// ============================================
+
+#[test]
+#[cfg(feature = "serde")]
+fn isolation_downgrade_via_deserialization() {
+    use lattice_guard::isolation::{
+        FileIsolation, IsolationLattice, NetworkIsolation, ProcessIsolation,
+    };
+
+    // Attempt to deserialize a weakest-isolation config
+    let weak_json = r#"{
+        "process": "shared",
+        "file": "unrestricted",
+        "network": "host"
+    }"#;
+
+    let isolation: IsolationLattice =
+        serde_json::from_str(weak_json).expect("Should parse valid JSON");
+
+    // Verify it parsed to weakest values (this is expected behavior)
+    assert_eq!(isolation.process, ProcessIsolation::Shared);
+    assert_eq!(isolation.file, FileIsolation::Unrestricted);
+    assert_eq!(isolation.network, NetworkIsolation::Host);
+
+    // The security comes from policy enforcement, not deserialization blocking
+    // This test documents that deserialization accepts any valid value
+}
+
+#[test]
+fn isolation_lattice_meet_never_strengthens() {
+    use lattice_guard::frame::Lattice;
+    use lattice_guard::isolation::IsolationLattice;
+
+    let strong = IsolationLattice::microvm();
+    let weak = IsolationLattice::localhost();
+
+    let result = strong.meet(&weak);
+
+    // Meet should give the weaker isolation (intersection of guarantees)
+    assert_eq!(result, weak);
+
+    // An attacker cannot strengthen isolation via meet
+    assert!(!result.at_least(&strong));
+}
+
+#[test]
+fn isolation_lattice_join_always_strengthens() {
+    use lattice_guard::frame::Lattice;
+    use lattice_guard::isolation::IsolationLattice;
+
+    let strong = IsolationLattice::microvm();
+    let weak = IsolationLattice::localhost();
+
+    let result = weak.join(&strong);
+
+    // Join should give the stronger isolation (union of requirements)
+    assert_eq!(result, strong);
+    assert!(result.at_least(&weak));
+    assert!(result.at_least(&strong));
+}
+
+#[test]
+fn isolation_fromstr_rejects_invalid() {
+    use lattice_guard::isolation::{FileIsolation, NetworkIsolation, ProcessIsolation};
+    use std::str::FromStr;
+
+    // Invalid process isolation
+    assert!(ProcessIsolation::from_str("invalid").is_err());
+    assert!(ProcessIsolation::from_str("").is_err());
+    assert!(ProcessIsolation::from_str("SHARED").is_ok()); // Case insensitive
+
+    // Invalid file isolation
+    assert!(FileIsolation::from_str("invalid").is_err());
+    assert!(FileIsolation::from_str("sandbox").is_err()); // Not exact match
+
+    // Invalid network isolation
+    assert!(NetworkIsolation::from_str("invalid").is_err());
+    assert!(NetworkIsolation::from_str("air-gapped").is_ok()); // Hyphenated allowed
+}
+
+#[test]
+fn isolation_incomparable_cases() {
+    use lattice_guard::frame::Lattice;
+    use lattice_guard::isolation::{
+        FileIsolation, IsolationLattice, NetworkIsolation, ProcessIsolation,
+    };
+
+    // Strong process, weak file/network
+    let a = IsolationLattice {
+        process: ProcessIsolation::MicroVM,
+        file: FileIsolation::Unrestricted,
+        network: NetworkIsolation::Host,
+    };
+
+    // Weak process, strong file/network
+    let b = IsolationLattice {
+        process: ProcessIsolation::Shared,
+        file: FileIsolation::Ephemeral,
+        network: NetworkIsolation::Airgapped,
+    };
+
+    // Neither is stronger than the other
+    assert!(!a.leq(&b), "a should not be ≤ b");
+    assert!(!b.leq(&a), "b should not be ≤ a");
+
+    // Meet gives weakest on all dimensions
+    let meet = a.meet(&b);
+    assert_eq!(meet.process, ProcessIsolation::Shared);
+    assert_eq!(meet.file, FileIsolation::Unrestricted);
+    assert_eq!(meet.network, NetworkIsolation::Host);
+
+    // Join gives strongest on all dimensions
+    let join = a.join(&b);
+    assert_eq!(join.process, ProcessIsolation::MicroVM);
+    assert_eq!(join.file, FileIsolation::Ephemeral);
+    assert_eq!(join.network, NetworkIsolation::Airgapped);
+}
+
+#[test]
+#[cfg(feature = "cel")]
+fn isolation_cel_constraint_evaluation() {
+    use lattice_guard::constraint::{Constraint, PolicyContext};
+    use lattice_guard::isolation::IsolationLattice;
+    use lattice_guard::Operation;
+
+    // Constraint: bash requires process isolation
+    let constraint = Constraint::new(
+        "bash-isolation",
+        r#"operation == "run_bash" && isolation.process == "shared""#,
+    )
+    .expect("Valid CEL")
+    .with_obligation(Operation::RunBash);
+
+    // Test with shared isolation - should trigger
+    let ctx_shared =
+        PolicyContext::new(Operation::RunBash).with_isolation(IsolationLattice::localhost());
+    let obs = constraint.evaluate(&ctx_shared).expect("Should evaluate");
+    assert!(
+        obs.requires(Operation::RunBash),
+        "Should require approval for bash in shared"
+    );
+
+    // Test with namespaced isolation - should NOT trigger
+    let ctx_namespaced =
+        PolicyContext::new(Operation::RunBash).with_isolation(IsolationLattice::sandboxed());
+    let obs = constraint
+        .evaluate(&ctx_namespaced)
+        .expect("Should evaluate");
+    assert!(
+        !obs.requires(Operation::RunBash),
+        "Should NOT require approval in namespaced"
+    );
+}
+
+#[test]
+#[cfg(feature = "cel")]
+fn isolation_cel_web_requires_microvm() {
+    use lattice_guard::constraint::{Constraint, PolicyContext};
+    use lattice_guard::isolation::IsolationLattice;
+    use lattice_guard::Operation;
+
+    // Constraint: web access requires microVM
+    let constraint = Constraint::new(
+        "web-vm",
+        r#"operation in ["web_fetch", "web_search"] && isolation.process != "microvm""#,
+    )
+    .expect("Valid CEL")
+    .with_obligation(Operation::WebFetch)
+    .with_obligation(Operation::WebSearch);
+
+    // Sandboxed (not microvm) - should trigger
+    let ctx = PolicyContext::new(Operation::WebFetch).with_isolation(IsolationLattice::sandboxed());
+    let obs = constraint.evaluate(&ctx).expect("Should evaluate");
+    assert!(obs.requires(Operation::WebFetch), "Should require approval");
+
+    // MicroVM - should NOT trigger
+    let ctx = PolicyContext::new(Operation::WebFetch)
+        .with_isolation(IsolationLattice::microvm_with_network());
+    let obs = constraint.evaluate(&ctx).expect("Should evaluate");
+    assert!(
+        !obs.requires(Operation::WebFetch),
+        "Should NOT require approval in microvm"
+    );
+}

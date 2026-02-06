@@ -13,8 +13,9 @@
 .DS_Store
 Thumbs.db
 
-# Local cargo data
+# Local cargo data (except audit.toml for security advisory ignores)
 .cargo/
+!.cargo/audit.toml
 
 # Cargo lock for libraries (keep for workspace)
 # Cargo.lock

@@ -5,11 +5,14 @@
 //! - Heyting algebra adjunction
 //! - Graded monad laws
 
+#[cfg(feature = "cel")]
+use lattice_guard::constraint::{Constraint, Policy, PolicyContext};
 use lattice_guard::{
     frame::{BoundedLattice, Lattice, Nucleus, TrifectaQuotient},
     graded::{Graded, RiskGrade},
     heyting::HeytingAlgebra,
-    CapabilityLattice, CapabilityLevel, PermissionLattice, TrifectaRisk,
+    isolation::{FileIsolation, IsolationLattice, NetworkIsolation, ProcessIsolation},
+    CapabilityLattice, CapabilityLevel, Operation, PermissionLattice, TrifectaRisk,
 };
 use proptest::prelude::*;
 
@@ -77,6 +80,45 @@ fn arb_trifecta_risk() -> impl Strategy<Value = TrifectaRisk> {
         Just(TrifectaRisk::Medium),
         Just(TrifectaRisk::Complete),
     ]
+}
+
+fn arb_process_isolation() -> impl Strategy<Value = ProcessIsolation> {
+    prop_oneof![
+        Just(ProcessIsolation::Shared),
+        Just(ProcessIsolation::Namespaced),
+        Just(ProcessIsolation::MicroVM),
+    ]
+}
+
+fn arb_file_isolation() -> impl Strategy<Value = FileIsolation> {
+    prop_oneof![
+        Just(FileIsolation::Unrestricted),
+        Just(FileIsolation::Sandboxed),
+        Just(FileIsolation::ReadOnly),
+        Just(FileIsolation::Ephemeral),
+    ]
+}
+
+fn arb_network_isolation() -> impl Strategy<Value = NetworkIsolation> {
+    prop_oneof![
+        Just(NetworkIsolation::Host),
+        Just(NetworkIsolation::Namespaced),
+        Just(NetworkIsolation::Filtered),
+        Just(NetworkIsolation::Airgapped),
+    ]
+}
+
+fn arb_isolation_lattice() -> impl Strategy<Value = IsolationLattice> {
+    (
+        arb_process_isolation(),
+        arb_file_isolation(),
+        arb_network_isolation(),
+    )
+        .prop_map(|(process, file, network)| IsolationLattice {
+            process,
+            file,
+            network,
+        })
 }
 
 fn arb_permission_lattice() -> impl Strategy<Value = PermissionLattice> {
@@ -350,5 +392,346 @@ proptest! {
         let lhs = Lattice::meet(&a, &Lattice::join(&b, &c));
         let rhs = Lattice::join(&Lattice::meet(&a, &b), &Lattice::meet(&a, &c));
         prop_assert_eq!(lhs, rhs);
+    }
+}
+
+// ============================================
+// Constraint Nucleus Laws (CEL feature)
+// ============================================
+
+#[cfg(feature = "cel")]
+fn arb_operation() -> impl Strategy<Value = Operation> {
+    prop_oneof![
+        Just(Operation::ReadFiles),
+        Just(Operation::WriteFiles),
+        Just(Operation::EditFiles),
+        Just(Operation::RunBash),
+        Just(Operation::GlobSearch),
+        Just(Operation::GrepSearch),
+        Just(Operation::WebSearch),
+        Just(Operation::WebFetch),
+        Just(Operation::GitCommit),
+        Just(Operation::GitPush),
+        Just(Operation::CreatePr),
+    ]
+}
+
+#[cfg(feature = "cel")]
+fn arb_policy_context() -> impl Strategy<Value = PolicyContext> {
+    (
+        arb_operation(),
+        arb_capability_lattice(),
+        arb_trifecta_risk(),
+        0.0f64..=1.0f64,
+        prop::bool::ANY,
+        0u32..100u32,
+        arb_isolation_lattice(),
+    )
+        .prop_map(|(op, caps, risk, budget, approval, rate, isolation)| {
+            PolicyContext::new(op)
+                .with_capabilities(caps)
+                .with_trifecta_risk(risk)
+                .with_budget(budget)
+                .with_approval(approval)
+                .with_request_rate(rate)
+                .with_isolation(isolation)
+        })
+}
+
+#[cfg(feature = "cel")]
+proptest! {
+    // ============================================
+    // Constraint: Nucleus Laws
+    // ============================================
+
+    /// A constraint's evaluate is **idempotent**: once obligations are added,
+    /// re-evaluating doesn't change them.
+    #[test]
+    fn constraint_is_idempotent(ctx in arb_policy_context()) {
+        // Use a constraint that always triggers
+        let constraint = Constraint::new("always", "true")
+            .unwrap()
+            .with_obligation(Operation::WriteFiles);
+
+        let once = constraint.evaluate(&ctx).unwrap();
+        // Re-evaluate with same context - should get same result
+        let twice = constraint.evaluate(&ctx).unwrap();
+
+        prop_assert_eq!(once, twice, "Constraint evaluate must be idempotent");
+    }
+
+    /// A constraint is **deflationary**: it can only add obligations, never remove them.
+    #[test]
+    fn constraint_is_deflationary(ctx in arb_policy_context()) {
+        let constraint = Constraint::new("always", "true")
+            .unwrap()
+            .with_obligation(Operation::WriteFiles);
+
+        let result_obligations = constraint.evaluate(&ctx).unwrap();
+
+        // Deflationary: when condition triggers, obligations are added
+        // A "true" condition always triggers, so WriteFiles should always be present
+        prop_assert!(
+            result_obligations.requires(Operation::WriteFiles),
+            "Deflationary constraint must add its obligations when triggered"
+        );
+    }
+
+    /// A constraint's condition evaluation is **pure**: same input, same output.
+    #[test]
+    fn constraint_is_pure(ctx in arb_policy_context()) {
+        let constraint = Constraint::new("check-op", r#"operation == "write_files""#)
+            .unwrap()
+            .with_obligation(Operation::WriteFiles);
+
+        let result1 = constraint.evaluate(&ctx).unwrap();
+        let result2 = constraint.evaluate(&ctx).unwrap();
+
+        prop_assert_eq!(result1, result2, "Constraint evaluate must be pure");
+    }
+
+    /// Policy evaluation accumulates obligations from all constraints.
+    #[test]
+    fn policy_accumulates_obligations(ctx in arb_policy_context()) {
+        let policy = Policy::new("test")
+            .with_constraint(
+                Constraint::new("c1", "true")
+                    .unwrap()
+                    .with_obligation(Operation::ReadFiles)
+            )
+            .with_constraint(
+                Constraint::new("c2", "true")
+                    .unwrap()
+                    .with_obligation(Operation::WriteFiles)
+            );
+
+        let obligations = policy.evaluate(&ctx).unwrap();
+
+        // Both obligations should be present
+        prop_assert!(obligations.requires(Operation::ReadFiles), "Policy should accumulate ReadFiles");
+        prop_assert!(obligations.requires(Operation::WriteFiles), "Policy should accumulate WriteFiles");
+    }
+
+    /// Policy evaluation is idempotent: evaluating twice gives same result.
+    #[test]
+    fn policy_is_idempotent(ctx in arb_policy_context()) {
+        let policy = Policy::new("test")
+            .with_constraint(
+                Constraint::new("c1", "true")
+                    .unwrap()
+                    .with_obligation(Operation::GitPush)
+            );
+
+        let once = policy.evaluate(&ctx).unwrap();
+        let twice = policy.evaluate(&ctx).unwrap();
+
+        prop_assert_eq!(once, twice, "Policy evaluate must be idempotent");
+    }
+
+    /// Trifecta detection: when all three trifecta capabilities are present,
+    /// exfiltration operations should require approval.
+    #[test]
+    fn trifecta_adds_obligations_when_complete(
+        op in arb_operation(),
+        budget in 0.0f64..=1.0f64
+    ) {
+        // Full trifecta: read + web + push
+        let caps = CapabilityLattice {
+            read_files: CapabilityLevel::Always,
+            web_fetch: CapabilityLevel::LowRisk,
+            git_push: CapabilityLevel::LowRisk,
+            ..Default::default()
+        };
+
+        let ctx = PolicyContext::new(op)
+            .with_capabilities(caps)
+            .with_trifecta_risk(TrifectaRisk::Complete)
+            .with_budget(budget);
+
+        // Default policy enforces trifecta
+        let policy = Policy::new("secure");
+        let obligations = policy.evaluate(&ctx).unwrap();
+
+        // With full trifecta, git_push should require approval
+        prop_assert!(
+            obligations.requires(Operation::GitPush),
+            "Full trifecta should require approval for git_push"
+        );
+    }
+}
+
+// ============================================
+// Isolation Lattice Laws
+// ============================================
+
+proptest! {
+    // ============================================
+    // Meet Laws
+    // ============================================
+
+    #[test]
+    fn isolation_meet_is_commutative(
+        a in arb_isolation_lattice(),
+        b in arb_isolation_lattice()
+    ) {
+        prop_assert_eq!(a.meet(&b), b.meet(&a));
+    }
+
+    #[test]
+    fn isolation_meet_is_associative(
+        a in arb_isolation_lattice(),
+        b in arb_isolation_lattice(),
+        c in arb_isolation_lattice()
+    ) {
+        let ab_c = a.meet(&b).meet(&c);
+        let a_bc = a.meet(&b.meet(&c));
+        prop_assert_eq!(ab_c, a_bc);
+    }
+
+    #[test]
+    fn isolation_meet_is_idempotent(a in arb_isolation_lattice()) {
+        prop_assert_eq!(a.meet(&a), a);
+    }
+
+    // ============================================
+    // Join Laws
+    // ============================================
+
+    #[test]
+    fn isolation_join_is_commutative(
+        a in arb_isolation_lattice(),
+        b in arb_isolation_lattice()
+    ) {
+        prop_assert_eq!(a.join(&b), b.join(&a));
+    }
+
+    #[test]
+    fn isolation_join_is_associative(
+        a in arb_isolation_lattice(),
+        b in arb_isolation_lattice(),
+        c in arb_isolation_lattice()
+    ) {
+        let ab_c = a.join(&b).join(&c);
+        let a_bc = a.join(&b.join(&c));
+        prop_assert_eq!(ab_c, a_bc);
+    }
+
+    #[test]
+    fn isolation_join_is_idempotent(a in arb_isolation_lattice()) {
+        prop_assert_eq!(a.join(&a), a);
+    }
+
+    // ============================================
+    // Absorption Laws
+    // ============================================
+
+    #[test]
+    fn isolation_absorption_meet_join(
+        a in arb_isolation_lattice(),
+        b in arb_isolation_lattice()
+    ) {
+        // a ∧ (a ∨ b) = a
+        let result = a.meet(&a.join(&b));
+        prop_assert_eq!(result, a);
+    }
+
+    #[test]
+    fn isolation_absorption_join_meet(
+        a in arb_isolation_lattice(),
+        b in arb_isolation_lattice()
+    ) {
+        // a ∨ (a ∧ b) = a
+        let result = a.join(&a.meet(&b));
+        prop_assert_eq!(result, a);
+    }
+
+    // ============================================
+    // Bounded Lattice Laws
+    // ============================================
+
+    #[test]
+    fn isolation_top_is_identity_for_meet(a in arb_isolation_lattice()) {
+        let top = IsolationLattice::top();
+        // a ∧ ⊤ = a
+        prop_assert_eq!(a.meet(&top), a);
+    }
+
+    #[test]
+    fn isolation_bottom_is_identity_for_join(a in arb_isolation_lattice()) {
+        let bottom = IsolationLattice::bottom();
+        // a ∨ ⊥ = a
+        prop_assert_eq!(a.join(&bottom), a);
+    }
+
+    #[test]
+    fn isolation_top_is_annihilator_for_join(a in arb_isolation_lattice()) {
+        let top = IsolationLattice::top();
+        // a ∨ ⊤ = ⊤
+        prop_assert_eq!(a.join(&top), top);
+    }
+
+    #[test]
+    fn isolation_bottom_is_annihilator_for_meet(a in arb_isolation_lattice()) {
+        let bottom = IsolationLattice::bottom();
+        // a ∧ ⊥ = ⊥
+        prop_assert_eq!(a.meet(&bottom), bottom);
+    }
+
+    // ============================================
+    // Partial Order Laws
+    // ============================================
+
+    #[test]
+    fn isolation_leq_is_reflexive(a in arb_isolation_lattice()) {
+        prop_assert!(a.leq(&a));
+    }
+
+    #[test]
+    fn isolation_leq_is_antisymmetric(
+        a in arb_isolation_lattice(),
+        b in arb_isolation_lattice()
+    ) {
+        // If a ≤ b and b ≤ a, then a = b
+        if a.leq(&b) && b.leq(&a) {
+            prop_assert_eq!(a, b);
+        }
+    }
+
+    #[test]
+    fn isolation_leq_is_transitive(
+        a in arb_isolation_lattice(),
+        b in arb_isolation_lattice(),
+        c in arb_isolation_lattice()
+    ) {
+        // If a ≤ b and b ≤ c, then a ≤ c
+        if a.leq(&b) && b.leq(&c) {
+            prop_assert!(a.leq(&c));
+        }
+    }
+
+    // ============================================
+    // Lattice-Order Connection
+    // ============================================
+
+    #[test]
+    fn isolation_meet_gives_lower_bound(
+        a in arb_isolation_lattice(),
+        b in arb_isolation_lattice()
+    ) {
+        let meet = a.meet(&b);
+        // a ∧ b ≤ a and a ∧ b ≤ b
+        prop_assert!(meet.leq(&a), "meet should be ≤ first operand");
+        prop_assert!(meet.leq(&b), "meet should be ≤ second operand");
+    }
+
+    #[test]
+    fn isolation_join_gives_upper_bound(
+        a in arb_isolation_lattice(),
+        b in arb_isolation_lattice()
+    ) {
+        let join = a.join(&b);
+        // a ≤ a ∨ b and b ≤ a ∨ b
+        prop_assert!(a.leq(&join), "first operand should be ≤ join");
+        prop_assert!(b.leq(&join), "second operand should be ≤ join");
     }
 }
