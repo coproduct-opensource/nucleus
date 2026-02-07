@@ -22,41 +22,41 @@ nucleus-spec = { path = "../nucleus-spec" }
 nucleus-client = { path = "../nucleus-client" }
 
 # CLI
-clap = { version = "4.5", features = ["derive", "env"] }
+clap = { workspace = true }
 
 # Async runtime
-tokio = { version = "1", features = ["full", "process"] }
+tokio = { workspace = true, features = ["full", "process"] }
 
 # Serialization and config
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-serde_yaml = "0.9"
-toml = "0.9"
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+toml = { workspace = true }
 
 # Error handling
-anyhow = "1.0"
-thiserror = "2.0"
+anyhow = { workspace = true }
+thiserror = { workspace = true }
 
 # Decimal for budget
-rust_decimal = "1.40"
+rust_decimal = { workspace = true }
 
 # Utilities
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 shellexpand = "3.1"
 dirs = "6.0"
-uuid = { version = "1.11", features = ["v4"] }
-ureq = { version = "3.1", features = ["json"] }
+uuid = { workspace = true }
+ureq = { workspace = true }
 rand = "0.9"
-chrono = { version = "0.4", features = ["serde"] }
-hex = "0.4"
+chrono = { workspace = true, features = ["serde"] }
+hex = { workspace = true }
 
 # macOS Keychain (conditional)
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.5"
 
 [dev-dependencies]
-tempfile = "3.15"
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

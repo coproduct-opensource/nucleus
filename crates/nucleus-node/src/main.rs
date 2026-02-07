@@ -38,9 +38,7 @@ mod net;
 mod signed_proxy;
 mod vsock_bridge;
 
-pub mod proto {
-    tonic::include_proto!("nucleus.node.v1");
-}
+pub use nucleus_proto::nucleus_node as proto;
 
 use proto::node_service_server::{NodeService, NodeServiceServer};
 
@@ -1425,9 +1423,8 @@ async fn spawn_firecracker_pod(
         // Create and register SPIFFE identity if identity management is enabled
         let (pod_identity, identity_manager, workload_api_bridge) =
             if let Some(ref manager) = state.identity_manager {
-                // Use pod name or labels for namespace/service_account context
-                // Since Metadata doesn't have namespace, we default to "default"
-                let namespace = "default";
+                // Use pod metadata for namespace/service_account context
+                let namespace = spec.metadata.namespace.as_deref().unwrap_or("default");
                 let service_account = spec.metadata.name.as_deref().unwrap_or("");
                 let identity = manager.identity_for_pod(id, namespace, service_account);
 

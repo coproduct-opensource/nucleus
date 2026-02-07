@@ -1,0 +1,47 @@
+# Nextest configuration for Nucleus workspace
+# https://nexte.st/book/configuration.html
+
+[profile.default]
+test-threads = "num-cpus"
+retries = 0
+failure-output = "immediate"
+success-output = "never"
+status-level = "pass"
+slow-timeout = { period = "60s", terminate-after = 2 }
+leak-timeout = "100ms"
+
+[profile.default.junit]
+path = "target/nextest/junit.xml"
+
+[profile.ci]
+retries = 1
+test-threads = 4
+slow-timeout = { period = "120s", terminate-after = 1 }
+failure-output = "immediate-final"
+success-output = "final"
+
+[profile.ci.junit]
+path = "target/nextest/ci-junit.xml"
+
+# Test groups for controlled parallelism
+[test-groups]
+crypto-tests = { max-threads = 1 }
+integration = { max-threads = 2 }
+property-tests = { max-threads = 2 }
+
+# Property tests (proptest) need more time
+[[profile.default.overrides]]
+filter = 'test(proptest) or test(property)'
+test-group = 'property-tests'
+slow-timeout = { period = "120s", terminate-after = 2 }
+
+# Integration tests that use real network/filesystem
+[[profile.default.overrides]]
+filter = 'test(integration) or test(mtls) or test(security_gauntlet)'
+test-group = 'integration'
+slow-timeout = { period = "180s", terminate-after = 2 }
+
+# Crypto/identity tests need isolation
+[[profile.default.overrides]]
+filter = 'package(nucleus-identity) and test(crypto)'
+test-group = 'crypto-tests'

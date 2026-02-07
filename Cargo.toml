@@ -5,6 +5,7 @@ members = [
     "crates/nucleus-cli",    # CLI: distributed executor with enforcement
     "crates/nucleus-client", # Client signing utilities
     "crates/nucleus-spec",   # Shared PodSpec definitions
+    "crates/nucleus-proto",  # Generated gRPC/Protobuf types
     "crates/nucleus-node",   # Node daemon (kubelet analogue)
     "crates/nucleus-tool-proxy", # Tool proxy server (runs inside pod)
     "crates/nucleus-guest-init", # Guest init for Firecracker images
@@ -25,3 +26,61 @@ authors = ["Coproduct <hello@coproduct.dev>"]
 
 [workspace.lints.clippy]
 type_complexity = "allow"
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+toml = "0.9"
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Async runtime
+tokio = { version = "1", default-features = false }
+tokio-rustls = "0.26"
+tokio-test = "0.4"
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Logging/tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Crypto/signing
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+
+# TLS
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+x509-parser = { version = "0.18", features = ["verify"] }
+
+# HTTP
+reqwest = { version = "0.12", default-features = false }
+axum = { version = "0.8", features = ["macros", "json"] }
+ureq = { version = "3.2", features = ["json"] }
+
+# gRPC
+tonic = { version = "0.14", features = ["transport", "tls-ring"] }
+prost = "0.14"
+prost-types = "0.14"
+tonic-prost = "0.14"
+
+# Utils
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+rust_decimal = "1.40"
+shell-words = "1.1"
+regex = "1.12"
+
+# Testing
+tempfile = "3"
+proptest = "1.8"
+
+# Build
+tonic-prost-build = "0.14"
+protoc-bin-vendored = "3.2"

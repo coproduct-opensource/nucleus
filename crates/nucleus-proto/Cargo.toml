@@ -1,0 +1,21 @@
+[package]
+name = "nucleus-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Generated gRPC/Protobuf types for nucleus-node"
+repository = "https://github.com/coproduct-opensource/nucleus"
+
+[dependencies]
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+
+[build-dependencies]
+tonic-prost-build = { workspace = true }
+protoc-bin-vendored = { workspace = true }
+
+[lints]
+workspace = true

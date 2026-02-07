@@ -12,10 +12,10 @@ keywords = ["ai", "security", "spec", "yaml", "agents"]
 categories = ["config", "development-tools"]
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
-serde_yaml = "0.9"
-serde_json = "1.0"
-thiserror = "2.0"
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 
 lattice-guard = { path = "../lattice-guard", features = ["serde"] }
 

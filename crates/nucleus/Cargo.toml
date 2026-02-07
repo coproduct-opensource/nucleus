@@ -30,18 +30,15 @@ quanta = "0.12"
 cap-std = "4"          # Capability-based filesystem
 cap-tempfile = "4"     # Secure temp files
 
-# Process spawning with sandboxing
-# (using cap-std's command wrapper where available)
-
 # Error handling
-thiserror = "2.0"
+thiserror = { workspace = true }
 
 # Optional: async support
-tokio = { version = "1", features = ["process", "fs", "io-util"], optional = true }
+tokio = { workspace = true, features = ["process", "fs", "io-util"], optional = true }
 
 # Shell parsing for command validation
-shell-words = "1.1"
+shell-words = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
-rust_decimal = "1.40"
+tempfile = { workspace = true }
+rust_decimal = { workspace = true }

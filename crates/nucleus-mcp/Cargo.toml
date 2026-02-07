@@ -16,13 +16,13 @@ name = "nucleus-mcp"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1.0"
-clap = { version = "4.5", features = ["derive", "env"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-serde_yaml = "0.9"
-ureq = { version = "3.1", features = ["json"] }
-uuid = { version = "1", features = ["v4"] }
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+ureq = { workspace = true }
+uuid = { workspace = true }
 
 nucleus-client = { path = "../nucleus-client" }
 nucleus-spec = { path = "../nucleus-spec" }
