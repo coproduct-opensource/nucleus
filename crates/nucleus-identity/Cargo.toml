@@ -19,38 +19,38 @@ spire = ["dep:spiffe"]
 [dependencies]
 # Crypto
 rcgen = "0.14"
-rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
-x509-parser = { version = "0.17", features = ["verify"] }
+rustls = { workspace = true }
+x509-parser = { workspace = true }
 ring = "0.17"
 
 # Async
-tokio = { version = "1", features = ["sync", "time", "io-util", "net", "rt", "macros", "fs"] }
-tokio-rustls = "0.26"
+tokio = { workspace = true, features = ["sync", "time", "io-util", "net", "rt", "macros", "fs"] }
+tokio-rustls = { workspace = true }
 async-trait = "0.1"
 
 # Serialization
-prost = "0.14"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+prost = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 # Certificate validation
 webpki = { package = "rustls-webpki", version = "0.102" }
 
 # Utils
-chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+chrono = { workspace = true }
 time = "0.3"
-thiserror = "2"
-tracing = "0.1"
+thiserror = { workspace = true }
+tracing = { workspace = true }
 
 # SPIRE integration (optional)
 spiffe = { version = "0.11", optional = true, features = ["workload-api-x509"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["full", "test-util"] }
-tokio-test = "0.4"
-tempfile = "3"
-proptest = "1.6"
-rand = "0.8"
+tokio = { workspace = true, features = ["full", "test-util"] }
+tokio-test = { workspace = true }
+tempfile = { workspace = true }
+proptest = { workspace = true }
+rand = "0.9"
 
 [lints]
 workspace = true

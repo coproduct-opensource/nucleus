@@ -27,33 +27,33 @@ spec = ["dep:serde_yaml", "dep:toml", "serde", "cel"]
 testing = []
 
 [dependencies]
-chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
-sha2 = "0.10"
-uuid = { version = "1.20", features = ["v4"] }
-tracing = "0.1"
+chrono = { workspace = true }
+sha2 = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
 
 # Optional serde support
-serde = { version = "1.0", features = ["derive"], optional = true }
-serde_json = { version = "1.0", optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 # Security: proper decimal arithmetic for budget (no f64 exploits)
-rust_decimal = "1.40"
+rust_decimal = { workspace = true }
 
 # Security: proper shell command parsing (no injection via quoting)
-shell-words = "1.1"
+shell-words = { workspace = true }
 
 # Glob pattern matching (audited, stable)
-regex = "1.12"
+regex = { workspace = true }
 
 # CEL expression evaluation (optional, for user-defined nuclei)
 cel-interpreter = { version = "0.10", optional = true }
 
 # Policy specification parsing (optional)
-serde_yaml = { version = "0.9", optional = true }
-toml = { version = "0.8", optional = true }
+serde_yaml = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
 
 [dev-dependencies]
-proptest = "1.9"
-serde_json = "1.0"
-tempfile = "3"
+proptest = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
 kani = "0.0.1"
