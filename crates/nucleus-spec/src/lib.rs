@@ -39,6 +39,12 @@ impl PodSpec {
 pub struct Metadata {
     /// Optional pod name.
     pub name: Option<String>,
+    /// Optional namespace for identity derivation.
+    /// When set, this controls the SPIFFE namespace (e.g., "agents" for durable
+    /// agent identities, "default" for ephemeral pods).
+    /// Defaults to "default" when not specified.
+    #[serde(default)]
+    pub namespace: Option<String>,
     /// Optional labels.
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
@@ -580,5 +586,59 @@ spec:
             debug_output.contains("[REDACTED]"),
             "Debug should show redacted markers"
         );
+    }
+
+    #[test]
+    fn test_metadata_namespace_backward_compat() {
+        // YAML without namespace (existing PodSpecs) should parse fine
+        let yaml_no_ns = r#"
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: test-pod
+spec:
+  work_dir: /tmp
+  policy:
+    type: profile
+    name: default
+"#;
+        let spec: PodSpec =
+            serde_yaml::from_str(yaml_no_ns).expect("should parse without namespace");
+        assert!(spec.metadata.namespace.is_none());
+        assert_eq!(spec.metadata.name.as_deref(), Some("test-pod"));
+
+        // YAML with namespace should parse and preserve the value
+        let yaml_with_ns = r#"
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: coder-alpha
+  namespace: agents
+spec:
+  work_dir: /tmp
+  policy:
+    type: profile
+    name: default
+"#;
+        let spec: PodSpec =
+            serde_yaml::from_str(yaml_with_ns).expect("should parse with namespace");
+        assert_eq!(spec.metadata.namespace.as_deref(), Some("agents"));
+        assert_eq!(spec.metadata.name.as_deref(), Some("coder-alpha"));
+    }
+
+    #[test]
+    fn test_metadata_namespace_roundtrip() {
+        let metadata = Metadata {
+            name: Some("test-agent".to_string()),
+            namespace: Some("agents".to_string()),
+            ..Default::default()
+        };
+
+        let yaml = serde_yaml::to_string(&metadata).expect("should serialize");
+        assert!(yaml.contains("namespace: agents"));
+
+        let parsed: Metadata = serde_yaml::from_str(&yaml).expect("should deserialize");
+        assert_eq!(parsed.namespace.as_deref(), Some("agents"));
+        assert_eq!(parsed.name.as_deref(), Some("test-agent"));
     }
 }
