@@ -79,7 +79,7 @@ regex = "1.12"
 
 # Testing
 tempfile = "3"
-proptest = "1.8"
+proptest = "1.10"
 
 # Build
 tonic-prost-build = "0.14"
