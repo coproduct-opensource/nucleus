@@ -47,7 +47,7 @@ shellexpand = "3.1"
 dirs = "6.0"
 uuid = { workspace = true }
 ureq = { workspace = true }
-rand = "0.9"
+rand = "0.10"
 chrono = { workspace = true, features = ["serde"] }
 hex = { workspace = true }
 
