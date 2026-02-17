@@ -39,7 +39,7 @@ hex = { workspace = true }
 ipnet = "2.11"
 
 # GitHub OIDC support
-jsonwebtoken = "9"
+jsonwebtoken = "10"
 reqwest = { workspace = true, features = ["json", "rustls-tls-manual-roots"] }
 rustls = { workspace = true }
 webpki-roots = "1.0"
