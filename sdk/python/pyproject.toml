@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nucleus-sdk"
+version = "0.0.0"
+description = "Python SDK for Nucleus intents and tool-proxy APIs"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Coproduct" }
+]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+]
+dependencies = [
+  "requests>=2.31",
+]
+
+[project.urls]
+Homepage = "https://github.com/coproduct-opensource/nucleus"
+
+[tool.setuptools]
+packages = ["nucleus_sdk"]
