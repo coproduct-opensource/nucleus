@@ -18,7 +18,7 @@
 #     nucleus-node
 
 # ── Planner (cargo-chef recipe) ───────────────────────────────────────
-FROM rust:1.85-bookworm AS planner
+FROM rust:1.88-bookworm AS planner
 
 RUN cargo install cargo-chef --locked
 WORKDIR /build
@@ -27,7 +27,7 @@ COPY crates/ crates/
 RUN cargo chef prepare --recipe-path recipe.json
 
 # ── Cook (compile dependencies only — cached across source changes) ───
-FROM rust:1.85-bookworm AS cook
+FROM rust:1.88-bookworm AS cook
 
 RUN cargo install cargo-chef --locked
 WORKDIR /build
