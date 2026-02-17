@@ -50,5 +50,8 @@ rustls = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio-vsock = "0.7"
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [lints]
 workspace = true
