@@ -302,6 +302,28 @@ impl CredentialsSpec {
     }
 }
 
+/// Compute SHA-256 of a byte slice and return the hex string.
+pub fn sha256_bytes_hex(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(data))
+}
+
+/// Exit report written by the tool-proxy before shutdown.
+///
+/// Contains a deterministic workspace content hash and the audit chain tail
+/// so the host (nucleus-node) can build an `ExecutionReceipt`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExitReport {
+    /// SHA-256 of workspace contents at exit.
+    pub workspace_hash: String,
+    /// Hash of the last audit log entry.
+    pub audit_tail_hash: String,
+    /// Total number of audit log entries.
+    pub audit_entry_count: u64,
+    /// Unix timestamp when the report was generated.
+    pub timestamp_unix: u64,
+}
+
 /// Errors resolving policies.
 #[derive(Debug, Error)]
 pub enum PolicyError {

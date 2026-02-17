@@ -28,6 +28,8 @@ use tracing::{info, warn};
 
 mod attestation;
 mod auth;
+#[allow(unused)]
+mod exit_report;
 mod mtls;
 mod policy;
 mod validation;
