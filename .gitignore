@@ -25,3 +25,6 @@ Thumbs.db
 
 # Proptest regression artifacts
 *.proptest-regressions
+
+# Runtime artifacts (pod logs, specs)
+nucleus-node/pods/
