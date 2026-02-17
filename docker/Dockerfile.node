@@ -1,0 +1,74 @@
+# Nucleus Node — kubelet analogue for secure pod execution.
+#
+# Supports three drivers:
+#   --driver local       Process isolation only (dev/test)
+#   --driver container   Docker/Colima/Podman (staging)
+#   --driver firecracker MicroVM with KVM (production)
+#
+# Build (requires BuildKit):
+#   docker build -f docker/Dockerfile.node -t nucleus-node .
+#
+# Run (container driver with Colima):
+#   docker run -v /var/run/docker.sock:/var/run/docker.sock \
+#     -e NUCLEUS_NODE_AUTH_SECRET=dev-secret \
+#     -e NUCLEUS_NODE_PROXY_AUTH_SECRET=dev-proxy-secret \
+#     -e NUCLEUS_NODE_PROXY_APPROVAL_SECRET=dev-approval-secret \
+#     -e NUCLEUS_CONTAINER_IMAGE=nucleus-tool-proxy:latest \
+#     -p 4080:4080 \
+#     nucleus-node
+
+# ── Planner (cargo-chef recipe) ───────────────────────────────────────
+FROM rust:1.85-bookworm AS planner
+
+RUN cargo install cargo-chef --locked
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ── Cook (compile dependencies only — cached across source changes) ───
+FROM rust:1.85-bookworm AS cook
+
+RUN cargo install cargo-chef --locked
+WORKDIR /build
+COPY --from=planner /build/recipe.json recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/target \
+    cargo chef cook --release --recipe-path recipe.json \
+        -p nucleus-node -p nucleus-tool-proxy
+
+# ── Builder (compile our code — fast when only src changes) ───────────
+FROM cook AS builder
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/target \
+    cargo build --release -p nucleus-node -p nucleus-tool-proxy \
+    && cp target/release/nucleus-node /usr/local/bin/ \
+    && cp target/release/nucleus-tool-proxy /usr/local/bin/ \
+    && strip /usr/local/bin/nucleus-node \
+    && strip /usr/local/bin/nucleus-tool-proxy
+
+# ── Runtime ──────────────────────────────────────────────────────────
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /usr/local/bin/nucleus-node /usr/local/bin/
+COPY --from=builder /usr/local/bin/nucleus-tool-proxy /usr/local/bin/
+
+RUN mkdir -p /data/nucleus-node
+ENV NUCLEUS_NODE_STATE_DIR=/data/nucleus-node
+
+ENV NUCLEUS_NODE_LISTEN=0.0.0.0:8080
+ENV NUCLEUS_NODE_GRPC_LISTEN=0.0.0.0:4080
+
+ENV NUCLEUS_NODE_DRIVER=container
+ENV NUCLEUS_CONTAINER_RUNTIME=docker
+
+EXPOSE 4080 8080
+
+ENTRYPOINT ["nucleus-node"]

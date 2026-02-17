@@ -1,0 +1,69 @@
+# Nucleus Tool Proxy — runs INSIDE each pod container as the guest process.
+#
+# This image is referenced by nucleus-node's container driver via:
+#   --container-image nucleus-tool-proxy:latest
+#
+# Contains:
+#   - nucleus-tool-proxy binary (lattice-guard policy enforcement)
+#   - claude CLI (installed via npm)
+#   - git, curl, and other common dev tools
+#
+# Build (requires BuildKit):
+#   docker build -f docker/Dockerfile.tool-proxy -t nucleus-tool-proxy .
+
+# ── Planner (cargo-chef recipe) ───────────────────────────────────────
+FROM rust:1.85-bookworm AS planner
+
+RUN cargo install cargo-chef --locked
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ── Cook (compile dependencies only — cached across source changes) ───
+FROM rust:1.85-bookworm AS cook
+
+RUN cargo install cargo-chef --locked
+WORKDIR /build
+COPY --from=planner /build/recipe.json recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/target \
+    cargo chef cook --release --recipe-path recipe.json \
+        -p nucleus-tool-proxy
+
+# ── Builder (compile our code — fast when only src changes) ───────────
+FROM cook AS builder
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/target \
+    cargo build --release -p nucleus-tool-proxy \
+    && cp target/release/nucleus-tool-proxy /usr/local/bin/ \
+    && strip /usr/local/bin/nucleus-tool-proxy
+
+# ── Runtime ──────────────────────────────────────────────────────────
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js (for Claude CLI)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Claude CLI globally
+RUN npm install -g @anthropic-ai/claude-code
+
+COPY --from=builder /usr/local/bin/nucleus-tool-proxy /usr/local/bin/
+
+RUN useradd -m -s /bin/bash -u 1000 agent
+USER agent
+WORKDIR /workspace
+
+ENTRYPOINT ["nucleus-tool-proxy", "--listen", "0.0.0.0:8080"]
