@@ -31,6 +31,7 @@ mod auth;
 #[allow(unused)]
 mod exit_report;
 mod mtls;
+mod node_client;
 mod policy;
 mod validation;
 
@@ -171,6 +172,24 @@ struct Args {
         default_value = "strict"
     )]
     drand_fail_mode: String,
+
+    // === Pod Management Configuration (orchestrator mode) ===
+    /// Enable pod management endpoints (for orchestrator pods).
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_ENABLE_POD_MGMT")]
+    enable_pod_mgmt: bool,
+
+    /// nucleus-node HTTP endpoint for pod management.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_NODE_URL")]
+    node_url: Option<String>,
+
+    /// Auth secret for requests to nucleus-node (HMAC).
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_NODE_AUTH_SECRET")]
+    node_auth_secret: Option<String>,
+
+    /// Delegation ceiling for sub-pod permissions (JSON-serialized PermissionLattice).
+    /// Sub-pods cannot exceed this ceiling via delegate_to().
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_DELEGATION_CEILING")]
+    delegation_ceiling: Option<String>,
 }
 
 #[derive(Clone)]
@@ -187,6 +206,12 @@ struct AppState {
     dns_allow: Vec<String>,
     attestation_verifier: AttestationVerifier,
     policy_engine: PolicyEngine,
+    /// Node client for pod management (orchestrator mode only).
+    node_client: Option<Arc<node_client::NodeClient>>,
+    /// Delegation ceiling: sub-pod permissions cannot exceed this.
+    delegation_ceiling: Option<Arc<PermissionLattice>>,
+    /// Credentials loaded from orchestrator environment for injection into sub-pods.
+    orchestrator_credentials: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Default)]
@@ -812,6 +837,42 @@ async fn main() -> Result<(), ApiError> {
         PolicyEngine::disabled()
     };
 
+    // Build node client for pod management (orchestrator mode)
+    let node_client = if args.enable_pod_mgmt {
+        let node_url = args.node_url.as_deref().unwrap_or("http://127.0.0.1:3000");
+        let node_secret = args
+            .node_auth_secret
+            .clone()
+            .unwrap_or_else(|| args.auth_secret.clone());
+        info!("pod management enabled (node_url={})", node_url);
+        Some(Arc::new(node_client::NodeClient::new(
+            node_url.to_string(),
+            node_secret,
+        )))
+    } else {
+        None
+    };
+
+    // Parse delegation ceiling for orchestrator mode
+    let delegation_ceiling = if let Some(ref ceiling_json) = args.delegation_ceiling {
+        let lattice: PermissionLattice = serde_json::from_str(ceiling_json)
+            .map_err(|e| ApiError::Spec(format!("invalid delegation ceiling JSON: {e}")))?;
+        Some(Arc::new(lattice))
+    } else {
+        None
+    };
+
+    // Load orchestrator credentials from environment for sub-pod injection
+    let orchestrator_credentials = {
+        let mut creds = std::collections::BTreeMap::new();
+        for key in ["LLM_API_TOKEN", "GITHUB_TOKEN"] {
+            if let Ok(val) = std::env::var(key) {
+                creds.insert(key.to_string(), val);
+            }
+        }
+        creds
+    };
+
     let state = AppState {
         runtime: Arc::new(runtime),
         approvals,
@@ -825,13 +886,16 @@ async fn main() -> Result<(), ApiError> {
         dns_allow,
         attestation_verifier,
         policy_engine,
+        node_client,
+        delegation_ceiling,
+        orchestrator_credentials,
     };
 
     if let Err(err) = emit_boot_report(&state).await {
         warn!("failed to emit boot report: {err}");
     }
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/v1/health", get(health))
         .route("/v1/read", post(read_file))
         .route("/v1/write", post(write_file))
@@ -841,7 +905,19 @@ async fn main() -> Result<(), ApiError> {
         .route("/v1/grep", post(grep_search))
         .route("/v1/web_search", post(web_search))
         .route("/v1/approve", post(approve_operation))
-        .route("/v1/escalate", post(escalate_permissions))
+        .route("/v1/escalate", post(escalate_permissions));
+
+    // Conditionally add pod management routes for orchestrator mode
+    if state.node_client.is_some() {
+        app = app
+            .route("/v1/pod/create", post(create_sub_pod))
+            .route("/v1/pod/list", post(list_sub_pods))
+            .route("/v1/pod/status", post(get_pod_status))
+            .route("/v1/pod/logs", post(get_pod_logs))
+            .route("/v1/pod/cancel", post(cancel_sub_pod));
+    }
+
+    let app = app
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state, auth_middleware));
 
@@ -2384,6 +2460,228 @@ fn resolve_approval_expiry(
     }
     let max_allowed = now + MAX_APPROVAL_TTL_SECS;
     Ok(Some(requested.min(max_allowed)))
+}
+
+// =============================================================================
+// Pod Management Handlers (orchestrator mode)
+// =============================================================================
+
+#[derive(Debug, Deserialize)]
+struct CreateSubPodRequest {
+    /// PodSpec YAML for the sub-pod.
+    spec_yaml: String,
+    /// Reason for creating the sub-pod (audit trail).
+    reason: String,
+}
+
+#[derive(Debug, Serialize)]
+struct CreateSubPodResponse {
+    pod_id: String,
+    proxy_addr: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PodIdRequest {
+    pod_id: String,
+}
+
+/// Check that manage_pods capability is at least LowRisk.
+fn check_manage_pods(state: &AppState) -> Result<(), ApiError> {
+    let policy = state.runtime.policy();
+    let level = policy.capabilities.manage_pods;
+    if level == CapabilityLevel::Never {
+        return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+            capability: "manage_pods".into(),
+            actual: level,
+            required: CapabilityLevel::LowRisk,
+        }));
+    }
+    Ok(())
+}
+
+async fn create_sub_pod(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<axum::Extension<auth::AuthContext>>,
+    Json(req): Json<CreateSubPodRequest>,
+) -> Result<Json<CreateSubPodResponse>, ApiError> {
+    let auth_ctx = auth.map(|e| e.0);
+    let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
+
+    // 1. Check manage_pods capability
+    check_manage_pods(&state)?;
+
+    // 2. Parse requested PodSpec
+    let mut spec: PodSpec = serde_yaml::from_str(&req.spec_yaml)
+        .map_err(|e| ApiError::Spec(format!("invalid sub-pod spec: {e}")))?;
+
+    // 3. Resolve requested policy → PermissionLattice
+    let requested = spec
+        .spec
+        .resolve_policy()
+        .map_err(|e| ApiError::Spec(format!("invalid sub-pod policy: {e}")))?;
+
+    // 4. Enforce delegation ceiling via delegate_to()
+    if let Some(ceiling) = state.delegation_ceiling.as_ref() {
+        let delegated = ceiling
+            .delegate_to(&requested, &req.reason)
+            .map_err(|e| ApiError::Spec(format!("delegation failed: {e}")))?;
+
+        // Replace policy with delegated (never exceeds parent)
+        spec.spec.policy = nucleus_spec::PolicySpec::Inline {
+            lattice: Box::new(delegated),
+        };
+    }
+
+    // 5. Inject credentials from orchestrator's env (transparent to agent)
+    let mut creds = spec.spec.credentials.take().unwrap_or_default();
+    for (key, val) in &state.orchestrator_credentials {
+        if !creds.env.contains_key(key) {
+            creds.env.insert(key.clone(), val.clone());
+        }
+    }
+    if !creds.is_empty() {
+        spec.spec.credentials = Some(creds);
+    }
+
+    // 6. Forward to nucleus-node
+    let node = state
+        .node_client
+        .as_ref()
+        .ok_or_else(|| ApiError::Spec("pod management not enabled".to_string()))?;
+
+    let spec_yaml = serde_yaml::to_string(&spec)
+        .map_err(|e| ApiError::Spec(format!("failed to serialize sub-pod spec: {e}")))?;
+
+    let result = node
+        .create_pod(&spec_yaml)
+        .await
+        .map_err(|e| ApiError::Spec(format!("node create_pod failed: {e}")))?;
+
+    // 7. Audit log
+    audit_event_with_context(
+        &state,
+        &headers,
+        "pod_create",
+        &format!("sub-pod {} (reason: {})", result.id, req.reason),
+        "created",
+        audit_ctx,
+    )
+    .await?;
+
+    Ok(Json(CreateSubPodResponse {
+        pod_id: result.id.to_string(),
+        proxy_addr: result.proxy_addr,
+    }))
+}
+
+async fn list_sub_pods(
+    State(state): State<AppState>,
+    _headers: HeaderMap,
+) -> Result<Json<Vec<node_client::PodInfo>>, ApiError> {
+    check_manage_pods(&state)?;
+
+    let node = state
+        .node_client
+        .as_ref()
+        .ok_or_else(|| ApiError::Spec("pod management not enabled".to_string()))?;
+
+    let pods = node
+        .list_pods()
+        .await
+        .map_err(|e| ApiError::Spec(format!("node list_pods failed: {e}")))?;
+
+    Ok(Json(pods))
+}
+
+async fn get_pod_status(
+    State(state): State<AppState>,
+    Json(req): Json<PodIdRequest>,
+) -> Result<Json<Vec<node_client::PodInfo>>, ApiError> {
+    check_manage_pods(&state)?;
+
+    let node = state
+        .node_client
+        .as_ref()
+        .ok_or_else(|| ApiError::Spec("pod management not enabled".to_string()))?;
+
+    let pods = node
+        .list_pods()
+        .await
+        .map_err(|e| ApiError::Spec(format!("node list_pods failed: {e}")))?;
+
+    let filtered: Vec<_> = pods
+        .into_iter()
+        .filter(|p| p.id.to_string() == req.pod_id)
+        .collect();
+
+    Ok(Json(filtered))
+}
+
+async fn get_pod_logs(
+    State(state): State<AppState>,
+    Json(req): Json<PodIdRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    check_manage_pods(&state)?;
+
+    let node = state
+        .node_client
+        .as_ref()
+        .ok_or_else(|| ApiError::Spec("pod management not enabled".to_string()))?;
+
+    let pod_id: uuid::Uuid = req
+        .pod_id
+        .parse()
+        .map_err(|e| ApiError::Spec(format!("invalid pod_id: {e}")))?;
+
+    let logs = node
+        .pod_logs(pod_id)
+        .await
+        .map_err(|e| ApiError::Spec(format!("node pod_logs failed: {e}")))?;
+
+    Ok(Json(
+        serde_json::json!({ "pod_id": req.pod_id, "logs": logs }),
+    ))
+}
+
+async fn cancel_sub_pod(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    auth: Option<axum::Extension<auth::AuthContext>>,
+    Json(req): Json<PodIdRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let auth_ctx = auth.map(|e| e.0);
+    let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
+
+    check_manage_pods(&state)?;
+
+    let node = state
+        .node_client
+        .as_ref()
+        .ok_or_else(|| ApiError::Spec("pod management not enabled".to_string()))?;
+
+    let pod_id: uuid::Uuid = req
+        .pod_id
+        .parse()
+        .map_err(|e| ApiError::Spec(format!("invalid pod_id: {e}")))?;
+
+    node.cancel_pod(pod_id)
+        .await
+        .map_err(|e| ApiError::Spec(format!("node cancel_pod failed: {e}")))?;
+
+    audit_event_with_context(
+        &state,
+        &headers,
+        "pod_cancel",
+        &format!("sub-pod {}", req.pod_id),
+        "cancelled",
+        audit_ctx,
+    )
+    .await?;
+
+    Ok(Json(
+        serde_json::json!({ "status": "cancelled", "pod_id": req.pod_id }),
+    ))
 }
 
 fn build_runtime(spec: &PodSpec) -> Result<PodRuntime, ApiError> {

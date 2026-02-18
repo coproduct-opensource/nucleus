@@ -60,6 +60,8 @@ pub enum Operation {
     GitPush,
     /// Create PR
     CreatePr,
+    /// Manage sub-pods (create, list, monitor, cancel)
+    ManagePods,
 }
 
 /// Approval obligations that gate autonomous capabilities.
@@ -152,6 +154,9 @@ pub struct CapabilityLattice {
     pub git_push: CapabilityLevel,
     /// Create PR permission level
     pub create_pr: CapabilityLevel,
+    /// Manage sub-pods permission level
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub manage_pods: CapabilityLevel,
 }
 
 impl Default for CapabilityLattice {
@@ -168,6 +173,7 @@ impl Default for CapabilityLattice {
             git_commit: CapabilityLevel::LowRisk,
             git_push: CapabilityLevel::Never,
             create_pr: CapabilityLevel::LowRisk,
+            manage_pods: CapabilityLevel::Never,
         }
     }
 }
@@ -335,6 +341,7 @@ impl CapabilityLattice {
             git_commit: std::cmp::min(self.git_commit, other.git_commit),
             git_push: std::cmp::min(self.git_push, other.git_push),
             create_pr: std::cmp::min(self.create_pr, other.create_pr),
+            manage_pods: std::cmp::min(self.manage_pods, other.manage_pods),
         }
     }
 
@@ -352,6 +359,7 @@ impl CapabilityLattice {
             git_commit: std::cmp::max(self.git_commit, other.git_commit),
             git_push: std::cmp::max(self.git_push, other.git_push),
             create_pr: std::cmp::max(self.create_pr, other.create_pr),
+            manage_pods: std::cmp::max(self.manage_pods, other.manage_pods),
         }
     }
 
@@ -368,6 +376,7 @@ impl CapabilityLattice {
             && self.git_commit <= other.git_commit
             && self.git_push <= other.git_push
             && self.create_pr <= other.create_pr
+            && self.manage_pods <= other.manage_pods
     }
 
     /// Create a permissive capability set (top of lattice).
@@ -384,6 +393,7 @@ impl CapabilityLattice {
             git_commit: CapabilityLevel::Always,
             git_push: CapabilityLevel::Always,
             create_pr: CapabilityLevel::Always,
+            manage_pods: CapabilityLevel::Always,
         }
     }
 
@@ -401,6 +411,7 @@ impl CapabilityLattice {
             git_commit: CapabilityLevel::Never,
             git_push: CapabilityLevel::Never,
             create_pr: CapabilityLevel::Never,
+            manage_pods: CapabilityLevel::Never,
         }
     }
 }
@@ -542,6 +553,7 @@ mod tests {
             git_commit: CapabilityLevel::Never,
             git_push: CapabilityLevel::Never,
             create_pr: CapabilityLevel::Never,
+            manage_pods: CapabilityLevel::Never,
         };
 
         let constraint = IncompatibilityConstraint::enforcing();

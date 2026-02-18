@@ -714,6 +714,7 @@ fn draw_capability_matrix(f: &mut Frame, app: &App) {
         "git_commit",
         "git_push",
         "create_pr",
+        "manage_pods",
     ];
 
     let rows: Vec<Row> = capability_names
@@ -783,6 +784,7 @@ fn get_capability_level(caps: &lattice_guard::CapabilityLattice, name: &str) -> 
         "git_commit" => caps.git_commit,
         "git_push" => caps.git_push,
         "create_pr" => caps.create_pr,
+        "manage_pods" => caps.manage_pods,
         _ => CapabilityLevel::Never,
     }
 }

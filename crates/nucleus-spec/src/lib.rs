@@ -148,6 +148,7 @@ impl PolicySpec {
                 "edit_only" | "edit-only" => Ok(PermissionLattice::edit_only()),
                 "release" => Ok(PermissionLattice::release()),
                 "database_client" | "database-client" => Ok(PermissionLattice::database_client()),
+                "orchestrator" => Ok(PermissionLattice::orchestrator()),
                 "filesystem_readonly" | "filesystem-readonly" => {
                     Ok(PermissionLattice::filesystem_readonly())
                 }
@@ -345,6 +346,10 @@ mod tests {
             ("codegen", "Code generation permissions (network-isolated)"),
             ("pr_approve", "PR approval permissions (CI-gated)"),
             ("pr-approve", "PR approval permissions (CI-gated)"),
+            (
+                "orchestrator",
+                "Orchestrator permissions (pod management only)",
+            ),
         ];
 
         for (name, expected_prefix) in profiles {
@@ -379,6 +384,7 @@ mod tests {
             "codegen",
             "pr_approve",
             "pr-approve",
+            "orchestrator",
             "read_only",
             "read-only",
             "permissive",

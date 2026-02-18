@@ -103,6 +103,7 @@ impl ModalPermissions for PermissionLattice {
                 Operation::GitCommit => result.capabilities.git_commit = CapabilityLevel::Never,
                 Operation::GitPush => result.capabilities.git_push = CapabilityLevel::Never,
                 Operation::CreatePr => result.capabilities.create_pr = CapabilityLevel::Never,
+                Operation::ManagePods => result.capabilities.manage_pods = CapabilityLevel::Never,
             }
         }
 
@@ -252,6 +253,7 @@ impl CapabilityModal {
             Operation::GitCommit => perms.capabilities.git_commit,
             Operation::GitPush => perms.capabilities.git_push,
             Operation::CreatePr => perms.capabilities.create_pr,
+            Operation::ManagePods => perms.capabilities.manage_pods,
         };
 
         let requires_approval = perms.obligations.requires(operation);
@@ -302,6 +304,7 @@ pub fn all_capability_modals(perms: &PermissionLattice) -> Vec<CapabilityModal> 
         CapabilityModal::from_perms(perms, Operation::GitCommit),
         CapabilityModal::from_perms(perms, Operation::GitPush),
         CapabilityModal::from_perms(perms, Operation::CreatePr),
+        CapabilityModal::from_perms(perms, Operation::ManagePods),
     ]
 }
 
@@ -445,7 +448,7 @@ mod tests {
         let modals = all_capability_modals(&perms);
 
         // Should have one modal per operation
-        assert_eq!(modals.len(), 11);
+        assert_eq!(modals.len(), 12);
 
         // Each modal should match the corresponding capability
         for modal in &modals {
@@ -461,6 +464,7 @@ mod tests {
                 Operation::GitCommit => perms.capabilities.git_commit,
                 Operation::GitPush => perms.capabilities.git_push,
                 Operation::CreatePr => perms.capabilities.create_pr,
+                Operation::ManagePods => perms.capabilities.manage_pods,
             };
             assert_eq!(modal.level, expected_level);
         }

@@ -225,6 +225,7 @@ pub enum SelectedCapability {
     GitCommit,
     GitPush,
     CreatePr,
+    ManagePods,
 }
 
 impl SelectedCapability {
@@ -232,7 +233,7 @@ impl SelectedCapability {
         use SelectedCapability::*;
         &[
             ReadFiles, WriteFiles, EditFiles, RunBash, WebSearch, WebFetch, GitCommit, GitPush,
-            CreatePr,
+            CreatePr, ManagePods,
         ]
     }
 
@@ -247,6 +248,7 @@ impl SelectedCapability {
             Self::GitCommit => "git_commit",
             Self::GitPush => "git_push",
             Self::CreatePr => "create_pr",
+            Self::ManagePods => "manage_pods",
         }
     }
 
@@ -261,6 +263,7 @@ impl SelectedCapability {
             Self::GitCommit => 6,
             Self::GitPush => 7,
             Self::CreatePr => 8,
+            Self::ManagePods => 9,
         }
     }
 
@@ -426,6 +429,7 @@ impl App {
             SelectedCapability::GitCommit => self.capabilities.git_commit,
             SelectedCapability::GitPush => self.capabilities.git_push,
             SelectedCapability::CreatePr => self.capabilities.create_pr,
+            SelectedCapability::ManagePods => self.capabilities.manage_pods,
         }
     }
 
@@ -441,6 +445,7 @@ impl App {
             SelectedCapability::GitCommit => self.capabilities.git_commit = level,
             SelectedCapability::GitPush => self.capabilities.git_push = level,
             SelectedCapability::CreatePr => self.capabilities.create_pr = level,
+            SelectedCapability::ManagePods => self.capabilities.manage_pods = level,
         }
         self.current_preset = None;
     }

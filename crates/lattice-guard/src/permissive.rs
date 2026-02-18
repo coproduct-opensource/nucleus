@@ -400,6 +400,11 @@ impl PermissiveExecutor {
                 self.floor.capabilities.create_pr,
                 self.ceiling.capabilities.create_pr,
             ),
+            (
+                Operation::ManagePods,
+                self.floor.capabilities.manage_pods,
+                self.ceiling.capabilities.manage_pods,
+            ),
         ];
 
         for (op, floor_level, ceiling_level) in ops {
@@ -446,6 +451,7 @@ impl PermissiveExecutor {
             Operation::GitCommit => test_caps.git_commit = to,
             Operation::GitPush => test_caps.git_push = to,
             Operation::CreatePr => test_caps.create_pr = to,
+            Operation::ManagePods => test_caps.manage_pods = to,
         }
 
         let before = constraint.trifecta_risk(&self.floor.capabilities);

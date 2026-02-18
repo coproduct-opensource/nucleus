@@ -124,6 +124,48 @@ struct ApproveResponse {
     ok: bool,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct CreatePodRequest {
+    spec_yaml: String,
+    reason: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreatePodResponseBody {
+    pod_id: String,
+    #[serde(default)]
+    proxy_addr: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct PodIdRequest {
+    pod_id: String,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct PodInfoResponse {
+    id: String,
+    #[serde(default)]
+    name: Option<String>,
+    state: String,
+    #[serde(default)]
+    proxy_addr: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PodLogsResponse {
+    logs: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct CancelPodResponse {
+    ok: bool,
+}
+
 #[derive(Debug, Deserialize)]
 struct ErrorBody {
     error: String,
@@ -412,6 +454,9 @@ fn build_tool_defs(policy: Option<&PermissionLattice>) -> Vec<ToolDefinition> {
     let allow_web_fetch = policy
         .map(|p| p.capabilities.web_fetch >= CapabilityLevel::LowRisk)
         .unwrap_or(true);
+    let allow_manage_pods = policy
+        .map(|p| p.capabilities.manage_pods >= CapabilityLevel::LowRisk)
+        .unwrap_or(false);
 
     if allow_read {
         tools.push(ToolDefinition {
@@ -462,6 +507,63 @@ fn build_tool_defs(policy: Option<&PermissionLattice>) -> Vec<ToolDefinition> {
                     "body": { "type": "string", "description": "Optional request body" }
                 },
                 "required": ["url"]
+            }),
+        });
+    }
+
+    if allow_manage_pods {
+        tools.push(ToolDefinition {
+            name: "create_pod".to_string(),
+            description: "Create a sub-pod from a PodSpec YAML definition. The sub-pod's permissions are bounded by the delegation ceiling.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "spec_yaml": { "type": "string", "description": "PodSpec YAML for the sub-pod" },
+                    "reason": { "type": "string", "description": "Why this sub-pod is being created" }
+                },
+                "required": ["spec_yaml", "reason"]
+            }),
+        });
+        tools.push(ToolDefinition {
+            name: "list_pods".to_string(),
+            description: "List all sub-pods managed by this orchestrator.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        });
+        tools.push(ToolDefinition {
+            name: "pod_status".to_string(),
+            description: "Get the current status of a sub-pod.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pod_id": { "type": "string", "description": "UUID of the sub-pod" }
+                },
+                "required": ["pod_id"]
+            }),
+        });
+        tools.push(ToolDefinition {
+            name: "pod_logs".to_string(),
+            description: "Get logs from a sub-pod.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pod_id": { "type": "string", "description": "UUID of the sub-pod" }
+                },
+                "required": ["pod_id"]
+            }),
+        });
+        tools.push(ToolDefinition {
+            name: "cancel_pod".to_string(),
+            description: "Cancel a running sub-pod.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pod_id": { "type": "string", "description": "UUID of the sub-pod" },
+                    "reason": { "type": "string", "description": "Why the pod is being cancelled" }
+                },
+                "required": ["pod_id", "reason"]
             }),
         });
     }
@@ -549,6 +651,51 @@ fn call_tool(client: &ProxyClient, call: &ToolCallParams, approval_prompt: bool)
                 "status: {}{}\nheaders: {:?}\nbody:\n{}",
                 response.status, truncated_note, response.headers, response.body
             ))
+        }
+        "create_pod" => {
+            let req: CreatePodRequest = serde_json::from_value(call.arguments.clone())
+                .map_err(|e| anyhow!("invalid create_pod args: {e}"))?;
+            let response: CreatePodResponseBody = client.post_json("/v1/pod/create", &req)?;
+            let addr_info = response
+                .proxy_addr
+                .map(|a| format!("\nproxy_addr: {}", a))
+                .unwrap_or_default();
+            Ok(format!("pod_id: {}{}", response.pod_id, addr_info))
+        }
+        "list_pods" => {
+            let response: Vec<PodInfoResponse> = client.post_json("/v1/pod/list", &json!({}))?;
+            if response.is_empty() {
+                Ok("No sub-pods found.".to_string())
+            } else {
+                let mut out = String::new();
+                for pod in &response {
+                    let name = pod.name.as_deref().unwrap_or("(unnamed)");
+                    out.push_str(&format!("- {} [{}] state={}\n", pod.id, name, pod.state));
+                }
+                Ok(out)
+            }
+        }
+        "pod_status" => {
+            let req: PodIdRequest = serde_json::from_value(call.arguments.clone())
+                .map_err(|e| anyhow!("invalid pod_status args: {e}"))?;
+            let response: PodInfoResponse = client.post_json("/v1/pod/status", &req)?;
+            let name = response.name.as_deref().unwrap_or("(unnamed)");
+            Ok(format!(
+                "pod_id: {}\nname: {}\nstate: {}",
+                response.id, name, response.state
+            ))
+        }
+        "pod_logs" => {
+            let req: PodIdRequest = serde_json::from_value(call.arguments.clone())
+                .map_err(|e| anyhow!("invalid pod_logs args: {e}"))?;
+            let response: PodLogsResponse = client.post_json("/v1/pod/logs", &req)?;
+            Ok(response.logs)
+        }
+        "cancel_pod" => {
+            let req: PodIdRequest = serde_json::from_value(call.arguments.clone())
+                .map_err(|e| anyhow!("invalid cancel_pod args: {e}"))?;
+            let _response: CancelPodResponse = client.post_json("/v1/pod/cancel", &req)?;
+            Ok(format!("Pod {} cancelled.", req.pod_id))
         }
         other => Err(anyhow!("unknown tool: {other}")),
     }
@@ -760,6 +907,32 @@ mod tests {
             Some("custom-session-123".to_string()),
         );
         assert_eq!(client.session_id(), "custom-session-123");
+    }
+
+    #[test]
+    fn test_build_tool_defs_orchestrator() {
+        let policy = PermissionLattice::orchestrator();
+        let tools = build_tool_defs(Some(&policy));
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        // Orchestrator has read/glob/grep (LowRisk) but no write/run/web
+        assert!(names.contains(&"read"));
+        assert!(!names.contains(&"write"));
+        assert!(!names.contains(&"run"));
+        assert!(!names.contains(&"web_fetch"));
+        // Orchestrator has manage_pods: Always
+        assert!(names.contains(&"create_pod"));
+        assert!(names.contains(&"list_pods"));
+        assert!(names.contains(&"pod_status"));
+        assert!(names.contains(&"pod_logs"));
+        assert!(names.contains(&"cancel_pod"));
+    }
+
+    #[test]
+    fn test_build_tool_defs_no_pod_mgmt_by_default() {
+        // Without a policy, manage_pods defaults to false
+        let tools = build_tool_defs(None);
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(!names.contains(&"create_pod"));
     }
 
     #[test]
