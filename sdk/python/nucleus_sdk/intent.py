@@ -19,6 +19,7 @@ class Intent(str, Enum):
     EDIT_ONLY = "edit_only"
     LOCAL_DEV = "local_dev"
     NETWORK_ONLY = "network_only"
+    ORCHESTRATE = "orchestrate"
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,14 @@ INTENT_PROFILES: Dict[Intent, IntentProfile] = {
         allowed_ops=["web_search", "web_fetch"],
         gated_ops=[],
     ),
+    Intent.ORCHESTRATE: IntentProfile(
+        intent=Intent.ORCHESTRATE,
+        profile="orchestrator",
+        description="Spawn and manage sub-pods. No direct file/command/web access.",
+        allowed_ops=["read", "glob", "grep", "create_pod", "list_pods", "pod_status", "pod_logs", "cancel_pod"],
+        gated_ops=[],
+        notes="Sub-pod permissions bounded by delegation ceiling via monotonic meet.",
+    ),
 }
 
 
@@ -150,4 +159,7 @@ def profile_for_intent(intent: Intent) -> IntentProfile:
 
 def pod_spec_for_intent(intent: Intent, work_dir: str = ".", timeout_seconds: int = 3600) -> PodSpec:
     profile = profile_for_intent(intent)
-    return PodSpec(work_dir=work_dir, timeout_seconds=timeout_seconds, profile=profile.profile)
+    labels = None
+    if intent == Intent.ORCHESTRATE:
+        labels = {"enable_pod_mgmt": "true"}
+    return PodSpec(work_dir=work_dir, timeout_seconds=timeout_seconds, profile=profile.profile, labels=labels)

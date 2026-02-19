@@ -41,6 +41,7 @@ fn obligations_from_masks(mask_base: u16, mask_extra: u16) -> (Obligations, Obli
         Operation::GitCommit,
         Operation::GitPush,
         Operation::CreatePr,
+        Operation::ManagePods,
     ];
 
     for (idx, op) in ops.iter().enumerate() {
@@ -90,6 +91,7 @@ fn build_ordered_permissions() -> (PermissionLattice, PermissionLattice) {
     let (commit_lo, commit_hi) = ordered_level_pair(kani::any::<u8>(), kani::any::<u8>());
     let (push_lo, push_hi) = ordered_level_pair(kani::any::<u8>(), kani::any::<u8>());
     let (pr_lo, pr_hi) = ordered_level_pair(kani::any::<u8>(), kani::any::<u8>());
+    let (pods_lo, pods_hi) = ordered_level_pair(kani::any::<u8>(), kani::any::<u8>());
 
     let (superset_obligations, base_obligations) =
         obligations_from_masks(kani::any::<u16>(), kani::any::<u16>());
@@ -109,6 +111,7 @@ fn build_ordered_permissions() -> (PermissionLattice, PermissionLattice) {
         git_commit: commit_lo,
         git_push: push_lo,
         create_pr: pr_lo,
+        manage_pods: pods_lo,
     };
     lhs.obligations = superset_obligations;
     lhs.trifecta_constraint = trifecta;
@@ -126,6 +129,7 @@ fn build_ordered_permissions() -> (PermissionLattice, PermissionLattice) {
         git_commit: commit_hi,
         git_push: push_hi,
         create_pr: pr_hi,
+        manage_pods: pods_hi,
     };
     rhs.obligations = base_obligations;
     rhs.trifecta_constraint = trifecta;

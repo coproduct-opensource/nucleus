@@ -478,6 +478,7 @@ impl PermissionLattice {
                 git_commit: CapabilityLevel::Never,
                 git_push: CapabilityLevel::Never,
                 create_pr: CapabilityLevel::Never,
+                manage_pods: CapabilityLevel::Never,
             },
             obligations: Obligations::default(),
             commands: CommandLattice::restrictive(),
@@ -511,6 +512,7 @@ impl PermissionLattice {
                 git_commit: CapabilityLevel::Never,
                 git_push: CapabilityLevel::Never,
                 create_pr: CapabilityLevel::Never,
+                manage_pods: CapabilityLevel::Never,
             },
             obligations: Obligations::default(),
             budget: BudgetLattice::with_cost_limit(1.0),
@@ -538,6 +540,7 @@ impl PermissionLattice {
                 git_commit: CapabilityLevel::Never,
                 git_push: CapabilityLevel::Never,
                 create_pr: CapabilityLevel::Never,
+                manage_pods: CapabilityLevel::Never,
             },
             obligations: Obligations::default(),
             budget: BudgetLattice::with_cost_limit(1.5),
@@ -567,6 +570,7 @@ impl PermissionLattice {
                 git_commit: CapabilityLevel::Never,
                 git_push: CapabilityLevel::Never,
                 create_pr: CapabilityLevel::Never,
+                manage_pods: CapabilityLevel::Never,
             },
             obligations,
             budget: BudgetLattice::with_cost_limit(1.0),
@@ -593,6 +597,7 @@ impl PermissionLattice {
                 git_commit: CapabilityLevel::Never,
                 git_push: CapabilityLevel::Never,
                 create_pr: CapabilityLevel::Never,
+                manage_pods: CapabilityLevel::Never,
             },
             obligations: Obligations::default(),
             paths: PathLattice::block_sensitive(),
@@ -620,6 +625,7 @@ impl PermissionLattice {
                 git_commit: CapabilityLevel::LowRisk,
                 git_push: CapabilityLevel::Never,
                 create_pr: CapabilityLevel::Never,
+                manage_pods: CapabilityLevel::Never,
             },
             obligations: Obligations::default(),
             paths: PathLattice::block_sensitive(),
@@ -655,6 +661,7 @@ impl PermissionLattice {
                 git_commit: CapabilityLevel::LowRisk,
                 git_push: CapabilityLevel::LowRisk,
                 create_pr: CapabilityLevel::LowRisk,
+                manage_pods: CapabilityLevel::Never,
             },
             obligations,
             paths: PathLattice::block_sensitive(),
@@ -686,6 +693,7 @@ impl PermissionLattice {
                 git_commit: CapabilityLevel::LowRisk,
                 git_push: CapabilityLevel::LowRisk,
                 create_pr: CapabilityLevel::LowRisk,
+                manage_pods: CapabilityLevel::Never,
             },
             obligations,
             paths: PathLattice::block_sensitive(),
@@ -722,6 +730,7 @@ impl PermissionLattice {
                 git_commit: CapabilityLevel::Never,
                 git_push: CapabilityLevel::Never,
                 create_pr: CapabilityLevel::Never,
+                manage_pods: CapabilityLevel::Never,
             },
             obligations: Obligations::default(),
             commands,
@@ -776,6 +785,7 @@ impl PermissionLattice {
                 git_commit: CapabilityLevel::LowRisk,
                 git_push: CapabilityLevel::LowRisk,
                 create_pr: CapabilityLevel::LowRisk,
+                manage_pods: CapabilityLevel::Never,
             },
             obligations,
             commands,
@@ -815,6 +825,7 @@ impl PermissionLattice {
                 git_commit: CapabilityLevel::Never,
                 git_push: CapabilityLevel::Never,
                 create_pr: CapabilityLevel::Never,
+                manage_pods: CapabilityLevel::Never,
             },
             obligations: Obligations::default(),
             paths: PathLattice::block_sensitive(),
@@ -851,6 +862,7 @@ impl PermissionLattice {
                 git_commit: CapabilityLevel::LowRisk,
                 git_push: CapabilityLevel::Never,
                 create_pr: CapabilityLevel::Never,
+                manage_pods: CapabilityLevel::Never,
             },
             obligations: Obligations::default(),
             paths: PathLattice::block_sensitive(),
@@ -888,11 +900,54 @@ impl PermissionLattice {
                 git_commit: CapabilityLevel::Never,
                 git_push: CapabilityLevel::LowRisk,
                 create_pr: CapabilityLevel::Never,
+                manage_pods: CapabilityLevel::Never,
             },
             obligations: Obligations::default(),
             paths: PathLattice::block_sensitive(),
             budget: BudgetLattice::with_cost_limit(1.0),
             time: TimeLattice::minutes(15),
+            ..Default::default()
+        };
+
+        lattice.normalize()
+    }
+
+    /// Create a permission set for orchestrator agents (pod management only).
+    ///
+    /// This profile is designed for meta-agents whose sole capability is
+    /// spawning and monitoring other nucleus pods. The orchestrator cannot
+    /// write files, run commands, or access the web directly.
+    ///
+    /// **Trifecta Analysis**: private access (read/glob/grep) present,
+    /// untrusted content absent (web_*: Never), exfiltration absent
+    /// (git/bash: Never). Only 1/3 components → `TrifectaRisk::Low`.
+    /// No approval obligations required.
+    ///
+    /// **Delegation**: The orchestrator's own permissions are narrow, but it
+    /// delegates to sub-pods via a separate delegation ceiling (configured
+    /// by the orchestrator's creator). Sub-pod permissions are bounded by
+    /// `delegation_ceiling.delegate_to(requested)`.
+    pub fn orchestrator() -> Self {
+        let lattice = Self {
+            description: "Orchestrator permissions (pod management only)".to_string(),
+            capabilities: CapabilityLattice {
+                read_files: CapabilityLevel::LowRisk,
+                write_files: CapabilityLevel::Never,
+                edit_files: CapabilityLevel::Never,
+                run_bash: CapabilityLevel::Never,
+                glob_search: CapabilityLevel::LowRisk,
+                grep_search: CapabilityLevel::LowRisk,
+                web_search: CapabilityLevel::Never,
+                web_fetch: CapabilityLevel::Never,
+                git_commit: CapabilityLevel::Never,
+                git_push: CapabilityLevel::Never,
+                create_pr: CapabilityLevel::Never,
+                manage_pods: CapabilityLevel::Always,
+            },
+            obligations: Obligations::default(),
+            budget: BudgetLattice::with_cost_limit(50.0),
+            time: TimeLattice::hours(4),
+            commands: CommandLattice::restrictive(),
             ..Default::default()
         };
 
@@ -1413,6 +1468,78 @@ mod tests {
             perms.capabilities.git_push,
             CapabilityLevel::LowRisk,
             "pr_approve CAN push (for merging)"
+        );
+    }
+
+    // ========================================================================
+    // Orchestrator Profile Tests
+    // ========================================================================
+
+    #[test]
+    fn test_orchestrator_no_trifecta() {
+        let perms = PermissionLattice::orchestrator();
+
+        // Verify core capability: manage_pods is Always
+        assert_eq!(
+            perms.capabilities.manage_pods,
+            CapabilityLevel::Always,
+            "orchestrator must have manage_pods: Always"
+        );
+
+        // Verify no direct tool access
+        assert_eq!(perms.capabilities.write_files, CapabilityLevel::Never);
+        assert_eq!(perms.capabilities.edit_files, CapabilityLevel::Never);
+        assert_eq!(perms.capabilities.run_bash, CapabilityLevel::Never);
+        assert_eq!(perms.capabilities.web_search, CapabilityLevel::Never);
+        assert_eq!(perms.capabilities.web_fetch, CapabilityLevel::Never);
+        assert_eq!(perms.capabilities.git_commit, CapabilityLevel::Never);
+        assert_eq!(perms.capabilities.git_push, CapabilityLevel::Never);
+        assert_eq!(perms.capabilities.create_pr, CapabilityLevel::Never);
+
+        // Read-only access for orchestration configs
+        assert_eq!(perms.capabilities.read_files, CapabilityLevel::LowRisk);
+        assert_eq!(perms.capabilities.glob_search, CapabilityLevel::LowRisk);
+        assert_eq!(perms.capabilities.grep_search, CapabilityLevel::LowRisk);
+
+        // Trifecta: only 1/3 components (private access), no untrusted or exfil
+        assert!(
+            !perms.is_trifecta_vulnerable(),
+            "orchestrator should NOT trigger trifecta"
+        );
+
+        // No approval obligations required
+        assert!(
+            !perms.requires_approval(Operation::ManagePods),
+            "manage_pods should not require approval"
+        );
+    }
+
+    #[test]
+    fn test_orchestrator_delegation_strips_manage_pods() {
+        let orchestrator = PermissionLattice::orchestrator();
+        let codegen = PermissionLattice::codegen();
+
+        // Delegate from orchestrator to codegen sub-pod
+        let delegated = orchestrator
+            .delegate_to(&codegen, "spawn codegen sub-pod")
+            .unwrap();
+
+        // Sub-pod should NOT get manage_pods (codegen doesn't request it,
+        // and meet of Always with Never = Never)
+        assert_eq!(
+            delegated.capabilities.manage_pods,
+            CapabilityLevel::Never,
+            "codegen sub-pod must not get manage_pods"
+        );
+    }
+
+    #[test]
+    fn test_orchestrator_budget() {
+        let perms = PermissionLattice::orchestrator();
+        assert_eq!(
+            perms.budget.max_cost_usd,
+            Decimal::from(50),
+            "orchestrator should have $50 budget"
         );
     }
 }

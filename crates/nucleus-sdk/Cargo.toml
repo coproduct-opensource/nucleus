@@ -1,0 +1,48 @@
+[package]
+name = "nucleus-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Rust SDK for building sandboxed AI agents with nucleus"
+repository = "https://github.com/coproduct-opensource/nucleus"
+documentation = "https://docs.rs/nucleus-sdk"
+readme = "README.md"
+keywords = ["ai", "security", "agents", "sdk", "sandbox"]
+categories = ["development-tools", "authentication"]
+
+[dependencies]
+# Existing workspace crates — reuse, don't reimplement
+nucleus-client = { path = "../nucleus-client" }
+nucleus-spec = { path = "../nucleus-spec" }
+nucleus-proto = { path = "../nucleus-proto" }
+lattice-guard = { path = "../lattice-guard" }
+
+# Async HTTP for tool-proxy
+reqwest = { workspace = true, features = ["rustls-tls-manual-roots", "json"] }
+
+# gRPC for node service
+tonic = { workspace = true }
+prost = { workspace = true }
+
+# Core
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync"] }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# Optional: SPIFFE identity
+nucleus-identity = { path = "../nucleus-identity", optional = true }
+
+[features]
+default = []
+identity = ["dep:nucleus-identity"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio-test = { workspace = true }
+
+[lints]
+workspace = true

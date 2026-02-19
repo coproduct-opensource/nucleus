@@ -14,6 +14,7 @@ members = [
     "crates/nucleus-audit", # Audit log verifier CLI
     "crates/nucleus-identity", # SPIFFE-based workload identity
     "crates/trifecta-playground", # Interactive TUI demo for HN
+    "crates/nucleus-sdk",        # Rust SDK for building sandboxed AI agents
 ]
 resolver = "2"
 

@@ -71,6 +71,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                     Screen::Hasse => handle_hasse_input(app, key.code),
                     Screen::Meet => handle_meet_input(app, key.code),
                     Screen::ChainBuilder => handle_chain_builder_input(app, key.code),
+                    Screen::DelegationForest => handle_delegation_forest_input(app, key.code),
                     Screen::Help => handle_help_input(app, key.code),
                 }
             }
@@ -92,6 +93,7 @@ fn handle_trifecta_input(app: &mut App, key: KeyCode) {
         KeyCode::Char('H') => app.screen = Screen::Hasse,
         KeyCode::Char('M') => app.screen = Screen::Meet,
         KeyCode::Char('c') => app.screen = Screen::ChainBuilder,
+        KeyCode::Char('d') => app.screen = Screen::DelegationForest,
         KeyCode::Char('?') => app.screen = Screen::Help,
         KeyCode::Up | KeyCode::Char('k') => app.prev_capability(),
         KeyCode::Down | KeyCode::Char('j') => app.next_capability(),
@@ -209,6 +211,23 @@ fn handle_chain_builder_input(app: &mut App, key: KeyCode) {
         KeyCode::Char('v') => app.chain_builder.compute_ceiling(),
         KeyCode::Up | KeyCode::Char('k') => app.chain_builder.prev_link(),
         KeyCode::Down | KeyCode::Char('j') => app.chain_builder.next_link(),
+        KeyCode::Esc | KeyCode::Backspace => app.screen = Screen::Trifecta,
+        KeyCode::Char('?') => app.screen = Screen::Help,
+        _ => {}
+    }
+}
+
+fn handle_delegation_forest_input(app: &mut App, key: KeyCode) {
+    match key {
+        KeyCode::Left | KeyCode::Char('h') => app.delegation_forest.go_to_parent(),
+        KeyCode::Right | KeyCode::Char('l') => app.delegation_forest.go_to_first_child(),
+        KeyCode::Down | KeyCode::Char('j') => app.delegation_forest.go_to_next_sibling(),
+        KeyCode::Up | KeyCode::Char('k') => app.delegation_forest.go_to_prev_sibling(),
+        KeyCode::Char('a') => app.delegation_forest.add_child_default(),
+        KeyCode::Char('x') => app.delegation_forest.remove_selected(),
+        KeyCode::Char('p') => app.delegation_forest.cycle_preset(),
+        KeyCode::Char('e') => app.delegation_forest.attempt_escalation(),
+        KeyCode::Char('c') => app.delegation_forest.toggle_comparison(),
         KeyCode::Esc | KeyCode::Backspace => app.screen = Screen::Trifecta,
         KeyCode::Char('?') => app.screen = Screen::Help,
         _ => {}

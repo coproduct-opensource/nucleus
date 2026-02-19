@@ -192,6 +192,7 @@ impl PolicyContext {
             Operation::GitCommit => "git_commit",
             Operation::GitPush => "git_push",
             Operation::CreatePr => "create_pr",
+            Operation::ManagePods => "manage_pods",
         }
     }
 

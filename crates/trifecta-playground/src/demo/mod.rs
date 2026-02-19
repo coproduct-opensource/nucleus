@@ -28,6 +28,7 @@ pub static PERMISSION_PRESETS: LazyLock<Vec<(&'static str, PermissionLattice)>> 
             ("READ_ONLY", PermissionLattice::read_only()),
             ("NETWORK_ONLY", PermissionLattice::network_only()),
             ("LOCAL_DEV", PermissionLattice::local_dev()),
+            ("ORCHESTRATOR", PermissionLattice::orchestrator()),
         ]
     });
 
@@ -75,6 +76,7 @@ pub const PRESETS: &[(&str, CapabilityLattice)] = &[
             git_commit: CapabilityLevel::Never,
             git_push: CapabilityLevel::Never,
             create_pr: CapabilityLevel::Never,
+            manage_pods: CapabilityLevel::Never,
         },
     ),
     (
@@ -91,6 +93,7 @@ pub const PRESETS: &[(&str, CapabilityLattice)] = &[
             git_commit: CapabilityLevel::Never,
             git_push: CapabilityLevel::Never,
             create_pr: CapabilityLevel::Never,
+            manage_pods: CapabilityLevel::Never,
         },
     ),
     (
@@ -107,6 +110,7 @@ pub const PRESETS: &[(&str, CapabilityLattice)] = &[
             git_commit: CapabilityLevel::LowRisk,
             git_push: CapabilityLevel::Never,
             create_pr: CapabilityLevel::Never,
+            manage_pods: CapabilityLevel::Never,
         },
     ),
     (
@@ -123,6 +127,7 @@ pub const PRESETS: &[(&str, CapabilityLattice)] = &[
             git_commit: CapabilityLevel::Always,
             git_push: CapabilityLevel::Always,
             create_pr: CapabilityLevel::Always,
+            manage_pods: CapabilityLevel::Always,
         },
     ),
     (
@@ -139,6 +144,7 @@ pub const PRESETS: &[(&str, CapabilityLattice)] = &[
             git_commit: CapabilityLevel::Never,
             git_push: CapabilityLevel::LowRisk, // Exfiltration
             create_pr: CapabilityLevel::Never,
+            manage_pods: CapabilityLevel::Never,
         },
     ),
 ];

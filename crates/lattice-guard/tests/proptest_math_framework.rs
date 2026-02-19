@@ -41,6 +41,7 @@ fn arb_capability_lattice() -> impl Strategy<Value = CapabilityLattice> {
         arb_capability_level(),
         arb_capability_level(),
         arb_capability_level(),
+        arb_capability_level(),
     )
         .prop_map(
             |(
@@ -55,6 +56,7 @@ fn arb_capability_lattice() -> impl Strategy<Value = CapabilityLattice> {
                 git_commit,
                 git_push,
                 create_pr,
+                manage_pods,
             )| {
                 CapabilityLattice {
                     read_files,
@@ -68,6 +70,7 @@ fn arb_capability_lattice() -> impl Strategy<Value = CapabilityLattice> {
                     git_commit,
                     git_push,
                     create_pr,
+                    manage_pods,
                 }
             },
         )
@@ -413,6 +416,7 @@ fn arb_operation() -> impl Strategy<Value = Operation> {
         Just(Operation::GitCommit),
         Just(Operation::GitPush),
         Just(Operation::CreatePr),
+        Just(Operation::ManagePods),
     ]
 }
 

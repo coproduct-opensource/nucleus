@@ -138,6 +138,7 @@ impl BoundedLattice for CapabilityLattice {
             git_commit: CapabilityLevel::Never,
             git_push: CapabilityLevel::Never,
             create_pr: CapabilityLevel::Never,
+            manage_pods: CapabilityLevel::Never,
         }
     }
 }
@@ -159,6 +160,7 @@ impl HeytingAlgebra for CapabilityLattice {
             git_commit: level_implies(self.git_commit, other.git_commit),
             git_push: level_implies(self.git_push, other.git_push),
             create_pr: level_implies(self.create_pr, other.create_pr),
+            manage_pods: level_implies(self.manage_pods, other.manage_pods),
         }
     }
 }

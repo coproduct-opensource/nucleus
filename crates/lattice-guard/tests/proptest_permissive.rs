@@ -38,6 +38,7 @@ fn arb_operation() -> impl Strategy<Value = Operation> {
         Just(Operation::GitCommit),
         Just(Operation::GitPush),
         Just(Operation::CreatePr),
+        Just(Operation::ManagePods),
     ]
 }
 

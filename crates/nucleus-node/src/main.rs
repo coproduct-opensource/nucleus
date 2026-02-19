@@ -215,6 +215,8 @@ struct NodeState {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     network_allocator: Arc<net::NetworkAllocator>,
     auth: AuthConfig,
+    /// Node HTTP listen address (for orchestrator pod management back-references).
+    listen_addr: String,
     proxy_auth_secret: String,
     proxy_approval_secret: String,
     proxy_actor: Option<String>,
@@ -240,6 +242,9 @@ struct PodHandle {
     log_path: PathBuf,
     proxy_addr: Mutex<Option<String>>,
     driver_state: DriverState,
+    /// Parent pod ID for orchestrator-spawned sub-pods.
+    /// When set, this pod is cancelled if the parent exits.
+    parent_pod_id: Option<Uuid>,
 }
 
 #[derive(Debug)]
@@ -448,6 +453,7 @@ async fn main() -> Result<(), ApiError> {
             args.auth_secret.as_bytes(),
             Duration::from_secs(args.auth_max_skew_secs),
         ),
+        listen_addr: args.listen.clone(),
         proxy_auth_secret: args.proxy_auth_secret.clone(),
         proxy_approval_secret: args.proxy_approval_secret.clone(),
         proxy_actor: Some(args.proxy_actor.clone()).filter(|actor| !actor.trim().is_empty()),
@@ -715,6 +721,7 @@ impl IntoResponse for OidcApiError {
 
 async fn create_pod(
     State(state): State<NodeState>,
+    headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Json<CreatePodResponse>, ApiError> {
     let spec = match serde_yaml::from_slice::<PodSpec>(&body) {
@@ -732,7 +739,13 @@ async fn create_pod(
         }
     };
 
-    let (id, proxy_addr) = create_pod_internal(&state, spec).await?;
+    // Extract parent pod ID from header (set by orchestrator tool-proxy)
+    let parent_pod_id = headers
+        .get("x-nucleus-parent-pod-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| Uuid::parse_str(s).ok());
+
+    let (id, proxy_addr) = create_pod_internal(&state, spec, parent_pod_id).await?;
 
     Ok(Json(CreatePodResponse { id, proxy_addr }))
 }
@@ -757,6 +770,7 @@ async fn auth_middleware(
 async fn create_pod_internal(
     state: &NodeState,
     spec: PodSpec,
+    parent_pod_id: Option<Uuid>,
 ) -> Result<(Uuid, Option<String>), ApiError> {
     let id = Uuid::new_v4();
     let created_at = now_unix();
@@ -775,6 +789,7 @@ async fn create_pod_internal(
         log_path,
         proxy_addr: Mutex::new(proxy_addr.clone()),
         driver_state,
+        parent_pod_id,
     });
 
     state.pods.lock().await.insert(id, handle);
@@ -1017,6 +1032,30 @@ async fn spawn_local_pod(
         "NUCLEUS_TOOL_PROXY_AUDIT_LOG",
         audit_path.to_string_lossy().as_ref(),
     );
+
+    // Detect orchestrator pod: inject pod management env vars
+    let enable_pod_mgmt = spec
+        .metadata
+        .labels
+        .get("enable_pod_mgmt")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    if enable_pod_mgmt {
+        command.env("NUCLEUS_TOOL_PROXY_ENABLE_POD_MGMT", "true");
+        // Point orchestrator's tool-proxy at this node's HTTP API
+        let node_url = format!("http://{}", state.listen_addr);
+        command.env("NUCLEUS_TOOL_PROXY_NODE_URL", &node_url);
+        command.env(
+            "NUCLEUS_TOOL_PROXY_NODE_AUTH_SECRET",
+            &state.proxy_auth_secret,
+        );
+        // Pass delegation ceiling from pod metadata if provided
+        if let Some(ceiling) = spec.metadata.labels.get("delegation_ceiling") {
+            command.env("NUCLEUS_TOOL_PROXY_DELEGATION_CEILING", ceiling);
+        }
+        info!("enabled pod management for orchestrator pod {}", id);
+    }
+
     let mut child = command
         .stdout(log_stdout)
         .stderr(log_stderr)
@@ -1654,10 +1693,34 @@ fn start_pod_reaper(state: NodeState) {
                 continue;
             }
 
-            for pod in pods {
-                let state = pod.status().await;
-                if matches!(state, PodState::Exited { .. } | PodState::Error { .. }) {
+            // Collect IDs of exited/errored pods for cascading cancel
+            let mut exited_ids = Vec::new();
+
+            for pod in &pods {
+                let pod_state = pod.status().await;
+                if matches!(pod_state, PodState::Exited { .. } | PodState::Error { .. }) {
+                    exited_ids.push(pod.id);
                     pod.cleanup_after_exit().await;
+                }
+            }
+
+            // Cascade cancel: kill children of exited parent pods
+            if !exited_ids.is_empty() {
+                for pod in &pods {
+                    if let Some(parent_id) = pod.parent_pod_id {
+                        if exited_ids.contains(&parent_id) {
+                            let child_state = pod.status().await;
+                            if matches!(child_state, PodState::Running) {
+                                info!(
+                                    "cascading cancel: killing child pod {} (parent {} exited)",
+                                    pod.id, parent_id
+                                );
+                                if let Err(e) = pod.cancel().await {
+                                    error!("failed to cascade cancel pod {}: {}", pod.id, e);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1784,6 +1847,13 @@ impl NodeService for GrpcService {
             auth::Operation::CreatePod,
         )?;
 
+        // Extract parent pod ID from gRPC metadata
+        let parent_pod_id = request
+            .metadata()
+            .get("x-nucleus-parent-pod-id")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| Uuid::parse_str(s).ok());
+
         let yaml = request.into_inner().yaml;
         if yaml.trim().is_empty() {
             return Err(Status::invalid_argument("missing pod spec yaml"));
@@ -1791,7 +1861,7 @@ impl NodeService for GrpcService {
 
         let spec: PodSpec = serde_yaml::from_str(&yaml)
             .map_err(|e| Status::invalid_argument(format!("invalid yaml: {e}")))?;
-        let (id, proxy_addr) = create_pod_internal(&self.state, spec)
+        let (id, proxy_addr) = create_pod_internal(&self.state, spec, parent_pod_id)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 

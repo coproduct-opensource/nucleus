@@ -1,5 +1,7 @@
 //! UI rendering for the playground.
 
+mod delegation_forest;
+
 use lattice_guard::{CapabilityLevel, Operation, PermissionLattice, TrifectaRisk};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -25,6 +27,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Screen::Hasse => draw_hasse_diagram(f, app),
         Screen::Meet => draw_meet_playground(f, app),
         Screen::ChainBuilder => draw_chain_builder(f, app),
+        Screen::DelegationForest => delegation_forest::draw(f, &app.delegation_forest, f.area()),
         Screen::Help => {
             draw_trifecta(f, app);
             draw_help_popup(f);
@@ -714,6 +717,7 @@ fn draw_capability_matrix(f: &mut Frame, app: &App) {
         "git_commit",
         "git_push",
         "create_pr",
+        "manage_pods",
     ];
 
     let rows: Vec<Row> = capability_names
@@ -783,6 +787,7 @@ fn get_capability_level(caps: &lattice_guard::CapabilityLattice, name: &str) -> 
         "git_commit" => caps.git_commit,
         "git_push" => caps.git_push,
         "create_pr" => caps.create_pr,
+        "manage_pods" => caps.manage_pods,
         _ => CapabilityLevel::Never,
     }
 }
