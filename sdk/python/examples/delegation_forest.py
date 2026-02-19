@@ -54,6 +54,30 @@ def pretty_caps(label: str, ops: list[str]) -> None:
     print(f"  {label:20s}: {joined}")
 
 
+def _print_capability_table() -> None:
+    banner("Capability Comparison")
+    all_ops = sorted({
+        op
+        for prof in INTENT_PROFILES.values()
+        for op in prof.allowed_ops + prof.gated_ops
+    })
+    header = f"  {'intent':20s}" + "".join(f" {op:>14s}" for op in all_ops)
+    print(header)
+    print("  " + "-" * len(header))
+    for intent in Intent:
+        prof = profile_for_intent(intent)
+        row = f"  {intent.value:20s}"
+        for op in all_ops:
+            if op in prof.allowed_ops:
+                marker = "Y"
+            elif op in prof.gated_ops:
+                marker = "gated"
+            else:
+                marker = "-"
+            row += f" {marker:>14s}"
+        print(row)
+
+
 # ---------------------------------------------------------------------------
 # Build sub-pod specs as YAML strings
 # ---------------------------------------------------------------------------
@@ -127,7 +151,13 @@ def main() -> None:
     # 2. Open an orchestrator session
     # ------------------------------------------------------------------
     banner("Create Orchestrator Pod")
-    session = nuc.intent(Intent.ORCHESTRATE)
+    try:
+        session = nuc.intent(Intent.ORCHESTRATE)
+    except Exception as exc:
+        print(f"\n  Could not connect to nucleus-node at {node_url}: {exc}")
+        print("  Skipping live demo — showing capability comparison instead.\n")
+        _print_capability_table()
+        return
     orch_profile = session.profile
     step(f"Orchestrator profile: {orch_profile.profile}")
     pretty_caps("allowed", orch_profile.allowed_ops)
@@ -215,27 +245,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     # 6. Capability comparison table
     # ------------------------------------------------------------------
-    banner("Capability Comparison")
-    all_ops = sorted({
-        op
-        for prof in INTENT_PROFILES.values()
-        for op in prof.allowed_ops + prof.gated_ops
-    })
-    header = f"  {'intent':20s}" + "".join(f" {op:>14s}" for op in all_ops)
-    print(header)
-    print("  " + "-" * len(header))
-    for intent in Intent:
-        prof = profile_for_intent(intent)
-        row = f"  {intent.value:20s}"
-        for op in all_ops:
-            if op in prof.allowed_ops:
-                marker = "Y"
-            elif op in prof.gated_ops:
-                marker = "gated"
-            else:
-                marker = "-"
-            row += f" {marker:>14s}"
-        print(row)
+    _print_capability_table()
 
     # ------------------------------------------------------------------
     # 7. Cascading cancel
