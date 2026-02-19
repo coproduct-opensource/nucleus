@@ -994,6 +994,11 @@ async fn spawn_local_pod(
     let announce_path = pod_dir.join("proxy.addr");
 
     let spec_yaml = serde_yaml::to_string(spec).map_err(ApiError::Serde)?;
+    // Compute spec hash before writing (write consumes the string).
+    let spec_yaml_hash = {
+        use sha2::{Digest, Sha256};
+        hex::encode(Sha256::digest(spec_yaml.as_bytes()))
+    };
     tokio::fs::write(&spec_path, spec_yaml).await?;
 
     if spec.spec.network.is_some() {
@@ -1032,6 +1037,14 @@ async fn spawn_local_pod(
         "NUCLEUS_TOOL_PROXY_AUDIT_LOG",
         audit_path.to_string_lossy().as_ref(),
     );
+
+    // Inject sandbox proof token so tool-proxy can verify it's in a managed sandbox.
+    let sandbox_token = nucleus_client::generate_sandbox_token(
+        state.proxy_auth_secret.as_bytes(),
+        &id.to_string(),
+        &spec_yaml_hash,
+    );
+    command.env("NUCLEUS_SANDBOX_TOKEN", &sandbox_token);
 
     // Detect orchestrator pod: inject pod management env vars
     let enable_pod_mgmt = spec
@@ -2314,6 +2327,23 @@ impl FirecrackerConfig {
             boot_args = match boot_args.take() {
                 Some(args) => Some(format!("{args} nucleus.workload_api_port={port}")),
                 None => Some(format!("nucleus.workload_api_port={port}")),
+            };
+        }
+
+        // Inject sandbox proof token so tool-proxy inside the VM can verify it's managed.
+        // This is a fallback — tier 1 (SVID with attestation) is preferred in Firecracker.
+        {
+            use sha2::{Digest, Sha256};
+            let spec_yaml = serde_yaml::to_string(spec).unwrap_or_default();
+            let spec_hash = hex::encode(Sha256::digest(spec_yaml.as_bytes()));
+            let sandbox_token = nucleus_client::generate_sandbox_token(
+                auth_secret.as_bytes(),
+                "firecracker",
+                &spec_hash,
+            );
+            boot_args = match boot_args.take() {
+                Some(args) => Some(format!("{args} nucleus.sandbox_token={sandbox_token}")),
+                None => Some(format!("nucleus.sandbox_token={sandbox_token}")),
             };
         }
 

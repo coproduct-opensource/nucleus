@@ -372,7 +372,7 @@ fn extract_attestation_from_cert(cert_der: &[u8]) -> Result<Option<LaunchAttesta
 }
 
 /// Simple base64 decoder.
-fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
     let mut output = Vec::new();

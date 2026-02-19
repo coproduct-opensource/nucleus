@@ -283,6 +283,94 @@ fn now_unix() -> i64 {
         .as_secs() as i64
 }
 
+/// Maximum age of a sandbox token before it's considered expired.
+const MAX_TOKEN_AGE_SECS: u64 = 300;
+
+/// Verified sandbox token payload (pod_id and spec_hash).
+#[derive(Debug, Clone)]
+pub struct SandboxTokenPayload {
+    /// The pod ID embedded in the token.
+    pub pod_id: String,
+    /// The spec hash embedded in the token.
+    pub spec_hash: String,
+}
+
+/// Generate an HMAC-signed sandbox token for injection into spawned tool-proxy processes.
+///
+/// Token format: `sandbox-proof.{pod_id}.{spec_hash}.{timestamp}.{hmac_hex}`
+///
+/// The token proves that the process was spawned by an authorized orchestrator
+/// (nucleus-node) that possesses the shared `auth_secret`.
+pub fn generate_sandbox_token(secret: &[u8], pod_id: &str, spec_hash: &str) -> String {
+    let timestamp = now_unix() as u64;
+    let message = format!("sandbox-proof.{pod_id}.{spec_hash}.{timestamp}");
+    let signature = sign_message(secret, message.as_bytes());
+    format!("{message}.{signature}")
+}
+
+/// Verify an HMAC-signed sandbox token.
+///
+/// Returns the verified payload (pod_id, spec_hash) on success,
+/// or an error string on failure.
+pub fn verify_sandbox_token(secret: &[u8], token: &str) -> Result<SandboxTokenPayload, String> {
+    if token.is_empty() {
+        return Err("empty token".to_string());
+    }
+
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 5 {
+        return Err(format!(
+            "malformed token: expected 5 dot-separated parts, got {}",
+            parts.len()
+        ));
+    }
+
+    let prefix = parts[0];
+    let pod_id = parts[1];
+    let spec_hash = parts[2];
+    let timestamp_str = parts[3];
+    let provided_sig = parts[4];
+
+    if prefix != "sandbox-proof" {
+        return Err(format!(
+            "invalid token prefix: expected 'sandbox-proof', got '{prefix}'"
+        ));
+    }
+
+    // Verify timestamp freshness
+    let token_ts: u64 = timestamp_str
+        .parse()
+        .map_err(|_| format!("invalid timestamp: {timestamp_str}"))?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if now > token_ts + MAX_TOKEN_AGE_SECS {
+        return Err(format!(
+            "token expired: issued at {token_ts}, now {now}, max age {MAX_TOKEN_AGE_SECS}s"
+        ));
+    }
+    // Also reject tokens from the future (clock skew tolerance: 60s)
+    if token_ts > now + 60 {
+        return Err(format!(
+            "token from the future: issued at {token_ts}, now {now}"
+        ));
+    }
+
+    // Verify HMAC signature
+    let signed_message = format!("sandbox-proof.{pod_id}.{spec_hash}.{timestamp_str}");
+    let expected_sig = sign_message(secret, signed_message.as_bytes());
+
+    if !constant_time_eq(provided_sig.as_bytes(), expected_sig.as_bytes()) {
+        return Err("invalid signature".to_string());
+    }
+
+    Ok(SandboxTokenPayload {
+        pod_id: pod_id.to_string(),
+        spec_hash: spec_hash.to_string(),
+    })
+}
+
 /// Constant-time comparison to prevent timing attacks.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
@@ -429,6 +517,45 @@ mod tests {
             body,
             signature
         ));
+    }
+
+    #[test]
+    fn test_generate_sandbox_token_format() {
+        let secret = b"test-secret";
+        let token = generate_sandbox_token(secret, "pod-abc", "deadbeef");
+
+        let parts: Vec<&str> = token.split('.').collect();
+        assert_eq!(parts.len(), 5);
+        assert_eq!(parts[0], "sandbox-proof");
+        assert_eq!(parts[1], "pod-abc");
+        assert_eq!(parts[2], "deadbeef");
+        // parts[3] is timestamp (numeric)
+        assert!(parts[3].parse::<u64>().is_ok());
+        // parts[4] is hex HMAC (64 chars for SHA-256)
+        assert_eq!(parts[4].len(), 64);
+    }
+
+    #[test]
+    fn test_verify_sandbox_token_roundtrip() {
+        let secret = b"test-secret";
+        let token = generate_sandbox_token(secret, "pod-xyz", "cafebabe");
+
+        let payload = verify_sandbox_token(secret, &token).unwrap();
+        assert_eq!(payload.pod_id, "pod-xyz");
+        assert_eq!(payload.spec_hash, "cafebabe");
+    }
+
+    #[test]
+    fn test_verify_sandbox_token_wrong_secret() {
+        let token = generate_sandbox_token(b"correct", "pod-1", "hash-1");
+        assert!(verify_sandbox_token(b"wrong", &token).is_err());
+    }
+
+    #[test]
+    fn test_verify_sandbox_token_malformed() {
+        assert!(verify_sandbox_token(b"s", "").is_err());
+        assert!(verify_sandbox_token(b"s", "too.few.parts").is_err());
+        assert!(verify_sandbox_token(b"s", "wrong-prefix.a.b.123.deadbeef").is_err());
     }
 
     #[test]

@@ -34,6 +34,7 @@ mod exit_report;
 mod mtls;
 mod node_client;
 mod policy;
+mod sandbox_proof;
 mod validation;
 
 use attestation::{AttestationConfig, AttestationVerifier};
@@ -118,6 +119,15 @@ struct Args {
     /// If empty, any config hash is accepted when attestation is present.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_ALLOWED_CONFIG_HASHES")]
     allowed_config_hashes: Option<String>,
+
+    // === Sandbox Proof Configuration ===
+    /// Path to identity certificate PEM for sandbox proof (tier 1/2).
+    /// Falls back to --tls-cert if not specified.
+    #[arg(long, env = "NUCLEUS_IDENTITY_CERT")]
+    identity_cert: Option<std::path::PathBuf>,
+    /// SPIRE Workload API socket path for sandbox proof (tier 2).
+    #[arg(long, env = "NUCLEUS_SPIRE_SOCKET")]
+    spire_socket: Option<String>,
 
     // === mTLS Configuration ===
     /// Enable mTLS mode. Requires --tls-cert and --tls-key and --trust-bundle.
@@ -215,6 +225,8 @@ struct AppState {
     orchestrator_credentials: std::collections::BTreeMap<String, String>,
     /// Permission market for Lagrangian pricing of capability dimensions.
     permission_market: Arc<Mutex<PermissionMarket>>,
+    /// Cryptographic proof that this process is inside a managed sandbox.
+    sandbox_proof: sandbox_proof::SandboxProof,
 }
 
 #[derive(Default)]
@@ -722,6 +734,33 @@ async fn main() -> Result<(), ApiError> {
         .init();
 
     let args = Args::parse();
+
+    // === Sandbox Proof Gate ===
+    // Refuse to start unless we can cryptographically prove we're in a managed sandbox.
+    let sandbox_proof_config = sandbox_proof::SandboxProofConfig {
+        identity_cert_path: args.identity_cert.clone().or_else(|| args.tls_cert.clone()),
+        spire_socket: args
+            .spire_socket
+            .clone()
+            .or_else(|| std::env::var("SPIFFE_ENDPOINT_SOCKET").ok()),
+        sandbox_token: std::env::var("NUCLEUS_SANDBOX_TOKEN").ok(),
+        auth_secret: args.auth_secret.as_bytes().to_vec(),
+    };
+    let sandbox_proof = match sandbox_proof::verify_sandbox(&sandbox_proof_config).await {
+        Ok(proof) => {
+            info!(
+                "sandbox proof verified: tier={} label={}",
+                proof.tier(),
+                proof.tier_label()
+            );
+            proof
+        }
+        Err(e) => {
+            eprintln!("FATAL: {e}");
+            std::process::exit(78); // EX_CONFIG
+        }
+    };
+
     let spec_contents = tokio::fs::read_to_string(&args.spec).await?;
     let spec: PodSpec =
         serde_yaml::from_str(&spec_contents).map_err(|e| ApiError::Spec(e.to_string()))?;
@@ -893,6 +932,7 @@ async fn main() -> Result<(), ApiError> {
         delegation_ceiling,
         orchestrator_credentials,
         permission_market: Arc::new(Mutex::new(PermissionMarket::new())),
+        sandbox_proof,
     };
 
     if let Err(err) = emit_boot_report(&state).await {
@@ -1166,8 +1206,14 @@ fn evaluate_permission_bid(headers: &HeaderMap, state: &AppState) -> Option<Perm
     Some(grant)
 }
 
-async fn health() -> Json<serde_json::Value> {
-    Json(serde_json::json!({"status": "ok"}))
+async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "status": "ok",
+        "sandbox_proof": {
+            "tier": state.sandbox_proof.tier(),
+            "label": state.sandbox_proof.tier_label(),
+        }
+    }))
 }
 
 /// Check if a SPIFFE identity has permission for an operation via policy.
@@ -3016,6 +3062,11 @@ async fn emit_boot_report(state: &AppState) -> Result<(), ApiError> {
         _ => return Ok(()),
     };
     let actor = std::env::var("NUCLEUS_TOOL_PROXY_BOOT_ACTOR").ok();
+    let report = format!(
+        "{} [sandbox_proof={}]",
+        report,
+        state.sandbox_proof.tier_label()
+    );
 
     state
         .audit
