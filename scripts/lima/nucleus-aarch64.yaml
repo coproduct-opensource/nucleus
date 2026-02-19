@@ -1,6 +1,9 @@
 # Lima VM template for Nucleus on Apple Silicon (M1/M2/M3/M4)
 # This template is optimized for Firecracker microVM support with nested virtualization.
 #
+# Compatible with Lima v1.x and v2.0+ (CNCF incubating).
+# Lima v2.0 adds AI agent isolation features and improved vz driver support.
+#
 # Usage:
 #   limactl create --name nucleus nucleus-aarch64.yaml
 #   limactl start nucleus
@@ -73,7 +76,7 @@ provision:
 
       # Download Firecracker if not present
       if [ ! -f /usr/local/bin/firecracker ]; then
-        FIRECRACKER_VERSION="v1.10.1"
+        FIRECRACKER_VERSION="v1.14.0"
         curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/${FIRECRACKER_VERSION}/firecracker-${FIRECRACKER_VERSION}-aarch64.tgz" | \
           tar -xz -C /tmp
         mv /tmp/release-${FIRECRACKER_VERSION}-aarch64/firecracker-${FIRECRACKER_VERSION}-aarch64 /usr/local/bin/firecracker
@@ -85,7 +88,7 @@ provision:
       # Download kernel if not present
       if [ ! -f /var/lib/nucleus/artifacts/vmlinux ]; then
         KERNEL_VERSION="v6.1"
-        curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.10/aarch64/vmlinux-6.1.102" \
+        curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.14/aarch64/vmlinux-6.1" \
           -o /var/lib/nucleus/artifacts/vmlinux
       fi
 

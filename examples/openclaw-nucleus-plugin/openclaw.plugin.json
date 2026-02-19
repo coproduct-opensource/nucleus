@@ -1,7 +1,8 @@
 {
   "id": "nucleus",
   "name": "Nucleus Tool Proxy",
-  "description": "Routes OpenClaw tool calls through nucleus-tool-proxy for enforced execution.",
+  "kind": "tool",
+  "description": "Routes tool calls through nucleus-tool-proxy for VM-isolated execution with policy enforcement.",
   "version": "0.1.0",
   "configSchema": {
     "type": "object",
@@ -13,21 +14,33 @@
       },
       "authSecret": {
         "type": "string",
-        "description": "Optional HMAC secret for signed requests"
+        "description": "HMAC secret for signed requests"
+      },
+      "approvalSecret": {
+        "type": "string",
+        "description": "Separate HMAC secret for approval operations (higher privilege)"
       },
       "actor": {
         "type": "string",
-        "description": "Optional actor identifier for audit logs"
+        "description": "Actor identifier for audit logs"
+      },
+      "approvalTtlSecs": {
+        "type": "number",
+        "description": "Approval TTL in seconds (default 300, max 300)"
       },
       "timeoutMs": {
         "type": "number",
-        "description": "Request timeout in milliseconds"
+        "description": "Request timeout in milliseconds (default 30000)"
       }
     }
   },
   "uiHints": {
     "authSecret": {
       "label": "HMAC Secret",
+      "sensitive": true
+    },
+    "approvalSecret": {
+      "label": "Approval Secret",
       "sensitive": true
     }
   }

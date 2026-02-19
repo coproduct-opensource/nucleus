@@ -5,6 +5,14 @@
 
 We disagree. Security should be architectural, not aspirational.
 
+## Status Update: February 2026
+
+> **OpenAI acquired OpenClaw on February 14, 2026.** The project's future licensing
+> and API stability are uncertain. Nucleus's value proposition is **framework-agnostic
+> isolation** — it works with OpenClaw, but also with any agent framework that executes
+> tools (Claude Code, Cursor, Windsurf, custom agents, etc.). If OpenClaw becomes
+> closed-source or OpenAI-proprietary, nucleus remains unaffected.
+
 ## The Problem: January 2026
 
 OpenClaw (formerly Moltbot/Clawdbot) has become one of the fastest-growing open source projects in history—100K+ GitHub stars in two months. It's deployed in enterprise environments, managing calendars, sending messages, and automating workflows.
@@ -225,10 +233,26 @@ Attack: Malicious attachment
   → Result: Malware contained, host unaffected
 ```
 
+## Framework-Agnostic Integration
+
+While this guide focuses on OpenClaw, nucleus provides the same isolation guarantees
+for **any** agent framework that executes tools on a host system:
+
+| Framework | Integration Method | Status |
+|-----------|-------------------|--------|
+| **OpenClaw** | TypeScript plugin (`openclaw-nucleus-plugin`) | Production |
+| **Custom Rust agents** | `nucleus-sdk` crate (`Nucleus::intent()` API) | Production |
+| **Any HTTP agent** | REST API to `nucleus-node` | Production |
+| **MCP-compatible agents** | MCP tool server (planned) | Roadmap |
+
+The core principle is the same regardless of framework: tool execution happens inside
+an isolated Firecracker microVM, and the permission lattice governs what's allowed.
+
 ## Further Reading
 
 - [Nucleus Architecture Overview](../architecture/overview.md)
 - [Lattice-Guard Permission Model](../architecture/lattice-guard.md)
 - [Audit Log Verification](../architecture/audit.md)
-- [OpenClaw Security Documentation](https://docs.openclaw.ai/gateway/security)
+- [Nucleus SDK](../../crates/nucleus-sdk/README.md)
+- [OpenClaw Security Documentation](https://docs.openclaw.ai/gateway/security) *(may change post-acquisition)*
 - [Palo Alto Networks: AI Agent Security Research](https://unit42.paloaltonetworks.com/)

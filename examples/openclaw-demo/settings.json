@@ -6,10 +6,24 @@
         "config": {
           "proxyUrl": "http://127.0.0.1:8080",
           "authSecret": "demo-secret",
+          "approvalSecret": "demo-approval-secret",
+          "approvalTtlSecs": 300,
           "actor": "openclaw-demo",
           "timeoutMs": 30000
         }
       }
     }
+  },
+  "tools": {
+    "allowlist": [
+      "nucleus_read",
+      "nucleus_write",
+      "nucleus_run",
+      "nucleus_web_fetch",
+      "nucleus_glob",
+      "nucleus_grep",
+      "nucleus_web_search",
+      "nucleus_approve"
+    ]
   }
 }

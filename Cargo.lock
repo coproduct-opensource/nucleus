@@ -1769,6 +1769,8 @@ version = "0.1.0"
 dependencies = [
  "cel-interpreter",
  "chrono",
+ "hex",
+ "hmac",
  "kani",
  "proptest",
  "regex",
@@ -2050,6 +2052,7 @@ dependencies = [
  "clap",
  "hex",
  "hmac",
+ "lattice-guard",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2200,6 +2203,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-permission-market"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "nucleus-proto"
 version = "0.1.0"
 dependencies = [
@@ -2259,6 +2272,7 @@ dependencies = [
  "nucleus",
  "nucleus-client",
  "nucleus-identity",
+ "nucleus-permission-market",
  "nucleus-spec",
  "regex",
  "reqwest",

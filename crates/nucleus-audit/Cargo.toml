@@ -9,6 +9,7 @@ authors.workspace = true
 clap = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
+lattice-guard = { path = "../lattice-guard", features = ["serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
