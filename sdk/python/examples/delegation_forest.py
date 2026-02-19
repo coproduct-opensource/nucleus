@@ -30,6 +30,7 @@ import time
 import yaml
 
 from nucleus_sdk import Nucleus, Intent
+from nucleus_sdk.auth import HmacAuth
 from nucleus_sdk.intent import profile_for_intent, INTENT_PROFILES
 from nucleus_sdk.models import PodSpec
 from nucleus_sdk.errors import NucleusError, AccessDenied
@@ -133,7 +134,9 @@ def main() -> None:
         print("ERROR: Set NUCLEUS_NODE_URL (e.g. http://localhost:9400)")
         sys.exit(1)
 
-    nuc = Nucleus(node_url=node_url)
+    auth_secret = os.environ.get("NUCLEUS_AUTH_SECRET", "")
+    auth = HmacAuth(secret=auth_secret.encode(), actor="delegation-demo") if auth_secret else None
+    nuc = Nucleus(node_url=node_url, auth=auth)
 
     # ------------------------------------------------------------------
     # 1. Show the intent catalogue

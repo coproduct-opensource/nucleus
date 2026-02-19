@@ -159,4 +159,7 @@ def profile_for_intent(intent: Intent) -> IntentProfile:
 
 def pod_spec_for_intent(intent: Intent, work_dir: str = ".", timeout_seconds: int = 3600) -> PodSpec:
     profile = profile_for_intent(intent)
-    return PodSpec(work_dir=work_dir, timeout_seconds=timeout_seconds, profile=profile.profile)
+    labels = None
+    if intent == Intent.ORCHESTRATE:
+        labels = {"enable_pod_mgmt": "true"}
+    return PodSpec(work_dir=work_dir, timeout_seconds=timeout_seconds, profile=profile.profile, labels=labels)
