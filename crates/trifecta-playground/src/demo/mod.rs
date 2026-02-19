@@ -28,6 +28,7 @@ pub static PERMISSION_PRESETS: LazyLock<Vec<(&'static str, PermissionLattice)>> 
             ("READ_ONLY", PermissionLattice::read_only()),
             ("NETWORK_ONLY", PermissionLattice::network_only()),
             ("LOCAL_DEV", PermissionLattice::local_dev()),
+            ("ORCHESTRATOR", PermissionLattice::orchestrator()),
         ]
     });
 

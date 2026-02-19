@@ -27,6 +27,8 @@ pub enum Screen {
     ChainBuilder,
     /// Help screen
     Help,
+    /// Delegation forest visualization
+    DelegationForest,
 }
 
 /// Side selection for meet playground.
@@ -316,6 +318,8 @@ pub struct App {
     pub hasse_state: HasseState,
     /// Currently selected row in the matrix view
     pub matrix_selected_row: usize,
+    /// State for the delegation forest
+    pub delegation_forest: DelegationForestState,
 }
 
 /// Result of running an attack scenario.
@@ -391,6 +395,7 @@ impl App {
             chain_builder: ChainBuilderState::default(),
             hasse_state: HasseState::default(),
             matrix_selected_row: 0,
+            delegation_forest: DelegationForestState::default(),
         }
     }
 
@@ -563,6 +568,401 @@ impl App {
             12345,
         );
         self.chain_status = Some("Chain reset to root".to_string());
+    }
+}
+
+/// A node in the delegation forest (arena-based tree).
+pub struct ForestNode {
+    pub id: usize,
+    pub parent: Option<usize>,
+    pub children: Vec<usize>,
+    pub spiffe_id: String,
+    pub preset_index: usize,
+    pub effective_perms: Option<PermissionLattice>,
+    pub depth: usize,
+}
+
+/// Result of attempting escalation.
+pub struct EscalationResult {
+    pub message: String,
+    pub reductions: Vec<(String, CapabilityLevel, CapabilityLevel)>,
+}
+
+/// State for the delegation forest screen.
+pub struct DelegationForestState {
+    pub nodes: Vec<ForestNode>,
+    pub selected_node: usize,
+    pub escalation_status: Option<EscalationResult>,
+    pub show_comparison: bool,
+}
+
+impl Default for DelegationForestState {
+    fn default() -> Self {
+        let presets = &*crate::demo::PERMISSION_PRESETS;
+        // Find ORCHESTRATOR index, fallback to 0
+        let orch_idx = presets
+            .iter()
+            .position(|(n, _)| *n == "ORCHESTRATOR")
+            .unwrap_or(0);
+        let root_perms = presets[orch_idx].1.clone();
+        let root = ForestNode {
+            id: 0,
+            parent: None,
+            children: vec![],
+            spiffe_id: "spiffe://nucleus.local/orchestrator/root".to_string(),
+            preset_index: orch_idx,
+            effective_perms: Some(root_perms),
+            depth: 0,
+        };
+        Self {
+            nodes: vec![root],
+            selected_node: 0,
+            escalation_status: None,
+            show_comparison: false,
+        }
+    }
+}
+
+impl DelegationForestState {
+    /// Add a child node under the selected node with the given preset.
+    pub fn add_child(&mut self, preset_index: usize) {
+        let presets = &*crate::demo::PERMISSION_PRESETS;
+        let parent_id = self.selected_node;
+        let parent_depth = self.nodes[parent_id].depth;
+        let child_num = self.nodes.len();
+        let (preset_name, _) = &presets[preset_index];
+        let spiffe_id = format!(
+            "spiffe://nucleus.local/agent/{}-{:03}",
+            preset_name.to_lowercase(),
+            child_num
+        );
+        let new_id = self.nodes.len();
+        let child = ForestNode {
+            id: new_id,
+            parent: Some(parent_id),
+            children: vec![],
+            spiffe_id,
+            preset_index,
+            effective_perms: None,
+            depth: parent_depth + 1,
+        };
+        self.nodes.push(child);
+        self.nodes[parent_id].children.push(new_id);
+        self.recompute_effective(new_id);
+        self.selected_node = new_id;
+        self.escalation_status = None;
+    }
+
+    /// Add a child with a cycling default preset.
+    pub fn add_child_default(&mut self) {
+        let presets = &*crate::demo::PERMISSION_PRESETS;
+        // Cycle through useful presets: CODEGEN, PR_REVIEW, READ_ONLY, FIX_ISSUE
+        let useful = [2, 3, 7, 5]; // CODEGEN, PR_REVIEW, READ_ONLY, FIX_ISSUE
+        let child_count = self.nodes[self.selected_node].children.len();
+        let idx = useful[child_count % useful.len()];
+        let idx = idx.min(presets.len() - 1);
+        self.add_child(idx);
+    }
+
+    /// Attempt escalation: try creating a child with PERMISSIVE profile.
+    pub fn attempt_escalation(&mut self) {
+        let presets = &*crate::demo::PERMISSION_PRESETS;
+        let parent_id = self.selected_node;
+        let parent_effective = match &self.nodes[parent_id].effective_perms {
+            Some(p) => p.clone(),
+            None => return,
+        };
+        // PERMISSIVE is index 0
+        let requested = &presets[0].1;
+        let clamped = parent_effective.meet(requested);
+
+        let mut reductions = Vec::new();
+        let cap_names = [
+            "read_files",
+            "write_files",
+            "edit_files",
+            "run_bash",
+            "web_search",
+            "web_fetch",
+            "git_commit",
+            "git_push",
+            "create_pr",
+            "manage_pods",
+        ];
+        let req_levels = [
+            requested.capabilities.read_files,
+            requested.capabilities.write_files,
+            requested.capabilities.edit_files,
+            requested.capabilities.run_bash,
+            requested.capabilities.web_search,
+            requested.capabilities.web_fetch,
+            requested.capabilities.git_commit,
+            requested.capabilities.git_push,
+            requested.capabilities.create_pr,
+            requested.capabilities.manage_pods,
+        ];
+        let got_levels = [
+            clamped.capabilities.read_files,
+            clamped.capabilities.write_files,
+            clamped.capabilities.edit_files,
+            clamped.capabilities.run_bash,
+            clamped.capabilities.web_search,
+            clamped.capabilities.web_fetch,
+            clamped.capabilities.git_commit,
+            clamped.capabilities.git_push,
+            clamped.capabilities.create_pr,
+            clamped.capabilities.manage_pods,
+        ];
+        for i in 0..cap_names.len() {
+            if got_levels[i] < req_levels[i] {
+                reductions.push((cap_names[i].to_string(), req_levels[i], got_levels[i]));
+            }
+        }
+
+        let message = if reductions.is_empty() {
+            "No reductions — escalation succeeded (parent is already permissive)".to_string()
+        } else {
+            format!(
+                "Escalation clamped: {} capabilities reduced by monotonic meet",
+                reductions.len()
+            )
+        };
+        self.escalation_status = Some(EscalationResult {
+            message,
+            reductions,
+        });
+    }
+
+    /// Remove the selected node and all its descendants.
+    pub fn remove_selected(&mut self) {
+        if self.selected_node == 0 {
+            return; // Can't remove root
+        }
+        let node_id = self.selected_node;
+        let parent_id = self.nodes[node_id].parent.unwrap_or(0);
+
+        // Collect all descendant IDs
+        let mut to_remove = vec![node_id];
+        let mut i = 0;
+        while i < to_remove.len() {
+            let id = to_remove[i];
+            to_remove.extend(self.nodes[id].children.clone());
+            i += 1;
+        }
+
+        // Remove from parent's children list
+        self.nodes[parent_id].children.retain(|c| *c != node_id);
+
+        // Mark removed nodes (set parent to a sentinel, clear children)
+        // We can't actually remove from the arena without reindexing,
+        // so we mark them as orphaned with empty spiffe_id
+        for &id in &to_remove {
+            self.nodes[id].children.clear();
+            self.nodes[id].parent = None;
+            self.nodes[id].spiffe_id = String::new();
+            self.nodes[id].effective_perms = None;
+        }
+
+        self.selected_node = parent_id;
+        self.escalation_status = None;
+    }
+
+    /// Navigate to parent.
+    pub fn go_to_parent(&mut self) {
+        if let Some(parent) = self.nodes[self.selected_node].parent {
+            self.selected_node = parent;
+            self.escalation_status = None;
+        }
+    }
+
+    /// Navigate to first child.
+    pub fn go_to_first_child(&mut self) {
+        let children: Vec<usize> = self.nodes[self.selected_node]
+            .children
+            .iter()
+            .filter(|&&c| !self.nodes[c].spiffe_id.is_empty())
+            .copied()
+            .collect();
+        if let Some(&first) = children.first() {
+            self.selected_node = first;
+            self.escalation_status = None;
+        }
+    }
+
+    /// Navigate to next sibling.
+    pub fn go_to_next_sibling(&mut self) {
+        if let Some(parent_id) = self.nodes[self.selected_node].parent {
+            let siblings: Vec<usize> = self.nodes[parent_id]
+                .children
+                .iter()
+                .filter(|&&c| !self.nodes[c].spiffe_id.is_empty())
+                .copied()
+                .collect();
+            if let Some(pos) = siblings.iter().position(|&s| s == self.selected_node) {
+                if pos + 1 < siblings.len() {
+                    self.selected_node = siblings[pos + 1];
+                    self.escalation_status = None;
+                }
+            }
+        }
+    }
+
+    /// Navigate to previous sibling.
+    pub fn go_to_prev_sibling(&mut self) {
+        if let Some(parent_id) = self.nodes[self.selected_node].parent {
+            let siblings: Vec<usize> = self.nodes[parent_id]
+                .children
+                .iter()
+                .filter(|&&c| !self.nodes[c].spiffe_id.is_empty())
+                .copied()
+                .collect();
+            if let Some(pos) = siblings.iter().position(|&s| s == self.selected_node) {
+                if pos > 0 {
+                    self.selected_node = siblings[pos - 1];
+                    self.escalation_status = None;
+                }
+            }
+        }
+    }
+
+    /// Cycle the profile on the selected node.
+    pub fn cycle_preset(&mut self) {
+        let len = crate::demo::PERMISSION_PRESETS.len();
+        self.nodes[self.selected_node].preset_index =
+            (self.nodes[self.selected_node].preset_index + 1) % len;
+        self.recompute_subtree(self.selected_node);
+        self.escalation_status = None;
+    }
+
+    /// Toggle comparison sidebar.
+    pub fn toggle_comparison(&mut self) {
+        self.show_comparison = !self.show_comparison;
+    }
+
+    /// Recompute effective permissions for a node (walk from root).
+    pub fn recompute_effective(&mut self, node_id: usize) {
+        let presets = &*crate::demo::PERMISSION_PRESETS;
+        // Build path from root to node
+        let mut path = vec![node_id];
+        let mut current = node_id;
+        while let Some(parent) = self.nodes[current].parent {
+            path.push(parent);
+            current = parent;
+        }
+        path.reverse();
+
+        // Compute cumulative meet along path
+        let mut effective = presets[self.nodes[path[0]].preset_index].1.clone();
+        for &id in path.iter().skip(1) {
+            let node_perms = &presets[self.nodes[id].preset_index].1;
+            effective = effective.meet(node_perms);
+        }
+        self.nodes[node_id].effective_perms = Some(effective);
+    }
+
+    /// Recompute effective permissions for a node and all its descendants.
+    fn recompute_subtree(&mut self, node_id: usize) {
+        self.recompute_effective(node_id);
+        let children: Vec<usize> = self.nodes[node_id].children.clone();
+        for child_id in children {
+            if !self.nodes[child_id].spiffe_id.is_empty() {
+                self.recompute_subtree(child_id);
+            }
+        }
+    }
+
+    /// Compare parent and child effective permissions, return reductions.
+    pub fn edge_delta(
+        &self,
+        parent_id: usize,
+        child_id: usize,
+    ) -> Vec<(String, CapabilityLevel, CapabilityLevel)> {
+        let parent_eff = match &self.nodes[parent_id].effective_perms {
+            Some(p) => p,
+            None => return vec![],
+        };
+        let child_eff = match &self.nodes[child_id].effective_perms {
+            Some(p) => p,
+            None => return vec![],
+        };
+        let cap_names = [
+            "read_files",
+            "write_files",
+            "edit_files",
+            "run_bash",
+            "web_search",
+            "web_fetch",
+            "git_commit",
+            "git_push",
+            "create_pr",
+            "manage_pods",
+        ];
+        let parent_levels = [
+            parent_eff.capabilities.read_files,
+            parent_eff.capabilities.write_files,
+            parent_eff.capabilities.edit_files,
+            parent_eff.capabilities.run_bash,
+            parent_eff.capabilities.web_search,
+            parent_eff.capabilities.web_fetch,
+            parent_eff.capabilities.git_commit,
+            parent_eff.capabilities.git_push,
+            parent_eff.capabilities.create_pr,
+            parent_eff.capabilities.manage_pods,
+        ];
+        let child_levels = [
+            child_eff.capabilities.read_files,
+            child_eff.capabilities.write_files,
+            child_eff.capabilities.edit_files,
+            child_eff.capabilities.run_bash,
+            child_eff.capabilities.web_search,
+            child_eff.capabilities.web_fetch,
+            child_eff.capabilities.git_commit,
+            child_eff.capabilities.git_push,
+            child_eff.capabilities.create_pr,
+            child_eff.capabilities.manage_pods,
+        ];
+        let mut reductions = Vec::new();
+        for i in 0..cap_names.len() {
+            if child_levels[i] < parent_levels[i] {
+                reductions.push((cap_names[i].to_string(), parent_levels[i], child_levels[i]));
+            }
+        }
+        reductions
+    }
+
+    /// Count active (non-deleted) nodes.
+    pub fn active_node_count(&self) -> usize {
+        self.nodes
+            .iter()
+            .filter(|n| !n.spiffe_id.is_empty())
+            .count()
+    }
+
+    /// Get max depth of active nodes.
+    pub fn max_depth(&self) -> usize {
+        self.nodes
+            .iter()
+            .filter(|n| !n.spiffe_id.is_empty())
+            .map(|n| n.depth)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Get ordered list of visible nodes for rendering (DFS order).
+    pub fn visible_nodes(&self) -> Vec<usize> {
+        let mut result = Vec::new();
+        self.collect_visible(0, &mut result);
+        result
+    }
+
+    fn collect_visible(&self, node_id: usize, result: &mut Vec<usize>) {
+        if self.nodes[node_id].spiffe_id.is_empty() {
+            return;
+        }
+        result.push(node_id);
+        for &child_id in &self.nodes[node_id].children {
+            self.collect_visible(child_id, result);
+        }
     }
 }
 

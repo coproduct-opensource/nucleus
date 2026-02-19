@@ -159,6 +159,26 @@ class ProxyClient(BaseClient):
             payload["nonce"] = nonce
         return self._request("POST", "/v1/approve", payload)
 
+    def create_pod(self, spec_yaml: str, reason: str) -> Dict[str, Any]:
+        """Create a sub-pod. Only available in orchestrator mode."""
+        return self._request("POST", "/v1/pod/create", {"spec_yaml": spec_yaml, "reason": reason})
+
+    def list_pods(self) -> Dict[str, Any]:
+        """List managed sub-pods."""
+        return self._request("POST", "/v1/pod/list", {})
+
+    def pod_status(self, pod_id: str) -> Dict[str, Any]:
+        """Get sub-pod status."""
+        return self._request("POST", "/v1/pod/status", {"pod_id": pod_id})
+
+    def pod_logs(self, pod_id: str) -> Dict[str, Any]:
+        """Get sub-pod logs."""
+        return self._request("POST", "/v1/pod/logs", {"pod_id": pod_id})
+
+    def cancel_pod(self, pod_id: str, reason: str = "") -> Dict[str, Any]:
+        """Cancel a running sub-pod."""
+        return self._request("POST", "/v1/pod/cancel", {"pod_id": pod_id, "reason": reason})
+
 
 class NodeClient(BaseClient):
     def create_pod(self, spec: PodSpec) -> Dict[str, Any]:
@@ -199,6 +219,10 @@ class Nucleus:
         if not self.node_url:
             raise ValueError("node_url is required to create a NodeClient")
         return NodeClient(self.node_url, auth=self.auth, mtls=self.mtls, timeout=self.timeout)
+
+    def proxy_at(self, url: str) -> ProxyClient:
+        """Create a ProxyClient pointing at a specific tool-proxy address."""
+        return ProxyClient(url, auth=self.auth, mtls=self.mtls, timeout=self.timeout)
 
     def intent(self, intent, work_dir: str = ".", timeout_seconds: int = 3600):
         from .intent import Intent, IntentSession, profile_for_intent, pod_spec_for_intent

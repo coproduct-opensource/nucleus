@@ -1,5 +1,7 @@
 //! UI rendering for the playground.
 
+mod delegation_forest;
+
 use lattice_guard::{CapabilityLevel, Operation, PermissionLattice, TrifectaRisk};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -25,6 +27,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Screen::Hasse => draw_hasse_diagram(f, app),
         Screen::Meet => draw_meet_playground(f, app),
         Screen::ChainBuilder => draw_chain_builder(f, app),
+        Screen::DelegationForest => delegation_forest::draw(f, &app.delegation_forest, f.area()),
         Screen::Help => {
             draw_trifecta(f, app);
             draw_help_popup(f);

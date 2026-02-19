@@ -19,6 +19,7 @@ class Intent(str, Enum):
     EDIT_ONLY = "edit_only"
     LOCAL_DEV = "local_dev"
     NETWORK_ONLY = "network_only"
+    ORCHESTRATE = "orchestrate"
 
 
 @dataclass(frozen=True)
@@ -102,6 +103,14 @@ INTENT_PROFILES: Dict[Intent, IntentProfile] = {
         description="Web-only research with no file access.",
         allowed_ops=["web_search", "web_fetch"],
         gated_ops=[],
+    ),
+    Intent.ORCHESTRATE: IntentProfile(
+        intent=Intent.ORCHESTRATE,
+        profile="orchestrator",
+        description="Spawn and manage sub-pods. No direct file/command/web access.",
+        allowed_ops=["read", "glob", "grep", "create_pod", "list_pods", "pod_status", "pod_logs", "cancel_pod"],
+        gated_ops=[],
+        notes="Sub-pod permissions bounded by delegation ceiling via monotonic meet.",
     ),
 }
 
