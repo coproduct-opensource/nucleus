@@ -2212,6 +2212,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-sdk"
+version = "0.1.0"
+dependencies = [
+ "lattice-guard",
+ "nucleus-client",
+ "nucleus-identity",
+ "nucleus-proto",
+ "nucleus-spec",
+ "prost",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "tonic",
+ "tracing",
+]
+
+[[package]]
 name = "nucleus-spec"
 version = "0.1.0"
 dependencies = [
