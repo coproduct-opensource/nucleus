@@ -28,23 +28,22 @@ repos:
   # Rust toolchain hooks - staggered priorities to share build cache
   - repo: local
     hooks:
-      # Pre-commit: only fast formatting check (~1-2s)
+      # Pre-commit: auto-format staged files then re-stage
       - id: cargo-fmt
         name: cargo fmt
-        entry: cargo fmt --all -- --check
+        entry: cargo fmt --all
         language: system
         types: [rust]
         pass_filenames: false
         priority: 10
 
-      # Pre-push: clippy first (builds everything, populates cache)
+      # Pre-commit: clippy catches dependency mismatches before commit
       - id: cargo-clippy
         name: cargo clippy
         entry: cargo clippy --all-targets --all-features -- -D warnings
         language: system
         types: [rust]
         pass_filenames: false
-        stages: [pre-push]
         priority: 20
 
       # Pre-push: tests reuse clippy's build cache
@@ -57,13 +56,12 @@ repos:
         stages: [pre-push]
         priority: 30
 
-      # Pre-push: deny + audit don't compile, run in parallel
+      # Pre-commit: dependency audit (no compilation, fast)
       - id: cargo-deny
         name: cargo deny
         entry: cargo deny check advisories bans licenses sources
         language: system
         pass_filenames: false
-        stages: [pre-push]
         priority: 40
 
       - id: cargo-audit
@@ -71,5 +69,4 @@ repos:
         entry: cargo audit -D warnings --no-fetch
         language: system
         pass_filenames: false
-        stages: [pre-push]
         priority: 40
