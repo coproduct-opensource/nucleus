@@ -28,6 +28,8 @@ testing = []
 
 [dependencies]
 chrono = { workspace = true }
+hex = { workspace = true }
+hmac = { workspace = true }
 sha2 = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }

@@ -37,6 +37,7 @@
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
 
@@ -60,6 +61,9 @@ pub struct AuditEntry {
     pub correlation_id: Option<String>,
     /// Optional task/session identifier.
     pub session_id: Option<String>,
+    /// SHA-256 hash of the previous entry, forming a tamper-evident chain.
+    /// `None` for the first entry in the log.
+    pub prev_hash: Option<String>,
 }
 
 impl AuditEntry {
@@ -72,6 +76,7 @@ impl AuditEntry {
             event,
             correlation_id: None,
             session_id: None,
+            prev_hash: None, // Set by the log during record()
         }
     }
 
@@ -85,6 +90,34 @@ impl AuditEntry {
     pub fn with_session_id(mut self, id: impl Into<String>) -> Self {
         self.session_id = Some(id.into());
         self
+    }
+
+    /// Compute the SHA-256 hash of this entry for chain linkage.
+    ///
+    /// The hash covers all fields including `prev_hash`, making the chain
+    /// tamper-evident: modifying any entry invalidates all subsequent hashes.
+    pub fn content_hash(&self) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(self.sequence.to_le_bytes());
+        // Encode timestamp as duration since UNIX_EPOCH
+        let ts = self
+            .timestamp
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default();
+        hasher.update(ts.as_nanos().to_le_bytes());
+        hasher.update(self.identity.as_bytes());
+        // Hash the event discriminant + key fields
+        hasher.update(format!("{:?}", self.event).as_bytes());
+        if let Some(ref cid) = self.correlation_id {
+            hasher.update(cid.as_bytes());
+        }
+        if let Some(ref sid) = self.session_id {
+            hasher.update(sid.as_bytes());
+        }
+        if let Some(ref ph) = self.prev_hash {
+            hasher.update(ph.as_bytes());
+        }
+        hex::encode(hasher.finalize())
     }
 
     /// Check if this event represents a deviation from declared permissions.
@@ -200,6 +233,7 @@ pub enum PermissionEvent {
 /// Append-only audit log for permission events.
 ///
 /// Thread-safe and designed for high-throughput logging.
+/// Optionally backed by a persistent [`AuditBackend`](crate::audit_backend::AuditBackend).
 #[derive(Debug)]
 pub struct AuditLog {
     inner: Arc<RwLock<AuditLogInner>>,
@@ -210,6 +244,11 @@ struct AuditLogInner {
     entries: Vec<AuditEntry>,
     next_sequence: u64,
     retention_policy: RetentionPolicy,
+    /// Hash of the most recent entry, used for chain linkage.
+    tail_hash: Option<String>,
+    /// Optional persistent backend.
+    #[cfg(feature = "serde")]
+    backend: Option<Box<dyn crate::audit_backend::AuditBackend>>,
 }
 
 /// Policy for how long to retain audit entries.
@@ -245,6 +284,55 @@ impl RetentionPolicy {
     }
 }
 
+/// Errors from hash chain verification.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum ChainVerificationError {
+    /// The first entry has a non-None prev_hash.
+    InvalidGenesisEntry {
+        /// Sequence number of the invalid entry.
+        sequence: u64,
+    },
+    /// An entry's prev_hash doesn't match the computed hash of the preceding entry.
+    HashMismatch {
+        /// Sequence number of the mismatched entry.
+        sequence: u64,
+        /// Expected hash (computed from previous entry).
+        expected: String,
+        /// Actual prev_hash stored in the entry.
+        actual: String,
+    },
+    /// An entry (other than the first) is missing its prev_hash.
+    MissingPrevHash {
+        /// Sequence number of the entry missing prev_hash.
+        sequence: u64,
+    },
+}
+
+impl std::fmt::Display for ChainVerificationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidGenesisEntry { sequence } => {
+                write!(f, "genesis entry (seq={}) has non-None prev_hash", sequence)
+            }
+            Self::HashMismatch {
+                sequence,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "hash mismatch at seq={}: expected {}, got {}",
+                sequence, expected, actual
+            ),
+            Self::MissingPrevHash { sequence } => {
+                write!(f, "entry (seq={}) missing prev_hash", sequence)
+            }
+        }
+    }
+}
+
+impl std::error::Error for ChainVerificationError {}
+
 impl Clone for AuditLog {
     fn clone(&self) -> Self {
         Self {
@@ -272,19 +360,83 @@ impl AuditLog {
                 entries: Vec::new(),
                 next_sequence: 1,
                 retention_policy: policy,
+                tail_hash: None,
+                #[cfg(feature = "serde")]
+                backend: None,
             })),
         }
     }
 
+    /// Create an audit log backed by a persistent backend.
+    ///
+    /// Entries are written to both the in-memory log and the backend.
+    /// Use [`recover_from_file`](crate::audit_backend::recover_from_file) to
+    /// restore entries from a file backend after restart.
+    #[cfg(feature = "serde")]
+    pub fn with_backend(
+        policy: RetentionPolicy,
+        backend: Box<dyn crate::audit_backend::AuditBackend>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(AuditLogInner {
+                entries: Vec::new(),
+                next_sequence: 1,
+                retention_policy: policy,
+                tail_hash: None,
+                backend: Some(backend),
+            })),
+        }
+    }
+
+    /// Create an audit log restored from a backend's persisted entries.
+    ///
+    /// Loads all entries from the backend, restores the in-memory state
+    /// (sequence numbers, tail hash), and continues appending new entries
+    /// to both memory and the backend.
+    #[cfg(feature = "serde")]
+    pub fn recover_from_backend(
+        policy: RetentionPolicy,
+        backend: Box<dyn crate::audit_backend::AuditBackend>,
+    ) -> Result<Self, crate::audit_backend::AuditBackendError> {
+        let entries = backend.load_all()?;
+        let next_sequence = entries.last().map(|e| e.sequence + 1).unwrap_or(1);
+        let tail_hash = entries.last().map(|e| e.content_hash());
+
+        Ok(Self {
+            inner: Arc::new(RwLock::new(AuditLogInner {
+                entries,
+                next_sequence,
+                retention_policy: policy,
+                tail_hash,
+                backend: Some(backend),
+            })),
+        })
+    }
+
     /// Record an audit entry.
     ///
-    /// Returns the sequence number assigned to the entry.
+    /// Sets the entry's `prev_hash` to the hash of the most recent entry,
+    /// forming a tamper-evident chain. Returns the sequence number assigned.
     pub fn record(&self, mut entry: AuditEntry) -> u64 {
         let mut inner = self.inner.write().expect("lock poisoned");
 
         let sequence = inner.next_sequence;
         entry.sequence = sequence;
+        entry.prev_hash = inner.tail_hash.clone();
         inner.next_sequence += 1;
+
+        // Compute this entry's hash and update the tail
+        let entry_hash = entry.content_hash();
+        inner.tail_hash = Some(entry_hash);
+
+        // Write to persistent backend if configured
+        #[cfg(feature = "serde")]
+        if let Some(ref mut backend) = inner.backend {
+            if let Err(e) = backend.append(&entry) {
+                tracing::error!("audit backend write failed: {}", e);
+            }
+        }
+
         inner.entries.push(entry);
 
         // Apply retention policy
@@ -295,6 +447,8 @@ impl AuditLog {
 
     /// Record multiple entries atomically.
     ///
+    /// Each entry's `prev_hash` is set to the hash of the preceding entry
+    /// in the batch (or the current tail for the first entry).
     /// Returns the sequence numbers assigned.
     pub fn record_batch(&self, entries: Vec<AuditEntry>) -> Vec<u64> {
         let mut inner = self.inner.write().expect("lock poisoned");
@@ -304,7 +458,19 @@ impl AuditLog {
             .map(|mut entry| {
                 let sequence = inner.next_sequence;
                 entry.sequence = sequence;
+                entry.prev_hash = inner.tail_hash.clone();
                 inner.next_sequence += 1;
+
+                let entry_hash = entry.content_hash();
+                inner.tail_hash = Some(entry_hash);
+
+                #[cfg(feature = "serde")]
+                if let Some(ref mut backend) = inner.backend {
+                    if let Err(e) = backend.append(&entry) {
+                        tracing::error!("audit backend batch write failed: {}", e);
+                    }
+                }
+
                 inner.entries.push(entry);
                 sequence
             })
@@ -427,10 +593,66 @@ impl AuditLog {
         inner.entries.clone()
     }
 
-    /// Clear all entries (primarily for testing).
+    /// Clear all entries.
+    ///
+    /// Only available in test builds. Production audit logs are append-only;
+    /// use retention policies to manage log size.
+    #[cfg(any(test, feature = "testing"))]
     pub fn clear(&self) {
         let mut inner = self.inner.write().expect("lock poisoned");
         inner.entries.clear();
+        inner.tail_hash = None;
+    }
+
+    /// Get the hash of the most recent entry in the chain.
+    ///
+    /// Returns `None` if the log is empty.
+    pub fn tail_hash(&self) -> Option<String> {
+        let inner = self.inner.read().expect("lock poisoned");
+        inner.tail_hash.clone()
+    }
+
+    /// Verify the integrity of the hash chain.
+    ///
+    /// Walks all entries and checks that each entry's `prev_hash` matches
+    /// the `content_hash()` of the preceding entry. Returns `Ok(())` if
+    /// the chain is valid, or an error describing the first broken link.
+    pub fn verify_chain(&self) -> Result<(), ChainVerificationError> {
+        let inner = self.inner.read().expect("lock poisoned");
+        let entries = &inner.entries;
+
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        // First entry should have prev_hash = None
+        if entries[0].prev_hash.is_some() {
+            return Err(ChainVerificationError::InvalidGenesisEntry {
+                sequence: entries[0].sequence,
+            });
+        }
+
+        // Walk the chain verifying linkage
+        for i in 1..entries.len() {
+            let expected_prev_hash = entries[i - 1].content_hash();
+            match &entries[i].prev_hash {
+                Some(actual) if *actual == expected_prev_hash => {}
+                Some(actual) => {
+                    return Err(ChainVerificationError::HashMismatch {
+                        sequence: entries[i].sequence,
+                        expected: expected_prev_hash,
+                        actual: actual.clone(),
+                    });
+                }
+                None => {
+                    return Err(ChainVerificationError::MissingPrevHash {
+                        sequence: entries[i].sequence,
+                    });
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -715,6 +937,144 @@ mod tests {
 
         let correlated = log.entries_by_correlation("task-123");
         assert_eq!(correlated.len(), 2);
+    }
+
+    #[test]
+    fn test_hash_chain_linkage() {
+        let log = AuditLog::in_memory();
+
+        let seq1 = log.record(AuditEntry::new(
+            "spiffe://test/agent-1",
+            PermissionEvent::PermissionsDeclared {
+                description: "Codegen".to_string(),
+                trifecta_risk: TrifectaRisk::Low,
+            },
+        ));
+
+        let seq2 = log.record(AuditEntry::new(
+            "spiffe://test/agent-1",
+            PermissionEvent::OperationRequested {
+                operation: Operation::ReadFiles,
+                declared_level: CapabilityLevel::Always,
+                requested_level: CapabilityLevel::Always,
+            },
+        ));
+
+        assert_eq!(seq1, 1);
+        assert_eq!(seq2, 2);
+
+        let entries = log.export();
+        // First entry has no prev_hash
+        assert!(entries[0].prev_hash.is_none());
+        // Second entry's prev_hash matches first entry's content_hash
+        assert_eq!(
+            entries[1].prev_hash.as_deref(),
+            Some(entries[0].content_hash().as_str())
+        );
+
+        // Chain verification should pass
+        assert!(log.verify_chain().is_ok());
+    }
+
+    #[test]
+    fn test_hash_chain_tamper_detection() {
+        let log = AuditLog::in_memory();
+
+        log.record(AuditEntry::new(
+            "spiffe://test/agent-1",
+            PermissionEvent::PermissionsDeclared {
+                description: "Codegen".to_string(),
+                trifecta_risk: TrifectaRisk::Low,
+            },
+        ));
+
+        log.record(AuditEntry::new(
+            "spiffe://test/agent-1",
+            PermissionEvent::OperationRequested {
+                operation: Operation::ReadFiles,
+                declared_level: CapabilityLevel::Always,
+                requested_level: CapabilityLevel::Always,
+            },
+        ));
+
+        // Tamper with the first entry's identity
+        {
+            let mut inner = log.inner.write().unwrap();
+            inner.entries[0].identity = "spiffe://test/TAMPERED".to_string();
+        }
+
+        // Chain verification should fail
+        let result = log.verify_chain();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(
+            err,
+            ChainVerificationError::HashMismatch { sequence: 2, .. }
+        ));
+    }
+
+    #[test]
+    fn test_hash_chain_batch() {
+        let log = AuditLog::in_memory();
+
+        let entries = vec![
+            AuditEntry::new(
+                "spiffe://test/agent-1",
+                PermissionEvent::PermissionsDeclared {
+                    description: "Batch 1".to_string(),
+                    trifecta_risk: TrifectaRisk::None,
+                },
+            ),
+            AuditEntry::new(
+                "spiffe://test/agent-1",
+                PermissionEvent::PermissionsDeclared {
+                    description: "Batch 2".to_string(),
+                    trifecta_risk: TrifectaRisk::Low,
+                },
+            ),
+            AuditEntry::new(
+                "spiffe://test/agent-1",
+                PermissionEvent::PermissionsDeclared {
+                    description: "Batch 3".to_string(),
+                    trifecta_risk: TrifectaRisk::Medium,
+                },
+            ),
+        ];
+
+        let seqs = log.record_batch(entries);
+        assert_eq!(seqs, vec![1, 2, 3]);
+
+        // All entries should be properly chained
+        assert!(log.verify_chain().is_ok());
+
+        let exported = log.export();
+        assert!(exported[0].prev_hash.is_none());
+        assert!(exported[1].prev_hash.is_some());
+        assert!(exported[2].prev_hash.is_some());
+    }
+
+    #[test]
+    fn test_tail_hash() {
+        let log = AuditLog::in_memory();
+        assert!(log.tail_hash().is_none());
+
+        log.record(AuditEntry::new(
+            "spiffe://test/agent-1",
+            PermissionEvent::PermissionsDeclared {
+                description: "test".to_string(),
+                trifecta_risk: TrifectaRisk::None,
+            },
+        ));
+
+        let tail = log.tail_hash();
+        assert!(tail.is_some());
+        assert_eq!(tail.unwrap().len(), 64); // SHA-256 hex
+    }
+
+    #[test]
+    fn test_empty_log_verification() {
+        let log = AuditLog::in_memory();
+        assert!(log.verify_chain().is_ok());
     }
 
     #[test]

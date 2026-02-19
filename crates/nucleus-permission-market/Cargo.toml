@@ -1,0 +1,22 @@
+[package]
+name = "nucleus-permission-market"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Lagrangian permission pricing oracle for multi-dimensional capability constraints"
+repository = "https://github.com/coproduct-opensource/nucleus"
+documentation = "https://docs.rs/nucleus-permission-market"
+keywords = ["ai", "security", "permissions", "pricing", "lagrange"]
+categories = ["algorithms", "development-tools"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

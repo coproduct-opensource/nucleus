@@ -85,6 +85,8 @@
 #![deny(unsafe_code)]
 
 pub mod audit;
+#[cfg(feature = "serde")]
+pub mod audit_backend;
 mod budget;
 mod capability;
 mod command;
@@ -138,7 +140,10 @@ pub use weakening::{
 };
 
 // Re-export key audit and metrics types
-pub use audit::{AuditEntry, AuditLog, IdentityAuditSummary, PermissionEvent, RetentionPolicy};
+pub use audit::{
+    AuditEntry, AuditLog, ChainVerificationError, IdentityAuditSummary, PermissionEvent,
+    RetentionPolicy,
+};
 pub use metrics::{
     build_deviation_report, DeviationDetail, DeviationReport, InMemoryMetrics, MetricEvent,
     MetricsCollector, MetricsReport, ReputationMetrics, ReputationWeights,

@@ -28,3 +28,6 @@ Thumbs.db
 
 # Runtime artifacts (pod logs, specs)
 nucleus-node/pods/
+
+# Node.js
+node_modules/

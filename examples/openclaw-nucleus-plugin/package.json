@@ -4,6 +4,16 @@
   "private": true,
   "type": "module",
   "openclaw": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.0",
+    "openclaw": "^2026.2.0",
+    "typescript": "^5.7.0"
   }
 }

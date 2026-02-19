@@ -19,6 +19,7 @@ use nucleus::{
     ApprovalRequest, BudgetModel, CallbackApprover, NucleusError, PodRuntime,
     PodSpec as RuntimePodSpec,
 };
+use nucleus_permission_market::{PermissionBid, PermissionGrant, PermissionMarket};
 use nucleus_spec::{BudgetModelSpec, PodSpec};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -212,6 +213,8 @@ struct AppState {
     delegation_ceiling: Option<Arc<PermissionLattice>>,
     /// Credentials loaded from orchestrator environment for injection into sub-pods.
     orchestrator_credentials: std::collections::BTreeMap<String, String>,
+    /// Permission market for Lagrangian pricing of capability dimensions.
+    permission_market: Arc<Mutex<PermissionMarket>>,
 }
 
 #[derive(Default)]
@@ -889,6 +892,7 @@ async fn main() -> Result<(), ApiError> {
         node_client,
         delegation_ceiling,
         orchestrator_credentials,
+        permission_market: Arc::new(Mutex::new(PermissionMarket::new())),
     };
 
     if let Err(err) = emit_boot_report(&state).await {
@@ -1004,6 +1008,7 @@ const MAX_AUTH_BODY_BYTES: usize = 10 * 1024 * 1024;
 const APPROVE_PATH: &str = "/v1/approve";
 const HEALTH_PATH: &str = "/v1/health";
 const HEADER_ATTESTATION: &str = "x-nucleus-attestation";
+const HEADER_PERMISSION_BID: &str = "x-nucleus-permission-bid";
 
 async fn auth_middleware(
     State(state): State<AppState>,
@@ -1119,9 +1124,46 @@ async fn auth_middleware(
     }
 
     let context = auth::verify_http(&parts.headers, &bytes, &state.auth)?;
+
+    // Evaluate permission bid if present
+    let permission_grant = evaluate_permission_bid(&parts.headers, &state);
+
     let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
     req.extensions_mut().insert(context);
+    if let Some(grant) = permission_grant {
+        req.extensions_mut().insert(grant);
+    }
     Ok(next.run(req).await)
+}
+
+/// Parse and evaluate a permission bid from request headers.
+///
+/// Returns `Some(PermissionGrant)` if a valid bid was present, `None` otherwise.
+/// Invalid bid JSON is silently ignored (logged at warn level).
+fn evaluate_permission_bid(headers: &HeaderMap, state: &AppState) -> Option<PermissionGrant> {
+    let bid_header = headers.get(HEADER_PERMISSION_BID)?;
+    let bid_str = bid_header.to_str().ok()?;
+    let bid: PermissionBid = match serde_json::from_str(bid_str) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(error = %e, "invalid permission bid header");
+            return None;
+        }
+    };
+
+    let market = state.permission_market.lock().unwrap();
+    let grant = market.evaluate_bid(&bid);
+
+    tracing::info!(
+        skill_id = %bid.skill_id,
+        granted = grant.granted.len(),
+        denied = grant.denied.len(),
+        total_cost = grant.total_cost,
+        event = "permission_bid_evaluated",
+        "permission market evaluated bid"
+    );
+
+    Some(grant)
 }
 
 async fn health() -> Json<serde_json::Value> {
