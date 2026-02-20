@@ -96,6 +96,22 @@ struct Args {
     /// Max concurrent Firecracker pods (0 = unlimited).
     #[arg(long, env = "NUCLEUS_FIRECRACKER_MAX_PODS", default_value_t = 15)]
     firecracker_max_pods: usize,
+
+    // Container driver configuration
+    /// Container image for pod execution (container driver).
+    #[arg(
+        long,
+        env = "NUCLEUS_CONTAINER_IMAGE",
+        default_value = "nucleus-tool-proxy:latest"
+    )]
+    container_image: String,
+    /// Network mode for containers ("none", "bridge", or a custom network name).
+    #[arg(long, env = "NUCLEUS_CONTAINER_NETWORK", default_value = "none")]
+    container_network: String,
+    /// Max concurrent container pods (0 = unlimited).
+    #[arg(long, env = "NUCLEUS_CONTAINER_MAX_PODS", default_value_t = 10)]
+    container_max_pods: usize,
+
     /// Shared secret for HMAC request signing.
     #[arg(long, env = "NUCLEUS_NODE_AUTH_SECRET")]
     auth_secret: String,
@@ -194,6 +210,7 @@ struct Args {
 enum DriverKind {
     Local,
     Firecracker,
+    Container,
 }
 
 #[derive(Clone)]
@@ -232,6 +249,15 @@ struct NodeState {
     github_oidc: Option<Arc<oidc::GitHubOidcValidator>>,
     /// Authorization policy for SPIFFE-based access control.
     authz_policy: auth::AuthorizationPolicy,
+    // Container driver state
+    /// Default container image for pods.
+    container_image: String,
+    /// Default network mode for containers.
+    container_network: String,
+    /// Semaphore limiting concurrent container pods.
+    container_pool: Option<Arc<Semaphore>>,
+    /// Docker client (initialized at startup when container driver is active).
+    docker: Option<Arc<bollard::Docker>>,
 }
 
 #[derive(Debug)]
@@ -252,6 +278,7 @@ enum DriverState {
     Local(Box<LocalPod>),
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Firecracker(Box<FirecrackerPod>),
+    Container(Box<ContainerPod>),
 }
 
 #[derive(Debug)]
@@ -281,6 +308,25 @@ struct FirecrackerPod {
     identity_manager: Option<identity::IdentityManager>,
     /// Workload API vsock bridge for this pod
     workload_api_bridge: Mutex<Option<workload_api_vsock::WorkloadApiVsockBridge>>,
+}
+
+/// Container-based pod execution via Docker API (Colima, Docker Desktop, Podman).
+///
+/// The container image can be either:
+///   - `nucleus-tool-proxy:latest` (proxy mode: audit + policy enforcement)
+///   - A Claude Code CLI image like `gt-executor:latest` (direct mode)
+///
+/// The mode is determined by the PodSpec label `nucleus.io/proxy-mode`.
+#[derive(Debug)]
+struct ContainerPod {
+    container_id: String,
+    docker: bollard::Docker,
+    /// Only present in proxy mode (when PodSpec label `nucleus.io/proxy-mode` = "true").
+    signed_proxy: Mutex<Option<signed_proxy::SignedProxy>>,
+    /// Semaphore permit for concurrency limiting.
+    permit: Mutex<Option<OwnedSemaphorePermit>>,
+    /// Cached exit state — set before container removal so status() works after cleanup.
+    cached_exit: Mutex<Option<PodState>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -436,6 +482,35 @@ async fn main() -> Result<(), ApiError> {
         None
     };
 
+    // Initialize Docker client if container driver is selected
+    let docker = if matches!(args.driver, DriverKind::Container) {
+        let docker = bollard::Docker::connect_with_local_defaults()
+            .map_err(|e| ApiError::Driver(format!("failed to connect to Docker: {e}")))?;
+        match docker.version().await {
+            Ok(v) => {
+                info!(
+                    api_version = ?v.api_version,
+                    "Docker client connected (container driver)"
+                );
+            }
+            Err(e) => {
+                return Err(ApiError::Driver(format!(
+                    "Docker not reachable (is Colima running?): {e}"
+                )));
+            }
+        }
+        Some(Arc::new(docker))
+    } else {
+        None
+    };
+
+    let container_pool =
+        if matches!(args.driver, DriverKind::Container) && args.container_max_pods > 0 {
+            Some(Arc::new(Semaphore::new(args.container_max_pods)))
+        } else {
+            None
+        };
+
     let state = NodeState {
         pods: Arc::new(Mutex::new(HashMap::new())),
         state_dir: args.state_dir.clone(),
@@ -462,6 +537,10 @@ async fn main() -> Result<(), ApiError> {
         identity_vsock_port: args.identity_workload_api_vsock_port,
         github_oidc: build_github_oidc(&args),
         authz_policy: auth::AuthorizationPolicy::new(&args.identity_trust_domain),
+        container_image: args.container_image.clone(),
+        container_network: args.container_network.clone(),
+        container_pool,
+        docker,
     };
 
     // Routes that require HMAC auth
@@ -780,6 +859,7 @@ async fn create_pod_internal(
     let (driver_state, proxy_addr, log_path) = match state.driver {
         DriverKind::Local => spawn_local_pod(state, &pod_dir, &spec, id).await?,
         DriverKind::Firecracker => spawn_firecracker_pod(state, &pod_dir, &spec, id).await?,
+        DriverKind::Container => spawn_container_pod(state, &pod_dir, &spec, id).await?,
     };
 
     let handle = Arc::new(PodHandle {
@@ -858,6 +938,7 @@ impl PodHandle {
         match &self.driver_state {
             DriverState::Local(local) => local.status().await,
             DriverState::Firecracker(firecracker) => firecracker.status().await,
+            DriverState::Container(container) => container.status().await,
         }
     }
 
@@ -865,6 +946,7 @@ impl PodHandle {
         match &self.driver_state {
             DriverState::Local(local) => local.cancel().await,
             DriverState::Firecracker(firecracker) => firecracker.cancel().await,
+            DriverState::Container(container) => container.cancel().await,
         }
     }
 
@@ -872,6 +954,7 @@ impl PodHandle {
         match &self.driver_state {
             DriverState::Local(local) => local.cleanup().await,
             DriverState::Firecracker(firecracker) => firecracker.cleanup().await,
+            DriverState::Container(container) => container.cleanup().await,
         }
     }
 }
@@ -980,6 +1063,88 @@ impl FirecrackerPod {
             manager.unregister_pod(&identity.to_spiffe_uri()).await;
             manager.forget_certificate(identity).await;
         }
+    }
+}
+
+impl ContainerPod {
+    async fn status(&self) -> PodState {
+        // Return cached state if container was already cleaned up.
+        if let Some(ref cached) = *self.cached_exit.lock().await {
+            return cached.clone();
+        }
+        use bollard::query_parameters::InspectContainerOptions;
+        match self
+            .docker
+            .inspect_container(&self.container_id, None::<InspectContainerOptions>)
+            .await
+        {
+            Ok(info) => {
+                let state = info.state.as_ref();
+                let running = state.and_then(|s| s.running).unwrap_or(false);
+                if running {
+                    PodState::Running
+                } else {
+                    let exit_state = PodState::Exited {
+                        code: state.and_then(|s| s.exit_code).map(|c| c as i32),
+                    };
+                    // Cache the terminal state so it survives container removal.
+                    *self.cached_exit.lock().await = Some(exit_state.clone());
+                    exit_state
+                }
+            }
+            Err(e) => PodState::Error {
+                message: e.to_string(),
+            },
+        }
+    }
+
+    async fn cancel(&self) -> Result<(), ApiError> {
+        if let Some(proxy) = self.signed_proxy.lock().await.take() {
+            proxy.shutdown().await;
+        }
+        let _ = self
+            .docker
+            .stop_container(
+                &self.container_id,
+                Some(bollard::query_parameters::StopContainerOptions {
+                    t: Some(5),
+                    signal: Some("SIGTERM".to_string()),
+                }),
+            )
+            .await;
+        let _ = self
+            .docker
+            .remove_container(
+                &self.container_id,
+                Some(bollard::query_parameters::RemoveContainerOptions {
+                    force: true,
+                    ..Default::default()
+                }),
+            )
+            .await;
+        self.permit.lock().await.take();
+        Ok(())
+    }
+
+    async fn cleanup(&self) {
+        // Cache exit state before removing the container so status() still works.
+        if self.cached_exit.lock().await.is_none() {
+            let _ = self.status().await; // populates cached_exit
+        }
+        if let Some(proxy) = self.signed_proxy.lock().await.take() {
+            proxy.shutdown().await;
+        }
+        let _ = self
+            .docker
+            .remove_container(
+                &self.container_id,
+                Some(bollard::query_parameters::RemoveContainerOptions {
+                    force: true,
+                    ..Default::default()
+                }),
+            )
+            .await;
+        self.permit.lock().await.take();
     }
 }
 
@@ -1101,6 +1266,300 @@ async fn spawn_local_pod(
 
     info!("spawned local pod {}", id);
     Ok((DriverState::Local(Box::new(handle)), proxy_addr, log_path))
+}
+
+async fn spawn_container_pod(
+    state: &NodeState,
+    pod_dir: &Path,
+    spec: &PodSpec,
+    id: Uuid,
+) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
+    let docker = state
+        .docker
+        .as_ref()
+        .ok_or_else(|| ApiError::Driver("Docker client not initialized".into()))?;
+
+    // Acquire semaphore permit
+    let permit = match &state.container_pool {
+        Some(pool) => Some(
+            pool.clone()
+                .acquire_owned()
+                .await
+                .map_err(|_| ApiError::Driver("container pool closed".into()))?,
+        ),
+        None => None,
+    };
+
+    let spec_path = pod_dir.join("pod.yaml");
+    let log_path = pod_dir.join("pod.log");
+    let announce_path = pod_dir.join("proxy.addr");
+    let audit_path = pod_dir.join("audit.log");
+
+    let spec_yaml = serde_yaml::to_string(spec).map_err(ApiError::Serde)?;
+    let spec_yaml_hash = {
+        use sha2::{Digest, Sha256};
+        hex::encode(Sha256::digest(spec_yaml.as_bytes()))
+    };
+    tokio::fs::write(&spec_path, &spec_yaml).await?;
+
+    let sandbox_token = nucleus_client::generate_sandbox_token(
+        state.proxy_auth_secret.as_bytes(),
+        &id.to_string(),
+        &spec_yaml_hash,
+    );
+
+    // Determine mode: proxy (tool-proxy entrypoint) vs direct (image-defined entrypoint)
+    let proxy_mode = spec
+        .metadata
+        .labels
+        .get("nucleus.io/proxy-mode")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+
+    // Resolve container image: per-pod label override or node default
+    let image = spec
+        .metadata
+        .labels
+        .get("nucleus.io/container-image")
+        .cloned()
+        .unwrap_or_else(|| state.container_image.clone());
+
+    // Build environment variables
+    let mut env: Vec<String> = vec![format!("NUCLEUS_SANDBOX_TOKEN={sandbox_token}")];
+
+    if proxy_mode {
+        env.push(format!(
+            "NUCLEUS_TOOL_PROXY_AUTH_SECRET={}",
+            state.proxy_auth_secret
+        ));
+        env.push(format!(
+            "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET={}",
+            state.proxy_approval_secret
+        ));
+        env.push("NUCLEUS_TOOL_PROXY_AUDIT_LOG=/data/pod/audit.log".to_string());
+    }
+
+    // Pass credentials from PodSpec (if any)
+    if let Some(ref creds) = spec.spec.credentials {
+        for (key, val) in &creds.env {
+            env.push(format!("{key}={val}"));
+        }
+    }
+
+    // In direct mode, extract the task from the raw YAML (task is not in the typed
+    // PodSpec struct — it's a free-form field that the tool-proxy/agent reads from YAML).
+    if !proxy_mode {
+        if let Ok(raw) = serde_yaml::from_str::<serde_json::Value>(&spec_yaml) {
+            if let Some(task) = raw
+                .get("spec")
+                .and_then(|s| s.get("task"))
+                .and_then(|t| t.as_str())
+            {
+                env.push(format!("NUCLEUS_TASK={task}"));
+            }
+        }
+    }
+
+    let pod_dir_abs = pod_dir
+        .canonicalize()
+        .unwrap_or_else(|_| pod_dir.to_path_buf());
+
+    // Bind mounts: pod_dir → /data/pod (always), workspace dir if specified
+    let mut binds = vec![format!("{}:/data/pod:rw", pod_dir_abs.display())];
+    let work_dir_str = spec.spec.work_dir.to_string_lossy();
+    if !work_dir_str.is_empty() && work_dir_str != "/" {
+        binds.push(format!("{work_dir_str}:/workspace:rw"));
+    }
+
+    // Network mode: per-pod label override or node default
+    let network_mode = spec
+        .metadata
+        .labels
+        .get("nucleus.io/network")
+        .cloned()
+        .unwrap_or_else(|| state.container_network.clone());
+
+    let host_config = bollard::secret::HostConfig {
+        network_mode: Some(network_mode),
+        binds: Some(binds),
+        memory: spec
+            .spec
+            .resources
+            .as_ref()
+            .and_then(|r| r.memory_mib)
+            .map(|m| (m as i64) * 1024 * 1024),
+        ..Default::default()
+    };
+
+    // In proxy mode: entrypoint is tool-proxy binary, cmd is args.
+    // In direct mode: use the image's default entrypoint/cmd.
+    let cmd = if proxy_mode {
+        Some(vec![
+            "nucleus-tool-proxy".to_string(),
+            "--spec".to_string(),
+            "/data/pod/pod.yaml".to_string(),
+            "--listen".to_string(),
+            "0.0.0.0:0".to_string(),
+            "--announce-path".to_string(),
+            "/data/pod/proxy.addr".to_string(),
+        ])
+    } else {
+        None
+    };
+
+    let config = bollard::secret::ContainerCreateBody {
+        image: Some(image.clone()),
+        cmd,
+        env: Some(env),
+        host_config: Some(host_config),
+        working_dir: Some("/workspace".to_string()),
+        ..Default::default()
+    };
+
+    let container = docker
+        .create_container(
+            None::<bollard::query_parameters::CreateContainerOptions>,
+            config,
+        )
+        .await
+        .map_err(|e| ApiError::Driver(format!("create container: {e}")))?;
+
+    let container_id = container.id.clone();
+    docker
+        .start_container(
+            &container_id,
+            None::<bollard::query_parameters::StartContainerOptions>,
+        )
+        .await
+        .map_err(|e| ApiError::Driver(format!("start container {container_id}: {e}")))?;
+
+    // Stream container logs to pod.log in background
+    {
+        let docker = docker.as_ref().clone();
+        let cid = container_id.clone();
+        let log_path = log_path.clone();
+        tokio::spawn(async move {
+            use bollard::query_parameters::LogsOptions;
+            use tokio_stream::StreamExt;
+            let opts = LogsOptions {
+                follow: true,
+                stdout: true,
+                stderr: true,
+                ..Default::default()
+            };
+            let mut stream = docker.logs(&cid, Some(opts));
+            let mut file = match tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+                .await
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    error!("failed to open log file {}: {e}", log_path.display());
+                    return;
+                }
+            };
+            while let Some(Ok(output)) = stream.next().await {
+                let bytes = output.into_bytes();
+                if file.write_all(&bytes).await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    // In proxy mode: wait for announce file and wrap with SignedProxy
+    let mut proxy_addr = None;
+    let mut signed_proxy_opt = None;
+
+    if proxy_mode {
+        proxy_addr =
+            wait_for_container_announce(&announce_path, docker.as_ref(), &container_id).await;
+
+        if let Some(ref addr) = proxy_addr {
+            let target_addr: SocketAddr = addr
+                .parse()
+                .map_err(|e| ApiError::Driver(format!("invalid tool proxy address {addr}: {e}")))?;
+            let proxy = signed_proxy::SignedProxy::start_with_drand(
+                target_addr,
+                Arc::new(state.proxy_auth_secret.as_bytes().to_vec()),
+                Some(Arc::new(state.proxy_approval_secret.as_bytes().to_vec())),
+                state.proxy_actor.clone(),
+                state.drand_config.clone(),
+            )
+            .await
+            .map_err(|e| ApiError::Driver(format!("signed proxy failed: {e}")))?;
+            proxy_addr = Some(format!("http://{}", proxy.listen_addr()));
+            signed_proxy_opt = Some(proxy);
+        }
+    }
+
+    // Touch audit log so it exists even in direct mode (for inspection)
+    let _ = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&audit_path)
+        .await;
+
+    let handle = ContainerPod {
+        container_id,
+        docker: docker.as_ref().clone(),
+        signed_proxy: Mutex::new(signed_proxy_opt),
+        permit: Mutex::new(permit),
+        cached_exit: Mutex::new(None),
+    };
+
+    info!(pod_id = %id, %image, proxy_mode, "spawned container pod");
+    Ok((
+        DriverState::Container(Box::new(handle)),
+        proxy_addr,
+        log_path,
+    ))
+}
+
+/// Wait for the announce file inside a container pod (analogous to `wait_for_announce`
+/// for the local driver, but checks container status instead of process status).
+async fn wait_for_container_announce(
+    announce_path: &Path,
+    docker: &bollard::Docker,
+    container_id: &str,
+) -> Option<String> {
+    use bollard::query_parameters::InspectContainerOptions;
+
+    let wait_result = timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(addr) = tokio::fs::read_to_string(announce_path).await {
+                let trimmed = addr.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+
+            // Check if container exited early
+            match docker
+                .inspect_container(container_id, None::<InspectContainerOptions>)
+                .await
+            {
+                Ok(info) => {
+                    let running = info.state.as_ref().and_then(|s| s.running).unwrap_or(false);
+                    if !running {
+                        error!("container exited before announcing proxy address");
+                        return None;
+                    }
+                }
+                Err(e) => {
+                    error!("container inspect error: {e}");
+                    return None;
+                }
+            }
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+
+    wait_result.unwrap_or_default()
 }
 
 async fn spawn_firecracker_pod(
