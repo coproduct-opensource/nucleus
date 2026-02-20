@@ -630,6 +630,9 @@ struct ErrorBody {
     kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     operation: Option<String>,
+    /// Payment metadata for 402 responses (vendor-agnostic).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payment: Option<nucleus_spec::PaymentRequiredInfo>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -658,69 +661,101 @@ enum ApiError {
     Escalation(String),
     #[error("validation error: {0}")]
     Validation(#[from] validation::ValidationError),
+    #[error("permission bid denied: insufficient value")]
+    PermissionDenied(#[allow(unused)] nucleus_spec::PaymentRequiredInfo),
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (status, kind, operation) = match &self {
+        let (status, kind, operation, payment) = match &self {
             ApiError::Nucleus(NucleusError::ApprovalRequired { operation }) => (
                 StatusCode::FORBIDDEN,
                 "approval_required",
                 Some(operation.clone()),
+                None,
             ),
-            ApiError::Nucleus(NucleusError::BudgetExhausted { .. }) => {
-                (StatusCode::PAYMENT_REQUIRED, "budget_exhausted", None)
+            ApiError::Nucleus(NucleusError::BudgetExhausted {
+                requested,
+                remaining,
+            }) => {
+                let payment_info = nucleus_spec::PaymentRequiredInfo {
+                    amount_usd: *requested,
+                    reason: format!(
+                        "budget exhausted: requested ${requested:.4}, remaining ${remaining:.4}"
+                    ),
+                    kind: nucleus_spec::PaymentRequiredKind::BudgetExhausted {
+                        requested: *requested,
+                        remaining: *remaining,
+                    },
+                    recipient: std::env::var("NUCLEUS_PAYMENT_RECIPIENT").ok(),
+                    resource: None,
+                };
+                (
+                    StatusCode::PAYMENT_REQUIRED,
+                    "budget_exhausted",
+                    None,
+                    Some(payment_info),
+                )
             }
             ApiError::Nucleus(NucleusError::CommandDenied { .. }) => {
-                (StatusCode::FORBIDDEN, "command_denied", None)
+                (StatusCode::FORBIDDEN, "command_denied", None, None)
             }
             ApiError::Nucleus(NucleusError::PathDenied { .. }) => {
-                (StatusCode::FORBIDDEN, "path_denied", None)
+                (StatusCode::FORBIDDEN, "path_denied", None, None)
             }
             ApiError::Nucleus(NucleusError::SandboxEscape { .. }) => {
-                (StatusCode::FORBIDDEN, "sandbox_escape", None)
+                (StatusCode::FORBIDDEN, "sandbox_escape", None, None)
             }
             ApiError::Nucleus(NucleusError::Io(_)) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "io_error", None)
+                (StatusCode::INTERNAL_SERVER_ERROR, "io_error", None, None)
             }
             ApiError::Nucleus(NucleusError::TimeViolation { .. }) => {
-                (StatusCode::REQUEST_TIMEOUT, "time_violation", None)
+                (StatusCode::REQUEST_TIMEOUT, "time_violation", None, None)
             }
             ApiError::Nucleus(NucleusError::TrifectaBlocked { .. }) => {
-                (StatusCode::FORBIDDEN, "trifecta_blocked", None)
+                (StatusCode::FORBIDDEN, "trifecta_blocked", None, None)
             }
             ApiError::Nucleus(NucleusError::InsufficientCapability { .. }) => {
-                (StatusCode::FORBIDDEN, "insufficient_capability", None)
+                (StatusCode::FORBIDDEN, "insufficient_capability", None, None)
             }
             ApiError::Nucleus(NucleusError::InvalidApproval { operation }) => (
                 StatusCode::FORBIDDEN,
                 "invalid_approval",
                 Some(operation.clone()),
+                None,
             ),
             ApiError::Nucleus(NucleusError::InvalidCharge { .. }) => {
-                (StatusCode::BAD_REQUEST, "invalid_charge", None)
+                (StatusCode::BAD_REQUEST, "invalid_charge", None, None)
             }
-            ApiError::Spec(_) => (StatusCode::BAD_REQUEST, "spec_error", None),
-            ApiError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, "io_error", None),
-            ApiError::Serde(_) => (StatusCode::BAD_REQUEST, "serde_error", None),
-            ApiError::Auth(_) => (StatusCode::UNAUTHORIZED, "auth_error", None),
-            ApiError::Body(_) => (StatusCode::BAD_REQUEST, "body_error", None),
-            ApiError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited", None),
-            ApiError::WebFetch(_) => (StatusCode::BAD_GATEWAY, "web_fetch_error", None),
-            ApiError::DnsNotAllowed(_) => (StatusCode::FORBIDDEN, "dns_not_allowed", None),
-            ApiError::AttestationFailed(_) => (StatusCode::FORBIDDEN, "attestation_failed", None),
-            ApiError::Escalation(_) => (StatusCode::FORBIDDEN, "escalation_denied", None),
-            ApiError::Validation(_) => (StatusCode::BAD_REQUEST, "validation_error", None),
+            ApiError::Spec(_) => (StatusCode::BAD_REQUEST, "spec_error", None, None),
+            ApiError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, "io_error", None, None),
+            ApiError::Serde(_) => (StatusCode::BAD_REQUEST, "serde_error", None, None),
+            ApiError::Auth(_) => (StatusCode::UNAUTHORIZED, "auth_error", None, None),
+            ApiError::Body(_) => (StatusCode::BAD_REQUEST, "body_error", None, None),
+            ApiError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited", None, None),
+            ApiError::WebFetch(_) => (StatusCode::BAD_GATEWAY, "web_fetch_error", None, None),
+            ApiError::DnsNotAllowed(_) => (StatusCode::FORBIDDEN, "dns_not_allowed", None, None),
+            ApiError::AttestationFailed(_) => {
+                (StatusCode::FORBIDDEN, "attestation_failed", None, None)
+            }
+            ApiError::Escalation(_) => (StatusCode::FORBIDDEN, "escalation_denied", None, None),
+            ApiError::Validation(_) => (StatusCode::BAD_REQUEST, "validation_error", None, None),
+            ApiError::PermissionDenied(ref info) => (
+                StatusCode::PAYMENT_REQUIRED,
+                "permission_denied",
+                None,
+                Some(info.clone()),
+            ),
         };
 
         // Sanitize error message to prevent information disclosure
-        // Note: We don't have access to sandbox root here, so we use generic sanitization
         let sanitized_error = validation::sanitize_error_message(&self.to_string(), None);
 
         let body = Json(ErrorBody {
             error: sanitized_error,
             kind: kind.to_string(),
             operation,
+            payment,
         });
         (status, body).into_response()
     }
@@ -1167,6 +1202,37 @@ async fn auth_middleware(
 
     // Evaluate permission bid if present
     let permission_grant = evaluate_permission_bid(&parts.headers, &state);
+
+    // If the bid was fully denied (no dimensions granted), return 402 with pricing
+    if let Some(ref grant) = permission_grant {
+        if !grant.denied.is_empty() && grant.granted.is_empty() {
+            let total_price: f64 = grant.denied.iter().map(|d| d.price).sum();
+            let denied_dims = grant
+                .denied
+                .iter()
+                .map(|d| nucleus_spec::DeniedDimensionInfo {
+                    dimension: d.dimension.label().to_string(),
+                    price_usd: d.price,
+                })
+                .collect();
+            let reason = grant
+                .denied
+                .iter()
+                .map(|d| format!("{} λ={:.2}", d.dimension.label(), d.price))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let payment_info = nucleus_spec::PaymentRequiredInfo {
+                amount_usd: total_price,
+                reason,
+                kind: nucleus_spec::PaymentRequiredKind::PermissionDenied {
+                    denied_dimensions: denied_dims,
+                },
+                recipient: std::env::var("NUCLEUS_PAYMENT_RECIPIENT").ok(),
+                resource: Some(parts.uri.path().to_string()),
+            };
+            return Err(ApiError::PermissionDenied(payment_info));
+        }
+    }
 
     let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
     req.extensions_mut().insert(context);

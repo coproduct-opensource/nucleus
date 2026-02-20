@@ -26,6 +26,7 @@ pub mod oid;
 pub mod session;
 pub mod tls;
 pub mod verifier;
+pub mod wallet;
 pub mod workload_api;
 
 pub use attestation::{AttestationRequirements, LaunchAttestation};
@@ -39,6 +40,7 @@ pub use manager::SecretManager;
 pub use session::{SessionId, SessionIdentity};
 pub use tls::{TlsClientConfig, TlsServerConfig};
 pub use verifier::{IdentityVerifier, TrustDomainVerifier};
+pub use wallet::{InMemoryWalletRegistry, WalletAddress, WalletMapping};
 pub use workload_api::{MtlsWorkloadApiClient, VmRegistry, WorkloadApiClient, WorkloadApiServer};
 
 /// Errors that can occur in nucleus-identity operations.
