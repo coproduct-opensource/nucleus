@@ -54,17 +54,56 @@ pub const ATTESTATION_OID_COMPONENTS: &[u64] = &[1, 3, 6, 1, 4, 1, 57212, 1, 1];
 ///
 /// **Encoding breakdown**:
 /// - `0x2b` = 1.3 (encoded as 1*40+3 = 43)
-/// - `0x06 0x01 0x04 0x01` = 6.1.4.1 (multi-byte OID encoding)
-/// - `0x82 0xde 0x7c` = 57212 (multi-byte encoding: 57212 = 0x2b7c, encoded as 0x82 0xde 0x7c)
+/// - `0x06 0x01 0x04 0x01` = 6.1.4.1 (single-byte VLQ per component)
+/// - `0x83 0xbe 0x7c` = 57212 (three-byte VLQ: 57212 = 3×128² + 62×128 + 124)
 /// - `0x01 0x01` = 1.1 (attestation.launch subarcs)
 pub const ATTESTATION_OID_DER: &[u8] = &[
-    0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0xde, 0x7c, // 1.3.6.1.4.1.57212
+    0x2b, 0x06, 0x01, 0x04, 0x01, 0x83, 0xbe, 0x7c, // 1.3.6.1.4.1.57212
     0x01, 0x01, // .1.1 (attestation.launch)
 ];
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Encodes a single OID component in VLQ (base-128) form.
+    ///
+    /// VLQ encoding rules:
+    /// 1. Split the value into 7-bit groups.
+    /// 2. Write groups most-significant first.
+    /// 3. Set the high bit (0x80) on every byte except the last.
+    fn vlq_encode(value: u64) -> Vec<u8> {
+        if value == 0 {
+            return vec![0x00];
+        }
+        let mut bytes = Vec::new();
+        let mut v = value;
+        while v > 0 {
+            bytes.push((v & 0x7F) as u8);
+            v >>= 7;
+        }
+        bytes.reverse();
+        let last = bytes.len() - 1;
+        for b in &mut bytes[..last] {
+            *b |= 0x80;
+        }
+        bytes
+    }
+
+    /// Encodes a full OID component array into DER bytes (without tag/length wrapper).
+    ///
+    /// The first two arc values are combined as `first*40 + second`.
+    fn encode_oid_components(components: &[u64]) -> Vec<u8> {
+        assert!(components.len() >= 2, "OID must have at least 2 arcs");
+        let mut bytes = Vec::new();
+        // First two components combined
+        let first_byte = components[0] * 40 + components[1];
+        bytes.extend_from_slice(&vlq_encode(first_byte));
+        for &c in &components[2..] {
+            bytes.extend_from_slice(&vlq_encode(c));
+        }
+        bytes
+    }
 
     #[test]
     fn test_oid_constants_exist() {
@@ -81,8 +120,52 @@ mod tests {
 
     #[test]
     fn test_sha256_oid_der_nist_compliance() {
-        // SHA-256 OID starts with 2.16.840 = 0x60 0x86 0x48
-        assert_eq!(&ATTESTATION_OID_DER[0], &0x2b, "first byte should be 0x2b");
-        assert_eq!(&SHA256_OID_DER[0], &0x60, "SHA-256 OID should start with 0x60");
+        // SHA-256 OID (2.16.840.1.101.3.4.2.1) starts with 2.16 = 2*40+16 = 96 = 0x60
+        assert_eq!(SHA256_OID_DER[0], 0x60, "SHA-256 OID should start with 0x60 (arc 2.16)");
+        // 840 encodes as two VLQ bytes: 0x86 0x48
+        assert_eq!(SHA256_OID_DER[1], 0x86, "second byte of SHA-256 OID should be 0x86");
+        assert_eq!(SHA256_OID_DER[2], 0x48, "third byte of SHA-256 OID should be 0x48");
+        // Total length for 2.16.840.1.101.3.4.2.1 is 9 bytes
+        assert_eq!(SHA256_OID_DER.len(), 9, "SHA-256 OID DER should be 9 bytes");
+    }
+
+    /// Verifies ATTESTATION_OID_DER is the exact DER encoding of ATTESTATION_OID_COMPONENTS.
+    ///
+    /// This is the key consistency test: both constants must encode the same OID.
+    #[test]
+    fn test_attestation_oid_der_matches_components() {
+        let computed = encode_oid_components(ATTESTATION_OID_COMPONENTS);
+        assert_eq!(
+            ATTESTATION_OID_DER,
+            computed.as_slice(),
+            "ATTESTATION_OID_DER must be the DER encoding of ATTESTATION_OID_COMPONENTS.\n\
+             Expected (from components): {:02x?}\n\
+             Got (constant):             {:02x?}",
+            computed,
+            ATTESTATION_OID_DER,
+        );
+    }
+
+    #[test]
+    fn test_attestation_oid_components_values() {
+        // 1.3.6.1.4.1.57212.1.1
+        assert_eq!(ATTESTATION_OID_COMPONENTS, &[1, 3, 6, 1, 4, 1, 57212, 1, 1]);
+    }
+
+    #[test]
+    fn test_vlq_encode_57212() {
+        // Verify the VLQ encoding of the PEN (57212) used in the attestation OID.
+        // 57212 = 3×128² + 62×128 + 124  →  [0x83, 0xBE, 0x7C]
+        let encoded = vlq_encode(57212);
+        assert_eq!(encoded, vec![0x83, 0xbe, 0x7c]);
+    }
+
+    #[test]
+    fn test_vlq_encode_known_values() {
+        assert_eq!(vlq_encode(0), vec![0x00]);
+        assert_eq!(vlq_encode(1), vec![0x01]);
+        assert_eq!(vlq_encode(127), vec![0x7f]);
+        assert_eq!(vlq_encode(128), vec![0x81, 0x00]);
+        assert_eq!(vlq_encode(840), vec![0x86, 0x48]); // from SHA-256 OID
     }
 }
