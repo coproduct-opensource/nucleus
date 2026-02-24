@@ -61,8 +61,18 @@ const OID_SHA256: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01
 /// For production, obtain an official PEN and update this OID.
 ///
 /// Format follows TCG DICE DiceTcbInfo-like structure.
+///
+/// DER encoding of 1.3.6.1.4.1.57212.1.1:
+///   - 1.3    → 0x2b (first two arcs combined: 1*40+3 = 43)
+///   - 6      → 0x06
+///   - 1      → 0x01
+///   - 4      → 0x04
+///   - 1      → 0x01
+///   - 57212  → 0x83, 0xbe, 0x7c (base-128: 3*128²+62*128+124 = 57212)
+///   - 1      → 0x01
+///   - 1      → 0x01
 const OID_NUCLEUS_ATTESTATION: &[u8] = &[
-    0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0xde, 0x7c, // 1.3.6.1.4.1.57212 (unregistered)
+    0x2b, 0x06, 0x01, 0x04, 0x01, 0x83, 0xbe, 0x7c, // 1.3.6.1.4.1.57212 (unregistered)
     0x01, 0x01, // .1.1 (attestation.launch)
 ];
 
@@ -876,5 +886,156 @@ mod tests {
 
         pos = 0;
         assert_eq!(decode_length(&long, &mut pos).unwrap(), 500);
+    }
+
+    /// Encode OID components (u64 array) to DER bytes.
+    ///
+    /// Used in tests to cross-validate `OID_NUCLEUS_ATTESTATION` against
+    /// `OID_NUCLEUS_ATTESTATION_COMPONENTS`.
+    fn oid_components_to_der(components: &[u64]) -> Vec<u8> {
+        fn encode_arc(value: u64, buf: &mut Vec<u8>) {
+            if value < 128 {
+                buf.push(value as u8);
+                return;
+            }
+            let mut groups = Vec::new();
+            let mut v = value;
+            while v > 0 {
+                groups.push((v & 0x7f) as u8);
+                v >>= 7;
+            }
+            groups.reverse();
+            for (i, &byte) in groups.iter().enumerate() {
+                if i < groups.len() - 1 {
+                    buf.push(byte | 0x80);
+                } else {
+                    buf.push(byte);
+                }
+            }
+        }
+
+        assert!(components.len() >= 2, "OID requires at least two arcs");
+        let mut content = Vec::new();
+        // First two arcs combined per X.690 §8.19.4
+        encode_arc(components[0] * 40 + components[1], &mut content);
+        for &arc in &components[2..] {
+            encode_arc(arc, &mut content);
+        }
+        content
+    }
+
+    #[test]
+    fn test_oid_consistency() {
+        // OID_NUCLEUS_ATTESTATION (DER bytes) and OID_NUCLEUS_ATTESTATION_COMPONENTS
+        // (u64 array) must encode the same OID. A mismatch means extension_oid() and
+        // the rcgen-based certificate generation would use different OIDs.
+        let from_components = oid_components_to_der(OID_NUCLEUS_ATTESTATION_COMPONENTS);
+        assert_eq!(
+            OID_NUCLEUS_ATTESTATION, from_components.as_slice(),
+            "DER bytes and component array must encode the same OID \
+             (1.3.6.1.4.1.57212.1.1). \
+             Expected bytes: {:02x?}, got: {:02x?}",
+            from_components,
+            OID_NUCLEUS_ATTESTATION,
+        );
+    }
+
+    #[test]
+    fn test_from_der_empty_input() {
+        let result = LaunchAttestation::from_der(&[]);
+        assert!(result.is_err(), "empty input should fail");
+    }
+
+    #[test]
+    fn test_from_der_wrong_outer_tag() {
+        // Use INTEGER tag instead of SEQUENCE
+        let bad = &[TAG_INTEGER, 0x01, 0x01];
+        let result = LaunchAttestation::from_der(bad);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("SEQUENCE"),
+            "error should mention expected SEQUENCE tag, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_from_der_wrong_version() {
+        // Build a DER with version=2 (unsupported)
+        let attestation = LaunchAttestation::from_hashes([1u8; 32], [2u8; 32], [3u8; 32]);
+        let mut der = attestation.to_der();
+
+        // Version INTEGER is at position: 0x30 <len> 0x02 0x01 <version_byte>
+        // Find the version byte (should be 0x01 at index 4)
+        // Outer SEQUENCE tag + length (2 bytes) + INTEGER tag + length = offset 4
+        assert_eq!(der[2], TAG_INTEGER, "third byte should be INTEGER tag");
+        assert_eq!(der[3], 0x01, "fourth byte should be length 1");
+        der[4] = 0x02; // Change version from 1 to 2
+
+        let result = LaunchAttestation::from_der(&der);
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("unsupported attestation version"),
+            "should report unsupported version"
+        );
+    }
+
+    #[test]
+    fn test_from_der_truncated() {
+        let attestation = LaunchAttestation::from_hashes([1u8; 32], [2u8; 32], [3u8; 32]);
+        let der = attestation.to_der();
+
+        // Truncate to first 20 bytes — valid outer header but truncated content
+        let result = LaunchAttestation::from_der(&der[..20]);
+        assert!(result.is_err(), "truncated input should fail");
+    }
+
+    #[test]
+    fn test_parse_hash_empty() {
+        assert!(parse_hash("").is_none(), "empty string should return None");
+    }
+
+    #[test]
+    fn test_parse_hash_wrong_length() {
+        // Too short
+        assert!(parse_hash("abcd").is_none(), "too-short hex should return None");
+        // Too long (65 chars)
+        let long = "a".repeat(65);
+        assert!(parse_hash(&long).is_none(), "too-long hex should return None");
+    }
+
+    #[test]
+    fn test_parse_hash_invalid_chars() {
+        // 64 chars but containing non-hex characters
+        let bad = "zz".repeat(32); // 64 'z' characters
+        assert!(parse_hash(&bad).is_none(), "non-hex chars should return None");
+    }
+
+    #[test]
+    fn test_parse_hash_with_surrounding_whitespace() {
+        let hash = [0xabu8; 32];
+        let hex = format!("  {}  ", format_hash(&hash));
+        // parse_hash trims whitespace; the trimmed length is 64
+        let result = parse_hash(&hex);
+        assert!(result.is_some(), "surrounding whitespace should be trimmed");
+        assert_eq!(result.unwrap(), hash);
+    }
+
+    #[test]
+    fn test_parse_hash_roundtrip_all_zeros() {
+        let hash = [0u8; 32];
+        let hex = format_hash(&hash);
+        assert_eq!(hex, "0".repeat(64));
+        let parsed = parse_hash(&hex).expect("should parse all-zeros hash");
+        assert_eq!(parsed, hash);
+    }
+
+    #[test]
+    fn test_parse_hash_roundtrip_all_ff() {
+        let hash = [0xffu8; 32];
+        let hex = format_hash(&hash);
+        assert_eq!(hex, "ff".repeat(32));
+        let parsed = parse_hash(&hex).expect("should parse all-0xff hash");
+        assert_eq!(parsed, hash);
     }
 }
