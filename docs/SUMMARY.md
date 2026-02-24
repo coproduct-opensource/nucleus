@@ -9,6 +9,7 @@
 - [Permissions Guide](permissions.md)
 - [Architecture](architecture/overview.md)
   - [Security Architecture](architecture/security.md)
+  - [Dependency Architecture](architecture/dependencies.md)
   - [Isolation Levels](architecture/isolation-levels.md)
   - [Threat Model](architecture/threat-model.md)
   - [Acceptance Tests](architecture/acceptance-tests.md)
