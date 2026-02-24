@@ -133,7 +133,7 @@ pub use isolation::{FileIsolation, IsolationLattice, NetworkIsolation, ProcessIs
 pub use lattice::{
     DelegationError, EffectivePermissions, PermissionLattice, PermissionLatticeBuilder,
 };
-pub use modal::{CapabilityModal, ModalContext, ModalPermissions};
+pub use modal::{CapabilityModal, EscalationPath, EscalationStep, ModalContext, ModalPermissions};
 pub use path::PathLattice;
 pub use permissive::{
     ExecutionDenied, PermissiveExecution, PermissiveExecutionResult, PermissiveExecutor,
