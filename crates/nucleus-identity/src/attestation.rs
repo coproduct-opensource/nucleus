@@ -965,12 +965,16 @@ mod tests {
         let attestation = LaunchAttestation::from_hashes([1u8; 32], [2u8; 32], [3u8; 32]);
         let mut der = attestation.to_der();
 
-        // Version INTEGER is at position: 0x30 <len> 0x02 0x01 <version_byte>
-        // Find the version byte (should be 0x01 at index 4)
-        // Outer SEQUENCE tag + length (2 bytes) + INTEGER tag + length = offset 4
-        assert_eq!(der[2], TAG_INTEGER, "third byte should be INTEGER tag");
-        assert_eq!(der[3], 0x01, "fourth byte should be length 1");
-        der[4] = 0x02; // Change version from 1 to 2
+        // DER layout for the outer SEQUENCE:
+        //   [0] 0x30            – SEQUENCE tag
+        //   [1] 0x81            – long-form length indicator (1 extra byte follows)
+        //   [2] 0xa1 (= 161)    – actual length (content is 161 bytes)
+        //   [3] TAG_INTEGER     – version INTEGER tag
+        //   [4] 0x01            – INTEGER length = 1
+        //   [5] 0x01            – version value = 1
+        assert_eq!(der[3], TAG_INTEGER, "fourth byte should be INTEGER tag");
+        assert_eq!(der[4], 0x01, "fifth byte should be length 1");
+        der[5] = 0x02; // Change version from 1 to 2
 
         let result = LaunchAttestation::from_der(&der);
         assert!(result.is_err());
