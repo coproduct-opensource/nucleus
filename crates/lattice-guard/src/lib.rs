@@ -121,7 +121,10 @@ pub use frame::{
     BoundedLattice, CompleteLattice, DistributiveLattice, Frame, Lattice, Nucleus,
     SafePermissionLattice, TrifectaQuotient,
 };
-pub use galois::{GaloisConnection, GaloisVerificationError, TrustDomainBridge};
+pub use galois::{
+    GaloisConnection, GaloisVerificationError, TranslationReport, TranslationStep,
+    TrustDomainBridge,
+};
 pub use graded::{Graded, GradedPermissionCheck, RiskGrade};
 pub use guard::{CompositeGuard, GuardError, GuardFn, GuardedAction, PermissionGuard};
 pub use heyting::{ConditionalPermission, HeytingAlgebra};
