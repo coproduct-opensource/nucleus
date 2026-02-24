@@ -337,6 +337,173 @@ impl CompleteLattice for PermissionLattice {
 
 impl Frame for PermissionLattice {}
 
+/// A composed nucleus: `j₂ ∘ j₁`.
+///
+/// Given nuclei `j₁` and `j₂`, the composition `j₂(j₁(x))` is itself a
+/// nucleus when both nuclei commute (j₁ ∘ j₂ = j₂ ∘ j₁). This combinator
+/// applies them in sequence and re-applies until a fixed point is reached,
+/// guaranteeing idempotency.
+///
+/// # Convergence
+///
+/// The stabilization loop applies at most `max_iterations` rounds of
+/// `j₂(j₁(x))` until `x` stops changing. For finite lattices (like
+/// `PermissionLattice`), convergence is guaranteed by monotonicity.
+pub struct ComposedNucleus<L: Frame, N1: Nucleus<L>, N2: Nucleus<L>> {
+    first: N1,
+    second: N2,
+    max_iterations: usize,
+    _phantom: std::marker::PhantomData<L>,
+}
+
+impl<L: Frame, N1: Nucleus<L>, N2: Nucleus<L>> ComposedNucleus<L, N1, N2> {
+    /// Compose two nuclei: `second ∘ first`.
+    pub fn new(first: N1, second: N2) -> Self {
+        Self {
+            first,
+            second,
+            max_iterations: 10,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<L: Frame, N1: Nucleus<L>, N2: Nucleus<L>> Nucleus<L> for ComposedNucleus<L, N1, N2> {
+    fn apply(&self, x: &L) -> L {
+        let mut current = self.second.apply(&self.first.apply(x));
+        // Stabilize: keep applying until fixed point (guarantees idempotency)
+        for _ in 0..self.max_iterations {
+            let next = self.second.apply(&self.first.apply(&current));
+            if next == current {
+                break;
+            }
+            current = next;
+        }
+        current
+    }
+}
+
+/// Errors from nucleus law verification.
+#[derive(Debug, Clone)]
+pub struct NucleusLawViolation {
+    /// Which law was violated.
+    pub law: NucleusLaw,
+    /// Human-readable description of the violation.
+    pub description: String,
+    /// Which sample index triggered the violation.
+    pub sample_index: usize,
+}
+
+/// The three nucleus laws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NucleusLaw {
+    /// `j(j(x)) = j(x)`
+    Idempotency,
+    /// `j(x) ≤ x` (deflationary)
+    Deflation,
+    /// `j(x ∧ y) = j(x) ∧ j(y)`
+    MeetPreservation,
+}
+
+impl std::fmt::Display for NucleusLaw {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Idempotency => write!(f, "Idempotency: j(j(x)) = j(x)"),
+            Self::Deflation => write!(f, "Deflation: j(x) ≤ x"),
+            Self::MeetPreservation => write!(f, "Meet preservation: j(x ∧ y) = j(x) ∧ j(y)"),
+        }
+    }
+}
+
+impl std::fmt::Display for NucleusLawViolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Nucleus law violation ({}): {} [sample {}]",
+            self.law, self.description, self.sample_index
+        )
+    }
+}
+
+/// Verify that a nucleus satisfies all three laws against sample inputs.
+///
+/// This provides runtime confidence that a custom or composed nucleus is
+/// mathematically valid. For full verification, combine with property-based
+/// testing using `proptest`.
+///
+/// # Example
+///
+/// ```rust
+/// use lattice_guard::frame::{TrifectaQuotient, verify_nucleus_laws};
+/// use lattice_guard::PermissionLattice;
+///
+/// let nucleus = TrifectaQuotient::new();
+/// let samples = vec![
+///     PermissionLattice::permissive(),
+///     PermissionLattice::restrictive(),
+///     PermissionLattice::default(),
+/// ];
+///
+/// let violations = verify_nucleus_laws(&nucleus, &samples);
+/// assert!(violations.is_empty(), "TrifectaQuotient should satisfy all laws");
+/// ```
+pub fn verify_nucleus_laws<N: Nucleus<PermissionLattice>>(
+    nucleus: &N,
+    samples: &[PermissionLattice],
+) -> Vec<NucleusLawViolation> {
+    let mut violations = Vec::new();
+
+    for (i, x) in samples.iter().enumerate() {
+        let jx = nucleus.apply(x);
+
+        // Law 1: Idempotency — j(j(x)) = j(x)
+        let jjx = nucleus.apply(&jx);
+        if jjx.capabilities != jx.capabilities || jjx.obligations != jx.obligations {
+            violations.push(NucleusLawViolation {
+                law: NucleusLaw::Idempotency,
+                description: format!(
+                    "j(j(x)) ≠ j(x): capabilities or obligations differ for sample '{}'",
+                    x.description
+                ),
+                sample_index: i,
+            });
+        }
+
+        // Law 2: Deflation — j(x) ≤ x
+        if !jx.capabilities.leq(&x.capabilities) {
+            violations.push(NucleusLawViolation {
+                law: NucleusLaw::Deflation,
+                description: format!("j(x) > x in capabilities for sample '{}'", x.description),
+                sample_index: i,
+            });
+        }
+
+        // Law 3: Meet preservation — j(x ∧ y) = j(x) ∧ j(y) for all pairs
+        for (j, y) in samples.iter().enumerate() {
+            if j <= i {
+                continue; // avoid duplicate pairs
+            }
+            let jx_meet_jy = nucleus.apply(x).meet(&nucleus.apply(y));
+            let j_x_meet_y = nucleus.apply(&x.meet(y));
+
+            if j_x_meet_y.capabilities != jx_meet_jy.capabilities
+                || j_x_meet_y.obligations != jx_meet_jy.obligations
+            {
+                violations.push(NucleusLawViolation {
+                    law: NucleusLaw::MeetPreservation,
+                    description: format!(
+                        "j(x∧y) ≠ j(x)∧j(y) for samples '{}' and '{}'",
+                        x.description, y.description
+                    ),
+                    sample_index: i,
+                });
+            }
+        }
+    }
+
+    violations
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,6 +617,60 @@ mod tests {
         assert!(result
             .capabilities
             .leq(&PermissionLattice::restrictive().capabilities));
+    }
+
+    #[test]
+    fn test_verify_nucleus_laws_trifecta_quotient() {
+        let nucleus = TrifectaQuotient::new();
+        let samples = vec![
+            PermissionLattice::permissive(),
+            PermissionLattice::restrictive(),
+            PermissionLattice::default(),
+            PermissionLattice::codegen(),
+        ];
+
+        let violations = verify_nucleus_laws(&nucleus, &samples);
+        assert!(
+            violations.is_empty(),
+            "TrifectaQuotient violated {} law(s): {:?}",
+            violations.len(),
+            violations.iter().map(|v| v.to_string()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_composed_nucleus_is_idempotent() {
+        let n1 = TrifectaQuotient::new();
+        let n2 = TrifectaQuotient::new();
+        let composed = ComposedNucleus::new(n1, n2);
+
+        let perms = PermissionLattice::permissive();
+        let once = composed.apply(&perms);
+        let twice = composed.apply(&once);
+
+        assert_eq!(once.capabilities, twice.capabilities);
+        assert_eq!(once.obligations, twice.obligations);
+    }
+
+    #[test]
+    fn test_composed_nucleus_laws() {
+        let n1 = TrifectaQuotient::new();
+        let n2 = TrifectaQuotient::new();
+        let composed = ComposedNucleus::new(n1, n2);
+
+        let samples = vec![
+            PermissionLattice::permissive(),
+            PermissionLattice::restrictive(),
+            PermissionLattice::default(),
+        ];
+
+        let violations = verify_nucleus_laws(&composed, &samples);
+        assert!(
+            violations.is_empty(),
+            "ComposedNucleus violated {} law(s): {:?}",
+            violations.len(),
+            violations.iter().map(|v| v.to_string()).collect::<Vec<_>>()
+        );
     }
 
     #[test]

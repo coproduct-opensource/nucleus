@@ -118,8 +118,9 @@ pub use capability::{
 };
 pub use command::{ArgPattern, CommandLattice, CommandPattern};
 pub use frame::{
-    BoundedLattice, CompleteLattice, DistributiveLattice, Frame, Lattice, Nucleus,
-    SafePermissionLattice, TrifectaQuotient,
+    verify_nucleus_laws, BoundedLattice, CompleteLattice, ComposedNucleus, DistributiveLattice,
+    Frame, Lattice, Nucleus, NucleusLaw, NucleusLawViolation, SafePermissionLattice,
+    TrifectaQuotient,
 };
 pub use galois::{
     GaloisConnection, GaloisVerificationError, TranslationReport, TranslationStep,
