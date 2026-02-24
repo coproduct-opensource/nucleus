@@ -66,6 +66,14 @@ const OID_NUCLEUS_ATTESTATION: &[u8] = &[
     0x01, 0x01, // .1.1 (attestation.launch)
 ];
 
+/// OID components for Nucleus Launch Attestation as u64 array.
+///
+/// Used by certificate generation (rcgen) which accepts OID components.
+/// Exported for use by CA implementations.
+///
+/// Arc: 1.3.6.1.4.1.57212.1.1
+pub const OID_NUCLEUS_ATTESTATION_COMPONENTS: &[u64] = &[1, 3, 6, 1, 4, 1, 57212, 1, 1];
+
 /// Launch attestation containing integrity measurements of VM components.
 ///
 /// This structure captures the cryptographic identity of a Firecracker VM's

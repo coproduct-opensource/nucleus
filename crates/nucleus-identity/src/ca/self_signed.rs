@@ -40,7 +40,7 @@
 //! # });
 //! ```
 
-use crate::attestation::LaunchAttestation;
+use crate::attestation::{LaunchAttestation, OID_NUCLEUS_ATTESTATION_COMPONENTS};
 use crate::ca::CaClient;
 use crate::certificate::{Certificate, PrivateKey, TrustBundle, WorkloadCertificate};
 use crate::identity::Identity;
@@ -389,12 +389,9 @@ impl SelfSignedCa {
     /// OID: 1.3.6.1.4.1.57212.1.1 (Nucleus Launch Attestation)
     /// Content: DER-encoded attestation per TCG DICE conventions
     fn create_attestation_extension(attestation: &LaunchAttestation) -> CustomExtension {
-        // OID components: 1.3.6.1.4.1.57212.1.1
-        // (iso.org.dod.internet.private.enterprise.57212.attestation.launch)
-        let oid: &[u64] = &[1, 3, 6, 1, 4, 1, 57212, 1, 1];
         let content = attestation.to_der();
 
-        let mut ext = CustomExtension::from_oid_content(oid, content);
+        let mut ext = CustomExtension::from_oid_content(OID_NUCLEUS_ATTESTATION_COMPONENTS, content);
         // Mark as non-critical so verifiers that don't understand it can still process the cert
         ext.set_criticality(false);
         ext
@@ -966,9 +963,9 @@ mod tests {
 
         let ext = SelfSignedCa::create_attestation_extension(&attestation);
 
-        // Check OID components
+        // Check OID components match the constant
         let oid_components: Vec<u64> = ext.oid_components().collect();
-        assert_eq!(oid_components, vec![1, 3, 6, 1, 4, 1, 57212, 1, 1]);
+        assert_eq!(oid_components, OID_NUCLEUS_ATTESTATION_COMPONENTS.to_vec());
 
         // Check criticality is false (non-critical extension)
         assert!(!ext.criticality());

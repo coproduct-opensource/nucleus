@@ -27,7 +27,7 @@ pub mod tls;
 pub mod verifier;
 pub mod workload_api;
 
-pub use attestation::{AttestationRequirements, LaunchAttestation};
+pub use attestation::{AttestationRequirements, LaunchAttestation, OID_NUCLEUS_ATTESTATION_COMPONENTS};
 #[cfg(feature = "spire")]
 pub use ca::{auto_detect_ca, SpireCaClient, DEFAULT_SPIRE_SOCKET, SPIFFE_ENDPOINT_ENV};
 pub use ca::{CaClient, SelfSignedCa};
