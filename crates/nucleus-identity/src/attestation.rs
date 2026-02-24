@@ -983,4 +983,341 @@ mod tests {
         pos = 0;
         assert_eq!(decode_length(&long, &mut pos).unwrap(), 500);
     }
+
+    // ===== OID assembly tests (validates const fn refactoring) =====
+
+    #[test]
+    fn test_oid_assembled_from_parts() {
+        // OID_NUCLEUS_ATTESTATION must equal ARC_ENTERPRISE || NUCLEUS_PEN_BYTES || LAUNCH_ATTESTATION
+        let expected: Vec<u8> = oid::ARC_ENTERPRISE
+            .iter()
+            .chain(oid::NUCLEUS_PEN_BYTES.iter())
+            .chain(oid::LAUNCH_ATTESTATION.iter())
+            .copied()
+            .collect();
+        assert_eq!(
+            OID_NUCLEUS_ATTESTATION,
+            expected.as_slice(),
+            "OID_NUCLEUS_ATTESTATION must equal the concatenation of its component parts"
+        );
+    }
+
+    #[test]
+    fn test_oid_len_constant_correct() {
+        assert_eq!(
+            oid::OID_LEN,
+            oid::ARC_ENTERPRISE.len() + oid::NUCLEUS_PEN_BYTES.len() + oid::LAUNCH_ATTESTATION.len(),
+            "OID_LEN must equal the sum of part lengths"
+        );
+        assert_eq!(
+            OID_NUCLEUS_ATTESTATION.len(),
+            oid::OID_LEN,
+            "OID_NUCLEUS_ATTESTATION byte length must match OID_LEN"
+        );
+    }
+
+    #[test]
+    fn test_oid_starts_with_enterprise_arc() {
+        // The private enterprise numbers arc (1.3.6.1.4.1) must be the first 5 bytes
+        assert_eq!(
+            &OID_NUCLEUS_ATTESTATION[..5],
+            &oid::ARC_ENTERPRISE,
+            "OID must start with the private enterprise arc 1.3.6.1.4.1"
+        );
+    }
+
+    #[test]
+    fn test_oid_enterprise_arc_encoding() {
+        // 1.3.6.1.4.1 DER encoding: first byte is 1*40+3=43=0x2b, then 6, 1, 4, 1
+        assert_eq!(
+            oid::ARC_ENTERPRISE,
+            [0x2b, 0x06, 0x01, 0x04, 0x01],
+            "ARC_ENTERPRISE must encode 1.3.6.1.4.1"
+        );
+    }
+
+    #[test]
+    fn test_oid_pen_suffix_present() {
+        // NUCLEUS_PEN_BYTES followed by LAUNCH_ATTESTATION must be the tail
+        let expected_tail: Vec<u8> = oid::NUCLEUS_PEN_BYTES
+            .iter()
+            .chain(oid::LAUNCH_ATTESTATION.iter())
+            .copied()
+            .collect();
+        assert_eq!(
+            &OID_NUCLEUS_ATTESTATION[oid::ARC_ENTERPRISE.len()..],
+            expected_tail.as_slice(),
+            "OID tail must be NUCLEUS_PEN_BYTES || LAUNCH_ATTESTATION"
+        );
+    }
+
+    #[test]
+    fn test_nucleus_attestation_oid_fn_idempotent() {
+        // Calling nucleus_attestation_oid() twice must yield the same bytes
+        assert_eq!(
+            oid::nucleus_attestation_oid(),
+            oid::nucleus_attestation_oid()
+        );
+        // And it must match the precomputed constant
+        assert_eq!(
+            oid::nucleus_attestation_oid().as_slice(),
+            OID_NUCLEUS_ATTESTATION
+        );
+    }
+
+    // ===== decode_fwid OID validation tests =====
+
+    #[test]
+    fn test_decode_fwid_accepts_sha256_oid() {
+        // encode_fwid uses SHA-256; decode_fwid must accept it
+        let test_hash = [0x42_u8; 32];
+        let fwid = encode_fwid(&test_hash);
+
+        let mut pos = 0;
+        let result = decode_fwid(&fwid, &mut pos);
+        assert!(result.is_ok(), "decode_fwid must accept SHA-256 OID");
+        assert_eq!(result.unwrap(), test_hash);
+        assert_eq!(pos, fwid.len(), "pos must advance past entire FWID");
+    }
+
+    #[test]
+    fn test_decode_fwid_rejects_wrong_oid() {
+        // Build an FWID that uses MD5 OID (1.2.840.113549.2.5) instead of SHA-256
+        // MD5 DER OID bytes: 2a 86 48 86 f7 0d 02 05
+        let md5_oid: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x02, 0x05];
+        let fake_digest = [0xaa_u8; 32];
+
+        let mut fwid_content = encode_oid(md5_oid);
+        fwid_content.extend_from_slice(&encode_octet_string(&fake_digest));
+        let fwid = encode_sequence(&fwid_content);
+
+        let mut pos = 0;
+        let result = decode_fwid(&fwid, &mut pos);
+        assert!(result.is_err(), "decode_fwid must reject non-SHA-256 OID");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("SHA-256") || msg.contains("hash algorithm"),
+            "error should mention SHA-256 or hash algorithm, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_decode_fwid_rejects_wrong_digest_length() {
+        // Build an FWID with SHA-256 OID but only a 16-byte digest
+        let short_digest = [0xbb_u8; 16];
+        let mut fwid_content = encode_oid(OID_SHA256);
+        fwid_content.extend_from_slice(&encode_octet_string(&short_digest));
+        let fwid = encode_sequence(&fwid_content);
+
+        let mut pos = 0;
+        let result = decode_fwid(&fwid, &mut pos);
+        assert!(
+            result.is_err(),
+            "decode_fwid must reject digest length other than 32"
+        );
+    }
+
+    #[test]
+    fn test_decode_fwid_rejects_missing_octet_string() {
+        // Build an FWID with only the OID (no OCTET STRING following it)
+        let fwid_content = encode_oid(OID_SHA256);
+        let fwid = encode_sequence(&fwid_content);
+
+        let mut pos = 0;
+        let result = decode_fwid(&fwid, &mut pos);
+        assert!(
+            result.is_err(),
+            "decode_fwid must error when OCTET STRING is missing"
+        );
+    }
+
+    // ===== from_der error case tests =====
+
+    #[test]
+    fn test_from_der_empty_input() {
+        let result = LaunchAttestation::from_der(&[]);
+        assert!(result.is_err(), "from_der must error on empty input");
+    }
+
+    #[test]
+    fn test_from_der_truncated_data() {
+        let att = LaunchAttestation::from_hashes([1u8; 32], [2u8; 32], [3u8; 32]);
+        let der = att.to_der();
+
+        // Try several truncation points
+        for cut in [1, der.len() / 4, der.len() / 2, der.len() - 1] {
+            let truncated = &der[..cut];
+            assert!(
+                LaunchAttestation::from_der(truncated).is_err(),
+                "from_der must error on truncation at byte {cut}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_from_der_wrong_outer_tag() {
+        let att = LaunchAttestation::from_hashes([1u8; 32], [2u8; 32], [3u8; 32]);
+        let mut der = att.to_der();
+        der[0] = TAG_INTEGER; // corrupt the outer SEQUENCE tag
+
+        let result = LaunchAttestation::from_der(&der);
+        assert!(
+            result.is_err(),
+            "from_der must error when outer tag is not SEQUENCE"
+        );
+    }
+
+    #[test]
+    fn test_from_der_unsupported_version() {
+        // Build a valid DER but with version = 2
+        let mut content = Vec::new();
+        content.extend_from_slice(&encode_integer(2));
+        content.extend_from_slice(&encode_fwid(&[1u8; 32]));
+        content.extend_from_slice(&encode_fwid(&[2u8; 32]));
+        content.extend_from_slice(&encode_fwid(&[3u8; 32]));
+        let dt = chrono::DateTime::from_timestamp(0, 0).unwrap();
+        content.extend_from_slice(&encode_generalized_time(&dt));
+        let der = encode_sequence(&content);
+
+        let result = LaunchAttestation::from_der(&der);
+        assert!(result.is_err(), "from_der must error on unsupported version");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("version"),
+            "error should mention 'version', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_from_der_roundtrip_all_zeros() {
+        // Ensure all-zeros hashes survive encode/decode
+        let att = LaunchAttestation::from_hashes([0u8; 32], [0u8; 32], [0u8; 32]);
+        let der = att.to_der();
+        let parsed = LaunchAttestation::from_der(&der).expect("should parse all-zeros attestation");
+        assert_eq!(parsed.kernel_hash(), &[0u8; 32]);
+        assert_eq!(parsed.rootfs_hash(), &[0u8; 32]);
+        assert_eq!(parsed.config_hash(), &[0u8; 32]);
+    }
+
+    #[test]
+    fn test_from_der_roundtrip_all_ff() {
+        // Ensure all-0xff hashes survive encode/decode
+        let att = LaunchAttestation::from_hashes([0xff; 32], [0xff; 32], [0xff; 32]);
+        let der = att.to_der();
+        let parsed = LaunchAttestation::from_der(&der).expect("should parse all-0xff attestation");
+        assert_eq!(parsed.kernel_hash(), &[0xff; 32]);
+        assert_eq!(parsed.rootfs_hash(), &[0xff; 32]);
+        assert_eq!(parsed.config_hash(), &[0xff; 32]);
+    }
+
+    // ===== AttestationRequirements missing coverage =====
+
+    #[test]
+    fn test_requirements_verify_rootfs_mismatch() {
+        let req = AttestationRequirements::any().allow_rootfs([1u8; 32]);
+        let att = LaunchAttestation::from_hashes([0u8; 32], [99u8; 32], [0u8; 32]);
+
+        let result = req.verify(&att);
+        assert!(result.is_err(), "should reject mismatched rootfs hash");
+        assert!(
+            result.unwrap_err().to_string().contains("rootfs hash"),
+            "error should mention 'rootfs hash'"
+        );
+    }
+
+    #[test]
+    fn test_requirements_verify_config_mismatch() {
+        let req = AttestationRequirements::any().allow_config([1u8; 32]);
+        let att = LaunchAttestation::from_hashes([0u8; 32], [0u8; 32], [99u8; 32]);
+
+        let result = req.verify(&att);
+        assert!(result.is_err(), "should reject mismatched config hash");
+        assert!(
+            result.unwrap_err().to_string().contains("config hash"),
+            "error should mention 'config hash'"
+        );
+    }
+
+    #[test]
+    fn test_requirements_verify_rootfs_match_with_any_kernel_config() {
+        // If only rootfs is constrained, kernel and config must be free
+        let req = AttestationRequirements::any().allow_rootfs([7u8; 32]);
+        let att = LaunchAttestation::from_hashes([99u8; 32], [7u8; 32], [88u8; 32]);
+        req.verify(&att).expect("should pass when only constrained rootfs matches");
+    }
+
+    #[test]
+    fn test_requirements_exact_all_mismatches() {
+        let req = AttestationRequirements::exact([1u8; 32], [2u8; 32], [3u8; 32]);
+        // Wrong kernel
+        let att = LaunchAttestation::from_hashes([9u8; 32], [2u8; 32], [3u8; 32]);
+        assert!(req.verify(&att).is_err(), "should reject wrong kernel");
+        // Wrong rootfs
+        let att = LaunchAttestation::from_hashes([1u8; 32], [9u8; 32], [3u8; 32]);
+        assert!(req.verify(&att).is_err(), "should reject wrong rootfs");
+        // Wrong config
+        let att = LaunchAttestation::from_hashes([1u8; 32], [2u8; 32], [9u8; 32]);
+        assert!(req.verify(&att).is_err(), "should reject wrong config");
+    }
+
+    // ===== parse_hash edge case tests =====
+
+    #[test]
+    fn test_parse_hash_empty() {
+        assert!(parse_hash("").is_none(), "empty string must return None");
+    }
+
+    #[test]
+    fn test_parse_hash_too_short() {
+        assert!(parse_hash("abcd").is_none(), "short hex must return None");
+        assert!(
+            parse_hash(&"a".repeat(63)).is_none(),
+            "63-char hex must return None"
+        );
+    }
+
+    #[test]
+    fn test_parse_hash_too_long() {
+        assert!(
+            parse_hash(&"a".repeat(65)).is_none(),
+            "65-char hex must return None"
+        );
+        assert!(
+            parse_hash(&"a".repeat(128)).is_none(),
+            "128-char hex must return None"
+        );
+    }
+
+    #[test]
+    fn test_parse_hash_invalid_chars() {
+        let invalid = "z".repeat(64);
+        assert!(
+            parse_hash(&invalid).is_none(),
+            "non-hex chars must return None"
+        );
+    }
+
+    #[test]
+    fn test_parse_hash_trims_whitespace() {
+        let hash = [0xab_u8; 32];
+        let hex = format_hash(&hash);
+        let padded = format!("  {hex}  ");
+        let result = parse_hash(&padded);
+        assert!(result.is_some(), "parse_hash should trim surrounding whitespace");
+        assert_eq!(result.unwrap(), hash);
+    }
+
+    #[test]
+    fn test_format_hash_roundtrip() {
+        let hash: Hash256 = [
+            0x00, 0x01, 0x0f, 0x10, 0x7f, 0x80, 0xff, 0xfe,
+            0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0x90,
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+            0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00,
+        ];
+        let hex = format_hash(&hash);
+        assert_eq!(hex.len(), 64, "formatted hash must be 64 hex chars");
+        let parsed = parse_hash(&hex).expect("should round-trip through format_hash/parse_hash");
+        assert_eq!(parsed, hash);
+    }
 }
