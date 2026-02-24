@@ -552,6 +552,162 @@ impl WeakeningCostConfig {
 
         process_cost.combine(&file_cost).combine(&network_cost)
     }
+
+    /// Compute the full weakening gap between a secure floor and actual permissions.
+    ///
+    /// Examines every dimension of the permission lattice and emits a
+    /// `WeakeningRequest` for each dimension where `actual > floor`.
+    pub fn compute_gap(
+        &self,
+        floor: &crate::PermissionLattice,
+        actual: &crate::PermissionLattice,
+    ) -> WeakeningGap {
+        let mut gap = WeakeningGap::empty();
+
+        // Capability weakenings
+        let cap_checks: &[(Operation, CapabilityLevel, CapabilityLevel)] = &[
+            (
+                Operation::ReadFiles,
+                floor.capabilities.read_files,
+                actual.capabilities.read_files,
+            ),
+            (
+                Operation::WriteFiles,
+                floor.capabilities.write_files,
+                actual.capabilities.write_files,
+            ),
+            (
+                Operation::EditFiles,
+                floor.capabilities.edit_files,
+                actual.capabilities.edit_files,
+            ),
+            (
+                Operation::RunBash,
+                floor.capabilities.run_bash,
+                actual.capabilities.run_bash,
+            ),
+            (
+                Operation::WebSearch,
+                floor.capabilities.web_search,
+                actual.capabilities.web_search,
+            ),
+            (
+                Operation::WebFetch,
+                floor.capabilities.web_fetch,
+                actual.capabilities.web_fetch,
+            ),
+            (
+                Operation::GitPush,
+                floor.capabilities.git_push,
+                actual.capabilities.git_push,
+            ),
+            (
+                Operation::CreatePr,
+                floor.capabilities.create_pr,
+                actual.capabilities.create_pr,
+            ),
+        ];
+
+        // Compute trifecta risk before and after
+        let constraint = crate::IncompatibilityConstraint::enforcing();
+        let floor_trifecta = constraint.trifecta_risk(&floor.capabilities);
+        let actual_trifecta = constraint.trifecta_risk(&actual.capabilities);
+        let trifecta_mult = self.trifecta_multiplier(floor_trifecta, actual_trifecta);
+
+        for &(op, floor_level, actual_level) in cap_checks {
+            if actual_level > floor_level {
+                let mut cost = self.capability_cost(floor_level, actual_level);
+                cost.trifecta_multiplier = trifecta_mult;
+                gap.add(WeakeningRequest::capability(
+                    op,
+                    floor_level,
+                    actual_level,
+                    cost,
+                    actual_trifecta,
+                ));
+            }
+        }
+
+        // Obligation removal weakenings
+        for op in &floor.obligations.approvals {
+            if !actual.obligations.approvals.contains(op) {
+                let cost = self.obligation_removal_cost(*op);
+                gap.add(WeakeningRequest::obligation_removal(*op, cost));
+            }
+        }
+
+        // Budget weakening (if actual allows more spend)
+        if actual.budget.max_cost_usd > floor.budget.max_cost_usd {
+            let ratio = actual.budget.max_cost_usd / floor.budget.max_cost_usd;
+            // Cost scales with log of budget expansion ratio
+            let base =
+                Decimal::new(1, 1) * Decimal::from(ratio.to_string().parse::<i64>().unwrap_or(1));
+            gap.add(WeakeningRequest::new(
+                WeakeningDimension::Budget,
+                format!("${}", floor.budget.max_cost_usd),
+                format!("${}", actual.budget.max_cost_usd),
+                WeakeningCost::new(base.min(Decimal::ONE)),
+                TrifectaRisk::None,
+            ));
+        }
+
+        // Path weakening (actual allows paths floor doesn't)
+        let floor_allowed: std::collections::BTreeSet<_> = floor.paths.allowed.iter().collect();
+        let actual_allowed: std::collections::BTreeSet<_> = actual.paths.allowed.iter().collect();
+        let extra_paths: Vec<_> = actual_allowed.difference(&floor_allowed).collect();
+        if !extra_paths.is_empty() {
+            gap.add(WeakeningRequest::new(
+                WeakeningDimension::Path,
+                format!("{} allowed paths", floor.paths.allowed.len()),
+                format!(
+                    "{} allowed paths (+{})",
+                    actual.paths.allowed.len(),
+                    extra_paths.len()
+                ),
+                WeakeningCost::new(Decimal::new(2, 1)), // 0.2 per expansion
+                TrifectaRisk::None,
+            ));
+        }
+
+        // Command weakening (actual allows commands floor doesn't)
+        let floor_cmds: std::collections::BTreeSet<_> = floor.commands.allowed.iter().collect();
+        let actual_cmds: std::collections::BTreeSet<_> = actual.commands.allowed.iter().collect();
+        let extra_cmds: Vec<_> = actual_cmds.difference(&floor_cmds).collect();
+        if !extra_cmds.is_empty() {
+            gap.add(WeakeningRequest::new(
+                WeakeningDimension::Command,
+                format!("{} allowed commands", floor.commands.allowed.len()),
+                format!(
+                    "{} allowed commands (+{})",
+                    actual.commands.allowed.len(),
+                    extra_cmds.len()
+                ),
+                WeakeningCost::new(Decimal::new(1, 1)), // 0.1 per expansion
+                TrifectaRisk::None,
+            ));
+        }
+
+        // Time weakening (actual has wider window)
+        if actual.time.valid_until > floor.time.valid_until {
+            let extra_secs = (actual.time.valid_until - floor.time.valid_until).num_seconds();
+            gap.add(WeakeningRequest::new(
+                WeakeningDimension::Time,
+                format!(
+                    "{}s window",
+                    (floor.time.valid_until - floor.time.valid_from).num_seconds()
+                ),
+                format!(
+                    "{}s window (+{}s)",
+                    (actual.time.valid_until - actual.time.valid_from).num_seconds(),
+                    extra_secs
+                ),
+                WeakeningCost::new(Decimal::new(1, 2)), // 0.01 per time extension
+                TrifectaRisk::None,
+            ));
+        }
+
+        gap
+    }
 }
 
 /// A collection of weakening requests with computed total cost.
@@ -741,6 +897,89 @@ mod tests {
         let combined = gap1.combine(gap2);
         assert_eq!(combined.len(), 2);
         assert_eq!(combined.total_cost.base, Decimal::new(11, 1)); // 0.3 + 0.8 = 1.1
+    }
+
+    #[test]
+    fn test_compute_gap_no_weakening() {
+        let config = WeakeningCostConfig::default();
+        let floor = crate::PermissionLattice::default();
+        let actual = floor.clone();
+
+        let gap = config.compute_gap(&floor, &actual);
+        assert!(gap.is_empty());
+        assert!(gap.total_cost.is_zero());
+    }
+
+    #[test]
+    fn test_compute_gap_capability_weakening() {
+        let config = WeakeningCostConfig::default();
+        let floor = crate::PermissionLattice::restrictive();
+        let mut actual = floor.clone();
+        // read_files is already Always in restrictive, so elevate write_files instead
+        actual.capabilities.write_files = CapabilityLevel::LowRisk;
+        actual.capabilities.web_fetch = CapabilityLevel::LowRisk;
+
+        let gap = config.compute_gap(&floor, &actual);
+        assert_eq!(gap.len(), 2);
+        assert!(gap.has_dimension(&WeakeningDimension::Capability(Operation::WriteFiles)));
+        assert!(gap.has_dimension(&WeakeningDimension::Capability(Operation::WebFetch)));
+        assert!(!gap.total_cost.is_zero());
+    }
+
+    #[test]
+    fn test_compute_gap_path_weakening() {
+        let config = WeakeningCostConfig::default();
+        let floor = crate::PermissionLattice::default();
+        let mut actual = floor.clone();
+        actual.paths.allowed.insert("/extra/path".to_string());
+
+        let gap = config.compute_gap(&floor, &actual);
+        assert!(gap.has_dimension(&WeakeningDimension::Path));
+    }
+
+    #[test]
+    fn test_compute_gap_command_weakening() {
+        let config = WeakeningCostConfig::default();
+        let floor = crate::PermissionLattice::default();
+        let mut actual = floor.clone();
+        actual.commands.allowed.insert("docker build".to_string());
+
+        let gap = config.compute_gap(&floor, &actual);
+        assert!(gap.has_dimension(&WeakeningDimension::Command));
+    }
+
+    #[test]
+    fn test_compute_gap_budget_weakening() {
+        let config = WeakeningCostConfig::default();
+        let floor = crate::PermissionLattice::default();
+        let mut actual = floor.clone();
+        actual.budget.max_cost_usd = floor.budget.max_cost_usd * Decimal::new(10, 0);
+
+        let gap = config.compute_gap(&floor, &actual);
+        assert!(gap.has_dimension(&WeakeningDimension::Budget));
+    }
+
+    #[test]
+    fn test_compute_gap_trifecta_multiplier_applied() {
+        let config = WeakeningCostConfig::default();
+        let floor = crate::PermissionLattice::restrictive();
+        let mut actual = floor.clone();
+        // Enable all three trifecta legs
+        actual.capabilities.read_files = CapabilityLevel::Always; // private data
+        actual.capabilities.web_fetch = CapabilityLevel::LowRisk; // untrusted content
+        actual.capabilities.git_push = CapabilityLevel::LowRisk; // exfiltration
+
+        let gap = config.compute_gap(&floor, &actual);
+        // All capability requests should have elevated trifecta multiplier
+        for req in &gap.requests {
+            if let WeakeningDimension::Capability(_) = &req.dimension {
+                assert!(
+                    req.cost.trifecta_multiplier > Decimal::ONE,
+                    "Expected trifecta multiplier > 1 for {:?}",
+                    req.dimension
+                );
+            }
+        }
     }
 
     #[test]
