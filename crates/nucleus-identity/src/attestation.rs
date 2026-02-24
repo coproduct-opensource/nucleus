@@ -51,20 +51,123 @@ pub type Hash256 = [u8; 32];
 /// OID for SHA-256: 2.16.840.1.101.3.4.2.1 (NIST)
 const OID_SHA256: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01];
 
-/// OID for Nucleus Launch Attestation (private enterprise arc).
+/// Nucleus-specific OID hierarchy for certificate extensions.
 ///
-/// **TODO(production):** Register a Private Enterprise Number (PEN) with IANA:
-/// <https://www.iana.org/assignments/enterprise-numbers/>
+/// This module defines the Object Identifier (OID) constants used in SPIFFE certificates
+/// for Nucleus workload identity extensions.
 ///
-/// Current value uses 1.3.6.1.4.1.57212.1.1 which is an unregistered placeholder.
-/// 57212 is not officially assigned and may conflict with other software.
-/// For production, obtain an official PEN and update this OID.
+/// # OID Structure
 ///
-/// Format follows TCG DICE DiceTcbInfo-like structure.
-const OID_NUCLEUS_ATTESTATION: &[u8] = &[
-    0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0xde, 0x7c, // 1.3.6.1.4.1.57212 (unregistered)
-    0x01, 0x01, // .1.1 (attestation.launch)
-];
+/// Nucleus uses the private enterprise numbers arc (1.3.6.1.4.1) managed by IANA:
+/// - `1.3.6.1.4.1` - Private enterprise numbers (RFC 5280)
+/// - `1.3.6.1.4.1.57212` - Nucleus private enterprise number (**currently unregistered**)
+/// - `1.3.6.1.4.1.57212.1` - Nucleus extensions
+/// - `1.3.6.1.4.1.57212.1.1` - Launch attestation
+///
+/// # Production Readiness: PEN Registration
+///
+/// **IMPORTANT:** The current Nucleus PEN (57212) is an unregistered placeholder.
+/// Before production deployment, an official PEN must be obtained from IANA.
+///
+/// ## Steps to Register and Update:
+///
+/// 1. **Register PEN with IANA**:
+///    - Visit: https://www.iana.org/assignments/enterprise-numbers/
+///    - Complete the registration form
+///    - Obtain your official PEN (e.g., 12345)
+///
+/// 2. **Encode the New PEN**:
+///    - Convert decimal to DER base-128 encoding
+///    - For PEN 12345: encode as [0x9f, 0x39] (variable-length base-128)
+///    - Reference: https://en.wikipedia.org/wiki/X.690#Contents
+///
+/// 3. **Update Nucleus OIDs**:
+///    - Replace [0x82, 0xde, 0x7c] in `NUCLEUS_PEN_BYTES` below
+///    - `OID_NUCLEUS_ATTESTATION` is automatically rebuilt from the parts
+///    - Update this module documentation with official PEN
+///
+/// 4. **Regenerate Certificates**:
+///    - All new SPIFFE certificates must use the updated OID
+///    - Old certificates with placeholder OID remain valid until expiry
+///
+/// 5. **Validate Changes**:
+///    - Run: `cargo test -p nucleus-identity`
+///    - Verify certificates parse correctly
+///    - Test with verifier on updated OIDs
+mod oid {
+    /// Private enterprise numbers arc: 1.3.6.1.4.1
+    /// Reference: https://www.iana.org/assignments/enterprise-numbers/
+    pub const ARC_ENTERPRISE: [u8; 5] = [0x2b, 0x06, 0x01, 0x04, 0x01]; // 1.3.6.1.4.1
+
+    /// NUCLEUS_PEN_BYTES encodes the Nucleus private enterprise number.
+    ///
+    /// Current value: [0x82, 0xde, 0x7c] = 57212 (unregistered placeholder)
+    /// - 0x82 = continuation byte with bits 10000010
+    /// - 0xde = continuation byte with bits 11011110
+    /// - 0x7c = final byte with bits 01111100
+    /// - Decoded: (2 << 14) | (94 << 7) | 124 = 57212
+    ///
+    /// Replace with official PEN bytes once registered with IANA.
+    /// `OID_NUCLEUS_ATTESTATION` is assembled from these parts automatically.
+    pub const NUCLEUS_PEN_BYTES: [u8; 3] = [0x82, 0xde, 0x7c];
+
+    /// Launch attestation extension sub-identifier: .1.1
+    pub const LAUNCH_ATTESTATION: [u8; 2] = [0x01, 0x01];
+
+    /// Total byte length of the assembled Nucleus attestation OID.
+    pub const OID_LEN: usize =
+        ARC_ENTERPRISE.len() + NUCLEUS_PEN_BYTES.len() + LAUNCH_ATTESTATION.len();
+
+    /// Assembles the full Nucleus launch attestation OID from its component parts.
+    ///
+    /// Returns the DER-encoded OID bytes for 1.3.6.1.4.1.57212.1.1.
+    /// This const fn ensures `OID_NUCLEUS_ATTESTATION` is always consistent with
+    /// `NUCLEUS_PEN_BYTES`; updating the PEN automatically propagates here.
+    pub const fn nucleus_attestation_oid() -> [u8; OID_LEN] {
+        let mut result = [0u8; OID_LEN];
+        let mut i = 0;
+        let mut j = 0;
+        while j < ARC_ENTERPRISE.len() {
+            result[i] = ARC_ENTERPRISE[j];
+            i += 1;
+            j += 1;
+        }
+        j = 0;
+        while j < NUCLEUS_PEN_BYTES.len() {
+            result[i] = NUCLEUS_PEN_BYTES[j];
+            i += 1;
+            j += 1;
+        }
+        j = 0;
+        while j < LAUNCH_ATTESTATION.len() {
+            result[i] = LAUNCH_ATTESTATION[j];
+            i += 1;
+            j += 1;
+        }
+        result
+    }
+}
+
+/// OID for Nucleus Launch Attestation: 1.3.6.1.4.1.57212.1.1
+///
+/// This OID identifies the Nucleus-specific X.509 certificate extension that carries
+/// cryptographic attestation of Firecracker VM launch configuration, including:
+/// - Kernel image hash (SHA-256)
+/// - Rootfs image hash (SHA-256)
+/// - Configuration hash (SHA-256, includes PodSpec + policy)
+/// - Launch timestamp
+///
+/// The attestation is encoded in ASN.1 DER format following TCG DICE conventions
+/// for compatibility with trusted execution monitoring and verification frameworks.
+///
+/// Assembled at compile time from [`oid::ARC_ENTERPRISE`], [`oid::NUCLEUS_PEN_BYTES`],
+/// and [`oid::LAUNCH_ATTESTATION`]. Update `NUCLEUS_PEN_BYTES` to change the PEN.
+///
+/// # See Also
+/// - TCG DICE Attestation Architecture v1.2: https://trustedcomputinggroup.org/wp-content/uploads/DICE-Attestation-Architecture-v1.2_pub.pdf
+/// - RFC 5280 (X.509): https://tools.ietf.org/html/rfc5280
+const OID_NUCLEUS_ATTESTATION_BYTES: [u8; oid::OID_LEN] = oid::nucleus_attestation_oid();
+const OID_NUCLEUS_ATTESTATION: &[u8] = &OID_NUCLEUS_ATTESTATION_BYTES;
 
 /// Launch attestation containing integrity measurements of VM components.
 ///
@@ -534,16 +637,27 @@ fn decode_integer(data: &[u8], pos: &mut usize) -> Result<i64> {
 }
 
 /// Decodes an FWID SEQUENCE, extracts the digest.
+///
+/// Validates that the hash algorithm OID is SHA-256 (`OID_SHA256`).
 fn decode_fwid(data: &[u8], pos: &mut usize) -> Result<Hash256> {
     let (_, fwid_content) = decode_sequence(data, pos)?;
     let mut inner_pos = 0;
 
-    // Skip OID (we assume SHA-256)
+    // Decode and validate OID (must be SHA-256)
     if inner_pos >= fwid_content.len() || fwid_content[inner_pos] != TAG_OID {
         return Err(Error::Certificate("expected OID in FWID".to_string()));
     }
     inner_pos += 1;
     let oid_len = decode_length(&fwid_content, &mut inner_pos)?;
+    if inner_pos + oid_len > fwid_content.len() {
+        return Err(Error::Certificate("truncated OID in FWID".to_string()));
+    }
+    let oid_bytes = &fwid_content[inner_pos..inner_pos + oid_len];
+    if oid_bytes != OID_SHA256 {
+        return Err(Error::Certificate(
+            "unsupported hash algorithm OID in FWID (expected SHA-256)".to_string(),
+        ));
+    }
     inner_pos += oid_len;
 
     // Decode OCTET STRING
