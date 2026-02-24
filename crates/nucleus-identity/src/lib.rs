@@ -22,6 +22,7 @@ pub mod certificate;
 pub mod csr;
 pub mod identity;
 pub mod manager;
+pub mod oid;
 pub mod session;
 pub mod tls;
 pub mod verifier;

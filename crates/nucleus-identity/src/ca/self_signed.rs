@@ -44,7 +44,7 @@ use crate::attestation::LaunchAttestation;
 use crate::ca::CaClient;
 use crate::certificate::{Certificate, PrivateKey, TrustBundle, WorkloadCertificate};
 use crate::identity::Identity;
-use crate::{Error, Result};
+use crate::{oid, Error, Result};
 use async_trait::async_trait;
 use rcgen::PublicKeyData;
 use rcgen::{
@@ -389,12 +389,9 @@ impl SelfSignedCa {
     /// OID: 1.3.6.1.4.1.57212.1.1 (Nucleus Launch Attestation)
     /// Content: DER-encoded attestation per TCG DICE conventions
     fn create_attestation_extension(attestation: &LaunchAttestation) -> CustomExtension {
-        // OID components: 1.3.6.1.4.1.57212.1.1
-        // (iso.org.dod.internet.private.enterprise.57212.attestation.launch)
-        let oid: &[u64] = &[1, 3, 6, 1, 4, 1, 57212, 1, 1];
         let content = attestation.to_der();
 
-        let mut ext = CustomExtension::from_oid_content(oid, content);
+        let mut ext = CustomExtension::from_oid_content(oid::OID_NUCLEUS_ATTESTATION_TUPLE, content);
         // Mark as non-critical so verifiers that don't understand it can still process the cert
         ext.set_criticality(false);
         ext
