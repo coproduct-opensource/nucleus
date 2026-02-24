@@ -6,15 +6,18 @@
 
 ## Executive Summary
 
-Nucleus maintains a secure, vendor-neutral dependency stack with:
+Nucleus maintains a secure dependency stack with:
 - **0 known CVEs** across 518 resolved packages
-- **100% vendor-neutral** compliance with CLAUDE.md requirements
+- **No vendor-specific packages** in the dependency tree
 - **All dependencies current** as of February 2026
 - **Pure Rust cryptography** eliminating entire vulnerability classes
 
-### Risk Assessment: **LOW**
+### Risk Assessment: **LOW** (dependencies) / **MEDIUM** (code compliance)
 
-No immediate action required. Current dependency policies are sound and well-maintained.
+No dependency security action required. However, vendor-specific source code
+references (`claude`, `claude-sonnet-4-20250514`) in `nucleus-cli` and
+`nucleus-mcp` need remediation to comply with CLAUDE.md vendor-neutrality rules.
+These are code issues, not dependency issues — no CVEs are affected.
 
 ---
 
@@ -61,7 +64,7 @@ No known CVEs (Common Vulnerabilities and Exposures) in any dependency.
 
 ### Known Advisory: RUSTSEC-2024-0436
 
-**Crate**: paste 1.0.14
+**Crate**: paste 1.0.15
 **Status**: Unmaintained
 **Used by**: cel-interpreter (transitive dependency)
 **Risk Level**: Low (no known exploits, stable API)
@@ -72,13 +75,39 @@ No known CVEs (Common Vulnerabilities and Exposures) in any dependency.
 
 ## Vendor Neutrality Verification
 
-### ✅ PASS: No Vendor-Specific SDKs
+### ✅ PASS: No Vendor-Specific SDKs in Dependencies
 
-**Checked for and NOT found:**
-- ✅ Anthropic SDKs (claude-*, anthropic-*)
+**Checked for and NOT found in Cargo.lock:**
+- ✅ Anthropic SDKs (anthropic-* packages)
 - ✅ OpenAI SDKs (openai-*, openai_*)
 - ✅ AWS SDKs (aws-sdk-*, rusoto-*)
 - ✅ GCP SDKs (google-cloud-*, gcloud-*)
+
+### ⚠️ FINDING: Vendor-Specific References in Source Code
+
+The dependency scan correctly found no vendor-specific *packages*, but a code scan
+reveals CLAUDE.md violations in source files (not captured by dependency tooling):
+
+**nucleus-cli/src/run.rs** (production code):
+- Line 121: `/// Claude model to use` (vendor-specific comment)
+- Line 122: `default_value = "claude-sonnet-4-20250514"` (hardcoded model name)
+- Line 539: `fn run_claude_mcp(` (vendor-specific function name)
+- Line 547: `Command::new("claude")` (direct invocation of Claude CLI binary)
+- Line 566: `.context("failed to spawn claude")` (vendor-specific error message)
+
+**nucleus-mcp/Cargo.toml** (package metadata):
+- `description = "MCP server that bridges Claude Code to nucleus-tool-proxy"`
+- `keywords = ["mcp", "claude", "tools", "security", "sandbox"]`
+
+**crates/lattice-guard/examples/claude_code_integration.rs** (example file):
+- File is entirely dedicated to Claude Code integration (acceptable as example,
+  but contradicts vendor-neutrality if shipped as primary documentation)
+
+**Recommended remediation** (code changes, out of scope for this audit):
+- Rename `run_claude_mcp` → `run_agent_mcp` or `run_mcp_agent`
+- Make the model name a required argument without a Claude-specific default
+- Generalize `nucleus-mcp/Cargo.toml` description and remove "claude" keyword
+- These are code issues, not dependency issues — tracked separately
 
 ### ✅ PASS: Generic Credential Handling
 
@@ -250,10 +279,11 @@ The dependency tree reflects intentional design:
 
 | Requirement | Status | Evidence |
 |-------------|--------|----------|
-| No Anthropic code | ✅ PASS | Verified via grep -r "anthropic" - not found |
-| No OpenAI code | ✅ PASS | Verified via grep -r "openai" - not found |
+| No Anthropic packages | ✅ PASS | No anthropic-* packages in Cargo.lock |
+| No OpenAI packages | ✅ PASS | No openai-* packages in Cargo.lock |
+| No vendor-specific *source* code | ⚠️ PARTIAL | "claude" references found in nucleus-cli/run.rs, nucleus-mcp/Cargo.toml — see Vendor Neutrality section |
 | Generic credentials | ✅ PASS | env: BTreeMap<String, String> in nucleus-spec |
-| Work-type policies | ✅ PASS | ceL policies in lattice-guard |
+| Work-type policies | ✅ PASS | CEL policies in lattice-guard |
 | Open standards | ✅ PASS | gRPC, Protobuf, SPIFFE, X.509, CEL |
 | Pure Rust crypto | ✅ PASS | rustls, ring, sha2, hmac (no OpenSSL) |
 
@@ -275,17 +305,22 @@ The dependency tree reflects intentional design:
 Nucleus demonstrates **excellent dependency discipline**:
 
 1. **Security**: No known vulnerabilities, well-audited libraries
-2. **Vendor Neutrality**: Perfect compliance with CLAUDE.md
+2. **Vendor Neutrality (deps)**: No vendor-specific packages in Cargo.lock
 3. **Architecture**: Smart choices (rustls, SPIFFE, CEL) reflect vendor-agnostic design
 4. **Maintainability**: Workspace pinning, clear update policies
 5. **Scalability**: Pure Rust foundation ensures consistency across platforms
 
 ### Recommended Action
 
-**Continue current practices.** No urgent updates required. Monitor quarterly for:
+**Dependency security**: Continue current practices. Monitor quarterly for:
 - cel-interpreter updates (paste dependency)
 - Tokio 2.0 migration timeline
 - New security advisories
+
+**Code compliance**: Address vendor-specific source references (medium priority):
+1. `nucleus-cli/src/run.rs` — Rename `run_claude_mcp`, remove hardcoded Claude model default
+2. `nucleus-mcp/Cargo.toml` — Generalize description and remove "claude" keyword
+3. `lattice-guard/examples/claude_code_integration.rs` — Consider renaming or restructuring as generic MCP example
 
 ---
 
