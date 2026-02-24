@@ -41,30 +41,13 @@
 //! ```
 
 use crate::{Error, Result};
+use crate::oids::{ATTESTATION_OID_DER, SHA256_OID_DER};
 use chrono::{DateTime, Utc};
 use ring::digest::{digest, SHA256};
 use std::path::Path;
 
 /// SHA-256 hash (32 bytes).
 pub type Hash256 = [u8; 32];
-
-/// OID for SHA-256: 2.16.840.1.101.3.4.2.1 (NIST)
-const OID_SHA256: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01];
-
-/// OID for Nucleus Launch Attestation (private enterprise arc).
-///
-/// **TODO(production):** Register a Private Enterprise Number (PEN) with IANA:
-/// <https://www.iana.org/assignments/enterprise-numbers/>
-///
-/// Current value uses 1.3.6.1.4.1.57212.1.1 which is an unregistered placeholder.
-/// 57212 is not officially assigned and may conflict with other software.
-/// For production, obtain an official PEN and update this OID.
-///
-/// Format follows TCG DICE DiceTcbInfo-like structure.
-const OID_NUCLEUS_ATTESTATION: &[u8] = &[
-    0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0xde, 0x7c, // 1.3.6.1.4.1.57212 (unregistered)
-    0x01, 0x01, // .1.1 (attestation.launch)
-];
 
 /// Launch attestation containing integrity measurements of VM components.
 ///
@@ -171,7 +154,7 @@ impl LaunchAttestation {
 
     /// Returns the X.509 extension OID for this attestation type.
     pub fn extension_oid() -> &'static [u8] {
-        OID_NUCLEUS_ATTESTATION
+        ATTESTATION_OID_DER
     }
 
     /// Serializes attestation to ASN.1 DER-encoded bytes for X.509 extension.
@@ -426,7 +409,7 @@ fn encode_oid(oid: &[u8]) -> Vec<u8> {
 
 /// Encodes an FWID (hashAlg OID + digest OCTET STRING) as SEQUENCE.
 fn encode_fwid(digest: &Hash256) -> Vec<u8> {
-    let mut content = encode_oid(OID_SHA256);
+    let mut content = encode_oid(SHA256_OID_DER);
     content.extend_from_slice(&encode_octet_string(digest));
     encode_sequence(&content)
 }
