@@ -54,18 +54,16 @@ mod tests {
         // The first two components (1.3) are encoded as 0x2b (1*40+3)
         assert_eq!(OID_NUCLEUS_ATTESTATION_BYTES[0], 0x2b);
 
-        // Component 4 is 57212, encoded as 0x82 0xde 0x7c (multi-byte encoding)
-        // 57212 = 0xdf5c = 0b1101111101011100
-        // Encoded as: 0x82 (continuation bit + 2 bits) 0xde (6 bits) 0x7c (7 bits)
-        assert_eq!(OID_NUCLEUS_ATTESTATION_BYTES[4..7], [0x82, 0xde, 0x7c]);
+        // PEN 57212 is encoded as 0x82 0xde 0x7c (multi-byte BER encoding)
+        // Bytes: 0x2b(1.3) 0x06(6) 0x01(1) 0x04(4) 0x01(1) 0x82,0xde,0x7c(57212) 0x01(1) 0x01(1)
+        assert_eq!(OID_NUCLEUS_ATTESTATION_BYTES[5..8], [0x82, 0xde, 0x7c]);
     }
 
     /// Verifies that the PEN is unregistered (for development awareness).
     #[test]
     fn test_attestation_oid_uses_unregistered_pen() {
-        // Component index 4 contains the PEN value (57212 as 0x82 0xde 0x7c)
-        // This test documents that we're using an unregistered PEN
-        let pen_bytes = &OID_NUCLEUS_ATTESTATION_BYTES[4..7];
+        // PEN 57212 is at byte indices 5..8 (after 1.3.6.1.4.1 prefix)
+        let pen_bytes = &OID_NUCLEUS_ATTESTATION_BYTES[5..8];
         // 57212 is NOT an officially registered PEN with IANA
         assert_eq!(pen_bytes, &[0x82, 0xde, 0x7c]);
     }
