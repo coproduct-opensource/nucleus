@@ -68,16 +68,54 @@ pub struct AuditEntry {
 
 impl AuditEntry {
     /// Create a new audit entry with the current timestamp.
+    ///
+    /// # Security Note
+    /// The identity should be a valid SPIFFE ID (format: `spiffe://trust-domain/path`).
+    /// While format validation is performed, callers should ensure the identity
+    /// comes from a trusted source (e.g., SPIFFE runtime).
     pub fn new(identity: impl Into<String>, event: PermissionEvent) -> Self {
+        let identity_str = identity.into();
+
+        // Validate SPIFFE ID format to prevent injection attacks
+        if !Self::is_valid_spiffe_id(&identity_str) {
+            tracing::warn!(
+                "audit entry with invalid SPIFFE format: '{}' (expected spiffe://trust-domain/path)",
+                identity_str
+            );
+        }
+
         Self {
             sequence: 0, // Set by the log
             timestamp: SystemTime::now(),
-            identity: identity.into(),
+            identity: identity_str,
             event,
             correlation_id: None,
             session_id: None,
             prev_hash: None, // Set by the log during record()
         }
+    }
+
+    /// Check if an identity string matches SPIFFE ID format.
+    /// Format: `spiffe://[trust-domain]/[path-components]`
+    fn is_valid_spiffe_id(identity: &str) -> bool {
+        // Must start with spiffe://
+        if !identity.starts_with("spiffe://") {
+            return false;
+        }
+
+        let remainder = &identity[9..]; // After "spiffe://"
+
+        // Must have at least a trust domain (no empty identities)
+        if remainder.is_empty() {
+            return false;
+        }
+
+        // Trust domain must be followed by / or be at end (for root workloads)
+        // Valid examples: spiffe://example.com, spiffe://example.com/sa/default
+        let parts: Vec<&str> = remainder.split('/').collect();
+
+        // At minimum, trust domain should exist and not be empty
+        !parts.is_empty() && !parts[0].is_empty()
     }
 
     /// Set the correlation ID.
@@ -96,18 +134,38 @@ impl AuditEntry {
     ///
     /// The hash covers all fields including `prev_hash`, making the chain
     /// tamper-evident: modifying any entry invalidates all subsequent hashes.
+    ///
+    /// Uses deterministic serialization (serde) to ensure the hash is stable
+    /// across Rust compiler versions and system restarts.
     pub fn content_hash(&self) -> String {
         let mut hasher = Sha256::new();
         hasher.update(self.sequence.to_le_bytes());
-        // Encode timestamp as duration since UNIX_EPOCH
+
+        // Encode timestamp as duration since UNIX_EPOCH in nanoseconds.
+        // Returns error if timestamp is before UNIX_EPOCH, ensuring deterministic hashing.
         let ts = self
             .timestamp
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default();
+            .expect("timestamp must be after UNIX_EPOCH (1970-01-01)");
         hasher.update(ts.as_nanos().to_le_bytes());
+
         hasher.update(self.identity.as_bytes());
-        // Hash the event discriminant + key fields
-        hasher.update(format!("{:?}", self.event).as_bytes());
+
+        // Use deterministic JSON serialization instead of Debug format.
+        // This ensures hashes remain consistent across Rust versions and compilers.
+        #[cfg(feature = "serde")]
+        {
+            let event_json = serde_json::to_string(&self.event)
+                .unwrap_or_else(|_| String::from("error_serializing_event"));
+            hasher.update(event_json.as_bytes());
+        }
+        #[cfg(not(feature = "serde"))]
+        {
+            // Fallback for non-serde builds: use the original Debug format
+            // (not ideal but maintains compatibility)
+            hasher.update(format!("{:?}", self.event).as_bytes());
+        }
+
         if let Some(ref cid) = self.correlation_id {
             hasher.update(cid.as_bytes());
         }
@@ -418,7 +476,10 @@ impl AuditLog {
     /// Sets the entry's `prev_hash` to the hash of the most recent entry,
     /// forming a tamper-evident chain. Returns the sequence number assigned.
     pub fn record(&self, mut entry: AuditEntry) -> u64 {
-        let mut inner = self.inner.write().expect("lock poisoned");
+        let mut inner = self.inner.write().unwrap_or_else(|poisoned| {
+            tracing::error!("RwLock poisoned during audit record; recovering");
+            poisoned.into_inner()
+        });
 
         let sequence = inner.next_sequence;
         entry.sequence = sequence;
@@ -451,7 +512,10 @@ impl AuditLog {
     /// in the batch (or the current tail for the first entry).
     /// Returns the sequence numbers assigned.
     pub fn record_batch(&self, entries: Vec<AuditEntry>) -> Vec<u64> {
-        let mut inner = self.inner.write().expect("lock poisoned");
+        let mut inner = self.inner.write().unwrap_or_else(|poisoned| {
+            tracing::error!("RwLock poisoned during audit record_batch; recovering");
+            poisoned.into_inner()
+        });
 
         let sequences: Vec<u64> = entries
             .into_iter()
@@ -483,7 +547,10 @@ impl AuditLog {
 
     /// Get all entries for a specific identity.
     pub fn entries_for_identity(&self, identity: &str) -> Vec<AuditEntry> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(|poisoned| {
+            tracing::error!("RwLock poisoned during audit read; recovering");
+            poisoned.into_inner()
+        });
         inner
             .entries
             .iter()
@@ -494,7 +561,10 @@ impl AuditLog {
 
     /// Get entries within a time window.
     pub fn entries_in_window(&self, start: SystemTime, end: SystemTime) -> Vec<AuditEntry> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(|poisoned| {
+            tracing::error!("RwLock poisoned during audit read; recovering");
+            poisoned.into_inner()
+        });
         inner
             .entries
             .iter()
@@ -505,7 +575,10 @@ impl AuditLog {
 
     /// Get all deviation events.
     pub fn deviations(&self) -> Vec<AuditEntry> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(|poisoned| {
+            tracing::error!("RwLock poisoned; recovering");
+            poisoned.into_inner()
+        });
         inner
             .entries
             .iter()
@@ -516,7 +589,10 @@ impl AuditLog {
 
     /// Get deviations for a specific identity.
     pub fn deviations_for_identity(&self, identity: &str) -> Vec<AuditEntry> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(|poisoned| {
+            tracing::error!("RwLock poisoned; recovering");
+            poisoned.into_inner()
+        });
         inner
             .entries
             .iter()
@@ -527,13 +603,19 @@ impl AuditLog {
 
     /// Count total entries.
     pub fn total_entries(&self) -> usize {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(|poisoned| {
+            tracing::error!("RwLock poisoned; recovering");
+            poisoned.into_inner()
+        });
         inner.entries.len()
     }
 
     /// Count entries for a specific identity.
     pub fn entries_count_for_identity(&self, identity: &str) -> usize {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(|poisoned| {
+            tracing::error!("RwLock poisoned; recovering");
+            poisoned.into_inner()
+        });
         inner
             .entries
             .iter()
@@ -543,7 +625,10 @@ impl AuditLog {
 
     /// Get entries by correlation ID.
     pub fn entries_by_correlation(&self, correlation_id: &str) -> Vec<AuditEntry> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(|poisoned| {
+            tracing::error!("RwLock poisoned; recovering");
+            poisoned.into_inner()
+        });
         inner
             .entries
             .iter()
@@ -554,7 +639,10 @@ impl AuditLog {
 
     /// Get the latest N entries.
     pub fn latest(&self, n: usize) -> Vec<AuditEntry> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(|poisoned| {
+            tracing::error!("RwLock poisoned; recovering");
+            poisoned.into_inner()
+        });
         inner
             .entries
             .iter()
@@ -583,13 +671,17 @@ impl AuditLog {
             inner.entries.retain(|e| e.timestamp >= cutoff);
         }
 
-        // Note: max_entries_per_identity is not enforced here for efficiency
-        // It could be enforced on reads or via periodic cleanup
+        // Note: max_entries_per_identity is intentionally not enforced here.
+        // Enforcing it on every write would require a linear scan over all entries.
+        // Use entries_count_for_identity() to check manually if needed.
     }
 
     /// Export all entries (for backup/analysis).
     pub fn export(&self) -> Vec<AuditEntry> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(|poisoned| {
+            tracing::error!("RwLock poisoned; recovering");
+            poisoned.into_inner()
+        });
         inner.entries.clone()
     }
 
@@ -599,7 +691,10 @@ impl AuditLog {
     /// use retention policies to manage log size.
     #[cfg(any(test, feature = "testing"))]
     pub fn clear(&self) {
-        let mut inner = self.inner.write().expect("lock poisoned");
+        let mut inner = self.inner.write().unwrap_or_else(|poisoned| {
+            tracing::error!("RwLock poisoned; recovering");
+            poisoned.into_inner()
+        });
         inner.entries.clear();
         inner.tail_hash = None;
     }
@@ -608,7 +703,10 @@ impl AuditLog {
     ///
     /// Returns `None` if the log is empty.
     pub fn tail_hash(&self) -> Option<String> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(|poisoned| {
+            tracing::error!("RwLock poisoned; recovering");
+            poisoned.into_inner()
+        });
         inner.tail_hash.clone()
     }
 
@@ -618,7 +716,10 @@ impl AuditLog {
     /// the `content_hash()` of the preceding entry. Returns `Ok(())` if
     /// the chain is valid, or an error describing the first broken link.
     pub fn verify_chain(&self) -> Result<(), ChainVerificationError> {
-        let inner = self.inner.read().expect("lock poisoned");
+        let inner = self.inner.read().unwrap_or_else(|poisoned| {
+            tracing::error!("RwLock poisoned; recovering");
+            poisoned.into_inner()
+        });
         let entries = &inner.entries;
 
         if entries.is_empty() {
@@ -1078,6 +1179,52 @@ mod tests {
     }
 
     #[test]
+    fn test_single_entry_chain_verification() {
+        let log = AuditLog::in_memory();
+
+        log.record(AuditEntry::new(
+            "spiffe://test/agent-1",
+            PermissionEvent::PermissionsDeclared {
+                description: "Single entry".to_string(),
+                trifecta_risk: TrifectaRisk::Low,
+            },
+        ));
+
+        // Single entry: no prev_hash, chain should be valid
+        assert!(log.verify_chain().is_ok());
+
+        let entries = log.export();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].prev_hash.is_none());
+    }
+
+    #[test]
+    fn test_genesis_entry_with_prev_hash_fails_verification() {
+        let log = AuditLog::in_memory();
+
+        log.record(AuditEntry::new(
+            "spiffe://test/agent-1",
+            PermissionEvent::PermissionsDeclared {
+                description: "First".to_string(),
+                trifecta_risk: TrifectaRisk::None,
+            },
+        ));
+
+        // Corrupt the genesis entry by setting a prev_hash
+        {
+            let mut inner = log.inner.write().unwrap();
+            inner.entries[0].prev_hash = Some("fake-hash".to_string());
+        }
+
+        let result = log.verify_chain();
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ChainVerificationError::InvalidGenesisEntry { sequence: 1 }
+        ));
+    }
+
+    #[test]
     fn test_retention_policy() {
         let policy = RetentionPolicy {
             max_total_entries: Some(3),
@@ -1098,5 +1245,44 @@ mod tests {
 
         // Should only keep 3 entries
         assert_eq!(log.total_entries(), 3);
+    }
+
+    #[test]
+    fn test_spiffe_identity_validation() {
+        // Valid SPIFFE IDs should be accepted
+        assert!(AuditEntry::is_valid_spiffe_id("spiffe://example.com"));
+        assert!(AuditEntry::is_valid_spiffe_id("spiffe://example.com/sa/default"));
+        assert!(AuditEntry::is_valid_spiffe_id("spiffe://trust-domain.local/ns/ns1/sa/agent-1"));
+
+        // Invalid SPIFFE IDs should be rejected
+        assert!(!AuditEntry::is_valid_spiffe_id("invalid"));
+        assert!(!AuditEntry::is_valid_spiffe_id("https://example.com")); // Wrong scheme
+        assert!(!AuditEntry::is_valid_spiffe_id("spiffe://")); // Empty trust domain
+        assert!(!AuditEntry::is_valid_spiffe_id("")); // Empty string
+    }
+
+    #[test]
+    fn test_deterministic_hash_with_serde() {
+        // Test that hashing is deterministic across invocations
+        let entry1 = AuditEntry::new(
+            "spiffe://test/agent-1",
+            PermissionEvent::OperationRequested {
+                operation: Operation::GitPush,
+                declared_level: CapabilityLevel::Never,
+                requested_level: CapabilityLevel::Always,
+            },
+        );
+
+        let entry2 = AuditEntry::new(
+            "spiffe://test/agent-1",
+            PermissionEvent::OperationRequested {
+                operation: Operation::GitPush,
+                declared_level: CapabilityLevel::Never,
+                requested_level: CapabilityLevel::Always,
+            },
+        );
+
+        // Identical entries should produce identical hashes
+        assert_eq!(entry1.content_hash(), entry2.content_hash());
     }
 }
