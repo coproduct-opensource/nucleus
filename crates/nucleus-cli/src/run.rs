@@ -118,9 +118,13 @@ pub struct RunArgs {
     #[arg(long, default_value = "3600")]
     pub timeout: u64,
 
-    /// Claude model to use
-    #[arg(long, default_value = "claude-sonnet-4-20250514")]
-    pub model: String,
+    /// LLM model to use (e.g., from orchestrator)
+    #[arg(long, env = "LLM_MODEL")]
+    pub model: Option<String>,
+
+    /// AI agent CLI command to invoke
+    #[arg(long, env = "AGENT_CMD", default_value = "claude")]
+    pub agent_cmd: String,
 
     /// Output format: text or json
     #[arg(long, default_value = "text")]
@@ -377,12 +381,13 @@ async fn run_enforced(
 
     info!(
         allowed_tools = %allowed_tools.join(","),
-        model = %args.model,
-        "Spawning Claude Code (enforced MCP mode)"
+        model = ?args.model,
+        agent_cmd = %args.agent_cmd,
+        "Spawning agent (enforced MCP mode)"
     );
 
     let start = Instant::now();
-    let output = match run_claude_mcp(
+    let output = match run_agent_mcp(
         args,
         policy,
         &mcp_config_path,
@@ -536,7 +541,7 @@ fn write_mcp_config(
     Ok(())
 }
 
-fn run_claude_mcp(
+fn run_agent_mcp(
     args: &RunArgs,
     policy: &PermissionLattice,
     mcp_config_path: &Path,
@@ -544,10 +549,8 @@ fn run_claude_mcp(
     prompt: &str,
     work_dir: &Path,
 ) -> Result<std::process::Output> {
-    let mut cmd = Command::new("claude");
+    let mut cmd = Command::new(&args.agent_cmd);
     cmd.arg("--print")
-        .arg("--model")
-        .arg(&args.model)
         .arg("--mcp-config")
         .arg(mcp_config_path)
         .arg("--allowedTools")
@@ -559,11 +562,16 @@ fn run_claude_mcp(
         .arg(prompt)
         .current_dir(work_dir);
 
+    if let Some(ref model) = args.model {
+        cmd.arg("--model").arg(model);
+    }
+
     if has_approval_obligations(policy) {
         cmd.arg("--permission-mode").arg("plan");
     }
 
-    cmd.output().context("failed to spawn claude")
+    cmd.output()
+        .with_context(|| format!("failed to spawn agent: {}", args.agent_cmd))
 }
 
 fn build_mcp_allowed_tools(policy: &PermissionLattice) -> Vec<String> {

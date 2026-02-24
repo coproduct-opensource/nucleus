@@ -4,11 +4,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "MCP server that bridges Claude Code to nucleus-tool-proxy"
+description = "MCP server that bridges AI agents to nucleus-tool-proxy"
 repository = "https://github.com/coproduct-opensource/nucleus"
 documentation = "https://docs.rs/nucleus-mcp"
 readme = "README.md"
-keywords = ["mcp", "claude", "tools", "security", "sandbox"]
+keywords = ["mcp", "tools", "security", "sandbox"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
