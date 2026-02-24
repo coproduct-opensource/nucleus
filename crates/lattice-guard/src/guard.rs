@@ -2,8 +2,32 @@
 //!
 //! This module provides compile-time guarantees that permission checks cannot
 //! be bypassed or ignored by callers.
+//!
+//! ## Graded Guards
+//!
+//! The [`GradedGuard`] combines type-safe enforcement with risk tracking via
+//! the graded monad. Every guard decision carries a [`TrifectaRisk`] grade
+//! that accumulates through monadic composition:
+//!
+//! ```rust
+//! use lattice_guard::guard::{GradedGuard, PermissionGuard};
+//! use lattice_guard::{PermissionLattice, CapabilityLevel};
+//! use lattice_guard::graded::RiskGrade;
+//!
+//! let perms = PermissionLattice::read_only();
+//! let guard = GradedGuard::new(perms);
+//!
+//! let result = guard.check_path("/workspace/src/lib.rs");
+//! assert!(result.value.is_ok());
+//! // Risk grade reflects trifecta exposure of the permission set
+//! ```
 
 use std::marker::PhantomData;
+
+use crate::capability::{IncompatibilityConstraint, Operation, TrifectaRisk};
+use crate::graded::Graded;
+use crate::heyting::permission_gap;
+use crate::PermissionLattice;
 
 /// A proof type that permission was checked and granted.
 ///
@@ -242,6 +266,103 @@ impl<A, E: Clone> PermissionGuard for CompositeGuard<A, E> {
     }
 }
 
+/// A permission guard that tracks trifecta risk as a grade.
+///
+/// Every check returns `Graded<TrifectaRisk, Result<GuardedAction<A>, GuardError>>`,
+/// so callers always see both the access decision AND the risk level of the
+/// permission set that produced it.
+///
+/// The risk grade is computed from the underlying `PermissionLattice` via
+/// `IncompatibilityConstraint::enforcing()`. This means even allowed actions
+/// carry their trifecta risk — enabling downstream systems to add extra
+/// oversight for operations that are technically permitted but high-risk.
+pub struct GradedGuard {
+    perms: PermissionLattice,
+    risk: TrifectaRisk,
+}
+
+impl GradedGuard {
+    /// Create a new graded guard from a permission lattice.
+    ///
+    /// The trifecta risk is computed once at construction and carried through
+    /// all subsequent checks.
+    pub fn new(perms: PermissionLattice) -> Self {
+        let constraint = IncompatibilityConstraint::enforcing();
+        let risk = constraint.trifecta_risk(&perms.capabilities);
+        Self { perms, risk }
+    }
+
+    /// Get the trifecta risk grade of this guard's permission set.
+    pub fn risk(&self) -> TrifectaRisk {
+        self.risk
+    }
+
+    /// Check if an operation is allowed, returning a graded result.
+    ///
+    /// The grade carries the trifecta risk regardless of whether the
+    /// operation is allowed or denied.
+    pub fn check_operation(
+        &self,
+        operation: Operation,
+    ) -> Graded<TrifectaRisk, Result<GuardedAction<Operation>, GuardError>> {
+        let requires_approval = self.perms.requires_approval(operation);
+
+        let result = if requires_approval && self.risk == TrifectaRisk::Complete {
+            Err(GuardError::Denied {
+                reason: format!(
+                    "{:?} denied: trifecta risk is Complete and operation requires approval",
+                    operation
+                ),
+            })
+        } else {
+            Ok(GuardedAction::new(operation))
+        };
+
+        Graded::new(self.risk, result)
+    }
+
+    /// Check if a path is accessible, returning a graded result.
+    ///
+    /// Uses the permission lattice's path matching against the configured
+    /// allowed paths.
+    pub fn check_path(
+        &self,
+        path: &str,
+    ) -> Graded<TrifectaRisk, Result<GuardedAction<String>, GuardError>> {
+        let allowed = self.perms.paths.can_access(std::path::Path::new(path));
+
+        let result = if allowed {
+            Ok(GuardedAction::new(path.to_string()))
+        } else {
+            Err(GuardError::Denied {
+                reason: format!("Path '{}' not in allowed paths", path),
+            })
+        };
+
+        Graded::new(self.risk, result)
+    }
+
+    /// Compute the Heyting permission gap needed to reach a target permission set.
+    ///
+    /// Returns a graded gap analysis: the grade is the risk of the *target*
+    /// (what the requester wants), and the value is the Heyting implication
+    /// `current → target` — the logical "what's needed" to bridge.
+    pub fn permission_gap_to(
+        &self,
+        target: &PermissionLattice,
+    ) -> Graded<TrifectaRisk, crate::CapabilityLattice> {
+        let constraint = IncompatibilityConstraint::enforcing();
+        let target_risk = constraint.trifecta_risk(&target.capabilities);
+        let gap = permission_gap(&self.perms.capabilities, &target.capabilities);
+        Graded::new(target_risk, gap)
+    }
+
+    /// Get a reference to the underlying permission lattice.
+    pub fn permissions(&self) -> &PermissionLattice {
+        &self.perms
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,5 +521,101 @@ mod tests {
             .unwrap()
             .try_map(|_| Err::<String, _>("io error".to_string()));
         assert!(matches!(result, Err(GuardError::CheckFailed { .. })));
+    }
+
+    #[test]
+    fn test_graded_guard_safe_profile() {
+        let perms = PermissionLattice::read_only();
+        let guard = GradedGuard::new(perms);
+
+        // read_only has only private data access (read_files: Always)
+        // so risk should be Low (1 trifecta component)
+        assert_eq!(guard.risk(), TrifectaRisk::Low);
+
+        // ReadFile operation should be allowed
+        let result = guard.check_operation(Operation::ReadFiles);
+        assert!(result.value.is_ok());
+        assert_eq!(result.grade, TrifectaRisk::Low);
+    }
+
+    #[test]
+    fn test_graded_guard_permissive_denies_trifecta_exfiltration() {
+        let perms = PermissionLattice::permissive();
+        let guard = GradedGuard::new(perms);
+
+        // Permissive has full trifecta
+        assert_eq!(guard.risk(), TrifectaRisk::Complete);
+
+        // Exfiltration operations that require approval should be denied
+        let result = guard.check_operation(Operation::GitPush);
+        assert_eq!(result.grade, TrifectaRisk::Complete);
+        // GitPush requires approval under trifecta, so it should be denied
+        assert!(result.value.is_err());
+    }
+
+    #[test]
+    fn test_graded_guard_path_check() {
+        use crate::PathLattice;
+        use std::collections::HashSet;
+
+        let perms = PermissionLattice {
+            paths: PathLattice {
+                allowed: HashSet::from(["**/*.rs".to_string()]),
+                blocked: HashSet::from([".env*".to_string()]),
+                work_dir: None,
+            },
+            ..Default::default()
+        };
+        let guard = GradedGuard::new(perms);
+
+        // .rs files should be allowed
+        let result = guard.check_path("src/lib.rs");
+        assert!(result.value.is_ok());
+
+        // .env files should be denied
+        let result = guard.check_path(".env");
+        assert!(result.value.is_err());
+    }
+
+    #[test]
+    fn test_graded_guard_permission_gap() {
+        use crate::CapabilityLevel;
+
+        let floor = PermissionLattice::read_only();
+        let mut target = PermissionLattice::read_only();
+        target.capabilities.git_push = CapabilityLevel::Always;
+        target.capabilities.web_fetch = CapabilityLevel::LowRisk;
+
+        let guard = GradedGuard::new(floor);
+        let gap = guard.permission_gap_to(&target);
+
+        // Target has more trifecta components, so risk is higher
+        assert!(gap.grade >= TrifectaRisk::Medium);
+
+        // The gap should show what's needed for the capabilities
+        // that the floor doesn't have
+        assert_eq!(gap.value.git_push, CapabilityLevel::Always);
+        assert_eq!(gap.value.web_fetch, CapabilityLevel::Always);
+    }
+
+    #[test]
+    fn test_graded_guard_compose_checks() {
+        let perms = PermissionLattice::read_only();
+        let guard = GradedGuard::new(perms);
+
+        // Compose two graded checks using and_then
+        let result = guard
+            .check_path("/workspace/src/lib.rs")
+            .and_then(|first_result| {
+                // Only proceed if first check passed
+                match first_result {
+                    Ok(_) => guard.check_operation(Operation::ReadFiles),
+                    Err(e) => Graded::new(guard.risk(), Err(e)),
+                }
+            });
+
+        // Risk should be composed (max of both checks)
+        assert_eq!(result.grade, TrifectaRisk::Low);
+        assert!(result.value.is_ok());
     }
 }

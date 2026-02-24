@@ -127,7 +127,7 @@ pub use galois::{
     TrustDomainBridge,
 };
 pub use graded::{Graded, GradedPermissionCheck, RiskGrade};
-pub use guard::{CompositeGuard, GuardError, GuardFn, GuardedAction, PermissionGuard};
+pub use guard::{CompositeGuard, GradedGuard, GuardError, GuardFn, GuardedAction, PermissionGuard};
 pub use heyting::{ConditionalPermission, HeytingAlgebra};
 pub use isolation::{FileIsolation, IsolationLattice, NetworkIsolation, ProcessIsolation};
 pub use lattice::{

@@ -391,7 +391,8 @@ impl SelfSignedCa {
     fn create_attestation_extension(attestation: &LaunchAttestation) -> CustomExtension {
         let content = attestation.to_der();
 
-        let mut ext = CustomExtension::from_oid_content(oid::OID_NUCLEUS_ATTESTATION_TUPLE, content);
+        let mut ext =
+            CustomExtension::from_oid_content(oid::OID_NUCLEUS_ATTESTATION_TUPLE, content);
         // Mark as non-critical so verifiers that don't understand it can still process the cert
         ext.set_criticality(false);
         ext
