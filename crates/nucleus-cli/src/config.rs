@@ -282,6 +282,249 @@ impl Config {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_default_config() {
+        let config = Config::default();
+        assert!(config.default_profile.is_empty());
+        assert_eq!(config.budget.max_cost_usd, 5.0);
+        assert_eq!(config.budget.max_input_tokens, 100_000);
+        assert_eq!(config.budget.max_output_tokens, 10_000);
+        assert!(!config.auth.use_keychain);
+        assert_eq!(config.vm.name, "nucleus");
+        assert!(config.vm.auto_start);
+        assert_eq!(config.vm.cpus, 4);
+        assert_eq!(config.vm.memory_gib, 8);
+        assert_eq!(config.vm.disk_gib, 50);
+        assert_eq!(config.node.url, "http://127.0.0.1:8080");
+        assert!(config.node.grpc_url.is_none());
+        assert_eq!(config.node.actor, "nucleus-cli");
+        assert_eq!(config.firecracker.kernel_path, "vmlinux");
+        assert_eq!(config.firecracker.rootfs_path, "rootfs.ext4");
+        assert!(config.firecracker.rootfs_read_only);
+        assert_eq!(config.firecracker.vsock_cid, 3);
+        assert_eq!(config.firecracker.vsock_port, 5000);
+        assert_eq!(config.time.timeout_seconds, 3600);
+    }
+
+    #[test]
+    fn test_load_nonexistent_file_returns_default() {
+        let result = Config::load("/nonexistent/path/nucleus.toml");
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        // Should be default config
+        assert!(config.default_profile.is_empty());
+        assert_eq!(config.budget.max_cost_usd, 5.0);
+    }
+
+    #[test]
+    fn test_load_valid_toml() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+default_profile = "fix-issue"
+
+[budget]
+max_cost_usd = 10.0
+max_input_tokens = 50000
+max_output_tokens = 5000
+
+[auth]
+use_keychain = true
+
+[vm]
+name = "my-nucleus"
+auto_start = false
+cpus = 8
+memory_gib = 16
+disk_gib = 100
+
+[node]
+url = "http://192.168.1.1:9090"
+grpc_url = "http://192.168.1.1:9091"
+actor = "my-agent"
+
+[firecracker]
+kernel_path = "my-vmlinux"
+rootfs_path = "my-rootfs.ext4"
+vsock_cid = 5
+vsock_port = 6000
+rootfs_read_only = false
+
+[time]
+timeout_seconds = 7200
+"#
+        )
+        .unwrap();
+
+        let config = Config::load(file.path().to_str().unwrap()).unwrap();
+        assert_eq!(config.default_profile, "fix-issue");
+        assert_eq!(config.budget.max_cost_usd, 10.0);
+        assert_eq!(config.budget.max_input_tokens, 50000);
+        assert_eq!(config.budget.max_output_tokens, 5000);
+        assert!(config.auth.use_keychain);
+        assert_eq!(config.vm.name, "my-nucleus");
+        assert!(!config.vm.auto_start);
+        assert_eq!(config.vm.cpus, 8);
+        assert_eq!(config.vm.memory_gib, 16);
+        assert_eq!(config.vm.disk_gib, 100);
+        assert_eq!(config.node.url, "http://192.168.1.1:9090");
+        assert_eq!(
+            config.node.grpc_url,
+            Some("http://192.168.1.1:9091".to_string())
+        );
+        assert_eq!(config.node.actor, "my-agent");
+        assert_eq!(config.firecracker.kernel_path, "my-vmlinux");
+        assert_eq!(config.firecracker.rootfs_path, "my-rootfs.ext4");
+        assert!(!config.firecracker.rootfs_read_only);
+        assert_eq!(config.firecracker.vsock_cid, 5);
+        assert_eq!(config.firecracker.vsock_port, 6000);
+        assert_eq!(config.time.timeout_seconds, 7200);
+    }
+
+    #[test]
+    fn test_load_partial_toml_uses_defaults() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+default_profile = "review"
+"#
+        )
+        .unwrap();
+
+        let config = Config::load(file.path().to_str().unwrap()).unwrap();
+        assert_eq!(config.default_profile, "review");
+        // Other fields should be default
+        assert_eq!(config.budget.max_cost_usd, 5.0);
+        assert_eq!(config.vm.cpus, 4);
+        assert_eq!(config.node.url, "http://127.0.0.1:8080");
+    }
+
+    #[test]
+    fn test_load_invalid_toml_returns_error() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "[[[not valid toml").unwrap();
+
+        let result = Config::load(file.path().to_str().unwrap());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_kernel_path_under_artifacts() {
+        let config = Config::default();
+        let path = config.kernel_path().unwrap();
+        assert!(path.ends_with("vmlinux"));
+        assert!(path.to_string_lossy().contains("nucleus"));
+    }
+
+    #[test]
+    fn test_rootfs_path_under_artifacts() {
+        let config = Config::default();
+        let path = config.rootfs_path().unwrap();
+        assert!(path.ends_with("rootfs.ext4"));
+        assert!(path.to_string_lossy().contains("nucleus"));
+    }
+
+    #[test]
+    fn test_scratch_path_default_has_value() {
+        let config = Config::default();
+        let path = config.scratch_path().unwrap();
+        assert!(path.is_some());
+        let p = path.unwrap();
+        assert!(p.ends_with("scratch.ext4"));
+    }
+
+    #[test]
+    fn test_scratch_path_none_when_not_set() {
+        let mut config = Config::default();
+        config.firecracker.scratch_path = None;
+        let path = config.scratch_path().unwrap();
+        assert!(path.is_none());
+    }
+
+    #[test]
+    fn test_custom_kernel_path_reflected() {
+        let mut config = Config::default();
+        config.firecracker.kernel_path = "custom-kernel".to_string();
+        let path = config.kernel_path().unwrap();
+        assert!(path.ends_with("custom-kernel"));
+    }
+
+    #[test]
+    fn test_budget_config_defaults() {
+        let budget = BudgetConfig::default();
+        assert_eq!(budget.max_cost_usd, 5.0);
+        assert_eq!(budget.max_input_tokens, 100_000);
+        assert_eq!(budget.max_output_tokens, 10_000);
+    }
+
+    #[test]
+    fn test_vm_config_defaults() {
+        let vm = VmConfig::default();
+        assert_eq!(vm.name, "nucleus");
+        assert!(vm.auto_start);
+        assert_eq!(vm.cpus, 4);
+        assert_eq!(vm.memory_gib, 8);
+        assert_eq!(vm.disk_gib, 50);
+    }
+
+    #[test]
+    fn test_node_config_defaults() {
+        let node = NodeConfig::default();
+        assert_eq!(node.url, "http://127.0.0.1:8080");
+        assert!(node.grpc_url.is_none());
+        assert_eq!(node.actor, "nucleus-cli");
+    }
+
+    #[test]
+    fn test_firecracker_config_defaults() {
+        let fc = FirecrackerConfig::default();
+        assert_eq!(fc.kernel_path, "vmlinux");
+        assert_eq!(fc.rootfs_path, "rootfs.ext4");
+        assert_eq!(fc.scratch_path, Some("scratch.ext4".to_string()));
+        assert_eq!(fc.vsock_cid, 3);
+        assert_eq!(fc.vsock_port, 5000);
+        assert!(fc.rootfs_read_only);
+    }
+
+    #[test]
+    fn test_time_config_defaults() {
+        let time = TimeConfig::default();
+        assert_eq!(time.timeout_seconds, 3600);
+    }
+
+    #[test]
+    fn test_show_nonexistent_path_succeeds() {
+        // show() loads config (returns default if missing) and prints it
+        let result = show("/nonexistent/config.toml");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_show_valid_config() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, r#"default_profile = "fix-issue""#).unwrap();
+
+        let result = show(file.path().to_str().unwrap());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_show_config_empty_profile_shows_restrictive() {
+        // show() should display "restrictive" when default_profile is empty
+        // This is just a smoke test that it doesn't panic
+        let result = show("/nonexistent/path.toml");
+        assert!(result.is_ok());
+    }
+}
+
 /// Show current configuration
 pub fn show(config_path: &str) -> Result<()> {
     let config = Config::load(config_path)?;

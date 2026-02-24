@@ -82,3 +82,110 @@ impl Approver for CallbackApprover {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_approval_request_new() {
+        let req = ApprovalRequest::new("git push origin main");
+        assert_eq!(req.operation(), "git push origin main");
+    }
+
+    #[test]
+    fn test_approval_request_equality() {
+        let req1 = ApprovalRequest::new("deploy-prod");
+        let req2 = ApprovalRequest::new("deploy-prod");
+        let req3 = ApprovalRequest::new("deploy-staging");
+        assert_eq!(req1, req2);
+        assert_ne!(req1, req3);
+    }
+
+    #[test]
+    fn test_approval_token_matches() {
+        let token = ApprovalToken::new("git push origin main");
+        assert!(token.matches("git push origin main"));
+        assert!(!token.matches("git commit -m msg"));
+        assert!(!token.matches(""));
+    }
+
+    #[test]
+    fn test_approval_token_exact_match_required() {
+        let token = ApprovalToken::new("git push");
+        // Partial matches should not pass
+        assert!(!token.matches("git push origin main"));
+        assert!(!token.matches("git"));
+    }
+
+    #[test]
+    fn test_callback_approver_always_approves() {
+        let approver = CallbackApprover::new(|_req| true);
+        let request = ApprovalRequest::new("some-operation");
+        let result = approver.approve(&request);
+        assert!(result.is_ok());
+        let token = result.unwrap();
+        assert!(token.matches("some-operation"));
+    }
+
+    #[test]
+    fn test_callback_approver_always_denies() {
+        let approver = CallbackApprover::new(|_req| false);
+        let request = ApprovalRequest::new("some-operation");
+        let result = approver.approve(&request);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            NucleusError::ApprovalRequired { .. }
+        ));
+    }
+
+    #[test]
+    fn test_callback_approver_conditional() {
+        let approver = CallbackApprover::new(|req| req.operation().starts_with("safe-"));
+        let safe_request = ApprovalRequest::new("safe-read");
+        let risky_request = ApprovalRequest::new("rm -rf /");
+
+        assert!(approver.approve(&safe_request).is_ok());
+        assert!(approver.approve(&risky_request).is_err());
+    }
+
+    #[test]
+    fn test_callback_approver_token_is_scoped() {
+        let approver = CallbackApprover::new(|_| true);
+        let request = ApprovalRequest::new("operation-a");
+        let token = approver.approve(&request).unwrap();
+
+        // Token is scoped to the approved operation
+        assert!(token.matches("operation-a"));
+        assert!(!token.matches("operation-b"));
+    }
+
+    #[test]
+    fn test_approval_token_clone() {
+        let token = ApprovalToken::new("my-op");
+        let token_clone = token.clone();
+        assert!(token_clone.matches("my-op"));
+    }
+
+    #[test]
+    fn test_approval_request_clone() {
+        let req = ApprovalRequest::new("my-op");
+        let req_clone = req.clone();
+        assert_eq!(req_clone.operation(), "my-op");
+    }
+
+    #[test]
+    fn test_approval_token_debug() {
+        let token = ApprovalToken::new("debug-test");
+        let debug_str = format!("{:?}", token);
+        assert!(debug_str.contains("debug-test"));
+    }
+
+    #[test]
+    fn test_approval_request_debug() {
+        let req = ApprovalRequest::new("debug-req");
+        let debug_str = format!("{:?}", req);
+        assert!(debug_str.contains("debug-req"));
+    }
+}
