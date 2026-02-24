@@ -228,6 +228,26 @@ pub enum PermissionEvent {
         /// The cost threshold that was exceeded (if applicable).
         threshold_exceeded: Option<rust_decimal::Decimal>,
     },
+
+    /// A delegation decision was made (permissions narrowed from parent to child).
+    ///
+    /// Enables full chain reconstruction: by querying all `DelegationDecision`
+    /// events for a correlation_id, the complete permission ancestry can be traced
+    /// from human approval through orchestrator to leaf agent.
+    DelegationDecision {
+        /// SPIFFE ID of the delegator (parent).
+        from_identity: String,
+        /// SPIFFE ID of the delegate (child).
+        to_identity: String,
+        /// Permissions requested by the child.
+        requested_description: String,
+        /// Permissions actually granted (after meet with parent ceiling).
+        granted_description: String,
+        /// Whether the granted permissions are strictly less than requested.
+        was_narrowed: bool,
+        /// Dimensions that were restricted (e.g., "write_files", "git_push").
+        restricted_dimensions: Vec<String>,
+    },
 }
 
 /// Append-only audit log for permission events.
@@ -678,6 +698,12 @@ pub struct IdentityAuditSummary {
     pub approvals_denied: usize,
     /// Number of executions blocked.
     pub executions_blocked: usize,
+    /// Number of delegations made (as delegator).
+    pub delegations_made: usize,
+    /// Number of delegations received (as delegate).
+    pub delegations_received: usize,
+    /// Number of delegations where permissions were narrowed.
+    pub delegations_narrowed: usize,
     /// Total weakening cost incurred.
     pub total_weakening_cost: rust_decimal::Decimal,
     /// Time window covered.
@@ -700,6 +726,9 @@ impl AuditLog {
             approvals_granted: 0,
             approvals_denied: 0,
             executions_blocked: 0,
+            delegations_made: 0,
+            delegations_received: 0,
+            delegations_narrowed: 0,
             total_weakening_cost: rust_decimal::Decimal::ZERO,
             window_start: SystemTime::now(),
             window_end: SystemTime::UNIX_EPOCH,
@@ -749,6 +778,20 @@ impl AuditLog {
                 }
                 PermissionEvent::ExecutionBlocked { .. } => {
                     summary.executions_blocked += 1;
+                }
+                PermissionEvent::DelegationDecision {
+                    from_identity,
+                    was_narrowed,
+                    ..
+                } => {
+                    if from_identity == identity {
+                        summary.delegations_made += 1;
+                    } else {
+                        summary.delegations_received += 1;
+                    }
+                    if *was_narrowed {
+                        summary.delegations_narrowed += 1;
+                    }
                 }
                 _ => {}
             }

@@ -91,6 +91,7 @@ mod budget;
 mod capability;
 mod command;
 pub mod constraint;
+pub mod delegation;
 pub mod escalation;
 pub mod frame;
 pub mod galois;
@@ -143,6 +144,10 @@ pub use weakening::{
 pub use audit::{
     AuditEntry, AuditLog, ChainVerificationError, IdentityAuditSummary, PermissionEvent,
     RetentionPolicy,
+};
+pub use delegation::{
+    meet_with_justification, DelegationChain, DelegationLink, MeetJustification, RestrictionDetail,
+    RestrictionReason,
 };
 pub use metrics::{
     build_deviation_report, DeviationDetail, DeviationReport, InMemoryMetrics, MetricEvent,
