@@ -90,6 +90,56 @@ pub struct PodSpecInner {
     /// must redact credential values in any debug output or audit logs.
     #[serde(default)]
     pub credentials: Option<CredentialsSpec>,
+    /// Additional repositories for multi-repo execution.
+    ///
+    /// When specified, these repos are made accessible alongside the primary `work_dir`.
+    /// Each repo is identified by its name (or path basename if name is omitted)
+    /// and can be targeted in tool operations (read, write, run) via the `repo` field.
+    ///
+    /// Use this for cross-repo tasks where an agent must work across multiple repositories.
+    #[serde(default)]
+    pub repos: Vec<RepoSpec>,
+}
+
+/// A repository specification for multi-repo execution.
+///
+/// Each `RepoSpec` defines an additional repository that will be sandboxed
+/// alongside the pod's primary `work_dir`. Repos are addressed by name in
+/// tool operations (read, write, run).
+///
+/// # Example (YAML)
+/// ```yaml
+/// spec:
+///   work_dir: /path/to/primary-repo
+///   repos:
+///     - path: /path/to/secondary-repo
+///       name: secondary
+///     - path: /path/to/third-repo
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoSpec {
+    /// Path to the repository on the host.
+    pub path: PathBuf,
+    /// Optional name/identifier for the repo.
+    ///
+    /// Used to address this repo in tool operations. If not specified,
+    /// defaults to the basename of the path (e.g., `/home/user/my-lib` → `my-lib`).
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl RepoSpec {
+    /// Get the effective name of this repo.
+    ///
+    /// Returns the explicit name if set, otherwise the basename of the path.
+    pub fn effective_name(&self) -> String {
+        self.name.clone().unwrap_or_else(|| {
+            self.path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "repo".to_string())
+        })
+    }
 }
 
 impl PodSpecInner {
@@ -668,5 +718,323 @@ spec:
         let parsed: Metadata = serde_yaml::from_str(&yaml).expect("should deserialize");
         assert_eq!(parsed.namespace.as_deref(), Some("agents"));
         assert_eq!(parsed.name.as_deref(), Some("test-agent"));
+    }
+
+    // ── RepoSpec tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_repo_spec_effective_name_with_explicit_name() {
+        let repo = RepoSpec {
+            path: PathBuf::from("/home/user/my-lib"),
+            name: Some("explicit-name".to_string()),
+        };
+        assert_eq!(repo.effective_name(), "explicit-name");
+    }
+
+    #[test]
+    fn test_repo_spec_effective_name_from_path_basename() {
+        let repo = RepoSpec {
+            path: PathBuf::from("/home/user/my-lib"),
+            name: None,
+        };
+        assert_eq!(repo.effective_name(), "my-lib");
+    }
+
+    #[test]
+    fn test_repo_spec_effective_name_relative_path() {
+        let repo = RepoSpec {
+            path: PathBuf::from("relative/path/to/repo"),
+            name: None,
+        };
+        assert_eq!(repo.effective_name(), "repo");
+    }
+
+    #[test]
+    fn test_repo_spec_effective_name_simple_name() {
+        // A path that is just the repo name itself
+        let repo = RepoSpec {
+            path: PathBuf::from("nucleus"),
+            name: None,
+        };
+        assert_eq!(repo.effective_name(), "nucleus");
+    }
+
+    #[test]
+    fn test_repo_spec_effective_name_root_path_falls_back() {
+        // "/" has no basename, so should fall back to "repo"
+        let repo = RepoSpec {
+            path: PathBuf::from("/"),
+            name: None,
+        };
+        assert_eq!(repo.effective_name(), "repo");
+    }
+
+    #[test]
+    fn test_repo_spec_effective_name_explicit_overrides_basename() {
+        // Explicit name should win over whatever the basename would be
+        let repo = RepoSpec {
+            path: PathBuf::from("/workspace/boring-basename"),
+            name: Some("friendly-name".to_string()),
+        };
+        assert_eq!(repo.effective_name(), "friendly-name");
+        // The basename would have been "boring-basename"
+        assert_ne!(repo.effective_name(), "boring-basename");
+    }
+
+    #[test]
+    fn test_repo_spec_serialization_with_name() {
+        let repo = RepoSpec {
+            path: PathBuf::from("/path/to/secondary"),
+            name: Some("secondary".to_string()),
+        };
+        let yaml = serde_yaml::to_string(&repo).expect("should serialize");
+        assert!(yaml.contains("path:"), "yaml must include path: {}", yaml);
+        assert!(yaml.contains("secondary"), "yaml must include name: {}", yaml);
+    }
+
+    #[test]
+    fn test_repo_spec_serialization_without_name() {
+        let repo = RepoSpec {
+            path: PathBuf::from("/path/to/repo"),
+            name: None,
+        };
+        let yaml = serde_yaml::to_string(&repo).expect("should serialize");
+        assert!(yaml.contains("path:"), "yaml must include path: {}", yaml);
+        // name: null or absent is acceptable; just verify path is present
+        assert!(yaml.contains("/path/to/repo"), "yaml should contain path value: {}", yaml);
+    }
+
+    #[test]
+    fn test_repo_spec_deserialization_with_name() {
+        let yaml = r#"
+path: /path/to/secondary
+name: secondary
+"#;
+        let repo: RepoSpec = serde_yaml::from_str(yaml).expect("should deserialize");
+        assert_eq!(repo.path, PathBuf::from("/path/to/secondary"));
+        assert_eq!(repo.name.as_deref(), Some("secondary"));
+        assert_eq!(repo.effective_name(), "secondary");
+    }
+
+    #[test]
+    fn test_repo_spec_deserialization_without_name() {
+        let yaml = r#"
+path: /path/to/my-repo
+"#;
+        let repo: RepoSpec = serde_yaml::from_str(yaml).expect("should deserialize");
+        assert_eq!(repo.path, PathBuf::from("/path/to/my-repo"));
+        assert!(repo.name.is_none());
+        // effective_name() should derive from path basename
+        assert_eq!(repo.effective_name(), "my-repo");
+    }
+
+    #[test]
+    fn test_repo_spec_roundtrip() {
+        let original = RepoSpec {
+            path: PathBuf::from("/workspace/secondary-repo"),
+            name: Some("secondary".to_string()),
+        };
+        let yaml = serde_yaml::to_string(&original).expect("should serialize");
+        let parsed: RepoSpec = serde_yaml::from_str(&yaml).expect("should deserialize");
+        assert_eq!(parsed.path, original.path);
+        assert_eq!(parsed.name, original.name);
+        assert_eq!(parsed.effective_name(), original.effective_name());
+    }
+
+    // ── PodSpec with repos field tests ──────────────────────────────────────
+
+    #[test]
+    fn test_pod_spec_without_repos_defaults_empty() {
+        let yaml = r#"
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: test-pod
+spec:
+  work_dir: /tmp
+  policy:
+    type: profile
+    name: default
+"#;
+        let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
+        // repos should default to an empty Vec when not specified
+        assert!(
+            spec.spec.repos.is_empty(),
+            "repos should default to empty vec, got: {:?}",
+            spec.spec.repos
+        );
+    }
+
+    #[test]
+    fn test_pod_spec_with_single_repo_parses() {
+        let yaml = r#"
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: test-pod
+spec:
+  work_dir: /workspace/primary
+  policy:
+    type: profile
+    name: default
+  repos:
+    - path: /workspace/secondary
+      name: secondary
+"#;
+        let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
+        assert_eq!(spec.spec.repos.len(), 1);
+        assert_eq!(spec.spec.repos[0].path, PathBuf::from("/workspace/secondary"));
+        assert_eq!(spec.spec.repos[0].name.as_deref(), Some("secondary"));
+        assert_eq!(spec.spec.repos[0].effective_name(), "secondary");
+    }
+
+    #[test]
+    fn test_pod_spec_with_multiple_repos_parses() {
+        let yaml = r#"
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: test-pod
+spec:
+  work_dir: /workspace/primary
+  policy:
+    type: profile
+    name: default
+  repos:
+    - path: /workspace/secondary
+      name: secondary
+    - path: /workspace/third-repo
+    - path: /workspace/lib
+      name: shared-lib
+"#;
+        let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
+        assert_eq!(spec.spec.repos.len(), 3);
+
+        // First repo: explicit name
+        assert_eq!(spec.spec.repos[0].effective_name(), "secondary");
+
+        // Second repo: no name, should derive from basename
+        assert_eq!(spec.spec.repos[1].effective_name(), "third-repo");
+        assert!(spec.spec.repos[1].name.is_none());
+
+        // Third repo: explicit name
+        assert_eq!(spec.spec.repos[2].effective_name(), "shared-lib");
+    }
+
+    #[test]
+    fn test_pod_spec_repos_all_have_names_derived() {
+        // Verify effective_name() is always usable for every repo in the list
+        let yaml = r#"
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: test-pod
+spec:
+  work_dir: /workspace/primary
+  policy:
+    type: profile
+    name: default
+  repos:
+    - path: /workspace/repo-a
+    - path: /workspace/repo-b
+    - path: /workspace/repo-c
+"#;
+        let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
+        let names: Vec<String> = spec.spec.repos.iter().map(|r| r.effective_name()).collect();
+        assert_eq!(names, vec!["repo-a", "repo-b", "repo-c"]);
+    }
+
+    #[test]
+    fn test_pod_spec_repos_roundtrip() {
+        let yaml = r#"
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: multi-repo-pod
+spec:
+  work_dir: /workspace/primary
+  timeout_seconds: 600
+  policy:
+    type: profile
+    name: codegen
+  repos:
+    - path: /workspace/secondary
+      name: secondary
+    - path: /workspace/utils
+"#;
+        let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
+        let serialized = serde_yaml::to_string(&spec).expect("should serialize");
+        let reparsed: PodSpec = serde_yaml::from_str(&serialized).expect("should re-parse");
+
+        assert_eq!(reparsed.spec.repos.len(), 2);
+        assert_eq!(reparsed.spec.repos[0].effective_name(), "secondary");
+        assert_eq!(reparsed.spec.repos[1].effective_name(), "utils");
+        assert_eq!(reparsed.spec.work_dir, PathBuf::from("/workspace/primary"));
+    }
+
+    #[test]
+    fn test_pod_spec_repos_backward_compat_existing_specs() {
+        // Ensure existing PodSpecs (without repos) still parse correctly
+        let legacy_yaml = r#"
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: legacy-pod
+spec:
+  work_dir: /tmp/workspace
+  timeout_seconds: 3600
+  policy:
+    type: profile
+    name: default
+  credentials:
+    env:
+      LLM_API_TOKEN: "test-token-123"
+"#;
+        let spec: PodSpec = serde_yaml::from_str(legacy_yaml).expect("legacy spec should parse");
+        assert!(
+            spec.spec.repos.is_empty(),
+            "legacy spec should have no repos"
+        );
+        // Other fields must still be intact
+        assert_eq!(spec.spec.work_dir, PathBuf::from("/tmp/workspace"));
+        assert_eq!(spec.spec.timeout_seconds, 3600);
+        let creds = spec.spec.credentials.expect("should have credentials");
+        assert_eq!(
+            creds.env.get("LLM_API_TOKEN").map(|s| s.as_str()),
+            Some("test-token-123")
+        );
+    }
+
+    #[test]
+    fn test_pod_spec_empty_repos_list_explicit() {
+        // Explicitly providing an empty repos list should work
+        let yaml = r#"
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: test-pod
+spec:
+  work_dir: /tmp
+  policy:
+    type: profile
+    name: default
+  repos: []
+"#;
+        let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
+        assert!(spec.spec.repos.is_empty());
+    }
+
+    #[test]
+    fn test_repo_spec_names_uniqueness_by_effective_name() {
+        // When using repos, callers need distinct effective names;
+        // this test documents the behaviour when names would collide.
+        let repos = vec![
+            RepoSpec { path: PathBuf::from("/a/nucleus"), name: None },
+            RepoSpec { path: PathBuf::from("/b/nucleus"), name: None },
+        ];
+        // Both would derive the same basename — effective_name is not guaranteed unique.
+        // Document this: both return "nucleus", callers are responsible for disambiguation.
+        assert_eq!(repos[0].effective_name(), "nucleus");
+        assert_eq!(repos[1].effective_name(), "nucleus");
     }
 }
