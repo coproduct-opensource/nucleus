@@ -22,6 +22,7 @@ use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 mod config;
+mod constants;
 mod doctor;
 mod keychain;
 mod node;

@@ -4,12 +4,10 @@ use anyhow::Result;
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::constants::FIRECRACKER_VERSION;
 use crate::keychain::{self, SecretKind, SecretStore};
 #[cfg(target_os = "macos")]
 use crate::setup::{AppleChip, MacOSVersion};
-
-/// Expected Firecracker version
-const EXPECTED_FIRECRACKER_VERSION: &str = "1.14.1";
 
 /// Check status indicator
 #[derive(Debug, Clone, Copy)]
@@ -321,7 +319,7 @@ fn check_lima() -> bool {
                 let version_str = String::from_utf8_lossy(&output.stdout);
                 let version = version_str.lines().next().unwrap_or("").trim();
 
-                let version_ok = version.contains(EXPECTED_FIRECRACKER_VERSION);
+                let version_ok = version.contains(FIRECRACKER_VERSION);
                 print_check(
                     "Firecracker",
                     if version_ok {
