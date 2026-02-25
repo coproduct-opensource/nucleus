@@ -50,6 +50,23 @@ pub struct Metadata {
     pub labels: BTreeMap<String, String>,
 }
 
+/// Specification for a single workspace (repository) within a pod.
+///
+/// Workspaces are used for multi-repo execution, where an agent operates
+/// across multiple independent git repositories. Each workspace is tracked
+/// independently in audit trails and exit reports.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceSpec {
+    /// Logical name for this workspace (used in exit reports and audit trails).
+    pub name: String,
+    /// Path to this workspace directory.
+    pub path: PathBuf,
+    /// Optional per-workspace policy override.
+    /// If not specified, inherits from the pod's global policy.
+    #[serde(default)]
+    pub policy: Option<PolicySpec>,
+}
+
 /// Inner spec fields.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PodSpecInner {
@@ -90,6 +107,16 @@ pub struct PodSpecInner {
     /// must redact credential values in any debug output or audit logs.
     #[serde(default)]
     pub credentials: Option<CredentialsSpec>,
+    /// Named workspaces for multi-repo execution.
+    ///
+    /// When non-empty, each workspace is tracked independently in audit trails
+    /// and exit reports. The `work_dir` field still determines the primary
+    /// working directory for the agent. All listed workspaces are hashed at exit.
+    ///
+    /// This enables agents that operate across multiple git repositories while
+    /// preserving per-repository audit trails and isolation boundaries.
+    #[serde(default)]
+    pub workspaces: Vec<WorkspaceSpec>,
 }
 
 impl PodSpecInner {
@@ -316,7 +343,18 @@ pub fn sha256_bytes_hex(data: &[u8]) -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExitReport {
     /// SHA-256 of workspace contents at exit.
+    ///
+    /// For single-workspace pods, this is the hash of `work_dir`.
+    /// For multi-workspace pods, this is a combined hash of all workspace hashes
+    /// (see `workspace_hashes`). Always populated for backward compatibility.
     pub workspace_hash: String,
+    /// Per-workspace content hashes for multi-repo execution.
+    ///
+    /// Keys are workspace names from `PodSpecInner::workspaces`, values are
+    /// SHA-256 hex strings of each workspace's contents at exit.
+    /// Empty for single-workspace pods (use `workspace_hash` instead).
+    #[serde(default)]
+    pub workspace_hashes: BTreeMap<String, String>,
     /// Hash of the last audit log entry.
     pub audit_tail_hash: String,
     /// Total number of audit log entries.
@@ -655,6 +693,124 @@ spec:
     }
 
     #[test]
+    fn test_workspace_spec_serialization() {
+        let workspace = WorkspaceSpec {
+            name: "primary".to_string(),
+            path: PathBuf::from("/workspace/repo1"),
+            policy: None,
+        };
+
+        let yaml = serde_yaml::to_string(&workspace).expect("should serialize");
+        assert!(yaml.contains("primary"));
+        assert!(yaml.contains("/workspace/repo1"));
+
+        let parsed: WorkspaceSpec = serde_yaml::from_str(&yaml).expect("should deserialize");
+        assert_eq!(parsed.name, "primary");
+        assert_eq!(parsed.path, PathBuf::from("/workspace/repo1"));
+        assert!(parsed.policy.is_none());
+    }
+
+    #[test]
+    fn test_workspace_spec_with_policy() {
+        let workspace = WorkspaceSpec {
+            name: "audit-logs".to_string(),
+            path: PathBuf::from("/workspace/audit"),
+            policy: Some(PolicySpec::Profile {
+                name: "read_only".to_string(),
+            }),
+        };
+
+        let yaml = serde_yaml::to_string(&workspace).expect("should serialize");
+        let parsed: WorkspaceSpec = serde_yaml::from_str(&yaml).expect("should deserialize");
+        assert_eq!(parsed.name, "audit-logs");
+        assert!(parsed.policy.is_some());
+    }
+
+    #[test]
+    fn test_pod_spec_with_workspaces_parses() {
+        let yaml = r#"
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: multi-repo-pod
+spec:
+  work_dir: /workspace/primary
+  policy:
+    type: profile
+    name: codegen
+  workspaces:
+    - name: primary
+      path: /workspace/repo1
+    - name: secondary
+      path: /workspace/repo2
+      policy:
+        type: profile
+        name: read_only
+"#;
+        let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
+        assert_eq!(spec.spec.workspaces.len(), 2);
+        assert_eq!(spec.spec.workspaces[0].name, "primary");
+        assert_eq!(spec.spec.workspaces[0].path, PathBuf::from("/workspace/repo1"));
+        assert!(spec.spec.workspaces[0].policy.is_none());
+        assert_eq!(spec.spec.workspaces[1].name, "secondary");
+        assert!(spec.spec.workspaces[1].policy.is_some());
+    }
+
+    #[test]
+    fn test_pod_spec_without_workspaces_defaults_empty() {
+        let yaml = r#"
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: single-repo-pod
+spec:
+  work_dir: /tmp
+  policy:
+    type: profile
+    name: default
+"#;
+        let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
+        assert!(
+            spec.spec.workspaces.is_empty(),
+            "workspaces should default to empty vec"
+        );
+    }
+
+    #[test]
+    fn test_exit_report_workspace_hashes_defaults_empty() {
+        let yaml = r#"
+workspace_hash: "abc123"
+audit_tail_hash: "def456"
+audit_entry_count: 5
+timestamp_unix: 1234567890
+"#;
+        let report: ExitReport = serde_yaml::from_str(yaml).expect("should parse");
+        assert!(
+            report.workspace_hashes.is_empty(),
+            "workspace_hashes should default to empty map"
+        );
+        assert_eq!(report.workspace_hash, "abc123");
+    }
+
+    #[test]
+    fn test_exit_report_with_workspace_hashes() {
+        let yaml = r#"
+workspace_hash: "combined_hash"
+workspace_hashes:
+  primary: "hash1"
+  secondary: "hash2"
+audit_tail_hash: "tail_hash"
+audit_entry_count: 10
+timestamp_unix: 9876543210
+"#;
+        let report: ExitReport = serde_yaml::from_str(yaml).expect("should parse");
+        assert_eq!(report.workspace_hash, "combined_hash");
+        assert_eq!(report.workspace_hashes.len(), 2);
+        assert_eq!(report.workspace_hashes["primary"], "hash1");
+        assert_eq!(report.workspace_hashes["secondary"], "hash2");
+    }
+
+    #[test]
     fn test_metadata_namespace_roundtrip() {
         let metadata = Metadata {
             name: Some("test-agent".to_string()),
@@ -668,5 +824,130 @@ spec:
         let parsed: Metadata = serde_yaml::from_str(&yaml).expect("should deserialize");
         assert_eq!(parsed.namespace.as_deref(), Some("agents"));
         assert_eq!(parsed.name.as_deref(), Some("test-agent"));
+    }
+
+    #[test]
+    fn test_workspace_spec_with_inline_policy() {
+        // WorkspaceSpec supports inline lattice policy, not only named profiles.
+        let workspace = WorkspaceSpec {
+            name: "isolated".to_string(),
+            path: PathBuf::from("/workspace/isolated"),
+            policy: Some(PolicySpec::Inline {
+                lattice: Box::new(PermissionLattice::read_only()),
+            }),
+        };
+
+        let yaml = serde_yaml::to_string(&workspace).expect("should serialize");
+        let parsed: WorkspaceSpec = serde_yaml::from_str(&yaml).expect("should deserialize");
+        assert_eq!(parsed.name, "isolated");
+        assert!(parsed.policy.is_some());
+
+        // The inline policy must still resolve successfully.
+        let resolved = parsed.policy.unwrap().resolve();
+        assert!(resolved.is_ok(), "inline policy must resolve: {:?}", resolved.err());
+    }
+
+    #[test]
+    fn test_pod_spec_workspaces_explicit_empty_list() {
+        // An explicit `workspaces: []` in YAML must parse to an empty vec,
+        // identical to omitting the field entirely.
+        let yaml = r#"
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: single-repo-pod
+spec:
+  work_dir: /tmp
+  policy:
+    type: profile
+    name: default
+  workspaces: []
+"#;
+        let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
+        assert!(
+            spec.spec.workspaces.is_empty(),
+            "explicit empty workspaces list should parse as empty vec"
+        );
+    }
+
+    #[test]
+    fn test_pod_spec_with_workspaces_roundtrip() {
+        // Serialize a PodSpec with workspaces, then deserialize it; all fields
+        // must survive the round-trip intact.
+        let yaml = r#"
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: multi-repo-pod
+spec:
+  work_dir: /workspace/primary
+  policy:
+    type: profile
+    name: codegen
+  workspaces:
+    - name: primary
+      path: /workspace/repo1
+    - name: secondary
+      path: /workspace/repo2
+      policy:
+        type: profile
+        name: read_only
+"#;
+        let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
+        let serialized = serde_yaml::to_string(&spec).expect("should serialize");
+        let reparsed: PodSpec = serde_yaml::from_str(&serialized).expect("should re-parse");
+
+        assert_eq!(reparsed.spec.workspaces.len(), 2);
+        assert_eq!(reparsed.spec.workspaces[0].name, "primary");
+        assert_eq!(reparsed.spec.workspaces[0].path, PathBuf::from("/workspace/repo1"));
+        assert!(reparsed.spec.workspaces[0].policy.is_none());
+        assert_eq!(reparsed.spec.workspaces[1].name, "secondary");
+        assert_eq!(reparsed.spec.workspaces[1].path, PathBuf::from("/workspace/repo2"));
+        assert!(reparsed.spec.workspaces[1].policy.is_some());
+    }
+
+    #[test]
+    fn test_exit_report_workspace_hashes_roundtrip() {
+        // ExitReport with populated workspace_hashes must survive YAML round-trip.
+        let mut hashes = BTreeMap::new();
+        hashes.insert("primary".to_string(), "aabbcc".to_string());
+        hashes.insert("secondary".to_string(), "ddeeff".to_string());
+
+        let report = ExitReport {
+            workspace_hash: "combined".to_string(),
+            workspace_hashes: hashes,
+            audit_tail_hash: "tail".to_string(),
+            audit_entry_count: 7,
+            timestamp_unix: 1000,
+        };
+
+        let yaml = serde_yaml::to_string(&report).expect("should serialize");
+        let parsed: ExitReport = serde_yaml::from_str(&yaml).expect("should deserialize");
+
+        assert_eq!(parsed.workspace_hash, "combined");
+        assert_eq!(parsed.workspace_hashes.len(), 2);
+        assert_eq!(parsed.workspace_hashes["primary"], "aabbcc");
+        assert_eq!(parsed.workspace_hashes["secondary"], "ddeeff");
+        assert_eq!(parsed.audit_tail_hash, "tail");
+        assert_eq!(parsed.audit_entry_count, 7);
+        assert_eq!(parsed.timestamp_unix, 1000);
+    }
+
+    #[test]
+    fn test_workspace_per_workspace_policy_resolves() {
+        // Verify that a profile name specified inside a WorkspaceSpec can be resolved.
+        let workspace = WorkspaceSpec {
+            name: "audit".to_string(),
+            path: PathBuf::from("/workspace/audit"),
+            policy: Some(PolicySpec::Profile {
+                name: "read_only".to_string(),
+            }),
+        };
+
+        let lattice = workspace.policy.unwrap().resolve();
+        assert!(
+            lattice.is_ok(),
+            "per-workspace profile policy must resolve successfully"
+        );
     }
 }
