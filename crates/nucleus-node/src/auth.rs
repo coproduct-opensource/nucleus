@@ -4,13 +4,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::http::HeaderMap;
 use hmac::{Hmac, Mac};
+use nucleus_proto::headers::{HEADER_ACTOR, HEADER_SIGNATURE, HEADER_TIMESTAMP};
 use sha2::Sha256;
 use tonic::metadata::MetadataMap;
 use tracing::warn;
-
-const HEADER_TIMESTAMP: &str = "x-nucleus-timestamp";
-const HEADER_SIGNATURE: &str = "x-nucleus-signature";
-const HEADER_ACTOR: &str = "x-nucleus-actor";
 
 /// Global flag to suppress repeated HMAC deprecation warnings after the first few.
 static HMAC_DEPRECATION_WARNED: AtomicBool = AtomicBool::new(false);

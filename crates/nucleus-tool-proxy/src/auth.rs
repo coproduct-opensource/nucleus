@@ -24,12 +24,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use axum::http::HeaderMap;
 use hmac::{Hmac, Mac};
 use nucleus_client::drand::{self, DrandConfig, DrandFailMode};
+use nucleus_proto::headers::{HEADER_ACTOR, HEADER_DRAND_ROUND, HEADER_SIGNATURE, HEADER_TIMESTAMP};
 use sha2::Sha256;
-
-const HEADER_TIMESTAMP: &str = "x-nucleus-timestamp";
-const HEADER_SIGNATURE: &str = "x-nucleus-signature";
-const HEADER_ACTOR: &str = "x-nucleus-actor";
-const HEADER_DRAND_ROUND: &str = "x-nucleus-drand-round";
 
 /// Configuration for request authentication.
 #[derive(Clone, Debug)]
