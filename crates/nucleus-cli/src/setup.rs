@@ -8,10 +8,8 @@ use std::path::PathBuf;
 use std::process::Command;
 use tracing::{info, warn};
 
+use crate::constants::FIRECRACKER_VERSION;
 use crate::keychain::{self, SecretKind, SecretStore};
-
-/// Version of Firecracker to download
-const FIRECRACKER_VERSION: &str = "1.14.1";
 
 /// Set up nucleus environment (Lima VM, artifacts, secrets)
 #[derive(Args, Debug)]
