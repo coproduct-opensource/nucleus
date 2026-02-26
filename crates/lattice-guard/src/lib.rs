@@ -106,6 +106,7 @@ pub mod modal;
 mod path;
 pub mod permissive;
 pub mod progress;
+pub mod region;
 mod time;
 pub mod weakening;
 
@@ -141,6 +142,7 @@ pub use permissive::{
     PermissiveExecutorBuilder,
 };
 pub use progress::{ProgressDimension, ProgressLattice, ProgressLevel};
+pub use region::CodeRegion;
 pub use time::TimeLattice;
 pub use weakening::{
     WeakeningCost, WeakeningCostConfig, WeakeningDimension, WeakeningGap, WeakeningRequest,
