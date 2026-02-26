@@ -99,12 +99,14 @@ pub mod graded;
 pub mod guard;
 pub mod heyting;
 pub mod identity;
+pub mod intent;
 pub mod isolation;
 mod lattice;
 pub mod metrics;
 pub mod modal;
 mod path;
 pub mod permissive;
+pub mod pipeline;
 pub mod progress;
 pub mod region;
 mod time;
@@ -131,6 +133,7 @@ pub use galois::{
 pub use graded::{Graded, GradedPermissionCheck, RiskGrade};
 pub use guard::{CompositeGuard, GradedGuard, GuardError, GuardFn, GuardedAction, PermissionGuard};
 pub use heyting::{ConditionalPermission, HeytingAlgebra};
+pub use intent::{IntentKind, WorkIntent};
 pub use isolation::{FileIsolation, IsolationLattice, NetworkIsolation, ProcessIsolation};
 pub use lattice::{
     DelegationError, EffectivePermissions, PermissionLattice, PermissionLatticeBuilder,
@@ -146,6 +149,14 @@ pub use region::CodeRegion;
 pub use time::TimeLattice;
 pub use weakening::{
     WeakeningCost, WeakeningCostConfig, WeakeningDimension, WeakeningGap, WeakeningRequest,
+};
+
+// Re-export pipeline types
+pub use pipeline::{
+    algebraic_gap, evaluate_and_escalate, full_pipeline, justify_necessity, require_or_escalate,
+    translate_with_cost, AlgebraicWeakeningGap, CostAnnotatedTranslation, EscalationTrigger,
+    HopCost, IntentRegionMapping, ModalJustification, ModalJustificationEntry, PipelineTrace,
+    RiskEvaluation,
 };
 
 // Re-export key audit and metrics types

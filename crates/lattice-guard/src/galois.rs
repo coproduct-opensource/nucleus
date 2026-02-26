@@ -392,6 +392,7 @@ pub mod presets {
 
 /// A step in an auditable bridge translation.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TranslationStep {
     /// Source trust domain for this hop.
     pub from_domain: String,
@@ -407,6 +408,7 @@ pub struct TranslationStep {
 
 /// An auditable report of a multi-hop bridge translation.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TranslationReport {
     /// The individual steps taken.
     pub steps: Vec<TranslationStep>,
@@ -434,6 +436,11 @@ impl BridgeChain {
     /// Add a bridge to the chain.
     pub fn add(&mut self, bridge: TrustDomainBridge) {
         self.bridges.push(bridge);
+    }
+
+    /// Get the bridges in this chain.
+    pub fn bridges(&self) -> &[TrustDomainBridge] {
+        &self.bridges
     }
 
     /// Translate permissions through the entire chain (forward).
