@@ -105,6 +105,7 @@ pub mod metrics;
 pub mod modal;
 mod path;
 pub mod permissive;
+pub mod progress;
 mod time;
 pub mod weakening;
 
@@ -139,6 +140,7 @@ pub use permissive::{
     ExecutionDenied, PermissiveExecution, PermissiveExecutionResult, PermissiveExecutor,
     PermissiveExecutorBuilder,
 };
+pub use progress::{ProgressDimension, ProgressLattice, ProgressLevel};
 pub use time::TimeLattice;
 pub use weakening::{
     WeakeningCost, WeakeningCostConfig, WeakeningDimension, WeakeningGap, WeakeningRequest,
