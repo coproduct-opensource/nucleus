@@ -328,3 +328,5 @@ Licensed under either of Apache License, Version 2.0 or MIT license at your opti
 - [Container Hardening Against Agentic AI](https://securitytheatre.substack.com/p/container-hardening-against-agentic)
 - [Lattice-based Access Control](https://en.wikipedia.org/wiki/Lattice-based_access_control) - Denning 1976, Sandhu 1993
 - [cap-std](https://github.com/bytecodealliance/cap-std) - Capability-based filesystem
+
+<!-- Lattice orbit test: 2026-02-26T17:56:56Z -->
