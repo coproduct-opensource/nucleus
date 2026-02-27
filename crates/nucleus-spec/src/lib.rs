@@ -240,6 +240,62 @@ pub struct NetworkSpec {
     pub dns_allow: Vec<String>,
 }
 
+impl NetworkSpec {
+    /// No egress at all — for airgapped workloads.
+    ///
+    /// Denies all outbound traffic. The pod can only communicate with the
+    /// host via vsock (if available). Used for `TrustLevel::Untrusted` or
+    /// `NetworkIsolation::Airgapped`.
+    pub fn deny_all() -> Self {
+        Self {
+            allow: vec![],
+            deny: vec!["0.0.0.0/0".into()],
+            dns_allow: vec![],
+        }
+    }
+
+    /// Allow package registries + GitHub API — minimum for build/test work.
+    ///
+    /// DNS entries are resolved and pinned at pod start by the dnsmasq proxy.
+    /// Used for `TrustLevel::OrgBYOK` or `NetworkIsolation::Filtered`.
+    pub fn package_registries() -> Self {
+        Self {
+            allow: vec![],
+            deny: vec![],
+            dns_allow: vec![
+                // Rust
+                "crates.io".into(),
+                "static.crates.io".into(),
+                "index.crates.io".into(),
+                // npm
+                "registry.npmjs.org".into(),
+                // Python
+                "pypi.org".into(),
+                "files.pythonhosted.org".into(),
+                // GitHub (API, web, uploads, LFS)
+                "github.com".into(),
+                "api.github.com".into(),
+                "uploads.github.com".into(),
+                "objects.githubusercontent.com".into(),
+                // Anthropic API (for Claude CLI)
+                "api.anthropic.com".into(),
+            ],
+        }
+    }
+
+    /// Unrestricted egress — for operator-trusted workloads.
+    ///
+    /// No deny rules and no DNS filtering. Used for `TrustLevel::SelfHosted`
+    /// or `NetworkIsolation::Host`.
+    pub fn permissive() -> Self {
+        Self {
+            allow: vec![],
+            deny: vec![],
+            dns_allow: vec![],
+        }
+    }
+}
+
 /// VM image configuration for Firecracker pods.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageSpec {
@@ -764,5 +820,49 @@ spec:
         let parsed: Metadata = serde_yaml::from_str(&yaml).expect("should deserialize");
         assert_eq!(parsed.namespace.as_deref(), Some("agents"));
         assert_eq!(parsed.name.as_deref(), Some("test-agent"));
+    }
+
+    // ── NetworkSpec presets ──────────────────────────────────────────
+
+    #[test]
+    fn test_network_spec_deny_all() {
+        let spec = NetworkSpec::deny_all();
+        assert!(spec.allow.is_empty());
+        assert_eq!(spec.deny, vec!["0.0.0.0/0"]);
+        assert!(spec.dns_allow.is_empty());
+    }
+
+    #[test]
+    fn test_network_spec_package_registries() {
+        let spec = NetworkSpec::package_registries();
+        assert!(spec.deny.is_empty(), "package_registries should not deny");
+        assert!(
+            spec.dns_allow.contains(&"crates.io".to_string()),
+            "should allow crates.io"
+        );
+        assert!(
+            spec.dns_allow.contains(&"registry.npmjs.org".to_string()),
+            "should allow npm"
+        );
+        assert!(
+            spec.dns_allow.contains(&"pypi.org".to_string()),
+            "should allow pypi"
+        );
+        assert!(
+            spec.dns_allow.contains(&"api.github.com".to_string()),
+            "should allow GitHub API"
+        );
+        assert!(
+            spec.dns_allow.contains(&"api.anthropic.com".to_string()),
+            "should allow Anthropic API"
+        );
+    }
+
+    #[test]
+    fn test_network_spec_permissive() {
+        let spec = NetworkSpec::permissive();
+        assert!(spec.allow.is_empty());
+        assert!(spec.deny.is_empty());
+        assert!(spec.dns_allow.is_empty(), "permissive has no DNS filter");
     }
 }
