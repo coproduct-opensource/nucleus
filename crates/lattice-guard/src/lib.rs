@@ -110,6 +110,7 @@ pub mod pipeline;
 pub mod progress;
 pub mod region;
 mod time;
+pub mod trust;
 pub mod weakening;
 
 #[cfg(kani)]
@@ -147,6 +148,7 @@ pub use permissive::{
 pub use progress::{ProgressDimension, ProgressLattice, ProgressLevel};
 pub use region::CodeRegion;
 pub use time::TimeLattice;
+pub use trust::{EnforcementResult, TrustProfile};
 pub use weakening::{
     WeakeningCost, WeakeningCostConfig, WeakeningDimension, WeakeningGap, WeakeningRequest,
 };
