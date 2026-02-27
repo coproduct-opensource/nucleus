@@ -1,0 +1,9 @@
+FROM alpine:3.19
+CMD sh -c '\
+  echo "smoke test starting"; \
+  echo "NUCLEUS_ARTIFACT: {\"type\":\"commit\",\"sha\":\"abc123smoke\"}"; \
+  echo "NUCLEUS_ARTIFACT: {\"type\":\"file_modified\",\"path\":\"src/main.rs\"}"; \
+  echo "NUCLEUS_ARTIFACT: {\"type\":\"pr_url\",\"url\":\"https://github.com/test/repo/pull/42\"}"; \
+  echo "env LLM_API_TOKEN=${LLM_API_TOKEN:-NOT_SET}"; \
+  echo "env NUCLEUS_TASK=${NUCLEUS_TASK:-NOT_SET}"; \
+  echo "smoke test done"'

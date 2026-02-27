@@ -308,6 +308,170 @@ pub fn all_capability_modals(perms: &PermissionLattice) -> Vec<CapabilityModal> 
     ]
 }
 
+/// A single step in an escalation path.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct EscalationStep {
+    /// The operation to approve.
+    pub operation: Operation,
+    /// The capability level gained.
+    pub from_level: CapabilityLevel,
+    /// The capability level after approval.
+    pub to_level: CapabilityLevel,
+    /// Estimated cost of this step (from WeakeningCostConfig).
+    pub cost: rust_decimal::Decimal,
+    /// Whether this step completes the trifecta.
+    pub completes_trifecta: bool,
+}
+
+/// An ordered escalation path from current to target permissions.
+///
+/// Steps are ranked by cost (cheapest first), allowing agents to request
+/// the most affordable approvals first. Steps that complete the trifecta
+/// are always ranked last regardless of base cost, since they require
+/// the most scrutiny.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct EscalationPath {
+    /// Ordered steps (cheapest non-trifecta first, trifecta-completing last).
+    pub steps: Vec<EscalationStep>,
+    /// Total cost of all steps.
+    pub total_cost: rust_decimal::Decimal,
+    /// Whether the full path completes the trifecta.
+    pub completes_trifecta: bool,
+}
+
+impl EscalationPath {
+    /// Whether the path is empty (no escalation needed).
+    pub fn is_empty(&self) -> bool {
+        self.steps.is_empty()
+    }
+
+    /// Number of approval steps required.
+    pub fn step_count(&self) -> usize {
+        self.steps.len()
+    }
+}
+
+impl ModalContext {
+    /// Compute the cheapest escalation path from current to target permissions.
+    ///
+    /// Uses the `WeakeningCostConfig` to price each approval step, then orders
+    /// them so:
+    /// 1. Non-trifecta steps sorted by ascending cost
+    /// 2. Trifecta-completing steps last (highest scrutiny)
+    ///
+    /// Returns `None` if the target is not achievable (exceeds ceiling).
+    pub fn escalation_path(
+        &self,
+        target: &PermissionLattice,
+        cost_config: &crate::weakening::WeakeningCostConfig,
+    ) -> Option<EscalationPath> {
+        use crate::capability::IncompatibilityConstraint;
+
+        // Target capabilities must be achievable (within possibility's capabilities)
+        if !target.capabilities.leq(&self.possible.capabilities) {
+            return None;
+        }
+
+        let constraint = IncompatibilityConstraint::enforcing();
+        let mut steps = Vec::new();
+
+        // Check each capability dimension
+        let cap_checks: &[(Operation, CapabilityLevel, CapabilityLevel)] = &[
+            (
+                Operation::ReadFiles,
+                self.necessary.capabilities.read_files,
+                target.capabilities.read_files,
+            ),
+            (
+                Operation::WriteFiles,
+                self.necessary.capabilities.write_files,
+                target.capabilities.write_files,
+            ),
+            (
+                Operation::EditFiles,
+                self.necessary.capabilities.edit_files,
+                target.capabilities.edit_files,
+            ),
+            (
+                Operation::RunBash,
+                self.necessary.capabilities.run_bash,
+                target.capabilities.run_bash,
+            ),
+            (
+                Operation::WebSearch,
+                self.necessary.capabilities.web_search,
+                target.capabilities.web_search,
+            ),
+            (
+                Operation::WebFetch,
+                self.necessary.capabilities.web_fetch,
+                target.capabilities.web_fetch,
+            ),
+            (
+                Operation::GitPush,
+                self.necessary.capabilities.git_push,
+                target.capabilities.git_push,
+            ),
+            (
+                Operation::CreatePr,
+                self.necessary.capabilities.create_pr,
+                target.capabilities.create_pr,
+            ),
+        ];
+
+        // Build a running capability to track trifecta impact
+        let running_caps = self.necessary.capabilities.clone();
+
+        for &(op, from_level, to_level) in cap_checks {
+            if to_level > from_level {
+                let cost = cost_config.capability_cost(from_level, to_level);
+
+                // Check if granting this step would complete the trifecta
+                let mut test_caps = running_caps.clone();
+                match op {
+                    Operation::ReadFiles => test_caps.read_files = to_level,
+                    Operation::WriteFiles => test_caps.write_files = to_level,
+                    Operation::EditFiles => test_caps.edit_files = to_level,
+                    Operation::RunBash => test_caps.run_bash = to_level,
+                    Operation::WebSearch => test_caps.web_search = to_level,
+                    Operation::WebFetch => test_caps.web_fetch = to_level,
+                    Operation::GitPush => test_caps.git_push = to_level,
+                    Operation::CreatePr => test_caps.create_pr = to_level,
+                    _ => {}
+                }
+                let completes = constraint.is_trifecta_complete(&test_caps)
+                    && !constraint.is_trifecta_complete(&running_caps);
+
+                steps.push(EscalationStep {
+                    operation: op,
+                    from_level,
+                    to_level,
+                    cost: cost.total(),
+                    completes_trifecta: completes,
+                });
+            }
+        }
+
+        // Sort: non-trifecta by cost ascending, trifecta-completing last
+        steps.sort_by(|a, b| match (a.completes_trifecta, b.completes_trifecta) {
+            (false, true) => std::cmp::Ordering::Less,
+            (true, false) => std::cmp::Ordering::Greater,
+            _ => a.cost.cmp(&b.cost),
+        });
+
+        let total_cost = steps.iter().map(|s| s.cost).sum();
+        let completes_trifecta = steps.iter().any(|s| s.completes_trifecta);
+
+        Some(EscalationPath {
+            steps,
+            total_cost,
+            completes_trifecta,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,6 +604,81 @@ mod tests {
 
         // read_only has no obligations, so base should be guaranteed
         assert!(context.is_guaranteed(&perms));
+    }
+
+    #[test]
+    fn test_escalation_path_no_escalation_needed() {
+        let perms = PermissionLattice::read_only();
+        let context = ModalContext::new(perms.clone());
+        let config = crate::weakening::WeakeningCostConfig::default();
+
+        let path = context.escalation_path(&perms, &config).unwrap();
+        assert!(path.is_empty());
+    }
+
+    #[test]
+    fn test_escalation_path_with_capability_elevation() {
+        use rust_decimal::Decimal;
+
+        let perms = PermissionLattice::restrictive();
+        let ceiling = PermissionLattice::permissive();
+        let context = ModalContext::with_ceiling(perms, ceiling);
+        let config = crate::weakening::WeakeningCostConfig::default();
+
+        let mut target = PermissionLattice::restrictive();
+        target.capabilities.write_files = CapabilityLevel::LowRisk;
+        target.capabilities.web_fetch = CapabilityLevel::LowRisk;
+
+        let path = context.escalation_path(&target, &config).unwrap();
+        assert!(!path.is_empty());
+        assert!(path.total_cost > Decimal::ZERO);
+
+        // Steps should be ordered by cost (cheapest first)
+        for window in path.steps.windows(2) {
+            if !window[0].completes_trifecta && !window[1].completes_trifecta {
+                assert!(window[0].cost <= window[1].cost);
+            }
+        }
+    }
+
+    #[test]
+    fn test_escalation_path_trifecta_completing_last() {
+        let perms = PermissionLattice::restrictive();
+        let ceiling = PermissionLattice::permissive();
+        let context = ModalContext::with_ceiling(perms, ceiling);
+        let config = crate::weakening::WeakeningCostConfig::default();
+
+        // Target with full trifecta: private data + untrusted content + exfil
+        let mut target = PermissionLattice::restrictive();
+        target.capabilities.read_files = CapabilityLevel::Always; // already Always in restrictive
+        target.capabilities.web_fetch = CapabilityLevel::LowRisk;
+        target.capabilities.git_push = CapabilityLevel::LowRisk;
+
+        let path = context.escalation_path(&target, &config).unwrap();
+
+        // If there are trifecta-completing steps, they should be last
+        if path.completes_trifecta {
+            let last_non_trifecta = path.steps.iter().rposition(|s| !s.completes_trifecta);
+            let first_trifecta = path.steps.iter().position(|s| s.completes_trifecta);
+            if let (Some(last_nt), Some(first_t)) = (last_non_trifecta, first_trifecta) {
+                assert!(
+                    last_nt < first_t,
+                    "Trifecta-completing steps should come after non-trifecta steps"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_escalation_path_unachievable_returns_none() {
+        let perms = PermissionLattice::restrictive();
+        let ceiling = PermissionLattice::read_only(); // Limited ceiling
+        let context = ModalContext::with_ceiling(perms, ceiling);
+        let config = crate::weakening::WeakeningCostConfig::default();
+
+        // Target exceeds ceiling
+        let target = PermissionLattice::permissive();
+        assert!(context.escalation_path(&target, &config).is_none());
     }
 
     #[test]

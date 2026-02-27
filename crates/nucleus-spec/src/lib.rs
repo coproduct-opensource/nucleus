@@ -168,6 +168,55 @@ pub struct BudgetModelSpec {
     pub cost_per_second_usd: f64,
 }
 
+/// Vendor-agnostic payment requirement metadata.
+///
+/// When a tool-proxy operation is denied due to budget exhaustion or
+/// insufficient permission bid, this struct describes what payment
+/// would be required to proceed. The actual payment protocol (x402, etc.)
+/// is implemented by the orchestrator, not by nucleus.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentRequiredInfo {
+    /// Amount required in USD.
+    pub amount_usd: f64,
+    /// Human-readable reason for the payment requirement.
+    pub reason: String,
+    /// The type of payment requirement.
+    pub kind: PaymentRequiredKind,
+    /// Optional payment recipient identifier (opaque to nucleus).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recipient: Option<String>,
+    /// Optional resource URI being gated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+}
+
+/// Classification of the payment requirement.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum PaymentRequiredKind {
+    /// Budget for the pod has been exhausted.
+    BudgetExhausted {
+        /// Amount the operation requested.
+        requested: f64,
+        /// Budget remaining before this request.
+        remaining: f64,
+    },
+    /// Permission bid was too low for one or more dimensions.
+    PermissionDenied {
+        /// Dimensions that were denied, with their prices.
+        denied_dimensions: Vec<DeniedDimensionInfo>,
+    },
+}
+
+/// A permission dimension that was denied, with its market price.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeniedDimensionInfo {
+    /// Dimension name (e.g. "filesystem", "network_egress").
+    pub dimension: String,
+    /// Effective price in USD (lambda * trust_discount).
+    pub price_usd: f64,
+}
+
 /// Resource hints for the pod.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceSpec {
@@ -652,6 +701,53 @@ spec:
             serde_yaml::from_str(yaml_with_ns).expect("should parse with namespace");
         assert_eq!(spec.metadata.namespace.as_deref(), Some("agents"));
         assert_eq!(spec.metadata.name.as_deref(), Some("coder-alpha"));
+    }
+
+    #[test]
+    fn test_payment_required_budget_exhausted_json() {
+        let info = PaymentRequiredInfo {
+            amount_usd: 0.05,
+            reason: "budget exhausted: requested $0.0500, remaining $0.0100".into(),
+            kind: PaymentRequiredKind::BudgetExhausted {
+                requested: 0.05,
+                remaining: 0.01,
+            },
+            recipient: Some("0xABC123".into()),
+            resource: Some("/v1/run".into()),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("budget_exhausted"));
+        assert!(json.contains("0xABC123"));
+        let parsed: PaymentRequiredInfo = serde_json::from_str(&json).unwrap();
+        assert!((parsed.amount_usd - 0.05).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_payment_required_permission_denied_json() {
+        let info = PaymentRequiredInfo {
+            amount_usd: 2.30,
+            reason: "NetworkEgress lambda=4.6".into(),
+            kind: PaymentRequiredKind::PermissionDenied {
+                denied_dimensions: vec![DeniedDimensionInfo {
+                    dimension: "network_egress".into(),
+                    price_usd: 2.30,
+                }],
+            },
+            recipient: None,
+            resource: Some("/v1/web_fetch".into()),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("permission_denied"));
+        assert!(json.contains("network_egress"));
+        let parsed: PaymentRequiredInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.recipient, None);
+        match &parsed.kind {
+            PaymentRequiredKind::PermissionDenied { denied_dimensions } => {
+                assert_eq!(denied_dimensions.len(), 1);
+                assert!((denied_dimensions[0].price_usd - 2.30).abs() < f64::EPSILON);
+            }
+            _ => panic!("expected PermissionDenied"),
+        }
     }
 
     #[test]

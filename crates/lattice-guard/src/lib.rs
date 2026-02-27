@@ -91,6 +91,7 @@ mod budget;
 mod capability;
 mod command;
 pub mod constraint;
+pub mod delegation;
 pub mod escalation;
 pub mod frame;
 pub mod galois;
@@ -98,12 +99,16 @@ pub mod graded;
 pub mod guard;
 pub mod heyting;
 pub mod identity;
+pub mod intent;
 pub mod isolation;
 mod lattice;
 pub mod metrics;
 pub mod modal;
 mod path;
 pub mod permissive;
+pub mod pipeline;
+pub mod progress;
+pub mod region;
 mod time;
 pub mod weakening;
 
@@ -117,32 +122,51 @@ pub use capability::{
 };
 pub use command::{ArgPattern, CommandLattice, CommandPattern};
 pub use frame::{
-    BoundedLattice, CompleteLattice, DistributiveLattice, Frame, Lattice, Nucleus,
-    SafePermissionLattice, TrifectaQuotient,
+    verify_nucleus_laws, BoundedLattice, CompleteLattice, ComposedNucleus, DistributiveLattice,
+    Frame, Lattice, Nucleus, NucleusLaw, NucleusLawViolation, SafePermissionLattice,
+    TrifectaQuotient,
 };
-pub use galois::{GaloisConnection, GaloisVerificationError, TrustDomainBridge};
+pub use galois::{
+    GaloisConnection, GaloisVerificationError, TranslationReport, TranslationStep,
+    TrustDomainBridge,
+};
 pub use graded::{Graded, GradedPermissionCheck, RiskGrade};
-pub use guard::{CompositeGuard, GuardError, GuardFn, GuardedAction, PermissionGuard};
+pub use guard::{CompositeGuard, GradedGuard, GuardError, GuardFn, GuardedAction, PermissionGuard};
 pub use heyting::{ConditionalPermission, HeytingAlgebra};
+pub use intent::{IntentKind, WorkIntent};
 pub use isolation::{FileIsolation, IsolationLattice, NetworkIsolation, ProcessIsolation};
 pub use lattice::{
     DelegationError, EffectivePermissions, PermissionLattice, PermissionLatticeBuilder,
 };
-pub use modal::{CapabilityModal, ModalContext, ModalPermissions};
+pub use modal::{CapabilityModal, EscalationPath, EscalationStep, ModalContext, ModalPermissions};
 pub use path::PathLattice;
 pub use permissive::{
     ExecutionDenied, PermissiveExecution, PermissiveExecutionResult, PermissiveExecutor,
     PermissiveExecutorBuilder,
 };
+pub use progress::{ProgressDimension, ProgressLattice, ProgressLevel};
+pub use region::CodeRegion;
 pub use time::TimeLattice;
 pub use weakening::{
     WeakeningCost, WeakeningCostConfig, WeakeningDimension, WeakeningGap, WeakeningRequest,
+};
+
+// Re-export pipeline types
+pub use pipeline::{
+    algebraic_gap, evaluate_and_escalate, full_pipeline, justify_necessity, require_or_escalate,
+    translate_with_cost, AlgebraicWeakeningGap, CostAnnotatedTranslation, EscalationTrigger,
+    HopCost, IntentRegionMapping, ModalJustification, ModalJustificationEntry, PipelineTrace,
+    RiskEvaluation,
 };
 
 // Re-export key audit and metrics types
 pub use audit::{
     AuditEntry, AuditLog, ChainVerificationError, IdentityAuditSummary, PermissionEvent,
     RetentionPolicy,
+};
+pub use delegation::{
+    meet_with_justification, DelegationChain, DelegationLink, MeetJustification, RestrictionDetail,
+    RestrictionReason,
 };
 pub use metrics::{
     build_deviation_report, DeviationDetail, DeviationReport, InMemoryMetrics, MetricEvent,
