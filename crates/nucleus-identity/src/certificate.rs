@@ -339,133 +339,20 @@ fn parse_cert_chain_pem(pem: &str) -> Result<Vec<Certificate>> {
 
 /// Converts DER bytes to PEM format.
 fn der_to_pem(der: &[u8], label: &str) -> String {
-    let base64 = base64_encode(der);
-    let mut pem = format!("-----BEGIN {label}-----\n");
-
-    // Split into 64-character lines
-    for chunk in base64.as_bytes().chunks(64) {
-        pem.push_str(std::str::from_utf8(chunk).unwrap());
-        pem.push('\n');
-    }
-
-    pem.push_str(&format!("-----END {label}-----\n"));
-    pem
+    let p = pem::Pem::new(label, der);
+    pem::encode(&p)
 }
 
 /// Converts PEM to DER bytes.
-fn pem_to_der(pem: &str, _expected_label: &str) -> Result<Vec<u8>> {
-    let mut in_block = false;
-    let mut base64_data = String::new();
-
-    for line in pem.lines() {
-        let line = line.trim();
-        if line.starts_with("-----BEGIN") {
-            in_block = true;
-            continue;
-        }
-        if line.starts_with("-----END") {
-            break;
-        }
-        if in_block {
-            base64_data.push_str(line);
-        }
-    }
-
-    if base64_data.is_empty() {
-        return Err(Error::Certificate("empty PEM data".to_string()));
-    }
-
-    base64_decode(&base64_data)
-}
-
-/// Simple base64 encoder.
-fn base64_encode(input: &[u8]) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    let mut output = String::new();
-    let mut i = 0;
-
-    while i < input.len() {
-        let b0 = input[i] as u32;
-        let b1 = if i + 1 < input.len() {
-            input[i + 1] as u32
-        } else {
-            0
-        };
-        let b2 = if i + 2 < input.len() {
-            input[i + 2] as u32
-        } else {
-            0
-        };
-
-        let triple = (b0 << 16) | (b1 << 8) | b2;
-
-        output.push(ALPHABET[((triple >> 18) & 0x3F) as usize] as char);
-        output.push(ALPHABET[((triple >> 12) & 0x3F) as usize] as char);
-
-        if i + 1 < input.len() {
-            output.push(ALPHABET[((triple >> 6) & 0x3F) as usize] as char);
-        } else {
-            output.push('=');
-        }
-
-        if i + 2 < input.len() {
-            output.push(ALPHABET[(triple & 0x3F) as usize] as char);
-        } else {
-            output.push('=');
-        }
-
-        i += 3;
-    }
-
-    output
-}
-
-/// Simple base64 decoder.
-fn base64_decode(input: &str) -> Result<Vec<u8>> {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    let mut output = Vec::new();
-    let mut buffer: u32 = 0;
-    let mut bits_collected = 0;
-
-    for c in input.chars() {
-        if c == '=' {
-            break;
-        }
-        if c.is_whitespace() {
-            continue;
-        }
-
-        let value = ALPHABET
-            .iter()
-            .position(|&x| x == c as u8)
-            .ok_or_else(|| Error::Certificate(format!("invalid base64 character: {c}")))?;
-
-        buffer = (buffer << 6) | (value as u32);
-        bits_collected += 6;
-
-        if bits_collected >= 8 {
-            bits_collected -= 8;
-            output.push((buffer >> bits_collected) as u8);
-            buffer &= (1 << bits_collected) - 1;
-        }
-    }
-
-    Ok(output)
+fn pem_to_der(pem_str: &str, _expected_label: &str) -> Result<Vec<u8>> {
+    let parsed =
+        pem::parse(pem_str).map_err(|e| Error::Certificate(format!("failed to parse PEM: {e}")))?;
+    Ok(parsed.into_contents())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_base64_roundtrip() {
-        let original = b"Hello, World!";
-        let encoded = base64_encode(original);
-        let decoded = base64_decode(&encoded).unwrap();
-        assert_eq!(original.as_slice(), decoded.as_slice());
-    }
 
     #[test]
     fn test_der_to_pem_roundtrip() {

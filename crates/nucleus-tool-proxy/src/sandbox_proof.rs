@@ -281,28 +281,8 @@ fn extract_spiffe_id(cert: &x509_parser::prelude::X509Certificate<'_>) -> Option
 /// Decode the first PEM block into DER bytes.
 fn decode_pem_to_der(pem_data: &[u8]) -> Result<Vec<u8>, String> {
     let pem_str = std::str::from_utf8(pem_data).map_err(|e| format!("invalid UTF-8: {e}"))?;
-
-    let begin_marker = "-----BEGIN ";
-    let end_marker = "-----END ";
-
-    let start = pem_str.find(begin_marker).ok_or("no PEM begin marker")?;
-    let header_end = pem_str[start..]
-        .find("-----\n")
-        .or_else(|| pem_str[start..].find("-----\r\n"))
-        .ok_or("no PEM header end")?;
-    let body_start = start + header_end + 6; // skip "-----\n"
-    if pem_str.as_bytes().get(start + header_end + 5) == Some(&b'\r') {
-        // handle \r\n
-    }
-
-    let body_end = pem_str[body_start..]
-        .find(end_marker)
-        .ok_or("no PEM end marker")?;
-    let body = &pem_str[body_start..body_start + body_end];
-
-    // Decode base64 (strip whitespace)
-    let cleaned: String = body.chars().filter(|c| !c.is_whitespace()).collect();
-    crate::attestation::base64_decode(&cleaned).map_err(|e| format!("base64 decode: {e}"))
+    let parsed = pem::parse(pem_str).map_err(|e| format!("PEM parse error: {e}"))?;
+    Ok(parsed.into_contents())
 }
 
 fn build_naked_process_message(config: &SandboxProofConfig) -> String {

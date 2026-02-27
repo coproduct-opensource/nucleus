@@ -79,6 +79,9 @@ rust_decimal = "1.40"
 shell-words = "1.1"
 regex = "1.12"
 
+# Encoding
+base64 = "0.22"
+
 # Testing
 tempfile = "3"
 proptest = "1.10"

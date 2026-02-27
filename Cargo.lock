@@ -2337,6 +2337,7 @@ name = "nucleus-tool-proxy"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "chrono",
  "clap",
  "glob",
@@ -2348,6 +2349,7 @@ dependencies = [
  "nucleus-identity",
  "nucleus-permission-market",
  "nucleus-spec",
+ "pem",
  "regex",
  "reqwest",
  "rustls",

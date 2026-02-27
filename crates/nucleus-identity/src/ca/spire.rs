@@ -383,52 +383,8 @@ impl SpireCaClient {
 
     /// Converts DER bytes to PEM format.
     fn der_to_pem(der: &[u8], label: &str) -> String {
-        use std::fmt::Write;
-
-        let base64 = Self::base64_encode(der);
-        let mut pem = format!("-----BEGIN {label}-----\n");
-
-        // Split into 64-character lines
-        for chunk in base64.as_bytes().chunks(64) {
-            pem.push_str(std::str::from_utf8(chunk).unwrap_or(""));
-            pem.push('\n');
-        }
-
-        writeln!(pem, "-----END {label}-----").unwrap();
-        pem
-    }
-
-    /// Simple base64 encoder.
-    fn base64_encode(data: &[u8]) -> String {
-        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-        let mut output = String::new();
-        let mut buffer = 0u32;
-        let mut bits_collected = 0;
-
-        for &byte in data {
-            buffer = (buffer << 8) | (byte as u32);
-            bits_collected += 8;
-
-            while bits_collected >= 6 {
-                bits_collected -= 6;
-                let index = ((buffer >> bits_collected) & 0x3F) as usize;
-                output.push(ALPHABET[index] as char);
-            }
-        }
-
-        if bits_collected > 0 {
-            buffer <<= 6 - bits_collected;
-            let index = (buffer & 0x3F) as usize;
-            output.push(ALPHABET[index] as char);
-        }
-
-        // Padding
-        while output.len() % 4 != 0 {
-            output.push('=');
-        }
-
-        output
+        let p = pem::Pem::new(label, der);
+        pem::encode(&p)
     }
 }
 
@@ -620,20 +576,13 @@ mod tests {
     }
 
     #[test]
-    fn test_base64_encode() {
-        assert_eq!(SpireCaClient::base64_encode(b"hello"), "aGVsbG8=");
-        assert_eq!(SpireCaClient::base64_encode(b""), "");
-        assert_eq!(SpireCaClient::base64_encode(b"a"), "YQ==");
-        assert_eq!(SpireCaClient::base64_encode(b"ab"), "YWI=");
-        assert_eq!(SpireCaClient::base64_encode(b"abc"), "YWJj");
-    }
-
-    #[test]
-    fn test_der_to_pem() {
+    fn test_der_to_pem_roundtrip() {
         let der = b"test data";
-        let pem = SpireCaClient::der_to_pem(der, "TEST");
-        assert!(pem.starts_with("-----BEGIN TEST-----\n"));
-        assert!(pem.ends_with("-----END TEST-----\n"));
-        assert!(pem.contains("dGVzdCBkYXRh")); // base64 of "test data"
+        let pem_str = SpireCaClient::der_to_pem(der, "TEST");
+        assert!(pem_str.contains("-----BEGIN TEST-----"));
+        assert!(pem_str.contains("-----END TEST-----"));
+        // Verify roundtrip
+        let parsed = pem::parse(&pem_str).unwrap();
+        assert_eq!(parsed.contents(), der);
     }
 }
