@@ -44,6 +44,35 @@
 use crate::frame::Lattice;
 use crate::PermissionLattice;
 
+/// Categorical composition for endomorphisms.
+///
+/// Models the endomorphism category `End(L)` where objects are a single
+/// lattice `L` and morphisms are `GaloisConnection<L, L>`.
+///
+/// # Laws
+///
+/// - **Left identity**: `identity().then(f)` behaves as `f`
+/// - **Right identity**: `f.then(identity())` behaves as `f`
+/// - **Associativity**: `(f.then(g)).then(h)` behaves as `f.then(g.then(h))`
+///
+/// Behavioural equality is checked pointwise on the security-relevant
+/// fields (`capabilities`, `obligations`, `budget`) because each
+/// `GaloisConnection` carries fresh UUIDs and timestamps.
+///
+/// # Note
+///
+/// Full generality would require higher-kinded types (morphisms between
+/// distinct lattice types). We restrict to the endomorphism case
+/// `GaloisConnection<L, L>` where source and target coincide, which
+/// is the most common setting for permission policy composition.
+pub trait Composable: Sized {
+    /// The identity morphism.
+    fn identity() -> Self;
+
+    /// Sequential composition: apply `self`, then `other` (diagrammatic order).
+    fn then(self, other: Self) -> Self;
+}
+
 /// Error returned when Galois connection verification fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GaloisVerificationError {
@@ -228,6 +257,16 @@ impl<L: Lattice + 'static, R: Lattice + 'static> GaloisConnection<L, R> {
         let g2 = Arc::clone(&gamma2);
 
         GaloisConnection::new(move |l: &L| a2(&a1(l)), move |s: &S| g1(&g2(s)))
+    }
+}
+
+impl<L: Lattice + 'static> Composable for GaloisConnection<L, L> {
+    fn identity() -> Self {
+        GaloisConnection::new(|x: &L| x.clone(), |x: &L| x.clone())
+    }
+
+    fn then(self, other: Self) -> Self {
+        self.compose(other)
     }
 }
 
@@ -1146,6 +1185,139 @@ mod tests {
                 bridge.verify(p, &alpha_p),
                 "read_only adjunction failed for profile {} with (p, α(p)) pair",
                 i
+            );
+        }
+    }
+
+    // --- Composable (Category) law tests ---
+
+    /// Helper: build a restricting endomorphism that meets with `read_only`.
+    fn read_only_endo() -> GaloisConnection<PermissionLattice, PermissionLattice> {
+        GaloisConnection::new(
+            |p: &PermissionLattice| p.meet(&PermissionLattice::read_only()),
+            |p: &PermissionLattice| p.clone(),
+        )
+    }
+
+    /// Helper: build a restricting endomorphism that meets with `network_only`.
+    fn network_only_endo() -> GaloisConnection<PermissionLattice, PermissionLattice> {
+        GaloisConnection::new(
+            |p: &PermissionLattice| p.meet(&PermissionLattice::network_only()),
+            |p: &PermissionLattice| p.clone(),
+        )
+    }
+
+    /// Helper: build an endomorphism that clears `run_bash`.
+    fn no_bash_endo() -> GaloisConnection<PermissionLattice, PermissionLattice> {
+        GaloisConnection::new(
+            |p: &PermissionLattice| {
+                let mut r = p.clone();
+                r.capabilities.run_bash = CapabilityLevel::Never;
+                r
+            },
+            |p: &PermissionLattice| p.clone(),
+        )
+    }
+
+    /// Pointwise security-field equality (ignores UUID/timestamp).
+    fn sec_eq(a: &PermissionLattice, b: &PermissionLattice) -> bool {
+        a.capabilities == b.capabilities && a.obligations == b.obligations && a.budget == b.budget
+    }
+
+    #[test]
+    fn test_composable_left_identity() {
+        // identity().then(f) behaves as f
+        let f = read_only_endo();
+        let id_then_f =
+            <GaloisConnection<PermissionLattice, PermissionLattice> as Composable>::identity()
+                .then(read_only_endo());
+
+        for p in &[
+            PermissionLattice::permissive(),
+            PermissionLattice::restrictive(),
+            PermissionLattice::codegen(),
+            PermissionLattice::default(),
+        ] {
+            let expected = f.abstract_to(p);
+            let actual = id_then_f.abstract_to(p);
+            assert!(
+                sec_eq(&expected, &actual),
+                "Left identity failed for α on profile {:?}",
+                p.description
+            );
+
+            let expected_gamma = f.concretize_from(p);
+            let actual_gamma = id_then_f.concretize_from(p);
+            assert!(
+                sec_eq(&expected_gamma, &actual_gamma),
+                "Left identity failed for γ on profile {:?}",
+                p.description
+            );
+        }
+    }
+
+    #[test]
+    fn test_composable_right_identity() {
+        // f.then(identity()) behaves as f
+        let f = read_only_endo();
+        let f_then_id = read_only_endo()
+            .then(
+                <GaloisConnection<PermissionLattice, PermissionLattice> as Composable>::identity(),
+            );
+
+        for p in &[
+            PermissionLattice::permissive(),
+            PermissionLattice::restrictive(),
+            PermissionLattice::codegen(),
+            PermissionLattice::default(),
+        ] {
+            let expected = f.abstract_to(p);
+            let actual = f_then_id.abstract_to(p);
+            assert!(
+                sec_eq(&expected, &actual),
+                "Right identity failed for α on profile {:?}",
+                p.description
+            );
+
+            let expected_gamma = f.concretize_from(p);
+            let actual_gamma = f_then_id.concretize_from(p);
+            assert!(
+                sec_eq(&expected_gamma, &actual_gamma),
+                "Right identity failed for γ on profile {:?}",
+                p.description
+            );
+        }
+    }
+
+    #[test]
+    fn test_composable_associativity() {
+        // (f.then(g)).then(h) behaves as f.then(g.then(h))
+        let left = read_only_endo()
+            .then(network_only_endo())
+            .then(no_bash_endo());
+        let right = read_only_endo().then(network_only_endo().then(no_bash_endo()));
+
+        for p in &[
+            PermissionLattice::permissive(),
+            PermissionLattice::restrictive(),
+            PermissionLattice::codegen(),
+            PermissionLattice::read_only(),
+            PermissionLattice::default(),
+        ] {
+            let l = left.abstract_to(p);
+            let r = right.abstract_to(p);
+            assert!(
+                sec_eq(&l, &r),
+                "Associativity failed for α on profile {:?}",
+                p.description
+            );
+
+            let lg = left.concretize_from(p);
+            let rg = right.concretize_from(p);
+            assert!(
+                sec_eq(&lg, &rg),
+                "Associativity failed for γ on profile {:?}",
+                p.description
             );
         }
     }
