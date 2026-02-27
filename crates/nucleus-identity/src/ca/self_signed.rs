@@ -188,68 +188,18 @@ impl SelfSignedCa {
         ))
     }
 
-    /// Converts PEM to DER.
-    fn pem_to_der(pem: &str, expected_label: &str) -> Result<Vec<u8>> {
-        let mut in_block = false;
-        let mut base64_data = String::new();
-        let mut found_label = false;
-
-        for line in pem.lines() {
-            let line = line.trim();
-            if line.contains("BEGIN") && line.contains(expected_label) {
-                in_block = true;
-                found_label = true;
-                continue;
-            }
-            if line.contains("END") {
-                break;
-            }
-            if in_block {
-                base64_data.push_str(line);
-            }
-        }
-
-        if !found_label {
+    /// Converts PEM to DER using the `pem` crate.
+    fn pem_to_der(pem_str: &str, expected_label: &str) -> Result<Vec<u8>> {
+        let parsed = pem::parse(pem_str)
+            .map_err(|e| Error::CsrGeneration(format!("failed to parse PEM: {e}")))?;
+        if !parsed.tag().contains(expected_label) {
             return Err(Error::CsrGeneration(format!(
-                "PEM does not contain expected label: {expected_label}"
+                "PEM label mismatch: expected '{}', got '{}'",
+                expected_label,
+                parsed.tag()
             )));
         }
-
-        Self::base64_decode(&base64_data)
-    }
-
-    /// Simple base64 decoder.
-    fn base64_decode(input: &str) -> Result<Vec<u8>> {
-        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-        let mut output = Vec::new();
-        let mut buffer: u32 = 0;
-        let mut bits_collected = 0;
-
-        for c in input.chars() {
-            if c == '=' {
-                break;
-            }
-            if c.is_whitespace() {
-                continue;
-            }
-
-            let value = ALPHABET
-                .iter()
-                .position(|&x| x == c as u8)
-                .ok_or_else(|| Error::CsrGeneration(format!("invalid base64 character: {c}")))?;
-
-            buffer = (buffer << 6) | (value as u32);
-            bits_collected += 6;
-
-            if bits_collected >= 8 {
-                bits_collected -= 8;
-                output.push((buffer >> bits_collected) as u8);
-                buffer &= (1 << bits_collected) - 1;
-            }
-        }
-
-        Ok(output)
+        Ok(parsed.into_contents())
     }
 
     /// Signs a CSR with the provided private key.

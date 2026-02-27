@@ -2192,6 +2192,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "pem",
  "proptest",
  "prost",
  "rand 0.10.0",
