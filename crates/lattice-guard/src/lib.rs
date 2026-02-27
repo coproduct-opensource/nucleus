@@ -128,10 +128,10 @@ pub use frame::{
     TrifectaQuotient,
 };
 pub use galois::{
-    GaloisConnection, GaloisVerificationError, TranslationReport, TranslationStep,
+    Composable, GaloisConnection, GaloisVerificationError, TranslationReport, TranslationStep,
     TrustDomainBridge,
 };
-pub use graded::{Graded, GradedPermissionCheck, RiskGrade};
+pub use graded::{Graded, GradedPermissionCheck, GradedPipeline, RiskCost, RiskGrade};
 pub use guard::{CompositeGuard, GradedGuard, GuardError, GuardFn, GuardedAction, PermissionGuard};
 pub use heyting::{ConditionalPermission, HeytingAlgebra};
 pub use intent::{IntentKind, WorkIntent};

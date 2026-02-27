@@ -44,6 +44,35 @@
 use crate::frame::Lattice;
 use crate::PermissionLattice;
 
+/// Categorical composition for endomorphisms.
+///
+/// Models the endomorphism category `End(L)` where objects are a single
+/// lattice `L` and morphisms are `GaloisConnection<L, L>`.
+///
+/// # Laws
+///
+/// - **Left identity**: `identity().then(f)` behaves as `f`
+/// - **Right identity**: `f.then(identity())` behaves as `f`
+/// - **Associativity**: `(f.then(g)).then(h)` behaves as `f.then(g.then(h))`
+///
+/// Behavioural equality is checked pointwise on the security-relevant
+/// fields (`capabilities`, `obligations`, `budget`) because each
+/// `GaloisConnection` carries fresh UUIDs and timestamps.
+///
+/// # Note
+///
+/// Full generality would require higher-kinded types (morphisms between
+/// distinct lattice types). We restrict to the endomorphism case
+/// `GaloisConnection<L, L>` where source and target coincide, which
+/// is the most common setting for permission policy composition.
+pub trait Composable: Sized {
+    /// The identity morphism.
+    fn identity() -> Self;
+
+    /// Sequential composition: apply `self`, then `other` (diagrammatic order).
+    fn then(self, other: Self) -> Self;
+}
+
 /// Error returned when Galois connection verification fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GaloisVerificationError {
@@ -231,6 +260,16 @@ impl<L: Lattice + 'static, R: Lattice + 'static> GaloisConnection<L, R> {
     }
 }
 
+impl<L: Lattice + 'static> Composable for GaloisConnection<L, L> {
+    fn identity() -> Self {
+        GaloisConnection::new(|x: &L| x.clone(), |x: &L| x.clone())
+    }
+
+    fn then(self, other: Self) -> Self {
+        self.compose(other)
+    }
+}
+
 impl<L, R> std::fmt::Debug for GaloisConnection<L, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GaloisConnection")
@@ -280,6 +319,41 @@ impl TrustDomainBridge {
         }
     }
 
+    /// Create a new trust domain bridge with Galois adjunction verification.
+    ///
+    /// Like [`Self::new`], but validates the adjunction property `α(l) ≤ r ⟺ l ≤ γ(r)`
+    /// against provided sample pairs before construction succeeds.
+    ///
+    /// # Arguments
+    ///
+    /// - `source`: The source trust domain URI
+    /// - `target`: The target trust domain URI
+    /// - `to_target`: Abstraction function (typically restricts permissions)
+    /// - `from_target`: Concretization function (typically embeds conservatively)
+    /// - `samples`: Pairs of (source, target) permission lattices to verify the adjunction
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GaloisVerificationError`] if any sample pair violates the adjunction.
+    pub fn new_verified<A, G>(
+        source: impl Into<String>,
+        target: impl Into<String>,
+        to_target: A,
+        from_target: G,
+        samples: &[(PermissionLattice, PermissionLattice)],
+    ) -> Result<Self, GaloisVerificationError>
+    where
+        A: Fn(&PermissionLattice) -> PermissionLattice + Send + Sync + 'static,
+        G: Fn(&PermissionLattice) -> PermissionLattice + Send + Sync + 'static,
+    {
+        let connection = GaloisConnection::new_verified(to_target, from_target, samples)?;
+        Ok(Self {
+            source: source.into(),
+            target: target.into(),
+            connection,
+        })
+    }
+
     /// Translate permissions from source to target domain.
     ///
     /// This applies the abstraction function (α), typically restricting
@@ -315,77 +389,221 @@ impl TrustDomainBridge {
 }
 
 /// Pre-built bridges for common trust domain patterns.
+///
+/// Each preset validates the Galois adjunction property at construction time
+/// using sample pairs derived from the named permission profiles.
+///
+/// The bridges use capability-level Heyting implication as the right adjoint (γ),
+/// ensuring the mathematical property `α(l) ≤ r ⟺ l ≤ γ(r)` holds for all
+/// permission lattice elements. The abstraction (α) restricts capabilities
+/// for the target domain, while the concretization (γ) computes the maximal
+/// source permissions consistent with a given target permission set.
 pub mod presets {
     use super::*;
-    use crate::CapabilityLevel;
+    use crate::heyting::HeytingAlgebra;
+
+    /// Named permission profiles used to generate verification samples.
+    ///
+    /// These five profiles span the lattice from top (permissive) to
+    /// near-bottom (restrictive), with intermediate points (default,
+    /// codegen, read_only) covering different capability regions.
+    fn sample_profiles() -> Vec<PermissionLattice> {
+        vec![
+            PermissionLattice::permissive(),
+            PermissionLattice::restrictive(),
+            PermissionLattice::codegen(),
+            PermissionLattice::read_only(),
+            PermissionLattice::default(),
+        ]
+    }
+
+    /// Generate verification sample pairs from named profiles.
+    ///
+    /// For each profile `p`, produces `(p, α(p))` so that verification
+    /// tests the closure-extensive property: `p ≤ γ(α(p))`.
+    fn verification_samples(
+        alpha: &(dyn Fn(&PermissionLattice) -> PermissionLattice + Send + Sync),
+    ) -> Vec<(PermissionLattice, PermissionLattice)> {
+        sample_profiles()
+            .into_iter()
+            .map(|p| {
+                let r = alpha(&p);
+                (p, r)
+            })
+            .collect()
+    }
+
+    /// Construct the Heyting right adjoint for a capability-level meet.
+    ///
+    /// Given a constant `c`, the right adjoint of `α(l) = l` with
+    /// `capabilities = l.capabilities.meet(c.capabilities)` is:
+    /// `γ(r) = r` with `capabilities = c.capabilities.implies(r.capabilities)`.
+    ///
+    /// This satisfies:
+    /// `l.caps.meet(c.caps) ≤ r.caps  ⟺  l.caps ≤ c.caps → r.caps`
+    ///
+    /// by the fundamental property of Heyting algebras.
+    fn capability_right_adjoint(
+        constant: &PermissionLattice,
+        r: &PermissionLattice,
+    ) -> PermissionLattice {
+        let mut result = r.clone();
+        result.capabilities = constant.capabilities.implies(&r.capabilities);
+        result
+    }
 
     /// Create a bridge for internal-to-external communication.
     ///
-    /// External domain gets network-only access, no filesystem.
-    pub fn internal_external(internal: &str, external: &str) -> TrustDomainBridge {
-        TrustDomainBridge::new(
+    /// **Abstraction (α)**: Restricts capabilities to network-only when
+    /// entering the external domain. Uses `meet` with the network-only profile.
+    ///
+    /// **Concretization (γ)**: Heyting right adjoint — computes the maximal
+    /// internal capability set consistent with a given external permission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GaloisVerificationError`] if the adjunction property fails
+    /// for any sample pair drawn from the named permission profiles.
+    pub fn internal_external(
+        internal: &str,
+        external: &str,
+    ) -> Result<TrustDomainBridge, GaloisVerificationError> {
+        let alpha = |p: &PermissionLattice| {
+            let mut result = p.clone();
+            result.capabilities = p
+                .capabilities
+                .meet(&PermissionLattice::network_only().capabilities);
+            result
+        };
+        let samples = verification_samples(&alpha);
+
+        TrustDomainBridge::new_verified(
             internal,
             external,
-            // To external: restrict to network-only
-            |p| p.meet(&PermissionLattice::network_only()),
-            // From external: block all filesystem access
-            |p| {
-                let mut restricted = p.clone();
-                restricted.capabilities.read_files = CapabilityLevel::Never;
-                restricted.capabilities.write_files = CapabilityLevel::Never;
-                restricted.capabilities.edit_files = CapabilityLevel::Never;
-                restricted.capabilities.run_bash = CapabilityLevel::Never;
-                restricted
+            // To external: restrict capabilities to network-only
+            |p: &PermissionLattice| {
+                let mut result = p.clone();
+                result.capabilities = p
+                    .capabilities
+                    .meet(&PermissionLattice::network_only().capabilities);
+                result
             },
+            // From external: Heyting right adjoint of capability meet
+            |r: &PermissionLattice| capability_right_adjoint(&PermissionLattice::network_only(), r),
+            &samples,
         )
     }
 
     /// Create a bridge for production-to-staging isolation.
     ///
-    /// Staging gets full capabilities, production restricts write operations.
-    pub fn production_staging(production: &str, staging: &str) -> TrustDomainBridge {
-        TrustDomainBridge::new(
+    /// **Abstraction (α)**: Identity — staging gets the same capabilities as
+    /// production (full access for testing).
+    ///
+    /// **Concretization (γ)**: Identity — since α is identity, γ must also be
+    /// identity for the adjunction to hold. The identity pair `(id, id)` is
+    /// trivially a Galois connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GaloisVerificationError`] if the adjunction property fails
+    /// for any sample pair drawn from the named permission profiles.
+    pub fn production_staging(
+        production: &str,
+        staging: &str,
+    ) -> Result<TrustDomainBridge, GaloisVerificationError> {
+        let alpha = |p: &PermissionLattice| p.clone();
+        let samples = verification_samples(&alpha);
+
+        TrustDomainBridge::new_verified(
             production,
             staging,
-            // To staging: allow full access (testing)
-            |p| p.clone(),
-            // From staging: restrict writes
-            |p| {
-                let mut restricted = p.clone();
-                restricted.capabilities.write_files = CapabilityLevel::Never;
-                restricted.capabilities.edit_files = CapabilityLevel::Never;
-                restricted.capabilities.git_push = CapabilityLevel::Never;
-                restricted.capabilities.create_pr = CapabilityLevel::Never;
-                restricted
-            },
+            // To staging: identity (full access for testing)
+            |p: &PermissionLattice| p.clone(),
+            // From staging: identity (right adjoint of identity is identity)
+            |r: &PermissionLattice| r.clone(),
+            &samples,
         )
     }
 
     /// Create a bridge for human-to-agent delegation.
     ///
-    /// Agents get reduced capabilities compared to human principals.
-    pub fn human_agent(human_domain: &str, agent_domain: &str) -> TrustDomainBridge {
-        TrustDomainBridge::new(
+    /// **Abstraction (α)**: Restricts capabilities to default level via `meet`.
+    ///
+    /// **Concretization (γ)**: Heyting right adjoint — computes the maximal
+    /// human capability set consistent with a given agent permission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GaloisVerificationError`] if the adjunction property fails
+    /// for any sample pair drawn from the named permission profiles.
+    pub fn human_agent(
+        human_domain: &str,
+        agent_domain: &str,
+    ) -> Result<TrustDomainBridge, GaloisVerificationError> {
+        let alpha = |p: &PermissionLattice| {
+            let mut result = p.clone();
+            result.capabilities = p
+                .capabilities
+                .meet(&PermissionLattice::default().capabilities);
+            result
+        };
+        let samples = verification_samples(&alpha);
+
+        TrustDomainBridge::new_verified(
             human_domain,
             agent_domain,
-            // To agent: apply default restrictions
-            |p| p.meet(&PermissionLattice::default()),
-            // From agent: trust nothing (agents can't elevate human permissions)
-            |_p| PermissionLattice::restrictive(),
+            // To agent: restrict capabilities to default level
+            |p: &PermissionLattice| {
+                let mut result = p.clone();
+                result.capabilities = p
+                    .capabilities
+                    .meet(&PermissionLattice::default().capabilities);
+                result
+            },
+            // From agent: Heyting right adjoint of capability meet
+            |r: &PermissionLattice| capability_right_adjoint(&PermissionLattice::default(), r),
+            &samples,
         )
     }
 
     /// Create a read-only bridge.
     ///
-    /// Target domain can only read, never write.
-    pub fn read_only(source: &str, target: &str) -> TrustDomainBridge {
-        TrustDomainBridge::new(
+    /// **Abstraction (α)**: Restricts capabilities to read-only via `meet`.
+    ///
+    /// **Concretization (γ)**: Heyting right adjoint — computes the maximal
+    /// source capability set consistent with a given target permission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GaloisVerificationError`] if the adjunction property fails
+    /// for any sample pair drawn from the named permission profiles.
+    pub fn read_only(
+        source: &str,
+        target: &str,
+    ) -> Result<TrustDomainBridge, GaloisVerificationError> {
+        let alpha = |p: &PermissionLattice| {
+            let mut result = p.clone();
+            result.capabilities = p
+                .capabilities
+                .meet(&PermissionLattice::read_only().capabilities);
+            result
+        };
+        let samples = verification_samples(&alpha);
+
+        TrustDomainBridge::new_verified(
             source,
             target,
-            // To target: read-only
-            |p| p.meet(&PermissionLattice::read_only()),
-            // From target: also read-only (symmetric)
-            |p| p.meet(&PermissionLattice::read_only()),
+            // To target: restrict capabilities to read-only
+            |p: &PermissionLattice| {
+                let mut result = p.clone();
+                result.capabilities = p
+                    .capabilities
+                    .meet(&PermissionLattice::read_only().capabilities);
+                result
+            },
+            // From target: Heyting right adjoint of capability meet
+            |r: &PermissionLattice| capability_right_adjoint(&PermissionLattice::read_only(), r),
+            &samples,
         )
     }
 }
@@ -572,7 +790,8 @@ mod tests {
 
     #[test]
     fn test_trust_domain_bridge_restriction() {
-        let bridge = presets::internal_external("spiffe://internal.corp", "spiffe://partner.org");
+        let bridge = presets::internal_external("spiffe://internal.corp", "spiffe://partner.org")
+            .expect("internal_external preset should satisfy Galois adjunction");
 
         let internal = PermissionLattice::permissive();
         let external = bridge.to_target(&internal);
@@ -586,30 +805,50 @@ mod tests {
 
     #[test]
     fn test_trust_domain_bridge_embedding() {
-        let bridge = presets::internal_external("spiffe://internal.corp", "spiffe://partner.org");
+        let bridge = presets::internal_external("spiffe://internal.corp", "spiffe://partner.org")
+            .expect("internal_external preset should satisfy Galois adjunction");
 
-        // External permissions coming in
+        // External permissions coming in (permissive external)
         let external = PermissionLattice::permissive();
         let internal = bridge.from_target(&external);
 
-        // Internal view should block filesystem
-        assert_eq!(internal.capabilities.read_files, CapabilityLevel::Never);
-        assert_eq!(internal.capabilities.write_files, CapabilityLevel::Never);
-        assert_eq!(internal.capabilities.run_bash, CapabilityLevel::Never);
+        // Heyting right adjoint: for capabilities where network_only constant is Never,
+        // implies(Never, Always) = Always (top). For capabilities where constant is
+        // LowRisk, implies(LowRisk, Always) = Always.
+        // So gamma(permissive) has all capabilities = Always.
+        assert_eq!(internal.capabilities.read_files, CapabilityLevel::Always);
+        assert_eq!(internal.capabilities.web_fetch, CapabilityLevel::Always);
+
+        // For a restrictive external, network capabilities at LowRisk:
+        // implies(LowRisk, Never) = Never (since LowRisk > Never)
+        let ext_restrictive = PermissionLattice::restrictive();
+        let int_from_restrictive = bridge.from_target(&ext_restrictive);
+        // Restrictive has web_fetch=Never, and network_only constant has web_fetch=LowRisk.
+        // implies(LowRisk, Never) = Never
+        assert_eq!(
+            int_from_restrictive.capabilities.web_fetch,
+            CapabilityLevel::Never
+        );
+        // implies(Never, Always) for read_files: restrictive has read_files=Always,
+        // network_only constant has read_files=Never, so implies(Never, Always) = Always
+        assert_eq!(
+            int_from_restrictive.capabilities.read_files,
+            CapabilityLevel::Always
+        );
     }
 
     #[test]
     fn test_bridge_chain_composition() {
         let mut chain = BridgeChain::new();
 
-        chain.add(presets::internal_external(
-            "spiffe://corp.internal",
-            "spiffe://dmz.corp",
-        ));
-        chain.add(presets::read_only(
-            "spiffe://dmz.corp",
-            "spiffe://partner.org",
-        ));
+        chain.add(
+            presets::internal_external("spiffe://corp.internal", "spiffe://dmz.corp")
+                .expect("internal_external preset should satisfy Galois adjunction"),
+        );
+        chain.add(
+            presets::read_only("spiffe://dmz.corp", "spiffe://partner.org")
+                .expect("read_only preset should satisfy Galois adjunction"),
+        );
 
         let perms = PermissionLattice::permissive();
         let final_perms = chain.translate_forward(&perms);
@@ -621,7 +860,8 @@ mod tests {
 
     #[test]
     fn test_round_trip_is_deflating() {
-        let bridge = presets::internal_external("spiffe://internal.corp", "spiffe://external.org");
+        let bridge = presets::internal_external("spiffe://internal.corp", "spiffe://external.org")
+            .expect("internal_external preset should satisfy Galois adjunction");
 
         let perms = PermissionLattice::permissive();
         let round_trip = bridge.round_trip(&perms);
@@ -633,17 +873,22 @@ mod tests {
     #[test]
     fn test_human_agent_bridge() {
         let bridge =
-            presets::human_agent("spiffe://corp/human/alice", "spiffe://corp/agent/coder-001");
+            presets::human_agent("spiffe://corp/human/alice", "spiffe://corp/agent/coder-001")
+                .expect("human_agent preset should satisfy Galois adjunction");
 
         let human_perms = PermissionLattice::permissive();
         let agent_perms = bridge.to_target(&human_perms);
 
-        // Agent should have default restrictions
-        assert!(agent_perms.leq(&human_perms));
+        // Agent should have default-level restrictions on capabilities
+        assert!(agent_perms.capabilities.leq(&human_perms.capabilities));
 
-        // Coming back from agent should be restrictive (agents can't elevate)
+        // Heyting right adjoint: gamma computes maximal human caps
+        // consistent with agent permissions. For default caps:
+        // - run_bash: default=Never, agent has run_bash=Never.
+        //   implies(Never, Never) = Always (since Never <= Never).
+        // So gamma inflates rather than restricts (proper right adjoint).
         let back = bridge.from_target(&agent_perms);
-        assert_eq!(back.description, "Restrictive permissions");
+        assert!(back.capabilities.read_files >= agent_perms.capabilities.read_files);
     }
 
     #[test]
@@ -723,14 +968,14 @@ mod tests {
     #[test]
     fn test_bridge_chain_compose_to_connection() {
         let mut chain = BridgeChain::new();
-        chain.add(presets::internal_external(
-            "spiffe://corp.internal",
-            "spiffe://dmz.corp",
-        ));
-        chain.add(presets::read_only(
-            "spiffe://dmz.corp",
-            "spiffe://partner.org",
-        ));
+        chain.add(
+            presets::internal_external("spiffe://corp.internal", "spiffe://dmz.corp")
+                .expect("internal_external preset should satisfy Galois adjunction"),
+        );
+        chain.add(
+            presets::read_only("spiffe://dmz.corp", "spiffe://partner.org")
+                .expect("read_only preset should satisfy Galois adjunction"),
+        );
 
         let perms = PermissionLattice::permissive();
         let expected = chain.translate_forward(&perms);
@@ -747,14 +992,14 @@ mod tests {
     #[test]
     fn test_translate_forward_audited() {
         let mut chain = BridgeChain::new();
-        chain.add(presets::internal_external(
-            "spiffe://corp.internal",
-            "spiffe://dmz.corp",
-        ));
-        chain.add(presets::read_only(
-            "spiffe://dmz.corp",
-            "spiffe://partner.org",
-        ));
+        chain.add(
+            presets::internal_external("spiffe://corp.internal", "spiffe://dmz.corp")
+                .expect("internal_external preset should satisfy Galois adjunction"),
+        );
+        chain.add(
+            presets::read_only("spiffe://dmz.corp", "spiffe://partner.org")
+                .expect("read_only preset should satisfy Galois adjunction"),
+        );
 
         let perms = PermissionLattice::permissive();
         let (result, report) = chain.translate_forward_audited(&perms);
@@ -775,14 +1020,14 @@ mod tests {
 
         // Result should match non-audited path
         let mut chain2 = BridgeChain::new();
-        chain2.add(presets::internal_external(
-            "spiffe://corp.internal",
-            "spiffe://dmz.corp",
-        ));
-        chain2.add(presets::read_only(
-            "spiffe://dmz.corp",
-            "spiffe://partner.org",
-        ));
+        chain2.add(
+            presets::internal_external("spiffe://corp.internal", "spiffe://dmz.corp")
+                .expect("internal_external preset should satisfy Galois adjunction"),
+        );
+        chain2.add(
+            presets::read_only("spiffe://dmz.corp", "spiffe://partner.org")
+                .expect("read_only preset should satisfy Galois adjunction"),
+        );
         let expected = chain2.translate_forward(&perms);
         assert_eq!(result.capabilities, expected.capabilities);
         assert_eq!(result.obligations, expected.obligations);
@@ -799,12 +1044,281 @@ mod tests {
     fn test_galois_closure_is_deflating() {
         // For a Galois connection, the closure γ ∘ α is deflationary
         // (round-trip loses information)
-        let bridge = presets::read_only("spiffe://source", "spiffe://target");
+        let bridge = presets::read_only("spiffe://source", "spiffe://target")
+            .expect("read_only preset should satisfy Galois adjunction");
 
         let perms = PermissionLattice::permissive();
         let round_trip = bridge.round_trip(&perms);
 
         // Closure should be ≤ original (in terms of capabilities)
         assert!(round_trip.capabilities.leq(&perms.capabilities));
+    }
+
+    // --- Preset verification tests ---
+
+    #[test]
+    fn test_preset_internal_external_constructs_successfully() {
+        let bridge = presets::internal_external("spiffe://internal.corp", "spiffe://partner.org");
+        assert!(
+            bridge.is_ok(),
+            "internal_external preset failed verification: {:?}",
+            bridge.err()
+        );
+    }
+
+    #[test]
+    fn test_preset_production_staging_constructs_successfully() {
+        let bridge =
+            presets::production_staging("spiffe://production.corp", "spiffe://staging.corp");
+        assert!(
+            bridge.is_ok(),
+            "production_staging preset failed verification: {:?}",
+            bridge.err()
+        );
+    }
+
+    #[test]
+    fn test_preset_human_agent_constructs_successfully() {
+        let bridge =
+            presets::human_agent("spiffe://corp/human/alice", "spiffe://corp/agent/coder-001");
+        assert!(
+            bridge.is_ok(),
+            "human_agent preset failed verification: {:?}",
+            bridge.err()
+        );
+    }
+
+    #[test]
+    fn test_preset_read_only_constructs_successfully() {
+        let bridge = presets::read_only("spiffe://source.corp", "spiffe://target.corp");
+        assert!(
+            bridge.is_ok(),
+            "read_only preset failed verification: {:?}",
+            bridge.err()
+        );
+    }
+
+    #[test]
+    fn test_preset_internal_external_verify_all_sample_pairs() {
+        let bridge = presets::internal_external("spiffe://internal.corp", "spiffe://partner.org")
+            .expect("preset should construct");
+
+        // Verify adjunction holds for all named profile pairs (p, α(p))
+        let profiles = [
+            PermissionLattice::permissive(),
+            PermissionLattice::restrictive(),
+            PermissionLattice::codegen(),
+            PermissionLattice::read_only(),
+            PermissionLattice::default(),
+        ];
+        for (i, p) in profiles.iter().enumerate() {
+            let alpha_p = bridge.to_target(p);
+            assert!(
+                bridge.verify(p, &alpha_p),
+                "internal_external adjunction failed for profile {} with (p, α(p)) pair",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_preset_production_staging_verify_all_sample_pairs() {
+        let bridge =
+            presets::production_staging("spiffe://production.corp", "spiffe://staging.corp")
+                .expect("preset should construct");
+
+        let profiles = [
+            PermissionLattice::permissive(),
+            PermissionLattice::restrictive(),
+            PermissionLattice::codegen(),
+            PermissionLattice::read_only(),
+            PermissionLattice::default(),
+        ];
+        for (i, p) in profiles.iter().enumerate() {
+            let alpha_p = bridge.to_target(p);
+            assert!(
+                bridge.verify(p, &alpha_p),
+                "production_staging adjunction failed for profile {} with (p, α(p)) pair",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_preset_human_agent_verify_all_sample_pairs() {
+        let bridge =
+            presets::human_agent("spiffe://corp/human/alice", "spiffe://corp/agent/coder-001")
+                .expect("preset should construct");
+
+        let profiles = [
+            PermissionLattice::permissive(),
+            PermissionLattice::restrictive(),
+            PermissionLattice::codegen(),
+            PermissionLattice::read_only(),
+            PermissionLattice::default(),
+        ];
+        for (i, p) in profiles.iter().enumerate() {
+            let alpha_p = bridge.to_target(p);
+            assert!(
+                bridge.verify(p, &alpha_p),
+                "human_agent adjunction failed for profile {} with (p, α(p)) pair",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_preset_read_only_verify_all_sample_pairs() {
+        let bridge = presets::read_only("spiffe://source.corp", "spiffe://target.corp")
+            .expect("preset should construct");
+
+        let profiles = [
+            PermissionLattice::permissive(),
+            PermissionLattice::restrictive(),
+            PermissionLattice::codegen(),
+            PermissionLattice::read_only(),
+            PermissionLattice::default(),
+        ];
+        for (i, p) in profiles.iter().enumerate() {
+            let alpha_p = bridge.to_target(p);
+            assert!(
+                bridge.verify(p, &alpha_p),
+                "read_only adjunction failed for profile {} with (p, α(p)) pair",
+                i
+            );
+        }
+    }
+
+    // --- Composable (Category) law tests ---
+
+    /// Helper: build a restricting endomorphism that meets with `read_only`.
+    fn read_only_endo() -> GaloisConnection<PermissionLattice, PermissionLattice> {
+        GaloisConnection::new(
+            |p: &PermissionLattice| p.meet(&PermissionLattice::read_only()),
+            |p: &PermissionLattice| p.clone(),
+        )
+    }
+
+    /// Helper: build a restricting endomorphism that meets with `network_only`.
+    fn network_only_endo() -> GaloisConnection<PermissionLattice, PermissionLattice> {
+        GaloisConnection::new(
+            |p: &PermissionLattice| p.meet(&PermissionLattice::network_only()),
+            |p: &PermissionLattice| p.clone(),
+        )
+    }
+
+    /// Helper: build an endomorphism that clears `run_bash`.
+    fn no_bash_endo() -> GaloisConnection<PermissionLattice, PermissionLattice> {
+        GaloisConnection::new(
+            |p: &PermissionLattice| {
+                let mut r = p.clone();
+                r.capabilities.run_bash = CapabilityLevel::Never;
+                r
+            },
+            |p: &PermissionLattice| p.clone(),
+        )
+    }
+
+    /// Pointwise security-field equality (ignores UUID/timestamp).
+    fn sec_eq(a: &PermissionLattice, b: &PermissionLattice) -> bool {
+        a.capabilities == b.capabilities && a.obligations == b.obligations && a.budget == b.budget
+    }
+
+    #[test]
+    fn test_composable_left_identity() {
+        // identity().then(f) behaves as f
+        let f = read_only_endo();
+        let id_then_f =
+            <GaloisConnection<PermissionLattice, PermissionLattice> as Composable>::identity()
+                .then(read_only_endo());
+
+        for p in &[
+            PermissionLattice::permissive(),
+            PermissionLattice::restrictive(),
+            PermissionLattice::codegen(),
+            PermissionLattice::default(),
+        ] {
+            let expected = f.abstract_to(p);
+            let actual = id_then_f.abstract_to(p);
+            assert!(
+                sec_eq(&expected, &actual),
+                "Left identity failed for α on profile {:?}",
+                p.description
+            );
+
+            let expected_gamma = f.concretize_from(p);
+            let actual_gamma = id_then_f.concretize_from(p);
+            assert!(
+                sec_eq(&expected_gamma, &actual_gamma),
+                "Left identity failed for γ on profile {:?}",
+                p.description
+            );
+        }
+    }
+
+    #[test]
+    fn test_composable_right_identity() {
+        // f.then(identity()) behaves as f
+        let f = read_only_endo();
+        let f_then_id = read_only_endo()
+            .then(
+                <GaloisConnection<PermissionLattice, PermissionLattice> as Composable>::identity(),
+            );
+
+        for p in &[
+            PermissionLattice::permissive(),
+            PermissionLattice::restrictive(),
+            PermissionLattice::codegen(),
+            PermissionLattice::default(),
+        ] {
+            let expected = f.abstract_to(p);
+            let actual = f_then_id.abstract_to(p);
+            assert!(
+                sec_eq(&expected, &actual),
+                "Right identity failed for α on profile {:?}",
+                p.description
+            );
+
+            let expected_gamma = f.concretize_from(p);
+            let actual_gamma = f_then_id.concretize_from(p);
+            assert!(
+                sec_eq(&expected_gamma, &actual_gamma),
+                "Right identity failed for γ on profile {:?}",
+                p.description
+            );
+        }
+    }
+
+    #[test]
+    fn test_composable_associativity() {
+        // (f.then(g)).then(h) behaves as f.then(g.then(h))
+        let left = read_only_endo()
+            .then(network_only_endo())
+            .then(no_bash_endo());
+        let right = read_only_endo().then(network_only_endo().then(no_bash_endo()));
+
+        for p in &[
+            PermissionLattice::permissive(),
+            PermissionLattice::restrictive(),
+            PermissionLattice::codegen(),
+            PermissionLattice::read_only(),
+            PermissionLattice::default(),
+        ] {
+            let l = left.abstract_to(p);
+            let r = right.abstract_to(p);
+            assert!(
+                sec_eq(&l, &r),
+                "Associativity failed for α on profile {:?}",
+                p.description
+            );
+
+            let lg = left.concretize_from(p);
+            let rg = right.concretize_from(p);
+            assert!(
+                sec_eq(&lg, &rg),
+                "Associativity failed for γ on profile {:?}",
+                p.description
+            );
+        }
     }
 }

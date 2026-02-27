@@ -160,12 +160,14 @@ fn example_galois_connections() {
 
     println!("A Galois connection (α, γ) satisfies: α(l) ≤ r  ⟺  l ≤ γ(r)\n");
 
-    // Create bridges for different trust domains
+    // Create bridges for different trust domains (now verified at construction)
     let internal_external =
-        presets::internal_external("spiffe://internal.corp", "spiffe://partner.org");
+        presets::internal_external("spiffe://internal.corp", "spiffe://partner.org")
+            .expect("internal_external bridge should satisfy Galois adjunction");
 
     let human_agent =
-        presets::human_agent("spiffe://corp/human/alice", "spiffe://corp/agent/coder-001");
+        presets::human_agent("spiffe://corp/human/alice", "spiffe://corp/agent/coder-001")
+            .expect("human_agent bridge should satisfy Galois adjunction");
 
     // Internal to external translation
     println!("Internal → External domain translation:");
