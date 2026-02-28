@@ -222,11 +222,18 @@ async fn try_svid_proof(cert_path: &PathBuf) -> Result<SandboxProof, SandboxProo
 
 /// Try to establish proof via SPIRE Workload API socket.
 ///
-/// This is a placeholder for when SPIRE agent is available. The socket
-/// path (typically a Unix domain socket) is kernel-enforced and only
-/// accessible from within the managed container.
+/// When the `spire` feature is enabled, this connects to the SPIRE Agent's
+/// Workload API and fetches a real X.509 SVID, extracting the authenticated
+/// SPIFFE ID. This is the production path — the SPIRE Agent attests the
+/// workload's identity through platform-specific attestors.
+///
+/// Without the `spire` feature, falls back to socket existence check only.
+#[cfg(feature = "spire")]
 async fn try_spire_proof(socket_path: &str) -> Result<SandboxProof, SandboxProofError> {
-    // Verify the socket exists and is accessible
+    use nucleus_identity::SpireCaClient;
+    use x509_parser::prelude::*;
+
+    // Verify the socket exists before attempting connection
     let path = std::path::Path::new(socket_path);
     if !path.exists() {
         return Err(SandboxProofError::CertReadError(format!(
@@ -234,13 +241,76 @@ async fn try_spire_proof(socket_path: &str) -> Result<SandboxProof, SandboxProof
         )));
     }
 
-    // The existence of the SPIRE Workload API socket at the expected path
-    // is itself a proof of sandbox — the socket is bind-mounted by the
-    // container runtime and the SPIRE Agent attests the container identity.
-    //
-    // Full SVID fetch would use the SPIFFE Workload API gRPC protocol,
-    // but socket existence + accessibility is sufficient for the sandbox gate.
-    // The actual SVID will be fetched later by the mTLS subsystem if needed.
+    // Normalize socket path to SPIFFE endpoint format (unix:<path>)
+    let endpoint = if socket_path.starts_with("unix:") {
+        socket_path.to_string()
+    } else {
+        format!("unix:{socket_path}")
+    };
+
+    info!(endpoint = %endpoint, "connecting to SPIRE Workload API for SVID fetch");
+
+    // Connect to SPIRE Agent and fetch SVID
+    let ca = SpireCaClient::connect_to(&endpoint).await.map_err(|e| {
+        SandboxProofError::CertReadError(format!("failed to connect to SPIRE Agent: {e}"))
+    })?;
+
+    let svid = ca.fetch_svid().await.map_err(|e| {
+        SandboxProofError::CertParseError(format!("failed to fetch SVID from SPIRE: {e}"))
+    })?;
+
+    let spiffe_id = svid.identity().to_spiffe_uri();
+    info!(spiffe_id = %spiffe_id, "SPIRE SVID fetched successfully");
+
+    // Check for attestation extension in the leaf certificate (Tier 1 upgrade)
+    let leaf_der = svid.leaf().der();
+    if let Ok((_, cert)) = X509Certificate::from_der(leaf_der) {
+        let attestation_oid =
+            oid_registry::Oid::from(&[1, 3, 6, 1, 4, 1, 57212, 1, 1]).expect("valid OID");
+
+        for ext in cert.extensions() {
+            if ext.oid == attestation_oid {
+                match nucleus_identity::LaunchAttestation::from_der(ext.value) {
+                    Ok(att) => {
+                        let att_info = crate::attestation::AttestationInfo::from(&att);
+                        return Ok(SandboxProof::Attested {
+                            spiffe_id,
+                            kernel_hash: att_info.kernel_hash,
+                            rootfs_hash: att_info.rootfs_hash,
+                            config_hash: att_info.config_hash,
+                        });
+                    }
+                    Err(e) => {
+                        warn!("SVID has attestation extension but failed to parse: {e}");
+                    }
+                }
+            }
+        }
+    }
+
+    // SVID without attestation extension → Tier 2
+    Ok(SandboxProof::SpiffeIdentity { spiffe_id })
+}
+
+/// Fallback when `spire` feature is not enabled.
+///
+/// Checks socket existence only. The SPIFFE ID is hardcoded because we
+/// cannot fetch a real SVID without the SPIRE client library.
+#[cfg(not(feature = "spire"))]
+async fn try_spire_proof(socket_path: &str) -> Result<SandboxProof, SandboxProofError> {
+    let path = std::path::Path::new(socket_path);
+    if !path.exists() {
+        return Err(SandboxProofError::CertReadError(format!(
+            "SPIRE socket not found: {socket_path}"
+        )));
+    }
+
+    warn!(
+        "SPIRE socket found at {socket_path} but `spire` feature is not enabled; \
+         using socket existence as proof without fetching a real SVID. \
+         Enable the `spire` feature for production use."
+    );
+
     let spiffe_id = "spiffe://nucleus.local/workload/tool-proxy".to_string();
     Ok(SandboxProof::SpiffeIdentity { spiffe_id })
 }

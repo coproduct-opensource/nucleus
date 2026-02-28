@@ -14,7 +14,7 @@ categories = ["cryptography", "network-programming"]
 [features]
 default = []
 # Enable SPIRE integration for production deployments
-spire = ["dep:spiffe"]
+spire = ["dep:spiffe", "dep:futures-util"]
 # Enable HTTP-based did:web resolution (requires network)
 resolver = ["dep:reqwest"]
 
@@ -53,6 +53,7 @@ reqwest = { workspace = true, features = ["rustls-tls-manual-roots", "json"], op
 
 # SPIRE integration (optional)
 spiffe = { version = "0.11", optional = true, features = ["workload-api-x509"] }
+futures-util = { version = "0.3", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

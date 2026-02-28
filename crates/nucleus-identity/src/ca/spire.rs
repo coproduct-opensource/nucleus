@@ -465,6 +465,102 @@ impl CaClient for SpireCaClient {
     }
 }
 
+impl SpireCaClient {
+    /// Runs an SVID rotation watcher that streams X.509 context updates from SPIRE.
+    ///
+    /// This uses the SPIRE Workload API's streaming interface to receive push
+    /// notifications when SVIDs are rotated, rather than polling. The watcher
+    /// invokes the provided callback with each new `WorkloadCertificate`.
+    ///
+    /// # Arguments
+    ///
+    /// * `on_update` - Callback invoked with each rotated SVID certificate.
+    ///   The callback receives the new `WorkloadCertificate` and can update
+    ///   caches, reload TLS configs, etc.
+    /// * `shutdown` - A `watch::Receiver<bool>` that signals when to stop.
+    ///   Send `true` to gracefully shut down the watcher.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use tokio::sync::watch;
+    ///
+    /// let ca = SpireCaClient::connect_env().await?;
+    /// let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    ///
+    /// tokio::spawn(async move {
+    ///     ca.run_svid_watcher(
+    ///         |cert| {
+    ///             println!("SVID rotated: {}", cert.identity().to_spiffe_uri());
+    ///         },
+    ///         shutdown_rx,
+    ///     ).await;
+    /// });
+    ///
+    /// // Later, to stop:
+    /// shutdown_tx.send(true).unwrap();
+    /// ```
+    pub async fn run_svid_watcher<F>(
+        &self,
+        on_update: F,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) where
+        F: Fn(WorkloadCertificate) + Send + Sync,
+    {
+        use futures_util::StreamExt;
+
+        let stream = match self.client.stream_x509_contexts().await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(error = %e, "failed to start SVID rotation stream; falling back to no-op");
+                return;
+            }
+        };
+
+        tokio::pin!(stream);
+
+        info!("SVID rotation watcher started");
+
+        loop {
+            tokio::select! {
+                item = stream.next() => {
+                    match item {
+                        Some(Ok(context)) => {
+                            if let Some(svid) = context.default_svid() {
+                                match self.convert_svid_to_workload_cert(svid) {
+                                    Ok(cert) => {
+                                        info!(
+                                            spiffe_id = %cert.identity().to_spiffe_uri(),
+                                            "SVID rotated via SPIRE stream"
+                                        );
+                                        on_update(cert);
+                                    }
+                                    Err(e) => {
+                                        warn!(error = %e, "failed to convert rotated SVID");
+                                    }
+                                }
+                            }
+                        }
+                        Some(Err(e)) => {
+                            warn!(error = %e, "SVID rotation stream error");
+                        }
+                        None => {
+                            info!("SVID rotation stream ended");
+                            break;
+                        }
+                    }
+                }
+                _ = shutdown.changed() => {
+                    if *shutdown.borrow() {
+                        info!("SVID rotation watcher shutting down");
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl std::fmt::Debug for SpireCaClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SpireCaClient")
