@@ -2191,6 +2191,7 @@ name = "nucleus-identity"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "chrono",
  "pem",
  "proptest",
@@ -2202,6 +2203,7 @@ dependencies = [
  "rustls-webpki 0.102.8",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "spiffe",
  "tempfile",
  "thiserror 2.0.18",

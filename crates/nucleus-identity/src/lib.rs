@@ -17,6 +17,8 @@
 //! - [`workload_api`] - Workload API server for VMs
 //! - [`did`] - W3C DID Document types for did:web method
 //! - [`did_binding`] - SPIFFE-DID binding proof types
+//! - [`did_crypto`] - JWS ES256 signing/verification and EC key extraction
+//! - [`did_builder`] - Higher-level DID document and binding proof builders
 
 pub mod attestation;
 pub mod ca;
@@ -24,6 +26,8 @@ pub mod certificate;
 pub mod csr;
 pub mod did;
 pub mod did_binding;
+pub mod did_builder;
+pub mod did_crypto;
 pub mod identity;
 pub mod manager;
 pub mod oid;
@@ -41,6 +45,11 @@ pub use certificate::{TrustBundle, WorkloadCertificate};
 pub use csr::{CertSign, CsrOptions};
 pub use did::{did_web_to_url, DidDocument, JsonWebKey, ServiceEndpoint, VerificationMethod};
 pub use did_binding::{BindingProof, BindingVerification, SpiffeDidBinding};
+pub use did_builder::{build_binding, build_did_document, extract_svid_material, SvidMaterial};
+pub use did_crypto::{
+    cert_fingerprint, chain_from_base64url, chain_to_base64url, extract_ec_p256_jwk,
+    jws_sign_es256, jws_verify_es256,
+};
 pub use identity::Identity;
 pub use manager::SecretManager;
 pub use session::{SessionId, SessionIdentity};
