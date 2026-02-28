@@ -21,6 +21,7 @@
 //! - [`did_builder`] - Higher-level DID document and binding proof builders
 //! - [`did_resolver`] - DID resolution trait and in-memory resolver
 //! - [`webfinger`] - WebFinger discovery protocol (RFC 7033)
+//! - [`dpop`] - OAuth2 DPoP proof-of-possession tokens (RFC 9449)
 
 pub mod attestation;
 pub mod ca;
@@ -31,6 +32,7 @@ pub mod did_binding;
 pub mod did_builder;
 pub mod did_crypto;
 pub mod did_resolver;
+pub mod dpop;
 pub mod identity;
 pub mod manager;
 pub mod oid;
@@ -59,6 +61,7 @@ pub use did_crypto::{
 #[cfg(feature = "resolver")]
 pub use did_resolver::HttpDidResolver;
 pub use did_resolver::{CachingDidResolver, DidResolver, InMemoryDidResolver};
+pub use dpop::{DpopClaims, DpopHeader, DpopProofBuilder, DpopVerifier};
 pub use identity::Identity;
 pub use manager::SecretManager;
 pub use session::{SessionId, SessionIdentity};
