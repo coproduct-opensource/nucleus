@@ -26,7 +26,6 @@ from __future__ import annotations
 import os
 import sys
 import textwrap
-import time
 import yaml
 
 from nucleus_sdk import Nucleus, Intent
@@ -124,6 +123,19 @@ def _researcher_spec() -> str:
     return yaml.dump(pod.to_dict(), default_flow_style=False)
 
 
+def _researcher_spec_local() -> str:
+    """Sub-pod for research on local driver (no network config)."""
+    pod = PodSpec(
+        work_dir=".",
+        timeout_seconds=300,
+        profile="web_research",
+        labels={"role": "researcher", "parent": "orchestrator", "fallback": "local"},
+        task="Research best practices for error handling in async runtimes.",
+        budget_max_usd=0.10,
+    )
+    return yaml.dump(pod.to_dict(), default_flow_style=False)
+
+
 # ---------------------------------------------------------------------------
 # Main demo
 # ---------------------------------------------------------------------------
@@ -199,12 +211,13 @@ def main() -> None:
     work_dir = os.getcwd()
     sub_pods: list[str] = []
 
-    for name, spec_yaml in [
-        ("codegen-worker", _codegen_spec(work_dir)),
-        ("reviewer", _reviewer_spec(work_dir)),
-        ("researcher", _researcher_spec()),
+    for name, spec_fn in [
+        ("codegen-worker", lambda: _codegen_spec(work_dir)),
+        ("reviewer", lambda: _reviewer_spec(work_dir)),
+        ("researcher", _researcher_spec),
     ]:
         step(f"Creating sub-pod: {name}")
+        spec_yaml = spec_fn()
         print(textwrap.indent(spec_yaml, "    "))
         try:
             result = proxy.create_pod(
@@ -221,7 +234,21 @@ def main() -> None:
                 pretty_caps("requested", yaml.safe_load(spec_yaml).get("spec", {}).get("policy", {}).get("name", "?"))
                 pretty_caps("effective (clamped)", effective)
         except NucleusError as exc:
-            print(f"  Pod creation result: {exc}")
+            if name == "researcher" and "firecracker" in str(exc).lower():
+                print(f"  Network policy rejected (local driver); retrying without network config...")
+                spec_yaml = _researcher_spec_local()
+                try:
+                    result = proxy.create_pod(
+                        spec_yaml=spec_yaml,
+                        reason=f"Delegation forest demo -- {name} (local fallback)",
+                    )
+                    pod_id = result.get("pod_id", result.get("id", "unknown"))
+                    sub_pods.append(str(pod_id))
+                    print(f"  Created pod_id={pod_id} (local fallback, no network)")
+                except NucleusError as retry_exc:
+                    print(f"  Pod creation result (retry): {retry_exc}")
+            else:
+                print(f"  Pod creation result: {exc}")
 
     # ------------------------------------------------------------------
     # 5. List and inspect sub-pods
@@ -230,10 +257,8 @@ def main() -> None:
     step("Listing all managed pods...")
     try:
         pods = proxy.list_pods()
-        for pod in pods.get("pods", [pods]):
-            pid = pod.get("pod_id", pod.get("id", "?"))
-            state = pod.get("state", pod.get("status", "?"))
-            print(f"  pod_id={pid}  state={state}")
+        for pod in pods:
+            print(f"  pod_id={pod.id}  state={pod.state}")
     except NucleusError as exc:
         print(f"  list_pods result: {exc}")
 

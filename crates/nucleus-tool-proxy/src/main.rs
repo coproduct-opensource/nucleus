@@ -30,6 +30,8 @@ use tracing::{info, warn};
 mod attestation;
 mod auth;
 mod exit_report;
+#[cfg(feature = "mcp")]
+mod mcp;
 mod mtls;
 mod node_client;
 mod policy;
@@ -70,14 +72,14 @@ struct Args {
     #[arg(
         long,
         env = "NUCLEUS_TOOL_PROXY_AUTH_MAX_SKEW_SECS",
-        default_value_t = 60
+        default_value_t = 30
     )]
     auth_max_skew_secs: u64,
     /// Audit log path.
     #[arg(
         long,
         env = "NUCLEUS_TOOL_PROXY_AUDIT_LOG",
-        default_value = "/tmp/nucleus-audit.log"
+        default_value = "/var/log/nucleus/audit.log"
     )]
     audit_log: PathBuf,
     /// Optional audit log signing secret (defaults to auth secret if omitted).
@@ -94,14 +96,14 @@ struct Args {
     #[arg(
         long,
         env = "NUCLEUS_TOOL_PROXY_WEB_FETCH_TIMEOUT_SECS",
-        default_value_t = 30
+        default_value_t = 15
     )]
     web_fetch_timeout_secs: u64,
     /// Maximum response body size in bytes for web fetch.
     #[arg(
         long,
         env = "NUCLEUS_TOOL_PROXY_WEB_FETCH_MAX_BYTES",
-        default_value_t = 10 * 1024 * 1024
+        default_value_t = 5 * 1024 * 1024
     )]
     web_fetch_max_bytes: usize,
     /// Require attestation for all requests.
@@ -209,18 +211,25 @@ struct Args {
     /// in the NUCLEUS_APPROVAL_BUNDLE environment variable.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_REQUIRE_APPROVAL_BUNDLE")]
     require_approval_bundle: bool,
+
+    // === MCP Server Mode ===
+    /// Run as an MCP (Model Context Protocol) server on stdio instead of HTTP.
+    /// Mutually exclusive with the HTTP server.
+    #[cfg(feature = "mcp")]
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_MCP")]
+    mcp: bool,
 }
 
 #[derive(Clone)]
-struct AppState {
-    runtime: Arc<PodRuntime>,
+pub(crate) struct AppState {
+    pub(crate) runtime: Arc<PodRuntime>,
     approvals: Arc<ApprovalRegistry>,
     audit: Arc<AuditLog>,
     auth: AuthConfig,
     approval_auth: AuthConfig,
     approval_nonces: Arc<ApprovalNonceCache>,
     approval_rate_limiter: Arc<ApprovalRateLimiter>,
-    web_client: reqwest::Client,
+    pub(crate) web_client: reqwest::Client,
     web_fetch_max_bytes: usize,
     dns_allow: Vec<String>,
     attestation_verifier: AttestationVerifier,
@@ -1008,6 +1017,22 @@ async fn main() -> Result<(), ApiError> {
         PolicyEngine::disabled()
     };
 
+    if args.zero_prompt && !args.mtls {
+        return Err(ApiError::Spec(
+            "--zero-prompt requires --mtls for identity-based authorization".to_string(),
+        ));
+    }
+
+    if args.require_attestation
+        && args.allowed_kernel_hashes.is_none()
+        && args.allowed_rootfs_hashes.is_none()
+    {
+        warn!(
+            "attestation required but no kernel/rootfs hash whitelist configured; \
+             any attested VM will be accepted"
+        );
+    }
+
     // Build node client for pod management (orchestrator mode)
     let node_client = if args.enable_pod_mgmt {
         let node_url = args.node_url.as_deref().unwrap_or("http://127.0.0.1:3000");
@@ -1066,6 +1091,12 @@ async fn main() -> Result<(), ApiError> {
 
     if let Err(err) = emit_boot_report(&state).await {
         warn!("failed to emit boot report: {err}");
+    }
+
+    // MCP server mode: serve Model Context Protocol over stdio instead of HTTP.
+    #[cfg(feature = "mcp")]
+    if args.mcp {
+        return mcp::run_mcp_server(Arc::new(state)).await;
     }
 
     let mut app = Router::new()

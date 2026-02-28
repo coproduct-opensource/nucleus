@@ -18,6 +18,7 @@ use nucleus_spec::NetworkSpec;
 use nucleus_spec::PodSpec;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
+#[cfg(any(feature = "local-driver", target_os = "linux"))]
 use tokio::process::Command;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
@@ -64,9 +65,11 @@ struct Args {
     )]
     driver: DriverKind,
     /// Allow the local driver (no VM isolation).
+    #[cfg(feature = "local-driver")]
     #[arg(long, env = "NUCLEUS_ALLOW_LOCAL_DRIVER", default_value_t = false)]
     allow_local_driver: bool,
     /// Path to the nucleus-tool-proxy binary (local driver).
+    #[cfg(feature = "local-driver")]
     #[arg(
         long,
         env = "NUCLEUS_TOOL_PROXY_PATH",
@@ -116,7 +119,7 @@ struct Args {
     #[arg(long, env = "NUCLEUS_NODE_AUTH_SECRET")]
     auth_secret: String,
     /// Maximum allowed clock skew (seconds) for signed requests.
-    #[arg(long, env = "NUCLEUS_NODE_AUTH_MAX_SKEW_SECS", default_value_t = 60)]
+    #[arg(long, env = "NUCLEUS_NODE_AUTH_MAX_SKEW_SECS", default_value_t = 30)]
     auth_max_skew_secs: u64,
     /// Shared secret for signing tool-proxy requests from the host.
     #[arg(long, env = "NUCLEUS_NODE_PROXY_AUTH_SECRET")]
@@ -208,6 +211,7 @@ struct Args {
 
 #[derive(Clone, Debug, ValueEnum)]
 enum DriverKind {
+    #[cfg(feature = "local-driver")]
     Local,
     Firecracker,
     Container,
@@ -218,6 +222,7 @@ struct NodeState {
     pods: Arc<Mutex<HashMap<Uuid, Arc<PodHandle>>>>,
     state_dir: PathBuf,
     driver: DriverKind,
+    #[cfg(feature = "local-driver")]
     tool_proxy_path: PathBuf,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     firecracker_path: PathBuf,
@@ -233,6 +238,7 @@ struct NodeState {
     network_allocator: Arc<net::NetworkAllocator>,
     auth: AuthConfig,
     /// Node HTTP listen address (for orchestrator pod management back-references).
+    #[cfg(feature = "local-driver")]
     listen_addr: String,
     proxy_auth_secret: String,
     proxy_approval_secret: String,
@@ -275,12 +281,14 @@ struct PodHandle {
 
 #[derive(Debug)]
 enum DriverState {
+    #[cfg(feature = "local-driver")]
     Local(Box<LocalPod>),
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Firecracker(Box<FirecrackerPod>),
     Container(Box<ContainerPod>),
 }
 
+#[cfg(feature = "local-driver")]
 #[derive(Debug)]
 struct LocalPod {
     child: Mutex<tokio::process::Child>,
@@ -415,6 +423,7 @@ async fn main() -> Result<(), ApiError> {
 
     let args = Args::parse();
     tokio::fs::create_dir_all(&args.state_dir).await?;
+    #[cfg(feature = "local-driver")]
     if matches!(args.driver, DriverKind::Local) && !args.allow_local_driver {
         return Err(ApiError::Driver(
             "local driver disabled; pass --allow-local-driver to run without VM isolation"
@@ -515,6 +524,7 @@ async fn main() -> Result<(), ApiError> {
         pods: Arc::new(Mutex::new(HashMap::new())),
         state_dir: args.state_dir.clone(),
         driver: args.driver.clone(),
+        #[cfg(feature = "local-driver")]
         tool_proxy_path: args.tool_proxy_path.clone(),
         firecracker_path: args.firecracker_path.clone(),
         firecracker_pool: build_firecracker_pool(&args),
@@ -528,6 +538,7 @@ async fn main() -> Result<(), ApiError> {
             args.auth_secret.as_bytes(),
             Duration::from_secs(args.auth_max_skew_secs),
         ),
+        #[cfg(feature = "local-driver")]
         listen_addr: args.listen.clone(),
         proxy_auth_secret: args.proxy_auth_secret.clone(),
         proxy_approval_secret: args.proxy_approval_secret.clone(),
@@ -857,6 +868,7 @@ async fn create_pod_internal(
     tokio::fs::create_dir_all(&pod_dir).await?;
 
     let (driver_state, proxy_addr, log_path) = match state.driver {
+        #[cfg(feature = "local-driver")]
         DriverKind::Local => spawn_local_pod(state, &pod_dir, &spec, id).await?,
         DriverKind::Firecracker => spawn_firecracker_pod(state, &pod_dir, &spec, id).await?,
         DriverKind::Container => spawn_container_pod(state, &pod_dir, &spec, id).await?,
@@ -936,6 +948,7 @@ impl PodHandle {
 
     async fn status(&self) -> PodState {
         match &self.driver_state {
+            #[cfg(feature = "local-driver")]
             DriverState::Local(local) => local.status().await,
             DriverState::Firecracker(firecracker) => firecracker.status().await,
             DriverState::Container(container) => container.status().await,
@@ -944,6 +957,7 @@ impl PodHandle {
 
     async fn cancel(&self) -> Result<(), ApiError> {
         match &self.driver_state {
+            #[cfg(feature = "local-driver")]
             DriverState::Local(local) => local.cancel().await,
             DriverState::Firecracker(firecracker) => firecracker.cancel().await,
             DriverState::Container(container) => container.cancel().await,
@@ -952,6 +966,7 @@ impl PodHandle {
 
     async fn cleanup_after_exit(&self) {
         match &self.driver_state {
+            #[cfg(feature = "local-driver")]
             DriverState::Local(local) => local.cleanup().await,
             DriverState::Firecracker(firecracker) => firecracker.cleanup().await,
             DriverState::Container(container) => container.cleanup().await,
@@ -959,6 +974,7 @@ impl PodHandle {
     }
 }
 
+#[cfg(feature = "local-driver")]
 impl LocalPod {
     async fn status(&self) -> PodState {
         let mut child = self.child.lock().await;
@@ -1148,6 +1164,7 @@ impl ContainerPod {
     }
 }
 
+#[cfg(feature = "local-driver")]
 async fn spawn_local_pod(
     state: &NodeState,
     pod_dir: &Path,
@@ -2071,6 +2088,7 @@ async fn cleanup_net_resources(
     }
 }
 
+#[cfg(feature = "local-driver")]
 async fn wait_for_announce(
     announce_path: &Path,
     child: &mut tokio::process::Child,
