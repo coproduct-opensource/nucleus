@@ -296,6 +296,67 @@ impl Identity {
     pub fn is_in_trust_domain(&self, trust_domain: &str) -> bool {
         self.trust_domain == trust_domain
     }
+
+    /// Convert this SPIFFE identity to a `did:web` identifier.
+    ///
+    /// The mapping is deterministic and injective: the service account becomes
+    /// the subdomain of the trust domain.
+    ///
+    /// ```text
+    /// spiffe://groundtruth.dev/ns/apps/sa/music-app  →  did:web:music-app.groundtruth.dev
+    /// ```
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nucleus_identity::Identity;
+    ///
+    /// let id = Identity::new("groundtruth.dev", "apps", "music-app");
+    /// assert_eq!(id.to_did_web(), "did:web:music-app.groundtruth.dev");
+    /// ```
+    pub fn to_did_web(&self) -> String {
+        format!("did:web:{}.{}", self.service_account, self.trust_domain)
+    }
+
+    /// Parse a `did:web` identifier back to a SPIFFE identity.
+    ///
+    /// The first subdomain label is the service account, the remainder
+    /// is the trust domain.
+    ///
+    /// ```text
+    /// did:web:music-app.groundtruth.dev  →  spiffe://groundtruth.dev/ns/{namespace}/sa/music-app
+    /// ```
+    ///
+    /// # Arguments
+    ///
+    /// * `did` - The `did:web` identifier to parse.
+    /// * `namespace` - The SPIFFE namespace (cannot be inferred from the DID).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the DID doesn't start with `did:web:` or has
+    /// no subdomain separator.
+    pub fn from_did_web(did: &str, namespace: &str) -> Result<Self> {
+        let method_specific = did
+            .strip_prefix("did:web:")
+            .ok_or_else(|| Error::InvalidSpiffeUri("DID must start with did:web:".into()))?;
+
+        let dot_pos = method_specific.find('.').ok_or_else(|| {
+            Error::InvalidSpiffeUri("did:web must have subdomain.domain format".into())
+        })?;
+
+        let app_name = &method_specific[..dot_pos];
+        let trust_domain = &method_specific[dot_pos + 1..];
+
+        if app_name.is_empty() {
+            return Err(Error::InvalidSpiffeUri("empty subdomain in did:web".into()));
+        }
+        if trust_domain.is_empty() {
+            return Err(Error::InvalidSpiffeUri("empty domain in did:web".into()));
+        }
+
+        Self::try_new(trust_domain, namespace, app_name)
+    }
 }
 
 impl fmt::Display for Identity {
@@ -449,5 +510,64 @@ mod tests {
         set.insert(Identity::new("nucleus.local", "default", "my-service"));
         set.insert(Identity::new("nucleus.local", "default", "my-service"));
         assert_eq!(set.len(), 1);
+    }
+
+    // ── did:web mapping ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_to_did_web() {
+        let id = Identity::new("groundtruth.dev", "apps", "music-app");
+        assert_eq!(id.to_did_web(), "did:web:music-app.groundtruth.dev");
+    }
+
+    #[test]
+    fn test_to_did_web_complex_domain() {
+        let id = Identity::new("cluster-1.nucleus.example.com", "prod", "api-server");
+        assert_eq!(
+            id.to_did_web(),
+            "did:web:api-server.cluster-1.nucleus.example.com"
+        );
+    }
+
+    #[test]
+    fn test_from_did_web() {
+        let id = Identity::from_did_web("did:web:music-app.groundtruth.dev", "apps").unwrap();
+        assert_eq!(id.trust_domain(), "groundtruth.dev");
+        assert_eq!(id.namespace(), "apps");
+        assert_eq!(id.service_account(), "music-app");
+    }
+
+    #[test]
+    fn test_from_did_web_complex_domain() {
+        let id = Identity::from_did_web("did:web:api-server.cluster-1.nucleus.example.com", "prod")
+            .unwrap();
+        assert_eq!(id.trust_domain(), "cluster-1.nucleus.example.com");
+        assert_eq!(id.service_account(), "api-server");
+    }
+
+    #[test]
+    fn test_did_web_roundtrip() {
+        let original = Identity::new("groundtruth.dev", "apps", "music-app");
+        let did = original.to_did_web();
+        let parsed = Identity::from_did_web(&did, "apps").unwrap();
+        assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn test_from_did_web_invalid_prefix() {
+        let err = Identity::from_did_web("did:key:abc123", "default").unwrap_err();
+        assert!(matches!(err, Error::InvalidSpiffeUri(_)));
+    }
+
+    #[test]
+    fn test_from_did_web_no_subdomain() {
+        let err = Identity::from_did_web("did:web:example", "default").unwrap_err();
+        assert!(matches!(err, Error::InvalidSpiffeUri(_)));
+    }
+
+    #[test]
+    fn test_from_did_web_empty_subdomain() {
+        let err = Identity::from_did_web("did:web:.example.com", "default").unwrap_err();
+        assert!(matches!(err, Error::InvalidSpiffeUri(_)));
     }
 }

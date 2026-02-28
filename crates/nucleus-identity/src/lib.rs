@@ -15,11 +15,15 @@
 //! - [`verifier`] - SPIFFE-aware mTLS verification
 //! - [`ca`] - CA client trait and implementations (self-signed, SPIRE)
 //! - [`workload_api`] - Workload API server for VMs
+//! - [`did`] - W3C DID Document types for did:web method
+//! - [`did_binding`] - SPIFFE-DID binding proof types
 
 pub mod attestation;
 pub mod ca;
 pub mod certificate;
 pub mod csr;
+pub mod did;
+pub mod did_binding;
 pub mod identity;
 pub mod manager;
 pub mod oid;
@@ -35,6 +39,8 @@ pub use ca::{auto_detect_ca, SpireCaClient, DEFAULT_SPIRE_SOCKET, SPIFFE_ENDPOIN
 pub use ca::{CaClient, SelfSignedCa};
 pub use certificate::{TrustBundle, WorkloadCertificate};
 pub use csr::{CertSign, CsrOptions};
+pub use did::{did_web_to_url, DidDocument, JsonWebKey, ServiceEndpoint, VerificationMethod};
+pub use did_binding::{BindingProof, BindingVerification, SpiffeDidBinding};
 pub use identity::Identity;
 pub use manager::SecretManager;
 pub use session::{SessionId, SessionIdentity};

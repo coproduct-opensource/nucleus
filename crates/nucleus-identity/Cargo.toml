@@ -37,7 +37,7 @@ serde_json = { workspace = true }
 webpki = { package = "rustls-webpki", version = "0.102" }
 
 # Utils
-chrono = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
 pem = "3"
 time = "0.3"
 thiserror = { workspace = true }
