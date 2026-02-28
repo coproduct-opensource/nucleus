@@ -21,6 +21,9 @@ cel = ["dep:cel-interpreter"]
 # Policy specification loading (YAML/TOML)
 spec = ["dep:serde_yaml", "dep:toml", "serde", "cel"]
 
+# Webhook audit backend for SIEM delivery
+webhook = ["dep:reqwest", "dep:tokio", "serde"]
+
 # SECURITY: Enable this feature ONLY for testing. It exposes methods that
 # bypass security constraints (e.g., disabling trifecta enforcement).
 # DO NOT enable in production builds.
@@ -53,6 +56,10 @@ cel-interpreter = { version = "0.10", optional = true }
 # Policy specification parsing (optional)
 serde_yaml = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }
+
+# Webhook audit backend (optional)
+reqwest = { workspace = true, features = ["json", "rustls-tls-manual-roots"], optional = true }
+tokio = { workspace = true, features = ["rt"], optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

@@ -243,6 +243,132 @@ impl AuditBackend for FileAuditBackend {
     }
 }
 
+/// Webhook audit backend that POSTs each entry as JSON with HMAC-SHA256 signature.
+///
+/// Delivery is fire-and-forget via `tokio::spawn`. The backend never blocks the
+/// caller — if the webhook is down, entries are logged to stderr and dropped.
+///
+/// The `X-Nucleus-Signature` header carries `HMAC-SHA256(body, secret)` for SIEM
+/// receivers to verify authenticity.
+#[cfg(feature = "webhook")]
+#[derive(Debug)]
+pub struct WebhookAuditBackend {
+    url: String,
+    client: reqwest::Client,
+    secret: Vec<u8>,
+}
+
+#[cfg(feature = "webhook")]
+impl WebhookAuditBackend {
+    /// Create a new webhook backend.
+    ///
+    /// `url` is the SIEM/alerting endpoint. `secret` is used for HMAC signing.
+    pub fn new(url: impl Into<String>, secret: impl Into<Vec<u8>>) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("failed to build webhook HTTP client");
+        Self {
+            url: url.into(),
+            client,
+            secret: secret.into(),
+        }
+    }
+
+    fn hmac_hex(&self, message: &[u8]) -> String {
+        let mut mac =
+            HmacSha256::new_from_slice(&self.secret).expect("HMAC key length is always valid");
+        mac.update(message);
+        hex::encode(mac.finalize().into_bytes())
+    }
+}
+
+#[cfg(feature = "webhook")]
+impl AuditBackend for WebhookAuditBackend {
+    fn append(&mut self, entry: &AuditEntry) -> Result<(), AuditBackendError> {
+        let body = serde_json::to_string(entry)
+            .map_err(|e| AuditBackendError::Serialization(e.to_string()))?;
+        let signature = self.hmac_hex(body.as_bytes());
+
+        let url = self.url.clone();
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            let result = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .header("X-Nucleus-Signature", &signature)
+                .body(body)
+                .send()
+                .await;
+            if let Err(e) = result {
+                eprintln!("audit webhook delivery failed: {e}");
+            }
+        });
+        Ok(())
+    }
+
+    fn load_all(&self) -> Result<Vec<AuditEntry>, AuditBackendError> {
+        // Webhook is write-only; cannot recover entries from a SIEM.
+        Ok(Vec::new())
+    }
+
+    fn count(&self) -> Result<usize, AuditBackendError> {
+        Ok(0)
+    }
+}
+
+/// Composite backend that fans out `append()` to multiple underlying backends.
+///
+/// Use this to write simultaneously to a file and a webhook, for example.
+/// Errors from individual backends are logged but do not block other backends.
+#[derive(Debug)]
+pub struct CompositeAuditBackend {
+    backends: Vec<Box<dyn AuditBackend>>,
+}
+
+impl CompositeAuditBackend {
+    /// Create a composite from multiple backends.
+    pub fn new(backends: Vec<Box<dyn AuditBackend>>) -> Self {
+        Self { backends }
+    }
+}
+
+impl AuditBackend for CompositeAuditBackend {
+    fn append(&mut self, entry: &AuditEntry) -> Result<(), AuditBackendError> {
+        let mut first_error = None;
+        for backend in &mut self.backends {
+            if let Err(e) = backend.append(entry) {
+                eprintln!("composite backend append failed: {e}");
+                if first_error.is_none() {
+                    first_error = Some(e);
+                }
+            }
+        }
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    fn load_all(&self) -> Result<Vec<AuditEntry>, AuditBackendError> {
+        for backend in &self.backends {
+            let entries = backend.load_all()?;
+            if !entries.is_empty() {
+                return Ok(entries);
+            }
+        }
+        Ok(Vec::new())
+    }
+
+    fn count(&self) -> Result<usize, AuditBackendError> {
+        self.backends
+            .iter()
+            .map(|b| b.count().unwrap_or(0))
+            .max()
+            .ok_or_else(|| AuditBackendError::Io(std::io::Error::other("no backends")))
+    }
+}
+
 /// Load entries from a file backend, recovering state for an `AuditLog`.
 ///
 /// This is useful for restarting a service and restoring the in-memory log
@@ -373,6 +499,40 @@ mod tests {
         // Recover via convenience function
         let entries = recover_from_file(&path, secret).unwrap();
         assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn test_composite_backend_fans_out() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path_a = dir.path().join("audit_a.jsonl");
+        let path_b = dir.path().join("audit_b.jsonl");
+
+        let backend_a = Box::new(FileAuditBackend::new(&path_a, b"secret".as_slice()));
+        let backend_b = Box::new(FileAuditBackend::new(&path_b, b"secret".as_slice()));
+        let mut composite = CompositeAuditBackend::new(vec![backend_a, backend_b]);
+
+        composite.append(&make_entry(1, "agent-1")).unwrap();
+        composite.append(&make_entry(2, "agent-2")).unwrap();
+
+        // Both files should have 2 entries
+        let reader_a = FileAuditBackend::new(&path_a, b"secret".as_slice());
+        let reader_b = FileAuditBackend::new(&path_b, b"secret".as_slice());
+        assert_eq!(reader_a.count().unwrap(), 2);
+        assert_eq!(reader_b.count().unwrap(), 2);
+
+        // load_all returns from first backend with entries
+        let loaded = composite.load_all().unwrap();
+        assert_eq!(loaded.len(), 2);
+
+        // count returns max
+        assert_eq!(composite.count().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_composite_backend_empty() {
+        let composite = CompositeAuditBackend::new(vec![]);
+        assert!(composite.load_all().unwrap().is_empty());
+        assert!(composite.count().is_err()); // no backends
     }
 
     #[test]

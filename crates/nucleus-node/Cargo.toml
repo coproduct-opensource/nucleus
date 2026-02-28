@@ -15,6 +15,11 @@ categories = ["network-programming", "development-tools"]
 name = "nucleus-node"
 path = "src/main.rs"
 
+[features]
+default = []
+# Enable local driver (no VM isolation). DO NOT enable in production.
+local-driver = []
+
 [dependencies]
 axum = { workspace = true }
 clap = { workspace = true }

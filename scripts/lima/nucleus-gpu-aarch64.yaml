@@ -1,0 +1,106 @@
+# Lima VM template for Nucleus on Apple Silicon — GPU workloads
+#
+# NOTE: Apple Virtualization.framework does NOT support GPU passthrough.
+# This template provides increased resources for CPU-bound AI workloads
+# and is prepared for future Lima GPU support.
+#
+# For GPU compute, use the x86_64 template with VFIO passthrough on
+# a Linux host with a discrete NVIDIA GPU.
+#
+# Usage:
+#   limactl create --name nucleus-gpu nucleus-gpu-aarch64.yaml
+#   limactl start nucleus-gpu
+
+# Ubuntu 24.04 LTS cloud image for ARM64
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+
+# Increased resources for AI/GPU workloads
+cpus: 8
+memory: "16GiB"
+disk: "100GiB"
+
+# Use Apple Virtualization.framework for native performance
+vmType: "vz"
+
+# Enable Rosetta for running x86_64 binaries
+rosetta:
+  enabled: true
+  binfmt: true
+
+# Nested virtualization for Firecracker/KVM
+nestedVirtualization: true
+
+# Mount the host filesystem read-only by default
+mounts:
+  - location: "~"
+    writable: false
+  - location: "/tmp/lima"
+    writable: true
+
+# Port forwarding for nucleus services
+portForwards:
+  - guestPort: 8080
+    hostPort: 8080
+  - guestPort: 9080
+    hostPort: 9080
+  - guestPort: 4002
+    hostPort: 4002
+
+# Provision the VM with required packages
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -euo pipefail
+
+      apt-get update
+      apt-get install -y \
+        ca-certificates \
+        curl \
+        iptables \
+        iproute2 \
+        dnsmasq \
+        e2fsprogs
+
+      mkdir -p /var/lib/nucleus/artifacts
+      mkdir -p /var/lib/nucleus/pods
+      mkdir -p /var/log/nucleus
+
+      # Download Firecracker if not present
+      if [ ! -f /usr/local/bin/firecracker ]; then
+        FIRECRACKER_VERSION="v1.14.0"
+        curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/${FIRECRACKER_VERSION}/firecracker-${FIRECRACKER_VERSION}-aarch64.tgz" | \
+          tar -xz -C /tmp
+        mv /tmp/release-${FIRECRACKER_VERSION}-aarch64/firecracker-${FIRECRACKER_VERSION}-aarch64 /usr/local/bin/firecracker
+        mv /tmp/release-${FIRECRACKER_VERSION}-aarch64/jailer-${FIRECRACKER_VERSION}-aarch64 /usr/local/bin/jailer
+        chmod +x /usr/local/bin/firecracker /usr/local/bin/jailer
+        rm -rf /tmp/release-${FIRECRACKER_VERSION}-aarch64
+      fi
+
+      # Download kernel if not present
+      if [ ! -f /var/lib/nucleus/artifacts/vmlinux ]; then
+        curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.14/aarch64/vmlinux-6.1" \
+          -o /var/lib/nucleus/artifacts/vmlinux
+      fi
+
+message: |
+  Nucleus GPU Lima VM created (Apple Silicon).
+
+  IMPORTANT: Apple Virtualization.framework does NOT support GPU passthrough.
+  This template provides increased resources (8 CPU, 16 GiB RAM, 100 GiB disk)
+  for CPU-bound AI workloads.
+
+  For GPU compute with NVIDIA hardware, use nucleus-gpu-x86_64.yaml on a
+  Linux host with VFIO passthrough.
+
+  To complete setup:
+    1. Copy nucleus-node binary:
+       limactl cp nucleus-node nucleus-gpu:/usr/local/bin/
+
+    2. Copy rootfs image:
+       limactl cp rootfs.ext4 nucleus-gpu:/var/lib/nucleus/artifacts/
+
+    3. Start nucleus-node:
+       limactl shell nucleus-gpu -- sudo nucleus-node

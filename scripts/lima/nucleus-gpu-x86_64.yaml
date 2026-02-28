@@ -1,0 +1,129 @@
+# Lima VM template for Nucleus on x86_64 — GPU passthrough via VFIO
+#
+# This template configures NVIDIA GPU passthrough using QEMU VFIO-PCI.
+# GPU passthrough is inherently less secure (direct hardware access) and
+# should only be used when GPU compute is required.
+#
+# Prerequisites:
+#   1. IOMMU enabled in BIOS/UEFI
+#   2. Host kernel: intel_iommu=on (or amd_iommu=on) in boot cmdline
+#   3. GPU bound to vfio-pci driver:
+#        echo "0000:01:00.0" > /sys/bus/pci/drivers/nvidia/unbind
+#        echo "vfio-pci" > /sys/bus/pci/devices/0000:01:00.0/driver_override
+#        echo "0000:01:00.0" > /sys/bus/pci/drivers_probe
+#   4. Update the qemuArgs PCI address below to match your GPU
+#
+# Usage:
+#   limactl create --name nucleus-gpu nucleus-gpu-x86_64.yaml
+#   limactl start nucleus-gpu
+
+# Ubuntu 24.04 LTS cloud image for x86_64
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+    arch: "x86_64"
+
+# Increased resources for GPU workloads
+cpus: 8
+memory: "16GiB"
+disk: "100GiB"
+
+# Use QEMU for PCI passthrough support
+vmType: "qemu"
+
+# QEMU extra arguments for GPU passthrough
+# Replace 01:00.0 with your GPU's PCI address (from lspci | grep -i nvidia)
+qemu:
+  extraArgs:
+    - "-device"
+    - "vfio-pci,host=01:00.0"
+
+# Mount the host filesystem read-only by default
+mounts:
+  - location: "~"
+    writable: false
+  - location: "/tmp/lima"
+    writable: true
+
+# Port forwarding for nucleus services
+portForwards:
+  - guestPort: 8080
+    hostPort: 8080
+  - guestPort: 9080
+    hostPort: 9080
+  - guestPort: 4002
+    hostPort: 4002
+
+# Provision the VM with required packages and GPU drivers
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -euo pipefail
+
+      apt-get update
+      apt-get install -y \
+        ca-certificates \
+        curl \
+        iptables \
+        iproute2 \
+        dnsmasq \
+        e2fsprogs \
+        pciutils
+
+      mkdir -p /var/lib/nucleus/artifacts
+      mkdir -p /var/lib/nucleus/pods
+      mkdir -p /var/log/nucleus
+
+      # Install NVIDIA driver and toolkit if GPU is detected
+      if lspci | grep -qi nvidia; then
+        echo "NVIDIA GPU detected, installing drivers..."
+        apt-get install -y software-properties-common
+        add-apt-repository -y ppa:graphics-drivers/ppa
+        apt-get update
+        apt-get install -y nvidia-driver-550 nvidia-cuda-toolkit
+        echo "NVIDIA driver installed. Reboot required for activation."
+      else
+        echo "No NVIDIA GPU detected. Skipping driver installation."
+        echo "If using VFIO passthrough, the GPU may appear after reboot."
+      fi
+
+      # Download Firecracker if not present
+      if [ ! -f /usr/local/bin/firecracker ]; then
+        FIRECRACKER_VERSION="v1.14.0"
+        curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/${FIRECRACKER_VERSION}/firecracker-${FIRECRACKER_VERSION}-x86_64.tgz" | \
+          tar -xz -C /tmp
+        mv /tmp/release-${FIRECRACKER_VERSION}-x86_64/firecracker-${FIRECRACKER_VERSION}-x86_64 /usr/local/bin/firecracker
+        mv /tmp/release-${FIRECRACKER_VERSION}-x86_64/jailer-${FIRECRACKER_VERSION}-x86_64 /usr/local/bin/jailer
+        chmod +x /usr/local/bin/firecracker /usr/local/bin/jailer
+        rm -rf /tmp/release-${FIRECRACKER_VERSION}-x86_64
+      fi
+
+      # Download kernel if not present
+      if [ ! -f /var/lib/nucleus/artifacts/vmlinux ]; then
+        curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.14/x86_64/vmlinux-6.1" \
+          -o /var/lib/nucleus/artifacts/vmlinux
+      fi
+
+message: |
+  Nucleus GPU Lima VM created (x86_64 + VFIO).
+
+  IMPORTANT: GPU passthrough requires:
+    1. IOMMU enabled in host BIOS
+    2. GPU bound to vfio-pci driver on host
+    3. Correct PCI address in qemuArgs (currently 01:00.0)
+
+  After first boot, check GPU:
+    limactl shell nucleus-gpu -- nvidia-smi
+
+  To complete setup:
+    1. Copy nucleus-node binary:
+       limactl cp nucleus-node nucleus-gpu:/usr/local/bin/
+
+    2. Copy rootfs image:
+       limactl cp rootfs.ext4 nucleus-gpu:/var/lib/nucleus/artifacts/
+
+    3. Start nucleus-node:
+       limactl shell nucleus-gpu -- sudo nucleus-node
+
+  NOTE: GPU passthrough is less secure (direct hardware access).
+  Only use for workloads that require GPU compute.

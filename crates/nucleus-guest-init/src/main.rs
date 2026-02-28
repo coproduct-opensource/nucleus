@@ -115,6 +115,14 @@ fn run() -> Result<(), String> {
     std::env::set_var("NUCLEUS_TOOL_PROXY_AUTH_SECRET", auth_secret);
     std::env::set_var("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET", approval_secret);
 
+    // Sandbox token is optional — Tier 3 fallback when SVID doesn't carry
+    // an attestation OID. If absent, tool-proxy uses Tier 1 or Tier 2 proof.
+    if let Some(sandbox_token) = parse_cmdline_secret(&cmdline, "nucleus.sandbox_token")
+        .or_else(|| read_secret("/etc/nucleus/sandbox.token"))
+    {
+        std::env::set_var("NUCLEUS_SANDBOX_TOKEN", sandbox_token);
+    }
+
     let audit_path = resolve_audit_path();
     std::env::set_var("NUCLEUS_TOOL_PROXY_AUDIT_LOG", audit_path.clone());
     std::env::set_var("NUCLEUS_TOOL_PROXY_BOOT_ACTOR", "guest-init");
@@ -209,9 +217,10 @@ fn build_boot_report(
         .unwrap_or_default();
     let auth_secret = Path::new("/etc/nucleus/auth.secret").exists();
     let approval_secret = Path::new("/etc/nucleus/approval.secret").exists();
+    let sandbox_token = Path::new("/etc/nucleus/sandbox.token").exists();
 
     Some(format!(
-        "{{\"spec_path\":\"{spec_path}\",\"net_addr\":\"{net_addr}\",\"net_gw\":\"{net_gw}\",\"net_dns\":\"{net_dns}\",\"audit_path\":\"{audit_path}\",\"auth_secret\":{auth_secret},\"approval_secret\":{approval_secret}}}"
+        "{{\"spec_path\":\"{spec_path}\",\"net_addr\":\"{net_addr}\",\"net_gw\":\"{net_gw}\",\"net_dns\":\"{net_dns}\",\"audit_path\":\"{audit_path}\",\"auth_secret\":{auth_secret},\"approval_secret\":{approval_secret},\"sandbox_token\":{sandbox_token}}}"
     ))
 }
 
@@ -318,4 +327,30 @@ fn parse_cmdline_secret(cmdline: &str, key: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_sandbox_token_from_cmdline() {
+        let cmdline = "console=ttyS0 reboot=k nucleus.auth_secret=auth123 nucleus.approval_secret=appr456 nucleus.sandbox_token=sbx789";
+        assert_eq!(
+            parse_cmdline_secret(cmdline, "nucleus.sandbox_token"),
+            Some("sbx789".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_sandbox_token_missing() {
+        let cmdline = "console=ttyS0 nucleus.auth_secret=auth123";
+        assert_eq!(parse_cmdline_secret(cmdline, "nucleus.sandbox_token"), None);
+    }
+
+    #[test]
+    fn parse_sandbox_token_empty_value() {
+        let cmdline = "nucleus.sandbox_token=";
+        assert_eq!(parse_cmdline_secret(cmdline, "nucleus.sandbox_token"), None);
+    }
 }
