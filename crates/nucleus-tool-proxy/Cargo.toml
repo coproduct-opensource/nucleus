@@ -15,6 +15,11 @@ categories = ["network-programming", "development-tools"]
 name = "nucleus-tool-proxy"
 path = "src/main.rs"
 
+[features]
+default = []
+# Enable SPIRE Workload API for real SVID fetch (Tier 2 sandbox proof)
+spire = ["nucleus-identity/spire"]
+
 [dependencies]
 axum = { workspace = true }
 clap = { workspace = true }
@@ -39,6 +44,9 @@ nucleus-identity = { path = "../nucleus-identity" }
 nucleus-client = { path = "../nucleus-client", features = ["async-drand"] }
 lattice-guard = { path = "../lattice-guard", features = ["serde", "spec"] }
 nucleus-permission-market = { path = "../nucleus-permission-market" }
+
+base64 = { workspace = true }
+pem = "3"
 
 # File search tools
 glob = "0.3"

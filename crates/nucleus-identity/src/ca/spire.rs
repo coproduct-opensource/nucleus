@@ -383,52 +383,8 @@ impl SpireCaClient {
 
     /// Converts DER bytes to PEM format.
     fn der_to_pem(der: &[u8], label: &str) -> String {
-        use std::fmt::Write;
-
-        let base64 = Self::base64_encode(der);
-        let mut pem = format!("-----BEGIN {label}-----\n");
-
-        // Split into 64-character lines
-        for chunk in base64.as_bytes().chunks(64) {
-            pem.push_str(std::str::from_utf8(chunk).unwrap_or(""));
-            pem.push('\n');
-        }
-
-        writeln!(pem, "-----END {label}-----").unwrap();
-        pem
-    }
-
-    /// Simple base64 encoder.
-    fn base64_encode(data: &[u8]) -> String {
-        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-        let mut output = String::new();
-        let mut buffer = 0u32;
-        let mut bits_collected = 0;
-
-        for &byte in data {
-            buffer = (buffer << 8) | (byte as u32);
-            bits_collected += 8;
-
-            while bits_collected >= 6 {
-                bits_collected -= 6;
-                let index = ((buffer >> bits_collected) & 0x3F) as usize;
-                output.push(ALPHABET[index] as char);
-            }
-        }
-
-        if bits_collected > 0 {
-            buffer <<= 6 - bits_collected;
-            let index = (buffer & 0x3F) as usize;
-            output.push(ALPHABET[index] as char);
-        }
-
-        // Padding
-        while output.len() % 4 != 0 {
-            output.push('=');
-        }
-
-        output
+        let p = pem::Pem::new(label, der);
+        pem::encode(&p)
     }
 }
 
@@ -506,6 +462,102 @@ impl CaClient for SpireCaClient {
 
     fn trust_domain(&self) -> &str {
         &self.trust_domain
+    }
+}
+
+impl SpireCaClient {
+    /// Runs an SVID rotation watcher that streams X.509 context updates from SPIRE.
+    ///
+    /// This uses the SPIRE Workload API's streaming interface to receive push
+    /// notifications when SVIDs are rotated, rather than polling. The watcher
+    /// invokes the provided callback with each new `WorkloadCertificate`.
+    ///
+    /// # Arguments
+    ///
+    /// * `on_update` - Callback invoked with each rotated SVID certificate.
+    ///   The callback receives the new `WorkloadCertificate` and can update
+    ///   caches, reload TLS configs, etc.
+    /// * `shutdown` - A `watch::Receiver<bool>` that signals when to stop.
+    ///   Send `true` to gracefully shut down the watcher.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use tokio::sync::watch;
+    ///
+    /// let ca = SpireCaClient::connect_env().await?;
+    /// let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    ///
+    /// tokio::spawn(async move {
+    ///     ca.run_svid_watcher(
+    ///         |cert| {
+    ///             println!("SVID rotated: {}", cert.identity().to_spiffe_uri());
+    ///         },
+    ///         shutdown_rx,
+    ///     ).await;
+    /// });
+    ///
+    /// // Later, to stop:
+    /// shutdown_tx.send(true).unwrap();
+    /// ```
+    pub async fn run_svid_watcher<F>(
+        &self,
+        on_update: F,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) where
+        F: Fn(WorkloadCertificate) + Send + Sync,
+    {
+        use futures_util::StreamExt;
+
+        let stream = match self.client.stream_x509_contexts().await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(error = %e, "failed to start SVID rotation stream; falling back to no-op");
+                return;
+            }
+        };
+
+        tokio::pin!(stream);
+
+        info!("SVID rotation watcher started");
+
+        loop {
+            tokio::select! {
+                item = stream.next() => {
+                    match item {
+                        Some(Ok(context)) => {
+                            if let Some(svid) = context.default_svid() {
+                                match self.convert_svid_to_workload_cert(svid) {
+                                    Ok(cert) => {
+                                        info!(
+                                            spiffe_id = %cert.identity().to_spiffe_uri(),
+                                            "SVID rotated via SPIRE stream"
+                                        );
+                                        on_update(cert);
+                                    }
+                                    Err(e) => {
+                                        warn!(error = %e, "failed to convert rotated SVID");
+                                    }
+                                }
+                            }
+                        }
+                        Some(Err(e)) => {
+                            warn!(error = %e, "SVID rotation stream error");
+                        }
+                        None => {
+                            info!("SVID rotation stream ended");
+                            break;
+                        }
+                    }
+                }
+                _ = shutdown.changed() => {
+                    if *shutdown.borrow() {
+                        info!("SVID rotation watcher shutting down");
+                        break;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -620,20 +672,13 @@ mod tests {
     }
 
     #[test]
-    fn test_base64_encode() {
-        assert_eq!(SpireCaClient::base64_encode(b"hello"), "aGVsbG8=");
-        assert_eq!(SpireCaClient::base64_encode(b""), "");
-        assert_eq!(SpireCaClient::base64_encode(b"a"), "YQ==");
-        assert_eq!(SpireCaClient::base64_encode(b"ab"), "YWI=");
-        assert_eq!(SpireCaClient::base64_encode(b"abc"), "YWJj");
-    }
-
-    #[test]
-    fn test_der_to_pem() {
+    fn test_der_to_pem_roundtrip() {
         let der = b"test data";
-        let pem = SpireCaClient::der_to_pem(der, "TEST");
-        assert!(pem.starts_with("-----BEGIN TEST-----\n"));
-        assert!(pem.ends_with("-----END TEST-----\n"));
-        assert!(pem.contains("dGVzdCBkYXRh")); // base64 of "test data"
+        let pem_str = SpireCaClient::der_to_pem(der, "TEST");
+        assert!(pem_str.contains("-----BEGIN TEST-----"));
+        assert!(pem_str.contains("-----END TEST-----"));
+        // Verify roundtrip
+        let parsed = pem::parse(&pem_str).unwrap();
+        assert_eq!(parsed.contents(), der);
     }
 }

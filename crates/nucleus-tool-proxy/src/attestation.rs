@@ -371,72 +371,19 @@ fn extract_attestation_from_cert(cert_der: &[u8]) -> Result<Option<LaunchAttesta
     Ok(None)
 }
 
-/// Simple base64 decoder.
+/// Decode standard base64 to bytes.
 pub(crate) fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    let mut output = Vec::new();
-    let mut buffer: u32 = 0;
-    let mut bits_collected = 0;
-
-    for c in input.chars() {
-        if c == '=' {
-            break;
-        }
-        if c.is_whitespace() {
-            continue;
-        }
-
-        let value = ALPHABET
-            .iter()
-            .position(|&x| x == c as u8)
-            .ok_or_else(|| format!("invalid base64 character: {}", c))?;
-
-        buffer = (buffer << 6) | (value as u32);
-        bits_collected += 6;
-
-        if bits_collected >= 8 {
-            bits_collected -= 8;
-            output.push((buffer >> bits_collected) as u8);
-            buffer &= (1 << bits_collected) - 1;
-        }
-    }
-
-    Ok(output)
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    STANDARD
+        .decode(input)
+        .map_err(|e| format!("base64 decode error: {e}"))
 }
 
-/// Simple base64 encoder.
-#[allow(dead_code)]
-pub fn base64_encode(input: &[u8]) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    let mut output = String::new();
-    let mut buffer: u32 = 0;
-    let mut bits_in_buffer = 0;
-
-    for &byte in input {
-        buffer = (buffer << 8) | (byte as u32);
-        bits_in_buffer += 8;
-
-        while bits_in_buffer >= 6 {
-            bits_in_buffer -= 6;
-            let index = ((buffer >> bits_in_buffer) & 0x3f) as usize;
-            output.push(ALPHABET[index] as char);
-        }
-    }
-
-    if bits_in_buffer > 0 {
-        buffer <<= 6 - bits_in_buffer;
-        let index = (buffer & 0x3f) as usize;
-        output.push(ALPHABET[index] as char);
-    }
-
-    // Add padding
-    while output.len() % 4 != 0 {
-        output.push('=');
-    }
-
-    output
+/// Encode bytes to standard base64.
+#[cfg(test)]
+pub(crate) fn base64_encode(input: &[u8]) -> String {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    STANDARD.encode(input)
 }
 
 #[cfg(test)]
