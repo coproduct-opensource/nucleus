@@ -6,8 +6,8 @@
 use std::sync::Arc;
 
 use nucleus_proto::nucleus_node::{
-    self, node_service_client::NodeServiceClient, CreatePodRequest, Empty, GetPodRequest, PodId,
-    StreamLogsRequest, WatchPodRequest,
+    self, node_service_client::NodeServiceClient, CreatePodRequest, Empty, GetPodRequest,
+    GetReceiptRequest, PodId, StreamLogsRequest, WatchPodRequest,
 };
 use tonic::transport::Channel;
 
@@ -43,6 +43,42 @@ impl From<nucleus_node::PodInfo> for PodInfo {
             exit_code: p.exit_code,
             error: p.error,
             proxy_addr: p.proxy_addr,
+        }
+    }
+}
+
+/// Execution receipt — cryptographic proof of pod execution outcome.
+#[derive(Debug, Clone)]
+pub struct ExecutionReceipt {
+    /// Pod identifier.
+    pub pod_id: String,
+    /// SHA-256 hash of workspace contents at exit.
+    pub workspace_hash: String,
+    /// Hash of the last audit log entry.
+    pub audit_tail_hash: String,
+    /// Total number of audit log entries.
+    pub audit_entry_count: u64,
+    /// Unix timestamp when the report was generated.
+    pub timestamp_unix: u64,
+    /// SHA-256 hash of the serialized PodSpec manifest.
+    pub manifest_hash: String,
+    /// Sandbox proof tier (e.g., "attested", "spiffe_identity").
+    pub sandbox_tier: String,
+    /// SPIFFE ID of the pod's workload identity.
+    pub spiffe_id: String,
+}
+
+impl From<nucleus_node::ExecutionReceipt> for ExecutionReceipt {
+    fn from(r: nucleus_node::ExecutionReceipt) -> Self {
+        Self {
+            pod_id: r.pod_id,
+            workspace_hash: r.workspace_hash,
+            audit_tail_hash: r.audit_tail_hash,
+            audit_entry_count: r.audit_entry_count,
+            timestamp_unix: r.timestamp_unix,
+            manifest_hash: r.manifest_hash,
+            sandbox_tier: r.sandbox_tier,
+            spiffe_id: r.spiffe_id,
         }
     }
 }
@@ -218,5 +254,18 @@ impl NodeClient {
         };
         let response = self.inner.clone().watch_pod_state(request).await?;
         Ok(response.into_inner())
+    }
+
+    /// Get execution receipt for a completed pod.
+    pub async fn get_receipt(&self, pod_id: &str) -> Result<ExecutionReceipt, Error> {
+        let request = GetReceiptRequest {
+            pod_id: pod_id.to_string(),
+        };
+        let response = self.inner.clone().get_receipt(request).await?;
+        let receipt = response
+            .into_inner()
+            .receipt
+            .ok_or_else(|| Error::Other(format!("no receipt for pod: {}", pod_id)))?;
+        Ok(ExecutionReceipt::from(receipt))
     }
 }

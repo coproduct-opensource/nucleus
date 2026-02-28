@@ -29,7 +29,6 @@ use tracing::{info, warn};
 
 mod attestation;
 mod auth;
-#[allow(unused)]
 mod exit_report;
 mod mtls;
 mod node_client;
@@ -39,8 +38,10 @@ mod validation;
 
 use attestation::{AttestationConfig, AttestationVerifier};
 use auth::{AuthConfig, AuthError};
+use base64::Engine as _;
 use mtls::{ClientCertInfo, MtlsConfig, MtlsConnectInfo, MtlsListener};
 use nucleus_client::drand::{DrandConfig, DrandFailMode};
+use nucleus_identity::approval_bundle::{compute_manifest_hash, ApprovalBundleVerifier};
 use policy::PolicyEngine;
 
 #[derive(Parser, Debug)]
@@ -201,6 +202,13 @@ struct Args {
     /// Sub-pods cannot exceed this ceiling via delegate_to().
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_DELEGATION_CEILING")]
     delegation_ceiling: Option<String>,
+
+    // === Approval Bundle Configuration ===
+    /// Require a signed approval bundle at startup.
+    /// When set, the tool-proxy refuses to start without a valid JWS bundle
+    /// in the NUCLEUS_APPROVAL_BUNDLE environment variable.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_REQUIRE_APPROVAL_BUNDLE")]
+    require_approval_bundle: bool,
 }
 
 #[derive(Clone)]
@@ -352,6 +360,85 @@ fn is_expired(expires_at_unix: Option<u64>) -> bool {
         Some(ts) => ts <= now_unix(),
         None => false,
     }
+}
+
+/// Load and verify a signed approval bundle from the NUCLEUS_APPROVAL_BUNDLE env var.
+///
+/// If present and valid, populates the ApprovalRegistry with the approved operations.
+/// If `require` is true, the function returns an error when the env var is missing.
+fn load_approval_bundle(
+    spec_contents: &str,
+    approvals: &ApprovalRegistry,
+    require: bool,
+) -> Result<(), ApiError> {
+    let jws = match std::env::var("NUCLEUS_APPROVAL_BUNDLE") {
+        Ok(val) if !val.is_empty() => val,
+        _ => {
+            if require {
+                return Err(ApiError::Spec(
+                    "--require-approval-bundle is set but NUCLEUS_APPROVAL_BUNDLE is not set"
+                        .to_string(),
+                ));
+            }
+            return Ok(());
+        }
+    };
+
+    verify_and_load_approval_bundle(&jws, spec_contents, approvals)
+}
+
+/// Verify a JWS approval bundle and populate the ApprovalRegistry.
+fn verify_and_load_approval_bundle(
+    jws: &str,
+    spec_contents: &str,
+    approvals: &ApprovalRegistry,
+) -> Result<(), ApiError> {
+    let manifest_hash = compute_manifest_hash(spec_contents.as_bytes());
+
+    // Extract the embedded JWK from the JWS header for self-trust verification.
+    // In production, the expected key would come from a pinned trust store.
+    let header = {
+        let header_b64 = jws.split('.').next().ok_or_else(|| {
+            ApiError::Spec("approval bundle is not a valid JWS (no header)".to_string())
+        })?;
+        let header_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(header_b64)
+            .map_err(|e| ApiError::Spec(format!("approval bundle header decode error: {e}")))?;
+        let header: nucleus_identity::approval_bundle::ApprovalBundleHeader =
+            serde_json::from_slice(&header_bytes)
+                .map_err(|e| ApiError::Spec(format!("approval bundle header parse error: {e}")))?;
+        header
+    };
+
+    let verifier = ApprovalBundleVerifier::new();
+    let claims = verifier
+        .verify(jws, &header.jwk, &manifest_hash)
+        .map_err(|e| ApiError::Spec(format!("approval bundle verification failed: {e}")))?;
+
+    // Populate the ApprovalRegistry with the approved operations
+    let count = claims.max_uses.map(|n| n as usize).unwrap_or(usize::MAX);
+    let expiry = Some(claims.exp as u64);
+    for op in &claims.approved_operations {
+        approvals.approve(op, count, expiry);
+        info!(
+            operation = %op,
+            count = count,
+            expires_at = claims.exp,
+            event = "approval_bundle_loaded",
+            "pre-approved operation from signed bundle"
+        );
+    }
+
+    info!(
+        issuer = %claims.iss,
+        jti = %claims.jti,
+        operations = ?claims.approved_operations,
+        manifest_hash = %claims.manifest_hash,
+        event = "approval_bundle_verified",
+        "signed approval bundle verified and loaded"
+    );
+
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -802,6 +889,13 @@ async fn main() -> Result<(), ApiError> {
 
     let runtime = build_runtime(&spec)?;
     let approvals = Arc::new(ApprovalRegistry::default());
+
+    // Load signed approval bundle if present
+    if let Err(e) = load_approval_bundle(&spec_contents, &approvals, args.require_approval_bundle) {
+        eprintln!("FATAL: {e}");
+        std::process::exit(78);
+    }
+
     let approver = CallbackApprover::new({
         let approvals = approvals.clone();
         move |request: &ApprovalRequest| approvals.consume(request.operation())
@@ -996,12 +1090,17 @@ async fn main() -> Result<(), ApiError> {
             .route("/v1/pod/cancel", post(cancel_sub_pod));
     }
 
+    // Keep references for the exit report after shutdown
+    let exit_audit = state.audit.clone();
+    let exit_work_dir = spec.spec.work_dir.clone();
+
     let app = app
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state, auth_middleware));
 
     if let Some(vsock) = resolve_vsock(&args, &spec)? {
         serve_vsock(app, vsock, args.announce_path).await?;
+        write_exit_report(&exit_audit, &exit_work_dir).await;
         return Ok(());
     }
 
@@ -1011,6 +1110,11 @@ async fn main() -> Result<(), ApiError> {
     if let Some(path) = args.announce_path.as_ref() {
         tokio::fs::write(path, addr.to_string()).await?;
     }
+
+    let shutdown = async {
+        let _ = tokio::signal::ctrl_c().await;
+        info!("shutdown signal received, writing exit report");
+    };
 
     // Check if mTLS is enabled
     if args.mtls {
@@ -1029,13 +1133,52 @@ async fn main() -> Result<(), ApiError> {
             mtls_listener,
             app.into_make_service_with_connect_info::<MtlsConnectInfo>(),
         )
+        .with_graceful_shutdown(shutdown)
         .await?;
     } else {
         info!("nucleus-tool-proxy listening on {}", addr);
-        axum::serve(listener, app).await?;
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown)
+            .await?;
     }
 
+    write_exit_report(&exit_audit, &exit_work_dir).await;
+
     Ok(())
+}
+
+/// Write the exit report on shutdown.
+async fn write_exit_report(audit: &AuditLog, work_dir_path: &Path) {
+    let workspace_hash = match exit_report::hash_workspace(work_dir_path).await {
+        Ok(h) => h,
+        Err(e) => {
+            warn!("failed to hash workspace for exit report: {e}");
+            return;
+        }
+    };
+
+    let (tail_hash, count) = audit.tail_hash_and_count();
+    let report = exit_report::build_exit_report(workspace_hash, tail_hash, count);
+
+    let report_path = work_dir_path.join(".nucleus-exit-report.json");
+    match serde_json::to_string_pretty(&report) {
+        Ok(json) => {
+            if let Err(e) = tokio::fs::write(&report_path, json).await {
+                warn!(
+                    "failed to write exit report to {}: {e}",
+                    report_path.display()
+                );
+            } else {
+                info!(
+                    path = %report_path.display(),
+                    entries = count,
+                    event = "exit_report_written",
+                    "exit report written"
+                );
+            }
+        }
+        Err(e) => warn!("failed to serialize exit report: {e}"),
+    }
 }
 
 /// Builds mTLS configuration from CLI arguments.
@@ -3013,6 +3156,7 @@ fn build_audit_log(args: &Args, auth: &AuthConfig) -> Result<Arc<AuditLog>, ApiE
         path,
         secret,
         last_hash: Mutex::new(last_hash),
+        entry_count: std::sync::atomic::AtomicU64::new(0),
         webhook,
         drand_client,
     }))
@@ -3179,6 +3323,7 @@ struct AuditLog {
     path: PathBuf,
     secret: Vec<u8>,
     last_hash: Mutex<String>,
+    entry_count: std::sync::atomic::AtomicU64,
     webhook: Option<WebhookSink>,
     /// Optional drand client for cryptographic time anchoring.
     drand_client: Option<Arc<nucleus_client::drand::DrandClient>>,
@@ -3231,6 +3376,8 @@ impl AuditLog {
         entry.prev_hash = prev_hash;
         entry.signature = signature.clone();
         entry.hash = hash;
+        self.entry_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let line = serde_json::to_string(&entry).map_err(|e| ApiError::Spec(e.to_string()))?;
 
@@ -3268,6 +3415,13 @@ impl AuditLog {
         }
 
         Ok(())
+    }
+
+    /// Get the current tail hash and entry count for the exit report.
+    fn tail_hash_and_count(&self) -> (String, u64) {
+        let hash = self.last_hash.lock().unwrap().clone();
+        let count = self.entry_count.load(std::sync::atomic::Ordering::Relaxed);
+        (hash, count)
     }
 }
 
@@ -3465,5 +3619,113 @@ mod tests {
         assert!(json.contains("src/main.rs"));
         assert!(json.contains("42"));
         assert!(json.contains("entry point"));
+    }
+
+    // ── Approval Bundle Tests ──────────────────────────────────────────
+
+    fn make_test_key() -> (Vec<u8>, nucleus_identity::did::JsonWebKey) {
+        use ring::signature::KeyPair;
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 = ring::signature::EcdsaKeyPair::generate_pkcs8(
+            &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+            &rng,
+        )
+        .unwrap();
+        let key_pair = ring::signature::EcdsaKeyPair::from_pkcs8(
+            &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+            pkcs8.as_ref(),
+            &rng,
+        )
+        .unwrap();
+        let pub_bytes = key_pair.public_key().as_ref();
+        let x = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&pub_bytes[1..33]);
+        let y = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&pub_bytes[33..65]);
+        let jwk = nucleus_identity::did::JsonWebKey::ec_p256(&x, &y);
+        (pkcs8.as_ref().to_vec(), jwk)
+    }
+
+    #[test]
+    fn test_approval_bundle_populates_registry() {
+        let (pkcs8, _jwk) = make_test_key();
+        let spec = "apiVersion: nucleus/v1\nkind: Pod\nspec:\n  work_dir: .";
+        let manifest_hash = compute_manifest_hash(spec.as_bytes());
+
+        let jws = nucleus_identity::approval_bundle::ApprovalBundleBuilder::new(
+            "spiffe://test/human/alice",
+        )
+        .approve_operation("write_files")
+        .approve_operation("run_bash")
+        .manifest_hash(&manifest_hash)
+        .ttl_seconds(3600)
+        .build(&pkcs8)
+        .unwrap();
+
+        let registry = ApprovalRegistry::default();
+        let result = verify_and_load_approval_bundle(&jws, spec, &registry);
+
+        assert!(result.is_ok(), "verify_and_load failed: {:?}", result);
+        assert!(
+            registry.consume("write_files"),
+            "write_files should be approved"
+        );
+        assert!(registry.consume("run_bash"), "run_bash should be approved");
+        assert!(
+            !registry.consume("web_fetch"),
+            "web_fetch should NOT be approved"
+        );
+    }
+
+    #[test]
+    fn test_approval_bundle_wrong_manifest() {
+        let (pkcs8, _jwk) = make_test_key();
+        let manifest_hash = compute_manifest_hash(b"different-manifest");
+
+        let jws = nucleus_identity::approval_bundle::ApprovalBundleBuilder::new(
+            "spiffe://test/human/bob",
+        )
+        .approve_operation("read_files")
+        .manifest_hash(&manifest_hash)
+        .ttl_seconds(3600)
+        .build(&pkcs8)
+        .unwrap();
+
+        let registry = ApprovalRegistry::default();
+        let result = verify_and_load_approval_bundle(&jws, "actual-manifest-content", &registry);
+        assert!(result.is_err(), "should fail with manifest hash mismatch");
+    }
+
+    #[test]
+    fn test_approval_bundle_max_uses() {
+        let (pkcs8, _jwk) = make_test_key();
+        let spec = "spec: limited-use";
+        let manifest_hash = compute_manifest_hash(spec.as_bytes());
+
+        let jws = nucleus_identity::approval_bundle::ApprovalBundleBuilder::new(
+            "spiffe://test/human/carol",
+        )
+        .approve_operation("write_files")
+        .manifest_hash(&manifest_hash)
+        .max_uses(2)
+        .ttl_seconds(3600)
+        .build(&pkcs8)
+        .unwrap();
+
+        let registry = ApprovalRegistry::default();
+        verify_and_load_approval_bundle(&jws, spec, &registry).unwrap();
+
+        // Should only allow 2 uses
+        assert!(registry.consume("write_files"));
+        assert!(registry.consume("write_files"));
+        assert!(
+            !registry.consume("write_files"),
+            "third use should be denied"
+        );
+    }
+
+    #[test]
+    fn test_approval_bundle_invalid_jws() {
+        let registry = ApprovalRegistry::default();
+        let result = verify_and_load_approval_bundle("not.a.valid.jws", "spec", &registry);
+        assert!(result.is_err());
     }
 }

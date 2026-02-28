@@ -70,7 +70,7 @@ pub use auth::{AuthStrategy, HmacAuth, MtlsConfig};
 pub use client::{Nucleus, NucleusBuilder};
 pub use error::Error;
 pub use intent::{Intent, IntentProfile, IntentSession};
-pub use node::NodeClient;
+pub use node::{ExecutionReceipt, NodeClient};
 pub use proxy::ProxyClient;
 pub use types::*;
 

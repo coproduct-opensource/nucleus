@@ -2357,6 +2357,7 @@ dependencies = [
  "pem",
  "regex",
  "reqwest",
+ "ring",
  "rustls",
  "serde",
  "serde_json",

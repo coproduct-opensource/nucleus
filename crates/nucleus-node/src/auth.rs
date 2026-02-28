@@ -278,6 +278,8 @@ pub enum Operation {
     CancelPod,
     /// Stream logs from a pod.
     StreamLogs,
+    /// Get execution receipt for a pod.
+    GetReceipt,
     /// Any pod management operation (used for matching).
     PodManagement,
 }
@@ -405,6 +407,7 @@ impl AuthorizationPolicy {
                     | Operation::CancelPod
                     | Operation::StreamLogs
                     | Operation::ListPods
+                    | Operation::GetReceipt
                     | Operation::PodManagement => {
                         tracing::debug!(
                             spiffe_id = %spiffe_id,

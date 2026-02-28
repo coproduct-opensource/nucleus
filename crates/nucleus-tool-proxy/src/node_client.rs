@@ -27,7 +27,7 @@ pub struct PodInfo {
 
 /// Pod state (mirrors nucleus-node PodState).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum PodState {
     Running,
     Exited { code: Option<i32> },
@@ -202,5 +202,50 @@ impl NodeClient {
         response.json::<R>().await.map_err(|e| NodeClientError {
             message: e.to_string(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pod_state_deserialize_externally_tagged() {
+        // nucleus-node uses externally-tagged serde (no `tag` attribute)
+        let running: PodState = serde_json::from_str(r#""running""#).unwrap();
+        assert!(matches!(running, PodState::Running));
+
+        let exited: PodState = serde_json::from_str(r#"{"exited":{"code":0}}"#).unwrap();
+        assert!(matches!(exited, PodState::Exited { code: Some(0) }));
+
+        let error: PodState = serde_json::from_str(r#"{"error":{"message":"boom"}}"#).unwrap();
+        assert!(matches!(error, PodState::Error { message } if message == "boom"));
+    }
+
+    #[test]
+    fn test_pod_info_deserialize() {
+        let json = r#"{
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "name": "test-pod",
+            "created_at_unix": 1700000000,
+            "state": "running",
+            "proxy_addr": "127.0.0.1:8080"
+        }"#;
+        let info: PodInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.name, Some("test-pod".to_string()));
+        assert!(matches!(info.state, PodState::Running));
+    }
+
+    #[test]
+    fn test_pod_info_deserialize_exited() {
+        let json = r#"{
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "name": null,
+            "created_at_unix": 1700000000,
+            "state": {"exited": {"code": 42}},
+            "proxy_addr": null
+        }"#;
+        let info: PodInfo = serde_json::from_str(json).unwrap();
+        assert!(matches!(info.state, PodState::Exited { code: Some(42) }));
     }
 }
