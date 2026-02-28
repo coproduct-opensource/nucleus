@@ -45,7 +45,9 @@ pub use certificate::{TrustBundle, WorkloadCertificate};
 pub use csr::{CertSign, CsrOptions};
 pub use did::{did_web_to_url, DidDocument, JsonWebKey, ServiceEndpoint, VerificationMethod};
 pub use did_binding::{BindingProof, BindingVerification, SpiffeDidBinding};
-pub use did_builder::{build_binding, build_did_document, extract_svid_material, SvidMaterial};
+pub use did_builder::{
+    build_binding, build_did_document, extract_svid_material, verify_binding, SvidMaterial,
+};
 pub use did_crypto::{
     cert_fingerprint, chain_from_base64url, chain_to_base64url, extract_ec_p256_jwk,
     jws_sign_es256, jws_verify_es256,

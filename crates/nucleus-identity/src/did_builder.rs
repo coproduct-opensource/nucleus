@@ -26,11 +26,12 @@
 
 use chrono::{DateTime, Utc};
 
-use crate::certificate::WorkloadCertificate;
+use crate::certificate::{Certificate, TrustBundle, WorkloadCertificate};
 use crate::did::{DidDocument, JsonWebKey, ServiceEndpoint, VerificationMethod};
-use crate::did_binding::{BindingProof, SpiffeDidBinding};
+use crate::did_binding::{BindingProof, BindingVerification, SpiffeDidBinding};
 use crate::did_crypto::{
-    cert_fingerprint, chain_to_base64url, extract_ec_p256_jwk, jws_sign_es256,
+    cert_fingerprint, chain_from_base64url, chain_to_base64url, extract_ec_p256_jwk,
+    jws_sign_es256, jws_verify_es256,
 };
 use crate::Result;
 
@@ -185,11 +186,198 @@ pub fn build_binding(
     })
 }
 
+/// Verify a SPIFFE-DID binding document against a DID document.
+///
+/// Performs the following checks:
+///
+/// 1. **Expiry** — rejects expired bindings
+/// 2. **SVID signature** — verifies `signature_over_did_by_svid` using the SVID
+///    public key extracted from the attestation chain's leaf certificate
+/// 3. **DID signature** — verifies `signature_over_svid_by_did` using the
+///    verification method referenced by `did_key_id` in the DID document
+/// 4. **Payload integrity** — confirms the signed payloads match the claimed
+///    DID and SPIFFE ID strings
+/// 5. **Fingerprint** — verifies the SVID fingerprint matches the leaf cert
+/// 6. **Trust bundle** (optional) — if provided, verifies the SVID leaf cert
+///    was signed by a trusted CA, upgrading the result to `FullyVerified`
+///
+/// # Arguments
+///
+/// * `binding` - The SPIFFE-DID binding document to verify
+/// * `did_document` - The DID document containing the app signing key
+/// * `trust_bundle` - Optional SPIFFE trust bundle for full verification
+///
+/// # Returns
+///
+/// A [`BindingVerification`] indicating the verification level achieved.
+pub fn verify_binding(
+    binding: &SpiffeDidBinding,
+    did_document: &DidDocument,
+    trust_bundle: Option<&TrustBundle>,
+) -> BindingVerification {
+    // 1. Check expiry
+    if binding.is_expired() {
+        return BindingVerification::Failed {
+            reason: "binding has expired".into(),
+        };
+    }
+
+    // 2. Decode the SVID leaf certificate from the attestation chain
+    let chain = match chain_from_base64url(&binding.binding_proof.attestation_chain) {
+        Ok(c) if !c.is_empty() => c,
+        Ok(_) => {
+            return BindingVerification::Failed {
+                reason: "attestation chain is empty".into(),
+            }
+        }
+        Err(e) => {
+            return BindingVerification::Failed {
+                reason: format!("failed to decode attestation chain: {e}"),
+            }
+        }
+    };
+
+    let leaf = &chain[0];
+
+    // 3. Verify SVID fingerprint matches the leaf cert
+    let computed_fingerprint = cert_fingerprint(leaf);
+    if computed_fingerprint != binding.binding_proof.svid_fingerprint {
+        return BindingVerification::Failed {
+            reason: format!(
+                "SVID fingerprint mismatch: expected {}, computed {}",
+                binding.binding_proof.svid_fingerprint, computed_fingerprint
+            ),
+        };
+    }
+
+    // 4. Extract the SVID public key and verify signature_over_did_by_svid
+    let svid_jwk = match extract_ec_p256_jwk(leaf) {
+        Ok(jwk) => jwk,
+        Err(e) => {
+            return BindingVerification::Failed {
+                reason: format!("failed to extract SVID public key: {e}"),
+            }
+        }
+    };
+
+    let did_payload =
+        match jws_verify_es256(&binding.binding_proof.signature_over_did_by_svid, &svid_jwk) {
+            Ok(p) => p,
+            Err(e) => {
+                return BindingVerification::Failed {
+                    reason: format!("SVID signature over DID failed: {e}"),
+                }
+            }
+        };
+
+    if did_payload != binding.did.as_bytes() {
+        return BindingVerification::Failed {
+            reason: "SVID-signed payload does not match claimed DID".into(),
+        };
+    }
+
+    // 5. Look up the DID verification method and verify signature_over_svid_by_did
+    let did_key_fragment = binding
+        .binding_proof
+        .did_key_id
+        .rsplit_once('#')
+        .map(|(_, frag)| frag)
+        .unwrap_or(&binding.binding_proof.did_key_id);
+
+    let vm = match did_document.find_verification_method(did_key_fragment) {
+        Some(vm) => vm,
+        None => {
+            return BindingVerification::Failed {
+                reason: format!(
+                    "DID verification method '{}' not found in DID document",
+                    binding.binding_proof.did_key_id
+                ),
+            }
+        }
+    };
+
+    let spiffe_payload = match jws_verify_es256(
+        &binding.binding_proof.signature_over_svid_by_did,
+        &vm.public_key_jwk,
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            return BindingVerification::Failed {
+                reason: format!("DID signature over SPIFFE ID failed: {e}"),
+            }
+        }
+    };
+
+    if spiffe_payload != binding.spiffe_id.as_bytes() {
+        return BindingVerification::Failed {
+            reason: "DID-signed payload does not match claimed SPIFFE ID".into(),
+        };
+    }
+
+    // 6. If a trust bundle is provided, verify the SVID chain
+    if let Some(bundle) = trust_bundle {
+        match verify_svid_chain(leaf, bundle) {
+            Ok(()) => BindingVerification::FullyVerified {
+                did: binding.did.clone(),
+                spiffe_id: binding.spiffe_id.clone(),
+                svid_expiry: binding.binding_proof.expires,
+            },
+            Err(reason) => BindingVerification::PartiallyVerified {
+                did: binding.did.clone(),
+                spiffe_id: binding.spiffe_id.clone(),
+                reason: format!(
+                    "cross-signatures valid but SVID chain verification failed: {reason}"
+                ),
+            },
+        }
+    } else {
+        BindingVerification::PartiallyVerified {
+            did: binding.did.clone(),
+            spiffe_id: binding.spiffe_id.clone(),
+            reason: "no trust bundle provided for SVID chain verification".into(),
+        }
+    }
+}
+
+/// Verify an SVID leaf certificate against a trust bundle.
+///
+/// Checks that the leaf certificate's issuer matches one of the root
+/// certificates in the trust bundle by verifying the signature.
+fn verify_svid_chain(
+    leaf: &Certificate,
+    trust_bundle: &TrustBundle,
+) -> std::result::Result<(), String> {
+    let leaf_der = rustls::pki_types::CertificateDer::from(leaf.der().to_vec());
+
+    let root_store = trust_bundle
+        .to_rustls_root_store()
+        .map_err(|e| format!("failed to build root store: {e}"))?;
+
+    // Use webpki to verify the leaf cert against the trust bundle
+    let end_entity = webpki::EndEntityCert::try_from(&leaf_der)
+        .map_err(|e| format!("failed to parse leaf as end-entity cert: {e}"))?;
+
+    let now = webpki::types::UnixTime::now();
+
+    end_entity
+        .verify_for_usage(
+            webpki::ALL_VERIFICATION_ALGS,
+            root_store.roots.as_slice(),
+            &[], // no intermediates beyond what's in root store
+            now,
+            webpki::KeyUsage::client_auth(),
+            None, // no revocation checking
+            None, // no budget override
+        )
+        .map(|_| ())
+        .map_err(|e| format!("SVID chain verification failed: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ca::SelfSignedCa;
-    use crate::did_crypto::{extract_ec_p256_jwk, jws_verify_es256};
+    use crate::ca::{CaClient, SelfSignedCa};
+    use crate::did_crypto::{extract_ec_p256_jwk, jws_sign_es256, jws_verify_es256};
     use crate::identity::Identity;
     use crate::CsrOptions;
     use base64::Engine;
@@ -386,5 +574,194 @@ mod tests {
             parsed.binding_proof.svid_fingerprint,
             binding.binding_proof.svid_fingerprint
         );
+    }
+
+    // ── verify_binding tests ─────────────────────────────────────────────
+
+    /// Helper: produce a complete (binding, did_doc, ca) for verification tests.
+    async fn make_verifiable_binding() -> (SpiffeDidBinding, DidDocument, SelfSignedCa) {
+        let ca = SelfSignedCa::new("test.local").unwrap();
+        let identity = Identity::new("test.local", "apps", "my-app");
+        let csr = CsrOptions::new(identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        let pk_pem = csr.private_key().to_string();
+
+        let cert = ca
+            .sign_csr_with_key(
+                csr.csr(),
+                csr.private_key(),
+                &identity,
+                Duration::from_secs(3600),
+            )
+            .await
+            .unwrap();
+
+        let svid_pk_der = crate::certificate::PrivateKey::from_pem(&pk_pem)
+            .unwrap()
+            .to_der()
+            .unwrap();
+
+        let material = extract_svid_material(&cert).unwrap();
+        let (app_pk_der, app_jwk) = make_app_key();
+
+        let did = "did:web:my-app.test.local";
+        let spiffe_id = "spiffe://test.local/ns/apps/sa/my-app";
+        let app_key_id = format!("{did}#app-signing-key-1");
+
+        let binding = build_binding(
+            did,
+            spiffe_id,
+            &material,
+            &svid_pk_der,
+            &app_pk_der,
+            &app_key_id,
+        )
+        .unwrap();
+
+        let doc = build_did_document(did, &app_jwk, &material, vec![]);
+
+        (binding, doc, ca)
+    }
+
+    #[tokio::test]
+    async fn verify_binding_partially_verified_without_trust_bundle() {
+        let (binding, doc, _ca) = make_verifiable_binding().await;
+
+        let result = verify_binding(&binding, &doc, None);
+
+        assert!(result.is_verified());
+        assert!(!result.is_fully_verified());
+        assert_eq!(result.did(), Some("did:web:my-app.test.local"));
+        assert_eq!(
+            result.spiffe_id(),
+            Some("spiffe://test.local/ns/apps/sa/my-app")
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_binding_fully_verified_with_trust_bundle() {
+        let (binding, doc, ca) = make_verifiable_binding().await;
+
+        let result = verify_binding(&binding, &doc, Some(ca.trust_bundle()));
+
+        assert!(result.is_verified());
+        assert!(result.is_fully_verified());
+        assert_eq!(result.did(), Some("did:web:my-app.test.local"));
+        assert_eq!(
+            result.spiffe_id(),
+            Some("spiffe://test.local/ns/apps/sa/my-app")
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_binding_rejects_expired() {
+        let (mut binding, doc, _ca) = make_verifiable_binding().await;
+
+        // Force the binding to be expired
+        binding.binding_proof.expires = Utc::now() - chrono::Duration::hours(1);
+
+        let result = verify_binding(&binding, &doc, None);
+        assert!(!result.is_verified());
+        assert!(matches!(
+            result,
+            BindingVerification::Failed { ref reason } if reason.contains("expired")
+        ));
+    }
+
+    #[tokio::test]
+    async fn verify_binding_rejects_wrong_svid_fingerprint() {
+        let (mut binding, doc, _ca) = make_verifiable_binding().await;
+
+        binding.binding_proof.svid_fingerprint = "SHA256:bogus_fingerprint".into();
+
+        let result = verify_binding(&binding, &doc, None);
+        assert!(!result.is_verified());
+        assert!(matches!(
+            result,
+            BindingVerification::Failed { ref reason } if reason.contains("fingerprint mismatch")
+        ));
+    }
+
+    #[tokio::test]
+    async fn verify_binding_rejects_tampered_did_signature() {
+        let (mut binding, doc, _ca) = make_verifiable_binding().await;
+
+        // Replace SVID signature with a signature from a different key
+        let (other_pk_der, _) = make_app_key();
+        binding.binding_proof.signature_over_did_by_svid =
+            jws_sign_es256(b"did:web:my-app.test.local", &other_pk_der).unwrap();
+
+        let result = verify_binding(&binding, &doc, None);
+        assert!(!result.is_verified());
+        assert!(matches!(
+            result,
+            BindingVerification::Failed { ref reason } if reason.contains("SVID signature")
+        ));
+    }
+
+    #[tokio::test]
+    async fn verify_binding_rejects_tampered_spiffe_signature() {
+        let (mut binding, doc, _ca) = make_verifiable_binding().await;
+
+        // Replace DID signature with a signature from a different key
+        let (other_pk_der, _) = make_app_key();
+        binding.binding_proof.signature_over_svid_by_did =
+            jws_sign_es256(b"spiffe://test.local/ns/apps/sa/my-app", &other_pk_der).unwrap();
+
+        let result = verify_binding(&binding, &doc, None);
+        assert!(!result.is_verified());
+        assert!(matches!(
+            result,
+            BindingVerification::Failed { ref reason } if reason.contains("DID signature")
+        ));
+    }
+
+    #[tokio::test]
+    async fn verify_binding_rejects_missing_did_key() {
+        let (mut binding, doc, _ca) = make_verifiable_binding().await;
+
+        // Point to a key ID that doesn't exist in the DID document
+        binding.binding_proof.did_key_id = "did:web:my-app.test.local#nonexistent-key".into();
+
+        let result = verify_binding(&binding, &doc, None);
+        assert!(!result.is_verified());
+        assert!(matches!(
+            result,
+            BindingVerification::Failed { ref reason } if reason.contains("not found")
+        ));
+    }
+
+    #[tokio::test]
+    async fn verify_binding_rejects_wrong_trust_bundle() {
+        let (binding, doc, _ca) = make_verifiable_binding().await;
+
+        // Create a different CA's trust bundle
+        let other_ca = SelfSignedCa::new("other.domain").unwrap();
+
+        let result = verify_binding(&binding, &doc, Some(other_ca.trust_bundle()));
+
+        // Should be partially verified — cross-signatures are valid but chain fails
+        assert!(result.is_verified());
+        assert!(!result.is_fully_verified());
+        assert!(matches!(
+            result,
+            BindingVerification::PartiallyVerified { ref reason, .. }
+                if reason.contains("chain verification failed")
+        ));
+    }
+
+    #[tokio::test]
+    async fn verify_binding_rejects_empty_attestation_chain() {
+        let (mut binding, doc, _ca) = make_verifiable_binding().await;
+
+        binding.binding_proof.attestation_chain = vec![];
+
+        let result = verify_binding(&binding, &doc, None);
+        assert!(!result.is_verified());
+        assert!(matches!(
+            result,
+            BindingVerification::Failed { ref reason } if reason.contains("empty")
+        ));
     }
 }
