@@ -22,7 +22,9 @@
 //! - [`did_resolver`] - DID resolution trait and in-memory resolver
 //! - [`webfinger`] - WebFinger discovery protocol (RFC 7033)
 //! - [`dpop`] - OAuth2 DPoP proof-of-possession tokens (RFC 9449)
+//! - [`approval_bundle`] - Signed preflight approval bundles (JWS ES256)
 
+pub mod approval_bundle;
 pub mod attestation;
 pub mod ca;
 pub mod certificate;
@@ -43,6 +45,9 @@ pub mod wallet;
 pub mod webfinger;
 pub mod workload_api;
 
+pub use approval_bundle::{
+    ApprovalBundleBuilder, ApprovalBundleClaims, ApprovalBundleHeader, ApprovalBundleVerifier,
+};
 pub use attestation::{AttestationRequirements, LaunchAttestation};
 #[cfg(feature = "spire")]
 pub use ca::{auto_detect_ca, SpireCaClient, DEFAULT_SPIRE_SOCKET, SPIFFE_ENDPOINT_ENV};

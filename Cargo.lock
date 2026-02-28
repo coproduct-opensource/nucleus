@@ -2193,6 +2193,7 @@ dependencies = [
  "async-trait",
  "base64",
  "chrono",
+ "hex",
  "pem",
  "proptest",
  "prost",
