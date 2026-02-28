@@ -15,6 +15,8 @@ categories = ["cryptography", "network-programming"]
 default = []
 # Enable SPIRE integration for production deployments
 spire = ["dep:spiffe"]
+# Enable HTTP-based did:web resolution (requires network)
+resolver = ["dep:reqwest"]
 
 [dependencies]
 # Crypto
@@ -44,6 +46,9 @@ pem = "3"
 time = "0.3"
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+# HTTP client for did:web resolution (optional)
+reqwest = { workspace = true, features = ["rustls-tls-manual-roots", "json"], optional = true }
 
 # SPIRE integration (optional)
 spiffe = { version = "0.11", optional = true, features = ["workload-api-x509"] }

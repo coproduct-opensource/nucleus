@@ -56,7 +56,9 @@ pub use did_crypto::{
     cert_fingerprint, chain_from_base64url, chain_to_base64url, extract_ec_p256_jwk,
     jws_sign_es256, jws_verify_es256,
 };
-pub use did_resolver::{DidResolver, InMemoryDidResolver};
+#[cfg(feature = "resolver")]
+pub use did_resolver::HttpDidResolver;
+pub use did_resolver::{CachingDidResolver, DidResolver, InMemoryDidResolver};
 pub use identity::Identity;
 pub use manager::SecretManager;
 pub use session::{SessionId, SessionIdentity};
