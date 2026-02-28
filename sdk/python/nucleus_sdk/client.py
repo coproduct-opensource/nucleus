@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import requests
 
 from .auth import AuthStrategy, MtlsConfig
 from .errors import NucleusError, RequestError, from_error_payload
-from .models import PodSpec
+from .models import PodInfo, PodSpec
 
 
 class BaseClient:
@@ -163,9 +163,11 @@ class ProxyClient(BaseClient):
         """Create a sub-pod. Only available in orchestrator mode."""
         return self._request("POST", "/v1/pod/create", {"spec_yaml": spec_yaml, "reason": reason})
 
-    def list_pods(self) -> Dict[str, Any]:
+    def list_pods(self) -> List[PodInfo]:
         """List managed sub-pods."""
-        return self._request("POST", "/v1/pod/list", {})
+        data = self._request("POST", "/v1/pod/list", {})
+        pods = data.get("pods", [])
+        return [PodInfo.from_dict(p) for p in pods]
 
     def pod_status(self, pod_id: str) -> Dict[str, Any]:
         """Get sub-pod status."""
@@ -178,6 +180,10 @@ class ProxyClient(BaseClient):
     def cancel_pod(self, pod_id: str, reason: str = "") -> Dict[str, Any]:
         """Cancel a running sub-pod."""
         return self._request("POST", "/v1/pod/cancel", {"pod_id": pod_id, "reason": reason})
+
+    def get_receipt(self, pod_id: str) -> Dict[str, Any]:
+        """Get execution receipt for a completed sub-pod."""
+        return self._request("POST", "/v1/pod/receipt", {"pod_id": pod_id})
 
 
 class NodeClient(BaseClient):
@@ -193,6 +199,10 @@ class NodeClient(BaseClient):
 
     def cancel_pod(self, pod_id: str) -> Dict[str, Any]:
         return self._request("POST", f"/v1/pods/{pod_id}/cancel")
+
+    def get_receipt(self, pod_id: str) -> Dict[str, Any]:
+        """Get execution receipt for a completed pod."""
+        return self._request("GET", f"/v1/pods/{pod_id}/receipt")
 
 
 class Nucleus:

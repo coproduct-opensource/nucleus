@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -54,3 +54,49 @@ class PodSpec:
         }
 
         return spec
+
+
+@dataclass
+class PodInfo:
+    """Information about a managed pod."""
+
+    id: str
+    created_at_unix: int
+    state: str
+    name: Optional[str] = None
+    exit_code: Optional[int] = None
+    error: Optional[str] = None
+    proxy_addr: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> PodInfo:
+        # nucleus-node uses externally-tagged serde for state:
+        # "running" | {"exited": {"code": N}} | {"error": {"message": "..."}}
+        raw_state = d.get("state", "unknown")
+        state: str
+        exit_code: Optional[int] = None
+        error: Optional[str] = None
+
+        if isinstance(raw_state, str):
+            state = raw_state
+        elif isinstance(raw_state, dict):
+            if "exited" in raw_state:
+                state = "exited"
+                exit_code = raw_state["exited"].get("code")
+            elif "error" in raw_state:
+                state = "error"
+                error = raw_state["error"].get("message")
+            else:
+                state = str(raw_state)
+        else:
+            state = str(raw_state)
+
+        return cls(
+            id=d["id"],
+            name=d.get("name"),
+            created_at_unix=d.get("created_at_unix", 0),
+            state=state,
+            exit_code=exit_code,
+            error=error,
+            proxy_addr=d.get("proxy_addr"),
+        )

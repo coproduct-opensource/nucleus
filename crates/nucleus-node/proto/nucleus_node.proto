@@ -93,6 +93,27 @@ message GetPodResponse {
   PodInfo pod = 1;
 }
 
+// Execution receipt — cryptographic proof of pod execution outcome.
+// Built from the tool-proxy's exit report plus node-level metadata.
+message ExecutionReceipt {
+  string pod_id = 1;
+  string workspace_hash = 2;
+  string audit_tail_hash = 3;
+  uint64 audit_entry_count = 4;
+  uint64 timestamp_unix = 5;
+  string manifest_hash = 6;
+  string sandbox_tier = 7;
+  string spiffe_id = 8;
+}
+
+message GetReceiptRequest {
+  string pod_id = 1;
+}
+
+message GetReceiptResponse {
+  ExecutionReceipt receipt = 1;
+}
+
 service NodeService {
   // Pod lifecycle management
   rpc CreatePod(CreatePodRequest) returns (CreatePodResponse);
@@ -106,4 +127,7 @@ service NodeService {
   // Streaming observability for orchestrators
   rpc StreamPodLogs(StreamLogsRequest) returns (stream LogEntry);
   rpc WatchPodState(WatchPodRequest) returns (stream PodStateChange);
+
+  // Execution receipt for auditing
+  rpc GetReceipt(GetReceiptRequest) returns (GetReceiptResponse);
 }

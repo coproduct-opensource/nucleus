@@ -2497,6 +2497,62 @@ impl NodeService for GrpcService {
 
         Ok(GrpcResponse::new(ReceiverStream::new(rx)))
     }
+
+    async fn get_receipt(
+        &self,
+        request: Request<proto::GetReceiptRequest>,
+    ) -> Result<GrpcResponse<proto::GetReceiptResponse>, Status> {
+        auth::authorize_grpc_operation(
+            &request,
+            &self.state.authz_policy,
+            auth::Operation::GetReceipt,
+        )?;
+
+        let pod_id_str = request.into_inner().pod_id;
+        let id =
+            Uuid::parse_str(&pod_id_str).map_err(|_| Status::invalid_argument("invalid pod id"))?;
+        let handle = get_pod(&self.state, id)
+            .await
+            .map_err(|_| Status::not_found("pod not found"))?;
+
+        // Pod must be exited to have a receipt
+        let state = handle.status().await;
+        if !matches!(state, PodState::Exited { .. }) {
+            return Err(Status::failed_precondition(
+                "pod has not exited yet; receipt not available",
+            ));
+        }
+
+        // Read the exit report from the pod's workspace
+        let report_path = handle.spec.spec.work_dir.join(".nucleus-exit-report.json");
+        let report_json = tokio::fs::read_to_string(&report_path).await.map_err(|e| {
+            Status::not_found(format!(
+                "exit report not found at {}: {e}",
+                report_path.display()
+            ))
+        })?;
+
+        let report: nucleus_spec::ExitReport = serde_json::from_str(&report_json)
+            .map_err(|e| Status::internal(format!("failed to parse exit report: {e}")))?;
+
+        // Compute manifest hash from the pod's spec
+        let spec_yaml = serde_yaml::to_string(&handle.spec).unwrap_or_default();
+        let manifest_hash =
+            nucleus_identity::approval_bundle::compute_manifest_hash(spec_yaml.as_bytes());
+
+        Ok(GrpcResponse::new(proto::GetReceiptResponse {
+            receipt: Some(proto::ExecutionReceipt {
+                pod_id: id.to_string(),
+                workspace_hash: report.workspace_hash,
+                audit_tail_hash: report.audit_tail_hash,
+                audit_entry_count: report.audit_entry_count,
+                timestamp_unix: report.timestamp_unix,
+                manifest_hash,
+                sandbox_tier: String::new(), // TODO: extract from pod metadata
+                spiffe_id: String::new(),    // TODO: extract from pod metadata
+            }),
+        }))
+    }
 }
 
 /// Stream log file contents to a channel
