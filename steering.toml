@@ -1,0 +1,135 @@
+# Steering Doc — Nucleus (Vendor-Agnostic Execution Runtime)
+#
+# This file is interpreted by orchestrator daemons (e.g., workstream-kg)
+# to configure convention injection, autonomy zones, and feature adoption.
+#
+# NO vendor-specific references permitted in this file or this repo.
+
+[meta]
+version = "1"
+repo = "nucleus"
+
+# ── Architectural Invariants ──────────────────────────────────────────────
+# Hard constraints. Violations block PRs.
+
+[[invariants]]
+id = "vendor-agnostic"
+description = "No vendor-specific code (Anthropic, Claude, OpenAI, etc.)"
+severity = "block"
+detector = "regex"
+condition = '(?i)(anthropic|claude|openai|gpt-4|gemini)'
+applies_to = ["**/*.rs", "**/*.md", "**/*.toml"]
+
+[[invariants]]
+id = "pkcs8-format"
+description = "rustls requires PKCS#8 format, not SEC1"
+severity = "warn"
+detector = "regex"
+condition = 'BEGIN.EC.PRIV'
+applies_to = ["**/*.rs", "**/*.pem"]
+
+[[invariants]]
+id = "generic-credentials"
+description = "Credential specs must use generic env vars, not vendor-specific fields"
+severity = "block"
+detector = "regex"
+condition = '(?i)(claude_oauth|anthropic_api_key|openai_key)\s*:'
+applies_to = ["**/*.rs", "**/*.proto"]
+
+# ── Conventions ──────────────────────────────────────────────────────────
+
+[[conventions]]
+id = "spiffe-service-identity"
+category = "security/spiffe_auth"
+priority = "high"
+title = "Use SPIFFE for service-to-service authentication"
+prompt_injection = """
+This codebase uses SPIFFE identities for all service-to-service auth.
+Format: spiffe://<trust-domain>/ns/<namespace>/sa/<service-account>
+Use nucleus-identity::CaClient trait for certificate operations.
+Never use raw API keys or shared secrets for internal service auth."""
+applies_to = ["**/grpc/**", "**/auth/**", "**/mtls/**"]
+anti_patterns = [
+    "Raw API keys for internal service auth",
+    "Shared secrets between services",
+    "HMAC signing for service-to-service calls",
+]
+
+[conventions.enforcement]
+severity = "warn"
+detector = "regex"
+condition = 'HMAC|shared.?secret|api.?key.*internal'
+
+[[conventions]]
+id = "grpc-internal"
+category = "service_comm/proto_first"
+priority = "medium"
+title = "Internal services use gRPC with Protocol Buffers"
+prompt_injection = """
+All internal service-to-service APIs use gRPC with Protocol Buffers.
+Proto files in crates/nucleus-proto/ are the source of truth.
+REST/HTTP only for external-facing endpoints.
+gRPC port convention: HTTP port + 1000."""
+applies_to = ["**/proto/**", "**/grpc/**", "**/*_client.rs"]
+anti_patterns = ["Internal services communicating via REST/HTTP"]
+
+[[conventions]]
+id = "rustls-ring-provider"
+category = "security/tls_config"
+priority = "high"
+title = "Install ring crypto provider before TLS"
+prompt_injection = """
+Must call rustls::crypto::ring::default_provider().install_default() before
+any TLS operation. rustls requires PKCS#8 format private keys.
+Use 'rustls-tls-manual-roots' feature for reqwest, not 'rustls-tls'."""
+applies_to = ["**/main.rs", "**/grpc_tls.rs", "**/mtls.rs"]
+anti_patterns = [
+    "Using aws-lc-rs crypto provider",
+    "SEC1 format private keys with rustls",
+]
+
+[[conventions]]
+id = "lattice-guard-property-tests"
+category = "custom/testing"
+priority = "medium"
+title = "Lattice operations must have property-based tests"
+prompt_injection = """
+All lattice operations (meet, join, leq) must be tested with proptest
+to verify algebraic laws: associativity, commutativity, idempotency.
+Use proptest::proptest! macro with arbitrary input generation."""
+applies_to = ["**/lattice-guard/src/**"]
+anti_patterns = ["Testing lattice ops with only hardcoded examples"]
+
+# ── Autonomy Zones ──────────────────────────────────────────────────────
+
+[[autonomy]]
+paths = ["crates/lattice-guard/src/**"]
+level = "low"
+reason = "Security-critical lattice math — changes require review"
+required_agents = ["security"]
+
+[[autonomy]]
+paths = ["crates/nucleus/src/**"]
+level = "low"
+reason = "Core sandbox enforcement — changes require review"
+
+[[autonomy]]
+paths = ["crates/*/tests/**", "tests/**"]
+level = "full"
+reason = "Test code — safe for autonomous work"
+
+[[autonomy]]
+paths = ["crates/nucleus-tool-proxy/src/**"]
+level = "standard"
+reason = "Tool proxy — standard CI gating"
+
+# ── Feature Adoption ────────────────────────────────────────────────────
+
+[[features]]
+id = "otel-init"
+description = "Every service binary initializes OpenTelemetry"
+required_in = ["**/main.rs"]
+detector = "regex"
+condition = 'init_tracing|init_otel|TracerProvider|tracing_subscriber'
+adopted_threshold = 0.8
+work_type = "improve_code_quality"
