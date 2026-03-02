@@ -52,7 +52,7 @@ tracing = { workspace = true }
 reqwest = { workspace = true, features = ["rustls-tls-manual-roots", "json"], optional = true }
 
 # SPIRE integration (optional)
-spiffe = { version = "0.11", optional = true, features = ["workload-api-x509"] }
+spiffe = { version = "0.12", optional = true, features = ["workload-api-x509"] }
 futures-util = { version = "0.3", optional = true }
 
 [dev-dependencies]
