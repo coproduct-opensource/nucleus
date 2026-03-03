@@ -1,0 +1,32 @@
+# Groundtruth configuration for coproduct-opensource/nucleus
+# https://github.com/coproduct-opensource/nucleus
+
+enabled: true
+
+# Watch the main CI workflow (required status checks: Clippy, Tests, Rustfmt)
+watch_workflows:
+  - "CI"
+
+# Budget per fix attempt
+budget_limit_usd: 3.0
+
+# Auto-merge: enabled, CI required, conservative file/cost caps
+auto_merge:
+  enabled: true
+  require_ci_pass: true
+  max_cost_usd: 2.00
+  max_files_changed: 10
+  allowed_risk_grades:
+    - none
+    - low
+
+# Labels the daemon adds to its PRs
+pr_labels:
+  - groundtruth
+  - autonomous
+
+# Autonomy cap: full (public repo, branch protection enforces safety)
+autonomy_cap: full
+
+# Max concurrent fix sessions for this repo
+max_concurrent_fixes: 2
