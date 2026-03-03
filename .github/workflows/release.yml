@@ -39,7 +39,7 @@ jobs:
           mkdir -p dist
           tar -C target/release -czf "dist/nucleus-node-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-node
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: nucleus-node-${{ matrix.target }}
           path: dist/*.tar.gz
@@ -78,12 +78,12 @@ jobs:
           mkdir -p dist
           tar -C target/${{ matrix.target }}/release -czf "dist/nucleus-node-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-node
       - name: Upload nucleus-node artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: nucleus-node-${{ matrix.target }}
           path: dist/*.tar.gz
       - name: Upload guest binaries for rootfs build
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: guest-binaries-${{ matrix.arch }}
           path: |
@@ -135,7 +135,7 @@ jobs:
           mkdir -p dist
           gzip -9 -c build/firecracker/${{ matrix.arch }}/rootfs.ext4 > "dist/nucleus-rootfs-${VERSION}-${{ matrix.arch }}.ext4.gz"
       - name: Upload rootfs artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: rootfs-${{ matrix.arch }}
           path: dist/*.ext4.gz
@@ -155,7 +155,7 @@ jobs:
           cp scripts/lima/nucleus-aarch64.yaml "dist/nucleus-lima-${VERSION}-aarch64.yaml"
           cp scripts/lima/nucleus-x86_64.yaml "dist/nucleus-lima-${VERSION}-x86_64.yaml"
       - name: Upload Lima templates
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: lima-templates
           path: dist/*.yaml
