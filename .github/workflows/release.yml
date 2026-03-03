@@ -109,7 +109,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Download guest binaries
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: guest-binaries-${{ matrix.arch }}
           path: target/${{ matrix.target }}/release
@@ -167,7 +167,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           path: dist
       - name: Collect assets
@@ -223,7 +223,7 @@ jobs:
         env:
           HOMEBREW_TAP: ${{ secrets.HOMEBREW_TAP }}
           HOMEBREW_TOKEN: ${{ secrets.HOMEBREW_TOKEN }}
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         if: ${{ steps.brew_gate.outputs.enabled == 'true' }}
         with:
           path: dist
