@@ -6,45 +6,75 @@
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/coproduct-opensource/nucleus/badge)](https://securityscorecards.dev/viewer/?uri=github.com/coproduct-opensource/nucleus)
 [![Docs](https://img.shields.io/badge/docs-github.io-blue)](https://coproduct-opensource.github.io/nucleus/)
 
-**Enforced permission envelopes for AI agents** — policy *and* enforcement, in one stack.
+**Security for AI agents that actually enforces.** Policy, enforcement, and audit — in one stack.
 
-Nucleus is built around a blunt observation: **policy without enforcement is theater**.
-If an agent can still read secrets, fetch untrusted content, and exfiltrate—your YAML is just vibes.
+Your AI agent has access to secrets, processes untrusted content, and can push code. That's the [lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/) — and your YAML config file isn't stopping it.
 
-## What It Does
+Nucleus provides three layers of defense:
 
-Nucleus runs each agent task inside an isolated runtime (Firecracker microVMs) and exposes side effects only through an enforcing tool proxy.
+1. **Scan** — Static analysis of agent configurations to catch dangerous permission combinations *before* deployment
+2. **Enforce** — Runtime permission envelopes in Firecracker microVMs that *cannot* be escalated
+3. **Audit** — Hash-chained, cryptographically verifiable logs of every agent action
 
-**Core properties**
-- **Enforced side effects:** file IO, command execution, and network are only reachable through the proxy.
-- **Non-escalating envelope:** permissions can only **tighten** or the task is **terminated**—never silently relaxed.
-- **Composable policy:** permissions compose predictably across a workflow; dangerous combinations trigger additional gates.
+## Start Here: Audit Your Agent Config
 
-*("Non-escalating" is monotone in the order-theory sense: movement is constrained to one direction.)*
+```bash
+cargo install nucleus-audit
 
-## The Safety Primitive: Lethal Trifecta Gating
+# Scan a PodSpec for security issues
+nucleus-audit scan --pod-spec your-agent.yaml
 
-Nucleus bakes in a guardrail against the [lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/):
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    THE LETHAL TRIFECTA                          │
-│                                                                 │
-│   ┌──────────────┐    ┌──────────────┐    ┌──────────────┐     │
-│   │   Private    │    │  Untrusted   │    │ Exfiltration │     │
-│   │    Data      │ +  │   Content    │ +  │    Vector    │     │
-│   │   Access     │    │  Exposure    │    │              │     │
-│   └──────────────┘    └──────────────┘    └──────────────┘     │
-│         ↓                    ↓                   ↓              │
-│   read_files ≥ LowRisk   web_fetch ≥ LowRisk   git_push ≥ LowRisk │
-│                          web_search ≥ LowRisk  create_pr ≥ LowRisk│
-│                                                run_bash ≥ LowRisk │
-│                                                                 │
-│   When ALL THREE are autonomous → Prompt injection = Data theft │
-└─────────────────────────────────────────────────────────────────┘
+# Example output:
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  Nucleus PodSpec Security Scan                              ║
+# ╠══════════════════════════════════════════════════════════════╣
+# ║  Pod: yolo-agent                                            ║
+# ║  Policy: permissive                                         ║
+# ║  Findings: 4 critical, 2 high, 1 medium                    ║
+# ╠══════════════════════════════════════════════════════════════╣
+# ║  [CRITICAL] Lethal trifecta: private data + untrusted       ║
+# ║             content + exfiltration all at autonomous levels  ║
+# ║  [CRITICAL] 7 credentials exposed — exceeds safe threshold  ║
+# ║  [HIGH]     No network restrictions (full egress)           ║
+# ║  [HIGH]     No VM isolation (no Firecracker/seccomp)        ║
+# ╚══════════════════════════════════════════════════════════════╝
+# Exit code: 1 (critical or high findings)
 ```
 
-When all three are present at autonomous levels, Nucleus **adds approval obligations** to exfiltration operations.
+The scan checks for trifecta risk, permission surface area, network posture, isolation level, credential exposure, and timeout hygiene. Exit code is non-zero when critical or high findings exist — drop it into CI and block unsafe deployments.
+
+```bash
+# JSON output for CI pipelines
+nucleus-audit scan --pod-spec agent.yaml --format json
+
+# Cross-reference with runtime audit logs
+nucleus-audit scan --pod-spec agent.yaml --audit-log /var/log/nucleus/agent.jsonl
+```
+
+## The Lethal Trifecta
+
+The core security primitive. When an agent has all three capabilities at autonomous levels, prompt injection becomes data exfiltration:
+
+```
+  Private Data Access    +    Untrusted Content    +    Exfiltration Vector
+  ─────────────────────       ──────────────────        ────────────────────
+  read_files ≥ LowRisk       web_fetch ≥ LowRisk      git_push ≥ LowRisk
+  read_env                    web_search ≥ LowRisk     create_pr ≥ LowRisk
+  database access             user input processing    run_bash (curl, etc)
+```
+
+Nucleus detects this combination statically (via `nucleus-audit scan`) and enforces it at runtime (via `lattice-guard`). When the trifecta is complete, exfiltration operations require **explicit human approval** — the agent cannot bypass this.
+
+## Runtime Enforcement
+
+Each agent task runs inside an isolated Firecracker microVM. Side effects are only possible through an enforcing tool proxy.
+
+**Properties that hold at runtime:**
+- **Non-escalating envelope** — permissions can only tighten during execution, never silently relax (monotone in the order-theory sense)
+- **Fail-closed network** — default-deny egress with DNS allowlisting; iptables drift kills the pod
+- **Atomic budget tracking** — cost and token limits enforced lock-free; exhaustion halts the agent
+- **Hash-chained audit** — every tool invocation is logged with cryptographic chaining; tampering is detectable
+- **SPIFFE workload identity** — mTLS between components; no shared secrets on the wire
 
 ```rust
 let executor = Executor::new(&policy, &sandbox, &budget);
@@ -54,103 +84,40 @@ executor.run("git push")?;
 // Error: ApprovalRequired { operation: "git_push" }
 ```
 
+## Permission Lattice
+
+Permissions compose predictably via a mathematical lattice. This isn't academic decoration — it's what makes multi-agent workflows safe:
+
+| Structure | What It Gives You |
+|-----------|-------------------|
+| **Quotient Lattice** | Trifecta detection is a nucleus operator — it's structural, not a regex |
+| **Heyting Algebra** | Conditional permissions: "allow push *if* tests pass" has formal semantics |
+| **Galois Connections** | Translate policies across trust domains without losing guarantees |
+| **Graded Monad** | Risk accumulates through computation chains — you can't hide it |
+| **Modal Operators** | Distinguish "guaranteed safe" (□) from "might be safe" (◇) |
+| **Delegation Chains** | SPIFFE-backed delegation with a ceiling theorem — no escalation beyond parent |
+
+412+ property-tested invariants. The lattice laws (commutative, associative, idempotent, absorption) are verified, not assumed.
+
+For the theory: [docs/THEORY.md](docs/THEORY.md).
+
 ## Crates
 
-| Crate | Description |
-|-------|-------------|
-| **lattice-guard** | Quotient lattice for permissions with mathematical framework (Heyting algebra, Galois connections, graded monads, modal operators) |
-| **nucleus** | Core enforcement: wraps OS APIs with policy checks |
-| **nucleus-cli** | CLI for running tasks with enforced permissions |
-| **nucleus-node** | Node daemon (kubelet analogue) managing Firecracker VMs |
-| **nucleus-identity** | SPIFFE-based workload identity with mTLS and certificate management |
-| **nucleus-tool-proxy** | Tool proxy server running inside pods |
+| Crate | Purpose |
+|-------|---------|
+| **nucleus-audit** | `scan` PodSpecs for misconfigurations; `verify` hash-chained audit logs |
+| **lattice-guard** | Permission lattice with 7 mathematical modules (~4800 LOC, 412+ tests) |
+| **nucleus-node** | Node daemon (kubelet analogue) managing Firecracker microVMs |
+| **nucleus-identity** | SPIFFE workload identity, mTLS, certificate management |
+| **nucleus-tool-proxy** | Enforcing tool proxy running inside pods |
 | **nucleus-mcp** | MCP server bridging to tool-proxy |
-| **nucleus-audit** | Hash-chained audit log verifier |
-| **nucleus-spec** | Shared PodSpec definitions |
+| **nucleus-spec** | PodSpec definitions (policy, network, credentials, isolation) |
+| **nucleus-cli** | CLI for running tasks with enforced permissions |
+| **nucleus** | Core enforcement: wraps OS APIs with policy checks |
 | **nucleus-client** | Client signing utilities |
 | **nucleus-guest-init** | Guest init for Firecracker rootfs |
 | **nucleus-net-probe** | TCP probe for network policy tests |
 | **trifecta-playground** | Interactive TUI demonstrating the permission lattice |
-
-## What Works Today
-
-### Runtime-Enforced (Real Controls, Not Config-Only)
-
-- **MCP tool proxy:** `read`, `write`, `run` (enforced in the microVM)
-- **Firecracker isolation** with default-deny egress in a dedicated netns (Linux)
-- **DNS allowlisting** with pinned resolution (Linux)
-- **iptables drift detection:** if policy changes, the pod is killed (fail-closed)
-- **Time windows** enforced via monotonic clock
-- **Atomic budget tracking** (cost/token limits, lock-free)
-- **Hash-chained audit logs** (`nucleus-audit`)
-- **HMAC-signed approval tokens** with nonce replay protection
-- **SPIFFE workload identity** with mTLS support
-
-### Mathematical Framework (lattice-guard)
-
-- **Frame-theoretic nucleus operators** for type-safe quotient lattices
-- **Heyting algebra** for conditional permissions via intuitionistic implication
-- **Galois connections** for principled trust domain translation
-- **Modal operators** (necessity □ / possibility ◇) for guaranteed vs achievable permissions
-- **Graded monad** for composable risk tracking through computation chains
-- **Property-tested lattice laws** (commutative, associative, idempotent, absorption)
-
-### Defined But Not Fully Wired Yet
-
-- `web_fetch` endpoint exists but MCP doesn't expose it yet
-- `web_search`, `glob_search`, `grep_search` exist in the policy model but aren't enforced yet
-- Seccomp is applied but not yet verified/attested
-- Kani proofs exist locally, not in CI
-
-## What It Is Not
-
-- **Not a general agent platform:** the enforced tool surface is intentionally small right now.
-- **Not a host-compromise solution:** the threat model assumes the enforcement stack is trusted.
-- **Not kernel-escape prevention:** use microVMs/containers appropriately; harden the host.
-
-## Quick Start
-
-```bash
-# Install the CLI + enforced tools
-cargo install nucleus-cli
-cargo install nucleus-mcp
-cargo install nucleus-tool-proxy
-cargo install nucleus-audit
-
-# Run a task with Claude (enforced via tool-proxy + MCP)
-nucleus run --profile fix-issue "Fix the bug in src/main.rs"
-
-# List available permission profiles
-nucleus profiles
-```
-
-Note: `nucleus run` uses `nucleus-node` (Firecracker) for enforcement and
-connects via MCP to the in-VM tool proxy. You must provide:
-- `NUCLEUS_NODE_URL`
-- `NUCLEUS_NODE_AUTH_SECRET`
-- `NUCLEUS_FIRECRACKER_KERNEL_PATH`
-- `NUCLEUS_FIRECRACKER_ROOTFS_PATH`
-- `NUCLEUS_FIRECRACKER_VSOCK_CID` and `NUCLEUS_FIRECRACKER_VSOCK_PORT`
-
-**Current enforced tools:** read, write, run. That's it for now—other tools exist in the policy model but aren't wired to MCP yet.
-
-**macOS users:** See [docs/quickstart/macos.md](docs/quickstart/macos.md) for Lima + Firecracker setup.
-
-## Interactive Demo
-
-The `trifecta-playground` TUI provides an interactive demonstration of the permission lattice:
-
-```bash
-cargo run -p trifecta-playground
-```
-
-Features:
-- **Trifecta screen:** Toggle capabilities and watch risk levels change in real-time
-- **Matrix view:** See all 11 capabilities across preset profiles
-- **Hasse diagram:** Visualize the partial order of permission presets
-- **Meet playground:** Compute the meet (∧) of two permission sets
-- **Chain builder:** Build SPIFFE delegation chains and verify the ceiling theorem
-- **Attack simulator:** See how common attack patterns are blocked
 
 ## Permission Profiles
 
@@ -158,19 +125,14 @@ Features:
 nucleus profiles
 
 # Available profiles:
-#   ✅ read-only       File reading and search only
-#   ✅ fix-issue       Write + bash + git commit (no push/PR)
-#   ✅ restrictive     Minimal permissions (default)
-#   🟡 code-review     Read + limited web search (web not wired)
-#   🟡 web-research    Read + web search/fetch (web not wired)
-#   🟡 full            Everything (trifecta still enforced!)
+#   read_only       File reading and search only
+#   fix_issue       Write + bash + git commit (no push/PR)
+#   code_review     Read + limited search
+#   restrictive     Minimal permissions (default)
+#   full            Everything (trifecta gates still enforced!)
 ```
 
-✅ = works now | 🟡 = policy defined, partial enforcement
-
 ## Custom Permissions
-
-Create a `permissions.toml`:
 
 ```toml
 [capabilities]
@@ -194,19 +156,24 @@ max_output_tokens = 5000
 valid_hours = 1           # Expires after 1 hour
 ```
 
-```bash
-nucleus run --config permissions.toml "Your task here"
-```
+## Example PodSpecs
+
+See [`examples/podspecs/`](examples/podspecs/) for real configurations:
+
+- **`airgapped-review.yaml`** — Code review in a fully airgapped Firecracker VM with seccomp
+- **`secure-codegen.yaml`** — Code generation with filtered network (crates.io, npm, GitHub only)
+- **`permissive-danger.yaml`** — Intentionally insecure config for testing `nucleus-audit scan`
 
 ## Threat Model
 
 **Protects against:**
-- Prompt injection attempting side effects outside the envelope
+- Prompt injection attempting side effects outside the permission envelope
 - Misconfigured tool permissions (enforced at runtime, not advisory)
-- Drift in network policy inside the runtime (fail-closed)
+- Network policy drift inside the runtime (fail-closed)
 - Budget exhaustion attacks (atomic tracking)
 - Privilege escalation via delegation (ceiling theorem)
 - Trust domain confusion (Galois connections)
+- Audit log tampering (hash chain verification)
 
 **Does not protect against:**
 - Compromised host or kernel (enforcement stack is trusted)
@@ -218,105 +185,46 @@ nucleus run --config permissions.toml "Your task here"
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Your Agent                                │
+│                        Your Agent                               │
 ├─────────────────────────────────────────────────────────────────┤
-│                       nucleus-cli                                │
-│     (Claude wrapper, enforced via MCP + tool-proxy by default)   │
+│  nucleus-cli / nucleus-audit scan                               │
+│  (enforce at runtime / catch misconfigs before deploy)          │
 ├─────────────────────────────────────────────────────────────────┤
-│                         nucleus                                  │
+│                         nucleus                                 │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
 │  │   Sandbox    │  │   Executor   │  │   AtomicBudget       │  │
 │  │  (cap-std)   │  │  (process)   │  │   (lock-free)        │  │
 │  └──────────────┘  └──────────────┘  └──────────────────────┘  │
 ├─────────────────────────────────────────────────────────────────┤
-│                      lattice-guard                               │
-│   Capabilities × Obligations × Paths × Commands × Budget × Time  │
-│   + Heyting Algebra + Galois Connections + Graded Monad + Modal  │
+│                      lattice-guard                              │
+│   Capabilities × Obligations × Paths × Commands × Budget × Time │
+│   + Heyting Algebra + Galois Connections + Graded Monad + Modal │
 ├─────────────────────────────────────────────────────────────────┤
-│                    nucleus-identity                              │
-│           SPIFFE workload identity + mTLS + cert rotation        │
+│                    nucleus-identity                             │
+│           SPIFFE workload identity + mTLS + cert rotation       │
 ├─────────────────────────────────────────────────────────────────┤
-│                    Operating System                              │
-│           (cap-std capabilities, atomic ops, quanta)             │
+│           Firecracker microVM / seccomp / netns                 │
+│           (default-deny egress, DNS allowlisting)               │
 └─────────────────────────────────────────────────────────────────┘
-```
-
-## Why a Lattice?
-
-The policy model uses a **permission lattice**—security-speak translation:
-
-- **Composable policy** = predictable aggregate posture across a workflow
-- **Meet operation** = tightening across composition (intersection of capabilities)
-- **Monotone delegation** = no escalation beyond parent envelope (ceiling theorem)
-
-The lattice is an implementation detail. What matters: permissions compose predictably, and dangerous combinations (the trifecta) trigger additional gates automatically.
-
-### Mathematical Extensions
-
-The `lattice-guard` crate provides advanced structures for principled permission modeling:
-
-| Structure | Purpose |
-|-----------|---------|
-| **Frame/Nucleus** | Type-safe quotient lattices via the trifecta nucleus operator |
-| **Heyting Algebra** | Conditional permissions: `(c ∧ a) ≤ b ⟺ c ≤ (a → b)` |
-| **Galois Connections** | Security-preserving translation across trust domains |
-| **Modal Operators** | Distinguish guaranteed (□) from achievable (◇) permissions |
-| **Graded Monad** | Track risk through computation chains with monad laws |
-
-For the PL theory motivation (graded monads, algebraic effects), see [docs/THEORY.md](docs/THEORY.md).
-
-## Firecracker Notes
-
-- Firecracker pods require `--proxy-auth-secret` and `--proxy-approval-secret` for signed tool and approval calls.
-- The driver defaults to Firecracker; local is opt-in via `--allow-local-driver` (no VM isolation).
-- Firecracker runs in a fresh network namespace by default (`--firecracker-netns=false` to disable).
-- Default-deny iptables apply even without `spec.network` (no NIC unless policy is set).
-- DNS allowlisting is enforced via `spec.network.dns_allow` (pinned at pod start).
-- Guest IPv6 is disabled at boot.
-- Audit logs are hash-chained and signed (verify with `nucleus-audit`).
-- Guest init is the Rust binary `nucleus-guest-init`, baked into the rootfs.
-- Run `scripts/firecracker/test-network.sh` to validate egress policy on Linux.
-
-## Command Policy
-
-Command enforcement supports both:
-- **String allow/block** rules (fast, coarse)
-- **Structured argv** patterns (precise)
-
-```rust
-use lattice_guard::{ArgPattern, CommandLattice, CommandPattern};
-
-let mut cmds = CommandLattice::permissive();
-cmds.allow_rule(CommandPattern::exact("cargo", &["test"]));
-cmds.block_rule(CommandPattern {
-    program: "bash".to_string(),
-    args: vec![ArgPattern::AnyRemaining],
-});
-
-assert!(cmds.can_execute("cargo test --release"));
-assert!(!cmds.can_execute("bash -c 'echo hi'"));
 ```
 
 ## Development
 
 ```bash
-# Build all crates
 cargo build --workspace
-
-# Run tests
 cargo test --workspace
-
-# Run the interactive demo
-cargo run -p trifecta-playground
-
-# Run CLI in development
-cargo run -p nucleus-cli -- run --profile fix-issue "Test task"
+cargo run -p trifecta-playground  # Interactive demo
 ```
+
+## What Works Today vs. What's Coming
+
+**Runtime-enforced now:** MCP tool proxy (read/write/run), Firecracker isolation, default-deny egress, DNS allowlisting, iptables drift detection, time windows, atomic budgets, hash-chained audit, HMAC-signed approvals, SPIFFE identity.
+
+**Policy-defined, not yet wired:** `web_fetch` MCP endpoint, `web_search`/`glob_search`/`grep_search` enforcement, seccomp attestation, Kani proofs in CI.
 
 ## Assurance Roadmap
 
-Formal methods plan and minimal proof targets are tracked in `docs/assurance/formal-methods.md`.
-Demo hardening criteria are tracked in `docs/assurance/hardening-checklist.md`.
+Formal methods plan: `docs/assurance/formal-methods.md`. Hardening checklist: `docs/assurance/hardening-checklist.md`.
 
 ## License
 
@@ -324,7 +232,7 @@ Licensed under either of Apache License, Version 2.0 or MIT license at your opti
 
 ## References
 
-- [The Lethal Trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/) - Simon Willison
+- [The Lethal Trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/) — Simon Willison
 - [Container Hardening Against Agentic AI](https://securitytheatre.substack.com/p/container-hardening-against-agentic)
-- [Lattice-based Access Control](https://en.wikipedia.org/wiki/Lattice-based_access_control) - Denning 1976, Sandhu 1993
-- [cap-std](https://github.com/bytecodealliance/cap-std) - Capability-based filesystem
+- [Lattice-based Access Control](https://en.wikipedia.org/wiki/Lattice-based_access_control) — Denning 1976, Sandhu 1993
+- [cap-std](https://github.com/bytecodealliance/cap-std) — Capability-based filesystem
