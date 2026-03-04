@@ -371,17 +371,37 @@ Policy without enforcement is theater.
 
 ---
 
-# The Obvious Question
+# The Honest Problem
 
-We just showed you 5 fail-open bugs in our own platform.
+We have 6 Kani SMT proofs, 233 proptest algebraic laws, and an OWASP gauntlet.
 
-Why should you trust that **Nucleus itself** isn't the same?
+**None of them would have caught these 5 bugs.**
 
-Fair question. Here's the answer: **the lattice-guard is machine-verified**.
+The proofs verify the **lattice algebra** — if enforcement happens,
+permissions compose correctly and can only tighten.
 
-Not "we wrote tests." Not "we ran a linter."
+Every bug was in the **integration layer** — the code that decides
+**whether to enforce at all**.
 
-**SMT solvers prove the algebraic laws hold for all inputs.**
+---
+
+# Two Different Failure Modes
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  "Is the lock correct?"          vs.   "Is the lock on?"    │
+│                                                              │
+│  Kani proves: ν(ν(x)) = ν(x)          maybe_auth! says:    │
+│  Proptest: a ∧ (b ∨ c) =              if auth_enabled {    │
+│    (a ∧ b) ∨ (a ∧ c)                    enforce()          │
+│  Gauntlet: CVE coverage                } else {             │
+│                                          pass_through()  ←  │
+│  ✅ Formally verified                  }                    │
+│                                        ❌ Not verified      │
+└──────────────────────────────────────────────────────────────┘
+```
+
+Our formal methods proved the lock works. They didn't check if anyone locked it.
 
 ---
 
@@ -471,6 +491,41 @@ Every layer is auditable. `cargo kani -p lattice-guard` to verify yourself.
 
 ---
 
+# The Gap: Integration Verification
+
+What's proven today vs. what isn't:
+
+| Layer | Verified? | Method |
+|-------|-----------|--------|
+| Lattice algebra (meet, join, distributivity) | **Yes** | Kani SMT, proptest |
+| Nucleus operator (idempotent, deflationary, monotone) | **Yes** | Kani SMT |
+| Trifecta constraint (obligations added correctly) | **Yes** | Proptest, OWASP gauntlet |
+| Attack resilience (real CVEs blocked) | **Yes** | OWASP gauntlet, fuzz |
+| Daemon activates enforcement on all paths | **No** | Found by audit |
+| Config defaults are fail-closed | **No** | Found by audit |
+| gRPC server refuses insecure fallback | **No** | Found by audit |
+
+The bottom three rows are where the 5 bugs lived.
+
+---
+
+# The Lesson
+
+Formal methods on the **engine** don't help if the **ignition** is optional.
+
+You need both:
+
+1. **Correct enforcement** — the lattice proofs guarantee this
+2. **Mandatory enforcement** — fail-closed defaults guarantee this
+
+We had (1) without (2). That's what the 5 fixes addressed.
+
+**Next:** extend Kani proofs to the integration boundary —
+prove that every code path through the daemon either
+enforces the lattice or panics. No silent degradation.
+
+---
+
 <!-- _class: lead -->
 <!-- _paginate: false -->
 
@@ -478,22 +533,22 @@ Every layer is auditable. `cargo kani -p lattice-guard` to verify yourself.
 
 ---
 
-# Advisory Security Doesn't Work
+# What We Actually Learned
 
 We build security tools for AI agents.
 
-We still had **five critical fail-open vulnerabilities**.
+We had a **formally verified permission engine** sitting behind
+**five fail-open integration bugs**.
 
 <br>
 
-**Every default must be secure.**
-**Every missing config must be a hard failure.**
-**Every policy must be enforced, not just declared.**
+The lattice algebra was correct. The deployment activation was not.
 
 <br>
 
-> Warn-and-continue is indistinguishable from no security
-> in the deployment where someone forgot an env var.
+**Formal methods are necessary but not sufficient.**
+**Fail-closed defaults are the other half.**
+**Neither works without the other.**
 
 ---
 
