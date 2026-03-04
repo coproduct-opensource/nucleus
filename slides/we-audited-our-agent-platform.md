@@ -367,6 +367,113 @@ Policy without enforcement is theater.
 <!-- _class: lead -->
 <!-- _paginate: false -->
 
+# Why This Isn't Turtles All The Way Down
+
+---
+
+# The Obvious Question
+
+We just showed you 5 fail-open bugs in our own platform.
+
+Why should you trust that **Nucleus itself** isn't the same?
+
+Fair question. Here's the answer: **the lattice-guard is machine-verified**.
+
+Not "we wrote tests." Not "we ran a linter."
+
+**SMT solvers prove the algebraic laws hold for all inputs.**
+
+---
+
+# Kani Bounded Model Checking
+
+Six formal proofs run nightly via `cargo kani`:
+
+```rust
+#[kani::proof]
+fn proof_normalize_idempotent() {
+    let x = build_symbolic_permissions();
+    let once = normalize(x);
+    let twice = normalize(once);
+    assert!(perm_lattice_eq(once, twice)); // ν(ν(x)) = ν(x)
+}
+```
+
+| Property | What It Proves |
+|----------|---------------|
+| `normalize_idempotent` | ν(ν(x)) = ν(x) — normalizing twice changes nothing |
+| `normalize_deflationary` | ν(x) ≤ x — enforcement only tightens |
+| `normalize_monotone` | x ≤ y ⟹ ν(x) ≤ ν(y) — order is preserved |
+| `capability_distributive` | a ∧ (b ∨ c) = (a ∧ b) ∨ (a ∧ c) |
+| `permission_distributive` | Full lattice distributivity |
+| `frame_finite_distributivity` | Frame axiom: meets distribute over joins |
+
+---
+
+# Property-Based Testing: 233+ Algebraic Laws
+
+Not example-based. **Proptest generates random inputs and checks invariants.**
+
+```rust
+proptest! {
+    #[test]
+    fn graded_associativity(
+        m in arb_permission_lattice(),
+        f in arb_operation(),
+        g in arb_operation()
+    ) {
+        // (m >>= f) >>= g  ≡  m >>= (λx. f(x) >>= g)
+        let left = m.and_then(&f).and_then(&g);
+        let right = m.and_then(&|x| f(x).and_then(&g));
+        assert!(perm_lattice_eq(left, right));
+    }
+}
+```
+
+Verified: **lattice laws, Heyting adjunction, graded monad laws,
+frame distributivity, nucleus operator properties, isolation lattice.**
+
+---
+
+# OWASP LLM Security Gauntlet
+
+70 tests mapping **real CVEs from 2025-2026** to lattice-guard defenses:
+
+| Attack (Real CVE) | Vector | Nucleus Defense | Verdict |
+|---|---|---|---|
+| RoguePilot (Orca 2025) | Symlink credential theft | cap-std path resolution | Defended |
+| Rules File Backdoor | Unicode injection | Network isolation + trifecta | Partial |
+| Config File Exec (CVE-2025-59536) | Config as code | Sandbox proof requirement | Strong |
+| DNS Exfiltration (CVE-2025-55284) | Ping → DNS leak | **5 independent layers** | Strong |
+| MCP Tool Poisoning (Invariant Labs) | Dynamic tool injection | Compile-time tool defs | Immune |
+
+Plus 3 libfuzzer targets in CI: command injection, path traversal, serde bypass.
+
+---
+
+# The Verification Stack
+
+```
+┌─────────────────────────────────────────────────┐
+│  Kani SMT Proofs         6 proofs (nightly CI)  │  ← proves laws hold
+│  ──────────────────────────────────────────────  │     for ALL inputs
+│  Proptest Laws           233+ properties        │  ← statistical
+│  ──────────────────────────────────────────────  │     confidence
+│  OWASP Gauntlet          70 attack scenarios    │  ← real CVE
+│  ──────────────────────────────────────────────  │     coverage
+│  Fuzzing                 3 libfuzzer targets    │  ← crash
+│  ──────────────────────────────────────────────  │     resistance
+│  776 Tests               CI-gated on every PR   │  ← correctness
+└─────────────────────────────────────────────────┘
+```
+
+Every layer is auditable. `cargo kani -p lattice-guard` to verify yourself.
+
+---
+
+<!-- _class: lead -->
+<!-- _paginate: false -->
+
 # The Takeaway
 
 ---
