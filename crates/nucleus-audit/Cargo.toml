@@ -10,7 +10,12 @@ clap = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
 lattice-guard = { path = "../lattice-guard", features = ["serde"] }
+nucleus-spec = { path = "../nucleus-spec" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

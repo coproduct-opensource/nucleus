@@ -1,0 +1,19 @@
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: yolo-agent
+spec:
+  work_dir: /workspace
+  timeout_seconds: 14400
+  policy:
+    type: profile
+    name: permissive
+  credentials:
+    env:
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET}"
+      DATABASE_URL: "postgres://admin:password@prod-db:5432/main"
+      GITHUB_TOKEN: "${GITHUB_TOKEN}"
+      LLM_API_TOKEN: "${LLM_API_TOKEN}"
+      PRIVATE_KEY: "${SIGNING_KEY}"
+      SLACK_WEBHOOK: "${SLACK_URL}"
+      ROOT_PASSWORD: "${ROOT_PW}"

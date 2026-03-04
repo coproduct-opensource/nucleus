@@ -1,0 +1,20 @@
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: code-reviewer
+  namespace: agents
+spec:
+  work_dir: /workspace
+  timeout_seconds: 900
+  policy:
+    type: profile
+    name: code_review
+  network:
+    deny:
+      - "0.0.0.0/0"
+  image:
+    kernel_path: /var/lib/nucleus/vmlinux
+    rootfs_path: /var/lib/nucleus/rootfs.ext4
+    read_only: true
+  seccomp:
+    mode: default

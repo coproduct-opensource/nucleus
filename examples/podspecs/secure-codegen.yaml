@@ -1,0 +1,23 @@
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: secure-codegen
+  namespace: agents
+spec:
+  work_dir: /workspace
+  timeout_seconds: 1800
+  policy:
+    type: profile
+    name: fix_issue
+  network:
+    deny: []
+    dns_allow:
+      - crates.io
+      - static.crates.io
+      - index.crates.io
+      - registry.npmjs.org
+      - github.com
+      - api.github.com
+  credentials:
+    env:
+      LLM_API_TOKEN: "${LLM_API_TOKEN}"
