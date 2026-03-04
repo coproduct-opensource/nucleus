@@ -17,6 +17,8 @@
 - [Use Cases](use-cases/README.md)
   - [OpenClaw Hardening](use-cases/openclaw-hardening.md)
   - [Enterprise AI Agents](use-cases/enterprise-ai-agents.md)
+- [Talks & Slides]()
+  - [We Audited Our Own Agent Platform](../slides/we-audited-our-agent-platform.html)
 - [Terminology](terminology.md)
 - [Temporal Workflow](temporal.md)
 - [Theoretical Foundations](THEORY.md)

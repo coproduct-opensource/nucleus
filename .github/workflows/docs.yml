@@ -6,6 +6,8 @@ on:
     branches: [main]
     paths:
       - "docs/**"
+      - "slides/**"
+      - "blog/**"
       - "book.toml"
       - ".github/workflows/docs.yml"
 
@@ -24,10 +26,24 @@ jobs:
         with:
           toolchain: stable
           cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: Install mdBook
         run: cargo install mdbook --locked
       - name: Build docs
         run: mdbook build
+      - name: Build slides
+        run: |
+          mkdir -p book/slides
+          npx --yes @marp-team/marp-cli@latest \
+            -I slides \
+            --html \
+            -o book/slides
+      - name: Copy blog posts
+        run: |
+          mkdir -p book/blog
+          cp blog/*.md book/blog/
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v4
         with:
