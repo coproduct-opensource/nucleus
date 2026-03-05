@@ -138,6 +138,7 @@ fn build_ordered_permissions() -> (PermissionLattice, PermissionLattice) {
 }
 
 #[kani::proof]
+#[kani::solver(cadical)]
 fn proof_normalize_idempotent() {
     let (lhs, _) = build_ordered_permissions();
     let once = lhs.clone().normalize();
@@ -146,6 +147,7 @@ fn proof_normalize_idempotent() {
 }
 
 #[kani::proof]
+#[kani::solver(cadical)]
 fn proof_normalize_deflationary() {
     let (lhs, _) = build_ordered_permissions();
     let normalized = lhs.clone().normalize();
@@ -153,6 +155,8 @@ fn proof_normalize_deflationary() {
 }
 
 #[kani::proof]
+#[kani::solver(cadical)]
+#[kani::unwind(4)]
 fn proof_normalize_monotone() {
     let (lhs, rhs) = build_ordered_permissions();
     assert!(lhs.leq(&rhs));
@@ -203,6 +207,7 @@ fn perm_lattice_eq(a: &PermissionLattice, b: &PermissionLattice) -> bool {
 /// Kani exhaustively verifies this over all 3^12 * 3^12 * 3^12 = 3^36 combinations
 /// (after modular reduction from u8 inputs).
 #[kani::proof]
+#[kani::solver(cadical)]
 fn proof_capability_distributive() {
     let a = arbitrary_caps();
     let b = arbitrary_caps();
@@ -224,6 +229,8 @@ fn proof_capability_distributive() {
 /// paths, budget, commands, time) distributes meet over join. Equality is checked
 /// via `leq` in both directions to avoid UUID/timestamp mismatches.
 #[kani::proof]
+#[kani::solver(cadical)]
+#[kani::unwind(4)]
 fn proof_permission_distributive() {
     let a = build_arbitrary_permission();
     let b = build_arbitrary_permission();
@@ -246,6 +253,8 @@ fn proof_permission_distributive() {
 /// {b, c, d} as a practical approximation of the infinite frame axiom:
 ///   a /\ (\/_{i} b_i) = \/_{i} (a /\ b_i)
 #[kani::proof]
+#[kani::solver(cadical)]
+#[kani::unwind(4)]
 fn proof_frame_finite_distributivity() {
     let a = build_arbitrary_permission();
     let b = build_arbitrary_permission();
