@@ -165,6 +165,7 @@ pub struct LatticeCertificate {
 /// Only [`verify_certificate`] can produce this type, guaranteeing that the
 /// permissions were cryptographically verified.
 #[non_exhaustive]
+#[derive(Clone)]
 pub struct VerifiedPermissions {
     /// The effective permissions at the end of the chain.
     pub effective: PermissionLattice,

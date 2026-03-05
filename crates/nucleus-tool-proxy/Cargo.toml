@@ -48,6 +48,8 @@ lattice-guard = { path = "../lattice-guard", features = ["serde", "spec"] }
 nucleus-permission-market = { path = "../nucleus-permission-market" }
 
 base64 = { workspace = true }
+ring = { workspace = true }
+rust_decimal = { workspace = true }
 pem = "3"
 
 # File search tools
@@ -67,7 +69,6 @@ tokio-vsock = "0.7"
 
 [dev-dependencies]
 tempfile = { workspace = true }
-ring = "0.17"
 
 [lints]
 workspace = true

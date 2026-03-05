@@ -29,6 +29,7 @@ use tracing::{info, warn};
 
 mod attestation;
 mod auth;
+mod cert_bridge;
 mod exit_report;
 #[cfg(feature = "mcp")]
 mod mcp;
@@ -205,6 +206,13 @@ struct Args {
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_DELEGATION_CEILING")]
     delegation_ceiling: Option<String>,
 
+    // === Delegation Certificate Configuration ===
+    /// Hex-encoded Ed25519 public key of the root delegation authority.
+    /// When set, the tool-proxy accepts `x-nucleus-delegation-cert` headers
+    /// and verifies delegation certificates against this root key.
+    #[arg(long, env = "NUCLEUS_CERT_ROOT_PUBKEY")]
+    cert_root_pubkey: Option<String>,
+
     // === Approval Bundle Configuration ===
     /// Require a signed approval bundle at startup.
     /// When set, the tool-proxy refuses to start without a valid JWS bundle
@@ -244,6 +252,8 @@ pub(crate) struct AppState {
     permission_market: Arc<Mutex<PermissionMarket>>,
     /// Cryptographic proof that this process is inside a managed sandbox.
     sandbox_proof: sandbox_proof::SandboxProof,
+    /// Root authority Ed25519 public key for delegation certificate verification.
+    cert_root_pubkey: Option<Arc<Vec<u8>>>,
 }
 
 #[derive(Default)]
@@ -1087,6 +1097,11 @@ async fn main() -> Result<(), ApiError> {
         orchestrator_credentials,
         permission_market: Arc::new(Mutex::new(PermissionMarket::new())),
         sandbox_proof,
+        cert_root_pubkey: args
+            .cert_root_pubkey
+            .as_deref()
+            .and_then(|hex_str| hex::decode(hex_str).ok())
+            .map(Arc::new),
     };
 
     if let Err(err) = emit_boot_report(&state).await {
@@ -1258,6 +1273,7 @@ const APPROVE_PATH: &str = "/v1/approve";
 const HEALTH_PATH: &str = "/v1/health";
 const HEADER_ATTESTATION: &str = "x-nucleus-attestation";
 const HEADER_PERMISSION_BID: &str = "x-nucleus-permission-bid";
+const HEADER_DELEGATION_CERT: &str = "x-nucleus-delegation-cert";
 
 async fn auth_middleware(
     State(state): State<AppState>,
@@ -1374,8 +1390,14 @@ async fn auth_middleware(
 
     let context = auth::verify_http(&parts.headers, &bytes, &state.auth)?;
 
-    // Evaluate permission bid if present
-    let permission_grant = evaluate_permission_bid(&parts.headers, &state);
+    // Evaluate delegation certificate if present (Galois bridge: cert → bid → market).
+    // Falls back to explicit permission bid header.
+    let (permission_grant, certified_perms) =
+        if let Some((grant, certified)) = evaluate_delegation_cert(&parts.headers, &state) {
+            (Some(grant), Some(certified))
+        } else {
+            (evaluate_permission_bid(&parts.headers, &state), None)
+        };
 
     // If the bid was fully denied (no dimensions granted), return 402 with pricing
     if let Some(ref grant) = permission_grant {
@@ -1413,6 +1435,9 @@ async fn auth_middleware(
     if let Some(grant) = permission_grant {
         req.extensions_mut().insert(grant);
     }
+    if let Some(certified) = certified_perms {
+        req.extensions_mut().insert(certified);
+    }
     Ok(next.run(req).await)
 }
 
@@ -1444,6 +1469,89 @@ fn evaluate_permission_bid(headers: &HeaderMap, state: &AppState) -> Option<Perm
     );
 
     Some(grant)
+}
+
+/// Verified delegation certificate permissions, inserted into request extensions.
+/// Downstream handlers read these to enforce the intersection of
+/// certificate attestation and market pricing.
+#[derive(Clone)]
+#[allow(dead_code)] // Fields consumed by downstream handlers
+pub(crate) struct CertifiedPermissions {
+    pub(crate) verified: lattice_guard::certificate::VerifiedPermissions,
+    pub(crate) effective: PermissionLattice,
+}
+
+/// Parse, verify, and evaluate a delegation certificate from request headers.
+///
+/// Flow:
+/// 1. Decode base64 certificate from `x-nucleus-delegation-cert`
+/// 2. Verify Ed25519 chain against root public key
+/// 3. Convert `VerifiedPermissions` → `PermissionBid` via α
+/// 4. Evaluate bid against market → `PermissionGrant`
+/// 5. Intersect grant with certificate → effective `PermissionLattice`
+fn evaluate_delegation_cert(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Option<(PermissionGrant, CertifiedPermissions)> {
+    let cert_header = headers.get(HEADER_DELEGATION_CERT)?;
+    let cert_b64 = cert_header.to_str().ok()?;
+
+    let root_pubkey = state.cert_root_pubkey.as_ref()?;
+
+    let cert_bytes = match base64::engine::general_purpose::STANDARD.decode(cert_b64) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(error = %e, "invalid delegation cert base64");
+            return None;
+        }
+    };
+
+    let cert: lattice_guard::LatticeCertificate = match serde_json::from_slice(&cert_bytes) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = %e, "invalid delegation cert JSON");
+            return None;
+        }
+    };
+
+    let verified = match lattice_guard::verify_certificate(
+        &cert,
+        root_pubkey,
+        chrono::Utc::now(),
+        lattice_guard::certificate::DEFAULT_MAX_CHAIN_DEPTH,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(error = %e, "delegation cert verification failed");
+            return None;
+        }
+    };
+
+    let bid = cert_bridge::certificate_to_bid(&verified);
+
+    let market = state.permission_market.lock().unwrap();
+    let grant = market.evaluate_bid(&bid);
+
+    let effective = cert_bridge::intersect_grant_with_certificate(&grant, &verified);
+
+    tracing::info!(
+        leaf_identity = %verified.leaf_identity,
+        chain_depth = verified.chain_depth,
+        trust_tier = ?bid.trust_tier,
+        granted = grant.granted.len(),
+        denied = grant.denied.len(),
+        total_cost = grant.total_cost,
+        event = "delegation_cert_evaluated",
+        "delegation certificate verified and evaluated against market"
+    );
+
+    Some((
+        grant,
+        CertifiedPermissions {
+            verified,
+            effective,
+        },
+    ))
 }
 
 async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {

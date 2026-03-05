@@ -2373,6 +2373,7 @@ dependencies = [
  "reqwest",
  "ring",
  "rmcp",
+ "rust_decimal",
  "rustls",
  "schemars",
  "serde",
