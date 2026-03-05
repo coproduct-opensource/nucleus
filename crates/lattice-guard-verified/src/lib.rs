@@ -17,6 +17,17 @@
 //! - Inherits all lattice laws from the component lattice
 //! - Meet/join are element-wise min/max
 //!
+//! ## Nucleus Operator (trifecta normalization)
+//! - Idempotent: ν(ν(x)) = ν(x)
+//! - Deflationary: ν(x) ≤ x (adds obligations, never removes)
+//! - **Not meet-preserving**: ν(x∧y) ≠ ν(x)∧ν(y) in general
+//!   (counterexample: threshold triggers for one input but not the meet)
+//! - **Not monotone**: x≤y does not imply ν(x)≤ν(y) in general
+//!   (counterexample: trifecta fires for y but not x)
+//! - Both properties DO hold on the image of ν (fixed points)
+//! - The quotient meet (perm_meet, which normalizes) always produces
+//!   fixed points and is commutative
+//!
 //! # Running Verification
 //!
 //! ```bash
@@ -584,6 +595,743 @@ proof fn proof_join_preserves_validity(a: CapLattice, b: CapLattice)
     ensures
         valid_lattice(lattice_join(a, b)),
 {
+}
+
+// ============================================================================
+// Obligations: modeled as 3 booleans (the exfiltration gates)
+// ============================================================================
+
+/// Models the obligations relevant to the trifecta nucleus.
+///
+/// In the real code, Obligations is a BTreeSet<Operation>. For verification
+/// we only model the 3 exfiltration-vector obligations that the nucleus
+/// operator can add: run_bash, git_push, create_pr.
+///
+/// More obligations = more constrained = SMALLER in the lattice order.
+/// (Obligations order is REVERSED: superset ≤ subset)
+pub struct Obs {
+    pub run_bash: bool,   // requires approval for run_bash
+    pub git_push: bool,   // requires approval for git_push
+    pub create_pr: bool,  // requires approval for create_pr
+}
+
+/// Obligations partial order: more obligations = smaller (more constrained).
+/// a ≤ b iff a.obligations ⊇ b.obligations
+pub open spec fn obs_leq(a: Obs, b: Obs) -> bool {
+    // a ≤ b means a has at least all obligations b has
+    // (a is more or equally constrained)
+    (b.run_bash ==> a.run_bash)
+    && (b.git_push ==> a.git_push)
+    && (b.create_pr ==> a.create_pr)
+}
+
+/// Union of obligations (meet in obligation space = more constrained).
+pub open spec fn obs_union(a: Obs, b: Obs) -> Obs {
+    Obs {
+        run_bash: a.run_bash || b.run_bash,
+        git_push: a.git_push || b.git_push,
+        create_pr: a.create_pr || b.create_pr,
+    }
+}
+
+/// Intersection of obligations (join in obligation space = less constrained).
+pub open spec fn obs_intersection(a: Obs, b: Obs) -> Obs {
+    Obs {
+        run_bash: a.run_bash && b.run_bash,
+        git_push: a.git_push && b.git_push,
+        create_pr: a.create_pr && b.create_pr,
+    }
+}
+
+/// Empty obligations (no approval required = top of obligation lattice).
+pub open spec fn obs_empty() -> Obs {
+    Obs { run_bash: false, git_push: false, create_pr: false }
+}
+
+/// Full obligations (all approvals required = bottom of obligation lattice).
+pub open spec fn obs_full() -> Obs {
+    Obs { run_bash: true, git_push: true, create_pr: true }
+}
+
+// ============================================================================
+// Full Permission Model: Capabilities × Obligations
+// ============================================================================
+
+/// The permission lattice product: capabilities and obligations.
+///
+/// In the real code this also includes paths, budget, commands, time —
+/// but the nucleus operator only touches capabilities and obligations,
+/// so we model just those two dimensions.
+pub struct Perm {
+    pub caps: CapLattice,
+    pub obs: Obs,
+    pub trifecta_constraint: bool,
+}
+
+/// Compute the trifecta obligations for a given capability set.
+///
+/// If the trifecta is complete, returns obligations requiring approval
+/// for each exfiltration vector that is ≥ LowRisk.
+pub open spec fn trifecta_obligations(caps: CapLattice) -> Obs {
+    if is_trifecta_complete(caps) {
+        Obs {
+            run_bash: caps.f3 >= 1,   // run_bash ≥ LowRisk
+            git_push: caps.f9 >= 1,   // git_push ≥ LowRisk
+            create_pr: caps.f10 >= 1, // create_pr ≥ LowRisk
+        }
+    } else {
+        obs_empty()
+    }
+}
+
+/// The nucleus operator ν: normalize a permission by adding trifecta obligations.
+///
+/// This models lattice_guard::PermissionLattice::normalize().
+/// If trifecta_constraint is true and the trifecta is complete,
+/// add approval obligations for the exfiltration vectors.
+pub open spec fn nucleus(p: Perm) -> Perm {
+    if p.trifecta_constraint {
+        Perm {
+            caps: p.caps,
+            obs: obs_union(p.obs, trifecta_obligations(p.caps)),
+            trifecta_constraint: true,
+        }
+    } else {
+        p
+    }
+}
+
+/// Permission meet: capabilities meet + obligations union + trifecta enforcement.
+///
+/// Models PermissionLattice::meet() from lattice.rs.
+pub open spec fn perm_meet(a: Perm, b: Perm) -> Perm {
+    let caps = lattice_meet(a.caps, b.caps);
+    let obs = obs_union(a.obs, b.obs);
+    let enforce = a.trifecta_constraint || b.trifecta_constraint;
+    let final_obs = if enforce {
+        obs_union(obs, trifecta_obligations(caps))
+    } else {
+        obs
+    };
+    Perm {
+        caps: caps,
+        obs: final_obs,
+        trifecta_constraint: enforce,
+    }
+}
+
+/// Permission partial order: caps ≤ AND obligations ≤ (more obligations = smaller).
+pub open spec fn perm_leq(a: Perm, b: Perm) -> bool {
+    lattice_leq(a.caps, b.caps) && obs_leq(a.obs, b.obs)
+}
+
+/// Valid permission: all capabilities valid, trifecta constraint is true.
+pub open spec fn valid_perm(p: Perm) -> bool {
+    valid_lattice(p.caps) && p.trifecta_constraint
+}
+
+// ============================================================================
+// Nucleus Operator Proofs — The Three Laws
+// ============================================================================
+
+// --- Law 1: Idempotency ---
+
+/// ν(ν(x)) = ν(x) — applying the nucleus twice equals applying it once.
+///
+/// This is the key idempotency property. After normalization, re-normalizing
+/// changes nothing because the trifecta obligations are already present.
+proof fn proof_nucleus_idempotent(p: Perm)
+    requires
+        valid_perm(p),
+    ensures
+        nucleus(nucleus(p)) == nucleus(p),
+{
+    // After first application, trifecta_constraint is true and obligations
+    // already include trifecta_obligations(caps). The second application
+    // unions the same obligations again, which is idempotent (a || a == a).
+}
+
+// --- Law 2: Deflationary ---
+
+/// ν(x) ≤ x — the nucleus only adds obligations, never removes them,
+/// and never increases capabilities.
+///
+/// Since obligations use reversed order (more obligations = smaller),
+/// adding obligations makes the result ≤ the input.
+proof fn proof_nucleus_deflationary(p: Perm)
+    requires
+        valid_perm(p),
+    ensures
+        perm_leq(nucleus(p), p),
+{
+    // Capabilities are unchanged (same caps), so caps ≤ holds trivially.
+    // Obligations: nucleus(p).obs = union(p.obs, trifecta_obs(p.caps))
+    // which is a superset of p.obs, so obs_leq holds.
+}
+
+// --- Law 3: Meet Preservation — DOES NOT HOLD ---
+//
+// The nucleus ν does NOT distribute over meets in general:
+//   ν(x ∧ y) ≠ ν(x) ∧ ν(y)
+//
+// The fundamental reason: trifecta_obligations is a THRESHOLD function.
+// When we meet two permissions, the meet can destroy the trifecta
+// (e.g., removing all private access), losing the obligations that
+// ν would have added to the individual inputs.
+//
+// Concretely: if a has full capabilities (trifecta complete) and
+// b has no private access (trifecta incomplete), then:
+//   - meet(a,b) has no private access → trifecta incomplete → ν adds nothing
+//   - But ν(a) already has trifecta obligations, which persist in ν(a) ∧ ν(b)
+//
+// This means the nucleus as defined is NOT a nucleus in the frame-theoretic
+// sense. It IS an idempotent, deflationary operator (a "kernel operator"),
+// but without meet preservation the quotient fixpoints don't automatically
+// form a sublattice under the raw meet.
+//
+// However, the QUOTIENT meet (perm_meet, which normalizes after meeting)
+// always produces fixed points — see proof_quotient_meet_is_fixed_point.
+
+/// Counterexample: ν does not preserve meets.
+///
+/// Witness: a = full caps (trifecta complete), b = no private access.
+/// LHS ν(a∧b) has no trifecta obligations; RHS (ν(a))∧(ν(b)) does.
+proof fn proof_nucleus_not_meet_preserving()
+    ensures
+        ({
+            let a = Perm {
+                caps: lattice_top(),
+                obs: obs_empty(),
+                trifecta_constraint: true,
+            };
+            let b = Perm {
+                caps: CapLattice {
+                    f0: 0, f1: 2, f2: 2, f3: 2, f4: 0, f5: 0,
+                    f6: 2, f7: 2, f8: 2, f9: 2, f10: 2, f11: 2,
+                },
+                obs: obs_empty(),
+                trifecta_constraint: true,
+            };
+            // ν(meet(a,b)) ≠ meet(ν(a), ν(b))
+            nucleus(perm_meet(a, b)) != perm_meet(nucleus(a), nucleus(b))
+        }),
+{
+}
+
+/// The quotient meet always produces fixed points of ν.
+///
+/// Since perm_meet already applies trifecta_obligations internally,
+/// applying ν again is idempotent: ν(perm_meet(a,b)) = perm_meet(a,b).
+/// This is the correct algebraic structure — the quotient meet IS the
+/// normalized meet, so fixed points are closed under it.
+proof fn proof_quotient_meet_is_fixed_point(a: Perm, b: Perm)
+    requires
+        valid_perm(a),
+        valid_perm(b),
+    ensures
+        nucleus(perm_meet(a, b)) == perm_meet(a, b),
+{
+    // perm_meet already unions trifecta_obligations(meet_caps) into obs.
+    // nucleus unions trifecta_obligations(meet_caps) again — idempotent.
+}
+
+/// The quotient meet is commutative: perm_meet(a,b) = perm_meet(b,a).
+proof fn proof_quotient_meet_commutative(a: Perm, b: Perm)
+    requires
+        valid_perm(a),
+        valid_perm(b),
+    ensures
+        perm_meet(a, b) == perm_meet(b, a),
+{
+    // lattice_meet commutative, obs_union commutative, || commutative.
+}
+
+// ============================================================================
+// Additional Nucleus Properties
+// ============================================================================
+
+// --- Monotonicity — DOES NOT HOLD ---
+//
+// The nucleus is NOT monotone in general: x ≤ y does NOT imply ν(x) ≤ ν(y).
+//
+// The issue: if a ≤ b (fewer caps, more obligations), then b might have
+// the trifecta complete while a doesn't (a has fewer capabilities, possibly
+// below the threshold). The nucleus adds obligations to b but not to a,
+// making ν(b) more constrained than ν(a) in the obligation dimension —
+// but ν(a) should be MORE constrained for ν(a) ≤ ν(b) to hold.
+//
+// This is the dual of the meet preservation failure: the threshold
+// function is_trifecta_complete is upward-monotone in capabilities,
+// but the OBLIGATION addition is downward in the permission order.
+
+/// Counterexample: ν is not monotone.
+///
+/// Witness: a has no private access (trifecta incomplete), b has all caps.
+/// a ≤ b holds, but ν(a) has no trifecta obligations while ν(b) does,
+/// so ν(a) ≤ ν(b) fails (ν(a) has fewer obligations = LARGER, not smaller).
+proof fn proof_nucleus_not_monotone()
+    ensures
+        ({
+            let a = Perm {
+                caps: CapLattice {
+                    f0: 0, f1: 2, f2: 2, f3: 2, f4: 0, f5: 0,
+                    f6: 2, f7: 2, f8: 2, f9: 2, f10: 2, f11: 2,
+                },
+                obs: obs_empty(),
+                trifecta_constraint: true,
+            };
+            let b = Perm {
+                caps: lattice_top(),
+                obs: obs_empty(),
+                trifecta_constraint: true,
+            };
+            // a ≤ b holds ...
+            perm_leq(a, b)
+            // ... but ν(a) ≤ ν(b) does not
+            && !perm_leq(nucleus(a), nucleus(b))
+        }),
+{
+}
+
+/// Trifecta completeness is upward-monotone in capabilities.
+///
+/// If a has fewer capabilities than b, and a triggers the trifecta,
+/// then b also triggers the trifecta. (Each trifecta component is
+/// a disjunction of capability levels ≥ 1, and meet only decreases.)
+proof fn proof_trifecta_upward_monotone(a: CapLattice, b: CapLattice)
+    requires
+        valid_lattice(a),
+        valid_lattice(b),
+        lattice_leq(a, b),
+        is_trifecta_complete(a),
+    ensures
+        is_trifecta_complete(b),
+{
+}
+
+/// The nucleus IS monotone on fixed points (trivially: it's the identity).
+///
+/// If both a and b are already normalized (fixed points of ν),
+/// then ν(a) = a ≤ b = ν(b). The monotonicity failure only occurs
+/// when the nucleus CHANGES something — on its image, it's harmless.
+proof fn proof_nucleus_monotone_on_fixed_points(a: Perm, b: Perm)
+    requires
+        valid_perm(a),
+        valid_perm(b),
+        nucleus(a) == a,
+        nucleus(b) == b,
+        perm_leq(a, b),
+    ensures
+        perm_leq(nucleus(a), nucleus(b)),
+{
+}
+
+/// Fixed points of the nucleus are exactly the "safe" configurations.
+///
+/// A permission is a fixed point (ν(x) = x) iff the trifecta obligations
+/// are already present in the obligations set.
+proof fn proof_nucleus_fixed_point_characterization(p: Perm)
+    requires
+        valid_perm(p),
+    ensures
+        (nucleus(p) == p) <==> (
+            obs_union(p.obs, trifecta_obligations(p.caps)) == p.obs
+        ),
+{
+}
+
+/// Trifecta obligations are monotone under meet: if one input doesn't have
+/// the trifecta, the meet doesn't either, so obligations don't increase.
+proof fn proof_trifecta_obligations_meet_safe(a: CapLattice, b: CapLattice)
+    requires
+        valid_lattice(a),
+        valid_lattice(b),
+        !is_trifecta_complete(a),
+    ensures
+        trifecta_obligations(lattice_meet(a, b)) == obs_empty(),
+{
+    // If a doesn't have the trifecta, meet(a,b) can't either
+    // (meet only reduces capabilities). trifecta_obligations returns empty.
+    proof_trifecta_meet_monotone(a, b);
+}
+
+/// The nucleus maps the top element (full permissions) to a safe configuration
+/// with exfiltration obligations.
+proof fn proof_nucleus_top_has_obligations(p: Perm)
+    requires
+        valid_perm(p),
+        p.caps == lattice_top(),
+    ensures
+        nucleus(p).obs.run_bash,
+        nucleus(p).obs.git_push,
+        nucleus(p).obs.create_pr,
+{
+    // Top has all capabilities at Always (2), so trifecta is complete.
+    // All exfiltration vectors are at Always >= LowRisk, so all get obligations.
+}
+
+/// The nucleus is the identity on the bottom element (no capabilities).
+proof fn proof_nucleus_bottom_is_identity(p: Perm)
+    requires
+        valid_perm(p),
+        p.caps == lattice_bot(),
+    ensures
+        nucleus(p).obs == p.obs,
+{
+    // Bottom has all capabilities at Never (0), so trifecta is not complete.
+    // trifecta_obligations returns empty, union with empty = identity.
+}
+
+// ============================================================================
+// Obligation Lattice Proofs
+// ============================================================================
+
+/// obs_union is commutative.
+proof fn proof_obs_union_commutative(a: Obs, b: Obs)
+    ensures
+        obs_union(a, b) == obs_union(b, a),
+{
+}
+
+/// obs_union is associative.
+proof fn proof_obs_union_associative(a: Obs, b: Obs, c: Obs)
+    ensures
+        obs_union(obs_union(a, b), c) == obs_union(a, obs_union(b, c)),
+{
+}
+
+/// obs_union is idempotent.
+proof fn proof_obs_union_idempotent(a: Obs)
+    ensures
+        obs_union(a, a) == a,
+{
+}
+
+/// obs_empty is identity for obs_union.
+proof fn proof_obs_union_identity(a: Obs)
+    ensures
+        obs_union(a, obs_empty()) == a,
+{
+}
+
+/// obs_intersection is commutative.
+proof fn proof_obs_intersection_commutative(a: Obs, b: Obs)
+    ensures
+        obs_intersection(a, b) == obs_intersection(b, a),
+{
+}
+
+/// obs_intersection is associative.
+proof fn proof_obs_intersection_associative(a: Obs, b: Obs, c: Obs)
+    ensures
+        obs_intersection(obs_intersection(a, b), c)
+            == obs_intersection(a, obs_intersection(b, c)),
+{
+}
+
+/// obs_full is identity for obs_intersection.
+proof fn proof_obs_intersection_identity(a: Obs)
+    ensures
+        obs_intersection(a, obs_full()) == a,
+{
+}
+
+/// Absorption: obs_union(a, obs_intersection(a, b)) == a
+proof fn proof_obs_absorption(a: Obs, b: Obs)
+    ensures
+        obs_union(a, obs_intersection(a, b)) == a,
+{
+}
+
+/// obs_leq is reflexive.
+proof fn proof_obs_leq_reflexive(a: Obs)
+    ensures
+        obs_leq(a, a),
+{
+}
+
+/// obs_leq is transitive.
+proof fn proof_obs_leq_transitive(a: Obs, b: Obs, c: Obs)
+    requires
+        obs_leq(a, b),
+        obs_leq(b, c),
+    ensures
+        obs_leq(a, c),
+{
+}
+
+/// obs_union produces the meet (greatest lower bound) in obligation order.
+proof fn proof_obs_union_is_meet(a: Obs, b: Obs)
+    ensures
+        obs_leq(obs_union(a, b), a),
+        obs_leq(obs_union(a, b), b),
+{
+}
+
+// ============================================================================
+// Fixed Point Helper Lemmas
+// ============================================================================
+
+/// A fixed point's obligations subsume its trifecta obligations.
+///
+/// If ν(p) = p, then p.obs already includes trifecta_obligations(p.caps).
+/// This follows directly from the fixed point characterization.
+proof fn lemma_fixed_point_includes_trifecta(p: Perm)
+    requires
+        valid_perm(p),
+        nucleus(p) == p,
+    ensures
+        obs_union(p.obs, trifecta_obligations(p.caps)) == p.obs,
+{
+    // nucleus(p) = Perm { caps: p.caps, obs: union(p.obs, trifecta_obs(p.caps)), ... }
+    // nucleus(p) == p implies union(p.obs, trifecta_obs(p.caps)) == p.obs
+}
+
+/// When both inputs are fixed points, trifecta_obligations of their meet
+/// is subsumed by the union of their obligations.
+///
+/// Key insight: if trifecta is complete for meet(a,b), then by upward
+/// monotonicity it's complete for both a and b. Each trifecta obligation
+/// flag in the meet (e.g., run_bash) requires min(a.f3, b.f3) >= 1,
+/// meaning a.f3 >= 1, so trifecta_obligations(a).run_bash = true,
+/// and since a is a fixed point, a.obs.run_bash = true.
+proof fn lemma_trifecta_obs_meet_subsumed(a: Perm, b: Perm)
+    requires
+        valid_perm(a),
+        valid_perm(b),
+        nucleus(a) == a,
+        nucleus(b) == b,
+    ensures
+        obs_union(obs_union(a.obs, b.obs), trifecta_obligations(lattice_meet(a.caps, b.caps)))
+            == obs_union(a.obs, b.obs),
+{
+    // First, establish that a.obs and b.obs already include their trifecta obs.
+    lemma_fixed_point_includes_trifecta(a);
+    lemma_fixed_point_includes_trifecta(b);
+
+    // For the meet's trifecta obligations, we need:
+    // trifecta_obs(meet(a,b)) subsumed by union(a.obs, b.obs)
+    //
+    // Case 1: trifecta NOT complete for meet(a,b).
+    //   Then trifecta_obligations returns empty. union with empty = identity. ✓
+    //
+    // Case 2: trifecta IS complete for meet(a,b).
+    //   Since meet(a,b) ≤ a and meet(a,b) ≤ b (deflationary),
+    //   by trifecta upward monotonicity, trifecta is complete for a and b.
+    //
+    //   For each flag (e.g., run_bash):
+    //     trifecta_obs(meet).run_bash = true
+    //     → meet.f3 >= 1 → min(a.f3, b.f3) >= 1 → a.f3 >= 1
+    //     → trifecta_obs(a).run_bash = true (since trifecta complete for a)
+    //     → a.obs.run_bash = true (since a is fixed point)
+    //     → union(a.obs, b.obs).run_bash = true ✓
+    //
+    //   Same for git_push (f9) and create_pr (f10).
+    //
+    // Z3 handles this by unfolding the boolean definitions.
+    let meet_caps = lattice_meet(a.caps, b.caps);
+    proof_meet_preserves_validity(a.caps, b.caps);
+    proof_meet_deflationary(a.caps, b.caps);
+
+    if is_trifecta_complete(meet_caps) {
+        // Trifecta is complete for the meet. By upward monotonicity
+        // (meet ≤ a and meet ≤ b), trifecta is complete for both a and b.
+        proof_trifecta_upward_monotone(meet_caps, a.caps);
+        proof_trifecta_upward_monotone(meet_caps, b.caps);
+        // Now Z3 knows:
+        //   is_trifecta_complete(a.caps) && is_trifecta_complete(b.caps)
+        //   a.obs includes trifecta_obs(a.caps) (from fixed point property)
+        //   Each flag in trifecta_obs(meet) implies the flag in trifecta_obs(a)
+        //   which implies the flag in a.obs.
+    } else {
+        // Trifecta not complete for meet → trifecta_obligations = empty.
+        // Union with empty is identity. Trivially holds.
+    }
+}
+
+/// On fixed points, perm_meet simplifies: the trifecta_obligations term
+/// is redundant because it's already subsumed by the input obligations.
+proof fn lemma_perm_meet_on_fixed_points(a: Perm, b: Perm)
+    requires
+        valid_perm(a),
+        valid_perm(b),
+        nucleus(a) == a,
+        nucleus(b) == b,
+    ensures
+        perm_meet(a, b).obs == obs_union(a.obs, b.obs),
+        perm_meet(a, b).caps == lattice_meet(a.caps, b.caps),
+        perm_meet(a, b).trifecta_constraint == true,
+{
+    lemma_trifecta_obs_meet_subsumed(a, b);
+}
+
+// ============================================================================
+// Quotient Meet Associativity (on Fixed Points)
+// ============================================================================
+
+/// **The key algebraic property**: perm_meet is associative on fixed points.
+///
+/// This is what the real code relies on — all PermissionLattice values
+/// are constructed via normalize(), so they're fixed points of ν.
+/// The associativity of the quotient meet guarantees that policy
+/// composition is well-defined regardless of evaluation order.
+///
+/// The proof strategy:
+/// 1. On fixed points, perm_meet.obs = union(a.obs, b.obs) (helper lemma)
+/// 2. Boolean union is associative
+/// 3. Capability meet is associative
+/// 4. Therefore the triple product is equal
+proof fn proof_quotient_meet_associative_on_fixed_points(a: Perm, b: Perm, c: Perm)
+    requires
+        valid_perm(a),
+        valid_perm(b),
+        valid_perm(c),
+        nucleus(a) == a,
+        nucleus(b) == b,
+        nucleus(c) == c,
+    ensures
+        perm_meet(perm_meet(a, b), c) == perm_meet(a, perm_meet(b, c)),
+{
+    // Step 1: Show perm_meet(a,b) is a fixed point
+    // (already proved: proof_quotient_meet_is_fixed_point)
+    // But we need valid_lattice for the intermediate too.
+    proof_meet_preserves_validity(a.caps, b.caps);
+    proof_meet_preserves_validity(b.caps, c.caps);
+
+    // Step 2: Show obs simplifies on fixed points
+    lemma_perm_meet_on_fixed_points(a, b);
+    lemma_perm_meet_on_fixed_points(b, c);
+
+    // Step 3: perm_meet(a,b) is a fixed point, so we can apply the lemma again
+    // We need nucleus(perm_meet(a,b)) == perm_meet(a,b)
+    // This is proof_quotient_meet_is_fixed_point.
+    // And valid_perm(perm_meet(a,b)).
+
+    // Step 4: The intermediate meets are fixed points
+    let ab = perm_meet(a, b);
+    let bc = perm_meet(b, c);
+
+    // ab and bc have trifecta_constraint = true and valid caps
+    assert(valid_lattice(ab.caps));
+    assert(valid_lattice(bc.caps));
+    assert(ab.trifecta_constraint == true);
+    assert(bc.trifecta_constraint == true);
+
+    // Prove ab and bc are fixed points so we can use the lemma
+    assert(nucleus(ab) == ab) by {
+        lemma_trifecta_obs_meet_subsumed(a, b);
+    }
+    assert(nucleus(bc) == bc) by {
+        lemma_trifecta_obs_meet_subsumed(b, c);
+    }
+
+    // Now apply the simplification to the triple meets
+    lemma_perm_meet_on_fixed_points(ab, c);
+    lemma_perm_meet_on_fixed_points(a, bc);
+
+    // At this point Z3 knows:
+    // perm_meet(ab, c).obs = union(ab.obs, c.obs) = union(union(a.obs, b.obs), c.obs)
+    // perm_meet(a, bc).obs = union(a.obs, bc.obs) = union(a.obs, union(b.obs, c.obs))
+    // These are equal by associativity of boolean ||.
+
+    // And caps:
+    // perm_meet(ab, c).caps = meet(meet(a.caps, b.caps), c.caps)
+    // perm_meet(a, bc).caps = meet(a.caps, meet(b.caps, c.caps))
+    // Equal by lattice meet associativity.
+    proof_lattice_meet_associative(a.caps, b.caps, c.caps);
+
+    // And trifecta_constraint = true on both sides.
+}
+
+/// Counterexample: perm_meet is NOT associative on arbitrary (non-fixed-point) inputs.
+///
+/// Witness: a and b have full caps (trifecta complete) but empty obligations.
+/// c has no private access. The intermediate meet(a,b) triggers trifecta
+/// obligations that persist, but meet(b,c) doesn't trigger them.
+proof fn proof_perm_meet_not_associative()
+    ensures
+        ({
+            let a = Perm {
+                caps: lattice_top(),
+                obs: obs_empty(),
+                trifecta_constraint: true,
+            };
+            let b = Perm {
+                caps: lattice_top(),
+                obs: obs_empty(),
+                trifecta_constraint: true,
+            };
+            let c = Perm {
+                caps: CapLattice {
+                    f0: 0, f1: 2, f2: 2, f3: 2, f4: 0, f5: 0,
+                    f6: 2, f7: 2, f8: 2, f9: 2, f10: 2, f11: 2,
+                },
+                obs: obs_empty(),
+                trifecta_constraint: true,
+            };
+            perm_meet(perm_meet(a, b), c) != perm_meet(a, perm_meet(b, c))
+        }),
+{
+    // LHS: meet(a,b) has trifecta complete → adds {t,t,t} obligations
+    //       meet(that, c) carries those obligations forward
+    // RHS: meet(b,c) has no private access → no trifecta obligations
+    //       meet(a, that) also has no private access → no trifecta obligations
+    // LHS.obs = {t,t,t}, RHS.obs = {} — provably different
+}
+
+// ============================================================================
+// Delegation Monotonicity (Ceiling Theorem)
+// ============================================================================
+
+/// Delegation via meet is deflationary: the delegated permission is ≤ the delegator's.
+///
+/// This is the ceiling theorem: you cannot delegate more permission than you have.
+/// Since meet(a, b) ≤ a for all b, the delegatee's effective permission is
+/// bounded by the delegator's permission.
+proof fn proof_delegation_ceiling(delegator: Perm, requested: Perm)
+    requires
+        valid_perm(delegator),
+        valid_perm(requested),
+    ensures
+        perm_leq(perm_meet(delegator, requested), delegator),
+{
+    // perm_meet computes meet of capabilities (deflationary) and
+    // union of obligations (more constrained). So the result has
+    // ≤ capabilities and ≥ obligations compared to the delegator.
+
+    // Caps: meet(delegator.caps, requested.caps) ≤ delegator.caps
+    proof_meet_deflationary(delegator.caps, requested.caps);
+
+    // Obs: union(delegator.obs, requested.obs, trifecta_obs) ⊇ delegator.obs
+    // obs_leq checks that delegator.obs implies result.obs — which holds
+    // since result.obs is a superset of delegator.obs.
+}
+
+/// Delegation is transitive with bounded depth:
+/// meet(meet(a, b), c) ≤ meet(a, b) ≤ a
+///
+/// A chain of delegations produces strictly decreasing permissions.
+proof fn proof_delegation_chain_monotone(a: Perm, b: Perm, c: Perm)
+    requires
+        valid_perm(a),
+        valid_perm(b),
+        valid_perm(c),
+    ensures
+        perm_leq(perm_meet(perm_meet(a, b), c), perm_meet(a, b)),
+        perm_leq(perm_meet(a, b), a),
+{
+    proof_meet_preserves_validity(a.caps, b.caps);
+    proof_delegation_ceiling(a, b);
+
+    // For the chain: meet(meet(a,b), c) ≤ meet(a,b)
+    // We need valid_perm for the intermediate
+    let ab = perm_meet(a, b);
+    assert(valid_lattice(ab.caps));
+    assert(ab.trifecta_constraint == true);
+    proof_delegation_ceiling(
+        Perm { caps: ab.caps, obs: ab.obs, trifecta_constraint: ab.trifecta_constraint },
+        c,
+    );
 }
 
 fn main() {}
