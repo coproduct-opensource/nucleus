@@ -2753,7 +2753,7 @@ fn exec_end_to_end_check(p: Perm, op: u8) -> (allowed: bool)
     result
 }
 
-// ============================================================================
+
 // Phase 4: Attested Delegation Chain Verification
 //
 // These proofs support the LatticeCertificate module. They verify that:
@@ -2985,6 +2985,7 @@ fn exec_verify_two_step_chain(root: Perm, mid: Perm, leaf: Perm) -> (ok: bool)
 
     ok
 }
+
 
 fn main() {}
 
