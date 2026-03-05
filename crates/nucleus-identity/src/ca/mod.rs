@@ -114,6 +114,32 @@ pub trait CaClient: Send + Sync {
         self.sign_csr(csr, private_key, identity, ttl).await
     }
 
+    /// Signs a CSR with both launch attestation and permission fingerprint.
+    ///
+    /// This is the "identity fusion" signing method that cryptographically binds:
+    /// - SPIFFE identity (X.509 SAN)
+    /// - VM integrity (attestation extension, OID .1.1)
+    /// - Permission set (fingerprint extension, OID .1.2)
+    ///
+    /// The permission fingerprint is a SHA-256 hash of a LatticeCertificate's
+    /// canonical form (see `LatticeCertificate::fingerprint()`).
+    ///
+    /// # Default Implementation
+    ///
+    /// Falls back to `sign_attested_csr()` (ignoring the fingerprint).
+    async fn sign_fused_csr(
+        &self,
+        csr: &str,
+        private_key: &str,
+        identity: &Identity,
+        ttl: Duration,
+        attestation: &LaunchAttestation,
+        _permission_fingerprint: &[u8; 32],
+    ) -> Result<WorkloadCertificate> {
+        self.sign_attested_csr(csr, private_key, identity, ttl, attestation)
+            .await
+    }
+
     /// Signs a CSR and returns only the certificate chain (not the private key).
     ///
     /// This is used for OIDC token exchange flows where the client generates

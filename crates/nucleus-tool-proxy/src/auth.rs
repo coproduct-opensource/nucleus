@@ -98,6 +98,8 @@ pub struct AuthContext {
     pub spiffe_id: Option<String>,
     /// The authentication method used.
     pub auth_method: AuthMethod,
+    /// How identity was bound to permissions (SPIFFE identity fusion).
+    pub identity_binding: IdentityBinding,
 }
 
 /// The method used to authenticate the request.
@@ -109,6 +111,26 @@ pub enum AuthMethod {
     HmacDrand,
     /// SPIFFE mTLS certificate (no shared secrets).
     SpiffeMtls,
+}
+
+/// How the request's identity was bound to its permissions.
+///
+/// Part of the SPIFFE identity fusion: tracks whether the authenticated identity
+/// has been cryptographically bound to a delegation certificate's permissions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IdentityBinding {
+    /// No delegation cert present; permissions from policy engine only.
+    PolicyOnly,
+    /// Delegation cert present and leaf_identity verified against auth identity.
+    DelegationVerified {
+        /// The leaf identity from the delegation certificate.
+        leaf_identity: String,
+    },
+    /// CA-attested binding: permission fingerprint embedded in X.509 extension.
+    Fused {
+        /// SHA-256 fingerprint of the LatticeCertificate.
+        permission_fingerprint: [u8; 32],
+    },
 }
 
 /// Errors that can occur during authentication.
@@ -177,6 +199,7 @@ pub fn verify_http(
         drand_round: None,
         spiffe_id: None,
         auth_method: AuthMethod::Hmac,
+        identity_binding: IdentityBinding::PolicyOnly,
     })
 }
 
@@ -257,6 +280,7 @@ pub fn verify_http_with_drand(
                         drand_round: Some(round),
                         spiffe_id: None,
                         auth_method: AuthMethod::HmacDrand,
+                        identity_binding: IdentityBinding::PolicyOnly,
                     });
                 }
                 None => {
@@ -294,6 +318,7 @@ pub fn verify_http_with_drand(
         drand_round: None,
         spiffe_id: None,
         auth_method: AuthMethod::Hmac,
+        identity_binding: IdentityBinding::PolicyOnly,
     })
 }
 
@@ -329,6 +354,7 @@ pub fn verify_spiffe_mtls(spiffe_id: &str) -> AuthContext {
         drand_round: None,
         spiffe_id: Some(spiffe_id.to_string()),
         auth_method: AuthMethod::SpiffeMtls,
+        identity_binding: IdentityBinding::PolicyOnly,
     }
 }
 

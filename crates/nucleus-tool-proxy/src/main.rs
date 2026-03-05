@@ -31,6 +31,7 @@ mod attestation;
 mod auth;
 mod cert_bridge;
 mod exit_report;
+mod identity_fusion;
 #[cfg(feature = "mcp")]
 mod mcp;
 mod mtls;
@@ -1357,47 +1358,74 @@ async fn auth_middleware(
         }
     }
 
-    // Try SPIFFE mTLS authentication first (most secure, no shared secrets)
-    if let Some(spiffe_id) = auth::extract_spiffe_id_from_extensions(&parts.extensions) {
-        tracing::info!(
-            spiffe_id = %spiffe_id,
-            path = %parts.uri.path(),
-            method = %parts.method,
-            event = "auth_spiffe_mtls",
-            "request authenticated via SPIFFE mTLS"
-        );
-        let context = auth::verify_spiffe_mtls(&spiffe_id);
-        let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
-        req.extensions_mut().insert(context);
-        return Ok(next.run(req).await);
-    }
-
-    // Fall back to HMAC-based authentication (legacy mode)
-    if parts.uri.path() == APPROVE_PATH {
-        // Use drand-aware verification for approval requests
-        let context = auth::verify_http_with_drand(&parts.headers, &bytes, &state.approval_auth)?;
-        if context.drand_round.is_some() {
+    // Determine authentication context (unified flow — no early returns).
+    // SPIFFE mTLS is most secure, then HMAC+drand for approvals, then HMAC.
+    let mut context =
+        if let Some(spiffe_id) = auth::extract_spiffe_id_from_extensions(&parts.extensions) {
             tracing::info!(
-                drand_round = context.drand_round,
-                auth_method = ?context.auth_method,
-                "approval request verified with drand anchoring"
+                spiffe_id = %spiffe_id,
+                path = %parts.uri.path(),
+                method = %parts.method,
+                event = "auth_spiffe_mtls",
+                "request authenticated via SPIFFE mTLS"
             );
-        }
-        let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
-        req.extensions_mut().insert(context);
-        return Ok(next.run(req).await);
-    }
-
-    let context = auth::verify_http(&parts.headers, &bytes, &state.auth)?;
-
-    // Evaluate delegation certificate if present (Galois bridge: cert → bid → market).
-    // Falls back to explicit permission bid header.
-    let (permission_grant, certified_perms) =
-        if let Some((grant, certified)) = evaluate_delegation_cert(&parts.headers, &state) {
-            (Some(grant), Some(certified))
+            auth::verify_spiffe_mtls(&spiffe_id)
+        } else if parts.uri.path() == APPROVE_PATH {
+            let ctx = auth::verify_http_with_drand(&parts.headers, &bytes, &state.approval_auth)?;
+            if ctx.drand_round.is_some() {
+                tracing::info!(
+                    drand_round = ctx.drand_round,
+                    auth_method = ?ctx.auth_method,
+                    "approval request verified with drand anchoring"
+                );
+            }
+            ctx
         } else {
-            (evaluate_permission_bid(&parts.headers, &state), None)
+            auth::verify_http(&parts.headers, &bytes, &state.auth)?
         };
+
+    // Extract client cert DER for Layer 3 (fused identity fingerprint extraction).
+    let client_cert_der: Option<Vec<u8>> = parts
+        .extensions
+        .get::<MtlsConnectInfo>()
+        .and_then(|info| info.client_cert.as_ref())
+        .map(|cert| cert.cert_der.clone())
+        .or_else(|| {
+            parts
+                .extensions
+                .get::<ClientCertInfo>()
+                .map(|cert| cert.cert_der.clone())
+        });
+
+    // Evaluate delegation certificate for ALL auth methods (not just HMAC).
+    // This fixes the security gap where mTLS requests couldn't use delegation certs.
+    // Identity binding: when mTLS is active, leaf_identity must match SPIFFE ID.
+    let (permission_grant, certified_perms) = if let Some((grant, certified, fused)) =
+        evaluate_delegation_cert_with_identity(
+            &parts.headers,
+            &state,
+            context.spiffe_id.as_deref(),
+            client_cert_der.as_deref(),
+        ) {
+        if let Some(ref fi) = fused {
+            if fi.fingerprint_verified {
+                context.identity_binding = auth::IdentityBinding::Fused {
+                    permission_fingerprint: fi.permission_fingerprint,
+                };
+            } else {
+                context.identity_binding = auth::IdentityBinding::DelegationVerified {
+                    leaf_identity: certified.verified.leaf_identity.clone(),
+                };
+            }
+        } else {
+            context.identity_binding = auth::IdentityBinding::DelegationVerified {
+                leaf_identity: certified.verified.leaf_identity.clone(),
+            };
+        }
+        (Some(grant), Some(certified))
+    } else {
+        (evaluate_permission_bid(&parts.headers, &state), None)
+    };
 
     // If the bid was fully denied (no dimensions granted), return 402 with pricing
     if let Some(ref grant) = permission_grant {
@@ -1481,18 +1509,27 @@ pub(crate) struct CertifiedPermissions {
     pub(crate) effective: PermissionLattice,
 }
 
-/// Parse, verify, and evaluate a delegation certificate from request headers.
+/// Parse, verify, and evaluate a delegation certificate from request headers,
+/// enforcing identity binding when an authenticated SPIFFE ID is present.
 ///
 /// Flow:
 /// 1. Decode base64 certificate from `x-nucleus-delegation-cert`
 /// 2. Verify Ed25519 chain against root public key
-/// 3. Convert `VerifiedPermissions` → `PermissionBid` via α
-/// 4. Evaluate bid against market → `PermissionGrant`
-/// 5. Intersect grant with certificate → effective `PermissionLattice`
-fn evaluate_delegation_cert(
+/// 3. **Identity binding**: if `authenticated_spiffe_id` is Some, reject if
+///    `verified.leaf_identity != spiffe_id` (prevents privilege escalation)
+/// 4. Convert `VerifiedPermissions` → `PermissionBid` via α
+/// 5. Evaluate bid against market → `PermissionGrant`
+/// 6. Intersect grant with certificate → effective `PermissionLattice`
+fn evaluate_delegation_cert_with_identity(
     headers: &HeaderMap,
     state: &AppState,
-) -> Option<(PermissionGrant, CertifiedPermissions)> {
+    authenticated_spiffe_id: Option<&str>,
+    client_cert_der: Option<&[u8]>,
+) -> Option<(
+    PermissionGrant,
+    CertifiedPermissions,
+    Option<identity_fusion::FusedIdentity>,
+)> {
     let cert_header = headers.get(HEADER_DELEGATION_CERT)?;
     let cert_b64 = cert_header.to_str().ok()?;
 
@@ -1527,10 +1564,37 @@ fn evaluate_delegation_cert(
         }
     };
 
+    // CRITICAL SECURITY CHECK (Layer 1): If we have an authenticated identity (mTLS),
+    // verify that the delegation certificate's leaf identity matches.
+    // This prevents privilege escalation where agent-A presents agent-B's cert.
+    if let Some(spiffe_id) = authenticated_spiffe_id {
+        if verified.leaf_identity != spiffe_id {
+            tracing::warn!(
+                authenticated_id = %spiffe_id,
+                cert_leaf_id = %verified.leaf_identity,
+                event = "identity_mismatch_rejected",
+                "delegation cert leaf_identity does not match authenticated SPIFFE ID"
+            );
+            return None;
+        }
+    }
+
+    // Layer 3: Extract fused identity from X.509 permission fingerprint extension.
+    let mut fused = client_cert_der.and_then(|der| {
+        authenticated_spiffe_id.and_then(|sid| identity_fusion::extract_fused_identity(der, sid))
+    });
+
     let bid = cert_bridge::certificate_to_bid(&verified);
 
     let market = state.permission_market.lock().unwrap();
-    let grant = market.evaluate_bid(&bid);
+    let mut grant = market.evaluate_bid(&bid);
+
+    // Layer 3: If fused identity present, verify fingerprint and elevate trust.
+    if let Some(ref mut fi) = fused {
+        if identity_fusion::verify_delegation_against_fingerprint(fi, &cert, &verified) {
+            grant = identity_fusion::elevate_grant_trust(&grant);
+        }
+    }
 
     let effective = cert_bridge::intersect_grant_with_certificate(&grant, &verified);
 
@@ -1541,6 +1605,8 @@ fn evaluate_delegation_cert(
         granted = grant.granted.len(),
         denied = grant.denied.len(),
         total_cost = grant.total_cost,
+        identity_verified = authenticated_spiffe_id.is_some(),
+        fused_verified = fused.as_ref().is_some_and(|f| f.fingerprint_verified),
         event = "delegation_cert_evaluated",
         "delegation certificate verified and evaluated against market"
     );
@@ -1551,6 +1617,7 @@ fn evaluate_delegation_cert(
             verified,
             effective,
         },
+        fused,
     ))
 }
 

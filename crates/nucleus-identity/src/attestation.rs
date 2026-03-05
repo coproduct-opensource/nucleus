@@ -627,6 +627,73 @@ pub fn format_hash(hash: &Hash256) -> String {
     hash.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// PERMISSION FINGERPRINT EXTRACTION (SPIFFE Identity Fusion, Layer 2)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Extract a permission fingerprint from an X.509 certificate extension.
+///
+/// Looks for OID `1.3.6.1.4.1.57212.1.2` (Nucleus Permission Fingerprint)
+/// in the certificate's extensions and parses the DER-encoded SHA-256 fingerprint.
+///
+/// Returns `None` if the extension is not present or cannot be parsed.
+pub fn extract_permission_fingerprint(cert_der: &[u8]) -> Option<[u8; 32]> {
+    use x509_parser::prelude::{FromDer, X509Certificate};
+
+    let (_, cert) = X509Certificate::from_der(cert_der).ok()?;
+
+    for ext in cert.extensions() {
+        // Compare raw OID bytes against our known permission fingerprint OID
+        if ext.oid.as_bytes() == crate::oid::OID_NUCLEUS_PERMISSION_FINGERPRINT_BYTES {
+            return parse_permission_fingerprint_der(ext.value);
+        }
+    }
+    None
+}
+
+/// Parse the DER content of a permission fingerprint extension.
+///
+/// Expected format: `SEQUENCE { INTEGER(version=1), OCTET STRING(32 bytes) }`
+fn parse_permission_fingerprint_der(der: &[u8]) -> Option<[u8; 32]> {
+    let mut pos = 0;
+
+    // SEQUENCE tag
+    if pos >= der.len() || der[pos] != 0x30 {
+        return None;
+    }
+    pos += 1;
+    let seq_len = der[pos] as usize;
+    pos += 1;
+    if pos + seq_len > der.len() {
+        return None;
+    }
+
+    // INTEGER tag (version)
+    if pos >= der.len() || der[pos] != 0x02 {
+        return None;
+    }
+    pos += 1;
+    let int_len = der[pos] as usize;
+    pos += 1;
+    // Skip version bytes
+    pos += int_len;
+
+    // OCTET STRING tag (fingerprint)
+    if pos >= der.len() || der[pos] != 0x04 {
+        return None;
+    }
+    pos += 1;
+    let oct_len = der[pos] as usize;
+    pos += 1;
+    if oct_len != 32 || pos + 32 > der.len() {
+        return None;
+    }
+
+    let mut fingerprint = [0u8; 32];
+    fingerprint.copy_from_slice(&der[pos..pos + 32]);
+    Some(fingerprint)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

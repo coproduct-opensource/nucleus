@@ -348,6 +348,33 @@ impl SelfSignedCa {
         ext
     }
 
+    /// Creates a custom X.509 extension for permission fingerprint.
+    ///
+    /// OID: 1.3.6.1.4.1.57212.1.2 (Nucleus Permission Fingerprint)
+    /// Content: DER-encoded SEQUENCE { INTEGER(version=1), OCTET STRING(32 bytes) }
+    ///
+    /// This binds the X.509/SPIFFE identity to a specific set of lattice permissions.
+    fn create_permission_fingerprint_extension(fingerprint: &[u8; 32]) -> CustomExtension {
+        // DER encode: SEQUENCE { INTEGER(version=1), OCTET STRING(fingerprint) }
+        let mut content = vec![
+            0x02, // INTEGER tag
+            0x01, // length 1
+            0x01, // version 1
+            0x04, // OCTET STRING tag
+            0x20, // length 32
+        ];
+        content.extend_from_slice(fingerprint);
+
+        // Wrap in SEQUENCE
+        let mut der = vec![0x30, content.len() as u8];
+        der.extend_from_slice(&content);
+
+        let mut ext =
+            CustomExtension::from_oid_content(oid::OID_NUCLEUS_PERMISSION_FINGERPRINT_TUPLE, der);
+        ext.set_criticality(false);
+        ext
+    }
+
     /// Signs a certificate using only a public key (no private key needed).
     ///
     /// This is used for CSR-only signing flows (like OIDC) where the client
@@ -522,6 +549,54 @@ impl CaClient for SelfSignedCa {
         // Sign with the workload's own key pair and attestation extension
         let chain =
             self.sign_with_keypair_and_extensions(&key_pair, identity, ttl, vec![attestation_ext])?;
+
+        let expiry = chain[0].not_after()?;
+        let private_key_obj = PrivateKey::from_pem(private_key)?;
+
+        Ok(WorkloadCertificate::new(
+            chain,
+            private_key_obj,
+            expiry,
+            identity.clone(),
+        ))
+    }
+
+    async fn sign_fused_csr(
+        &self,
+        csr: &str,
+        private_key: &str,
+        identity: &Identity,
+        ttl: Duration,
+        attestation: &LaunchAttestation,
+        permission_fingerprint: &[u8; 32],
+    ) -> Result<WorkloadCertificate> {
+        let csr_spiffe_uri = self.validate_csr(csr)?;
+        let expected_uri = identity.to_spiffe_uri();
+        if csr_spiffe_uri != expected_uri {
+            return Err(Error::VerificationFailed(format!(
+                "CSR SPIFFE URI mismatch: expected {}, got {}",
+                expected_uri, csr_spiffe_uri
+            )));
+        }
+        if identity.trust_domain() != self.trust_domain {
+            return Err(Error::TrustDomainMismatch {
+                expected: self.trust_domain.clone(),
+                actual: identity.trust_domain().to_string(),
+            });
+        }
+
+        let key_pair = KeyPair::from_pem(private_key)
+            .map_err(|e| Error::CaSigning(format!("failed to load private key: {e}")))?;
+
+        let attestation_ext = Self::create_attestation_extension(attestation);
+        let fingerprint_ext = Self::create_permission_fingerprint_extension(permission_fingerprint);
+
+        let chain = self.sign_with_keypair_and_extensions(
+            &key_pair,
+            identity,
+            ttl,
+            vec![attestation_ext, fingerprint_ext],
+        )?;
 
         let expiry = chain[0].not_after()?;
         let private_key_obj = PrivateKey::from_pem(private_key)?;
@@ -929,5 +1004,87 @@ mod tests {
             content[0], 0x30,
             "attestation DER should start with SEQUENCE tag"
         );
+    }
+
+    #[tokio::test]
+    async fn test_sign_fused_csr_embeds_fingerprint() {
+        use crate::attestation::{extract_permission_fingerprint, LaunchAttestation};
+
+        let ca = SelfSignedCa::new("nucleus.local").unwrap();
+        let identity = Identity::new("nucleus.local", "default", "fused-agent");
+
+        let csr_options = crate::CsrOptions::new(identity.to_spiffe_uri());
+        let cert_sign = csr_options.generate().unwrap();
+
+        let attestation = LaunchAttestation::from_hashes([0xaa; 32], [0xbb; 32], [0xcc; 32]);
+        let fingerprint = [0xdd; 32];
+
+        let cert = ca
+            .sign_fused_csr(
+                cert_sign.csr(),
+                cert_sign.private_key(),
+                &identity,
+                Duration::from_secs(3600),
+                &attestation,
+                &fingerprint,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(cert.identity(), &identity);
+        assert!(!cert.is_expired());
+
+        // Extract fingerprint from the issued certificate
+        let extracted = extract_permission_fingerprint(cert.leaf().der());
+        assert_eq!(
+            extracted,
+            Some(fingerprint),
+            "extracted fingerprint must match embedded fingerprint"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_extract_fingerprint_absent_from_standard_cert() {
+        use crate::attestation::extract_permission_fingerprint;
+
+        let ca = SelfSignedCa::new("nucleus.local").unwrap();
+        let identity = Identity::new("nucleus.local", "default", "plain-agent");
+
+        let csr_options = crate::CsrOptions::new(identity.to_spiffe_uri());
+        let cert_sign = csr_options.generate().unwrap();
+
+        let cert = ca
+            .sign_csr(
+                cert_sign.csr(),
+                cert_sign.private_key(),
+                &identity,
+                Duration::from_secs(3600),
+            )
+            .await
+            .unwrap();
+
+        let extracted = extract_permission_fingerprint(cert.leaf().der());
+        assert!(
+            extracted.is_none(),
+            "standard cert without fingerprint extension should return None"
+        );
+    }
+
+    #[test]
+    fn test_permission_fingerprint_extension_creation() {
+        let fingerprint = [0xff; 32];
+        let ext = SelfSignedCa::create_permission_fingerprint_extension(&fingerprint);
+
+        // Check OID components
+        let oid_components: Vec<u64> = ext.oid_components().collect();
+        assert_eq!(oid_components, vec![1, 3, 6, 1, 4, 1, 57212, 1, 2]);
+
+        // Check criticality is false
+        assert!(!ext.criticality());
+
+        // Check content starts with SEQUENCE tag
+        let content = ext.content();
+        assert!(!content.is_empty());
+        assert_eq!(content[0], 0x30, "DER should start with SEQUENCE tag");
     }
 }

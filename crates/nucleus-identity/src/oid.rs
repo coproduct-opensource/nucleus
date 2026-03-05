@@ -27,11 +27,27 @@ pub const OID_SHA256_TUPLE: &[u64] = &[2, 16, 840, 1, 101, 3, 4, 2, 1];
 /// flexible iteration. Production deployments MUST use an official IANA-registered
 /// PEN to avoid conflicts with other software.
 pub const OID_NUCLEUS_ATTESTATION_BYTES: &[u8] = &[
-    0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0xde, 0x7c, // 1.3.6.1.4.1.57212
+    0x2b, 0x06, 0x01, 0x04, 0x01, 0x83, 0xbe, 0x7c, // 1.3.6.1.4.1.57212
     0x01, 0x01, // .1.1 (attestation.launch)
 ];
 
 pub const OID_NUCLEUS_ATTESTATION_TUPLE: &[u64] = &[1, 3, 6, 1, 4, 1, 57212, 1, 1];
+
+/// OID for Nucleus Permission Fingerprint (same PEN arc, component .1.2).
+///
+/// OID: 1.3.6.1.4.1.57212.1.2
+/// - PEN: 57212 (same unregistered placeholder as attestation)
+/// - Component: .1.2 (attestation.permission_fingerprint)
+///
+/// This extension embeds a SHA-256 hash of a LatticeCertificate's canonical form,
+/// cryptographically binding "who you are" (X.509/SPIFFE) to "what you can do"
+/// (lattice permissions). See `LatticeCertificate::fingerprint()`.
+pub const OID_NUCLEUS_PERMISSION_FINGERPRINT_BYTES: &[u8] = &[
+    0x2b, 0x06, 0x01, 0x04, 0x01, 0x83, 0xbe, 0x7c, // 1.3.6.1.4.1.57212
+    0x01, 0x02, // .1.2 (attestation.permission_fingerprint)
+];
+
+pub const OID_NUCLEUS_PERMISSION_FINGERPRINT_TUPLE: &[u64] = &[1, 3, 6, 1, 4, 1, 57212, 1, 2];
 
 #[cfg(test)]
 mod tests {
@@ -54,9 +70,10 @@ mod tests {
         // The first two components (1.3) are encoded as 0x2b (1*40+3)
         assert_eq!(OID_NUCLEUS_ATTESTATION_BYTES[0], 0x2b);
 
-        // PEN 57212 is encoded as 0x82 0xde 0x7c (multi-byte BER encoding)
-        // Bytes: 0x2b(1.3) 0x06(6) 0x01(1) 0x04(4) 0x01(1) 0x82,0xde,0x7c(57212) 0x01(1) 0x01(1)
-        assert_eq!(OID_NUCLEUS_ATTESTATION_BYTES[5..8], [0x82, 0xde, 0x7c]);
+        // PEN 57212 is encoded as 0x83 0xbe 0x7c (multi-byte BER encoding)
+        // 57212 = 0xDF6C → BER: (0x03 << 7 | 0x80 = 0x83), (0x7C | 0x80 = 0xBE), 0x7C
+        // Bytes: 0x2b(1.3) 0x06(6) 0x01(1) 0x04(4) 0x01(1) 0x83,0xbe,0x7c(57212) 0x01(1) 0x01(1)
+        assert_eq!(OID_NUCLEUS_ATTESTATION_BYTES[5..8], [0x83, 0xbe, 0x7c]);
     }
 
     /// Verifies that the PEN is unregistered (for development awareness).
@@ -65,6 +82,30 @@ mod tests {
         // PEN 57212 is at byte indices 5..8 (after 1.3.6.1.4.1 prefix)
         let pen_bytes = &OID_NUCLEUS_ATTESTATION_BYTES[5..8];
         // 57212 is NOT an officially registered PEN with IANA
-        assert_eq!(pen_bytes, &[0x82, 0xde, 0x7c]);
+        assert_eq!(pen_bytes, &[0x83, 0xbe, 0x7c]);
+    }
+
+    #[test]
+    fn test_permission_fingerprint_oid_consistency() {
+        // Same PEN prefix as attestation
+        assert_eq!(
+            &OID_NUCLEUS_PERMISSION_FINGERPRINT_BYTES[..8],
+            &OID_NUCLEUS_ATTESTATION_BYTES[..8],
+            "fingerprint OID must share the same PEN arc"
+        );
+
+        // Different component: .1.2 vs .1.1
+        assert_eq!(OID_NUCLEUS_PERMISSION_FINGERPRINT_BYTES[8], 0x01); // .1
+        assert_eq!(OID_NUCLEUS_PERMISSION_FINGERPRINT_BYTES[9], 0x02); // .2
+        assert_eq!(OID_NUCLEUS_ATTESTATION_BYTES[9], 0x01); // .1
+
+        // Tuple representations match
+        assert_eq!(OID_NUCLEUS_PERMISSION_FINGERPRINT_TUPLE.len(), 9);
+        assert_eq!(
+            &OID_NUCLEUS_PERMISSION_FINGERPRINT_TUPLE[..8],
+            &OID_NUCLEUS_ATTESTATION_TUPLE[..8]
+        );
+        assert_eq!(OID_NUCLEUS_PERMISSION_FINGERPRINT_TUPLE[8], 2);
+        assert_eq!(OID_NUCLEUS_ATTESTATION_TUPLE[8], 1);
     }
 }

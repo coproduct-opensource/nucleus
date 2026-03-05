@@ -293,7 +293,7 @@ impl std::error::Error for CertificateDelegationError {}
 ///
 /// This intentionally excludes metadata (id, description, created_at, created_by,
 /// derived_from) to produce deterministic hashes for structurally identical permissions.
-fn canonical_permissions_hash(perms: &PermissionLattice) -> Vec<u8> {
+pub fn canonical_permissions_hash(perms: &PermissionLattice) -> Vec<u8> {
     let mut hasher = Sha256::new();
 
     // Capabilities (12 dimensions, each as u8)
@@ -648,6 +648,56 @@ impl LatticeCertificate {
     #[cfg(feature = "serde")]
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, serde_json::Error> {
         serde_json::from_slice(bytes)
+    }
+
+    /// Compute the SHA-256 fingerprint of this certificate's canonical form.
+    ///
+    /// The fingerprint covers:
+    /// 1. Authority block: root_identity + root_permissions canonical hash + not_after + signature
+    /// 2. Each delegation block: identities + effective_permissions + not_after + hash chain + signature
+    /// 3. The final proof-of-possession signature
+    ///
+    /// This fingerprint can be embedded in an X.509 extension (OID 1.3.6.1.4.1.57212.1.2)
+    /// to cryptographically bind a SPIFFE identity to its lattice permissions.
+    ///
+    /// # Stability
+    ///
+    /// The fingerprint is deterministic for structurally identical certificates.
+    /// Metadata fields (id, description, created_at) are excluded via `canonical_permissions_hash`.
+    /// Signatures are included, binding to a specific signing event.
+    pub fn fingerprint(&self) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+
+        // Domain separation to prevent cross-protocol confusion
+        hasher.update(b"lattice-cert-fingerprint-v1:");
+
+        // Authority block
+        hasher.update(self.authority.root_identity.as_bytes());
+        hasher.update([0]); // separator
+        hasher.update(self.authority.not_after.timestamp().to_le_bytes());
+        hasher.update(canonical_permissions_hash(&self.authority.root_permissions));
+        hasher.update(&self.authority.signature);
+
+        // Delegation blocks
+        hasher.update((self.blocks.len() as u32).to_le_bytes());
+        for block in &self.blocks {
+            hasher.update(block.from_identity.as_bytes());
+            hasher.update([0]);
+            hasher.update(block.to_identity.as_bytes());
+            hasher.update([0]);
+            hasher.update(block.not_after.timestamp().to_le_bytes());
+            hasher.update(canonical_permissions_hash(&block.effective_permissions));
+            hasher.update(&block.prev_block_hash);
+            hasher.update(&block.signature);
+        }
+
+        // Final proof-of-possession
+        hasher.update(&self.final_signature);
+
+        let digest = hasher.finalize();
+        let mut result = [0u8; 32];
+        result.copy_from_slice(&digest);
+        result
     }
 }
 
@@ -1230,5 +1280,116 @@ mod tests {
 
         // Effective permissions must be ≤ root
         assert!(cert.effective_permissions().leq(&root_perms));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // FINGERPRINT TESTS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_fingerprint_deterministic() {
+        let rng = test_rng();
+        let root_key = generate_key(&rng);
+        let not_after = Utc::now() + Duration::hours(8);
+
+        let (cert, _) = LatticeCertificate::mint(
+            PermissionLattice::permissive(),
+            "spiffe://test/root".into(),
+            not_after,
+            &root_key,
+            &rng,
+        );
+
+        let fp1 = cert.fingerprint();
+        let fp2 = cert.fingerprint();
+        assert_eq!(fp1, fp2, "same certificate must produce same fingerprint");
+    }
+
+    #[test]
+    fn test_fingerprint_different_for_different_permissions() {
+        let rng = test_rng();
+        let root_key = generate_key(&rng);
+        let not_after = Utc::now() + Duration::hours(8);
+
+        let (cert1, _) = LatticeCertificate::mint(
+            PermissionLattice::permissive(),
+            "spiffe://test/root".into(),
+            not_after,
+            &root_key,
+            &rng,
+        );
+        let (cert2, _) = LatticeCertificate::mint(
+            PermissionLattice::restrictive(),
+            "spiffe://test/root".into(),
+            not_after,
+            &root_key,
+            &rng,
+        );
+
+        assert_ne!(
+            cert1.fingerprint(),
+            cert2.fingerprint(),
+            "different permissions must produce different fingerprints"
+        );
+    }
+
+    #[test]
+    fn test_fingerprint_different_for_different_identities() {
+        let rng = test_rng();
+        let root_key = generate_key(&rng);
+        let not_after = Utc::now() + Duration::hours(8);
+
+        let (cert1, _) = LatticeCertificate::mint(
+            PermissionLattice::permissive(),
+            "spiffe://test/alice".into(),
+            not_after,
+            &root_key,
+            &rng,
+        );
+        let (cert2, _) = LatticeCertificate::mint(
+            PermissionLattice::permissive(),
+            "spiffe://test/bob".into(),
+            not_after,
+            &root_key,
+            &rng,
+        );
+
+        assert_ne!(
+            cert1.fingerprint(),
+            cert2.fingerprint(),
+            "different identities must produce different fingerprints"
+        );
+    }
+
+    #[test]
+    fn test_fingerprint_changes_with_delegation() {
+        let rng = test_rng();
+        let root_key = generate_key(&rng);
+        let not_after = Utc::now() + Duration::hours(8);
+
+        let (cert, holder_key) = LatticeCertificate::mint(
+            PermissionLattice::permissive(),
+            "spiffe://test/root".into(),
+            not_after,
+            &root_key,
+            &rng,
+        );
+        let fp_before = cert.fingerprint();
+
+        let (delegated, _) = cert
+            .delegate(
+                &PermissionLattice::restrictive(),
+                "spiffe://test/agent".into(),
+                not_after,
+                &holder_key,
+                &rng,
+            )
+            .unwrap();
+        let fp_after = delegated.fingerprint();
+
+        assert_ne!(
+            fp_before, fp_after,
+            "delegation must change the fingerprint"
+        );
     }
 }

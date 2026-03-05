@@ -169,8 +169,8 @@ pub use audit::{
     RetentionPolicy,
 };
 pub use certificate::{
-    verify_certificate, CertificateDelegationError, CertificateError, LatticeCertificate,
-    VerifiedPermissions,
+    canonical_permissions_hash, verify_certificate, CertificateDelegationError, CertificateError,
+    LatticeCertificate, VerifiedPermissions,
 };
 pub use delegation::{
     meet_with_justification, DelegationChain, DelegationLink, MeetJustification, RestrictionDetail,
