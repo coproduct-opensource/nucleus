@@ -21,6 +21,8 @@ default = []
 spire = ["nucleus-identity/spire"]
 # MCP server mode (stdio transport)
 mcp = ["dep:rmcp", "dep:schemars"]
+# Red-team harness: Claude vs. Portcullis (requires ANTHROPIC_API_KEY)
+red-team = []
 
 [dependencies]
 axum = { workspace = true }
