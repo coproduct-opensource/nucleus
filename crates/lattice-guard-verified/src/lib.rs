@@ -6,18 +6,20 @@
 //!
 //! # Verified Properties
 //!
-//! ## CapabilityLevel (3-element total order: Never < LowRisk < Always)
+//! ## Phase 1: Algebraic Core
+//!
+//! ### CapabilityLevel (3-element total order: Never < LowRisk < Always)
 //! - Meet (min) and Join (max) form a bounded distributive lattice
 //! - All 7 lattice laws: commutativity, associativity, idempotence,
 //!   absorption, distributivity, bounded (top/bottom identity)
 //! - Partial order consistency: a ≤ b iff meet(a, b) = a
 //!
-//! ## CapabilityLattice (12-dimensional product lattice)
+//! ### CapabilityLattice (12-dimensional product lattice)
 //! - Product of 12 CapabilityLevel dimensions
 //! - Inherits all lattice laws from the component lattice
 //! - Meet/join are element-wise min/max
 //!
-//! ## Nucleus Operator (trifecta normalization)
+//! ### Nucleus Operator (trifecta normalization)
 //! - Idempotent: ν(ν(x)) = ν(x)
 //! - Deflationary: ν(x) ≤ x (adds obligations, never removes)
 //! - **Not meet-preserving**: ν(x∧y) ≠ ν(x)∧ν(y) in general
@@ -27,6 +29,33 @@
 //! - Both properties DO hold on the image of ν (fixed points)
 //! - The quotient meet (perm_meet, which normalizes) always produces
 //!   fixed points and is commutative
+//!
+//! ## Phase 2: Enforcement Boundary
+//!
+//! ### Trifecta Risk Grading
+//! - Count of components is bounded {0,1,2,3}
+//! - Risk is monotone under ≤ (more capabilities → more risk)
+//! - Risk decreases under meet, increases under join
+//! - No trifecta → no obligations; complete → all active exfil gated
+//!
+//! ### Normalize Correctness
+//! - Preserves capabilities (never modifies capability levels)
+//! - Only adds obligations (never removes approval gates)
+//! - No-op when trifecta constraint disabled
+//! - Meet of fixed points is a fixed point
+//!
+//! ### Guard Decision (THE CRITICAL PROOFS)
+//! - Complete risk + approval required → operation denied
+//! - No obligation → always allowed; risk < Complete → always allowed
+//! - **End-to-end trifecta safety**: normalize → check_operation
+//!   DENIES all exfil ops when trifecta is complete
+//! - Read-only profiles never blocked
+//! - Guard is monotone in obligations
+//!
+//! ### Budget Decision
+//! - Within budget → allowed; over budget → denied
+//! - Monotone in consumption and max
+//! - Sequential charges compose correctly
 //!
 //! # Running Verification
 //!
@@ -1332,6 +1361,548 @@ proof fn proof_delegation_chain_monotone(a: Perm, b: Perm, c: Perm)
         Perm { caps: ab.caps, obs: ab.obs, trifecta_constraint: ab.trifecta_constraint },
         c,
     );
+}
+
+// ============================================================================
+// Phase 2: Enforcement Boundary Proofs
+//
+// These proofs verify the pure decision logic at the enforcement boundary:
+// the functions that sit between the lattice algebra and I/O, deciding
+// allow/deny for operations. This is where the audit found fail-open bugs.
+// ============================================================================
+
+// ============================================================================
+// Tier A: Trifecta Risk Grading
+// ============================================================================
+
+/// Count of trifecta components present at ≥ LowRisk.
+///
+/// Models IncompatibilityConstraint::trifecta_risk() counting logic.
+pub open spec fn trifecta_count(c: CapLattice) -> nat {
+    (if has_private_access(c) { 1nat } else { 0nat })
+    + (if has_untrusted_content(c) { 1nat } else { 0nat })
+    + (if has_exfiltration(c) { 1nat } else { 0nat })
+}
+
+/// Risk level: 0=None, 1=Low, 2=Medium, 3=Complete.
+///
+/// Models TrifectaRisk enum as u8.
+pub open spec fn trifecta_risk_level(c: CapLattice) -> nat {
+    trifecta_count(c)
+}
+
+/// Trifecta count is bounded: always ∈ {0, 1, 2, 3}.
+proof fn proof_trifecta_count_bounded(c: CapLattice)
+    requires
+        valid_lattice(c),
+    ensures
+        trifecta_count(c) <= 3,
+{
+}
+
+/// Trifecta risk == 3 (Complete) iff all three components present.
+proof fn proof_trifecta_complete_iff_count_three(c: CapLattice)
+    requires
+        valid_lattice(c),
+    ensures
+        is_trifecta_complete(c) <==> trifecta_count(c) == 3,
+{
+}
+
+/// Bottom has zero trifecta risk.
+proof fn proof_trifecta_bottom_zero_risk(c: CapLattice)
+    requires
+        c == lattice_bot(),
+    ensures
+        trifecta_count(c) == 0,
+        !has_private_access(c),
+        !has_untrusted_content(c),
+        !has_exfiltration(c),
+{
+}
+
+/// Risk is monotone: a ≤ b ⟹ risk(a) ≤ risk(b).
+///
+/// If a has fewer capabilities than b, a can't have more trifecta
+/// components active than b. Each component is a disjunction of
+/// capability levels ≥ 1, and since a ≤ b pointwise, if a.field ≥ 1
+/// then b.field ≥ 1.
+proof fn proof_trifecta_risk_monotone(a: CapLattice, b: CapLattice)
+    requires
+        valid_lattice(a),
+        valid_lattice(b),
+        lattice_leq(a, b),
+    ensures
+        trifecta_count(a) <= trifecta_count(b),
+{
+    // For each component: if a has it active, b must too (since a ≤ b).
+    // has_private_access: a.f0 >= 1 ∨ a.f4 >= 1 ∨ a.f5 >= 1
+    //   If any of these hold for a, they hold for b (pointwise a ≤ b).
+    // Same for untrusted and exfil.
+    // So each bool for a implies the corresponding bool for b.
+    // The count is the sum of 3 bools, so count(a) ≤ count(b).
+}
+
+/// Meet can only decrease or maintain risk.
+///
+/// risk(a ∧ b) ≤ risk(a) and risk(a ∧ b) ≤ risk(b).
+proof fn proof_trifecta_meet_risk_decreases(a: CapLattice, b: CapLattice)
+    requires
+        valid_lattice(a),
+        valid_lattice(b),
+    ensures
+        trifecta_count(lattice_meet(a, b)) <= trifecta_count(a),
+        trifecta_count(lattice_meet(a, b)) <= trifecta_count(b),
+{
+    proof_meet_preserves_validity(a, b);
+    proof_meet_deflationary(a, b);
+    // meet(a,b) ≤ a, so by risk monotonicity:
+    proof_trifecta_risk_monotone(lattice_meet(a, b), a);
+    // meet(a,b) ≤ b:
+    let m = lattice_meet(a, b);
+    // Need to show m ≤ b. Since meet is commutative, meet(b,a) = meet(a,b)
+    // and meet(b,a) ≤ b.
+    proof_lattice_meet_commutative(a, b);
+    proof_meet_deflationary(b, a);
+    proof_trifecta_risk_monotone(lattice_meet(a, b), b);
+}
+
+/// Join can only increase or maintain risk.
+///
+/// risk(a ∨ b) ≥ risk(a) and risk(a ∨ b) ≥ risk(b).
+proof fn proof_trifecta_join_risk_increases(a: CapLattice, b: CapLattice)
+    requires
+        valid_lattice(a),
+        valid_lattice(b),
+    ensures
+        trifecta_count(lattice_join(a, b)) >= trifecta_count(a),
+        trifecta_count(lattice_join(a, b)) >= trifecta_count(b),
+{
+    proof_join_preserves_validity(a, b);
+    // join(a,b) ≥ a pointwise, so risk monotonicity applies.
+    // First: a ≤ join(a,b)
+    // This follows from: join(a, b) = b iff a ≤ b; or equivalently
+    // a ≤ join(a,b) always holds (join is upper bound).
+    // We can show: meet(a, join(a,b)) = a (absorption), which means a ≤ join(a,b).
+    proof_lattice_absorption_meet_join(a, b);
+    // Now lattice_leq(a, join(a,b)) by order consistency
+    proof_lattice_order_consistent(a, lattice_join(a, b));
+    proof_trifecta_risk_monotone(a, lattice_join(a, b));
+
+    // Similarly b ≤ join(a,b)
+    proof_lattice_join_commutative(a, b);
+    proof_lattice_absorption_meet_join(b, a);
+    proof_lattice_order_consistent(b, lattice_join(b, a));
+    proof_trifecta_risk_monotone(b, lattice_join(a, b));
+}
+
+/// No trifecta ⟹ no obligations.
+///
+/// When the trifecta is not complete, trifecta_obligations returns empty.
+proof fn proof_no_trifecta_no_obligations(c: CapLattice)
+    requires
+        valid_lattice(c),
+        !is_trifecta_complete(c),
+    ensures
+        trifecta_obligations(c) == obs_empty(),
+{
+}
+
+/// Trifecta obligations only target exfiltration operations.
+///
+/// The obligations produced by trifecta detection are always a subset
+/// of {run_bash, git_push, create_pr} — never for read, search, etc.
+/// This is structural: trifecta_obligations() only sets those 3 flags.
+proof fn proof_trifecta_obligations_only_exfil(c: CapLattice)
+    requires
+        valid_lattice(c),
+    ensures
+        // The obligations struct only has run_bash/git_push/create_pr fields.
+        // This proof documents that the model matches the production code:
+        // obligations_for() only inserts RunBash, GitPush, CreatePr.
+        trifecta_obligations(c).run_bash ==>
+            (is_trifecta_complete(c) && c.f3 >= 1),
+        trifecta_obligations(c).git_push ==>
+            (is_trifecta_complete(c) && c.f9 >= 1),
+        trifecta_obligations(c).create_pr ==>
+            (is_trifecta_complete(c) && c.f10 >= 1),
+{
+}
+
+/// Trifecta obligations cover ALL active exfiltration vectors.
+///
+/// If the trifecta is complete and an exfil vector is at ≥ LowRisk,
+/// that operation gets an approval obligation. No exfil vector escapes.
+proof fn proof_trifecta_obligations_cover_active_exfil(c: CapLattice)
+    requires
+        valid_lattice(c),
+        is_trifecta_complete(c),
+    ensures
+        c.f3 >= 1 ==> trifecta_obligations(c).run_bash,
+        c.f9 >= 1 ==> trifecta_obligations(c).git_push,
+        c.f10 >= 1 ==> trifecta_obligations(c).create_pr,
+{
+}
+
+// ============================================================================
+// Tier B: Normalize Correctness (additional proofs)
+// ============================================================================
+
+/// Normalize preserves capabilities: ν(p).caps == p.caps.
+///
+/// The nucleus only adds obligations, never modifies capability levels.
+/// This is critical: normalize can't accidentally remove permissions.
+proof fn proof_normalize_preserves_capabilities(p: Perm)
+    requires
+        valid_perm(p),
+    ensures
+        nucleus(p).caps == p.caps,
+{
+}
+
+/// Normalize only adds obligations: ν(p).obs ⊇ p.obs.
+///
+/// In the obligation order (reversed), this means ν(p).obs ≤ p.obs
+/// (more obligations = smaller). The nucleus never removes approval gates.
+proof fn proof_normalize_only_adds_obligations(p: Perm)
+    requires
+        valid_perm(p),
+    ensures
+        obs_leq(nucleus(p).obs, p.obs),
+{
+    // nucleus(p).obs = union(p.obs, trifecta_obs(p.caps))
+    // union with anything is a superset, so leq holds.
+}
+
+/// Normalize is a no-op when trifecta constraint is disabled.
+proof fn proof_normalize_noop_without_constraint(p: Perm)
+    requires
+        !p.trifecta_constraint,
+    ensures
+        nucleus(p) == p,
+{
+}
+
+/// Meet of two fixed points is a fixed point.
+///
+/// If both a and b are already normalized, their quotient meet is too.
+/// This ensures that composing two safe permission sets stays safe.
+proof fn proof_safe_meet_is_safe(a: Perm, b: Perm)
+    requires
+        valid_perm(a),
+        valid_perm(b),
+        nucleus(a) == a,
+        nucleus(b) == b,
+    ensures
+        nucleus(perm_meet(a, b)) == perm_meet(a, b),
+{
+    // Already proved as proof_quotient_meet_is_fixed_point,
+    // but this version has the additional precondition that inputs
+    // are fixed points. The proof is the same.
+}
+
+// ============================================================================
+// Tier C: Guard Decision Correctness
+//
+// This is the critical enforcement boundary. These proofs verify that
+// the GradedGuard::check_operation() logic correctly blocks dangerous
+// operations under trifecta risk.
+// ============================================================================
+
+/// Operations modeled as u8 indices into the CapLattice.
+///
+/// We care about which are exfiltration vectors:
+/// - f3 (run_bash) = op 3
+/// - f9 (git_push) = op 9
+/// - f10 (create_pr) = op 10
+///
+/// An operation is an exfiltration vector:
+pub open spec fn is_exfil_op(op: nat) -> bool {
+    op == 3 || op == 9 || op == 10
+}
+
+/// Check if an operation requires approval in the given obligation set.
+///
+/// Models PermissionLattice::requires_approval(operation).
+pub open spec fn requires_approval(obs: Obs, op: nat) -> bool {
+    (op == 3 && obs.run_bash)
+    || (op == 9 && obs.git_push)
+    || (op == 10 && obs.create_pr)
+}
+
+/// The guard decision: is an operation allowed?
+///
+/// Models GradedGuard::check_operation():
+/// - If requires_approval AND risk == Complete → denied
+/// - Otherwise → allowed
+///
+/// Note: in the real code, risk is computed from the *same* permission set,
+/// so requires_approval && risk==Complete means the trifecta is complete
+/// and this operation is an exfil vector that has an obligation.
+pub open spec fn check_operation_allowed(obs: Obs, risk: nat, op: nat) -> bool {
+    !(requires_approval(obs, op) && risk == 3)
+}
+
+/// Complete trifecta risk + approval required → operation denied.
+///
+/// This is the core enforcement invariant of GradedGuard::check_operation().
+proof fn proof_check_denies_trifecta_exfil(obs: Obs, op: nat)
+    requires
+        requires_approval(obs, op),
+    ensures
+        !check_operation_allowed(obs, 3, op),
+{
+}
+
+/// No approval required → operation always allowed regardless of risk.
+proof fn proof_check_allows_without_obligation(obs: Obs, risk: nat, op: nat)
+    requires
+        !requires_approval(obs, op),
+    ensures
+        check_operation_allowed(obs, risk, op),
+{
+}
+
+/// Risk below Complete → operation always allowed regardless of obligations.
+proof fn proof_check_allows_below_complete(obs: Obs, risk: nat, op: nat)
+    requires
+        risk < 3,
+    ensures
+        check_operation_allowed(obs, risk, op),
+{
+}
+
+/// **THE CRITICAL PROOF**: normalize + check_operation blocks lethal trifecta exfil.
+///
+/// If we normalize a permission set and then check an exfiltration operation:
+/// - If the trifecta is complete, the operation is denied
+/// - Specifically: for any exfil op that's active (≥ LowRisk), normalize
+///   adds an obligation, and check_operation with risk=Complete denies it
+///
+/// This is the composition that directly addresses the audit findings:
+/// "the algebra, when applied, blocks the attack."
+proof fn proof_normalized_blocks_complete_exfil(p: Perm)
+    requires
+        valid_perm(p),
+        is_trifecta_complete(p.caps),
+        // run_bash is active (exfil vector present)
+        p.caps.f3 >= 1,
+    ensures
+        // After normalize, check_operation denies run_bash
+        !check_operation_allowed(nucleus(p).obs, 3, 3),
+{
+    // Step 1: trifecta is complete, so trifecta_obligations adds run_bash obligation
+    // Step 2: nucleus(p).obs = union(p.obs, trifecta_obligations(p.caps))
+    // Step 3: trifecta_obligations(p.caps).run_bash == true (since complete && f3 >= 1)
+    // Step 4: therefore nucleus(p).obs.run_bash == true
+    // Step 5: requires_approval(nucleus(p).obs, 3) == true
+    // Step 6: check_operation_allowed(obs, 3, 3) == !(true && true) == false
+}
+
+/// Same proof for git_push (op 9).
+proof fn proof_normalized_blocks_git_push_exfil(p: Perm)
+    requires
+        valid_perm(p),
+        is_trifecta_complete(p.caps),
+        p.caps.f9 >= 1,
+    ensures
+        !check_operation_allowed(nucleus(p).obs, 3, 9),
+{
+}
+
+/// Same proof for create_pr (op 10).
+proof fn proof_normalized_blocks_create_pr_exfil(p: Perm)
+    requires
+        valid_perm(p),
+        is_trifecta_complete(p.caps),
+        p.caps.f10 >= 1,
+    ensures
+        !check_operation_allowed(nucleus(p).obs, 3, 10),
+{
+}
+
+/// Read-only profile has no exfil obligations → all operations allowed.
+///
+/// A permission set with no exfiltration capability cannot have
+/// a complete trifecta, so no obligations are added by normalize.
+proof fn proof_read_only_always_safe(p: Perm)
+    requires
+        valid_perm(p),
+        // "read-only": no exfil vectors
+        p.caps.f3 == 0, // run_bash = Never
+        p.caps.f9 == 0, // git_push = Never
+        p.caps.f10 == 0, // create_pr = Never
+        // and no pre-existing exfil obligations
+        !p.obs.run_bash,
+        !p.obs.git_push,
+        !p.obs.create_pr,
+    ensures
+        // After normalize, no exfil operations are obligated
+        !requires_approval(nucleus(p).obs, 3),
+        !requires_approval(nucleus(p).obs, 9),
+        !requires_approval(nucleus(p).obs, 10),
+        // So all operations pass the guard
+        check_operation_allowed(nucleus(p).obs, trifecta_risk_level(p.caps) as nat, 3),
+        check_operation_allowed(nucleus(p).obs, trifecta_risk_level(p.caps) as nat, 9),
+        check_operation_allowed(nucleus(p).obs, trifecta_risk_level(p.caps) as nat, 10),
+{
+    // With no exfil capability, trifecta can't be complete (missing component 3).
+    // So trifecta_obligations returns empty. nucleus(p).obs = union(p.obs, empty) = p.obs.
+    // p.obs has no exfil obligations, so requires_approval is false for all exfil ops.
+}
+
+/// Guard monotonicity: fewer obligations → more operations allowed.
+///
+/// If a has fewer obligations than b (a ≥ b in obs order), then any
+/// operation allowed under b's obligations is also allowed under a's.
+proof fn proof_guard_monotone_obligations(a_obs: Obs, b_obs: Obs, risk: nat, op: nat)
+    requires
+        obs_leq(b_obs, a_obs), // b has more obligations ≤ a (fewer obligations)
+        check_operation_allowed(b_obs, risk, op),
+    ensures
+        check_operation_allowed(a_obs, risk, op),
+{
+    // b_obs ≤ a_obs means b has superset of a's obligations.
+    // If b allows (i.e., !(requires_approval(b_obs, op) && risk==3)),
+    // either risk < 3 (then a also allows) or !requires_approval(b_obs, op).
+    // If !requires_approval(b_obs, op), then since b has MORE obligations than a,
+    // !requires_approval(a_obs, op) also holds.
+    //
+    // Actually: obs_leq(b_obs, a_obs) means b ≤ a, i.e., b has MORE obligations.
+    // requires_approval(b_obs, op) && !requires_approval(a_obs, op) is possible.
+    // Wait — obs_leq(b, a) means a.flags implies b.flags.
+    // So if a.run_bash then b.run_bash. (a ≤ b means a has superset)
+    // No wait: obs_leq(a, b) means (b.flag ==> a.flag).
+    // So obs_leq(b_obs, a_obs) means (a_obs.flag ==> b_obs.flag).
+    // b has at least all obligations that a has.
+    //
+    // If requires_approval(a_obs, op) then requires_approval(b_obs, op).
+    // Contrapositive: if !requires_approval(b_obs, op) then !requires_approval(a_obs, op).
+    //
+    // Case: check_operation_allowed(b_obs, risk, op) = true
+    //   means !(requires_approval(b_obs, op) && risk == 3)
+    //   Case 1: risk != 3. Then check_operation_allowed(a_obs, risk, op) = true. ✓
+    //   Case 2: !requires_approval(b_obs, op).
+    //     By contrapositive above: !requires_approval(a_obs, op).
+    //     So check_operation_allowed(a_obs, risk, op) = true. ✓
+}
+
+/// **END-TO-END TRIFECTA SAFETY**: The full composition.
+///
+/// For ANY permission set with a complete trifecta and ANY active
+/// exfiltration operation: normalize → compute risk → check_operation
+/// results in DENIAL.
+///
+/// This proves the system as a whole prevents autonomous exfiltration
+/// when the lethal trifecta is present.
+proof fn proof_end_to_end_trifecta_safe(p: Perm, op: nat)
+    requires
+        valid_perm(p),
+        is_trifecta_complete(p.caps),
+        is_exfil_op(op),
+        // The exfil op is active in the capability set
+        (op == 3 ==> p.caps.f3 >= 1),
+        (op == 9 ==> p.caps.f9 >= 1),
+        (op == 10 ==> p.caps.f10 >= 1),
+    ensures
+        // After normalize, the operation is denied at Complete risk
+        !check_operation_allowed(
+            nucleus(p).obs,
+            trifecta_risk_level(p.caps) as nat,
+            op,
+        ),
+{
+    // Step 1: trifecta is complete → risk level = 3
+    proof_trifecta_complete_iff_count_three(p.caps);
+    assert(trifecta_risk_level(p.caps) == 3);
+
+    // Step 2: normalize adds obligations for active exfil vectors
+    // nucleus(p).obs = union(p.obs, trifecta_obligations(p.caps))
+    // Since trifecta is complete and the exfil op is active,
+    // the corresponding obligation flag is set.
+    proof_trifecta_obligations_cover_active_exfil(p.caps);
+
+    // Step 3: requires_approval is true for this op
+    // Step 4: check_operation with risk=3 denies
+}
+
+// ============================================================================
+// Tier D: Budget Decision Correctness
+// ============================================================================
+
+/// Budget allows a charge iff consumed + amount ≤ max.
+///
+/// Models AtomicBudget::charge_micro_usd() decision predicate.
+/// (The actual CAS loop is not modeled — just the decision.)
+pub open spec fn budget_allows(consumed: nat, max_budget: nat, amount: nat) -> bool {
+    consumed + amount <= max_budget
+}
+
+/// Zero budget denies all charges (except zero-cost operations).
+proof fn proof_budget_zero_denies_nonzero(amount: nat)
+    requires
+        amount > 0,
+    ensures
+        !budget_allows(0, 0, amount),
+{
+}
+
+/// Charge within budget is allowed.
+proof fn proof_budget_within_allows(consumed: nat, max_budget: nat, amount: nat)
+    requires
+        consumed + amount <= max_budget,
+    ensures
+        budget_allows(consumed, max_budget, amount),
+{
+}
+
+/// Charge exceeding budget is denied.
+proof fn proof_budget_over_denies(consumed: nat, max_budget: nat, amount: nat)
+    requires
+        consumed + amount > max_budget,
+    ensures
+        !budget_allows(consumed, max_budget, amount),
+{
+}
+
+/// Budget is monotone in consumption: more consumed → fewer allowed charges.
+///
+/// If consumed₁ ≤ consumed₂ and a charge is allowed at consumed₂,
+/// it's also allowed at consumed₁ (more budget remaining).
+proof fn proof_budget_monotone_consumption(
+    consumed1: nat, consumed2: nat, max_budget: nat, amount: nat,
+)
+    requires
+        consumed1 <= consumed2,
+        budget_allows(consumed2, max_budget, amount),
+    ensures
+        budget_allows(consumed1, max_budget, amount),
+{
+}
+
+/// Budget is monotone in max: higher max → more charges allowed.
+proof fn proof_budget_monotone_max(
+    consumed: nat, max1: nat, max2: nat, amount: nat,
+)
+    requires
+        max1 <= max2,
+        budget_allows(consumed, max1, amount),
+    ensures
+        budget_allows(consumed, max2, amount),
+{
+}
+
+/// Sequential charges: if two charges pass individually, their sum
+/// is within budget.
+proof fn proof_budget_sequential_charges(
+    consumed: nat, max_budget: nat, amount1: nat, amount2: nat,
+)
+    requires
+        budget_allows(consumed, max_budget, amount1),
+        budget_allows(consumed + amount1, max_budget, amount2),
+    ensures
+        consumed + amount1 + amount2 <= max_budget,
+{
 }
 
 fn main() {}
