@@ -594,9 +594,17 @@ impl ToolDispatcher {
 // Anthropic Messages API Client (minimal, no SDK)
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Auth method for the Anthropic Messages API.
+enum AuthMethod {
+    /// x-api-key header (sk-ant-api03-*)
+    ApiKey(String),
+    /// Authorization: Bearer header (sk-ant-oat01-* from Claude Code OAuth)
+    OAuthBearer(String),
+}
+
 struct AnthropicClient {
     client: reqwest::Client,
-    api_key: String,
+    auth: AuthMethod,
 }
 
 #[derive(Serialize)]
@@ -642,20 +650,28 @@ enum ContentBlock {
 }
 
 impl AnthropicClient {
-    fn new(api_key: String) -> Self {
+    fn new(auth: AuthMethod) -> Self {
         Self {
             client: reqwest::Client::new(),
-            api_key,
+            auth,
         }
     }
 
     async fn send(&self, request: &MessagesRequest) -> Result<MessagesResponse, String> {
-        let resp = self
+        let mut req = self
             .client
             .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
+            .header("content-type", "application/json");
+
+        req = match &self.auth {
+            AuthMethod::ApiKey(key) => req.header("x-api-key", key),
+            AuthMethod::OAuthBearer(token) => {
+                req.header("Authorization", format!("Bearer {token}"))
+            }
+        };
+
+        let resp = req
             .json(request)
             .send()
             .await
@@ -671,6 +687,49 @@ impl AnthropicClient {
             .await
             .map_err(|e| format!("JSON parse error: {e}"))
     }
+}
+
+/// Resolve auth: ANTHROPIC_API_KEY env var → macOS Keychain OAuth token.
+fn resolve_auth() -> Option<AuthMethod> {
+    // Priority 1: explicit API key
+    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+        eprintln!("[red-team] Auth: ANTHROPIC_API_KEY (x-api-key)");
+        return Some(AuthMethod::ApiKey(key));
+    }
+
+    // Priority 2: Claude Code OAuth token from macOS Keychain
+    if let Some(token) = extract_keychain_oauth() {
+        eprintln!("[red-team] Auth: Claude Code OAuth token from Keychain (Bearer)");
+        return Some(AuthMethod::OAuthBearer(token));
+    }
+
+    None
+}
+
+/// Extract Claude Code OAuth access token from macOS Keychain.
+fn extract_keychain_oauth() -> Option<String> {
+    let output = std::process::Command::new("security")
+        .args([
+            "find-generic-password",
+            "-s",
+            "Claude Code-credentials",
+            "-w",
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(raw.trim()).ok()?;
+
+    // Structure: {"claudeAiOauth":{"accessToken":"sk-ant-oat01-..."}}
+    json.get("claudeAiOauth")?
+        .get("accessToken")?
+        .as_str()
+        .map(|s| s.to_string())
 }
 
 fn tool_definitions() -> Vec<ToolDefinition> {
@@ -841,8 +900,8 @@ fn plant_canaries() -> TestSandbox {
 // ═══════════════════════════════════════════════════════════════════════════
 
 async fn run_red_team_session(policy: PermissionLattice, profile_name: &str) -> Transcript {
-    let api_key = std::env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY required");
-    let client = AnthropicClient::new(api_key);
+    let auth = resolve_auth().expect("No auth available (need ANTHROPIC_API_KEY or Keychain)");
+    let client = AnthropicClient::new(auth);
 
     let test_sandbox = plant_canaries();
     let sandbox =
@@ -1115,19 +1174,21 @@ fn assert_no_exfiltration(transcript: &Transcript) {
 // Tests — one per policy profile
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Skip if ANTHROPIC_API_KEY is not set (allows `cargo test` without costs).
-fn require_api_key() -> Option<()> {
-    if std::env::var("ANTHROPIC_API_KEY").is_ok() {
+/// Skip if no auth is available (allows `cargo test` without costs).
+fn require_auth() -> Option<()> {
+    if resolve_auth().is_some() {
         Some(())
     } else {
-        eprintln!("[red-team] Skipping: ANTHROPIC_API_KEY not set");
+        eprintln!(
+            "[red-team] Skipping: no auth (set ANTHROPIC_API_KEY or have Claude Code Keychain)"
+        );
         None
     }
 }
 
 #[tokio::test]
 async fn red_team_restrictive() {
-    if require_api_key().is_none() {
+    if require_auth().is_none() {
         return;
     }
     let policy = restrictive_policy();
@@ -1143,7 +1204,7 @@ async fn red_team_restrictive() {
 
 #[tokio::test]
 async fn red_team_web_research() {
-    if require_api_key().is_none() {
+    if require_auth().is_none() {
         return;
     }
     let policy = web_research_policy();
@@ -1153,7 +1214,7 @@ async fn red_team_web_research() {
 
 #[tokio::test]
 async fn red_team_fix_issue() {
-    if require_api_key().is_none() {
+    if require_auth().is_none() {
         return;
     }
     let policy = fix_issue_policy();
@@ -1163,7 +1224,7 @@ async fn red_team_fix_issue() {
 
 #[tokio::test]
 async fn red_team_full_trifecta() {
-    if require_api_key().is_none() {
+    if require_auth().is_none() {
         return;
     }
     let policy = full_trifecta_policy();
