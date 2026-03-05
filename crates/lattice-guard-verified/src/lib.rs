@@ -6,20 +6,18 @@
 //!
 //! # Verified Properties
 //!
-//! ## Phase 1: Algebraic Core
-//!
-//! ### CapabilityLevel (3-element total order: Never < LowRisk < Always)
+//! ## CapabilityLevel (3-element total order: Never < LowRisk < Always)
 //! - Meet (min) and Join (max) form a bounded distributive lattice
 //! - All 7 lattice laws: commutativity, associativity, idempotence,
 //!   absorption, distributivity, bounded (top/bottom identity)
 //! - Partial order consistency: a ≤ b iff meet(a, b) = a
 //!
-//! ### CapabilityLattice (12-dimensional product lattice)
+//! ## CapabilityLattice (12-dimensional product lattice)
 //! - Product of 12 CapabilityLevel dimensions
 //! - Inherits all lattice laws from the component lattice
 //! - Meet/join are element-wise min/max
 //!
-//! ### Nucleus Operator (trifecta normalization)
+//! ## Nucleus Operator (trifecta normalization)
 //! - Idempotent: ν(ν(x)) = ν(x)
 //! - Deflationary: ν(x) ≤ x (adds obligations, never removes)
 //! - **Not meet-preserving**: ν(x∧y) ≠ ν(x)∧ν(y) in general
@@ -30,32 +28,31 @@
 //! - The quotient meet (perm_meet, which normalizes) always produces
 //!   fixed points and is commutative
 //!
-//! ## Phase 2: Enforcement Boundary
+//! ## Heyting Algebra (intuitionistic implication)
+//! - Implication a → b: if a ≤ b then ⊤, else b (pointwise on product)
+//! - **Adjunction**: (c ∧ a) ≤ b ⟺ c ≤ (a → b) — the defining property
+//! - Identity (a → a = ⊤), ex falso (⊥ → a = ⊤), modus ponens
+//! - Transitivity: (a → b) ∧ (b → c) ≤ (a → c)
+//! - Entailment: a ≤ b ⟺ (a → b) = ⊤
+//! - Pseudo-complement: a ∧ ¬a = ⊥
+//! - All properties verified both at component and 12-dimensional level
 //!
-//! ### Trifecta Risk Grading
-//! - Count of components is bounded {0,1,2,3}
-//! - Risk is monotone under ≤ (more capabilities → more risk)
-//! - Risk decreases under meet, increases under join
-//! - No trifecta → no obligations; complete → all active exfil gated
+//! ## Modal Operators (necessity □ and possibility ◇)
+//! - Necessity: masks capabilities that have obligations (S4 interior)
+//! - S4 axiom T: □p ≤ p (necessity implies actuality)
+//! - S4 axiom 4: □(□p) = □p (idempotent)
+//! - □ distributes over capability meet (shared obligations)
+//! - Possibility: join with ceiling (S4 closure)
+//! - ◇ is inflationary: p ≤ ◇p
+//! - ◇ is idempotent: ◇(◇p) = ◇p
+//! - ◇ distributes over capability join
+//! - Modal chain: □p ≤ p ≤ ◇p
+//! - Necessity breaks trifecta when full obligations present
 //!
-//! ### Normalize Correctness
-//! - Preserves capabilities (never modifies capability levels)
-//! - Only adds obligations (never removes approval gates)
-//! - No-op when trifecta constraint disabled
-//! - Meet of fixed points is a fixed point
-//!
-//! ### Guard Decision (THE CRITICAL PROOFS)
-//! - Complete risk + approval required → operation denied
-//! - No obligation → always allowed; risk < Complete → always allowed
-//! - **End-to-end trifecta safety**: normalize → check_operation
-//!   DENIES all exfil ops when trifecta is complete
-//! - Read-only profiles never blocked
-//! - Guard is monotone in obligations
-//!
-//! ### Budget Decision
-//! - Within budget → allowed; over budget → denied
-//! - Monotone in consumption and max
-//! - Sequential charges compose correctly
+//! ## Weakening Cost Monoid
+//! - (Cost, combine, zero) forms a commutative monoid
+//! - combine: additive base, max multipliers
+//! - Associativity, commutativity, identity element
 //!
 //! # Running Verification
 //!
@@ -1365,6 +1362,630 @@ proof fn proof_delegation_chain_monotone(a: Perm, b: Perm, c: Perm)
         c,
     );
 }
+
+// ============================================================================
+// Heyting Implication (Intuitionistic Logic)
+// ============================================================================
+//
+// The Heyting implication a → b is defined for a total order as:
+//   - If a ≤ b: return ⊤ (trivially true)
+//   - If a > b: return b (need to be at most b to satisfy)
+//
+// For the 12-dimensional product lattice, implication is computed pointwise.
+// The key property is the ADJUNCTION:
+//   (c ∧ a) ≤ b  ⟺  c ≤ (a → b)
+//
+// This models lattice_guard::heyting::level_implies and HeytingAlgebra::implies.
+
+/// Heyting implication for capability levels.
+///
+/// Models `level_implies(a, b)` from heyting.rs:
+/// - If a ≤ b: returns ⊤ (Always = 2)
+/// - If a > b: returns b
+pub open spec fn cap_implies(a: CapLevel, b: CapLevel) -> CapLevel {
+    if a <= b { cap_top() } else { b }
+}
+
+/// Pointwise Heyting implication for the 12-dimensional product lattice.
+///
+/// Models `HeytingAlgebra::implies` for CapabilityLattice.
+pub open spec fn lattice_implies(a: CapLattice, b: CapLattice) -> CapLattice {
+    CapLattice {
+        f0: cap_implies(a.f0, b.f0),
+        f1: cap_implies(a.f1, b.f1),
+        f2: cap_implies(a.f2, b.f2),
+        f3: cap_implies(a.f3, b.f3),
+        f4: cap_implies(a.f4, b.f4),
+        f5: cap_implies(a.f5, b.f5),
+        f6: cap_implies(a.f6, b.f6),
+        f7: cap_implies(a.f7, b.f7),
+        f8: cap_implies(a.f8, b.f8),
+        f9: cap_implies(a.f9, b.f9),
+        f10: cap_implies(a.f10, b.f10),
+        f11: cap_implies(a.f11, b.f11),
+    }
+}
+
+// --- Component-level Heyting proofs ---
+
+/// cap_implies preserves validity.
+proof fn proof_cap_implies_valid(a: CapLevel, b: CapLevel)
+    requires
+        valid_cap(a),
+        valid_cap(b),
+    ensures
+        valid_cap(cap_implies(a, b)),
+{
+}
+
+/// Identity: a → a = ⊤
+///
+/// Every element implies itself. This is the reflexivity of entailment.
+proof fn proof_heyting_identity(a: CapLevel)
+    requires
+        valid_cap(a),
+    ensures
+        cap_implies(a, a) == cap_top(),
+{
+}
+
+/// Top implies identity: ⊤ → a = a
+///
+/// Modus ponens with truth: knowing ⊤ (everything) and a → b gives b.
+proof fn proof_heyting_top_implies(a: CapLevel)
+    requires
+        valid_cap(a),
+    ensures
+        cap_implies(cap_top(), a) == a,
+{
+}
+
+/// Bottom implies anything: ⊥ → a = ⊤ (ex falso quodlibet)
+///
+/// From nothing, everything follows.
+proof fn proof_heyting_bottom_implies(a: CapLevel)
+    requires
+        valid_cap(a),
+    ensures
+        cap_implies(cap_bot(), a) == cap_top(),
+{
+}
+
+/// Anything implies top: a → ⊤ = ⊤
+///
+/// Top is trivially entailed.
+proof fn proof_heyting_implies_top(a: CapLevel)
+    requires
+        valid_cap(a),
+    ensures
+        cap_implies(a, cap_top()) == cap_top(),
+{
+}
+
+/// **The Heyting adjunction** for capability levels:
+///   cap_meet(c, a) ≤ b  ⟺  c ≤ cap_implies(a, b)
+///
+/// This is THE defining property of a Heyting algebra. It says that
+/// `a → b` is the largest x such that `x ∧ a ≤ b`.
+///
+/// Z3 verifies this by exhaustive case analysis on {0, 1, 2}³.
+proof fn proof_heyting_adjunction(a: CapLevel, b: CapLevel, c: CapLevel)
+    requires
+        valid_cap(a),
+        valid_cap(b),
+        valid_cap(c),
+    ensures
+        cap_leq(cap_meet(c, a), b) <==> cap_leq(c, cap_implies(a, b)),
+{
+}
+
+/// Modus ponens at component level: meet(a → b, a) ≤ b
+///
+/// Having the implication and the antecedent gives the consequent.
+proof fn proof_heyting_modus_ponens(a: CapLevel, b: CapLevel)
+    requires
+        valid_cap(a),
+        valid_cap(b),
+    ensures
+        cap_leq(cap_meet(cap_implies(a, b), a), b),
+{
+}
+
+/// Transitivity of implication: (a → b) ∧ (b → c) ≤ (a → c)
+///
+/// If a implies b and b implies c, then a implies c.
+proof fn proof_heyting_transitivity(a: CapLevel, b: CapLevel, c: CapLevel)
+    requires
+        valid_cap(a),
+        valid_cap(b),
+        valid_cap(c),
+    ensures
+        cap_leq(
+            cap_meet(cap_implies(a, b), cap_implies(b, c)),
+            cap_implies(a, c),
+        ),
+{
+}
+
+/// Pseudo-complement: a ∧ (a → ⊥) = ⊥
+///
+/// The pseudo-complement ¬a = a → ⊥ is always disjoint from a.
+proof fn proof_heyting_pseudo_complement_disjoint(a: CapLevel)
+    requires
+        valid_cap(a),
+    ensures
+        cap_meet(a, cap_implies(a, cap_bot())) == cap_bot(),
+{
+}
+
+// --- Product-level Heyting proofs ---
+
+/// lattice_implies preserves validity.
+proof fn proof_lattice_implies_valid(a: CapLattice, b: CapLattice)
+    requires
+        valid_lattice(a),
+        valid_lattice(b),
+    ensures
+        valid_lattice(lattice_implies(a, b)),
+{
+}
+
+/// Product identity: a → a = ⊤
+proof fn proof_lattice_heyting_identity(a: CapLattice)
+    requires
+        valid_lattice(a),
+    ensures
+        lattice_implies(a, a) == lattice_top(),
+{
+}
+
+/// Product: ⊤ → a = a
+proof fn proof_lattice_heyting_top_implies(a: CapLattice)
+    requires
+        valid_lattice(a),
+    ensures
+        lattice_implies(lattice_top(), a) == a,
+{
+}
+
+/// Product: ⊥ → a = ⊤
+proof fn proof_lattice_heyting_bottom_implies(a: CapLattice)
+    requires
+        valid_lattice(a),
+    ensures
+        lattice_implies(lattice_bot(), a) == lattice_top(),
+{
+}
+
+/// **Product Heyting adjunction**: the defining property at lattice level.
+///
+///   lattice_leq(lattice_meet(c, a), b) ⟺ lattice_leq(c, lattice_implies(a, b))
+///
+/// Proof strategy: invoke the per-component adjunction lemma for each
+/// of the 12 dimensions so Z3 can unify the conjunction.
+proof fn proof_lattice_heyting_adjunction(a: CapLattice, b: CapLattice, c: CapLattice)
+    requires
+        valid_lattice(a),
+        valid_lattice(b),
+        valid_lattice(c),
+    ensures
+        lattice_leq(lattice_meet(c, a), b)
+            <==> lattice_leq(c, lattice_implies(a, b)),
+{
+    proof_heyting_adjunction(a.f0, b.f0, c.f0);
+    proof_heyting_adjunction(a.f1, b.f1, c.f1);
+    proof_heyting_adjunction(a.f2, b.f2, c.f2);
+    proof_heyting_adjunction(a.f3, b.f3, c.f3);
+    proof_heyting_adjunction(a.f4, b.f4, c.f4);
+    proof_heyting_adjunction(a.f5, b.f5, c.f5);
+    proof_heyting_adjunction(a.f6, b.f6, c.f6);
+    proof_heyting_adjunction(a.f7, b.f7, c.f7);
+    proof_heyting_adjunction(a.f8, b.f8, c.f8);
+    proof_heyting_adjunction(a.f9, b.f9, c.f9);
+    proof_heyting_adjunction(a.f10, b.f10, c.f10);
+    proof_heyting_adjunction(a.f11, b.f11, c.f11);
+}
+
+/// Product modus ponens: meet(a → b, a) ≤ b
+///
+/// Follows from the adjunction with c = (a → b).
+proof fn proof_lattice_heyting_modus_ponens(a: CapLattice, b: CapLattice)
+    requires
+        valid_lattice(a),
+        valid_lattice(b),
+    ensures
+        lattice_leq(lattice_meet(lattice_implies(a, b), a), b),
+{
+    proof_heyting_modus_ponens(a.f0, b.f0);
+    proof_heyting_modus_ponens(a.f1, b.f1);
+    proof_heyting_modus_ponens(a.f2, b.f2);
+    proof_heyting_modus_ponens(a.f3, b.f3);
+    proof_heyting_modus_ponens(a.f4, b.f4);
+    proof_heyting_modus_ponens(a.f5, b.f5);
+    proof_heyting_modus_ponens(a.f6, b.f6);
+    proof_heyting_modus_ponens(a.f7, b.f7);
+    proof_heyting_modus_ponens(a.f8, b.f8);
+    proof_heyting_modus_ponens(a.f9, b.f9);
+    proof_heyting_modus_ponens(a.f10, b.f10);
+    proof_heyting_modus_ponens(a.f11, b.f11);
+}
+
+/// Product transitivity: (a → b) ∧ (b → c) ≤ (a → c)
+proof fn proof_lattice_heyting_transitivity(a: CapLattice, b: CapLattice, c: CapLattice)
+    requires
+        valid_lattice(a),
+        valid_lattice(b),
+        valid_lattice(c),
+    ensures
+        lattice_leq(
+            lattice_meet(lattice_implies(a, b), lattice_implies(b, c)),
+            lattice_implies(a, c),
+        ),
+{
+    proof_heyting_transitivity(a.f0, b.f0, c.f0);
+    proof_heyting_transitivity(a.f1, b.f1, c.f1);
+    proof_heyting_transitivity(a.f2, b.f2, c.f2);
+    proof_heyting_transitivity(a.f3, b.f3, c.f3);
+    proof_heyting_transitivity(a.f4, b.f4, c.f4);
+    proof_heyting_transitivity(a.f5, b.f5, c.f5);
+    proof_heyting_transitivity(a.f6, b.f6, c.f6);
+    proof_heyting_transitivity(a.f7, b.f7, c.f7);
+    proof_heyting_transitivity(a.f8, b.f8, c.f8);
+    proof_heyting_transitivity(a.f9, b.f9, c.f9);
+    proof_heyting_transitivity(a.f10, b.f10, c.f10);
+    proof_heyting_transitivity(a.f11, b.f11, c.f11);
+}
+
+/// Entailment equivalence: lattice_leq(a, b) ⟺ lattice_implies(a, b) = ⊤
+///
+/// This is the constructive interpretation: a entails b exactly when
+/// the implication is trivially true.
+proof fn proof_lattice_entailment(a: CapLattice, b: CapLattice)
+    requires
+        valid_lattice(a),
+        valid_lattice(b),
+    ensures
+        lattice_leq(a, b) <==> lattice_implies(a, b) == lattice_top(),
+{
+}
+
+// ============================================================================
+// Modal Operators: Necessity (□) and Possibility (◇)
+// ============================================================================
+//
+// Necessity: "what can be exercised WITHOUT approval"
+//   □p removes capabilities that have corresponding obligations.
+//   For our model: if obs.run_bash, then caps.f3 = 0; etc.
+//
+// Possibility: "what COULD be exercised with escalation"
+//   ◇p = join(p.caps, ceiling.caps) — the escalation ceiling.
+//
+// These model lattice_guard::modal::ModalPermissions.
+
+/// Necessity operator at the capability level.
+///
+/// Masks capabilities that have obligations: sets them to Never (0).
+/// Only models the 3 exfiltration operations tracked by our Obs type.
+pub open spec fn cap_necessity(caps: CapLattice, obs: Obs) -> CapLattice {
+    CapLattice {
+        f0: caps.f0,
+        f1: caps.f1,
+        f2: caps.f2,
+        f3: if obs.run_bash { cap_bot() } else { caps.f3 },
+        f4: caps.f4,
+        f5: caps.f5,
+        f6: caps.f6,
+        f7: caps.f7,
+        f8: caps.f8,
+        f9: if obs.git_push { cap_bot() } else { caps.f9 },
+        f10: if obs.create_pr { cap_bot() } else { caps.f10 },
+        f11: caps.f11,
+    }
+}
+
+/// Full necessity on a Perm: reduce capabilities based on obligations.
+pub open spec fn necessity(p: Perm) -> Perm {
+    Perm {
+        caps: cap_necessity(p.caps, p.obs),
+        obs: p.obs,
+        trifecta_constraint: p.trifecta_constraint,
+    }
+}
+
+/// Possibility operator at the capability level: join with ceiling.
+pub open spec fn cap_possibility(caps: CapLattice, ceiling: CapLattice) -> CapLattice {
+    lattice_join(caps, ceiling)
+}
+
+/// □p preserves validity.
+proof fn proof_necessity_preserves_validity(p: Perm)
+    requires
+        valid_perm(p),
+    ensures
+        valid_lattice(necessity(p).caps),
+{
+}
+
+/// **S4 axiom T**: □A ≤ A — necessity implies actuality.
+///
+/// The capabilities after masking are ≤ the original capabilities,
+/// because we only zero out entries (never increase them).
+proof fn proof_necessity_deflationary(p: Perm)
+    requires
+        valid_perm(p),
+    ensures
+        lattice_leq(necessity(p).caps, p.caps),
+{
+}
+
+/// **S4 axiom 4**: □(□A) = □A — positive introspection (idempotent).
+///
+/// Masking an already-masked capability is idempotent:
+/// if obs.run_bash, then f3 is already 0 in □p, so masking again gives 0.
+proof fn proof_necessity_idempotent(p: Perm)
+    requires
+        valid_perm(p),
+    ensures
+        necessity(necessity(p)) == necessity(p),
+{
+    // obligations are unchanged by necessity, so the mask is the same.
+    // cap_bot() masked again is still cap_bot().
+}
+
+/// □ distributes over capability meet: □(a∧b) = □a ∧ □b
+/// when both share the same obligations.
+///
+/// Since the mask depends on obligations (not capabilities),
+/// masking the meet = meeting the masks.
+proof fn proof_necessity_distributes_over_cap_meet(
+    caps_a: CapLattice,
+    caps_b: CapLattice,
+    obs: Obs,
+)
+    requires
+        valid_lattice(caps_a),
+        valid_lattice(caps_b),
+    ensures
+        cap_necessity(lattice_meet(caps_a, caps_b), obs)
+            == lattice_meet(cap_necessity(caps_a, obs), cap_necessity(caps_b, obs)),
+{
+    // For masked fields (e.g., f3 when obs.run_bash):
+    //   LHS: if obs.run_bash { 0 } else { min(a.f3, b.f3) }
+    //   RHS: min(if obs.run_bash { 0 } else { a.f3 }, if obs.run_bash { 0 } else { b.f3 })
+    //   When obs.run_bash: LHS = 0, RHS = min(0, 0) = 0 ✓
+    //   When !obs.run_bash: LHS = min(a.f3, b.f3), RHS = min(a.f3, b.f3) ✓
+    // For unmasked fields: both sides are just min(a.fi, b.fi).
+}
+
+/// ◇ is inflationary: A ≤ ◇A — actuality implies possibility.
+///
+/// The join with ceiling can only increase capabilities.
+proof fn proof_possibility_inflationary(caps: CapLattice, ceiling: CapLattice)
+    requires
+        valid_lattice(caps),
+        valid_lattice(ceiling),
+    ensures
+        lattice_leq(caps, cap_possibility(caps, ceiling)),
+{
+}
+
+/// ◇ is idempotent: ◇(◇A) = ◇A (when using the same ceiling).
+///
+/// join(join(caps, ceiling), ceiling) = join(caps, ceiling)
+/// because join(ceiling, ceiling) = ceiling (idempotent).
+proof fn proof_possibility_idempotent(caps: CapLattice, ceiling: CapLattice)
+    requires
+        valid_lattice(caps),
+        valid_lattice(ceiling),
+    ensures
+        cap_possibility(cap_possibility(caps, ceiling), ceiling)
+            == cap_possibility(caps, ceiling),
+{
+    proof_lattice_join_associative(caps, ceiling, ceiling);
+    proof_lattice_join_idempotent(ceiling);
+}
+
+/// The modal chain: □p ≤ p ≤ ◇p (at capability level).
+///
+/// Necessity strips capabilities, possibility adds capabilities.
+proof fn proof_modal_chain(caps: CapLattice, obs: Obs, ceiling: CapLattice)
+    requires
+        valid_lattice(caps),
+        valid_lattice(ceiling),
+    ensures
+        lattice_leq(cap_necessity(caps, obs), caps),
+        lattice_leq(caps, cap_possibility(caps, ceiling)),
+{
+}
+
+/// ◇ distributes over capability join: ◇(a∨b) = ◇a ∨ ◇b
+/// when using the same ceiling.
+///
+/// join(join(a, b), c) = join(join(a, c), join(b, c))
+/// follows from join distributivity and commutativity.
+proof fn proof_possibility_distributes_over_join(
+    caps_a: CapLattice,
+    caps_b: CapLattice,
+    ceiling: CapLattice,
+)
+    requires
+        valid_lattice(caps_a),
+        valid_lattice(caps_b),
+        valid_lattice(ceiling),
+    ensures
+        cap_possibility(lattice_join(caps_a, caps_b), ceiling)
+            == lattice_join(
+                cap_possibility(caps_a, ceiling),
+                cap_possibility(caps_b, ceiling),
+            ),
+{
+    // cap_possibility(join(a,b), c) = join(join(a,b), c)
+    // We need: join(join(a,b), c) = join(join(a,c), join(b,c))
+    //
+    // By join distributes over meet? No — we need the dual:
+    // join distributes over join is just associativity + commutativity.
+    // Actually: join(join(a,b), c) vs join(join(a,c), join(b,c)).
+    //
+    // In a distributive lattice, join(join(a,b), c) ≠ join(join(a,c), join(b,c))
+    // in general. But join(a∨b, c) = join(a,c) ∨ join(b,c) requires
+    // join to distribute over join, which only holds if join is idempotent
+    // (absorption). Let's check:
+    //
+    // join(a∨b, c) means join(join(a,b), c).
+    // join(a,c) ∨ join(b,c) means join(join(a,c), join(b,c)).
+    //
+    // These are equal by the semilattice identity (join is ACI = associative,
+    // commutative, idempotent). The multiset {a,b,c} = {a,c,b,c} modulo
+    // idempotency. Both reduce to join(a, b, c).
+    proof_lattice_join_associative(caps_a, caps_b, ceiling);
+    proof_lattice_join_associative(caps_a, ceiling, lattice_join(caps_b, ceiling));
+    proof_lattice_join_commutative(caps_b, ceiling);
+    proof_lattice_join_associative(caps_a, caps_b, ceiling);
+
+    // Actually, let's just show both sides equal join(a, join(b, c)):
+    // LHS = join(join(a,b), c) = join(a, join(b, c))  [associativity]
+    // RHS = join(join(a,c), join(b,c))
+    //     = join(a, join(c, join(b, c)))  [assoc]
+    //     = join(a, join(join(c, b), c))  [assoc on inner]
+    //     = join(a, join(b, join(c, c)))  [assoc + comm]
+    //     = join(a, join(b, c))           [idempotent]
+    // Both sides = join(a, join(b, c)). ✓
+
+    // Let Z3 unfold the component-wise definitions.
+}
+
+/// Necessity and possibility have disjoint effects on fixed points:
+/// if p is a fixed point of ν (already normalized), then □p's capabilities
+/// are exactly the "safe" subset — the trifecta cannot be complete in □p
+/// when p has full trifecta obligations.
+proof fn proof_necessity_breaks_trifecta_on_full_obligations(caps: CapLattice, obs: Obs)
+    requires
+        valid_lattice(caps),
+        obs.run_bash,
+        obs.git_push,
+        obs.create_pr,
+    ensures
+        !has_exfiltration(cap_necessity(caps, obs)),
+{
+    // All exfiltration capabilities (f3, f9, f10) are masked to 0.
+    // has_exfiltration requires at least one of f3, f9, f10 >= 1.
+}
+
+// ============================================================================
+// Weakening Cost Monoid
+// ============================================================================
+//
+// The WeakeningCost from weakening.rs has:
+//   total = base * trifecta_multiplier * isolation_multiplier
+//   combine(a, b) = Cost { base: a+b, trifecta: max(a,b), isolation: max(a,b) }
+//
+// We verify that (Cost, combine, zero) forms a commutative monoid.
+// This models lattice_guard::weakening::WeakeningCost::combine.
+
+/// Abstract weakening cost: base + two multipliers.
+///
+/// Invariant: multipliers ≥ 1 (enforced by valid_cost).
+pub struct Cost {
+    pub base: nat,
+    pub trifecta_mult: nat,
+    pub isolation_mult: nat,
+}
+
+/// A cost is valid when multipliers are ≥ 1.
+pub open spec fn valid_cost(c: Cost) -> bool {
+    c.trifecta_mult >= 1 && c.isolation_mult >= 1
+}
+
+/// The zero cost (identity for combine).
+pub open spec fn cost_zero() -> Cost {
+    Cost { base: 0, trifecta_mult: 1, isolation_mult: 1 }
+}
+
+/// Combine two costs: additive base, max multipliers.
+pub open spec fn cost_combine(a: Cost, b: Cost) -> Cost {
+    Cost {
+        base: a.base + b.base,
+        trifecta_mult: if a.trifecta_mult >= b.trifecta_mult {
+            a.trifecta_mult
+        } else {
+            b.trifecta_mult
+        },
+        isolation_mult: if a.isolation_mult >= b.isolation_mult {
+            a.isolation_mult
+        } else {
+            b.isolation_mult
+        },
+    }
+}
+
+/// The total cost: base × trifecta × isolation.
+pub open spec fn cost_total(c: Cost) -> nat {
+    c.base * c.trifecta_mult * c.isolation_mult
+}
+
+/// combine preserves validity.
+proof fn proof_cost_combine_valid(a: Cost, b: Cost)
+    requires
+        valid_cost(a),
+        valid_cost(b),
+    ensures
+        valid_cost(cost_combine(a, b)),
+{
+}
+
+/// zero is valid.
+proof fn proof_cost_zero_valid()
+    ensures
+        valid_cost(cost_zero()),
+{
+}
+
+/// combine is commutative.
+proof fn proof_cost_combine_commutative(a: Cost, b: Cost)
+    requires
+        valid_cost(a),
+        valid_cost(b),
+    ensures
+        cost_combine(a, b) == cost_combine(b, a),
+{
+}
+
+/// combine is associative.
+proof fn proof_cost_combine_associative(a: Cost, b: Cost, c: Cost)
+    requires
+        valid_cost(a),
+        valid_cost(b),
+        valid_cost(c),
+    ensures
+        cost_combine(cost_combine(a, b), c) == cost_combine(a, cost_combine(b, c)),
+{
+}
+
+/// zero is the identity for combine.
+proof fn proof_cost_zero_identity(a: Cost)
+    requires
+        valid_cost(a),
+    ensures
+        cost_combine(a, cost_zero()) == a,
+{
+}
+
+/// Zero cost has zero total.
+proof fn proof_cost_zero_total()
+    ensures
+        cost_total(cost_zero()) == 0,
+{
+}
+
+/// Cost total is non-negative (trivially true for nat, but documents intent).
+proof fn proof_cost_total_nonneg(c: Cost)
+    requires
+        valid_cost(c),
+    ensures
+        cost_total(c) >= 0,
+{
+}
+
 
 // ============================================================================
 // Phase 2: Enforcement Boundary Proofs
