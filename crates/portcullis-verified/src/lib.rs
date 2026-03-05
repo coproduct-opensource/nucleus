@@ -54,6 +54,14 @@
 //! - combine: additive base, max multipliers
 //! - Associativity, commutativity, identity element
 //!
+//! ## GradedTaintGuard — TaintSet Monoid (Phase 6)
+//! - TaintSet: 3-bool semilattice (private_data, untrusted_content, exfil_vector)
+//! - Monoid laws: identity (left/right), commutativity, associativity, idempotence
+//! - Taint classification: operation → label totality, risk monotonicity
+//! - Guard decisions: trifecta blocks exfil, incomplete taint allows, accumulation monotone
+//! - Bridge: TaintSet trifecta ↔ CapLattice trifecta, guard agrees with nucleus operator
+//! - Executable specs: empty, singleton, union, is_trifecta, count
+//!
 //! # Running Verification
 //!
 //! ```bash
@@ -3382,6 +3390,331 @@ proof fn proof_market_cost_commutative(a: Cost, b: Cost)
     ensures cost_combine(a, b) == cost_combine(b, a),
 {
     proof_cost_combine_commutative(a, b);
+}
+
+// ============================================================================
+// Phase 6: GradedTaintGuard — TaintSet Monoid & Guard Decision Proofs
+//
+// The GradedTaintGuard uses a 3-bit semilattice (TaintSet) as the grade
+// monoid in a graded monad. Each tool call is tagged with a TaintLabel
+// (PrivateData, UntrustedContent, ExfilVector), and the session's accumulated
+// taint is the monoidal composition (union). When the trifecta is complete
+// (all 3 legs present), exfiltration operations are blocked.
+//
+// These proofs verify:
+// - Tier H: TaintSet is a valid monoid + join-semilattice (5 proofs)
+// - Tier I: Taint classification is correct and risk is monotone (4 proofs)
+// - Tier J: Guard decisions are sound (4 proofs)
+// - Tier K: Bridge to existing nucleus model (2 proofs)
+// - Tier L: Executable spec functions (5 exec fns)
+// ============================================================================
+
+// --- Spec Types ---
+
+/// Spec mirror of portcullis::guard::TaintSet.
+/// Three booleans tracking which trifecta legs have been touched.
+pub struct SpecTaintSet {
+    pub private_data: bool,
+    pub untrusted_content: bool,
+    pub exfil_vector: bool,
+}
+
+/// Empty taint set — the monoid identity.
+pub open spec fn taint_empty() -> SpecTaintSet {
+    SpecTaintSet { private_data: false, untrusted_content: false, exfil_vector: false }
+}
+
+/// Union of two taint sets — the monoid operation.
+pub open spec fn taint_union(a: SpecTaintSet, b: SpecTaintSet) -> SpecTaintSet {
+    SpecTaintSet {
+        private_data: a.private_data || b.private_data,
+        untrusted_content: a.untrusted_content || b.untrusted_content,
+        exfil_vector: a.exfil_vector || b.exfil_vector,
+    }
+}
+
+/// Singleton taint set from a label (0=PrivateData, 1=UntrustedContent, 2=ExfilVector).
+pub open spec fn taint_singleton(label: nat) -> SpecTaintSet {
+    SpecTaintSet {
+        private_data: label == 0,
+        untrusted_content: label == 1,
+        exfil_vector: label == 2,
+    }
+}
+
+/// Check if trifecta is complete — all 3 legs present.
+pub open spec fn taint_is_trifecta_complete(s: SpecTaintSet) -> bool {
+    s.private_data && s.untrusted_content && s.exfil_vector
+}
+
+/// Count of active taint legs.
+pub open spec fn taint_count(s: SpecTaintSet) -> nat {
+    (if s.private_data { 1 as nat } else { 0 })
+    + (if s.untrusted_content { 1 as nat } else { 0 })
+    + (if s.exfil_vector { 1 as nat } else { 0 })
+}
+
+/// Check if a taint set contains a specific label.
+pub open spec fn taint_contains(s: SpecTaintSet, label: nat) -> bool {
+    (label == 0 && s.private_data)
+    || (label == 1 && s.untrusted_content)
+    || (label == 2 && s.exfil_vector)
+}
+
+/// Valid taint label: 0, 1, or 2.
+pub open spec fn valid_taint_label(label: nat) -> bool {
+    label <= 2
+}
+
+/// Map an operation (nat) to its taint label, or 3 for neutral ops.
+///
+/// Mirrors portcullis::guard::operation_taint(op: Operation).
+/// Leg 1 (PrivateData=0): ReadFiles=0, GlobSearch=4, GrepSearch=5
+/// Leg 2 (UntrustedContent=1): WebFetch=6, WebSearch=7
+/// Leg 3 (ExfilVector=2): RunBash=3, GitPush=9, CreatePr=10
+/// Neutral (returns 3): WriteFiles=1, EditFiles=2, GitCommit=8, ManagePods=11
+pub open spec fn operation_taint_label(op: nat) -> nat {
+    if op == 0 || op == 4 || op == 5 { 0 }       // PrivateData
+    else if op == 6 || op == 7 { 1 }              // UntrustedContent
+    else if op == 3 || op == 9 || op == 10 { 2 }  // ExfilVector
+    else { 3 }                                     // Neutral (no taint)
+}
+
+/// Valid operation index: 0..11.
+pub open spec fn valid_operation(op: nat) -> bool {
+    op <= 11
+}
+
+/// Is this a neutral operation (no taint contribution)?
+pub open spec fn is_neutral_op(op: nat) -> bool {
+    op == 1 || op == 2 || op == 8 || op == 11
+}
+
+/// Taint set subset relation: a ⊆ b (each leg of a implies the same leg of b).
+pub open spec fn taint_subset(a: SpecTaintSet, b: SpecTaintSet) -> bool {
+    (a.private_data ==> b.private_data)
+    && (a.untrusted_content ==> b.untrusted_content)
+    && (a.exfil_vector ==> b.exfil_vector)
+}
+
+// ============================================================================
+// Tier H: TaintSet Monoid Laws (5 proofs)
+// ============================================================================
+
+/// H1: Left identity — empty.union(s) == s
+proof fn proof_taintset_identity_left(s: SpecTaintSet)
+    ensures taint_union(taint_empty(), s) == s,
+{}
+
+/// H2: Right identity — s.union(empty) == s
+proof fn proof_taintset_identity_right(s: SpecTaintSet)
+    ensures taint_union(s, taint_empty()) == s,
+{}
+
+/// H3: Commutativity — a.union(b) == b.union(a)
+proof fn proof_taintset_union_commutative(a: SpecTaintSet, b: SpecTaintSet)
+    ensures taint_union(a, b) == taint_union(b, a),
+{}
+
+/// H4: Associativity — a.union(b.union(c)) == a.union(b).union(c)
+proof fn proof_taintset_union_associative(
+    a: SpecTaintSet, b: SpecTaintSet, c: SpecTaintSet,
+)
+    ensures taint_union(a, taint_union(b, c)) == taint_union(taint_union(a, b), c),
+{}
+
+/// H5: Idempotence — s.union(s) == s
+proof fn proof_taintset_union_idempotent(s: SpecTaintSet)
+    ensures taint_union(s, s) == s,
+{}
+
+// ============================================================================
+// Tier I: Taint Classification Correctness (4 proofs)
+// ============================================================================
+
+/// I1: Every valid operation maps to a valid taint label (0..2) or neutral (3).
+proof fn proof_operation_taint_total(op: nat)
+    requires valid_operation(op),
+    ensures operation_taint_label(op) <= 3,
+{}
+
+/// I2: Trifecta is complete iff all three legs are present.
+proof fn proof_trifecta_iff_all_three(s: SpecTaintSet)
+    ensures
+        taint_is_trifecta_complete(s) <==>
+            (s.private_data && s.untrusted_content && s.exfil_vector),
+{}
+
+/// I3: Risk (count) is monotone under subset — if a ⊆ b, count(a) ≤ count(b).
+proof fn proof_taint_risk_monotone(a: SpecTaintSet, b: SpecTaintSet)
+    requires taint_subset(a, b),
+    ensures taint_count(a) <= taint_count(b),
+{}
+
+/// I4: Count is bounded [0, 3] and count == 3 iff trifecta complete.
+proof fn proof_taintset_count_bounds(s: SpecTaintSet)
+    ensures
+        taint_count(s) <= 3,
+        taint_count(s) == 3 <==> taint_is_trifecta_complete(s),
+{}
+
+// ============================================================================
+// Tier J: Guard Decision Theorems (4 proofs)
+// ============================================================================
+
+/// J1: If taint is trifecta-complete and the operation requires approval,
+/// the guard denies it.
+///
+/// This connects the TaintSet model to the existing check_operation_allowed:
+/// when taint_count == 3, the risk parameter is 3 (Complete), and combined
+/// with requires_approval, the check returns false (denied).
+proof fn proof_guard_blocks_on_trifecta(
+    taint: SpecTaintSet, obs: Obs, op: nat,
+)
+    requires
+        taint_is_trifecta_complete(taint),
+        requires_approval(obs, op),
+    ensures
+        !check_operation_allowed(obs, 3, op),
+{}
+
+/// J2: If taint is NOT trifecta-complete, the taint risk alone cannot cause denial.
+///
+/// When taint_count < 3, the risk parameter is < 3, and check_operation_allowed
+/// always returns true regardless of obligations (risk < Complete → allowed).
+proof fn proof_guard_allows_incomplete_taint(
+    taint: SpecTaintSet, obs: Obs, op: nat,
+)
+    requires !taint_is_trifecta_complete(taint),
+    ensures check_operation_allowed(obs, taint_count(taint), op),
+{
+    // taint_count(taint) < 3 when not trifecta-complete (from I4)
+    proof_taintset_count_bounds(taint);
+    // check_operation_allowed with risk < 3 always allows (existing proof)
+}
+
+/// J3: Recording a taint label (union with singleton) can only increase taint,
+/// never decrease. The new taint is a superset of the old.
+proof fn proof_taint_accumulation_monotone(
+    before: SpecTaintSet, label: nat,
+)
+    requires valid_taint_label(label),
+    ensures
+        taint_subset(before, taint_union(before, taint_singleton(label))),
+        taint_count(before) <= taint_count(taint_union(before, taint_singleton(label))),
+{
+    proof_taint_risk_monotone(
+        before,
+        taint_union(before, taint_singleton(label)),
+    );
+}
+
+/// J4: Neutral operations (write, edit, commit, pods) produce no taint label.
+proof fn proof_neutral_ops_no_taint(op: nat)
+    requires is_neutral_op(op),
+    ensures operation_taint_label(op) == 3,
+{}
+
+// ============================================================================
+// Tier K: Bridge to Existing Nucleus Model (2 proofs)
+// ============================================================================
+
+/// K1: When a TaintSet has trifecta complete, and we have a CapLattice
+/// that also has the trifecta complete (private + untrusted + exfil),
+/// then taint_count == 3 matches the existing is_trifecta_complete(caps).
+///
+/// This bridges the O(1) TaintSet check to the O(n) CapLattice check:
+/// both agree on when the trifecta is complete.
+proof fn proof_taint_risk_bridge(
+    taint: SpecTaintSet, caps: CapLattice,
+)
+    requires
+        valid_lattice(caps),
+        // Link: taint legs track which cap-lattice components are active
+        taint.private_data == has_private_access(caps),
+        taint.untrusted_content == has_untrusted_content(caps),
+        taint.exfil_vector == has_exfiltration(caps),
+    ensures
+        taint_is_trifecta_complete(taint) <==> is_trifecta_complete(caps),
+{}
+
+/// K2: When taint is complete and an exfil op requires approval under the
+/// nucleus model, the guard's denial (via check_operation_allowed with
+/// risk=3) is consistent with the nucleus operator adding obligations.
+///
+/// Specifically: if nucleus(p) would add an obligation for this op
+/// (because trifecta is complete and the cap is ≥ LowRisk), then
+/// check_operation_allowed(nucleus(p).obs, 3, op) == false.
+proof fn proof_guard_agrees_with_nucleus(
+    p: Perm, taint: SpecTaintSet, op: nat,
+)
+    requires
+        valid_perm(p),
+        // Taint tracks the same trifecta components as the cap lattice
+        taint.private_data == has_private_access(p.caps),
+        taint.untrusted_content == has_untrusted_content(p.caps),
+        taint.exfil_vector == has_exfiltration(p.caps),
+        taint_is_trifecta_complete(taint),
+        is_exfil_op(op),
+        requires_approval(nucleus(p).obs, op),
+    ensures
+        !check_operation_allowed(nucleus(p).obs, 3, op),
+{}
+
+// ============================================================================
+// Tier L: Exec Functions (5 executable spec functions)
+// ============================================================================
+
+/// L1: Create an empty taint set.
+exec fn exec_taintset_empty() -> (result: SpecTaintSet)
+    ensures result == taint_empty(),
+{
+    SpecTaintSet { private_data: false, untrusted_content: false, exfil_vector: false }
+}
+
+/// L2: Create a singleton taint set from a label.
+exec fn exec_taintset_singleton(label: u8) -> (result: SpecTaintSet)
+    requires label <= 2,
+    ensures
+        result == taint_singleton(label as nat),
+        taint_contains(result, label as nat),
+        taint_count(result) == 1,
+{
+    SpecTaintSet {
+        private_data: label == 0,
+        untrusted_content: label == 1,
+        exfil_vector: label == 2,
+    }
+}
+
+/// L3: Compute the union of two taint sets.
+exec fn exec_taintset_union(a: SpecTaintSet, b: SpecTaintSet) -> (result: SpecTaintSet)
+    ensures
+        result == taint_union(a, b),
+        forall|l: nat| valid_taint_label(l) ==>
+            (taint_contains(result, l) <==> (taint_contains(a, l) || taint_contains(b, l))),
+{
+    SpecTaintSet {
+        private_data: a.private_data || b.private_data,
+        untrusted_content: a.untrusted_content || b.untrusted_content,
+        exfil_vector: a.exfil_vector || b.exfil_vector,
+    }
+}
+
+/// L4: Check if trifecta is complete.
+exec fn exec_taintset_is_trifecta(s: SpecTaintSet) -> (result: bool)
+    ensures result <==> taint_is_trifecta_complete(s),
+{
+    s.private_data && s.untrusted_content && s.exfil_vector
+}
+
+/// L5: Count active taint legs.
+exec fn exec_taint_count(s: SpecTaintSet) -> (result: u8)
+    ensures result as nat == taint_count(s),
+{
+    (if s.private_data { 1u8 } else { 0u8 })
+    + (if s.untrusted_content { 1u8 } else { 0u8 })
+    + (if s.exfil_vector { 1u8 } else { 0u8 })
 }
 
 fn main() {}

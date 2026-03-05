@@ -20,8 +20,8 @@
 
 use portcullis::guard::GradedGuard;
 use portcullis::{
-    CapabilityLattice, CapabilityLevel, IncompatibilityConstraint, Obligations, Operation,
-    PathLattice, PermissionLattice, TrifectaRisk,
+    operation_taint, CapabilityLattice, CapabilityLevel, IncompatibilityConstraint, Obligations,
+    Operation, PathLattice, PermissionLattice, TaintLabel, TaintSet, TrifectaRisk,
 };
 use proptest::prelude::*;
 
@@ -1077,4 +1077,203 @@ fn conformance_untrusted_profile_prevents_trifecta() {
     assert_eq!(enforced.run_bash, CapabilityLevel::Never);
     assert_eq!(enforced.git_push, CapabilityLevel::Never);
     assert_eq!(enforced.create_pr, CapabilityLevel::Never);
+}
+
+// ============================================================================
+// Tier G: TaintSet Monoid Conformance (bridges Phase 6 proofs to production)
+//
+// These tests verify that the production TaintSet code matches the Verus
+// SpecTaintSet model. The Verus proofs verify monoid laws, risk monotonicity,
+// and guard decision theorems on the spec model. These conformance tests
+// ensure the production code exhibits the same behavior.
+// ============================================================================
+
+fn arb_taint_label() -> impl Strategy<Value = TaintLabel> {
+    prop_oneof![
+        Just(TaintLabel::PrivateData),
+        Just(TaintLabel::UntrustedContent),
+        Just(TaintLabel::ExfilVector),
+    ]
+}
+
+fn arb_taint_set() -> impl Strategy<Value = TaintSet> {
+    (any::<bool>(), any::<bool>(), any::<bool>()).prop_map(|(p, u, e)| {
+        let mut s = TaintSet::empty();
+        if p {
+            s = s.union(&TaintSet::singleton(TaintLabel::PrivateData));
+        }
+        if u {
+            s = s.union(&TaintSet::singleton(TaintLabel::UntrustedContent));
+        }
+        if e {
+            s = s.union(&TaintSet::singleton(TaintLabel::ExfilVector));
+        }
+        s
+    })
+}
+
+proptest! {
+    /// CONFORMANCE H1+H2: TaintSet identity — empty.union(s) == s == s.union(empty).
+    ///
+    /// Mirrors Verus proof_taintset_identity_left + proof_taintset_identity_right.
+    #[test]
+    fn conformance_taintset_identity(s in arb_taint_set()) {
+        let empty = TaintSet::empty();
+        prop_assert_eq!(empty.union(&s), s.clone(), "left identity failed");
+        prop_assert_eq!(s.union(&empty), s, "right identity failed");
+    }
+
+    /// CONFORMANCE H3: TaintSet union is commutative.
+    ///
+    /// Mirrors Verus proof_taintset_union_commutative.
+    #[test]
+    fn conformance_taintset_commutative(a in arb_taint_set(), b in arb_taint_set()) {
+        prop_assert_eq!(a.union(&b), b.union(&a));
+    }
+
+    /// CONFORMANCE H4: TaintSet union is associative.
+    ///
+    /// Mirrors Verus proof_taintset_union_associative.
+    #[test]
+    fn conformance_taintset_associative(
+        a in arb_taint_set(),
+        b in arb_taint_set(),
+        c in arb_taint_set(),
+    ) {
+        prop_assert_eq!(
+            a.union(&b.union(&c)),
+            a.union(&b).union(&c),
+        );
+    }
+
+    /// CONFORMANCE H5: TaintSet union is idempotent.
+    ///
+    /// Mirrors Verus proof_taintset_union_idempotent.
+    #[test]
+    fn conformance_taintset_idempotent(s in arb_taint_set()) {
+        prop_assert_eq!(s.union(&s), s);
+    }
+
+    /// CONFORMANCE I2: Trifecta complete iff all three legs present.
+    ///
+    /// Mirrors Verus proof_trifecta_iff_all_three.
+    #[test]
+    fn conformance_taintset_trifecta_iff_all_three(s in arb_taint_set()) {
+        let all_present = s.contains(TaintLabel::PrivateData)
+            && s.contains(TaintLabel::UntrustedContent)
+            && s.contains(TaintLabel::ExfilVector);
+        prop_assert_eq!(
+            s.is_trifecta_complete(), all_present,
+            "trifecta_complete={} but all_present={} for {:?}",
+            s.is_trifecta_complete(), all_present, s
+        );
+    }
+
+    /// CONFORMANCE I4: Count bounded [0, 3] and count == 3 iff trifecta.
+    ///
+    /// Mirrors Verus proof_taintset_count_bounds.
+    #[test]
+    fn conformance_taintset_count_bounds(s in arb_taint_set()) {
+        prop_assert!(s.count() <= 3, "count {} > 3", s.count());
+        prop_assert_eq!(
+            s.count() == 3, s.is_trifecta_complete(),
+            "count==3 is {} but trifecta is {}", s.count() == 3, s.is_trifecta_complete()
+        );
+    }
+
+    /// CONFORMANCE J3: Recording a label only increases taint (monotone accumulation).
+    ///
+    /// Mirrors Verus proof_taint_accumulation_monotone.
+    #[test]
+    fn conformance_taint_accumulation_monotone(
+        before in arb_taint_set(),
+        label in arb_taint_label(),
+    ) {
+        let after = before.union(&TaintSet::singleton(label));
+        // after is a superset of before
+        for l in [TaintLabel::PrivateData, TaintLabel::UntrustedContent, TaintLabel::ExfilVector] {
+            if before.contains(l) {
+                prop_assert!(after.contains(l), "accumulation lost label {:?}", l);
+            }
+        }
+        prop_assert!(after.count() >= before.count(), "count decreased");
+    }
+
+    /// CONFORMANCE J4: Neutral operations produce no taint label.
+    ///
+    /// Mirrors Verus proof_neutral_ops_no_taint.
+    #[test]
+    fn conformance_neutral_ops_no_taint(op in prop_oneof![
+        Just(Operation::WriteFiles),
+        Just(Operation::EditFiles),
+        Just(Operation::GitCommit),
+        Just(Operation::ManagePods),
+    ]) {
+        prop_assert_eq!(
+            operation_taint(op), None,
+            "neutral op {:?} should produce no taint", op
+        );
+    }
+
+    /// CONFORMANCE I1: Every operation maps to a valid taint label or None.
+    ///
+    /// Mirrors Verus proof_operation_taint_total.
+    #[test]
+    fn conformance_operation_taint_total(op in arb_operation()) {
+        let label = operation_taint(op);
+        // Either None (neutral) or a valid TaintLabel
+        match label {
+            None => {} // neutral — valid
+            Some(TaintLabel::PrivateData)
+            | Some(TaintLabel::UntrustedContent)
+            | Some(TaintLabel::ExfilVector) => {} // valid label
+        }
+    }
+
+    /// CONFORMANCE I3: Risk (count) is monotone — subset taint ≤ superset taint.
+    ///
+    /// Mirrors Verus proof_taint_risk_monotone.
+    #[test]
+    fn conformance_taint_risk_monotone(a in arb_taint_set(), b in arb_taint_set()) {
+        let merged = a.union(&b);
+        // a ⊆ merged, so count(a) ≤ count(merged)
+        prop_assert!(
+            a.count() <= merged.count(),
+            "risk not monotone: count(a)={} > count(union)={}", a.count(), merged.count()
+        );
+        prop_assert!(
+            b.count() <= merged.count(),
+            "risk not monotone: count(b)={} > count(union)={}", b.count(), merged.count()
+        );
+    }
+
+    /// CONFORMANCE K1: TaintSet trifecta agrees with CapLattice trifecta.
+    ///
+    /// Mirrors Verus proof_taint_risk_bridge.
+    /// When a TaintSet is built from the same capability lattice components,
+    /// both agree on trifecta completeness.
+    #[test]
+    fn conformance_taint_risk_bridge(caps in arb_capability_lattice()) {
+        // Build taint set from the same cap lattice components
+        let mut taint = TaintSet::empty();
+        if model_has_private_access(&caps) {
+            taint = taint.union(&TaintSet::singleton(TaintLabel::PrivateData));
+        }
+        if model_has_untrusted_content(&caps) {
+            taint = taint.union(&TaintSet::singleton(TaintLabel::UntrustedContent));
+        }
+        if model_has_exfiltration(&caps) {
+            taint = taint.union(&TaintSet::singleton(TaintLabel::ExfilVector));
+        }
+
+        let constraint = IncompatibilityConstraint::enforcing();
+        let cap_complete = constraint.is_trifecta_complete(&caps);
+        let taint_complete = taint.is_trifecta_complete();
+
+        prop_assert_eq!(
+            taint_complete, cap_complete,
+            "BRIDGE VIOLATION: taint_complete={} != cap_complete={} for caps={:?}",
+            taint_complete, cap_complete, caps
+        );
+    }
 }
