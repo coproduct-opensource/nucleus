@@ -4140,15 +4140,27 @@ proof fn proof_trace_composition(
         // Therefore trace_taint_at(concat, |concat_prefix|) == trace_taint(concat_prefix)
         lemma_trace_taint_eq_on_prefix(concat, concat_prefix);
 
-        // trace_taint(concat) = apply_event(trace_taint(concat_prefix), last)
-        //   = apply_event(union(tt(s1), tt(s2_prefix)), last)   [by IH]
+        // Explicit chain for Z3 stability:
+        let taint_prefix = trace_taint_at(concat, concat_prefix.len());
+        assert(taint_prefix == trace_taint(concat_prefix));
+        // IH: trace_taint(concat_prefix) == union(tt(s1), tt(s2_prefix))
+        let ih_result = taint_union(trace_taint(s1), trace_taint(s2_prefix));
+        assert(trace_taint(concat_prefix) == ih_result);
+        assert(taint_prefix == ih_result);
+
+        // concat's last element is `last` = s2[n2-1]
+        assert(concat[(concat.len() - 1) as int] == last);
+
+        // trace_taint(concat) = apply_event(taint_prefix, last)
+        //   = apply_event(union(tt(s1), tt(s2_prefix)), last)
         //   = union(tt(s1), apply_event(tt(s2_prefix), last))   [distributes]
-        //   = union(tt(s1), trace_taint(s2))                    [by definition]
         lemma_apply_distributes_over_union(
             trace_taint(s1),
             trace_taint(s2_prefix),
             last,
         );
+        // apply_event(tt(s2_prefix), last) == trace_taint(s2)   [by definition]
+        assert(apply_event_taint(trace_taint(s2_prefix), last) == trace_taint(s2));
     }
 }
 
@@ -4174,11 +4186,19 @@ proof fn lemma_trace_taint_eq_on_prefix(
             assert(b_prefix[i] == b[i]);
         }
         lemma_trace_taint_eq_on_prefix(a, b_prefix);
-        // trace_taint_at(a, n-1) == trace_taint(b_prefix)
-        // a[n-1] == b[n-1]
-        // so apply_event(trace_taint_at(a, n-1), a[n-1])
-        //  == apply_event(trace_taint(b_prefix), b[n-1])
-        //  == trace_taint_at(b, n) == trace_taint(b)
+        // Explicit chain for Z3 stability:
+        // IH gives: trace_taint_at(a, n-1) == trace_taint(b_prefix)
+        let taint_before_a = trace_taint_at(a, (n - 1) as nat);
+        let taint_before_b = trace_taint(b_prefix);
+        assert(taint_before_a == taint_before_b);
+        // Precondition gives: a[n-1] == b[n-1]
+        assert(a[(n - 1) as int] == b[(n - 1) as int]);
+        // Therefore apply_event on both sides yields the same result:
+        // trace_taint_at(a, n) == apply_event(taint_before_a, a[n-1])
+        //                      == apply_event(taint_before_b, b[n-1])
+        //                      == trace_taint_at(b, n) == trace_taint(b)
+        assert(apply_event_taint(taint_before_a, a[(n - 1) as int])
+            == apply_event_taint(taint_before_b, b[(n - 1) as int]));
     }
 }
 
@@ -4210,14 +4230,38 @@ proof fn lemma_taint_count_bounded_by_events(
         let event = trace[(n - 1) as int];
         let after = trace_taint_at(trace, n);
 
+        // Z3 stability: establish subrange relationships explicitly
+        // full[0..n-1] == prefix
+        assert forall|i: int| 0 <= i < prefix.len()
+            implies #[trigger] full[i] == prefix[i]
+        by {
+            assert(full[i] == trace[i]);
+            assert(prefix[i] == trace[i]);
+        }
+        // last element of full is event
+        assert(full[(n - 1) as int] == event);
+        assert(full.len() == n);
+        // full.subrange(0, full.len()-1) agrees with prefix
+        let full_prefix = full.subrange(0, (n - 1) as int);
+        assert(full_prefix =~= prefix);
+
         if event.succeeded && operation_taint_label(event.op) <= 2 {
-            // after = union(before, singleton(label))
-            // taint_count(after) <= taint_count(before) + 1
-            // (each bool can only go from false to true, adding at most 1)
+            let label = operation_taint_label(event.op);
+            let singleton = taint_singleton(label);
+            // after = union(before, singleton)
+            assert(after == taint_union(before, singleton));
+            // taint_count(union(a, singleton)) <= taint_count(a) + 1
+            // Each bool: (a_bit || s_bit) adds at most 1 if a_bit was false
+            assert(taint_count(after) <= taint_count(before) + 1);
             // count_nonneutral(full) == count_nonneutral(prefix) + 1
+            assert(count_successful_nonneutral(full)
+                == count_successful_nonneutral(prefix) + 1);
         } else {
-            // after == before (no taint change)
+            // No taint change
+            assert(after == before);
             // count_nonneutral(full) >= count_nonneutral(prefix)
+            assert(count_successful_nonneutral(full)
+                >= count_successful_nonneutral(prefix));
         }
     }
 }
@@ -4236,7 +4280,14 @@ proof fn proof_trifecta_minimum_three_steps(
         !taint_is_trifecta_complete(trace_taint(trace)),
 {
     lemma_taint_count_bounded_by_events(trace, trace.len());
-    // taint_count(trace_taint(trace)) <= count_nonneutral(trace) < 3
+    // Explicit chain for Z3 stability:
+    // trace.subrange(0, trace.len() as int) =~= trace
+    assert(trace.subrange(0, trace.len() as int) =~= trace);
+    let tc = taint_count(trace_taint(trace));
+    let cnn = count_successful_nonneutral(trace);
+    assert(tc <= cnn);
+    assert(cnn < 3);
+    assert(tc < 3);
     proof_taintset_count_bounds(trace_taint(trace));
     // taint_count < 3 → !trifecta_complete (from I4)
 }
