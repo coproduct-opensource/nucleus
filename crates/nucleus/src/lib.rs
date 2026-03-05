@@ -1,13 +1,13 @@
 //! # Nucleus
 //!
-//! OS-level enforcement of lattice-guard permissions.
+//! OS-level enforcement of portcullis permissions.
 //!
-//! While `lattice-guard` provides the policy layer (what SHOULD be allowed),
+//! While `portcullis` provides the policy layer (what SHOULD be allowed),
 //! `nucleus` provides the enforcement layer (what IS allowed at runtime).
 //!
-//! ## Key Differences from lattice-guard
+//! ## Key Differences from portcullis
 //!
-//! | Aspect | lattice-guard | nucleus |
+//! | Aspect | portcullis | nucleus |
 //! |--------|---------------|---------|
 //! | Purpose | Policy definition | Policy enforcement |
 //! | File access | `PathLattice::can_access()` predicate | `Sandbox::open()` with capability handles |
@@ -18,7 +18,7 @@
 //!
 //! ## Design Principles
 //!
-//! 1. **No Bypass Path**: Unlike lattice-guard where all fields are public and
+//! 1. **No Bypass Path**: Unlike portcullis where all fields are public and
 //!    constraints can be disabled, nucleus enforces policy in its API design.
 //!    You cannot construct a `Sandbox` without a policy. You cannot execute
 //!    commands without going through `Executor`.
@@ -36,7 +36,7 @@
 //!
 //! ```ignore
 //! use nucleus::{Sandbox, Executor, AtomicBudget};
-//! use lattice_guard::PermissionLattice;
+//! use portcullis::PermissionLattice;
 //!
 //! // Create policy
 //! let policy = PermissionLattice::fix_issue();
@@ -77,5 +77,5 @@ pub use pod::{PodRuntime, PodSpec};
 pub use sandbox::Sandbox;
 pub use time::MonotonicGuard;
 
-// Re-export lattice-guard for convenience
-pub use lattice_guard;
+// Re-export portcullis for convenience
+pub use portcullis;

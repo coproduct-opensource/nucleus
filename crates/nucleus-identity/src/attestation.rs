@@ -5,7 +5,7 @@
 //!
 //! - **Kernel integrity**: SHA-256 hash of the kernel image
 //! - **Rootfs integrity**: SHA-256 hash of the root filesystem
-//! - **Configuration integrity**: SHA-256 hash of PodSpec + lattice-guard policy
+//! - **Configuration integrity**: SHA-256 hash of PodSpec + portcullis policy
 //!
 //! # TCG DICE Compliance
 //!

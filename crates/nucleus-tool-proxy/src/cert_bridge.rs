@@ -1,4 +1,4 @@
-//! Galois bridge between lattice-guard delegation certificates and
+//! Galois bridge between portcullis delegation certificates and
 //! nucleus-permission-market Lagrangian pricing.
 //!
 //! # Mathematical Structure
@@ -24,11 +24,11 @@
 //! gates them; they survive from the certificate unchanged.
 
 use chrono::{Duration, Utc};
-use lattice_guard::{
+use nucleus_permission_market::{PermissionBid, PermissionDimension, PermissionGrant, TrustTier};
+use portcullis::{
     certificate::VerifiedPermissions, BudgetLattice, CapabilityLattice, CapabilityLevel,
     PermissionLattice, TimeLattice,
 };
-use nucleus_permission_market::{PermissionBid, PermissionDimension, PermissionGrant, TrustTier};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use std::collections::HashSet;
@@ -178,15 +178,15 @@ pub fn dimensions_to_ceiling(dimensions: &[PermissionDimension]) -> PermissionLa
         description: String::new(),
         derived_from: None,
         capabilities: caps,
-        obligations: lattice_guard::Obligations::default(), // empty = most permissive
-        paths: lattice_guard::PathLattice::default(),       // empty = all allowed
+        obligations: portcullis::Obligations::default(), // empty = most permissive
+        paths: portcullis::PathLattice::default(),       // empty = all allowed
         budget: BudgetLattice {
             max_cost_usd: Decimal::from(1_000_000),
             max_input_tokens: u64::MAX,
             max_output_tokens: u64::MAX,
             ..Default::default()
         },
-        commands: lattice_guard::CommandLattice {
+        commands: portcullis::CommandLattice {
             allowed: Default::default(), // empty = all allowed
             blocked: Default::default(), // empty = nothing blocked
             allowed_rules: Default::default(),
@@ -261,8 +261,8 @@ fn lattice_to_dimensions(perms: &PermissionLattice) -> HashSet<PermissionDimensi
 mod tests {
     use super::*;
     use chrono::{Duration, Utc};
-    use lattice_guard::certificate::{verify_certificate, LatticeCertificate};
     use nucleus_permission_market::PermissionMarket;
+    use portcullis::certificate::{verify_certificate, LatticeCertificate};
     use ring::rand::SystemRandom;
     use ring::signature::{Ed25519KeyPair, KeyPair};
 

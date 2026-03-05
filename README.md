@@ -63,7 +63,7 @@ The core security primitive. When an agent has all three capabilities at autonom
   database access             user input processing    run_bash (curl, etc)
 ```
 
-Nucleus detects this combination statically (via `nucleus-audit scan`) and enforces it at runtime (via `lattice-guard`). When the trifecta is complete, exfiltration operations require **explicit human approval** — the agent cannot bypass this.
+Nucleus detects this combination statically (via `nucleus-audit scan`) and enforces it at runtime (via `portcullis`). When the trifecta is complete, exfiltration operations require **explicit human approval** — the agent cannot bypass this.
 
 ## Runtime Enforcement
 
@@ -106,7 +106,7 @@ For the theory: [docs/THEORY.md](docs/THEORY.md).
 | Crate | Purpose |
 |-------|---------|
 | **nucleus-audit** | `scan` PodSpecs for misconfigurations; `verify` hash-chained audit logs |
-| **lattice-guard** | Permission lattice with 7 mathematical modules (~4800 LOC, 412+ tests) |
+| **portcullis** | Permission lattice with 7 mathematical modules (~4800 LOC, 412+ tests) |
 | **nucleus-node** | Node daemon (kubelet analogue) managing Firecracker microVMs |
 | **nucleus-identity** | SPIFFE workload identity, mTLS, certificate management |
 | **nucleus-tool-proxy** | Enforcing tool proxy running inside pods |
@@ -196,7 +196,7 @@ See [`examples/podspecs/`](examples/podspecs/) for real configurations:
 │  │  (cap-std)   │  │  (process)   │  │   (lock-free)        │  │
 │  └──────────────┘  └──────────────┘  └──────────────────────┘  │
 ├─────────────────────────────────────────────────────────────────┤
-│                      lattice-guard                              │
+│                      portcullis                              │
 │   Capabilities × Obligations × Paths × Commands × Budget × Time │
 │   + Heyting Algebra + Galois Connections + Graded Monad + Modal │
 ├─────────────────────────────────────────────────────────────────┤

@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
-use lattice_guard::{CapabilityLevel, PermissionLattice};
 use nucleus_client::sign_http_headers;
 use nucleus_spec::PodSpec;
+use portcullis::{CapabilityLevel, PermissionLattice};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;

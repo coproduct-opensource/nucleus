@@ -4,12 +4,12 @@ on:
   push:
     branches: ["main"]
     paths:
-      - "crates/lattice-guard/src/**"
+      - "crates/portcullis/src/**"
       - ".kani-minimum-proofs"
       - ".github/workflows/kani-nightly.yml"
   pull_request:
     paths:
-      - "crates/lattice-guard/src/**"
+      - "crates/portcullis/src/**"
       - ".kani-minimum-proofs"
       - ".github/workflows/kani-nightly.yml"
   schedule:
@@ -20,20 +20,35 @@ permissions:
   contents: read
 
 jobs:
-  kani:
+  # Fast tier: 4 lightweight harnesses — runs on every PR and push
+  kani-fast:
     name: Kani
-    runs-on: ubuntu-20.04
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v6
       - uses: Swatinem/rust-cache@v2
-      - name: Run Kani
+        with:
+          cache-on-failure: true
+      - name: Cache Kani toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.kani
+          key: kani-toolchain-${{ runner.os }}-${{ hashFiles('.github/workflows/kani-nightly.yml') }}
+      - name: Run Kani (fast harnesses)
         uses: model-checking/kani-github-action@v1
         with:
-          args: "-p lattice-guard"
+          args: >-
+            -p portcullis
+            --solver cadical
+            --harness proof_normalize_idempotent
+            --harness proof_normalize_deflationary
+            --harness proof_normalize_monotone
+            --harness proof_capability_distributive
       - name: Proof count regression gate
         run: |
-          PROOF_COUNT=$(grep -c '#\[kani::proof\]' crates/lattice-guard/src/kani.rs)
+          PROOF_COUNT=$(grep -c '#\[kani::proof\]' crates/portcullis/src/kani.rs)
           MINIMUM=$(cat .kani-minimum-proofs | tr -d '[:space:]')
           echo "Kani proof harnesses: $PROOF_COUNT (minimum: $MINIMUM)"
           if [ "$PROOF_COUNT" -lt "$MINIMUM" ]; then
@@ -43,10 +58,51 @@ jobs:
       - name: Summary
         if: always()
         run: |
-          PROOF_COUNT=$(grep -c '#\[kani::proof\]' crates/lattice-guard/src/kani.rs)
+          PROOF_COUNT=$(grep -c '#\[kani::proof\]' crates/portcullis/src/kani.rs)
           MINIMUM=$(cat .kani-minimum-proofs | tr -d '[:space:]')
-          echo "## Kani BMC Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Kani BMC Results (fast tier)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Proof harnesses:** $PROOF_COUNT" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Harnesses verified:** 4 / $PROOF_COUNT (fast tier)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Solver:** CaDiCaL" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Minimum required:** $MINIMUM" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Target:** lattice-guard" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Full suite:** nightly + workflow_dispatch" >> "$GITHUB_STEP_SUMMARY"
+
+  # Full tier: all 6 harnesses — nightly and on-demand only
+  kani-full:
+    name: Kani (full)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Cache Kani toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.kani
+          key: kani-toolchain-${{ runner.os }}-${{ hashFiles('.github/workflows/kani-nightly.yml') }}
+      - name: Run Kani (all harnesses)
+        uses: model-checking/kani-github-action@v1
+        with:
+          args: "-p portcullis --solver cadical"
+      - name: Proof count regression gate
+        run: |
+          PROOF_COUNT=$(grep -c '#\[kani::proof\]' crates/portcullis/src/kani.rs)
+          MINIMUM=$(cat .kani-minimum-proofs | tr -d '[:space:]')
+          echo "Kani proof harnesses: $PROOF_COUNT (minimum: $MINIMUM)"
+          if [ "$PROOF_COUNT" -lt "$MINIMUM" ]; then
+            echo "::error::Kani proof count regression: $PROOF_COUNT < $MINIMUM"
+            exit 1
+          fi
+      - name: Summary
+        if: always()
+        run: |
+          PROOF_COUNT=$(grep -c '#\[kani::proof\]' crates/portcullis/src/kani.rs)
+          MINIMUM=$(cat .kani-minimum-proofs | tr -d '[:space:]')
+          echo "## Kani BMC Results (full suite)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Harnesses verified:** $PROOF_COUNT / $PROOF_COUNT (all)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Solver:** CaDiCaL" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Minimum required:** $MINIMUM" >> "$GITHUB_STEP_SUMMARY"

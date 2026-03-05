@@ -16,7 +16,7 @@ categories = ["development-tools", "authentication"]
 nucleus-client = { path = "../nucleus-client" }
 nucleus-spec = { path = "../nucleus-spec" }
 nucleus-proto = { path = "../nucleus-proto" }
-lattice-guard = { path = "../lattice-guard" }
+portcullis = { path = "../portcullis" }
 
 # Async HTTP for tool-proxy
 reqwest = { workspace = true, features = ["rustls-tls-manual-roots", "json"] }

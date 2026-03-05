@@ -1,6 +1,6 @@
 //! Demo scenarios and presets for the playground.
 
-use lattice_guard::{CapabilityLattice, CapabilityLevel, PermissionLattice};
+use portcullis::{CapabilityLattice, CapabilityLevel, PermissionLattice};
 
 use crate::app::AttackResult;
 

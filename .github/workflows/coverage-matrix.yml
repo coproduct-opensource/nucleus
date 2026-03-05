@@ -28,16 +28,16 @@ jobs:
           cargo llvm-cov --all-features \
             --fail-under-lines 85 \
             --ignore-filename-regex '(tests/|kani\.rs|main\.rs)' 2>&1 | tee /tmp/workspace-cov.txt
-      - name: lattice-guard coverage (security-critical threshold)
+      - name: portcullis coverage (security-critical threshold)
         run: |
-          cargo llvm-cov --all-features -p lattice-guard \
+          cargo llvm-cov --all-features -p portcullis \
             --fail-under-lines 87 \
-            --ignore-filename-regex '(tests/|kani\.rs)' 2>&1 | tee /tmp/lattice-guard-cov.txt
+            --ignore-filename-regex '(tests/|kani\.rs)' 2>&1 | tee /tmp/portcullis-cov.txt
       - name: Generate JSON coverage report
         if: always()
         run: |
-          cargo llvm-cov --all-features -p lattice-guard \
-            --json --output-path /tmp/lattice-guard-cov.json \
+          cargo llvm-cov --all-features -p portcullis \
+            --json --output-path /tmp/portcullis-cov.json \
             --ignore-filename-regex '(tests/|kani\.rs)' || true
       - name: Coverage summary
         if: always()
@@ -49,12 +49,12 @@ jobs:
           tail -5 /tmp/workspace-cov.txt >> "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### lattice-guard (security-critical)" >> "$GITHUB_STEP_SUMMARY"
+          echo "### portcullis (security-critical)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          tail -5 /tmp/lattice-guard-cov.txt >> "$GITHUB_STEP_SUMMARY" || true
+          tail -5 /tmp/portcullis-cov.txt >> "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Thresholds:** workspace ≥ 85% lines, lattice-guard ≥ 87% lines" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Thresholds:** workspace ≥ 85% lines, portcullis ≥ 87% lines" >> "$GITHUB_STEP_SUMMARY"
 
   # Layer 2: Mutation testing on security-critical modules
   mutants:
@@ -70,13 +70,13 @@ jobs:
         run: cargo install cargo-mutants --locked
       - name: Run mutation tests on security-critical modules
         run: |
-          cargo mutants --package lattice-guard \
-            --file crates/lattice-guard/src/capability.rs \
-            --file crates/lattice-guard/src/guard.rs \
-            --file crates/lattice-guard/src/lattice.rs \
-            --file crates/lattice-guard/src/certificate.rs \
-            --file crates/lattice-guard/src/delegation.rs \
-            --file crates/lattice-guard/src/trust.rs \
+          cargo mutants --package portcullis \
+            --file crates/portcullis/src/capability.rs \
+            --file crates/portcullis/src/guard.rs \
+            --file crates/portcullis/src/lattice.rs \
+            --file crates/portcullis/src/certificate.rs \
+            --file crates/portcullis/src/delegation.rs \
+            --file crates/portcullis/src/trust.rs \
             --timeout 120 \
             -- --all-features 2>&1 | tee /tmp/mutants.txt
       - name: Check for survived mutants
@@ -108,7 +108,7 @@ jobs:
       - name: Count Kani proofs
         id: kani-count
         run: |
-          PROOF_COUNT=$(grep -c '#\[kani::proof\]' crates/lattice-guard/src/kani.rs)
+          PROOF_COUNT=$(grep -c '#\[kani::proof\]' crates/portcullis/src/kani.rs)
           MINIMUM=$(cat .kani-minimum-proofs | tr -d '[:space:]')
           echo "count=$PROOF_COUNT" >> "$GITHUB_OUTPUT"
           echo "minimum=$MINIMUM" >> "$GITHUB_OUTPUT"
@@ -120,8 +120,8 @@ jobs:
       - name: Count verification artifacts
         id: counts
         run: |
-          VERUS_PROOF=$(grep -c '^proof fn\|^pub proof fn' crates/lattice-guard-verified/src/lib.rs)
-          CONFORMANCE=$(grep -c 'proptest!' crates/lattice-guard/tests/verus_conformance.rs)
+          VERUS_PROOF=$(grep -c '^proof fn\|^pub proof fn' crates/portcullis-verified/src/lib.rs)
+          CONFORMANCE=$(grep -c 'proptest!' crates/portcullis/tests/verus_conformance.rs)
           echo "verus_proof=$VERUS_PROOF" >> "$GITHUB_OUTPUT"
           echo "conformance=$CONFORMANCE" >> "$GITHUB_OUTPUT"
           echo "Verus proof functions: $VERUS_PROOF"

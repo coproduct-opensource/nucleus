@@ -1,7 +1,7 @@
 //! Built-in permission profiles
 
 use anyhow::Result;
-use lattice_guard::PermissionLattice;
+use portcullis::PermissionLattice;
 
 /// Built-in permission profiles
 pub enum Profile {

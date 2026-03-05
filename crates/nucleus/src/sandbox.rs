@@ -1,6 +1,6 @@
 //! Capability-based file sandbox.
 //!
-//! Unlike `lattice_guard::PathLattice` which uses string-based path checking,
+//! Unlike `portcullis::PathLattice` which uses string-based path checking,
 //! `Sandbox` uses `cap-std` to hold directory handles. This provides kernel-level
 //! enforcement against:
 //!
@@ -12,7 +12,7 @@
 //!
 //! ```ignore
 //! use nucleus::Sandbox;
-//! use lattice_guard::PermissionLattice;
+//! use portcullis::PermissionLattice;
 //!
 //! let policy = PermissionLattice::fix_issue();
 //! let sandbox = Sandbox::new(&policy, "/home/user/project")?;
@@ -33,7 +33,7 @@ use std::sync::Arc;
 
 use crate::approval::{ApprovalRequest, ApprovalToken, Approver, CallbackApprover};
 use crate::error::{NucleusError, Result};
-use lattice_guard::{
+use portcullis::{
     CapabilityLattice, CapabilityLevel, Obligations, Operation, PathLattice, PermissionLattice,
 };
 
@@ -46,7 +46,7 @@ pub struct Sandbox {
     root: Dir,
     /// The absolute path of the root (for error messages)
     root_path: PathBuf,
-    /// The path policy from lattice-guard
+    /// The path policy from portcullis
     policy: PathLattice,
     /// Capability policy for file operations
     capabilities: CapabilityLattice,
@@ -429,7 +429,7 @@ impl Sandbox {
             });
         }
 
-        // Check against lattice-guard policy
+        // Check against portcullis policy
         // Note: We pass the relative path to the policy checker
         if !self.policy.can_access(path) {
             return Err(NucleusError::PathDenied {

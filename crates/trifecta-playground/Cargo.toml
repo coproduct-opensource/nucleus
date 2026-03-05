@@ -16,4 +16,4 @@ path = "src/main.rs"
 [dependencies]
 ratatui = "0.30"
 crossterm = "0.29"
-lattice-guard = { path = "../lattice-guard" }
+portcullis = { path = "../portcullis" }

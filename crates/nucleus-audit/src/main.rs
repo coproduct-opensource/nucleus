@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use hmac::{Hmac, Mac};
-use lattice_guard::CapabilityLevel;
+use portcullis::CapabilityLevel;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -34,9 +34,9 @@ enum Command {
         #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUTH_SECRET")]
         auth_secret: Option<String>,
     },
-    /// Verify a lattice-guard permission audit log (hash chain only).
+    /// Verify a portcullis permission audit log (hash chain only).
     VerifyChain {
-        /// Audit log path (JSONL, each line is a lattice-guard AuditEntry).
+        /// Audit log path (JSONL, each line is a portcullis AuditEntry).
         #[arg(long)]
         log: PathBuf,
         /// HMAC secret (required if entries were written with FileAuditBackend).
@@ -120,7 +120,7 @@ enum AuditError {
     },
     #[error("invalid audit log at line {line}: {message}")]
     Invalid { line: usize, message: String },
-    #[error("lattice-guard backend error: {0}")]
+    #[error("portcullis backend error: {0}")]
     Backend(String),
 }
 
@@ -143,8 +143,8 @@ fn main() -> Result<(), AuditError> {
             println!("ok: verified {} tool-proxy entries", count);
         }
         Command::VerifyChain { log, secret } => {
-            let count = verify_lattice_guard_chain(&log, secret.as_deref())?;
-            println!("ok: verified {} lattice-guard entries", count);
+            let count = verify_portcullis_chain(&log, secret.as_deref())?;
+            println!("ok: verified {} portcullis entries", count);
         }
         Command::Summary { log } => {
             print_summary(&log)?;
@@ -257,12 +257,12 @@ fn verify_tool_proxy_log(path: &Path, secret: &[u8]) -> Result<usize, AuditError
     Ok(count)
 }
 
-// --- verify-chain (lattice-guard) ---
+// --- verify-chain (portcullis) ---
 
-fn verify_lattice_guard_chain(path: &Path, secret: Option<&str>) -> Result<usize, AuditError> {
+fn verify_portcullis_chain(path: &Path, secret: Option<&str>) -> Result<usize, AuditError> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
-    let mut entries: Vec<lattice_guard::AuditEntry> = Vec::new();
+    let mut entries: Vec<portcullis::AuditEntry> = Vec::new();
 
     for (idx, line) in reader.lines().enumerate() {
         let line = line?;
@@ -273,7 +273,7 @@ fn verify_lattice_guard_chain(path: &Path, secret: Option<&str>) -> Result<usize
         let line_no = idx + 1;
 
         // Try signed format first (FileAuditBackend), then raw entry
-        let entry: lattice_guard::AuditEntry =
+        let entry: portcullis::AuditEntry =
             if let Ok(signed) = serde_json::from_str::<SignedLine>(line) {
                 // Verify HMAC if secret provided
                 if let Some(secret) = secret {
@@ -523,7 +523,7 @@ fn scan_pod_spec(
         nucleus_spec::PolicySpec::Inline { .. } => "inline".to_string(),
     };
 
-    let trifecta_config = lattice_guard::IncompatibilityConstraint::enforcing();
+    let trifecta_config = portcullis::IncompatibilityConstraint::enforcing();
     let trifecta_risk = trifecta_config.trifecta_risk(&lattice.capabilities);
     let trifecta_enforced = lattice.trifecta_constraint;
 
@@ -540,7 +540,7 @@ fn scan_pod_spec(
     }
 
     let trifecta_str = format!("{:?}", trifecta_risk);
-    if trifecta_risk == lattice_guard::TrifectaRisk::Complete && trifecta_enforced {
+    if trifecta_risk == portcullis::TrifectaRisk::Complete && trifecta_enforced {
         findings.push(Finding {
             severity: Severity::Medium,
             category: "trifecta".to_string(),
@@ -550,7 +550,7 @@ fn scan_pod_spec(
                 attack surface is maximal."
                 .to_string(),
         });
-    } else if trifecta_risk == lattice_guard::TrifectaRisk::Complete && !trifecta_enforced {
+    } else if trifecta_risk == portcullis::TrifectaRisk::Complete && !trifecta_enforced {
         findings.push(Finding {
             severity: Severity::Critical,
             category: "trifecta".to_string(),
@@ -610,10 +610,10 @@ fn scan_pod_spec(
             let op_name = format!(
                 "{:?}",
                 match *name {
-                    "run_bash" => lattice_guard::Operation::RunBash,
-                    "git_push" => lattice_guard::Operation::GitPush,
-                    "create_pr" => lattice_guard::Operation::CreatePr,
-                    "manage_pods" => lattice_guard::Operation::ManagePods,
+                    "run_bash" => portcullis::Operation::RunBash,
+                    "git_push" => portcullis::Operation::GitPush,
+                    "create_pr" => portcullis::Operation::CreatePr,
+                    "manage_pods" => portcullis::Operation::ManagePods,
                     _ => continue,
                 }
             );
@@ -813,7 +813,7 @@ fn analyze_audit_log(
     let file = File::open(log_path)?;
     let reader = BufReader::new(file);
 
-    let log = lattice_guard::audit::AuditLog::in_memory();
+    let log = portcullis::audit::AuditLog::in_memory();
     let mut identities: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut deviations = 0usize;
     let mut trifecta_completions = 0usize;
@@ -827,8 +827,8 @@ fn analyze_audit_log(
             continue;
         }
 
-        // Try lattice-guard AuditEntry format
-        let entry: lattice_guard::AuditEntry =
+        // Try portcullis AuditEntry format
+        let entry: portcullis::AuditEntry =
             if let Ok(signed) = serde_json::from_str::<SignedLine>(line) {
                 serde_json::from_value(signed.entry).map_err(|source| AuditError::Json {
                     line: idx + 1,
@@ -846,12 +846,12 @@ fn analyze_audit_log(
         if entry.is_deviation() {
             deviations += 1;
         }
-        if let Some(lattice_guard::TrifectaRisk::Complete) = entry.trifecta_impact() {
+        if let Some(portcullis::TrifectaRisk::Complete) = entry.trifecta_impact() {
             trifecta_completions += 1;
         }
         if matches!(
             &entry.event,
-            lattice_guard::audit::PermissionEvent::ExecutionBlocked { .. }
+            portcullis::audit::PermissionEvent::ExecutionBlocked { .. }
         ) {
             blocks += 1;
         }

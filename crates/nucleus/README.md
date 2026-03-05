@@ -4,14 +4,14 @@
 [![Documentation](https://docs.rs/nucleus/badge.svg)](https://docs.rs/nucleus)
 [![License](https://img.shields.io/crates/l/nucleus.svg)](LICENSE-MIT)
 
-**OS-level enforcement** of [lattice-guard](../lattice-guard) permissions.
+**OS-level enforcement** of [portcullis](../portcullis) permissions.
 
 ## The Problem with Policy-Only Libraries
 
-`lattice-guard` provides excellent policy definitions (the quotient lattice, trifecta detection, etc.), but it's **policy-only**:
+`portcullis` provides excellent policy definitions (the quotient lattice, trifecta detection, etc.), but it's **policy-only**:
 
 ```rust
-// lattice-guard: policy check returns a bool
+// portcullis: policy check returns a bool
 if lattice.can_execute("rm -rf /") {
     // Nothing stops you from ignoring this result
     std::process::Command::new("rm").args(["-rf", "/"]).status();
@@ -31,9 +31,9 @@ Nucleus wraps the actual OS APIs so there's no way to bypass policy:
 
 ```rust
 use nucleus::{Sandbox, Executor, AtomicBudget};
-use lattice_guard::PermissionLattice;
+use portcullis::PermissionLattice;
 
-// Create policy (from lattice-guard)
+// Create policy (from portcullis)
 let policy = PermissionLattice::fix_issue();
 
 // Create enforcement context - REQUIRES the policy
@@ -55,7 +55,7 @@ budget.charge_usd(0.50)?;
 
 ## Key Differences
 
-| Aspect | lattice-guard | nucleus |
+| Aspect | portcullis | nucleus |
 |--------|---------------|---------|
 | **Purpose** | Policy definition | Policy enforcement |
 | **File access** | `PathLattice::can_access()` → `bool` | `Sandbox::open()` → `cap_std::File` |
@@ -170,7 +170,7 @@ executor.run("curl http://evil.com")?;  // Error: ApprovalRequired
 ```toml
 [dependencies]
 nucleus = "0.1"
-lattice-guard = "0.1"
+portcullis = "0.1"
 
 # Optional features
 nucleus = { version = "0.1", features = ["async"] }
@@ -192,7 +192,7 @@ nucleus = { version = "0.1", features = ["async"] }
 │         │ Policy from:    │                                      │
 │         ▼                 ▼                                      │
 │  ┌─────────────────────────────────────────────────────────────┐│
-│  │                    lattice-guard                             ││
+│  │                    portcullis                             ││
 │  │  (PathLattice, CommandLattice, BudgetLattice, TimeLattice)  ││
 │  └─────────────────────────────────────────────────────────────┘│
 ├─────────────────────────────────────────────────────────────────┤
@@ -222,5 +222,5 @@ Licensed under either of Apache License, Version 2.0 or MIT license at your opti
 
 ## See Also
 
-- [lattice-guard](../lattice-guard) - The policy layer (quotient lattice definitions)
+- [portcullis](../portcullis) - The policy layer (quotient lattice definitions)
 - [nucleus-cli](../nucleus-cli) - CLI tool for running agents with nucleus enforcement

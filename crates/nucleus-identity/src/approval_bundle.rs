@@ -103,9 +103,9 @@ pub struct ApprovalBundleHeader {
 
 /// Claims payload for an approval bundle.
 ///
-/// Operations are represented as strings matching `lattice_guard::Operation`'s
+/// Operations are represented as strings matching `portcullis::Operation`'s
 /// serde representation (snake_case). This avoids a dependency from
-/// `nucleus-identity` on `lattice-guard`; the consumer (e.g., tool-proxy)
+/// `nucleus-identity` on `portcullis`; the consumer (e.g., tool-proxy)
 /// maps strings back to concrete `Operation` variants.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ApprovalBundleClaims {
@@ -126,7 +126,7 @@ pub struct ApprovalBundleClaims {
     /// The verifier checks this against the actual PodSpec being executed.
     pub manifest_hash: String,
 
-    /// Approved operations (strings matching `lattice_guard::Operation` serde names).
+    /// Approved operations (strings matching `portcullis::Operation` serde names).
     /// e.g., `{"write_files", "run_bash", "git_push"}`
     pub approved_operations: BTreeSet<String>,
 

@@ -10,8 +10,8 @@
 //! - Fingerprint + matching delegation cert: Platform trust tier (CA-attested binding)
 //! - Fingerprint + mismatched delegation cert: logged warning, no elevation
 
-use lattice_guard::certificate::VerifiedPermissions;
 use nucleus_permission_market::PermissionGrant;
+use portcullis::certificate::VerifiedPermissions;
 
 /// Result of fused identity verification.
 ///
@@ -51,7 +51,7 @@ pub fn extract_fused_identity(client_cert_der: &[u8], spiffe_id: &str) -> Option
 /// and the market cost drops to zero.
 pub fn verify_delegation_against_fingerprint(
     fused: &mut FusedIdentity,
-    cert: &lattice_guard::LatticeCertificate,
+    cert: &portcullis::LatticeCertificate,
     verified: &VerifiedPermissions,
 ) -> bool {
     let cert_fingerprint = cert.fingerprint();
@@ -116,7 +116,7 @@ mod tests {
 
     #[test]
     fn test_verify_delegation_matching_fingerprint() {
-        use lattice_guard::{LatticeCertificate, PermissionLattice};
+        use portcullis::{LatticeCertificate, PermissionLattice};
         use ring::rand::SystemRandom;
         use ring::signature::{Ed25519KeyPair, KeyPair};
 
@@ -134,11 +134,11 @@ mod tests {
         );
 
         let root_pub = root_key.public_key().as_ref().to_vec();
-        let verified = lattice_guard::verify_certificate(
+        let verified = portcullis::verify_certificate(
             &cert,
             &root_pub,
             chrono::Utc::now(),
-            lattice_guard::certificate::DEFAULT_MAX_CHAIN_DEPTH,
+            portcullis::certificate::DEFAULT_MAX_CHAIN_DEPTH,
         )
         .unwrap();
 
@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn test_verify_delegation_mismatched_fingerprint() {
-        use lattice_guard::{LatticeCertificate, PermissionLattice};
+        use portcullis::{LatticeCertificate, PermissionLattice};
         use ring::rand::SystemRandom;
         use ring::signature::{Ed25519KeyPair, KeyPair};
 
@@ -177,11 +177,11 @@ mod tests {
         );
 
         let root_pub = root_key.public_key().as_ref().to_vec();
-        let verified = lattice_guard::verify_certificate(
+        let verified = portcullis::verify_certificate(
             &cert,
             &root_pub,
             chrono::Utc::now(),
-            lattice_guard::certificate::DEFAULT_MAX_CHAIN_DEPTH,
+            portcullis::certificate::DEFAULT_MAX_CHAIN_DEPTH,
         )
         .unwrap();
 

@@ -1,6 +1,6 @@
 //! Identity-based policy enforcement for tool-proxy.
 //!
-//! This module integrates SPIFFE workload identity with the lattice-guard
+//! This module integrates SPIFFE workload identity with the portcullis
 //! policy system to enable zero-prompt authorization for AI agents.
 //!
 //! # Overview
@@ -16,9 +16,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use lattice_guard::escalation::{EscalationPolicy, EscalationPolicySet};
-use lattice_guard::identity::{IdentityPolicy, IdentityPolicySet};
-use lattice_guard::PermissionLattice;
+use portcullis::escalation::{EscalationPolicy, EscalationPolicySet};
+use portcullis::identity::{IdentityPolicy, IdentityPolicySet};
+use portcullis::PermissionLattice;
 use serde::{Deserialize, Serialize};
 
 /// Policy configuration loaded from YAML.

@@ -1,6 +1,6 @@
 //! Application state and logic.
 
-use lattice_guard::{
+use portcullis::{
     escalation::{SpiffeTraceChain, SpiffeTraceLink},
     CapabilityLattice, CapabilityLevel, IncompatibilityConstraint, Obligations, PermissionLattice,
     TrifectaRisk,

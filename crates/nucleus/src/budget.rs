@@ -1,6 +1,6 @@
 //! Atomic budget enforcement.
 //!
-//! Unlike `lattice_guard::BudgetLattice` which uses `&mut self` for charging,
+//! Unlike `portcullis::BudgetLattice` which uses `&mut self` for charging,
 //! `AtomicBudget` uses atomic operations to prevent concurrent agents from
 //! racing to exhaust budgets.
 //!
@@ -16,7 +16,7 @@ use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::{NucleusError, Result};
-use lattice_guard::BudgetLattice;
+use portcullis::BudgetLattice;
 
 /// Thread-safe budget enforcement with atomic operations.
 ///

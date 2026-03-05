@@ -86,9 +86,9 @@ pub enum NucleusError {
         /// The capability that was insufficient.
         capability: String,
         /// The actual level.
-        actual: lattice_guard::CapabilityLevel,
+        actual: portcullis::CapabilityLevel,
         /// The required level.
-        required: lattice_guard::CapabilityLevel,
+        required: portcullis::CapabilityLevel,
     },
 
     /// IO error from underlying operation.

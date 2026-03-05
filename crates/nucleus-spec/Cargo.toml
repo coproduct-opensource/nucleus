@@ -19,7 +19,7 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
 
-lattice-guard = { path = "../lattice-guard", features = ["serde"] }
+portcullis = { path = "../portcullis", features = ["serde"] }
 
 [lints]
 workspace = true

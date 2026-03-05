@@ -36,7 +36,7 @@ The following are in scope for security reports:
 
 - **nucleus-node**: The Firecracker VM orchestrator
 - **nucleus-cli**: The command-line interface
-- **lattice-guard**: Permission and capability enforcement
+- **portcullis**: Permission and capability enforcement
 - **nucleus-tool-proxy**: Request signing and validation
 - **nucleus-audit**: Audit log integrity
 

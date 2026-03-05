@@ -2,9 +2,9 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
-use lattice_guard::{BudgetLattice, CapabilityLevel, PermissionLattice};
 use nucleus_client::sign_http_headers;
 use nucleus_spec::{ImageSpec, PodSpec as SpecPodSpec, PodSpecInner, PolicySpec, VsockSpec};
+use portcullis::{BudgetLattice, CapabilityLevel, PermissionLattice};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::fs::{self};

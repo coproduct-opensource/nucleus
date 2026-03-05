@@ -57,7 +57,7 @@ jobs:
         with:
           cache: true
       - name: Run OWASP LLM Top 10 security tests
-        run: cargo test -p lattice-guard --test owasp_llm_gauntlet --all-features
+        run: cargo test -p portcullis --test owasp_llm_gauntlet --all-features
 
   fuzz:
     name: Fuzz

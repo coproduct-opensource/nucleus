@@ -7,7 +7,7 @@
 //! - **[`ProxyClient`]** — HTTP client for the tool-proxy (file I/O, execution, web access)
 //! - **[`NodeClient`]** — gRPC client for nucleus-node (pod lifecycle, streaming logs)
 //! - **[`Nucleus`]** — Unified facade combining both clients
-//! - **[`Intent`]** — High-level permission profiles mapped to lattice-guard policies
+//! - **[`Intent`]** — High-level permission profiles mapped to portcullis policies
 //!
 //! ## Quick Start
 //!
@@ -24,7 +24,7 @@
 //! // Open a scoped session with trifecta-safe permissions
 //! let session = nucleus.intent(Intent::FixIssue).await?;
 //!
-//! // All operations enforced by lattice-guard inside the pod
+//! // All operations enforced by portcullis inside the pod
 //! let source = session.read("src/main.rs").await?;
 //! session.write("src/main.rs", &source.replace("bug", "fix")).await?;
 //! # Ok(())

@@ -30,7 +30,7 @@ Use Agent Sandbox + kata-fc when you need:
 - Compatibility with existing k8s tooling (Argo CD, Flux)
 
 Use Nucleus directly when you need:
-- Fine-grained permission policies (lattice-guard)
+- Fine-grained permission policies (portcullis)
 - Automatic trifecta detection (prompt injection defense)
 - Lower memory footprint and faster startup
 
@@ -413,7 +413,7 @@ EOF
 ## Next Steps
 
 - [Kubernetes Quickstart](./kubernetes.md) - Deploy Nucleus directly on Kubernetes
-- [Permission Model](../permissions.md) - Understanding lattice-guard policies
+- [Permission Model](../permissions.md) - Understanding portcullis policies
 - [Threat Model](../architecture/threat-model.md) - Security analysis
 
 ## References

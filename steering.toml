@@ -89,7 +89,7 @@ anti_patterns = [
 ]
 
 [[conventions]]
-id = "lattice-guard-property-tests"
+id = "portcullis-property-tests"
 category = "custom/testing"
 priority = "medium"
 title = "Lattice operations must have property-based tests"
@@ -97,13 +97,13 @@ prompt_injection = """
 All lattice operations (meet, join, leq) must be tested with proptest
 to verify algebraic laws: associativity, commutativity, idempotency.
 Use proptest::proptest! macro with arbitrary input generation."""
-applies_to = ["**/lattice-guard/src/**"]
+applies_to = ["**/portcullis/src/**"]
 anti_patterns = ["Testing lattice ops with only hardcoded examples"]
 
 # ── Autonomy Zones ──────────────────────────────────────────────────────
 
 [[autonomy]]
-paths = ["crates/lattice-guard/src/**"]
+paths = ["crates/portcullis/src/**"]
 level = "low"
 reason = "Security-critical lattice math — changes require review"
 required_agents = ["security"]
