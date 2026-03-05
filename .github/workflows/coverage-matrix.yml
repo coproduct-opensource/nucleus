@@ -96,24 +96,15 @@ jobs:
           fi
 
   # Layer 3: Verification proof count regression gates
+  #
+  # Verus verification count is gated in verus.yml (runs the actual verifier).
+  # Here we gate Kani proof harnesses and report all counts for visibility.
   proof-ratchet:
     name: Proof Count Ratchet
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
-      - name: Count Verus proofs
-        id: verus-count
-        run: |
-          PROOF_COUNT=$(grep -c '^proof fn\|^pub proof fn' crates/lattice-guard-verified/src/lib.rs)
-          MINIMUM=$(cat .verus-minimum-proofs | tr -d '[:space:]')
-          echo "count=$PROOF_COUNT" >> "$GITHUB_OUTPUT"
-          echo "minimum=$MINIMUM" >> "$GITHUB_OUTPUT"
-          echo "Verus proof functions: $PROOF_COUNT (minimum: $MINIMUM)"
-          if [ "$PROOF_COUNT" -lt "$MINIMUM" ]; then
-            echo "::error::Verus proof count regression: $PROOF_COUNT < $MINIMUM"
-            exit 1
-          fi
       - name: Count Kani proofs
         id: kani-count
         run: |
@@ -126,12 +117,15 @@ jobs:
             echo "::error::Kani proof count regression: $PROOF_COUNT < $MINIMUM"
             exit 1
           fi
-      - name: Count conformance tests
-        id: conformance-count
+      - name: Count verification artifacts
+        id: counts
         run: |
-          CONFORMANCE_COUNT=$(grep -c 'proptest!' crates/lattice-guard/tests/verus_conformance.rs)
-          echo "count=$CONFORMANCE_COUNT" >> "$GITHUB_OUTPUT"
-          echo "Conformance test suites: $CONFORMANCE_COUNT"
+          VERUS_PROOF=$(grep -c '^proof fn\|^pub proof fn' crates/lattice-guard-verified/src/lib.rs)
+          CONFORMANCE=$(grep -c 'proptest!' crates/lattice-guard/tests/verus_conformance.rs)
+          echo "verus_proof=$VERUS_PROOF" >> "$GITHUB_OUTPUT"
+          echo "conformance=$CONFORMANCE" >> "$GITHUB_OUTPUT"
+          echo "Verus proof functions: $VERUS_PROOF"
+          echo "Conformance test suites: $CONFORMANCE"
       - name: Ratchet summary
         if: always()
         run: |
@@ -140,21 +134,16 @@ jobs:
           echo "| Layer | Count | Minimum | Status |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-------|-------|---------|--------|" >> "$GITHUB_STEP_SUMMARY"
 
-          VERUS="${{ steps.verus-count.outputs.count }}"
-          VERUS_MIN="${{ steps.verus-count.outputs.minimum }}"
-          if [ "$VERUS" -ge "$VERUS_MIN" ]; then
-            echo "| Verus SMT proofs | $VERUS | $VERUS_MIN | ✅ |" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "| Verus SMT proofs | $VERUS | $VERUS_MIN | ❌ |" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          VERUS="${{ steps.counts.outputs.verus_proof }}"
+          echo "| Verus proof fns | ${VERUS:-?} | — | ℹ️ (gated in verus.yml) |" >> "$GITHUB_STEP_SUMMARY"
 
           KANI="${{ steps.kani-count.outputs.count }}"
           KANI_MIN="${{ steps.kani-count.outputs.minimum }}"
-          if [ "$KANI" -ge "$KANI_MIN" ]; then
+          if [ -n "$KANI" ] && [ "$KANI" -ge "$KANI_MIN" ]; then
             echo "| Kani BMC harnesses | $KANI | $KANI_MIN | ✅ |" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "| Kani BMC harnesses | $KANI | $KANI_MIN | ❌ |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| Kani BMC harnesses | ${KANI:-?} | ${KANI_MIN:-?} | ❌ |" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-          CONF="${{ steps.conformance-count.outputs.count }}"
-          echo "| Conformance suites | $CONF | — | ℹ️ |" >> "$GITHUB_STEP_SUMMARY"
+          CONF="${{ steps.counts.outputs.conformance }}"
+          echo "| Conformance suites | ${CONF:-?} | — | ℹ️ |" >> "$GITHUB_STEP_SUMMARY"
