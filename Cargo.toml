@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "crates/lattice-guard",  # Policy: quotient lattice types
+    "crates/portcullis",  # Policy: quotient lattice types
     "crates/nucleus",        # Enforcement: wraps OS APIs with policy checks
     "crates/nucleus-cli",    # CLI: distributed executor with enforcement
     "crates/nucleus-client", # Client signing utilities
@@ -17,8 +17,8 @@ members = [
     "crates/nucleus-sdk",        # Rust SDK for building sandboxed AI agents
     "crates/nucleus-permission-market", # Lagrangian permission pricing oracle
 ]
-# Verified with Verus (not standard cargo); run: .verus/verus-x86-macos/verus crates/lattice-guard-verified/src/lib.rs
-exclude = ["crates/lattice-guard-verified"]
+# Verified with Verus (not standard cargo); run: .verus/verus-x86-macos/verus crates/portcullis-verified/src/lib.rs
+exclude = ["crates/portcullis-verified"]
 resolver = "2"
 
 [workspace.package]

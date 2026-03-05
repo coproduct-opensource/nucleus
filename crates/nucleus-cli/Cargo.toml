@@ -17,7 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Core enforcement
-lattice-guard = { path = "../lattice-guard" }
+portcullis = { path = "../portcullis" }
 nucleus-spec = { path = "../nucleus-spec" }
 nucleus-client = { path = "../nucleus-client" }
 

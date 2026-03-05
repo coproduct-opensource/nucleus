@@ -1,7 +1,7 @@
 //! Trifecta Playground - Interactive TUI for demonstrating the Lethal Trifecta prevention system.
 //!
 //! This application provides a visual, interactive demonstration of how the
-//! lattice-guard permission system prevents dangerous capability combinations.
+//! portcullis permission system prevents dangerous capability combinations.
 
 use std::io;
 use std::time::Duration;

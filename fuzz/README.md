@@ -1,6 +1,6 @@
 # Fuzzing Targets
 
-This directory contains `cargo-fuzz` targets for lattice-guard invariants.
+This directory contains `cargo-fuzz` targets for portcullis invariants.
 
 ## Setup
 
@@ -18,5 +18,5 @@ cargo fuzz run permission_serde -- -max_total_time=60
 ```
 
 Notes:
-- Targets use `lattice-guard` with `serde` enabled.
+- Targets use `portcullis` with `serde` enabled.
 - Add seed corpora under `fuzz/corpus/<target>/` to improve coverage.

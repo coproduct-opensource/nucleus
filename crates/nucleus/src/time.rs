@@ -1,6 +1,6 @@
 //! Monotonic time enforcement.
 //!
-//! Unlike `lattice_guard::TimeLattice` which uses wall clock time (`Utc::now()`),
+//! Unlike `portcullis::TimeLattice` which uses wall clock time (`Utc::now()`),
 //! `MonotonicGuard` uses `quanta` monotonic clocks. This prevents:
 //!
 //! - **Clock manipulation**: Changing system time cannot extend validity
@@ -16,7 +16,7 @@ use quanta::Instant;
 use std::time::Duration;
 
 use crate::error::{NucleusError, Result};
-use lattice_guard::TimeLattice;
+use portcullis::TimeLattice;
 
 /// A monotonic time guard that cannot be bypassed by clock manipulation.
 ///

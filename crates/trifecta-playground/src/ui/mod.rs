@@ -2,7 +2,7 @@
 
 mod delegation_forest;
 
-use lattice_guard::{CapabilityLevel, Operation, PermissionLattice, TrifectaRisk};
+use portcullis::{CapabilityLevel, Operation, PermissionLattice, TrifectaRisk};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -774,7 +774,7 @@ fn draw_capability_matrix(f: &mut Frame, app: &App) {
 }
 
 /// Get capability level by name from a CapabilityLattice.
-fn get_capability_level(caps: &lattice_guard::CapabilityLattice, name: &str) -> CapabilityLevel {
+fn get_capability_level(caps: &portcullis::CapabilityLattice, name: &str) -> CapabilityLevel {
     match name {
         "read_files" => caps.read_files,
         "write_files" => caps.write_files,

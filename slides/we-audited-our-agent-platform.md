@@ -457,7 +457,7 @@ frame distributivity, nucleus operator properties, isolation lattice.**
 
 # OWASP LLM Security Gauntlet
 
-70 tests mapping **real CVEs from 2025-2026** to lattice-guard defenses:
+70 tests mapping **real CVEs from 2025-2026** to portcullis defenses:
 
 | Attack (Real CVE) | Vector | Nucleus Defense | Verdict |
 |---|---|---|---|
@@ -487,7 +487,7 @@ Plus 3 libfuzzer targets in CI: command injection, path traversal, serde bypass.
 └─────────────────────────────────────────────────┘
 ```
 
-Every layer is auditable. `cargo kani -p lattice-guard` to verify yourself.
+Every layer is auditable. `cargo kani -p portcullis` to verify yourself.
 
 ---
 

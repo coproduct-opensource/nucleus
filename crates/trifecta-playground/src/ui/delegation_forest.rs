@@ -4,7 +4,7 @@
 //! monotonic meet (delegate_to) at each edge. The structural differentiator
 //! vs flat sandbox models: sub-pod permissions are always ≤ parent ceiling.
 
-use lattice_guard::{CapabilityLevel, IncompatibilityConstraint, PermissionLattice, TrifectaRisk};
+use portcullis::{CapabilityLevel, IncompatibilityConstraint, PermissionLattice, TrifectaRisk};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -344,7 +344,7 @@ fn draw_footer(f: &mut Frame, area: Rect) {
 }
 
 /// Build a 10-char heatmap of capability levels.
-fn capability_heatmap(caps: &lattice_guard::CapabilityLattice) -> String {
+fn capability_heatmap(caps: &portcullis::CapabilityLattice) -> String {
     let levels = [
         caps.read_files,
         caps.write_files,

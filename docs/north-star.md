@@ -56,7 +56,7 @@ These production systems validate the approach:
 - **AWS Cedar** — formally verified authorization policy engine. Rust production
   engine + Lean formal model + differential fuzz testing. 1 billion auth
   requests/sec. The Cedar pattern (Rust runtime + Lean model + differential
-  testing) is our architectural template for lattice-guard.
+  testing) is our architectural template for portcullis.
 
 - **libcrux** (Cryspen) — formally verified post-quantum crypto in Rust via
   hax → F*. ML-KEM verified for correctness, panic freedom, and secret
@@ -71,7 +71,7 @@ These production systems validate the approach:
 ```
 ┌─────────────────────────────────────────────────────┐
 │  Verified Core (Verus)              ~10-15K LOC     │
-│  ├── lattice-guard                  Verus proofs    │
+│  ├── portcullis                  Verus proofs    │
 │  ├── permission enforcement         Verus proofs    │
 │  └── sandbox boundary               Verus proofs    │
 ├─────────────────────────────────────────────────────┤
@@ -112,7 +112,7 @@ production code.
 
 ### Phase 0: Verified Lattice Core (3-4 months)
 
-**Target:** lattice-guard crate (4.8K LOC, 96 existing tests)
+**Target:** portcullis crate (4.8K LOC, 96 existing tests)
 
 **Tool:** Verus + AutoVerus
 
@@ -129,7 +129,7 @@ security." This is the product claim.
 
 ### Phase 1: Lean 4 Mathematical Model (2-3 months)
 
-**Target:** Translate lattice-guard to Lean 4 via Aeneas
+**Target:** Translate portcullis to Lean 4 via Aeneas
 
 **Tool:** Aeneas + Lean 4 + Mathlib
 
@@ -165,7 +165,7 @@ tested.
 **Tool:** cargo fuzz + custom harness
 
 **What we test:**
-- Rust lattice-guard engine vs Lean 4 model on millions of random inputs
+- Rust portcullis engine vs Lean 4 model on millions of random inputs
 - Permission composition: same input → same decision in both implementations
 - Edge cases that neither Verus nor Lean proofs would cover (serialization
   boundaries, encoding issues)

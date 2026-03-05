@@ -10,7 +10,7 @@ use crate::command::{BudgetModel, Executor};
 use crate::error::Result;
 use crate::sandbox::Sandbox;
 use crate::time::MonotonicGuard;
-use lattice_guard::PermissionLattice;
+use portcullis::PermissionLattice;
 
 /// Specification for a pod (sandboxed instance).
 #[derive(Debug, Clone)]

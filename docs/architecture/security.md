@@ -111,7 +111,7 @@ File access uses cap-std for capability-based security:
 - Must explicitly open files through capability handles
 - Path traversal attacks blocked at syscall level
 
-### Layer 4: Policy Enforcement (lattice-guard)
+### Layer 4: Policy Enforcement (portcullis)
 
 The permission lattice provides mathematical guarantees:
 - Capabilities can only tighten through composition

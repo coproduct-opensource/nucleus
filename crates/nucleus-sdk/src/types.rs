@@ -1,7 +1,7 @@
-//! Re-exports from `nucleus-spec` and `lattice-guard`.
+//! Re-exports from `nucleus-spec` and `portcullis`.
 //!
 //! Users can depend solely on `nucleus-sdk` without adding `nucleus-spec`
-//! or `lattice-guard` to their own Cargo.toml.
+//! or `portcullis` to their own Cargo.toml.
 
 // Pod specification types
 pub use nucleus_spec::{
@@ -10,7 +10,7 @@ pub use nucleus_spec::{
 };
 
 // Permission lattice types
-pub use lattice_guard::{
+pub use portcullis::{
     CapabilityLattice, CapabilityLevel, IncompatibilityConstraint, Obligations, Operation,
     PermissionLattice, TrifectaRisk,
 };

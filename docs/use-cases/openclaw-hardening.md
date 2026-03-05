@@ -251,7 +251,7 @@ an isolated Firecracker microVM, and the permission lattice governs what's allow
 ## Further Reading
 
 - [Nucleus Architecture Overview](../architecture/overview.md)
-- [Lattice-Guard Permission Model](../architecture/lattice-guard.md)
+- [Lattice-Guard Permission Model](../architecture/portcullis.md)
 - [Audit Log Verification](../architecture/audit.md)
 - [Nucleus SDK](../../crates/nucleus-sdk/README.md)
 - [OpenClaw Security Documentation](https://docs.openclaw.ai/gateway/security) *(may change post-acquisition)*

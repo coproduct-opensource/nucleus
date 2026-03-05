@@ -26,7 +26,7 @@ uuid = { workspace = true }
 
 nucleus-client = { path = "../nucleus-client" }
 nucleus-spec = { path = "../nucleus-spec" }
-lattice-guard = { path = "../lattice-guard" }
+portcullis = { path = "../portcullis" }
 
 [lints]
 workspace = true

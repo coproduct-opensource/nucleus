@@ -111,7 +111,7 @@ When all three are present, exfiltration operations automatically require approv
 ## Loading Policies
 
 ```rust
-use lattice_guard::constraint::spec::PolicySpec;
+use portcullis::constraint::spec::PolicySpec;
 use std::fs;
 
 let yaml = fs::read_to_string("policies/basic-codegen.yaml")?;
@@ -119,7 +119,7 @@ let spec = PolicySpec::from_yaml(&yaml)?;
 let policy = spec.build()?;
 
 // Use as a nucleus
-use lattice_guard::frame::Nucleus;
+use portcullis::frame::Nucleus;
 let perms = PermissionLattice::permissive();
 let safe = policy.apply(&perms);
 ```

@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use lattice_guard::PathLattice;
+use portcullis::PathLattice;
 use std::path::Path;
 
 fuzz_target!(|data: &[u8]| {

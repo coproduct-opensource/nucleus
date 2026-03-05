@@ -4,13 +4,13 @@ on:
   push:
     branches: ["main"]
     paths:
-      - "crates/lattice-guard-verified/**"
+      - "crates/portcullis-verified/**"
       - ".verus-version"
       - ".verus-minimum-proofs"
       - ".github/workflows/verus.yml"
   pull_request:
     paths:
-      - "crates/lattice-guard-verified/**"
+      - "crates/portcullis-verified/**"
       - ".verus-version"
       - ".verus-minimum-proofs"
       - ".github/workflows/verus.yml"
@@ -65,11 +65,11 @@ jobs:
           rustup install "$REQUIRED"
           rustup default "$REQUIRED"
 
-      - name: Verify lattice-guard-verified
+      - name: Verify portcullis-verified
         id: verify
         run: |
           echo "::group::Verus verification"
-          .verus/verus-x86-linux/verus crates/lattice-guard-verified/src/lib.rs 2>&1 | tee /tmp/verus-output.txt
+          .verus/verus-x86-linux/verus crates/portcullis-verified/src/lib.rs 2>&1 | tee /tmp/verus-output.txt
           echo "::endgroup::"
 
       - name: Proof count regression gate
@@ -91,6 +91,6 @@ jobs:
           echo "## Verus Verification Results" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Verus version:** ${{ steps.verus-version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Target:** \`crates/lattice-guard-verified/src/lib.rs\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Target:** \`crates/portcullis-verified/src/lib.rs\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Result:** $VERIFIED verified, $ERRORS errors" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Minimum required:** $MINIMUM" >> "$GITHUB_STEP_SUMMARY"

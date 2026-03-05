@@ -1,6 +1,6 @@
 //! Command execution with policy enforcement.
 //!
-//! Unlike `lattice_guard::CommandLattice` which provides a `can_execute()` predicate,
+//! Unlike `portcullis::CommandLattice` which provides a `can_execute()` predicate,
 //! `Executor` actually spawns processes - but only after validating against policy.
 //!
 //! The key difference: with `CommandLattice`, a caller could ignore the predicate.
@@ -17,7 +17,7 @@ use crate::budget::AtomicBudget;
 use crate::error::{NucleusError, Result};
 use crate::sandbox::Sandbox;
 use crate::time::MonotonicGuard;
-use lattice_guard::{
+use portcullis::{
     CapabilityLattice, CapabilityLevel, CommandLattice, Obligations, Operation, PermissionLattice,
 };
 
@@ -604,7 +604,7 @@ mod tests {
     use super::*;
     use crate::budget::AtomicBudget;
     use crate::sandbox::Sandbox;
-    use lattice_guard::{BudgetLattice, CapabilityLattice};
+    use portcullis::{BudgetLattice, CapabilityLattice};
     use rust_decimal::Decimal;
     use tempfile::tempdir;
 

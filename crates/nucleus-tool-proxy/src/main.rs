@@ -11,10 +11,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{middleware, Json, Router};
 use clap::Parser;
-use nucleus::lattice_guard::escalation::{
+use nucleus::portcullis::escalation::{
     EscalationError, EscalationGrant, EscalationRequest, SpiffeTraceChain, SpiffeTraceLink,
 };
-use nucleus::lattice_guard::{CapabilityLevel, Operation, PermissionLattice};
+use nucleus::portcullis::{CapabilityLevel, Operation, PermissionLattice};
 use nucleus::{
     ApprovalRequest, BudgetModel, CallbackApprover, NucleusError, PodRuntime,
     PodSpec as RuntimePodSpec,
@@ -1505,7 +1505,7 @@ fn evaluate_permission_bid(headers: &HeaderMap, state: &AppState) -> Option<Perm
 #[derive(Clone)]
 #[allow(dead_code)] // Fields consumed by downstream handlers
 pub(crate) struct CertifiedPermissions {
-    pub(crate) verified: lattice_guard::certificate::VerifiedPermissions,
+    pub(crate) verified: portcullis::certificate::VerifiedPermissions,
     pub(crate) effective: PermissionLattice,
 }
 
@@ -1543,7 +1543,7 @@ fn evaluate_delegation_cert_with_identity(
         }
     };
 
-    let cert: lattice_guard::LatticeCertificate = match serde_json::from_slice(&cert_bytes) {
+    let cert: portcullis::LatticeCertificate = match serde_json::from_slice(&cert_bytes) {
         Ok(c) => c,
         Err(e) => {
             warn!(error = %e, "invalid delegation cert JSON");
@@ -1551,11 +1551,11 @@ fn evaluate_delegation_cert_with_identity(
         }
     };
 
-    let verified = match lattice_guard::verify_certificate(
+    let verified = match portcullis::verify_certificate(
         &cert,
         root_pubkey,
         chrono::Utc::now(),
-        lattice_guard::certificate::DEFAULT_MAX_CHAIN_DEPTH,
+        portcullis::certificate::DEFAULT_MAX_CHAIN_DEPTH,
     ) {
         Ok(v) => v,
         Err(e) => {
@@ -2678,7 +2678,7 @@ async fn escalate_permissions(
     if !approver_chain.verify() {
         let result = approver_chain.verify_detailed();
         let reason = match result {
-            lattice_guard::escalation::ChainVerificationResult::Invalid { reason, .. } => reason,
+            portcullis::escalation::ChainVerificationResult::Invalid { reason, .. } => reason,
             _ => "unknown".to_string(),
         };
         tracing::warn!(

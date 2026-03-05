@@ -11,11 +11,11 @@
 //!
 //! Closes: #102, #103
 
-use lattice_guard::{
+use nucleus::Sandbox;
+use portcullis::{
     CapabilityLevel, GradedTaintGuard, Operation, PermissionLattice, TaintLabel, TaintSet,
     ToolCallGuard, TrifectaRisk,
 };
-use nucleus::Sandbox;
 use tempfile::tempdir;
 
 // ---------------------------------------------------------------------------
@@ -351,7 +351,7 @@ fn test_full_rogue_pilot_chain() {
 
 #[test]
 fn test_graded_monad_taint_composition() {
-    use lattice_guard::graded::Graded;
+    use portcullis::graded::Graded;
 
     // Build the same sequence functionally via Graded<TaintSet, _>
     let read = Graded::new(

@@ -67,7 +67,7 @@ Status key: `DONE`, `PARTIAL`, `TODO`.
 - **No privilege relaxation after creation**
   - Pass: permission state can only tighten or the pod is terminated.
   - Current: `PARTIAL` (policy normalization enforced; no runtime guardrail).
-  - Evidence: `crates/lattice-guard/src/lattice.rs`, `crates/nucleus-cli/src/run.rs`
+  - Evidence: `crates/portcullis/src/lattice.rs`, `crates/nucleus-cli/src/run.rs`
 - **Network policy drift detection**
   - Pass: host checks iptables drift and fails closed on deviation.
   - Current: `DONE`.
@@ -92,7 +92,7 @@ Status key: `DONE`, `PARTIAL`, `TODO`.
 - **ν laws proven in CI**
   - Pass: Kani proof job runs in CI and blocks merges on failure.
   - Current: `PARTIAL` (Kani proofs exist, nightly job runs; merge gate pending).
-  - Evidence: `crates/lattice-guard/src/kani.rs`
+  - Evidence: `crates/portcullis/src/kani.rs`
 - **Fuzzing in CI**
   - Pass: cargo-fuzz targets run with time budget; known bypasses blocked.
   - Current: `PARTIAL` (targets exist; CI gate pending).

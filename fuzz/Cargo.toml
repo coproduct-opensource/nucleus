@@ -13,8 +13,8 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 serde_json = "1.0"
 
-[dependencies.lattice-guard]
-path = "../crates/lattice-guard"
+[dependencies.portcullis]
+path = "../crates/portcullis"
 features = ["serde"]
 
 [[bin]]

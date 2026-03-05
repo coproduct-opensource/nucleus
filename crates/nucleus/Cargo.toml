@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "OS-level enforcement of lattice-guard permissions - wraps file, process, and network APIs"
+description = "OS-level enforcement of portcullis permissions - wraps file, process, and network APIs"
 repository = "https://github.com/coproduct-opensource/nucleus"
 documentation = "https://docs.rs/nucleus"
 readme = "README.md"
@@ -18,7 +18,7 @@ async = ["tokio"]
 
 [dependencies]
 # Policy layer - the quotient lattice
-lattice-guard = { path = "../lattice-guard" }
+portcullis = { path = "../portcullis" }
 
 # Atomic budget tracking
 parking_lot = "0.12"

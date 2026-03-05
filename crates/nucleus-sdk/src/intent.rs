@@ -1,7 +1,7 @@
 //! Intent system for user-facing permission profiles.
 //!
 //! [`Intent`] maps high-level goals (e.g., "fix an issue", "review code") to
-//! lattice-guard permission profiles. [`IntentSession`] wraps a [`ProxyClient`]
+//! portcullis permission profiles. [`IntentSession`] wraps a [`ProxyClient`]
 //! with the resolved profile for scoped, type-safe operations.
 //!
 //! Mirrors the Python SDK's `intent.py`.
@@ -13,7 +13,7 @@ use crate::Error;
 
 /// User-facing intent describing what an agent session will do.
 ///
-/// Each intent maps to a lattice-guard profile name that determines the
+/// Each intent maps to a portcullis profile name that determines the
 /// permission lattice for the session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Intent {
@@ -42,7 +42,7 @@ pub enum Intent {
 }
 
 impl Intent {
-    /// Get the lattice-guard profile name for this intent.
+    /// Get the portcullis profile name for this intent.
     pub fn profile_name(&self) -> &'static str {
         match self {
             Intent::ResearchWeb => "web_research",
@@ -104,7 +104,7 @@ pub struct IntentProfile {
     /// Human-readable description.
     pub description: &'static str,
     /// Resolved permission lattice.
-    pub lattice: lattice_guard::PermissionLattice,
+    pub lattice: portcullis::PermissionLattice,
 }
 
 impl IntentProfile {
@@ -130,8 +130,8 @@ impl IntentProfile {
     }
 
     /// Check which operations are allowed at autonomous level.
-    pub fn allowed_operations(&self) -> Vec<lattice_guard::Operation> {
-        use lattice_guard::{CapabilityLevel, Operation};
+    pub fn allowed_operations(&self) -> Vec<portcullis::Operation> {
+        use portcullis::{CapabilityLevel, Operation};
 
         let ops = [
             (Operation::ReadFiles, self.lattice.capabilities.read_files),
@@ -155,7 +155,7 @@ impl IntentProfile {
     }
 
     /// Check which operations have approval obligations (gated by trifecta enforcement).
-    pub fn gated_operations(&self) -> Vec<lattice_guard::Operation> {
+    pub fn gated_operations(&self) -> Vec<portcullis::Operation> {
         self.lattice.obligations.approvals.iter().copied().collect()
     }
 }
@@ -329,14 +329,14 @@ mod tests {
         let allowed = profile.allowed_operations();
 
         // Code review should allow read, glob, grep
-        assert!(allowed.contains(&lattice_guard::Operation::ReadFiles));
-        assert!(allowed.contains(&lattice_guard::Operation::GlobSearch));
-        assert!(allowed.contains(&lattice_guard::Operation::GrepSearch));
+        assert!(allowed.contains(&portcullis::Operation::ReadFiles));
+        assert!(allowed.contains(&portcullis::Operation::GlobSearch));
+        assert!(allowed.contains(&portcullis::Operation::GrepSearch));
 
         // Should NOT allow write, run_bash, git push
-        assert!(!allowed.contains(&lattice_guard::Operation::WriteFiles));
-        assert!(!allowed.contains(&lattice_guard::Operation::RunBash));
-        assert!(!allowed.contains(&lattice_guard::Operation::GitPush));
+        assert!(!allowed.contains(&portcullis::Operation::WriteFiles));
+        assert!(!allowed.contains(&portcullis::Operation::RunBash));
+        assert!(!allowed.contains(&portcullis::Operation::GitPush));
     }
 
     #[test]
@@ -349,8 +349,8 @@ mod tests {
         let allowed = profile.allowed_operations();
 
         // Should allow read and write
-        assert!(allowed.contains(&lattice_guard::Operation::ReadFiles));
-        assert!(allowed.contains(&lattice_guard::Operation::WriteFiles));
+        assert!(allowed.contains(&portcullis::Operation::ReadFiles));
+        assert!(allowed.contains(&portcullis::Operation::WriteFiles));
     }
 
     #[test]
@@ -359,10 +359,10 @@ mod tests {
         let allowed = profile.allowed_operations();
 
         // Codegen should allow write
-        assert!(allowed.contains(&lattice_guard::Operation::WriteFiles));
+        assert!(allowed.contains(&portcullis::Operation::WriteFiles));
 
         // Should NOT allow web fetch (network-isolated)
-        assert!(!allowed.contains(&lattice_guard::Operation::WebFetch));
+        assert!(!allowed.contains(&portcullis::Operation::WebFetch));
     }
 
     #[test]

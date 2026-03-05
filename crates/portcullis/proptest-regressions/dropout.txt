@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f3993c2cba28c44be2baffa42ae467de6fa3f76b131496f7553908990cbf278a # shrinks to caps = CapabilityLattice { read_files: Never, write_files: Never, edit_files: Never, run_bash: Never, glob_search: Never, grep_search: Never, web_search: Never, web_fetch: Never, git_commit: Never, git_push: Never, create_pr: Never, manage_pods: Never }, sub_mask = SubLatticeMask(0), cap_mask = CapabilityMask(0)
+cc d211906d913c23438afcd2258d7ce3076b829e0f4436dcd988e92c76d078335c # shrinks to caps_a = CapabilityLattice { read_files: Never, write_files: Never, edit_files: Never, run_bash: Never, glob_search: Never, grep_search: Never, web_search: Never, web_fetch: Never, git_commit: Never, git_push: Never, create_pr: Never, manage_pods: Never }, caps_b = CapabilityLattice { read_files: Never, write_files: Never, edit_files: Never, run_bash: LowRisk, glob_search: Never, grep_search: Never, web_search: Never, web_fetch: Never, git_commit: Never, git_push: Never, create_pr: Never, manage_pods: Never }, cap_mask = CapabilityMask(2304)

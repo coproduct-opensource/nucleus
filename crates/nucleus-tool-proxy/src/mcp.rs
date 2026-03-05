@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use lattice_guard::{CapabilityLevel, GradedTaintGuard, Operation, ToolCallGuard};
+use portcullis::{CapabilityLevel, GradedTaintGuard, Operation, ToolCallGuard};
 use rmcp::{
     handler::server::router::tool::ToolRouter, handler::server::wrapper::Parameters, model::*,
     tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt,
