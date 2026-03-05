@@ -331,6 +331,7 @@ proof fn proof_order_total(a: CapLevel, b: CapLevel)
 /// Fields (in order): read_files, write_files, edit_files, run_bash,
 /// glob_search, grep_search, web_search, web_fetch, git_commit,
 /// git_push, create_pr, manage_pods.
+#[derive(Clone, Copy)]
 pub struct CapLattice {
     pub f0: CapLevel,  // read_files
     pub f1: CapLevel,  // write_files
@@ -638,6 +639,7 @@ proof fn proof_join_preserves_validity(a: CapLattice, b: CapLattice)
 ///
 /// More obligations = more constrained = SMALLER in the lattice order.
 /// (Obligations order is REVERSED: superset ≤ subset)
+#[derive(Clone, Copy)]
 pub struct Obs {
     pub run_bash: bool,   // requires approval for run_bash
     pub git_push: bool,   // requires approval for git_push
@@ -691,6 +693,7 @@ pub open spec fn obs_full() -> Obs {
 /// In the real code this also includes paths, budget, commands, time —
 /// but the nucleus operator only touches capabilities and obligations,
 /// so we model just those two dimensions.
+#[derive(Clone, Copy)]
 pub struct Perm {
     pub caps: CapLattice,
     pub obs: Obs,
@@ -1903,6 +1906,230 @@ proof fn proof_budget_sequential_charges(
     ensures
         consumed + amount1 + amount2 <= max_budget,
 {
+}
+
+// ============================================================================
+// Phase 3: Executable Verification
+//
+// These are EXEC functions — real Rust code that Verus compiles AND verifies.
+// Each function mirrors its production counterpart exactly and carries a
+// postcondition linking it to the corresponding spec function.
+//
+// This closes the model-implementation gap:
+// 1. Spec proofs (Phase 1-2) verify algebraic properties of the model
+// 2. Exec postconditions verify the executable code matches the model
+// 3. Transitivity: the executable code satisfies the algebraic properties
+//
+// The exec code here is structurally identical to the production Rust code
+// in lattice-guard/src/capability.rs and guard.rs. The conformance test suite
+// (tests/verus_conformance.rs) additionally asserts that the production code
+// and these exec functions produce identical results on random inputs.
+// ============================================================================
+
+/// Executable: check if a capability set has private data access.
+///
+/// Mirrors: `has_private_access` in production
+/// (read_files >= LowRisk || glob_search >= LowRisk || grep_search >= LowRisk)
+fn exec_has_private_access(c: CapLattice) -> (result: bool)
+    requires
+        valid_lattice(c),
+    ensures
+        result == has_private_access(c),
+{
+    c.f0 >= 1 || c.f4 >= 1 || c.f5 >= 1
+}
+
+/// Executable: check if a capability set has untrusted content exposure.
+///
+/// Mirrors: untrusted content check in production
+/// (web_search >= LowRisk || web_fetch >= LowRisk)
+fn exec_has_untrusted_content(c: CapLattice) -> (result: bool)
+    requires
+        valid_lattice(c),
+    ensures
+        result == has_untrusted_content(c),
+{
+    c.f6 >= 1 || c.f7 >= 1
+}
+
+/// Executable: check if a capability set has exfiltration vectors.
+///
+/// Mirrors: exfiltration check in production
+/// (run_bash >= LowRisk || git_push >= LowRisk || create_pr >= LowRisk)
+fn exec_has_exfiltration(c: CapLattice) -> (result: bool)
+    requires
+        valid_lattice(c),
+    ensures
+        result == has_exfiltration(c),
+{
+    c.f3 >= 1 || c.f9 >= 1 || c.f10 >= 1
+}
+
+/// Executable: check if the lethal trifecta is complete.
+///
+/// Mirrors: `IncompatibilityConstraint::is_trifecta_complete()` in production.
+fn exec_is_trifecta_complete(c: CapLattice) -> (result: bool)
+    requires
+        valid_lattice(c),
+    ensures
+        result == is_trifecta_complete(c),
+{
+    exec_has_private_access(c)
+        && exec_has_untrusted_content(c)
+        && exec_has_exfiltration(c)
+}
+
+/// Executable: compute trifecta risk level (0=None, 1=Low, 2=Medium, 3=Complete).
+///
+/// Mirrors: `IncompatibilityConstraint::trifecta_risk()` in production.
+/// This is the function HN skeptics care about — it's real Rust, and Verus
+/// verifies it matches the spec that all the algebraic proofs reference.
+fn exec_trifecta_risk(c: CapLattice) -> (risk: u8)
+    requires
+        valid_lattice(c),
+    ensures
+        risk as nat == trifecta_count(c),
+        risk <= 3,
+{
+    let p: u8 = if exec_has_private_access(c) { 1 } else { 0 };
+    let u: u8 = if exec_has_untrusted_content(c) { 1 } else { 0 };
+    let e: u8 = if exec_has_exfiltration(c) { 1 } else { 0 };
+    p + u + e
+}
+
+/// Executable: compute trifecta obligations.
+///
+/// Mirrors: `IncompatibilityConstraint::obligations_for()` in production.
+/// If trifecta is complete, gates each active exfiltration vector.
+fn exec_trifecta_obligations(c: CapLattice) -> (obs: Obs)
+    requires
+        valid_lattice(c),
+    ensures
+        obs == trifecta_obligations(c),
+{
+    if exec_is_trifecta_complete(c) {
+        Obs {
+            run_bash: c.f3 >= 1,
+            git_push: c.f9 >= 1,
+            create_pr: c.f10 >= 1,
+        }
+    } else {
+        Obs { run_bash: false, git_push: false, create_pr: false }
+    }
+}
+
+/// Executable: union of obligations.
+///
+/// Mirrors: `Obligations::union()` in production.
+fn exec_obs_union(a: Obs, b: Obs) -> (result: Obs)
+    ensures
+        result == obs_union(a, b),
+{
+    Obs {
+        run_bash: a.run_bash || b.run_bash,
+        git_push: a.git_push || b.git_push,
+        create_pr: a.create_pr || b.create_pr,
+    }
+}
+
+/// Executable: the nucleus operator (normalize).
+///
+/// Mirrors: `PermissionLattice::normalize()` in production.
+/// Adds trifecta obligations if constraint is enabled.
+fn exec_nucleus(p: Perm) -> (result: Perm)
+    requires
+        valid_perm(p),
+    ensures
+        result == nucleus(p),
+{
+    if p.trifecta_constraint {
+        let tri_obs = exec_trifecta_obligations(p.caps);
+        Perm {
+            caps: p.caps,
+            obs: exec_obs_union(p.obs, tri_obs),
+            trifecta_constraint: true,
+        }
+    } else {
+        p
+    }
+}
+
+/// Executable: check if operation requires approval.
+///
+/// Mirrors: `PermissionLattice::requires_approval()` in production.
+/// Maps operation indices to obligation flags.
+fn exec_requires_approval(obs: Obs, op: u8) -> (result: bool)
+    ensures
+        result == requires_approval(obs, op as nat),
+{
+    (op == 3 && obs.run_bash)
+    || (op == 9 && obs.git_push)
+    || (op == 10 && obs.create_pr)
+}
+
+/// Executable: the guard decision function.
+///
+/// Mirrors: `GradedGuard::check_operation()` in production.
+/// Returns true if allowed, false if denied.
+fn exec_check_operation(obs: Obs, risk: u8, op: u8) -> (allowed: bool)
+    ensures
+        allowed == check_operation_allowed(obs, risk as nat, op as nat),
+{
+    !(exec_requires_approval(obs, op) && risk == 3)
+}
+
+/// Executable: budget decision.
+///
+/// Mirrors: `AtomicBudget::charge_micro_usd()` decision predicate.
+fn exec_budget_allows(consumed: u64, max_budget: u64, amount: u64) -> (allowed: bool)
+    requires
+        consumed as nat + amount as nat <= u64::MAX as nat,
+    ensures
+        allowed == budget_allows(consumed as nat, max_budget as nat, amount as nat),
+{
+    consumed + amount <= max_budget
+}
+
+/// **THE CROWN JEWEL**: Executable end-to-end trifecta safety.
+///
+/// This is a REAL Rust function that Verus verifies will ALWAYS deny
+/// autonomous exfiltration when the lethal trifecta is present.
+///
+/// The function chains: normalize → risk computation → guard decision.
+/// Verus proves the postcondition: if trifecta complete + exfil op active → denied.
+///
+/// This directly addresses the audit findings in executable code, not just a model.
+fn exec_end_to_end_check(p: Perm, op: u8) -> (allowed: bool)
+    requires
+        valid_perm(p),
+    ensures
+        // THE SAFETY GUARANTEE: if trifecta is complete and op is an active
+        // exfil vector, the operation is DENIED after normalization.
+        (is_trifecta_complete(p.caps)
+            && is_exfil_op(op as nat)
+            && (op == 3 ==> p.caps.f3 >= 1)
+            && (op == 9 ==> p.caps.f9 >= 1)
+            && (op == 10 ==> p.caps.f10 >= 1))
+            ==> !allowed,
+{
+    let normalized = exec_nucleus(p);
+    let risk = exec_trifecta_risk(normalized.caps);
+    let result = exec_check_operation(normalized.obs, risk, op);
+
+    // Help Z3 connect the dots through the exec chain
+    proof {
+        if is_trifecta_complete(p.caps)
+            && is_exfil_op(op as nat)
+            && (op == 3 ==> p.caps.f3 >= 1)
+            && (op == 9 ==> p.caps.f9 >= 1)
+            && (op == 10 ==> p.caps.f10 >= 1)
+        {
+            proof_trifecta_complete_iff_count_three(p.caps);
+            proof_trifecta_obligations_cover_active_exfil(p.caps);
+        }
+    }
+
+    result
 }
 
 fn main() {}
