@@ -1623,4 +1623,117 @@ proptest! {
             }
         }
     }
+
+    // =======================================================================
+    // Phase 9B — Noninterference Conformance
+    // =======================================================================
+
+    /// CONFORMANCE N1: Omnibus noninterference.
+    ///
+    /// If UntrustedContent is set, RunBash is denied regardless of PrivateData.
+    /// Tests the 2-safety property: two taint states differing only on PrivateData
+    /// both deny RunBash.
+    #[test]
+    fn conformance_omnibus_noninterference(
+        has_exfil in proptest::bool::ANY,
+    ) {
+        // Build two taint states: one with PrivateData, one without.
+        // Both have UntrustedContent.
+        let mut with_private = TaintSet::empty()
+            .union(&TaintSet::singleton(TaintLabel::UntrustedContent));
+        let mut without_private = TaintSet::empty()
+            .union(&TaintSet::singleton(TaintLabel::UntrustedContent));
+
+        // Add PrivateData to only one
+        with_private = with_private.union(&TaintSet::singleton(TaintLabel::PrivateData));
+
+        // Optionally add ExfilVector to both (shouldn't matter)
+        if has_exfil {
+            with_private = with_private.union(&TaintSet::singleton(TaintLabel::ExfilVector));
+            without_private = without_private.union(&TaintSet::singleton(TaintLabel::ExfilVector));
+        }
+
+        // Both must deny RunBash (when RunBash requires approval)
+        let denied_with = model_guard_would_deny(&with_private, Operation::RunBash, true);
+        let denied_without = model_guard_would_deny(&without_private, Operation::RunBash, true);
+
+        prop_assert!(
+            denied_with,
+            "N1 violated: RunBash not denied with PrivateData+UntrustedContent"
+        );
+        prop_assert!(
+            denied_without,
+            "N1 violated: RunBash not denied with UntrustedContent only (omnibus should close)"
+        );
+    }
+
+    /// CONFORMANCE N2: Contamination barrier.
+    ///
+    /// Once WebFetch/WebSearch executes, all subsequent RunBash is blocked
+    /// in the session fold (UntrustedContent latches, omnibus closes).
+    #[test]
+    fn conformance_contamination_barrier(
+        pre_ops in proptest::collection::vec(
+            (arb_operation(), any::<bool>()),
+            0..5,
+        ),
+        post_ops in proptest::collection::vec(
+            (arb_operation(), any::<bool>()),
+            0..5,
+        ),
+    ) {
+        // Build trace: pre_ops + WebFetch(success) + post_ops + RunBash(attempt)
+        let mut trace: Vec<(Operation, bool)> = pre_ops;
+        trace.push((Operation::WebFetch, true)); // contamination event
+        trace.extend(post_ops);
+
+        // Compute session fold up to the point before RunBash attempt
+        let taint_before_runbash = session_fold_taint(&trace, &exfil_requires_approval);
+
+        // RunBash must be denied (UntrustedContent latched + omnibus projection)
+        let denied = model_guard_would_deny(&taint_before_runbash, Operation::RunBash, true);
+
+        // UntrustedContent must have latched
+        prop_assert!(
+            taint_before_runbash.contains(TaintLabel::UntrustedContent),
+            "N2: UntrustedContent should latch after WebFetch"
+        );
+        prop_assert!(
+            denied,
+            "N2 violated: RunBash not denied after WebFetch contamination (taint: {})",
+            taint_before_runbash
+        );
+    }
+
+    /// CONFORMANCE N3: Full-path noninterference for GitPush/CreatePr.
+    ///
+    /// When both PrivateData and UntrustedContent are set, GitPush/CreatePr
+    /// are denied (classical 3-leg trifecta).
+    #[test]
+    fn conformance_full_path_noninterference(
+        has_exfil in proptest::bool::ANY,
+    ) {
+        // Build taint with both PrivateData and UntrustedContent
+        let mut taint = TaintSet::empty()
+            .union(&TaintSet::singleton(TaintLabel::PrivateData))
+            .union(&TaintSet::singleton(TaintLabel::UntrustedContent));
+
+        if has_exfil {
+            taint = taint.union(&TaintSet::singleton(TaintLabel::ExfilVector));
+        }
+
+        // GitPush must be denied
+        let denied_push = model_guard_would_deny(&taint, Operation::GitPush, true);
+        prop_assert!(
+            denied_push,
+            "N3 violated: GitPush not denied with PrivateData+UntrustedContent"
+        );
+
+        // CreatePr must be denied
+        let denied_pr = model_guard_would_deny(&taint, Operation::CreatePr, true);
+        prop_assert!(
+            denied_pr,
+            "N3 violated: CreatePr not denied with PrivateData+UntrustedContent"
+        );
+    }
 }

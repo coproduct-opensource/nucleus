@@ -4693,6 +4693,224 @@ proof fn proof_session_fold_safety(
     // requires_approval is given, so guard_would_deny holds
 }
 
+// ============================================================================
+// Phase 9B — Noninterference Proofs
+// ============================================================================
+//
+// These proofs establish information-flow properties analogous to seL4's
+// noninterference theorems. They go beyond trace safety (M2: "trifecta → denial")
+// to prove that certain COMBINATIONS of taint legs NECESSARILY lead to denial,
+// regardless of the trace's PrivateData history.
+
+/// Helper: individual taint label latch through session fold.
+///
+/// If a specific label (private_data, untrusted_content, or exfil_vector) is
+/// set at step k, it remains set at step n >= k. This generalizes the
+/// trifecta latch to individual labels.
+proof fn lemma_session_fold_label_latch(
+    trace: Seq<McpEvent>,
+    obs: Obs,
+    k: nat,
+    n: nat,
+)
+    requires
+        k <= n,
+        n <= trace.len(),
+        forall|i: int| 0 <= i < trace.len() ==> valid_event(#[trigger] trace[i]),
+    ensures
+        // Each label at step k implies the same label at step n
+        session_fold_spec_at(trace, obs, k).private_data
+            ==> session_fold_spec_at(trace, obs, n).private_data,
+        session_fold_spec_at(trace, obs, k).untrusted_content
+            ==> session_fold_spec_at(trace, obs, n).untrusted_content,
+        session_fold_spec_at(trace, obs, k).exfil_vector
+            ==> session_fold_spec_at(trace, obs, n).exfil_vector,
+    decreases (n - k),
+{
+    if k < n {
+        // By B4 (monotone): taint_subset(fold[k], fold[k+1])
+        proof_session_fold_monotone(trace, obs, k);
+        let taint_k = session_fold_spec_at(trace, obs, k);
+        let taint_k1 = session_fold_spec_at(trace, obs, (k + 1) as nat);
+        assert(taint_subset(taint_k, taint_k1));
+        // taint_subset means each true field in k implies true in k+1
+        assert(taint_k.private_data ==> taint_k1.private_data);
+        assert(taint_k.untrusted_content ==> taint_k1.untrusted_content);
+        assert(taint_k.exfil_vector ==> taint_k1.exfil_vector);
+        // Recurse for the remaining steps
+        lemma_session_fold_label_latch(trace, obs, (k + 1) as nat, n);
+    }
+}
+
+// ============================================================================
+// N1: Omnibus Noninterference
+// ============================================================================
+
+/// N1: RunBash denial is INDEPENDENT of PrivateData history.
+///
+/// If untrusted content is present in the taint state, RunBash is denied
+/// regardless of whether private data was ever accessed. The omnibus
+/// projection adds PrivateData + ExfilVector, making PrivateData history
+/// irrelevant to the denial decision.
+///
+/// This is a 2-safety hyperproperty: comparing two taint states that
+/// differ only on PrivateData, both are denied for RunBash.
+proof fn proof_omnibus_noninterference(
+    taint_with_private: SpecTaintSet,
+    taint_without_private: SpecTaintSet,
+    obs: Obs,
+)
+    requires
+        // Both have untrusted content
+        taint_with_private.untrusted_content,
+        taint_without_private.untrusted_content,
+        // They may differ on private_data and exfil_vector
+        // (no constraint — the proof is unconditional on those fields)
+        // Obligations gate RunBash
+        obs.run_bash,
+    ensures
+        // BOTH deny RunBash — PrivateData state is irrelevant
+        guard_would_deny(obs, taint_with_private, 3),
+        guard_would_deny(obs, taint_without_private, 3),
+{
+    // RunBash (op=3) omnibus projection:
+    //   projected = union(union(taint, singleton(0)), singleton(2))
+    //   projected.private_data = taint.private_data || true = true
+    //   projected.untrusted_content = taint.untrusted_content (unchanged)
+    //   projected.exfil_vector = taint.exfil_vector || true = true
+    //
+    // For taint_with_private:
+    let proj_with_inner = taint_union(taint_with_private, taint_singleton(0));
+    let proj_with = taint_union(proj_with_inner, taint_singleton(2));
+    assert(proj_with.private_data);       // singleton(0) forces true
+    assert(proj_with.untrusted_content);  // from precondition
+    assert(proj_with.exfil_vector);       // singleton(2) forces true
+    assert(taint_is_trifecta_complete(proj_with));
+
+    // For taint_without_private:
+    let proj_without_inner = taint_union(taint_without_private, taint_singleton(0));
+    let proj_without = taint_union(proj_without_inner, taint_singleton(2));
+    assert(proj_without.private_data);       // singleton(0) forces true
+    assert(proj_without.untrusted_content);  // from precondition
+    assert(proj_without.exfil_vector);       // singleton(2) forces true
+    assert(taint_is_trifecta_complete(proj_without));
+
+    // Both projected taints are trifecta-complete + obs.run_bash → both denied
+}
+
+// ============================================================================
+// N2: Trace-Level Contamination Barrier
+// ============================================================================
+
+/// N2: Once untrusted content enters the session, ALL future RunBash is blocked.
+///
+/// This is stronger than M2: it doesn't require trifecta-complete taint.
+/// UntrustedContent ALONE (from WebFetch/WebSearch) is sufficient to
+/// permanently block RunBash, because the omnibus projection adds the
+/// remaining two legs (PrivateData + ExfilVector).
+///
+/// In the Clinejection attack model: the moment an agent reads a GitHub
+/// issue (WebFetch → UntrustedContent), all `npm install` attempts
+/// (RunBash) are blocked for the rest of the session.
+proof fn proof_contamination_barrier(
+    trace: Seq<McpEvent>,
+    obs: Obs,
+    contamination_step: nat,
+    n: nat,
+)
+    requires
+        contamination_step < n,
+        n < trace.len(),
+        // A successful UntrustedContent event at contamination_step
+        trace[contamination_step as int].succeeded,
+        operation_taint_label(trace[contamination_step as int].op) == 1, // UntrustedContent
+        // The event at contamination_step was NOT denied by the guard
+        !guard_would_deny(obs, session_fold_spec_at(trace, obs, contamination_step), trace[contamination_step as int].op),
+        // RunBash at step n with obligations
+        trace[n as int].op == 3,
+        obs.run_bash,
+        // All events valid
+        forall|i: int| 0 <= i < trace.len() ==> valid_event(#[trigger] trace[i]),
+    ensures
+        guard_would_deny(obs, session_fold_spec_at(trace, obs, n), 3),
+{
+    // Step 1: Show UntrustedContent is set after contamination_step
+    let k = contamination_step;
+    let taint_k = session_fold_spec_at(trace, obs, k);
+    let event_k = trace[k as int];
+    // Event was not denied, so fold[k+1] = apply_event_taint(fold[k], event_k)
+    let taint_k1 = session_fold_spec_at(trace, obs, (k + 1) as nat);
+    assert(taint_k1 == apply_event_taint(taint_k, event_k));
+    // event_k.succeeded && operation_taint_label(event_k.op) == 1
+    // → apply_event_taint unions with singleton(1) = UntrustedContent
+    let singleton_uc = taint_singleton(1);
+    assert(taint_k1 == taint_union(taint_k, singleton_uc));
+    assert(taint_k1.untrusted_content); // singleton(1).untrusted_content == true
+
+    // Step 2: UntrustedContent latches through the fold to step n
+    lemma_session_fold_label_latch(trace, obs, (k + 1) as nat, n);
+    let taint_n = session_fold_spec_at(trace, obs, n);
+    assert(taint_n.untrusted_content);
+
+    // Step 3: RunBash omnibus projection on taint_n gives trifecta
+    // (same argument as N1)
+    let proj_inner = taint_union(taint_n, taint_singleton(0));
+    let projected = taint_union(proj_inner, taint_singleton(2));
+    assert(projected.private_data);      // singleton(0)
+    assert(projected.untrusted_content); // latched from step k+1
+    assert(projected.exfil_vector);      // singleton(2)
+    assert(taint_is_trifecta_complete(projected));
+    // obs.run_bash → requires_approval(obs, 3) → guard_would_deny
+}
+
+// ============================================================================
+// N3: Conditional Full-Path Noninterference
+// ============================================================================
+
+/// N3: For GitPush/CreatePr, PrivateData + UntrustedContent → denial.
+///
+/// Unlike RunBash (which has omnibus projection), GitPush and CreatePr
+/// only project ExfilVector. So both PrivateData AND UntrustedContent
+/// must be present in the session fold for the trifecta to complete.
+///
+/// This is the classical 3-leg argument restated in session fold terms
+/// with the guard-aware semantics.
+proof fn proof_full_path_noninterference(
+    trace: Seq<McpEvent>,
+    obs: Obs,
+    n: nat,
+)
+    requires
+        n < trace.len(),
+        forall|i: int| 0 <= i < trace.len() ==> valid_event(#[trigger] trace[i]),
+        // PrivateData and UntrustedContent are both set in the fold at step n
+        session_fold_spec_at(trace, obs, n).private_data,
+        session_fold_spec_at(trace, obs, n).untrusted_content,
+        // Exfil operation at position n: GitPush(9) or CreatePr(10)
+        (trace[n as int].op == 9 || trace[n as int].op == 10),
+        // Approval required for the operation
+        requires_approval(obs, trace[n as int].op),
+    ensures
+        guard_would_deny(obs, session_fold_spec_at(trace, obs, n), trace[n as int].op),
+{
+    let taint_n = session_fold_spec_at(trace, obs, n);
+    let op = trace[n as int].op;
+    // GitPush(9): operation_taint_label(9) = 2 (ExfilVector)
+    // CreatePr(10): operation_taint_label(10) = 2 (ExfilVector)
+    // Both project ExfilVector via the standard path (not omnibus)
+    let label = operation_taint_label(op);
+    assert(label == 2); // Both ops have ExfilVector label
+    let projected = taint_union(taint_n, taint_singleton(label));
+    // projected.private_data = taint_n.private_data = true (precondition)
+    assert(projected.private_data);
+    // projected.untrusted_content = taint_n.untrusted_content = true (precondition)
+    assert(projected.untrusted_content);
+    // projected.exfil_vector = taint_n.exfil_vector || true = true (singleton(2))
+    assert(projected.exfil_vector);
+    assert(taint_is_trifecta_complete(projected));
+    // requires_approval is given → guard_would_deny
+}
+
 fn main() {}
 
 } // verus!
