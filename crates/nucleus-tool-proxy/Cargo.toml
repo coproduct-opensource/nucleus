@@ -23,6 +23,8 @@ spire = ["nucleus-identity/spire"]
 mcp = ["dep:rmcp", "dep:schemars"]
 # Red-team harness: Claude vs. Portcullis (requires ANTHROPIC_API_KEY)
 red-team = []
+# Remote append-only audit sink (S3-compatible: AWS S3, MinIO, R2, Tigris)
+remote-audit = ["dep:aws-sdk-s3", "dep:aws-config"]
 
 [dependencies]
 axum = { workspace = true }
@@ -65,6 +67,10 @@ rmcp = { version = "0.17", features = ["server", "macros", "transport-io"], opti
 schemars = { version = "1", optional = true }
 tokio-rustls = { workspace = true }
 rustls = { workspace = true }
+
+# Remote audit sink (optional, S3-compatible)
+aws-sdk-s3 = { workspace = true, optional = true }
+aws-config = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio-vsock = "0.7"

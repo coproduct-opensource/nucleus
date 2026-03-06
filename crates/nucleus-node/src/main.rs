@@ -1224,6 +1224,20 @@ async fn spawn_local_pod(
         audit_path.to_string_lossy().as_ref(),
     );
 
+    // Pass audit sink config from PodSpec for deletion-resistant remote storage
+    if let Some(ref sink) = spec.spec.audit_sink {
+        command.env("NUCLEUS_TOOL_PROXY_AUDIT_S3_BUCKET", &sink.s3_bucket);
+        if let Some(ref prefix) = sink.s3_prefix {
+            command.env("NUCLEUS_TOOL_PROXY_AUDIT_S3_PREFIX", prefix);
+        }
+        if let Some(ref region) = sink.s3_region {
+            command.env("NUCLEUS_TOOL_PROXY_AUDIT_S3_REGION", region);
+        }
+        if let Some(ref endpoint) = sink.s3_endpoint {
+            command.env("NUCLEUS_TOOL_PROXY_AUDIT_S3_ENDPOINT", endpoint);
+        }
+    }
+
     // Inject sandbox proof token so tool-proxy can verify it's in a managed sandbox.
     let sandbox_token = nucleus_client::generate_sandbox_token(
         state.proxy_auth_secret.as_bytes(),
@@ -1364,6 +1378,23 @@ async fn spawn_container_pod(
             state.proxy_approval_secret
         ));
         env.push("NUCLEUS_TOOL_PROXY_AUDIT_LOG=/data/pod/audit.log".to_string());
+
+        // Pass audit sink config from PodSpec for deletion-resistant remote storage
+        if let Some(ref sink) = spec.spec.audit_sink {
+            env.push(format!(
+                "NUCLEUS_TOOL_PROXY_AUDIT_S3_BUCKET={}",
+                sink.s3_bucket
+            ));
+            if let Some(ref prefix) = sink.s3_prefix {
+                env.push(format!("NUCLEUS_TOOL_PROXY_AUDIT_S3_PREFIX={prefix}"));
+            }
+            if let Some(ref region) = sink.s3_region {
+                env.push(format!("NUCLEUS_TOOL_PROXY_AUDIT_S3_REGION={region}"));
+            }
+            if let Some(ref endpoint) = sink.s3_endpoint {
+                env.push(format!("NUCLEUS_TOOL_PROXY_AUDIT_S3_ENDPOINT={endpoint}"));
+            }
+        }
     }
 
     // Pass credentials from PodSpec (if any)

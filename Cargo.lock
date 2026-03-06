@@ -2984,6 +2984,8 @@ dependencies = [
 name = "nucleus-tool-proxy"
 version = "0.1.0"
 dependencies = [
+ "aws-config",
+ "aws-sdk-s3",
  "axum",
  "base64",
  "chrono",

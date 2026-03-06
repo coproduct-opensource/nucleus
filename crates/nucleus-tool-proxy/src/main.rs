@@ -94,6 +94,24 @@ struct Args {
     /// Entries are POSTed as JSON with HMAC signature in X-Nucleus-Signature header.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUDIT_WEBHOOK")]
     audit_webhook: Option<String>,
+    /// S3 bucket for deletion-resistant audit storage.
+    /// Each audit entry is stored as a separate object with `if_none_match("*")`
+    /// to enforce append-only semantics. Compatible with AWS S3, MinIO, R2, Tigris.
+    #[cfg(feature = "remote-audit")]
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUDIT_S3_BUCKET")]
+    audit_s3_bucket: Option<String>,
+    /// Key prefix for audit objects in S3 (e.g. "audit/pod-name").
+    #[cfg(feature = "remote-audit")]
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUDIT_S3_PREFIX")]
+    audit_s3_prefix: Option<String>,
+    /// AWS region for the audit S3 bucket.
+    #[cfg(feature = "remote-audit")]
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUDIT_S3_REGION")]
+    audit_s3_region: Option<String>,
+    /// Custom S3 endpoint URL (for MinIO, R2, Tigris, etc.).
+    #[cfg(feature = "remote-audit")]
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUDIT_S3_ENDPOINT")]
+    audit_s3_endpoint: Option<String>,
     /// Timeout in seconds for web fetch requests.
     #[arg(
         long,
@@ -1005,7 +1023,7 @@ async fn main() -> Result<(), ApiError> {
         }
     };
 
-    let audit = build_audit_log(&args, &auth)?;
+    let audit = build_audit_log(&args, &auth).await?;
 
     // Build HTTP client for web fetch
     let web_client = reqwest::Client::builder()
@@ -3426,7 +3444,7 @@ impl axum::serve::Listener for VsockAxumListener {
     }
 }
 
-fn build_audit_log(args: &Args, auth: &AuthConfig) -> Result<Arc<AuditLog>, ApiError> {
+async fn build_audit_log(args: &Args, auth: &AuthConfig) -> Result<Arc<AuditLog>, ApiError> {
     use nucleus_client::drand::{DrandClient, DrandConfig, DrandFailMode};
 
     let path = args.audit_log.clone();
@@ -3477,6 +3495,34 @@ fn build_audit_log(args: &Args, auth: &AuthConfig) -> Result<Arc<AuditLog>, ApiE
         None
     };
 
+    // Set up S3 sink for deletion-resistant audit storage
+    #[cfg(feature = "remote-audit")]
+    let s3_sink = if let Some(bucket) = args.audit_s3_bucket.as_ref() {
+        let region = args.audit_s3_region.as_deref().unwrap_or("us-east-1");
+        let mut config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .region(aws_config::Region::new(region.to_string()));
+        if let Some(endpoint) = args.audit_s3_endpoint.as_ref() {
+            config_loader = config_loader.endpoint_url(endpoint);
+        }
+        let sdk_config = config_loader.load().await;
+        let s3_client = aws_sdk_s3::Client::new(&sdk_config);
+        let prefix = args
+            .audit_s3_prefix
+            .clone()
+            .unwrap_or_else(|| "audit".to_string());
+        info!(
+            "S3 audit sink configured: bucket={}, prefix={}",
+            bucket, prefix
+        );
+        Some(Arc::new(S3Sink {
+            client: s3_client,
+            bucket: bucket.clone(),
+            prefix,
+        }))
+    } else {
+        None
+    };
+
     Ok(Arc::new(AuditLog {
         path,
         secret,
@@ -3484,6 +3530,8 @@ fn build_audit_log(args: &Args, auth: &AuthConfig) -> Result<Arc<AuditLog>, ApiE
         entry_count: std::sync::atomic::AtomicU64::new(0),
         webhook,
         drand_client,
+        #[cfg(feature = "remote-audit")]
+        s3_sink,
     }))
 }
 
@@ -3652,11 +3700,55 @@ struct AuditLog {
     webhook: Option<WebhookSink>,
     /// Optional drand client for cryptographic time anchoring.
     drand_client: Option<Arc<nucleus_client::drand::DrandClient>>,
+    /// Optional S3-compatible sink for deletion-resistant audit storage.
+    #[cfg(feature = "remote-audit")]
+    s3_sink: Option<Arc<S3Sink>>,
 }
 
 struct WebhookSink {
     url: String,
     client: reqwest::Client,
+}
+
+/// S3-compatible append-only audit sink.
+///
+/// Each audit entry is stored as a separate S3 object. The `if_none_match("*")`
+/// precondition prevents overwriting existing entries. Combined with a bucket
+/// policy that denies `s3:DeleteObject`, this provides a deletion-resistant
+/// audit trail that a compromised pod cannot erase.
+#[cfg(feature = "remote-audit")]
+struct S3Sink {
+    client: aws_sdk_s3::Client,
+    bucket: String,
+    prefix: String,
+}
+
+#[cfg(feature = "remote-audit")]
+impl S3Sink {
+    /// Put a single audit line as an S3 object.
+    ///
+    /// Key format: `{prefix}/{timestamp_unix}-{hash_prefix}.jsonl`
+    /// Uses `if_none_match("*")` for append-only semantics: S3 returns 412
+    /// if an object with this key already exists.
+    async fn put_entry(&self, timestamp_unix: u64, hash: &str, line: &str) {
+        let hash_prefix = if hash.len() >= 8 { &hash[..8] } else { hash };
+        let key = format!("{}/{}-{}.jsonl", self.prefix, timestamp_unix, hash_prefix);
+
+        let result = self
+            .client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(&key)
+            .body(line.as_bytes().to_vec().into())
+            .content_type("application/jsonl")
+            .if_none_match("*")
+            .send()
+            .await;
+
+        if let Err(e) = result {
+            tracing::warn!("failed to write audit entry to S3 (key={key}): {e}");
+        }
+    }
 }
 
 impl AuditLog {
@@ -3736,6 +3828,18 @@ impl AuditLog {
                 if let Err(e) = result {
                     tracing::warn!("failed to send audit entry to webhook: {e}");
                 }
+            });
+        }
+
+        // Send to S3 if configured (fire-and-forget, like webhook)
+        #[cfg(feature = "remote-audit")]
+        if let Some(s3) = &self.s3_sink {
+            let s3 = Arc::clone(s3);
+            let body = line.clone();
+            let ts = entry.timestamp_unix;
+            let h = entry.hash.clone();
+            tokio::spawn(async move {
+                s3.put_entry(ts, &h, &body).await;
             });
         }
 
