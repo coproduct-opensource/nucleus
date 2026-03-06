@@ -1737,3 +1737,394 @@ proptest! {
         );
     }
 }
+
+// ============================================================================
+// Phase 9C: Structural Bisimulation Conformance Tests
+//
+// These tests bridge the Verus exec functions to the production
+// taint_core functions, completing the verification chain:
+//
+//   Verus spec fns ←[SMT proof]→ Verus exec fns ←[these tests]→ taint_core fns
+//
+// The Verus exec functions are re-implemented here in plain Rust
+// (identical logic, no Verus syntax) and tested against the production
+// taint_core module exhaustively over all 12 operations × 8 taint states.
+// ============================================================================
+
+mod structural_bisimulation {
+    use portcullis::taint_core;
+    use portcullis::{operation_taint, Operation, TaintLabel, TaintSet};
+    use proptest::prelude::*;
+
+    /// All 12 operations for exhaustive testing.
+    const ALL_OPS: [Operation; 12] = [
+        Operation::ReadFiles,  // 0
+        Operation::WriteFiles, // 1
+        Operation::EditFiles,  // 2
+        Operation::RunBash,    // 3
+        Operation::GlobSearch, // 4
+        Operation::GrepSearch, // 5
+        Operation::WebSearch,  // 6
+        Operation::WebFetch,   // 7
+        Operation::GitCommit,  // 8
+        Operation::GitPush,    // 9
+        Operation::CreatePr,   // 10
+        Operation::ManagePods, // 11
+    ];
+
+    /// Re-implementation of Verus `exec_operation_taint_label`.
+    fn verus_operation_taint_label(op: u8) -> u8 {
+        if op == 0 || op == 4 || op == 5 {
+            0 // PrivateData
+        } else if op == 6 || op == 7 {
+            1 // UntrustedContent
+        } else if op == 3 || op == 9 || op == 10 {
+            2 // ExfilVector
+        } else {
+            3 // Neutral
+        }
+    }
+
+    /// Map Operation enum to its nat index (Verus convention).
+    fn op_to_nat(op: Operation) -> u8 {
+        match op {
+            Operation::ReadFiles => 0,
+            Operation::WriteFiles => 1,
+            Operation::EditFiles => 2,
+            Operation::RunBash => 3,
+            Operation::GlobSearch => 4,
+            Operation::GrepSearch => 5,
+            Operation::WebSearch => 6,
+            Operation::WebFetch => 7,
+            Operation::GitCommit => 8,
+            Operation::GitPush => 9,
+            Operation::CreatePr => 10,
+            Operation::ManagePods => 11,
+        }
+    }
+
+    /// Convert Verus label (0,1,2) to TaintLabel.
+    fn label_to_taint(label: u8) -> Option<TaintLabel> {
+        match label {
+            0 => Some(TaintLabel::PrivateData),
+            1 => Some(TaintLabel::UntrustedContent),
+            2 => Some(TaintLabel::ExfilVector),
+            _ => None,
+        }
+    }
+
+    /// Re-implementation of Verus `exec_guard_check`.
+    fn verus_guard_check(taint: &TaintSet, op: u8, requires_approval: bool) -> bool {
+        let projected = if op == 3 {
+            // RunBash omnibus
+            taint
+                .union(&TaintSet::singleton(TaintLabel::PrivateData))
+                .union(&TaintSet::singleton(TaintLabel::ExfilVector))
+        } else {
+            let label = verus_operation_taint_label(op);
+            if label <= 2 {
+                taint.union(&TaintSet::singleton(label_to_taint(label).unwrap()))
+            } else {
+                taint.clone()
+            }
+        };
+        projected.is_trifecta_complete() && requires_approval
+    }
+
+    /// Re-implementation of Verus `exec_apply_event` (succeeded=true).
+    fn verus_apply_event(taint: &TaintSet, op: u8) -> TaintSet {
+        let label = verus_operation_taint_label(op);
+        if label <= 2 {
+            taint.union(&TaintSet::singleton(label_to_taint(label).unwrap()))
+        } else {
+            taint.clone()
+        }
+    }
+
+    /// All 8 possible taint states (3 bools = 2^3).
+    fn all_taint_states() -> Vec<TaintSet> {
+        let mut states = Vec::new();
+        for pd in [false, true] {
+            for uc in [false, true] {
+                for ev in [false, true] {
+                    let mut t = TaintSet::empty();
+                    if pd {
+                        t = t.union(&TaintSet::singleton(TaintLabel::PrivateData));
+                    }
+                    if uc {
+                        t = t.union(&TaintSet::singleton(TaintLabel::UntrustedContent));
+                    }
+                    if ev {
+                        t = t.union(&TaintSet::singleton(TaintLabel::ExfilVector));
+                    }
+                    states.push(t);
+                }
+            }
+        }
+        states
+    }
+
+    // --- S1: classify_operation ↔ exec_operation_taint_label ---
+
+    #[test]
+    fn bisim_s1_classify_exhaustive() {
+        // Exhaustively verify all 12 operations match between
+        // taint_core::classify_operation and verus exec_operation_taint_label
+        for op in ALL_OPS {
+            let production = taint_core::classify_operation(op);
+            let verus_label = verus_operation_taint_label(op_to_nat(op));
+            let production_label: u8 = match production {
+                Some(TaintLabel::PrivateData) => 0,
+                Some(TaintLabel::UntrustedContent) => 1,
+                Some(TaintLabel::ExfilVector) => 2,
+                None => 3,
+            };
+            assert_eq!(
+                production_label, verus_label,
+                "S1 bisim failed for {:?}: production={}, verus={}",
+                op, production_label, verus_label
+            );
+        }
+    }
+
+    #[test]
+    fn bisim_s1_classify_agrees_with_operation_taint() {
+        // Verify taint_core::classify_operation == guard::operation_taint
+        // (since classify_operation IS operation_taint's backing impl)
+        for op in ALL_OPS {
+            assert_eq!(
+                taint_core::classify_operation(op),
+                operation_taint(op),
+                "classify_operation disagrees with operation_taint for {:?}",
+                op
+            );
+        }
+    }
+
+    // --- S2: project_taint ↔ guard_would_deny projection arm ---
+
+    #[test]
+    fn bisim_s2_project_exhaustive() {
+        // Exhaustively verify all 12 ops × 8 taint states
+        for taint in all_taint_states() {
+            for op in ALL_OPS {
+                let production = taint_core::project_taint(&taint, op);
+                // Re-implement the Verus projection logic
+                let verus = if op == Operation::RunBash {
+                    taint
+                        .union(&TaintSet::singleton(TaintLabel::PrivateData))
+                        .union(&TaintSet::singleton(TaintLabel::ExfilVector))
+                } else {
+                    let label = verus_operation_taint_label(op_to_nat(op));
+                    if label <= 2 {
+                        taint.union(&TaintSet::singleton(label_to_taint(label).unwrap()))
+                    } else {
+                        taint.clone()
+                    }
+                };
+                assert_eq!(
+                    production, verus,
+                    "S2 bisim failed for {:?} with taint {}: production={}, verus={}",
+                    op, taint, production, verus
+                );
+            }
+        }
+    }
+
+    // --- S3: should_deny ↔ exec_guard_check ---
+
+    #[test]
+    fn bisim_s3_should_deny_exhaustive() {
+        // Exhaustively verify all 12 ops × 8 taint states × 2 approval × 2 constraint
+        for taint in all_taint_states() {
+            for op in ALL_OPS {
+                for requires_approval in [false, true] {
+                    for trifecta_constraint in [false, true] {
+                        let production = taint_core::should_deny(
+                            &taint,
+                            op,
+                            requires_approval,
+                            trifecta_constraint,
+                        );
+                        let verus = if trifecta_constraint {
+                            verus_guard_check(&taint, op_to_nat(op), requires_approval)
+                        } else {
+                            false
+                        };
+                        assert_eq!(
+                            production, verus,
+                            "S3 bisim failed for {:?} taint={} approval={} constraint={}: prod={}, verus={}",
+                            op, taint, requires_approval, trifecta_constraint, production, verus
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // --- S4: apply_record ↔ exec_apply_event ---
+
+    #[test]
+    fn bisim_s4_apply_record_exhaustive() {
+        // Exhaustively verify all 12 ops × 8 taint states
+        for taint in all_taint_states() {
+            for op in ALL_OPS {
+                let production = taint_core::apply_record(&taint, op);
+                let verus = verus_apply_event(&taint, op_to_nat(op));
+                assert_eq!(
+                    production, verus,
+                    "S4 bisim failed for {:?} with taint {}: production={}, verus={}",
+                    op, taint, production, verus
+                );
+            }
+        }
+    }
+
+    // --- S5: Record-project soundness (production) ---
+
+    #[test]
+    fn bisim_s5_record_subset_of_project() {
+        // For all ops × all taint states, apply_record result is a
+        // subset of project_taint result
+        for taint in all_taint_states() {
+            for op in ALL_OPS {
+                let recorded = taint_core::apply_record(&taint, op);
+                let projected = taint_core::project_taint(&taint, op);
+                // Check subset: each leg of recorded implies leg of projected
+                assert!(
+                    (!recorded.contains(TaintLabel::PrivateData)
+                        || projected.contains(TaintLabel::PrivateData))
+                        && (!recorded.contains(TaintLabel::UntrustedContent)
+                            || projected.contains(TaintLabel::UntrustedContent))
+                        && (!recorded.contains(TaintLabel::ExfilVector)
+                            || projected.contains(TaintLabel::ExfilVector)),
+                    "S5 violated for {:?} with taint {}: recorded={} not subset of projected={}",
+                    op,
+                    taint,
+                    recorded,
+                    projected
+                );
+            }
+        }
+    }
+
+    // --- S5-gap: The gap only exists for RunBash ---
+
+    #[test]
+    fn bisim_s5_gap_only_runbash() {
+        // For all non-RunBash ops, record == project (no gap)
+        for taint in all_taint_states() {
+            for op in ALL_OPS {
+                if op == Operation::RunBash {
+                    continue;
+                }
+                let recorded = taint_core::apply_record(&taint, op);
+                let projected = taint_core::project_taint(&taint, op);
+                assert_eq!(
+                    recorded, projected,
+                    "S5-gap: non-RunBash op {:?} has record≠project gap (taint={})",
+                    op, taint
+                );
+            }
+        }
+    }
+
+    // --- Proptest: random taint + random op bisimulation ---
+
+    fn arb_taint() -> impl Strategy<Value = TaintSet> {
+        (
+            proptest::bool::ANY,
+            proptest::bool::ANY,
+            proptest::bool::ANY,
+        )
+            .prop_map(|(pd, uc, ev)| {
+                let mut t = TaintSet::empty();
+                if pd {
+                    t = t.union(&TaintSet::singleton(TaintLabel::PrivateData));
+                }
+                if uc {
+                    t = t.union(&TaintSet::singleton(TaintLabel::UntrustedContent));
+                }
+                if ev {
+                    t = t.union(&TaintSet::singleton(TaintLabel::ExfilVector));
+                }
+                t
+            })
+    }
+
+    fn arb_op() -> impl Strategy<Value = Operation> {
+        prop_oneof![
+            Just(Operation::ReadFiles),
+            Just(Operation::WriteFiles),
+            Just(Operation::EditFiles),
+            Just(Operation::RunBash),
+            Just(Operation::GlobSearch),
+            Just(Operation::GrepSearch),
+            Just(Operation::WebSearch),
+            Just(Operation::WebFetch),
+            Just(Operation::GitCommit),
+            Just(Operation::GitPush),
+            Just(Operation::CreatePr),
+            Just(Operation::ManagePods),
+        ]
+    }
+
+    proptest! {
+        /// Proptest: classify_operation matches Verus exec on random inputs.
+        #[test]
+        fn proptest_bisim_classify(op in arb_op()) {
+            let production = taint_core::classify_operation(op);
+            let verus_label = verus_operation_taint_label(op_to_nat(op));
+            let production_label: u8 = match production {
+                Some(TaintLabel::PrivateData) => 0,
+                Some(TaintLabel::UntrustedContent) => 1,
+                Some(TaintLabel::ExfilVector) => 2,
+                None => 3,
+            };
+            prop_assert_eq!(production_label, verus_label);
+        }
+
+        /// Proptest: should_deny matches Verus exec_guard_check on random inputs.
+        #[test]
+        fn proptest_bisim_should_deny(
+            taint in arb_taint(),
+            op in arb_op(),
+            requires_approval in proptest::bool::ANY,
+        ) {
+            let production = taint_core::should_deny(&taint, op, requires_approval, true);
+            let verus = verus_guard_check(&taint, op_to_nat(op), requires_approval);
+            prop_assert_eq!(production, verus);
+        }
+
+        /// Proptest: apply_record matches Verus exec_apply_event on random inputs.
+        #[test]
+        fn proptest_bisim_apply_record(
+            taint in arb_taint(),
+            op in arb_op(),
+        ) {
+            let production = taint_core::apply_record(&taint, op);
+            let verus = verus_apply_event(&taint, op_to_nat(op));
+            prop_assert_eq!(production, verus);
+        }
+
+        /// Proptest: project_taint result is always a superset of apply_record result.
+        #[test]
+        fn proptest_bisim_record_subset_project(
+            taint in arb_taint(),
+            op in arb_op(),
+        ) {
+            let recorded = taint_core::apply_record(&taint, op);
+            let projected = taint_core::project_taint(&taint, op);
+            prop_assert!(
+                (!recorded.contains(TaintLabel::PrivateData)
+                    || projected.contains(TaintLabel::PrivateData))
+                && (!recorded.contains(TaintLabel::UntrustedContent)
+                    || projected.contains(TaintLabel::UntrustedContent))
+                && (!recorded.contains(TaintLabel::ExfilVector)
+                    || projected.contains(TaintLabel::ExfilVector)),
+                "record not subset of project for {:?} taint={}",
+                op, taint
+            );
+        }
+    }
+}

@@ -672,24 +672,11 @@ impl crate::graded::RiskGrade for TaintSet {
 /// tags each tool call with which trifecta leg it contributes to.
 /// Neutral operations (WriteFiles, EditFiles, GitCommit, ManagePods)
 /// return `None` — they don't contribute to the trifecta.
+///
+/// Delegates to [`crate::taint_core::classify_operation`] — the verified
+/// shared kernel.
 pub fn operation_taint(op: Operation) -> Option<TaintLabel> {
-    match op {
-        // Leg 1: Private data access
-        Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch => {
-            Some(TaintLabel::PrivateData)
-        }
-        // Leg 2: Untrusted content ingestion
-        Operation::WebFetch | Operation::WebSearch => Some(TaintLabel::UntrustedContent),
-        // Leg 3: Exfiltration vectors
-        Operation::RunBash | Operation::GitPush | Operation::CreatePr => {
-            Some(TaintLabel::ExfilVector)
-        }
-        // Neutral operations
-        Operation::WriteFiles
-        | Operation::EditFiles
-        | Operation::GitCommit
-        | Operation::ManagePods => None,
-    }
+    crate::taint_core::classify_operation(op)
 }
 
 /// Session-scoped taint-tracking guard using the graded monad.
@@ -738,28 +725,6 @@ impl GradedTaintGuard {
         }
     }
 
-    /// Project what the taint set would be if this operation is added.
-    ///
-    /// RunBash is treated as an **omnibus** operation: bash can read any
-    /// file (`cat /etc/passwd`) AND exfiltrate data (`curl`), so it
-    /// conservatively projects both `PrivateData` and `ExfilVector`.
-    /// This closes the Clinejection gap where `WebFetch → RunBash`
-    /// was missing the `PrivateData` leg of the trifecta.
-    fn projected_taint(&self, operation: Operation) -> TaintSet {
-        let current = self.taint.read().expect("taint lock poisoned");
-        if operation == Operation::RunBash {
-            // RunBash is omnibus: bash can read files AND exfiltrate.
-            // Project both PrivateData and ExfilVector conservatively.
-            current
-                .union(&TaintSet::singleton(TaintLabel::PrivateData))
-                .union(&TaintSet::singleton(TaintLabel::ExfilVector))
-        } else if let Some(label) = operation_taint(operation) {
-            current.union(&TaintSet::singleton(label))
-        } else {
-            current.clone()
-        }
-    }
-
     /// Get the current taint set.
     pub fn taint(&self) -> TaintSet {
         self.taint.read().expect("taint lock poisoned").clone()
@@ -788,34 +753,33 @@ impl ToolCallGuard for GradedTaintGuard {
             });
         }
 
-        // Layer 2: Session taint projection via graded monad
+        // Layer 2: Session taint projection via verified shared kernel
         //
-        // Model this tool call as Graded<TaintSet, Operation>:
-        //   current_taint >>= (λ _ → singleton(label))
-        //
-        // If the projected taint completes the trifecta AND this
-        // operation requires approval under trifecta, DENY.
-        if self.perms.trifecta_constraint {
-            let projected = self.projected_taint(operation);
-            if projected.is_trifecta_complete() && self.perms.requires_approval(operation) {
-                let current = self.taint.read().expect("taint lock poisoned");
-                return Err(GuardError::Denied {
-                    reason: format!(
-                        "{:?} denied: would complete trifecta (taint: {} → {})",
-                        operation, current, projected,
-                    ),
-                });
-            }
+        // Delegates to taint_core::should_deny — the pure decision function
+        // whose logic is structurally bisimilar to the Verus exec fn
+        // `exec_guard_check`.
+        let current = self.taint.read().expect("taint lock poisoned");
+        if crate::taint_core::should_deny(
+            &current,
+            operation,
+            self.perms.requires_approval(operation),
+            self.perms.trifecta_constraint,
+        ) {
+            let projected = crate::taint_core::project_taint(&current, operation);
+            return Err(GuardError::Denied {
+                reason: format!(
+                    "{:?} denied: would complete trifecta (taint: {} → {})",
+                    operation, current, projected,
+                ),
+            });
         }
 
         Ok(())
     }
 
     fn record(&self, operation: Operation) {
-        if let Some(label) = operation_taint(operation) {
-            let mut taint = self.taint.write().expect("taint lock poisoned");
-            *taint = taint.union(&TaintSet::singleton(label));
-        }
+        let mut taint = self.taint.write().expect("taint lock poisoned");
+        *taint = crate::taint_core::apply_record(&taint, operation);
     }
 
     fn accumulated_risk(&self) -> TrifectaRisk {

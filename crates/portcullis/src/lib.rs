@@ -100,6 +100,8 @@ pub mod galois;
 pub mod graded;
 pub mod guard;
 pub mod heyting;
+pub mod taint_core;
+
 pub mod identity;
 pub mod intent;
 pub mod isolation;
@@ -152,6 +154,7 @@ pub use permissive::{
 };
 pub use progress::{ProgressDimension, ProgressLattice, ProgressLevel};
 pub use region::CodeRegion;
+pub use taint_core::{apply_record, classify_operation, project_taint, should_deny};
 pub use time::TimeLattice;
 pub use trust::{EnforcementResult, TrustProfile};
 pub use weakening::{
