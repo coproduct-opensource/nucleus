@@ -71,6 +71,22 @@
 //! - Phantom taint freedom: failed operations contribute nothing
 //! - Three-step minimum: at least 3 non-neutral successes needed for trifecta
 //!
+//! ## Graded Monad Laws (Phase 0 completion)
+//! - Grade monoid: TrifectaRisk as max-monoid over {0,1,2,3}
+//! - Mon1-Mon5: identity, associativity, commutativity, idempotence
+//! - Graded monad: (grade, value) pair with max-monoid grading
+//! - ML1-ML3: left identity, right identity, associativity of monadic bind
+//!
+//! ## Galois Connection Properties (Phase 0 completion)
+//! - Domain: CapabilityLevel as 3-element chain {0=Never, 1=LowRisk, 2=Always}
+//! - α(l) = min(l, threshold) (restriction/cap)
+//! - γ(r) = max inverse image: if r >= threshold then top else r
+//! - G1: Adjunction α(l) ≤ r ⟺ l ≤ γ(r) (for all l, r, threshold)
+//! - G2: Closure inflationary — l ≤ γ(α(l))
+//! - G3: Kernel deflationary — α(γ(r)) ≤ r
+//! - G4-G5: Closure and kernel idempotent
+//! - G6-G7: Both α and γ monotone
+//!
 //! # Running Verification
 //!
 //! ```bash
@@ -5219,6 +5235,295 @@ proof fn proof_p5_protocol_deterministic()
         // From Checked: only ExecuteAndRecord is valid
         protocol_step(ProtocolState::Checked, ProtocolTransition::ExecuteAndRecord).is_some(),
         protocol_step(ProtocolState::Checked, ProtocolTransition::Check).is_none(),
+{
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PHASE 0 COMPLETION: Graded Monad Laws + Galois Connection Proofs
+//
+// These proofs complete North Star Phase 0 by verifying the two remaining
+// algebraic structures from the roadmap:
+//
+// 1. Graded monad laws (ML1-ML3) + grade monoid laws (Mon1-Mon3)
+//    - Grade: TrifectaRisk as 4-element total order {0,1,2,3}, compose = max
+//    - Monad: Graded<G, A> = (grade, value) pair
+//    - pure(v) = (0, v), bind((g,v), f) = let (h,w) = f(v); (max(g,h), w)
+//
+// 2. Galois connection proofs (G1-G5)
+//    - Domain: CapabilityLevel as 3-element chain {0=Never, 1=LowRisk, 2=Always}
+//    - α (restriction): min(l, threshold)   — cap at threshold
+//    - γ (embedding): l                     — identity embedding
+//    - Adjunction: α(l) ≤ r ⟺ l ≤ γ(r)
+//
+// All proofs are Z3-decidable (finite domains, no induction needed).
+// ═══════════════════════════════════════════════════════════════════════════
+
+// --- Grade monoid: TrifectaRisk as max-monoid over {0,1,2,3} ---
+
+/// Grade composition: max of two risk levels.
+///
+/// Models `TrifectaRisk::join()` / `RiskGrade::compose()`.
+spec fn grade_compose(a: nat, b: nat) -> nat
+    recommends a <= 3, b <= 3,
+{
+    if a >= b { a } else { b }
+}
+
+/// Grade identity: risk level 0 (None).
+///
+/// Models `TrifectaRisk::None` / `RiskGrade::identity()`.
+spec fn grade_identity() -> nat { 0 }
+
+/// Mon1: Left identity — compose(identity, g) = g
+proof fn proof_mon1_left_identity(g: nat)
+    requires g <= 3,
+    ensures grade_compose(grade_identity(), g) == g,
+{
+}
+
+/// Mon2: Right identity — compose(g, identity) = g
+proof fn proof_mon2_right_identity(g: nat)
+    requires g <= 3,
+    ensures grade_compose(g, grade_identity()) == g,
+{
+}
+
+/// Mon3: Associativity — compose(compose(a,b), c) = compose(a, compose(b,c))
+proof fn proof_mon3_associativity(a: nat, b: nat, c: nat)
+    requires a <= 3, b <= 3, c <= 3,
+    ensures grade_compose(grade_compose(a, b), c) == grade_compose(a, grade_compose(b, c)),
+{
+}
+
+/// Mon4 (bonus): Commutativity — compose(a, b) = compose(b, a)
+///
+/// TrifectaRisk uses max, which is commutative.
+proof fn proof_mon4_commutativity(a: nat, b: nat)
+    requires a <= 3, b <= 3,
+    ensures grade_compose(a, b) == grade_compose(b, a),
+{
+}
+
+/// Mon5 (bonus): Idempotence — compose(a, a) = a
+///
+/// max is idempotent (semilattice property).
+proof fn proof_mon5_idempotence(a: nat)
+    requires a <= 3,
+    ensures grade_compose(a, a) == a,
+{
+}
+
+// --- Graded monad: (grade, value) pair with max-monoid grading ---
+
+/// Graded value: a pair (grade, value).
+///
+/// Models `Graded<TrifectaRisk, A>` where A is abstracted to nat.
+struct SpecGraded {
+    grade: nat,
+    value: nat,
+}
+
+/// Pure: inject a value with identity grade.
+///
+/// Models `Graded::pure(v)`.
+spec fn graded_pure(v: nat) -> SpecGraded {
+    SpecGraded { grade: grade_identity(), value: v }
+}
+
+/// Bind: chain a graded computation with a function.
+///
+/// Models `Graded::and_then(f)`:
+///   let result = f(self.value);
+///   Graded { grade: self.grade.compose(&result.grade), value: result.value }
+spec fn graded_bind(m: SpecGraded, f_grade: nat, f_value: nat) -> SpecGraded
+    recommends m.grade <= 3, f_grade <= 3,
+{
+    SpecGraded {
+        grade: grade_compose(m.grade, f_grade),
+        value: f_value,
+    }
+}
+
+/// ML1: Left identity — pure(a).and_then(f) = f(a)
+///
+/// bind(pure(a), f) should equal f(a) — the pure wrapper has no effect.
+proof fn proof_ml1_left_identity(a: nat, f_grade: nat, f_value: nat)
+    requires f_grade <= 3,
+    ensures
+        graded_bind(graded_pure(a), f_grade, f_value) ==
+        (SpecGraded { grade: f_grade, value: f_value }),
+{
+}
+
+/// ML2: Right identity — m.and_then(pure) = m
+///
+/// bind(m, pure) should equal m — pure is a neutral continuation.
+proof fn proof_ml2_right_identity(m: SpecGraded)
+    requires m.grade <= 3,
+    ensures graded_bind(m, grade_identity(), m.value) == m,
+{
+}
+
+/// ML3: Associativity — m.and_then(f).and_then(g) = m.and_then(|a| f(a).and_then(g))
+///
+/// Sequential composition of bind is associative.
+/// This reduces to max associativity on grades.
+proof fn proof_ml3_associativity(
+    m: SpecGraded,
+    f_grade: nat, f_value: nat,
+    g_grade: nat, g_value: nat,
+)
+    requires m.grade <= 3, f_grade <= 3, g_grade <= 3,
+    ensures
+        // LHS: (m >>= f) >>= g
+        graded_bind(graded_bind(m, f_grade, f_value), g_grade, g_value) ==
+        // RHS: m >>= (|a| f(a) >>= g)
+        graded_bind(m, grade_compose(f_grade, g_grade), g_value),
+{
+    // Z3 auto-discharges: max(max(a, b), c) == max(a, max(b, c))
+    proof_mon3_associativity(m.grade, f_grade, g_grade);
+}
+
+// --- Galois connection proofs on CapabilityLevel {0=Never, 1=LowRisk, 2=Always} ---
+//
+// We model the canonical Galois connection induced by a threshold cap:
+//   α(l) = min(l, threshold)           — restriction (cap at threshold)
+//   γ(r) = if r >= threshold then 2 else r  — right adjoint (inverse image max)
+//
+// This is the mathematically correct right adjoint:
+//   γ(r) = max{l ∈ {0,1,2} : α(l) ≤ r}
+// For α = min(·, t): if r ≥ t then every l satisfies min(l,t) ≤ t ≤ r,
+// so γ(r) = 2 (top). Otherwise γ(r) = r.
+//
+// This models the production `TrustDomainBridge` pattern: when crossing
+// into a less-trusted domain, capabilities are capped; the right adjoint
+// recovers the maximal permission that would map to a given restricted level.
+
+/// Abstraction: α(l) = min(l, threshold)
+///
+/// Models restriction when entering an external trust domain.
+spec fn galois_alpha(l: nat, threshold: nat) -> nat
+    recommends l <= 2, threshold <= 2,
+{
+    if l <= threshold { l } else { threshold }
+}
+
+/// Concretization: γ(r) = if r >= threshold then 2 else r
+///
+/// Right adjoint of α: the maximum capability that would restrict to ≤ r.
+/// When r ≥ threshold, every capability level caps to ≤ r, so γ(r) = top.
+spec fn galois_gamma(r: nat, threshold: nat) -> nat
+    recommends r <= 2, threshold <= 2,
+{
+    if r >= threshold { 2 } else { r }
+}
+
+/// CapabilityLevel ordering for Galois proofs (total order: 0 < 1 < 2).
+///
+/// Distinct from `cap_leq` (which operates on `CapLevel` enum) — this
+/// operates on nat encodings for the Galois connection spec functions.
+spec fn galois_leq(a: nat, b: nat) -> bool
+    recommends a <= 2, b <= 2,
+{
+    a <= b
+}
+
+/// G1: Adjunction — α(l) ≤ r ⟺ l ≤ γ(r)
+///
+/// The defining property of a Galois connection.
+/// With α = min(l, t) and γ(r) = if r ≥ t then 2 else r:
+/// - Forward: min(l, t) ≤ r ⟹ l ≤ γ(r)
+///   If r ≥ t: γ(r) = 2 ≥ l always. ✓
+///   If r < t: min(l, t) ≤ r means l ≤ r (since t > r, min(l,t) = l). ✓
+/// - Backward: l ≤ γ(r) ⟹ min(l, t) ≤ r
+///   If r ≥ t: min(l, t) ≤ t ≤ r. ✓
+///   If r < t: l ≤ γ(r) = r, so min(l, t) = l ≤ r. ✓
+proof fn proof_g1_adjunction(l: nat, r: nat, threshold: nat)
+    requires l <= 2, r <= 2, threshold <= 2,
+    ensures
+        galois_leq(galois_alpha(l, threshold), r)
+        <==> galois_leq(l, galois_gamma(r, threshold)),
+{
+}
+
+/// G2: Closure is deflationary — γ(α(l)) ≤ l  (when l ≤ threshold)
+///
+/// When l ≤ threshold: α(l) = l, γ(l) = if l ≥ t then 2 else l.
+///   If l ≥ t: γ(α(l)) = γ(l) = 2 ≥ l. NOT deflationary in general!
+///
+/// Actually for Galois connections, the closure γ∘α is INFLATIONARY: l ≤ γ(α(l)).
+/// (The kernel α∘γ is deflationary: α(γ(r)) ≤ r... wait, that's wrong too.)
+///
+/// Standard facts for Galois connection (α, γ):
+///   - α∘γ is deflationary (kernel): α(γ(r)) ≤ r  (but this is for the RIGHT side)
+///   - γ∘α is inflationary (closure): l ≤ γ(α(l))  (this is for the LEFT side)
+///
+/// We prove the inflationary closure property.
+proof fn proof_g2_closure_inflationary(l: nat, threshold: nat)
+    requires l <= 2, threshold <= 2,
+    ensures galois_leq(l, galois_gamma(galois_alpha(l, threshold), threshold)),
+{
+}
+
+/// G3: Kernel is deflationary — α(γ(r)) ≤ r  (when r ≤ threshold)
+///
+/// α(γ(r)) = α(if r ≥ t then 2 else r) = min(if r ≥ t then 2 else r, t)
+///   If r ≥ t: α(2) = min(2, t) = t ≤ r (since r ≥ t). ✓
+///   If r < t: α(r) = min(r, t) = r ≤ r. ✓
+///
+/// Wait: we need r ≤ 2 and threshold ≤ 2.
+/// Actually α(γ(r)) ≤ r always holds here:
+///   If r ≥ t: α(γ(r)) = min(2, t) = t ≤ r ✓
+///   If r < t: α(γ(r)) = min(r, t) = r ≤ r ✓
+proof fn proof_g3_kernel_deflationary(r: nat, threshold: nat)
+    requires r <= 2, threshold <= 2,
+    ensures galois_leq(galois_alpha(galois_gamma(r, threshold), threshold), r),
+{
+}
+
+/// G4: Closure idempotence — γ(α(γ(α(l)))) = γ(α(l))
+///
+/// Applying the closure twice yields the same result.
+proof fn proof_g4_closure_idempotent(l: nat, threshold: nat)
+    requires l <= 2, threshold <= 2,
+    ensures
+        galois_gamma(galois_alpha(
+            galois_gamma(galois_alpha(l, threshold), threshold),
+            threshold,
+        ), threshold)
+        == galois_gamma(galois_alpha(l, threshold), threshold),
+{
+}
+
+/// G5: Kernel idempotence — α(γ(α(γ(r)))) = α(γ(r))
+///
+/// Applying the kernel twice yields the same result.
+proof fn proof_g5_kernel_idempotent(r: nat, threshold: nat)
+    requires r <= 2, threshold <= 2,
+    ensures
+        galois_alpha(galois_gamma(
+            galois_alpha(galois_gamma(r, threshold), threshold),
+            threshold,
+        ), threshold)
+        == galois_alpha(galois_gamma(r, threshold), threshold),
+{
+}
+
+/// G6: α is monotone — l₁ ≤ l₂ ⟹ α(l₁) ≤ α(l₂)
+///
+/// Restriction preserves the capability ordering.
+proof fn proof_g6_alpha_monotone(l1: nat, l2: nat, threshold: nat)
+    requires l1 <= 2, l2 <= 2, threshold <= 2, galois_leq(l1, l2),
+    ensures galois_leq(galois_alpha(l1, threshold), galois_alpha(l2, threshold)),
+{
+}
+
+/// G7: γ is monotone — r₁ ≤ r₂ ⟹ γ(r₁) ≤ γ(r₂)
+///
+/// Right adjoint preserves ordering.
+proof fn proof_g7_gamma_monotone(r1: nat, r2: nat, threshold: nat)
+    requires r1 <= 2, r2 <= 2, threshold <= 2, galois_leq(r1, r2),
+    ensures galois_leq(galois_gamma(r1, threshold), galois_gamma(r2, threshold)),
 {
 }
 
