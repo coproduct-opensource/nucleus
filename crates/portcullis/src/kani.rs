@@ -1,8 +1,10 @@
 #![cfg(kani)]
 
 use crate::{
-    frame::Lattice, BudgetLattice, CapabilityLattice, CapabilityLevel, CommandLattice, Obligations,
-    Operation, PathLattice, PermissionLattice, TimeLattice,
+    frame::Lattice,
+    guard::{operation_taint, TaintLabel, TaintSet},
+    BudgetLattice, CapabilityLattice, CapabilityLevel, CommandLattice, Obligations, Operation,
+    PathLattice, PermissionLattice, TimeLattice,
 };
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -268,4 +270,245 @@ fn proof_frame_finite_distributivity() {
         perm_lattice_eq(&lhs, &rhs),
         "Frame law (finite distributivity) violated for PermissionLattice"
     );
+}
+
+// ============================================================================
+// TaintSet Bounded Model Checking (Track A — Phase 8)
+// ============================================================================
+//
+// These harnesses verify properties of the PRODUCTION TaintSet type via
+// bounded model checking with CaDiCaL. Unlike the Verus proofs (which
+// verify a SpecTaintSet model), these operate directly on the Rust types
+// that ship in the binary.
+
+/// Build a symbolic TaintSet from 3 arbitrary bools.
+fn arbitrary_taint_set() -> TaintSet {
+    let mut s = TaintSet::empty();
+    if kani::any::<bool>() {
+        s = s.union(&TaintSet::singleton(TaintLabel::PrivateData));
+    }
+    if kani::any::<bool>() {
+        s = s.union(&TaintSet::singleton(TaintLabel::UntrustedContent));
+    }
+    if kani::any::<bool>() {
+        s = s.union(&TaintSet::singleton(TaintLabel::ExfilVector));
+    }
+    s
+}
+
+/// Build a symbolic Operation from the 12-variant enum.
+fn arbitrary_operation() -> Operation {
+    let idx = kani::any::<u8>() % 12;
+    match idx {
+        0 => Operation::ReadFiles,
+        1 => Operation::WriteFiles,
+        2 => Operation::EditFiles,
+        3 => Operation::RunBash,
+        4 => Operation::GlobSearch,
+        5 => Operation::GrepSearch,
+        6 => Operation::WebSearch,
+        7 => Operation::WebFetch,
+        8 => Operation::GitCommit,
+        9 => Operation::GitPush,
+        10 => Operation::CreatePr,
+        _ => Operation::ManagePods,
+    }
+}
+
+/// Pure taint projection: what the taint WOULD be after recording this op.
+/// Mirrors GradedTaintGuard::projected_taint() without the RwLock.
+fn pure_projected_taint(current: &TaintSet, op: Operation) -> TaintSet {
+    if let Some(label) = operation_taint(op) {
+        current.union(&TaintSet::singleton(label))
+    } else {
+        current.clone()
+    }
+}
+
+/// Pure guard denial check: would this operation be denied?
+/// Mirrors GradedTaintGuard::check() layers 1+2 (trifecta path only).
+fn pure_taint_would_deny(current: &TaintSet, op: Operation, requires_approval: bool) -> bool {
+    pure_projected_taint(current, op).is_trifecta_complete() && requires_approval
+}
+
+// ---------------------------------------------------------------------------
+// A1: TaintSet monoid identity — empty() is the two-sided identity
+// ---------------------------------------------------------------------------
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_taintset_monoid_identity() {
+    let s = arbitrary_taint_set();
+    let empty = TaintSet::empty();
+    assert!(
+        empty.union(&s) == s,
+        "Left identity violated: empty ∪ s ≠ s"
+    );
+    assert!(
+        s.union(&empty) == s,
+        "Right identity violated: s ∪ empty ≠ s"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A2: TaintSet monoid laws — associativity, commutativity, idempotence
+// ---------------------------------------------------------------------------
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_taintset_monoid_laws() {
+    let a = arbitrary_taint_set();
+    let b = arbitrary_taint_set();
+    let c = arbitrary_taint_set();
+    // Associativity: (a ∪ b) ∪ c == a ∪ (b ∪ c)
+    assert!(
+        a.union(&b).union(&c) == a.union(&b.union(&c)),
+        "Associativity violated"
+    );
+    // Commutativity: a ∪ b == b ∪ a
+    assert!(a.union(&b) == b.union(&a), "Commutativity violated");
+    // Idempotence: a ∪ a == a
+    assert!(a.union(&a) == a, "Idempotence violated");
+}
+
+// ---------------------------------------------------------------------------
+// A3: Trifecta iff count == 3
+// ---------------------------------------------------------------------------
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_taintset_trifecta_iff_count_three() {
+    let s = arbitrary_taint_set();
+    assert!(
+        s.is_trifecta_complete() == (s.count() == 3),
+        "Trifecta ⟺ count==3 violated"
+    );
+    assert!(s.count() <= 3, "Count exceeds maximum");
+}
+
+// ---------------------------------------------------------------------------
+// A4: Union monotonicity — taint never decreases under union
+// ---------------------------------------------------------------------------
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_taintset_union_monotone() {
+    let a = arbitrary_taint_set();
+    let b = arbitrary_taint_set();
+    let merged = a.union(&b);
+    // Count monotonicity
+    assert!(a.count() <= merged.count(), "Count decreased after union");
+    // Label containment: all labels in a are in merged
+    if a.contains(TaintLabel::PrivateData) {
+        assert!(merged.contains(TaintLabel::PrivateData));
+    }
+    if a.contains(TaintLabel::UntrustedContent) {
+        assert!(merged.contains(TaintLabel::UntrustedContent));
+    }
+    if a.contains(TaintLabel::ExfilVector) {
+        assert!(merged.contains(TaintLabel::ExfilVector));
+    }
+    // Symmetric: all labels in b are in merged
+    if b.contains(TaintLabel::PrivateData) {
+        assert!(merged.contains(TaintLabel::PrivateData));
+    }
+    if b.contains(TaintLabel::UntrustedContent) {
+        assert!(merged.contains(TaintLabel::UntrustedContent));
+    }
+    if b.contains(TaintLabel::ExfilVector) {
+        assert!(merged.contains(TaintLabel::ExfilVector));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A5: operation_taint completeness — all 12 ops map to correct taint legs
+// ---------------------------------------------------------------------------
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_operation_taint_completeness() {
+    let op = arbitrary_operation();
+    let label = operation_taint(op);
+    match label {
+        Some(TaintLabel::PrivateData) => {
+            assert!(matches!(
+                op,
+                Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch
+            ));
+        }
+        Some(TaintLabel::UntrustedContent) => {
+            assert!(matches!(op, Operation::WebFetch | Operation::WebSearch));
+        }
+        Some(TaintLabel::ExfilVector) => {
+            assert!(matches!(
+                op,
+                Operation::RunBash | Operation::GitPush | Operation::CreatePr
+            ));
+        }
+        None => {
+            assert!(matches!(
+                op,
+                Operation::WriteFiles
+                    | Operation::EditFiles
+                    | Operation::GitCommit
+                    | Operation::ManagePods
+            ));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A6: Projected taint correctness — projection is monotone, adds only op's label
+// ---------------------------------------------------------------------------
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_projected_taint_correctness() {
+    let current = arbitrary_taint_set();
+    let op = arbitrary_operation();
+    let projected = pure_projected_taint(&current, op);
+    // 1. Projection is monotone: current ⊆ projected
+    if current.contains(TaintLabel::PrivateData) {
+        assert!(projected.contains(TaintLabel::PrivateData));
+    }
+    if current.contains(TaintLabel::UntrustedContent) {
+        assert!(projected.contains(TaintLabel::UntrustedContent));
+    }
+    if current.contains(TaintLabel::ExfilVector) {
+        assert!(projected.contains(TaintLabel::ExfilVector));
+    }
+    // 2. Neutral ops don't change taint
+    if operation_taint(op).is_none() {
+        assert!(projected == current, "Neutral op changed taint");
+    }
+    // 3. Non-neutral ops add their label
+    if let Some(label) = operation_taint(op) {
+        assert!(
+            projected.contains(label),
+            "Projected taint missing op label"
+        );
+    }
+    // 4. If current is already trifecta-complete, projected is too (irreversibility)
+    if current.is_trifecta_complete() {
+        assert!(
+            projected.is_trifecta_complete(),
+            "Trifecta lost after projection"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A7: Guard denial soundness — Kani analog of Verus M2 on production types
+// ---------------------------------------------------------------------------
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_guard_denial_soundness() {
+    let current = arbitrary_taint_set();
+    let op = arbitrary_operation();
+    let requires_approval = kani::any::<bool>();
+    let denied = pure_taint_would_deny(&current, op, requires_approval);
+    // If denied, projected taint MUST be trifecta-complete AND requires approval
+    if denied {
+        let projected = pure_projected_taint(&current, op);
+        assert!(projected.is_trifecta_complete(), "Denied without trifecta");
+        assert!(requires_approval, "Denied without approval requirement");
+    }
+    // Converse: trifecta-complete + requires_approval → denied
+    if current.is_trifecta_complete() && requires_approval {
+        assert!(denied, "Trifecta + approval should deny but didn't");
+    }
 }

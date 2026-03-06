@@ -4359,6 +4359,272 @@ exec fn exec_guard_check(
     complete && approval
 }
 
+// ============================================================================
+// Phase 8 — Session Fold: Guard-Aware Trace Semantics
+// ============================================================================
+//
+// Phase 7 models trace_taint_at: every event contributes taint unconditionally.
+// But the production check→op→record pipeline DENIES certain operations,
+// meaning denied events never execute and never contribute taint.
+//
+// session_fold_spec models this: it's trace_taint_at with guard denial
+// integrated. This is the true semantics of the production pipeline.
+
+// ============================================================================
+// Phase 8 — Spec Functions
+// ============================================================================
+
+/// Fold a trace through the guard protocol at step n.
+///
+/// Unlike trace_taint_at (which accumulates unconditionally),
+/// this fold checks guard_would_deny at each step: denied events
+/// produce no taint change (modeling the production check→op→record cycle).
+pub open spec fn session_fold_spec_at(
+    trace: Seq<McpEvent>,
+    obs: Obs,
+    n: nat,
+) -> SpecTaintSet
+    decreases n,
+{
+    if n == 0 {
+        taint_empty()
+    } else {
+        let prev = session_fold_spec_at(trace, obs, (n - 1) as nat);
+        let event = trace[(n - 1) as int];
+        if guard_would_deny(obs, prev, event.op) {
+            prev // Denied: taint unchanged (no phantom taint from denials)
+        } else {
+            apply_event_taint(prev, event)
+        }
+    }
+}
+
+/// Session fold over the full trace.
+pub open spec fn session_fold_spec(
+    trace: Seq<McpEvent>,
+    obs: Obs,
+) -> SpecTaintSet {
+    session_fold_spec_at(trace, obs, trace.len())
+}
+
+// ============================================================================
+// Phase 8 — Exec Functions
+// ============================================================================
+
+/// Executable: full tool call cycle — check, (optional) execute, record.
+///
+/// Models the production pattern in mcp.rs:
+///   1. guard.check(op) → denied?
+///   2. if !denied: sandbox executes op → succeeded?
+///   3. if !denied && succeeded: guard.record(op) → taint grows
+///
+/// Returns (denied, new_taint).
+exec fn exec_full_tool_call(
+    taint: SpecTaintSet,
+    obs: Obs,
+    op: u8,
+    op_succeeded: bool,
+) -> (result: (bool, SpecTaintSet))
+    requires op <= 11,
+    ensures ({
+        let (denied, new_taint) = result;
+        // Check decision matches spec
+        denied == guard_would_deny(obs, taint, op as nat)
+        // Denied ops produce no phantom taint (M4 at exec level)
+        && (denied ==> new_taint == taint)
+        // Allowed ops update taint correctly (M7 at exec level)
+        && (!denied ==> new_taint == apply_event_taint(
+            taint,
+            McpEvent { op: op as nat, succeeded: op_succeeded },
+        ))
+    }),
+{
+    let denied = exec_guard_check(taint, obs, op);
+    if denied {
+        (true, taint)
+    } else {
+        let new_taint = exec_apply_event(taint, op, op_succeeded);
+        (false, new_taint)
+    }
+}
+
+// ============================================================================
+// Phase 8 — Proof Functions
+// ============================================================================
+
+/// B3: Exec-level session safety refinement.
+///
+/// When taint is trifecta-complete, exec_full_tool_call ALWAYS denies
+/// operations requiring approval. This bridges exec to M2.
+proof fn proof_exec_session_safety_refinement(
+    taint: SpecTaintSet,
+    obs: Obs,
+    op: u8,
+)
+    requires
+        taint_is_trifecta_complete(taint),
+        op <= 11,
+        valid_operation(op as nat),
+        requires_approval(obs, op as nat),
+    ensures
+        guard_would_deny(obs, taint, op as nat),
+{
+    // guard_would_deny projects taint: union(taint, singleton(label(op)))
+    // Taint is already trifecta-complete.
+    // Union with any singleton preserves trifecta (monotonicity).
+    let label = operation_taint_label(op as nat);
+    if label <= 2 {
+        // Projection: union(trifecta, singleton) is still trifecta
+        let singleton = taint_singleton(label);
+        let projected = taint_union(taint, singleton);
+        // Each leg is (taint.leg || singleton.leg) — taint already has all legs true
+        assert(projected.private_data);
+        assert(projected.untrusted_content);
+        assert(projected.exfil_vector);
+        assert(taint_is_trifecta_complete(projected));
+    } else {
+        // Neutral op: projected == taint, still trifecta-complete
+        assert(taint_is_trifecta_complete(taint));
+    }
+    // requires_approval(obs, op) is given, so guard_would_deny is true
+}
+
+/// B4: Session fold taint is monotone at each step.
+///
+/// The taint at step n is a subset of the taint at step n+1.
+/// Denied events preserve taint; allowed events may grow it.
+proof fn proof_session_fold_monotone(
+    trace: Seq<McpEvent>,
+    obs: Obs,
+    n: nat,
+)
+    requires
+        n < trace.len(),
+        forall|i: int| 0 <= i < trace.len() ==> valid_event(#[trigger] trace[i]),
+    ensures
+        taint_subset(
+            session_fold_spec_at(trace, obs, n),
+            session_fold_spec_at(trace, obs, (n + 1) as nat),
+        ),
+{
+    let prev = session_fold_spec_at(trace, obs, n);
+    let event = trace[n as int];
+    let next = session_fold_spec_at(trace, obs, (n + 1) as nat);
+
+    if guard_would_deny(obs, prev, event.op) {
+        // Denied: next == prev, trivially subset
+        assert(next == prev);
+        // taint_subset is reflexive
+        assert(taint_subset(prev, prev));
+    } else {
+        // Allowed: next == apply_event_taint(prev, event)
+        assert(next == apply_event_taint(prev, event));
+        if event.succeeded && operation_taint_label(event.op) <= 2 {
+            // apply_event = union(prev, singleton(label))
+            // union is monotone: prev ⊆ union(prev, x)
+            let label = operation_taint_label(event.op);
+            let singleton = taint_singleton(label);
+            let result = taint_union(prev, singleton);
+            assert(next == result);
+            // Explicit subset: each leg of prev implies same leg of result
+            assert(prev.private_data ==> result.private_data);
+            assert(prev.untrusted_content ==> result.untrusted_content);
+            assert(prev.exfil_vector ==> result.exfil_vector);
+        } else {
+            // Failed or neutral: next == prev
+            assert(next == prev);
+            assert(taint_subset(prev, prev));
+        }
+    }
+}
+
+/// Helper: session fold taint stays trifecta-complete once latched.
+///
+/// If taint is trifecta-complete at step k, it's trifecta-complete at step n ≥ k.
+/// This uses the session fold semantics (with denial), not raw trace_taint_at.
+proof fn lemma_session_fold_trifecta_latch(
+    trace: Seq<McpEvent>,
+    obs: Obs,
+    k: nat,
+    n: nat,
+)
+    requires
+        k <= n,
+        n <= trace.len(),
+        forall|i: int| 0 <= i < trace.len() ==> valid_event(#[trigger] trace[i]),
+        taint_is_trifecta_complete(session_fold_spec_at(trace, obs, k)),
+    ensures
+        taint_is_trifecta_complete(session_fold_spec_at(trace, obs, n)),
+    decreases (n - k),
+{
+    if k < n {
+        // Inductive step: show taint at k+1 is still trifecta-complete
+        proof_session_fold_monotone(trace, obs, k);
+        let taint_k = session_fold_spec_at(trace, obs, k);
+        let taint_k1 = session_fold_spec_at(trace, obs, (k + 1) as nat);
+        assert(taint_subset(taint_k, taint_k1));
+        // trifecta_complete(taint_k) + taint_k ⊆ taint_k1 → trifecta_complete(taint_k1)
+        assert(taint_k.private_data);
+        assert(taint_k.untrusted_content);
+        assert(taint_k.exfil_vector);
+        assert(taint_k1.private_data);
+        assert(taint_k1.untrusted_content);
+        assert(taint_k1.exfil_vector);
+        assert(taint_is_trifecta_complete(taint_k1));
+        // Recurse for the remaining steps
+        lemma_session_fold_trifecta_latch(trace, obs, (k + 1) as nat, n);
+    }
+}
+
+/// B5: Session fold safety — THE CROWN JEWEL of exec refinement.
+///
+/// Once taint becomes trifecta-complete during a session fold,
+/// all subsequent operations requiring approval are denied by the guard.
+///
+/// This is the production-level analog of M2 + M6:
+/// - M2 (session safety): trifecta → denial
+/// - M6 (irreversibility): trifecta latch never unsets
+/// Combined here with guard-aware fold semantics.
+proof fn proof_session_fold_safety(
+    trace: Seq<McpEvent>,
+    obs: Obs,
+    trifecta_step: nat,
+    n: nat,
+)
+    requires
+        trifecta_step <= n,
+        n < trace.len(),
+        forall|i: int| 0 <= i < trace.len() ==> valid_event(#[trigger] trace[i]),
+        taint_is_trifecta_complete(
+            session_fold_spec_at(trace, obs, trifecta_step),
+        ),
+        valid_operation(trace[n as int].op),
+        requires_approval(obs, trace[n as int].op),
+    ensures
+        guard_would_deny(
+            obs,
+            session_fold_spec_at(trace, obs, n),
+            trace[n as int].op,
+        ),
+{
+    // Step 1: Taint at step n is still trifecta-complete (latch)
+    lemma_session_fold_trifecta_latch(trace, obs, trifecta_step, n);
+    let taint_n = session_fold_spec_at(trace, obs, n);
+    assert(taint_is_trifecta_complete(taint_n));
+
+    // Step 2: guard_would_deny on trifecta-complete taint (exec refinement)
+    let op = trace[n as int].op;
+    let label = operation_taint_label(op);
+    if label <= 2 {
+        let projected = taint_union(taint_n, taint_singleton(label));
+        assert(projected.private_data);
+        assert(projected.untrusted_content);
+        assert(projected.exfil_vector);
+        assert(taint_is_trifecta_complete(projected));
+    }
+    // requires_approval is given, so guard_would_deny holds
+}
+
 fn main() {}
 
 } // verus!
