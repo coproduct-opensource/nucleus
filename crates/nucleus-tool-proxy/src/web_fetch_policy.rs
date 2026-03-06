@@ -32,6 +32,8 @@ pub fn validate_url(url: &str) -> Result<(), String> {
 
 /// Check a host:port against the DNS allowlist.
 /// Returns Ok(()) if allowed, Err with message if blocked.
+///
+/// Handles IPv6 bracket notation: `[::1]:8080` splits on `]:` not `:`.
 pub fn check_dns_allowlist(dns_allow: &[String], host: &str, port: u16) -> Result<(), String> {
     if dns_allow.is_empty() {
         return Ok(());
@@ -40,19 +42,39 @@ pub fn check_dns_allowlist(dns_allow: &[String], host: &str, port: u16) -> Resul
     let host_port = format!("{host}:{port}");
 
     let allowed = dns_allow.iter().any(|pattern| {
-        if let Some((pat_host, pat_port)) = pattern.rsplit_once(':') {
-            // Pattern has an explicit port — match both host and port
-            pat_host == host && pat_port == port.to_string()
-        } else {
-            // Pattern is host-only — allow any port
-            pattern == host
+        match split_host_port(pattern) {
+            Some((pat_host, pat_port)) => {
+                // Pattern has an explicit port — match both host and port
+                pat_host == host && pat_port == port.to_string()
+            }
+            None => {
+                // Pattern is host-only — allow any port
+                pattern == host
+            }
         }
     });
 
     if allowed {
         Ok(())
     } else {
-        Err(format!("DNS not allowed: {host_port}"))
+        Err(host_port)
+    }
+}
+
+/// Split a pattern into (host, port), handling IPv6 bracket notation.
+/// - `"github.com:443"` → `Some(("github.com", "443"))`
+/// - `"[::1]:8080"` → `Some(("[::1]", "8080"))`
+/// - `"github.com"` → `None`
+/// - `"[::1]"` → `None`
+fn split_host_port(pattern: &str) -> Option<(&str, &str)> {
+    if pattern.starts_with('[') {
+        // IPv6 bracket notation: split on `]:`
+        pattern
+            .find("]:")
+            .map(|i| (&pattern[..=i], &pattern[i + 2..]))
+    } else {
+        // IPv4/hostname: split on last `:`
+        pattern.rsplit_once(':')
     }
 }
 
@@ -131,6 +153,36 @@ mod tests {
     #[test]
     fn test_dns_allowlist_empty() {
         assert!(check_dns_allowlist(&[], "anything.com", 443).is_ok());
+    }
+
+    #[test]
+    fn test_dns_allowlist_ipv6_host_only() {
+        let allow = vec!["[::1]".to_string()];
+        assert!(check_dns_allowlist(&allow, "[::1]", 443).is_ok());
+        assert!(check_dns_allowlist(&allow, "[::1]", 8080).is_ok());
+        assert!(check_dns_allowlist(&allow, "[::2]", 443).is_err());
+    }
+
+    #[test]
+    fn test_dns_allowlist_ipv6_with_port() {
+        let allow = vec!["[::1]:8080".to_string()];
+        assert!(check_dns_allowlist(&allow, "[::1]", 8080).is_ok());
+        assert!(check_dns_allowlist(&allow, "[::1]", 443).is_err());
+    }
+
+    #[test]
+    fn test_split_host_port() {
+        assert_eq!(
+            split_host_port("github.com:443"),
+            Some(("github.com", "443"))
+        );
+        assert_eq!(split_host_port("github.com"), None);
+        assert_eq!(split_host_port("[::1]:8080"), Some(("[::1]", "8080")));
+        assert_eq!(split_host_port("[::1]"), None);
+        assert_eq!(
+            split_host_port("[2001:db8::1]:443"),
+            Some(("[2001:db8::1]", "443"))
+        );
     }
 
     #[test]

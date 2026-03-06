@@ -123,6 +123,42 @@ fn run() -> Result<(), String> {
         std::env::set_var("NUCLEUS_SANDBOX_TOKEN", sandbox_token);
     }
 
+    // S3 audit sink config (optional, passed via kernel args from nucleus-node)
+    for (arg, env_var) in [
+        (
+            "nucleus.audit_s3_bucket",
+            "NUCLEUS_TOOL_PROXY_AUDIT_S3_BUCKET",
+        ),
+        (
+            "nucleus.audit_s3_prefix",
+            "NUCLEUS_TOOL_PROXY_AUDIT_S3_PREFIX",
+        ),
+        (
+            "nucleus.audit_s3_region",
+            "NUCLEUS_TOOL_PROXY_AUDIT_S3_REGION",
+        ),
+        (
+            "nucleus.audit_s3_endpoint",
+            "NUCLEUS_TOOL_PROXY_AUDIT_S3_ENDPOINT",
+        ),
+    ] {
+        if let Some(val) = parse_cmdline_secret(&cmdline, arg) {
+            std::env::set_var(env_var, val);
+        }
+    }
+
+    // AWS credentials for S3 audit sink (optional)
+    for (arg, env_var) in [
+        ("nucleus.aws_access_key_id", "AWS_ACCESS_KEY_ID"),
+        ("nucleus.aws_secret_access_key", "AWS_SECRET_ACCESS_KEY"),
+        ("nucleus.aws_session_token", "AWS_SESSION_TOKEN"),
+        ("nucleus.aws_default_region", "AWS_DEFAULT_REGION"),
+    ] {
+        if let Some(val) = parse_cmdline_secret(&cmdline, arg) {
+            std::env::set_var(env_var, val);
+        }
+    }
+
     let audit_path = resolve_audit_path();
     std::env::set_var("NUCLEUS_TOOL_PROXY_AUDIT_LOG", audit_path.clone());
     std::env::set_var("NUCLEUS_TOOL_PROXY_BOOT_ACTOR", "guest-init");

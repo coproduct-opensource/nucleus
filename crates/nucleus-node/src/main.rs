@@ -2973,6 +2973,42 @@ impl FirecrackerConfig {
             };
         }
 
+        // Inject audit S3 sink config and AWS credentials via kernel args
+        if let Some(ref sink) = spec.spec.audit_sink {
+            boot_args = match boot_args.take() {
+                Some(args) => Some(format!("{args} nucleus.audit_s3_bucket={}", sink.s3_bucket)),
+                None => Some(format!("nucleus.audit_s3_bucket={}", sink.s3_bucket)),
+            };
+            if let Some(ref prefix) = sink.s3_prefix {
+                if let Some(ref mut args) = boot_args {
+                    args.push_str(&format!(" nucleus.audit_s3_prefix={prefix}"));
+                }
+            }
+            if let Some(ref region) = sink.s3_region {
+                if let Some(ref mut args) = boot_args {
+                    args.push_str(&format!(" nucleus.audit_s3_region={region}"));
+                }
+            }
+            if let Some(ref endpoint) = sink.s3_endpoint {
+                if let Some(ref mut args) = boot_args {
+                    args.push_str(&format!(" nucleus.audit_s3_endpoint={endpoint}"));
+                }
+            }
+            // Forward ambient AWS credentials for S3 audit sink
+            for (env_key, arg_key) in [
+                ("AWS_ACCESS_KEY_ID", "nucleus.aws_access_key_id"),
+                ("AWS_SECRET_ACCESS_KEY", "nucleus.aws_secret_access_key"),
+                ("AWS_SESSION_TOKEN", "nucleus.aws_session_token"),
+                ("AWS_DEFAULT_REGION", "nucleus.aws_default_region"),
+            ] {
+                if let Ok(val) = std::env::var(env_key) {
+                    if let Some(ref mut args) = boot_args {
+                        args.push_str(&format!(" {arg_key}={val}"));
+                    }
+                }
+            }
+        }
+
         // Inject sandbox proof token so tool-proxy inside the VM can verify it's managed.
         // This is a fallback — tier 1 (SVID with attestation) is preferred in Firecracker.
         {

@@ -514,7 +514,11 @@ impl NucleusMcpServer {
             _ => return Ok(err_result(format!("unsupported method: {method}"))),
         };
 
-        // Perform async fetch with full security controls
+        // Perform async fetch with full security controls.
+        // NOTE: The fetch happens before execute_and_record() intentionally.
+        // execute_and_record's purpose is TOCTOU detection (checking if taint
+        // changed between check() and record). The closure runs WITHOUT holding
+        // locks, so completing the async I/O first minimizes the TOCTOU window.
         let max_bytes = self.state.web_fetch_max_bytes;
         let dns_allow = self.state.dns_allow.clone();
         let url_allow = self.state.url_allow.clone();

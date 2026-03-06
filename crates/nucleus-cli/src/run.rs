@@ -435,7 +435,7 @@ async fn run_local(
         .env("NUCLEUS_TOOL_PROXY_DRAND_ENABLED", "false")
         .kill_on_drop(true)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
         .spawn()
         .context("failed to spawn nucleus-tool-proxy")?;
 
