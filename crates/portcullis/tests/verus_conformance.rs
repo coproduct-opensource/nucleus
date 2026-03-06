@@ -1432,3 +1432,188 @@ proptest! {
         );
     }
 }
+
+// ============================================================================
+// Tier I: Session Fold Conformance (bridges Phase 8 proofs to production)
+//
+// These tests verify the guard-aware session fold: denied events don't
+// contribute taint, and the trifecta latch holds across the fold.
+// ============================================================================
+
+/// Model the guard denial check (pure function, no RwLock).
+/// Mirrors GradedTaintGuard::check() trifecta path.
+fn model_guard_would_deny(current: &TaintSet, op: Operation, requires_approval: bool) -> bool {
+    let projected = if let Some(label) = operation_taint(op) {
+        current.union(&TaintSet::singleton(label))
+    } else {
+        current.clone()
+    };
+    projected.is_trifecta_complete() && requires_approval
+}
+
+/// Model the full check→op→record cycle.
+/// Returns (denied, new_taint).
+fn model_full_tool_call(
+    taint: &TaintSet,
+    op: Operation,
+    succeeded: bool,
+    requires_approval: bool,
+) -> (bool, TaintSet) {
+    let denied = model_guard_would_deny(taint, op, requires_approval);
+    if denied {
+        (true, taint.clone())
+    } else {
+        (false, apply_event(taint, op, succeeded))
+    }
+}
+
+/// Compute session fold taint: like trace_taint but with guard denials.
+fn session_fold_taint(
+    events: &[(Operation, bool)],
+    requires_approval_fn: &dyn Fn(Operation) -> bool,
+) -> TaintSet {
+    let mut taint = TaintSet::empty();
+    for &(op, succeeded) in events {
+        let denied = model_guard_would_deny(&taint, op, requires_approval_fn(op));
+        if !denied {
+            taint = apply_event(&taint, op, succeeded);
+        }
+    }
+    taint
+}
+
+/// Map an operation to whether it requires approval (exfil ops only).
+fn exfil_requires_approval(op: Operation) -> bool {
+    matches!(
+        op,
+        Operation::RunBash | Operation::GitPush | Operation::CreatePr
+    )
+}
+
+proptest! {
+    /// CONFORMANCE B1: exec_full_tool_call — denied ops don't change taint.
+    ///
+    /// Mirrors Verus exec_full_tool_call postcondition.
+    #[test]
+    fn conformance_full_tool_call_denied_no_taint(
+        taint in arb_taint_set(),
+        op in arb_operation(),
+        succeeded in any::<bool>(),
+    ) {
+        let (denied, new_taint) = model_full_tool_call(&taint, op, succeeded, true);
+        if denied {
+            prop_assert_eq!(
+                new_taint, taint,
+                "denied op {:?} changed taint", op
+            );
+        }
+    }
+
+    /// CONFORMANCE B3: Trifecta-complete taint always denies approval-requiring ops.
+    ///
+    /// Mirrors Verus proof_exec_session_safety_refinement.
+    #[test]
+    fn conformance_exec_session_safety(
+        op in prop_oneof![
+            Just(Operation::RunBash),
+            Just(Operation::GitPush),
+            Just(Operation::CreatePr),
+        ],
+    ) {
+        // Build a trifecta-complete taint set
+        let taint = TaintSet::singleton(TaintLabel::PrivateData)
+            .union(&TaintSet::singleton(TaintLabel::UntrustedContent))
+            .union(&TaintSet::singleton(TaintLabel::ExfilVector));
+        prop_assert!(taint.is_trifecta_complete());
+
+        let denied = model_guard_would_deny(&taint, op, true);
+        prop_assert!(
+            denied,
+            "trifecta-complete taint should deny {:?} with approval required", op
+        );
+    }
+
+    /// CONFORMANCE B4: Session fold taint is monotone.
+    ///
+    /// Mirrors Verus proof_session_fold_monotone.
+    #[test]
+    fn conformance_session_fold_monotone(
+        ops in proptest::collection::vec(
+            (arb_operation(), any::<bool>()),
+            0..20,
+        ),
+    ) {
+        let mut taint = TaintSet::empty();
+        for &(op, succeeded) in &ops {
+            let before = taint.clone();
+            let denied = model_guard_would_deny(&taint, op, exfil_requires_approval(op));
+            if !denied {
+                taint = apply_event(&taint, op, succeeded);
+            }
+            // Monotone: taint never decreases even with denials
+            for l in [TaintLabel::PrivateData, TaintLabel::UntrustedContent, TaintLabel::ExfilVector] {
+                if before.contains(l) {
+                    prop_assert!(taint.contains(l), "lost taint leg {:?} in session fold", l);
+                }
+            }
+        }
+    }
+
+    /// CONFORMANCE B5: Session fold safety — trifecta latch across guard-aware fold.
+    ///
+    /// Mirrors Verus proof_session_fold_safety.
+    #[test]
+    fn conformance_session_fold_safety(
+        ops in proptest::collection::vec(
+            (arb_operation(), any::<bool>()),
+            0..20,
+        ),
+    ) {
+        let mut taint = TaintSet::empty();
+        let mut latched = false;
+        for &(op, succeeded) in &ops {
+            let requires_approval = exfil_requires_approval(op);
+            let denied = model_guard_would_deny(&taint, op, requires_approval);
+
+            // If trifecta is latched, exfil ops with approval MUST be denied
+            if latched && requires_approval {
+                prop_assert!(
+                    denied,
+                    "trifecta-latched session allowed {:?} (requires_approval=true)", op
+                );
+            }
+
+            if !denied {
+                taint = apply_event(&taint, op, succeeded);
+            }
+
+            if taint.is_trifecta_complete() {
+                latched = true;
+            }
+        }
+    }
+
+    /// CONFORMANCE B-FOLD: Session fold produces ⊆ raw trace taint.
+    ///
+    /// Guard denials can only reduce taint compared to unconstrained execution.
+    #[test]
+    fn conformance_session_fold_subset_of_trace(
+        ops in proptest::collection::vec(
+            (arb_operation(), any::<bool>()),
+            0..15,
+        ),
+    ) {
+        let raw = trace_taint(&ops);
+        let folded = session_fold_taint(&ops, &exfil_requires_approval);
+
+        // folded ⊆ raw (guard denials can only prevent taint accumulation)
+        for l in [TaintLabel::PrivateData, TaintLabel::UntrustedContent, TaintLabel::ExfilVector] {
+            if folded.contains(l) {
+                prop_assert!(
+                    raw.contains(l),
+                    "session fold has {:?} but raw trace doesn't", l
+                );
+            }
+        }
+    }
+}

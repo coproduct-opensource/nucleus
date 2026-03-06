@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 jobs:
-  # Fast tier: 4 lightweight harnesses — runs on every PR and push
+  # Fast tier: 7 lightweight harnesses — runs on every PR and push
   kani-fast:
     name: Kani
     runs-on: ubuntu-24.04
@@ -46,6 +46,9 @@ jobs:
             --harness proof_normalize_deflationary
             --harness proof_normalize_monotone
             --harness proof_capability_distributive
+            --harness proof_taintset_monoid_identity
+            --harness proof_taintset_trifecta_iff_count_three
+            --harness proof_operation_taint_completeness
       - name: Proof count regression gate
         run: |
           PROOF_COUNT=$(grep -c '#\[kani::proof\]' crates/portcullis/src/kani.rs)
@@ -62,12 +65,12 @@ jobs:
           MINIMUM=$(cat .kani-minimum-proofs | tr -d '[:space:]')
           echo "## Kani BMC Results (fast tier)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Harnesses verified:** 4 / $PROOF_COUNT (fast tier)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Harnesses verified:** 7 / $PROOF_COUNT (fast tier)" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Solver:** CaDiCaL" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Minimum required:** $MINIMUM" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Full suite:** nightly + workflow_dispatch" >> "$GITHUB_STEP_SUMMARY"
 
-  # Full tier: all 6 harnesses — nightly and on-demand only
+  # Full tier: all 13 harnesses — nightly and on-demand only
   kani-full:
     name: Kani (full)
     runs-on: ubuntu-24.04
