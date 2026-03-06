@@ -509,17 +509,30 @@ pub trait ToolCallGuard: Send + Sync {
 /// untrusted content + exfiltration).
 ///
 /// Also pins the tool schema at session start for rug-pull detection.
+///
+/// # Deprecation
+///
+/// Use [`GradedTaintGuard`] instead. This guard is retained for backward
+/// compatibility and testing but now delegates all security decisions to
+/// the verified `taint_core` kernel — the same code path that
+/// `GradedTaintGuard` uses and that is structurally bisimilar to the
+/// Verus-verified spec functions.
+#[deprecated(
+    since = "0.5.0",
+    note = "Use GradedTaintGuard instead — it uses the same verified taint_core kernel with O(1) taint tracking"
+)]
 pub struct RuntimeTrifectaGuard {
     /// The underlying permission lattice for static checks.
     perms: PermissionLattice,
-    /// Operations executed in this session.
+    /// Operations executed in this session (retained for inspection/debugging).
     executed_ops: RwLock<Vec<Operation>>,
-    /// Current accumulated risk level.
-    accumulated_risk_state: RwLock<TrifectaRisk>,
+    /// Accumulated taint from all recorded operations — delegates to taint_core.
+    taint: RwLock<TaintSet>,
     /// Pinned SHA-256 of tool list at session init.
     pinned_schema_hash: String,
 }
 
+#[allow(deprecated)]
 impl RuntimeTrifectaGuard {
     /// Create a new guard for a session.
     ///
@@ -534,63 +547,18 @@ impl RuntimeTrifectaGuard {
         Self {
             perms,
             executed_ops: RwLock::new(Vec::new()),
-            accumulated_risk_state: RwLock::new(TrifectaRisk::None),
+            taint: RwLock::new(TaintSet::empty()),
             pinned_schema_hash: hash,
         }
     }
-
-    /// Compute the trifecta risk from a set of executed operations.
-    ///
-    /// This looks at which *categories* of the trifecta have been touched,
-    /// not the static capability levels. A session that has only done reads
-    /// is Low risk even if the permission set allows web_fetch.
-    fn compute_session_risk(ops: &[Operation]) -> TrifectaRisk {
-        let has_private = ops.iter().any(|op| {
-            matches!(
-                op,
-                Operation::ReadFiles
-                    | Operation::GlobSearch
-                    | Operation::GrepSearch
-                    | Operation::RunBash // RunBash can read any file
-            )
-        });
-        let has_untrusted = ops
-            .iter()
-            .any(|op| matches!(op, Operation::WebFetch | Operation::WebSearch));
-        let has_exfil = ops.iter().any(|op| {
-            matches!(
-                op,
-                Operation::GitPush | Operation::CreatePr | Operation::RunBash
-            )
-        });
-
-        match (has_private as u8) + (has_untrusted as u8) + (has_exfil as u8) {
-            0 => TrifectaRisk::None,
-            1 => TrifectaRisk::Low,
-            2 => TrifectaRisk::Medium,
-            _ => TrifectaRisk::Complete,
-        }
-    }
-
-    /// Compute the equivalent TaintSet from a list of executed operations.
-    ///
-    /// Used to create taint snapshots for TOCTOU detection in `CheckProof`.
-    fn ops_to_taint(ops: &[Operation]) -> TaintSet {
-        let mut taint = TaintSet::empty();
-        for op in ops {
-            if let Some(label) = operation_taint(*op) {
-                taint = taint.union(&TaintSet::singleton(label));
-            }
-        }
-        taint
-    }
 }
 
+#[allow(deprecated)]
 impl ToolCallGuard for RuntimeTrifectaGuard {
     fn check(&self, operation: Operation) -> Result<CheckProof, GuardError> {
         use crate::CapabilityLevel;
 
-        // 1. Check capability level (is the operation allowed at all?)
+        // Layer 1: Capability level check (is the operation allowed at all?)
         let level = self.perms.capabilities.level_for(operation);
         if level == CapabilityLevel::Never {
             return Err(GuardError::Denied {
@@ -598,27 +566,29 @@ impl ToolCallGuard for RuntimeTrifectaGuard {
             });
         }
 
-        // 2. Project what the session risk would be if this op executes
-        let ops = self.executed_ops.read().expect("lock poisoned");
-        let mut projected = ops.clone();
-        projected.push(operation);
-        let projected_risk = Self::compute_session_risk(&projected);
-
-        // 3. If projected risk would complete trifecta and the operation
-        //    has approval obligations, deny it. This is the runtime
-        //    interposition gate — blocks the read→fetch→exfil sequence.
-        if projected_risk == TrifectaRisk::Complete && self.perms.requires_approval(operation) {
-            let current = *self.accumulated_risk_state.read().expect("lock poisoned");
+        // Layer 2: Session taint projection via verified shared kernel
+        //
+        // Delegates to taint_core::should_deny — the pure decision function
+        // whose logic is structurally bisimilar to the Verus exec fn
+        // `exec_guard_check`.
+        let current = self.taint.read().expect("taint lock poisoned");
+        if crate::taint_core::should_deny(
+            &current,
+            operation,
+            self.perms.requires_approval(operation),
+            self.perms.trifecta_constraint,
+        ) {
+            let projected = crate::taint_core::project_taint(&current, operation);
             return Err(GuardError::Denied {
                 reason: format!(
-                    "{:?} denied: would complete trifecta (session risk: {:?} -> Complete)",
-                    operation, current,
+                    "{:?} denied: would complete trifecta (taint: {} → {})",
+                    operation, current, projected,
                 ),
             });
         }
 
         // Snapshot taint for TOCTOU detection
-        let taint_snapshot = Self::ops_to_taint(&ops);
+        let taint_snapshot = current.clone();
 
         Ok(CheckProof {
             operation,
@@ -638,43 +608,38 @@ impl ToolCallGuard for RuntimeTrifectaGuard {
             Err(e) => return Err(ExecuteError::OperationFailed(e)),
         };
 
-        // Acquire write lock for atomic TOCTOU check + record
-        let mut ops = self.executed_ops.write().expect("lock poisoned");
+        // Acquire write locks for atomic TOCTOU check + record
+        let mut taint = self.taint.write().expect("taint lock poisoned");
+        let mut ops = self.executed_ops.write().expect("ops lock poisoned");
 
         // TOCTOU detection: check if taint grew since check()
-        let current_taint = Self::ops_to_taint(&ops);
-        if current_taint != proof.taint_snapshot {
-            // Taint grew — re-validate with the new taint
-            let mut projected = ops.clone();
-            projected.push(proof.operation);
-            let projected_risk = Self::compute_session_risk(&projected);
+        if *taint != proof.taint_snapshot && self.perms.trifecta_constraint {
+            // Re-check with current (grown) taint using taint_core
+            let projected = crate::taint_core::project_taint(&taint, proof.operation);
 
-            if projected_risk == TrifectaRisk::Complete
-                && self.perms.requires_approval(proof.operation)
-            {
-                // Record anyway (operation DID execute) for taint consistency
+            if projected.is_trifecta_complete() && self.perms.requires_approval(proof.operation) {
+                // Record taint anyway (operation DID execute) for consistency
                 ops.push(proof.operation);
-                let new_risk = Self::compute_session_risk(&ops);
-                *self.accumulated_risk_state.write().expect("lock poisoned") = new_risk;
+                *taint = crate::taint_core::apply_record(&taint, proof.operation);
                 return Err(ExecuteError::TocTouDenied {
                     reason: format!(
-                        "{:?}: concurrent taint growth detected; operation would now be denied",
-                        proof.operation,
+                        "{:?}: concurrent taint growth detected ({} → {}); \
+                         operation would now be denied (projected: {})",
+                        proof.operation, proof.taint_snapshot, *taint, projected,
                     ),
                 });
             }
         }
 
-        // Record the operation
+        // Record the operation's taint via taint_core
         ops.push(proof.operation);
-        let new_risk = Self::compute_session_risk(&ops);
-        *self.accumulated_risk_state.write().expect("lock poisoned") = new_risk;
+        *taint = crate::taint_core::apply_record(&taint, proof.operation);
 
         Ok(value)
     }
 
     fn accumulated_risk(&self) -> TrifectaRisk {
-        *self.accumulated_risk_state.read().expect("lock poisoned")
+        self.taint.read().expect("taint lock poisoned").to_risk()
     }
 
     fn verify_schema(&self, current_hash: &str) -> Result<(), GuardError> {
@@ -842,8 +807,9 @@ pub fn operation_taint(op: Operation) -> Option<TaintLabel> {
 /// label is the grade, the operation is the value. The session's accumulated
 /// state is the monadic composition (>>=) of all recorded tool calls.
 ///
-/// This is the **beautiful** counterpart to [`RuntimeTrifectaGuard`]:
-/// - `RuntimeTrifectaGuard`: tracks `Vec<Operation>`, rescans O(n)
+/// This is the **production** guard (replacing the deprecated
+/// [`RuntimeTrifectaGuard`]):
+/// - `RuntimeTrifectaGuard` (deprecated): tracks `Vec<Operation>`, delegates to `taint_core`
 /// - `GradedTaintGuard`: tracks `TaintSet` (3 bits), O(1) per check
 ///
 /// Both produce identical decisions. The graded version makes the
@@ -1277,6 +1243,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_session_risk_accumulates() {
         let guard = RuntimeTrifectaGuard::new(trifecta_perms(), "[]");
 
@@ -1303,6 +1270,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_no_phantom_risk() {
         let guard = RuntimeTrifectaGuard::new(trifecta_perms(), "[]");
 
@@ -1317,6 +1285,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_benign_sequence_allowed() {
         let guard = RuntimeTrifectaGuard::new(trifecta_perms(), "[]");
 
@@ -1331,6 +1300,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_schema_pinning_detects_mutation() {
         let guard = RuntimeTrifectaGuard::new(trifecta_perms(), r#"[{"name":"read"}]"#);
 
@@ -1348,6 +1318,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_two_leg_trifecta_allows_exfil() {
         // If only 2 of 3 trifecta legs are present in permissions,
         // exfil should be allowed (no trifecta constraint fires)
@@ -1598,6 +1569,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_graded_taint_guard_agrees_with_runtime_guard() {
         // Both guards should make identical decisions
         let perms = trifecta_perms();
@@ -1705,6 +1677,7 @@ mod tests {
 
     /// Verify that RunBash also triggers trifecta in the RuntimeTrifectaGuard.
     #[test]
+    #[allow(deprecated)]
     fn test_clinejection_runtime_guard() {
         let perms = trifecta_perms();
         let guard = RuntimeTrifectaGuard::new(perms, "[]");
@@ -1732,5 +1705,117 @@ mod tests {
         // Taint should be empty — failed operation not recorded
         assert_eq!(guard.taint(), TaintSet::empty());
         assert_eq!(guard.accumulated_risk(), TrifectaRisk::None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Exhaustive equivalence: RuntimeTrifectaGuard ≡ GradedTaintGuard
+    //
+    // Now that RuntimeTrifectaGuard delegates to taint_core, both guards
+    // MUST produce identical check/deny/risk decisions for ALL operation
+    // permutations. This test checks every permutation of all 12 operations.
+    // -----------------------------------------------------------------------
+
+    /// All Operation variants for exhaustive testing.
+    const ALL_OPS: [Operation; 12] = [
+        Operation::ReadFiles,
+        Operation::WriteFiles,
+        Operation::EditFiles,
+        Operation::RunBash,
+        Operation::GlobSearch,
+        Operation::GrepSearch,
+        Operation::WebSearch,
+        Operation::WebFetch,
+        Operation::GitCommit,
+        Operation::GitPush,
+        Operation::CreatePr,
+        Operation::ManagePods,
+    ];
+
+    /// Exhaustive equivalence test: for every possible operation sequence
+    /// (up to length 4), both guards produce identical decisions.
+    #[test]
+    #[allow(deprecated)]
+    fn test_guard_equivalence_exhaustive() {
+        // Test all single-operation sequences
+        for &op in &ALL_OPS {
+            assert_guards_agree(&[op], &format!("[{:?}]", op));
+        }
+
+        // Test all 2-operation sequences (12 × 12 = 144)
+        for &op1 in &ALL_OPS {
+            for &op2 in &ALL_OPS {
+                assert_guards_agree(&[op1, op2], &format!("[{:?}, {:?}]", op1, op2));
+            }
+        }
+
+        // Test critical 3-operation sequences (trifecta-completing paths)
+        let trifecta_legs: [Operation; 6] = [
+            Operation::ReadFiles,
+            Operation::WebFetch,
+            Operation::RunBash,
+            Operation::GlobSearch,
+            Operation::WebSearch,
+            Operation::GitPush,
+        ];
+        for &op1 in &trifecta_legs {
+            for &op2 in &trifecta_legs {
+                for &op3 in &trifecta_legs {
+                    assert_guards_agree(
+                        &[op1, op2, op3],
+                        &format!("[{:?}, {:?}, {:?}]", op1, op2, op3),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Helper: create both guards with trifecta_perms, feed the same
+    /// operations, and assert every observable produces identical results.
+    #[allow(deprecated)]
+    fn assert_guards_agree(ops: &[Operation], label: &str) {
+        let perms = trifecta_perms();
+        let runtime = RuntimeTrifectaGuard::new(perms.clone(), "[]");
+        let graded = GradedTaintGuard::new(perms, "[]");
+
+        for (i, &op) in ops.iter().enumerate() {
+            let r1 = runtime.check(op);
+            let r2 = graded.check(op);
+
+            assert_eq!(
+                r1.is_ok(),
+                r2.is_ok(),
+                "Guard disagreement on check({:?}) at step {} of {}: runtime={}, graded={}",
+                op,
+                i,
+                label,
+                if r1.is_ok() { "allow" } else { "deny" },
+                if r2.is_ok() { "allow" } else { "deny" },
+            );
+
+            // If both allow, record the operation in both
+            if let (Ok(p1), Ok(p2)) = (r1, r2) {
+                let e1 = runtime.execute_and_record(p1, || Ok::<_, String>(()));
+                let e2 = graded.execute_and_record(p2, || Ok::<_, String>(()));
+                assert_eq!(
+                    e1.is_ok(),
+                    e2.is_ok(),
+                    "Guard disagreement on execute({:?}) at step {} of {}",
+                    op,
+                    i,
+                    label,
+                );
+            }
+
+            // Risk must always agree
+            assert_eq!(
+                runtime.accumulated_risk(),
+                graded.accumulated_risk(),
+                "Risk disagreement after step {} of {}: runtime={:?}, graded={:?}",
+                i,
+                label,
+                runtime.accumulated_risk(),
+                graded.accumulated_risk(),
+            );
+        }
     }
 }

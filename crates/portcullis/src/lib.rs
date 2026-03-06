@@ -136,6 +136,7 @@ pub use galois::{
     TrustDomainBridge,
 };
 pub use graded::{Graded, GradedPermissionCheck, GradedPipeline, RiskCost, RiskGrade};
+#[allow(deprecated)]
 pub use guard::{
     operation_taint, CheckProof, CompositeGuard, ExecuteError, GradedGuard, GradedTaintGuard,
     GuardError, GuardFn, GuardedAction, PermissionGuard, RuntimeTrifectaGuard, TaintLabel,

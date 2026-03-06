@@ -2138,6 +2138,7 @@ mod structural_bisimulation {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod protocol_conformance {
     use portcullis::{
         CapabilityLevel, GradedTaintGuard, Operation, PermissionLattice, RuntimeTrifectaGuard,
