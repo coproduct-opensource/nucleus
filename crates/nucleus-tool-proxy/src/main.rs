@@ -39,6 +39,7 @@ mod node_client;
 mod policy;
 mod sandbox_proof;
 mod validation;
+mod web_fetch_policy;
 
 use attestation::{AttestationConfig, AttestationVerifier};
 use auth::{AuthConfig, AuthError};
@@ -407,7 +408,7 @@ fn is_expired(expires_at_unix: Option<u64>) -> bool {
 /// - `*` matches any sequence of characters except `/`
 /// - `**` matches any sequence of characters including `/`
 /// - All other characters match literally.
-fn url_glob_match(pattern: &str, url: &str) -> bool {
+pub(crate) fn url_glob_match(pattern: &str, url: &str) -> bool {
     url_glob_match_inner(pattern.as_bytes(), url.as_bytes())
 }
 
@@ -2097,39 +2098,19 @@ async fn web_fetch(
     let url =
         url::Url::parse(&url_str).map_err(|e| ApiError::WebFetch(format!("invalid URL: {e}")))?;
 
-    // Check DNS allow list (if configured)
-    if !state.dns_allow.is_empty() {
+    // Check DNS allow list (if configured) — shared with MCP path
+    {
         let host = url
             .host_str()
             .ok_or_else(|| ApiError::WebFetch("URL has no host".into()))?;
         let port = url.port_or_known_default().unwrap_or(443);
-        let host_port = format!("{}:{}", host, port);
-
-        let allowed = state.dns_allow.iter().any(|pattern| {
-            // Match exact host:port or host (any port)
-            pattern == &host_port || pattern == host || pattern.starts_with(&format!("{}:", host))
-        });
-
-        if !allowed {
-            return Err(ApiError::DnsNotAllowed(host_port));
-        }
+        web_fetch_policy::check_dns_allowlist(&state.dns_allow, host, port)
+            .map_err(ApiError::DnsNotAllowed)?;
     }
 
-    // Check URL allow list (if configured) — glob-style pattern matching
-    if !state.url_allow.is_empty() {
-        let url_string = url.as_str();
-        let allowed = state.url_allow.iter().any(|pattern| {
-            // Simple glob: `*` matches any sequence of non-`/` chars,
-            // `**` matches anything including `/`.
-            url_glob_match(pattern, url_string)
-        });
-        if !allowed {
-            return Err(ApiError::WebFetch(format!(
-                "URL '{}' not in url_allow list",
-                url_str
-            )));
-        }
-    }
+    // Check URL allow list (if configured) — shared with MCP path
+    web_fetch_policy::check_url_allowlist(&state.url_allow, url.as_str())
+        .map_err(ApiError::WebFetch)?;
 
     // Build the request
     let method = req.method.as_deref().unwrap_or("GET").to_uppercase();
@@ -2158,41 +2139,19 @@ async fn web_fetch(
 
     let status = response.status().as_u16();
 
-    // MIME type gating: only allow text and structured data formats.
-    // Binary formats (images, executables, archives) are blocked to prevent
-    // content injection and reduce the agent's attack surface.
+    // Verify the final URL after redirects is still in the allowlist.
+    // Prevents open-redirect bypass attacks on allowlisted domains.
+    let final_url = response.url().clone();
+    web_fetch_policy::check_redirect_target(&state.dns_allow, &state.url_allow, &final_url)
+        .map_err(|e| ApiError::WebFetch(format!("redirect target blocked: {e}")))?;
+
+    // MIME type gating — shared with MCP path
     let content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    {
-        const ALLOWED_MIME_PREFIXES: &[&str] = &[
-            "text/html",
-            "text/plain",
-            "text/markdown",
-            "text/csv",
-            "text/xml",
-            "text/css",
-            "application/json",
-            "application/xml",
-            "application/javascript",
-            "application/typescript",
-            "application/x-yaml",
-            "application/yaml",
-            "application/toml",
-        ];
-        if !content_type.is_empty()
-            && !ALLOWED_MIME_PREFIXES
-                .iter()
-                .any(|prefix| content_type.starts_with(prefix))
-        {
-            return Err(ApiError::WebFetch(format!(
-                "MIME type '{}' not in allowlist (text and structured data only)",
-                content_type
-            )));
-        }
-    }
+    web_fetch_policy::check_mime_type(content_type).map_err(ApiError::WebFetch)?;
 
     // Collect response headers + add taint metadata
     let mut response_headers: HashMap<String, String> = response

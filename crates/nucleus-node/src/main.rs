@@ -1236,6 +1236,18 @@ async fn spawn_local_pod(
         if let Some(ref endpoint) = sink.s3_endpoint {
             command.env("NUCLEUS_TOOL_PROXY_AUDIT_S3_ENDPOINT", endpoint);
         }
+        // Forward ambient AWS credentials so the tool-proxy's aws_config chain works.
+        // Operators set these on nucleus-node; they flow through to the S3 sink.
+        for key in [
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_DEFAULT_REGION",
+        ] {
+            if let Ok(val) = std::env::var(key) {
+                command.env(key, val);
+            }
+        }
     }
 
     // Inject sandbox proof token so tool-proxy can verify it's in a managed sandbox.
@@ -1393,6 +1405,17 @@ async fn spawn_container_pod(
             }
             if let Some(ref endpoint) = sink.s3_endpoint {
                 env.push(format!("NUCLEUS_TOOL_PROXY_AUDIT_S3_ENDPOINT={endpoint}"));
+            }
+            // Forward ambient AWS credentials for the S3 sink
+            for key in [
+                "AWS_ACCESS_KEY_ID",
+                "AWS_SECRET_ACCESS_KEY",
+                "AWS_SESSION_TOKEN",
+                "AWS_DEFAULT_REGION",
+            ] {
+                if let Ok(val) = std::env::var(key) {
+                    env.push(format!("{key}={val}"));
+                }
             }
         }
     }

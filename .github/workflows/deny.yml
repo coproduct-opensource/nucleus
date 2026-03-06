@@ -2,17 +2,13 @@ name: Cargo Deny
 
 on:
   push:
+    branches: [main]
     paths:
       - Cargo.lock
       - Cargo.toml
       - crates/**/Cargo.toml
       - deny.toml
   pull_request:
-    paths:
-      - Cargo.lock
-      - Cargo.toml
-      - crates/**/Cargo.toml
-      - deny.toml
   schedule:
     - cron: "0 7 * * 1"
 

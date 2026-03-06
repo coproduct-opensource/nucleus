@@ -38,7 +38,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
-    cargo build --release -p nucleus-tool-proxy \
+    cargo build --release -p nucleus-tool-proxy --features remote-audit \
     && cp target/release/nucleus-tool-proxy /usr/local/bin/ \
     && strip /usr/local/bin/nucleus-tool-proxy
 

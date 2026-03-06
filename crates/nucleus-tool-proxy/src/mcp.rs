@@ -449,7 +449,10 @@ impl NucleusMcpServer {
     }
 
     // -----------------------------------------------------------------------
-    // web_fetch — capability check + DNS allow-list + trifecta gate
+    // web_fetch — unified security controls (identical to HTTP path)
+    //
+    // Enforces: URL validation, DNS allowlist, URL allowlist, MIME gating,
+    // redirect target verification, and trifecta gate via GradedTaintGuard.
     // -----------------------------------------------------------------------
 
     #[tool(description = "Fetch a URL (HTTP GET/POST/PUT/DELETE)")]
@@ -467,28 +470,37 @@ impl NucleusMcpServer {
             return Ok(err_result("web_fetch capability is disabled"));
         }
 
-        // Parse and validate URL
+        // Input validation (scheme, length, null bytes) — shared with HTTP path
+        if let Err(e) = crate::web_fetch_policy::validate_url(&params.url) {
+            return Ok(err_result(e));
+        }
+
+        // Parse URL
         let parsed_url = match url::Url::parse(&params.url) {
             Ok(u) => u,
             Err(e) => return Ok(err_result(format!("invalid URL: {e}"))),
         };
 
-        // DNS allow-list enforcement
-        if !self.state.dns_allow.is_empty() {
+        // DNS allowlist — shared with HTTP path (fixed port-matching logic)
+        {
             let host = match parsed_url.host_str() {
                 Some(h) => h,
                 None => return Ok(err_result("URL has no host")),
             };
             let port = parsed_url.port_or_known_default().unwrap_or(443);
-            let host_port = format!("{host}:{port}");
-
-            let allowed = self.state.dns_allow.iter().any(|pattern| {
-                pattern == &host_port || pattern == host || pattern.starts_with(&format!("{host}:"))
-            });
-            if !allowed {
+            if let Err(e) =
+                crate::web_fetch_policy::check_dns_allowlist(&self.state.dns_allow, host, port)
+            {
                 warn!(host = host, port = port, "DNS not in allow-list");
-                return Ok(err_result(format!("DNS not allowed: {host_port}")));
+                return Ok(err_result(e));
             }
+        }
+
+        // URL allowlist — shared with HTTP path (was missing from MCP)
+        if let Err(e) =
+            crate::web_fetch_policy::check_url_allowlist(&self.state.url_allow, parsed_url.as_str())
+        {
+            return Ok(err_result(e));
         }
 
         let method = params.method.as_deref().unwrap_or("GET");
@@ -502,14 +514,30 @@ impl NucleusMcpServer {
             _ => return Ok(err_result(format!("unsupported method: {method}"))),
         };
 
-        // Perform async fetch, then feed result through execute_and_record
+        // Perform async fetch with full security controls
         let max_bytes = self.state.web_fetch_max_bytes;
+        let dns_allow = self.state.dns_allow.clone();
+        let url_allow = self.state.url_allow.clone();
         let fetch_result: Result<String, String> = async {
             let resp = request
                 .send()
                 .await
                 .map_err(|e| format!("fetch failed: {e}"))?;
             let status = resp.status().as_u16();
+
+            // Verify redirect target is still in allowlist
+            let final_url = resp.url().clone();
+            crate::web_fetch_policy::check_redirect_target(&dns_allow, &url_allow, &final_url)
+                .map_err(|e| format!("redirect target blocked: {e}"))?;
+
+            // MIME type gating — was missing from MCP path
+            let content_type = resp
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            crate::web_fetch_policy::check_mime_type(content_type)?;
+
             let bytes = resp
                 .bytes()
                 .await

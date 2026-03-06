@@ -70,7 +70,7 @@ jobs:
       - name: Build guest binaries (musl)
         run: |
           cross build -p nucleus-guest-init --release --target ${{ matrix.target }}
-          cross build -p nucleus-tool-proxy --release --target ${{ matrix.target }}
+          cross build -p nucleus-tool-proxy --release --features remote-audit --target ${{ matrix.target }}
           cross build -p nucleus-net-probe --release --target ${{ matrix.target }}
       - name: Build CLI + MCP (musl)
         run: |

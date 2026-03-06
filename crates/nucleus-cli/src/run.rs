@@ -782,8 +782,6 @@ fn run_claude_mcp(
         .arg(mcp_config_path)
         .arg("--allowedTools")
         .arg(allowed_tools.join(","))
-        .arg("--max-turns")
-        .arg("20")
         .arg("--max-budget-usd")
         .arg(policy.budget.max_cost_usd.to_string())
         .arg(prompt)

@@ -91,6 +91,8 @@ jobs:
             echo '```' >> "$GITHUB_STEP_SUMMARY"
             grep "SURVIVED" /tmp/mutants.txt >> "$GITHUB_STEP_SUMMARY" || true
             echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Survived mutants detected in security-critical modules"
+            exit 1
           else
             echo "All mutants caught by tests." >> "$GITHUB_STEP_SUMMARY"
           fi
