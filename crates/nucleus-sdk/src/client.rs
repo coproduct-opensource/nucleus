@@ -112,6 +112,7 @@ impl Nucleus {
             vsock: None,
             seccomp: None,
             cgroup: None,
+            audit_sink: None,
             credentials: None,
         });
 

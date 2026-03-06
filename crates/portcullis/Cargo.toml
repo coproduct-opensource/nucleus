@@ -24,6 +24,9 @@ spec = ["dep:serde_yaml", "dep:toml", "serde", "cel"]
 # Webhook audit backend for SIEM delivery
 webhook = ["dep:reqwest", "dep:tokio", "serde"]
 
+# Remote append-only audit sink (S3-compatible: AWS S3, MinIO, R2, Tigris)
+remote-audit = ["dep:aws-sdk-s3", "dep:aws-config", "dep:tokio", "serde"]
+
 # SECURITY: Enable this feature ONLY for testing. It exposes methods that
 # bypass security constraints (e.g., disabling trifecta enforcement).
 # DO NOT enable in production builds.
@@ -63,6 +66,10 @@ toml = { workspace = true, optional = true }
 # Webhook audit backend (optional)
 reqwest = { workspace = true, features = ["json", "rustls-tls-manual-roots"], optional = true }
 tokio = { workspace = true, features = ["rt"], optional = true }
+
+# Remote audit sink (optional, S3-compatible)
+aws-sdk-s3 = { workspace = true, optional = true }
+aws-config = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

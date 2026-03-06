@@ -83,6 +83,9 @@ pub struct PodSpecInner {
     /// Optional cgroup placement for Firecracker process.
     #[serde(default)]
     pub cgroup: Option<CgroupSpec>,
+    /// Optional remote audit sink for deletion-resistant log shipping.
+    #[serde(default)]
+    pub audit_sink: Option<AuditSinkSpec>,
     /// Optional credentials to inject into the pod.
     /// These are passed as environment variables to the pod's workload.
     ///
@@ -146,6 +149,7 @@ impl PolicySpec {
                 "web_research" | "web-research" => Ok(PermissionLattice::web_research()),
                 "network_only" | "network-only" => Ok(PermissionLattice::network_only()),
                 "edit_only" | "edit-only" => Ok(PermissionLattice::edit_only()),
+                "safe_pr_fixer" | "safe-pr-fixer" => Ok(PermissionLattice::safe_pr_fixer()),
                 "release" => Ok(PermissionLattice::release()),
                 "database_client" | "database-client" => Ok(PermissionLattice::database_client()),
                 "orchestrator" => Ok(PermissionLattice::orchestrator()),
@@ -238,6 +242,18 @@ pub struct NetworkSpec {
     /// Allowed DNS hostnames (resolved and pinned at pod start).
     #[serde(default)]
     pub dns_allow: Vec<String>,
+    /// Allowed URL patterns for web_fetch (glob-style, e.g. "https://docs.rs/*").
+    /// If non-empty, only URLs matching at least one pattern are permitted.
+    #[serde(default)]
+    pub url_allow: Vec<String>,
+    /// Override the default MIME type allowlist for web_fetch responses.
+    /// If None, the built-in allowlist (text + structured data) is used.
+    #[serde(default)]
+    pub mime_allow: Option<Vec<String>>,
+    /// Maximum response body size in bytes for web_fetch.
+    /// Defaults to 10 MiB if not specified.
+    #[serde(default)]
+    pub max_response_bytes: Option<u64>,
 }
 
 impl NetworkSpec {
@@ -251,6 +267,9 @@ impl NetworkSpec {
             allow: vec![],
             deny: vec!["0.0.0.0/0".into()],
             dns_allow: vec![],
+            url_allow: vec![],
+            mime_allow: None,
+            max_response_bytes: None,
         }
     }
 
@@ -280,6 +299,9 @@ impl NetworkSpec {
                 // Anthropic API (for Claude CLI)
                 "api.anthropic.com".into(),
             ],
+            url_allow: vec![],
+            mime_allow: None,
+            max_response_bytes: None,
         }
     }
 
@@ -292,6 +314,9 @@ impl NetworkSpec {
             allow: vec![],
             deny: vec![],
             dns_allow: vec![],
+            url_allow: vec![],
+            mime_allow: None,
+            max_response_bytes: None,
         }
     }
 }
@@ -408,6 +433,28 @@ impl CredentialsSpec {
     }
 }
 
+/// Remote audit sink configuration for deletion-resistant log shipping.
+///
+/// When configured, audit entries are written to an S3-compatible object store
+/// in addition to the local HMAC-signed JSONL log. Each entry is a separate
+/// object with `if_none_match("*")` to enforce append-only semantics.
+///
+/// Compatible with: AWS S3, MinIO, Cloudflare R2, Tigris.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditSinkSpec {
+    /// S3 bucket name.
+    pub s3_bucket: String,
+    /// Key prefix for audit objects (e.g. "audit/pod-name/").
+    #[serde(default)]
+    pub s3_prefix: Option<String>,
+    /// AWS region (defaults to us-east-1 if not set).
+    #[serde(default)]
+    pub s3_region: Option<String>,
+    /// Custom S3 endpoint URL (for MinIO, R2, Tigris, etc.).
+    #[serde(default)]
+    pub s3_endpoint: Option<String>,
+}
+
 /// Compute SHA-256 of a byte slice and return the hex string.
 pub fn sha256_bytes_hex(data: &[u8]) -> String {
     use sha2::{Digest, Sha256};
@@ -504,6 +551,8 @@ mod tests {
             "network-only",
             "edit_only",
             "edit-only",
+            "safe_pr_fixer",
+            "safe-pr-fixer",
             "release",
             "database_client",
             "database-client",
@@ -855,6 +904,58 @@ spec:
         assert!(
             spec.dns_allow.contains(&"api.anthropic.com".to_string()),
             "should allow Anthropic API"
+        );
+    }
+
+    #[test]
+    fn test_safe_pr_fixer_invariants() {
+        let spec = PolicySpec::Profile {
+            name: "safe_pr_fixer".to_string(),
+        };
+        let lattice = spec.resolve().expect("safe_pr_fixer should resolve");
+
+        // Core security invariant: agent cannot push or create PRs
+        assert_eq!(
+            lattice.capabilities.git_push,
+            portcullis::CapabilityLevel::Never,
+            "safe_pr_fixer must not allow git push"
+        );
+        assert_eq!(
+            lattice.capabilities.create_pr,
+            portcullis::CapabilityLevel::Never,
+            "safe_pr_fixer must not allow PR creation"
+        );
+        assert_eq!(
+            lattice.capabilities.web_search,
+            portcullis::CapabilityLevel::Never,
+            "safe_pr_fixer must not allow web search"
+        );
+
+        // Should be able to read, write, edit, commit
+        assert_eq!(
+            lattice.capabilities.read_files,
+            portcullis::CapabilityLevel::Always,
+        );
+        assert_eq!(
+            lattice.capabilities.write_files,
+            portcullis::CapabilityLevel::LowRisk,
+        );
+        assert_eq!(
+            lattice.capabilities.git_commit,
+            portcullis::CapabilityLevel::LowRisk,
+        );
+
+        // Trifecta IS complete (read + web_fetch + run_bash), but that's
+        // correct: normalize() adds approval obligations on exfil channels.
+        // The key constraint is that git_push and create_pr are Never.
+        assert!(
+            lattice.is_trifecta_vulnerable(),
+            "safe_pr_fixer has trifecta (bash is exfil vector), obligations mitigate"
+        );
+        // Bash should require approval due to trifecta normalization
+        assert!(
+            lattice.requires_approval(portcullis::Operation::RunBash),
+            "run_bash should require approval in safe_pr_fixer (trifecta mitigation)"
         );
     }
 

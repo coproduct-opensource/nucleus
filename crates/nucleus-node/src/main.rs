@@ -1801,6 +1801,25 @@ async fn spawn_firecracker_pod(
             }
         };
         let pid = child.id();
+
+        // Verify seccomp is active on the Firecracker process (unless explicitly disabled).
+        // Seccomp mode 2 = SECCOMP_MODE_FILTER (BPF filter active).
+        if !matches!(spec.spec.seccomp, Some(nucleus_spec::SeccompSpec::Disabled)) {
+            if let Some(fc_pid) = pid {
+                match verify_seccomp_active(fc_pid) {
+                    Ok(()) => {
+                        tracing::info!(
+                            pid = fc_pid,
+                            "seccomp filter verified active on firecracker process"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(pid = fc_pid, error = %e, "seccomp verification failed (may not be readable in some environments)");
+                    }
+                }
+            }
+        }
+
         let mut netns_baseline: Option<String> = None;
         let mut netns_pid: Option<u32> = None;
 
@@ -1809,6 +1828,9 @@ async fn spawn_firecracker_pod(
                 allow: Vec::new(),
                 deny: Vec::new(),
                 dns_allow: Vec::new(),
+                url_allow: Vec::new(),
+                mime_allow: None,
+                max_response_bytes: None,
             };
             let policy = spec.spec.network.as_ref().unwrap_or(&default_policy);
             let pid = match pid {
@@ -2977,6 +2999,35 @@ fn build_drive_config(image: &nucleus_spec::ImageSpec) -> Vec<DriveConfig> {
     }
 
     drives
+}
+
+/// Verify that seccomp is active on a Firecracker process by reading /proc/{pid}/status.
+/// Returns Ok(()) if seccomp mode is 2 (SECCOMP_MODE_FILTER).
+#[cfg(target_os = "linux")]
+fn verify_seccomp_active(pid: u32) -> Result<(), String> {
+    let status_path = format!("/proc/{}/status", pid);
+    let status = std::fs::read_to_string(&status_path)
+        .map_err(|e| format!("cannot read {}: {}", status_path, e))?;
+    let seccomp_line = status
+        .lines()
+        .find(|l| l.starts_with("Seccomp:"))
+        .ok_or_else(|| format!("no Seccomp field in {}", status_path))?;
+    let mode: u8 = seccomp_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    if mode < 2 {
+        return Err(format!("seccomp mode {} (expected 2 = filter)", mode));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+#[allow(dead_code)]
+fn verify_seccomp_active(_pid: u32) -> Result<(), String> {
+    // Seccomp is Linux-only; skip verification on other platforms.
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]

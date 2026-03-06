@@ -1,0 +1,58 @@
+name: 'Nucleus Safe PR Fixer'
+description: 'Run an AI agent with lattice-enforced permissions to fix issues safely'
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  issue-number:
+    description: 'GitHub issue number to fix'
+    required: true
+  model:
+    description: 'LLM model to use'
+    default: 'claude-sonnet-4-20250514'
+  api-key:
+    description: 'LLM API key (e.g., ANTHROPIC_API_KEY)'
+    required: true
+  profile:
+    description: 'Nucleus permission profile'
+    default: 'safe_pr_fixer'
+  timeout:
+    description: 'Timeout in seconds'
+    default: '3600'
+  nucleus-version:
+    description: 'Nucleus CLI version to install (or "latest")'
+    default: 'latest'
+
+outputs:
+  branch:
+    description: 'Branch name created for the fix'
+    value: ${{ steps.fix.outputs.branch }}
+  pr-url:
+    description: 'URL of the created pull request'
+    value: ${{ steps.fix.outputs.pr_url }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Nucleus CLI
+      shell: bash
+      run: |
+        if [ "${{ inputs.nucleus-version }}" = "latest" ]; then
+          curl -fsSL https://raw.githubusercontent.com/coproduct-opensource/nucleus/main/scripts/install.sh | bash
+        else
+          curl -fsSL https://raw.githubusercontent.com/coproduct-opensource/nucleus/main/scripts/install.sh | bash -s -- --version "${{ inputs.nucleus-version }}"
+        fi
+        echo "$HOME/.nucleus/bin" >> "$GITHUB_PATH"
+
+    - name: Run safe PR fixer
+      id: fix
+      shell: bash
+      env:
+        NUCLEUS_PROFILE: ${{ inputs.profile }}
+        ISSUE_NUMBER: ${{ inputs.issue-number }}
+        LLM_API_TOKEN: ${{ inputs.api-key }}
+        NUCLEUS_TIMEOUT: ${{ inputs.timeout }}
+        LLM_MODEL: ${{ inputs.model }}
+        GH_TOKEN: ${{ github.token }}
+      run: ${{ github.action_path }}/scripts/action-entrypoint.sh

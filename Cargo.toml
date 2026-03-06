@@ -89,6 +89,10 @@ base64 = "0.22"
 tempfile = "3"
 proptest = "1.10"
 
+# AWS SDK (optional, for remote audit sink)
+aws-sdk-s3 = "1.124"
+aws-config = { version = "1.6", features = ["behavior-version-latest"] }
+
 # Build
 tonic-prost-build = "0.14"
 protoc-bin-vendored = "3.2"

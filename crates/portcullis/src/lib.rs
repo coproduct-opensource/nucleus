@@ -100,6 +100,8 @@ pub mod galois;
 pub mod graded;
 pub mod guard;
 pub mod heyting;
+#[cfg(feature = "remote-audit")]
+pub mod s3_audit_backend;
 pub mod taint_core;
 
 pub mod identity;

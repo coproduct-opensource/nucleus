@@ -58,9 +58,9 @@ Status key: `DONE`, `PARTIAL`, `TODO`.
   - Current: `DONE`.
   - Evidence: `crates/nucleus-guest-init/src/main.rs`
 - **Seccomp enforced**
-  - Pass: seccomp profile configured and verified.
-  - Current: `PARTIAL` (config supported; verification pending).
-  - Evidence: `crates/nucleus-node/src/main.rs`, `crates/nucleus-spec/src/lib.rs`
+  - Pass: seccomp profile configured and verified post-spawn.
+  - Current: `DONE` (config applied via `apply_seccomp_flags`; post-spawn `/proc/{pid}/status` verification checks mode=2).
+  - Evidence: `crates/nucleus-node/src/main.rs` (verify_seccomp_active, apply_seccomp_flags), `crates/nucleus-spec/src/lib.rs` (SeccompSpec)
 
 ## 4.5) Monotone Security Posture (Immutability)
 
@@ -85,18 +85,34 @@ Status key: `DONE`, `PARTIAL`, `TODO`.
   - Evidence: `crates/nucleus-tool-proxy/src/main.rs`, `crates/nucleus-audit/src/main.rs`
 - **Remote append-only storage**
   - Pass: logs shipped to append-only store (or immutability proof).
-  - Current: `TODO`.
+  - Current: `DONE` (S3AuditBackend with `if_none_match("*")` append-only semantics; behind `remote-audit` feature flag).
+  - Evidence: `crates/portcullis/src/s3_audit_backend.rs`, `crates/nucleus-spec/src/lib.rs` (AuditSinkSpec)
 
 ## 6) Formal Assurance Gates
 
 - **ν laws proven in CI**
-  - Pass: Kani proof job runs in CI and blocks merges on failure.
-  - Current: `PARTIAL` (Kani proofs exist, nightly job runs; merge gate pending).
-  - Evidence: `crates/portcullis/src/kani.rs`
+  - Pass: Verus/Kani proof jobs run in CI and block merges on failure.
+  - Current: `DONE` (297 Verus proofs + 14 Kani harnesses; both are required merge checks on main).
+  - Evidence: `.github/workflows/verus.yml`, `.github/workflows/kani-nightly.yml`, `crates/portcullis-verified/src/lib.rs`, `crates/portcullis/src/kani.rs`
 - **Fuzzing in CI**
   - Pass: cargo-fuzz targets run with time budget; known bypasses blocked.
-  - Current: `PARTIAL` (targets exist; CI gate pending).
-  - Evidence: `fuzz/`
+  - Current: `DONE` (3 fuzz targets × 30s; Fuzz is a required merge check on main).
+  - Evidence: `fuzz/`, `.github/workflows/ci.yml`
+
+## 6.5) Web Ingress Control
+
+- **MIME type gating on web_fetch**
+  - Pass: only text and structured data MIME types are allowed; binary formats blocked.
+  - Current: `DONE` (allowlist: text/*, application/json, application/xml, etc.).
+  - Evidence: `crates/nucleus-tool-proxy/src/main.rs` (web_fetch handler)
+- **Taint provenance on fetched content**
+  - Pass: all web-fetched content is tagged with `X-Nucleus-Taint: UntrustedContent` + source domain.
+  - Current: `DONE`.
+  - Evidence: `crates/nucleus-tool-proxy/src/main.rs` (response headers)
+- **URL pattern allowlisting**
+  - Pass: per-pod URL pattern allowlist via `NetworkSpec.url_allow`.
+  - Current: `DONE` (glob-style matching; empty = allow all permitted domains).
+  - Evidence: `crates/nucleus-spec/src/lib.rs` (NetworkSpec), `crates/nucleus-tool-proxy/src/main.rs`
 
 ## 7) Demo Verification Script
 

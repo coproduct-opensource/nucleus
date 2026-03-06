@@ -171,7 +171,7 @@ DoD (guarantees)
 - Machine-checked proofs for ν laws.
 - CI gate that fails if proofs no longer check.
 Status
-- Not started.
+- Done: 297 Verus SMT proofs (E1-E7: taint monotonicity, trace monotonicity, denial monotonicity, auth boundary, capability coverage, budget monotonicity, delegation ceiling) + 14 Kani BMC harnesses. Both Verus and Kani are required merge checks on main. See `crates/portcullis-verified/src/lib.rs`, `.github/workflows/verus.yml`, `.github/workflows/kani-nightly.yml`.
 
 ## 10) Fuzzing coverage gaps
 
@@ -192,4 +192,4 @@ DoD (guarantees)
 - Fuzz CI: minimum corpus size + time budget.
 - No crashes, no false-allow for known forbidden patterns.
 Status
-- Partial: fuzz targets added under `fuzz/`; CI integration pending.
+- Done (CI-gated): 3 fuzz targets (command_can_execute, path_can_access, permission_serde) run in CI with 30s time budget each. Fuzz is a required merge check on main. See `fuzz/`, `.github/workflows/ci.yml`.

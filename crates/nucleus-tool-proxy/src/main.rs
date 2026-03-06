@@ -241,6 +241,8 @@ pub(crate) struct AppState {
     pub(crate) web_client: reqwest::Client,
     web_fetch_max_bytes: usize,
     dns_allow: Vec<String>,
+    /// URL pattern allowlist for web_fetch. If non-empty, URLs must match.
+    url_allow: Vec<String>,
     attestation_verifier: AttestationVerifier,
     policy_engine: PolicyEngine,
     /// Node client for pod management (orchestrator mode only).
@@ -380,6 +382,51 @@ fn is_expired(expires_at_unix: Option<u64>) -> bool {
         Some(ts) => ts <= now_unix(),
         None => false,
     }
+}
+
+/// Simple URL glob matcher for `url_allow` patterns.
+///
+/// - `*` matches any sequence of characters except `/`
+/// - `**` matches any sequence of characters including `/`
+/// - All other characters match literally.
+fn url_glob_match(pattern: &str, url: &str) -> bool {
+    url_glob_match_inner(pattern.as_bytes(), url.as_bytes())
+}
+
+fn url_glob_match_inner(pattern: &[u8], text: &[u8]) -> bool {
+    if pattern.is_empty() {
+        return text.is_empty();
+    }
+    if pattern.len() >= 2 && pattern[0] == b'*' && pattern[1] == b'*' {
+        // `**` — match any number of chars (including `/`)
+        let rest = &pattern[2..];
+        for i in 0..=text.len() {
+            if url_glob_match_inner(rest, &text[i..]) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if pattern[0] == b'*' {
+        // `*` — match any number of non-`/` chars
+        let rest = &pattern[1..];
+        for i in 0..=text.len() {
+            if i > 0 && text[i - 1] == b'/' {
+                break;
+            }
+            if url_glob_match_inner(rest, &text[i..]) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if text.is_empty() {
+        return false;
+    }
+    if pattern[0] == text[0] {
+        return url_glob_match_inner(&pattern[1..], &text[1..]);
+    }
+    false
 }
 
 /// Load and verify a signed approval bundle from the NUCLEUS_APPROVAL_BUNDLE env var.
@@ -967,12 +1014,18 @@ async fn main() -> Result<(), ApiError> {
         .build()
         .map_err(|e| ApiError::Spec(format!("failed to build HTTP client: {e}")))?;
 
-    // Extract DNS allow list from spec
+    // Extract DNS and URL allow lists from spec
     let dns_allow = spec
         .spec
         .network
         .as_ref()
         .map(|n| n.dns_allow.clone())
+        .unwrap_or_default();
+    let url_allow = spec
+        .spec
+        .network
+        .as_ref()
+        .map(|n| n.url_allow.clone())
         .unwrap_or_default();
 
     // Build attestation verifier
@@ -1091,6 +1144,7 @@ async fn main() -> Result<(), ApiError> {
         web_client,
         web_fetch_max_bytes: args.web_fetch_max_bytes,
         dns_allow,
+        url_allow,
         attestation_verifier,
         policy_engine,
         node_client,
@@ -2043,6 +2097,22 @@ async fn web_fetch(
         }
     }
 
+    // Check URL allow list (if configured) — glob-style pattern matching
+    if !state.url_allow.is_empty() {
+        let url_string = url.as_str();
+        let allowed = state.url_allow.iter().any(|pattern| {
+            // Simple glob: `*` matches any sequence of non-`/` chars,
+            // `**` matches anything including `/`.
+            url_glob_match(pattern, url_string)
+        });
+        if !allowed {
+            return Err(ApiError::WebFetch(format!(
+                "URL '{}' not in url_allow list",
+                url_str
+            )));
+        }
+    }
+
     // Build the request
     let method = req.method.as_deref().unwrap_or("GET").to_uppercase();
     let method = reqwest::Method::from_bytes(method.as_bytes())
@@ -2070,8 +2140,44 @@ async fn web_fetch(
 
     let status = response.status().as_u16();
 
-    // Collect response headers
-    let response_headers: HashMap<String, String> = response
+    // MIME type gating: only allow text and structured data formats.
+    // Binary formats (images, executables, archives) are blocked to prevent
+    // content injection and reduce the agent's attack surface.
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    {
+        const ALLOWED_MIME_PREFIXES: &[&str] = &[
+            "text/html",
+            "text/plain",
+            "text/markdown",
+            "text/csv",
+            "text/xml",
+            "text/css",
+            "application/json",
+            "application/xml",
+            "application/javascript",
+            "application/typescript",
+            "application/x-yaml",
+            "application/yaml",
+            "application/toml",
+        ];
+        if !content_type.is_empty()
+            && !ALLOWED_MIME_PREFIXES
+                .iter()
+                .any(|prefix| content_type.starts_with(prefix))
+        {
+            return Err(ApiError::WebFetch(format!(
+                "MIME type '{}' not in allowlist (text and structured data only)",
+                content_type
+            )));
+        }
+    }
+
+    // Collect response headers + add taint metadata
+    let mut response_headers: HashMap<String, String> = response
         .headers()
         .iter()
         .filter_map(|(k, v)| {
@@ -2080,6 +2186,19 @@ async fn web_fetch(
                 .map(|v| (k.as_str().to_string(), v.to_string()))
         })
         .collect();
+
+    // Taint provenance: mark all web-fetched content as untrusted.
+    // Downstream tool calls can use these headers for taint tracking.
+    response_headers.insert(
+        "x-nucleus-taint".to_string(),
+        "UntrustedContent".to_string(),
+    );
+    if let Some(host) = url::Url::parse(&url_str)
+        .ok()
+        .and_then(|u| u.host_str().map(|s| s.to_string()))
+    {
+        response_headers.insert("x-nucleus-source-domain".to_string(), host);
+    }
 
     // Read body with size limit
     let bytes = response
