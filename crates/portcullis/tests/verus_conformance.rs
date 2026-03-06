@@ -1442,8 +1442,15 @@ proptest! {
 
 /// Model the guard denial check (pure function, no RwLock).
 /// Mirrors GradedTaintGuard::check() trifecta path.
+///
+/// RunBash is omnibus: projects both PrivateData and ExfilVector.
 fn model_guard_would_deny(current: &TaintSet, op: Operation, requires_approval: bool) -> bool {
-    let projected = if let Some(label) = operation_taint(op) {
+    let projected = if op == Operation::RunBash {
+        // RunBash omnibus: projects PrivateData + ExfilVector
+        current
+            .union(&TaintSet::singleton(TaintLabel::PrivateData))
+            .union(&TaintSet::singleton(TaintLabel::ExfilVector))
+    } else if let Some(label) = operation_taint(op) {
         current.union(&TaintSet::singleton(label))
     } else {
         current.clone()

@@ -450,7 +450,10 @@ impl RuntimeTrifectaGuard {
         let has_private = ops.iter().any(|op| {
             matches!(
                 op,
-                Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch
+                Operation::ReadFiles
+                    | Operation::GlobSearch
+                    | Operation::GrepSearch
+                    | Operation::RunBash // RunBash can read any file
             )
         });
         let has_untrusted = ops
@@ -736,9 +739,21 @@ impl GradedTaintGuard {
     }
 
     /// Project what the taint set would be if this operation is added.
+    ///
+    /// RunBash is treated as an **omnibus** operation: bash can read any
+    /// file (`cat /etc/passwd`) AND exfiltrate data (`curl`), so it
+    /// conservatively projects both `PrivateData` and `ExfilVector`.
+    /// This closes the Clinejection gap where `WebFetch → RunBash`
+    /// was missing the `PrivateData` leg of the trifecta.
     fn projected_taint(&self, operation: Operation) -> TaintSet {
         let current = self.taint.read().expect("taint lock poisoned");
-        if let Some(label) = operation_taint(operation) {
+        if operation == Operation::RunBash {
+            // RunBash is omnibus: bash can read files AND exfiltrate.
+            // Project both PrivateData and ExfilVector conservatively.
+            current
+                .union(&TaintSet::singleton(TaintLabel::PrivateData))
+                .union(&TaintSet::singleton(TaintLabel::ExfilVector))
+        } else if let Some(label) = operation_taint(operation) {
             current.union(&TaintSet::singleton(label))
         } else {
             current.clone()
@@ -1489,5 +1504,51 @@ mod tests {
         guard.record(Operation::ReadFiles);
         guard.record(Operation::WebFetch);
         assert!(guard.check(Operation::RunBash).is_err());
+    }
+
+    /// Clinejection attack (Feb 2026): prompt injection in a GitHub issue
+    /// triggers `npm install` via an AI coding assistant. The preinstall
+    /// hook exfiltrates credentials.
+    ///
+    /// Portcullis must block this even WITHOUT a prior ReadFiles:
+    ///   WebFetch(UntrustedContent) → RunBash(projected: PrivateData+ExfilVector)
+    ///   = all 3 trifecta legs → DENIED.
+    #[test]
+    fn test_clinejection_blocked() {
+        let guard = GradedTaintGuard::new(trifecta_perms(), "[]");
+
+        // Step 1: Read untrusted content (GitHub issue via WebFetch)
+        assert!(guard.check(Operation::WebFetch).is_ok());
+        guard.record(Operation::WebFetch);
+
+        // Step 2: Attempt RunBash (npm install from attacker).
+        // RunBash projects PrivateData + ExfilVector (omnibus),
+        // completing the trifecta with UntrustedContent.
+        let result = guard.check(Operation::RunBash);
+        assert!(
+            result.is_err(),
+            "Clinejection: RunBash after WebFetch must be denied (omnibus projection)"
+        );
+
+        // The taint should NOT have changed (check doesn't taint)
+        assert!(!guard.taint().contains(TaintLabel::PrivateData));
+        assert!(!guard.taint().contains(TaintLabel::ExfilVector));
+    }
+
+    /// Verify that RunBash also triggers trifecta in the RuntimeTrifectaGuard.
+    #[test]
+    fn test_clinejection_runtime_guard() {
+        let perms = trifecta_perms();
+        let guard = RuntimeTrifectaGuard::new(perms, "[]");
+
+        // WebFetch then RunBash — should complete trifecta
+        assert!(guard.check(Operation::WebFetch).is_ok());
+        guard.record(Operation::WebFetch);
+
+        let result = guard.check(Operation::RunBash);
+        assert!(
+            result.is_err(),
+            "Clinejection: RuntimeTrifectaGuard must also block WebFetch → RunBash"
+        );
     }
 }

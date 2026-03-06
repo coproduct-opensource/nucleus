@@ -3820,7 +3820,15 @@ pub open spec fn guard_would_deny(
     current_taint: SpecTaintSet,
     op: nat,
 ) -> bool {
-    let projected = if operation_taint_label(op) <= 2 {
+    let projected = if op == 3 {
+        // RunBash (op=3) is omnibus: projects PrivateData(0) + ExfilVector(2).
+        // Bash can read any file (cat) AND exfiltrate (curl), so the
+        // CHECK conservatively projects both legs.
+        taint_union(
+            taint_union(current_taint, taint_singleton(0)),
+            taint_singleton(2),
+        )
+    } else if operation_taint_label(op) <= 2 {
         taint_union(current_taint, taint_singleton(operation_taint_label(op)))
     } else {
         current_taint
@@ -3904,10 +3912,12 @@ proof fn proof_neutral_op_preserves_taint(
 // M7: Guard Projection Soundness
 // ============================================================================
 
-/// M7: The guard's check projection matches what record would produce.
+/// M7: The guard's check projection is sound w.r.t. what record produces.
 ///
-/// For a successful event, apply_event_taint produces exactly the taint
-/// that guard_would_deny's projection predicts.
+/// For a successful event, apply_event_taint produces taint that is a
+/// subset of guard_would_deny's projection. Equality holds for all ops
+/// except RunBash (op=3), where the guard conservatively over-projects
+/// (PrivateData + ExfilVector) while record only adds ExfilVector.
 proof fn proof_guard_projection_sound(
     current_taint: SpecTaintSet,
     op: nat,
@@ -3915,14 +3925,43 @@ proof fn proof_guard_projection_sound(
     requires valid_operation(op),
     ensures ({
         let event = McpEvent { op: op, succeeded: true };
-        let projected = if operation_taint_label(op) <= 2 {
+        let projected = if op == 3 {
+            // RunBash omnibus projection: PrivateData(0) + ExfilVector(2)
+            taint_union(
+                taint_union(current_taint, taint_singleton(0)),
+                taint_singleton(2),
+            )
+        } else if operation_taint_label(op) <= 2 {
             taint_union(current_taint, taint_singleton(operation_taint_label(op)))
         } else {
             current_taint
         };
-        apply_event_taint(current_taint, event) == projected
+        // Record taint is a subset of the guard's projection (sound over-approximation)
+        taint_subset(apply_event_taint(current_taint, event), projected)
     }),
-{}
+{
+    let event = McpEvent { op: op, succeeded: true };
+    let actual = apply_event_taint(current_taint, event);
+    if op == 3 {
+        // RunBash: actual = union(current, singleton(2))  [ExfilVector only]
+        //          projected = union(union(current, singleton(0)), singleton(2))
+        // actual ⊆ projected because projected has everything actual has, plus singleton(0)
+        let proj_inner = taint_union(current_taint, taint_singleton(0));
+        let projected = taint_union(proj_inner, taint_singleton(2));
+        // actual = union(current, singleton(2))
+        assert(actual == taint_union(current_taint, taint_singleton(2)));
+        // projected.private_data = current.private_data || true = true
+        // projected.untrusted_content = current.untrusted_content (unchanged)
+        // projected.exfil_vector = current.exfil_vector || true = true
+        // actual.private_data = current.private_data
+        // actual.untrusted_content = current.untrusted_content
+        // actual.exfil_vector = current.exfil_vector || true = true
+        assert(actual.private_data ==> projected.private_data);
+        assert(actual.untrusted_content ==> projected.untrusted_content);
+        assert(actual.exfil_vector ==> projected.exfil_vector);
+    }
+    // else: op != 3 — actual == projected (exact match, subset trivially holds)
+}
 
 // ============================================================================
 // M1: Trace Taint Monotonicity
@@ -4011,24 +4050,29 @@ proof fn proof_session_safety(
         guard_would_deny(obs, trace_taint(trace), next_op),
 {
     let current = trace_taint(trace);
-    // The projected taint is union(current, singleton(label)) or current.
+    // The projected taint is always a superset of current.
     // Since current is already trifecta-complete, the projection is also
     // trifecta-complete (union can only add more true bits).
-    if operation_taint_label(next_op) <= 2 {
+    if next_op == 3 {
+        // RunBash omnibus: projected = union(union(current, singleton(0)), singleton(2))
+        let proj1 = taint_union(current, taint_singleton(0));
+        let projected = taint_union(proj1, taint_singleton(2));
+        // current is trifecta-complete → all legs true → projected all legs true
+        assert(projected.private_data);
+        assert(projected.untrusted_content);
+        assert(projected.exfil_vector);
+        assert(taint_is_trifecta_complete(projected));
+    } else if operation_taint_label(next_op) <= 2 {
         let projected = taint_union(
             current,
             taint_singleton(operation_taint_label(next_op)),
         );
-        // projected is a superset of current (by J3/accumulation monotone)
         proof_taint_accumulation_monotone(
             current,
             operation_taint_label(next_op),
         );
-        // taint_subset(current, projected)
-        // current has all 3 legs true → projected has all 3 legs true
     }
     // else: projected == current, already trifecta-complete
-    // With trifecta-complete projected + requires_approval → guard denies
 }
 
 // ============================================================================
@@ -4346,11 +4390,19 @@ exec fn exec_guard_check(
     requires op <= 11,
     ensures denied == guard_would_deny(obs, taint, op as nat),
 {
-    let label = exec_operation_taint_label(op);
-    let projected = if label <= 2 {
-        exec_taintset_union(taint, exec_taintset_singleton(label))
+    let projected = if op == 3 {
+        // RunBash: omnibus projection — PrivateData(0) + ExfilVector(2)
+        exec_taintset_union(
+            exec_taintset_union(taint, exec_taintset_singleton(0)),
+            exec_taintset_singleton(2),
+        )
     } else {
-        taint
+        let label = exec_operation_taint_label(op);
+        if label <= 2 {
+            exec_taintset_union(taint, exec_taintset_singleton(label))
+        } else {
+            taint
+        }
     };
     let complete = exec_taintset_is_trifecta(projected);
     let approval = (op == 3 && obs.run_bash)
@@ -4469,24 +4521,30 @@ proof fn proof_exec_session_safety_refinement(
     ensures
         guard_would_deny(obs, taint, op as nat),
 {
-    // guard_would_deny projects taint: union(taint, singleton(label(op)))
+    // guard_would_deny projects taint then checks trifecta + approval.
     // Taint is already trifecta-complete.
-    // Union with any singleton preserves trifecta (monotonicity).
-    let label = operation_taint_label(op as nat);
-    if label <= 2 {
-        // Projection: union(trifecta, singleton) is still trifecta
-        let singleton = taint_singleton(label);
-        let projected = taint_union(taint, singleton);
-        // Each leg is (taint.leg || singleton.leg) — taint already has all legs true
+    // Any projection (union with more labels) preserves trifecta.
+    if op == 3 {
+        // RunBash omnibus: projected = union(union(taint, singleton(0)), singleton(2))
+        let proj1 = taint_union(taint, taint_singleton(0));
+        let projected = taint_union(proj1, taint_singleton(2));
         assert(projected.private_data);
         assert(projected.untrusted_content);
         assert(projected.exfil_vector);
         assert(taint_is_trifecta_complete(projected));
     } else {
-        // Neutral op: projected == taint, still trifecta-complete
-        assert(taint_is_trifecta_complete(taint));
+        let label = operation_taint_label(op as nat);
+        if label <= 2 {
+            let singleton = taint_singleton(label);
+            let projected = taint_union(taint, singleton);
+            assert(projected.private_data);
+            assert(projected.untrusted_content);
+            assert(projected.exfil_vector);
+            assert(taint_is_trifecta_complete(projected));
+        } else {
+            assert(taint_is_trifecta_complete(taint));
+        }
     }
-    // requires_approval(obs, op) is given, so guard_would_deny is true
 }
 
 /// B4: Session fold taint is monotone at each step.
@@ -4614,13 +4672,23 @@ proof fn proof_session_fold_safety(
 
     // Step 2: guard_would_deny on trifecta-complete taint (exec refinement)
     let op = trace[n as int].op;
-    let label = operation_taint_label(op);
-    if label <= 2 {
-        let projected = taint_union(taint_n, taint_singleton(label));
+    if op == 3 {
+        // RunBash omnibus: projected = union(union(taint_n, singleton(0)), singleton(2))
+        let proj1 = taint_union(taint_n, taint_singleton(0));
+        let projected = taint_union(proj1, taint_singleton(2));
         assert(projected.private_data);
         assert(projected.untrusted_content);
         assert(projected.exfil_vector);
         assert(taint_is_trifecta_complete(projected));
+    } else {
+        let label = operation_taint_label(op);
+        if label <= 2 {
+            let projected = taint_union(taint_n, taint_singleton(label));
+            assert(projected.private_data);
+            assert(projected.untrusted_content);
+            assert(projected.exfil_vector);
+            assert(taint_is_trifecta_complete(projected));
+        }
     }
     // requires_approval is given, so guard_would_deny holds
 }

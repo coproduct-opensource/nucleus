@@ -317,8 +317,16 @@ fn arbitrary_operation() -> Operation {
 
 /// Pure taint projection: what the taint WOULD be after recording this op.
 /// Mirrors GradedTaintGuard::projected_taint() without the RwLock.
+///
+/// RunBash is omnibus: bash can read files AND exfiltrate, so the CHECK
+/// conservatively projects both PrivateData and ExfilVector.
 fn pure_projected_taint(current: &TaintSet, op: Operation) -> TaintSet {
-    if let Some(label) = operation_taint(op) {
+    if op == Operation::RunBash {
+        // RunBash is omnibus: project both PrivateData and ExfilVector
+        current
+            .union(&TaintSet::singleton(TaintLabel::PrivateData))
+            .union(&TaintSet::singleton(TaintLabel::ExfilVector))
+    } else if let Some(label) = operation_taint(op) {
         current.union(&TaintSet::singleton(label))
     } else {
         current.clone()
@@ -472,7 +480,7 @@ fn proof_projected_taint_correctness() {
         assert!(projected.contains(TaintLabel::ExfilVector));
     }
     // 2. Neutral ops don't change taint
-    if operation_taint(op).is_none() {
+    if operation_taint(op).is_none() && op != Operation::RunBash {
         assert!(projected == current, "Neutral op changed taint");
     }
     // 3. Non-neutral ops add their label
@@ -480,6 +488,17 @@ fn proof_projected_taint_correctness() {
         assert!(
             projected.contains(label),
             "Projected taint missing op label"
+        );
+    }
+    // 3b. RunBash omnibus: always projects both PrivateData AND ExfilVector
+    if op == Operation::RunBash {
+        assert!(
+            projected.contains(TaintLabel::PrivateData),
+            "RunBash projection missing PrivateData"
+        );
+        assert!(
+            projected.contains(TaintLabel::ExfilVector),
+            "RunBash projection missing ExfilVector"
         );
     }
     // 4. If current is already trifecta-complete, projected is too (irreversibility)
@@ -511,4 +530,49 @@ fn proof_guard_denial_soundness() {
     if current.is_trifecta_complete() && requires_approval {
         assert!(denied, "Trifecta + approval should deny but didn't");
     }
+}
+
+// ---------------------------------------------------------------------------
+// A8: Clinejection defense — WebFetch → RunBash is ALWAYS denied
+// ---------------------------------------------------------------------------
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_clinejection_blocked() {
+    // Model the Clinejection attack: untrusted content read via WebFetch,
+    // then attacker triggers RunBash (npm install with preinstall hook).
+    //
+    // After WebFetch, taint has UntrustedContent. RunBash's omnibus
+    // projection adds PrivateData + ExfilVector → trifecta complete → denied.
+    let mut taint = TaintSet::empty();
+
+    // Step 1: WebFetch contributes UntrustedContent
+    taint = taint.union(&TaintSet::singleton(TaintLabel::UntrustedContent));
+    assert!(taint.contains(TaintLabel::UntrustedContent));
+    assert!(!taint.is_trifecta_complete());
+
+    // Step 2: RunBash projected taint includes PrivateData + ExfilVector
+    let projected = pure_projected_taint(&taint, Operation::RunBash);
+    assert!(
+        projected.contains(TaintLabel::PrivateData),
+        "RunBash must project PrivateData"
+    );
+    assert!(
+        projected.contains(TaintLabel::ExfilVector),
+        "RunBash must project ExfilVector"
+    );
+    assert!(
+        projected.contains(TaintLabel::UntrustedContent),
+        "Existing UntrustedContent must survive projection"
+    );
+    assert!(
+        projected.is_trifecta_complete(),
+        "WebFetch + RunBash must complete trifecta"
+    );
+
+    // Step 3: Guard denies (RunBash requires approval → denied)
+    let denied = pure_taint_would_deny(&taint, Operation::RunBash, true);
+    assert!(
+        denied,
+        "Clinejection: RunBash after WebFetch MUST be denied"
+    );
 }
