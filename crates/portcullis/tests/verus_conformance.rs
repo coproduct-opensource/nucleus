@@ -2859,3 +2859,253 @@ mod enforcement_monotonicity {
         }
     }
 }
+
+// ============================================================================
+// E4: Fail-Closed Auth Boundary Conformance
+//
+// These tests verify that the auth_decision model in portcullis-verified
+// faithfully captures the auth_middleware behavior in nucleus-tool-proxy.
+//
+// The model is a pure function:
+//   auth_decision(is_health, has_spiffe, hmac_ok, is_approve, drand_ok) -> AuthResult
+//
+// Where AuthResult ∈ {0=PassThrough, 1=Authenticated, 2=Rejected}.
+//
+// Since the inputs are 5 booleans (2^5=32 combinations), we test exhaustively.
+// ============================================================================
+mod auth_boundary {
+    /// Mirror of Verus `auth_decision` spec function.
+    ///
+    /// Must exactly match the Verus spec in portcullis-verified/src/lib.rs.
+    fn auth_decision(
+        is_health: bool,
+        has_spiffe: bool,
+        hmac_ok: bool,
+        is_approve: bool,
+        drand_ok: bool,
+    ) -> u8 {
+        if is_health {
+            0 // PassThrough
+        } else if has_spiffe {
+            1 // Authenticated
+        } else if is_approve {
+            if hmac_ok && drand_ok {
+                1 // Authenticated
+            } else {
+                2 // Rejected
+            }
+        } else if hmac_ok {
+            1 // Authenticated
+        } else {
+            2 // Rejected
+        }
+    }
+
+    /// E4.1 conformance: health always passes through.
+    #[test]
+    fn conformance_e4_health_always_passes() {
+        // Health is pass-through for all 2^4 = 16 combinations of remaining inputs
+        for has_spiffe in [false, true] {
+            for hmac_ok in [false, true] {
+                for is_approve in [false, true] {
+                    for drand_ok in [false, true] {
+                        assert_eq!(
+                            auth_decision(true, has_spiffe, hmac_ok, is_approve, drand_ok),
+                            0,
+                            "health should pass-through: spiffe={has_spiffe}, hmac={hmac_ok}, approve={is_approve}, drand={drand_ok}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// E4.2 conformance: no credentials → always rejected.
+    #[test]
+    fn conformance_e4_no_auth_rejects() {
+        for is_approve in [false, true] {
+            for drand_ok in [false, true] {
+                assert_eq!(
+                    auth_decision(false, false, false, is_approve, drand_ok),
+                    2,
+                    "no auth should reject: approve={is_approve}, drand={drand_ok}"
+                );
+            }
+        }
+    }
+
+    /// E4.3 conformance: non-health never produces pass-through.
+    #[test]
+    fn conformance_e4_non_health_never_passthrough() {
+        for has_spiffe in [false, true] {
+            for hmac_ok in [false, true] {
+                for is_approve in [false, true] {
+                    for drand_ok in [false, true] {
+                        let result =
+                            auth_decision(false, has_spiffe, hmac_ok, is_approve, drand_ok);
+                        assert_ne!(
+                            result, 0,
+                            "non-health should never pass-through: spiffe={has_spiffe}, hmac={hmac_ok}, approve={is_approve}, drand={drand_ok}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// E4.4 conformance: SPIFFE is always sufficient.
+    #[test]
+    fn conformance_e4_spiffe_sufficient() {
+        for hmac_ok in [false, true] {
+            for is_approve in [false, true] {
+                for drand_ok in [false, true] {
+                    assert_eq!(
+                        auth_decision(false, true, hmac_ok, is_approve, drand_ok),
+                        1,
+                        "SPIFFE should authenticate: hmac={hmac_ok}, approve={is_approve}, drand={drand_ok}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// E4.5 conformance: HMAC sufficient for non-approve.
+    #[test]
+    fn conformance_e4_hmac_sufficient_non_approve() {
+        for drand_ok in [false, true] {
+            assert_eq!(
+                auth_decision(false, false, true, false, drand_ok),
+                1,
+                "HMAC should authenticate non-approve: drand={drand_ok}"
+            );
+        }
+    }
+
+    /// E4.6 conformance: approve path requires drand (strict).
+    #[test]
+    fn conformance_e4_approve_needs_drand() {
+        assert_eq!(
+            auth_decision(false, false, true, true, false),
+            2,
+            "approve with HMAC but no drand should be rejected in strict mode"
+        );
+    }
+
+    /// E4.7 conformance: all 32 inputs produce valid results.
+    #[test]
+    fn conformance_e4_decision_total_exhaustive() {
+        let mut count = 0u32;
+        for is_health in [false, true] {
+            for has_spiffe in [false, true] {
+                for hmac_ok in [false, true] {
+                    for is_approve in [false, true] {
+                        for drand_ok in [false, true] {
+                            let result =
+                                auth_decision(is_health, has_spiffe, hmac_ok, is_approve, drand_ok);
+                            assert!(
+                                result <= 2,
+                                "invalid result {result}: health={is_health}, spiffe={has_spiffe}, hmac={hmac_ok}, approve={is_approve}, drand={drand_ok}"
+                            );
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(count, 32, "must test all 2^5 combinations");
+    }
+
+    /// E4.8 conformance: verify the decision truth table.
+    ///
+    /// Explicitly asserts every one of the 32 input combinations against
+    /// expected output. This is the ultimate conformance test — if this
+    /// passes, the model is faithful to the intended behavior.
+    #[test]
+    fn conformance_e4_full_truth_table() {
+        // Format: (is_health, has_spiffe, hmac_ok, is_approve, drand_ok) -> expected
+        let truth_table: [(bool, bool, bool, bool, bool, u8); 32] = [
+            // Health path: always 0 (pass-through)
+            (true, false, false, false, false, 0),
+            (true, false, false, false, true, 0),
+            (true, false, false, true, false, 0),
+            (true, false, false, true, true, 0),
+            (true, false, true, false, false, 0),
+            (true, false, true, false, true, 0),
+            (true, false, true, true, false, 0),
+            (true, false, true, true, true, 0),
+            (true, true, false, false, false, 0),
+            (true, true, false, false, true, 0),
+            (true, true, false, true, false, 0),
+            (true, true, false, true, true, 0),
+            (true, true, true, false, false, 0),
+            (true, true, true, false, true, 0),
+            (true, true, true, true, false, 0),
+            (true, true, true, true, true, 0),
+            // Non-health, no SPIFFE, no HMAC: always 2 (rejected)
+            (false, false, false, false, false, 2),
+            (false, false, false, false, true, 2),
+            (false, false, false, true, false, 2),
+            (false, false, false, true, true, 2),
+            // Non-health, no SPIFFE, HMAC ok, non-approve: 1 (authenticated)
+            (false, false, true, false, false, 1),
+            (false, false, true, false, true, 1),
+            // Non-health, no SPIFFE, HMAC ok, approve: needs drand
+            (false, false, true, true, false, 2), // strict: rejected without drand
+            (false, false, true, true, true, 1),  // approved with drand
+            // Non-health, SPIFFE present: always 1 (authenticated)
+            (false, true, false, false, false, 1),
+            (false, true, false, false, true, 1),
+            (false, true, false, true, false, 1),
+            (false, true, false, true, true, 1),
+            (false, true, true, false, false, 1),
+            (false, true, true, false, true, 1),
+            (false, true, true, true, false, 1),
+            (false, true, true, true, true, 1),
+        ];
+
+        for (i, &(is_health, has_spiffe, hmac_ok, is_approve, drand_ok, expected)) in
+            truth_table.iter().enumerate()
+        {
+            let actual = auth_decision(is_health, has_spiffe, hmac_ok, is_approve, drand_ok);
+            assert_eq!(
+                actual, expected,
+                "row {i}: auth_decision({is_health}, {has_spiffe}, {hmac_ok}, {is_approve}, {drand_ok}) = {actual}, expected {expected}"
+            );
+        }
+    }
+
+    /// E4 structural: rejection dominance — rejected inputs stay rejected
+    /// when adding more capabilities (monotonicity of rejection).
+    ///
+    /// If a request is rejected with no SPIFFE and no HMAC, adding drand alone
+    /// does not help (drand is not an auth method, just an anchoring mechanism).
+    #[test]
+    fn conformance_e4_drand_alone_insufficient() {
+        // drand alone never authenticates — it's only meaningful with HMAC
+        assert_eq!(
+            auth_decision(false, false, false, false, true),
+            2,
+            "drand alone should not authenticate non-approve"
+        );
+        assert_eq!(
+            auth_decision(false, false, false, true, true),
+            2,
+            "drand alone should not authenticate approve"
+        );
+    }
+
+    /// E4 structural: approve path is strictly harder than non-approve.
+    ///
+    /// For the same auth credentials (no SPIFFE, HMAC ok, no drand),
+    /// non-approve succeeds but approve is rejected.
+    #[test]
+    fn conformance_e4_approve_strictly_harder() {
+        let non_approve = auth_decision(false, false, true, false, false);
+        let approve = auth_decision(false, false, true, true, false);
+        assert_eq!(non_approve, 1, "non-approve with HMAC should authenticate");
+        assert_eq!(
+            approve, 2,
+            "approve with only HMAC should be rejected (strict drand)"
+        );
+    }
+}

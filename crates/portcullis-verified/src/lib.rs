@@ -77,6 +77,17 @@
 //! - Graded monad: (grade, value) pair with max-monoid grading
 //! - ML1-ML3: left identity, right identity, associativity of monadic bind
 //!
+//! ## Fail-Closed Auth Boundary (Phase 2: E4)
+//! - AuthResult: {0=PassThrough, 1=Authenticated, 2=Rejected}
+//! - auth_decision(is_health, has_spiffe, hmac_ok, is_approve, drand_ok) → AuthResult
+//! - Health is the ONLY pass-through path (no auth check)
+//! - Non-health with no credentials always rejects (fail-closed)
+//! - Non-health result is always authenticated OR rejected (never pass-through)
+//! - SPIFFE mTLS is always sufficient (highest precedence after health)
+//! - HMAC is sufficient for non-approve paths
+//! - Approve path in strict drand mode requires drand anchoring
+//! - Decision function is total over all 2^5=32 input combinations
+//!
 //! ## Galois Connection Properties (Phase 0 completion)
 //! - Domain: CapabilityLevel as 3-element chain {0=Never, 1=LowRisk, 2=Always}
 //! - α(l) = min(l, threshold) (restriction/cap)
@@ -5676,6 +5687,206 @@ proof fn proof_e3_denial_monotone(
         assert(taint_is_trifecta_complete(taint_i) ==> taint_is_trifecta_complete(taint_j));
     }
 }
+
+// ============================================================================
+// E4: Fail-Closed Auth Boundary
+//
+// Models the auth_middleware decision function from nucleus-tool-proxy.
+// The auth middleware is the outermost perimeter — if it passes an
+// unauthenticated request through, all lattice enforcement is bypassed.
+//
+// The model captures the decision tree:
+//   1. Health path → pass-through (no auth check)
+//   2. SPIFFE mTLS → authenticated (always sufficient)
+//   3. Approve path → HMAC + drand (strict mode requires drand)
+//   4. Other paths → HMAC
+//   5. No credentials → rejected
+//
+// AuthResult encoding: 0=PassThrough, 1=Authenticated, 2=Rejected
+// ============================================================================
+
+/// Valid auth result: 0 (pass-through), 1 (authenticated), 2 (rejected).
+pub open spec fn valid_auth_result(r: u8) -> bool {
+    r <= 2
+}
+
+/// Auth decision: pure function over 5 boolean inputs.
+///
+/// Models the auth_middleware in nucleus-tool-proxy/src/main.rs.
+/// The real middleware uses Axum state, async I/O, and error types;
+/// this spec captures only the decision logic.
+///
+/// Arguments:
+///   is_health: request targets /v1/health
+///   has_spiffe: SPIFFE mTLS identity present in connection
+///   hmac_ok: HMAC signature verification succeeds
+///   is_approve: request targets /v1/approve
+///   drand_ok: drand round present and valid (only checked on approve path)
+///
+/// Returns: 0=PassThrough, 1=Authenticated, 2=Rejected
+pub open spec fn auth_decision(
+    is_health: bool,
+    has_spiffe: bool,
+    hmac_ok: bool,
+    is_approve: bool,
+    drand_ok: bool,
+) -> u8 {
+    if is_health {
+        0  // PassThrough: health endpoint skips all auth
+    } else if has_spiffe {
+        1  // Authenticated: SPIFFE mTLS is always sufficient
+    } else if is_approve {
+        if hmac_ok && drand_ok {
+            1  // Authenticated: approve with HMAC + drand
+        } else {
+            2  // Rejected: approve requires both HMAC and drand (strict)
+        }
+    } else {
+        if hmac_ok {
+            1  // Authenticated: HMAC sufficient for non-approve
+        } else {
+            2  // Rejected: no valid credentials
+        }
+    }
+}
+
+/// Executable mirror of auth_decision for runtime conformance testing.
+pub fn auth_decision_exec(
+    is_health: bool,
+    has_spiffe: bool,
+    hmac_ok: bool,
+    is_approve: bool,
+    drand_ok: bool,
+) -> (result: u8)
+    ensures result == auth_decision(is_health, has_spiffe, hmac_ok, is_approve, drand_ok),
+{
+    if is_health {
+        0
+    } else if has_spiffe {
+        1
+    } else if is_approve {
+        if hmac_ok && drand_ok {
+            1
+        } else {
+            2
+        }
+    } else {
+        if hmac_ok {
+            1
+        } else {
+            2
+        }
+    }
+}
+
+/// E4.1: Health endpoint always passes through regardless of auth state.
+///
+/// This is the ONLY pass-through path. Health must be reachable for
+/// liveness probes even when auth infrastructure is down.
+proof fn proof_e4_health_always_passes(
+    has_spiffe: bool,
+    hmac_ok: bool,
+    is_approve: bool,
+    drand_ok: bool,
+)
+    ensures
+        auth_decision(true, has_spiffe, hmac_ok, is_approve, drand_ok) == 0,
+{}
+
+/// E4.2: Non-health requests with no credentials are always rejected.
+///
+/// "Fail-closed": without SPIFFE identity and without valid HMAC,
+/// no non-health request can pass. This is the core security guarantee.
+proof fn proof_e4_non_health_no_auth_rejects(
+    is_approve: bool,
+    drand_ok: bool,
+)
+    ensures
+        auth_decision(false, false, false, is_approve, drand_ok) == 2,
+{}
+
+/// E4.3: Non-health requests never produce pass-through.
+///
+/// The result of any non-health request is always either
+/// Authenticated (1) or Rejected (2), never PassThrough (0).
+/// This proves the health check is the SOLE pass-through gate.
+proof fn proof_e4_non_health_never_passthrough(
+    has_spiffe: bool,
+    hmac_ok: bool,
+    is_approve: bool,
+    drand_ok: bool,
+)
+    ensures
+        auth_decision(false, has_spiffe, hmac_ok, is_approve, drand_ok) != 0,
+{}
+
+/// E4.4: SPIFFE mTLS is always sufficient for non-health requests.
+///
+/// When a valid SPIFFE identity is present, the request is authenticated
+/// regardless of HMAC state, path, or drand round. SPIFFE is the highest
+/// precedence auth method.
+proof fn proof_e4_spiffe_sufficient(
+    hmac_ok: bool,
+    is_approve: bool,
+    drand_ok: bool,
+)
+    ensures
+        auth_decision(false, true, hmac_ok, is_approve, drand_ok) == 1,
+{}
+
+/// E4.5: HMAC is sufficient for non-approve paths.
+///
+/// For any path other than /v1/approve, a valid HMAC signature is
+/// sufficient for authentication. No drand round is required.
+proof fn proof_e4_hmac_sufficient_non_approve(
+    drand_ok: bool,
+)
+    ensures
+        auth_decision(false, false, true, false, drand_ok) == 1,
+{}
+
+/// E4.6: Approve path in strict drand mode requires drand anchoring.
+///
+/// When the approve path is requested with valid HMAC but no drand round,
+/// the request is rejected. This prevents approval replay attacks by
+/// anchoring each approval to a drand beacon round.
+proof fn proof_e4_approve_needs_drand_strict()
+    ensures
+        auth_decision(false, false, true, true, false) == 2,
+{}
+
+/// E4.7: The auth decision function is total.
+///
+/// For every possible combination of the 5 boolean inputs (2^5 = 32),
+/// the result is a valid AuthResult (0, 1, or 2).
+/// This proves there are no undefined states in the decision function.
+proof fn proof_e4_decision_total(
+    is_health: bool,
+    has_spiffe: bool,
+    hmac_ok: bool,
+    is_approve: bool,
+    drand_ok: bool,
+)
+    ensures
+        valid_auth_result(auth_decision(is_health, has_spiffe, hmac_ok, is_approve, drand_ok)),
+{}
+
+/// E4.8: Adding SPIFFE to a rejected request always authenticates it.
+///
+/// If a request was rejected (result=2), adding SPIFFE identity to the
+/// same request will always produce Authenticated (result=1), as long
+/// as the request is not a health path (which would be pass-through).
+/// This proves SPIFFE is a universal override for non-health rejection.
+proof fn proof_e4_spiffe_overrides_rejection(
+    hmac_ok: bool,
+    is_approve: bool,
+    drand_ok: bool,
+)
+    requires
+        auth_decision(false, false, hmac_ok, is_approve, drand_ok) == 2,
+    ensures
+        auth_decision(false, true, hmac_ok, is_approve, drand_ok) == 1,
+{}
 
 fn main() {}
 
