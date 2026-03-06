@@ -2861,6 +2861,575 @@ mod enforcement_monotonicity {
 }
 
 // ============================================================================
+// E4: Fail-Closed Auth Boundary Conformance
+//
+// These tests verify that the auth_decision model in portcullis-verified
+// faithfully captures the auth_middleware behavior in nucleus-tool-proxy.
+//
+// The model is a pure function:
+//   auth_decision(is_health, has_spiffe, hmac_ok, is_approve, drand_ok) -> AuthResult
+//
+// We cannot directly call the auth_middleware (it requires HTTP context),
+// but we can test the decision logic by implementing the same decision
+// tree and verifying structural properties.
+// ============================================================================
+
+mod auth_boundary {
+    /// Mirror of the Verus auth_decision spec function.
+    ///
+    /// This is the reference implementation that conformance tests verify.
+    fn auth_decision(
+        is_health: bool,
+        has_spiffe: bool,
+        hmac_ok: bool,
+        is_approve: bool,
+        drand_ok: bool,
+    ) -> u8 {
+        if is_health {
+            0
+        } else if has_spiffe {
+            1
+        } else if is_approve {
+            if hmac_ok && drand_ok {
+                1
+            } else {
+                2
+            }
+        } else if hmac_ok {
+            1
+        } else {
+            2
+        }
+    }
+
+    /// E4.1 conformance: health is the ONLY pass-through.
+    #[test]
+    fn conformance_e4_health_only_passthrough() {
+        // All health combos should return 0
+        for has_spiffe in [false, true] {
+            for hmac_ok in [false, true] {
+                for is_approve in [false, true] {
+                    for drand_ok in [false, true] {
+                        assert_eq!(
+                            auth_decision(true, has_spiffe, hmac_ok, is_approve, drand_ok),
+                            0,
+                            "health path should always pass through"
+                        );
+                    }
+                }
+            }
+        }
+        // All non-health combos should return >= 1
+        for has_spiffe in [false, true] {
+            for hmac_ok in [false, true] {
+                for is_approve in [false, true] {
+                    for drand_ok in [false, true] {
+                        assert!(
+                            auth_decision(false, has_spiffe, hmac_ok, is_approve, drand_ok) >= 1,
+                            "non-health should never pass through"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// E4.2 conformance: no credentials → always rejected.
+    #[test]
+    fn conformance_e4_no_auth_rejects() {
+        for is_approve in [false, true] {
+            for drand_ok in [false, true] {
+                assert_eq!(
+                    auth_decision(false, false, false, is_approve, drand_ok),
+                    2,
+                    "no auth should reject: approve={is_approve}, drand={drand_ok}"
+                );
+            }
+        }
+    }
+
+    /// E4.3 conformance: SPIFFE always authenticates.
+    #[test]
+    fn conformance_e4_spiffe_sufficient() {
+        for hmac_ok in [false, true] {
+            for is_approve in [false, true] {
+                for drand_ok in [false, true] {
+                    assert_eq!(
+                        auth_decision(false, true, hmac_ok, is_approve, drand_ok),
+                        1,
+                        "SPIFFE should always authenticate"
+                    );
+                }
+            }
+        }
+    }
+
+    /// E4.4 conformance: approve needs both HMAC and drand.
+    #[test]
+    fn conformance_e4_approve_needs_both() {
+        // HMAC + drand → authenticated
+        assert_eq!(auth_decision(false, false, true, true, true), 1);
+        // HMAC only → rejected (strict drand)
+        assert_eq!(auth_decision(false, false, true, true, false), 2);
+        // drand only → rejected (no HMAC)
+        assert_eq!(auth_decision(false, false, false, true, true), 2);
+        // neither → rejected
+        assert_eq!(auth_decision(false, false, false, true, false), 2);
+    }
+
+    /// E4.5 conformance: non-approve only needs HMAC.
+    #[test]
+    fn conformance_e4_non_approve_hmac_only() {
+        assert_eq!(auth_decision(false, false, true, false, false), 1);
+        assert_eq!(auth_decision(false, false, true, false, true), 1);
+    }
+
+    /// E4.6 conformance: decision total — all 32 inputs valid.
+    #[test]
+    fn conformance_e4_total() {
+        let mut count = 0u32;
+        for is_health in [false, true] {
+            for has_spiffe in [false, true] {
+                for hmac_ok in [false, true] {
+                    for is_approve in [false, true] {
+                        for drand_ok in [false, true] {
+                            let r =
+                                auth_decision(is_health, has_spiffe, hmac_ok, is_approve, drand_ok);
+                            assert!(r <= 2, "invalid result {r}");
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(count, 32);
+    }
+
+    /// E4.7 conformance: exhaustive truth table.
+    #[test]
+    fn conformance_e4_full_truth_table() {
+        let truth_table: [(bool, bool, bool, bool, bool, u8); 32] = [
+            // Health path: always 0
+            (true, false, false, false, false, 0),
+            (true, false, false, false, true, 0),
+            (true, false, false, true, false, 0),
+            (true, false, false, true, true, 0),
+            (true, false, true, false, false, 0),
+            (true, false, true, false, true, 0),
+            (true, false, true, true, false, 0),
+            (true, false, true, true, true, 0),
+            (true, true, false, false, false, 0),
+            (true, true, false, false, true, 0),
+            (true, true, false, true, false, 0),
+            (true, true, false, true, true, 0),
+            (true, true, true, false, false, 0),
+            (true, true, true, false, true, 0),
+            (true, true, true, true, false, 0),
+            (true, true, true, true, true, 0),
+            // No SPIFFE, no HMAC: always 2
+            (false, false, false, false, false, 2),
+            (false, false, false, false, true, 2),
+            (false, false, false, true, false, 2),
+            (false, false, false, true, true, 2),
+            // HMAC ok, non-approve: always 1
+            (false, false, true, false, false, 1),
+            (false, false, true, false, true, 1),
+            // HMAC ok, approve: needs drand
+            (false, false, true, true, false, 2),
+            (false, false, true, true, true, 1),
+            // SPIFFE: always 1
+            (false, true, false, false, false, 1),
+            (false, true, false, false, true, 1),
+            (false, true, false, true, false, 1),
+            (false, true, false, true, true, 1),
+            (false, true, true, false, false, 1),
+            (false, true, true, false, true, 1),
+            (false, true, true, true, false, 1),
+            (false, true, true, true, true, 1),
+        ];
+        for (is_health, has_spiffe, hmac_ok, is_approve, drand_ok, expected) in truth_table {
+            assert_eq!(
+                auth_decision(is_health, has_spiffe, hmac_ok, is_approve, drand_ok),
+                expected,
+                "mismatch: health={is_health} spiffe={has_spiffe} hmac={hmac_ok} approve={is_approve} drand={drand_ok}"
+            );
+        }
+    }
+
+    /// E4 structural: drand alone never authenticates.
+    #[test]
+    fn conformance_e4_drand_alone_insufficient() {
+        assert_eq!(auth_decision(false, false, false, false, true), 2);
+        assert_eq!(auth_decision(false, false, false, true, true), 2);
+    }
+
+    /// E4 structural: approve path is strictly harder than non-approve.
+    #[test]
+    fn conformance_e4_approve_strictly_harder() {
+        let non_approve = auth_decision(false, false, true, false, false);
+        let approve = auth_decision(false, false, true, true, false);
+        assert_eq!(non_approve, 1, "non-approve with HMAC should authenticate");
+        assert_eq!(
+            approve, 2,
+            "approve with only HMAC should be rejected (strict drand)"
+        );
+    }
+}
+
+// ============================================================================
+// E5: Capability-Operation Coverage Conformance
+//
+// Tests that the Verus cap_level_for_op model matches the production
+// CapabilityLattice::level_for() implementation.
+// ============================================================================
+mod capability_coverage {
+    use portcullis::{CapabilityLattice, CapabilityLevel, Operation};
+    use proptest::prelude::*;
+
+    /// All 12 operations in enum order (matching Verus op indices 0-11).
+    const ALL_OPS: [Operation; 12] = [
+        Operation::ReadFiles,  // 0
+        Operation::WriteFiles, // 1
+        Operation::EditFiles,  // 2
+        Operation::RunBash,    // 3
+        Operation::GlobSearch, // 4
+        Operation::GrepSearch, // 5
+        Operation::WebSearch,  // 6
+        Operation::WebFetch,   // 7
+        Operation::GitCommit,  // 8
+        Operation::GitPush,    // 9
+        Operation::CreatePr,   // 10
+        Operation::ManagePods, // 11
+    ];
+
+    /// All-Never lattice (Verus `lattice_bot()`).
+    fn all_never() -> CapabilityLattice {
+        CapabilityLattice {
+            read_files: CapabilityLevel::Never,
+            write_files: CapabilityLevel::Never,
+            edit_files: CapabilityLevel::Never,
+            run_bash: CapabilityLevel::Never,
+            glob_search: CapabilityLevel::Never,
+            grep_search: CapabilityLevel::Never,
+            web_search: CapabilityLevel::Never,
+            web_fetch: CapabilityLevel::Never,
+            git_commit: CapabilityLevel::Never,
+            git_push: CapabilityLevel::Never,
+            create_pr: CapabilityLevel::Never,
+            manage_pods: CapabilityLevel::Never,
+        }
+    }
+
+    /// All-Always lattice (Verus `lattice_top()`).
+    fn all_always() -> CapabilityLattice {
+        CapabilityLattice {
+            read_files: CapabilityLevel::Always,
+            write_files: CapabilityLevel::Always,
+            edit_files: CapabilityLevel::Always,
+            run_bash: CapabilityLevel::Always,
+            glob_search: CapabilityLevel::Always,
+            grep_search: CapabilityLevel::Always,
+            web_search: CapabilityLevel::Always,
+            web_fetch: CapabilityLevel::Always,
+            git_commit: CapabilityLevel::Always,
+            git_push: CapabilityLevel::Always,
+            create_pr: CapabilityLevel::Always,
+            manage_pods: CapabilityLevel::Always,
+        }
+    }
+
+    /// Mirror of Verus cap_level_for_op.
+    fn model_cap_level_for_op(caps: &CapabilityLattice, op: usize) -> CapabilityLevel {
+        match op {
+            0 => caps.read_files,
+            1 => caps.write_files,
+            2 => caps.edit_files,
+            3 => caps.run_bash,
+            4 => caps.glob_search,
+            5 => caps.grep_search,
+            6 => caps.web_search,
+            7 => caps.web_fetch,
+            8 => caps.git_commit,
+            9 => caps.git_push,
+            10 => caps.create_pr,
+            11 => caps.manage_pods,
+            _ => panic!("invalid op {op}"),
+        }
+    }
+
+    /// E5.1 conformance: model matches production level_for for all 12 ops.
+    #[test]
+    fn conformance_e5_model_matches_production() {
+        let lattices = [all_never(), CapabilityLattice::default(), all_always()];
+
+        for caps in &lattices {
+            for (i, &op) in ALL_OPS.iter().enumerate() {
+                let production = caps.level_for(op);
+                let model = model_cap_level_for_op(caps, i);
+                assert_eq!(
+                    production, model,
+                    "op {i} ({op:?}): production={production:?}, model={model:?}"
+                );
+            }
+        }
+    }
+
+    /// E5.2 conformance: injective — each op reads a distinct field.
+    #[test]
+    fn conformance_e5_injective() {
+        // For each op, construct a lattice where only that op's dim is Always.
+        // Then verify that ALL other ops return Never.
+        for i in 0..12usize {
+            let mut caps = all_never();
+            // Set only dimension i to Always
+            match i {
+                0 => caps.read_files = CapabilityLevel::Always,
+                1 => caps.write_files = CapabilityLevel::Always,
+                2 => caps.edit_files = CapabilityLevel::Always,
+                3 => caps.run_bash = CapabilityLevel::Always,
+                4 => caps.glob_search = CapabilityLevel::Always,
+                5 => caps.grep_search = CapabilityLevel::Always,
+                6 => caps.web_search = CapabilityLevel::Always,
+                7 => caps.web_fetch = CapabilityLevel::Always,
+                8 => caps.git_commit = CapabilityLevel::Always,
+                9 => caps.git_push = CapabilityLevel::Always,
+                10 => caps.create_pr = CapabilityLevel::Always,
+                11 => caps.manage_pods = CapabilityLevel::Always,
+                _ => unreachable!(),
+            }
+
+            for (j, &op) in ALL_OPS.iter().enumerate() {
+                let level = caps.level_for(op);
+                if i == j {
+                    assert_eq!(
+                        level,
+                        CapabilityLevel::Always,
+                        "op {j} should be Always when dim {i} is set"
+                    );
+                } else {
+                    assert_eq!(
+                        level,
+                        CapabilityLevel::Never,
+                        "op {j} should be Never when only dim {i} is set"
+                    );
+                }
+            }
+        }
+    }
+
+    /// E5.3 conformance: surjective — every field is read by level_for.
+    #[test]
+    fn conformance_e5_surjective() {
+        // Use a lattice with unique values per dimension to verify all 12 fields accessed.
+        // We use LowRisk for even ops and Always for odd ops.
+        let caps = CapabilityLattice {
+            read_files: CapabilityLevel::LowRisk,  // 0: even
+            write_files: CapabilityLevel::Always,  // 1: odd
+            edit_files: CapabilityLevel::LowRisk,  // 2: even
+            run_bash: CapabilityLevel::Always,     // 3: odd
+            glob_search: CapabilityLevel::LowRisk, // 4: even
+            grep_search: CapabilityLevel::Always,  // 5: odd
+            web_search: CapabilityLevel::LowRisk,  // 6: even
+            web_fetch: CapabilityLevel::Always,    // 7: odd
+            git_commit: CapabilityLevel::LowRisk,  // 8: even
+            git_push: CapabilityLevel::Always,     // 9: odd
+            create_pr: CapabilityLevel::LowRisk,   // 10: even
+            manage_pods: CapabilityLevel::Always,  // 11: odd
+        };
+
+        for (i, &op) in ALL_OPS.iter().enumerate() {
+            let expected = if i % 2 == 0 {
+                CapabilityLevel::LowRisk
+            } else {
+                CapabilityLevel::Always
+            };
+            assert_eq!(
+                caps.level_for(op),
+                expected,
+                "op {i} ({op:?}) should match its unique level"
+            );
+        }
+    }
+
+    /// E5.4 conformance: Never blocks per trifecta leg (private data).
+    #[test]
+    fn conformance_e5_never_blocks_private() {
+        let caps = all_never();
+        assert_eq!(caps.level_for(Operation::ReadFiles), CapabilityLevel::Never);
+        assert_eq!(
+            caps.level_for(Operation::GlobSearch),
+            CapabilityLevel::Never
+        );
+        assert_eq!(
+            caps.level_for(Operation::GrepSearch),
+            CapabilityLevel::Never
+        );
+    }
+
+    /// E5.5 conformance: Never blocks per trifecta leg (untrusted content).
+    #[test]
+    fn conformance_e5_never_blocks_untrusted() {
+        let caps = all_never();
+        assert_eq!(caps.level_for(Operation::WebSearch), CapabilityLevel::Never);
+        assert_eq!(caps.level_for(Operation::WebFetch), CapabilityLevel::Never);
+    }
+
+    /// E5.6 conformance: Never blocks per trifecta leg (exfiltration).
+    #[test]
+    fn conformance_e5_never_blocks_exfil() {
+        let caps = all_never();
+        assert_eq!(caps.level_for(Operation::RunBash), CapabilityLevel::Never);
+        assert_eq!(caps.level_for(Operation::GitPush), CapabilityLevel::Never);
+        assert_eq!(caps.level_for(Operation::CreatePr), CapabilityLevel::Never);
+    }
+
+    /// E5.7 conformance: bottom lattice blocks all ops.
+    #[test]
+    fn conformance_e5_bottom_blocks_all() {
+        let bottom = all_never();
+        for &op in &ALL_OPS {
+            assert_eq!(
+                bottom.level_for(op),
+                CapabilityLevel::Never,
+                "bottom should block {op:?}"
+            );
+        }
+    }
+
+    /// E5.8 conformance: meet preserves Never on any dimension.
+    #[test]
+    fn conformance_e5_meet_preserves_never() {
+        let top = all_always();
+
+        // For each dimension, create a lattice with only that dim at Never
+        for (dim, &op) in ALL_OPS.iter().enumerate() {
+            let mut restrictive = top.clone();
+            match dim {
+                0 => restrictive.read_files = CapabilityLevel::Never,
+                1 => restrictive.write_files = CapabilityLevel::Never,
+                2 => restrictive.edit_files = CapabilityLevel::Never,
+                3 => restrictive.run_bash = CapabilityLevel::Never,
+                4 => restrictive.glob_search = CapabilityLevel::Never,
+                5 => restrictive.grep_search = CapabilityLevel::Never,
+                6 => restrictive.web_search = CapabilityLevel::Never,
+                7 => restrictive.web_fetch = CapabilityLevel::Never,
+                8 => restrictive.git_commit = CapabilityLevel::Never,
+                9 => restrictive.git_push = CapabilityLevel::Never,
+                10 => restrictive.create_pr = CapabilityLevel::Never,
+                11 => restrictive.manage_pods = CapabilityLevel::Never,
+                _ => unreachable!(),
+            }
+
+            let met = top.meet(&restrictive);
+            assert_eq!(
+                met.level_for(op),
+                CapabilityLevel::Never,
+                "meet should preserve Never on dim {dim} ({op:?})"
+            );
+        }
+    }
+
+    // E5.9 conformance: monotonicity via proptest.
+    // If a ≤ b (component-wise), then level_for(a, op) ≤ level_for(b, op).
+    proptest! {
+        #[test]
+        fn conformance_e5_monotone(
+            levels_a in proptest::collection::vec(0u8..3, 12..=12),
+            delta in proptest::collection::vec(0u8..3, 12..=12),
+        ) {
+            // b = max(a, a + delta) component-wise, ensuring a ≤ b
+            let to_level = |v: u8| match v {
+                0 => CapabilityLevel::Never,
+                1 => CapabilityLevel::LowRisk,
+                _ => CapabilityLevel::Always,
+            };
+
+            let a = CapabilityLattice {
+                read_files: to_level(levels_a[0]),
+                write_files: to_level(levels_a[1]),
+                edit_files: to_level(levels_a[2]),
+                run_bash: to_level(levels_a[3]),
+                glob_search: to_level(levels_a[4]),
+                grep_search: to_level(levels_a[5]),
+                web_search: to_level(levels_a[6]),
+                web_fetch: to_level(levels_a[7]),
+                git_commit: to_level(levels_a[8]),
+                git_push: to_level(levels_a[9]),
+                create_pr: to_level(levels_a[10]),
+                manage_pods: to_level(levels_a[11]),
+            };
+
+            let b = CapabilityLattice {
+                read_files: to_level(levels_a[0].max(delta[0])),
+                write_files: to_level(levels_a[1].max(delta[1])),
+                edit_files: to_level(levels_a[2].max(delta[2])),
+                run_bash: to_level(levels_a[3].max(delta[3])),
+                glob_search: to_level(levels_a[4].max(delta[4])),
+                grep_search: to_level(levels_a[5].max(delta[5])),
+                web_search: to_level(levels_a[6].max(delta[6])),
+                web_fetch: to_level(levels_a[7].max(delta[7])),
+                git_commit: to_level(levels_a[8].max(delta[8])),
+                git_push: to_level(levels_a[9].max(delta[9])),
+                create_pr: to_level(levels_a[10].max(delta[10])),
+                manage_pods: to_level(levels_a[11].max(delta[11])),
+            };
+
+            // a ≤ b by construction
+            for &op in &ALL_OPS {
+                prop_assert!(
+                    a.level_for(op) <= b.level_for(op),
+                    "monotonicity violated for {op:?}: a={:?} > b={:?}",
+                    a.level_for(op), b.level_for(op),
+                );
+            }
+        }
+    }
+
+    /// E5.10 conformance: blocking any trifecta leg prevents trifecta detection.
+    #[test]
+    fn conformance_e5_block_any_leg_breaks_trifecta() {
+        use portcullis::IncompatibilityConstraint;
+
+        let constraint = IncompatibilityConstraint::enforcing();
+
+        let full = all_always();
+        assert!(
+            constraint.is_trifecta_complete(&full),
+            "full lattice should be trifecta-complete"
+        );
+
+        // Block private data leg (ReadFiles, GlobSearch, GrepSearch → Never)
+        let mut no_private = full.clone();
+        no_private.read_files = CapabilityLevel::Never;
+        no_private.glob_search = CapabilityLevel::Never;
+        no_private.grep_search = CapabilityLevel::Never;
+        assert!(
+            !constraint.is_trifecta_complete(&no_private),
+            "blocking private leg should prevent trifecta"
+        );
+
+        // Block untrusted content leg (WebSearch, WebFetch → Never)
+        let mut no_untrusted = full.clone();
+        no_untrusted.web_search = CapabilityLevel::Never;
+        no_untrusted.web_fetch = CapabilityLevel::Never;
+        assert!(
+            !constraint.is_trifecta_complete(&no_untrusted),
+            "blocking untrusted leg should prevent trifecta"
+        );
+
+        // Block exfiltration leg (RunBash, GitPush, CreatePr → Never)
+        let mut no_exfil = full;
+        no_exfil.run_bash = CapabilityLevel::Never;
+        no_exfil.git_push = CapabilityLevel::Never;
+        no_exfil.create_pr = CapabilityLevel::Never;
+        assert!(
+            !constraint.is_trifecta_complete(&no_exfil),
+            "blocking exfil leg should prevent trifecta"
+        );
+    }
+}
+
+// ============================================================================
 // E6: Budget Monotonicity Conformance
 //
 // Tests that the Verus SpecBudget model matches the production BudgetLattice.

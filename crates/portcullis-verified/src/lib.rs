@@ -77,6 +77,26 @@
 //! - Graded monad: (grade, value) pair with max-monoid grading
 //! - ML1-ML3: left identity, right identity, associativity of monadic bind
 //!
+//! ## Fail-Closed Auth Boundary (Phase 2: E4)
+//! - AuthResult: {0=PassThrough, 1=Authenticated, 2=Rejected}
+//! - auth_decision(is_health, has_spiffe, hmac_ok, is_approve, drand_ok) → AuthResult
+//! - Health is the ONLY pass-through path (no auth check)
+//! - Non-health with no credentials always rejects (fail-closed)
+//! - Non-health result is always authenticated OR rejected (never pass-through)
+//! - SPIFFE mTLS is always sufficient (highest precedence after health)
+//! - HMAC is sufficient for non-approve paths
+//! - Approve path in strict drand mode requires drand anchoring
+//! - Decision function is total over all 2^5=32 input combinations
+//!
+//! ## Capability-Operation Coverage (Phase 2: E5)
+//! - cap_level_for_op(caps, op): extracts the capability level for a given operation
+//! - Bijective mapping: operations 0-11 ↔ CapLattice fields f0-f11
+//! - Totality: all valid ops produce valid CapLevels
+//! - Never blocks: cap_level_for_op == 0 → operation blocked
+//! - Meet preserves Never: meet of any lattice with Never on a dim has Never
+//! - Monotonicity: lattice_leq(a,b) → cap_level_for_op(a,op) ≤ cap_level_for_op(b,op)
+//! - Bottom blocks all, top allows all
+//!
 //! ## Budget Monotonicity (Phase 2: E6)
 //! - SpecBudget: (consumed: nat, max_budget: nat) with consumed ≤ max invariant
 //! - Charge increases consumed monotonically
@@ -5684,6 +5704,411 @@ proof fn proof_e3_denial_monotone(
     } else {
         // Neutral operation — projected == current, so same logic
         assert(taint_is_trifecta_complete(taint_i) ==> taint_is_trifecta_complete(taint_j));
+    }
+}
+
+// ============================================================================
+// E4: Fail-Closed Auth Boundary
+//
+// Models the auth_middleware decision function from nucleus-tool-proxy.
+// The auth middleware is the outermost perimeter — if it passes an
+// unauthenticated request through, all lattice enforcement is bypassed.
+//
+// The model captures the decision tree:
+//   1. Health path → pass-through (no auth check)
+//   2. SPIFFE mTLS → authenticated (highest precedence for real requests)
+//   3. Approve path + HMAC + drand → authenticated
+//   4. Approve path + HMAC - drand → rejected (strict drand mode)
+//   5. Non-approve + HMAC → authenticated
+//   6. No credentials → rejected (fail-closed)
+//
+// AuthResult encoding:
+//   0 = PassThrough (health only)
+//   1 = Authenticated
+//   2 = Rejected
+// ============================================================================
+
+/// Auth decision function modeling the tool-proxy auth_middleware.
+///
+/// Returns 0 (pass-through), 1 (authenticated), or 2 (rejected).
+pub open spec fn auth_decision(
+    is_health: bool,
+    has_spiffe: bool,
+    hmac_ok: bool,
+    is_approve: bool,
+    drand_ok: bool,
+) -> u8 {
+    if is_health {
+        0  // Health path always passes through
+    } else if has_spiffe {
+        1  // SPIFFE mTLS always authenticates
+    } else if is_approve {
+        if hmac_ok && drand_ok { 1 } else { 2 }  // Approve needs both HMAC + drand
+    } else {
+        if hmac_ok { 1 } else { 2 }  // Non-approve needs just HMAC
+    }
+}
+
+/// Executable mirror of auth_decision for conformance testing.
+pub fn auth_decision_exec(
+    is_health: bool,
+    has_spiffe: bool,
+    hmac_ok: bool,
+    is_approve: bool,
+    drand_ok: bool,
+) -> (result: u8)
+    ensures
+        result == auth_decision(is_health, has_spiffe, hmac_ok, is_approve, drand_ok),
+{
+    if is_health {
+        0
+    } else if has_spiffe {
+        1
+    } else if is_approve {
+        if hmac_ok && drand_ok { 1 } else { 2 }
+    } else {
+        if hmac_ok { 1 } else { 2 }
+    }
+}
+
+/// E4.1: Health path is the ONLY pass-through.
+///
+/// AuthResult 0 (pass-through) can only happen for health paths.
+/// All non-health paths return 1 or 2.
+proof fn proof_e4_health_only_passthrough(
+    has_spiffe: bool,
+    hmac_ok: bool,
+    is_approve: bool,
+    drand_ok: bool,
+)
+    ensures
+        auth_decision(false, has_spiffe, hmac_ok, is_approve, drand_ok) >= 1,
+{}
+
+/// E4.2: Non-health with no credentials always rejects.
+///
+/// Fail-closed: if is_health=false, has_spiffe=false, hmac_ok=false,
+/// the result is always 2 (rejected), regardless of other flags.
+proof fn proof_e4_fail_closed(is_approve: bool, drand_ok: bool)
+    ensures
+        auth_decision(false, false, false, is_approve, drand_ok) == 2,
+{}
+
+/// E4.3: Non-health result is always 1 or 2.
+///
+/// No non-health path ever produces 0 (pass-through).
+proof fn proof_e4_non_health_binary(
+    has_spiffe: bool,
+    hmac_ok: bool,
+    is_approve: bool,
+    drand_ok: bool,
+)
+    ensures ({
+        let r = auth_decision(false, has_spiffe, hmac_ok, is_approve, drand_ok);
+        r == 1 || r == 2
+    }),
+{}
+
+/// E4.4: SPIFFE mTLS is always sufficient.
+///
+/// Regardless of HMAC, approve, or drand state, SPIFFE authenticates.
+proof fn proof_e4_spiffe_sufficient(hmac_ok: bool, is_approve: bool, drand_ok: bool)
+    ensures
+        auth_decision(false, true, hmac_ok, is_approve, drand_ok) == 1,
+{}
+
+/// E4.5: Decision function is total over all valid inputs.
+///
+/// For any combination of 5 booleans, the result is 0, 1, or 2.
+proof fn proof_e4_total(
+    is_health: bool,
+    has_spiffe: bool,
+    hmac_ok: bool,
+    is_approve: bool,
+    drand_ok: bool,
+)
+    ensures ({
+        let r = auth_decision(is_health, has_spiffe, hmac_ok, is_approve, drand_ok);
+        r <= 2
+    }),
+{}
+
+/// E4.6: Approve path with HMAC but no drand is rejected.
+///
+/// This captures DrandFailMode::Strict — approve requests MUST have
+/// a valid drand round, even if HMAC is valid.
+proof fn proof_e4_approve_needs_drand(has_spiffe: bool)
+    ensures
+        auth_decision(false, false, true, true, false) == 2,
+{}
+
+/// E4.7: Non-approve path doesn't need drand.
+///
+/// For non-approve paths, HMAC alone is sufficient — drand is irrelevant.
+proof fn proof_e4_non_approve_hmac_sufficient(drand_ok: bool)
+    ensures
+        auth_decision(false, false, true, false, drand_ok) == 1,
+{}
+
+/// E4.8: SPIFFE overrides any rejection.
+///
+/// Even if the same flags would cause rejection without SPIFFE,
+/// adding SPIFFE always results in authentication.
+proof fn proof_e4_spiffe_overrides_rejection(
+    hmac_ok: bool,
+    is_approve: bool,
+    drand_ok: bool,
+)
+    requires
+        auth_decision(false, false, hmac_ok, is_approve, drand_ok) == 2,
+    ensures
+        auth_decision(false, true, hmac_ok, is_approve, drand_ok) == 1,
+{}
+
+// ============================================================================
+// E5: Capability-Operation Coverage
+//
+// Models the mapping from operations to capability dimensions.
+// Every operation maps to exactly one CapLattice field, and Never (0)
+// is an absolute block on any dimension.
+//
+// Operations:
+//   0=ReadFiles,  1=WriteFiles, 2=EditFiles,  3=RunBash,
+//   4=GlobSearch,  5=GrepSearch, 6=WebSearch,  7=WebFetch,
+//   8=GitCommit,  9=GitPush,   10=CreatePr,  11=ManagePods
+//
+// This corresponds to portcullis::CapabilityLattice::level_for()
+// ============================================================================
+
+/// Extract the capability level for a given operation from a CapLattice.
+///
+/// This is the Verus model of CapabilityLattice::level_for(op).
+/// Each operation maps to exactly one of the 12 dimensions.
+pub open spec fn cap_level_for_op(caps: CapLattice, op: nat) -> CapLevel {
+    if op == 0 { caps.f0 }       // ReadFiles
+    else if op == 1 { caps.f1 }  // WriteFiles
+    else if op == 2 { caps.f2 }  // EditFiles
+    else if op == 3 { caps.f3 }  // RunBash
+    else if op == 4 { caps.f4 }  // GlobSearch
+    else if op == 5 { caps.f5 }  // GrepSearch
+    else if op == 6 { caps.f6 }  // WebSearch
+    else if op == 7 { caps.f7 }  // WebFetch
+    else if op == 8 { caps.f8 }  // GitCommit
+    else if op == 9 { caps.f9 }  // GitPush
+    else if op == 10 { caps.f10 } // CreatePr
+    else { caps.f11 }            // ManagePods (default for op==11)
+}
+
+/// Executable mirror of cap_level_for_op.
+pub fn cap_level_for_op_exec(caps: &CapLattice, op: u8) -> (result: CapLevel)
+    requires
+        op <= 11,
+        valid_lattice(*caps),
+    ensures
+        result == cap_level_for_op(*caps, op as nat),
+        valid_cap(result),
+{
+    if op == 0 { caps.f0 }
+    else if op == 1 { caps.f1 }
+    else if op == 2 { caps.f2 }
+    else if op == 3 { caps.f3 }
+    else if op == 4 { caps.f4 }
+    else if op == 5 { caps.f5 }
+    else if op == 6 { caps.f6 }
+    else if op == 7 { caps.f7 }
+    else if op == 8 { caps.f8 }
+    else if op == 9 { caps.f9 }
+    else if op == 10 { caps.f10 }
+    else { caps.f11 }
+}
+
+/// E5.1: cap_level_for_op is total — all valid operations produce valid CapLevels.
+proof fn proof_e5_total(caps: CapLattice, op: nat)
+    requires
+        valid_lattice(caps),
+        valid_operation(op),
+    ensures
+        valid_cap(cap_level_for_op(caps, op)),
+{}
+
+/// E5.2: The mapping is injective — distinct operations read distinct fields.
+///
+/// For any two different operations, we can distinguish them by constructing
+/// a CapLattice where one returns Always and the other returns Never.
+/// This proves no two ops share a dimension.
+proof fn proof_e5_injective(op1: nat, op2: nat)
+    requires
+        valid_operation(op1),
+        valid_operation(op2),
+        op1 != op2,
+    ensures ({
+        // There exists a lattice where op1 and op2 produce different levels.
+        // This is only possible if they map to different dimensions.
+        let caps = CapLattice {
+            f0: if op1 == 0 { 2 } else { 0 },
+            f1: if op1 == 1 { 2 } else { 0 },
+            f2: if op1 == 2 { 2 } else { 0 },
+            f3: if op1 == 3 { 2 } else { 0 },
+            f4: if op1 == 4 { 2 } else { 0 },
+            f5: if op1 == 5 { 2 } else { 0 },
+            f6: if op1 == 6 { 2 } else { 0 },
+            f7: if op1 == 7 { 2 } else { 0 },
+            f8: if op1 == 8 { 2 } else { 0 },
+            f9: if op1 == 9 { 2 } else { 0 },
+            f10: if op1 == 10 { 2 } else { 0 },
+            f11: if op1 == 11 { 2 } else { 0 },
+        };
+        cap_level_for_op(caps, op1) != cap_level_for_op(caps, op2)
+    }),
+{}
+
+/// E5.3: The mapping is surjective — every dimension is accessed by some operation.
+///
+/// For each field f_i, there exists an operation op_i such that
+/// cap_level_for_op(caps, op_i) reads from f_i.
+proof fn proof_e5_surjective(caps: CapLattice)
+    ensures
+        cap_level_for_op(caps, 0) == caps.f0,
+        cap_level_for_op(caps, 1) == caps.f1,
+        cap_level_for_op(caps, 2) == caps.f2,
+        cap_level_for_op(caps, 3) == caps.f3,
+        cap_level_for_op(caps, 4) == caps.f4,
+        cap_level_for_op(caps, 5) == caps.f5,
+        cap_level_for_op(caps, 6) == caps.f6,
+        cap_level_for_op(caps, 7) == caps.f7,
+        cap_level_for_op(caps, 8) == caps.f8,
+        cap_level_for_op(caps, 9) == caps.f9,
+        cap_level_for_op(caps, 10) == caps.f10,
+        cap_level_for_op(caps, 11) == caps.f11,
+{}
+
+/// E5.4: Never blocks all private-data operations.
+///
+/// If ReadFiles, GlobSearch, and GrepSearch are all Never,
+/// then has_private_access is false — no private taint can be acquired.
+proof fn proof_e5_never_blocks_private(caps: CapLattice)
+    requires
+        cap_level_for_op(caps, 0) == 0,  // ReadFiles = Never
+        cap_level_for_op(caps, 4) == 0,  // GlobSearch = Never
+        cap_level_for_op(caps, 5) == 0,  // GrepSearch = Never
+    ensures
+        !has_private_access(caps),
+{}
+
+/// E5.5: Never blocks all untrusted-content operations.
+///
+/// If WebSearch and WebFetch are both Never,
+/// then has_untrusted_content is false — no untrusted taint.
+proof fn proof_e5_never_blocks_untrusted(caps: CapLattice)
+    requires
+        cap_level_for_op(caps, 6) == 0,  // WebSearch = Never
+        cap_level_for_op(caps, 7) == 0,  // WebFetch = Never
+    ensures
+        !has_untrusted_content(caps),
+{}
+
+/// E5.6: Never blocks all exfiltration operations.
+///
+/// If RunBash, GitPush, and CreatePr are all Never,
+/// then has_exfiltration is false — no exfil taint.
+proof fn proof_e5_never_blocks_exfil(caps: CapLattice)
+    requires
+        cap_level_for_op(caps, 3) == 0,   // RunBash = Never
+        cap_level_for_op(caps, 9) == 0,   // GitPush = Never
+        cap_level_for_op(caps, 10) == 0,  // CreatePr = Never
+    ensures
+        !has_exfiltration(caps),
+{}
+
+/// E5.7: Bottom lattice blocks all operations.
+///
+/// When all capabilities are Never, every operation level is Never.
+proof fn proof_e5_bottom_blocks_all(op: nat)
+    requires valid_operation(op),
+    ensures cap_level_for_op(lattice_bot(), op) == 0,
+{}
+
+/// E5.8: Top lattice allows all operations.
+///
+/// When all capabilities are Always, every operation level is Always.
+proof fn proof_e5_top_allows_all(op: nat)
+    requires valid_operation(op),
+    ensures cap_level_for_op(lattice_top(), op) == 2,
+{}
+
+/// E5.9: cap_level_for_op is monotone w.r.t. lattice_leq.
+///
+/// If lattice a ≤ lattice b, then the capability level for any operation
+/// in a is ≤ the level in b. Permissions can only grow upward in the lattice.
+proof fn proof_e5_monotone(a: CapLattice, b: CapLattice, op: nat)
+    requires
+        valid_lattice(a),
+        valid_lattice(b),
+        valid_operation(op),
+        lattice_leq(a, b),
+    ensures
+        cap_leq(cap_level_for_op(a, op), cap_level_for_op(b, op)),
+{}
+
+/// E5.10: Meet preserves Never on any dimension.
+///
+/// If either input has Never for an operation, the meet has Never.
+/// This is the key property: meeting with a restrictive policy zeroes out dims.
+proof fn proof_e5_meet_preserves_never(a: CapLattice, b: CapLattice, op: nat)
+    requires
+        valid_lattice(a),
+        valid_lattice(b),
+        valid_operation(op),
+        cap_level_for_op(a, op) == 0 || cap_level_for_op(b, op) == 0,
+    ensures
+        cap_level_for_op(lattice_meet(a, b), op) == 0,
+{}
+
+/// E5.11: Bottom blocks trifecta.
+///
+/// The bottom lattice (all Never) prevents the trifecta from forming.
+/// This is a corollary of E5.4 + E5.5 + E5.6 combined.
+proof fn proof_e5_bottom_prevents_trifecta()
+    ensures
+        !is_trifecta_complete(lattice_bot()),
+{
+    proof_e5_never_blocks_private(lattice_bot());
+}
+
+/// E5.12: Never on any trifecta leg prevents trifecta.
+///
+/// If all operations in ANY one of the three trifecta legs are Never,
+/// the trifecta cannot complete. This is the formal basis for
+/// "block one leg to break the trifecta" mitigation.
+proof fn proof_e5_block_any_leg_breaks_trifecta(caps: CapLattice, leg: nat)
+    requires
+        leg <= 2,
+        // Leg 0: private data (ops 0, 4, 5)
+        leg == 0 ==> (
+            cap_level_for_op(caps, 0) == 0
+            && cap_level_for_op(caps, 4) == 0
+            && cap_level_for_op(caps, 5) == 0
+        ),
+        // Leg 1: untrusted content (ops 6, 7)
+        leg == 1 ==> (
+            cap_level_for_op(caps, 6) == 0
+            && cap_level_for_op(caps, 7) == 0
+        ),
+        // Leg 2: exfiltration (ops 3, 9, 10)
+        leg == 2 ==> (
+            cap_level_for_op(caps, 3) == 0
+            && cap_level_for_op(caps, 9) == 0
+            && cap_level_for_op(caps, 10) == 0
+        ),
+    ensures
+        !is_trifecta_complete(caps),
+{
+    if leg == 0 {
+        proof_e5_never_blocks_private(caps);
+    } else if leg == 1 {
+        proof_e5_never_blocks_untrusted(caps);
+    } else {
+        proof_e5_never_blocks_exfil(caps);
     }
 }
 
