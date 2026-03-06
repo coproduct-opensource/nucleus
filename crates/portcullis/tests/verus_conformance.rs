@@ -2859,3 +2859,178 @@ mod enforcement_monotonicity {
         }
     }
 }
+
+// ============================================================================
+// E6: Budget Monotonicity Conformance
+//
+// Tests that the Verus SpecBudget model matches the production BudgetLattice.
+// Uses Decimal for production code, nat for Verus model.
+// ============================================================================
+mod budget_monotonicity {
+    use portcullis::BudgetLattice;
+    use proptest::prelude::*;
+    use rust_decimal::Decimal;
+
+    // E6.1 conformance: charge increases consumed monotonically.
+    proptest! {
+        #[test]
+        fn conformance_e6_charge_consumed_monotone(
+            max in 1u64..1000,
+            consumed in 0u64..500,
+            amount in 1u64..500,
+        ) {
+            if consumed <= max && consumed + amount <= max {
+                let mut budget = BudgetLattice {
+                    max_cost_usd: Decimal::from(max),
+                    consumed_usd: Decimal::from(consumed),
+                    max_input_tokens: 100_000,
+                    max_output_tokens: 10_000,
+                };
+                let before = budget.consumed_usd;
+                let ok = budget.charge(Decimal::from(amount));
+                prop_assert!(ok, "charge should succeed");
+                prop_assert!(budget.consumed_usd >= before, "consumed must not decrease");
+            }
+        }
+    }
+
+    // E6.2 conformance: charge decreases remaining monotonically.
+    proptest! {
+        #[test]
+        fn conformance_e6_charge_remaining_monotone(
+            max in 1u64..1000,
+            consumed in 0u64..500,
+            amount in 1u64..500,
+        ) {
+            if consumed <= max && consumed + amount <= max {
+                let mut budget = BudgetLattice {
+                    max_cost_usd: Decimal::from(max),
+                    consumed_usd: Decimal::from(consumed),
+                    max_input_tokens: 100_000,
+                    max_output_tokens: 10_000,
+                };
+                let before_remaining = budget.remaining();
+                budget.charge(Decimal::from(amount));
+                prop_assert!(budget.remaining() <= before_remaining, "remaining must not increase");
+            }
+        }
+    }
+
+    /// E6.3 conformance: charge preserves consumed ≤ max.
+    #[test]
+    fn conformance_e6_charge_preserves_validity() {
+        let mut budget = BudgetLattice::with_cost_limit(10.0);
+        for i in 1..=10 {
+            let ok = budget.charge(Decimal::from(1));
+            assert!(ok, "charge {i} of 1 should succeed");
+            assert!(
+                budget.consumed_usd <= budget.max_cost_usd,
+                "validity violated after charge {i}"
+            );
+        }
+        // 11th charge should fail
+        assert!(!budget.charge(Decimal::from(1)));
+        assert!(budget.consumed_usd <= budget.max_cost_usd);
+    }
+
+    /// E6.4 conformance: charge fails when insufficient budget.
+    #[test]
+    fn conformance_e6_charge_fails_insufficient() {
+        let mut budget = BudgetLattice::with_cost_limit(5.0);
+        budget.charge(Decimal::from(4));
+        // Only 1.0 remaining, trying to charge 2.0
+        let ok = budget.charge(Decimal::from(2));
+        assert!(!ok, "charge exceeding remaining should fail");
+        assert_eq!(
+            budget.consumed_usd,
+            Decimal::from(4),
+            "failed charge must not mutate"
+        );
+    }
+
+    /// E6.6 conformance: reserve conservation.
+    #[test]
+    fn conformance_e6_reserve_conservation() {
+        let budget = BudgetLattice::with_cost_limit(100.0);
+        let original_remaining = budget.remaining();
+
+        // Simulate reserve: parent consumed += amount, child max = amount
+        let amount = Decimal::from(30);
+        let mut parent = budget.clone();
+        parent.charge(amount);
+
+        let child = BudgetLattice::with_cost_limit_decimal(amount);
+
+        // Conservation: parent.remaining + child.max = original.remaining
+        let sum = parent.remaining() + child.max_cost_usd;
+        assert_eq!(
+            sum, original_remaining,
+            "reserve conservation violated: {sum} != {original_remaining}"
+        );
+    }
+
+    /// E6.7 conformance: meet is deflationary on max_budget.
+    #[test]
+    fn conformance_e6_meet_deflationary() {
+        let a = BudgetLattice {
+            max_cost_usd: Decimal::from(10),
+            consumed_usd: Decimal::from(2),
+            max_input_tokens: 100_000,
+            max_output_tokens: 10_000,
+        };
+        let b = BudgetLattice {
+            max_cost_usd: Decimal::from(5),
+            consumed_usd: Decimal::from(1),
+            max_input_tokens: 50_000,
+            max_output_tokens: 20_000,
+        };
+        let met = a.meet(&b);
+        assert!(met.max_cost_usd <= a.max_cost_usd);
+        assert!(met.max_cost_usd <= b.max_cost_usd);
+        assert!(met.max_input_tokens <= a.max_input_tokens);
+        assert!(met.max_input_tokens <= b.max_input_tokens);
+    }
+
+    /// E6.8 conformance: sequential charges accumulate.
+    #[test]
+    fn conformance_e6_sequential_charges_accumulate() {
+        // Charge 3 then 4 should give same consumed as charging 7 at once
+        let mut seq = BudgetLattice::with_cost_limit(10.0);
+        seq.charge(Decimal::from(3));
+        seq.charge(Decimal::from(4));
+
+        let mut once = BudgetLattice::with_cost_limit(10.0);
+        once.charge(Decimal::from(7));
+
+        assert_eq!(
+            seq.consumed_usd, once.consumed_usd,
+            "sequential charges should equal single charge"
+        );
+    }
+
+    /// E6.11 conformance: charge of remaining exactly exhausts budget.
+    #[test]
+    fn conformance_e6_charge_remaining_exhausts() {
+        let mut budget = BudgetLattice::with_cost_limit(10.0);
+        budget.charge(Decimal::from(3));
+
+        let remaining = budget.remaining();
+        assert!(remaining > Decimal::ZERO);
+
+        let ok = budget.charge(remaining);
+        assert!(ok, "charging remaining should succeed");
+        assert_eq!(
+            budget.remaining(),
+            Decimal::ZERO,
+            "should be fully exhausted"
+        );
+    }
+
+    /// E6.12 conformance: fresh budget has full remaining.
+    #[test]
+    fn conformance_e6_fresh_budget_full() {
+        let budget = BudgetLattice::with_cost_limit(42.0);
+        assert_eq!(budget.consumed_usd, Decimal::ZERO);
+        assert_eq!(budget.remaining(), budget.max_cost_usd);
+    }
+}

@@ -77,6 +77,16 @@
 //! - Graded monad: (grade, value) pair with max-monoid grading
 //! - ML1-ML3: left identity, right identity, associativity of monadic bind
 //!
+//! ## Budget Monotonicity (Phase 2: E6)
+//! - SpecBudget: (consumed: nat, max_budget: nat) with consumed ≤ max invariant
+//! - Charge increases consumed monotonically
+//! - Remaining (max - consumed) decreases monotonically
+//! - Charge preserves validity (consumed ≤ max)
+//! - Charge fails when insufficient budget
+//! - Meet is deflationary on max
+//! - Reserve conservation: parent.remaining + child.max = original.remaining
+//! - Sequential charges accumulate
+//!
 //! ## Galois Connection Properties (Phase 0 completion)
 //! - Domain: CapabilityLevel as 3-element chain {0=Never, 1=LowRisk, 2=Always}
 //! - α(l) = min(l, threshold) (restriction/cap)
@@ -5676,6 +5686,186 @@ proof fn proof_e3_denial_monotone(
         assert(taint_is_trifecta_complete(taint_i) ==> taint_is_trifecta_complete(taint_j));
     }
 }
+
+// ============================================================================
+// E6: Budget Monotonicity
+//
+// Models the BudgetLattice from portcullis::budget.
+// We use nat (natural numbers) instead of Decimal to keep Z3 in linear
+// integer arithmetic — the key properties are about ordering, not precision.
+//
+// Invariant: consumed ≤ max_budget (validity)
+// ============================================================================
+
+/// Budget state: consumed units out of max_budget total.
+pub struct SpecBudget {
+    pub consumed: nat,
+    pub max_budget: nat,
+}
+
+/// A budget is valid when consumed ≤ max_budget.
+pub open spec fn budget_valid(b: SpecBudget) -> bool {
+    b.consumed <= b.max_budget
+}
+
+/// Remaining budget = max - consumed.
+pub open spec fn budget_remaining(b: SpecBudget) -> nat {
+    (b.max_budget - b.consumed) as nat
+}
+
+/// Charge succeeds: consumed + amount ≤ max_budget.
+pub open spec fn charge_succeeds(b: SpecBudget, amount: nat) -> bool {
+    amount > 0 && b.consumed + amount <= b.max_budget
+}
+
+/// Result of charging: new budget with consumed increased.
+pub open spec fn charge_result(b: SpecBudget, amount: nat) -> SpecBudget {
+    SpecBudget { consumed: (b.consumed + amount) as nat, max_budget: b.max_budget }
+}
+
+/// Budget meet: min of max_budget, max of consumed.
+pub open spec fn budget_meet(a: SpecBudget, b: SpecBudget) -> SpecBudget {
+    SpecBudget {
+        consumed: if a.consumed >= b.consumed { a.consumed } else { b.consumed },
+        max_budget: if a.max_budget <= b.max_budget { a.max_budget } else { b.max_budget },
+    }
+}
+
+/// Budget ordering: a ≤ b iff a.max_budget ≤ b.max_budget.
+pub open spec fn budget_leq(a: SpecBudget, b: SpecBudget) -> bool {
+    a.max_budget <= b.max_budget
+}
+
+/// Reserve: split off a child budget from a parent.
+/// Parent consumed increases by amount, child gets max = amount.
+pub open spec fn reserve_parent(b: SpecBudget, amount: nat) -> SpecBudget {
+    SpecBudget { consumed: (b.consumed + amount) as nat, max_budget: b.max_budget }
+}
+
+pub open spec fn reserve_child(amount: nat) -> SpecBudget {
+    SpecBudget { consumed: 0, max_budget: amount }
+}
+
+/// E6.1: Charge increases consumed monotonically.
+proof fn proof_e6_charge_consumed_monotone(b: SpecBudget, amount: nat)
+    requires
+        budget_valid(b),
+        charge_succeeds(b, amount),
+    ensures
+        charge_result(b, amount).consumed >= b.consumed,
+{}
+
+/// E6.2: Charge decreases remaining monotonically.
+proof fn proof_e6_charge_remaining_monotone(b: SpecBudget, amount: nat)
+    requires
+        budget_valid(b),
+        charge_succeeds(b, amount),
+    ensures
+        budget_remaining(charge_result(b, amount)) <= budget_remaining(b),
+{}
+
+/// E6.3: Charge preserves validity (consumed ≤ max).
+proof fn proof_e6_charge_preserves_validity(b: SpecBudget, amount: nat)
+    requires
+        budget_valid(b),
+        charge_succeeds(b, amount),
+    ensures
+        budget_valid(charge_result(b, amount)),
+{}
+
+/// E6.4: Charge fails when insufficient budget.
+proof fn proof_e6_charge_fails_insufficient(b: SpecBudget, amount: nat)
+    requires
+        budget_valid(b),
+        amount > 0,
+        b.consumed + amount > b.max_budget,
+    ensures
+        !charge_succeeds(b, amount),
+{}
+
+/// E6.5: Reserve splits correctly — parent consumed increases.
+proof fn proof_e6_reserve_parent_consumed(b: SpecBudget, amount: nat)
+    requires
+        budget_valid(b),
+        charge_succeeds(b, amount),
+    ensures
+        reserve_parent(b, amount).consumed == b.consumed + amount,
+{}
+
+/// E6.6: Reserve conservation — parent.remaining + child.max = original.remaining.
+proof fn proof_e6_reserve_conservation(b: SpecBudget, amount: nat)
+    requires
+        budget_valid(b),
+        charge_succeeds(b, amount),
+    ensures
+        budget_remaining(reserve_parent(b, amount)) + reserve_child(amount).max_budget
+            == budget_remaining(b),
+{}
+
+/// E6.7: Meet is deflationary on max_budget.
+///
+/// The meet of two budgets has max_budget ≤ both inputs.
+proof fn proof_e6_meet_deflationary(a: SpecBudget, b: SpecBudget)
+    requires
+        budget_valid(a),
+        budget_valid(b),
+    ensures
+        budget_meet(a, b).max_budget <= a.max_budget,
+        budget_meet(a, b).max_budget <= b.max_budget,
+{}
+
+/// E6.8: Sequential charges accumulate.
+///
+/// Charging a1 then a2 gives the same result as charging (a1 + a2) at once.
+proof fn proof_e6_sequential_charges_accumulate(b: SpecBudget, a1: nat, a2: nat)
+    requires
+        budget_valid(b),
+        charge_succeeds(b, a1),
+        charge_succeeds(charge_result(b, a1), a2),
+    ensures
+        charge_result(charge_result(b, a1), a2).consumed
+            == charge_result(b, (a1 + a2) as nat).consumed,
+{}
+
+/// E6.9: Meet preserves validity when both inputs valid.
+proof fn proof_e6_meet_preserves_validity(a: SpecBudget, b: SpecBudget)
+    requires
+        budget_valid(a),
+        budget_valid(b),
+        // Additional: the max(consumed) must fit within min(max_budget)
+        (if a.consumed >= b.consumed { a.consumed } else { b.consumed })
+            <= (if a.max_budget <= b.max_budget { a.max_budget } else { b.max_budget }),
+    ensures
+        budget_valid(budget_meet(a, b)),
+{}
+
+/// E6.10: Remaining is exactly max - consumed for valid budgets.
+proof fn proof_e6_remaining_exact(b: SpecBudget)
+    requires
+        budget_valid(b),
+    ensures
+        budget_remaining(b) == b.max_budget - b.consumed,
+{}
+
+/// E6.11: Charge of remaining exactly exhausts budget.
+proof fn proof_e6_charge_remaining_exhausts(b: SpecBudget)
+    requires
+        budget_valid(b),
+        budget_remaining(b) > 0,
+    ensures
+        charge_succeeds(b, budget_remaining(b)),
+        budget_remaining(charge_result(b, budget_remaining(b))) == 0,
+{}
+
+/// E6.12: Zero-consumed budget has full remaining.
+proof fn proof_e6_fresh_budget_full(max: nat)
+    requires
+        max > 0,
+    ensures ({
+        let b = SpecBudget { consumed: 0, max_budget: max };
+        budget_valid(b) && budget_remaining(b) == max
+    }),
+{}
 
 fn main() {}
 
