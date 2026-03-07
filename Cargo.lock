@@ -2088,7 +2088,7 @@ dependencies = [
 
 [[package]]
 name = "nucleus"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "cap-std",
  "cap-tempfile",
@@ -2104,7 +2104,7 @@ dependencies = [
 
 [[package]]
 name = "nucleus-audit"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "clap",
  "hex",
@@ -2121,7 +2121,7 @@ dependencies = [
 
 [[package]]
 name = "nucleus-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2150,7 +2150,7 @@ dependencies = [
 
 [[package]]
 name = "nucleus-client"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "drand-verify",
  "hex",
@@ -2166,7 +2166,7 @@ dependencies = [
 
 [[package]]
 name = "nucleus-guest-init"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "nix 0.31.2",
  "serde",
@@ -2176,7 +2176,7 @@ dependencies = [
 
 [[package]]
 name = "nucleus-identity"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "async-trait",
  "base64",
@@ -2208,7 +2208,7 @@ dependencies = [
 
 [[package]]
 name = "nucleus-mcp"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2224,11 +2224,11 @@ dependencies = [
 
 [[package]]
 name = "nucleus-net-probe"
-version = "0.1.0"
+version = "1.0.0"
 
 [[package]]
 name = "nucleus-node"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "base64",
@@ -2271,7 +2271,7 @@ dependencies = [
 
 [[package]]
 name = "nucleus-permission-market"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "proptest",
  "serde",
@@ -2281,7 +2281,7 @@ dependencies = [
 
 [[package]]
 name = "nucleus-proto"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "prost",
  "prost-types",
@@ -2293,7 +2293,7 @@ dependencies = [
 
 [[package]]
 name = "nucleus-sdk"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "nucleus-client",
  "nucleus-identity",
@@ -2314,7 +2314,7 @@ dependencies = [
 
 [[package]]
 name = "nucleus-spec"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "hex",
  "portcullis",
@@ -2327,7 +2327,7 @@ dependencies = [
 
 [[package]]
 name = "nucleus-tool-proxy"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "base64",
@@ -2679,7 +2679,7 @@ checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
 
 [[package]]
 name = "portcullis"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "cel-interpreter",
  "chrono",
@@ -4533,7 +4533,7 @@ dependencies = [
 
 [[package]]
 name = "trifecta-playground"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "crossterm",
  "portcullis",
