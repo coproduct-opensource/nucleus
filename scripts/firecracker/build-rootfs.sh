@@ -277,8 +277,14 @@ else
         echo "Docker not found. Set DEBIAN_TARBALL to a Debian rootfs tarball instead." >&2
         exit 1
     fi
-    echo "Extracting base from Docker image: $DEBIAN_IMAGE"
-    CID=$(docker create "$DEBIAN_IMAGE" /bin/sh)
+    # Map ARCH to Docker platform for cross-architecture builds (e.g., aarch64 on x86_64 CI)
+    case "$ARCH" in
+        aarch64) DOCKER_PLATFORM="linux/arm64" ;;
+        x86_64)  DOCKER_PLATFORM="linux/amd64" ;;
+        *)       DOCKER_PLATFORM="linux/amd64" ;;
+    esac
+    echo "Extracting base from Docker image: $DEBIAN_IMAGE (platform: $DOCKER_PLATFORM)"
+    CID=$(docker create --platform "$DOCKER_PLATFORM" "$DEBIAN_IMAGE" /bin/sh)
     docker export "$CID" -o "$TMP_TAR"
     docker rm "$CID" >/dev/null
     tar -xf "$TMP_TAR" -C "$ROOTFS_DIR"
