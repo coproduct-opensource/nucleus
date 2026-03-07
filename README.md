@@ -274,7 +274,7 @@ See [`examples/podspecs/`](examples/podspecs/) for real configurations:
 Add to any CI pipeline — blocks PRs with unsafe agent configs:
 
 ```yaml
-- uses: coproduct-opensource/nucleus/scan@v1.0.4
+- uses: coproduct-opensource/nucleus/scan@v1.0.5
   with:
     pod-spec: path/to/podspec.yaml
     # format: text          # or json
@@ -287,7 +287,7 @@ Outputs `verdict` (PASS/WARN/FAIL) and `findings-json`. Non-zero exit code on cr
 Drop this into any repo to get nucleus-enforced issue fixes:
 
 ```yaml
-- uses: coproduct-opensource/nucleus@v1.0.4
+- uses: coproduct-opensource/nucleus@v1.0.5
   with:
     issue-number: "123"
     api-key: ${{ secrets.ANTHROPIC_API_KEY }}
