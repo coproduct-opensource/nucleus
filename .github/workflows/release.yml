@@ -20,7 +20,7 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: macos-13
+          - os: macos-14
             target: x86_64-apple-darwin
           - os: macos-14
             target: aarch64-apple-darwin
@@ -29,18 +29,22 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache: true
+      - name: Add cross-compilation target
+        if: matrix.target == 'x86_64-apple-darwin'
+        run: rustup target add x86_64-apple-darwin
       - name: Build
-        run: cargo build -p nucleus-node -p nucleus-cli -p nucleus-mcp -p nucleus-audit --release
+        run: cargo build -p nucleus-node -p nucleus-cli -p nucleus-mcp -p nucleus-audit --release --target ${{ matrix.target }}
       - name: Package
         run: |
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#nucleus-node-v}"
           VERSION="${VERSION#v}"
+          RELEASE_DIR="target/${{ matrix.target }}/release"
           mkdir -p dist
-          tar -C target/release -czf "dist/nucleus-node-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-node
-          tar -C target/release -czf "dist/nucleus-cli-${VERSION}-${{ matrix.target }}.tar.gz" nucleus
-          tar -C target/release -czf "dist/nucleus-mcp-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-mcp
-          tar -C target/release -czf "dist/nucleus-audit-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-audit
+          tar -C "$RELEASE_DIR" -czf "dist/nucleus-node-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-node
+          tar -C "$RELEASE_DIR" -czf "dist/nucleus-cli-${VERSION}-${{ matrix.target }}.tar.gz" nucleus
+          tar -C "$RELEASE_DIR" -czf "dist/nucleus-mcp-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-mcp
+          tar -C "$RELEASE_DIR" -czf "dist/nucleus-audit-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-audit
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
