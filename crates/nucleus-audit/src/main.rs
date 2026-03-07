@@ -1,3 +1,4 @@
+mod discover;
 mod finding;
 mod report;
 mod scan_claude_settings;
@@ -69,8 +70,14 @@ enum Command {
     /// Scan agent configurations for security posture and vulnerabilities.
     ///
     /// Supports PodSpec YAML, Claude Code settings.json, and MCP config files.
-    /// At least one input source must be provided.
+    /// Use --auto to discover configs in the current directory, or provide paths explicitly.
     Scan {
+        /// Auto-discover config files in the current directory tree.
+        #[arg(long)]
+        auto: bool,
+        /// Directory to scan when using --auto (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
         /// Path to a PodSpec YAML/JSON file.
         #[arg(long)]
         pod_spec: Option<PathBuf>,
@@ -166,32 +173,84 @@ fn main() -> Result<(), AuditError> {
             export_log(&log, &format)?;
         }
         Command::Scan {
+            auto,
+            dir,
             pod_spec,
             claude_settings,
             mcp_config,
             audit_log,
             format,
         } => {
-            if pod_spec.is_none() && claude_settings.is_none() && mcp_config.is_none() {
+            // Collect all config paths to scan
+            let mut pod_specs: Vec<PathBuf> = pod_spec.into_iter().collect();
+            let mut claude_settings_paths: Vec<PathBuf> = claude_settings.into_iter().collect();
+            let mut mcp_configs: Vec<PathBuf> = mcp_config.into_iter().collect();
+
+            if auto {
+                let discovered = discover::discover_configs(&dir, 3);
+                if discovered.is_empty()
+                    && pod_specs.is_empty()
+                    && claude_settings_paths.is_empty()
+                    && mcp_configs.is_empty()
+                {
+                    eprintln!("No agent config files found in {}", dir.display());
+                    eprintln!(
+                        "Looked for: .claude/settings.json, .mcp.json, \
+                         and PodSpec YAML in examples/podspecs/"
+                    );
+                    std::process::exit(2);
+                }
+
+                // Print discovery results
+                if !discovered.is_empty() {
+                    eprintln!(
+                        "Discovered {} config file{}:",
+                        discovered.total(),
+                        if discovered.total() == 1 { "" } else { "s" }
+                    );
+                    for p in &discovered.claude_settings {
+                        eprintln!("  Claude settings: {}", p.display());
+                    }
+                    for p in &discovered.mcp_configs {
+                        eprintln!("  MCP config:      {}", p.display());
+                    }
+                    for p in &discovered.pod_specs {
+                        eprintln!("  PodSpec:         {}", p.display());
+                    }
+                    eprintln!();
+                }
+
+                pod_specs.extend(discovered.pod_specs);
+                claude_settings_paths.extend(discovered.claude_settings);
+                mcp_configs.extend(discovered.mcp_configs);
+            }
+
+            if pod_specs.is_empty() && claude_settings_paths.is_empty() && mcp_configs.is_empty() {
                 eprintln!(
                     "Error: at least one of --pod-spec, --claude-settings, \
-                     or --mcp-config is required"
+                     --mcp-config, or --auto is required"
                 );
                 std::process::exit(2);
             }
 
             let mut report = ScanReport::default();
+            let mut has_pod_spec = false;
 
-            // Scan PodSpec if provided
-            if let Some(ps_path) = &pod_spec {
-                report = scan_podspec::scan_pod_spec(ps_path, audit_log.as_deref())?;
+            // Scan PodSpecs
+            for ps_path in &pod_specs {
+                let ps_report = scan_podspec::scan_pod_spec(ps_path, audit_log.as_deref())?;
+                if !has_pod_spec {
+                    report = ps_report;
+                    has_pod_spec = true;
+                } else {
+                    report.findings.extend(ps_report.findings);
+                }
             }
 
-            // Scan Claude settings if provided
-            if let Some(cs_path) = &claude_settings {
+            // Scan Claude settings
+            for cs_path in &claude_settings_paths {
                 let (findings, summary) = scan_claude_settings::scan_claude_settings(cs_path)?;
-                // If no PodSpec, derive trifecta info from settings findings
-                if pod_spec.is_none() {
+                if !has_pod_spec {
                     let has_trifecta = findings
                         .iter()
                         .any(|f| f.category == "trifecta" && f.severity == Severity::Critical);
@@ -202,15 +261,15 @@ fn main() -> Result<(), AuditError> {
                     } else {
                         "None".to_string()
                     };
-                    report.trifecta_enforced = false; // settings.json has no enforcement
+                    report.trifecta_enforced = false;
                     report.has_credentials = findings.iter().any(|f| f.category == "credentials");
                 }
                 report.findings.extend(findings);
                 report.claude_settings_summary = Some(summary);
             }
 
-            // Scan MCP config if provided
-            if let Some(mc_path) = &mcp_config {
+            // Scan MCP configs
+            for mc_path in &mcp_configs {
                 let (findings, summary) = scan_mcp_config::scan_mcp_config(mc_path)?;
                 if findings.iter().any(|f| f.category == "credentials") {
                     report.has_credentials = true;

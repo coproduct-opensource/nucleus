@@ -18,6 +18,9 @@ inputs:
   audit-log:
     description: 'Optional audit log to cross-reference against declared policy'
     required: false
+  auto:
+    description: 'Auto-discover config files in the repository (ignores pod-spec/claude-settings/mcp-config)'
+    default: 'false'
   format:
     description: 'Output format (text or json)'
     default: 'text'
@@ -74,25 +77,29 @@ runs:
 
         ARGS=""
 
-        if [ -n "${{ inputs.pod-spec }}" ]; then
-          ARGS="${ARGS} --pod-spec ${{ inputs.pod-spec }}"
-        fi
+        if [ "${{ inputs.auto }}" = "true" ]; then
+          ARGS="--auto"
+        else
+          if [ -n "${{ inputs.pod-spec }}" ]; then
+            ARGS="${ARGS} --pod-spec ${{ inputs.pod-spec }}"
+          fi
 
-        if [ -n "${{ inputs.claude-settings }}" ]; then
-          ARGS="${ARGS} --claude-settings ${{ inputs.claude-settings }}"
-        fi
+          if [ -n "${{ inputs.claude-settings }}" ]; then
+            ARGS="${ARGS} --claude-settings ${{ inputs.claude-settings }}"
+          fi
 
-        if [ -n "${{ inputs.mcp-config }}" ]; then
-          ARGS="${ARGS} --mcp-config ${{ inputs.mcp-config }}"
-        fi
+          if [ -n "${{ inputs.mcp-config }}" ]; then
+            ARGS="${ARGS} --mcp-config ${{ inputs.mcp-config }}"
+          fi
 
-        if [ -n "${{ inputs.audit-log }}" ]; then
-          ARGS="${ARGS} --audit-log ${{ inputs.audit-log }}"
-        fi
+          if [ -n "${{ inputs.audit-log }}" ]; then
+            ARGS="${ARGS} --audit-log ${{ inputs.audit-log }}"
+          fi
 
-        if [ -z "${ARGS}" ]; then
-          echo "::error::At least one of pod-spec, claude-settings, or mcp-config is required"
-          exit 1
+          if [ -z "${ARGS}" ]; then
+            echo "::error::At least one of pod-spec, claude-settings, mcp-config, or auto is required"
+            exit 1
+          fi
         fi
 
         # Always capture JSON for the output

@@ -22,13 +22,12 @@ cargo install --git https://github.com/coproduct-opensource/nucleus nucleus-audi
 
 # Or download a pre-built binary from GitHub Releases
 
-# Scan a PodSpec for security issues
+# Auto-discover and scan all agent configs in the current repo
+nucleus-audit scan --auto
+
+# Or specify paths explicitly
 nucleus-audit scan --pod-spec your-agent.yaml
-
-# Scan a Claude Code settings.json
 nucleus-audit scan --claude-settings .claude/settings.json
-
-# Scan an MCP config
 nucleus-audit scan --mcp-config .mcp.json
 
 # Scan everything at once — findings are merged and deduplicated
@@ -279,15 +278,21 @@ See [`examples/podspecs/`](examples/podspecs/) for real configurations:
 Add to any CI pipeline — blocks PRs with unsafe agent configs:
 
 ```yaml
+# Auto-discover all agent configs in the repo
 - uses: coproduct-opensource/nucleus/scan@v1.0.8
   with:
-    pod-spec: path/to/podspec.yaml
-    # claude-settings: .claude/settings.json
-    # mcp-config: .mcp.json
+    auto: true
+
+# Or specify paths explicitly
+- uses: coproduct-opensource/nucleus/scan@v1.0.8
+  with:
+    claude-settings: .claude/settings.json
+    mcp-config: .mcp.json
+    # pod-spec: path/to/podspec.yaml
     # format: text          # or json
 ```
 
-At least one of `pod-spec`, `claude-settings`, or `mcp-config` is required. Outputs `verdict` (PASS/WARN/FAIL) and `findings-json`. Non-zero exit code on critical or high findings.
+Use `auto: true` to discover configs automatically, or provide explicit paths. Outputs `verdict` (PASS/WARN/FAIL) and `findings-json`. Non-zero exit code on critical or high findings.
 
 ### Safe PR Fixer (LLM-powered, lattice-enforced)
 
