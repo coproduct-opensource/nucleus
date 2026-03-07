@@ -1,4 +1,5 @@
 name: 'Nucleus Scan'
+author: 'coproduct-opensource'
 description: 'Deterministic security scan for AI agent PodSpecs. No LLM required.'
 branding:
   icon: 'search'

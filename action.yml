@@ -1,4 +1,5 @@
 name: 'Nucleus Safe PR Fixer'
+author: 'coproduct-opensource'
 description: 'Run an AI agent with lattice-enforced permissions to fix issues safely'
 branding:
   icon: 'shield'
