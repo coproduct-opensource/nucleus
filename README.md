@@ -14,10 +14,13 @@ Nucleus is a security framework for AI agents that combines a mathematically ver
 
 ## Start Here: Scan Your Agent Config
 
-This works today. No runtime required. Not yet published to crates.io — install from source.
+This works today. No runtime required. Pre-built binaries ship with every [release](https://github.com/coproduct-opensource/nucleus/releases).
 
 ```bash
+# From source
 cargo install --git https://github.com/coproduct-opensource/nucleus nucleus-audit
+
+# Or download a pre-built binary from GitHub Releases
 
 # Scan a PodSpec for security issues
 nucleus-audit scan --pod-spec your-agent.yaml
@@ -259,22 +262,39 @@ valid_hours = 1           # Expires after 1 hour
 
 See [`examples/podspecs/`](examples/podspecs/) for real configurations:
 
+- **`safe-pr-fixer.yaml`** — CI issue fixer: write + bash + commit, no push/PR (the GitHub Action profile)
 - **`airgapped-review.yaml`** — Code review in a fully airgapped Firecracker VM with seccomp
 - **`secure-codegen.yaml`** — Code generation with filtered network (crates.io, npm, GitHub only)
 - **`permissive-danger.yaml`** — Intentionally insecure config for testing `nucleus-audit scan`
 
-## GitHub Action: Safe PR Fixer
+## GitHub Actions
+
+### Deterministic Scan (no LLM, no API key)
+
+Add to any CI pipeline — blocks PRs with unsafe agent configs:
+
+```yaml
+- uses: coproduct-opensource/nucleus/scan@v1.0.4
+  with:
+    pod-spec: path/to/podspec.yaml
+    # format: text          # or json
+```
+
+Outputs `verdict` (PASS/WARN/FAIL) and `findings-json`. Non-zero exit code on critical or high findings.
+
+### Safe PR Fixer (LLM-powered, lattice-enforced)
 
 Drop this into any repo to get nucleus-enforced issue fixes:
 
 ```yaml
-- uses: coproduct-opensource/nucleus@v1.0.2
+- uses: coproduct-opensource/nucleus@v1.0.4
   with:
     issue-number: "123"
     api-key: ${{ secrets.ANTHROPIC_API_KEY }}
     profile: safe_pr_fixer     # write + bash + commit + web fetch, no push/PR
     timeout: "600"
     # model: "claude-sonnet-4-20250514"   # default
+    # github-token: ${{ secrets.GH_PAT }}  # optional: override GITHUB_TOKEN for PR creation
 ```
 
 **How it works:**

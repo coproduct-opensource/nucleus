@@ -1,0 +1,14 @@
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: safe-pr-fixer
+  namespace: ci
+spec:
+  work_dir: /workspace
+  timeout_seconds: 600
+  policy:
+    type: profile
+    name: safe_pr_fixer
+  credentials:
+    env:
+      LLM_API_TOKEN: "${LLM_API_TOKEN}"
