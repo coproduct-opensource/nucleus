@@ -69,6 +69,12 @@ runs:
         chmod +x "$HOME/.nucleus/bin/"*
         echo "$HOME/.nucleus/bin" >> "$GITHUB_PATH"
 
+    - name: Install Claude Code CLI
+      shell: bash
+      run: |
+        npm install -g @anthropic-ai/claude-code
+        claude --version
+
     - name: Run safe PR fixer
       id: fix
       shell: bash
