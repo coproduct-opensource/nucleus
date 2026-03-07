@@ -26,6 +26,7 @@ pub const ALLOWED_MIME_PREFIXES: &[&str] = &[
 ];
 
 /// Validate a URL for web_fetch (length, scheme, null bytes).
+#[cfg_attr(not(feature = "mcp"), allow(dead_code))]
 pub fn validate_url(url: &str) -> Result<(), String> {
     validation::validate_url(url).map_err(|e| format!("validation error: {e}"))
 }
