@@ -77,7 +77,7 @@ Three layers, at different levels of maturity:
 
 | Component | Maturity | Evidence |
 |-----------|----------|----------|
-| **Permission lattice** (portcullis) | Verified | 50K LOC, 470 tests, 297 Verus VCs, 3 fuzz targets |
+| **Permission lattice** (portcullis) | Verified | 43K LOC, 875 tests, 297 Verus VCs, 3 fuzz targets |
 | **Trifecta detection** | Verified | Static scan + runtime guard, monotonicity proven (E1-E3) |
 | **Web fetch security** | Tested | Unified MCP+HTTP path: MIME gating, DNS/URL allowlist, redirect verification, IPv6 |
 | **Audit log verification** | Tested | HMAC-SHA256 + SHA-256 chain; optional S3 append-only sink (no integration test) |
@@ -96,7 +96,7 @@ Three layers, at different levels of maturity:
 
 ## Permission Lattice
 
-Permissions compose predictably via a mathematical lattice. This is the most mature part of Nucleus — 50K lines of Rust with 297 machine-checked verification conditions.
+Permissions compose predictably via a mathematical lattice. This is the most mature part of Nucleus — 43K lines of Rust with 297 machine-checked verification conditions.
 
 | Structure | What It Gives You | Status |
 |-----------|-------------------|--------|
@@ -139,6 +139,25 @@ See the full roadmap: [docs/north-star.md](docs/north-star.md).
 
 The Verus VC count is ratcheted in CI — it can only go up, never down (`.verus-minimum-proofs`). Merging to `main` requires 14 status checks to pass, including security audit, cargo deny, clippy, fmt, and per-crate test suites. Mutation testing (cargo-mutants) blocks merges when surviving mutants are detected.
 
+## v1.0 Contract Surface
+
+The v1.0 interfaces are designed for 15 years of growth. See [`STABILITY.md`](STABILITY.md) for the full frozen/open contract table.
+
+**Frozen at v1.0** (breaking changes require v2.0):
+- 12 core `Operation` variants + taint classifications
+- 3 core `TaintLabel` variants + trifecta predicate
+- `CapabilityLevel` enum (`Never`, `LowRisk`, `Always`)
+- gRPC `NodeService` RPCs, HMAC signing protocol, audit hash chain
+
+**Open for extension** (no version bump needed):
+- New operations via `ExtensionOperation` on `CapabilityLattice` (fail-closed: unknown ops default to `Never`)
+- New taint labels via `ExtensionTaintLabel` on `TaintSet` (don't affect core trifecta)
+- New dangerous combinations via `ConstraintNucleus` (trifecta always slot 0, can't be removed)
+- Versioned `ExecutionReceipt` with `v1_content_hash` for forward-compatible verification
+- `WorkspaceGuard` trait for multi-agent shared taint (interface only in v1.0)
+
+Proofs survive extensions by construction: products of lattices are lattices (universal property in **Lat**), powersets preserve join-semilattice laws, and composition of deflationary endomorphisms is deflationary. No Verus re-verification needed.
+
 ## Runtime Architecture
 
 ```
@@ -172,7 +191,7 @@ The enforcement path: Agent → MCP → tool-proxy (inside VM) → portcullis ch
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
-| **portcullis** | Permission lattice: 7 algebraic modules | 470 |
+| **portcullis** | Permission lattice: 9 algebraic modules | 875 |
 | **portcullis-verified** | Verus SMT proofs for portcullis | 297 VCs |
 | **nucleus-audit** | `scan` PodSpecs; `verify` hash-chained audit logs | 14 |
 | **nucleus** | Enforcement: sandbox, executor, budget | 89 |
@@ -188,7 +207,7 @@ The enforcement path: Agent → MCP → tool-proxy (inside VM) → portcullis ch
 | **nucleus-net-probe** | TCP probe for network policy tests | 2 |
 | **trifecta-playground** | Interactive TUI for exploring the lattice | — |
 
-Total: ~6,700 test functions across the workspace (includes proptest invariants).
+Total: ~1,550 test functions across the workspace. Proptest invariants each generate 256 random cases.
 
 ## Permission Profiles
 
