@@ -30,7 +30,7 @@ jobs:
         with:
           cache: true
       - name: Build
-        run: cargo build -p nucleus-node -p nucleus-cli -p nucleus-mcp --release
+        run: cargo build -p nucleus-node -p nucleus-cli -p nucleus-mcp -p nucleus-audit --release
       - name: Package
         run: |
           TAG="${GITHUB_REF_NAME}"
@@ -40,6 +40,7 @@ jobs:
           tar -C target/release -czf "dist/nucleus-node-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-node
           tar -C target/release -czf "dist/nucleus-cli-${VERSION}-${{ matrix.target }}.tar.gz" nucleus
           tar -C target/release -czf "dist/nucleus-mcp-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-mcp
+          tar -C target/release -czf "dist/nucleus-audit-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-audit
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
@@ -72,10 +73,11 @@ jobs:
           cross build -p nucleus-guest-init --release --target ${{ matrix.target }}
           cross build -p nucleus-tool-proxy --release --features remote-audit --target ${{ matrix.target }}
           cross build -p nucleus-net-probe --release --target ${{ matrix.target }}
-      - name: Build CLI + MCP (musl)
+      - name: Build CLI + MCP + Audit (musl)
         run: |
           cross build -p nucleus-cli --release --target ${{ matrix.target }}
           cross build -p nucleus-mcp --release --target ${{ matrix.target }}
+          cross build -p nucleus-audit --release --target ${{ matrix.target }}
       - name: Package all binaries
         run: |
           TAG="${GITHUB_REF_NAME}"
@@ -85,6 +87,7 @@ jobs:
           tar -C target/${{ matrix.target }}/release -czf "dist/nucleus-node-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-node
           tar -C target/${{ matrix.target }}/release -czf "dist/nucleus-cli-${VERSION}-${{ matrix.target }}.tar.gz" nucleus
           tar -C target/${{ matrix.target }}/release -czf "dist/nucleus-mcp-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-mcp
+          tar -C target/${{ matrix.target }}/release -czf "dist/nucleus-audit-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-audit
           tar -C target/${{ matrix.target }}/release -czf "dist/nucleus-tool-proxy-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-tool-proxy
       - name: Upload packaged artifacts
         uses: actions/upload-artifact@v7

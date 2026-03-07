@@ -1,0 +1,86 @@
+name: 'Nucleus Scan'
+description: 'Deterministic security scan for AI agent PodSpecs. No LLM required.'
+branding:
+  icon: 'search'
+  color: 'orange'
+
+inputs:
+  pod-spec:
+    description: 'Path to PodSpec YAML file to scan'
+    required: true
+  audit-log:
+    description: 'Optional audit log to cross-reference against declared policy'
+    required: false
+  format:
+    description: 'Output format (text or json)'
+    default: 'text'
+  nucleus-version:
+    description: 'Nucleus version to install (or "latest")'
+    default: 'latest'
+
+outputs:
+  verdict:
+    description: 'Scan verdict (PASS, WARN, FAIL)'
+    value: ${{ steps.scan.outputs.verdict }}
+  findings-json:
+    description: 'Findings in JSON format'
+    value: ${{ steps.scan.outputs.findings_json }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install nucleus-audit
+      shell: bash
+      run: |
+        set -euo pipefail
+        REPO="coproduct-opensource/nucleus"
+        if [ "${{ inputs.nucleus-version }}" = "latest" ]; then
+          VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | jq -r '.tag_name')
+        else
+          VERSION="${{ inputs.nucleus-version }}"
+        fi
+        VERSION_NUM="${VERSION#v}"
+
+        ARCH=$(uname -m)
+        case "$ARCH" in
+          x86_64)  TARGET="x86_64-unknown-linux-musl" ;;
+          aarch64) TARGET="aarch64-unknown-linux-musl" ;;
+          *)       echo "::error::Unsupported architecture: $ARCH"; exit 1 ;;
+        esac
+
+        ARTIFACT="nucleus-audit-${VERSION_NUM}-${TARGET}.tar.gz"
+        BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
+
+        mkdir -p "$HOME/.nucleus/bin"
+        echo "::group::Installing nucleus-audit ${VERSION_NUM}"
+        curl -fsSL "${BASE_URL}/${ARTIFACT}" | tar -xz -C "$HOME/.nucleus/bin/"
+        echo "::endgroup::"
+
+        chmod +x "$HOME/.nucleus/bin/"*
+        echo "$HOME/.nucleus/bin" >> "$GITHUB_PATH"
+
+    - name: Run scan
+      id: scan
+      shell: bash
+      run: |
+        set -uo pipefail
+
+        ARGS="--pod-spec ${{ inputs.pod-spec }}"
+
+        if [ -n "${{ inputs.audit-log }}" ]; then
+          ARGS="${ARGS} --audit-log ${{ inputs.audit-log }}"
+        fi
+
+        # Always capture JSON for the output
+        JSON_OUTPUT=$(nucleus-audit scan ${ARGS} --format json 2>&1) || true
+        echo "findings_json<<NUCLEUS_EOF" >> "$GITHUB_OUTPUT"
+        echo "${JSON_OUTPUT}" >> "$GITHUB_OUTPUT"
+        echo "NUCLEUS_EOF" >> "$GITHUB_OUTPUT"
+
+        # Run again with requested format for display
+        if nucleus-audit scan ${ARGS} --format ${{ inputs.format }}; then
+          echo "verdict=PASS" >> "$GITHUB_OUTPUT"
+        else
+          echo "verdict=FAIL" >> "$GITHUB_OUTPUT"
+          exit 1
+        fi
