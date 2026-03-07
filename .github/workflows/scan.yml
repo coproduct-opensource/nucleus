@@ -1,0 +1,72 @@
+name: PodSpec Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Scan PodSpecs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: true
+
+      - name: Build nucleus-audit
+        run: cargo build -p nucleus-audit --release
+
+      - name: Scan example PodSpecs
+        run: |
+          set -uo pipefail
+          SCANNER=target/release/nucleus-audit
+
+          echo "::group::safe-pr-fixer.yaml"
+          $SCANNER scan --pod-spec examples/podspecs/safe-pr-fixer.yaml
+          echo "::endgroup::"
+
+          echo "::group::airgapped-review.yaml"
+          $SCANNER scan --pod-spec examples/podspecs/airgapped-review.yaml
+          echo "::endgroup::"
+
+          echo "::group::secure-codegen.yaml"
+          $SCANNER scan --pod-spec examples/podspecs/secure-codegen.yaml
+          echo "::endgroup::"
+
+          echo "::group::permissive-danger.yaml (expected FAIL)"
+          if $SCANNER scan --pod-spec examples/podspecs/permissive-danger.yaml; then
+            echo "::error::permissive-danger.yaml should fail the scan but passed"
+            exit 1
+          else
+            echo "Correctly failed — this PodSpec is intentionally insecure"
+          fi
+          echo "::endgroup::"
+
+  # Test the standalone scan action (downloads pre-built binary from releases)
+  scan-action:
+    name: Scan Action (integration)
+    runs-on: ubuntu-latest
+    # Only run on main — the action downloads from releases, so it needs a published version
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Scan safe PodSpec
+        uses: coproduct-opensource/nucleus/scan@v1.0.4
+        id: safe
+        with:
+          pod-spec: examples/podspecs/safe-pr-fixer.yaml
+
+      - name: Verify verdict
+        run: |
+          echo "Verdict: ${{ steps.safe.outputs.verdict }}"
+          if [ "${{ steps.safe.outputs.verdict }}" != "PASS" ]; then
+            echo "::error::Expected PASS verdict for safe-pr-fixer.yaml"
+            exit 1
+          fi
