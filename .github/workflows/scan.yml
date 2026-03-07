@@ -1,4 +1,4 @@
-name: PodSpec Scan
+name: Config Scan
 
 on:
   push:
@@ -48,6 +48,42 @@ jobs:
           fi
           echo "::endgroup::"
 
+          # Claude Code settings.json
+          echo "::group::safe-restrictive.json (Claude settings)"
+          $SCANNER scan --claude-settings examples/claude-settings/safe-restrictive.json
+          echo "::endgroup::"
+
+          echo "::group::permissive-danger.json (Claude settings, expected FAIL)"
+          if $SCANNER scan --claude-settings examples/claude-settings/permissive-danger.json; then
+            echo "::error::permissive-danger.json should fail the scan but passed"
+            exit 1
+          else
+            echo "Correctly failed — this Claude config is intentionally insecure"
+          fi
+          echo "::endgroup::"
+
+          # MCP configs
+          echo "::group::safe-local.json (MCP config)"
+          $SCANNER scan --mcp-config examples/mcp-configs/safe-local.json
+          echo "::endgroup::"
+
+          echo "::group::permissive-danger.json (MCP config, expected FAIL)"
+          if $SCANNER scan --mcp-config examples/mcp-configs/permissive-danger.json; then
+            echo "::error::permissive-danger.json should fail the scan but passed"
+            exit 1
+          else
+            echo "Correctly failed — this MCP config is intentionally insecure"
+          fi
+          echo "::endgroup::"
+
+          # Combined scan
+          echo "::group::Combined scan (all three formats)"
+          $SCANNER scan \
+            --pod-spec examples/podspecs/safe-pr-fixer.yaml \
+            --claude-settings examples/claude-settings/safe-restrictive.json \
+            --mcp-config examples/mcp-configs/safe-local.json
+          echo "::endgroup::"
+
   # Test the standalone scan action (downloads pre-built binary from releases)
   scan-action:
     name: Scan Action (integration)
@@ -58,7 +94,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Scan safe PodSpec
-        uses: coproduct-opensource/nucleus/scan@v1.0.5
+        uses: coproduct-opensource/nucleus/scan@v1.0.7
         id: safe
         with:
           pod-spec: examples/podspecs/safe-pr-fixer.yaml

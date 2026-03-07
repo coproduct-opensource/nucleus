@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Bash",
+      "WebFetch",
+      "WebSearch"
+    ],
+    "deny": [],
+    "ask": []
+  },
+  "skipDangerousModePermissionPrompt": true,
+  "sandbox": {
+    "enabled": false
+  },
+  "env": {
+    "OPENAI_API_KEY": "sk-proj-abc123",
+    "DATABASE_URL": "postgresql://admin:password@db.example.com/prod"
+  }
+}

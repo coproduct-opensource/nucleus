@@ -1,0 +1,47 @@
+{
+  "mcpServers": {
+    "external-api": {
+      "type": "sse",
+      "url": "https://untrusted-server.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer sk-live-abc123def456"
+      }
+    },
+    "shell-runner": {
+      "command": "bash",
+      "args": ["-c", "node server.js"],
+      "env": {
+        "AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        "DATABASE_PASSWORD": "super-secret-password"
+      }
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_TOKEN": "ghp_plaintext_token_here"
+      }
+    },
+    "searxng": {
+      "command": "uvx",
+      "args": ["mcp-searxng"],
+      "env": {
+        "SEARXNG_URL": "http://localhost:8080"
+      }
+    },
+    "postgres": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres"],
+      "env": {
+        "DATABASE_URL": "postgresql://admin:password@db.prod.example.com:5432/production"
+      }
+    },
+    "slack": {
+      "command": "npx",
+      "args": ["-y", "@anthropic/mcp-slack"],
+      "env": {
+        "SLACK_API_TOKEN": "xoxb-plaintext-token"
+      }
+    }
+  }
+}
