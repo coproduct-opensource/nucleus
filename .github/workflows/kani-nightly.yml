@@ -44,7 +44,6 @@ jobs:
             --solver cadical
             --harness proof_normalize_idempotent
             --harness proof_normalize_deflationary
-            --harness proof_normalize_monotone
             --harness proof_capability_distributive
             --harness proof_taintset_monoid_identity
             --harness proof_taintset_trifecta_iff_count_three
@@ -66,7 +65,7 @@ jobs:
           MINIMUM=$(cat .kani-minimum-proofs | tr -d '[:space:]')
           echo "## Kani BMC Results (fast tier)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Harnesses verified:** 8 / $PROOF_COUNT (fast tier)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Harnesses verified:** 7 / $PROOF_COUNT (fast tier)" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Solver:** CaDiCaL" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Minimum required:** $MINIMUM" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Full suite:** nightly + workflow_dispatch" >> "$GITHUB_STEP_SUMMARY"
