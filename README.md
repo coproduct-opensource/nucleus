@@ -39,10 +39,12 @@ nucleus-audit scan --pod-spec agent.yaml --claude-settings settings.json --mcp-c
 | Format | File | What It Checks |
 |--------|------|----------------|
 | PodSpec | `*.yaml` | Trifecta, credentials, network, isolation, timeout, permissions |
-| Claude Code settings | `settings.json` | Trifecta via allow/deny rules, unrestricted Bash, exfil patterns, safety bypasses, inline credentials, hooks |
-| MCP config | `.mcp.json` | External HTTP servers, plaintext credentials, auth headers in config, dangerous commands, surface area |
+| Claude Code settings | `settings.json` | Trifecta via allow/deny rules, Bash capability propagation, exfil patterns, safety bypasses, inline credentials, hooks |
+| MCP config | `.mcp.json` | Well-known server classification, `npx -y` supply chain risk, external HTTP servers, plaintext credentials, auth headers, dangerous commands |
 
-The Claude Code scanner projects `allow`/`deny` rules onto the portcullis `CapabilityLattice` and runs the same trifecta analysis used for PodSpecs. A deny rule like `"Bash"` (bare, no pattern) demotes the exfiltration leg back to `Never`, breaking the trifecta.
+The Claude Code scanner projects `allow`/`deny` rules onto the portcullis `CapabilityLattice` and runs the same trifecta analysis used for PodSpecs. **Unrestricted Bash implies all capabilities** — `cat` reads files, `curl` fetches web content, `grep` searches — so `["Edit", "Write", "Bash"]` correctly triggers a CRITICAL trifecta even without explicit `Read` or `WebFetch` rules. Patterned Bash (e.g., `Bash(curl *)`) propagates only the relevant capability legs. A deny rule like `"Bash"` (bare, no pattern) demotes the exfiltration leg back to `Never`, breaking the trifecta.
+
+The MCP scanner classifies well-known server packages (database, filesystem, VCS, cloud, communication, browser) and flags `npx -y` with non-official packages as a supply chain risk.
 
 Exit code is non-zero when critical or high findings exist — drop it into CI and block unsafe deployments.
 
@@ -53,6 +55,66 @@ nucleus-audit scan --pod-spec agent.yaml --format json
 # Verify hash-chained audit logs
 nucleus-audit verify --audit-log /var/log/nucleus/agent.jsonl
 ```
+
+### Example: The Hidden Trifecta
+
+A common config that *looks* safe — only Edit, Write, and Bash — but unrestricted Bash implies `cat` (read), `curl` (web), and `git push` (exfil):
+
+```json
+{ "permissions": { "allow": ["Edit", "Write", "Bash"], "deny": [] } }
+```
+
+```
+$ nucleus-audit scan --claude-settings settings.json
+
+  !! [CRITICAL] Lethal trifecta in Claude Code settings
+       The allow rules grant private data access (Read/Glob/Grep)
+       + untrusted content (WebFetch/WebSearch) + exfiltration (Bash)
+       without sufficient deny rules to break the trifecta.
+
+  !  [HIGH] Unrestricted Bash access
+       Bash is allowed without pattern restrictions and no deny rules
+       limit it.
+
+  ══ Verdict: FAIL — critical issues must be resolved ══
+```
+
+Compare with a hardened config that restricts Bash to specific commands and denies exfil patterns:
+
+```json
+{ "permissions": {
+    "allow": ["Read", "Bash(cargo *)", "Bash(git status)", "Bash(git diff *)"],
+    "deny":  ["Bash(curl *)", "Bash(wget *)", "Read(.env)", "Read(*secret*)"],
+    "ask":   ["Write", "Edit", "Bash(git push *)"]
+} }
+```
+
+```
+$ nucleus-audit scan --claude-settings settings.json
+  ══ Verdict: PASS with advisories ══
+```
+
+### Example: MCP Server Classification
+
+The scanner classifies well-known MCP server packages and flags `npx -y` supply chain risk:
+
+```
+$ nucleus-audit scan --mcp-config .mcp.json
+
+  ~  [MEDIUM] Database access via MCP server 'postgres'
+  ~  [MEDIUM] Filesystem access via MCP server 'filesystem'
+  ~  [MEDIUM] Vcs access via MCP server 'github'
+       This server provides BOTH private data access and
+       exfiltration capability — two trifecta legs in one server.
+  ~  [MEDIUM] Auto-install unknown package in 'custom-tool': some-random-mcp-server
+       This executes arbitrary code from npm on every invocation.
+  -  [LOW] Auto-install official MCP package in 'postgres'
+       Pinning to a specific version is recommended.
+
+  ══ Verdict: PASS with advisories ══
+```
+
+See [`examples/`](examples/) for more configs: [Claude Code settings](examples/claude-settings/), [MCP configs](examples/mcp-configs/), [PodSpecs](examples/podspecs/).
 
 ## The Lethal Trifecta
 
@@ -89,8 +151,8 @@ Three layers, at different levels of maturity:
 | **Web fetch security** | Tested | Unified MCP+HTTP path: MIME gating, DNS/URL allowlist, redirect verification, IPv6 |
 | **Audit log verification** | Tested | HMAC-SHA256 + SHA-256 chain; optional S3 append-only sink (no integration test) |
 | **PodSpec scanner** | Tested | Trifecta, credentials, network, isolation, timeout checks |
-| **Claude Code scanner** | Tested | Trifecta via allow/deny projection, exfil patterns, safety bypasses, credentials |
-| **MCP config scanner** | Tested | HTTP servers, plaintext credentials, auth headers, dangerous commands |
+| **Claude Code scanner** | Tested | Trifecta via allow/deny projection, Bash capability propagation, exfil patterns, safety bypasses, credentials |
+| **MCP config scanner** | Tested | Well-known server classification (15 packages), `npx -y` supply chain detection, HTTP servers, credentials |
 | **Permission profiles** | Tested | 14 named profiles backed by lattice constructors |
 | **Tool proxy** (MCP enforcement) | Tested | 9,500 LOC, 119 tests; enforces agent sessions in GitHub Actions |
 | **Firecracker isolation** | Tested | Real jailer invocation + iptables; Linux+KVM only |
@@ -202,7 +264,7 @@ The enforcement path: Agent → MCP → tool-proxy (inside VM) → portcullis ch
 |-------|---------|-------|
 | **portcullis** | Permission lattice: 9 algebraic modules | 875 |
 | **portcullis-verified** | Verus SMT proofs for portcullis | 297 VCs |
-| **nucleus-audit** | `scan` PodSpecs, Claude Code settings, MCP configs; `verify` audit logs | 24 |
+| **nucleus-audit** | `scan` PodSpecs, Claude Code settings, MCP configs; `verify` audit logs | 37 |
 | **nucleus** | Enforcement: sandbox, executor, budget | 89 |
 | **nucleus-node** | Node daemon managing Firecracker microVMs | 26 |
 | **nucleus-tool-proxy** | MCP tool proxy running inside pods | 119 |
@@ -216,7 +278,7 @@ The enforcement path: Agent → MCP → tool-proxy (inside VM) → portcullis ch
 | **nucleus-net-probe** | TCP probe for network policy tests | 2 |
 | **trifecta-playground** | Interactive TUI for exploring the lattice | — |
 
-Total: ~1,550 test functions across the workspace. Proptest invariants each generate 256 random cases.
+Total: ~1,590 test functions across the workspace. Proptest invariants each generate 256 random cases.
 
 ## Permission Profiles
 
@@ -262,14 +324,25 @@ max_output_tokens = 5000
 valid_hours = 1           # Expires after 1 hour
 ```
 
-## Example PodSpecs
+## Example Configs
 
-See [`examples/podspecs/`](examples/podspecs/) for real configurations:
+See [`examples/`](examples/) for scannable configurations across all three formats:
 
+**PodSpecs** ([`examples/podspecs/`](examples/podspecs/)):
 - **`safe-pr-fixer.yaml`** — CI issue fixer: write + bash + commit, no push/PR (the GitHub Action profile)
 - **`airgapped-review.yaml`** — Code review in a fully airgapped Firecracker VM with seccomp
 - **`secure-codegen.yaml`** — Code generation with filtered network (crates.io, npm, GitHub only)
 - **`permissive-danger.yaml`** — Intentionally insecure config for testing `nucleus-audit scan`
+
+**Claude Code settings** ([`examples/claude-settings/`](examples/claude-settings/)):
+- **`safe-restrictive.json`** — Scoped Bash patterns, deny rules for exfil, sandbox enabled
+- **`hidden-trifecta.json`** — The `["Edit", "Write", "Bash"]` trap: CRITICAL trifecta via Bash propagation
+- **`permissive-danger.json`** — Everything allowed, safety bypasses, plaintext credentials
+
+**MCP configs** ([`examples/mcp-configs/`](examples/mcp-configs/)):
+- **`safe-local.json`** — Single local filesystem server, no credentials
+- **`typical-dev-stack.json`** — Postgres + filesystem + GitHub + unknown packages (shows server classification + supply chain warnings)
+- **`permissive-danger.json`** — External HTTP server, plaintext credentials, dangerous commands
 
 ## GitHub Actions
 
@@ -279,12 +352,12 @@ Add to any CI pipeline — blocks PRs with unsafe agent configs:
 
 ```yaml
 # Auto-discover all agent configs in the repo
-- uses: coproduct-opensource/nucleus/scan@v1.0.8
+- uses: coproduct-opensource/nucleus/scan@v1
   with:
     auto: true
 
 # Or specify paths explicitly
-- uses: coproduct-opensource/nucleus/scan@v1.0.8
+- uses: coproduct-opensource/nucleus/scan@v1
   with:
     claude-settings: .claude/settings.json
     mcp-config: .mcp.json
@@ -299,7 +372,7 @@ Use `auto: true` to discover configs automatically, or provide explicit paths. O
 Drop this into any repo to get nucleus-enforced issue fixes:
 
 ```yaml
-- uses: coproduct-opensource/nucleus@v1.0.8
+- uses: coproduct-opensource/nucleus@v1
   with:
     issue-number: "123"
     api-key: ${{ secrets.ANTHROPIC_API_KEY }}
