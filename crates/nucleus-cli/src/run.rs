@@ -789,6 +789,12 @@ fn run_claude_mcp(
 
     if has_approval_obligations(policy) {
         cmd.arg("--permission-mode").arg("plan");
+    } else {
+        // No approval obligations → bypass Claude's built-in permission checks.
+        // Security is enforced by the nucleus tool-proxy lattice, not Claude's
+        // permission system. Without this flag, --print (non-interactive) mode
+        // falls back to plan-only and the agent never implements.
+        cmd.arg("--dangerously-skip-permissions");
     }
 
     cmd.output().context("failed to spawn claude")
