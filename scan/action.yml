@@ -1,6 +1,6 @@
 name: 'Nucleus Scan'
 author: 'coproduct-opensource'
-description: 'Deterministic security scan for AI agent PodSpecs. No LLM required.'
+description: 'Deterministic security scan for AI agent configs. Scans PodSpecs, Claude Code settings, and MCP configs. No LLM required.'
 branding:
   icon: 'search'
   color: 'orange'
@@ -8,7 +8,13 @@ branding:
 inputs:
   pod-spec:
     description: 'Path to PodSpec YAML file to scan'
-    required: true
+    required: false
+  claude-settings:
+    description: 'Path to Claude Code settings.json to scan'
+    required: false
+  mcp-config:
+    description: 'Path to MCP config (.mcp.json) to scan'
+    required: false
   audit-log:
     description: 'Optional audit log to cross-reference against declared policy'
     required: false
@@ -66,10 +72,27 @@ runs:
       run: |
         set -uo pipefail
 
-        ARGS="--pod-spec ${{ inputs.pod-spec }}"
+        ARGS=""
+
+        if [ -n "${{ inputs.pod-spec }}" ]; then
+          ARGS="${ARGS} --pod-spec ${{ inputs.pod-spec }}"
+        fi
+
+        if [ -n "${{ inputs.claude-settings }}" ]; then
+          ARGS="${ARGS} --claude-settings ${{ inputs.claude-settings }}"
+        fi
+
+        if [ -n "${{ inputs.mcp-config }}" ]; then
+          ARGS="${ARGS} --mcp-config ${{ inputs.mcp-config }}"
+        fi
 
         if [ -n "${{ inputs.audit-log }}" ]; then
           ARGS="${ARGS} --audit-log ${{ inputs.audit-log }}"
+        fi
+
+        if [ -z "${ARGS}" ]; then
+          echo "::error::At least one of pod-spec, claude-settings, or mcp-config is required"
+          exit 1
         fi
 
         # Always capture JSON for the output

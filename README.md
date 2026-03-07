@@ -25,24 +25,27 @@ cargo install --git https://github.com/coproduct-opensource/nucleus nucleus-audi
 # Scan a PodSpec for security issues
 nucleus-audit scan --pod-spec your-agent.yaml
 
-# Example output:
-# ╔══════════════════════════════════════════════════════════════╗
-# ║  Nucleus PodSpec Security Scan                              ║
-# ╠══════════════════════════════════════════════════════════════╣
-# ║  Pod: yolo-agent                                            ║
-# ║  Policy: permissive                                         ║
-# ║  Findings: 4 critical, 2 high, 1 medium                    ║
-# ╠══════════════════════════════════════════════════════════════╣
-# ║  [CRITICAL] Lethal trifecta: private data + untrusted       ║
-# ║             content + exfiltration all at autonomous levels  ║
-# ║  [CRITICAL] 7 credentials exposed — exceeds safe threshold  ║
-# ║  [HIGH]     No network restrictions (full egress)           ║
-# ║  [HIGH]     No VM isolation (no Firecracker/seccomp)        ║
-# ╚══════════════════════════════════════════════════════════════╝
-# Exit code: 1 (critical or high findings)
+# Scan a Claude Code settings.json
+nucleus-audit scan --claude-settings .claude/settings.json
+
+# Scan an MCP config
+nucleus-audit scan --mcp-config .mcp.json
+
+# Scan everything at once — findings are merged and deduplicated
+nucleus-audit scan --pod-spec agent.yaml --claude-settings settings.json --mcp-config .mcp.json
 ```
 
-The scan checks for trifecta risk, permission surface area, network posture, isolation level, credential exposure, and timeout hygiene. Exit code is non-zero when critical or high findings exist — drop it into CI and block unsafe deployments.
+**Supported formats:**
+
+| Format | File | What It Checks |
+|--------|------|----------------|
+| PodSpec | `*.yaml` | Trifecta, credentials, network, isolation, timeout, permissions |
+| Claude Code settings | `settings.json` | Trifecta via allow/deny rules, unrestricted Bash, exfil patterns, safety bypasses, inline credentials, hooks |
+| MCP config | `.mcp.json` | External HTTP servers, plaintext credentials, auth headers in config, dangerous commands, surface area |
+
+The Claude Code scanner projects `allow`/`deny` rules onto the portcullis `CapabilityLattice` and runs the same trifecta analysis used for PodSpecs. A deny rule like `"Bash"` (bare, no pattern) demotes the exfiltration leg back to `Never`, breaking the trifecta.
+
+Exit code is non-zero when critical or high findings exist — drop it into CI and block unsafe deployments.
 
 ```bash
 # JSON output for CI pipelines
@@ -72,7 +75,7 @@ The trifecta guard's monotonicity is formally proven: once an operation is denie
 
 Three layers, at different levels of maturity:
 
-1. **Scan** (usable today) — Static analysis of agent PodSpecs. Catches dangerous permission combinations before deployment. Works as a standalone CLI tool.
+1. **Scan** (usable today) — Static analysis of agent PodSpecs, Claude Code `settings.json`, and MCP configs. Catches dangerous permission combinations before deployment. Works as a standalone CLI tool and GitHub Action.
 
 2. **Enforce** (working in CI, not production-hardened) — Runtime permission envelopes. The tool proxy intercepts every agent side effect and checks it against the permission lattice. Both HTTP and MCP paths share identical security controls (MIME gating, DNS/URL allowlists, redirect verification). The `--local` path works end-to-end in GitHub Actions. The Firecracker path works on Linux+KVM but has no production deployment.
 
@@ -87,6 +90,8 @@ Three layers, at different levels of maturity:
 | **Web fetch security** | Tested | Unified MCP+HTTP path: MIME gating, DNS/URL allowlist, redirect verification, IPv6 |
 | **Audit log verification** | Tested | HMAC-SHA256 + SHA-256 chain; optional S3 append-only sink (no integration test) |
 | **PodSpec scanner** | Tested | Trifecta, credentials, network, isolation, timeout checks |
+| **Claude Code scanner** | Tested | Trifecta via allow/deny projection, exfil patterns, safety bypasses, credentials |
+| **MCP config scanner** | Tested | HTTP servers, plaintext credentials, auth headers, dangerous commands |
 | **Permission profiles** | Tested | 14 named profiles backed by lattice constructors |
 | **Tool proxy** (MCP enforcement) | Tested | 9,500 LOC, 119 tests; enforces agent sessions in GitHub Actions |
 | **Firecracker isolation** | Tested | Real jailer invocation + iptables; Linux+KVM only |
@@ -198,7 +203,7 @@ The enforcement path: Agent → MCP → tool-proxy (inside VM) → portcullis ch
 |-------|---------|-------|
 | **portcullis** | Permission lattice: 9 algebraic modules | 875 |
 | **portcullis-verified** | Verus SMT proofs for portcullis | 297 VCs |
-| **nucleus-audit** | `scan` PodSpecs; `verify` hash-chained audit logs | 14 |
+| **nucleus-audit** | `scan` PodSpecs, Claude Code settings, MCP configs; `verify` audit logs | 24 |
 | **nucleus** | Enforcement: sandbox, executor, budget | 89 |
 | **nucleus-node** | Node daemon managing Firecracker microVMs | 26 |
 | **nucleus-tool-proxy** | MCP tool proxy running inside pods | 119 |
@@ -277,10 +282,12 @@ Add to any CI pipeline — blocks PRs with unsafe agent configs:
 - uses: coproduct-opensource/nucleus/scan@v1.0.5
   with:
     pod-spec: path/to/podspec.yaml
+    # claude-settings: .claude/settings.json
+    # mcp-config: .mcp.json
     # format: text          # or json
 ```
 
-Outputs `verdict` (PASS/WARN/FAIL) and `findings-json`. Non-zero exit code on critical or high findings.
+At least one of `pod-spec`, `claude-settings`, or `mcp-config` is required. Outputs `verdict` (PASS/WARN/FAIL) and `findings-json`. Non-zero exit code on critical or high findings.
 
 ### Safe PR Fixer (LLM-powered, lattice-enforced)
 
@@ -309,7 +316,7 @@ The agent **cannot push or create PRs** — only the trusted CI wrapper does tha
 **Trust ladder:**
 | Tier | What | Isolation |
 |------|------|-----------|
-| **Tier 0** | `nucleus-audit scan` in CI | Static analysis, no runtime |
+| **Tier 0** | `nucleus-audit scan` in CI | Static analysis (PodSpec, Claude settings, MCP), no runtime |
 | **Tier 1** | `nucleus run --local` (GitHub Action) | Tool-proxy lattice enforcement, no VM |
 | **Tier 2** | `nucleus run` with Firecracker | microVM + netns + default-deny egress |
 

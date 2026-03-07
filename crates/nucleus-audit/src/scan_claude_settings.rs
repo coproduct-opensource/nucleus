@@ -1,0 +1,514 @@
+//! Claude Code settings.json security scanner.
+//!
+//! Parses Claude Code's `settings.json` format and projects permission rules
+//! onto the portcullis CapabilityLattice for trifecta analysis.
+
+use std::collections::HashMap;
+use std::path::Path;
+
+use portcullis::{CapabilityLattice, CapabilityLevel, IncompatibilityConstraint};
+use serde::Deserialize;
+
+use crate::finding::{ClaudeSettingsSummary, Finding, Severity};
+use crate::tool_pattern::{
+    is_exfil_bash_pattern, is_sensitive_path_pattern, is_unrestricted_pattern,
+    parse_tool_permission, ToolKind,
+};
+use crate::AuditError;
+
+// --- Serde structs for Claude Code settings.json ---
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeSettings {
+    #[serde(default)]
+    pub permissions: Option<PermissionRules>,
+    #[serde(default)]
+    pub mcp_servers: Option<HashMap<String, serde_json::Value>>,
+    #[serde(default)]
+    pub sandbox: Option<SandboxConfig>,
+    #[serde(default)]
+    pub hooks: Option<serde_json::Value>,
+    #[serde(default)]
+    pub env: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub skip_dangerous_mode_permission_prompt: Option<bool>,
+    #[serde(default)]
+    pub api_key_helper: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionRules {
+    #[serde(default)]
+    pub allow: Vec<String>,
+    #[serde(default)]
+    pub deny: Vec<String>,
+    #[serde(default)]
+    pub ask: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // Fields used for deserialization tolerance
+pub struct SandboxConfig {
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub filesystem: Option<serde_json::Value>,
+    #[serde(default)]
+    pub network: Option<serde_json::Value>,
+}
+
+/// Scan a Claude Code settings.json file for security issues.
+pub fn scan_claude_settings(
+    path: &Path,
+) -> Result<(Vec<Finding>, ClaudeSettingsSummary), AuditError> {
+    let content = std::fs::read_to_string(path)?;
+    let settings: ClaudeSettings = serde_json::from_str(&content)
+        .map_err(|e| AuditError::Backend(format!("failed to parse settings.json: {}", e)))?;
+
+    let mut findings = Vec::new();
+    let mut safety_bypasses = Vec::new();
+
+    let perms = settings.permissions.as_ref();
+    let allow_rules = perms.map_or(0, |p| p.allow.len());
+    let deny_rules = perms.map_or(0, |p| p.deny.len());
+    let ask_rules = perms.map_or(0, |p| p.ask.len());
+    let mcp_server_count = settings.mcp_servers.as_ref().map_or(0, |m| m.len());
+
+    // --- Trifecta analysis via CapabilityLattice projection ---
+
+    if let Some(perms) = perms {
+        let caps = project_to_capability_lattice(perms);
+        let trifecta_config = IncompatibilityConstraint::enforcing();
+        let trifecta_risk = trifecta_config.trifecta_risk(&caps);
+
+        if trifecta_risk == portcullis::TrifectaRisk::Complete {
+            findings.push(Finding {
+                severity: Severity::Critical,
+                category: "trifecta".to_string(),
+                title: "Lethal trifecta in Claude Code settings".to_string(),
+                description: "The allow rules grant private data access (Read/Glob/Grep) + \
+                    untrusted content (WebFetch/WebSearch) + exfiltration (Bash) without \
+                    sufficient deny rules to break the trifecta. A prompt injection attack \
+                    could exfiltrate sensitive data."
+                    .to_string(),
+            });
+        } else if trifecta_risk == portcullis::TrifectaRisk::Medium {
+            findings.push(Finding {
+                severity: Severity::Medium,
+                category: "trifecta".to_string(),
+                title: "Partial trifecta in Claude Code settings".to_string(),
+                description: "Two of three trifecta components are present in allow rules. \
+                    Adding the third would enable data exfiltration. Review deny rules."
+                    .to_string(),
+            });
+        }
+
+        // --- Unrestricted bash ---
+        for rule in &perms.allow {
+            let parsed = parse_tool_permission(rule);
+            if parsed.tool == ToolKind::Bash && is_unrestricted_pattern(parsed.pattern.as_deref()) {
+                // Check if deny rules mitigate this
+                let has_bash_deny = perms.deny.iter().any(|d| {
+                    let dp = parse_tool_permission(d);
+                    dp.tool == ToolKind::Bash
+                });
+                if !has_bash_deny {
+                    findings.push(Finding {
+                        severity: Severity::High,
+                        category: "permissions".to_string(),
+                        title: "Unrestricted Bash access".to_string(),
+                        description: "Bash is allowed without pattern restrictions and no \
+                            deny rules limit it. The agent can execute any shell command \
+                            including data exfiltration via curl, wget, etc."
+                            .to_string(),
+                    });
+                }
+            }
+
+            // Exfiltration patterns in bash allow rules
+            if parsed.tool == ToolKind::Bash {
+                if let Some(pattern) = &parsed.pattern {
+                    if is_exfil_bash_pattern(pattern) {
+                        findings.push(Finding {
+                            severity: Severity::High,
+                            category: "exfiltration".to_string(),
+                            title: format!("Exfiltration command allowed: {}", rule),
+                            description: format!(
+                                "The allow rule '{}' permits a known exfiltration command. \
+                                 If this is intentional, add it to the 'ask' list instead \
+                                 so it requires approval.",
+                                rule
+                            ),
+                        });
+                    }
+                }
+            }
+
+            // Sensitive path access
+            if parsed.tool == ToolKind::Read {
+                if let Some(pattern) = &parsed.pattern {
+                    if is_sensitive_path_pattern(pattern) {
+                        findings.push(Finding {
+                            severity: Severity::Medium,
+                            category: "permissions".to_string(),
+                            title: format!("Sensitive path readable: {}", rule),
+                            description: format!(
+                                "The allow rule '{}' grants read access to a sensitive path \
+                                 (credentials, secrets, SSH keys). Consider adding a deny rule.",
+                                rule
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+
+        // --- No deny rules ---
+        if perms.deny.is_empty() && !perms.allow.is_empty() {
+            findings.push(Finding {
+                severity: Severity::Medium,
+                category: "permissions".to_string(),
+                title: "No deny rules configured".to_string(),
+                description: "Allow rules are present but no deny rules. Without deny rules, \
+                    all allowed tools have unrestricted access. Add deny rules for sensitive \
+                    operations (e.g., Bash(curl *), Read(.env))."
+                    .to_string(),
+            });
+        }
+    }
+
+    // --- Safety bypass flags ---
+
+    if settings.skip_dangerous_mode_permission_prompt == Some(true) {
+        safety_bypasses.push("skipDangerousModePermissionPrompt".to_string());
+        findings.push(Finding {
+            severity: Severity::High,
+            category: "safety_bypass".to_string(),
+            title: "Dangerous mode prompt skipped".to_string(),
+            description: "skipDangerousModePermissionPrompt is true. This suppresses the \
+                safety confirmation when entering dangerous mode, making it easier to \
+                accidentally grant full permissions."
+                .to_string(),
+        });
+    }
+
+    if settings.api_key_helper.is_some() {
+        findings.push(Finding {
+            severity: Severity::Medium,
+            category: "credentials".to_string(),
+            title: "API key helper script configured".to_string(),
+            description: "An apiKeyHelper script is configured. This script runs to generate \
+                API credentials and has access to the environment. Ensure it is trusted and \
+                not subject to injection."
+                .to_string(),
+        });
+    }
+
+    // --- Sandbox configuration ---
+
+    let sandbox_enabled = settings.sandbox.as_ref().and_then(|s| s.enabled);
+    if sandbox_enabled == Some(false) {
+        safety_bypasses.push("sandbox.enabled=false".to_string());
+        findings.push(Finding {
+            severity: Severity::Medium,
+            category: "isolation".to_string(),
+            title: "Sandbox explicitly disabled".to_string(),
+            description: "The sandbox is explicitly disabled. The agent runs without \
+                filesystem or network isolation boundaries."
+                .to_string(),
+        });
+    }
+
+    // --- Hooks ---
+
+    if let Some(hooks) = &settings.hooks {
+        if hooks.is_object() && !hooks.as_object().unwrap().is_empty() {
+            let hook_count = hooks.as_object().unwrap().len();
+            findings.push(Finding {
+                severity: Severity::Medium,
+                category: "hooks".to_string(),
+                title: format!(
+                    "{} hook{} configured",
+                    hook_count,
+                    if hook_count == 1 { "" } else { "s" }
+                ),
+                description: "Hooks can execute arbitrary commands or make HTTP requests in \
+                    response to tool events. Each hook is a potential execution and \
+                    exfiltration vector. Review hook configurations."
+                    .to_string(),
+            });
+        }
+    }
+
+    // --- Inline credentials in env ---
+
+    if let Some(env) = &settings.env {
+        check_credential_env(env, &mut findings, "settings.env");
+    }
+
+    // --- MCP servers embedded in settings ---
+
+    if let Some(servers) = &settings.mcp_servers {
+        for (name, server) in servers {
+            if let Some(env) = server.get("env").and_then(|e| e.as_object()) {
+                let env_map: HashMap<String, String> = env
+                    .iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect();
+                check_credential_env(&env_map, &mut findings, &format!("mcpServers.{}", name));
+            }
+        }
+    }
+
+    let summary = ClaudeSettingsSummary {
+        total_allow_rules: allow_rules,
+        total_deny_rules: deny_rules,
+        total_ask_rules: ask_rules,
+        mcp_server_count,
+        sandbox_enabled,
+        safety_bypasses,
+    };
+
+    Ok((findings, summary))
+}
+
+/// Project Claude Code allow/deny rules to a CapabilityLattice for trifecta analysis.
+fn project_to_capability_lattice(perms: &PermissionRules) -> CapabilityLattice {
+    // Start from all-Never (not default, which is permissive)
+    let mut caps = CapabilityLattice {
+        read_files: CapabilityLevel::Never,
+        write_files: CapabilityLevel::Never,
+        edit_files: CapabilityLevel::Never,
+        run_bash: CapabilityLevel::Never,
+        glob_search: CapabilityLevel::Never,
+        grep_search: CapabilityLevel::Never,
+        web_search: CapabilityLevel::Never,
+        web_fetch: CapabilityLevel::Never,
+        git_commit: CapabilityLevel::Never,
+        git_push: CapabilityLevel::Never,
+        create_pr: CapabilityLevel::Never,
+        manage_pods: CapabilityLevel::Never,
+        ..CapabilityLattice::default()
+    };
+
+    // Allow rules raise capabilities to LowRisk
+    for rule in &perms.allow {
+        let parsed = parse_tool_permission(rule);
+        match parsed.tool {
+            ToolKind::Read | ToolKind::Glob | ToolKind::Grep => {
+                caps.read_files = CapabilityLevel::LowRisk;
+                if matches!(parsed.tool, ToolKind::Glob) {
+                    caps.glob_search = CapabilityLevel::LowRisk;
+                }
+                if matches!(parsed.tool, ToolKind::Grep) {
+                    caps.grep_search = CapabilityLevel::LowRisk;
+                }
+            }
+            ToolKind::Write | ToolKind::Edit => {
+                caps.write_files = CapabilityLevel::LowRisk;
+                caps.edit_files = CapabilityLevel::LowRisk;
+            }
+            ToolKind::Bash => {
+                caps.run_bash = CapabilityLevel::LowRisk;
+            }
+            ToolKind::WebSearch => {
+                caps.web_search = CapabilityLevel::LowRisk;
+            }
+            ToolKind::WebFetch => {
+                caps.web_fetch = CapabilityLevel::LowRisk;
+            }
+            ToolKind::McpTool { .. } | ToolKind::Unknown(_) => {}
+        }
+    }
+
+    // Deny rules demote capabilities back to Never (if they fully block the tool)
+    for rule in &perms.deny {
+        let parsed = parse_tool_permission(rule);
+        // Only demote if the deny is unrestricted (blocks all uses of the tool)
+        if is_unrestricted_pattern(parsed.pattern.as_deref()) {
+            match parsed.tool {
+                ToolKind::Read => caps.read_files = CapabilityLevel::Never,
+                ToolKind::Glob => caps.glob_search = CapabilityLevel::Never,
+                ToolKind::Grep => caps.grep_search = CapabilityLevel::Never,
+                ToolKind::Write => caps.write_files = CapabilityLevel::Never,
+                ToolKind::Edit => caps.edit_files = CapabilityLevel::Never,
+                ToolKind::Bash => caps.run_bash = CapabilityLevel::Never,
+                ToolKind::WebSearch => caps.web_search = CapabilityLevel::Never,
+                ToolKind::WebFetch => caps.web_fetch = CapabilityLevel::Never,
+                _ => {}
+            }
+        }
+    }
+
+    caps
+}
+
+/// Check a map of env vars for credential patterns.
+fn check_credential_env(env: &HashMap<String, String>, findings: &mut Vec<Finding>, source: &str) {
+    let credential_patterns = [
+        "API_KEY",
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "PRIVATE_KEY",
+        "AWS_SECRET",
+        "DATABASE_URL",
+    ];
+
+    for key in env.keys() {
+        let upper = key.to_uppercase();
+        for pattern in &credential_patterns {
+            if upper.contains(pattern) {
+                findings.push(Finding {
+                    severity: Severity::High,
+                    category: "credentials".to_string(),
+                    title: format!("Credential in {}: {}", source, key),
+                    description: format!(
+                        "Environment variable '{}' in {} matches credential pattern '{}'. \
+                         Use a secret manager or environment variable reference (${{VAR}}) \
+                         instead of plaintext values in config files.",
+                        key, source, pattern
+                    ),
+                });
+                break; // One finding per key
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings_json(perms: &str) -> String {
+        format!(r#"{{ "permissions": {} }}"#, perms)
+    }
+
+    #[test]
+    fn test_full_trifecta_detection() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            settings_json(r#"{ "allow": ["Read", "WebFetch", "Bash"], "deny": [], "ask": [] }"#),
+        )
+        .unwrap();
+
+        let (findings, summary) = scan_claude_settings(&path).unwrap();
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.category == "trifecta" && f.severity == Severity::Critical),
+            "Should detect lethal trifecta. Findings: {:?}",
+            findings
+        );
+        assert_eq!(summary.total_allow_rules, 3);
+        assert_eq!(summary.total_deny_rules, 0);
+    }
+
+    #[test]
+    fn test_trifecta_mitigated_by_deny() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        // Deny bash entirely → breaks trifecta exfil leg
+        std::fs::write(
+            &path,
+            settings_json(
+                r#"{ "allow": ["Read", "WebFetch", "Bash(cargo *)"], "deny": ["Bash"], "ask": [] }"#,
+            ),
+        )
+        .unwrap();
+
+        let (findings, _) = scan_claude_settings(&path).unwrap();
+        let trifecta_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.category == "trifecta" && f.severity == Severity::Critical)
+            .collect();
+        assert!(
+            trifecta_findings.is_empty(),
+            "Trifecta should be mitigated by deny rule. Got: {:?}",
+            trifecta_findings
+        );
+    }
+
+    #[test]
+    fn test_safety_bypass_detection() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{ "skipDangerousModePermissionPrompt": true }"#).unwrap();
+
+        let (findings, summary) = scan_claude_settings(&path).unwrap();
+        assert!(findings
+            .iter()
+            .any(|f| f.category == "safety_bypass" && f.severity == Severity::High),);
+        assert!(summary
+            .safety_bypasses
+            .contains(&"skipDangerousModePermissionPrompt".to_string()));
+    }
+
+    #[test]
+    fn test_clean_restrictive_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            settings_json(
+                r#"{
+                    "allow": ["Read", "Bash(cargo *)"],
+                    "deny": ["Bash(curl *)", "Bash(wget *)", "Read(.env)"],
+                    "ask": ["Bash(git push *)"]
+                }"#,
+            ),
+        )
+        .unwrap();
+
+        let (findings, summary) = scan_claude_settings(&path).unwrap();
+        // No trifecta (no WebFetch), has deny rules
+        let critical: Vec<_> = findings
+            .iter()
+            .filter(|f| f.severity == Severity::Critical)
+            .collect();
+        assert!(
+            critical.is_empty(),
+            "Should have no critical findings: {:?}",
+            critical
+        );
+        assert_eq!(summary.total_deny_rules, 3);
+        assert_eq!(summary.total_ask_rules, 1);
+    }
+
+    #[test]
+    fn test_credential_detection_in_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{ "env": { "MY_API_KEY": "sk-secret-123" } }"#).unwrap();
+
+        let (findings, _) = scan_claude_settings(&path).unwrap();
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.category == "credentials" && f.severity == Severity::High),
+            "Should flag credential in env"
+        );
+    }
+
+    #[test]
+    fn test_exfil_bash_pattern() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            settings_json(r#"{ "allow": ["Bash(curl *)"], "deny": [], "ask": [] }"#),
+        )
+        .unwrap();
+
+        let (findings, _) = scan_claude_settings(&path).unwrap();
+        assert!(
+            findings.iter().any(|f| f.category == "exfiltration"),
+            "Should flag curl as exfiltration: {:?}",
+            findings
+        );
+    }
+}
