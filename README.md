@@ -6,9 +6,11 @@
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/coproduct-opensource/nucleus/badge)](https://securityscorecards.dev/viewer/?uri=github.com/coproduct-opensource/nucleus)
 [![Docs](https://img.shields.io/badge/docs-github.io-blue)](https://coproduct-opensource.github.io/nucleus/)
 
-**A formally verified permission lattice and security runtime for AI agents.** Pre-production. Not yet deployed. The math is real.
+**A formally verified permission lattice and security runtime for AI agents.**
 
-Nucleus is a security framework for AI agents that combines a mathematically verified permission algebra with a Firecracker-based enforcement runtime. The permission lattice has 297 SMT verification conditions checked by Z3. The runtime has never served production traffic. This README tries to be honest about both.
+Nucleus is a security framework for AI agents that combines a mathematically verified permission algebra with a Firecracker-based enforcement runtime. The permission lattice has 297 SMT verification conditions checked by Z3. The GitHub Action works end-to-end today. This README tries to be honest about what's real and what isn't.
+
+> **Versioning note:** v1.0 means the **interface contract is stable** (see [`STABILITY.md`](STABILITY.md)), not that the system is "production-secure by default." The lattice is heavily verified; the runtime is tested but not yet battle-hardened in production traffic.
 
 ## Start Here: Scan Your Agent Config
 
@@ -69,7 +71,7 @@ Three layers, at different levels of maturity:
 
 1. **Scan** (usable today) — Static analysis of agent PodSpecs. Catches dangerous permission combinations before deployment. Works as a standalone CLI tool.
 
-2. **Enforce** (implemented, not production-tested) — Runtime permission envelopes in Firecracker microVMs. The tool proxy intercepts every agent side effect and checks it against the permission lattice. Both HTTP and MCP paths share identical security controls (MIME gating, DNS/URL allowlists, redirect verification). All code exists and passes tests, but has never enforced a real agent session.
+2. **Enforce** (working in CI, not production-hardened) — Runtime permission envelopes. The tool proxy intercepts every agent side effect and checks it against the permission lattice. Both HTTP and MCP paths share identical security controls (MIME gating, DNS/URL allowlists, redirect verification). The `--local` path works end-to-end in GitHub Actions. The Firecracker path works on Linux+KVM but has no production deployment.
 
 3. **Audit** (implemented, not production-tested) — Hash-chained, HMAC-signed logs of every agent action with optional S3 append-only remote sink. Local verification tool exists and works on generated test logs. S3 sink compiles into production binaries but has no integration test against real S3. No production audit logs exist yet.
 
@@ -83,7 +85,7 @@ Three layers, at different levels of maturity:
 | **Audit log verification** | Tested | HMAC-SHA256 + SHA-256 chain; optional S3 append-only sink (no integration test) |
 | **PodSpec scanner** | Tested | Trifecta, credentials, network, isolation, timeout checks |
 | **Permission profiles** | Tested | 14 named profiles backed by lattice constructors |
-| **Tool proxy** (MCP enforcement) | Tested | 9,500 LOC, 119 tests; never served real agent traffic |
+| **Tool proxy** (MCP enforcement) | Tested | 9,500 LOC, 119 tests; enforces agent sessions in GitHub Actions |
 | **Firecracker isolation** | Tested | Real jailer invocation + iptables; Linux+KVM only |
 | **Network enforcement** | Tested | Default-deny egress, DNS allowlisting, drift detection |
 | **CI hardening** | Tested | 14 required status checks; mutation testing blocks surviving mutants |
@@ -215,17 +217,17 @@ Total: ~1,550 test functions across the workspace. Proptest invariants each gene
 nucleus profiles
 
 # Available profiles:
-#   restrictive       Minimal permissions (default)
-#   read-only         File reading and search only
-#   code-review       Read + limited search
-#   edit-only         Write + edit, no execution
-#   fix-issue         Write + bash + git commit (no push/PR)
-#   safe-pr-fixer     Write + bash + commit + web fetch (no push/PR/search)
-#   local-dev         Full local development, no network
-#   web-research      Read + web access, no writes
-#   network-only      Network access, no filesystem
-#   release           Full pipeline including push + PR
-#   full              Everything (trifecta gates still enforced!)
+#   restrictive        Minimal permissions (default)
+#   read_only          File reading and search only
+#   code_review        Read + limited search
+#   edit_only          Write + edit, no execution
+#   fix_issue          Write + bash + git commit (no push/PR)
+#   safe_pr_fixer      Write + bash + commit + web fetch (no push/PR/search)
+#   local_dev          Full local development, no network
+#   web_research       Read + web access, no writes
+#   network_only       Network access, no filesystem
+#   release            Full pipeline including push + PR
+#   full               Everything (trifecta gates still enforced!)
 #   + 3 more domain-specific profiles
 ```
 
@@ -261,23 +263,37 @@ See [`examples/podspecs/`](examples/podspecs/) for real configurations:
 - **`secure-codegen.yaml`** — Code generation with filtered network (crates.io, npm, GitHub only)
 - **`permissive-danger.yaml`** — Intentionally insecure config for testing `nucleus-audit scan`
 
-## GitHub Action
+## GitHub Action: Safe PR Fixer
 
-Drop this into any repo to get nucleus-enforced PR fixes:
+Drop this into any repo to get nucleus-enforced issue fixes:
 
 ```yaml
-- uses: coproduct-opensource/nucleus@main
+- uses: coproduct-opensource/nucleus@v1.0.2
   with:
-    prompt: "Fix the failing CI. Read the logs, identify the bug, fix it."
-    profile: safe-pr-fixer    # write + bash + commit + web fetch, no push/PR
-    timeout: "300"
-  env:
-    LLM_API_TOKEN: ${{ secrets.ANTHROPIC_API_KEY }}
+    issue-number: "123"
+    api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+    profile: safe_pr_fixer     # write + bash + commit + web fetch, no push/PR
+    timeout: "600"
+    # model: "claude-sonnet-4-20250514"   # default
 ```
 
-**What actually works:** The action installs pre-built musl binaries, spawns a local tool-proxy that enforces the permission lattice, and gates the agent's side effects. The `safe-pr-fixer` profile blocks `git_push`, `create_pr`, and `web_search` — the agent can read, write, run bash, and commit, but cannot exfiltrate or publish.
+**How it works:**
+1. Installs `nucleus-cli`, `nucleus-tool-proxy`, and `nucleus-mcp` from [GitHub Releases](https://github.com/coproduct-opensource/nucleus/releases)
+2. Installs Claude Code CLI
+3. Builds a prompt from the issue body
+4. Runs `nucleus run --local --profile safe_pr_fixer` — the tool-proxy enforces the permission lattice on every agent side effect
+5. If the agent produced commits, a trusted CI script pushes the branch and opens a PR
 
-**What doesn't work yet:** The action has never run in a real GitHub Actions workflow end-to-end. The install step downloads release binaries that don't exist yet (no release has been cut). The `--local` mode spawns the tool-proxy without Firecracker isolation — network enforcement relies on the permission lattice, not default-deny iptables.
+The agent **cannot push or create PRs** — only the trusted CI wrapper does that. The `safe_pr_fixer` profile blocks `git_push`, `create_pr`, and `web_search`.
+
+**Trust ladder:**
+| Tier | What | Isolation |
+|------|------|-----------|
+| **Tier 0** | `nucleus-audit scan` in CI | Static analysis, no runtime |
+| **Tier 1** | `nucleus run --local` (GitHub Action) | Tool-proxy lattice enforcement, no VM |
+| **Tier 2** | `nucleus run` with Firecracker | microVM + netns + default-deny egress |
+
+The GitHub Action uses Tier 1 (`--local`). Network enforcement relies on the permission lattice, not default-deny iptables. For full containment, use Tier 2 with Firecracker on Linux+KVM.
 
 ## Known Gaps
 
@@ -289,7 +305,7 @@ Documented in detail in [`SECURITY_TODO.md`](SECURITY_TODO.md). Key items:
 - **Formal verification covers the lattice algebra, not the full runtime.** The 297 Verus VCs verify portcullis properties. The tool proxy, network enforcement, and Firecracker integration are tested, not verified.
 - **S3 audit sink is fire-and-forget.** Upload failures are logged but don't block the agent. No integration test against real S3 exists. Append-only semantics use `if_none_match("*")` PutObject preconditions — untested against eventual consistency.
 - **Redirect following is reqwest default (10 hops).** The final URL is checked against DNS/URL allowlists after all redirects complete, but intermediate hops are not validated. An allowlisted domain with an open redirect to a non-allowlisted domain will be caught, but the request still reaches the intermediate servers.
-- **No release has been cut.** All binaries are built in CI but no GitHub Release exists. The GitHub Action's install step will fail until one is published.
+- **`--local` mode has weaker isolation than Firecracker.** The tool-proxy enforces lattice permissions, but there is no VM boundary or default-deny network. Use Tier 2 (Firecracker) for high-security workloads.
 
 ## Threat Model
 
