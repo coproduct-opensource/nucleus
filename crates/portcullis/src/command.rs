@@ -344,9 +344,13 @@ impl CommandPattern {
 }
 
 /// Structured argument rule.
+///
+/// Custom Serialize/Deserialize impls are used instead of derive because
+/// this type is nested inside `PolicySpec` which uses `#[serde(tag = "type")]`
+/// (internally tagged enum). Serde's internally tagged enums buffer their
+/// contents, and the buffered format doesn't support `deserialize_enum` for
+/// nested enums. Using `deserialize_any` in a manual impl avoids this.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum ArgPattern {
     /// Exact argument match.
     Exact(String),
@@ -354,6 +358,74 @@ pub enum ArgPattern {
     Any,
     /// Any remaining arguments (zero or more).
     AnyRemaining,
+}
+
+#[cfg(feature = "serde")]
+impl Serialize for ArgPattern {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            ArgPattern::Exact(s) => {
+                use serde::ser::SerializeMap;
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("exact", s)?;
+                map.end()
+            }
+            ArgPattern::Any => serializer.serialize_str("any"),
+            ArgPattern::AnyRemaining => serializer.serialize_str("any_remaining"),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for ArgPattern {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ArgPatternVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for ArgPatternVisitor {
+            type Value = ArgPattern;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str(
+                    "a string (\"any\" or \"any_remaining\") or a map ({exact: \"value\"})",
+                )
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                match v {
+                    "any" => Ok(ArgPattern::Any),
+                    "any_remaining" => Ok(ArgPattern::AnyRemaining),
+                    _ => Err(E::unknown_variant(v, &["any", "any_remaining", "exact"])),
+                }
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let key: String = map
+                    .next_key()?
+                    .ok_or_else(|| serde::de::Error::custom("expected a map with key \"exact\""))?;
+                match key.as_str() {
+                    "exact" => {
+                        let value: String = map.next_value()?;
+                        Ok(ArgPattern::Exact(value))
+                    }
+                    other => Err(serde::de::Error::unknown_field(other, &["exact"])),
+                }
+            }
+        }
+
+        deserializer.deserialize_any(ArgPatternVisitor)
+    }
 }
 
 fn contains_shell_metacharacters(words: &[String]) -> bool {
@@ -538,6 +610,40 @@ fn is_subsequence(needle: &[String], haystack: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression test: ArgPattern must survive serde round-trip inside an
+    /// internally tagged enum (like PolicySpec), which buffers contents and
+    /// breaks `deserialize_enum` for nested enums.
+    #[test]
+    fn test_arg_pattern_serde_inside_internally_tagged_enum() {
+        #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+        #[serde(tag = "type")]
+        enum Wrapper {
+            Inline { rules: Vec<CommandPattern> },
+        }
+
+        let rules = default_blocked_rules();
+        let wrapper = Wrapper::Inline {
+            rules: rules.clone(),
+        };
+
+        // JSON round-trip (same buffering behavior as YAML)
+        let json = serde_json::to_string(&wrapper).unwrap();
+        let back: Wrapper = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, wrapper);
+    }
+
+    #[test]
+    fn test_arg_pattern_serde_round_trip() {
+        let patterns = vec![
+            ArgPattern::Exact("-c".to_string()),
+            ArgPattern::Any,
+            ArgPattern::AnyRemaining,
+        ];
+        let json = serde_json::to_string(&patterns).unwrap();
+        let back: Vec<ArgPattern> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, patterns);
+    }
 
     #[test]
     fn test_command_can_execute_allowed() {
