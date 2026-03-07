@@ -279,7 +279,7 @@ See [`examples/podspecs/`](examples/podspecs/) for real configurations:
 Add to any CI pipeline — blocks PRs with unsafe agent configs:
 
 ```yaml
-- uses: coproduct-opensource/nucleus/scan@v1.0.7
+- uses: coproduct-opensource/nucleus/scan@v1.0.8
   with:
     pod-spec: path/to/podspec.yaml
     # claude-settings: .claude/settings.json
@@ -294,7 +294,7 @@ At least one of `pod-spec`, `claude-settings`, or `mcp-config` is required. Outp
 Drop this into any repo to get nucleus-enforced issue fixes:
 
 ```yaml
-- uses: coproduct-opensource/nucleus@v1.0.7
+- uses: coproduct-opensource/nucleus@v1.0.8
   with:
     issue-number: "123"
     api-key: ${{ secrets.ANTHROPIC_API_KEY }}
