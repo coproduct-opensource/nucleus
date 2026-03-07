@@ -1,0 +1,54 @@
+name: Action Smoke Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-test:
+    name: Test binary download
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Nucleus CLI (from release)
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPO="coproduct-opensource/nucleus"
+          VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | jq -r '.tag_name')
+          VERSION_NUM="${VERSION#v}"
+          TARGET="x86_64-unknown-linux-musl"
+          BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
+
+          mkdir -p "$HOME/.nucleus/bin"
+
+          for BIN in nucleus-cli nucleus-tool-proxy nucleus-mcp; do
+            ARTIFACT="${BIN}-${VERSION_NUM}-${TARGET}.tar.gz"
+            echo "::group::Downloading ${BIN}"
+            curl -fsSL "${BASE_URL}/${ARTIFACT}" | tar -xz -C "$HOME/.nucleus/bin/"
+            echo "::endgroup::"
+          done
+
+          chmod +x "$HOME/.nucleus/bin/"*
+          echo "$HOME/.nucleus/bin" >> "$GITHUB_PATH"
+
+      - name: Verify binaries
+        run: |
+          echo "=== nucleus CLI ==="
+          nucleus --version
+          echo "=== nucleus-tool-proxy ==="
+          nucleus-tool-proxy --help | head -5
+          echo "=== nucleus-mcp ==="
+          nucleus-mcp --help | head -5
+          echo "=== Available profiles ==="
+          nucleus run --help 2>&1 | head -20 || true
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Action Smoke Test" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** $(nucleus --version 2>&1 || echo 'not installed')" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Binaries:** $(ls -1 $HOME/.nucleus/bin/ 2>/dev/null | tr '\n' ', ' || echo 'none')" >> "$GITHUB_STEP_SUMMARY"
