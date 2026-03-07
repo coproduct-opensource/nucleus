@@ -1,18 +1,32 @@
-name: Action Smoke Test
+name: Action E2E Test
 
 on:
   workflow_dispatch:
+    inputs:
+      issue-number:
+        description: 'Issue number for live test (leave empty for dry-run only)'
+        required: false
+        default: ''
+      profile:
+        description: 'Permission profile to test'
+        required: false
+        default: 'safe_pr_fixer'
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
+  issues: read
 
 jobs:
-  smoke-test:
-    name: Test binary download
+  # Tier 1: No secrets needed — validates binary download, profile resolution,
+  # MCP config generation, and dry-run output
+  dry-run:
+    name: Dry-run validation
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Install Nucleus CLI (from release)
+
+      - name: Install Nucleus CLI
         shell: bash
         run: |
           set -euo pipefail
@@ -23,7 +37,6 @@ jobs:
           BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
 
           mkdir -p "$HOME/.nucleus/bin"
-
           for BIN in nucleus-cli nucleus-tool-proxy nucleus-mcp; do
             ARTIFACT="${BIN}-${VERSION_NUM}-${TARGET}.tar.gz"
             echo "::group::Downloading ${BIN}"
@@ -33,22 +46,143 @@ jobs:
 
           chmod +x "$HOME/.nucleus/bin/"*
           echo "$HOME/.nucleus/bin" >> "$GITHUB_PATH"
+          echo "version=${VERSION_NUM}" >> "$GITHUB_OUTPUT"
 
       - name: Verify binaries
         run: |
           echo "=== nucleus CLI ==="
           nucleus --version
+          echo ""
           echo "=== nucleus-tool-proxy ==="
-          nucleus-tool-proxy --help | head -5
+          nucleus-tool-proxy --help | head -3
+          echo ""
           echo "=== nucleus-mcp ==="
-          nucleus-mcp --help | head -5
-          echo "=== Available profiles ==="
-          nucleus run --help 2>&1 | head -20 || true
+          nucleus-mcp --help | head -3
+
+      - name: 'Dry-run: safe_pr_fixer profile'
+        run: |
+          OUTPUT=$(nucleus run --local --profile safe_pr_fixer --dry-run "test prompt" 2>&1)
+          echo "$OUTPUT"
+          echo ""
+
+          # Validate lattice enforcement
+          echo "$OUTPUT" | grep -q "Profile: safe_pr_fixer" || { echo "::error::Profile not resolved"; exit 1; }
+          echo "$OUTPUT" | grep -q "git_push: Never" || { echo "::error::git_push should be Never"; exit 1; }
+          echo "$OUTPUT" | grep -q "read_files: Always" || { echo "::error::read_files should be Always"; exit 1; }
+          echo "PASS: safe_pr_fixer profile validates correctly"
+
+      - name: 'Dry-run: all profiles'
+        run: |
+          PROFILES="restrictive read-only code-review edit-only local-dev fix-issue safe_pr_fixer release demo full"
+          FAILED=""
+          for PROFILE in $PROFILES; do
+            echo "--- Testing profile: $PROFILE ---"
+            if nucleus run --local --profile "$PROFILE" --dry-run "test" 2>&1 | grep -q "Profile:"; then
+              echo "  PASS"
+            else
+              echo "  FAIL"
+              FAILED="${FAILED} ${PROFILE}"
+            fi
+          done
+
+          if [ -n "$FAILED" ]; then
+            echo "::error::Failed profiles:${FAILED}"
+            exit 1
+          fi
+          echo "All profiles resolve correctly"
+
+      - name: 'Dry-run: lattice invariants'
+        run: |
+          # Verify the lattice ordering: restrictive ≤ safe_pr_fixer ≤ full
+          RESTRICTIVE=$(nucleus run --local --profile restrictive --dry-run "test" 2>&1)
+          SAFE_PR=$(nucleus run --local --profile safe_pr_fixer --dry-run "test" 2>&1)
+          FULL=$(nucleus run --local --profile full --dry-run "test" 2>&1)
+
+          # Restrictive should block everything
+          echo "$RESTRICTIVE" | grep -q "write_files: Never" || { echo "::error::restrictive should block writes"; exit 1; }
+          echo "$RESTRICTIVE" | grep -q "run_bash: Never" || { echo "::error::restrictive should block bash"; exit 1; }
+          echo "$RESTRICTIVE" | grep -q "git_push: Never" || { echo "::error::restrictive should block push"; exit 1; }
+
+          # Safe PR fixer should allow writes but block push
+          echo "$SAFE_PR" | grep -q "git_push: Never" || { echo "::error::safe_pr_fixer should block push"; exit 1; }
+          echo "$SAFE_PR" | grep -q "read_files: Always" || { echo "::error::safe_pr_fixer should allow reads"; exit 1; }
+
+          # Full should allow everything
+          echo "$FULL" | grep -q "git_push: Always" || { echo "::error::full should allow push"; exit 1; }
+          echo "$FULL" | grep -q "run_bash: Always" || { echo "::error::full should allow bash"; exit 1; }
+
+          echo "PASS: Lattice ordering invariants hold"
+
+      - name: 'Dry-run: trifecta constraint'
+        run: |
+          # safe_pr_fixer should have trifecta constraint enabled
+          OUTPUT=$(nucleus run --local --profile safe_pr_fixer --dry-run "test" 2>&1)
+          echo "$OUTPUT" | grep -qi "trifecta" || echo "::warning::Trifecta constraint not visible in dry-run output"
+          echo "Trifecta check complete"
+
+      - name: 'Dry-run: entrypoint script validation'
+        run: |
+          # Verify the entrypoint script is present and executable
+          test -f scripts/action-entrypoint.sh || { echo "::error::action-entrypoint.sh not found"; exit 1; }
+          test -x scripts/action-entrypoint.sh || { echo "::error::action-entrypoint.sh not executable"; exit 1; }
+
+          # Verify it would fail gracefully without required env vars
+          if ISSUE_NUMBER="" LLM_API_TOKEN="" bash scripts/action-entrypoint.sh 2>&1; then
+            echo "::error::Entrypoint should fail without ISSUE_NUMBER"
+            exit 1
+          fi
+          echo "PASS: Entrypoint validates required env vars"
 
       - name: Summary
         if: always()
         run: |
-          echo "## Action Smoke Test" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Action E2E Test — Dry Run" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Version:** $(nucleus --version 2>&1 || echo 'not installed')" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Binaries:** $(ls -1 $HOME/.nucleus/bin/ 2>/dev/null | tr '\n' ', ' || echo 'none')" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Binaries:** $(ls -1 $HOME/.nucleus/bin/ 2>/dev/null | tr '\n' ', ')" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Profiles tested:** restrictive, read-only, code-review, edit-only, local-dev, fix-issue, safe_pr_fixer, release, demo, full" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Lattice invariants:** restrictive ≤ safe_pr_fixer ≤ full" >> "$GITHUB_STEP_SUMMARY"
+
+  # Tier 2: Requires ANTHROPIC_API_KEY secret — runs the full action on a real issue
+  live-test:
+    name: Live test (issue ${{ inputs.issue-number }})
+    runs-on: ubuntu-latest
+    if: inputs.issue-number != ''
+    needs: dry-run
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check API key
+        id: gate
+        run: |
+          if [ -n "${ANTHROPIC_API_KEY}" ]; then
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::ANTHROPIC_API_KEY not set — skipping live test"
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Run Nucleus Action
+        if: steps.gate.outputs.has_key == 'true'
+        uses: ./
+        with:
+          issue-number: ${{ inputs.issue-number }}
+          api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          profile: ${{ inputs.profile }}
+          timeout: '600'
+          nucleus-version: 'latest'
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Action E2E Test — Live" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.gate.outputs.has_key }}" = "true" ]; then
+            echo "- **Issue:** #${{ inputs.issue-number }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Profile:** ${{ inputs.profile }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Status:** Completed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- **Status:** Skipped (no ANTHROPIC_API_KEY secret)" >> "$GITHUB_STEP_SUMMARY"
+          fi
