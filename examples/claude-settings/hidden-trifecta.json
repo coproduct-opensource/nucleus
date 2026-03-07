@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": ["Edit", "Write", "Bash"],
+    "deny": [],
+    "ask": []
+  }
+}

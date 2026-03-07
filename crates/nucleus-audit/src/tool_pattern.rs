@@ -145,6 +145,91 @@ pub fn is_exfil_bash_pattern(pattern: &str) -> bool {
     || lower.split_whitespace().any(|word| word == "nc")
 }
 
+/// Capabilities implied by a bash pattern.
+///
+/// Unrestricted Bash can do everything — `cat` reads files, `curl` fetches web,
+/// `grep` searches, `git push` exfiltrates. Patterned Bash implies a subset.
+#[derive(Debug, Clone, Default)]
+pub struct BashImpliedCapabilities {
+    pub read_files: bool,
+    pub glob_search: bool,
+    pub grep_search: bool,
+    pub web_fetch: bool,
+    pub web_search: bool,
+    pub git_push: bool,
+    pub git_commit: bool,
+}
+
+impl BashImpliedCapabilities {
+    /// All capabilities (unrestricted bash).
+    pub fn all() -> Self {
+        Self {
+            read_files: true,
+            glob_search: true,
+            grep_search: true,
+            web_fetch: true,
+            web_search: true,
+            git_push: true,
+            git_commit: true,
+        }
+    }
+}
+
+/// Determine what capabilities a bash permission pattern implies.
+///
+/// - Unrestricted (bare `Bash` or `Bash(*)`) → all capabilities
+/// - `Bash(curl *)` / `Bash(wget *)` → web_fetch
+/// - `Bash(cat *)` / `Bash(head *)` / `Bash(tail *)` / `Bash(less *)` → read_files
+/// - `Bash(grep *)` / `Bash(rg *)` → grep_search, read_files
+/// - `Bash(find *)` / `Bash(ls *)` → glob_search
+/// - `Bash(git push *)` → git_push
+/// - `Bash(git commit *)` → git_commit
+pub fn bash_implied_capabilities(pattern: Option<&str>) -> BashImpliedCapabilities {
+    if is_unrestricted_pattern(pattern) {
+        return BashImpliedCapabilities::all();
+    }
+
+    let mut caps = BashImpliedCapabilities::default();
+
+    if let Some(pat) = pattern {
+        let lower = pat.to_lowercase();
+        // Extract the first word (command name)
+        let first_word = lower.split_whitespace().next().unwrap_or("");
+
+        match first_word {
+            "curl" | "wget" | "http" | "fetch" => {
+                caps.web_fetch = true;
+            }
+            "cat" | "head" | "tail" | "less" | "more" | "bat" | "open" => {
+                caps.read_files = true;
+            }
+            "grep" | "rg" | "ag" | "ack" => {
+                caps.grep_search = true;
+                caps.read_files = true;
+            }
+            "find" | "ls" | "fd" | "tree" | "exa" | "eza" => {
+                caps.glob_search = true;
+            }
+            "git" => {
+                // Check subcommand
+                let second = lower.split_whitespace().nth(1).unwrap_or("");
+                match second {
+                    "push" => caps.git_push = true,
+                    "commit" => caps.git_commit = true,
+                    _ => {}
+                }
+            }
+            "ssh" | "scp" | "rsync" | "nc" | "ncat" => {
+                // Network exfil tools — imply web_fetch (network access)
+                caps.web_fetch = true;
+            }
+            _ => {}
+        }
+    }
+
+    caps
+}
+
 /// Check if a read pattern targets known sensitive paths.
 pub fn is_sensitive_path_pattern(pattern: &str) -> bool {
     let sensitive = [
@@ -232,6 +317,64 @@ mod tests {
         assert!(is_sensitive_path_pattern("~/.aws/**"));
         assert!(is_sensitive_path_pattern("~/.ssh/id_rsa"));
         assert!(!is_sensitive_path_pattern("/workspaces/**"));
+    }
+
+    #[test]
+    fn test_bash_implied_capabilities_unrestricted() {
+        let caps = bash_implied_capabilities(None);
+        assert!(caps.read_files);
+        assert!(caps.glob_search);
+        assert!(caps.grep_search);
+        assert!(caps.web_fetch);
+        assert!(caps.web_search);
+        assert!(caps.git_push);
+        assert!(caps.git_commit);
+
+        // Same for wildcard
+        let caps2 = bash_implied_capabilities(Some("*"));
+        assert!(caps2.read_files);
+        assert!(caps2.web_fetch);
+    }
+
+    #[test]
+    fn test_bash_implied_capabilities_patterned() {
+        // curl → web_fetch only
+        let caps = bash_implied_capabilities(Some("curl *"));
+        assert!(caps.web_fetch);
+        assert!(!caps.read_files);
+        assert!(!caps.grep_search);
+
+        // cat → read_files only
+        let caps = bash_implied_capabilities(Some("cat /tmp/foo"));
+        assert!(caps.read_files);
+        assert!(!caps.web_fetch);
+
+        // grep → grep_search + read_files
+        let caps = bash_implied_capabilities(Some("grep pattern *"));
+        assert!(caps.grep_search);
+        assert!(caps.read_files);
+        assert!(!caps.web_fetch);
+
+        // find → glob_search only
+        let caps = bash_implied_capabilities(Some("find . -name '*.rs'"));
+        assert!(caps.glob_search);
+        assert!(!caps.read_files);
+
+        // git push → git_push only
+        let caps = bash_implied_capabilities(Some("git push origin main"));
+        assert!(caps.git_push);
+        assert!(!caps.git_commit);
+
+        // git commit → git_commit only
+        let caps = bash_implied_capabilities(Some("git commit -m 'msg'"));
+        assert!(caps.git_commit);
+        assert!(!caps.git_push);
+
+        // cargo test → nothing extra
+        let caps = bash_implied_capabilities(Some("cargo test"));
+        assert!(!caps.read_files);
+        assert!(!caps.web_fetch);
+        assert!(!caps.git_push);
     }
 
     #[test]
