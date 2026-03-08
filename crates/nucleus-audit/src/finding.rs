@@ -1,6 +1,6 @@
 //! Shared types for security scan findings.
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
     Critical = 0,
@@ -43,6 +43,8 @@ pub struct ScanReport {
     pub isolation_level: String,
     pub has_credentials: bool,
     pub findings: Vec<Finding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scanned_sources: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime_metrics: Option<RuntimeMetrics>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -63,6 +65,7 @@ impl Default for ScanReport {
             isolation_level: "none".to_string(),
             has_credentials: false,
             findings: Vec::new(),
+            scanned_sources: Vec::new(),
             runtime_metrics: None,
             claude_settings_summary: None,
             mcp_config_summary: None,

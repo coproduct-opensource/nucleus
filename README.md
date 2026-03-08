@@ -30,7 +30,7 @@ nucleus-audit scan --pod-spec your-agent.yaml
 nucleus-audit scan --claude-settings .claude/settings.json
 nucleus-audit scan --mcp-config .mcp.json
 
-# Scan everything at once — findings are merged and deduplicated
+# Scan everything at once — findings are merged, deduplicated, and source-attributed
 nucleus-audit scan --pod-spec agent.yaml --claude-settings settings.json --mcp-config .mcp.json
 ```
 

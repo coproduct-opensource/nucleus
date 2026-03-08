@@ -6,7 +6,7 @@ mod scan_mcp_config;
 mod scan_podspec;
 mod tool_pattern;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -16,7 +16,7 @@ use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use finding::{ScanReport, Severity};
+use finding::{Finding, ScanReport, Severity};
 
 #[derive(Parser, Debug)]
 #[command(name = "nucleus-audit")]
@@ -233,52 +233,119 @@ fn main() -> Result<(), AuditError> {
                 std::process::exit(2);
             }
 
+            let total_sources = pod_specs.len() + claude_settings_paths.len() + mcp_configs.len();
+            let include_source_in_finding = total_sources > 1;
+            let single_pod_only =
+                pod_specs.len() == 1 && claude_settings_paths.is_empty() && mcp_configs.is_empty();
+
             let mut report = ScanReport::default();
-            let mut has_pod_spec = false;
+            let mut aggregate_trifecta_rank = 0u8;
+            let mut aggregate_has_pod = false;
+            let mut aggregate_network_posture: Option<String> = None;
+            let mut aggregate_isolation_level: Option<String> = None;
 
             // Scan PodSpecs
             for ps_path in &pod_specs {
                 let ps_report = scan_podspec::scan_pod_spec(ps_path, audit_log.as_deref())?;
-                if !has_pod_spec {
-                    report = ps_report;
-                    has_pod_spec = true;
-                } else {
-                    report.findings.extend(ps_report.findings);
+                report.scanned_sources.push(ps_path.display().to_string());
+
+                aggregate_has_pod = true;
+                aggregate_trifecta_rank =
+                    aggregate_trifecta_rank.max(trifecta_rank_from_str(&ps_report.trifecta_risk));
+                merge_dimension(&mut aggregate_network_posture, &ps_report.network_posture);
+                merge_dimension(&mut aggregate_isolation_level, &ps_report.isolation_level);
+                report.has_credentials |= ps_report.has_credentials;
+
+                if single_pod_only {
+                    report.pod_name = ps_report.pod_name.clone();
+                    report.policy_profile = ps_report.policy_profile.clone();
+                    report.trifecta_risk = ps_report.trifecta_risk.clone();
+                    report.trifecta_enforced = ps_report.trifecta_enforced;
+                    report.permission_surface = ps_report.permission_surface.clone();
+                    report.network_posture = ps_report.network_posture.clone();
+                    report.isolation_level = ps_report.isolation_level.clone();
+                    report.runtime_metrics = ps_report.runtime_metrics.clone();
                 }
+
+                report.findings.extend(attach_source_to_findings(
+                    ps_report.findings,
+                    ps_path,
+                    include_source_in_finding,
+                ));
             }
 
             // Scan Claude settings
             for cs_path in &claude_settings_paths {
                 let (findings, summary) = scan_claude_settings::scan_claude_settings(cs_path)?;
-                if !has_pod_spec {
-                    let has_trifecta = findings
-                        .iter()
-                        .any(|f| f.category == "trifecta" && f.severity == Severity::Critical);
-                    report.trifecta_risk = if has_trifecta {
-                        "Complete".to_string()
-                    } else if findings.iter().any(|f| f.category == "trifecta") {
-                        "Medium".to_string()
-                    } else {
-                        "None".to_string()
-                    };
-                    report.trifecta_enforced = false;
-                    report.has_credentials = findings.iter().any(|f| f.category == "credentials");
+                report.scanned_sources.push(cs_path.display().to_string());
+
+                let has_critical_trifecta = findings
+                    .iter()
+                    .any(|f| f.category == "trifecta" && f.severity == Severity::Critical);
+                let has_partial_trifecta = findings.iter().any(|f| f.category == "trifecta");
+                let claude_rank = if has_critical_trifecta {
+                    2
+                } else if has_partial_trifecta {
+                    1
+                } else {
+                    0
+                };
+                aggregate_trifecta_rank = aggregate_trifecta_rank.max(claude_rank);
+                report.has_credentials |= findings.iter().any(|f| f.category == "credentials");
+
+                if claude_settings_paths.len() == 1 {
+                    report.claude_settings_summary = Some(summary);
                 }
-                report.findings.extend(findings);
-                report.claude_settings_summary = Some(summary);
+
+                report.findings.extend(attach_source_to_findings(
+                    findings,
+                    cs_path,
+                    include_source_in_finding,
+                ));
             }
 
             // Scan MCP configs
             for mc_path in &mcp_configs {
                 let (findings, summary) = scan_mcp_config::scan_mcp_config(mc_path)?;
+                report.scanned_sources.push(mc_path.display().to_string());
+
                 if findings.iter().any(|f| f.category == "credentials") {
                     report.has_credentials = true;
                 }
-                report.findings.extend(findings);
-                report.mcp_config_summary = Some(summary);
+                if mcp_configs.len() == 1 {
+                    report.mcp_config_summary = Some(summary);
+                }
+
+                report.findings.extend(attach_source_to_findings(
+                    findings,
+                    mc_path,
+                    include_source_in_finding,
+                ));
             }
 
-            // Sort all findings by severity
+            if !single_pod_only {
+                report.pod_name = None;
+                report.policy_profile = None;
+                report.trifecta_risk = trifecta_label_from_rank(aggregate_trifecta_rank);
+                report.trifecta_enforced = false;
+                report.permission_surface = Default::default();
+                report.network_posture = if aggregate_has_pod {
+                    aggregate_network_posture.unwrap_or_else(|| "multiple".to_string())
+                } else {
+                    "unspecified".to_string()
+                };
+                report.isolation_level = if aggregate_has_pod {
+                    aggregate_isolation_level.unwrap_or_else(|| "multiple".to_string())
+                } else {
+                    "none".to_string()
+                };
+                report.runtime_metrics = None;
+            }
+
+            dedupe_findings(&mut report.findings);
+            report.scanned_sources.sort();
+
+            // Sort all findings by severity then title
             report.findings.sort_by(|a, b| a.severity.cmp(&b.severity));
 
             match format {
@@ -303,6 +370,61 @@ fn main() -> Result<(), AuditError> {
     }
 
     Ok(())
+}
+
+fn attach_source_to_findings(
+    findings: Vec<Finding>,
+    source: &Path,
+    include_source: bool,
+) -> Vec<Finding> {
+    if !include_source {
+        return findings;
+    }
+    let source = source.display().to_string();
+    findings
+        .into_iter()
+        .map(|mut finding| {
+            finding.title = format!("[{}] {}", source, finding.title);
+            finding
+        })
+        .collect()
+}
+
+fn dedupe_findings(findings: &mut Vec<Finding>) {
+    let mut seen: HashSet<(Severity, String, String, String)> = HashSet::new();
+    findings.retain(|f| {
+        seen.insert((
+            f.severity.clone(),
+            f.category.clone(),
+            f.title.clone(),
+            f.description.clone(),
+        ))
+    });
+}
+
+fn trifecta_rank_from_str(risk: &str) -> u8 {
+    match risk {
+        "Complete" => 2,
+        "Medium" | "Low" => 1,
+        _ => 0,
+    }
+}
+
+fn trifecta_label_from_rank(rank: u8) -> String {
+    match rank {
+        2 => "Complete".to_string(),
+        1 => "Medium".to_string(),
+        _ => "None".to_string(),
+    }
+}
+
+fn merge_dimension(current: &mut Option<String>, next: &str) {
+    match current {
+        None => *current = Some(next.to_string()),
+        Some(value) if value == "multiple" => {}
+        Some(value) if value == next => {}
+        Some(value) => *value = "multiple".to_string(),
+    }
 }
 
 // --- verify (tool-proxy) ---
@@ -709,5 +831,46 @@ spec:
         assert!(Severity::High < Severity::Medium);
         assert!(Severity::Medium < Severity::Low);
         assert!(Severity::Low < Severity::Info);
+    }
+
+    #[test]
+    fn test_attach_source_to_findings_prefixes_title() {
+        let findings = vec![Finding {
+            severity: Severity::Medium,
+            category: "test".to_string(),
+            title: "Sample finding".to_string(),
+            description: "desc".to_string(),
+        }];
+        let out = attach_source_to_findings(findings, Path::new("foo.yaml"), true);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].title.starts_with("[foo.yaml] "));
+    }
+
+    #[test]
+    fn test_dedupe_findings_removes_exact_duplicates() {
+        let mut findings = vec![
+            Finding {
+                severity: Severity::High,
+                category: "network".to_string(),
+                title: "A".to_string(),
+                description: "D".to_string(),
+            },
+            Finding {
+                severity: Severity::High,
+                category: "network".to_string(),
+                title: "A".to_string(),
+                description: "D".to_string(),
+            },
+        ];
+        dedupe_findings(&mut findings);
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn test_merge_dimension_marks_multiple() {
+        let mut dim = None;
+        merge_dimension(&mut dim, "airgapped");
+        merge_dimension(&mut dim, "filtered");
+        assert_eq!(dim.as_deref(), Some("multiple"));
     }
 }

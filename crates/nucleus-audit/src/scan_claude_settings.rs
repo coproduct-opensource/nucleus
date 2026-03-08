@@ -12,7 +12,7 @@ use serde::Deserialize;
 use crate::finding::{ClaudeSettingsSummary, Finding, Severity};
 use crate::tool_pattern::{
     bash_implied_capabilities, is_exfil_bash_pattern, is_sensitive_path_pattern,
-    is_unrestricted_pattern, parse_tool_permission, ToolKind,
+    is_unrestricted_pattern, mcp_implied_capabilities, parse_tool_permission, ToolKind,
 };
 use crate::AuditError;
 
@@ -342,7 +342,25 @@ fn project_to_capability_lattice(perms: &PermissionRules) -> CapabilityLattice {
             ToolKind::WebFetch => {
                 caps.web_fetch = CapabilityLevel::LowRisk;
             }
-            ToolKind::McpTool { .. } | ToolKind::Unknown(_) => {}
+            ToolKind::McpTool { server, tool } => {
+                let implied = mcp_implied_capabilities(&server, &tool);
+                if implied.private_data {
+                    caps.read_files = CapabilityLevel::LowRisk;
+                }
+                if implied.untrusted_content {
+                    caps.web_fetch = CapabilityLevel::LowRisk;
+                }
+                if implied.exfiltration {
+                    caps.run_bash = CapabilityLevel::LowRisk;
+                }
+                if implied.git_push {
+                    caps.git_push = CapabilityLevel::LowRisk;
+                }
+                if implied.create_pr {
+                    caps.create_pr = CapabilityLevel::LowRisk;
+                }
+            }
+            ToolKind::Unknown(_) => {}
         }
     }
 
@@ -536,6 +554,28 @@ mod tests {
                 .any(|f| f.category == "trifecta" && f.severity == Severity::Critical),
             "Edit+Write+Bash should trigger CRITICAL trifecta because unrestricted \
              Bash implies read (cat), web (curl), and exfil. Findings: {:?}",
+            findings
+        );
+    }
+
+    #[test]
+    fn test_mcp_tool_exfil_can_complete_trifecta() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            settings_json(
+                r#"{ "allow": ["Read", "WebFetch", "mcp__github__create_pr"], "deny": [], "ask": [] }"#,
+            ),
+        )
+        .unwrap();
+
+        let (findings, _) = scan_claude_settings(&path).unwrap();
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.category == "trifecta" && f.severity == Severity::Critical),
+            "MCP create_pr should count as exfiltration in trifecta analysis: {:?}",
             findings
         );
     }

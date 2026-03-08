@@ -160,6 +160,16 @@ pub struct BashImpliedCapabilities {
     pub git_commit: bool,
 }
 
+/// Capabilities implied by an MCP tool permission.
+#[derive(Debug, Clone, Default)]
+pub struct McpImpliedCapabilities {
+    pub private_data: bool,
+    pub untrusted_content: bool,
+    pub exfiltration: bool,
+    pub git_push: bool,
+    pub create_pr: bool,
+}
+
 impl BashImpliedCapabilities {
     /// All capabilities (unrestricted bash).
     pub fn all() -> Self {
@@ -228,6 +238,85 @@ pub fn bash_implied_capabilities(pattern: Option<&str>) -> BashImpliedCapabiliti
     }
 
     caps
+}
+
+/// Determine what capabilities an MCP tool permission implies.
+///
+/// This is a conservative heuristic over `mcp__<server>__<tool>` names.
+pub fn mcp_implied_capabilities(server: &str, tool: &str) -> McpImpliedCapabilities {
+    let server = server.to_lowercase();
+    let tool = tool.to_lowercase();
+
+    let server_has = |patterns: &[&str]| patterns.iter().any(|p| server.contains(p));
+    let tool_has = |patterns: &[&str]| patterns.iter().any(|p| tool.contains(p));
+
+    let private_server = server_has(&[
+        "filesystem",
+        "file",
+        "fs",
+        "git",
+        "github",
+        "gitlab",
+        "bitbucket",
+        "postgres",
+        "mysql",
+        "sqlite",
+        "mongodb",
+        "database",
+        "db",
+        "s3",
+        "aws",
+        "gcp",
+        "azure",
+        "memory",
+    ]);
+    let untrusted_server = server_has(&[
+        "browser",
+        "playwright",
+        "puppeteer",
+        "web",
+        "search",
+        "fetch",
+        "crawl",
+        "scrape",
+        "http",
+    ]);
+    let exfil_server = server_has(&[
+        "github",
+        "gitlab",
+        "bitbucket",
+        "slack",
+        "discord",
+        "teams",
+        "smtp",
+        "mail",
+        "http",
+        "webhook",
+    ]);
+
+    let private_tool = tool_has(&["read", "list", "query", "search", "get", "fetch"]);
+    let untrusted_tool = tool_has(&["search", "fetch", "crawl", "scrape", "navigate"]);
+    let exfil_tool = tool_has(&[
+        "create_pr",
+        "pull_request",
+        "push",
+        "publish",
+        "upload",
+        "send",
+        "post",
+        "comment",
+        "message",
+        "webhook",
+        "write_remote",
+    ]);
+
+    McpImpliedCapabilities {
+        private_data: private_server || private_tool,
+        untrusted_content: untrusted_server || untrusted_tool,
+        exfiltration: exfil_server || exfil_tool,
+        git_push: tool_has(&["git_push", "push"]),
+        create_pr: tool_has(&["create_pr", "pull_request"]),
+    }
 }
 
 /// Check if a read pattern targets known sensitive paths.
@@ -389,5 +478,20 @@ mod tests {
 
         assert!(ToolKind::Bash.is_exfil_vector());
         assert!(!ToolKind::Read.is_exfil_vector());
+    }
+
+    #[test]
+    fn test_mcp_implied_capabilities_github_create_pr() {
+        let caps = mcp_implied_capabilities("github", "create_pr");
+        assert!(caps.private_data);
+        assert!(caps.exfiltration);
+        assert!(caps.create_pr);
+    }
+
+    #[test]
+    fn test_mcp_implied_capabilities_browser_navigation() {
+        let caps = mcp_implied_capabilities("playwright", "navigate");
+        assert!(caps.untrusted_content);
+        assert!(!caps.create_pr);
     }
 }
