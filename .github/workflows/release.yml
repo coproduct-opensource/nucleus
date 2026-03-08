@@ -25,8 +25,8 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions-rust-lang/setup-rust-toolchain@a0b538fa0b742a6aa35d6e2c169b4bd06d225a98 # v1
         with:
           cache: true
       - name: Add cross-compilation target
@@ -46,7 +46,7 @@ jobs:
           tar -C "$RELEASE_DIR" -czf "dist/nucleus-mcp-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-mcp
           tar -C "$RELEASE_DIR" -czf "dist/nucleus-audit-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-audit
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: nucleus-node-${{ matrix.target }}
           path: dist/*.tar.gz
@@ -64,8 +64,8 @@ jobs:
           - arch: x86_64
             target: x86_64-unknown-linux-musl
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions-rust-lang/setup-rust-toolchain@a0b538fa0b742a6aa35d6e2c169b4bd06d225a98 # v1
         with:
           cache: true
       - name: Install cross
@@ -94,12 +94,12 @@ jobs:
           tar -C target/${{ matrix.target }}/release -czf "dist/nucleus-audit-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-audit
           tar -C target/${{ matrix.target }}/release -czf "dist/nucleus-tool-proxy-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-tool-proxy
       - name: Upload packaged artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: nucleus-binaries-${{ matrix.target }}
           path: dist/*.tar.gz
       - name: Upload guest binaries for rootfs build
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: guest-binaries-${{ matrix.arch }}
           path: |
@@ -123,9 +123,9 @@ jobs:
             target: x86_64-unknown-linux-musl
             debian_image: debian:bookworm-slim
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Download guest binaries
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8
         with:
           name: guest-binaries-${{ matrix.arch }}
           path: target/${{ matrix.target }}/release
@@ -136,7 +136,7 @@ jobs:
           chmod +x target/${{ matrix.target }}/release/nucleus-net-probe
       - name: Set up QEMU
         if: matrix.arch == 'aarch64'
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
         with:
           platforms: arm64
       - name: Build rootfs
@@ -151,7 +151,7 @@ jobs:
           mkdir -p dist
           gzip -9 -c build/firecracker/${{ matrix.arch }}/rootfs.ext4 > "dist/nucleus-rootfs-${VERSION}-${{ matrix.arch }}.ext4.gz"
       - name: Upload rootfs artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: rootfs-${{ matrix.arch }}
           path: dist/*.ext4.gz
@@ -161,7 +161,7 @@ jobs:
     name: Upload Lima Templates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Package Lima templates
         run: |
           TAG="${GITHUB_REF_NAME}"
@@ -171,7 +171,7 @@ jobs:
           cp scripts/lima/nucleus-aarch64.yaml "dist/nucleus-lima-${VERSION}-aarch64.yaml"
           cp scripts/lima/nucleus-x86_64.yaml "dist/nucleus-lima-${VERSION}-x86_64.yaml"
       - name: Upload Lima templates
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: lima-templates
           path: dist/*.yaml
@@ -184,7 +184,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8
         with:
           path: dist
       - name: Collect assets
@@ -192,9 +192,9 @@ jobs:
           mkdir -p release
           find dist -type f \( -name "*.tar.gz" -o -name "*.ext4.gz" -o -name "*.yaml" \) -exec mv {} release/ \;
           ls -lah release
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
         with:
           files: release/*
       - name: Update floating v1 tag
@@ -218,9 +218,9 @@ jobs:
           fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         if: ${{ steps.publish_gate.outputs.enabled == 'true' }}
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@a0b538fa0b742a6aa35d6e2c169b4bd06d225a98 # v1
         if: ${{ steps.publish_gate.outputs.enabled == 'true' }}
         with:
           cache: true
@@ -246,7 +246,7 @@ jobs:
         env:
           HOMEBREW_TAP: ${{ secrets.HOMEBREW_TAP }}
           HOMEBREW_TOKEN: ${{ secrets.HOMEBREW_TOKEN }}
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8
         if: ${{ steps.brew_gate.outputs.enabled == 'true' }}
         with:
           path: dist
@@ -272,7 +272,7 @@ jobs:
           echo "mac_arm_sha=$(sha256sum release/${MAC_ARM} | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
       - name: Checkout tap
         if: ${{ steps.brew_gate.outputs.enabled == 'true' }}
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           repository: ${{ secrets.HOMEBREW_TAP }}
           token: ${{ secrets.HOMEBREW_TOKEN }}

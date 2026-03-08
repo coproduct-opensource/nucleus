@@ -24,7 +24,7 @@ jobs:
     name: Dry-run validation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install Nucleus CLI
         shell: bash
@@ -150,7 +150,7 @@ jobs:
     if: inputs.issue-number != ''
     needs: dry-run
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Check API key
         id: gate
