@@ -12,7 +12,7 @@
 #   docker build -f docker/Dockerfile.tool-proxy -t nucleus-tool-proxy .
 
 # ── Planner (cargo-chef recipe) ───────────────────────────────────────
-FROM rust:1.88-bookworm AS planner
+FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS planner
 
 RUN cargo install cargo-chef --locked
 WORKDIR /build
@@ -21,7 +21,7 @@ COPY crates/ crates/
 RUN cargo chef prepare --recipe-path recipe.json
 
 # ── Cook (compile dependencies only — cached across source changes) ───
-FROM rust:1.88-bookworm AS cook
+FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS cook
 
 RUN cargo install cargo-chef --locked
 WORKDIR /build
@@ -43,22 +43,19 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && strip /usr/local/bin/nucleus-tool-proxy
 
 # ── Runtime ──────────────────────────────────────────────────────────
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:74d56e3931e0d5a1dd51f8c8a2466d21de84a271cd3b5a733b803aa91abf4421
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    curl \
     git \
+    nodejs \
+    npm \
     openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Node.js (for Claude CLI)
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y nodejs \
-    && rm -rf /var/lib/apt/lists/*
-
 # Install Claude CLI globally
-RUN npm install -g @anthropic-ai/claude-code
+ARG CLAUDE_CODE_VERSION=2.1.71
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 COPY --from=builder /usr/local/bin/nucleus-tool-proxy /usr/local/bin/
 

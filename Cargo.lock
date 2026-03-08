@@ -2747,14 +2747,18 @@ version = "1.0.0"
 dependencies = [
  "cap-std",
  "cap-tempfile",
+ "hex",
+ "hmac",
  "parking_lot",
  "portcullis",
  "quanta",
  "rust_decimal",
+ "sha2 0.10.9",
  "shell-words",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -2772,6 +2776,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
+ "url",
 ]
 
 [[package]]

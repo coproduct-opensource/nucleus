@@ -34,6 +34,9 @@ pub fn print_scan_report(report: &ScanReport) {
             "none"
         }
     );
+    if !report.scanned_sources.is_empty() {
+        println!("  Sources:        {}", report.scanned_sources.len());
+    }
     println!();
 
     // --- Permission surface ---

@@ -318,6 +318,7 @@ pub fn scan_pod_spec(
         isolation_level: isolation_level.to_string(),
         has_credentials,
         findings,
+        scanned_sources: Vec::new(),
         runtime_metrics,
         claude_settings_summary: None,
         mcp_config_summary: None,

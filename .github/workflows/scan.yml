@@ -94,7 +94,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Scan safe PodSpec
-        uses: coproduct-opensource/nucleus/scan@v1
+        # v1.0.8
+        uses: coproduct-opensource/nucleus/scan@06742eea507a4abeb0cb900a30b1a3e2208b91f9
         id: safe
         with:
           pod-spec: examples/podspecs/safe-pr-fixer.yaml
