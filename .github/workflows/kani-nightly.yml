@@ -30,17 +30,17 @@ jobs:
     timeout-minutes: 15
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v6
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
           cache-on-failure: true
       - name: Cache Kani toolchain
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.kani
           key: kani-toolchain-${{ runner.os }}-${{ hashFiles('.github/workflows/kani-nightly.yml') }}
       - name: Run Kani (fast harnesses)
-        uses: model-checking/kani-github-action@v1
+        uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
         with:
           args: >-
             -p portcullis
@@ -79,17 +79,17 @@ jobs:
     timeout-minutes: 60
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v6
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
           cache-on-failure: true
       - name: Cache Kani toolchain
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.kani
           key: kani-toolchain-${{ runner.os }}-${{ hashFiles('.github/workflows/kani-nightly.yml') }}
       - name: Run Kani (all harnesses)
-        uses: model-checking/kani-github-action@v1
+        uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
         with:
           args: "-p portcullis --solver cadical"
       - name: Proof count regression gate

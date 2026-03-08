@@ -28,14 +28,14 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Read Verus version
         id: verus-version
         run: echo "version=$(cat .verus-version | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
 
       - name: Cache Verus binary
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         id: cache-verus
         with:
           path: .verus/verus-x86-linux

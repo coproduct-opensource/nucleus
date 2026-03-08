@@ -29,6 +29,11 @@ Thumbs.db
 # Runtime artifacts (pod logs, specs)
 nucleus-node/pods/
 
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
 # Node.js
 node_modules/
 
