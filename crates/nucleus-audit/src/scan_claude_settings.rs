@@ -11,8 +11,8 @@ use serde::Deserialize;
 
 use crate::finding::{ClaudeSettingsSummary, Finding, Severity};
 use crate::tool_pattern::{
-    is_exfil_bash_pattern, is_sensitive_path_pattern, is_unrestricted_pattern,
-    parse_tool_permission, ToolKind,
+    bash_implied_capabilities, is_exfil_bash_pattern, is_sensitive_path_pattern,
+    is_unrestricted_pattern, parse_tool_permission, ToolKind,
 };
 use crate::AuditError;
 
@@ -312,6 +312,29 @@ fn project_to_capability_lattice(perms: &PermissionRules) -> CapabilityLattice {
             }
             ToolKind::Bash => {
                 caps.run_bash = CapabilityLevel::LowRisk;
+                // Bash implies additional capabilities based on pattern
+                let implied = bash_implied_capabilities(parsed.pattern.as_deref());
+                if implied.read_files {
+                    caps.read_files = CapabilityLevel::LowRisk;
+                }
+                if implied.glob_search {
+                    caps.glob_search = CapabilityLevel::LowRisk;
+                }
+                if implied.grep_search {
+                    caps.grep_search = CapabilityLevel::LowRisk;
+                }
+                if implied.web_fetch {
+                    caps.web_fetch = CapabilityLevel::LowRisk;
+                }
+                if implied.web_search {
+                    caps.web_search = CapabilityLevel::LowRisk;
+                }
+                if implied.git_push {
+                    caps.git_push = CapabilityLevel::LowRisk;
+                }
+                if implied.git_commit {
+                    caps.git_commit = CapabilityLevel::LowRisk;
+                }
             }
             ToolKind::WebSearch => {
                 caps.web_search = CapabilityLevel::LowRisk;
@@ -491,6 +514,111 @@ mod tests {
                 .iter()
                 .any(|f| f.category == "credentials" && f.severity == Severity::High),
             "Should flag credential in env"
+        );
+    }
+
+    #[test]
+    fn test_edit_write_bash_triggers_trifecta() {
+        // This is the real-world case from thaqi-renovation.json:
+        // ["Edit", "Write", "Bash"] — unrestricted Bash implies ALL capabilities
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            settings_json(r#"{ "allow": ["Edit", "Write", "Bash"], "deny": [], "ask": [] }"#),
+        )
+        .unwrap();
+
+        let (findings, _) = scan_claude_settings(&path).unwrap();
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.category == "trifecta" && f.severity == Severity::Critical),
+            "Edit+Write+Bash should trigger CRITICAL trifecta because unrestricted \
+             Bash implies read (cat), web (curl), and exfil. Findings: {:?}",
+            findings
+        );
+    }
+
+    #[test]
+    fn test_unrestricted_bash_propagation() {
+        // Bare "Bash" should propagate to ALL capability lattice legs
+        let perms = PermissionRules {
+            allow: vec!["Bash".to_string()],
+            deny: vec![],
+            ask: vec![],
+        };
+        let caps = project_to_capability_lattice(&perms);
+        assert_eq!(caps.run_bash, CapabilityLevel::LowRisk);
+        assert_eq!(caps.read_files, CapabilityLevel::LowRisk, "cat/head/less");
+        assert_eq!(caps.glob_search, CapabilityLevel::LowRisk, "find/ls");
+        assert_eq!(caps.grep_search, CapabilityLevel::LowRisk, "grep/rg");
+        assert_eq!(caps.web_fetch, CapabilityLevel::LowRisk, "curl/wget");
+        assert_eq!(caps.web_search, CapabilityLevel::LowRisk, "curl+APIs");
+        assert_eq!(caps.git_push, CapabilityLevel::LowRisk, "git push");
+        assert_eq!(caps.git_commit, CapabilityLevel::LowRisk, "git commit");
+    }
+
+    #[test]
+    fn test_patterned_bash_partial_propagation() {
+        // Bash(curl *) should raise web_fetch but NOT read_files
+        let perms = PermissionRules {
+            allow: vec!["Bash(curl *)".to_string()],
+            deny: vec![],
+            ask: vec![],
+        };
+        let caps = project_to_capability_lattice(&perms);
+        assert_eq!(caps.run_bash, CapabilityLevel::LowRisk);
+        assert_eq!(
+            caps.web_fetch,
+            CapabilityLevel::LowRisk,
+            "curl implies web_fetch"
+        );
+        assert_eq!(
+            caps.read_files,
+            CapabilityLevel::Never,
+            "curl does NOT imply read_files"
+        );
+        assert_eq!(
+            caps.grep_search,
+            CapabilityLevel::Never,
+            "curl does NOT imply grep"
+        );
+
+        // Bash(cat *) should raise read_files but NOT web_fetch
+        let perms2 = PermissionRules {
+            allow: vec!["Bash(cat *)".to_string()],
+            deny: vec![],
+            ask: vec![],
+        };
+        let caps2 = project_to_capability_lattice(&perms2);
+        assert_eq!(
+            caps2.read_files,
+            CapabilityLevel::LowRisk,
+            "cat implies read_files"
+        );
+        assert_eq!(
+            caps2.web_fetch,
+            CapabilityLevel::Never,
+            "cat does NOT imply web_fetch"
+        );
+
+        // Bash(git push *) should raise git_push
+        let perms3 = PermissionRules {
+            allow: vec!["Bash(git push *)".to_string()],
+            deny: vec![],
+            ask: vec![],
+        };
+        let caps3 = project_to_capability_lattice(&perms3);
+        assert_eq!(
+            caps3.git_push,
+            CapabilityLevel::LowRisk,
+            "git push implies git_push"
+        );
+        assert_eq!(
+            caps3.git_commit,
+            CapabilityLevel::Never,
+            "git push does NOT imply git_commit"
         );
     }
 

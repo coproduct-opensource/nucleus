@@ -192,10 +192,16 @@ jobs:
           mkdir -p release
           find dist -type f \( -name "*.tar.gz" -o -name "*.ext4.gz" -o -name "*.yaml" \) -exec mv {} release/ \;
           ls -lah release
+      - uses: actions/checkout@v6
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: release/*
+      - name: Update floating v1 tag
+        run: |
+          MAJOR="${GITHUB_REF_NAME%%.*}"
+          git tag -fa "${MAJOR}" -m "Release ${MAJOR}"
+          git push origin "${MAJOR}" --force
 
   publish:
     name: Publish to crates.io

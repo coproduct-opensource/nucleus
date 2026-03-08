@@ -37,6 +37,137 @@ pub struct McpServerEntry {
     pub headers: Option<HashMap<String, String>>,
 }
 
+/// Risk profile for a well-known MCP server package.
+#[derive(Debug, Clone)]
+struct McpServerRisk {
+    /// Category of data access
+    category: &'static str,
+    /// Severity of having this server
+    severity: Severity,
+    /// Whether it provides access to private/sensitive data (trifecta leg 1)
+    private_data: bool,
+    /// Whether it can exfiltrate data (trifecta leg 3)
+    exfil_capable: bool,
+    /// Human-readable description of the risk
+    description: &'static str,
+}
+
+/// Classify a well-known MCP server package by name.
+///
+/// Matches the package name portion (after any `@scope/` prefix) against
+/// known MCP server packages from the official Model Context Protocol org
+/// and popular third-party servers.
+fn known_mcp_server_risk(package_name: &str) -> Option<McpServerRisk> {
+    // Normalize: strip @scope/ prefix, strip version suffixes like @latest
+    let name = package_name
+        .rsplit('/')
+        .next()
+        .unwrap_or(package_name)
+        .split('@')
+        .next()
+        .unwrap_or(package_name);
+
+    match name {
+        // Database servers — read/write access to databases
+        "server-postgres" | "server-sqlite" | "server-mysql" | "server-mongodb" => {
+            Some(McpServerRisk {
+                category: "database",
+                severity: Severity::Medium,
+                private_data: true,
+                exfil_capable: false,
+                description:
+                    "Database MCP server provides read/write access to database contents. \
+                    Queries could expose sensitive data (PII, credentials, business data).",
+            })
+        }
+        // Filesystem servers — full local filesystem access
+        "server-filesystem" => Some(McpServerRisk {
+            category: "filesystem",
+            severity: Severity::Medium,
+            private_data: true,
+            exfil_capable: false,
+            description:
+                "Filesystem MCP server provides read/write access to the local filesystem. \
+                Can read credentials, SSH keys, and other sensitive files.",
+        }),
+        // VCS servers — code access, some with push capability
+        "server-git" => Some(McpServerRisk {
+            category: "vcs",
+            severity: Severity::Low,
+            private_data: true,
+            exfil_capable: false,
+            description: "Git MCP server provides access to local git repositories.",
+        }),
+        "server-github" | "server-gitlab" | "server-bitbucket" => Some(McpServerRisk {
+            category: "vcs",
+            severity: Severity::Medium,
+            private_data: true,
+            exfil_capable: true,
+            description: "VCS platform MCP server can read private repos and push code/comments. \
+                This is both a private data access vector and an exfiltration vector.",
+        }),
+        // Communication servers — can send messages (exfiltration)
+        "server-slack" | "server-discord" | "server-teams" => Some(McpServerRisk {
+            category: "communication",
+            severity: Severity::Medium,
+            private_data: false,
+            exfil_capable: true,
+            description: "Communication MCP server can send messages to external channels. \
+                This is an exfiltration vector for data extracted from other tools.",
+        }),
+        // Cloud servers — broad access to cloud resources
+        "server-aws" | "server-gcp" | "server-azure" => Some(McpServerRisk {
+            category: "cloud",
+            severity: Severity::High,
+            private_data: true,
+            exfil_capable: true,
+            description: "Cloud provider MCP server provides broad access to cloud resources \
+                including storage, compute, and secrets. High risk for both data access \
+                and exfiltration.",
+        }),
+        // Browser automation — web access
+        "server-puppeteer" | "server-playwright" => Some(McpServerRisk {
+            category: "browser",
+            severity: Severity::Medium,
+            private_data: false,
+            exfil_capable: true,
+            description: "Browser automation MCP server can navigate to arbitrary URLs, \
+                read web content, and submit forms. Exfiltration via GET/POST requests.",
+        }),
+        // Memory/knowledge servers — benign
+        "server-memory" | "server-knowledge-graph" => None,
+        _ => None,
+    }
+}
+
+/// Extract the MCP package name from `npx` args.
+///
+/// Handles patterns like:
+/// - `["-y", "@modelcontextprotocol/server-postgres"]`
+/// - `["--yes", "@scope/package"]`
+/// - `["package@latest"]`
+fn extract_npx_package(args: &[String]) -> Option<&str> {
+    for arg in args {
+        // Skip flags
+        if arg.starts_with('-') {
+            continue;
+        }
+        // First non-flag arg is the package
+        return Some(arg.as_str());
+    }
+    None
+}
+
+/// Check if npx args contain -y or --yes (auto-install without prompt).
+fn has_npx_auto_install(args: &[String]) -> bool {
+    args.iter().any(|a| a == "-y" || a == "--yes" || a == "-Y")
+}
+
+/// Check if a package is from the official @modelcontextprotocol scope.
+fn is_official_mcp_package(package: &str) -> bool {
+    package.starts_with("@modelcontextprotocol/")
+}
+
 /// Scan an MCP config file for security issues.
 pub fn scan_mcp_config(path: &Path) -> Result<(Vec<Finding>, McpConfigSummary), AuditError> {
     let content = std::fs::read_to_string(path)?;
@@ -176,6 +307,74 @@ pub fn scan_mcp_config(path: &Path) -> Result<(Vec<Finding>, McpConfigSummary), 
                 }
             }
         }
+
+        // --- Well-known MCP server classification ---
+        if let Some(args) = &server.args {
+            if let Some(package) = extract_npx_package(args) {
+                // Check against known server registry
+                if let Some(risk) = known_mcp_server_risk(package) {
+                    let mut desc = format!(
+                        "MCP server '{}' uses known package '{}' (category: {}). {}",
+                        name, package, risk.category, risk.description
+                    );
+                    if risk.private_data && risk.exfil_capable {
+                        desc.push_str(
+                            " This server provides BOTH private data access and \
+                             exfiltration capability — two trifecta legs in one server.",
+                        );
+                    }
+                    findings.push(Finding {
+                        severity: risk.severity,
+                        category: format!("mcp_{}", risk.category),
+                        title: format!(
+                            "{} access via MCP server '{}'",
+                            capitalize(risk.category),
+                            name
+                        ),
+                        description: desc,
+                    });
+                }
+
+                // npx -y supply chain risk
+                let is_npx = server.command.as_deref().is_some_and(|c| c.contains("npx"));
+                if is_npx && has_npx_auto_install(args) {
+                    if is_official_mcp_package(package) {
+                        findings.push(Finding {
+                            severity: Severity::Low,
+                            category: "supply_chain".to_string(),
+                            title: format!(
+                                "Auto-install official MCP package in '{}': {}",
+                                name, package
+                            ),
+                            description: format!(
+                                "MCP server '{}' uses 'npx -y {}' to auto-install without \
+                                 confirmation. While this is an official @modelcontextprotocol \
+                                 package, pinning to a specific version is recommended to \
+                                 prevent supply chain attacks via package takeover.",
+                                name, package
+                            ),
+                        });
+                    } else {
+                        findings.push(Finding {
+                            severity: Severity::Medium,
+                            category: "supply_chain".to_string(),
+                            title: format!(
+                                "Auto-install unknown package in '{}': {}",
+                                name, package
+                            ),
+                            description: format!(
+                                "MCP server '{}' uses 'npx -y {}' to auto-install a \
+                                 non-official package without confirmation. This executes \
+                                 arbitrary code from npm on every invocation. The package \
+                                 could be compromised or typosquatted. Pin to a known version \
+                                 or install globally instead.",
+                                name, package
+                            ),
+                        });
+                    }
+                }
+            }
+        }
     }
 
     // --- Overall surface area ---
@@ -199,6 +398,15 @@ pub fn scan_mcp_config(path: &Path) -> Result<(Vec<Finding>, McpConfigSummary), 
     };
 
     Ok((findings, summary))
+}
+
+/// Capitalize the first letter of a string.
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+    }
 }
 
 #[cfg(test)]
@@ -319,6 +527,137 @@ mod tests {
                 .any(|f| f.category == "execution" && f.severity == Severity::High),
             "Should flag sudo: {:?}",
             findings
+        );
+    }
+
+    #[test]
+    fn test_known_mcp_server_classification() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "mcpServers": {
+                    "postgres": {
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-postgres"]
+                    },
+                    "filesystem": {
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-filesystem"]
+                    },
+                    "github": {
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-github"],
+                        "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let (findings, summary) = scan_mcp_config(&path).unwrap();
+        assert_eq!(summary.server_count, 3);
+
+        // Should flag database access
+        assert!(
+            findings.iter().any(|f| f.category == "mcp_database"),
+            "Should flag postgres as database access: {:?}",
+            findings
+        );
+
+        // Should flag filesystem access
+        assert!(
+            findings.iter().any(|f| f.category == "mcp_filesystem"),
+            "Should flag filesystem access: {:?}",
+            findings
+        );
+
+        // Should flag VCS access with exfil capability
+        let vcs_finding = findings
+            .iter()
+            .find(|f| f.category == "mcp_vcs")
+            .expect("Should flag github as VCS access");
+        assert!(
+            vcs_finding.description.contains("exfiltration"),
+            "GitHub server should be flagged as exfiltration vector"
+        );
+    }
+
+    #[test]
+    fn test_npx_supply_chain_risk_unknown_package() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "mcpServers": {
+                    "custom": {
+                        "command": "npx",
+                        "args": ["-y", "@upstash/context7-mcp"]
+                    },
+                    "devtools": {
+                        "command": "npx",
+                        "args": ["chrome-devtools-mcp@latest"]
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let (findings, _) = scan_mcp_config(&path).unwrap();
+
+        // Unknown package with -y should be MEDIUM supply chain risk
+        let supply_chain: Vec<_> = findings
+            .iter()
+            .filter(|f| f.category == "supply_chain")
+            .collect();
+        assert!(
+            supply_chain
+                .iter()
+                .any(|f| f.severity == Severity::Medium && f.title.contains("context7")),
+            "Unknown package with npx -y should be MEDIUM: {:?}",
+            supply_chain
+        );
+
+        // Package without -y flag should NOT be flagged for supply chain
+        assert!(
+            !supply_chain
+                .iter()
+                .any(|f| f.title.contains("chrome-devtools")),
+            "Package without -y should not get supply chain warning: {:?}",
+            supply_chain
+        );
+    }
+
+    #[test]
+    fn test_npx_supply_chain_official_package() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "mcpServers": {
+                    "memory": {
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-memory"]
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let (findings, _) = scan_mcp_config(&path).unwrap();
+
+        // Official package with -y should be LOW (advisory only)
+        let supply_chain: Vec<_> = findings
+            .iter()
+            .filter(|f| f.category == "supply_chain")
+            .collect();
+        assert!(
+            supply_chain.iter().all(|f| f.severity == Severity::Low),
+            "Official MCP packages should be LOW severity: {:?}",
+            supply_chain
         );
     }
 
