@@ -3409,6 +3409,20 @@ async fn build_audit_log(args: &Args, auth: &AuthConfig) -> Result<Arc<AuditLog>
     use nucleus_client::drand::{DrandClient, DrandConfig, DrandFailMode};
 
     let path = args.audit_log.clone();
+
+    // Ensure parent directory exists (e.g., /var/log/nucleus/ or the pod state dir).
+    // Without this, the first write silently fails when the parent is missing.
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                ApiError::Spec(format!(
+                    "failed to create audit log directory {}: {e}",
+                    parent.display()
+                ))
+            })?;
+        }
+    }
+
     let secret = if let Some(secret) = args.audit_secret.as_ref() {
         secret.as_bytes().to_vec()
     } else {
@@ -3601,14 +3615,16 @@ async fn audit_event_with_context(
 }
 
 async fn emit_boot_report(state: &AppState) -> Result<(), ApiError> {
-    let report = match std::env::var("NUCLEUS_TOOL_PROXY_BOOT_REPORT") {
-        Ok(value) if !value.trim().is_empty() => value,
-        _ => return Ok(()),
-    };
+    // Always emit boot report — this is the first entry in the audit chain.
+    // Optional env var adds a custom message; otherwise use a default.
+    let message = std::env::var("NUCLEUS_TOOL_PROXY_BOOT_REPORT")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "tool-proxy started".to_string());
     let actor = std::env::var("NUCLEUS_TOOL_PROXY_BOOT_ACTOR").ok();
     let report = format!(
         "{} [sandbox_proof={}]",
-        report,
+        message,
         state.sandbox_proof.tier_label()
     );
 

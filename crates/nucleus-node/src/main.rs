@@ -878,6 +878,16 @@ async fn create_pod_internal(
         }
     };
 
+    // Write lifecycle audit event so even direct-task pods have an audit trail.
+    let audit_path = pod_dir.join("audit.log");
+    write_lifecycle_audit(
+        &audit_path,
+        "pod_started",
+        &id.to_string(),
+        &format!("driver={:?}", state.driver),
+    )
+    .await;
+
     let handle = Arc::new(PodHandle {
         id,
         spec,
@@ -2238,6 +2248,44 @@ fn now_unix() -> u64 {
         .as_secs()
 }
 
+/// Write a lifecycle audit event to a pod's audit.log from the node side.
+///
+/// This ensures every pod (including direct-task pods that don't run a tool-proxy)
+/// has at least start/stop audit entries in its audit.log file.
+async fn write_lifecycle_audit(audit_path: &Path, event: &str, pod_id: &str, detail: &str) {
+    let entry = serde_json::json!({
+        "timestamp_unix": now_unix(),
+        "actor": "nucleus-node",
+        "event": event,
+        "subject": format!("pod:{}", pod_id),
+        "result": detail,
+    });
+    let line = match serde_json::to_string(&entry) {
+        Ok(l) => l,
+        Err(e) => {
+            error!("failed to serialize lifecycle audit entry: {e}");
+            return;
+        }
+    };
+    match tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(audit_path)
+        .await
+    {
+        Ok(mut file) => {
+            let _ = file.write_all(line.as_bytes()).await;
+            let _ = file.write_all(b"\n").await;
+        }
+        Err(e) => {
+            error!(
+                "failed to write lifecycle audit to {}: {e}",
+                audit_path.display()
+            );
+        }
+    }
+}
+
 fn build_firecracker_pool(args: &Args) -> Option<Arc<Semaphore>> {
     if !matches!(&args.driver, DriverKind::Firecracker) || args.firecracker_max_pods == 0 {
         return None;
@@ -2298,6 +2346,24 @@ fn start_pod_reaper(state: NodeState) {
             for pod in &pods {
                 let pod_state = pod.status().await;
                 if matches!(pod_state, PodState::Exited { .. } | PodState::Error { .. }) {
+                    // Write lifecycle audit for pod exit
+                    let detail = match &pod_state {
+                        PodState::Exited { code } => {
+                            format!("exit_code={}", code.unwrap_or(-1))
+                        }
+                        PodState::Error { message } => {
+                            format!("error={}", message)
+                        }
+                        _ => "unknown".to_string(),
+                    };
+                    let audit_path = pod
+                        .log_path
+                        .parent()
+                        .unwrap_or(Path::new("."))
+                        .join("audit.log");
+                    write_lifecycle_audit(&audit_path, "pod_exited", &pod.id.to_string(), &detail)
+                        .await;
+
                     exited_ids.push(pod.id);
                     pod.cleanup_after_exit().await;
                 }
