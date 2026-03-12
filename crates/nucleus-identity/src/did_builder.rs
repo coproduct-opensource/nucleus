@@ -357,7 +357,7 @@ fn verify_svid_chain(
     let end_entity = webpki::EndEntityCert::try_from(&leaf_der)
         .map_err(|e| format!("failed to parse leaf as end-entity cert: {e}"))?;
 
-    let now = webpki::types::UnixTime::now();
+    let now = rustls::pki_types::UnixTime::now();
 
     end_entity
         .verify_for_usage(

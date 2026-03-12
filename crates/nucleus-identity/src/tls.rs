@@ -271,19 +271,18 @@ impl ServerCertVerifier for SpiffeServerCertVerifier {
 
         // Step 2: Convert rustls TrustAnchors to webpki TrustAnchors
         // The RootCertStore.roots field contains TrustAnchor<'static> with public fields
-        let anchors: Vec<webpki::types::TrustAnchor> = self
+        use rustls::pki_types::{Der, TrustAnchor};
+        let anchors: Vec<TrustAnchor> = self
             .roots
             .roots
             .iter()
-            .map(|ta| webpki::types::TrustAnchor {
-                subject: webpki::types::Der::from_slice(ta.subject.as_ref()),
-                subject_public_key_info: webpki::types::Der::from_slice(
-                    ta.subject_public_key_info.as_ref(),
-                ),
+            .map(|ta| TrustAnchor {
+                subject: Der::from_slice(ta.subject.as_ref()),
+                subject_public_key_info: Der::from_slice(ta.subject_public_key_info.as_ref()),
                 name_constraints: ta
                     .name_constraints
                     .as_ref()
-                    .map(|nc| webpki::types::Der::from_slice(nc.as_ref())),
+                    .map(|nc| Der::from_slice(nc.as_ref())),
             })
             .collect();
 
@@ -291,12 +290,10 @@ impl ServerCertVerifier for SpiffeServerCertVerifier {
         let intermediate_certs: Vec<CertificateDer<'_>> = intermediates.to_vec();
 
         // Step 4: Build the verification time
-        let time = webpki::types::UnixTime::since_unix_epoch(std::time::Duration::from_secs(
-            now.as_secs(),
-        ));
+        let time = UnixTime::since_unix_epoch(std::time::Duration::from_secs(now.as_secs()));
 
         // Step 5: Define supported signature algorithms for SPIFFE (P-256 and P-384 ECDSA)
-        let sig_algs: &[&dyn webpki::types::SignatureVerificationAlgorithm] = &[
+        let sig_algs: &[&dyn rustls::pki_types::SignatureVerificationAlgorithm] = &[
             webpki::ring::ECDSA_P256_SHA256,
             webpki::ring::ECDSA_P256_SHA384,
             webpki::ring::ECDSA_P384_SHA256,

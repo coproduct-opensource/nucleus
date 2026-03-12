@@ -305,9 +305,7 @@ impl IdentityVerifier {
             .collect();
 
         // Convert UnixTime to webpki UnixTime
-        let time = webpki::types::UnixTime::since_unix_epoch(std::time::Duration::from_secs(
-            now.as_secs(),
-        ));
+        let time = UnixTime::since_unix_epoch(std::time::Duration::from_secs(now.as_secs()));
 
         // Verify the certificate chain against our trust anchors
         // Use the configured key usage (server_auth for ServerCertVerifier, client_auth for ClientCertVerifier)
