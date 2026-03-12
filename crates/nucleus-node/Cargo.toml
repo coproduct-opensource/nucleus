@@ -45,7 +45,7 @@ ipnet = "2.12"
 
 # GitHub OIDC support
 jsonwebtoken = "10"
-reqwest = { workspace = true, features = ["json", "rustls-tls-manual-roots"] }
+reqwest = { workspace = true, features = ["json", "rustls-no-provider"] }
 rustls = { workspace = true }
 webpki-roots = "1.0"
 base64 = "0.22"

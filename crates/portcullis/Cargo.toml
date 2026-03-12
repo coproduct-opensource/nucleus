@@ -64,7 +64,7 @@ serde_yaml = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }
 
 # Webhook audit backend (optional)
-reqwest = { workspace = true, features = ["json", "rustls-tls-manual-roots"], optional = true }
+reqwest = { workspace = true, features = ["json", "rustls-no-provider"], optional = true }
 tokio = { workspace = true, features = ["rt"], optional = true }
 
 # Remote audit sink (optional, S3-compatible)
