@@ -26,6 +26,11 @@ struct Args {
     /// Optional pod spec for filtering visible tools.
     #[arg(long, env = "NUCLEUS_MCP_SPEC")]
     spec: Option<PathBuf>,
+    /// Separate auth secret for the /v1/approve endpoint.
+    /// The tool proxy authenticates approval requests with a different secret
+    /// than regular tool calls, enforcing privilege separation.
+    #[arg(long, env = "NUCLEUS_MCP_APPROVAL_SECRET")]
+    approval_secret: Option<String>,
     /// Prompt on approval-required operations (uses /dev/tty).
     #[arg(long, default_value_t = true)]
     approval_prompt: bool,
@@ -192,6 +197,8 @@ impl std::error::Error for ProxyError {}
 struct ProxyClient {
     base_url: String,
     auth_secret: Option<Vec<u8>>,
+    /// Separate secret for /v1/approve requests (privilege separation).
+    approval_secret: Option<Vec<u8>>,
     actor: Option<String>,
     /// Session ID for audit correlation across tool calls.
     session_id: String,
@@ -201,6 +208,7 @@ impl ProxyClient {
     fn new(
         base_url: String,
         auth_secret: Option<String>,
+        approval_secret: Option<String>,
         actor: Option<String>,
         session_id: Option<String>,
     ) -> Self {
@@ -213,6 +221,7 @@ impl ProxyClient {
         Self {
             base_url,
             auth_secret: auth_secret.map(|s| s.into_bytes()),
+            approval_secret: approval_secret.map(|s| s.into_bytes()),
             actor,
             session_id,
         }
@@ -227,6 +236,26 @@ impl ProxyClient {
         &self,
         path: &str,
         body: &T,
+    ) -> Result<R, ProxyError> {
+        self.post_json_with_secret(path, body, self.auth_secret.as_ref())
+    }
+
+    /// POST to /v1/approve using the approval secret (privilege separation).
+    /// Falls back to auth_secret if no approval_secret is configured.
+    fn post_approve<T: Serialize, R: for<'de> Deserialize<'de>>(
+        &self,
+        path: &str,
+        body: &T,
+    ) -> Result<R, ProxyError> {
+        let secret = self.approval_secret.as_ref().or(self.auth_secret.as_ref());
+        self.post_json_with_secret(path, body, secret)
+    }
+
+    fn post_json_with_secret<T: Serialize, R: for<'de> Deserialize<'de>>(
+        &self,
+        path: &str,
+        body: &T,
+        secret: Option<&Vec<u8>>,
     ) -> Result<R, ProxyError> {
         let body_bytes = serde_json::to_vec(body).map_err(|e| ProxyError {
             kind: "client_error".to_string(),
@@ -243,7 +272,7 @@ impl ProxyClient {
             // Always include session ID for audit correlation
             .header("x-nucleus-session-id", &self.session_id);
 
-        if let Some(secret) = self.auth_secret.as_ref() {
+        if let Some(secret) = secret {
             let signed = sign_http_headers(secret, self.actor.as_deref(), &body_bytes);
             for (key, value) in signed.headers {
                 request = request.header(&key, &value);
@@ -335,6 +364,7 @@ fn main() -> Result<()> {
     let client = ProxyClient::new(
         args.proxy_url.clone(),
         args.auth_secret.clone(),
+        args.approval_secret.clone(),
         Some(args.actor.clone()),
         args.session_id.clone(),
     );
@@ -724,7 +754,8 @@ where
                             expires_at_unix: None,
                             nonce: Some(nonce),
                         };
-                        let _resp: ApproveResponse = client.post_json("/v1/approve", &approve)?;
+                        let _resp: ApproveResponse =
+                            client.post_approve("/v1/approve", &approve)?;
                         let _ = _resp.ok;
                         return retry().map_err(|err| anyhow!("{}: {}", err.kind, err.message));
                     }
@@ -903,6 +934,7 @@ mod tests {
         let client = ProxyClient::new(
             "http://localhost:8080".to_string(),
             None,
+            None,
             Some("test-actor".to_string()),
             Some("custom-session-123".to_string()),
         );
@@ -936,9 +968,45 @@ mod tests {
     }
 
     #[test]
+    fn test_proxy_client_approval_secret_separate() {
+        let client = ProxyClient::new(
+            "http://localhost:8080".to_string(),
+            Some("auth-secret-abc".to_string()),
+            Some("approval-secret-xyz".to_string()),
+            Some("actor".to_string()),
+            None,
+        );
+        // Auth and approval secrets should be stored separately
+        assert_ne!(client.auth_secret, client.approval_secret);
+        assert_eq!(
+            client.auth_secret.as_deref(),
+            Some(b"auth-secret-abc".as_slice())
+        );
+        assert_eq!(
+            client.approval_secret.as_deref(),
+            Some(b"approval-secret-xyz".as_slice())
+        );
+    }
+
+    #[test]
+    fn test_proxy_client_approval_secret_fallback() {
+        // When no approval_secret is given, post_approve falls back to auth_secret
+        let client = ProxyClient::new(
+            "http://localhost:8080".to_string(),
+            Some("shared-secret".to_string()),
+            None,
+            Some("actor".to_string()),
+            None,
+        );
+        assert!(client.approval_secret.is_none());
+        // The fallback logic is in post_approve: it uses approval_secret.or(auth_secret)
+    }
+
+    #[test]
     fn test_proxy_client_session_id_generated() {
         let client = ProxyClient::new(
             "http://localhost:8080".to_string(),
+            None,
             None,
             Some("test-actor".to_string()),
             None,

@@ -449,6 +449,7 @@ async fn run_local(
         &mcp_command_path,
         &proxy_url,
         Some(&auth_secret),
+        Some(&approval_secret),
         &spec_path,
     )?;
 
@@ -589,6 +590,7 @@ async fn run_enforced(
         &mcp_command_path,
         &proxy_url,
         None,
+        None,
         &spec_path,
     )?;
 
@@ -716,6 +718,7 @@ fn write_mcp_config(
     mcp_command: &Path,
     proxy_url: &str,
     auth_secret: Option<&str>,
+    approval_secret: Option<&str>,
     spec_path: &Path,
 ) -> Result<()> {
     #[derive(Serialize)]
@@ -739,6 +742,12 @@ fn write_mcp_config(
     env.insert("NUCLEUS_MCP_PROXY_URL".to_string(), proxy_url.to_string());
     if let Some(secret) = auth_secret {
         env.insert("NUCLEUS_MCP_AUTH_SECRET".to_string(), secret.to_string());
+    }
+    if let Some(secret) = approval_secret {
+        env.insert(
+            "NUCLEUS_MCP_APPROVAL_SECRET".to_string(),
+            secret.to_string(),
+        );
     }
     env.insert(
         "NUCLEUS_MCP_SPEC".to_string(),
