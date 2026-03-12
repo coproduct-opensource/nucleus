@@ -18,6 +18,7 @@ pub struct ObserveArgs {
     pub name: String,
 
     /// Path to JSONL audit log file. Use "-" or omit for stdin.
+    /// Accepts both simple format and kernel Decision JSONL from --kernel-trace.
     #[arg(short, long)]
     pub input: Option<PathBuf>,
 

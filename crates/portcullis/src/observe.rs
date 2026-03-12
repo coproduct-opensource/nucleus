@@ -373,16 +373,31 @@ impl ObserveSession {
 
 /// Parse JSONL audit log lines into observations.
 ///
-/// Each line should be a JSON object with at minimum:
+/// Accepts two formats:
+///
+/// **Simple format** (manual audit logs):
 /// ```json
 /// {"operation": "read_files", "subject": "src/main.rs", "succeeded": true}
 /// ```
+///
+/// **Kernel Decision format** (from `--kernel-trace` JSONL):
+/// ```json
+/// {"operation": "read_files", "subject": "/src/main.rs", "verdict": {"type": "allow"}, "timestamp": "..."}
+/// ```
+///
+/// Lines with `"type": "session_summary"` are skipped (not tool call observations).
 pub fn parse_jsonl_observations(input: &str) -> Vec<Observation> {
     input
         .lines()
         .filter(|line| !line.trim().is_empty())
         .filter_map(|line| {
             let v: serde_json::Value = serde_json::from_str(line).ok()?;
+
+            // Skip session_summary lines from kernel trace
+            if v.get("type").and_then(|t| t.as_str()) == Some("session_summary") {
+                return None;
+            }
+
             let op_str = v.get("operation")?.as_str()?;
             let operation = parse_operation(op_str)?;
             let subject = v
@@ -390,7 +405,20 @@ pub fn parse_jsonl_observations(input: &str) -> Vec<Observation> {
                 .and_then(|s| s.as_str())
                 .unwrap_or("")
                 .to_string();
-            let succeeded = v.get("succeeded").and_then(|s| s.as_bool()).unwrap_or(true);
+
+            // Determine success: check "succeeded" field first (simple format),
+            // then fall back to "verdict.type" (kernel Decision format).
+            let succeeded = if let Some(s) = v.get("succeeded").and_then(|s| s.as_bool()) {
+                s
+            } else if let Some(verdict_type) = v
+                .get("verdict")
+                .and_then(|vv| vv.get("type"))
+                .and_then(|t| t.as_str())
+            {
+                verdict_type == "allow"
+            } else {
+                true
+            };
 
             let timestamp = v
                 .get("timestamp")
@@ -644,6 +672,56 @@ mod tests {
 
         let observations = parse_jsonl_observations(input);
         assert_eq!(observations.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_kernel_decision_format() {
+        // Kernel Decision JSONL format with verdict.type
+        let input = r#"{"id":"abc","sequence":0,"operation":"read_files","subject":"src/main.rs","verdict":{"type":"allow"},"timestamp":"2026-03-12T00:00:00Z","pre_permissions_hash":"a","post_permissions_hash":"b","taint_transition":{"pre_count":0,"post_count":1,"contributed_label":"private_data","trifecta_completed":false,"dynamic_gate_applied":false}}
+{"id":"def","sequence":1,"operation":"write_files","subject":"out.txt","verdict":{"type":"deny","reason":"insufficient_capability"},"timestamp":"2026-03-12T00:01:00Z","pre_permissions_hash":"a","post_permissions_hash":"a","taint_transition":{"pre_count":1,"post_count":1,"contributed_label":null,"trifecta_completed":false,"dynamic_gate_applied":false}}
+{"id":"ghi","sequence":2,"operation":"web_fetch","subject":"https://example.com","verdict":{"type":"requires_approval"},"timestamp":"2026-03-12T00:02:00Z","pre_permissions_hash":"a","post_permissions_hash":"a","taint_transition":{"pre_count":1,"post_count":1,"contributed_label":null,"trifecta_completed":false,"dynamic_gate_applied":true}}
+"#;
+
+        let observations = parse_jsonl_observations(input);
+        assert_eq!(observations.len(), 3);
+
+        // allow → succeeded
+        assert_eq!(observations[0].operation, Operation::ReadFiles);
+        assert!(observations[0].succeeded);
+
+        // deny → not succeeded
+        assert_eq!(observations[1].operation, Operation::WriteFiles);
+        assert!(!observations[1].succeeded);
+
+        // requires_approval → not succeeded
+        assert_eq!(observations[2].operation, Operation::WebFetch);
+        assert!(!observations[2].succeeded);
+    }
+
+    #[test]
+    fn test_parse_kernel_decision_skips_session_summary() {
+        let input = r#"{"id":"abc","sequence":0,"operation":"read_files","subject":"a.txt","verdict":{"type":"allow"},"timestamp":"2026-03-12T00:00:00Z","pre_permissions_hash":"a","post_permissions_hash":"b","taint_transition":{"pre_count":0,"post_count":1,"contributed_label":"private_data","trifecta_completed":false,"dynamic_gate_applied":false}}
+{"type":"session_summary","session_id":"123","decisions":1,"consumed_usd":"0.01","remaining_usd":"9.99","initial_hash":"abc"}
+"#;
+
+        let observations = parse_jsonl_observations(input);
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].operation, Operation::ReadFiles);
+    }
+
+    #[test]
+    fn test_parse_mixed_formats() {
+        // Both simple and kernel Decision formats in the same input
+        let input = r#"{"operation":"read_files","subject":"a.txt","succeeded":true}
+{"id":"abc","sequence":0,"operation":"web_fetch","subject":"https://example.com","verdict":{"type":"allow"},"timestamp":"2026-03-12T00:00:00Z","pre_permissions_hash":"a","post_permissions_hash":"b","taint_transition":{"pre_count":0,"post_count":1,"contributed_label":null,"trifecta_completed":false,"dynamic_gate_applied":false}}
+{"operation":"git_push","subject":"origin main","succeeded":false}
+"#;
+
+        let observations = parse_jsonl_observations(input);
+        assert_eq!(observations.len(), 3);
+        assert!(observations[0].succeeded);
+        assert!(observations[1].succeeded); // verdict.type == "allow"
+        assert!(!observations[2].succeeded);
     }
 
     #[test]

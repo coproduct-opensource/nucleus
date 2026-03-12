@@ -202,6 +202,12 @@ pub struct RunArgs {
     /// Mount rootfs read-only (recommended).
     #[arg(long, env = "NUCLEUS_FIRECRACKER_READ_ONLY", default_value_t = true)]
     pub rootfs_read_only: bool,
+
+    /// Path to write kernel decision trace in JSONL format.
+    /// Each tool call decision (allow/deny/requires_approval) is recorded.
+    /// Feed the output into `nucleus observe` to synthesize a minimal policy.
+    #[arg(long, env = "NUCLEUS_KERNEL_TRACE")]
+    pub kernel_trace: Option<PathBuf>,
 }
 
 /// Execute the run command
@@ -449,6 +455,7 @@ async fn run_local(
         Some(&auth_secret),
         Some(&approval_secret),
         &spec_path,
+        args.kernel_trace.as_deref(),
     )?;
 
     let allowed_tools = build_mcp_allowed_tools(policy);
@@ -456,6 +463,10 @@ async fn run_local(
         return Err(anyhow!(
             "no allowed MCP tools for this profile (policy is too restrictive)"
         ));
+    }
+
+    if let Some(ref trace_path) = args.kernel_trace {
+        info!(trace_path = %trace_path.display(), "Kernel trace enabled");
     }
 
     info!(
@@ -590,6 +601,7 @@ async fn run_enforced(
         None,
         None,
         &spec_path,
+        args.kernel_trace.as_deref(),
     )?;
 
     let allowed_tools = build_mcp_allowed_tools(policy);
@@ -718,6 +730,7 @@ fn write_mcp_config(
     auth_secret: Option<&str>,
     approval_secret: Option<&str>,
     spec_path: &Path,
+    kernel_trace: Option<&Path>,
 ) -> Result<()> {
     #[derive(Serialize)]
     struct McpServer {
@@ -751,6 +764,12 @@ fn write_mcp_config(
         "NUCLEUS_MCP_SPEC".to_string(),
         spec_path.display().to_string(),
     );
+    if let Some(trace_path) = kernel_trace {
+        env.insert(
+            "NUCLEUS_MCP_KERNEL_TRACE".to_string(),
+            trace_path.display().to_string(),
+        );
+    }
 
     let server = McpServer {
         server_type: "stdio".to_string(),
