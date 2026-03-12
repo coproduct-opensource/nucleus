@@ -563,22 +563,15 @@ impl NucleusMcpServer {
 #[tool_handler]
 impl ServerHandler for NucleusMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            protocol_version: ProtocolVersion::V_2024_11_05,
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            server_info: Implementation {
-                name: "nucleus-tool-proxy".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-                title: None,
-                description: None,
-                icons: None,
-                website_url: None,
-            },
-            instructions: Some(
-                "Nucleus tool-proxy MCP server. Operations enforced by the permission lattice."
-                    .into(),
-            ),
-        }
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_protocol_version(ProtocolVersion::V_2024_11_05)
+            .with_server_info(Implementation::new(
+                "nucleus-tool-proxy",
+                env!("CARGO_PKG_VERSION"),
+            ))
+            .with_instructions(
+                "Nucleus tool-proxy MCP server. Operations enforced by the permission lattice.",
+            )
     }
 }
 

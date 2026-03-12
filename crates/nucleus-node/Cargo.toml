@@ -41,7 +41,7 @@ tonic-prost = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
-ipnet = "2.11"
+ipnet = "2.12"
 
 # GitHub OIDC support
 jsonwebtoken = "10"
