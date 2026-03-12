@@ -21,6 +21,7 @@ use clap::{Parser, Subcommand};
 use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
+mod audit;
 mod config;
 mod constants;
 mod doctor;
@@ -53,6 +54,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Audit agent configurations for security risks (Tier 0)
+    Audit(audit::AuditArgs),
+
     /// Execute a task with enforced permissions
     Run(Box<run::RunArgs>),
 
@@ -106,6 +110,7 @@ async fn main() -> Result<()> {
     info!(config_path = %config_path, "Starting nucleus");
 
     match cli.command {
+        Commands::Audit(args) => audit::execute(args),
         Commands::Run(args) => run::execute(*args, &config_path).await,
         Commands::Setup(args) => setup::execute(args).await,
         Commands::Start(args) => start::execute(args).await,
