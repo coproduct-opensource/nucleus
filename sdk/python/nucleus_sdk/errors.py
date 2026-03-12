@@ -31,6 +31,18 @@ class SpecError(NucleusError):
     pass
 
 
+class PolicyDenied(AccessDenied):
+    """Raised when an operation is denied by the policy engine."""
+
+    pass
+
+
+class BudgetExceeded(NucleusError):
+    """Raised when a session or pod exceeds its budget limit."""
+
+    pass
+
+
 class RequestError(NucleusError):
     pass
 
@@ -42,6 +54,12 @@ def from_error_payload(payload: dict, status: int) -> NucleusError:
 
     if kind == "approval_required":
         return ApprovalRequired(message, kind=kind, status=status, operation=operation)
+
+    if kind == "policy_denied":
+        return PolicyDenied(message, kind=kind, status=status, operation=operation)
+
+    if kind == "budget_exceeded":
+        return BudgetExceeded(message, kind=kind, status=status, operation=operation)
 
     if kind in {
         "path_denied",
