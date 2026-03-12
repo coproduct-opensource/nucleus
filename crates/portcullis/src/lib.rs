@@ -102,6 +102,9 @@ pub mod galois;
 pub mod graded;
 pub mod guard;
 pub mod heyting;
+/// Kernel decision engine — complete mediation with monotone session state.
+#[cfg(feature = "serde")]
+pub mod kernel;
 /// Declarative profile specification and canonical profile registry.
 ///
 /// Requires the `spec` feature (includes `serde`, `cel`, `serde_yaml`, `toml`).
