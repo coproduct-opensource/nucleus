@@ -1,6 +1,7 @@
 mod discover;
 mod finding;
 mod report;
+mod sarif;
 mod scan_claude_settings;
 mod scan_mcp_config;
 mod scan_podspec;
@@ -106,6 +107,7 @@ enum ExportFormat {
 pub enum ScanOutputFormat {
     Text,
     Json,
+    Sarif,
 }
 
 #[derive(Debug, Deserialize)]
@@ -352,6 +354,10 @@ fn main() -> Result<(), AuditError> {
                 ScanOutputFormat::Text => report::print_scan_report(&report),
                 ScanOutputFormat::Json => {
                     println!("{}", serde_json::to_string_pretty(&report).unwrap());
+                }
+                ScanOutputFormat::Sarif => {
+                    let sarif_log = sarif::scan_report_to_sarif(&report);
+                    println!("{}", serde_json::to_string_pretty(&sarif_log).unwrap());
                 }
             }
 

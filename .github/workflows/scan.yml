@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  security-events: write
 
 jobs:
   scan:
@@ -83,6 +84,22 @@ jobs:
             --claude-settings examples/claude-settings/safe-restrictive.json \
             --mcp-config examples/mcp-configs/safe-local.json
           echo "::endgroup::"
+
+      - name: SARIF scan (all safe configs)
+        if: always()
+        run: |
+          target/release/nucleus-audit scan \
+            --pod-spec examples/podspecs/safe-pr-fixer.yaml \
+            --claude-settings examples/claude-settings/safe-restrictive.json \
+            --mcp-config examples/mcp-configs/safe-local.json \
+            --format sarif > nucleus-scan.sarif || true
+
+      - name: Upload SARIF to GitHub Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: nucleus-scan.sarif
+          category: nucleus-audit
 
   # Test the standalone scan action (downloads pre-built binary from releases)
   scan-action:
