@@ -37,6 +37,9 @@ __pycache__/
 # Node.js
 node_modules/
 
+# Claude Code local config
+LOOPS.md
+
 # Verus binary distribution (downloaded, not committed)
 .verus/verus-x86-macos/
 .verus/verus-arm64-macos/

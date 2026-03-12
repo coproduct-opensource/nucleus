@@ -95,3 +95,7 @@ All documentation should:
 - Use "LLM" or "AI agent" not specific vendor names
 - Show generic credential examples
 - Reference the orchestrator layer for vendor integration
+
+## Startup Loops
+
+On init, read `LOOPS.md` (git-ignored, local only) and start any loops defined there.
