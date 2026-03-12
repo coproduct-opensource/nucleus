@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use nucleus_client::sign_http_headers;
 use nucleus_spec::PodSpec;
-use portcullis::kernel::{DenyReason, Kernel, Verdict};
+use portcullis::kernel::{Decision, DenyReason, Kernel, Verdict};
 use portcullis::{CapabilityLevel, Operation, PermissionLattice};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -40,6 +40,11 @@ struct Args {
     /// All tool calls within this MCP session will include this ID for tracing.
     #[arg(long, env = "NUCLEUS_MCP_SESSION_ID")]
     session_id: Option<String>,
+    /// Path to write kernel decision trace in JSONL format.
+    /// Each line is a JSON-serialized `Decision` from the portcullis kernel.
+    /// A summary line is written on session close.
+    #[arg(long, env = "NUCLEUS_MCP_KERNEL_TRACE")]
+    kernel_trace: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -541,6 +546,65 @@ fn operation_cost(op: Operation) -> Decimal {
     }
 }
 
+/// Appends kernel decisions to a JSONL file for post-hoc audit.
+///
+/// Each line is a JSON-serialized [`Decision`]. When the session ends,
+/// [`TraceWriter::finish`] writes a summary object with session statistics.
+struct TraceWriter {
+    file: Option<std::cell::RefCell<io::BufWriter<fs::File>>>,
+}
+
+impl TraceWriter {
+    /// Open a trace file for writing. Returns a no-op writer if `path` is `None`.
+    fn open(path: Option<&Path>) -> Result<Self> {
+        match path {
+            Some(p) => {
+                let file = fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(p)
+                    .with_context(|| {
+                        format!("failed to open kernel trace file: {}", p.display())
+                    })?;
+                Ok(Self {
+                    file: Some(std::cell::RefCell::new(io::BufWriter::new(file))),
+                })
+            }
+            None => Ok(Self { file: None }),
+        }
+    }
+
+    /// Write a single decision as a JSONL line.
+    fn record(&self, decision: &Decision) {
+        if let Some(ref f) = self.file {
+            if let Ok(line) = serde_json::to_string(decision) {
+                let mut writer = f.borrow_mut();
+                let _ = writeln!(writer, "{line}");
+                let _ = writer.flush();
+            }
+        }
+    }
+
+    /// Write a summary line and flush on session end.
+    fn finish(&self, kernel: &Kernel) {
+        if let Some(ref f) = self.file {
+            let summary = json!({
+                "type": "session_summary",
+                "session_id": kernel.session_id().to_string(),
+                "decisions": kernel.decision_count(),
+                "consumed_usd": kernel.consumed_usd().to_string(),
+                "remaining_usd": kernel.remaining_usd().to_string(),
+                "initial_hash": kernel.initial_hash(),
+            });
+            if let Ok(line) = serde_json::to_string(&summary) {
+                let mut writer = f.borrow_mut();
+                let _ = writeln!(writer, "{line}");
+                let _ = writer.flush();
+            }
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     let policy = match args.spec.as_ref() {
@@ -560,6 +624,15 @@ fn main() -> Result<()> {
     // state. Otherwise, use a permissive lattice (proxy handles enforcement).
     let kernel_lattice = policy.clone().unwrap_or_else(PermissionLattice::permissive);
     let mut kernel = Kernel::new(kernel_lattice);
+
+    // Open kernel trace file (JSONL) if --kernel-trace is specified.
+    let trace = TraceWriter::open(args.kernel_trace.as_deref())?;
+    if args.kernel_trace.is_some() {
+        eprintln!(
+            "[nucleus-mcp] kernel trace: {}",
+            args.kernel_trace.as_ref().unwrap().display()
+        );
+    }
 
     // Log session ID to stderr for debugging/correlation
     eprintln!(
@@ -616,16 +689,17 @@ fn main() -> Result<()> {
                         continue;
                     }
                 };
-                let result = match call_tool(&client, &call, args.approval_prompt, &mut kernel) {
-                    Ok(text) => json!({
-                        "content": [{ "type": "text", "text": text }],
-                        "isError": false
-                    }),
-                    Err(err) => json!({
-                        "content": [{ "type": "text", "text": err.to_string() }],
-                        "isError": true
-                    }),
-                };
+                let result =
+                    match call_tool(&client, &call, args.approval_prompt, &mut kernel, &trace) {
+                        Ok(text) => json!({
+                            "content": [{ "type": "text", "text": text }],
+                            "isError": false
+                        }),
+                        Err(err) => json!({
+                            "content": [{ "type": "text", "text": err.to_string() }],
+                            "isError": true
+                        }),
+                    };
                 write_result(&mut stdout, id, result)?;
             }
             "ping" => {
@@ -638,6 +712,9 @@ fn main() -> Result<()> {
             }
         }
     }
+
+    // Write session summary to trace file on clean exit.
+    trace.finish(&kernel);
 
     Ok(())
 }
@@ -855,6 +932,7 @@ fn call_tool(
     call: &ToolCallParams,
     approval_prompt: bool,
     kernel: &mut Kernel,
+    trace: &TraceWriter,
 ) -> Result<String> {
     // Route every operation through the kernel decision engine.
     // The kernel provides: capability checks, monotone session state,
@@ -863,6 +941,7 @@ fn call_tool(
     if let Some(op) = tool_to_operation(&call.name) {
         let subject = extract_subject(&call.name, &call.arguments);
         let decision = kernel.decide(op, &subject);
+        trace.record(&decision);
 
         match &decision.verdict {
             Verdict::Allow => {
@@ -899,6 +978,7 @@ fn call_tool(
                     // Grant a one-time approval and re-decide
                     kernel.grant_approval(op, 1);
                     let retry = kernel.decide(op, &subject);
+                    trace.record(&retry);
                     if !matches!(retry.verdict, Verdict::Allow) {
                         return Err(anyhow!(
                             "operation denied after approval: {} — {:?}",
@@ -1870,5 +1950,113 @@ mod tests {
                 op
             );
         }
+    }
+
+    // ── Trace writer tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_trace_writer_none_is_noop() {
+        let trace = TraceWriter::open(None).unwrap();
+        assert!(trace.file.is_none());
+        // record/finish should not panic when no file is configured
+        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        let decision = kernel.decide(Operation::ReadFiles, "/tmp/test");
+        trace.record(&decision);
+        trace.finish(&kernel);
+    }
+
+    #[test]
+    fn test_trace_writer_records_decisions_as_jsonl() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trace.jsonl");
+        let trace = TraceWriter::open(Some(&path)).unwrap();
+
+        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        let d1 = kernel.decide(Operation::ReadFiles, "/tmp/a");
+        let d2 = kernel.decide(Operation::WriteFiles, "/tmp/b");
+        trace.record(&d1);
+        trace.record(&d2);
+
+        // Read back and verify JSONL
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 2);
+
+        // Each line should be valid JSON with expected fields
+        let parsed: Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(parsed["operation"], "read_files");
+        assert_eq!(parsed["subject"], "/tmp/a");
+        assert_eq!(parsed["verdict"]["type"], "allow");
+
+        let parsed: Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(parsed["operation"], "write_files");
+        assert_eq!(parsed["subject"], "/tmp/b");
+    }
+
+    #[test]
+    fn test_trace_writer_finish_writes_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trace.jsonl");
+        let trace = TraceWriter::open(Some(&path)).unwrap();
+
+        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        let d = kernel.decide(Operation::ReadFiles, "/tmp/test");
+        trace.record(&d);
+        kernel.charge(Decimal::new(5, 2)).unwrap(); // $0.05
+        trace.finish(&kernel);
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 2); // 1 decision + 1 summary
+
+        let summary: Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(summary["type"], "session_summary");
+        assert_eq!(summary["decisions"], 1);
+        assert_eq!(summary["consumed_usd"], "0.05");
+    }
+
+    #[test]
+    fn test_trace_writer_denied_operations_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trace.jsonl");
+        let trace = TraceWriter::open(Some(&path)).unwrap();
+
+        // Use restrictive lattice where write is denied
+        let mut kernel = Kernel::new(PermissionLattice::restrictive());
+        let d = kernel.decide(Operation::WriteFiles, "/tmp/test");
+        trace.record(&d);
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let parsed: Value = serde_json::from_str(contents.trim()).unwrap();
+        assert_eq!(parsed["verdict"]["type"], "deny");
+    }
+
+    #[test]
+    fn test_trace_writer_appends_to_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trace.jsonl");
+
+        // Write first session
+        {
+            let trace = TraceWriter::open(Some(&path)).unwrap();
+            let mut kernel = Kernel::new(permissive_no_static_obligations());
+            let d = kernel.decide(Operation::ReadFiles, "/tmp/first");
+            trace.record(&d);
+            trace.finish(&kernel);
+        }
+
+        // Write second session — should append, not overwrite
+        {
+            let trace = TraceWriter::open(Some(&path)).unwrap();
+            let mut kernel = Kernel::new(permissive_no_static_obligations());
+            let d = kernel.decide(Operation::ReadFiles, "/tmp/second");
+            trace.record(&d);
+            trace.finish(&kernel);
+        }
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = contents.lines().collect();
+        // 2 decisions + 2 summaries = 4 lines
+        assert_eq!(lines.len(), 4);
     }
 }

@@ -29,5 +29,8 @@ nucleus-client = { path = "../nucleus-client" }
 nucleus-spec = { path = "../nucleus-spec" }
 portcullis = { path = "../portcullis", features = ["serde"] }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [lints]
 workspace = true
