@@ -1,11 +1,11 @@
-//! Example showing how to integrate with Claude Code CLI.
+//! Example showing how to integrate with an AI agent CLI.
 //!
 //! This example demonstrates converting a PermissionLattice to
-//! Claude Code CLI flags for the `--allowedTools` argument.
+//! CLI flags for tool allowlists and permission modes.
 
 use portcullis::{CapabilityLevel, Operation, PermissionLattice};
 
-/// Convert a PermissionLattice to Claude Code CLI `--allowedTools` flags.
+/// Convert a PermissionLattice to CLI `--allowedTools` flags.
 fn build_allowed_tools(perms: &PermissionLattice) -> Vec<String> {
     let mut tools = Vec::new();
     let caps = &perms.capabilities;
@@ -45,7 +45,7 @@ fn build_allowed_tools(perms: &PermissionLattice) -> Vec<String> {
     tools
 }
 
-/// Get the permission mode for Claude Code CLI.
+/// Get the permission mode for the agent CLI.
 fn get_permission_mode(perms: &PermissionLattice) -> &'static str {
     // If any operation requires approval, use plan mode
     let needs_ask = [
@@ -69,7 +69,7 @@ fn get_permission_mode(perms: &PermissionLattice) -> &'static str {
 }
 
 fn main() {
-    println!("=== Claude Code CLI Integration Example ===\n");
+    println!("=== AI Agent CLI Integration Example ===\n");
 
     // Example 1: Code review (read-only)
     println!("1. Code Review Task:");
@@ -80,7 +80,7 @@ fn main() {
     println!("   Allowed tools: {:?}", tools);
     println!("   Permission mode: {}", mode);
     println!(
-        "   CLI: claude --allowedTools {} --permission-mode {}",
+        "   CLI: agent --allowedTools {} --permission-mode {}",
         tools.join(","),
         mode
     );
@@ -94,7 +94,7 @@ fn main() {
     println!("   Allowed tools: {:?}", tools);
     println!("   Permission mode: {}", mode);
     println!(
-        "   CLI: claude --allowedTools {} --permission-mode {} --max-cost-usd {:.2}",
+        "   CLI: agent --allowedTools {} --permission-mode {} --max-cost-usd {:.2}",
         tools.join(","),
         mode,
         fix_perms.budget.max_cost_usd
@@ -122,7 +122,7 @@ fn main() {
     let tools = build_allowed_tools(&safe);
     let mode = get_permission_mode(&safe);
     println!(
-        "   CLI: claude --allowedTools {} --permission-mode {}",
+        "   CLI: agent --allowedTools {} --permission-mode {}",
         tools.join(","),
         mode
     );
