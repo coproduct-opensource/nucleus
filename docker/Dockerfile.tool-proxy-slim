@@ -15,9 +15,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Claude CLI globally
-ARG CLAUDE_CODE_VERSION=2.1.71
-RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+# Install CLI globally via lockfile for hash-pinned supply chain integrity.
+# The lockfile in cli-pins/ contains npm integrity hashes verified by `npm ci`.
+COPY cli-pins/package.json cli-pins/package-lock.json /tmp/cli-pins/
+RUN cd /tmp/cli-pins && npm ci --ignore-scripts \
+    && npm install -g /tmp/cli-pins/node_modules/@anthropic-ai/claude-code \
+    && rm -rf /tmp/cli-pins
 
 COPY nucleus-tool-proxy /usr/local/bin/
 RUN chmod +x /usr/local/bin/nucleus-tool-proxy
