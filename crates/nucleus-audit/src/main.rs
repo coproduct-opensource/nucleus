@@ -5,6 +5,7 @@ mod sarif;
 mod scan_claude_settings;
 mod scan_mcp_config;
 mod scan_podspec;
+mod suggest;
 mod tool_pattern;
 
 use std::collections::{HashMap, HashSet};
@@ -91,9 +92,12 @@ enum Command {
         /// Optional audit log to analyze runtime behavior against declared policy.
         #[arg(long)]
         audit_log: Option<PathBuf>,
-        /// Output format (text or json).
+        /// Output format (text, json, or sarif).
         #[arg(long, default_value = "text")]
         format: ScanOutputFormat,
+        /// Generate a suggested safe profile YAML that remediates findings.
+        #[arg(long)]
+        suggest_profile: bool,
     },
 }
 
@@ -182,6 +186,7 @@ fn main() -> Result<(), AuditError> {
             mcp_config,
             audit_log,
             format,
+            suggest_profile,
         } => {
             // Collect all config paths to scan
             let mut pod_specs: Vec<PathBuf> = pod_spec.into_iter().collect();
@@ -358,6 +363,19 @@ fn main() -> Result<(), AuditError> {
                 ScanOutputFormat::Sarif => {
                     let sarif_log = sarif::scan_report_to_sarif(&report);
                     println!("{}", serde_json::to_string_pretty(&sarif_log).unwrap());
+                }
+            }
+
+            // Profile suggestion
+            if suggest_profile {
+                let profile = suggest::suggest_profile(&report);
+                let yaml = suggest::format_suggestion(&profile, &report.findings);
+                println!();
+                println!("{}", yaml);
+
+                if let Some(snippet) = suggest::mcp_allowlist_snippet(&report) {
+                    println!();
+                    println!("{}", snippet);
                 }
             }
 
