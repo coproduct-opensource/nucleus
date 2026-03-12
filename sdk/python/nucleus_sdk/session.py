@@ -6,6 +6,7 @@ from typing import Any, Callable, Dict, Optional, TypeVar
 
 from .client import ProxyClient
 from .errors import AccessDenied, ApprovalRequired
+from .profiles import ProfileRegistry, ProfileSpec
 from .taint import TaintGuard
 from .trace import Trace
 from .tools.fs import FileHandle
@@ -35,6 +36,8 @@ class Session:
     via :attr:`trace` during and after the session lifetime.
     """
 
+    _canonical_registry: Optional[ProfileRegistry] = None
+
     def __init__(
         self,
         profile: str = "default",
@@ -42,6 +45,7 @@ class Session:
         proxy: Optional[ProxyClient] = None,
         timeout: float = 30.0,
         trifecta_enabled: bool = True,
+        validate_profile: bool = False,
     ) -> None:
         self.profile = profile
         self._proxy_url = proxy_url or os.environ.get("NUCLEUS_PROXY_URL", "")
@@ -49,6 +53,15 @@ class Session:
         self._trace = Trace()
         self._external_proxy = proxy
         self._taint_guard = TaintGuard(trifecta_enabled=trifecta_enabled)
+
+        # Resolve profile spec from canonical registry.
+        if Session._canonical_registry is None:
+            Session._canonical_registry = ProfileRegistry.canonical()
+        self._profile_spec: Optional[ProfileSpec] = (
+            Session._canonical_registry.get(profile)
+        )
+        if validate_profile and self._profile_spec is None:
+            Session._canonical_registry.resolve(profile)  # raises KeyError
 
         # These are initialised lazily in __enter__
         self._proxy: Optional[ProxyClient] = None
@@ -109,6 +122,11 @@ class Session:
     @property
     def trace(self) -> Trace:
         return self._trace
+
+    @property
+    def profile_spec(self) -> Optional[ProfileSpec]:
+        """The resolved profile spec, or ``None`` for custom profiles."""
+        return self._profile_spec
 
     @property
     def taint_summary(self) -> str:

@@ -1,6 +1,14 @@
 from .client import Nucleus, NodeClient, ProxyClient
 from .models import PodInfo, PodSpec
 from .intent import Intent, IntentSession, IntentProfile
+from .profiles import (
+    CapabilityLevel,
+    Capabilities,
+    ProfileSpec,
+    ProfileRegistry,
+    BudgetSpec,
+    TimeSpec,
+)
 from .auth import MtlsConfig, HmacAuth
 from .session import Session
 from .taint import TaintGuard, TaintLabel, TaintSet
@@ -35,6 +43,12 @@ __all__ = [
     "Intent",
     "IntentSession",
     "IntentProfile",
+    "CapabilityLevel",
+    "Capabilities",
+    "ProfileSpec",
+    "ProfileRegistry",
+    "BudgetSpec",
+    "TimeSpec",
     "MtlsConfig",
     "HmacAuth",
     "Session",
