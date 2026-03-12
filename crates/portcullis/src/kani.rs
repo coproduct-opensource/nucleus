@@ -581,6 +581,213 @@ fn proof_clinejection_blocked() {
     );
 }
 
+// ============================================================================
+// Core Invariant Proofs — Lattice Laws & Delegation Theorems (PR6)
+// ============================================================================
+//
+// These harnesses verify the foundational properties that the kernel
+// and delegation system depend on. Together with the taint proofs above,
+// they form a complete verification of the permission algebra.
+
+// ---------------------------------------------------------------------------
+// B1: Meet is idempotent — meet(a, a) ≡ a
+// ---------------------------------------------------------------------------
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_meet_idempotent() {
+    let a = build_arbitrary_permission();
+    let aa = a.meet(&a);
+    assert!(
+        perm_lattice_eq(&a, &aa),
+        "Meet idempotence violated: meet(a, a) ≠ a"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// B2: Meet is commutative — meet(a, b) ≡ meet(b, a)
+// ---------------------------------------------------------------------------
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_meet_commutative() {
+    let a = build_arbitrary_permission();
+    let b = build_arbitrary_permission();
+    let ab = a.meet(&b);
+    let ba = b.meet(&a);
+    assert!(
+        perm_lattice_eq(&ab, &ba),
+        "Meet commutativity violated: meet(a,b) ≠ meet(b,a)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// B3: Meet is associative — meet(a, meet(b, c)) ≡ meet(meet(a, b), c)
+// ---------------------------------------------------------------------------
+#[kani::proof]
+#[kani::solver(cadical)]
+#[kani::unwind(4)]
+fn proof_meet_associative() {
+    let a = build_arbitrary_permission();
+    let b = build_arbitrary_permission();
+    let c = build_arbitrary_permission();
+    let lhs = a.meet(&b.meet(&c));
+    let rhs = a.meet(&b).meet(&c);
+    assert!(
+        perm_lattice_eq(&lhs, &rhs),
+        "Meet associativity violated: a∧(b∧c) ≠ (a∧b)∧c"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// B4: Delegation ceiling theorem — meet(a, b) ≤ a
+//
+// This is THE core security property: delegating permissions to a child
+// agent can never grant MORE authority than the parent has.
+// ---------------------------------------------------------------------------
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_delegation_ceiling() {
+    let parent = build_arbitrary_permission();
+    let child_request = build_arbitrary_permission();
+    let delegated = parent.meet(&child_request);
+    assert!(
+        delegated.leq(&parent),
+        "Delegation ceiling violated: meet(parent, child) > parent"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// B5: apply_record is monotone — taint never decreases
+//
+// For any taint set `current` and operation `op`:
+//   current ⊆ apply_record(current, op)
+// ---------------------------------------------------------------------------
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_apply_record_monotone() {
+    let current = arbitrary_taint_set();
+    let op = arbitrary_operation();
+    let after = crate::taint_core::apply_record(&current, op);
+    // Every label in `current` must also be in `after`
+    if current.contains(TaintLabel::PrivateData) {
+        assert!(
+            after.contains(TaintLabel::PrivateData),
+            "apply_record lost PrivateData"
+        );
+    }
+    if current.contains(TaintLabel::UntrustedContent) {
+        assert!(
+            after.contains(TaintLabel::UntrustedContent),
+            "apply_record lost UntrustedContent"
+        );
+    }
+    if current.contains(TaintLabel::ExfilVector) {
+        assert!(
+            after.contains(TaintLabel::ExfilVector),
+            "apply_record lost ExfilVector"
+        );
+    }
+    // Count never decreases
+    assert!(
+        after.count() >= current.count(),
+        "apply_record decreased taint count"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// B6: Taint irreversibility — once trifecta-complete, always trifecta-complete
+//
+// If `current.is_trifecta_complete()`, then for ANY operation `op`:
+//   apply_record(current, op).is_trifecta_complete()
+//
+// This is the monotone latch property: trifecta is a one-way gate.
+// ---------------------------------------------------------------------------
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_taint_irreversibility() {
+    let current = arbitrary_taint_set();
+    let op = arbitrary_operation();
+    if current.is_trifecta_complete() {
+        let after = crate::taint_core::apply_record(&current, op);
+        assert!(
+            after.is_trifecta_complete(),
+            "Trifecta reversed after apply_record"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B7: Dynamic gate completeness — exfil ops ALWAYS denied when trifecta
+//     would complete AND the op requires approval
+//
+// Strengthened version of A7: covers both the transition case (not yet
+// complete → projected would complete) and the ongoing case (already
+// complete → stays denied).
+// ---------------------------------------------------------------------------
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_dynamic_gate_completeness() {
+    let current = arbitrary_taint_set();
+    let op = arbitrary_operation();
+    let requires_approval = true;
+
+    let projected = pure_projected_taint(&current, op);
+    let denied = pure_taint_would_deny(&current, op, requires_approval);
+
+    // If the projected taint is trifecta-complete, denial MUST happen
+    if projected.is_trifecta_complete() {
+        assert!(denied, "Trifecta-complete projection should deny");
+    }
+
+    // Converse: if taint was already complete, projection is also complete
+    if current.is_trifecta_complete() {
+        assert!(projected.is_trifecta_complete(), "Projection lost trifecta");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B8: Meet deflationary on both arguments — meet(a,b) ≤ a AND meet(a,b) ≤ b
+//
+// Strengthened version of the existing deflationary proof: verifies the
+// property holds for BOTH arguments, not just the first.
+// ---------------------------------------------------------------------------
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_meet_deflationary_both() {
+    let a = build_arbitrary_permission();
+    let b = build_arbitrary_permission();
+    let ab = a.meet(&b);
+    assert!(ab.leq(&a), "meet(a,b) > a: meet not deflationary on left");
+    assert!(ab.leq(&b), "meet(a,b) > b: meet not deflationary on right");
+}
+
+// ---------------------------------------------------------------------------
+// B9: Taint three-step minimum — trifecta requires at least 3 distinct
+//     non-neutral operations
+//
+// Starting from empty taint, you need operations from ALL THREE categories
+// (private data, untrusted content, exfil vector) to complete the trifecta.
+// ---------------------------------------------------------------------------
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_taint_three_step_minimum() {
+    let op1 = arbitrary_operation();
+    let op2 = arbitrary_operation();
+
+    // Two operations from empty can never complete the trifecta
+    // (RunBash omnibus gives 2 legs, but 2 is not 3)
+    let t0 = TaintSet::empty();
+    let t1 = crate::taint_core::apply_record(&t0, op1);
+    let t2 = crate::taint_core::apply_record(&t1, op2);
+
+    // At most 2 legs from 2 operations (each op adds at most 1 via apply_record)
+    assert!(t2.count() <= 2, "Two ops should add at most 2 taint legs");
+    // Therefore, trifecta cannot be complete
+    assert!(
+        !t2.is_trifecta_complete(),
+        "Trifecta should not complete in 2 steps"
+    );
+}
+
 // ===========================================================================
 // C-series: Isolation lattice proofs (VM mode hardening)
 // ===========================================================================
