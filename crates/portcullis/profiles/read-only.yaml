@@ -1,0 +1,47 @@
+# Read Only — read files and search, nothing else.
+#
+# The most restrictive useful profile. The agent can read files and
+# search with glob/grep. No writes, no edits, no execution, no
+# network, no git operations. Useful for code exploration, analysis,
+# and question-answering tasks.
+#
+# Trifecta analysis:
+#   - Private data: read_files=always (present)
+#   - Untrusted content: absent
+#   - Exfiltration: absent
+#   => One of three components. Safe by construction.
+
+name: read-only
+description: "Read only — read files and search, no writes or network"
+
+capabilities:
+  read_files: always
+  write_files: never
+  edit_files: never
+  run_bash: never
+  glob_search: always
+  grep_search: always
+  web_search: never
+  web_fetch: never
+  git_commit: never
+  git_push: never
+  create_pr: never
+  manage_pods: never
+
+paths:
+  blocked:
+    - "**/.ssh/**"
+    - "**/.aws/**"
+    - "**/.env"
+    - "**/.env.*"
+    - "**/credentials*"
+    - "/etc/shadow"
+    - "/etc/passwd"
+
+budget:
+  max_cost_usd: "1.00"
+  max_input_tokens: 50000
+  max_output_tokens: 5000
+
+time:
+  duration_minutes: 30

@@ -1,0 +1,47 @@
+# Codegen — network-isolated code generation and editing.
+#
+# The agent can read, write, edit code, run bash (tests, builds), and
+# commit locally. No network access and no push — the generated code
+# stays local until a human reviews and pushes.
+#
+# Trifecta analysis:
+#   - Private data: read_files=always (present)
+#   - Untrusted content: web_search=never, web_fetch=never (absent)
+#   - Exfiltration: git_push=never, create_pr=never (absent)
+#   => One of three components. Safe by construction — no untrusted
+#      content and no exfiltration vectors.
+
+name: codegen
+description: "Code generation — read/write/edit/run, network-isolated, no push"
+
+capabilities:
+  read_files: always
+  write_files: low_risk
+  edit_files: low_risk
+  run_bash: low_risk
+  glob_search: always
+  grep_search: always
+  web_search: never
+  web_fetch: never
+  git_commit: low_risk
+  git_push: never
+  create_pr: never
+  manage_pods: never
+
+paths:
+  blocked:
+    - "**/.ssh/**"
+    - "**/.aws/**"
+    - "**/.env"
+    - "**/.env.*"
+    - "**/credentials*"
+    - "/etc/shadow"
+    - "/etc/passwd"
+
+budget:
+  max_cost_usd: "5.00"
+  max_input_tokens: 100000
+  max_output_tokens: 10000
+
+time:
+  duration_hours: 1

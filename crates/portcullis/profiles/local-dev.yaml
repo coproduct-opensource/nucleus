@@ -1,0 +1,47 @@
+# Local Dev — full local development without network or push.
+#
+# The agent can read, write, edit code, run bash commands (tests,
+# builds, linters), and commit locally. No network access and no
+# push — all work stays local until a human reviews and pushes.
+#
+# Trifecta analysis:
+#   - Private data: read_files=always (present)
+#   - Untrusted content: web_search=never, web_fetch=never (absent)
+#   - Exfiltration: git_push=never, create_pr=never (absent)
+#   => One of three components. Safe by construction — network-isolated
+#      with no exfiltration vectors.
+
+name: local-dev
+description: "Local dev — read/write/edit/run/commit, no network, no push"
+
+capabilities:
+  read_files: always
+  write_files: low_risk
+  edit_files: low_risk
+  run_bash: low_risk
+  glob_search: always
+  grep_search: always
+  web_search: never
+  web_fetch: never
+  git_commit: low_risk
+  git_push: never
+  create_pr: never
+  manage_pods: never
+
+paths:
+  blocked:
+    - "**/.ssh/**"
+    - "**/.aws/**"
+    - "**/.env"
+    - "**/.env.*"
+    - "**/credentials*"
+    - "/etc/shadow"
+    - "/etc/passwd"
+
+budget:
+  max_cost_usd: "3.00"
+  max_input_tokens: 100000
+  max_output_tokens: 10000
+
+time:
+  duration_hours: 2

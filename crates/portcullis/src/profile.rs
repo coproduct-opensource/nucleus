@@ -421,6 +421,12 @@ const SAFE_PR_FIXER_YAML: &str = include_str!("../profiles/safe-pr-fixer.yaml");
 const DOC_EDITOR_YAML: &str = include_str!("../profiles/doc-editor.yaml");
 const TEST_RUNNER_YAML: &str = include_str!("../profiles/test-runner.yaml");
 const TRIAGE_BOT_YAML: &str = include_str!("../profiles/triage-bot.yaml");
+const CODE_REVIEW_YAML: &str = include_str!("../profiles/code-review.yaml");
+const CODEGEN_YAML: &str = include_str!("../profiles/codegen.yaml");
+const RELEASE_YAML: &str = include_str!("../profiles/release.yaml");
+const RESEARCH_WEB_YAML: &str = include_str!("../profiles/research-web.yaml");
+const READ_ONLY_YAML: &str = include_str!("../profiles/read-only.yaml");
+const LOCAL_DEV_YAML: &str = include_str!("../profiles/local-dev.yaml");
 
 /// Registry of named profiles, combining embedded canonical profiles
 /// with optional user-supplied ones.
@@ -437,6 +443,12 @@ impl ProfileRegistry {
             ProfileSpec::from_yaml(DOC_EDITOR_YAML)?,
             ProfileSpec::from_yaml(TEST_RUNNER_YAML)?,
             ProfileSpec::from_yaml(TRIAGE_BOT_YAML)?,
+            ProfileSpec::from_yaml(CODE_REVIEW_YAML)?,
+            ProfileSpec::from_yaml(CODEGEN_YAML)?,
+            ProfileSpec::from_yaml(RELEASE_YAML)?,
+            ProfileSpec::from_yaml(RESEARCH_WEB_YAML)?,
+            ProfileSpec::from_yaml(READ_ONLY_YAML)?,
+            ProfileSpec::from_yaml(LOCAL_DEV_YAML)?,
         ];
         Ok(Self { profiles })
     }
@@ -487,11 +499,17 @@ mod tests {
     #[test]
     fn test_canonical_profiles_parse() {
         let registry = ProfileRegistry::canonical().unwrap();
-        assert_eq!(registry.names().len(), 4);
+        assert_eq!(registry.names().len(), 10);
         assert!(registry.names().contains(&"safe-pr-fixer"));
         assert!(registry.names().contains(&"doc-editor"));
         assert!(registry.names().contains(&"test-runner"));
         assert!(registry.names().contains(&"triage-bot"));
+        assert!(registry.names().contains(&"code-review"));
+        assert!(registry.names().contains(&"codegen"));
+        assert!(registry.names().contains(&"release"));
+        assert!(registry.names().contains(&"research-web"));
+        assert!(registry.names().contains(&"read-only"));
+        assert!(registry.names().contains(&"local-dev"));
     }
 
     #[test]
@@ -575,6 +593,129 @@ mod tests {
         assert_eq!(lattice.capabilities.edit_files, CapabilityLevel::Never);
         assert_eq!(lattice.capabilities.git_push, CapabilityLevel::Never);
         assert_eq!(lattice.capabilities.run_bash, CapabilityLevel::Never);
+    }
+
+    #[test]
+    fn test_code_review_no_modifications() {
+        let registry = ProfileRegistry::canonical().unwrap();
+        let lattice = registry.resolve("code-review").unwrap();
+
+        // Can read and search
+        assert_eq!(lattice.capabilities.read_files, CapabilityLevel::Always);
+        assert_eq!(lattice.capabilities.glob_search, CapabilityLevel::Always);
+        assert_eq!(lattice.capabilities.grep_search, CapabilityLevel::Always);
+
+        // Web search allowed with approval
+        assert_eq!(lattice.capabilities.web_search, CapabilityLevel::LowRisk);
+        assert!(lattice.requires_approval(Operation::WebSearch));
+
+        // No modifications, no execution, no push
+        assert_eq!(lattice.capabilities.write_files, CapabilityLevel::Never);
+        assert_eq!(lattice.capabilities.edit_files, CapabilityLevel::Never);
+        assert_eq!(lattice.capabilities.run_bash, CapabilityLevel::Never);
+        assert_eq!(lattice.capabilities.git_push, CapabilityLevel::Never);
+        assert_eq!(lattice.capabilities.create_pr, CapabilityLevel::Never);
+    }
+
+    #[test]
+    fn test_codegen_network_isolated() {
+        let registry = ProfileRegistry::canonical().unwrap();
+        let lattice = registry.resolve("codegen").unwrap();
+
+        // Full local dev capabilities
+        assert_eq!(lattice.capabilities.read_files, CapabilityLevel::Always);
+        assert_eq!(lattice.capabilities.write_files, CapabilityLevel::LowRisk);
+        assert_eq!(lattice.capabilities.edit_files, CapabilityLevel::LowRisk);
+        assert_eq!(lattice.capabilities.run_bash, CapabilityLevel::LowRisk);
+        assert_eq!(lattice.capabilities.git_commit, CapabilityLevel::LowRisk);
+
+        // Network isolated — no web access
+        assert_eq!(lattice.capabilities.web_search, CapabilityLevel::Never);
+        assert_eq!(lattice.capabilities.web_fetch, CapabilityLevel::Never);
+
+        // No push or PR creation
+        assert_eq!(lattice.capabilities.git_push, CapabilityLevel::Never);
+        assert_eq!(lattice.capabilities.create_pr, CapabilityLevel::Never);
+    }
+
+    #[test]
+    fn test_release_approval_on_publish() {
+        let registry = ProfileRegistry::canonical().unwrap();
+        let lattice = registry.resolve("release").unwrap();
+
+        // Has push and PR capabilities
+        assert_eq!(lattice.capabilities.git_push, CapabilityLevel::LowRisk);
+        assert_eq!(lattice.capabilities.create_pr, CapabilityLevel::LowRisk);
+
+        // But they require approval (trifecta: read + web + exfil)
+        assert!(lattice.requires_approval(Operation::GitPush));
+        assert!(lattice.requires_approval(Operation::CreatePr));
+
+        // Full read/write/edit/run
+        assert_eq!(lattice.capabilities.read_files, CapabilityLevel::Always);
+        assert_eq!(lattice.capabilities.write_files, CapabilityLevel::LowRisk);
+        assert_eq!(lattice.capabilities.run_bash, CapabilityLevel::LowRisk);
+    }
+
+    #[test]
+    fn test_research_web_no_exfil() {
+        let registry = ProfileRegistry::canonical().unwrap();
+        let lattice = registry.resolve("research-web").unwrap();
+
+        // Read (low_risk) + web access
+        assert_eq!(lattice.capabilities.read_files, CapabilityLevel::LowRisk);
+        assert_eq!(lattice.capabilities.web_search, CapabilityLevel::LowRisk);
+        assert_eq!(lattice.capabilities.web_fetch, CapabilityLevel::LowRisk);
+
+        // No write, no edit, no execution, no push
+        assert_eq!(lattice.capabilities.write_files, CapabilityLevel::Never);
+        assert_eq!(lattice.capabilities.edit_files, CapabilityLevel::Never);
+        assert_eq!(lattice.capabilities.run_bash, CapabilityLevel::Never);
+        assert_eq!(lattice.capabilities.git_push, CapabilityLevel::Never);
+        assert_eq!(lattice.capabilities.create_pr, CapabilityLevel::Never);
+    }
+
+    #[test]
+    fn test_read_only_minimal() {
+        let registry = ProfileRegistry::canonical().unwrap();
+        let lattice = registry.resolve("read-only").unwrap();
+
+        // Can read and search
+        assert_eq!(lattice.capabilities.read_files, CapabilityLevel::Always);
+        assert_eq!(lattice.capabilities.glob_search, CapabilityLevel::Always);
+        assert_eq!(lattice.capabilities.grep_search, CapabilityLevel::Always);
+
+        // Everything else is Never
+        assert_eq!(lattice.capabilities.write_files, CapabilityLevel::Never);
+        assert_eq!(lattice.capabilities.edit_files, CapabilityLevel::Never);
+        assert_eq!(lattice.capabilities.run_bash, CapabilityLevel::Never);
+        assert_eq!(lattice.capabilities.web_search, CapabilityLevel::Never);
+        assert_eq!(lattice.capabilities.web_fetch, CapabilityLevel::Never);
+        assert_eq!(lattice.capabilities.git_commit, CapabilityLevel::Never);
+        assert_eq!(lattice.capabilities.git_push, CapabilityLevel::Never);
+        assert_eq!(lattice.capabilities.create_pr, CapabilityLevel::Never);
+        assert_eq!(lattice.capabilities.manage_pods, CapabilityLevel::Never);
+    }
+
+    #[test]
+    fn test_local_dev_no_network() {
+        let registry = ProfileRegistry::canonical().unwrap();
+        let lattice = registry.resolve("local-dev").unwrap();
+
+        // Full local capabilities
+        assert_eq!(lattice.capabilities.read_files, CapabilityLevel::Always);
+        assert_eq!(lattice.capabilities.write_files, CapabilityLevel::LowRisk);
+        assert_eq!(lattice.capabilities.edit_files, CapabilityLevel::LowRisk);
+        assert_eq!(lattice.capabilities.run_bash, CapabilityLevel::LowRisk);
+        assert_eq!(lattice.capabilities.git_commit, CapabilityLevel::LowRisk);
+
+        // No network
+        assert_eq!(lattice.capabilities.web_search, CapabilityLevel::Never);
+        assert_eq!(lattice.capabilities.web_fetch, CapabilityLevel::Never);
+
+        // No push
+        assert_eq!(lattice.capabilities.git_push, CapabilityLevel::Never);
+        assert_eq!(lattice.capabilities.create_pr, CapabilityLevel::Never);
     }
 
     #[test]
