@@ -675,6 +675,7 @@ impl ToolCallGuard for RuntimeTrifectaGuard {
 /// These 3 core labels are FROZEN — they have Verus proofs covering
 /// monotonicity, session safety, and irreversibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TaintLabel {
     /// Private data was accessed (read_files, glob_search, grep_search)
     PrivateData,
