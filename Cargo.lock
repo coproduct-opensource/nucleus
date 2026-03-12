@@ -2799,6 +2799,7 @@ name = "nucleus-cli"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "base64",
  "chrono",
  "clap",
  "dirs",
@@ -2807,6 +2808,7 @@ dependencies = [
  "nucleus-spec",
  "portcullis",
  "rand 0.10.0",
+ "ring",
  "rust_decimal",
  "rustls 0.23.37",
  "security-framework",

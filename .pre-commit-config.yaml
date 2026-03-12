@@ -22,7 +22,7 @@ repos:
         args: ['--maxkb=500']
         priority: 0
       - id: detect-private-key
-        exclude: ^crates/(nucleus-identity|nucleus-node)/
+        exclude: ^crates/(nucleus-identity|nucleus-node)/|^crates/nucleus-cli/src/token\.rs$
         priority: 0
 
   # Rust toolchain hooks - staggered priorities to share build cache

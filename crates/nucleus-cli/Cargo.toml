@@ -40,6 +40,10 @@ thiserror = { workspace = true }
 # Decimal for budget
 rust_decimal = { workspace = true }
 
+# Crypto for attenuation tokens
+ring = { workspace = true }
+base64 = { workspace = true }
+
 # Utilities
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

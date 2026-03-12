@@ -33,6 +33,7 @@ mod run;
 mod setup;
 mod start;
 mod stop;
+mod token;
 
 /// Nucleus CLI - policy-aware wrapper (tool enforcement via proxy)
 #[derive(Parser)]
@@ -81,6 +82,9 @@ enum Commands {
     /// Observe agent behavior and generate a minimal policy profile
     Observe(observe::ObserveArgs),
 
+    /// Manage attenuation tokens for delegation
+    Token(token::TokenArgs),
+
     /// Interact with a running nucleus-node (test utilities)
     Node(node::NodeArgs),
 }
@@ -119,6 +123,7 @@ async fn main() -> Result<()> {
         Commands::Profiles => profiles::list(),
         Commands::Config => config::show(&config_path),
         Commands::Observe(args) => observe::execute(args),
+        Commands::Token(args) => token::execute(args),
         Commands::Node(args) => node::execute(args).await,
     }
 }
