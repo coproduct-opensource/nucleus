@@ -2,9 +2,12 @@ use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use nucleus_client::sign_http_headers;
 use nucleus_spec::PodSpec;
-use portcullis::{CapabilityLevel, PermissionLattice};
+use portcullis::{
+    apply_record, should_deny, CapabilityLevel, Operation, PermissionLattice, TaintLabel, TaintSet,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::cell::RefCell;
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -424,6 +427,101 @@ fn generate_session_id() -> String {
     Uuid::from_bytes(bytes).to_string()
 }
 
+/// Map MCP tool names to portcullis `Operation` variants for taint classification.
+///
+/// Returns `None` for tools that don't map to taint-relevant operations
+/// (e.g., pod management, which is classified as ManagePods but has no taint
+/// contribution in the current taint_core model).
+fn tool_to_operation(tool_name: &str) -> Option<Operation> {
+    match tool_name {
+        "read" => Some(Operation::ReadFiles),
+        "write" => Some(Operation::WriteFiles),
+        "run" => Some(Operation::RunBash),
+        "web_fetch" => Some(Operation::WebFetch),
+        "glob" => Some(Operation::GlobSearch),
+        "grep" => Some(Operation::GrepSearch),
+        "web_search" => Some(Operation::WebSearch),
+        "create_pod" | "list_pods" | "pod_status" | "pod_logs" | "cancel_pod" => {
+            Some(Operation::ManagePods)
+        }
+        _ => None,
+    }
+}
+
+/// Session-scoped taint accumulator.
+///
+/// Tracks the monotone taint state across tool calls within a single MCP session.
+/// Taint can only increase (union) — it never decreases. When all three taint
+/// labels co-occur (private_data + untrusted_content + exfil_vector = trifecta),
+/// exfiltration-capable operations require explicit human approval.
+///
+/// This is the client-side enforcement of the taint lattice, complementing the
+/// server-side GradedTaintGuard used in MCP server mode.
+struct SessionTaint {
+    taint: RefCell<TaintSet>,
+    /// Whether trifecta constraint enforcement is enabled.
+    /// When true, operations that would complete the trifecta require approval.
+    trifecta_enabled: bool,
+}
+
+impl SessionTaint {
+    fn new(trifecta_enabled: bool) -> Self {
+        Self {
+            taint: RefCell::new(TaintSet::empty()),
+            trifecta_enabled,
+        }
+    }
+
+    /// Check whether an operation should be blocked due to taint trifecta.
+    ///
+    /// Returns `true` if the operation would complete the trifecta and
+    /// thus requires explicit approval before proceeding.
+    fn would_trigger_trifecta(&self, operation: Operation) -> bool {
+        let current = self.taint.borrow();
+        // Operations that can exfiltrate require approval when trifecta would complete
+        let requires_approval = matches!(
+            operation,
+            Operation::RunBash | Operation::GitPush | Operation::CreatePr
+        );
+        should_deny(
+            &current,
+            operation,
+            requires_approval,
+            self.trifecta_enabled,
+        )
+    }
+
+    /// Record a successful operation's taint contribution.
+    ///
+    /// This is called AFTER a tool call succeeds — the taint set is updated
+    /// monotonically (union). Taint never decreases within a session.
+    fn record(&self, operation: Operation) {
+        let current = self.taint.borrow().clone();
+        let new_taint = apply_record(&current, operation);
+        *self.taint.borrow_mut() = new_taint;
+    }
+
+    /// Get a human-readable summary of the current taint state.
+    fn summary(&self) -> String {
+        let t = self.taint.borrow();
+        let mut labels = Vec::new();
+        if t.contains(TaintLabel::PrivateData) {
+            labels.push("private_data");
+        }
+        if t.contains(TaintLabel::UntrustedContent) {
+            labels.push("untrusted_content");
+        }
+        if t.contains(TaintLabel::ExfilVector) {
+            labels.push("exfil_vector");
+        }
+        if labels.is_empty() {
+            "clean".to_string()
+        } else {
+            labels.join("+")
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     let policy = match args.spec.as_ref() {
@@ -438,6 +536,9 @@ fn main() -> Result<()> {
         Some(args.actor.clone()),
         args.session_id.clone(),
     );
+    // Initialize session taint tracking.
+    // Trifecta enforcement is always enabled — this is the core safety invariant.
+    let session_taint = SessionTaint::new(true);
 
     // Log session ID to stderr for debugging/correlation
     eprintln!(
@@ -494,7 +595,7 @@ fn main() -> Result<()> {
                         continue;
                     }
                 };
-                let result = match call_tool(&client, &call, args.approval_prompt) {
+                let result = match call_tool(&client, &call, args.approval_prompt, &session_taint) {
                     Ok(text) => json!({
                         "content": [{ "type": "text", "text": text }],
                         "isError": false
@@ -728,7 +829,75 @@ fn build_tool_defs(policy: Option<&PermissionLattice>) -> Vec<ToolDefinition> {
     tools
 }
 
-fn call_tool(client: &ProxyClient, call: &ToolCallParams, approval_prompt: bool) -> Result<String> {
+fn call_tool(
+    client: &ProxyClient,
+    call: &ToolCallParams,
+    approval_prompt: bool,
+    session_taint: &SessionTaint,
+) -> Result<String> {
+    // Pre-call taint check: would this operation trigger the trifecta?
+    if let Some(op) = tool_to_operation(&call.name) {
+        if session_taint.would_trigger_trifecta(op) {
+            eprintln!(
+                "[nucleus-mcp] taint trifecta: tool={} taint={} — approval required",
+                call.name,
+                session_taint.summary()
+            );
+            // Prompt the human for approval before proceeding.
+            // This is distinct from the proxy-level approval flow — the taint gate
+            // fires at the MCP bridge BEFORE the request even reaches the proxy.
+            if approval_prompt {
+                let msg = format!("trifecta({}) after {}", call.name, session_taint.summary());
+                if !prompt_approval(&msg)? {
+                    return Err(anyhow!(
+                        "trifecta blocked: {} would complete taint trifecta ({}). \
+                         The session has accessed private data and untrusted content — \
+                         this exfiltration-capable operation requires explicit approval.",
+                        call.name,
+                        session_taint.summary()
+                    ));
+                }
+                eprintln!(
+                    "[nucleus-mcp] trifecta approved by human: tool={}",
+                    call.name
+                );
+            } else {
+                return Err(anyhow!(
+                    "trifecta blocked: {} would complete taint trifecta ({}). \
+                     No approval prompt available — operation denied.",
+                    call.name,
+                    session_taint.summary()
+                ));
+            }
+        }
+    }
+
+    // Execute the tool call
+    let result = call_tool_inner(client, call, approval_prompt);
+
+    // Post-call taint record: if the call succeeded, record its taint contribution
+    if result.is_ok() {
+        if let Some(op) = tool_to_operation(&call.name) {
+            let before = session_taint.summary();
+            session_taint.record(op);
+            let after = session_taint.summary();
+            if before != after {
+                eprintln!(
+                    "[nucleus-mcp] taint: {} -> {} (tool={})",
+                    before, after, call.name
+                );
+            }
+        }
+    }
+
+    result
+}
+
+fn call_tool_inner(
+    client: &ProxyClient,
+    call: &ToolCallParams,
+    approval_prompt: bool,
+) -> Result<String> {
     match call.name.as_str() {
         "read" => {
             let req: ReadRequest = serde_json::from_value(call.arguments.clone())
@@ -1299,5 +1468,152 @@ mod tests {
         assert_eq!(session_id.len(), 36);
         let parsed = Uuid::parse_str(session_id).unwrap();
         assert_eq!(parsed.get_version_num(), 7);
+    }
+
+    // --- Session taint tracking tests ---
+
+    #[test]
+    fn test_tool_to_operation_mapping() {
+        assert_eq!(tool_to_operation("read"), Some(Operation::ReadFiles));
+        assert_eq!(tool_to_operation("write"), Some(Operation::WriteFiles));
+        assert_eq!(tool_to_operation("run"), Some(Operation::RunBash));
+        assert_eq!(tool_to_operation("web_fetch"), Some(Operation::WebFetch));
+        assert_eq!(tool_to_operation("glob"), Some(Operation::GlobSearch));
+        assert_eq!(tool_to_operation("grep"), Some(Operation::GrepSearch));
+        assert_eq!(tool_to_operation("web_search"), Some(Operation::WebSearch));
+        assert_eq!(tool_to_operation("create_pod"), Some(Operation::ManagePods));
+        assert_eq!(tool_to_operation("cancel_pod"), Some(Operation::ManagePods));
+        assert_eq!(tool_to_operation("unknown_tool"), None);
+    }
+
+    #[test]
+    fn test_session_taint_starts_clean() {
+        let taint = SessionTaint::new(true);
+        assert_eq!(taint.summary(), "clean");
+    }
+
+    #[test]
+    fn test_session_taint_records_private_data() {
+        let taint = SessionTaint::new(true);
+        taint.record(Operation::ReadFiles);
+        assert_eq!(taint.summary(), "private_data");
+    }
+
+    #[test]
+    fn test_session_taint_records_untrusted_content() {
+        let taint = SessionTaint::new(true);
+        taint.record(Operation::WebFetch);
+        assert_eq!(taint.summary(), "untrusted_content");
+    }
+
+    #[test]
+    fn test_session_taint_records_exfil_vector() {
+        let taint = SessionTaint::new(true);
+        taint.record(Operation::GitPush);
+        assert_eq!(taint.summary(), "exfil_vector");
+    }
+
+    #[test]
+    fn test_session_taint_accumulates_monotonically() {
+        let taint = SessionTaint::new(true);
+        taint.record(Operation::ReadFiles);
+        assert_eq!(taint.summary(), "private_data");
+        taint.record(Operation::WebFetch);
+        assert_eq!(taint.summary(), "private_data+untrusted_content");
+        // Reading again doesn't change taint (idempotent union)
+        taint.record(Operation::ReadFiles);
+        assert_eq!(taint.summary(), "private_data+untrusted_content");
+    }
+
+    #[test]
+    fn test_session_taint_neutral_ops_dont_add_taint() {
+        let taint = SessionTaint::new(true);
+        taint.record(Operation::WriteFiles);
+        assert_eq!(taint.summary(), "clean");
+        taint.record(Operation::EditFiles);
+        assert_eq!(taint.summary(), "clean");
+    }
+
+    #[test]
+    fn test_trifecta_blocks_exfil_after_read_and_fetch() {
+        let taint = SessionTaint::new(true);
+        // Step 1: read private data
+        taint.record(Operation::ReadFiles);
+        assert!(!taint.would_trigger_trifecta(Operation::RunBash));
+        // Step 2: ingest untrusted content
+        taint.record(Operation::WebFetch);
+        // Step 3: attempt exfiltration → trifecta blocks
+        assert!(taint.would_trigger_trifecta(Operation::RunBash));
+        assert!(taint.would_trigger_trifecta(Operation::GitPush));
+        assert!(taint.would_trigger_trifecta(Operation::CreatePr));
+    }
+
+    #[test]
+    fn test_trifecta_allows_non_exfil_ops() {
+        let taint = SessionTaint::new(true);
+        taint.record(Operation::ReadFiles);
+        taint.record(Operation::WebFetch);
+        // Non-exfiltration ops are allowed even with taint
+        assert!(!taint.would_trigger_trifecta(Operation::ReadFiles));
+        assert!(!taint.would_trigger_trifecta(Operation::WriteFiles));
+        assert!(!taint.would_trigger_trifecta(Operation::WebFetch));
+        assert!(!taint.would_trigger_trifecta(Operation::GlobSearch));
+    }
+
+    #[test]
+    fn test_trifecta_disabled_allows_everything() {
+        let taint = SessionTaint::new(false); // trifecta disabled
+        taint.record(Operation::ReadFiles);
+        taint.record(Operation::WebFetch);
+        // Even with full taint, exfil is allowed when trifecta is disabled
+        assert!(!taint.would_trigger_trifecta(Operation::RunBash));
+        assert!(!taint.would_trigger_trifecta(Operation::GitPush));
+    }
+
+    #[test]
+    fn test_trifecta_requires_all_three_legs() {
+        let taint = SessionTaint::new(true);
+        // Only private data → no block (RunBash is omnibus but only 2/3 legs)
+        taint.record(Operation::ReadFiles);
+        assert!(!taint.would_trigger_trifecta(Operation::RunBash));
+
+        // Only untrusted content + RunBash (omnibus) → DOES block!
+        // RunBash projects both PrivateData + ExfilVector (omnibus), so with
+        // untrusted_content already present, the projection completes the trifecta.
+        // This is intentionally conservative — bash can read files AND exfiltrate.
+        let taint2 = SessionTaint::new(true);
+        taint2.record(Operation::WebFetch);
+        assert!(taint2.would_trigger_trifecta(Operation::RunBash));
+
+        // But untrusted content + GitPush (not omnibus, only exfil_vector) → no block
+        // because we only have 2/3 legs (untrusted_content + exfil_vector, missing private_data)
+        assert!(!taint2.would_trigger_trifecta(Operation::GitPush));
+    }
+
+    #[test]
+    fn test_glob_grep_contribute_private_data_taint() {
+        let taint = SessionTaint::new(true);
+        taint.record(Operation::GlobSearch);
+        assert_eq!(taint.summary(), "private_data");
+        let taint2 = SessionTaint::new(true);
+        taint2.record(Operation::GrepSearch);
+        assert_eq!(taint2.summary(), "private_data");
+    }
+
+    #[test]
+    fn test_web_search_contributes_untrusted_content_taint() {
+        let taint = SessionTaint::new(true);
+        taint.record(Operation::WebSearch);
+        assert_eq!(taint.summary(), "untrusted_content");
+    }
+
+    #[test]
+    fn test_trifecta_scenario_grep_then_websearch_then_run() {
+        // Real scenario: agent greps code, searches web, tries to run a command
+        let taint = SessionTaint::new(true);
+        taint.record(Operation::GrepSearch); // private_data
+        taint.record(Operation::WebSearch); // untrusted_content
+                                            // Now RunBash would complete the trifecta (exfil_vector via omnibus projection)
+        assert!(taint.would_trigger_trifecta(Operation::RunBash));
     }
 }
