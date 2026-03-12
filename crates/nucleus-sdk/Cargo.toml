@@ -19,7 +19,8 @@ nucleus-proto = { path = "../nucleus-proto" }
 portcullis = { path = "../portcullis" }
 
 # Async HTTP for tool-proxy
-reqwest = { workspace = true, features = ["rustls-tls-manual-roots", "json"] }
+reqwest = { workspace = true, features = ["rustls-no-provider", "json"] }
+rustls = { workspace = true }
 
 # gRPC for node service
 tonic = { workspace = true }

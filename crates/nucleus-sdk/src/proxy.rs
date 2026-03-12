@@ -90,6 +90,9 @@ impl ProxyClient {
         auth: Option<Box<dyn AuthStrategy>>,
         mtls: Option<&MtlsConfig>,
     ) -> Result<Self, Error> {
+        // Ensure ring crypto provider is installed for rustls (idempotent)
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         let mut builder = reqwest::Client::builder();
 
         if let Some(mtls) = mtls {
@@ -97,7 +100,7 @@ impl ProxyClient {
             builder = builder.identity(identity);
 
             if let Some(ca) = mtls.reqwest_ca_cert()? {
-                builder = builder.add_root_certificate(ca);
+                builder = builder.tls_certs_merge([ca]);
             }
         }
 
