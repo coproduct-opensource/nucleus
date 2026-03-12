@@ -1,0 +1,47 @@
+# Research Web — read local files and search/fetch web content.
+#
+# The agent can read files (low risk) for context and access the web
+# for research. Cannot write, edit, execute, or push anything.
+# Ideal for research tasks that combine local code context with
+# external documentation, API references, or CVE databases.
+#
+# Trifecta analysis:
+#   - Private data: read_files=low_risk (present)
+#   - Untrusted content: web_search=low_risk, web_fetch=low_risk (present)
+#   - Exfiltration: git_push=never, run_bash=never, create_pr=never (absent)
+#   => Two of three components. No exfil vectors, safe by construction.
+
+name: research-web
+description: "Web research — read files, search/fetch web, no writes or execution"
+
+capabilities:
+  read_files: low_risk
+  write_files: never
+  edit_files: never
+  run_bash: never
+  glob_search: always
+  grep_search: always
+  web_search: low_risk
+  web_fetch: low_risk
+  git_commit: never
+  git_push: never
+  create_pr: never
+  manage_pods: never
+
+paths:
+  blocked:
+    - "**/.ssh/**"
+    - "**/.aws/**"
+    - "**/.env"
+    - "**/.env.*"
+    - "**/credentials*"
+    - "/etc/shadow"
+    - "/etc/passwd"
+
+budget:
+  max_cost_usd: "1.50"
+  max_input_tokens: 50000
+  max_output_tokens: 5000
+
+time:
+  duration_minutes: 45

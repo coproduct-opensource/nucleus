@@ -522,7 +522,7 @@ mod tests {
         let profiles = [
             ("pr_review", "PR review permissions"),
             ("pr-review", "PR review permissions"),
-            ("codegen", "Code generation permissions (network-isolated)"),
+            ("codegen", "Code generation"),
             ("pr_approve", "PR approval permissions (CI-gated)"),
             ("pr-approve", "PR approval permissions (CI-gated)"),
             (
@@ -592,6 +592,8 @@ mod tests {
             "test_runner",
             "triage-bot",
             "triage_bot",
+            "research-web",
+            "research_web",
         ];
 
         for name in profile_names {

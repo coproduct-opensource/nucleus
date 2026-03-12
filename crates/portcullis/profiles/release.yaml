@@ -1,0 +1,50 @@
+# Release — full capabilities with approval gates on publishing.
+#
+# The agent can read, write, edit, run tests, fetch web content, and
+# push/create PRs. Push and PR creation require explicit human approval.
+#
+# Trifecta analysis:
+#   - Private data: read_files=always (present)
+#   - Untrusted content: web_fetch=low_risk (present)
+#   - Exfiltration: git_push=low_risk, create_pr=low_risk (present)
+#   => All three components present. Trifecta normalization adds approval
+#      obligations on exfil operations (git_push, create_pr, run_bash).
+
+name: release
+description: "Release — full capabilities, approval required for push and PR"
+
+capabilities:
+  read_files: always
+  write_files: low_risk
+  edit_files: low_risk
+  run_bash: low_risk
+  glob_search: always
+  grep_search: always
+  web_search: low_risk
+  web_fetch: low_risk
+  git_commit: low_risk
+  git_push: low_risk
+  create_pr: low_risk
+  manage_pods: never
+
+obligations:
+  - git_push
+  - create_pr
+
+paths:
+  blocked:
+    - "**/.ssh/**"
+    - "**/.aws/**"
+    - "**/.env"
+    - "**/.env.*"
+    - "**/credentials*"
+    - "/etc/shadow"
+    - "/etc/passwd"
+
+budget:
+  max_cost_usd: "5.00"
+  max_input_tokens: 100000
+  max_output_tokens: 10000
+
+time:
+  duration_hours: 2
