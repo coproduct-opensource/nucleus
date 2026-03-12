@@ -11,10 +11,24 @@
 //!
 //! ```text
 //! effective(dᵢ₊₁) ≤ effective(dᵢ)
+//! taint(dᵢ) ⊆ taint(dᵢ₊₁)          // taint only grows
 //! ```
 //!
-//! Authority never increases. Budget is consumed. Time advances.
-//! The trace is append-only.
+//! Authority never increases. Taint never decreases. Budget is consumed.
+//! Time advances. The trace is append-only.
+//!
+//! # Runtime Taint Tracking
+//!
+//! The kernel tracks a [`TaintSet`] accumulator across the session. Each
+//! allowed operation contributes its taint label (if any) to the set.
+//! When the accumulated taint would complete the lethal trifecta
+//! (private data + untrusted content + exfiltration vector), the kernel
+//! **dynamically gates** exfiltration operations — requiring approval
+//! even if the static lattice doesn't mandate it.
+//!
+//! This is the "tainted-to-sink gating" described in the North Star:
+//! static obligations catch structural risks, while runtime taint catches
+//! emergent risks from the actual sequence of operations.
 //!
 //! # Complete Mediation
 //!
@@ -55,12 +69,14 @@ use uuid::Uuid;
 use serde::{Deserialize, Serialize};
 
 use crate::capability::{CapabilityLevel, Operation};
+use crate::guard::{TaintLabel, TaintSet};
 use crate::lattice::PermissionLattice;
+use crate::taint_core;
 
 /// A single decision made by the kernel.
 ///
 /// Captures the operation, subject, verdict, and a snapshot of the
-/// permission state before and after the decision.
+/// permission state before and after the decision — including taint.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Decision {
@@ -80,6 +96,29 @@ pub struct Decision {
     pub pre_permissions_hash: String,
     /// SHA-256 hash of effective permissions after this decision.
     pub post_permissions_hash: String,
+    /// Taint state transition caused by this decision.
+    pub taint_transition: TaintTransition,
+}
+
+/// Records the taint state before and after a decision.
+///
+/// For allowed operations that carry a taint label, `post` will have
+/// that label added. For denied operations, taint does not advance
+/// (the operation didn't execute).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct TaintTransition {
+    /// Taint legs active before this decision.
+    pub pre_count: u8,
+    /// Taint legs active after this decision.
+    pub post_count: u8,
+    /// The taint label contributed by this operation, if any.
+    pub contributed_label: Option<TaintLabel>,
+    /// Whether the trifecta was completed by this decision.
+    pub trifecta_completed: bool,
+    /// Whether a dynamic taint gate was applied (RequiresApproval
+    /// due to runtime taint, not static obligations).
+    pub dynamic_gate_applied: bool,
 }
 
 /// The kernel's verdict on an operation.
@@ -136,6 +175,20 @@ pub enum DenyReason {
     },
 }
 
+/// The source of a RequiresApproval verdict.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(tag = "source", rename_all = "snake_case"))]
+pub enum ApprovalSource {
+    /// Static obligation from the permission lattice (trifecta in lattice structure).
+    StaticObligation,
+    /// Dynamic taint gate — runtime taint accumulation completed the trifecta.
+    DynamicTaint {
+        /// The taint label that would complete the trifecta.
+        completing_label: TaintLabel,
+    },
+}
+
 /// Error when attempting to violate monotonicity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonotoneViolation {
@@ -182,6 +235,11 @@ pub struct Kernel {
     consumed_usd: Decimal,
     /// Pre-granted approvals: operation → remaining count.
     approvals: std::collections::BTreeMap<Operation, u32>,
+    /// Runtime taint accumulator — monotonically growing.
+    ///
+    /// Records which trifecta legs have been touched by allowed operations.
+    /// When this reaches trifecta-complete, exfil operations get dynamically gated.
+    taint: TaintSet,
 }
 
 impl Kernel {
@@ -199,6 +257,7 @@ impl Kernel {
             next_seq: 0,
             consumed_usd: Decimal::ZERO,
             approvals: std::collections::BTreeMap::new(),
+            taint: TaintSet::empty(),
         }
     }
 
@@ -211,28 +270,37 @@ impl Kernel {
     /// 2. **Budget**: Has the cost ceiling been reached?
     /// 3. **Capability**: Is the operation allowed at the current level?
     /// 4. **Path**: Is the subject path accessible?
-    /// 5. **Approval**: Does this operation require (and have) approval?
+    /// 5. **Command**: Is the command allowed?
+    /// 6. **Static approval**: Does the lattice mandate approval?
+    /// 7. **Dynamic taint gate**: Would this op complete the trifecta at runtime?
     ///
-    /// The decision is recorded in the append-only trace.
+    /// For allowed operations, taint is recorded in the accumulator.
+    /// The decision (including taint transition) is recorded in the append-only trace.
     pub fn decide(&mut self, operation: Operation, subject: &str) -> Decision {
         let pre_hash = self.effective.checksum();
+        let pre_taint_count = self.taint.count();
+        let contributed_label = taint_core::classify_operation(operation);
 
         // 1. Time check
         let now = Utc::now();
         if now > self.effective.time.valid_until {
-            return self.record(
+            return self.record_with_taint(
                 operation,
                 subject,
                 Verdict::Deny(DenyReason::TimeExpired {
                     expired_at: self.effective.time.valid_until,
                 }),
                 &pre_hash,
+                pre_taint_count,
+                contributed_label,
+                false,
+                false,
             );
         }
 
         // 2. Budget check
         if self.consumed_usd >= self.effective.budget.max_cost_usd {
-            return self.record(
+            return self.record_with_taint(
                 operation,
                 subject,
                 Verdict::Deny(DenyReason::BudgetExhausted {
@@ -240,17 +308,25 @@ impl Kernel {
                         .to_string(),
                 }),
                 &pre_hash,
+                pre_taint_count,
+                contributed_label,
+                false,
+                false,
             );
         }
 
         // 3. Capability level check
         let level = self.effective.capabilities.level_for(operation);
         if level == CapabilityLevel::Never {
-            return self.record(
+            return self.record_with_taint(
                 operation,
                 subject,
                 Verdict::Deny(DenyReason::InsufficientCapability),
                 &pre_hash,
+                pre_taint_count,
+                contributed_label,
+                false,
+                false,
             );
         }
 
@@ -261,38 +337,117 @@ impl Kernel {
                 .paths
                 .can_access(std::path::Path::new(subject))
         {
-            return self.record(
+            return self.record_with_taint(
                 operation,
                 subject,
                 Verdict::Deny(DenyReason::PathBlocked {
                     path: subject.to_string(),
                 }),
                 &pre_hash,
+                pre_taint_count,
+                contributed_label,
+                false,
+                false,
             );
         }
 
         // 5. Command check (for exec operations)
         if operation == Operation::RunBash && !self.effective.commands.can_execute(subject) {
-            return self.record(
+            return self.record_with_taint(
                 operation,
                 subject,
                 Verdict::Deny(DenyReason::CommandBlocked {
                     command: subject.to_string(),
                 }),
                 &pre_hash,
+                pre_taint_count,
+                contributed_label,
+                false,
+                false,
             );
         }
 
-        // 6. Approval check
+        // 6. Static approval check (obligations from lattice structure)
         if self.effective.requires_approval(operation) {
             if self.consume_approval(operation) {
-                return self.record(operation, subject, Verdict::Allow, &pre_hash);
+                // Approved — record taint from this allowed operation
+                self.taint = taint_core::apply_record(&self.taint, operation);
+                let trifecta_completed =
+                    !TaintSet::empty().is_trifecta_complete() && self.taint.is_trifecta_complete();
+                return self.record_with_taint(
+                    operation,
+                    subject,
+                    Verdict::Allow,
+                    &pre_hash,
+                    pre_taint_count,
+                    contributed_label,
+                    trifecta_completed,
+                    false,
+                );
             }
-            return self.record(operation, subject, Verdict::RequiresApproval, &pre_hash);
+            return self.record_with_taint(
+                operation,
+                subject,
+                Verdict::RequiresApproval,
+                &pre_hash,
+                pre_taint_count,
+                contributed_label,
+                false,
+                false,
+            );
         }
 
-        // All checks passed
-        self.record(operation, subject, Verdict::Allow, &pre_hash)
+        // 7. Dynamic taint gate — runtime trifecta detection.
+        //
+        // Project what the taint WOULD be after this operation.
+        // If the projected taint completes the trifecta and this op
+        // is an exfil vector, gate it with RequiresApproval.
+        let projected = taint_core::project_taint(&self.taint, operation);
+        if !self.taint.is_trifecta_complete()
+            && projected.is_trifecta_complete()
+            && is_exfil_operation(operation)
+        {
+            // Check if there's a pre-granted approval
+            if self.consume_approval(operation) {
+                self.taint = taint_core::apply_record(&self.taint, operation);
+                return self.record_with_taint(
+                    operation,
+                    subject,
+                    Verdict::Allow,
+                    &pre_hash,
+                    pre_taint_count,
+                    contributed_label,
+                    true,
+                    true,
+                );
+            }
+            return self.record_with_taint(
+                operation,
+                subject,
+                Verdict::RequiresApproval,
+                &pre_hash,
+                pre_taint_count,
+                contributed_label,
+                false,
+                true,
+            );
+        }
+
+        // All checks passed — record taint and allow
+        let pre_complete = self.taint.is_trifecta_complete();
+        self.taint = taint_core::apply_record(&self.taint, operation);
+        let trifecta_completed = !pre_complete && self.taint.is_trifecta_complete();
+
+        self.record_with_taint(
+            operation,
+            subject,
+            Verdict::Allow,
+            &pre_hash,
+            pre_taint_count,
+            contributed_label,
+            trifecta_completed,
+            false,
+        )
     }
 
     /// Tighten effective permissions by taking the meet with a ceiling.
@@ -384,17 +539,32 @@ impl Kernel {
         self.next_seq
     }
 
+    /// Get the current runtime taint accumulator.
+    ///
+    /// This reflects which trifecta legs have been touched by allowed
+    /// operations during this session. Taint only grows — it is never
+    /// reset or reduced.
+    pub fn taint(&self) -> &TaintSet {
+        &self.taint
+    }
+
     // ── Internal ──────────────────────────────────────────────────────
 
-    /// Record a decision in the trace and return it.
-    fn record(
+    /// Record a decision with taint transition in the trace and return it.
+    #[allow(clippy::too_many_arguments)]
+    fn record_with_taint(
         &mut self,
         operation: Operation,
         subject: &str,
         verdict: Verdict,
         pre_hash: &str,
+        pre_taint_count: u8,
+        contributed_label: Option<TaintLabel>,
+        trifecta_completed: bool,
+        dynamic_gate_applied: bool,
     ) -> Decision {
         let post_hash = self.effective.checksum();
+        let post_taint_count = self.taint.count();
         let seq = self.next_seq;
         self.next_seq += 1;
 
@@ -407,6 +577,13 @@ impl Kernel {
             timestamp: Utc::now(),
             pre_permissions_hash: pre_hash.to_string(),
             post_permissions_hash: post_hash,
+            taint_transition: TaintTransition {
+                pre_count: pre_taint_count,
+                post_count: post_taint_count,
+                contributed_label,
+                trifecta_completed,
+                dynamic_gate_applied,
+            },
         };
 
         self.trace.push(decision.clone());
@@ -434,6 +611,14 @@ fn is_path_operation(op: Operation) -> bool {
             | Operation::EditFiles
             | Operation::GlobSearch
             | Operation::GrepSearch
+    )
+}
+
+/// Check if an operation is an exfiltration vector.
+fn is_exfil_operation(op: Operation) -> bool {
+    matches!(
+        op,
+        Operation::RunBash | Operation::GitPush | Operation::CreatePr
     )
 }
 
@@ -775,5 +960,342 @@ mod tests {
             d.verdict,
             Verdict::Deny(DenyReason::InsufficientCapability)
         ));
+    }
+
+    // ── Taint plumbing tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_taint_starts_empty() {
+        let perms = PermissionLattice::default();
+        let kernel = Kernel::new(perms);
+
+        assert_eq!(kernel.taint().count(), 0);
+        assert!(!kernel.taint().is_trifecta_complete());
+    }
+
+    #[test]
+    fn test_taint_accumulates_on_allow() {
+        // Use a profile that allows reads and web_fetch without trifecta obligations
+        use crate::capability::CapabilityLattice;
+        let perms = PermissionLattice::builder()
+            .description("read-and-fetch")
+            .capabilities(CapabilityLattice {
+                read_files: CapabilityLevel::Always,
+                write_files: CapabilityLevel::Never,
+                edit_files: CapabilityLevel::Never,
+                run_bash: CapabilityLevel::Never,
+                glob_search: CapabilityLevel::Never,
+                grep_search: CapabilityLevel::Never,
+                web_search: CapabilityLevel::Never,
+                web_fetch: CapabilityLevel::Always,
+                git_commit: CapabilityLevel::Never,
+                git_push: CapabilityLevel::Never,
+                create_pr: CapabilityLevel::Never,
+                manage_pods: CapabilityLevel::Never,
+                extensions: std::collections::BTreeMap::new(),
+            })
+            .build();
+
+        let mut kernel = Kernel::new(perms);
+
+        // ReadFiles → PrivateData taint
+        let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+        assert!(d.verdict.is_allowed());
+        assert!(kernel.taint().contains(TaintLabel::PrivateData));
+        assert_eq!(kernel.taint().count(), 1);
+        assert_eq!(d.taint_transition.pre_count, 0);
+        assert_eq!(d.taint_transition.post_count, 1);
+        assert_eq!(
+            d.taint_transition.contributed_label,
+            Some(TaintLabel::PrivateData)
+        );
+
+        // WebFetch → UntrustedContent taint
+        let d = kernel.decide(Operation::WebFetch, "https://example.com");
+        assert!(d.verdict.is_allowed());
+        assert!(kernel.taint().contains(TaintLabel::UntrustedContent));
+        assert_eq!(kernel.taint().count(), 2);
+        assert_eq!(d.taint_transition.pre_count, 1);
+        assert_eq!(d.taint_transition.post_count, 2);
+    }
+
+    #[test]
+    fn test_taint_does_not_accumulate_on_deny() {
+        let perms = PermissionLattice::safe_pr_fixer();
+        let mut kernel = Kernel::new(perms);
+
+        // git_push=Never → denied, no taint recorded
+        let d = kernel.decide(Operation::GitPush, "origin/main");
+        assert!(d.verdict.is_denied());
+        assert_eq!(kernel.taint().count(), 0);
+        assert_eq!(d.taint_transition.post_count, 0);
+    }
+
+    #[test]
+    fn test_taint_monotone_never_decreases() {
+        use crate::capability::CapabilityLattice;
+        let perms = PermissionLattice::builder()
+            .description("all-read")
+            .capabilities(CapabilityLattice {
+                read_files: CapabilityLevel::Always,
+                write_files: CapabilityLevel::Always,
+                edit_files: CapabilityLevel::Never,
+                run_bash: CapabilityLevel::Never,
+                glob_search: CapabilityLevel::Never,
+                grep_search: CapabilityLevel::Never,
+                web_search: CapabilityLevel::Never,
+                web_fetch: CapabilityLevel::Always,
+                git_commit: CapabilityLevel::Never,
+                git_push: CapabilityLevel::Never,
+                create_pr: CapabilityLevel::Never,
+                manage_pods: CapabilityLevel::Never,
+                extensions: std::collections::BTreeMap::new(),
+            })
+            .build();
+
+        let mut kernel = Kernel::new(perms);
+
+        // Build up taint
+        kernel.decide(Operation::ReadFiles, "/a");
+        kernel.decide(Operation::WebFetch, "https://b.com");
+
+        // Neutral operation (WriteFiles) should not reduce taint
+        kernel.decide(Operation::WriteFiles, "/c");
+        assert_eq!(kernel.taint().count(), 2);
+
+        // Denied operation should not reduce taint
+        kernel.decide(Operation::RunBash, "echo hi");
+        assert_eq!(kernel.taint().count(), 2);
+    }
+
+    #[test]
+    fn test_dynamic_taint_gate_blocks_exfil() {
+        // Build a profile that allows ALL operations (no static obligations).
+        // No trifecta obligations in the lattice because we construct one
+        // without running normalize().
+        use crate::capability::CapabilityLattice;
+        let mut perms = PermissionLattice::builder()
+            .description("everything-allowed")
+            .capabilities(CapabilityLattice {
+                read_files: CapabilityLevel::Always,
+                write_files: CapabilityLevel::Always,
+                edit_files: CapabilityLevel::Always,
+                run_bash: CapabilityLevel::Always,
+                glob_search: CapabilityLevel::Always,
+                grep_search: CapabilityLevel::Always,
+                web_search: CapabilityLevel::Always,
+                web_fetch: CapabilityLevel::Always,
+                git_commit: CapabilityLevel::Always,
+                git_push: CapabilityLevel::Always,
+                create_pr: CapabilityLevel::Always,
+                manage_pods: CapabilityLevel::Always,
+                extensions: std::collections::BTreeMap::new(),
+            })
+            .build();
+
+        // Clear any obligations the builder might have added
+        perms.obligations.approvals.clear();
+
+        let mut kernel = Kernel::new(perms);
+
+        // Step 1: Read private data → taint PrivateData
+        let d = kernel.decide(Operation::ReadFiles, "/etc/passwd");
+        assert!(d.verdict.is_allowed());
+
+        // Step 2: Fetch untrusted content → taint UntrustedContent
+        let d = kernel.decide(Operation::WebFetch, "https://evil.com/payload");
+        assert!(d.verdict.is_allowed());
+
+        // Step 3: Try to push → trifecta would complete → dynamic gate!
+        let d = kernel.decide(Operation::GitPush, "origin/main");
+        assert!(
+            matches!(d.verdict, Verdict::RequiresApproval),
+            "dynamic taint gate should block exfil, got {:?}",
+            d.verdict
+        );
+        assert!(d.taint_transition.dynamic_gate_applied);
+
+        // Taint should NOT have advanced (operation was gated, not allowed)
+        assert!(!kernel.taint().is_trifecta_complete());
+        assert_eq!(kernel.taint().count(), 2);
+    }
+
+    #[test]
+    fn test_dynamic_taint_gate_with_pre_approval() {
+        use crate::capability::CapabilityLattice;
+        let mut perms = PermissionLattice::builder()
+            .description("everything-allowed")
+            .capabilities(CapabilityLattice {
+                read_files: CapabilityLevel::Always,
+                write_files: CapabilityLevel::Always,
+                edit_files: CapabilityLevel::Always,
+                run_bash: CapabilityLevel::Always,
+                glob_search: CapabilityLevel::Always,
+                grep_search: CapabilityLevel::Always,
+                web_search: CapabilityLevel::Always,
+                web_fetch: CapabilityLevel::Always,
+                git_commit: CapabilityLevel::Always,
+                git_push: CapabilityLevel::Always,
+                create_pr: CapabilityLevel::Always,
+                manage_pods: CapabilityLevel::Always,
+                extensions: std::collections::BTreeMap::new(),
+            })
+            .build();
+
+        perms.obligations.approvals.clear();
+
+        let mut kernel = Kernel::new(perms);
+
+        // Pre-grant approval for the exfil operation
+        kernel.grant_approval(Operation::GitPush, 1);
+
+        // Accumulate taint
+        kernel.decide(Operation::ReadFiles, "/etc/passwd");
+        kernel.decide(Operation::WebFetch, "https://evil.com/payload");
+
+        // Push with pre-approval should be allowed through the dynamic gate
+        let d = kernel.decide(Operation::GitPush, "origin/main");
+        assert!(
+            d.verdict.is_allowed(),
+            "pre-approved exfil should pass dynamic gate, got {:?}",
+            d.verdict
+        );
+        assert!(d.taint_transition.dynamic_gate_applied);
+        assert!(d.taint_transition.trifecta_completed);
+        assert!(kernel.taint().is_trifecta_complete());
+    }
+
+    #[test]
+    fn test_dynamic_taint_gate_does_not_affect_non_exfil() {
+        use crate::capability::CapabilityLattice;
+        let mut perms = PermissionLattice::builder()
+            .description("everything-allowed")
+            .capabilities(CapabilityLattice {
+                read_files: CapabilityLevel::Always,
+                write_files: CapabilityLevel::Always,
+                edit_files: CapabilityLevel::Always,
+                run_bash: CapabilityLevel::Always,
+                glob_search: CapabilityLevel::Always,
+                grep_search: CapabilityLevel::Always,
+                web_search: CapabilityLevel::Always,
+                web_fetch: CapabilityLevel::Always,
+                git_commit: CapabilityLevel::Always,
+                git_push: CapabilityLevel::Always,
+                create_pr: CapabilityLevel::Always,
+                manage_pods: CapabilityLevel::Always,
+                extensions: std::collections::BTreeMap::new(),
+            })
+            .build();
+
+        perms.obligations.approvals.clear();
+
+        let mut kernel = Kernel::new(perms);
+
+        // Accumulate two legs
+        kernel.decide(Operation::ReadFiles, "/etc/passwd");
+        kernel.decide(Operation::WebFetch, "https://evil.com");
+
+        // Neutral ops should still be allowed even with high taint
+        let d = kernel.decide(Operation::WriteFiles, "/workspace/out.txt");
+        assert!(d.verdict.is_allowed());
+        assert!(!d.taint_transition.dynamic_gate_applied);
+
+        // git_commit is not an exfil op — should be allowed
+        let d = kernel.decide(Operation::GitCommit, "fix: stuff");
+        assert!(d.verdict.is_allowed());
+        assert!(!d.taint_transition.dynamic_gate_applied);
+    }
+
+    #[test]
+    fn test_taint_transition_in_decision_trace() {
+        use crate::capability::CapabilityLattice;
+        let perms = PermissionLattice::builder()
+            .description("read-only")
+            .capabilities(CapabilityLattice {
+                read_files: CapabilityLevel::Always,
+                write_files: CapabilityLevel::Never,
+                edit_files: CapabilityLevel::Never,
+                run_bash: CapabilityLevel::Never,
+                glob_search: CapabilityLevel::Never,
+                grep_search: CapabilityLevel::Never,
+                web_search: CapabilityLevel::Never,
+                web_fetch: CapabilityLevel::Never,
+                git_commit: CapabilityLevel::Never,
+                git_push: CapabilityLevel::Never,
+                create_pr: CapabilityLevel::Never,
+                manage_pods: CapabilityLevel::Never,
+                extensions: std::collections::BTreeMap::new(),
+            })
+            .build();
+
+        let mut kernel = Kernel::new(perms);
+
+        kernel.decide(Operation::ReadFiles, "/a");
+        kernel.decide(Operation::ReadFiles, "/b");
+        kernel.decide(Operation::WriteFiles, "/c"); // denied
+
+        let trace = kernel.trace();
+
+        // First read: taint 0→1
+        assert_eq!(trace[0].taint_transition.pre_count, 0);
+        assert_eq!(trace[0].taint_transition.post_count, 1);
+        assert_eq!(
+            trace[0].taint_transition.contributed_label,
+            Some(TaintLabel::PrivateData)
+        );
+
+        // Second read: taint stays at 1 (already has PrivateData)
+        assert_eq!(trace[1].taint_transition.pre_count, 1);
+        assert_eq!(trace[1].taint_transition.post_count, 1);
+
+        // Denied write: taint stays at 1 (denied ops don't contribute)
+        assert_eq!(trace[2].taint_transition.pre_count, 1);
+        assert_eq!(trace[2].taint_transition.post_count, 1);
+    }
+
+    #[test]
+    fn test_runbash_dynamic_gate_omnibus() {
+        // RunBash is special: it projects both PrivateData + ExfilVector.
+        // If we've already ingested untrusted content, RunBash should
+        // be dynamically gated because it's an exfil vector that would
+        // complete the trifecta (it projects PrivateData too).
+        use crate::capability::CapabilityLattice;
+        use crate::CommandLattice;
+        let mut perms = PermissionLattice::builder()
+            .description("bash-and-web")
+            .capabilities(CapabilityLattice {
+                read_files: CapabilityLevel::Never,
+                write_files: CapabilityLevel::Never,
+                edit_files: CapabilityLevel::Never,
+                run_bash: CapabilityLevel::Always,
+                glob_search: CapabilityLevel::Never,
+                grep_search: CapabilityLevel::Never,
+                web_search: CapabilityLevel::Always,
+                web_fetch: CapabilityLevel::Always,
+                git_commit: CapabilityLevel::Never,
+                git_push: CapabilityLevel::Never,
+                create_pr: CapabilityLevel::Never,
+                manage_pods: CapabilityLevel::Never,
+                extensions: std::collections::BTreeMap::new(),
+            })
+            .commands(CommandLattice::permissive())
+            .build();
+
+        perms.obligations.approvals.clear();
+
+        let mut kernel = Kernel::new(perms);
+
+        // Fetch untrusted content
+        kernel.decide(Operation::WebFetch, "https://evil.com/payload");
+        assert!(kernel.taint().contains(TaintLabel::UntrustedContent));
+
+        // RunBash with a permitted command — trifecta would complete via omnibus
+        let d = kernel.decide(Operation::RunBash, "cargo test");
+        assert!(
+            matches!(d.verdict, Verdict::RequiresApproval),
+            "RunBash omnibus projection should trigger dynamic gate, got {:?}",
+            d.verdict
+        );
+        assert!(d.taint_transition.dynamic_gate_applied);
     }
 }
