@@ -479,17 +479,21 @@ impl Kernel {
 
         // 7. Dynamic taint gate — runtime trifecta detection.
         //
-        // Project what the taint WOULD be after this operation.
-        // If the projected taint completes the trifecta and this op
-        // is an exfil vector, gate it with RequiresApproval.
+        // Gate exfil operations when:
+        // a) The taint is ALREADY trifecta-complete (ongoing risk), OR
+        // b) This operation WOULD complete the trifecta (transition risk)
+        //
+        // This ensures exfil ops remain gated for the entire session once
+        // the trifecta has been reached, not just at the transition point.
         let projected = taint_core::project_taint(&self.taint, operation);
-        if !self.taint.is_trifecta_complete()
-            && projected.is_trifecta_complete()
+        if (self.taint.is_trifecta_complete() || projected.is_trifecta_complete())
             && is_exfil_operation(operation)
         {
             // Check if there's a pre-granted approval
             if self.consume_approval(operation) {
+                let pre_complete = self.taint.is_trifecta_complete();
                 self.taint = taint_core::apply_record(&self.taint, operation);
+                let newly_completed = !pre_complete && self.taint.is_trifecta_complete();
                 return self.record_with_taint(
                     operation,
                     subject,
@@ -497,7 +501,7 @@ impl Kernel {
                     &pre_hash,
                     pre_taint_count,
                     contributed_label,
-                    true,
+                    newly_completed,
                     true,
                 );
             }
