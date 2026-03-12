@@ -47,6 +47,9 @@ serde_json = { workspace = true, optional = true }
 # Ed25519 signatures for attested delegation certificates
 ring = { workspace = true }
 
+# Base64 encoding for compact token transport
+base64 = { workspace = true }
+
 # Security: proper decimal arithmetic for budget (no f64 exploits)
 rust_decimal = { workspace = true }
 

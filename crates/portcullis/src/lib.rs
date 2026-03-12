@@ -113,6 +113,10 @@ pub mod profile;
 #[cfg(feature = "remote-audit")]
 pub mod s3_audit_backend;
 pub mod taint_core;
+/// Attenuation tokens — compact delegation credentials for wire transport.
+///
+/// Requires the `serde` feature for serialization.
+pub mod token;
 
 pub mod identity;
 pub mod intent;
@@ -203,6 +207,7 @@ pub use metrics::{
     build_deviation_report, DeviationDetail, DeviationReport, InMemoryMetrics, MetricEvent,
     MetricsCollector, MetricsReport, ReputationMetrics, ReputationWeights,
 };
+pub use token::{AttenuationToken, SessionProvenance, TokenError};
 
 /// Check if a glob pattern matches a path.
 pub fn glob_match(pattern: &str, path: &str) -> bool {

@@ -768,7 +768,76 @@ fn proof_meet_deflationary_both() {
 // Starting from empty taint, you need operations from ALL THREE categories
 // (private data, untrusted content, exfil vector) to complete the trifecta.
 // ---------------------------------------------------------------------------
+
+// ═══════════════════════════════════════════════════════════════════════════
+// D-series: Attenuation token invariants
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// **D1 — Meet attenuation is monotone (leq parent)**:
+///
+/// For all parent p and requested r, meet(p, r) ≤ p.
+///
+/// This is the core security property of attenuation tokens:
+/// delegating permissions can never amplify them.
 #[kani::proof]
+#[kani::unwind(3)]
+#[kani::solver(cadical)]
+fn proof_attenuation_leq_parent() {
+    let parent = build_arbitrary_permission();
+    let requested = build_arbitrary_permission();
+
+    let attenuated = parent.meet(&requested);
+    assert!(
+        attenuated.leq(&parent),
+        "Attenuation via meet must never exceed the parent"
+    );
+}
+
+/// **D2 — Meet attenuation is monotone (leq requested)**:
+///
+/// For all parent p and requested r, meet(p, r) ≤ r.
+///
+/// The attenuated result is also bounded by the requested permissions.
+/// Combined with D1, this proves meet is the greatest lower bound.
+#[kani::proof]
+#[kani::unwind(3)]
+#[kani::solver(cadical)]
+fn proof_attenuation_leq_requested() {
+    let parent = build_arbitrary_permission();
+    let requested = build_arbitrary_permission();
+
+    let attenuated = parent.meet(&requested);
+    assert!(
+        attenuated.leq(&requested),
+        "Attenuation via meet must never exceed the request"
+    );
+}
+
+/// **D3 — Chained attenuation only tightens**:
+///
+/// For a delegation chain p → q → r:
+///   q = meet(p, req1), r = meet(q, req2)
+///   ⟹ r ≤ q ≤ p
+///
+/// Multi-hop delegation can never amplify permissions.
+#[kani::proof]
+#[kani::unwind(3)]
+#[kani::solver(cadical)]
+fn proof_chained_attenuation_monotone() {
+    let root = build_arbitrary_permission();
+    let req1 = build_arbitrary_permission();
+    let req2 = build_arbitrary_permission();
+
+    let hop1 = root.meet(&req1);
+    let hop2 = hop1.meet(&req2);
+
+    assert!(hop1.leq(&root), "First hop must be ≤ root");
+    assert!(hop2.leq(&hop1), "Second hop must be ≤ first hop");
+    assert!(hop2.leq(&root), "Transitive: second hop must be ≤ root");
+}
+
+#[kani::proof]
+#[kani::unwind(3)]
 #[kani::solver(cadical)]
 fn proof_taint_three_step_minimum() {
     let op1 = arbitrary_operation();

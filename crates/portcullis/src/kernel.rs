@@ -69,10 +69,12 @@ use uuid::Uuid;
 use serde::{Deserialize, Serialize};
 
 use crate::capability::{CapabilityLevel, Operation};
+use crate::certificate::VerifiedPermissions;
 use crate::guard::{TaintLabel, TaintSet};
 use crate::isolation::{IsolationLattice, NetworkIsolation};
 use crate::lattice::PermissionLattice;
 use crate::taint_core;
+use crate::token::SessionProvenance;
 
 /// A single decision made by the kernel.
 ///
@@ -263,6 +265,12 @@ pub struct Kernel {
     /// Records which trifecta legs have been touched by allowed operations.
     /// When this reaches trifecta-complete, exfil operations get dynamically gated.
     taint: TaintSet,
+    /// Optional provenance linking this session to a delegation certificate.
+    ///
+    /// Present when the kernel was created from a verified certificate via
+    /// [`Kernel::from_certificate`]. Provides an auditable chain from every
+    /// decision back to the root authority.
+    provenance: Option<SessionProvenance>,
 }
 
 impl Kernel {
@@ -295,6 +303,77 @@ impl Kernel {
             consumed_usd: Decimal::ZERO,
             approvals: std::collections::BTreeMap::new(),
             taint: TaintSet::empty(),
+            provenance: None,
+        }
+    }
+
+    /// Create a kernel session from cryptographically verified permissions.
+    ///
+    /// The [`VerifiedPermissions`] type is sealed — it can only be produced
+    /// by [`verify_certificate`], guaranteeing that the permissions were
+    /// cryptographically verified before the kernel was created.
+    ///
+    /// The kernel records the certificate fingerprint and delegation chain
+    /// metadata as [`SessionProvenance`], linking every subsequent decision
+    /// back to the root authority.
+    ///
+    /// # Arguments
+    ///
+    /// * `verified` — Cryptographically verified permissions from a delegation certificate.
+    /// * `certificate_fingerprint` — SHA-256 fingerprint of the source certificate.
+    pub fn from_certificate(
+        verified: VerifiedPermissions,
+        certificate_fingerprint: [u8; 32],
+    ) -> Self {
+        let provenance = SessionProvenance {
+            certificate_fingerprint,
+            root_identity: verified.root_identity.clone(),
+            leaf_identity: verified.leaf_identity.clone(),
+            chain_depth: verified.chain_depth,
+        };
+        let initial_hash = verified.effective.checksum();
+        Self {
+            session_id: Uuid::new_v4(),
+            effective: verified.effective,
+            initial_hash,
+            isolation: IsolationLattice::localhost(),
+            trace: Vec::new(),
+            next_seq: 0,
+            consumed_usd: Decimal::ZERO,
+            approvals: std::collections::BTreeMap::new(),
+            taint: TaintSet::empty(),
+            provenance: Some(provenance),
+        }
+    }
+
+    /// Create a kernel session from verified certificate with explicit isolation.
+    ///
+    /// Combines [`from_certificate`] with [`with_isolation`] — the kernel
+    /// uses the certificate's effective permissions AND enforces the given
+    /// isolation level for defense-in-depth.
+    pub fn from_certificate_with_isolation(
+        verified: VerifiedPermissions,
+        certificate_fingerprint: [u8; 32],
+        isolation: IsolationLattice,
+    ) -> Self {
+        let provenance = SessionProvenance {
+            certificate_fingerprint,
+            root_identity: verified.root_identity.clone(),
+            leaf_identity: verified.leaf_identity.clone(),
+            chain_depth: verified.chain_depth,
+        };
+        let initial_hash = verified.effective.checksum();
+        Self {
+            session_id: Uuid::new_v4(),
+            effective: verified.effective,
+            initial_hash,
+            isolation,
+            trace: Vec::new(),
+            next_seq: 0,
+            consumed_usd: Decimal::ZERO,
+            approvals: std::collections::BTreeMap::new(),
+            taint: TaintSet::empty(),
+            provenance: Some(provenance),
         }
     }
 
@@ -635,6 +714,15 @@ impl Kernel {
     /// reset or reduced.
     pub fn taint(&self) -> &TaintSet {
         &self.taint
+    }
+
+    /// Get the session provenance, if this kernel was created from a certificate.
+    ///
+    /// Returns `Some` when the kernel was created via [`Kernel::from_certificate`],
+    /// linking every decision in this session to the delegation chain that
+    /// authorized it.
+    pub fn provenance(&self) -> Option<&SessionProvenance> {
+        self.provenance.as_ref()
     }
 
     // ── Internal ──────────────────────────────────────────────────────
@@ -1561,5 +1649,138 @@ mod tests {
         let kernel = Kernel::with_isolation(perms, iso);
 
         assert_eq!(kernel.isolation(), &IsolationLattice::microvm());
+    }
+
+    // ── Certificate integration tests ───────────────────────────────
+
+    #[test]
+    fn test_from_certificate_creates_kernel() {
+        use crate::certificate::{verify_certificate, LatticeCertificate};
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let root_key = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+        let root_pub = root_key.public_key().as_ref().to_vec();
+        let not_after = Utc::now() + chrono::Duration::hours(8);
+
+        let (cert, holder_key) = LatticeCertificate::mint(
+            PermissionLattice::permissive(),
+            "spiffe://test/human/alice".into(),
+            not_after,
+            &root_key,
+            &rng,
+        );
+
+        let (cert, _) = cert
+            .delegate(
+                &PermissionLattice::restrictive(),
+                "spiffe://test/agent/coder".into(),
+                not_after,
+                &holder_key,
+                &rng,
+            )
+            .unwrap();
+
+        let fingerprint = cert.fingerprint();
+        let verified = verify_certificate(&cert, &root_pub, Utc::now(), 10).unwrap();
+        let mut kernel = Kernel::from_certificate(verified, fingerprint);
+
+        // Provenance is set
+        let prov = kernel.provenance().unwrap();
+        assert_eq!(prov.root_identity, "spiffe://test/human/alice");
+        assert_eq!(prov.leaf_identity, "spiffe://test/agent/coder");
+        assert_eq!(prov.chain_depth, 1);
+        assert_eq!(prov.certificate_fingerprint, fingerprint);
+
+        // Kernel makes decisions using the certificate's effective permissions
+        let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+        assert!(d.verdict.is_allowed());
+    }
+
+    #[test]
+    fn test_from_certificate_enforces_restrictions() {
+        use crate::certificate::{verify_certificate, LatticeCertificate};
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let root_key = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+        let root_pub = root_key.public_key().as_ref().to_vec();
+        let not_after = Utc::now() + chrono::Duration::hours(8);
+
+        // Mint with permissive root
+        let (cert, holder_key) = LatticeCertificate::mint(
+            PermissionLattice::permissive(),
+            "spiffe://test/root".into(),
+            not_after,
+            &root_key,
+            &rng,
+        );
+
+        // Delegate to read_only
+        let (cert, _) = cert
+            .delegate(
+                &PermissionLattice::read_only(),
+                "spiffe://test/reader".into(),
+                not_after,
+                &holder_key,
+                &rng,
+            )
+            .unwrap();
+
+        let fingerprint = cert.fingerprint();
+        let verified = verify_certificate(&cert, &root_pub, Utc::now(), 10).unwrap();
+        let mut kernel = Kernel::from_certificate(verified, fingerprint);
+
+        // Reading is allowed
+        assert!(kernel
+            .decide(Operation::ReadFiles, "/workspace/main.rs")
+            .verdict
+            .is_allowed());
+
+        // Writing is denied (read_only profile)
+        assert!(kernel
+            .decide(Operation::GitPush, "origin/main")
+            .verdict
+            .is_denied());
+    }
+
+    #[test]
+    fn test_kernel_without_certificate_has_no_provenance() {
+        let kernel = Kernel::new(PermissionLattice::default());
+        assert!(kernel.provenance().is_none());
+    }
+
+    #[test]
+    fn test_from_certificate_attenuate_preserves_provenance() {
+        use crate::certificate::{verify_certificate, LatticeCertificate};
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let root_key = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+        let root_pub = root_key.public_key().as_ref().to_vec();
+        let not_after = Utc::now() + chrono::Duration::hours(8);
+
+        let (cert, _) = LatticeCertificate::mint(
+            PermissionLattice::permissive(),
+            "spiffe://test/root".into(),
+            not_after,
+            &root_key,
+            &rng,
+        );
+
+        let fingerprint = cert.fingerprint();
+        let verified = verify_certificate(&cert, &root_pub, Utc::now(), 10).unwrap();
+        let mut kernel = Kernel::from_certificate(verified, fingerprint);
+
+        // Attenuate the kernel
+        kernel.attenuate(&PermissionLattice::read_only()).unwrap();
+
+        // Provenance is preserved after attenuation
+        let prov = kernel.provenance().unwrap();
+        assert_eq!(prov.root_identity, "spiffe://test/root");
+        assert_eq!(prov.certificate_fingerprint, fingerprint);
     }
 }
