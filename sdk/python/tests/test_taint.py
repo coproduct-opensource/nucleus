@@ -354,11 +354,16 @@ class TestToolHandlesWithoutGuard(unittest.TestCase):
         proxy.web_fetch.return_value = {"status": 200, "body": "ok"}
         nh = NetHandle(proxy, Trace())
         result = nh.fetch("https://example.com")
-        self.assertEqual(result["status"], 200)
+        self.assertEqual(result.status, 200)
 
     def test_git_handle_no_guard(self):
         proxy = MagicMock(spec=ProxyClient)
-        proxy.run.return_value = {"exit_code": 0, "stdout": ""}
+        proxy.run.return_value = {
+            "status": 0,
+            "success": True,
+            "stdout": "",
+            "stderr": "",
+        }
         gh = GitHandle(proxy, Trace())
         gh.push("origin")
         proxy.run.assert_called_once()

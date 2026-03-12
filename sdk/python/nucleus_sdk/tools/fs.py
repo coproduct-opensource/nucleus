@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
+
+from ..types import GlobResult, GrepResult
 
 if TYPE_CHECKING:
     from ..client import ProxyClient
@@ -65,20 +67,20 @@ class FileHandle:
         pattern: str,
         directory: Optional[str] = None,
         max_results: Optional[int] = None,
-    ) -> Dict[str, Any]:
+    ) -> GlobResult:
         """Search for files matching a glob pattern."""
         if self._guard:
             self._guard.check("fs.glob")
         start = time.monotonic()
-        result = self._proxy.glob(
+        raw = self._proxy.glob(
             pattern=pattern, directory=directory, max_results=max_results
         )
         elapsed = (time.monotonic() - start) * 1000
-        matches = result.get("files", [])
+        result = GlobResult.from_dict(raw)
         self._trace.record(
             operation="fs.glob",
             args={"pattern": pattern},
-            result_summary=f"{len(matches)} matches",
+            result_summary=f"{len(result.matches)} matches",
             duration_ms=round(elapsed, 2),
         )
         if self._guard:
@@ -93,12 +95,12 @@ class FileHandle:
         context_lines: Optional[int] = None,
         max_matches: Optional[int] = None,
         case_insensitive: Optional[bool] = None,
-    ) -> Dict[str, Any]:
+    ) -> GrepResult:
         """Search file contents with a regex pattern."""
         if self._guard:
             self._guard.check("fs.grep")
         start = time.monotonic()
-        result = self._proxy.grep(
+        raw = self._proxy.grep(
             pattern=pattern,
             path=path,
             file_glob=file_glob,
@@ -107,11 +109,11 @@ class FileHandle:
             case_insensitive=case_insensitive,
         )
         elapsed = (time.monotonic() - start) * 1000
-        matches = result.get("matches", [])
+        result = GrepResult.from_dict(raw)
         self._trace.record(
             operation="fs.grep",
             args={"pattern": pattern},
-            result_summary=f"{len(matches)} matches",
+            result_summary=f"{len(result.matches)} matches",
             duration_ms=round(elapsed, 2),
         )
         if self._guard:

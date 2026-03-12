@@ -5,6 +5,15 @@ from .auth import MtlsConfig, HmacAuth
 from .session import Session
 from .taint import TaintGuard, TaintLabel, TaintSet
 from .trace import Trace, TraceEntry
+from .types import (
+    CommandOutput,
+    FetchResponse,
+    GlobResult,
+    GrepMatch,
+    GrepResult,
+    SearchResult,
+    SearchResultItem,
+)
 from .errors import (
     NucleusError,
     ApprovalRequired,
@@ -34,6 +43,13 @@ __all__ = [
     "TaintSet",
     "Trace",
     "TraceEntry",
+    "CommandOutput",
+    "FetchResponse",
+    "GlobResult",
+    "GrepMatch",
+    "GrepResult",
+    "SearchResult",
+    "SearchResultItem",
     "NucleusError",
     "ApprovalRequired",
     "AccessDenied",

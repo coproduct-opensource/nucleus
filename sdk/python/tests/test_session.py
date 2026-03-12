@@ -218,16 +218,18 @@ class TestFileHandleDelegation(unittest.TestCase):
         self.assertEqual(self.trace.entries[0].operation, "fs.write")
 
     def test_glob_delegates(self):
-        self.mock_proxy.glob.return_value = {"files": ["a.py", "b.py"]}
+        self.mock_proxy.glob.return_value = {"matches": ["a.py", "b.py"]}
         result = self.fh.glob("*.py")
         self.mock_proxy.glob.assert_called_once_with(
             pattern="*.py", directory=None, max_results=None
         )
-        self.assertEqual(len(result["files"]), 2)
+        self.assertEqual(len(result.matches), 2)
         self.assertEqual(self.trace.entries[0].operation, "fs.glob")
 
     def test_grep_delegates(self):
-        self.mock_proxy.grep.return_value = {"matches": [{"line": "foo"}]}
+        self.mock_proxy.grep.return_value = {
+            "matches": [{"file": "a.py", "line": 1, "content": "foo"}]
+        }
         result = self.fh.grep("foo", path="/src")
         self.mock_proxy.grep.assert_called_once_with(
             pattern="foo",
@@ -237,7 +239,8 @@ class TestFileHandleDelegation(unittest.TestCase):
             max_matches=None,
             case_insensitive=None,
         )
-        self.assertEqual(len(result["matches"]), 1)
+        self.assertEqual(len(result.matches), 1)
+        self.assertEqual(result.matches[0].content, "foo")
         self.assertEqual(self.trace.entries[0].operation, "fs.grep")
 
 
@@ -253,23 +256,32 @@ class TestNetHandleDelegation(unittest.TestCase):
         self.mock_proxy.web_fetch.assert_called_once_with(
             url="https://example.com", method=None, headers=None, body=None
         )
-        self.assertEqual(result["status"], 200)
+        self.assertEqual(result.status, 200)
+        self.assertEqual(result.body, "ok")
         self.assertEqual(self.trace.entries[0].operation, "net.fetch")
 
     def test_search_delegates(self):
-        self.mock_proxy.web_search.return_value = {"results": [{"title": "a"}]}
+        self.mock_proxy.web_search.return_value = {
+            "results": [{"title": "a", "url": "https://example.com"}]
+        }
         result = self.nh.search("test query", max_results=5)
         self.mock_proxy.web_search.assert_called_once_with(
             query="test query", max_results=5
         )
-        self.assertEqual(len(result["results"]), 1)
+        self.assertEqual(len(result.results), 1)
+        self.assertEqual(result.results[0].title, "a")
         self.assertEqual(self.trace.entries[0].operation, "net.search")
 
 
 class TestGitHandleDelegation(unittest.TestCase):
     def setUp(self):
         self.mock_proxy = MagicMock(spec=ProxyClient)
-        self.mock_proxy.run.return_value = {"exit_code": 0, "stdout": ""}
+        self.mock_proxy.run.return_value = {
+            "status": 0,
+            "success": True,
+            "stdout": "",
+            "stderr": "",
+        }
         self.trace = Trace()
         self.gh = GitHandle(self.mock_proxy, self.trace)
 
@@ -333,7 +345,7 @@ class TestSessionApprove(unittest.TestCase):
             result = session.approve(
                 "fetch", lambda: session.net.fetch("https://example.com")
             )
-        self.assertEqual(result["status"], 200)
+        self.assertEqual(result.status, 200)
         mock_proxy.approve.assert_called_once_with("fetch")
         # Should have trace entries for net.fetch and approve:fetch
         ops = [e.operation for e in s.trace.entries]
@@ -352,7 +364,12 @@ class TestSessionIntegration(unittest.TestCase):
     def test_full_workflow_trace(self):
         mock_proxy = MagicMock(spec=ProxyClient)
         mock_proxy.read.return_value = "# README\n"
-        mock_proxy.run.return_value = {"exit_code": 0, "stdout": ""}
+        mock_proxy.run.return_value = {
+            "status": 0,
+            "success": True,
+            "stdout": "",
+            "stderr": "",
+        }
         mock_proxy.web_fetch.return_value = {"status": 200, "body": "<html>"}
         mock_proxy.approve.return_value = {"approved": True}
 

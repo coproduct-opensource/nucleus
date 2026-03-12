@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Dict, Optional, TYPE_CHECKING
+
+from ..types import FetchResponse, SearchResult
 
 if TYPE_CHECKING:
     from ..client import ProxyClient
@@ -33,20 +35,20 @@ class NetHandle:
         method: Optional[str] = None,
         headers: Optional[Dict[str, str]] = None,
         body: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> FetchResponse:
         """Fetch a URL through the proxy."""
         if self._guard:
             self._guard.check("net.fetch")
         start = time.monotonic()
-        result = self._proxy.web_fetch(
+        raw = self._proxy.web_fetch(
             url=url, method=method, headers=headers, body=body
         )
         elapsed = (time.monotonic() - start) * 1000
-        status = result.get("status", "unknown")
+        result = FetchResponse.from_dict(raw)
         self._trace.record(
             operation="net.fetch",
             args={"url": url, "method": method or "GET"},
-            result_summary=f"status={status}",
+            result_summary=f"status={result.status}",
             duration_ms=round(elapsed, 2),
         )
         if self._guard:
@@ -57,18 +59,18 @@ class NetHandle:
         self,
         query: str,
         max_results: Optional[int] = None,
-    ) -> Dict[str, Any]:
+    ) -> SearchResult:
         """Perform a web search through the proxy."""
         if self._guard:
             self._guard.check("net.search")
         start = time.monotonic()
-        result = self._proxy.web_search(query=query, max_results=max_results)
+        raw = self._proxy.web_search(query=query, max_results=max_results)
         elapsed = (time.monotonic() - start) * 1000
-        results_count = len(result.get("results", []))
+        result = SearchResult.from_dict(raw)
         self._trace.record(
             operation="net.search",
             args={"query": query},
-            result_summary=f"{results_count} results",
+            result_summary=f"{len(result.results)} results",
             duration_ms=round(elapsed, 2),
         )
         if self._guard:

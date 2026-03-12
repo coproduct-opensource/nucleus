@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING
+
+from ..types import CommandOutput
 
 if TYPE_CHECKING:
     from ..client import ProxyClient
@@ -32,20 +34,20 @@ class GitHandle:
         args: List[str],
         operation_name: str,
         directory: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> CommandOutput:
         """Run a git subcommand and record it in the trace."""
         op = f"git.{operation_name}"
         if self._guard:
             self._guard.check(op)
         full_args = ["git"] + args
         start = time.monotonic()
-        result = self._proxy.run(args=full_args, directory=directory)
+        raw = self._proxy.run(args=full_args, directory=directory)
         elapsed = (time.monotonic() - start) * 1000
-        exit_code = result.get("exit_code", -1)
+        result = CommandOutput.from_dict(raw)
         self._trace.record(
             operation=op,
             args={"git_args": args},
-            result_summary=f"exit_code={exit_code}",
+            result_summary=f"exit_code={result.status}",
             duration_ms=round(elapsed, 2),
         )
         if self._guard:
@@ -57,7 +59,7 @@ class GitHandle:
         message: str,
         paths: Optional[List[str]] = None,
         directory: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> CommandOutput:
         """Stage files and create a git commit."""
         if paths:
             self._run_git(["add"] + paths, "add", directory=directory)
@@ -70,7 +72,7 @@ class GitHandle:
         remote: str = "origin",
         branch: Optional[str] = None,
         directory: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> CommandOutput:
         """Push commits to a remote."""
         args = ["push", remote]
         if branch:
@@ -83,7 +85,7 @@ class GitHandle:
         body: str = "",
         base: Optional[str] = None,
         directory: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> CommandOutput:
         """Create a pull request (delegates to a generic PR creation command)."""
         # Uses a generic 'pr create' pattern that maps to the proxy's run endpoint.
         # The orchestrator is responsible for translating this to the appropriate
