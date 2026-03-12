@@ -101,6 +101,9 @@ pub mod galois;
 pub mod graded;
 pub mod guard;
 pub mod heyting;
+/// Kernel decision engine — complete mediation with monotone session state.
+#[cfg(feature = "serde")]
+pub mod kernel;
 #[cfg(feature = "remote-audit")]
 pub mod s3_audit_backend;
 pub mod taint_core;
