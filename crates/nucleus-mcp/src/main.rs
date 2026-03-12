@@ -4,6 +4,7 @@ use nucleus_client::sign_http_headers;
 use nucleus_spec::PodSpec;
 use portcullis::kernel::{DenyReason, Kernel, Verdict};
 use portcullis::{CapabilityLevel, Operation, PermissionLattice};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
@@ -510,6 +511,36 @@ fn format_deny_reason(reason: &DenyReason) -> String {
     }
 }
 
+/// Per-operation cost estimates for budget tracking.
+///
+/// These are policy-level costs representing the relative expense and risk
+/// of each operation class. They are NOT LLM API costs (which are tracked
+/// by the orchestrator). Costs are calibrated so that a $1.00 budget allows
+/// roughly 100 file reads, 50 writes, 20 shell commands, or 10 web fetches.
+fn operation_cost(op: Operation) -> Decimal {
+    match op {
+        // Read-only operations: low cost
+        Operation::ReadFiles => Decimal::new(1, 2), // $0.01
+        Operation::GlobSearch => Decimal::new(1, 2), // $0.01
+        Operation::GrepSearch => Decimal::new(1, 2), // $0.01
+        // Write operations: moderate cost
+        Operation::WriteFiles => Decimal::new(2, 2), // $0.02
+        Operation::EditFiles => Decimal::new(2, 2),  // $0.02
+        // Execution: higher cost (side effects)
+        Operation::RunBash => Decimal::new(5, 2), // $0.05
+        // Network: higher cost (external interaction)
+        Operation::WebSearch => Decimal::new(5, 2), // $0.05
+        Operation::WebFetch => Decimal::new(10, 2), // $0.10
+        // Git operations: moderate cost
+        Operation::GitCommit => Decimal::new(2, 2), // $0.02
+        // Publish operations: high cost (irreversible)
+        Operation::GitPush => Decimal::new(25, 2), // $0.25
+        Operation::CreatePr => Decimal::new(25, 2), // $0.25
+        // Pod management: high cost
+        Operation::ManagePods => Decimal::new(50, 2), // $0.50
+    }
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     let policy = match args.spec.as_ref() {
@@ -900,7 +931,28 @@ fn call_tool(
     }
 
     // Execute the tool call (the proxy provides additional enforcement)
-    call_tool_inner(client, call, approval_prompt)
+    let result = call_tool_inner(client, call, approval_prompt)?;
+
+    // Charge budget after successful execution.
+    // The cost is charged post-execution because:
+    // 1. We only charge for operations that actually complete
+    // 2. The NEXT kernel.decide() will see the updated budget and deny if exhausted
+    if let Some(op) = tool_to_operation(&call.name) {
+        let cost = operation_cost(op);
+        match kernel.charge(cost) {
+            Ok(remaining) => {
+                eprintln!("[nucleus-mcp] budget: charged ${cost}, remaining ${remaining}");
+            }
+            Err(_) => {
+                eprintln!(
+                    "[nucleus-mcp] budget: exhausted after tool={} (charged ${cost})",
+                    call.name
+                );
+            }
+        }
+    }
+
+    Ok(result)
 }
 
 fn call_tool_inner(
@@ -1708,5 +1760,115 @@ mod tests {
     fn test_extract_subject_unknown_tool() {
         let args = json!({});
         assert_eq!(extract_subject("custom_tool", &args), "custom_tool");
+    }
+
+    // ── Budget enforcement tests ────────────────────────────────────────
+
+    #[test]
+    fn test_operation_cost_values() {
+        // Read-only ops are cheapest
+        assert_eq!(operation_cost(Operation::ReadFiles), Decimal::new(1, 2));
+        assert_eq!(operation_cost(Operation::GlobSearch), Decimal::new(1, 2));
+        assert_eq!(operation_cost(Operation::GrepSearch), Decimal::new(1, 2));
+        // Write ops are moderate
+        assert_eq!(operation_cost(Operation::WriteFiles), Decimal::new(2, 2));
+        assert_eq!(operation_cost(Operation::EditFiles), Decimal::new(2, 2));
+        // Exec/network are higher
+        assert_eq!(operation_cost(Operation::RunBash), Decimal::new(5, 2));
+        assert_eq!(operation_cost(Operation::WebFetch), Decimal::new(10, 2));
+        // Publish ops are most expensive
+        assert_eq!(operation_cost(Operation::GitPush), Decimal::new(25, 2));
+        assert_eq!(operation_cost(Operation::CreatePr), Decimal::new(25, 2));
+        assert_eq!(operation_cost(Operation::ManagePods), Decimal::new(50, 2));
+    }
+
+    #[test]
+    fn test_budget_charge_deducts_from_kernel() {
+        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        // Charge a read operation
+        let remaining = kernel.charge(operation_cost(Operation::ReadFiles)).unwrap();
+        // Default permissive budget is $10, charged $0.01
+        assert_eq!(remaining, Decimal::new(10, 0) - Decimal::new(1, 2));
+    }
+
+    #[test]
+    fn test_budget_exhaustion_denies_next_operation() {
+        use portcullis::BudgetLattice;
+        // Create a lattice with a tiny budget ($0.05)
+        let mut lattice = permissive_no_static_obligations();
+        lattice.budget = BudgetLattice {
+            max_cost_usd: Decimal::new(5, 2), // $0.05
+            ..lattice.budget
+        };
+        let mut kernel = Kernel::new(lattice);
+
+        // First read is allowed ($0.01 cost)
+        let d = kernel.decide(Operation::ReadFiles, "a.txt");
+        assert!(matches!(d.verdict, Verdict::Allow));
+        kernel.charge(operation_cost(Operation::ReadFiles)).unwrap();
+
+        // Second read is allowed ($0.02 total)
+        let d = kernel.decide(Operation::ReadFiles, "b.txt");
+        assert!(matches!(d.verdict, Verdict::Allow));
+        kernel.charge(operation_cost(Operation::ReadFiles)).unwrap();
+
+        // Third read still allowed ($0.03 total)
+        let d = kernel.decide(Operation::ReadFiles, "c.txt");
+        assert!(matches!(d.verdict, Verdict::Allow));
+        kernel.charge(operation_cost(Operation::ReadFiles)).unwrap();
+
+        // RunBash costs $0.05, which would bring total to $0.08 > $0.05 budget
+        // But decide() checks consumed_usd ($0.03) < max ($0.05), so it allows
+        let d = kernel.decide(Operation::RunBash, "cargo test");
+        assert!(matches!(d.verdict, Verdict::Allow));
+        // Charge fails because $0.03 + $0.05 = $0.08 > $0.05
+        assert!(kernel.charge(operation_cost(Operation::RunBash)).is_err());
+
+        // Next decide() sees consumed ($0.03) < max ($0.05), but if we force
+        // another charge to push over: charge 3 more reads to reach $0.06
+        kernel.charge(operation_cost(Operation::ReadFiles)).unwrap(); // $0.04
+        kernel.charge(operation_cost(Operation::ReadFiles)).unwrap(); // $0.05
+
+        // Now decide() should deny (consumed $0.05 >= max $0.05)
+        let d = kernel.decide(Operation::ReadFiles, "d.txt");
+        assert!(
+            matches!(d.verdict, Verdict::Deny(DenyReason::BudgetExhausted { .. })),
+            "expected BudgetExhausted, got {:?}",
+            d.verdict
+        );
+    }
+
+    #[test]
+    fn test_budget_zero_cost_is_no_op() {
+        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        // Charging zero should succeed and not change budget
+        let remaining = kernel.charge(Decimal::ZERO).unwrap();
+        assert_eq!(remaining, Decimal::new(10, 0));
+    }
+
+    #[test]
+    fn test_all_operations_have_nonzero_cost() {
+        // Every operation should have a positive cost
+        let ops = [
+            Operation::ReadFiles,
+            Operation::WriteFiles,
+            Operation::EditFiles,
+            Operation::RunBash,
+            Operation::GlobSearch,
+            Operation::GrepSearch,
+            Operation::WebSearch,
+            Operation::WebFetch,
+            Operation::GitCommit,
+            Operation::GitPush,
+            Operation::CreatePr,
+            Operation::ManagePods,
+        ];
+        for op in &ops {
+            assert!(
+                operation_cost(*op) > Decimal::ZERO,
+                "operation {:?} should have positive cost",
+                op
+            );
+        }
     }
 }
