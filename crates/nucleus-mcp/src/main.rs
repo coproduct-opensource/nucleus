@@ -109,6 +109,76 @@ struct WebFetchResponse {
     truncated: Option<bool>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct GlobRequest {
+    pattern: String,
+    #[serde(default)]
+    directory: Option<String>,
+    #[serde(default)]
+    max_results: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GlobResponse {
+    matches: Vec<String>,
+    #[serde(default)]
+    truncated: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct GrepRequest {
+    pattern: String,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default, rename = "glob")]
+    file_glob: Option<String>,
+    #[serde(default)]
+    context_lines: Option<usize>,
+    #[serde(default)]
+    max_matches: Option<usize>,
+    #[serde(default)]
+    case_insensitive: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct GrepMatch {
+    file: String,
+    line: usize,
+    content: String,
+    #[serde(default)]
+    context_before: Option<Vec<String>>,
+    #[serde(default)]
+    context_after: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GrepResponse {
+    matches: Vec<GrepMatch>,
+    #[serde(default)]
+    truncated: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct WebSearchRequest {
+    query: String,
+    #[serde(default)]
+    max_results: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WebSearchResult {
+    title: String,
+    url: String,
+    #[serde(default)]
+    snippet: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WebSearchResponse {
+    results: Vec<WebSearchResult>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct ApproveRequest {
     operation: String,
@@ -484,6 +554,15 @@ fn build_tool_defs(policy: Option<&PermissionLattice>) -> Vec<ToolDefinition> {
     let allow_web_fetch = policy
         .map(|p| p.capabilities.web_fetch >= CapabilityLevel::LowRisk)
         .unwrap_or(true);
+    let allow_glob = policy
+        .map(|p| p.capabilities.glob_search >= CapabilityLevel::LowRisk)
+        .unwrap_or(true);
+    let allow_grep = policy
+        .map(|p| p.capabilities.grep_search >= CapabilityLevel::LowRisk)
+        .unwrap_or(true);
+    let allow_web_search = policy
+        .map(|p| p.capabilities.web_search >= CapabilityLevel::LowRisk)
+        .unwrap_or(false);
     let allow_manage_pods = policy
         .map(|p| p.capabilities.manage_pods >= CapabilityLevel::LowRisk)
         .unwrap_or(false);
@@ -537,6 +616,54 @@ fn build_tool_defs(policy: Option<&PermissionLattice>) -> Vec<ToolDefinition> {
                     "body": { "type": "string", "description": "Optional request body" }
                 },
                 "required": ["url"]
+            }),
+        });
+    }
+
+    if allow_glob {
+        tools.push(ToolDefinition {
+            name: "glob".to_string(),
+            description: "Search for files matching a glob pattern within the sandbox".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "Glob pattern (e.g. \"**/*.rs\", \"src/*.json\")" },
+                    "directory": { "type": "string", "description": "Directory to search in (relative to sandbox root)" },
+                    "max_results": { "type": "integer", "description": "Maximum number of results" }
+                },
+                "required": ["pattern"]
+            }),
+        });
+    }
+    if allow_grep {
+        tools.push(ToolDefinition {
+            name: "grep".to_string(),
+            description: "Search file contents with regex within the sandbox".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "Regex pattern to search for" },
+                    "path": { "type": "string", "description": "File or directory to search in" },
+                    "glob": { "type": "string", "description": "Glob pattern to filter files" },
+                    "context_lines": { "type": "integer", "description": "Context lines before/after match" },
+                    "max_matches": { "type": "integer", "description": "Maximum number of matches" },
+                    "case_insensitive": { "type": "boolean", "description": "Case-insensitive search" }
+                },
+                "required": ["pattern"]
+            }),
+        });
+    }
+    if allow_web_search {
+        tools.push(ToolDefinition {
+            name: "web_search".to_string(),
+            description: "Search the web for information".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Search query" },
+                    "max_results": { "type": "integer", "description": "Maximum number of results" }
+                },
+                "required": ["query"]
             }),
         });
     }
@@ -681,6 +808,88 @@ fn call_tool(client: &ProxyClient, call: &ToolCallParams, approval_prompt: bool)
                 "status: {}{}\nheaders: {:?}\nbody:\n{}",
                 response.status, truncated_note, response.headers, response.body
             ))
+        }
+        "glob" => {
+            let req: GlobRequest = serde_json::from_value(call.arguments.clone())
+                .map_err(|e| anyhow!("invalid glob args: {e}"))?;
+            let response: GlobResponse = call_with_approval(
+                client,
+                approval_prompt,
+                || client.post_json("/v1/glob", &req),
+                || {
+                    let req = GlobRequest {
+                        pattern: req.pattern.clone(),
+                        directory: req.directory.clone(),
+                        max_results: req.max_results,
+                    };
+                    client.post_json("/v1/glob", &req)
+                },
+            )?;
+            let truncated_note = if response.truncated == Some(true) {
+                " (truncated)"
+            } else {
+                ""
+            };
+            Ok(format!(
+                "{} matches{}\n{}",
+                response.matches.len(),
+                truncated_note,
+                response.matches.join("\n")
+            ))
+        }
+        "grep" => {
+            let req: GrepRequest = serde_json::from_value(call.arguments.clone())
+                .map_err(|e| anyhow!("invalid grep args: {e}"))?;
+            let response: GrepResponse = call_with_approval(
+                client,
+                approval_prompt,
+                || client.post_json("/v1/grep", &req),
+                || {
+                    let req = GrepRequest {
+                        pattern: req.pattern.clone(),
+                        path: req.path.clone(),
+                        file_glob: req.file_glob.clone(),
+                        context_lines: req.context_lines,
+                        max_matches: req.max_matches,
+                        case_insensitive: req.case_insensitive,
+                    };
+                    client.post_json("/v1/grep", &req)
+                },
+            )?;
+            let truncated_note = if response.truncated == Some(true) {
+                " (truncated)"
+            } else {
+                ""
+            };
+            let mut out = format!("{} matches{}\n", response.matches.len(), truncated_note);
+            for m in &response.matches {
+                out.push_str(&format!("{}:{}: {}\n", m.file, m.line, m.content));
+            }
+            Ok(out)
+        }
+        "web_search" => {
+            let req: WebSearchRequest = serde_json::from_value(call.arguments.clone())
+                .map_err(|e| anyhow!("invalid web_search args: {e}"))?;
+            let response: WebSearchResponse = call_with_approval(
+                client,
+                approval_prompt,
+                || client.post_json("/v1/web_search", &req),
+                || {
+                    let req = WebSearchRequest {
+                        query: req.query.clone(),
+                        max_results: req.max_results,
+                    };
+                    client.post_json("/v1/web_search", &req)
+                },
+            )?;
+            let mut out = format!("{} results\n", response.results.len());
+            for r in &response.results {
+                out.push_str(&format!("- {} ({})\n", r.title, r.url));
+                if let Some(ref snippet) = r.snippet {
+                    out.push_str(&format!("  {}\n", snippet));
+                }
+            }
+            Ok(out)
         }
         "create_pod" => {
             let req: CreatePodRequest = serde_json::from_value(call.arguments.clone())
@@ -857,12 +1066,16 @@ mod tests {
     #[test]
     fn test_build_tool_defs_permissive() {
         let tools = build_tool_defs(None);
-        assert_eq!(tools.len(), 4);
+        // No policy = defaults: read, write, run, web_fetch, glob, grep (web_search defaults off)
+        assert_eq!(tools.len(), 6);
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"read"));
         assert!(names.contains(&"write"));
         assert!(names.contains(&"run"));
         assert!(names.contains(&"web_fetch"));
+        assert!(names.contains(&"glob"));
+        assert!(names.contains(&"grep"));
+        assert!(!names.contains(&"web_search")); // defaults to false
     }
 
     #[test]
@@ -965,6 +1178,76 @@ mod tests {
         let tools = build_tool_defs(None);
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(!names.contains(&"create_pod"));
+    }
+
+    #[test]
+    fn test_build_tool_defs_search_tools_with_policy() {
+        // Restrictive already has read/glob/grep at Always, so add web_search
+        let mut policy = PermissionLattice::restrictive();
+        policy.capabilities.web_search = CapabilityLevel::LowRisk;
+
+        let tools = build_tool_defs(Some(&policy));
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"glob"));
+        assert!(names.contains(&"grep"));
+        assert!(names.contains(&"web_search"));
+        assert!(names.contains(&"read")); // restrictive allows read
+                                          // Restrictive denies write/run
+        assert!(!names.contains(&"write"));
+        assert!(!names.contains(&"run"));
+    }
+
+    #[test]
+    fn test_build_tool_defs_never_hides_search() {
+        // All capabilities at Never → no tools exposed
+        let mut policy = PermissionLattice::restrictive();
+        policy.capabilities.read_files = CapabilityLevel::Never;
+        policy.capabilities.glob_search = CapabilityLevel::Never;
+        policy.capabilities.grep_search = CapabilityLevel::Never;
+        policy.capabilities.web_search = CapabilityLevel::Never;
+        let tools = build_tool_defs(Some(&policy));
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(!names.contains(&"glob"));
+        assert!(!names.contains(&"grep"));
+        assert!(!names.contains(&"web_search"));
+        assert!(!names.contains(&"read"));
+    }
+
+    #[test]
+    fn test_glob_request_serialization() {
+        let req = GlobRequest {
+            pattern: "**/*.rs".to_string(),
+            directory: Some("src".to_string()),
+            max_results: Some(100),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("**/*.rs"));
+        assert!(json.contains("src"));
+    }
+
+    #[test]
+    fn test_grep_request_serialization() {
+        let req = GrepRequest {
+            pattern: "fn main".to_string(),
+            path: None,
+            file_glob: Some("*.rs".to_string()),
+            context_lines: Some(2),
+            max_matches: Some(50),
+            case_insensitive: Some(true),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("fn main"));
+        assert!(json.contains("*.rs"));
+    }
+
+    #[test]
+    fn test_web_search_request_serialization() {
+        let req = WebSearchRequest {
+            query: "rust async".to_string(),
+            max_results: Some(10),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("rust async"));
     }
 
     #[test]

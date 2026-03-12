@@ -827,28 +827,22 @@ fn build_mcp_allowed_tools(policy: &PermissionLattice) -> Vec<String> {
     if policy.capabilities.web_fetch >= CapabilityLevel::LowRisk {
         tools.push("mcp__nucleus__web_fetch".to_string());
     }
+    if policy.capabilities.glob_search >= CapabilityLevel::LowRisk {
+        tools.push("mcp__nucleus__glob".to_string());
+    }
+    if policy.capabilities.grep_search >= CapabilityLevel::LowRisk {
+        tools.push("mcp__nucleus__grep".to_string());
+    }
+    if policy.capabilities.web_search >= CapabilityLevel::LowRisk {
+        tools.push("mcp__nucleus__web_search".to_string());
+    }
     tools
 }
 
-fn warn_unimplemented_caps(policy: &PermissionLattice) {
-    // Capabilities that exist in the policy model but have no MCP tool implementation
-    // Note: web_fetch IS implemented - don't warn about it
-    let mut missing = Vec::new();
-    if policy.capabilities.web_search >= CapabilityLevel::LowRisk {
-        missing.push("web_search");
-    }
-    if policy.capabilities.glob_search >= CapabilityLevel::LowRisk {
-        missing.push("glob_search");
-    }
-    if policy.capabilities.grep_search >= CapabilityLevel::LowRisk {
-        missing.push("grep_search");
-    }
-    if !missing.is_empty() {
-        info!(
-            missing = %missing.join(","),
-            "Enforced mode does not expose tools for these capabilities"
-        );
-    }
+fn warn_unimplemented_caps(_policy: &PermissionLattice) {
+    // All standard capabilities now have MCP tool implementations
+    // (read, write, run, web_fetch, glob, grep, web_search).
+    // This function remains as a hook for future capabilities.
 }
 
 fn render_output(output: &std::process::Output, duration: Duration, mode: &str) -> Result<()> {
