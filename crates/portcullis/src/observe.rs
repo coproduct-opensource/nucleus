@@ -373,7 +373,7 @@ impl ObserveSession {
 
 /// Parse JSONL audit log lines into observations.
 ///
-/// Accepts two formats:
+/// Accepts three formats:
 ///
 /// **Simple format** (manual audit logs):
 /// ```json
@@ -384,6 +384,16 @@ impl ObserveSession {
 /// ```json
 /// {"operation": "read_files", "subject": "/src/main.rs", "verdict": {"type": "allow"}, "timestamp": "..."}
 /// ```
+///
+/// **Python SDK trace format** (from `session.trace.export_jsonl()`):
+/// ```json
+/// {"timestamp": 1710201600.5, "operation": "fs.read", "args": {"path": "README.md"}, "result_summary": "ok", "duration_ms": 12.5, "policy_decision": "allow"}
+/// ```
+///
+/// SDK operation names (`fs.read`, `net.fetch`, `git.push`, etc.) are mapped
+/// to canonical names. The `subject` is extracted from `args.path`, `args.url`,
+/// `args.query`, `args.pattern`, or `args.git_args`. The `policy_decision`
+/// field determines success (`"allow"` → succeeded).
 ///
 /// Lines with `"type": "session_summary"` are skipped (not tool call observations).
 pub fn parse_jsonl_observations(input: &str) -> Vec<Observation> {
@@ -400,14 +410,40 @@ pub fn parse_jsonl_observations(input: &str) -> Vec<Observation> {
 
             let op_str = v.get("operation")?.as_str()?;
             let operation = parse_operation(op_str)?;
-            let subject = v
-                .get("subject")
-                .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .to_string();
 
-            // Determine success: check "succeeded" field first (simple format),
-            // then fall back to "verdict.type" (kernel Decision format).
+            // Extract subject: try "subject" first (simple/kernel format),
+            // then fall back to SDK "args" fields.
+            let subject = if let Some(s) = v.get("subject").and_then(|s| s.as_str()) {
+                s.to_string()
+            } else if let Some(args) = v.get("args") {
+                // Python SDK trace: extract from args.path, args.url,
+                // args.query, args.pattern, or args.git_args
+                if let Some(s) = args
+                    .get("path")
+                    .or_else(|| args.get("url"))
+                    .or_else(|| args.get("query"))
+                    .or_else(|| args.get("pattern"))
+                    .and_then(|v| v.as_str())
+                {
+                    s.to_string()
+                } else if let Some(arr) = args.get("git_args").and_then(|v| v.as_array()) {
+                    // git_args is an array — join with spaces
+                    arr.iter()
+                        .filter_map(|e| e.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+
+            // Determine success:
+            // 1. "succeeded" field (simple format)
+            // 2. "verdict.type" (kernel Decision format)
+            // 3. "policy_decision" (Python SDK trace format)
+            // 4. Default to true
             let succeeded = if let Some(s) = v.get("succeeded").and_then(|s| s.as_bool()) {
                 s
             } else if let Some(verdict_type) = v
@@ -416,14 +452,25 @@ pub fn parse_jsonl_observations(input: &str) -> Vec<Observation> {
                 .and_then(|t| t.as_str())
             {
                 verdict_type == "allow"
+            } else if let Some(decision) = v.get("policy_decision").and_then(|d| d.as_str()) {
+                decision == "allow"
             } else {
                 true
             };
 
+            // Parse timestamp: ISO 8601 string (kernel format) or
+            // Unix epoch float (Python SDK format).
             let timestamp = v
                 .get("timestamp")
-                .and_then(|t| t.as_str())
-                .and_then(|t| t.parse::<DateTime<Utc>>().ok())
+                .and_then(|t| {
+                    if let Some(s) = t.as_str() {
+                        s.parse::<DateTime<Utc>>().ok()
+                    } else if let Some(f) = t.as_f64() {
+                        DateTime::from_timestamp(f as i64, ((f.fract()) * 1_000_000_000.0) as u32)
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or_else(Utc::now);
 
             Some(Observation {
@@ -438,6 +485,7 @@ pub fn parse_jsonl_observations(input: &str) -> Vec<Observation> {
 
 fn parse_operation(s: &str) -> Option<Operation> {
     match s {
+        // Canonical names (kernel Decision format, simple format)
         "read_files" => Some(Operation::ReadFiles),
         "write_files" => Some(Operation::WriteFiles),
         "edit_files" => Some(Operation::EditFiles),
@@ -450,6 +498,18 @@ fn parse_operation(s: &str) -> Option<Operation> {
         "git_push" => Some(Operation::GitPush),
         "create_pr" => Some(Operation::CreatePr),
         "manage_pods" => Some(Operation::ManagePods),
+        // Python SDK names (dotted format from trace.export_jsonl())
+        "fs.read" => Some(Operation::ReadFiles),
+        "fs.write" => Some(Operation::WriteFiles),
+        "fs.edit" => Some(Operation::EditFiles),
+        "fs.glob" => Some(Operation::GlobSearch),
+        "fs.grep" => Some(Operation::GrepSearch),
+        "net.fetch" => Some(Operation::WebFetch),
+        "net.search" => Some(Operation::WebSearch),
+        "git.commit" => Some(Operation::GitCommit),
+        "git.push" => Some(Operation::GitPush),
+        "git.create_pr" => Some(Operation::CreatePr),
+        "git.add" => Some(Operation::RunBash),
         _ => None,
     }
 }
@@ -768,5 +828,131 @@ mod tests {
         assert_eq!(summary.paths_accessed.len(), 2);
         assert_eq!(summary.urls_fetched.len(), 1);
         assert_eq!(summary.commands_run.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_sdk_trace_format() {
+        // Python SDK trace.export_jsonl() format
+        let input = r#"{"timestamp":1710201600.5,"operation":"fs.read","args":{"path":"README.md"},"result_summary":"ok","duration_ms":12.5,"policy_decision":"allow"}
+{"timestamp":1710201601.0,"operation":"net.fetch","args":{"url":"https://docs.rs","method":"GET"},"result_summary":"ok","duration_ms":150.0,"policy_decision":"allow"}
+{"timestamp":1710201602.0,"operation":"git.push","args":{"git_args":["push","origin","main"]},"result_summary":"exit_code=0","duration_ms":2000.0,"policy_decision":"allow"}
+{"timestamp":1710201603.0,"operation":"fs.write","args":{"path":"out.txt"},"result_summary":"ok","duration_ms":5.0,"policy_decision":"deny"}
+"#;
+
+        let observations = parse_jsonl_observations(input);
+        assert_eq!(observations.len(), 4);
+
+        // fs.read → ReadFiles, subject from args.path
+        assert_eq!(observations[0].operation, Operation::ReadFiles);
+        assert_eq!(observations[0].subject, "README.md");
+        assert!(observations[0].succeeded);
+
+        // net.fetch → WebFetch, subject from args.url
+        assert_eq!(observations[1].operation, Operation::WebFetch);
+        assert_eq!(observations[1].subject, "https://docs.rs");
+        assert!(observations[1].succeeded);
+
+        // git.push → GitPush, subject from args.git_args joined
+        assert_eq!(observations[2].operation, Operation::GitPush);
+        assert_eq!(observations[2].subject, "push origin main");
+        assert!(observations[2].succeeded);
+
+        // policy_decision: "deny" → not succeeded
+        assert_eq!(observations[3].operation, Operation::WriteFiles);
+        assert_eq!(observations[3].subject, "out.txt");
+        assert!(!observations[3].succeeded);
+    }
+
+    #[test]
+    fn test_parse_sdk_trace_glob_grep() {
+        let input = r#"{"timestamp":1710201600.0,"operation":"fs.glob","args":{"pattern":"**/*.rs"},"result_summary":"ok","duration_ms":10.0,"policy_decision":"allow"}
+{"timestamp":1710201601.0,"operation":"fs.grep","args":{"pattern":"fn main"},"result_summary":"ok","duration_ms":20.0,"policy_decision":"allow"}
+{"timestamp":1710201602.0,"operation":"net.search","args":{"query":"rust async"},"result_summary":"ok","duration_ms":300.0,"policy_decision":"allow"}
+"#;
+
+        let observations = parse_jsonl_observations(input);
+        assert_eq!(observations.len(), 3);
+
+        assert_eq!(observations[0].operation, Operation::GlobSearch);
+        assert_eq!(observations[0].subject, "**/*.rs");
+
+        assert_eq!(observations[1].operation, Operation::GrepSearch);
+        assert_eq!(observations[1].subject, "fn main");
+
+        assert_eq!(observations[2].operation, Operation::WebSearch);
+        assert_eq!(observations[2].subject, "rust async");
+    }
+
+    #[test]
+    fn test_parse_sdk_trace_numeric_timestamp() {
+        let input = r#"{"timestamp":1710201600.123,"operation":"fs.read","args":{"path":"a.txt"},"result_summary":"ok","duration_ms":1.0,"policy_decision":"allow"}"#;
+
+        let observations = parse_jsonl_observations(input);
+        assert_eq!(observations.len(), 1);
+        // Verify the timestamp was parsed from the numeric value
+        assert_eq!(observations[0].timestamp.timestamp(), 1710201600);
+    }
+
+    #[test]
+    fn test_parse_sdk_trace_feeds_observe_session() {
+        // End-to-end: SDK trace → parse → observe session → synthesize policy
+        let input = r#"{"timestamp":1710201600.0,"operation":"fs.read","args":{"path":"src/main.rs"},"result_summary":"ok","duration_ms":5.0,"policy_decision":"allow"}
+{"timestamp":1710201601.0,"operation":"fs.write","args":{"path":"src/main.rs"},"result_summary":"ok","duration_ms":8.0,"policy_decision":"allow"}
+{"timestamp":1710201602.0,"operation":"fs.glob","args":{"pattern":"**/*.rs"},"result_summary":"ok","duration_ms":10.0,"policy_decision":"allow"}
+{"timestamp":1710201603.0,"operation":"net.fetch","args":{"url":"https://docs.rs"},"result_summary":"ok","duration_ms":200.0,"policy_decision":"allow"}
+{"timestamp":1710201604.0,"operation":"git.commit","args":{"git_args":["commit","-m","fix: typo"]},"result_summary":"exit_code=0","duration_ms":500.0,"policy_decision":"allow"}
+"#;
+
+        let observations = parse_jsonl_observations(input);
+        assert_eq!(observations.len(), 5);
+
+        let mut session = ObserveSession::new("sdk-agent");
+        for obs in observations {
+            session.record(obs);
+        }
+
+        let profile = session.synthesize();
+        assert_eq!(profile.name, "observed-sdk-agent");
+
+        // Verify the capabilities match the observed operations
+        assert_eq!(profile.capabilities.read_files, CapabilityLevel::LowRisk);
+        assert_eq!(profile.capabilities.write_files, CapabilityLevel::LowRisk);
+        assert_eq!(profile.capabilities.glob_search, CapabilityLevel::LowRisk);
+        assert_eq!(profile.capabilities.web_fetch, CapabilityLevel::LowRisk);
+        assert_eq!(profile.capabilities.git_commit, CapabilityLevel::LowRisk);
+        // Unobserved operations remain Never
+        assert_eq!(profile.capabilities.git_push, CapabilityLevel::Never);
+        assert_eq!(profile.capabilities.run_bash, CapabilityLevel::Never);
+
+        // Profile must be valid
+        assert!(profile.validate().is_ok());
+        assert!(profile.build().is_ok());
+
+        // Verify subjects were extracted correctly
+        let summary = session.summary();
+        assert!(summary.paths_accessed.contains("src/main.rs"));
+        assert!(summary.paths_accessed.contains("**/*.rs"));
+        assert!(summary.urls_fetched.contains("https://docs.rs"));
+    }
+
+    #[test]
+    fn test_parse_mixed_all_three_formats() {
+        // All three formats in a single input
+        let input = r#"{"operation":"read_files","subject":"a.txt","succeeded":true}
+{"id":"abc","sequence":0,"operation":"web_fetch","subject":"https://example.com","verdict":{"type":"allow"},"timestamp":"2026-03-12T00:00:00Z","pre_permissions_hash":"a","post_permissions_hash":"b","taint_transition":{"pre_count":0,"post_count":1,"contributed_label":null,"trifecta_completed":false,"dynamic_gate_applied":false}}
+{"timestamp":1710201600.0,"operation":"fs.grep","args":{"pattern":"TODO"},"result_summary":"ok","duration_ms":15.0,"policy_decision":"allow"}
+"#;
+
+        let observations = parse_jsonl_observations(input);
+        assert_eq!(observations.len(), 3);
+
+        assert_eq!(observations[0].operation, Operation::ReadFiles);
+        assert_eq!(observations[0].subject, "a.txt");
+
+        assert_eq!(observations[1].operation, Operation::WebFetch);
+        assert_eq!(observations[1].subject, "https://example.com");
+
+        assert_eq!(observations[2].operation, Operation::GrepSearch);
+        assert_eq!(observations[2].subject, "TODO");
     }
 }
