@@ -1280,7 +1280,7 @@ async fn write_exit_report(audit: &AuditLog, work_dir_path: &Path) {
     };
 
     let (tail_hash, count) = audit.tail_hash_and_count();
-    let report = exit_report::build_exit_report(workspace_hash, tail_hash, count);
+    let report = exit_report::build_exit_report(workspace_hash, tail_hash, count, None);
 
     let report_path = work_dir_path.join(".nucleus-exit-report.json");
     match serde_json::to_string_pretty(&report) {

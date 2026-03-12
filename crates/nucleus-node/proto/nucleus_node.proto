@@ -113,6 +113,16 @@ message ExecutionReceipt {
   string v1_content_hash = 10;
   // Forward-compatible extension data
   map<string, string> extensions = 11;
+
+  // === v1.1 Token usage and cost fields ===
+  // Input tokens consumed during execution
+  uint64 input_tokens = 12;
+  // Output tokens generated during execution
+  uint64 output_tokens = 13;
+  // Cache read tokens (hits from prompt caching)
+  uint64 cache_read_tokens = 14;
+  // Estimated cost in USD (IEEE 754 double)
+  double cost_usd = 15;
 }
 
 message GetReceiptRequest {

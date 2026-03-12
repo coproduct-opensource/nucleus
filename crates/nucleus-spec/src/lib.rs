@@ -490,6 +490,18 @@ pub struct ExitReport {
     pub audit_entry_count: u64,
     /// Unix timestamp when the report was generated.
     pub timestamp_unix: u64,
+    /// Input tokens consumed during execution.
+    #[serde(default)]
+    pub input_tokens: u64,
+    /// Output tokens generated during execution.
+    #[serde(default)]
+    pub output_tokens: u64,
+    /// Cache read tokens (prompt caching hits).
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    /// Estimated cost in USD.
+    #[serde(default)]
+    pub cost_usd: f64,
 }
 
 /// Errors resolving policies.

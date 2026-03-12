@@ -2694,6 +2694,10 @@ impl NodeService for GrpcService {
                 version: 1,
                 v1_content_hash,
                 extensions: std::collections::HashMap::new(),
+                input_tokens: report.input_tokens,
+                output_tokens: report.output_tokens,
+                cache_read_tokens: report.cache_read_tokens,
+                cost_usd: report.cost_usd,
             }),
         }))
     }

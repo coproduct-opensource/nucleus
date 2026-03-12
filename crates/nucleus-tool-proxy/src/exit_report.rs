@@ -67,22 +67,42 @@ async fn collect_file_hashes(
     Ok(())
 }
 
+/// Token usage statistics collected during execution.
+#[derive(Debug, Clone, Default)]
+pub struct TokenUsage {
+    /// Input tokens consumed.
+    pub input_tokens: u64,
+    /// Output tokens generated.
+    pub output_tokens: u64,
+    /// Cache read tokens (prompt caching hits).
+    pub cache_read_tokens: u64,
+    /// Estimated cost in USD.
+    pub cost_usd: f64,
+}
+
 /// Build an exit report from the current state.
 pub fn build_exit_report(
     workspace_hash: String,
     audit_tail_hash: String,
     audit_entry_count: u64,
+    token_usage: Option<TokenUsage>,
 ) -> ExitReport {
     let timestamp_unix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
 
+    let usage = token_usage.unwrap_or_default();
+
     ExitReport {
         workspace_hash,
         audit_tail_hash,
         audit_entry_count,
         timestamp_unix,
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cache_read_tokens: usage.cache_read_tokens,
+        cost_usd: usage.cost_usd,
     }
 }
 
@@ -148,10 +168,32 @@ mod tests {
 
     #[test]
     fn test_build_exit_report() {
-        let report = build_exit_report("workspace_hash".to_string(), "audit_hash".to_string(), 10);
+        let report = build_exit_report(
+            "workspace_hash".to_string(),
+            "audit_hash".to_string(),
+            10,
+            None,
+        );
         assert_eq!(report.workspace_hash, "workspace_hash");
         assert_eq!(report.audit_tail_hash, "audit_hash");
         assert_eq!(report.audit_entry_count, 10);
         assert!(report.timestamp_unix > 0);
+        assert_eq!(report.input_tokens, 0);
+        assert_eq!(report.cost_usd, 0.0);
+    }
+
+    #[test]
+    fn test_build_exit_report_with_usage() {
+        let usage = TokenUsage {
+            input_tokens: 1500,
+            output_tokens: 500,
+            cache_read_tokens: 200,
+            cost_usd: 0.42,
+        };
+        let report = build_exit_report("hash".to_string(), "tail".to_string(), 5, Some(usage));
+        assert_eq!(report.input_tokens, 1500);
+        assert_eq!(report.output_tokens, 500);
+        assert_eq!(report.cache_read_tokens, 200);
+        assert!((report.cost_usd - 0.42).abs() < f64::EPSILON);
     }
 }
