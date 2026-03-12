@@ -22,8 +22,11 @@ inputs:
     description: 'Auto-discover config files in the repository (ignores pod-spec/claude-settings/mcp-config)'
     default: 'false'
   format:
-    description: 'Output format (text or json)'
+    description: 'Output format (text, json, or sarif)'
     default: 'text'
+  upload-sarif:
+    description: 'Upload SARIF results to GitHub Code Scanning (requires security-events: write permission)'
+    default: 'false'
   nucleus-version:
     description: 'Nucleus version to install (or "latest")'
     default: 'latest'
@@ -35,6 +38,9 @@ outputs:
   findings-json:
     description: 'Findings in JSON format'
     value: ${{ steps.scan.outputs.findings_json }}
+  sarif-file:
+    description: 'Path to generated SARIF file (when upload-sarif is true or format is sarif)'
+    value: ${{ steps.sarif.outputs.sarif_path }}
 
 runs:
   using: 'composite'
@@ -115,3 +121,31 @@ runs:
           echo "verdict=FAIL" >> "$GITHUB_OUTPUT"
           exit 1
         fi
+
+    - name: Generate SARIF
+      id: sarif
+      if: inputs.upload-sarif == 'true' || inputs.format == 'sarif'
+      shell: bash
+      run: |
+        set -uo pipefail
+
+        ARGS=""
+        if [ "${{ inputs.auto }}" = "true" ]; then
+          ARGS="--auto"
+        else
+          [ -n "${{ inputs.pod-spec }}" ] && ARGS="${ARGS} --pod-spec ${{ inputs.pod-spec }}"
+          [ -n "${{ inputs.claude-settings }}" ] && ARGS="${ARGS} --claude-settings ${{ inputs.claude-settings }}"
+          [ -n "${{ inputs.mcp-config }}" ] && ARGS="${ARGS} --mcp-config ${{ inputs.mcp-config }}"
+          [ -n "${{ inputs.audit-log }}" ] && ARGS="${ARGS} --audit-log ${{ inputs.audit-log }}"
+        fi
+
+        SARIF_PATH="${RUNNER_TEMP}/nucleus-scan.sarif"
+        nucleus-audit scan ${ARGS} --format sarif > "${SARIF_PATH}" || true
+        echo "sarif_path=${SARIF_PATH}" >> "$GITHUB_OUTPUT"
+
+    - name: Upload SARIF to GitHub Code Scanning
+      if: (inputs.upload-sarif == 'true' || inputs.format == 'sarif') && steps.sarif.outputs.sarif_path != ''
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ steps.sarif.outputs.sarif_path }}
+        category: nucleus-audit
