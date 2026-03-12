@@ -79,6 +79,7 @@ fn base_permission() -> PermissionLattice {
         trifecta_constraint: true,
         created_at: fixed_timestamp(),
         created_by: "kani".to_string(),
+        minimum_isolation: None,
     }
 }
 
