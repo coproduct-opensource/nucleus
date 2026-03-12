@@ -401,6 +401,7 @@ impl ProfileSpec {
             commands: CommandLattice::permissive(),
             time,
             trifecta_constraint: true,
+            minimum_isolation: None,
             created_at: chrono::Utc::now(),
             created_by: "profile".to_string(),
         };

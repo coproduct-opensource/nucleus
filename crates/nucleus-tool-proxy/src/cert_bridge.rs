@@ -198,6 +198,7 @@ pub fn dimensions_to_ceiling(dimensions: &[PermissionDimension]) -> PermissionLa
             Utc::now() + Duration::days(365 * 100),
         ),
         trifecta_constraint: false,
+        minimum_isolation: None,
         created_at: Utc::now(),
         created_by: String::new(),
     }

@@ -18,6 +18,8 @@ use crate::{
         CapabilityLattice, CapabilityLevel, IncompatibilityConstraint, Obligations, Operation,
     },
     command::{ArgPattern, CommandLattice, CommandPattern},
+    frame::Lattice,
+    isolation::IsolationLattice,
     path::PathLattice,
     time::TimeLattice,
 };
@@ -85,6 +87,19 @@ pub struct PermissionLattice {
     /// code if you explicitly need to disable the constraint (e.g., for testing).
     pub trifecta_constraint: bool,
 
+    /// Minimum isolation level required to use this policy.
+    ///
+    /// When set, the kernel will deny all operations if the runtime isolation
+    /// level is weaker than this minimum. This provides defense-in-depth:
+    /// security-critical policies can demand strong isolation guarantees.
+    ///
+    /// `None` means no minimum required (equivalent to localhost).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub minimum_isolation: Option<IsolationLattice>,
+
     /// When this permission was created
     pub created_at: DateTime<Utc>,
     /// Who/what created this permission
@@ -108,6 +123,8 @@ struct RawPermissionLattice {
     #[serde(default = "default_trifecta_constraint")]
     #[allow(dead_code)]
     trifecta_constraint: bool, // Ignored during deserialization
+    #[serde(default)]
+    minimum_isolation: Option<IsolationLattice>,
     created_at: DateTime<Utc>,
     created_by: String,
 }
@@ -132,6 +149,7 @@ impl<'de> Deserialize<'de> for PermissionLattice {
             commands: raw.commands,
             time: raw.time,
             trifecta_constraint: true, // ALWAYS true after deserialization
+            minimum_isolation: raw.minimum_isolation,
             created_at: raw.created_at,
             created_by: raw.created_by,
         };
@@ -165,6 +183,7 @@ impl Default for PermissionLattice {
             commands: CommandLattice::default(),
             time: TimeLattice::default(),
             trifecta_constraint: true,
+            minimum_isolation: None,
             created_at: Utc::now(),
             created_by: "system".to_string(),
         };
@@ -288,6 +307,15 @@ impl PermissionLattice {
             base_obligations
         };
 
+        // Minimum isolation: meet takes the join (stronger requirement).
+        // If either policy demands stronger isolation, the combined policy demands it.
+        let minimum_isolation = match (&self.minimum_isolation, &other.minimum_isolation) {
+            (Some(a), Some(b)) => Some(a.join(b)),
+            (Some(a), None) => Some(*a),
+            (None, Some(b)) => Some(*b),
+            (None, None) => None,
+        };
+
         Self {
             id: Uuid::new_v4(),
             description: format!("meet({}, {})", self.description, other.description),
@@ -299,6 +327,7 @@ impl PermissionLattice {
             commands: self.commands.meet(&other.commands),
             time: self.time.meet(&other.time),
             trifecta_constraint: enforce_trifecta,
+            minimum_isolation,
             created_at: Utc::now(),
             created_by: "meet_operation".to_string(),
         }
@@ -322,6 +351,20 @@ impl PermissionLattice {
             base_obligations
         };
 
+        // Minimum isolation: join takes the meet (weaker requirement).
+        let minimum_isolation = match (&self.minimum_isolation, &other.minimum_isolation) {
+            (Some(a), Some(b)) => {
+                let result = a.meet(b);
+                if result == IsolationLattice::localhost() {
+                    None
+                } else {
+                    Some(result)
+                }
+            }
+            // Join is least upper bound — if one side has no requirement, result has none
+            (_, _) => None,
+        };
+
         Self {
             id: Uuid::new_v4(),
             description: format!("join({}, {})", self.description, other.description),
@@ -333,6 +376,7 @@ impl PermissionLattice {
             commands: self.commands.join(&other.commands),
             time: self.time.join(&other.time),
             trifecta_constraint: enforce_trifecta,
+            minimum_isolation,
             created_at: Utc::now(),
             created_by: "join_operation".to_string(),
         }
@@ -387,13 +431,41 @@ impl PermissionLattice {
     }
 
     /// Check if this lattice is less than or equal to another (partial order).
+    ///
+    /// `self ≤ other` means self is at most as permissive as other.
+    /// For minimum_isolation: a higher minimum means more constrained,
+    /// so self ≤ other requires self's minimum ≥ other's minimum.
     pub fn leq(&self, other: &Self) -> bool {
-        self.capabilities.leq(&other.capabilities)
+        let isolation_leq = match (&self.minimum_isolation, &other.minimum_isolation) {
+            // self has requirement, other doesn't → self is more constrained → ok
+            (Some(_), None) => true,
+            // self has no requirement, other does → self is less constrained → not leq
+            (None, Some(_)) => false,
+            // both have requirements → self's minimum must be ≥ other's minimum
+            (Some(a), Some(b)) => b.leq(a),
+            // neither has requirement → equal
+            (None, None) => true,
+        };
+
+        isolation_leq
+            && self.capabilities.leq(&other.capabilities)
             && self.obligations.leq(&other.obligations)
             && self.paths.leq(&other.paths)
             && self.budget.leq(&other.budget)
             && self.commands.leq(&other.commands)
             && self.time.leq(&other.time)
+    }
+
+    /// Get the effective minimum isolation (defaults to localhost if unset).
+    pub fn effective_minimum_isolation(&self) -> IsolationLattice {
+        self.minimum_isolation
+            .unwrap_or_else(IsolationLattice::localhost)
+    }
+
+    /// Set the minimum isolation level required to use this policy.
+    pub fn with_minimum_isolation(mut self, isolation: IsolationLattice) -> Self {
+        self.minimum_isolation = Some(isolation);
+        self
     }
 
     /// Check if the permission is currently valid.
@@ -1039,6 +1111,7 @@ pub struct PermissionLatticeBuilder {
     commands: Option<CommandLattice>,
     time: Option<TimeLattice>,
     trifecta_constraint: Option<bool>,
+    minimum_isolation: Option<IsolationLattice>,
     created_by: Option<String>,
 }
 
@@ -1096,6 +1169,12 @@ impl PermissionLatticeBuilder {
         self
     }
 
+    /// Set the minimum isolation required to use this policy.
+    pub fn minimum_isolation(mut self, isolation: IsolationLattice) -> Self {
+        self.minimum_isolation = Some(isolation);
+        self
+    }
+
     /// Set who created this permission.
     pub fn created_by(mut self, creator: impl Into<String>) -> Self {
         self.created_by = Some(creator.into());
@@ -1117,6 +1196,7 @@ impl PermissionLatticeBuilder {
             commands: self.commands.unwrap_or_default(),
             time: self.time.unwrap_or_default(),
             trifecta_constraint: self.trifecta_constraint.unwrap_or(true),
+            minimum_isolation: self.minimum_isolation,
             created_at: Utc::now(),
             created_by: self.created_by.unwrap_or_else(|| "builder".to_string()),
         };

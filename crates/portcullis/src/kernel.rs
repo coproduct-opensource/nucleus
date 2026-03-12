@@ -70,6 +70,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::capability::{CapabilityLevel, Operation};
 use crate::guard::{TaintLabel, TaintSet};
+use crate::isolation::{IsolationLattice, NetworkIsolation};
 use crate::lattice::PermissionLattice;
 use crate::taint_core;
 
@@ -173,6 +174,22 @@ pub enum DenyReason {
         /// The blocked command.
         command: String,
     },
+    /// Runtime isolation does not meet the policy's minimum requirement.
+    IsolationInsufficient {
+        /// The required minimum isolation level.
+        required: String,
+        /// The actual runtime isolation level.
+        actual: String,
+    },
+    /// Operation is denied by defense-in-depth isolation gating.
+    ///
+    /// Even if the capability lattice allows the operation, the runtime
+    /// isolation level makes it physically impossible or unsafe (e.g.,
+    /// web_fetch in an airgapped network).
+    IsolationGated {
+        /// The isolation dimension that blocks this operation.
+        dimension: String,
+    },
 }
 
 /// The source of a RequiresApproval verdict.
@@ -227,6 +244,12 @@ pub struct Kernel {
     effective: PermissionLattice,
     /// Initial permissions (for audit comparison).
     initial_hash: String,
+    /// Runtime isolation level — immutable for the session lifetime.
+    ///
+    /// The kernel uses this for defense-in-depth: even if the capability
+    /// lattice allows an operation, the isolation level can deny it
+    /// (e.g., network operations in an airgapped environment).
+    isolation: IsolationLattice,
     /// Append-only session trace.
     trace: Vec<Decision>,
     /// Next sequence number.
@@ -246,13 +269,27 @@ impl Kernel {
     /// Create a new kernel with the given initial permissions.
     ///
     /// The initial permissions set the ceiling — effective permissions
-    /// can only stay the same or decrease from here.
+    /// can only stay the same or decrease from here. Uses localhost
+    /// isolation level (no isolation constraints enforced).
     pub fn new(initial: PermissionLattice) -> Self {
+        Self::with_isolation(initial, IsolationLattice::localhost())
+    }
+
+    /// Create a new kernel with explicit isolation level.
+    ///
+    /// The isolation level is immutable for the session lifetime.
+    /// It enables defense-in-depth checks: network operations are denied
+    /// in airgapped environments, regardless of capability levels.
+    ///
+    /// If the policy's `minimum_isolation` exceeds the runtime isolation,
+    /// ALL operations will be denied.
+    pub fn with_isolation(initial: PermissionLattice, isolation: IsolationLattice) -> Self {
         let initial_hash = initial.checksum();
         Self {
             session_id: Uuid::new_v4(),
             effective: initial,
             initial_hash,
+            isolation,
             trace: Vec::new(),
             next_seq: 0,
             consumed_usd: Decimal::ZERO,
@@ -266,9 +303,12 @@ impl Kernel {
     /// Every operation the agent attempts must pass through this function.
     /// The kernel checks:
     ///
+    /// 0. **Isolation**: Does the runtime isolation meet the policy's minimum?
     /// 1. **Time**: Is the session still within its validity window?
     /// 2. **Budget**: Has the cost ceiling been reached?
     /// 3. **Capability**: Is the operation allowed at the current level?
+    ///    - **Isolation gate**: Defense-in-depth — is the operation physically
+    ///      possible given the isolation level? (e.g., no network in airgap)
     /// 4. **Path**: Is the subject path accessible?
     /// 5. **Command**: Is the command allowed?
     /// 6. **Static approval**: Does the lattice mandate approval?
@@ -280,6 +320,25 @@ impl Kernel {
         let pre_hash = self.effective.checksum();
         let pre_taint_count = self.taint.count();
         let contributed_label = taint_core::classify_operation(operation);
+
+        // 0. Isolation minimum check — does runtime isolation meet policy requirement?
+        if let Some(ref minimum) = self.effective.minimum_isolation {
+            if !self.isolation.at_least(minimum) {
+                return self.record_with_taint(
+                    operation,
+                    subject,
+                    Verdict::Deny(DenyReason::IsolationInsufficient {
+                        required: format!("{}", minimum),
+                        actual: format!("{}", self.isolation),
+                    }),
+                    &pre_hash,
+                    pre_taint_count,
+                    contributed_label,
+                    false,
+                    false,
+                );
+            }
+        }
 
         // 1. Time check
         let now = Utc::now();
@@ -322,6 +381,27 @@ impl Kernel {
                 operation,
                 subject,
                 Verdict::Deny(DenyReason::InsufficientCapability),
+                &pre_hash,
+                pre_taint_count,
+                contributed_label,
+                false,
+                false,
+            );
+        }
+
+        // 3b. Defense-in-depth isolation gate.
+        //
+        // Even if the capability lattice allows the operation, the runtime
+        // isolation level may make it physically impossible or unsafe.
+        // Belt-and-suspenders: the lattice says "allowed", the isolation says "impossible".
+        if is_network_operation(operation) && self.isolation.network == NetworkIsolation::Airgapped
+        {
+            return self.record_with_taint(
+                operation,
+                subject,
+                Verdict::Deny(DenyReason::IsolationGated {
+                    dimension: "network=airgapped".to_string(),
+                }),
                 &pre_hash,
                 pre_taint_count,
                 contributed_label,
@@ -539,6 +619,11 @@ impl Kernel {
         self.next_seq
     }
 
+    /// Get the runtime isolation level.
+    pub fn isolation(&self) -> &IsolationLattice {
+        &self.isolation
+    }
+
     /// Get the current runtime taint accumulator.
     ///
     /// This reflects which trifecta legs have been touched by allowed
@@ -612,6 +697,11 @@ fn is_path_operation(op: Operation) -> bool {
             | Operation::GlobSearch
             | Operation::GrepSearch
     )
+}
+
+/// Check if an operation requires network access.
+fn is_network_operation(op: Operation) -> bool {
+    matches!(op, Operation::WebFetch | Operation::WebSearch)
 }
 
 /// Check if an operation is an exfiltration vector.
@@ -1297,5 +1387,175 @@ mod tests {
             d.verdict
         );
         assert!(d.taint_transition.dynamic_gate_applied);
+    }
+
+    // ── Isolation tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_isolation_minimum_met() {
+        // Policy requires namespaced, runtime is MicroVM — should pass
+        let perms = PermissionLattice::safe_pr_fixer()
+            .with_minimum_isolation(IsolationLattice::sandboxed());
+        let mut kernel = Kernel::with_isolation(perms, IsolationLattice::microvm());
+
+        let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+        assert!(
+            d.verdict.is_allowed(),
+            "MicroVM satisfies sandboxed minimum"
+        );
+    }
+
+    #[test]
+    fn test_isolation_minimum_not_met() {
+        // Policy requires MicroVM, runtime is localhost — should deny everything
+        let perms =
+            PermissionLattice::safe_pr_fixer().with_minimum_isolation(IsolationLattice::microvm());
+        let mut kernel = Kernel::with_isolation(perms, IsolationLattice::localhost());
+
+        let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+        assert!(
+            matches!(
+                d.verdict,
+                Verdict::Deny(DenyReason::IsolationInsufficient { .. })
+            ),
+            "localhost does not satisfy MicroVM minimum, got {:?}",
+            d.verdict
+        );
+    }
+
+    #[test]
+    fn test_isolation_minimum_exact_match() {
+        // Policy requires sandboxed, runtime is exactly sandboxed — should pass
+        let perms = PermissionLattice::safe_pr_fixer()
+            .with_minimum_isolation(IsolationLattice::sandboxed());
+        let mut kernel = Kernel::with_isolation(perms, IsolationLattice::sandboxed());
+
+        let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+        assert!(d.verdict.is_allowed(), "exact match satisfies minimum");
+    }
+
+    #[test]
+    fn test_isolation_minimum_partial_fail() {
+        use crate::isolation::{FileIsolation, NetworkIsolation, ProcessIsolation};
+
+        // Policy requires MicroVM + Filtered network
+        let min = IsolationLattice::new(
+            ProcessIsolation::MicroVM,
+            FileIsolation::Sandboxed,
+            NetworkIsolation::Filtered,
+        );
+        let perms = PermissionLattice::safe_pr_fixer().with_minimum_isolation(min);
+
+        // Runtime has MicroVM process but Host network — partial failure
+        let runtime = IsolationLattice::new(
+            ProcessIsolation::MicroVM,
+            FileIsolation::Sandboxed,
+            NetworkIsolation::Host,
+        );
+        let mut kernel = Kernel::with_isolation(perms, runtime);
+
+        let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+        assert!(
+            matches!(
+                d.verdict,
+                Verdict::Deny(DenyReason::IsolationInsufficient { .. })
+            ),
+            "Host network doesn't satisfy Filtered minimum"
+        );
+    }
+
+    #[test]
+    fn test_isolation_no_minimum_always_passes() {
+        // Policy has no minimum_isolation — any runtime works
+        let perms = PermissionLattice::safe_pr_fixer();
+        assert!(perms.minimum_isolation.is_none());
+        let mut kernel = Kernel::with_isolation(perms, IsolationLattice::localhost());
+
+        let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+        assert!(
+            d.verdict.is_allowed(),
+            "no minimum → always passes isolation check"
+        );
+    }
+
+    #[test]
+    fn test_airgapped_denies_network_ops() {
+        // Even with web_fetch=Always, airgapped network denies it
+        let perms = PermissionLattice::permissive();
+        let mut kernel = Kernel::with_isolation(perms, IsolationLattice::microvm());
+
+        let d = kernel.decide(Operation::WebFetch, "https://example.com");
+        assert!(
+            matches!(d.verdict, Verdict::Deny(DenyReason::IsolationGated { .. })),
+            "airgapped network must deny web_fetch even if capability allows it, got {:?}",
+            d.verdict
+        );
+    }
+
+    #[test]
+    fn test_airgapped_denies_web_search() {
+        let perms = PermissionLattice::permissive();
+        let mut kernel = Kernel::with_isolation(perms, IsolationLattice::microvm());
+
+        let d = kernel.decide(Operation::WebSearch, "rust async");
+        assert!(
+            matches!(d.verdict, Verdict::Deny(DenyReason::IsolationGated { .. })),
+            "airgapped network must deny web_search, got {:?}",
+            d.verdict
+        );
+    }
+
+    #[test]
+    fn test_airgapped_allows_non_network_ops() {
+        // Airgapped still allows file operations and local commands
+        let perms = PermissionLattice::permissive();
+        let mut kernel = Kernel::with_isolation(perms, IsolationLattice::microvm());
+
+        let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+        assert!(d.verdict.is_allowed(), "airgapped should allow file reads");
+
+        let d = kernel.decide(Operation::GlobSearch, "**/*.rs");
+        assert!(d.verdict.is_allowed(), "airgapped should allow glob search");
+    }
+
+    #[test]
+    fn test_filtered_network_allows_web_ops() {
+        // Filtered network (not airgapped) should allow web operations
+        let perms = PermissionLattice::permissive();
+        let mut kernel = Kernel::with_isolation(perms, IsolationLattice::microvm_with_network());
+
+        let d = kernel.decide(Operation::WebFetch, "https://example.com");
+        assert!(
+            d.verdict.is_allowed(),
+            "filtered network should allow web_fetch, got {:?}",
+            d.verdict
+        );
+    }
+
+    #[test]
+    fn test_isolation_minimum_meet_takes_stronger() {
+        // When two policies are combined via meet, the minimum_isolation
+        // should be the join (stronger) of both
+        let a =
+            PermissionLattice::permissive().with_minimum_isolation(IsolationLattice::sandboxed());
+        let b = PermissionLattice::permissive().with_minimum_isolation(IsolationLattice::microvm());
+
+        let result = a.meet(&b);
+        assert!(
+            result.minimum_isolation.is_some(),
+            "meet should preserve minimum_isolation"
+        );
+        let min = result.minimum_isolation.unwrap();
+        // MicroVM is stronger than sandboxed on all dimensions
+        assert!(min.at_least(&IsolationLattice::microvm()));
+    }
+
+    #[test]
+    fn test_kernel_isolation_accessor() {
+        let perms = PermissionLattice::safe_pr_fixer();
+        let iso = IsolationLattice::microvm();
+        let kernel = Kernel::with_isolation(perms, iso);
+
+        assert_eq!(kernel.isolation(), &IsolationLattice::microvm());
     }
 }
