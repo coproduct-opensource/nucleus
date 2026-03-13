@@ -2,7 +2,7 @@
 
 use crate::{
     frame::Lattice,
-    guard::{operation_taint, TaintLabel, TaintSet},
+    guard::{operation_exposure, ExposureLabel, ExposureSet},
     isolation::{FileIsolation, IsolationLattice, NetworkIsolation, ProcessIsolation},
     BudgetLattice, CapabilityLattice, CapabilityLevel, CommandLattice, Obligations, Operation,
     PathLattice, PermissionLattice, TimeLattice,
@@ -76,7 +76,7 @@ fn base_permission() -> PermissionLattice {
         budget: BudgetLattice::with_cost_limit(1.0),
         commands: CommandLattice::restrictive(),
         time: TimeLattice::minutes(1),
-        trifecta_constraint: true,
+        uninhabitable_constraint: true,
         created_at: fixed_timestamp(),
         created_by: "kani".to_string(),
         minimum_isolation: None,
@@ -100,7 +100,7 @@ fn build_ordered_permissions() -> (PermissionLattice, PermissionLattice) {
     let (superset_obligations, base_obligations) =
         obligations_from_masks(kani::any::<u16>(), kani::any::<u16>());
 
-    let trifecta = kani::any::<bool>();
+    let uninhabitable_state = kani::any::<bool>();
 
     let mut lhs = base_permission();
     lhs.capabilities = CapabilityLattice {
@@ -119,7 +119,7 @@ fn build_ordered_permissions() -> (PermissionLattice, PermissionLattice) {
         // extensions field excluded via #[cfg(not(kani))]
     };
     lhs.obligations = superset_obligations;
-    lhs.trifecta_constraint = trifecta;
+    lhs.uninhabitable_constraint = uninhabitable_state;
 
     let mut rhs = base_permission();
     rhs.capabilities = CapabilityLattice {
@@ -138,7 +138,7 @@ fn build_ordered_permissions() -> (PermissionLattice, PermissionLattice) {
         // extensions field excluded via #[cfg(not(kani))]
     };
     rhs.obligations = base_obligations;
-    rhs.trifecta_constraint = trifecta;
+    rhs.uninhabitable_constraint = uninhabitable_state;
 
     (lhs, rhs)
 }
@@ -196,7 +196,7 @@ fn build_arbitrary_permission() -> PermissionLattice {
     let mut perm = base_permission();
     perm.capabilities = arbitrary_caps();
     perm.obligations = obligations;
-    perm.trifecta_constraint = kani::any::<bool>();
+    perm.uninhabitable_constraint = kani::any::<bool>();
     perm
 }
 
@@ -278,25 +278,25 @@ fn proof_frame_finite_distributivity() {
 }
 
 // ============================================================================
-// TaintSet Bounded Model Checking (Track A — Phase 8)
+// ExposureSet Bounded Model Checking (Track A — Phase 8)
 // ============================================================================
 //
-// These harnesses verify properties of the PRODUCTION TaintSet type via
+// These harnesses verify properties of the PRODUCTION ExposureSet type via
 // bounded model checking with CaDiCaL. Unlike the Verus proofs (which
-// verify a SpecTaintSet model), these operate directly on the Rust types
+// verify a SpecExposureSet model), these operate directly on the Rust types
 // that ship in the binary.
 
-/// Build a symbolic TaintSet from 3 arbitrary bools.
-fn arbitrary_taint_set() -> TaintSet {
-    let mut s = TaintSet::empty();
+/// Build a symbolic ExposureSet from 3 arbitrary bools.
+fn arbitrary_exposure_set() -> ExposureSet {
+    let mut s = ExposureSet::empty();
     if kani::any::<bool>() {
-        s = s.union(&TaintSet::singleton(TaintLabel::PrivateData));
+        s = s.union(&ExposureSet::singleton(ExposureLabel::PrivateData));
     }
     if kani::any::<bool>() {
-        s = s.union(&TaintSet::singleton(TaintLabel::UntrustedContent));
+        s = s.union(&ExposureSet::singleton(ExposureLabel::UntrustedContent));
     }
     if kani::any::<bool>() {
-        s = s.union(&TaintSet::singleton(TaintLabel::ExfilVector));
+        s = s.union(&ExposureSet::singleton(ExposureLabel::ExfilVector));
     }
     s
 }
@@ -320,38 +320,38 @@ fn arbitrary_operation() -> Operation {
     }
 }
 
-/// Pure taint projection: what the taint WOULD be after recording this op.
-/// Mirrors GradedTaintGuard::projected_taint() without the RwLock.
+/// Pure exposure projection: what the exposure WOULD be after recording this op.
+/// Mirrors GradedExposureGuard::projected_exposure() without the RwLock.
 ///
 /// RunBash is omnibus: bash can read files AND exfiltrate, so the CHECK
 /// conservatively projects both PrivateData and ExfilVector.
-fn pure_projected_taint(current: &TaintSet, op: Operation) -> TaintSet {
+fn pure_projected_exposure(current: &ExposureSet, op: Operation) -> ExposureSet {
     if op == Operation::RunBash {
         // RunBash is omnibus: project both PrivateData and ExfilVector
         current
-            .union(&TaintSet::singleton(TaintLabel::PrivateData))
-            .union(&TaintSet::singleton(TaintLabel::ExfilVector))
-    } else if let Some(label) = operation_taint(op) {
-        current.union(&TaintSet::singleton(label))
+            .union(&ExposureSet::singleton(ExposureLabel::PrivateData))
+            .union(&ExposureSet::singleton(ExposureLabel::ExfilVector))
+    } else if let Some(label) = operation_exposure(op) {
+        current.union(&ExposureSet::singleton(label))
     } else {
         current.clone()
     }
 }
 
 /// Pure guard denial check: would this operation be denied?
-/// Mirrors GradedTaintGuard::check() layers 1+2 (trifecta path only).
-fn pure_taint_would_deny(current: &TaintSet, op: Operation, requires_approval: bool) -> bool {
-    pure_projected_taint(current, op).is_trifecta_complete() && requires_approval
+/// Mirrors GradedExposureGuard::check() layers 1+2 (uninhabitable_state path only).
+fn pure_exposure_would_deny(current: &ExposureSet, op: Operation, requires_approval: bool) -> bool {
+    pure_projected_exposure(current, op).is_uninhabitable() && requires_approval
 }
 
 // ---------------------------------------------------------------------------
-// A1: TaintSet monoid identity — empty() is the two-sided identity
+// A1: ExposureSet monoid identity — empty() is the two-sided identity
 // ---------------------------------------------------------------------------
 #[kani::proof]
 #[kani::solver(cadical)]
-fn proof_taintset_monoid_identity() {
-    let s = arbitrary_taint_set();
-    let empty = TaintSet::empty();
+fn proof_exposureset_monoid_identity() {
+    let s = arbitrary_exposure_set();
+    let empty = ExposureSet::empty();
     assert!(
         empty.union(&s) == s,
         "Left identity violated: empty ∪ s ≠ s"
@@ -363,14 +363,14 @@ fn proof_taintset_monoid_identity() {
 }
 
 // ---------------------------------------------------------------------------
-// A2: TaintSet monoid laws — associativity, commutativity, idempotence
+// A2: ExposureSet monoid laws — associativity, commutativity, idempotence
 // ---------------------------------------------------------------------------
 #[kani::proof]
 #[kani::solver(cadical)]
-fn proof_taintset_monoid_laws() {
-    let a = arbitrary_taint_set();
-    let b = arbitrary_taint_set();
-    let c = arbitrary_taint_set();
+fn proof_exposureset_monoid_laws() {
+    let a = arbitrary_exposure_set();
+    let b = arbitrary_exposure_set();
+    let c = arbitrary_exposure_set();
     // Associativity: (a ∪ b) ∪ c == a ∪ (b ∪ c)
     assert!(
         a.union(&b).union(&c) == a.union(&b.union(&c)),
@@ -383,71 +383,71 @@ fn proof_taintset_monoid_laws() {
 }
 
 // ---------------------------------------------------------------------------
-// A3: Trifecta iff count == 3
+// A3:  UninhabitableState iff count == 3
 // ---------------------------------------------------------------------------
 #[kani::proof]
 #[kani::solver(cadical)]
-fn proof_taintset_trifecta_iff_count_three() {
-    let s = arbitrary_taint_set();
+fn proof_exposureset_uninhabitable_iff_count_three() {
+    let s = arbitrary_exposure_set();
     assert!(
-        s.is_trifecta_complete() == (s.count() == 3),
-        "Trifecta ⟺ count==3 violated"
+        s.is_uninhabitable() == (s.count() == 3),
+        " UninhabitableState ⟺ count==3 violated"
     );
     assert!(s.count() <= 3, "Count exceeds maximum");
 }
 
 // ---------------------------------------------------------------------------
-// A4: Union monotonicity — taint never decreases under union
+// A4: Union monotonicity — exposure never decreases under union
 // ---------------------------------------------------------------------------
 #[kani::proof]
 #[kani::solver(cadical)]
-fn proof_taintset_union_monotone() {
-    let a = arbitrary_taint_set();
-    let b = arbitrary_taint_set();
+fn proof_exposureset_union_monotone() {
+    let a = arbitrary_exposure_set();
+    let b = arbitrary_exposure_set();
     let merged = a.union(&b);
     // Count monotonicity
     assert!(a.count() <= merged.count(), "Count decreased after union");
     // Label containment: all labels in a are in merged
-    if a.contains(TaintLabel::PrivateData) {
-        assert!(merged.contains(TaintLabel::PrivateData));
+    if a.contains(ExposureLabel::PrivateData) {
+        assert!(merged.contains(ExposureLabel::PrivateData));
     }
-    if a.contains(TaintLabel::UntrustedContent) {
-        assert!(merged.contains(TaintLabel::UntrustedContent));
+    if a.contains(ExposureLabel::UntrustedContent) {
+        assert!(merged.contains(ExposureLabel::UntrustedContent));
     }
-    if a.contains(TaintLabel::ExfilVector) {
-        assert!(merged.contains(TaintLabel::ExfilVector));
+    if a.contains(ExposureLabel::ExfilVector) {
+        assert!(merged.contains(ExposureLabel::ExfilVector));
     }
     // Symmetric: all labels in b are in merged
-    if b.contains(TaintLabel::PrivateData) {
-        assert!(merged.contains(TaintLabel::PrivateData));
+    if b.contains(ExposureLabel::PrivateData) {
+        assert!(merged.contains(ExposureLabel::PrivateData));
     }
-    if b.contains(TaintLabel::UntrustedContent) {
-        assert!(merged.contains(TaintLabel::UntrustedContent));
+    if b.contains(ExposureLabel::UntrustedContent) {
+        assert!(merged.contains(ExposureLabel::UntrustedContent));
     }
-    if b.contains(TaintLabel::ExfilVector) {
-        assert!(merged.contains(TaintLabel::ExfilVector));
+    if b.contains(ExposureLabel::ExfilVector) {
+        assert!(merged.contains(ExposureLabel::ExfilVector));
     }
 }
 
 // ---------------------------------------------------------------------------
-// A5: operation_taint completeness — all 12 ops map to correct taint legs
+// A5: operation_exposure completeness — all 12 ops map to correct exposure legs
 // ---------------------------------------------------------------------------
 #[kani::proof]
 #[kani::solver(cadical)]
-fn proof_operation_taint_completeness() {
+fn proof_operation_exposure_completeness() {
     let op = arbitrary_operation();
-    let label = operation_taint(op);
+    let label = operation_exposure(op);
     match label {
-        Some(TaintLabel::PrivateData) => {
+        Some(ExposureLabel::PrivateData) => {
             assert!(matches!(
                 op,
                 Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch
             ));
         }
-        Some(TaintLabel::UntrustedContent) => {
+        Some(ExposureLabel::UntrustedContent) => {
             assert!(matches!(op, Operation::WebFetch | Operation::WebSearch));
         }
-        Some(TaintLabel::ExfilVector) => {
+        Some(ExposureLabel::ExfilVector) => {
             assert!(matches!(
                 op,
                 Operation::RunBash | Operation::GitPush | Operation::CreatePr
@@ -466,51 +466,51 @@ fn proof_operation_taint_completeness() {
 }
 
 // ---------------------------------------------------------------------------
-// A6: Projected taint correctness — projection is monotone, adds only op's label
+// A6: Projected exposure correctness — projection is monotone, adds only op's label
 // ---------------------------------------------------------------------------
 #[kani::proof]
 #[kani::solver(cadical)]
-fn proof_projected_taint_correctness() {
-    let current = arbitrary_taint_set();
+fn proof_projected_exposure_correctness() {
+    let current = arbitrary_exposure_set();
     let op = arbitrary_operation();
-    let projected = pure_projected_taint(&current, op);
+    let projected = pure_projected_exposure(&current, op);
     // 1. Projection is monotone: current ⊆ projected
-    if current.contains(TaintLabel::PrivateData) {
-        assert!(projected.contains(TaintLabel::PrivateData));
+    if current.contains(ExposureLabel::PrivateData) {
+        assert!(projected.contains(ExposureLabel::PrivateData));
     }
-    if current.contains(TaintLabel::UntrustedContent) {
-        assert!(projected.contains(TaintLabel::UntrustedContent));
+    if current.contains(ExposureLabel::UntrustedContent) {
+        assert!(projected.contains(ExposureLabel::UntrustedContent));
     }
-    if current.contains(TaintLabel::ExfilVector) {
-        assert!(projected.contains(TaintLabel::ExfilVector));
+    if current.contains(ExposureLabel::ExfilVector) {
+        assert!(projected.contains(ExposureLabel::ExfilVector));
     }
-    // 2. Neutral ops don't change taint
-    if operation_taint(op).is_none() && op != Operation::RunBash {
-        assert!(projected == current, "Neutral op changed taint");
+    // 2. Neutral ops don't change exposure
+    if operation_exposure(op).is_none() && op != Operation::RunBash {
+        assert!(projected == current, "Neutral op changed exposure");
     }
     // 3. Non-neutral ops add their label
-    if let Some(label) = operation_taint(op) {
+    if let Some(label) = operation_exposure(op) {
         assert!(
             projected.contains(label),
-            "Projected taint missing op label"
+            "Projected exposure missing op label"
         );
     }
     // 3b. RunBash omnibus: always projects both PrivateData AND ExfilVector
     if op == Operation::RunBash {
         assert!(
-            projected.contains(TaintLabel::PrivateData),
+            projected.contains(ExposureLabel::PrivateData),
             "RunBash projection missing PrivateData"
         );
         assert!(
-            projected.contains(TaintLabel::ExfilVector),
+            projected.contains(ExposureLabel::ExfilVector),
             "RunBash projection missing ExfilVector"
         );
     }
-    // 4. If current is already trifecta-complete, projected is too (irreversibility)
-    if current.is_trifecta_complete() {
+    // 4. If current is already uninhabitable, projected is too (irreversibility)
+    if current.is_uninhabitable() {
         assert!(
-            projected.is_trifecta_complete(),
-            "Trifecta lost after projection"
+            projected.is_uninhabitable(),
+            " UninhabitableState lost after projection"
         );
     }
 }
@@ -521,19 +521,25 @@ fn proof_projected_taint_correctness() {
 #[kani::proof]
 #[kani::solver(cadical)]
 fn proof_guard_denial_soundness() {
-    let current = arbitrary_taint_set();
+    let current = arbitrary_exposure_set();
     let op = arbitrary_operation();
     let requires_approval = kani::any::<bool>();
-    let denied = pure_taint_would_deny(&current, op, requires_approval);
-    // If denied, projected taint MUST be trifecta-complete AND requires approval
+    let denied = pure_exposure_would_deny(&current, op, requires_approval);
+    // If denied, projected exposure MUST be uninhabitable AND requires approval
     if denied {
-        let projected = pure_projected_taint(&current, op);
-        assert!(projected.is_trifecta_complete(), "Denied without trifecta");
+        let projected = pure_projected_exposure(&current, op);
+        assert!(
+            projected.is_uninhabitable(),
+            "Denied without uninhabitable_state"
+        );
         assert!(requires_approval, "Denied without approval requirement");
     }
-    // Converse: trifecta-complete + requires_approval → denied
-    if current.is_trifecta_complete() && requires_approval {
-        assert!(denied, "Trifecta + approval should deny but didn't");
+    // Converse: uninhabitable + requires_approval → denied
+    if current.is_uninhabitable() && requires_approval {
+        assert!(
+            denied,
+            " UninhabitableState + approval should deny but didn't"
+        );
     }
 }
 
@@ -546,36 +552,36 @@ fn proof_clinejection_blocked() {
     // Model the Clinejection attack: untrusted content read via WebFetch,
     // then attacker triggers RunBash (npm install with preinstall hook).
     //
-    // After WebFetch, taint has UntrustedContent. RunBash's omnibus
-    // projection adds PrivateData + ExfilVector → trifecta complete → denied.
-    let mut taint = TaintSet::empty();
+    // After WebFetch, exposure has UntrustedContent. RunBash's omnibus
+    // projection adds PrivateData + ExfilVector → uninhabitable_state complete → denied.
+    let mut exposure = ExposureSet::empty();
 
     // Step 1: WebFetch contributes UntrustedContent
-    taint = taint.union(&TaintSet::singleton(TaintLabel::UntrustedContent));
-    assert!(taint.contains(TaintLabel::UntrustedContent));
-    assert!(!taint.is_trifecta_complete());
+    exposure = exposure.union(&ExposureSet::singleton(ExposureLabel::UntrustedContent));
+    assert!(exposure.contains(ExposureLabel::UntrustedContent));
+    assert!(!exposure.is_uninhabitable());
 
-    // Step 2: RunBash projected taint includes PrivateData + ExfilVector
-    let projected = pure_projected_taint(&taint, Operation::RunBash);
+    // Step 2: RunBash projected exposure includes PrivateData + ExfilVector
+    let projected = pure_projected_exposure(&exposure, Operation::RunBash);
     assert!(
-        projected.contains(TaintLabel::PrivateData),
+        projected.contains(ExposureLabel::PrivateData),
         "RunBash must project PrivateData"
     );
     assert!(
-        projected.contains(TaintLabel::ExfilVector),
+        projected.contains(ExposureLabel::ExfilVector),
         "RunBash must project ExfilVector"
     );
     assert!(
-        projected.contains(TaintLabel::UntrustedContent),
+        projected.contains(ExposureLabel::UntrustedContent),
         "Existing UntrustedContent must survive projection"
     );
     assert!(
-        projected.is_trifecta_complete(),
-        "WebFetch + RunBash must complete trifecta"
+        projected.is_uninhabitable(),
+        "WebFetch + RunBash must uninhabitable_state"
     );
 
     // Step 3: Guard denies (RunBash requires approval → denied)
-    let denied = pure_taint_would_deny(&taint, Operation::RunBash, true);
+    let denied = pure_exposure_would_deny(&exposure, Operation::RunBash, true);
     assert!(
         denied,
         "Clinejection: RunBash after WebFetch MUST be denied"
@@ -587,7 +593,7 @@ fn proof_clinejection_blocked() {
 // ============================================================================
 //
 // These harnesses verify the foundational properties that the kernel
-// and delegation system depend on. Together with the taint proofs above,
+// and delegation system depend on. Together with the exposure proofs above,
 // they form a complete verification of the permission algebra.
 
 // ---------------------------------------------------------------------------
@@ -657,67 +663,67 @@ fn proof_delegation_ceiling() {
 }
 
 // ---------------------------------------------------------------------------
-// B5: apply_record is monotone — taint never decreases
+// B5: apply_record is monotone — exposure never decreases
 //
-// For any taint set `current` and operation `op`:
+// For any exposure set `current` and operation `op`:
 //   current ⊆ apply_record(current, op)
 // ---------------------------------------------------------------------------
 #[kani::proof]
 #[kani::solver(cadical)]
 fn proof_apply_record_monotone() {
-    let current = arbitrary_taint_set();
+    let current = arbitrary_exposure_set();
     let op = arbitrary_operation();
-    let after = crate::taint_core::apply_record(&current, op);
+    let after = crate::exposure_core::apply_record(&current, op);
     // Every label in `current` must also be in `after`
-    if current.contains(TaintLabel::PrivateData) {
+    if current.contains(ExposureLabel::PrivateData) {
         assert!(
-            after.contains(TaintLabel::PrivateData),
+            after.contains(ExposureLabel::PrivateData),
             "apply_record lost PrivateData"
         );
     }
-    if current.contains(TaintLabel::UntrustedContent) {
+    if current.contains(ExposureLabel::UntrustedContent) {
         assert!(
-            after.contains(TaintLabel::UntrustedContent),
+            after.contains(ExposureLabel::UntrustedContent),
             "apply_record lost UntrustedContent"
         );
     }
-    if current.contains(TaintLabel::ExfilVector) {
+    if current.contains(ExposureLabel::ExfilVector) {
         assert!(
-            after.contains(TaintLabel::ExfilVector),
+            after.contains(ExposureLabel::ExfilVector),
             "apply_record lost ExfilVector"
         );
     }
     // Count never decreases
     assert!(
         after.count() >= current.count(),
-        "apply_record decreased taint count"
+        "apply_record decreased exposure count"
     );
 }
 
 // ---------------------------------------------------------------------------
-// B6: Taint irreversibility — once trifecta-complete, always trifecta-complete
+// B6: Exposure irreversibility — once uninhabitable, always uninhabitable
 //
-// If `current.is_trifecta_complete()`, then for ANY operation `op`:
-//   apply_record(current, op).is_trifecta_complete()
+// If `current.is_uninhabitable()`, then for ANY operation `op`:
+//   apply_record(current, op).is_uninhabitable()
 //
-// This is the monotone latch property: trifecta is a one-way gate.
+// This is the monotone latch property: uninhabitable_state is a one-way gate.
 // ---------------------------------------------------------------------------
 #[kani::proof]
 #[kani::solver(cadical)]
-fn proof_taint_irreversibility() {
-    let current = arbitrary_taint_set();
+fn proof_exposure_irreversibility() {
+    let current = arbitrary_exposure_set();
     let op = arbitrary_operation();
-    if current.is_trifecta_complete() {
-        let after = crate::taint_core::apply_record(&current, op);
+    if current.is_uninhabitable() {
+        let after = crate::exposure_core::apply_record(&current, op);
         assert!(
-            after.is_trifecta_complete(),
-            "Trifecta reversed after apply_record"
+            after.is_uninhabitable(),
+            " UninhabitableState reversed after apply_record"
         );
     }
 }
 
 // ---------------------------------------------------------------------------
-// B7: Dynamic gate completeness — exfil ops ALWAYS denied when trifecta
+// B7: Dynamic gate completeness — exfil ops ALWAYS denied when uninhabitable_state
 //     would complete AND the op requires approval
 //
 // Strengthened version of A7: covers both the transition case (not yet
@@ -727,21 +733,27 @@ fn proof_taint_irreversibility() {
 #[kani::proof]
 #[kani::solver(cadical)]
 fn proof_dynamic_gate_completeness() {
-    let current = arbitrary_taint_set();
+    let current = arbitrary_exposure_set();
     let op = arbitrary_operation();
     let requires_approval = true;
 
-    let projected = pure_projected_taint(&current, op);
-    let denied = pure_taint_would_deny(&current, op, requires_approval);
+    let projected = pure_projected_exposure(&current, op);
+    let denied = pure_exposure_would_deny(&current, op, requires_approval);
 
-    // If the projected taint is trifecta-complete, denial MUST happen
-    if projected.is_trifecta_complete() {
-        assert!(denied, "Trifecta-complete projection should deny");
+    // If the projected exposure is uninhabitable, denial MUST happen
+    if projected.is_uninhabitable() {
+        assert!(
+            denied,
+            "uninhabitable_state-complete projection should deny"
+        );
     }
 
-    // Converse: if taint was already complete, projection is also complete
-    if current.is_trifecta_complete() {
-        assert!(projected.is_trifecta_complete(), "Projection lost trifecta");
+    // Converse: if exposure was already complete, projection is also complete
+    if current.is_uninhabitable() {
+        assert!(
+            projected.is_uninhabitable(),
+            "Projection lost uninhabitable_state"
+        );
     }
 }
 
@@ -762,11 +774,11 @@ fn proof_meet_deflationary_both() {
 }
 
 // ---------------------------------------------------------------------------
-// B9: Taint three-step minimum — trifecta requires at least 3 distinct
+// B9: Exposure three-step minimum — uninhabitable_state requires at least 3 distinct
 //     non-neutral operations
 //
-// Starting from empty taint, you need operations from ALL THREE categories
-// (private data, untrusted content, exfil vector) to complete the trifecta.
+// Starting from empty exposure, you need operations from ALL THREE categories
+// (private data, untrusted content, exfil vector) to complete the uninhabitable_state.
 // ---------------------------------------------------------------------------
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -839,22 +851,25 @@ fn proof_chained_attenuation_monotone() {
 #[kani::proof]
 #[kani::unwind(3)]
 #[kani::solver(cadical)]
-fn proof_taint_three_step_minimum() {
+fn proof_exposure_three_step_minimum() {
     let op1 = arbitrary_operation();
     let op2 = arbitrary_operation();
 
-    // Two operations from empty can never complete the trifecta
+    // Two operations from empty can never complete the uninhabitable_state
     // (RunBash omnibus gives 2 legs, but 2 is not 3)
-    let t0 = TaintSet::empty();
-    let t1 = crate::taint_core::apply_record(&t0, op1);
-    let t2 = crate::taint_core::apply_record(&t1, op2);
+    let t0 = ExposureSet::empty();
+    let t1 = crate::exposure_core::apply_record(&t0, op1);
+    let t2 = crate::exposure_core::apply_record(&t1, op2);
 
     // At most 2 legs from 2 operations (each op adds at most 1 via apply_record)
-    assert!(t2.count() <= 2, "Two ops should add at most 2 taint legs");
-    // Therefore, trifecta cannot be complete
     assert!(
-        !t2.is_trifecta_complete(),
-        "Trifecta should not complete in 2 steps"
+        t2.count() <= 2,
+        "Two ops should add at most 2 exposure legs"
+    );
+    // Therefore, uninhabitable_state cannot be complete
+    assert!(
+        !t2.is_uninhabitable(),
+        " UninhabitableState should not complete in 2 steps"
     );
 }
 

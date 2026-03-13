@@ -4,11 +4,11 @@
 [![Documentation](https://docs.rs/portcullis/badge.svg)](https://docs.rs/portcullis)
 [![License](https://img.shields.io/crates/l/portcullis.svg)](LICENSE-MIT)
 
-A **quotient lattice** for AI agent permissions that prevents the "lethal trifecta".
+A **quotient lattice** for AI agent permissions that prevents the "uninhabitable state".
 
-## The Lethal Trifecta
+## The Uninhabitable State
 
-The [lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/) describes three capabilities that, when combined in an AI agent, create critical security vulnerabilities:
+The [uninhabitable state](https://simonwillison.net/2025/Jun/16/the-uninhabitable-state/) describes three capabilities that, when combined in an AI agent, create critical security vulnerabilities:
 
 1. **Private Data Access** - reading files, credentials, secrets
 2. **Untrusted Content Exposure** - web search, fetching URLs, processing external input
@@ -18,7 +18,7 @@ When an agent has all three at autonomous levels, prompt injection attacks can e
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
-│                    THE LETHAL TRIFECTA                          │
+│                    THE LETHAL uninhabitable state                          │
 │                                                                 │
 │   ┌──────────────┐    ┌──────────────┐    ┌──────────────┐     │
 │   │   Private    │    │  Untrusted   │    │ Exfiltration │     │
@@ -48,7 +48,7 @@ The portcullis ν satisfies:
 • Meet-preserving: ν(x ∧ y) = ν(x) ∧ ν(y)
 ```
 
-When the trifecta is detected, exfiltration operations gain approval obligations. The quotient L' contains only configurations where this invariant holds.
+When the uninhabitable state is detected, exfiltration operations gain approval obligations. The quotient L' contains only configurations where this invariant holds.
 
 See [THREAT_MODEL.md](THREAT_MODEL.md) for what this crate prevents and what it does NOT prevent.
 
@@ -234,7 +234,7 @@ let perms = PermissionLattice::builder()
     .description("Code review task")
     .capabilities(CapabilityLattice::restrictive())
     .budget(BudgetLattice::with_cost_limit(1.0))
-    .trifecta_constraint(true)
+    .uninhabitable_constraint(true)
     .created_by("review-agent")
     .build();
 ```
@@ -293,18 +293,18 @@ The nucleus operator is formalized as a proper frame-theoretic construct, enabli
 
 ```rust
 use portcullis::{
-    frame::{Nucleus, TrifectaQuotient, SafePermissionLattice},
+    frame::{Nucleus, UninhabitableQuotient, SafePermissionLattice},
     PermissionLattice,
 };
 
-// Create the trifecta quotient nucleus
-let nucleus = TrifectaQuotient::new();
+// Create the uninhabitable state quotient nucleus
+let nucleus = UninhabitableQuotient::new();
 
 // Project through the nucleus to get compile-time safety guarantee
 let dangerous = PermissionLattice::permissive();
 let safe = SafePermissionLattice::from_nucleus(&nucleus, dangerous);
 
-// The inner lattice is guaranteed to be trifecta-safe
+// The inner lattice is guaranteed to be uninhabitable state-safe
 assert!(nucleus.is_fixed_point(safe.inner()));
 ```
 
@@ -397,18 +397,18 @@ Track risk through computation chains with proper monad laws:
 ```rust
 use portcullis::{
     graded::{Graded, RiskGrade, evaluate_with_risk},
-    TrifectaRisk, PermissionLattice,
+    StateRisk, PermissionLattice,
 };
 
 // Pure computation (no risk)
-let safe: Graded<TrifectaRisk, i32> = Graded::pure(42);
+let safe: Graded<StateRisk, i32> = Graded::pure(42);
 
 // Chain computations, risk accumulates via composition
 let result = safe
-    .and_then(|x| Graded::new(TrifectaRisk::Low, x * 2))
-    .and_then(|x| Graded::new(TrifectaRisk::Medium, x + 1));
+    .and_then(|x| Graded::new(StateRisk::Low, x * 2))
+    .and_then(|x| Graded::new(StateRisk::Medium, x + 1));
 
-assert_eq!(result.grade, TrifectaRisk::Medium); // max of grades
+assert_eq!(result.grade, StateRisk::Medium); // max of grades
 
 // Evaluate permission profile with automatic risk grading
 let perms = PermissionLattice::fix_issue();
@@ -446,7 +446,7 @@ fn execute_with_permission<A>(action: GuardedAction<A>) {
 
 ### What We Prevent
 
-- Trifecta completion at autonomous levels
+-  Uninhabitable state completion at autonomous levels
 - Privilege escalation via delegation
 - Budget inflation via negative charges
 - Path traversal attacks
@@ -476,7 +476,7 @@ at your option.
 
 ### Security
 
-- [The Lethal Trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/) - Simon Willison
+- [The Uninhabitable State](https://simonwillison.net/2025/Jun/16/the-uninhabitable-state/) - Simon Willison
 - [Container Hardening Against Agentic AI](https://securitytheatre.substack.com/p/container-hardening-against-agentic)
 - [Lattice-based Access Control](https://en.wikipedia.org/wiki/Lattice-based_access_control) - Denning 1976, Sandhu 1993
 

@@ -21,10 +21,10 @@ through machine-checked proof.
 | VC-001a | **Lattice distributivity** — capability meet distributes over join. | Machine-proved | `crates/portcullis/src/kani.rs` — `proof_capability_distributive` | `crates/portcullis/src/capability.rs` | CI-verified |
 | VC-001b | **Normalization idempotence** — normalizing a permission twice yields the same result as once. | Machine-proved | `crates/portcullis/src/kani.rs` — `proof_normalize_idempotent` | `crates/portcullis/src/lattice.rs` | CI-verified |
 | VC-002 | **Complete mediation** — no side effect bypasses the kernel. Every I/O operation (filesystem, network, process spawn) is intercepted and evaluated by the Nucleus kernel before execution. | Unverified | — | `crates/nucleus-tool-proxy/src/policy.rs`, `crates/portcullis/src/guard.rs` | — |
-| VC-003 | **Sink safety** — tainted data cannot reach a sink without approval. Data originating from untrusted sources carries a taint label; writing it to an external sink requires an explicit approval or declassification gate. | Machine-proved | `crates/portcullis/src/kani.rs` — `proof_guard_denial_soundness`, `proof_clinejection_blocked`, `proof_projected_taint_correctness` | `crates/portcullis/src/taint_core.rs`, `crates/portcullis/src/guard.rs` | CI-verified |
-| VC-003a | **Taint monotonicity** — taint never decreases under union. | Machine-proved | `crates/portcullis/src/kani.rs` — `proof_taintset_union_monotone` | `crates/portcullis/src/taint_core.rs` | CI-verified |
-| VC-003b | **Taint monoid laws** — TaintSet union is associative, commutative, and idempotent with empty as identity. | Machine-proved | `crates/portcullis/src/kani.rs` — `proof_taintset_monoid_identity`, `proof_taintset_monoid_laws` | `crates/portcullis/src/taint_core.rs` | CI-verified |
-| VC-003c | **Operation taint completeness** — all operations map to the correct taint labels. | Machine-proved | `crates/portcullis/src/kani.rs` — `proof_operation_taint_completeness` | `crates/portcullis/src/kani.rs` | CI-verified |
+| VC-003 | **Sink safety** — exposed data cannot reach a sink without approval. Data originating from untrusted sources carries exposure_correctness` | `crates/portcullis/src/exposure_core.rs`, `crates/portcullis/src/guard.rs` | CI-verified |
+| VC-003a | **Exposure monotonicity** — exposure never decreases under union. | Machine-proved | `crates/portcullis/src/kani.rs` — `proof_exposureset_union_monotone` | `crates/portcullis/src/exposure_core.rs` | CI-verified |
+| VC-003b | **Exposure monoid laws** — ExposureSet union is associative, commutative, and idempotent with empty as identity. | Machine-proved | `crates/portcullis/src/kani.rs` — `proof_exposureset_monoid_identity`, `proof_exposureset_monoid_laws` | `crates/portcullis/src/exposure_core.rs` | CI-verified |
+| VC-003c | **Operation exposure completeness** — all operations map to the correct exposure labels. | Machine-proved | `crates/portcullis/src/kani.rs` — `proof_operation_exposure_completeness` | `crates/portcullis/src/kani.rs` | CI-verified |
 | VC-004 | **No ambient authority** — agent process has no direct capabilities. The agent process runs with zero ambient I/O permissions; all authority is granted via typed handles from the kernel. | Unverified | — | `crates/nucleus/src/sandbox.rs`, `crates/nucleus/src/pod.rs` | — |
 | VC-005 | **Trace completeness** — all mediated actions produce audit records. Every decision made by the kernel (allow, deny, attenuate) is recorded in a tamper-evident trace log. | Unverified | — | `crates/portcullis/src/audit.rs` | — |
 
@@ -44,6 +44,6 @@ Each verified claim covers one facet of that top-level guarantee:
 
 - **VC-001** (Monotonicity) ensures authority cannot escalate.
 - **VC-002** (Complete mediation) ensures nothing bypasses the kernel.
-- **VC-003** (Sink safety) ensures tainted data is gated.
+- **VC-003** (Sink safety) ensures exposed data is gated.
 - **VC-004** (No ambient authority) ensures the agent starts with nothing.
 - **VC-005** (Trace completeness) ensures auditability of every decision.

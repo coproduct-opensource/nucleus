@@ -3,13 +3,13 @@
 # The agent can read all files, write/edit code, run tests, and commit
 # locally. It CANNOT push or create PRs — the trusted CI wrapper does that.
 #
-# Trifecta analysis:
+#  Uninhabitable state analysis:
 #   - Private data: read_files=always (present)
 #   - Untrusted content: web_fetch=low_risk (present)
 #   - Exfiltration: git_push=never, create_pr=never (absent)
 #   => Two of three components. No approval escalation needed for push/PR
 #      because those vectors are structurally removed.
-#   => run_bash is LowRisk, so trifecta normalization adds approval on it.
+#   => run_bash is LowRisk, so uninhabitable state normalization adds approval on it.
 
 name: safe-pr-fixer
 description: "Safe PR fixer — no push, no PR creation. CI wrapper pushes."

@@ -45,9 +45,9 @@ struct McpServerRisk {
     category: &'static str,
     /// Severity of having this server
     severity: Severity,
-    /// Whether it provides access to private/sensitive data (trifecta leg 1)
+    /// Whether it provides access to private/sensitive data (exposure leg 1)
     private_data: bool,
-    /// Whether it can exfiltrate data (trifecta leg 3)
+    /// Whether it can exfiltrate data (exposure leg 3)
     exfil_capable: bool,
     /// Human-readable description of the risk
     description: &'static str,
@@ -315,7 +315,7 @@ pub fn scan_mcp_config(path: &Path) -> Result<(Vec<Finding>, McpConfigSummary), 
                     if risk.private_data && risk.exfil_capable {
                         desc.push_str(
                             " This server provides BOTH private data access and \
-                             exfiltration capability — two trifecta legs in one server.",
+                             exfiltration capability — two exposure legs in one server.",
                         );
                     }
                     findings.push(Finding {

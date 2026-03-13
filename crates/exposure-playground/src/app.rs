@@ -3,7 +3,7 @@
 use portcullis::{
     escalation::{SpiffeTraceChain, SpiffeTraceLink},
     CapabilityLattice, CapabilityLevel, IncompatibilityConstraint, Obligations, PermissionLattice,
-    TrifectaRisk,
+    StateRisk,
 };
 
 use crate::demo::{ATTACK_SCENARIOS, PRESETS};
@@ -11,8 +11,8 @@ use crate::demo::{ATTACK_SCENARIOS, PRESETS};
 /// The current screen being displayed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
-    /// Main trifecta detection screen
-    Trifecta,
+    /// Main uninhabitable_state detection screen
+    UninhabitableState,
     /// SPIFFE trace chain visualization
     TraceChain,
     /// Attack simulator
@@ -273,20 +273,22 @@ impl SelectedCapability {
         Self::all()[idx % Self::all().len()]
     }
 
-    /// Which trifecta component does this capability belong to?
-    pub fn trifecta_component(&self) -> Option<TrifectaComponent> {
+    /// Which uninhabitable_state component does this capability belong to?
+    pub fn uninhabitable_state_component(&self) -> Option<UninhabitableStateComponent> {
         match self {
-            Self::ReadFiles => Some(TrifectaComponent::PrivateData),
-            Self::WebSearch | Self::WebFetch => Some(TrifectaComponent::UntrustedContent),
-            Self::GitPush | Self::CreatePr | Self::RunBash => Some(TrifectaComponent::Exfiltration),
+            Self::ReadFiles => Some(UninhabitableStateComponent::PrivateData),
+            Self::WebSearch | Self::WebFetch => Some(UninhabitableStateComponent::UntrustedContent),
+            Self::GitPush | Self::CreatePr | Self::RunBash => {
+                Some(UninhabitableStateComponent::Exfiltration)
+            }
             _ => None,
         }
     }
 }
 
-/// The three components of the lethal trifecta.
+/// The three components of the uninhabitable_state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TrifectaComponent {
+pub enum UninhabitableStateComponent {
     PrivateData,
     UntrustedContent,
     Exfiltration,
@@ -379,7 +381,7 @@ impl HasseState {
 impl App {
     pub fn new() -> Self {
         Self {
-            screen: Screen::Trifecta,
+            screen: Screen::UninhabitableState,
             capabilities: CapabilityLattice::default(),
             selected_capability: SelectedCapability::ReadFiles,
             trace_chain: SpiffeTraceChain::new_root(
@@ -399,13 +401,13 @@ impl App {
         }
     }
 
-    /// Get the current trifecta risk level.
-    pub fn trifecta_risk(&self) -> TrifectaRisk {
+    /// Get the current uninhabitable_state risk level.
+    pub fn state_risk(&self) -> StateRisk {
         let constraint = IncompatibilityConstraint::enforcing();
-        constraint.trifecta_risk(&self.capabilities)
+        constraint.state_risk(&self.capabilities)
     }
 
-    /// Check which trifecta components are active.
+    /// Check which uninhabitable_state components are active.
     pub fn active_components(&self) -> (bool, bool, bool) {
         let has_private = self.capabilities.read_files >= CapabilityLevel::LowRisk;
         let has_untrusted = self.capabilities.web_fetch >= CapabilityLevel::LowRisk

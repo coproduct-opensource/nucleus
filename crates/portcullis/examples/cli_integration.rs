@@ -100,13 +100,13 @@ fn main() {
         fix_perms.budget.max_cost_usd
     );
 
-    // Example 3: Dangerous config (trifecta blocked)
+    // Example 3: Dangerous config (uninhabitable_state blocked)
     println!("\n3. Dangerous Config (auto-corrected):");
     let mut dangerous = PermissionLattice::permissive();
     dangerous.capabilities.web_fetch = CapabilityLevel::LowRisk;
     dangerous.capabilities.git_push = CapabilityLevel::LowRisk;
 
-    // Meet enforces trifecta constraint
+    // Meet enforces uninhabitable_state constraint
     let safe = dangerous.meet(&dangerous);
 
     println!(
@@ -115,7 +115,7 @@ fn main() {
     );
     println!("   Effective git_push: {:?}", safe.capabilities.git_push);
     println!(
-        "   Trifecta prevented: git_push requires approval = {}",
+        "    UninhabitableState prevented: git_push requires approval = {}",
         safe.requires_approval(Operation::GitPush)
     );
 

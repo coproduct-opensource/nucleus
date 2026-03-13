@@ -4,7 +4,7 @@
 # builds, linters), and commit locally. No network access and no
 # push — all work stays local until a human reviews and pushes.
 #
-# Trifecta analysis:
+#  Uninhabitable state analysis:
 #   - Private data: read_files=always (present)
 #   - Untrusted content: web_search=never, web_fetch=never (absent)
 #   - Exfiltration: git_push=never, create_pr=never (absent)

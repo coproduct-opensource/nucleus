@@ -15,10 +15,10 @@ pub fn print_scan_report(report: &ScanReport) {
     if let Some(profile) = &report.policy_profile {
         println!("  Policy:         {}", profile);
     }
-    println!("  Trifecta risk:  {}", report.trifecta_risk);
+    println!("   UninhabitableState risk:  {}", report.state_risk);
     println!(
-        "  Trifecta guard: {}",
-        if report.trifecta_enforced {
+        "   UninhabitableState guard: {}",
+        if report.uninhabitable_state_enforced {
             "ENFORCED"
         } else {
             "DISABLED"
@@ -110,7 +110,10 @@ pub fn print_scan_report(report: &ScanReport) {
         );
         println!("  Identities:        {}", metrics.identities);
         println!("  Deviations:        {}", metrics.deviations);
-        println!("  Trifecta events:   {}", metrics.trifecta_completions);
+        println!(
+            "   UninhabitableState events:   {}",
+            metrics.uninhabitable_completions
+        );
         println!("  Blocked:           {}", metrics.blocks);
         println!();
     }

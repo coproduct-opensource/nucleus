@@ -1,10 +1,11 @@
 //! # Lattice Guard
 //!
-//! A quotient lattice for AI agent permissions that prevents the "lethal trifecta".
+//! A quotient lattice for AI agent permissions that prevents uninhabitable states.
 //!
-//! ## The Lethal Trifecta
+//! ## The Uninhabitable State
 //!
-//! The [lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/) describes
+//! The [uninhabitable state](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/)
+//! (originally termed "lethal trifecta" by Simon Willison) describes
 //! three capabilities that, when combined in an AI agent, create critical security vulnerabilities:
 //!
 //! 1. **Access to private data** - reading files, credentials, secrets
@@ -29,7 +30,7 @@
 //! • Preserves meets: ν(x ∧ y) = ν(x) ∧ ν(y)
 //! ```
 //!
-//! When the trifecta is detected, exfiltration operations gain approval
+//! When the uninhabitable_state is detected, exfiltration operations gain approval
 //! obligations. The quotient L' contains only configurations where this
 //! invariant holds.
 //!
@@ -44,7 +45,7 @@
 //! perms.capabilities.web_fetch = CapabilityLevel::LowRisk;    // Untrusted content
 //! perms.capabilities.git_push = CapabilityLevel::LowRisk;     // Exfiltration
 //!
-//! // The meet operation detects the trifecta and adds approval obligations
+//! // The meet operation detects the uninhabitable_state and adds approval obligations
 //! let safe = perms.meet(&perms);
 //! assert!(safe.requires_approval(Operation::GitPush));
 //! ```
@@ -92,11 +93,12 @@ mod capability;
 pub mod certificate;
 mod command;
 pub mod constraint;
-pub mod dangerous_combo;
+pub mod uninhabitable_state;
 
 pub mod delegation;
 pub mod dropout;
 pub mod escalation;
+pub mod exposure_core;
 pub mod frame;
 pub mod galois;
 pub mod graded;
@@ -106,7 +108,7 @@ pub mod heyting;
 #[cfg(feature = "serde")]
 pub mod kernel;
 /// MCP mediation: classify and gate arbitrary MCP tool calls against the
-/// permission lattice with taint tracking.
+/// permission lattice with exposure tracking.
 ///
 /// Requires the `spec` feature (includes `serde`, `serde_yaml`, `toml`).
 #[cfg(feature = "spec")]
@@ -123,7 +125,6 @@ pub mod observe;
 pub mod profile;
 #[cfg(feature = "remote-audit")]
 pub mod s3_audit_backend;
-pub mod taint_core;
 /// Attenuation tokens — compact delegation credentials for wire transport.
 ///
 /// Requires the `serde` feature for serialization.
@@ -151,13 +152,14 @@ mod kani;
 pub use budget::BudgetLattice;
 pub use capability::{
     CapabilityLattice, CapabilityLevel, ExtensionOperation, IncompatibilityConstraint, Obligations,
-    Operation, TrifectaRisk,
+    Operation, StateRisk,
 };
 pub use command::{ArgPattern, CommandLattice, CommandPattern};
+pub use exposure_core::{apply_record, classify_operation, project_exposure, should_deny};
 pub use frame::{
     verify_nucleus_laws, BoundedLattice, CompleteLattice, ComposedNucleus, DistributiveLattice,
     Frame, Lattice, Nucleus, NucleusLaw, NucleusLawViolation, SafePermissionLattice,
-    TrifectaQuotient,
+    UninhabitableQuotient,
 };
 pub use galois::{
     Composable, GaloisConnection, GaloisVerificationError, TranslationReport, TranslationStep,
@@ -166,9 +168,9 @@ pub use galois::{
 pub use graded::{Graded, GradedPermissionCheck, GradedPipeline, RiskCost, RiskGrade};
 #[allow(deprecated)]
 pub use guard::{
-    operation_taint, CheckProof, CompositeGuard, ExecuteError, ExtensionTaintLabel, GradedGuard,
-    GradedTaintGuard, GuardError, GuardFn, GuardedAction, PermissionGuard, RuntimeTrifectaGuard,
-    TaintLabel, TaintSet, ToolCallGuard,
+    operation_exposure, CheckProof, CompositeGuard, ExecuteError, ExposureLabel, ExposureSet,
+    ExtensionExposureLabel, GradedExposureGuard, GradedGuard, GuardError, GuardFn, GuardedAction,
+    PermissionGuard, RuntimeStateGuard, ToolCallGuard,
 };
 pub use heyting::{ConditionalPermission, HeytingAlgebra};
 pub use intent::{IntentKind, WorkIntent};
@@ -184,7 +186,6 @@ pub use permissive::{
 };
 pub use progress::{ProgressDimension, ProgressLattice, ProgressLevel};
 pub use region::CodeRegion;
-pub use taint_core::{apply_record, classify_operation, project_taint, should_deny};
 pub use time::TimeLattice;
 pub use trust::{EnforcementResult, TrustProfile};
 pub use weakening::{
@@ -209,7 +210,6 @@ pub use certificate::{
     canonical_permissions_hash, verify_certificate, CertificateDelegationError, CertificateError,
     LatticeCertificate, VerifiedPermissions,
 };
-pub use dangerous_combo::{ConstraintNucleus, CoreTaintRequirement, DangerousCombo};
 pub use delegation::{
     meet_with_justification, DelegationChain, DelegationLink, MeetJustification, RestrictionDetail,
     RestrictionReason,
@@ -219,6 +219,7 @@ pub use metrics::{
     MetricsCollector, MetricsReport, ReputationMetrics, ReputationWeights,
 };
 pub use token::{AttenuationToken, SessionProvenance, TokenError};
+pub use uninhabitable_state::{ConstraintNucleus, CoreExposureRequirement, UninhabitableState};
 
 /// Check if a glob pattern matches a path.
 pub fn glob_match(pattern: &str, path: &str) -> bool {

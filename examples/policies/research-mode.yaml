@@ -6,7 +6,7 @@
 name: research-mode
 description: Read-only with web access for research tasks
 
-enforce_trifecta: true
+enforce_uninhabitable: true
 
 constraints:
   # No writes in research mode

@@ -246,7 +246,7 @@ fn main() -> Result<(), AuditError> {
                 pod_specs.len() == 1 && claude_settings_paths.is_empty() && mcp_configs.is_empty();
 
             let mut report = ScanReport::default();
-            let mut aggregate_trifecta_rank = 0u8;
+            let mut aggregate_uninhabitable_rank = 0u8;
             let mut aggregate_has_pod = false;
             let mut aggregate_network_posture: Option<String> = None;
             let mut aggregate_isolation_level: Option<String> = None;
@@ -257,8 +257,8 @@ fn main() -> Result<(), AuditError> {
                 report.scanned_sources.push(ps_path.display().to_string());
 
                 aggregate_has_pod = true;
-                aggregate_trifecta_rank =
-                    aggregate_trifecta_rank.max(trifecta_rank_from_str(&ps_report.trifecta_risk));
+                aggregate_uninhabitable_rank = aggregate_uninhabitable_rank
+                    .max(uninhabitable_state_rank_from_str(&ps_report.state_risk));
                 merge_dimension(&mut aggregate_network_posture, &ps_report.network_posture);
                 merge_dimension(&mut aggregate_isolation_level, &ps_report.isolation_level);
                 report.has_credentials |= ps_report.has_credentials;
@@ -266,8 +266,8 @@ fn main() -> Result<(), AuditError> {
                 if single_pod_only {
                     report.pod_name = ps_report.pod_name.clone();
                     report.policy_profile = ps_report.policy_profile.clone();
-                    report.trifecta_risk = ps_report.trifecta_risk.clone();
-                    report.trifecta_enforced = ps_report.trifecta_enforced;
+                    report.state_risk = ps_report.state_risk.clone();
+                    report.uninhabitable_state_enforced = ps_report.uninhabitable_state_enforced;
                     report.permission_surface = ps_report.permission_surface.clone();
                     report.network_posture = ps_report.network_posture.clone();
                     report.isolation_level = ps_report.isolation_level.clone();
@@ -286,18 +286,19 @@ fn main() -> Result<(), AuditError> {
                 let (findings, summary) = scan_claude_settings::scan_claude_settings(cs_path)?;
                 report.scanned_sources.push(cs_path.display().to_string());
 
-                let has_critical_trifecta = findings
-                    .iter()
-                    .any(|f| f.category == "trifecta" && f.severity == Severity::Critical);
-                let has_partial_trifecta = findings.iter().any(|f| f.category == "trifecta");
-                let claude_rank = if has_critical_trifecta {
+                let has_critical_uninhabitable = findings.iter().any(|f| {
+                    f.category == "uninhabitable_state" && f.severity == Severity::Critical
+                });
+                let has_partial_uninhabitable =
+                    findings.iter().any(|f| f.category == "uninhabitable_state");
+                let claude_rank = if has_critical_uninhabitable {
                     2
-                } else if has_partial_trifecta {
+                } else if has_partial_uninhabitable {
                     1
                 } else {
                     0
                 };
-                aggregate_trifecta_rank = aggregate_trifecta_rank.max(claude_rank);
+                aggregate_uninhabitable_rank = aggregate_uninhabitable_rank.max(claude_rank);
                 report.has_credentials |= findings.iter().any(|f| f.category == "credentials");
 
                 if claude_settings_paths.len() == 1 {
@@ -333,8 +334,9 @@ fn main() -> Result<(), AuditError> {
             if !single_pod_only {
                 report.pod_name = None;
                 report.policy_profile = None;
-                report.trifecta_risk = trifecta_label_from_rank(aggregate_trifecta_rank);
-                report.trifecta_enforced = false;
+                report.state_risk =
+                    uninhabitable_state_label_from_rank(aggregate_uninhabitable_rank);
+                report.uninhabitable_state_enforced = false;
                 report.permission_surface = Default::default();
                 report.network_posture = if aggregate_has_pod {
                     aggregate_network_posture.unwrap_or_else(|| "multiple".to_string())
@@ -426,19 +428,19 @@ fn dedupe_findings(findings: &mut Vec<Finding>) {
     });
 }
 
-fn trifecta_rank_from_str(risk: &str) -> u8 {
+fn uninhabitable_state_rank_from_str(risk: &str) -> u8 {
     match risk {
-        "Complete" => 2,
+        "Uninhabitable" | "Complete" => 2,
         "Medium" | "Low" => 1,
         _ => 0,
     }
 }
 
-fn trifecta_label_from_rank(rank: u8) -> String {
+fn uninhabitable_state_label_from_rank(rank: u8) -> String {
     match rank {
-        2 => "Complete".to_string(),
+        2 => "Uninhabitable".to_string(),
         1 => "Medium".to_string(),
-        _ => "None".to_string(),
+        _ => "Safe".to_string(),
     }
 }
 
@@ -796,8 +798,8 @@ spec:
         );
 
         let report = scan_podspec::scan_pod_spec(&spec, None).unwrap();
-        assert_eq!(report.trifecta_risk, "Complete");
-        assert!(report.trifecta_enforced);
+        assert_eq!(report.state_risk, "Uninhabitable");
+        assert!(report.uninhabitable_state_enforced);
         assert_eq!(report.network_posture, "unspecified");
         assert_eq!(report.isolation_level, "none");
         assert!(report.has_credentials);
@@ -846,7 +848,7 @@ spec:
         let json = serde_json::to_string(&report).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["policy_profile"], "fix_issue");
-        assert_eq!(parsed["trifecta_enforced"], true);
+        assert_eq!(parsed["uninhabitable_state_enforced"], true);
     }
 
     #[test]

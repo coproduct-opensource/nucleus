@@ -39,19 +39,19 @@ Meet (∧) gives the greatest lower bound—the most restrictive combination. Th
 
 ---
 
-## The Trifecta as a Type-Level Constraint
+## The  Uninhabitable state as a Type-Level Constraint
 
-The "lethal trifecta" (private data + untrusted content + exfiltration) is not a runtime check bolted on. It's a **type-level invariant**.
+The "uninhabitable state" (private data + untrusted content + exfiltration) is not a runtime check bolted on. It's a **type-level invariant**.
 
 ```haskell
 -- When all three legs are present, the type changes
-type family TrifectaGuard p where
-  TrifectaGuard p = If (HasTrifecta p)
+type family uninhabitable stateGuard p where
+  uninhabitable stateGuard p = If (Has Uninhabitable state p)
                        (RequiresApproval p)
                        p
 
 -- Operations that can exfiltrate check this at the type level
-gitPush :: TrifectaGuard p ~ p => Ref -> Sandbox p ()
+gitPush :: uninhabitable stateGuard p ~ p => Ref -> Sandbox p ()
 ```
 
 In Rust, we approximate this with runtime normalization (the `ν` function), but the intent is the same: certain capability combinations **change the type of operations** from "autonomous" to "requires approval."
@@ -203,7 +203,7 @@ Think of Nucleus permissions as **types**, not configuration:
 - The permission lattice is like a type parameter
 - Operations have capability requirements like trait bounds
 - Sequencing operations composes their requirements
-- The trifecta constraint is a type-level invariant, not a runtime check
+- The uninhabitable state constraint is a type-level invariant, not a runtime check
 
 ---
 
@@ -213,7 +213,7 @@ Think of Nucleus permissions as **types**, not configuration:
 - [Algebraic Effects for Functional Programming](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/08/algeff-tr-2016-v2.pdf) - Leijen, 2016
 - [Free Monads and Free Applicatives](https://www.paolocapriotti.com/assets/applicative.pdf) - Capriotti & Kaposi, 2014
 - [Session Types](http://www.di.fc.ul.pt/~vv/papers/honda.vasconcelos.kubo_language-primitives.pdf) - Honda et al., 1998
-- [The Lethal Trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/) - Simon Willison, 2025
+- [The Uninhabitable State](https://simonwillison.net/2025/Jun/16/the-uninhabitable-state/) - Simon Willison, 2025
 
 ---
 

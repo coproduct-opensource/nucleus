@@ -42,7 +42,7 @@ pub use context::*;
 
 use crate::capability::IncompatibilityConstraint;
 #[cfg(feature = "cel")]
-use crate::capability::TrifectaRisk;
+use crate::capability::StateRisk;
 use crate::frame::Nucleus;
 use crate::{Obligations, Operation, PermissionLattice};
 
@@ -60,7 +60,7 @@ use crate::{Obligations, Operation, PermissionLattice};
 /// | `operation` | string | Current operation (e.g., "write_files") |
 /// | `path` | string | File path being accessed |
 /// | `url` | string | URL being fetched |
-/// | `trifecta_risk` | string | "none", "low", "medium", "complete" |
+/// | `state_risk` | string | "none", "low", "medium", "complete" |
 /// | `budget_remaining` | float | Budget fraction (0.0-1.0) |
 /// | `has_approval` | bool | Whether approval was granted |
 /// | `request_rate` | int | Requests per minute |
@@ -183,7 +183,7 @@ impl Constraint {
 
 /// A policy is a nucleus composed of constraints.
 ///
-/// The policy first applies the built-in trifecta constraint (unless disabled),
+/// The policy first applies the built-in uninhabitable_state constraint (unless disabled),
 /// then applies all user-defined constraints in order. Obligations accumulate
 /// monotonically (deflationary).
 ///
@@ -197,17 +197,17 @@ pub struct Policy {
     name: String,
     /// User-defined constraints.
     constraints: Vec<Constraint>,
-    /// Whether to apply the built-in trifecta constraint.
-    enforce_trifecta: bool,
+    /// Whether to apply the built-in uninhabitable_state constraint.
+    enforce_uninhabitable: bool,
 }
 
 impl Policy {
-    /// Create a new policy with trifecta enforcement enabled by default.
+    /// Create a new policy with uninhabitable_state enforcement enabled by default.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             constraints: Vec::new(),
-            enforce_trifecta: true,
+            enforce_uninhabitable: true,
         }
     }
 
@@ -217,16 +217,16 @@ impl Policy {
         self
     }
 
-    /// Disable the built-in trifecta constraint.
+    /// Disable the built-in uninhabitable_state constraint.
     ///
     /// # Security Warning
     ///
-    /// This allows the lethal trifecta (private data + untrusted content +
+    /// This allows the uninhabitable_state (private data + untrusted content +
     /// exfiltration) to operate without approval obligations. Only disable
     /// when you have external enforcement mechanisms.
     #[cfg(feature = "testing")]
-    pub fn without_trifecta(mut self) -> Self {
-        self.enforce_trifecta = false;
+    pub fn without_uninhabitable(mut self) -> Self {
+        self.enforce_uninhabitable = false;
         self
     }
 
@@ -240,15 +240,15 @@ impl Policy {
         &self.constraints
     }
 
-    /// Check if trifecta enforcement is enabled.
-    pub fn enforces_trifecta(&self) -> bool {
-        self.enforce_trifecta
+    /// Check if uninhabitable_state enforcement is enabled.
+    pub fn enforces_uninhabitable(&self) -> bool {
+        self.enforce_uninhabitable
     }
 
     /// Evaluate the policy against a context, returning accumulated obligations.
     ///
     /// This applies:
-    /// 1. The trifecta constraint (if enabled)
+    /// 1. The uninhabitable_state constraint (if enabled)
     /// 2. All user-defined constraints in order
     ///
     /// Obligations accumulate monotonically via union.
@@ -256,10 +256,10 @@ impl Policy {
     pub fn evaluate(&self, ctx: &PolicyContext) -> Result<Obligations, CelError> {
         let mut obligations = Obligations::default();
 
-        // Apply trifecta constraint
-        if self.enforce_trifecta {
-            let trifecta_obs = self.trifecta_obligations(ctx);
-            obligations = obligations.union(&trifecta_obs);
+        // Apply uninhabitable_state constraint
+        if self.enforce_uninhabitable {
+            let uninhabitable_state_obs = self.uninhabitable_state_obligations(ctx);
+            obligations = obligations.union(&uninhabitable_state_obs);
         }
 
         // Apply user-defined constraints
@@ -271,13 +271,13 @@ impl Policy {
         Ok(obligations)
     }
 
-    /// Compute trifecta obligations from context.
+    /// Compute uninhabitable_state obligations from context.
     #[cfg(feature = "cel")]
-    fn trifecta_obligations(&self, ctx: &PolicyContext) -> Obligations {
+    fn uninhabitable_state_obligations(&self, ctx: &PolicyContext) -> Obligations {
         let constraint = IncompatibilityConstraint::enforcing();
-        let risk = constraint.trifecta_risk(&ctx.capabilities);
+        let risk = constraint.state_risk(&ctx.capabilities);
 
-        if risk == TrifectaRisk::Complete {
+        if risk == StateRisk::Uninhabitable {
             constraint.obligations_for(&ctx.capabilities)
         } else {
             Obligations::default()
@@ -301,11 +301,11 @@ impl Nucleus<PermissionLattice> for Policy {
     fn apply(&self, x: &PermissionLattice) -> PermissionLattice {
         let mut result = x.clone();
 
-        // Apply trifecta constraint
-        if self.enforce_trifecta {
+        // Apply uninhabitable_state constraint
+        if self.enforce_uninhabitable {
             let constraint = IncompatibilityConstraint::enforcing();
-            let trifecta_obs = constraint.obligations_for(&result.capabilities);
-            result.obligations = result.obligations.union(&trifecta_obs);
+            let uninhabitable_state_obs = constraint.obligations_for(&result.capabilities);
+            result.obligations = result.obligations.union(&uninhabitable_state_obs);
         }
 
         // Apply user-defined constraints (with limited context)
@@ -450,10 +450,10 @@ mod tests {
 
     #[test]
     #[cfg(feature = "cel")]
-    fn test_policy_with_trifecta() {
+    fn test_policy_with_uninhabitable() {
         let policy = Policy::new("test");
 
-        // Context with full trifecta
+        // Context with complete uninhabitable_state
         let ctx = PolicyContext::new(Operation::GitPush)
             .with_capabilities(CapabilityLattice {
                 read_files: CapabilityLevel::Always,
@@ -461,11 +461,11 @@ mod tests {
                 git_push: CapabilityLevel::LowRisk,
                 ..Default::default()
             })
-            .with_trifecta_risk(TrifectaRisk::Complete);
+            .with_state_risk(StateRisk::Uninhabitable);
 
         let obs = policy.evaluate(&ctx).unwrap();
 
-        // Trifecta should add git_push obligation
+        //  UninhabitableState should add git_push obligation
         assert!(obs.requires(Operation::GitPush));
     }
 
@@ -475,7 +475,7 @@ mod tests {
 
         let policy = Policy::new("test");
 
-        // Permissive lattice with trifecta
+        // Permissive lattice with uninhabitable_state
         let perms = PermissionLattice::builder()
             .capabilities(CapabilityLattice {
                 read_files: CapabilityLevel::Always,
@@ -487,7 +487,7 @@ mod tests {
 
         let result = policy.apply(&perms);
 
-        // Trifecta should be enforced
+        //  UninhabitableState should be enforced
         assert!(result.requires_approval(Operation::GitPush));
     }
 

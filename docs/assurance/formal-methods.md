@@ -9,7 +9,7 @@ and nucleus (`ν`) properties, while keeping the spec small and auditable.
   - Idempotent: ν(ν(x)) = ν(x)
   - Monotone: x ≤ y ⇒ ν(x) ≤ ν(y)
   - Deflationary: ν(x) ≤ x
-- Trifecta obligations as a derived constraint.
+-  Uninhabitable state obligations as a derived constraint.
 
 ## Plan
 1. **Lean 4 spec** of the lattice structure and ν (small, pure model).

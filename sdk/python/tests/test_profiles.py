@@ -82,35 +82,35 @@ class TestProfileSpec:
         with pytest.raises(AttributeError):
             CODEGEN.name = "something-else"  # type: ignore[misc]
 
-    def test_trifecta_components_one(self):
+    def test_uninhabitable_components_one(self):
         # read-only: only private_data (read_files=always)
-        assert READ_ONLY.trifecta_components == 1
-        assert READ_ONLY.trifecta_safe is True
+        assert READ_ONLY.uninhabitable_state_components == 1
+        assert READ_ONLY.uninhabitable_state_safe is True
 
-    def test_trifecta_components_two(self):
+    def test_uninhabitable_components_two(self):
         # triage-bot: private_data + untrusted_content (web_fetch=low_risk)
-        assert TRIAGE_BOT.trifecta_components == 2
-        assert TRIAGE_BOT.trifecta_safe is True
+        assert TRIAGE_BOT.uninhabitable_state_components == 2
+        assert TRIAGE_BOT.uninhabitable_state_safe is True
 
-    def test_trifecta_components_three(self):
+    def test_uninhabitable_components_three(self):
         # release: all three (read + web + push)
-        assert RELEASE.trifecta_components == 3
-        assert RELEASE.trifecta_safe is False
+        assert RELEASE.uninhabitable_state_components == 3
+        assert RELEASE.uninhabitable_state_safe is False
 
-    def test_safe_pr_fixer_trifecta(self):
+    def test_safe_pr_fixer_uninhabitable(self):
         # safe-pr-fixer: private_data + untrusted (web_fetch) + exfil (run_bash)
-        assert SAFE_PR_FIXER.trifecta_components == 3
-        assert SAFE_PR_FIXER.trifecta_safe is False
+        assert SAFE_PR_FIXER.uninhabitable_state_components == 3
+        assert SAFE_PR_FIXER.uninhabitable_state_safe is False
 
-    def test_codegen_trifecta(self):
+    def test_codegen_uninhabitable(self):
         # codegen: private_data + exfil (run_bash), no untrusted
-        assert CODEGEN.trifecta_components == 2
-        assert CODEGEN.trifecta_safe is True
+        assert CODEGEN.uninhabitable_state_components == 2
+        assert CODEGEN.uninhabitable_state_safe is True
 
-    def test_doc_editor_trifecta(self):
+    def test_doc_editor_uninhabitable(self):
         # doc-editor: only private_data
-        assert DOC_EDITOR.trifecta_components == 1
-        assert DOC_EDITOR.trifecta_safe is True
+        assert DOC_EDITOR.uninhabitable_state_components == 1
+        assert DOC_EDITOR.uninhabitable_state_safe is True
 
 
 class TestCanonicalProfiles:

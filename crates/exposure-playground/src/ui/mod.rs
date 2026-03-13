@@ -2,7 +2,7 @@
 
 mod delegation_forest;
 
-use portcullis::{CapabilityLevel, Operation, PermissionLattice, TrifectaRisk};
+use portcullis::{CapabilityLevel, Operation, PermissionLattice, StateRisk};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -20,7 +20,7 @@ use crate::demo::{get_hasse_edges, preset_descriptions, ATTACK_SCENARIOS, PERMIS
 /// Main draw function that dispatches to the current screen.
 pub fn draw(f: &mut Frame, app: &App) {
     match app.screen {
-        Screen::Trifecta => draw_trifecta(f, app),
+        Screen::UninhabitableState => draw_uninhabitable(f, app),
         Screen::TraceChain => draw_trace_chain(f, app),
         Screen::Attacks => draw_attacks(f, app),
         Screen::Matrix => draw_capability_matrix(f, app),
@@ -29,20 +29,20 @@ pub fn draw(f: &mut Frame, app: &App) {
         Screen::ChainBuilder => draw_chain_builder(f, app),
         Screen::DelegationForest => delegation_forest::draw(f, &app.delegation_forest, f.area()),
         Screen::Help => {
-            draw_trifecta(f, app);
+            draw_uninhabitable(f, app);
             draw_help_popup(f);
         }
     }
 }
 
-/// Draw the main trifecta detection screen.
-fn draw_trifecta(f: &mut Frame, app: &App) {
+/// Draw the main uninhabitable_state detection screen.
+fn draw_uninhabitable(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
             Constraint::Length(3), // Title
-            Constraint::Length(7), // Trifecta indicator
+            Constraint::Length(7), //  UninhabitableState indicator
             Constraint::Min(10),   // Capabilities
             Constraint::Length(5), // Obligations
             Constraint::Length(3), // Footer
@@ -50,7 +50,7 @@ fn draw_trifecta(f: &mut Frame, app: &App) {
         .split(f.area());
 
     // Title
-    let title = Paragraph::new("Trifecta Guard Playground")
+    let title = Paragraph::new(" UninhabitableState Guard Playground")
         .style(
             Style::default()
                 .fg(Color::Cyan)
@@ -60,8 +60,8 @@ fn draw_trifecta(f: &mut Frame, app: &App) {
         .block(Block::default().borders(Borders::BOTTOM));
     f.render_widget(title, chunks[0]);
 
-    // Trifecta indicator
-    draw_trifecta_indicator(f, app, chunks[1]);
+    //  UninhabitableState indicator
+    draw_uninhabitable_indicator(f, app, chunks[1]);
 
     // Capabilities
     draw_capabilities(f, app, chunks[2]);
@@ -73,10 +73,10 @@ fn draw_trifecta(f: &mut Frame, app: &App) {
     draw_footer(f, app, chunks[4]);
 }
 
-/// Draw the three-panel trifecta indicator.
-fn draw_trifecta_indicator(f: &mut Frame, app: &App, area: Rect) {
+/// Draw the three-panel uninhabitable_state indicator.
+fn draw_uninhabitable_indicator(f: &mut Frame, app: &App, area: Rect) {
     let (has_private, has_untrusted, has_exfil) = app.active_components();
-    let risk = app.trifecta_risk();
+    let risk = app.state_risk();
 
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -151,15 +151,15 @@ fn draw_trifecta_indicator(f: &mut Frame, app: &App, area: Rect) {
 
     // Status box
     let (status_text, status_style) = match risk {
-        TrifectaRisk::None => (
+        StateRisk::Safe => (
             "SAFE",
             Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
         ),
-        TrifectaRisk::Low => ("LOW RISK", Style::default().fg(Color::Green)),
-        TrifectaRisk::Medium => ("MEDIUM", Style::default().fg(Color::Yellow)),
-        TrifectaRisk::Complete => (
+        StateRisk::Low => ("LOW RISK", Style::default().fg(Color::Green)),
+        StateRisk::Medium => ("MEDIUM", Style::default().fg(Color::Yellow)),
+        StateRisk::Uninhabitable => (
             "GATED",
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         ),
@@ -168,7 +168,7 @@ fn draw_trifecta_indicator(f: &mut Frame, app: &App, area: Rect) {
         Line::from(Span::styled("=", Style::default().fg(Color::White))),
         Line::from(Span::styled(status_text, status_style)),
         Line::from(Span::styled(
-            if risk == TrifectaRisk::Complete {
+            if risk == StateRisk::Uninhabitable {
                 "Auto-gated"
             } else {
                 ""
@@ -205,11 +205,11 @@ fn draw_capabilities(f: &mut Frame, app: &App, area: Rect) {
                 CapabilityLevel::Always => Color::Green,
             };
 
-            // Highlight if this is a trifecta component
-            let component_marker = match cap.trifecta_component() {
-                Some(crate::app::TrifectaComponent::PrivateData) => " [P]",
-                Some(crate::app::TrifectaComponent::UntrustedContent) => " [U]",
-                Some(crate::app::TrifectaComponent::Exfiltration) => " [E]",
+            // Highlight if this is a uninhabitable_state component
+            let component_marker = match cap.uninhabitable_state_component() {
+                Some(crate::app::UninhabitableStateComponent::PrivateData) => " [P]",
+                Some(crate::app::UninhabitableStateComponent::UntrustedContent) => " [U]",
+                Some(crate::app::UninhabitableStateComponent::Exfiltration) => " [E]",
                 None => "    ",
             };
 
@@ -239,18 +239,18 @@ fn draw_capabilities(f: &mut Frame, app: &App, area: Rect) {
 /// Draw the obligations panel.
 fn draw_obligations(f: &mut Frame, app: &App, area: Rect) {
     let obligations = app.obligations();
-    let risk = app.trifecta_risk();
+    let risk = app.state_risk();
 
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Obligations ");
 
     let content = if obligations.approvals.is_empty() {
-        if risk == TrifectaRisk::Complete {
+        if risk == StateRisk::Uninhabitable {
             // This shouldn't happen with proper enforcement
             Text::from(Line::from(vec![
                 Span::styled("ERROR: ", Style::default().fg(Color::Red)),
-                Span::raw("Trifecta complete but no obligations?"),
+                Span::raw(" UninhabitableState complete but no obligations?"),
             ]))
         } else {
             Text::from(Line::from(Span::styled(
@@ -582,14 +582,14 @@ fn draw_help_popup(f: &mut Frame) {
 
     let help_text = vec![
         Line::from(Span::styled(
-            "Trifecta Guard Playground",
+            " UninhabitableState Guard Playground",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "The Lethal Trifecta",
+            "The Uninhabitable State",
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -630,7 +630,7 @@ fn draw_help_popup(f: &mut Frame) {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from("When trifecta is complete, the nucleus operator ν"),
+        Line::from("When uninhabitable_state is complete, the nucleus operator ν"),
         Line::from("adds approval obligations. Meet (∧) computes the"),
         Line::from("greatest lower bound of two permission sets."),
         Line::from(""),
@@ -887,8 +887,8 @@ fn draw_hasse_diagram(f: &mut Frame, app: &App) {
             ),
         ]),
         Line::from(vec![
-            Span::styled("Trifecta: ", Style::default().fg(Color::DarkGray)),
-            if perms.is_trifecta_vulnerable() {
+            Span::styled("UninhabitableState: ", Style::default().fg(Color::DarkGray)),
+            if perms.is_uninhabitable_vulnerable() {
                 Span::styled("VULNERABLE (gated)", Style::default().fg(Color::Red))
             } else {
                 Span::styled("safe", Style::default().fg(Color::Green))
@@ -1057,8 +1057,8 @@ fn draw_meet_playground(f: &mut Frame, app: &App) {
 
         // Show key differences
         lines.push(Line::from(vec![
-            Span::styled("Trifecta: ", Style::default().fg(Color::DarkGray)),
-            if result.is_trifecta_vulnerable() {
+            Span::styled("UninhabitableState: ", Style::default().fg(Color::DarkGray)),
+            if result.is_uninhabitable_vulnerable() {
                 Span::styled("VULNERABLE - exfil gated", Style::default().fg(Color::Red))
             } else {
                 Span::styled("safe", Style::default().fg(Color::Green))
@@ -1230,9 +1230,9 @@ fn draw_chain_builder(f: &mut Frame, app: &App) {
             Line::from(""),
             Line::from(vec![
                 Span::styled("Computed ceiling: ", Style::default().fg(Color::DarkGray)),
-                if ceiling.is_trifecta_vulnerable() {
+                if ceiling.is_uninhabitable_vulnerable() {
                     Span::styled(
-                        "TRIFECTA GATED",
+                        "uninhabitable_state GATED",
                         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                     )
                 } else {

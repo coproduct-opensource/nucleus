@@ -34,10 +34,10 @@
 //! let yaml = profile.to_yaml().unwrap();
 //! println!("{}", yaml);
 //!
-//! // Taint analysis is included in the summary
+//! // Exposure analysis is included in the summary
 //! let summary = session.summary();
-//! assert_eq!(summary.taint_legs, 2); // PrivateData + UntrustedContent
-//! assert!(!summary.trifecta_complete);
+//! assert_eq!(summary.exposure_count, 2); // PrivateData + UntrustedContent
+//! assert!(!summary.state_uninhabitable);
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -45,11 +45,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use chrono::{DateTime, Utc};
 
 use crate::capability::{CapabilityLevel, Operation};
-use crate::guard::{TaintLabel, TaintSet};
+use crate::exposure_core::{apply_record, classify_operation};
+use crate::guard::{ExposureLabel, ExposureSet};
 use crate::profile::{
     BudgetSpec, CapabilitiesSpec, ObligationSpec, PathsSpec, ProfileSpec, TimeSpec,
 };
-use crate::taint_core::{apply_record, classify_operation};
 
 /// A single observed tool call.
 #[derive(Debug, Clone)]
@@ -99,12 +99,12 @@ pub struct ObserveSummary {
     pub failed_operations: usize,
     /// Unique operations used.
     pub operations_used: BTreeSet<Operation>,
-    /// Number of taint legs touched (0-3).
-    pub taint_legs: u8,
-    /// Whether the trifecta was completed.
-    pub trifecta_complete: bool,
-    /// Taint labels present.
-    pub taint_labels: Vec<TaintLabel>,
+    /// Number of exposure legs touched (0-3).
+    pub exposure_count: u8,
+    /// Whether the uninhabitable_state was completed.
+    pub state_uninhabitable: bool,
+    /// Exposure labels present.
+    pub exposure_labels: Vec<ExposureLabel>,
     /// Unique file paths accessed.
     pub paths_accessed: BTreeSet<String>,
     /// Unique URLs fetched.
@@ -125,8 +125,8 @@ pub struct ObserveSummary {
 pub struct ObserveSession {
     agent_name: String,
     observations: Vec<Observation>,
-    /// Accumulated taint from successful operations.
-    taint: TaintSet,
+    /// Accumulated exposure from successful operations.
+    exposure: ExposureSet,
     /// Operations that succeeded, with count.
     operation_counts: BTreeMap<Operation, u32>,
     /// File paths accessed (for ReadFiles, WriteFiles, EditFiles).
@@ -147,7 +147,7 @@ impl ObserveSession {
         Self {
             agent_name: agent_name.into(),
             observations: Vec::new(),
-            taint: TaintSet::empty(),
+            exposure: ExposureSet::empty(),
             operation_counts: BTreeMap::new(),
             paths: BTreeSet::new(),
             urls: BTreeSet::new(),
@@ -168,8 +168,8 @@ impl ObserveSession {
         self.last_at = Some(obs.timestamp);
 
         if obs.succeeded {
-            // Accumulate taint (monotone — only grows)
-            self.taint = apply_record(&self.taint, obs.operation);
+            // Accumulate exposure (monotone — only grows)
+            self.exposure = apply_record(&self.exposure, obs.operation);
 
             // Count operation usage
             *self.operation_counts.entry(obs.operation).or_insert(0) += 1;
@@ -201,7 +201,7 @@ impl ObserveSession {
     /// The generated profile:
     /// - Sets each operation to the minimum level needed (`Never` if unused,
     ///   `LowRisk` if used)
-    /// - Adds trifecta obligations when all 3 taint legs are present
+    /// - Adds uninhabitable_state obligations when all 3 exposure legs are present
     /// - Includes path restrictions based on observed access patterns
     /// - Applies conservative defaults for budget and time
     pub fn synthesize(&self) -> ProfileSpec {
@@ -230,15 +230,15 @@ impl ObserveSession {
         let successful = self.observations.iter().filter(|o| o.succeeded).count();
         let failed = self.observations.len() - successful;
 
-        let mut taint_labels = Vec::new();
-        if self.taint.contains(TaintLabel::PrivateData) {
-            taint_labels.push(TaintLabel::PrivateData);
+        let mut exposure_labels = Vec::new();
+        if self.exposure.contains(ExposureLabel::PrivateData) {
+            exposure_labels.push(ExposureLabel::PrivateData);
         }
-        if self.taint.contains(TaintLabel::UntrustedContent) {
-            taint_labels.push(TaintLabel::UntrustedContent);
+        if self.exposure.contains(ExposureLabel::UntrustedContent) {
+            exposure_labels.push(ExposureLabel::UntrustedContent);
         }
-        if self.taint.contains(TaintLabel::ExfilVector) {
-            taint_labels.push(TaintLabel::ExfilVector);
+        if self.exposure.contains(ExposureLabel::ExfilVector) {
+            exposure_labels.push(ExposureLabel::ExfilVector);
         }
 
         let duration = match (self.started_at, self.last_at) {
@@ -255,9 +255,9 @@ impl ObserveSession {
             successful_operations: successful,
             failed_operations: failed,
             operations_used: self.operation_counts.keys().copied().collect(),
-            taint_legs: self.taint.count(),
-            trifecta_complete: self.taint.is_trifecta_complete(),
-            taint_labels,
+            exposure_count: self.exposure.count(),
+            state_uninhabitable: self.exposure.is_uninhabitable(),
+            exposure_labels,
             paths_accessed: self.paths.clone(),
             urls_fetched: self.urls.clone(),
             commands_run: self.commands.clone(),
@@ -319,8 +319,8 @@ impl ObserveSession {
     fn synthesize_obligations(&self) -> Vec<ObligationSpec> {
         let mut obligations = Vec::new();
 
-        // If trifecta is complete, add obligations on exfil operations
-        if self.taint.is_trifecta_complete() {
+        // If uninhabitable_state is complete, add obligations on exfil operations
+        if self.exposure.is_uninhabitable() {
             if self.operation_counts.contains_key(&Operation::GitPush) {
                 obligations.push(ObligationSpec::GitPush);
             }
@@ -532,16 +532,16 @@ pub fn format_summary(summary: &ObserveSummary) -> String {
     }
 
     out.push_str(&format!(
-        "\nTaint: {}/3 legs ({})\n",
-        summary.taint_legs,
-        if summary.trifecta_complete {
-            "TRIFECTA COMPLETE — obligations added"
+        "\nexposure: {}/3 legs ({})\n",
+        summary.exposure_count,
+        if summary.state_uninhabitable {
+            "uninhabitable_state COMPLETE — obligations added"
         } else {
             "safe"
         },
     ));
 
-    for label in &summary.taint_labels {
+    for label in &summary.exposure_labels {
         out.push_str(&format!("  - {:?}\n", label));
     }
 
@@ -550,11 +550,11 @@ pub fn format_summary(summary: &ObserveSummary) -> String {
         summary.operations_used.len()
     ));
     for op in &summary.operations_used {
-        let taint = classify_operation(*op);
-        let marker = match taint {
-            Some(TaintLabel::PrivateData) => " [private-data]",
-            Some(TaintLabel::UntrustedContent) => " [untrusted-content]",
-            Some(TaintLabel::ExfilVector) => " [exfil-vector]",
+        let exposure = classify_operation(*op);
+        let marker = match exposure {
+            Some(ExposureLabel::PrivateData) => " [private-data]",
+            Some(ExposureLabel::UntrustedContent) => " [untrusted-content]",
+            Some(ExposureLabel::ExfilVector) => " [exfil-vector]",
             None => "",
         };
         out.push_str(&format!("  - {:?}{}\n", op, marker));
@@ -638,12 +638,12 @@ mod tests {
         assert_eq!(profile.capabilities.write_files, CapabilityLevel::Never);
         assert_eq!(profile.capabilities.run_bash, CapabilityLevel::Never);
         assert_eq!(profile.capabilities.git_push, CapabilityLevel::Never);
-        // No obligations (only 1 taint leg)
+        // No obligations (only 1 exposure leg)
         assert!(profile.obligations.is_empty());
     }
 
     #[test]
-    fn test_trifecta_triggers_obligations() {
+    fn test_uninhabitable_triggers_obligations() {
         let mut session = ObserveSession::new("risky");
         // Leg 1: private data
         session.record(Observation::new(Operation::ReadFiles, "secrets.txt"));
@@ -654,15 +654,15 @@ mod tests {
 
         let profile = session.synthesize();
 
-        // Trifecta complete → obligations on exfil ops
+        //  UninhabitableState complete → obligations on exfil ops
         assert!(profile
             .obligations
             .iter()
             .any(|o| matches!(o, ObligationSpec::GitPush)));
 
         let summary = session.summary();
-        assert!(summary.trifecta_complete);
-        assert_eq!(summary.taint_legs, 3);
+        assert!(summary.state_uninhabitable);
+        assert_eq!(summary.exposure_count, 3);
     }
 
     #[test]
@@ -680,18 +680,18 @@ mod tests {
     }
 
     #[test]
-    fn test_taint_monotonicity() {
+    fn test_exposure_monotonicity() {
         let mut session = ObserveSession::new("mono");
         session.record(Observation::new(Operation::ReadFiles, "a.txt"));
 
         let s1 = session.summary();
-        assert_eq!(s1.taint_legs, 1);
+        assert_eq!(s1.exposure_count, 1);
 
         session.record(Observation::new(Operation::WebFetch, "https://example.com"));
 
         let s2 = session.summary();
-        assert_eq!(s2.taint_legs, 2);
-        assert!(s2.taint_legs >= s1.taint_legs); // Monotone
+        assert_eq!(s2.exposure_count, 2);
+        assert!(s2.exposure_count >= s1.exposure_count); // Monotone
     }
 
     #[test]
@@ -737,9 +737,9 @@ mod tests {
     #[test]
     fn test_parse_kernel_decision_format() {
         // Kernel Decision JSONL format with verdict.type
-        let input = r#"{"id":"abc","sequence":0,"operation":"read_files","subject":"src/main.rs","verdict":{"type":"allow"},"timestamp":"2026-03-12T00:00:00Z","pre_permissions_hash":"a","post_permissions_hash":"b","taint_transition":{"pre_count":0,"post_count":1,"contributed_label":"private_data","trifecta_completed":false,"dynamic_gate_applied":false}}
-{"id":"def","sequence":1,"operation":"write_files","subject":"out.txt","verdict":{"type":"deny","reason":"insufficient_capability"},"timestamp":"2026-03-12T00:01:00Z","pre_permissions_hash":"a","post_permissions_hash":"a","taint_transition":{"pre_count":1,"post_count":1,"contributed_label":null,"trifecta_completed":false,"dynamic_gate_applied":false}}
-{"id":"ghi","sequence":2,"operation":"web_fetch","subject":"https://example.com","verdict":{"type":"requires_approval"},"timestamp":"2026-03-12T00:02:00Z","pre_permissions_hash":"a","post_permissions_hash":"a","taint_transition":{"pre_count":1,"post_count":1,"contributed_label":null,"trifecta_completed":false,"dynamic_gate_applied":true}}
+        let input = r#"{"id":"abc","sequence":0,"operation":"read_files","subject":"src/main.rs","verdict":{"type":"allow"},"timestamp":"2026-03-12T00:00:00Z","pre_permissions_hash":"a","post_permissions_hash":"b","exposure_transition":{"pre_count":0,"post_count":1,"contributed_label":"private_data","state_uninhabitable":false,"dynamic_gate_applied":false}}
+{"id":"def","sequence":1,"operation":"write_files","subject":"out.txt","verdict":{"type":"deny","reason":"insufficient_capability"},"timestamp":"2026-03-12T00:01:00Z","pre_permissions_hash":"a","post_permissions_hash":"a","exposure_transition":{"pre_count":1,"post_count":1,"contributed_label":null,"state_uninhabitable":false,"dynamic_gate_applied":false}}
+{"id":"ghi","sequence":2,"operation":"web_fetch","subject":"https://example.com","verdict":{"type":"requires_approval"},"timestamp":"2026-03-12T00:02:00Z","pre_permissions_hash":"a","post_permissions_hash":"a","exposure_transition":{"pre_count":1,"post_count":1,"contributed_label":null,"state_uninhabitable":false,"dynamic_gate_applied":true}}
 "#;
 
         let observations = parse_jsonl_observations(input);
@@ -760,7 +760,7 @@ mod tests {
 
     #[test]
     fn test_parse_kernel_decision_skips_session_summary() {
-        let input = r#"{"id":"abc","sequence":0,"operation":"read_files","subject":"a.txt","verdict":{"type":"allow"},"timestamp":"2026-03-12T00:00:00Z","pre_permissions_hash":"a","post_permissions_hash":"b","taint_transition":{"pre_count":0,"post_count":1,"contributed_label":"private_data","trifecta_completed":false,"dynamic_gate_applied":false}}
+        let input = r#"{"id":"abc","sequence":0,"operation":"read_files","subject":"a.txt","verdict":{"type":"allow"},"timestamp":"2026-03-12T00:00:00Z","pre_permissions_hash":"a","post_permissions_hash":"b","exposure_transition":{"pre_count":0,"post_count":1,"contributed_label":"private_data","state_uninhabitable":false,"dynamic_gate_applied":false}}
 {"type":"session_summary","session_id":"123","decisions":1,"consumed_usd":"0.01","remaining_usd":"9.99","initial_hash":"abc"}
 "#;
 
@@ -773,7 +773,7 @@ mod tests {
     fn test_parse_mixed_formats() {
         // Both simple and kernel Decision formats in the same input
         let input = r#"{"operation":"read_files","subject":"a.txt","succeeded":true}
-{"id":"abc","sequence":0,"operation":"web_fetch","subject":"https://example.com","verdict":{"type":"allow"},"timestamp":"2026-03-12T00:00:00Z","pre_permissions_hash":"a","post_permissions_hash":"b","taint_transition":{"pre_count":0,"post_count":1,"contributed_label":null,"trifecta_completed":false,"dynamic_gate_applied":false}}
+{"id":"abc","sequence":0,"operation":"web_fetch","subject":"https://example.com","verdict":{"type":"allow"},"timestamp":"2026-03-12T00:00:00Z","pre_permissions_hash":"a","post_permissions_hash":"b","exposure_transition":{"pre_count":0,"post_count":1,"contributed_label":null,"state_uninhabitable":false,"dynamic_gate_applied":false}}
 {"operation":"git_push","subject":"origin main","succeeded":false}
 "#;
 
@@ -939,7 +939,7 @@ mod tests {
     fn test_parse_mixed_all_three_formats() {
         // All three formats in a single input
         let input = r#"{"operation":"read_files","subject":"a.txt","succeeded":true}
-{"id":"abc","sequence":0,"operation":"web_fetch","subject":"https://example.com","verdict":{"type":"allow"},"timestamp":"2026-03-12T00:00:00Z","pre_permissions_hash":"a","post_permissions_hash":"b","taint_transition":{"pre_count":0,"post_count":1,"contributed_label":null,"trifecta_completed":false,"dynamic_gate_applied":false}}
+{"id":"abc","sequence":0,"operation":"web_fetch","subject":"https://example.com","verdict":{"type":"allow"},"timestamp":"2026-03-12T00:00:00Z","pre_permissions_hash":"a","post_permissions_hash":"b","exposure_transition":{"pre_count":0,"post_count":1,"contributed_label":null,"state_uninhabitable":false,"dynamic_gate_applied":false}}
 {"timestamp":1710201600.0,"operation":"fs.grep","args":{"pattern":"TODO"},"result_summary":"ok","duration_ms":15.0,"policy_decision":"allow"}
 "#;
 

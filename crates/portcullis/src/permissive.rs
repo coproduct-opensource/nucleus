@@ -47,7 +47,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-use crate::capability::{IncompatibilityConstraint, Operation, TrifectaRisk};
+use crate::capability::{IncompatibilityConstraint, Operation, StateRisk};
 use crate::isolation::IsolationLattice;
 use crate::weakening::{WeakeningCost, WeakeningCostConfig, WeakeningGap, WeakeningRequest};
 use crate::{CapabilityLevel, PermissionLattice};
@@ -205,10 +205,10 @@ pub struct PermissiveExecutionResult<A> {
     pub weakenings: Vec<WeakeningRequest>,
     /// Total cost of all weakenings
     pub total_cost: WeakeningCost,
-    /// Trifecta risk at floor
-    pub floor_trifecta: TrifectaRisk,
-    /// Trifecta risk at ceiling
-    pub ceiling_trifecta: TrifectaRisk,
+    ///  UninhabitableState risk at floor
+    pub floor_uninhabitable: StateRisk,
+    ///  UninhabitableState risk at ceiling
+    pub ceiling_uninhabitable: StateRisk,
 }
 
 impl<A> PermissiveExecutionResult<A> {
@@ -225,10 +225,10 @@ impl<A> PermissiveExecutionResult<A> {
             .collect()
     }
 
-    /// Check if this execution completes the trifecta.
-    pub fn completes_trifecta(&self) -> bool {
-        self.floor_trifecta != TrifectaRisk::Complete
-            && self.ceiling_trifecta == TrifectaRisk::Complete
+    /// Check if this execution completes the uninhabitable_state.
+    pub fn completes_uninhabitable(&self) -> bool {
+        self.floor_uninhabitable != StateRisk::Uninhabitable
+            && self.ceiling_uninhabitable == StateRisk::Uninhabitable
     }
 
     /// Convert to a WeakeningGap.
@@ -248,8 +248,8 @@ impl<A: fmt::Display> fmt::Display for PermissiveExecutionResult<A> {
         writeln!(f, "  Ceiling: {}", self.ceiling.description)?;
         writeln!(
             f,
-            "  Trifecta: {:?} → {:?}",
-            self.floor_trifecta, self.ceiling_trifecta
+            "  UninhabitableState: {:?} → {:?}",
+            self.floor_uninhabitable, self.ceiling_uninhabitable
         )?;
         writeln!(f, "  Total cost: {}", self.total_cost)?;
         writeln!(f, "  Weakenings ({}):", self.weakenings.len())?;
@@ -319,16 +319,16 @@ impl PermissiveExecutor {
     /// from the secure floor to the permissive ceiling.
     pub fn compute_gap(&self) -> WeakeningGap {
         let constraint = IncompatibilityConstraint::enforcing();
-        let floor_trifecta = constraint.trifecta_risk(&self.floor.capabilities);
-        let ceiling_trifecta = constraint.trifecta_risk(&self.ceiling.capabilities);
-        let trifecta_multiplier = self
+        let floor_uninhabitable = constraint.state_risk(&self.floor.capabilities);
+        let ceiling_uninhabitable = constraint.state_risk(&self.ceiling.capabilities);
+        let uninhabitable_multiplier = self
             .cost_config
-            .trifecta_multiplier(floor_trifecta, ceiling_trifecta);
+            .uninhabitable_multiplier(floor_uninhabitable, ceiling_uninhabitable);
 
         let mut gap = WeakeningGap::empty();
 
         // Compute capability weakenings
-        self.compute_capability_weakenings(&mut gap, trifecta_multiplier, &constraint);
+        self.compute_capability_weakenings(&mut gap, uninhabitable_multiplier, &constraint);
 
         // Compute obligation weakenings (removals)
         self.compute_obligation_weakenings(&mut gap);
@@ -340,7 +340,7 @@ impl PermissiveExecutor {
     fn compute_capability_weakenings(
         &self,
         gap: &mut WeakeningGap,
-        trifecta_multiplier: rust_decimal::Decimal,
+        uninhabitable_multiplier: rust_decimal::Decimal,
         constraint: &IncompatibilityConstraint,
     ) {
         // Check each capability
@@ -410,32 +410,32 @@ impl PermissiveExecutor {
         for (op, floor_level, ceiling_level) in ops {
             if ceiling_level > floor_level {
                 let mut cost = self.cost_config.capability_cost(floor_level, ceiling_level);
-                cost.trifecta_multiplier = trifecta_multiplier;
+                cost.uninhabitable_multiplier = uninhabitable_multiplier;
 
-                // Determine trifecta impact
-                let trifecta_impact =
-                    self.compute_trifecta_impact(op, floor_level, ceiling_level, constraint);
+                // Determine uninhabitable_state impact
+                let uninhabitable_impact =
+                    self.compute_uninhabitable_impact(op, floor_level, ceiling_level, constraint);
 
                 gap.add(WeakeningRequest::capability(
                     op,
                     floor_level,
                     ceiling_level,
                     cost,
-                    trifecta_impact,
+                    uninhabitable_impact,
                 ));
             }
         }
     }
 
-    /// Compute the trifecta impact of a capability change.
-    fn compute_trifecta_impact(
+    /// Compute the uninhabitable_state impact of a capability change.
+    fn compute_uninhabitable_impact(
         &self,
         op: Operation,
         _from: CapabilityLevel,
         to: CapabilityLevel,
         constraint: &IncompatibilityConstraint,
-    ) -> TrifectaRisk {
-        // Create a modified capability set to check trifecta
+    ) -> StateRisk {
+        // Create a modified capability set to check uninhabitable_state
         let mut test_caps = self.floor.capabilities.clone();
 
         // Apply the change
@@ -454,14 +454,14 @@ impl PermissiveExecutor {
             Operation::ManagePods => test_caps.manage_pods = to,
         }
 
-        let before = constraint.trifecta_risk(&self.floor.capabilities);
-        let after = constraint.trifecta_risk(&test_caps);
+        let before = constraint.state_risk(&self.floor.capabilities);
+        let after = constraint.state_risk(&test_caps);
 
-        // If this change increases trifecta risk, report the new level
+        // If this change increases uninhabitable_state risk, report the new level
         if after > before {
             after
         } else {
-            TrifectaRisk::None
+            StateRisk::Safe
         }
     }
 
@@ -486,8 +486,8 @@ impl PermissiveExecutor {
         let gap = self.compute_gap();
 
         let constraint = IncompatibilityConstraint::enforcing();
-        let floor_trifecta = constraint.trifecta_risk(&self.floor.capabilities);
-        let ceiling_trifecta = constraint.trifecta_risk(&self.ceiling.capabilities);
+        let floor_uninhabitable = constraint.state_risk(&self.floor.capabilities);
+        let ceiling_uninhabitable = constraint.state_risk(&self.ceiling.capabilities);
 
         PermissiveExecutionResult {
             value,
@@ -496,8 +496,8 @@ impl PermissiveExecutor {
             isolation_floor: self.isolation_floor,
             weakenings: gap.requests,
             total_cost: gap.total_cost,
-            floor_trifecta,
-            ceiling_trifecta,
+            floor_uninhabitable,
+            ceiling_uninhabitable,
         }
     }
 
@@ -652,7 +652,7 @@ mod tests {
                 CapabilityLevel::Never,
                 CapabilityLevel::LowRisk,
                 WeakeningCost::new(Decimal::new(1, 1)),
-                TrifectaRisk::Low,
+                StateRisk::Low,
             ),
         );
 
@@ -664,7 +664,7 @@ mod tests {
                     CapabilityLevel::Never,
                     CapabilityLevel::LowRisk,
                     WeakeningCost::new(Decimal::new(1, 1)),
-                    TrifectaRisk::Low,
+                    StateRisk::Low,
                 ),
             )
         });
@@ -686,7 +686,7 @@ mod tests {
                     CapabilityLevel::Never,
                     CapabilityLevel::LowRisk,
                     WeakeningCost::new(Decimal::new(1, 1)),
-                    TrifectaRisk::None,
+                    StateRisk::Safe,
                 ),
             )
         };
@@ -709,7 +709,7 @@ mod tests {
                 CapabilityLevel::Never,
                 CapabilityLevel::LowRisk,
                 WeakeningCost::new(Decimal::new(1, 1)),
-                TrifectaRisk::None,
+                StateRisk::Safe,
             ),
         );
 

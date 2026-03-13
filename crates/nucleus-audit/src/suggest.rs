@@ -1,9 +1,9 @@
 //! Profile suggestion engine for nucleus-audit scan results.
 //!
 //! Analyzes scan findings and generates a minimal safe [`ProfileSpec`] YAML
-//! that preserves needed capabilities while breaking the lethal trifecta.
+//! that preserves needed capabilities while breaking the uninhabitable_state.
 //!
-//! Philosophy: **gate, don't block.** When the trifecta is detected, add
+//! Philosophy: **gate, don't block.** When the uninhabitable_state is detected, add
 //! approval obligations on exfiltration operations rather than removing
 //! capabilities entirely. This matches the nucleus approach — the agent can
 //! still do useful work, but dangerous paths require explicit approval.
@@ -32,16 +32,16 @@ const BLOCKED_PATHS: &[&str] = &[
 ///
 /// The suggestion:
 /// - Preserves capabilities that were observed in the scanned config
-/// - Adds approval obligations when the trifecta would otherwise be complete
+/// - Adds approval obligations when the uninhabitable_state would otherwise be complete
 /// - Blocks sensitive paths
 /// - Sets sensible budget and time limits
-/// - Names the profile based on the trifecta risk level
+/// - Names the profile based on the uninhabitable_state risk level
 pub fn suggest_profile(report: &ScanReport) -> ProfileSpec {
-    let has_trifecta = report.trifecta_risk == "Complete"
+    let has_uninhabitable = report.state_risk == "Complete"
         || report
             .findings
             .iter()
-            .any(|f| f.category == "trifecta" && f.severity == Severity::Critical);
+            .any(|f| f.category == "uninhabitable_state" && f.severity == Severity::Critical);
 
     let has_credentials = report.has_credentials;
     let has_exfil_findings = report.findings.iter().any(|f| f.category == "exfiltration");
@@ -49,9 +49,9 @@ pub fn suggest_profile(report: &ScanReport) -> ProfileSpec {
     // Determine which capabilities are in use from the permission surface
     let caps = capabilities_from_surface(&report.permission_surface);
 
-    // Build obligations: gate exfiltration operations when trifecta is present
+    // Build obligations: gate exfiltration operations when uninhabitable_state is present
     let mut obligations = Vec::new();
-    if has_trifecta || has_exfil_findings {
+    if has_uninhabitable || has_exfil_findings {
         // Gate exfiltration operations with approval
         if caps.git_push != CapabilityLevel::Never {
             obligations.push(ObligationSpec::GitPush);
@@ -88,14 +88,14 @@ pub fn suggest_profile(report: &ScanReport) -> ProfileSpec {
     };
 
     // Profile name based on risk
-    let name = if has_trifecta {
+    let name = if has_uninhabitable {
         "suggested-safe".to_string()
     } else {
         "suggested-minimal".to_string()
     };
 
-    let description = if has_trifecta {
-        "Auto-generated profile that breaks the lethal trifecta by adding \
+    let description = if has_uninhabitable {
+        "Auto-generated profile that breaks the uninhabitable_state by adding \
          approval obligations on exfiltration operations."
             .to_string()
     } else {
@@ -205,7 +205,7 @@ pub fn format_suggestion(profile: &ProfileSpec, findings: &[Finding]) -> String 
     if profile.obligations.is_empty() {
         out.push_str("# Strategy: minimal capabilities matching observed usage\n");
     } else {
-        out.push_str("# Strategy: gate exfiltration with approval obligations (breaks trifecta)\n");
+        out.push_str("# Strategy: gate exfiltration with approval obligations (breaks uninhabitable_state)\n");
     }
 
     out.push_str("#\n");
@@ -309,10 +309,10 @@ mod tests {
     use super::*;
     use crate::finding::{McpConfigSummary, PermissionSurface, ScanReport, Severity};
 
-    fn report_with_trifecta() -> ScanReport {
+    fn report_with_uninhabitable() -> ScanReport {
         ScanReport {
-            trifecta_risk: "Complete".to_string(),
-            trifecta_enforced: true,
+            state_risk: "Complete".to_string(),
+            uninhabitable_state_enforced: true,
             permission_surface: PermissionSurface {
                 total_capabilities: 12,
                 always_allowed: vec!["read_files".into(), "glob_search".into()],
@@ -323,8 +323,8 @@ mod tests {
             findings: vec![
                 Finding {
                     severity: Severity::Critical,
-                    category: "trifecta".to_string(),
-                    title: "Lethal trifecta detected".to_string(),
+                    category: "uninhabitable_state".to_string(),
+                    title: "Lethal uninhabitable_state detected".to_string(),
                     description: "desc".to_string(),
                 },
                 Finding {
@@ -341,7 +341,7 @@ mod tests {
 
     fn clean_report() -> ScanReport {
         ScanReport {
-            trifecta_risk: "None".to_string(),
+            state_risk: "None".to_string(),
             permission_surface: PermissionSurface {
                 total_capabilities: 5,
                 always_allowed: vec!["read_files".into(), "glob_search".into()],
@@ -355,8 +355,8 @@ mod tests {
     }
 
     #[test]
-    fn test_trifecta_adds_obligations() {
-        let report = report_with_trifecta();
+    fn test_uninhabitable_adds_obligations() {
+        let report = report_with_uninhabitable();
         let profile = suggest_profile(&report);
 
         assert_eq!(profile.name, "suggested-safe");
@@ -385,13 +385,13 @@ mod tests {
         assert_eq!(profile.name, "suggested-minimal");
         assert!(
             profile.obligations.is_empty(),
-            "No trifecta = no obligations"
+            "No uninhabitable_state = no obligations"
         );
     }
 
     #[test]
     fn test_capabilities_preserved() {
-        let report = report_with_trifecta();
+        let report = report_with_uninhabitable();
         let profile = suggest_profile(&report);
 
         assert_eq!(profile.capabilities.read_files, CapabilityLevel::Always);
@@ -423,7 +423,7 @@ mod tests {
 
     #[test]
     fn test_format_suggestion_yaml() {
-        let report = report_with_trifecta();
+        let report = report_with_uninhabitable();
         let profile = suggest_profile(&report);
         let yaml = format_suggestion(&profile, &report.findings);
 
@@ -486,7 +486,7 @@ mod tests {
 
     #[test]
     fn test_profile_validates() {
-        let report = report_with_trifecta();
+        let report = report_with_uninhabitable();
         let profile = suggest_profile(&report);
         assert!(
             profile.validate().is_ok(),
@@ -499,8 +499,8 @@ mod tests {
         let report = ScanReport {
             findings: vec![Finding {
                 severity: Severity::Medium,
-                category: "trifecta".to_string(),
-                title: "Partial trifecta".to_string(),
+                category: "uninhabitable_state".to_string(),
+                title: "Partial uninhabitable_state".to_string(),
                 description: "desc".to_string(),
             }],
             ..ScanReport::default()

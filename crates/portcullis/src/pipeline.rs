@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::capability::{
-    CapabilityLattice, CapabilityLevel, IncompatibilityConstraint, Operation, TrifectaRisk,
+    CapabilityLattice, CapabilityLevel, IncompatibilityConstraint, Operation, StateRisk,
 };
 use crate::escalation::{EscalationRequest, SpiffeTraceChain};
 use crate::galois::{BridgeChain, TranslationReport};
@@ -73,9 +73,10 @@ pub fn algebraic_gap(
     let delta = permission_gap(&actual.capabilities, &floor.capabilities);
 
     let constraint = IncompatibilityConstraint::enforcing();
-    let floor_trifecta = constraint.trifecta_risk(&floor.capabilities);
-    let actual_trifecta = constraint.trifecta_risk(&actual.capabilities);
-    let trifecta_mult = cost_config.trifecta_multiplier(floor_trifecta, actual_trifecta);
+    let floor_uninhabitable = constraint.state_risk(&floor.capabilities);
+    let actual_uninhabitable = constraint.state_risk(&actual.capabilities);
+    let uninhabitable_mult =
+        cost_config.uninhabitable_multiplier(floor_uninhabitable, actual_uninhabitable);
 
     let mut gap = WeakeningGap::empty();
 
@@ -157,13 +158,13 @@ pub fn algebraic_gap(
     for &(op, delta_level, floor_level, actual_level) in checks {
         if delta_level != CapabilityLevel::Always {
             let mut cost = cost_config.capability_cost(floor_level, actual_level);
-            cost.trifecta_multiplier = trifecta_mult;
+            cost.uninhabitable_multiplier = uninhabitable_mult;
             gap.add(crate::weakening::WeakeningRequest::capability(
                 op,
                 floor_level,
                 actual_level,
                 cost,
-                actual_trifecta,
+                actual_uninhabitable,
             ));
         }
     }
@@ -210,8 +211,8 @@ pub fn algebraic_gap(
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct RiskEvaluation {
-    /// The trifecta risk level observed
-    pub risk: TrifectaRisk,
+    /// The uninhabitable_state risk level observed
+    pub risk: StateRisk,
     /// Whether intervention is required
     pub requires_intervention: bool,
     /// Escalation trigger details, if intervention is needed
@@ -223,7 +224,7 @@ pub struct RiskEvaluation {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct EscalationTrigger {
     /// Risk grade that triggered escalation
-    pub risk: TrifectaRisk,
+    pub risk: StateRisk,
     /// Current permissions being evaluated
     pub current_permissions: PermissionLattice,
     /// Target permissions that require escalation
@@ -253,7 +254,7 @@ impl EscalationTrigger {
 
 /// Evaluate a graded computation's risk and produce escalation trigger if needed.
 pub fn evaluate_and_escalate<A>(
-    graded: &Graded<TrifectaRisk, A>,
+    graded: &Graded<StateRisk, A>,
     current_perms: &PermissionLattice,
     target_perms: &PermissionLattice,
     reason: impl Into<String>,
@@ -277,9 +278,9 @@ pub fn evaluate_and_escalate<A>(
     }
 }
 
-/// Natural transformation: `Graded<TrifectaRisk, A> → Result<A, Box<EscalationTrigger>>`.
+/// Natural transformation: `Graded<StateRisk, A> → Result<A, Box<EscalationTrigger>>`.
 pub fn require_or_escalate<A>(
-    graded: Graded<TrifectaRisk, A>,
+    graded: Graded<StateRisk, A>,
     current_perms: &PermissionLattice,
     target_perms: &PermissionLattice,
     reason: impl Into<String>,
@@ -324,8 +325,8 @@ pub struct ModalJustificationEntry {
     pub original_level: CapabilityLevel,
     /// Obligations that caused this stripping
     pub caused_by_obligations: Vec<Operation>,
-    /// Trifecta risk context
-    pub trifecta_context: TrifectaRisk,
+    ///  UninhabitableState risk context
+    pub uninhabitable_state_context: StateRisk,
 }
 
 /// Compute necessity with justification of WHY each capability was stripped.
@@ -333,8 +334,8 @@ pub fn justify_necessity(perms: &PermissionLattice) -> (PermissionLattice, Modal
     let necessary = perms.necessity();
 
     let constraint = IncompatibilityConstraint::enforcing();
-    let trifecta = constraint.trifecta_risk(&perms.capabilities);
-    let trifecta_obligations = constraint.obligations_for(&perms.capabilities);
+    let uninhabitable_state = constraint.state_risk(&perms.capabilities);
+    let uninhabitable_state_obligations = constraint.obligations_for(&perms.capabilities);
 
     let mut entries = Vec::new();
     let mut obligations_set: std::collections::BTreeSet<Operation> =
@@ -367,7 +368,7 @@ pub fn justify_necessity(perms: &PermissionLattice) -> (PermissionLattice, Modal
             if perms.obligations.requires(*op) {
                 caused_by.push(*op);
             }
-            if trifecta_obligations.requires(*op) && !caused_by.contains(op) {
+            if uninhabitable_state_obligations.requires(*op) && !caused_by.contains(op) {
                 caused_by.push(*op);
             }
             obligations_set.extend(caused_by.iter());
@@ -375,7 +376,7 @@ pub fn justify_necessity(perms: &PermissionLattice) -> (PermissionLattice, Modal
                 operation: *op,
                 original_level,
                 caused_by_obligations: caused_by,
-                trifecta_context: trifecta,
+                uninhabitable_state_context: uninhabitable_state,
             });
         }
     }
@@ -595,7 +596,7 @@ mod tests {
 
     #[test]
     fn test_no_escalation_for_safe_risk() {
-        let graded = Graded::new(TrifectaRisk::None, 42);
+        let graded = Graded::new(StateRisk::Safe, 42);
         let perms = PermissionLattice::read_only();
         let eval = evaluate_and_escalate(&graded, &perms, &perms, "test");
         assert!(!eval.requires_intervention);
@@ -604,18 +605,18 @@ mod tests {
 
     #[test]
     fn test_escalation_for_complete_risk() {
-        let graded = Graded::new(TrifectaRisk::Complete, 42);
+        let graded = Graded::new(StateRisk::Uninhabitable, 42);
         let current = PermissionLattice::restrictive();
         let target = PermissionLattice::permissive();
         let eval = evaluate_and_escalate(&graded, &current, &target, "full access");
         assert!(eval.requires_intervention);
         assert!(eval.trigger.is_some());
-        assert_eq!(eval.trigger.unwrap().risk, TrifectaRisk::Complete);
+        assert_eq!(eval.trigger.unwrap().risk, StateRisk::Uninhabitable);
     }
 
     #[test]
     fn test_require_or_escalate_ok() {
-        let graded = Graded::new(TrifectaRisk::Low, 42);
+        let graded = Graded::new(StateRisk::Low, 42);
         let perms = PermissionLattice::read_only();
         let result = require_or_escalate(graded, &perms, &perms, "test", 3600);
         assert_eq!(result.unwrap(), 42);
@@ -623,19 +624,19 @@ mod tests {
 
     #[test]
     fn test_require_or_escalate_err() {
-        let graded = Graded::new(TrifectaRisk::Complete, 42);
+        let graded = Graded::new(StateRisk::Uninhabitable, 42);
         let perms = PermissionLattice::permissive();
         let result = require_or_escalate(graded, &perms, &perms, "dangerous", 3600);
         assert!(result.is_err());
         let trigger = result.unwrap_err();
-        assert_eq!(trigger.risk, TrifectaRisk::Complete);
+        assert_eq!(trigger.risk, StateRisk::Uninhabitable);
         assert_eq!(trigger.suggested_ttl_seconds, 3600);
     }
 
     #[test]
     fn test_trigger_into_request() {
         let trigger = EscalationTrigger {
-            risk: TrifectaRisk::Complete,
+            risk: StateRisk::Uninhabitable,
             current_permissions: PermissionLattice::restrictive(),
             requested_permissions: PermissionLattice::permissive(),
             reason: "need write access".into(),
@@ -662,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn test_justify_necessity_with_trifecta() {
+    fn test_justify_necessity_with_uninhabitable() {
         let perms = PermissionLattice::fix_issue();
         let (necessary, justification) = justify_necessity(&perms);
         assert_eq!(necessary.capabilities, perms.necessity().capabilities);
@@ -732,6 +733,6 @@ mod tests {
         let gap = trace.algebraic_gap.unwrap();
         assert!(!gap.priced_gap.is_empty());
         assert!(gap.consistent);
-        assert!(trace.risk_evaluation.unwrap().risk >= TrifectaRisk::None);
+        assert!(trace.risk_evaluation.unwrap().risk >= StateRisk::Safe);
     }
 }

@@ -19,7 +19,7 @@ Corollaries:
 ### Pillar A — Math that survives (Kernel Semantics)
 
 1. **Capability lattice (authority):** compare, combine, and restrict permissions.
-2. **Taint lattice (trust):** track untrusted influence and gate sinks.
+2. **Exposure lattice (trust):** track untrusted influence and gate sinks.
 3. **Trace semantics (time):** what actions happened, in what order, under what authority.
 4. **Monotonicity:** authority can only stay the same or tighten (a one-way ratchet).
 
@@ -62,7 +62,7 @@ with Session(profile="safe_pr_fixer") as s:
 The SDK ships with:
 
 - **Profiles** — declarative policy bundles for common work types.
-- **Typed handles with taint** — every value carries provenance metadata.
+- **Typed handles with exposure** — every value carries provenance metadata.
 - **Exceptions** — `PolicyDenied`, `ApprovalRequired`, `BudgetExceeded`.
 - **Trace export** — structured audit logs for every mediated action.
 
@@ -75,7 +75,7 @@ The agent process must not have ambient authority. The kernel is the only place 
 | Rung | Artifact | Description |
 |------|----------|-------------|
 | **1** | Executable spec | TLA+ or Python model of the kernel semantics. |
-| **2** | Machine-checked proofs | Lean/Coq proofs for monotonicity, sink safety, taint gating. |
+| **2** | Machine-checked proofs | Lean/Coq proofs for monotonicity, sink safety, exposure gating. |
 | **3** | Implementation alignment | Property tests, Kani/Verus proofs, boundary fuzzing. |
 | **4** | TCB minimization | Reduce the trusted computing base as a measurable deliverable. |
 
@@ -87,7 +87,7 @@ The agent process must not have ambient authority. The kernel is the only place 
 | **PR1** | Python SDK skeleton |
 | **PR2** | Policy schema + canonical profiles |
 | **PR3** | Minimal kernel decision engine |
-| **PR4** | Taint plumbing |
+| **PR4** | Exposure plumbing |
 | **PR5** | Executable spec + model checking |
 | **PR6** | Proofs of the core invariants |
 | **PR7** | VM mode hardening |

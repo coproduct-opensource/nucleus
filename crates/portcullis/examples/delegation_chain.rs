@@ -101,11 +101,11 @@ fn main() {
         println!("   - {:?}: {:?}", detail.dimension, detail.reason);
     }
 
-    // Step 4: Trifecta check
-    println!("\n4. Trifecta safety check:");
+    // Step 4:  UninhabitableState check
+    println!("\n4.  UninhabitableState safety check:");
     println!(
-        "   Sub-agent triggers trifecta: {}",
-        sub_effective.is_trifecta_vulnerable()
+        "   Sub-agent triggers uninhabitable_state: {}",
+        sub_effective.is_uninhabitable_vulnerable()
     );
     println!(
         "   git_push requires approval: {}",

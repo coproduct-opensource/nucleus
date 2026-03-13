@@ -11,23 +11,23 @@
 //!
 //! ```text
 //! effective(dᵢ₊₁) ≤ effective(dᵢ)
-//! taint(dᵢ) ⊆ taint(dᵢ₊₁)          // taint only grows
+//! exposure(dᵢ) ⊆ exposure(dᵢ₊₁)          // exposure only grows
 //! ```
 //!
-//! Authority never increases. Taint never decreases. Budget is consumed.
+//! Authority never increases. Exposure never decreases. Budget is consumed.
 //! Time advances. The trace is append-only.
 //!
-//! # Runtime Taint Tracking
+//! # Runtime Exposure Tracking
 //!
-//! The kernel tracks a [`TaintSet`] accumulator across the session. Each
-//! allowed operation contributes its taint label (if any) to the set.
-//! When the accumulated taint would complete the lethal trifecta
+//! The kernel tracks a [`ExposureSet`] accumulator across the session. Each
+//! allowed operation contributes its exposure label (if any) to the set.
+//! When the accumulated exposure would complete the uninhabitable_state
 //! (private data + untrusted content + exfiltration vector), the kernel
 //! **dynamically gates** exfiltration operations — requiring approval
 //! even if the static lattice doesn't mandate it.
 //!
-//! This is the "tainted-to-sink gating" described in the North Star:
-//! static obligations catch structural risks, while runtime taint catches
+//! This is the "exposureed-to-sink gating" described in the North Star:
+//! static obligations catch structural risks, while runtime exposure catches
 //! emergent risks from the actual sequence of operations.
 //!
 //! # Complete Mediation
@@ -70,16 +70,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::capability::{CapabilityLevel, Operation};
 use crate::certificate::VerifiedPermissions;
-use crate::guard::{TaintLabel, TaintSet};
+use crate::exposure_core;
+use crate::guard::{ExposureLabel, ExposureSet};
 use crate::isolation::{IsolationLattice, NetworkIsolation};
 use crate::lattice::PermissionLattice;
-use crate::taint_core;
 use crate::token::SessionProvenance;
 
 /// A single decision made by the kernel.
 ///
 /// Captures the operation, subject, verdict, and a snapshot of the
-/// permission state before and after the decision — including taint.
+/// permission state before and after the decision — including exposure.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Decision {
@@ -99,28 +99,30 @@ pub struct Decision {
     pub pre_permissions_hash: String,
     /// SHA-256 hash of effective permissions after this decision.
     pub post_permissions_hash: String,
-    /// Taint state transition caused by this decision.
-    pub taint_transition: TaintTransition,
+    /// Exposure state transition caused by this decision.
+    #[cfg_attr(feature = "serde", serde(alias = "taint_transition"))]
+    pub exposure_transition: ExposureTransition,
 }
 
-/// Records the taint state before and after a decision.
+/// Records the exposure state before and after a decision.
 ///
-/// For allowed operations that carry a taint label, `post` will have
-/// that label added. For denied operations, taint does not advance
+/// For allowed operations that carry a exposure label, `post` will have
+/// that label added. For denied operations, exposure does not advance
 /// (the operation didn't execute).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct TaintTransition {
-    /// Taint legs active before this decision.
+pub struct ExposureTransition {
+    /// Exposure legs active before this decision.
     pub pre_count: u8,
-    /// Taint legs active after this decision.
+    /// Exposure legs active after this decision.
     pub post_count: u8,
-    /// The taint label contributed by this operation, if any.
-    pub contributed_label: Option<TaintLabel>,
-    /// Whether the trifecta was completed by this decision.
-    pub trifecta_completed: bool,
-    /// Whether a dynamic taint gate was applied (RequiresApproval
-    /// due to runtime taint, not static obligations).
+    /// The exposure label contributed by this operation, if any.
+    pub contributed_label: Option<ExposureLabel>,
+    /// Whether the uninhabitable_state was completed by this decision.
+    #[cfg_attr(feature = "serde", serde(alias = "trifecta_completed"))]
+    pub state_uninhabitable: bool,
+    /// Whether a dynamic exposure gate was applied (RequiresApproval
+    /// due to runtime exposure, not static obligations).
     pub dynamic_gate_applied: bool,
 }
 
@@ -199,12 +201,13 @@ pub enum DenyReason {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(tag = "source", rename_all = "snake_case"))]
 pub enum ApprovalSource {
-    /// Static obligation from the permission lattice (trifecta in lattice structure).
+    /// Static obligation from the permission lattice (uninhabitable_state in lattice structure).
     StaticObligation,
-    /// Dynamic taint gate — runtime taint accumulation completed the trifecta.
-    DynamicTaint {
-        /// The taint label that would complete the trifecta.
-        completing_label: TaintLabel,
+    /// Dynamic exposure gate — runtime exposure accumulation completed the uninhabitable_state.
+    #[cfg_attr(feature = "serde", serde(alias = "dynamic_taint"))]
+    DynamicExposure {
+        /// The exposure label that would complete the uninhabitable_state.
+        completing_label: ExposureLabel,
     },
 }
 
@@ -260,11 +263,11 @@ pub struct Kernel {
     consumed_usd: Decimal,
     /// Pre-granted approvals: operation → remaining count.
     approvals: std::collections::BTreeMap<Operation, u32>,
-    /// Runtime taint accumulator — monotonically growing.
+    /// Runtime exposure accumulator — monotonically growing.
     ///
-    /// Records which trifecta legs have been touched by allowed operations.
-    /// When this reaches trifecta-complete, exfil operations get dynamically gated.
-    taint: TaintSet,
+    /// Records which exposure legs have been touched by allowed operations.
+    /// When this reaches uninhabitable, exfil operations get dynamically gated.
+    exposure: ExposureSet,
     /// Optional provenance linking this session to a delegation certificate.
     ///
     /// Present when the kernel was created from a verified certificate via
@@ -302,7 +305,7 @@ impl Kernel {
             next_seq: 0,
             consumed_usd: Decimal::ZERO,
             approvals: std::collections::BTreeMap::new(),
-            taint: TaintSet::empty(),
+            exposure: ExposureSet::empty(),
             provenance: None,
         }
     }
@@ -341,7 +344,7 @@ impl Kernel {
             next_seq: 0,
             consumed_usd: Decimal::ZERO,
             approvals: std::collections::BTreeMap::new(),
-            taint: TaintSet::empty(),
+            exposure: ExposureSet::empty(),
             provenance: Some(provenance),
         }
     }
@@ -372,7 +375,7 @@ impl Kernel {
             next_seq: 0,
             consumed_usd: Decimal::ZERO,
             approvals: std::collections::BTreeMap::new(),
-            taint: TaintSet::empty(),
+            exposure: ExposureSet::empty(),
             provenance: Some(provenance),
         }
     }
@@ -391,19 +394,19 @@ impl Kernel {
     /// 4. **Path**: Is the subject path accessible?
     /// 5. **Command**: Is the command allowed?
     /// 6. **Static approval**: Does the lattice mandate approval?
-    /// 7. **Dynamic taint gate**: Would this op complete the trifecta at runtime?
+    /// 7. **Dynamic exposure gate**: Would this op complete the uninhabitable_state at runtime?
     ///
-    /// For allowed operations, taint is recorded in the accumulator.
-    /// The decision (including taint transition) is recorded in the append-only trace.
+    /// For allowed operations, exposure is recorded in the accumulator.
+    /// The decision (including exposure transition) is recorded in the append-only trace.
     pub fn decide(&mut self, operation: Operation, subject: &str) -> Decision {
         let pre_hash = self.effective.checksum();
-        let pre_taint_count = self.taint.count();
-        let contributed_label = taint_core::classify_operation(operation);
+        let pre_exposure_count = self.exposure.count();
+        let contributed_label = exposure_core::classify_operation(operation);
 
         // 0. Isolation minimum check — does runtime isolation meet policy requirement?
         if let Some(ref minimum) = self.effective.minimum_isolation {
             if !self.isolation.at_least(minimum) {
-                return self.record_with_taint(
+                return self.record_with_exposure(
                     operation,
                     subject,
                     Verdict::Deny(DenyReason::IsolationInsufficient {
@@ -411,7 +414,7 @@ impl Kernel {
                         actual: format!("{}", self.isolation),
                     }),
                     &pre_hash,
-                    pre_taint_count,
+                    pre_exposure_count,
                     contributed_label,
                     false,
                     false,
@@ -422,14 +425,14 @@ impl Kernel {
         // 1. Time check
         let now = Utc::now();
         if now > self.effective.time.valid_until {
-            return self.record_with_taint(
+            return self.record_with_exposure(
                 operation,
                 subject,
                 Verdict::Deny(DenyReason::TimeExpired {
                     expired_at: self.effective.time.valid_until,
                 }),
                 &pre_hash,
-                pre_taint_count,
+                pre_exposure_count,
                 contributed_label,
                 false,
                 false,
@@ -438,7 +441,7 @@ impl Kernel {
 
         // 2. Budget check
         if self.consumed_usd >= self.effective.budget.max_cost_usd {
-            return self.record_with_taint(
+            return self.record_with_exposure(
                 operation,
                 subject,
                 Verdict::Deny(DenyReason::BudgetExhausted {
@@ -446,7 +449,7 @@ impl Kernel {
                         .to_string(),
                 }),
                 &pre_hash,
-                pre_taint_count,
+                pre_exposure_count,
                 contributed_label,
                 false,
                 false,
@@ -456,12 +459,12 @@ impl Kernel {
         // 3. Capability level check
         let level = self.effective.capabilities.level_for(operation);
         if level == CapabilityLevel::Never {
-            return self.record_with_taint(
+            return self.record_with_exposure(
                 operation,
                 subject,
                 Verdict::Deny(DenyReason::InsufficientCapability),
                 &pre_hash,
-                pre_taint_count,
+                pre_exposure_count,
                 contributed_label,
                 false,
                 false,
@@ -475,14 +478,14 @@ impl Kernel {
         // Belt-and-suspenders: the lattice says "allowed", the isolation says "impossible".
         if is_network_operation(operation) && self.isolation.network == NetworkIsolation::Airgapped
         {
-            return self.record_with_taint(
+            return self.record_with_exposure(
                 operation,
                 subject,
                 Verdict::Deny(DenyReason::IsolationGated {
                     dimension: "network=airgapped".to_string(),
                 }),
                 &pre_hash,
-                pre_taint_count,
+                pre_exposure_count,
                 contributed_label,
                 false,
                 false,
@@ -496,14 +499,14 @@ impl Kernel {
                 .paths
                 .can_access(std::path::Path::new(subject))
         {
-            return self.record_with_taint(
+            return self.record_with_exposure(
                 operation,
                 subject,
                 Verdict::Deny(DenyReason::PathBlocked {
                     path: subject.to_string(),
                 }),
                 &pre_hash,
-                pre_taint_count,
+                pre_exposure_count,
                 contributed_label,
                 false,
                 false,
@@ -512,14 +515,14 @@ impl Kernel {
 
         // 5. Command check (for exec operations)
         if operation == Operation::RunBash && !self.effective.commands.can_execute(subject) {
-            return self.record_with_taint(
+            return self.record_with_exposure(
                 operation,
                 subject,
                 Verdict::Deny(DenyReason::CommandBlocked {
                     command: subject.to_string(),
                 }),
                 &pre_hash,
-                pre_taint_count,
+                pre_exposure_count,
                 contributed_label,
                 false,
                 false,
@@ -529,86 +532,86 @@ impl Kernel {
         // 6. Static approval check (obligations from lattice structure)
         if self.effective.requires_approval(operation) {
             if self.consume_approval(operation) {
-                // Approved — record taint from this allowed operation
-                self.taint = taint_core::apply_record(&self.taint, operation);
-                let trifecta_completed =
-                    !TaintSet::empty().is_trifecta_complete() && self.taint.is_trifecta_complete();
-                return self.record_with_taint(
+                // Approved — record exposure from this allowed operation
+                self.exposure = exposure_core::apply_record(&self.exposure, operation);
+                let state_uninhabitable =
+                    !ExposureSet::empty().is_uninhabitable() && self.exposure.is_uninhabitable();
+                return self.record_with_exposure(
                     operation,
                     subject,
                     Verdict::Allow,
                     &pre_hash,
-                    pre_taint_count,
+                    pre_exposure_count,
                     contributed_label,
-                    trifecta_completed,
+                    state_uninhabitable,
                     false,
                 );
             }
-            return self.record_with_taint(
+            return self.record_with_exposure(
                 operation,
                 subject,
                 Verdict::RequiresApproval,
                 &pre_hash,
-                pre_taint_count,
+                pre_exposure_count,
                 contributed_label,
                 false,
                 false,
             );
         }
 
-        // 7. Dynamic taint gate — runtime trifecta detection.
+        // 7. Dynamic exposure gate — runtime uninhabitable_state detection.
         //
         // Gate exfil operations when:
-        // a) The taint is ALREADY trifecta-complete (ongoing risk), OR
-        // b) This operation WOULD complete the trifecta (transition risk)
+        // a) The exposure is ALREADY uninhabitable (ongoing risk), OR
+        // b) This operation WOULD complete the uninhabitable_state (transition risk)
         //
         // This ensures exfil ops remain gated for the entire session once
-        // the trifecta has been reached, not just at the transition point.
-        let projected = taint_core::project_taint(&self.taint, operation);
-        if (self.taint.is_trifecta_complete() || projected.is_trifecta_complete())
+        // the uninhabitable_state has been reached, not just at the transition point.
+        let projected = exposure_core::project_exposure(&self.exposure, operation);
+        if (self.exposure.is_uninhabitable() || projected.is_uninhabitable())
             && is_exfil_operation(operation)
         {
             // Check if there's a pre-granted approval
             if self.consume_approval(operation) {
-                let pre_complete = self.taint.is_trifecta_complete();
-                self.taint = taint_core::apply_record(&self.taint, operation);
-                let newly_completed = !pre_complete && self.taint.is_trifecta_complete();
-                return self.record_with_taint(
+                let pre_complete = self.exposure.is_uninhabitable();
+                self.exposure = exposure_core::apply_record(&self.exposure, operation);
+                let newly_completed = !pre_complete && self.exposure.is_uninhabitable();
+                return self.record_with_exposure(
                     operation,
                     subject,
                     Verdict::Allow,
                     &pre_hash,
-                    pre_taint_count,
+                    pre_exposure_count,
                     contributed_label,
                     newly_completed,
                     true,
                 );
             }
-            return self.record_with_taint(
+            return self.record_with_exposure(
                 operation,
                 subject,
                 Verdict::RequiresApproval,
                 &pre_hash,
-                pre_taint_count,
+                pre_exposure_count,
                 contributed_label,
                 false,
                 true,
             );
         }
 
-        // All checks passed — record taint and allow
-        let pre_complete = self.taint.is_trifecta_complete();
-        self.taint = taint_core::apply_record(&self.taint, operation);
-        let trifecta_completed = !pre_complete && self.taint.is_trifecta_complete();
+        // All checks passed — record exposure and allow
+        let pre_complete = self.exposure.is_uninhabitable();
+        self.exposure = exposure_core::apply_record(&self.exposure, operation);
+        let state_uninhabitable = !pre_complete && self.exposure.is_uninhabitable();
 
-        self.record_with_taint(
+        self.record_with_exposure(
             operation,
             subject,
             Verdict::Allow,
             &pre_hash,
-            pre_taint_count,
+            pre_exposure_count,
             contributed_label,
-            trifecta_completed,
+            state_uninhabitable,
             false,
         )
     }
@@ -707,13 +710,13 @@ impl Kernel {
         &self.isolation
     }
 
-    /// Get the current runtime taint accumulator.
+    /// Get the current runtime exposure accumulator.
     ///
-    /// This reflects which trifecta legs have been touched by allowed
-    /// operations during this session. Taint only grows — it is never
+    /// This reflects which exposure legs have been touched by allowed
+    /// operations during this session. Exposure only grows — it is never
     /// reset or reduced.
-    pub fn taint(&self) -> &TaintSet {
-        &self.taint
+    pub fn exposure(&self) -> &ExposureSet {
+        &self.exposure
     }
 
     /// Get the session provenance, if this kernel was created from a certificate.
@@ -727,21 +730,21 @@ impl Kernel {
 
     // ── Internal ──────────────────────────────────────────────────────
 
-    /// Record a decision with taint transition in the trace and return it.
+    /// Record a decision with exposure transition in the trace and return it.
     #[allow(clippy::too_many_arguments)]
-    fn record_with_taint(
+    fn record_with_exposure(
         &mut self,
         operation: Operation,
         subject: &str,
         verdict: Verdict,
         pre_hash: &str,
-        pre_taint_count: u8,
-        contributed_label: Option<TaintLabel>,
-        trifecta_completed: bool,
+        pre_exposure_count: u8,
+        contributed_label: Option<ExposureLabel>,
+        state_uninhabitable: bool,
         dynamic_gate_applied: bool,
     ) -> Decision {
         let post_hash = self.effective.checksum();
-        let post_taint_count = self.taint.count();
+        let post_exposure_count = self.exposure.count();
         let seq = self.next_seq;
         self.next_seq += 1;
 
@@ -754,11 +757,11 @@ impl Kernel {
             timestamp: Utc::now(),
             pre_permissions_hash: pre_hash.to_string(),
             post_permissions_hash: post_hash,
-            taint_transition: TaintTransition {
-                pre_count: pre_taint_count,
-                post_count: post_taint_count,
+            exposure_transition: ExposureTransition {
+                pre_count: pre_exposure_count,
+                post_count: post_exposure_count,
                 contributed_label,
-                trifecta_completed,
+                state_uninhabitable,
                 dynamic_gate_applied,
             },
         };
@@ -919,7 +922,7 @@ mod tests {
         let perms = PermissionLattice::safe_pr_fixer();
         let mut kernel = Kernel::new(perms);
 
-        // run_bash requires approval in safe_pr_fixer (trifecta mitigation)
+        // run_bash requires approval in safe_pr_fixer (uninhabitable_state mitigation)
         let d = kernel.decide(Operation::RunBash, "cargo test");
         assert!(
             matches!(d.verdict, Verdict::RequiresApproval),
@@ -1126,7 +1129,7 @@ mod tests {
 
         // Initially allowed
         let d = kernel.decide(Operation::GitPush, "origin/main");
-        // permissive has trifecta so push requires approval, but capability is present
+        // permissive has uninhabitable_state so push requires approval, but capability is present
         assert!(!matches!(
             d.verdict,
             Verdict::Deny(DenyReason::InsufficientCapability)
@@ -1144,20 +1147,20 @@ mod tests {
         ));
     }
 
-    // ── Taint plumbing tests ──────────────────────────────────────────
+    // ── Exposure plumbing tests ──────────────────────────────────────────
 
     #[test]
-    fn test_taint_starts_empty() {
+    fn test_exposure_starts_empty() {
         let perms = PermissionLattice::default();
         let kernel = Kernel::new(perms);
 
-        assert_eq!(kernel.taint().count(), 0);
-        assert!(!kernel.taint().is_trifecta_complete());
+        assert_eq!(kernel.exposure().count(), 0);
+        assert!(!kernel.exposure().is_uninhabitable());
     }
 
     #[test]
-    fn test_taint_accumulates_on_allow() {
-        // Use a profile that allows reads and web_fetch without trifecta obligations
+    fn test_exposure_accumulates_on_allow() {
+        // Use a profile that allows reads and web_fetch without uninhabitable_state obligations
         use crate::capability::CapabilityLattice;
         let perms = PermissionLattice::builder()
             .description("read-and-fetch")
@@ -1180,41 +1183,41 @@ mod tests {
 
         let mut kernel = Kernel::new(perms);
 
-        // ReadFiles → PrivateData taint
+        // ReadFiles → PrivateDatan exposure
         let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
         assert!(d.verdict.is_allowed());
-        assert!(kernel.taint().contains(TaintLabel::PrivateData));
-        assert_eq!(kernel.taint().count(), 1);
-        assert_eq!(d.taint_transition.pre_count, 0);
-        assert_eq!(d.taint_transition.post_count, 1);
+        assert!(kernel.exposure().contains(ExposureLabel::PrivateData));
+        assert_eq!(kernel.exposure().count(), 1);
+        assert_eq!(d.exposure_transition.pre_count, 0);
+        assert_eq!(d.exposure_transition.post_count, 1);
         assert_eq!(
-            d.taint_transition.contributed_label,
-            Some(TaintLabel::PrivateData)
+            d.exposure_transition.contributed_label,
+            Some(ExposureLabel::PrivateData)
         );
 
-        // WebFetch → UntrustedContent taint
+        // WebFetch → UntrustedContent exposure
         let d = kernel.decide(Operation::WebFetch, "https://example.com");
         assert!(d.verdict.is_allowed());
-        assert!(kernel.taint().contains(TaintLabel::UntrustedContent));
-        assert_eq!(kernel.taint().count(), 2);
-        assert_eq!(d.taint_transition.pre_count, 1);
-        assert_eq!(d.taint_transition.post_count, 2);
+        assert!(kernel.exposure().contains(ExposureLabel::UntrustedContent));
+        assert_eq!(kernel.exposure().count(), 2);
+        assert_eq!(d.exposure_transition.pre_count, 1);
+        assert_eq!(d.exposure_transition.post_count, 2);
     }
 
     #[test]
-    fn test_taint_does_not_accumulate_on_deny() {
+    fn test_exposure_does_not_accumulate_on_deny() {
         let perms = PermissionLattice::safe_pr_fixer();
         let mut kernel = Kernel::new(perms);
 
-        // git_push=Never → denied, no taint recorded
+        // git_push=Never → denied, no exposure recorded
         let d = kernel.decide(Operation::GitPush, "origin/main");
         assert!(d.verdict.is_denied());
-        assert_eq!(kernel.taint().count(), 0);
-        assert_eq!(d.taint_transition.post_count, 0);
+        assert_eq!(kernel.exposure().count(), 0);
+        assert_eq!(d.exposure_transition.post_count, 0);
     }
 
     #[test]
-    fn test_taint_monotone_never_decreases() {
+    fn test_exposure_monotone_never_decreases() {
         use crate::capability::CapabilityLattice;
         let perms = PermissionLattice::builder()
             .description("all-read")
@@ -1237,23 +1240,23 @@ mod tests {
 
         let mut kernel = Kernel::new(perms);
 
-        // Build up taint
+        // Build up exposure
         kernel.decide(Operation::ReadFiles, "/a");
         kernel.decide(Operation::WebFetch, "https://b.com");
 
-        // Neutral operation (WriteFiles) should not reduce taint
+        // Neutral operation (WriteFiles) should not reduce exposure
         kernel.decide(Operation::WriteFiles, "/c");
-        assert_eq!(kernel.taint().count(), 2);
+        assert_eq!(kernel.exposure().count(), 2);
 
-        // Denied operation should not reduce taint
+        // Denied operation should not reduce exposure
         kernel.decide(Operation::RunBash, "echo hi");
-        assert_eq!(kernel.taint().count(), 2);
+        assert_eq!(kernel.exposure().count(), 2);
     }
 
     #[test]
-    fn test_dynamic_taint_gate_blocks_exfil() {
+    fn test_dynamic_exposure_gate_blocks_exfil() {
         // Build a profile that allows ALL operations (no static obligations).
-        // No trifecta obligations in the lattice because we construct one
+        // No uninhabitable_state obligations in the lattice because we construct one
         // without running normalize().
         use crate::capability::CapabilityLattice;
         let mut perms = PermissionLattice::builder()
@@ -1280,30 +1283,30 @@ mod tests {
 
         let mut kernel = Kernel::new(perms);
 
-        // Step 1: Read private data → taint PrivateData
+        // Step 1: Read private data → exposure PrivateData
         let d = kernel.decide(Operation::ReadFiles, "/etc/passwd");
         assert!(d.verdict.is_allowed());
 
-        // Step 2: Fetch untrusted content → taint UntrustedContent
+        // Step 2: Fetch untrusted content → exposure UntrustedContent
         let d = kernel.decide(Operation::WebFetch, "https://evil.com/payload");
         assert!(d.verdict.is_allowed());
 
-        // Step 3: Try to push → trifecta would complete → dynamic gate!
+        // Step 3: Try to push → uninhabitable_state would complete → dynamic gate!
         let d = kernel.decide(Operation::GitPush, "origin/main");
         assert!(
             matches!(d.verdict, Verdict::RequiresApproval),
-            "dynamic taint gate should block exfil, got {:?}",
+            "dynamic exposure gate should block exfil, got {:?}",
             d.verdict
         );
-        assert!(d.taint_transition.dynamic_gate_applied);
+        assert!(d.exposure_transition.dynamic_gate_applied);
 
-        // Taint should NOT have advanced (operation was gated, not allowed)
-        assert!(!kernel.taint().is_trifecta_complete());
-        assert_eq!(kernel.taint().count(), 2);
+        // Exposure should NOT have advanced (operation was gated, not allowed)
+        assert!(!kernel.exposure().is_uninhabitable());
+        assert_eq!(kernel.exposure().count(), 2);
     }
 
     #[test]
-    fn test_dynamic_taint_gate_with_pre_approval() {
+    fn test_dynamic_exposure_gate_with_pre_approval() {
         use crate::capability::CapabilityLattice;
         let mut perms = PermissionLattice::builder()
             .description("everything-allowed")
@@ -1331,7 +1334,7 @@ mod tests {
         // Pre-grant approval for the exfil operation
         kernel.grant_approval(Operation::GitPush, 1);
 
-        // Accumulate taint
+        // Accumulate exposure
         kernel.decide(Operation::ReadFiles, "/etc/passwd");
         kernel.decide(Operation::WebFetch, "https://evil.com/payload");
 
@@ -1342,13 +1345,13 @@ mod tests {
             "pre-approved exfil should pass dynamic gate, got {:?}",
             d.verdict
         );
-        assert!(d.taint_transition.dynamic_gate_applied);
-        assert!(d.taint_transition.trifecta_completed);
-        assert!(kernel.taint().is_trifecta_complete());
+        assert!(d.exposure_transition.dynamic_gate_applied);
+        assert!(d.exposure_transition.state_uninhabitable);
+        assert!(kernel.exposure().is_uninhabitable());
     }
 
     #[test]
-    fn test_dynamic_taint_gate_does_not_affect_non_exfil() {
+    fn test_dynamic_exposure_gate_does_not_affect_non_exfil() {
         use crate::capability::CapabilityLattice;
         let mut perms = PermissionLattice::builder()
             .description("everything-allowed")
@@ -1377,19 +1380,19 @@ mod tests {
         kernel.decide(Operation::ReadFiles, "/etc/passwd");
         kernel.decide(Operation::WebFetch, "https://evil.com");
 
-        // Neutral ops should still be allowed even with high taint
+        // Neutral ops should still be allowed even with high exposure
         let d = kernel.decide(Operation::WriteFiles, "/workspace/out.txt");
         assert!(d.verdict.is_allowed());
-        assert!(!d.taint_transition.dynamic_gate_applied);
+        assert!(!d.exposure_transition.dynamic_gate_applied);
 
         // git_commit is not an exfil op — should be allowed
         let d = kernel.decide(Operation::GitCommit, "fix: stuff");
         assert!(d.verdict.is_allowed());
-        assert!(!d.taint_transition.dynamic_gate_applied);
+        assert!(!d.exposure_transition.dynamic_gate_applied);
     }
 
     #[test]
-    fn test_taint_transition_in_decision_trace() {
+    fn test_exposure_transition_in_decision_trace() {
         use crate::capability::CapabilityLattice;
         let perms = PermissionLattice::builder()
             .description("read-only")
@@ -1418,21 +1421,21 @@ mod tests {
 
         let trace = kernel.trace();
 
-        // First read: taint 0→1
-        assert_eq!(trace[0].taint_transition.pre_count, 0);
-        assert_eq!(trace[0].taint_transition.post_count, 1);
+        // First read: exposure 0→1
+        assert_eq!(trace[0].exposure_transition.pre_count, 0);
+        assert_eq!(trace[0].exposure_transition.post_count, 1);
         assert_eq!(
-            trace[0].taint_transition.contributed_label,
-            Some(TaintLabel::PrivateData)
+            trace[0].exposure_transition.contributed_label,
+            Some(ExposureLabel::PrivateData)
         );
 
-        // Second read: taint stays at 1 (already has PrivateData)
-        assert_eq!(trace[1].taint_transition.pre_count, 1);
-        assert_eq!(trace[1].taint_transition.post_count, 1);
+        // Second read: exposure stays at 1 (already has PrivateData)
+        assert_eq!(trace[1].exposure_transition.pre_count, 1);
+        assert_eq!(trace[1].exposure_transition.post_count, 1);
 
-        // Denied write: taint stays at 1 (denied ops don't contribute)
-        assert_eq!(trace[2].taint_transition.pre_count, 1);
-        assert_eq!(trace[2].taint_transition.post_count, 1);
+        // Denied write: exposure stays at 1 (denied ops don't contribute)
+        assert_eq!(trace[2].exposure_transition.pre_count, 1);
+        assert_eq!(trace[2].exposure_transition.post_count, 1);
     }
 
     #[test]
@@ -1440,7 +1443,7 @@ mod tests {
         // RunBash is special: it projects both PrivateData + ExfilVector.
         // If we've already ingested untrusted content, RunBash should
         // be dynamically gated because it's an exfil vector that would
-        // complete the trifecta (it projects PrivateData too).
+        // complete the uninhabitable_state (it projects PrivateData too).
         use crate::capability::CapabilityLattice;
         use crate::CommandLattice;
         let mut perms = PermissionLattice::builder()
@@ -1469,16 +1472,16 @@ mod tests {
 
         // Fetch untrusted content
         kernel.decide(Operation::WebFetch, "https://evil.com/payload");
-        assert!(kernel.taint().contains(TaintLabel::UntrustedContent));
+        assert!(kernel.exposure().contains(ExposureLabel::UntrustedContent));
 
-        // RunBash with a permitted command — trifecta would complete via omnibus
+        // RunBash with a permitted command — uninhabitable_state would complete via omnibus
         let d = kernel.decide(Operation::RunBash, "cargo test");
         assert!(
             matches!(d.verdict, Verdict::RequiresApproval),
             "RunBash omnibus projection should trigger dynamic gate, got {:?}",
             d.verdict
         );
-        assert!(d.taint_transition.dynamic_gate_applied);
+        assert!(d.exposure_transition.dynamic_gate_applied);
     }
 
     // ── Isolation tests ─────────────────────────────────────────────

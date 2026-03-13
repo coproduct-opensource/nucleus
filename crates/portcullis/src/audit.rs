@@ -16,7 +16,7 @@
 //!
 //! ```rust
 //! use portcullis::audit::{AuditLog, AuditEntry, PermissionEvent};
-//! use portcullis::{Operation, CapabilityLevel, TrifectaRisk};
+//! use portcullis::{Operation, CapabilityLevel, StateRisk};
 //!
 //! // Create an in-memory audit log
 //! let mut log = AuditLog::in_memory();
@@ -41,7 +41,7 @@ use sha2::{Digest, Sha256};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
 
-use crate::capability::{Operation, TrifectaRisk};
+use crate::capability::{Operation, StateRisk};
 use crate::weakening::{WeakeningCost, WeakeningRequest};
 use crate::CapabilityLevel;
 
@@ -161,13 +161,14 @@ impl AuditEntry {
         }
     }
 
-    /// Get the trifecta impact if applicable.
-    pub fn trifecta_impact(&self) -> Option<TrifectaRisk> {
+    /// Get the uninhabitable_state impact if applicable.
+    pub fn uninhabitable_impact(&self) -> Option<StateRisk> {
         match &self.event {
             PermissionEvent::WeakeningRequested {
-                trifecta_impact, ..
-            } => Some(*trifecta_impact),
-            PermissionEvent::TrifectaStateChanged { after, .. } => Some(*after),
+                uninhabitable_impact,
+                ..
+            } => Some(*uninhabitable_impact),
+            PermissionEvent::UninhabitableStateChanged { after, .. } => Some(*after),
             _ => None,
         }
     }
@@ -181,8 +182,8 @@ pub enum PermissionEvent {
     PermissionsDeclared {
         /// Human-readable description of declared permissions.
         description: String,
-        /// Trifecta risk of declared permissions.
-        trifecta_risk: TrifectaRisk,
+        ///  UninhabitableState risk of declared permissions.
+        state_risk: StateRisk,
     },
 
     /// Agent requested an operation.
@@ -199,16 +200,16 @@ pub enum PermissionEvent {
     WeakeningRequested {
         /// The weakening request details.
         request: WeakeningRequest,
-        /// The trifecta impact of this weakening.
-        trifecta_impact: TrifectaRisk,
+        /// The uninhabitable_state impact of this weakening.
+        uninhabitable_impact: StateRisk,
     },
 
-    /// The trifecta state changed.
-    TrifectaStateChanged {
-        /// Previous trifecta risk level.
-        before: TrifectaRisk,
-        /// New trifecta risk level.
-        after: TrifectaRisk,
+    /// The uninhabitable_state state changed.
+    UninhabitableStateChanged {
+        /// Previous uninhabitable_state risk level.
+        before: StateRisk,
+        /// New uninhabitable_state risk level.
+        after: StateRisk,
         /// What triggered the change.
         trigger: String,
     },
@@ -219,8 +220,8 @@ pub enum PermissionEvent {
         total_cost: WeakeningCost,
         /// Number of weakenings.
         weakening_count: usize,
-        /// Whether the trifecta was completed.
-        trifecta_completed: bool,
+        /// Whether the uninhabitable_state was completed.
+        state_uninhabitable: bool,
     },
 
     /// Approval was requested from a human.
@@ -716,8 +717,8 @@ pub struct IdentityAuditSummary {
     pub total_operations: usize,
     /// Number of deviations from declared permissions.
     pub deviation_count: usize,
-    /// Number of times trifecta was completed.
-    pub trifecta_completions: usize,
+    /// Number of times uninhabitable_state was completed.
+    pub uninhabitable_completions: usize,
     /// Number of approvals requested.
     pub approvals_requested: usize,
     /// Number of approvals granted.
@@ -749,7 +750,7 @@ impl AuditLog {
             identity: identity.to_string(),
             total_operations: 0,
             deviation_count: 0,
-            trifecta_completions: 0,
+            uninhabitable_completions: 0,
             approvals_requested: 0,
             approvals_granted: 0,
             approvals_denied: 0,
@@ -779,20 +780,20 @@ impl AuditLog {
                 PermissionEvent::WeakeningRequested { .. } => {
                     summary.deviation_count += 1;
                 }
-                PermissionEvent::TrifectaStateChanged {
-                    after: TrifectaRisk::Complete,
+                PermissionEvent::UninhabitableStateChanged {
+                    after: StateRisk::Uninhabitable,
                     ..
                 } => {
-                    summary.trifecta_completions += 1;
+                    summary.uninhabitable_completions += 1;
                 }
                 PermissionEvent::ExecutionCompleted {
                     total_cost,
-                    trifecta_completed,
+                    state_uninhabitable,
                     ..
                 } => {
                     summary.total_weakening_cost += total_cost.total();
-                    if *trifecta_completed {
-                        summary.trifecta_completions += 1;
+                    if *state_uninhabitable {
+                        summary.uninhabitable_completions += 1;
                     }
                 }
                 PermissionEvent::ApprovalRequested { .. } => {
@@ -855,7 +856,7 @@ mod tests {
             "spiffe://test/agent-1",
             PermissionEvent::ApprovalRequested {
                 operation: Operation::GitPush,
-                reason: "Trifecta detected".to_string(),
+                reason: " UninhabitableState detected".to_string(),
             },
         ));
 
@@ -872,7 +873,7 @@ mod tests {
             "spiffe://test/agent-1",
             PermissionEvent::PermissionsDeclared {
                 description: "Codegen".to_string(),
-                trifecta_risk: TrifectaRisk::Low,
+                state_risk: StateRisk::Low,
             },
         ));
 
@@ -880,7 +881,7 @@ mod tests {
             "spiffe://test/agent-2",
             PermissionEvent::PermissionsDeclared {
                 description: "Permissive".to_string(),
-                trifecta_risk: TrifectaRisk::Complete,
+                state_risk: StateRisk::Uninhabitable,
             },
         ));
 
@@ -948,9 +949,9 @@ mod tests {
                     CapabilityLevel::Never,
                     CapabilityLevel::Always,
                     WeakeningCost::new(rust_decimal::Decimal::new(5, 1)),
-                    TrifectaRisk::Complete,
+                    StateRisk::Uninhabitable,
                 ),
-                trifecta_impact: TrifectaRisk::Complete,
+                uninhabitable_impact: StateRisk::Uninhabitable,
             },
         ));
 
@@ -958,7 +959,7 @@ mod tests {
             identity,
             PermissionEvent::ApprovalRequested {
                 operation: Operation::GitPush,
-                reason: "Trifecta".to_string(),
+                reason: "UninhabitableState".to_string(),
             },
         ));
 
@@ -1000,7 +1001,7 @@ mod tests {
                 "spiffe://test/agent-1",
                 PermissionEvent::ApprovalRequested {
                     operation: Operation::GitPush,
-                    reason: "Trifecta".to_string(),
+                    reason: "UninhabitableState".to_string(),
                 },
             )
             .with_correlation_id("task-123"),
@@ -1018,7 +1019,7 @@ mod tests {
             "spiffe://test/agent-1",
             PermissionEvent::PermissionsDeclared {
                 description: "Codegen".to_string(),
-                trifecta_risk: TrifectaRisk::Low,
+                state_risk: StateRisk::Low,
             },
         ));
 
@@ -1055,7 +1056,7 @@ mod tests {
             "spiffe://test/agent-1",
             PermissionEvent::PermissionsDeclared {
                 description: "Codegen".to_string(),
-                trifecta_risk: TrifectaRisk::Low,
+                state_risk: StateRisk::Low,
             },
         ));
 
@@ -1093,21 +1094,21 @@ mod tests {
                 "spiffe://test/agent-1",
                 PermissionEvent::PermissionsDeclared {
                     description: "Batch 1".to_string(),
-                    trifecta_risk: TrifectaRisk::None,
+                    state_risk: StateRisk::Safe,
                 },
             ),
             AuditEntry::new(
                 "spiffe://test/agent-1",
                 PermissionEvent::PermissionsDeclared {
                     description: "Batch 2".to_string(),
-                    trifecta_risk: TrifectaRisk::Low,
+                    state_risk: StateRisk::Low,
                 },
             ),
             AuditEntry::new(
                 "spiffe://test/agent-1",
                 PermissionEvent::PermissionsDeclared {
                     description: "Batch 3".to_string(),
-                    trifecta_risk: TrifectaRisk::Medium,
+                    state_risk: StateRisk::Medium,
                 },
             ),
         ];
@@ -1133,7 +1134,7 @@ mod tests {
             "spiffe://test/agent-1",
             PermissionEvent::PermissionsDeclared {
                 description: "test".to_string(),
-                trifecta_risk: TrifectaRisk::None,
+                state_risk: StateRisk::Safe,
             },
         ));
 
@@ -1162,7 +1163,7 @@ mod tests {
                 format!("spiffe://test/agent-{}", i),
                 PermissionEvent::PermissionsDeclared {
                     description: "Test".to_string(),
-                    trifecta_risk: TrifectaRisk::None,
+                    state_risk: StateRisk::Safe,
                 },
             ));
         }

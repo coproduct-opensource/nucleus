@@ -79,7 +79,7 @@ pub fn from_error_payload(status: u16, payload: &Value) -> Error {
         "path_denied"
         | "command_denied"
         | "sandbox_escape"
-        | "trifecta_blocked"
+        | "uninhabitable_blocked"
         | "insufficient_capability"
         | "dns_not_allowed" => Error::AccessDenied {
             kind: kind.to_string(),
@@ -115,7 +115,7 @@ mod tests {
             "path_denied",
             "command_denied",
             "sandbox_escape",
-            "trifecta_blocked",
+            "uninhabitable_blocked",
             "insufficient_capability",
             "dns_not_allowed",
         ] {

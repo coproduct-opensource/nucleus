@@ -8,11 +8,11 @@ Deploy Firecracker-isolated AI agent sandboxes on Kubernetes with fine-grained p
 |---------|---------------------|---------|
 | Isolation | gVisor (syscall filter) | Firecracker (hardware VM) |
 | Attack surface | ~300 syscalls exposed | ~50K lines Rust, KVM-backed |
-| Permission model | Pod RBAC only | Lattice-guard with trifecta detection |
+| Permission model | Pod RBAC only | Lattice-guard with uninhabitable state detection |
 | Startup time | <1s (warm pool) | <125ms (Firecracker) |
 | Memory overhead | ~50MB | ~5MB per microVM |
 
-Nucleus provides **hardware-level isolation** with a **mathematical permission model** that automatically detects dangerous capability combinations (the "lethal trifecta").
+Nucleus provides **hardware-level isolation** with a **mathematical permission model** that automatically detects dangerous capability combinations (the "uninhabitable state").
 
 ---
 
@@ -182,10 +182,10 @@ Nucleus includes built-in profiles for common agent patterns:
 |---------|----------|--------------|
 | `read-only` | Code exploration | Read files, no writes/network |
 | `code-review` | PR review agents | Read + web search for context |
-| `fix-issue` | Bug fix agents | Full dev workflow, trifecta protected |
+| `fix-issue` | Bug fix agents | Full dev workflow, uninhabitable state protected |
 | `demo` | Live demos | Blocks shell interpreters |
 
-### Trifecta Protection
+###  Uninhabitable state Protection
 
 When an agent has all three dangerous capabilities:
 1. **Private data access** (read_files ≥ low_risk)
@@ -197,7 +197,7 @@ Nucleus **automatically requires human approval** for exfiltration actions. This
 ```
 Agent requests: git push origin main
 ┌─────────────────────────────────────────┐
-│  ⚠️  TRIFECTA PROTECTION TRIGGERED      │
+│  ⚠️  uninhabitable state PROTECTION TRIGGERED      │
 │                                         │
 │  This agent has:                        │
 │  ✓ Read access to files                 │
@@ -235,7 +235,7 @@ Choose Nucleus when you need:
 - **Hardware isolation**: Defense against kernel exploits
 - **Permission governance**: Fine-grained capability control beyond RBAC
 - **Compliance**: SOC2, HIPAA, NIST frameworks requiring VM-level isolation
-- **Prompt injection defense**: Automatic trifecta detection
+- **Prompt injection defense**: Automatic uninhabitable state detection
 
 Choose Agent Sandbox when you need:
 - **Faster iteration**: Lighter weight for development

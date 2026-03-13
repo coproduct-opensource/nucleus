@@ -5,7 +5,7 @@
 # network, no git operations. Useful for code exploration, analysis,
 # and question-answering tasks.
 #
-# Trifecta analysis:
+#  Uninhabitable state analysis:
 #   - Private data: read_files=always (present)
 #   - Untrusted content: absent
 #   - Exfiltration: absent

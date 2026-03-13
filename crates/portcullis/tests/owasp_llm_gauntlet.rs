@@ -10,14 +10,14 @@
 //!
 //! | OWASP Vulnerability | Primary Security Control | Test Module |
 //! |---------------------|-------------------------|-------------|
-//! | LLM01: Prompt Injection | Trifecta constraint | `llm01_prompt_injection` |
+//! | LLM01: Prompt Injection |  UninhabitableState constraint | `llm01_prompt_injection` |
 //! | LLM02: Sensitive Disclosure | PathLattice | `llm02_sensitive_disclosure` |
 //! | LLM03: Supply Chain | CommandLattice | `llm03_supply_chain` |
 //! | LLM04: Data Poisoning | EffectivePermissions | `llm04_data_poisoning` |
 //! | LLM05: Output Handling | CommandLattice | `llm05_output_handling` |
-//! | LLM06: Excessive Agency | Trifecta + Approval | `llm06_excessive_agency` |
+//! | LLM06: Excessive Agency |  UninhabitableState + Approval | `llm06_excessive_agency` |
 //! | LLM07: Prompt Leakage | PathLattice | `llm07_prompt_leakage` |
-//! | LLM08: Vector Weaknesses | Trifecta + Capabilities | `llm08_vector_weaknesses` |
+//! | LLM08: Vector Weaknesses |  UninhabitableState + Capabilities | `llm08_vector_weaknesses` |
 //! | LLM09: Misinformation | TimeLattice + Approval | `llm09_misinformation` |
 //! | LLM10: Unbounded Consumption | BudgetLattice | `llm10_unbounded_consumption` |
 //!
@@ -81,7 +81,7 @@ const SHELL_METACHARACTERS: &[&str] = &[
 // ============================================================================
 // LLM01: Prompt Injection
 // ============================================================================
-// The trifecta constraint prevents prompt injection attacks from exfiltrating
+// The uninhabitable_state constraint prevents prompt injection attacks from exfiltrating
 // data by requiring approval when private data + untrusted content + exfil
 // vectors are all present.
 
@@ -89,8 +89,8 @@ mod llm01_prompt_injection {
     use super::*;
 
     #[test]
-    fn trifecta_bypass_via_json_rejected() {
-        // Attempt to bypass trifecta constraint via crafted JSON payload
+    fn uninhabitable_bypass_via_json_rejected() {
+        // Attempt to bypass uninhabitable_state constraint via crafted JSON payload
         // This simulates an attacker injecting a malicious permission payload
         let malicious_json = r#"{
             "id": "00000000-0000-0000-0000-000000000001",
@@ -114,7 +114,7 @@ mod llm01_prompt_injection {
             "budget": {"max_cost_usd": "100", "consumed_usd": "0", "max_input_tokens": 1000000, "max_output_tokens": 100000},
             "commands": {"allowed": [], "blocked": [], "allowed_rules": [], "blocked_rules": []},
             "time": {"valid_from": "2024-01-01T00:00:00Z", "valid_until": "2030-01-01T00:00:00Z"},
-            "trifecta_constraint": false,
+            "uninhabitable_constraint": false,
             "created_at": "2024-01-01T00:00:00Z",
             "created_by": "attacker"
         }"#;
@@ -122,16 +122,16 @@ mod llm01_prompt_injection {
         let perms: PermissionLattice =
             serde_json::from_str(malicious_json).expect("Should parse malicious payload");
 
-        // Despite the JSON saying trifecta_constraint: false, it should be enforced
+        // Despite the JSON saying uninhabitable_constraint: false, it should be enforced
         assert!(
-            perms.trifecta_constraint,
-            "Trifecta constraint MUST be enforced regardless of JSON input"
+            perms.uninhabitable_constraint,
+            " UninhabitableState constraint MUST be enforced regardless of JSON input"
         );
 
-        // The trifecta should be detected and exfil should require approval
+        // The uninhabitable_state should be detected and exfil should require approval
         assert!(
-            perms.is_trifecta_vulnerable(),
-            "Trifecta should be detected in injected payload"
+            perms.is_uninhabitable_vulnerable(),
+            " UninhabitableState should be detected in injected payload"
         );
         assert!(
             perms.requires_approval(Operation::GitPush),
@@ -149,17 +149,17 @@ mod llm01_prompt_injection {
 
     #[test]
     #[cfg(feature = "testing")]
-    fn trifecta_enforcement_in_meet_is_infectious() {
-        // If either parent enforces trifecta, the child must too
+    fn uninhabitable_enforcement_in_meet_is_infectious() {
+        // If either parent enforces uninhabitable_state, the child must too
         let enforcing = PermissionLattice::builder()
-            .description("enforcing trifecta")
+            .description("enforcing uninhabitable_state")
             .capabilities(CapabilityLattice {
                 read_files: CapabilityLevel::Always,
                 web_fetch: CapabilityLevel::LowRisk,
                 git_push: CapabilityLevel::LowRisk,
                 ..Default::default()
             })
-            .trifecta_constraint(true)
+            .uninhabitable_constraint(true)
             .build();
 
         let not_enforcing = PermissionLattice::builder()
@@ -170,16 +170,16 @@ mod llm01_prompt_injection {
                 git_push: CapabilityLevel::LowRisk,
                 ..Default::default()
             })
-            .trifecta_constraint(false)
+            .uninhabitable_constraint(false)
             .build()
-            .with_trifecta_disabled();
+            .with_uninhabitable_disabled();
 
         // Meet should inherit enforcement from either parent
         let result = enforcing.meet(&not_enforcing);
 
         assert!(
-            result.trifecta_constraint,
-            "Meet with any enforcing parent MUST enforce trifecta"
+            result.uninhabitable_constraint,
+            "Meet with any enforcing parent MUST enforce uninhabitable_state"
         );
         assert!(
             result.requires_approval(Operation::GitPush),
@@ -188,8 +188,8 @@ mod llm01_prompt_injection {
     }
 
     #[test]
-    fn serialization_roundtrip_maintains_trifecta() {
-        // Serialize a permission set and deserialize it - trifecta must remain enforced
+    fn serialization_roundtrip_maintains_uninhabitable() {
+        // Serialize a permission set and deserialize it - uninhabitable_state must remain enforced
         let original = PermissionLattice::builder()
             .description("test roundtrip")
             .capabilities(CapabilityLattice {
@@ -198,15 +198,15 @@ mod llm01_prompt_injection {
                 git_push: CapabilityLevel::LowRisk,
                 ..Default::default()
             })
-            .trifecta_constraint(true)
+            .uninhabitable_constraint(true)
             .build();
 
         let json = serde_json::to_string(&original).expect("Should serialize");
         let restored: PermissionLattice = serde_json::from_str(&json).expect("Should deserialize");
 
         assert!(
-            restored.trifecta_constraint,
-            "Trifecta must be enforced after roundtrip"
+            restored.uninhabitable_constraint,
+            " UninhabitableState must be enforced after roundtrip"
         );
         assert!(
             restored.requires_approval(Operation::GitPush),
@@ -239,7 +239,7 @@ mod llm01_prompt_injection {
             "budget": {"max_cost_usd": "5", "consumed_usd": "0", "max_input_tokens": 100000, "max_output_tokens": 10000},
             "commands": {"allowed": [], "blocked": [], "allowed_rules": [], "blocked_rules": []},
             "time": {"valid_from": "2024-01-01T00:00:00Z", "valid_until": "2030-01-01T00:00:00Z"},
-            "trifecta_constraint": true,
+            "uninhabitable_constraint": true,
             "created_at": "2024-01-01T00:00:00Z",
             "created_by": "test"
         }"#;
@@ -248,10 +248,10 @@ mod llm01_prompt_injection {
             serde_json::from_str(json_with_empty_obligations).expect("Should parse");
 
         // Even though obligations were empty in JSON, normalize() should add them
-        // because trifecta is complete (read + web + git_push)
+        // because uninhabitable_state is complete (read + web + git_push)
         assert!(
             perms.requires_approval(Operation::GitPush),
-            "GitPush must require approval when trifecta is complete"
+            "GitPush must require approval when uninhabitable_state is complete"
         );
     }
 }
@@ -811,16 +811,16 @@ mod llm05_output_handling {
 // ============================================================================
 // LLM06: Excessive Agency
 // ============================================================================
-// Trifecta constraint + approval obligations prevent autonomous exfiltration
+//  UninhabitableState constraint + approval obligations prevent autonomous exfiltration
 
 mod llm06_excessive_agency {
     use super::*;
 
     #[test]
-    fn trifecta_complete_requires_approval() {
-        // Create a permission set with complete trifecta
+    fn state_uninhabitable_requires_approval() {
+        // Create a permission set with uninhabitable_state
         let perms = PermissionLattice::builder()
-            .description("trifecta complete")
+            .description("uninhabitable_state complete")
             .capabilities(CapabilityLattice {
                 read_files: CapabilityLevel::Always, // Private data
                 web_fetch: CapabilityLevel::LowRisk, // Untrusted content
@@ -832,8 +832,8 @@ mod llm06_excessive_agency {
             .build();
 
         assert!(
-            perms.is_trifecta_vulnerable(),
-            "Trifecta should be detected"
+            perms.is_uninhabitable_vulnerable(),
+            " UninhabitableState should be detected"
         );
 
         // All exfil vectors must require approval
@@ -895,7 +895,7 @@ mod llm06_excessive_agency {
 
             assert!(
                 perms.requires_approval(op),
-                "Exfil vector '{}' must require approval when trifecta is complete",
+                "Exfil vector '{}' must require approval when uninhabitable_state is complete",
                 name
             );
         }
@@ -977,12 +977,12 @@ mod llm06_excessive_agency {
 
     #[test]
     fn pr_review_profile_safe() {
-        // pr_review profile should NOT trigger trifecta because it has no exfil
+        // pr_review profile should NOT trigger uninhabitable_state because it has no exfil
         let perms = PermissionLattice::pr_review();
 
         assert!(
-            !perms.is_trifecta_vulnerable(),
-            "pr_review should NOT trigger trifecta (no exfiltration capability)"
+            !perms.is_uninhabitable_vulnerable(),
+            "pr_review should NOT trigger uninhabitable_state (no exfiltration capability)"
         );
 
         // Verify no exfil capabilities
@@ -1112,7 +1112,7 @@ mod llm07_prompt_leakage {
 // ============================================================================
 // LLM08: Vector and Embedding Weaknesses
 // ============================================================================
-// Trifecta + capabilities ensure web_fetch with private data requires gating
+//  UninhabitableState + capabilities ensure web_fetch with private data requires gating
 
 mod llm08_vector_weaknesses {
     use super::*;
@@ -1133,7 +1133,7 @@ mod llm08_vector_weaknesses {
     }
 
     #[test]
-    fn web_fetch_with_trifecta_gated() {
+    fn web_fetch_with_uninhabitable_gated() {
         // If web_fetch is enabled with read_files and exfil, it must be gated
         let perms = PermissionLattice::builder()
             .capabilities(CapabilityLattice {
@@ -1145,8 +1145,8 @@ mod llm08_vector_weaknesses {
             .build();
 
         assert!(
-            perms.is_trifecta_vulnerable(),
-            "Trifecta should be detected"
+            perms.is_uninhabitable_vulnerable(),
+            " UninhabitableState should be detected"
         );
 
         // Exfiltration must require approval
@@ -1180,12 +1180,12 @@ mod llm08_vector_weaknesses {
             .build();
 
         assert!(
-            with_fetch.is_trifecta_vulnerable(),
-            "web_fetch should trigger trifecta"
+            with_fetch.is_uninhabitable_vulnerable(),
+            "web_fetch should trigger uninhabitable_state"
         );
         assert!(
-            with_search.is_trifecta_vulnerable(),
-            "web_search should trigger trifecta"
+            with_search.is_uninhabitable_vulnerable(),
+            "web_search should trigger uninhabitable_state"
         );
     }
 
@@ -1197,8 +1197,8 @@ mod llm08_vector_weaknesses {
         assert_eq!(perms.capabilities.web_fetch, CapabilityLevel::Never);
         assert_eq!(perms.capabilities.web_search, CapabilityLevel::Never);
         assert!(
-            !perms.is_trifecta_vulnerable(),
-            "Network-isolated profile should not trigger trifecta"
+            !perms.is_uninhabitable_vulnerable(),
+            "Network-isolated profile should not trigger uninhabitable_state"
         );
     }
 }
@@ -1263,8 +1263,8 @@ mod llm09_misinformation {
     }
 
     #[test]
-    fn commit_trifecta_gated() {
-        // git_commit + read + web should trigger trifecta gating on exfil
+    fn commit_uninhabitable_gated() {
+        // git_commit + read + web should trigger uninhabitable_state gating on exfil
         // Note: git_commit alone is not an exfil vector, but run_bash could be
         let perms = PermissionLattice::builder()
             .capabilities(CapabilityLattice {
@@ -1277,8 +1277,8 @@ mod llm09_misinformation {
             .build();
 
         assert!(
-            perms.is_trifecta_vulnerable(),
-            "Should detect trifecta with run_bash"
+            perms.is_uninhabitable_vulnerable(),
+            "Should detect uninhabitable_state with run_bash"
         );
         assert!(
             perms.requires_approval(Operation::RunBash),
@@ -1478,7 +1478,7 @@ mod integration_attacks {
     use super::*;
 
     #[test]
-    fn full_trifecta_attack_blocked() {
+    fn full_uninhabitable_attack_blocked() {
         // Simulate a full prompt injection attack that tries to:
         // 1. Read sensitive files
         // 2. Fetch malicious instructions
@@ -1506,7 +1506,7 @@ mod integration_attacks {
             "budget": {"max_cost_usd": "1000000", "consumed_usd": "0", "max_input_tokens": 99999999, "max_output_tokens": 99999999},
             "commands": {"allowed": [], "blocked": [], "allowed_rules": [], "blocked_rules": []},
             "time": {"valid_from": "2020-01-01T00:00:00Z", "valid_until": "2100-01-01T00:00:00Z"},
-            "trifecta_constraint": false,
+            "uninhabitable_constraint": false,
             "created_at": "2024-01-01T00:00:00Z",
             "created_by": "attacker"
         }"#;
@@ -1514,14 +1514,14 @@ mod integration_attacks {
         let perms: PermissionLattice =
             serde_json::from_str(attacker_payload).expect("Should parse attack payload");
 
-        // All three trifecta protections must be active
+        // All three uninhabitable_state protections must be active
         assert!(
-            perms.trifecta_constraint,
-            "Trifecta must be enforced despite payload"
+            perms.uninhabitable_constraint,
+            " UninhabitableState must be enforced despite payload"
         );
         assert!(
-            perms.is_trifecta_vulnerable(),
-            "Trifecta vulnerability must be detected"
+            perms.is_uninhabitable_vulnerable(),
+            " UninhabitableState vulnerability must be detected"
         );
 
         // All exfiltration vectors must require approval
@@ -1686,7 +1686,7 @@ mod legitimate_operations {
 
     #[test]
     fn safe_profiles_work() {
-        // These profiles should not trigger trifecta
+        // These profiles should not trigger uninhabitable_state
         let safe_profiles = [
             ("pr_review", PermissionLattice::pr_review()),
             ("codegen", PermissionLattice::codegen()),
@@ -1697,8 +1697,8 @@ mod legitimate_operations {
 
         for (name, perms) in safe_profiles {
             assert!(
-                !perms.is_trifecta_vulnerable(),
-                "Safe profile '{}' should not trigger trifecta",
+                !perms.is_uninhabitable_vulnerable(),
+                "Safe profile '{}' should not trigger uninhabitable_state",
                 name
             );
         }

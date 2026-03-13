@@ -38,11 +38,11 @@ nucleus-audit scan --pod-spec agent.yaml --claude-settings settings.json --mcp-c
 
 | Format | File | What It Checks |
 |--------|------|----------------|
-| PodSpec | `*.yaml` | Trifecta, credentials, network, isolation, timeout, permissions |
-| Claude Code settings | `settings.json` | Trifecta via allow/deny rules, Bash capability propagation, exfil patterns, safety bypasses, inline credentials, hooks |
+| PodSpec | `*.yaml` | Uninhabitable state, credentials, network, isolation, timeout, permissions |
+| Claude Code settings | `settings.json` |  Uninhabitable state via allow/deny rules, Bash capability propagation, exfil patterns, safety bypasses, inline credentials, hooks |
 | MCP config | `.mcp.json` | Well-known server classification, `npx -y` supply chain risk, external HTTP servers, plaintext credentials, auth headers, dangerous commands |
 
-The Claude Code scanner projects `allow`/`deny` rules onto the portcullis `CapabilityLattice` and runs the same trifecta analysis used for PodSpecs. **Unrestricted Bash implies all capabilities** — `cat` reads files, `curl` fetches web content, `grep` searches — so `["Edit", "Write", "Bash"]` correctly triggers a CRITICAL trifecta even without explicit `Read` or `WebFetch` rules. Patterned Bash (e.g., `Bash(curl *)`) propagates only the relevant capability legs. A deny rule like `"Bash"` (bare, no pattern) demotes the exfiltration leg back to `Never`, breaking the trifecta.
+The Claude Code scanner projects `allow`/`deny` rules onto the portcullis `CapabilityLattice` and runs the same uninhabitable state analysis used for PodSpecs. **Unrestricted Bash implies all capabilities** — `cat` reads files, `curl` fetches web content, `grep` searches — so `["Edit", "Write", "Bash"]` correctly triggers a CRITICAL uninhabitable state even without explicit `Read` or `WebFetch` rules. Patterned Bash (e.g., `Bash(curl *)`) propagates only the relevant capability legs. A deny rule like `"Bash"` (bare, no pattern) demotes the exfiltration leg back to `Never`, breaking the uninhabitable state.
 
 The MCP scanner classifies well-known server packages (database, filesystem, VCS, cloud, communication, browser) and flags `npx -y` with non-official packages as a supply chain risk.
 
@@ -56,7 +56,7 @@ nucleus-audit scan --pod-spec agent.yaml --format json
 nucleus-audit verify --audit-log /var/log/nucleus/agent.jsonl
 ```
 
-### Example: The Hidden Trifecta
+### Example: The Hidden Uninhabitable state
 
 A common config that *looks* safe — only Edit, Write, and Bash — but unrestricted Bash implies `cat` (read), `curl` (web), and `git push` (exfil):
 
@@ -67,10 +67,10 @@ A common config that *looks* safe — only Edit, Write, and Bash — but unrestr
 ```
 $ nucleus-audit scan --claude-settings settings.json
 
-  !! [CRITICAL] Lethal trifecta in Claude Code settings
+  !! [CRITICAL] Lethal uninhabitable state in Claude Code settings
        The allow rules grant private data access (Read/Glob/Grep)
        + untrusted content (WebFetch/WebSearch) + exfiltration (Bash)
-       without sufficient deny rules to break the trifecta.
+       without sufficient deny rules to break the uninhabitable state.
 
   !  [HIGH] Unrestricted Bash access
        Bash is allowed without pattern restrictions and no deny rules
@@ -105,7 +105,7 @@ $ nucleus-audit scan --mcp-config .mcp.json
   ~  [MEDIUM] Filesystem access via MCP server 'filesystem'
   ~  [MEDIUM] Vcs access via MCP server 'github'
        This server provides BOTH private data access and
-       exfiltration capability — two trifecta legs in one server.
+       exfiltration capability — two exposure legs in one server.
   ~  [MEDIUM] Auto-install unknown package in 'custom-tool': some-random-mcp-server
        This executes arbitrary code from npm on every invocation.
   -  [LOW] Auto-install official MCP package in 'postgres'
@@ -116,7 +116,7 @@ $ nucleus-audit scan --mcp-config .mcp.json
 
 See [`examples/`](examples/) for more configs: [Claude Code settings](examples/claude-settings/), [MCP configs](examples/mcp-configs/), [PodSpecs](examples/podspecs/).
 
-## The Lethal Trifecta
+## The Uninhabitable State
 
 The core security primitive. When an agent has all three capabilities at autonomous levels, prompt injection becomes data exfiltration:
 
@@ -128,9 +128,9 @@ The core security primitive. When an agent has all three capabilities at autonom
   database access             user input processing    run_bash (curl, etc)
 ```
 
-Nucleus detects this combination statically (via `nucleus-audit scan`) and enforces it at runtime (via `portcullis`). When the trifecta is complete, exfiltration operations require **explicit human approval** — the agent cannot bypass this.
+Nucleus detects this combination statically (via `nucleus-audit scan`) and enforces it at runtime (via `portcullis`). When the uninhabitable state is complete, exfiltration operations require **explicit human approval** — the agent cannot bypass this.
 
-The trifecta guard's monotonicity is formally proven: once an operation is denied, it stays denied for the rest of the session (proofs E1-E3 in `portcullis-verified`).
+The uninhabitable state guard's monotonicity is formally proven: once an operation is denied, it stays denied for the rest of the session (proofs E1-E3 in `portcullis-verified`).
 
 ## What Nucleus Provides
 
@@ -147,7 +147,7 @@ Three layers, at different levels of maturity:
 | Component | Maturity | Evidence |
 |-----------|----------|----------|
 | **Permission lattice** (portcullis) | Verified | 58K LOC, 942 tests, 297 Verus VCs, 32 Kani BMC proofs, 3 fuzz targets |
-| **Trifecta detection** | Verified | Static scan + runtime guard, monotonicity proven (E1-E3, Kani B1-B9) |
+| ** Uninhabitable state detection** | Verified | Static scan + runtime guard, monotonicity proven (E1-E3, Kani B1-B9) |
 | **Attenuation tokens** | Verified | Compact delegation credentials with Kani-proven invariants (D1-D7) |
 | **Delegation chains** | Tested | Monotone attenuation with `meet_with_justification`, audit-reconstructable chains |
 | **Unicode injection defense** | Tested | 8-category invisible character detection (bidi, tags, ZWJ); warn/strip/deny policy |
@@ -155,8 +155,8 @@ Three layers, at different levels of maturity:
 | **Permission market** | Tested | Lagrangian pricing oracle for multi-dimensional capability constraints |
 | **Web fetch security** | Tested | Unified MCP+HTTP path: MIME gating, DNS/URL allowlist, redirect verification, IPv6 |
 | **Audit log verification** | Tested | HMAC-SHA256 + SHA-256 chain; optional S3 append-only sink; node-side lifecycle events |
-| **PodSpec scanner** | Tested | Trifecta, credentials, network, isolation, timeout checks |
-| **Claude Code scanner** | Tested | Trifecta via allow/deny projection, Bash capability propagation, exfil patterns, safety bypasses, credentials |
+| **PodSpec scanner** | Tested | Uninhabitable state, credentials, network, isolation, timeout checks |
+| **Claude Code scanner** | Tested |  Uninhabitable state via allow/deny projection, Bash capability propagation, exfil patterns, safety bypasses, credentials |
 | **MCP config scanner** | Tested | Well-known server classification (15 packages), `npx -y` supply chain detection, HTTP servers, credentials |
 | **Permission profiles** | Tested | 14 named profiles backed by lattice constructors |
 | **Tool proxy** (MCP enforcement) | Tested | 149 tests; enforces agent sessions in GitHub Actions |
@@ -176,12 +176,12 @@ Permissions compose predictably via a mathematical lattice. This is the most mat
 
 | Structure | What It Gives You | Status |
 |-----------|-------------------|--------|
-| **Quotient Lattice** | Trifecta detection as a structural nucleus operator | Verified (Verus) |
+| **Quotient Lattice** |  Uninhabitable state detection as a structural nucleus operator | Verified (Verus) |
 | **Heyting Algebra** | Conditional permissions with formal semantics | Verified (Verus) |
 | **Galois Connections** | Policy translation across trust domains | Verified (Verus) |
 | **Graded Monad** | Risk accumulation through computation chains | Verified (Verus) |
 | **Attenuation Tokens** | Compact delegation credentials for wire transport | Verified (Kani D1-D7) |
-| **Taint Invariants** | Taint-set monotonicity, trifecta iff count==3 | Verified (Kani B1-B9) |
+| **Exposure Invariants** | Exposure-set monotonicity, uninhabitable state iff count==3 | Verified (Kani B1-B9) |
 | **Modal Operators** | Distinguish "guaranteed safe" (□) from "might be safe" (◇) | Tested |
 | **Delegation Chains** | Monotone attenuation with justification trails | Tested |
 
@@ -201,12 +201,12 @@ Nucleus uses two complementary verification tools:
 - Heyting adjunction: a ∧ b ≤ c ⟺ a ≤ b → c
 - Galois connection: adjunction, closure/kernel properties, monotonicity
 - Graded monad: identity, associativity, composition laws
-- Taint guard: monotonicity (E1), trace monotonicity (E2), denial monotonicity (E3)
-- Trifecta: completeness detection, risk classification, session safety
+- Exposure guard: monotonicity (E1), trace monotonicity (E2), denial monotonicity (E3)
+- Uninhabitable state: completeness detection, risk classification, session safety
 - Delegation: transitivity, ceiling theorem, chain composition
 
 *Kani (BMC):*
-- B-series (9 proofs): Taint set monoid identity/associativity, monotonicity, trifecta-iff-count-equals-3, isolation lattice meet/join properties
+- B-series (9 proofs): Exposure set monoid identity/associativity, monotonicity, uninhabitable state-iff-count-equals-3, isolation lattice meet/join properties
 - D-series (7 proofs): Attenuation token invariants — token ≤ parent, token ≤ requested cap, chained attenuation, delegation ceiling preservation
 - E-series (3 proofs): Guard denial soundness, Clinejection defense, apply_record monotonicity
 - Structural (13 proofs): Lattice distributivity, frame law, budget monotonicity, capability level ordering
@@ -232,18 +232,18 @@ Both proof counts are ratcheted in CI — they can only go up, never down (`.ver
 The v1.0 interfaces are designed for 15 years of growth. See [`STABILITY.md`](STABILITY.md) for the full frozen/open contract table.
 
 **Frozen at v1.0** (breaking changes require v2.0):
-- 12 core `Operation` variants + taint classifications
-- 3 core `TaintLabel` variants + trifecta predicate
+- 12 core `Operation` variants + exposure classifications
+- 3 core `ExposureLabel` variants + uninhabitable state predicate
 - `CapabilityLevel` enum (`Never`, `LowRisk`, `Always`)
 - gRPC `NodeService` RPCs (8 RPCs including streaming), HMAC signing protocol, audit hash chain
 - `ExecutionReceipt` fields 1-8 (v1.0 frozen), with `v1_content_hash` for forward compatibility
 
 **Open for extension** (no version bump needed):
 - New operations via `ExtensionOperation` on `CapabilityLattice` (fail-closed: unknown ops default to `Never`)
-- New taint labels via `ExtensionTaintLabel` on `TaintSet` (don't affect core trifecta)
-- New dangerous combinations via `ConstraintNucleus` (trifecta always slot 0, can't be removed)
+- New exposure labels via `ExtensionExposureLabel` on `ExposureSet` (don't affect core uninhabitable state)
+- New dangerous combinations via `ConstraintNucleus` (uninhabitable state always slot 0, can't be removed)
 - Versioned `ExecutionReceipt` with `v1_content_hash` for forward-compatible verification
-- `WorkspaceGuard` trait for multi-agent shared taint (interface only in v1.0)
+- `WorkspaceGuard` trait for multi-agent shared exposure (interface only in v1.0)
 
 Proofs survive extensions by construction: products of lattices are lattices (universal property in **Lat**), powersets preserve join-semilattice laws, and composition of deflationary endomorphisms is deflationary. No Verus re-verification needed.
 
@@ -296,7 +296,7 @@ The enforcement path: Agent → MCP → tool-proxy (inside VM) → portcullis ch
 | **nucleus-client** | Client signing utilities + drand anchoring | 8 |
 | **nucleus-guest-init** | Guest init for Firecracker rootfs | 2 |
 | **nucleus-net-probe** | TCP probe for network policy tests | 2 |
-| **trifecta-playground** | Interactive TUI for exploring the lattice | — |
+| **exposure-playground** | Interactive TUI for exploring the lattice | — |
 
 Total: ~1,700 test functions across the workspace (103K LOC Rust). Proptest invariants each generate 256 random cases. 32 Kani BMC proofs run in CI alongside 297 Verus VCs.
 
@@ -316,7 +316,7 @@ nucleus profiles
 #   web_research       Read + web access, no writes
 #   network_only       Network access, no filesystem
 #   release            Full pipeline including push + PR
-#   full               Everything (trifecta gates still enforced!)
+#   full               Everything (uninhabitable state gates still enforced!)
 #   + 3 more domain-specific profiles
 ```
 
@@ -356,7 +356,7 @@ See [`examples/`](examples/) for scannable configurations across all three forma
 
 **Claude Code settings** ([`examples/claude-settings/`](examples/claude-settings/)):
 - **`safe-restrictive.json`** — Scoped Bash patterns, deny rules for exfil, sandbox enabled
-- **`hidden-trifecta.json`** — The `["Edit", "Write", "Bash"]` trap: CRITICAL trifecta via Bash propagation
+- **`hidden-uninhabitable state.json`** — The `["Edit", "Write", "Bash"]` trap: CRITICAL uninhabitable state via Bash propagation
 - **`permissive-danger.json`** — Everything allowed, safety bypasses, plaintext credentials
 
 **MCP configs** ([`examples/mcp-configs/`](examples/mcp-configs/)):
@@ -424,7 +424,7 @@ The GitHub Action uses Tier 1 (`--local`). Network enforcement relies on the per
 
 Documented in detail in [`SECURITY_TODO.md`](SECURITY_TODO.md). Key items:
 
-- **Command exfiltration detection is program-name only.** `bash -c 'curl ...'` can bypass trifecta detection at the command lattice level. The Firecracker network policy is the real defense (default-deny egress), but the command-level check has known bypasses.
+- **Command exfiltration detection is program-name only.** `bash -c 'curl ...'` can bypass uninhabitable state detection at the command lattice level. The Firecracker network policy is the real defense (default-deny egress), but the command-level check has known bypasses.
 - **Path sandboxing is string-based.** Unicode normalization and symlink race conditions are not exhaustively tested. `cap-std` capability handles provide defense-in-depth. Invisible Unicode character injection (Rules File Backdoor) is detected at the tool-proxy gateway layer with configurable policy (warn/strip/deny).
 - **Budget enforcement is partial.** Pre-execution reservation works when timeouts are set. Post-execution cost accounting (output tokens, refunds) is not implemented.
 - **Formal verification covers the lattice algebra, not the full runtime.** The 297 Verus VCs verify portcullis properties. The tool proxy, network enforcement, and Firecracker integration are tested, not verified.
@@ -456,7 +456,7 @@ Documented in detail in [`SECURITY_TODO.md`](SECURITY_TODO.md). Key items:
 ```bash
 cargo build --workspace
 cargo test --workspace
-cargo run -p trifecta-playground  # Interactive lattice explorer
+cargo run -p exposure-playground  # Interactive lattice explorer
 ```
 
 Requires Rust stable. Firecracker features require Linux with KVM. macOS development works for everything except VM isolation.
@@ -467,7 +467,7 @@ Licensed under either of Apache License, Version 2.0 or MIT license at your opti
 
 ## References
 
-- [The Lethal Trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/) — Simon Willison
+- [The Uninhabitable State](https://simonwillison.net/2025/Jun/16/the-uninhabitable-state/) — Simon Willison
 - [Container Hardening Against Agentic AI](https://securitytheatre.substack.com/p/container-hardening-against-agentic)
 - [Lattice-based Access Control](https://en.wikipedia.org/wiki/Lattice-based_access_control) — Denning 1976, Sandhu 1993
 - [Verus: Verified Rust for Systems Code](https://verus-lang.github.io/verus/) — SOSP 2025 Best Paper

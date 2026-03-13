@@ -25,11 +25,11 @@
 //! # Example
 //!
 //! ```rust
-//! use portcullis::frame::{Lattice, BoundedLattice, Nucleus, TrifectaQuotient};
+//! use portcullis::frame::{Lattice, BoundedLattice, Nucleus, UninhabitableQuotient};
 //! use portcullis::PermissionLattice;
 //!
-//! // The trifecta quotient is a nucleus on the permission lattice
-//! let nucleus = TrifectaQuotient::new();
+//! // The uninhabitable_state quotient is a nucleus on the permission lattice
+//! let nucleus = UninhabitableQuotient::new();
 //!
 //! let perms = PermissionLattice::permissive();
 //! let safe = nucleus.apply(&perms);
@@ -128,8 +128,8 @@ pub trait Frame: CompleteLattice + DistributiveLattice {}
 ///
 /// # Security Application
 ///
-/// The trifecta constraint is modeled as a nucleus. The quotient frame
-/// contains only "safe" configurations where the lethal trifecta is
+/// The uninhabitable_state constraint is modeled as a nucleus. The quotient frame
+/// contains only "safe" configurations where the uninhabitable_state is
 /// either absent or gated by approval obligations.
 pub trait Nucleus<L: Frame> {
     /// Apply the nucleus operator.
@@ -146,11 +146,11 @@ pub trait Nucleus<L: Frame> {
     }
 }
 
-/// The trifecta quotient nucleus.
+/// The uninhabitable_state quotient nucleus.
 ///
 /// This nucleus projects the permission lattice onto the quotient of safe
-/// configurations. When the lethal trifecta (private data + untrusted content +
-/// exfiltration) is detected, approval obligations are added to break the trifecta.
+/// configurations. When the uninhabitable_state (private data + untrusted content +
+/// exfiltration) is detected, approval obligations are added to break the uninhabitable_state.
 ///
 /// # Mathematical Structure
 ///
@@ -158,15 +158,15 @@ pub trait Nucleus<L: Frame> {
 /// L  = Full permission lattice (unrestricted)
 /// L' = { x ∈ L : j(x) = x }  (safe quotient)
 ///
-/// j(x) = x with approval obligations for exfiltration if trifecta detected
+/// j(x) = x with approval obligations for exfiltration if uninhabitable_state detected
 /// ```
 #[derive(Debug, Clone, Default)]
-pub struct TrifectaQuotient {
+pub struct UninhabitableQuotient {
     constraint: IncompatibilityConstraint,
 }
 
-impl TrifectaQuotient {
-    /// Create a new trifecta quotient nucleus.
+impl UninhabitableQuotient {
+    /// Create a new uninhabitable_state quotient nucleus.
     pub fn new() -> Self {
         Self {
             constraint: IncompatibilityConstraint::enforcing(),
@@ -177,7 +177,7 @@ impl TrifectaQuotient {
     ///
     /// # Security Warning
     ///
-    /// This creates a nucleus that does NOT enforce the trifecta constraint.
+    /// This creates a nucleus that does NOT enforce the uninhabitable_state constraint.
     /// Only available with the `testing` feature enabled.
     ///
     /// **DO NOT** use in production code.
@@ -190,18 +190,18 @@ impl TrifectaQuotient {
 
     /// Check if the constraint is enforcing.
     pub fn is_enforcing(&self) -> bool {
-        self.constraint.enforce_trifecta
+        self.constraint.enforce_uninhabitable
     }
 }
 
-impl Nucleus<PermissionLattice> for TrifectaQuotient {
+impl Nucleus<PermissionLattice> for UninhabitableQuotient {
     fn apply(&self, x: &PermissionLattice) -> PermissionLattice {
-        if !self.constraint.enforce_trifecta {
+        if !self.constraint.enforce_uninhabitable {
             return x.clone();
         }
 
         let mut result = x.clone();
-        result.trifecta_constraint = true;
+        result.uninhabitable_constraint = true;
         result.normalize()
     }
 }
@@ -209,22 +209,22 @@ impl Nucleus<PermissionLattice> for TrifectaQuotient {
 /// A permission lattice guaranteed to be in the safe quotient.
 ///
 /// This newtype provides a compile-time guarantee that the permission
-/// configuration is a fixed point of the trifecta nucleus. The only way
+/// configuration is a fixed point of the uninhabitable_state nucleus. The only way
 /// to construct a `SafePermissionLattice` is through the nucleus projection.
 ///
 /// # Example
 ///
 /// ```rust
-/// use portcullis::frame::{SafePermissionLattice, TrifectaQuotient, Nucleus};
+/// use portcullis::frame::{SafePermissionLattice, UninhabitableQuotient, Nucleus};
 /// use portcullis::PermissionLattice;
 ///
-/// let nucleus = TrifectaQuotient::new();
+/// let nucleus = UninhabitableQuotient::new();
 /// let perms = PermissionLattice::permissive();
 ///
 /// // Project through the nucleus to get a safe lattice
 /// let safe = SafePermissionLattice::from_nucleus(&nucleus, perms);
 ///
-/// // The inner permissions are guaranteed to be trifecta-safe
+/// // The inner permissions are guaranteed to be uninhabitable_state-safe
 /// assert!(nucleus.is_fixed_point(safe.inner()));
 /// ```
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -235,7 +235,7 @@ impl SafePermissionLattice {
     /// Create a safe permission lattice by projecting through a nucleus.
     ///
     /// This is the canonical way to construct a `SafePermissionLattice`,
-    /// ensuring the trifecta invariant holds.
+    /// ensuring the uninhabitable_state invariant holds.
     pub fn from_nucleus<N: Nucleus<PermissionLattice>>(
         nucleus: &N,
         perms: PermissionLattice,
@@ -247,7 +247,7 @@ impl SafePermissionLattice {
     ///
     /// # Panics
     ///
-    /// Panics if the lattice is not a fixed point of the trifecta nucleus.
+    /// Panics if the lattice is not a fixed point of the uninhabitable_state nucleus.
     /// This check runs in both debug AND release builds for security.
     ///
     /// # Security Note
@@ -257,9 +257,9 @@ impl SafePermissionLattice {
     /// where the lattice is known to be normalized.
     pub fn from_normalized(perms: PermissionLattice) -> Self {
         // SECURITY: Runtime check that cannot be stripped in release builds.
-        // This prevents bypassing the trifecta safety guarantee.
+        // This prevents bypassing the uninhabitable_state safety guarantee.
         assert!(
-            perms.trifecta_constraint,
+            perms.uninhabitable_constraint,
             "SafePermissionLattice::from_normalized called on unnormalized lattice - \
              this is a security violation. Use from_nucleus() instead."
         );
@@ -434,10 +434,10 @@ impl std::fmt::Display for NucleusLawViolation {
 /// # Example
 ///
 /// ```rust
-/// use portcullis::frame::{TrifectaQuotient, verify_nucleus_laws};
+/// use portcullis::frame::{UninhabitableQuotient, verify_nucleus_laws};
 /// use portcullis::PermissionLattice;
 ///
-/// let nucleus = TrifectaQuotient::new();
+/// let nucleus = UninhabitableQuotient::new();
 /// let samples = vec![
 ///     PermissionLattice::permissive(),
 ///     PermissionLattice::restrictive(),
@@ -445,7 +445,7 @@ impl std::fmt::Display for NucleusLawViolation {
 /// ];
 ///
 /// let violations = verify_nucleus_laws(&nucleus, &samples);
-/// assert!(violations.is_empty(), "TrifectaQuotient should satisfy all laws");
+/// assert!(violations.is_empty(), "UninhabitableQuotient should satisfy all laws");
 /// ```
 pub fn verify_nucleus_laws<N: Nucleus<PermissionLattice>>(
     nucleus: &N,
@@ -511,7 +511,7 @@ mod tests {
 
     #[test]
     fn test_nucleus_is_idempotent() {
-        let nucleus = TrifectaQuotient::new();
+        let nucleus = UninhabitableQuotient::new();
         let perms = PermissionLattice::permissive();
 
         let once = nucleus.apply(&perms);
@@ -522,9 +522,9 @@ mod tests {
 
     #[test]
     fn test_nucleus_is_deflationary() {
-        let nucleus = TrifectaQuotient::new();
+        let nucleus = UninhabitableQuotient::new();
 
-        // A permissive lattice with trifecta
+        // A permissive lattice with uninhabitable_state
         let mut perms = PermissionLattice::permissive();
         perms.capabilities.read_files = CapabilityLevel::Always;
         perms.capabilities.web_fetch = CapabilityLevel::LowRisk;
@@ -543,7 +543,7 @@ mod tests {
 
     #[test]
     fn test_nucleus_preserves_meets() {
-        let nucleus = TrifectaQuotient::new();
+        let nucleus = UninhabitableQuotient::new();
 
         let a = PermissionLattice::permissive();
         let b = PermissionLattice::restrictive();
@@ -565,7 +565,7 @@ mod tests {
 
     #[test]
     fn test_safe_permission_lattice_from_nucleus() {
-        let nucleus = TrifectaQuotient::new();
+        let nucleus = UninhabitableQuotient::new();
         let perms = PermissionLattice::permissive();
 
         let safe = SafePermissionLattice::from_nucleus(&nucleus, perms);
@@ -576,7 +576,7 @@ mod tests {
 
     #[test]
     fn test_safe_permission_lattice_meet_is_safe() {
-        let nucleus = TrifectaQuotient::new();
+        let nucleus = UninhabitableQuotient::new();
 
         let safe_a = SafePermissionLattice::from_nucleus(&nucleus, PermissionLattice::permissive());
         let safe_b = SafePermissionLattice::from_nucleus(&nucleus, PermissionLattice::codegen());
@@ -620,8 +620,8 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_nucleus_laws_trifecta_quotient() {
-        let nucleus = TrifectaQuotient::new();
+    fn test_verify_nucleus_laws_uninhabitable_quotient() {
+        let nucleus = UninhabitableQuotient::new();
         let samples = vec![
             PermissionLattice::permissive(),
             PermissionLattice::restrictive(),
@@ -632,7 +632,7 @@ mod tests {
         let violations = verify_nucleus_laws(&nucleus, &samples);
         assert!(
             violations.is_empty(),
-            "TrifectaQuotient violated {} law(s): {:?}",
+            "UninhabitableQuotient violated {} law(s): {:?}",
             violations.len(),
             violations.iter().map(|v| v.to_string()).collect::<Vec<_>>()
         );
@@ -640,8 +640,8 @@ mod tests {
 
     #[test]
     fn test_composed_nucleus_is_idempotent() {
-        let n1 = TrifectaQuotient::new();
-        let n2 = TrifectaQuotient::new();
+        let n1 = UninhabitableQuotient::new();
+        let n2 = UninhabitableQuotient::new();
         let composed = ComposedNucleus::new(n1, n2);
 
         let perms = PermissionLattice::permissive();
@@ -654,8 +654,8 @@ mod tests {
 
     #[test]
     fn test_composed_nucleus_laws() {
-        let n1 = TrifectaQuotient::new();
-        let n2 = TrifectaQuotient::new();
+        let n1 = UninhabitableQuotient::new();
+        let n2 = UninhabitableQuotient::new();
         let composed = ComposedNucleus::new(n1, n2);
 
         let samples = vec![
@@ -676,10 +676,10 @@ mod tests {
     #[test]
     #[cfg(feature = "testing")]
     fn test_disabled_nucleus_is_identity() {
-        let nucleus = TrifectaQuotient::disabled();
+        let nucleus = UninhabitableQuotient::disabled();
 
         let mut perms = PermissionLattice::permissive();
-        perms.trifecta_constraint = false;
+        perms.uninhabitable_constraint = false;
 
         let result = nucleus.apply(&perms);
 

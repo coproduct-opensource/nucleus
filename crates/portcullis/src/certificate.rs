@@ -368,8 +368,8 @@ pub fn canonical_permissions_hash(perms: &PermissionLattice) -> Vec<u8> {
     hasher.update(perms.time.valid_from.timestamp().to_le_bytes());
     hasher.update(perms.time.valid_until.timestamp().to_le_bytes());
 
-    // Trifecta constraint
-    hasher.update([perms.trifecta_constraint as u8]);
+    //  UninhabitableState constraint
+    hasher.update([perms.uninhabitable_constraint as u8]);
 
     hasher.finalize().to_vec()
 }

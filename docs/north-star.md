@@ -41,23 +41,23 @@ The math core is small and sharp:
    3-level capability states (Never/LowRisk/Always). Compare, combine, restrict
    permissions algebraically.
 
-2. **Taint lattice** (trust) — 3-bool semilattice tracking `private_data`,
-   `untrusted_content`, and `exfil_vector`. When all three co-occur (trifecta),
-   the operation requires explicit approval. Taint is monotone: it never
+2. **Exposure lattice** (trust) — 3-bool semilattice tracking `private_data`,
+   `untrusted_content`, and `exfil_vector`. When all three co-occur (uninhabitable state),
+   the operation requires explicit approval. Exposure is monotone: it never
    decreases.
 
-3. **Trace semantics** (time) — ordered record of actions, authority, and taint
-   at each step. Free monoid with homomorphic taint accumulation.
+3. **Trace semantics** (time) — ordered record of actions, authority, and exposure
+   at each step. Free monoid with homomorphic exposure accumulation.
 
 4. **Monotonicity** (ratchet) — authority can only stay the same or tighten.
-   Budget can only decrease. Taint can only increase. The nucleus operator ν is
+   Budget can only decrease. Exposure can only increase. The nucleus operator ν is
    idempotent and deflationary.
 
 Key design choice: **prove properties about the enforcement boundary**, not
 about LLM behavior. The agent is a black box. The kernel is the TCB.
 
 **Current state (March 2026):** 297 Verus proofs verified in CI covering
-lattice laws, trifecta operator, Heyting algebra, modal operators (S4), taint
+lattice laws, uninhabitable state operator, Heyting algebra, modal operators (S4), exposure
 monoid, graded monad laws, Galois connections, fail-closed auth boundary,
 capability coverage theorem, budget monotonicity, and delegation ceiling
 theorem. Phase 0-2 partially complete.
@@ -114,7 +114,7 @@ Immediate felt safety:
 
 - All side effects go through a local proxy
 - No direct agent access except via the mediated gateway
-- Approval prompts for risky actions (trifecta triggers)
+- Approval prompts for risky actions (uninhabitable state triggers)
 - Same policy language as Tier 2
 
 ### Tier 2: `nucleus run --vm`
@@ -175,9 +175,9 @@ with Session(profile="safe_pr_fixer") as s:
 - **Profiles**: `safe_pr_fixer`, `doc_editor`, `test_runner`, `triage_bot`,
   `code_review`, `codegen`, `release`, `research_web`, `read_only`, `local_dev`
 - **Typed handles**: `FileHandle`, `NetResponse`, `CommandOutput` that carry
-  taint metadata
+  exposure metadata
 - **Exceptions**: `PolicyDenied`, `ApprovalRequired`, `BudgetExceeded`,
-  `TrifectaBlocked`
+  `StateBlocked`
 - **Trace export**: `session.trace.export_jsonl()`
 
 **Current state (March 2026):** Draft Python SDK at `sdk/python/` with
@@ -193,9 +193,9 @@ No direct egress. No direct filesystem beyond what is mediated. No token leaks.
 The kernel is the only place where:
 
 - Decisions are made (capability check)
-- Approvals are validated (trifecta gate)
+- Approvals are validated (uninhabitable state gate)
 - Traces are recorded (audit log)
-- Taint is tracked (monotone accumulation)
+- Exposure is tracked (monotone accumulation)
 
 This is what makes formal verification tractable: the TCB is small (~10-15K
 LOC of verified Rust), and every path through it either enforces the lattice
@@ -205,7 +205,7 @@ or panics. No fail-open. No silent degradation.
 ┌─────────────────────────────────────────────────────┐
 │  Verified Core (Verus)              ~10-15K LOC     │
 │  ├── portcullis lattice engine     297 proofs       │
-│  ├── taint guard + trifecta        proven monotone  │
+│  ├── exposure guard + uninhabitable state        proven monotone  │
 │  ├── permission enforcement        fail-closed      │
 │  └── sandbox boundary              proven panics    │
 ├─────────────────────────────────────────────────────┤
@@ -250,17 +250,17 @@ or panics. No fail-open. No silent degradation.
 
 | Alternative | What it does | What it lacks |
 |---|---|---|
-| **E2B / Daytona / microsandbox** | Run code in Firecracker/Docker | No policy, no capability model, no taint, no proofs. Ambient authority inside the box. |
+| **E2B / Daytona / microsandbox** | Run code in Firecracker/Docker | No policy, no capability model, no exposure, no proofs. Ambient authority inside the box. |
 | **AgentSpec** (ICSE 2026) | DSL for runtime rule enforcement | Ad-hoc rules, not lattice-based. No monotonicity guarantee. Rules are LLM-generated (95% precision — 5% are wrong). |
 | **ARMO** | eBPF observe → baseline → enforce | Behavioral, not prescriptive. Must allow bad behavior before blocking it. No formal guarantees. |
-| **Google Agent Sandbox** (GKE) | Pre-warmed VM pools, fast launch | Infrastructure-level only. No policy language, no taint, no proofs. |
+| **Google Agent Sandbox** (GKE) | Pre-warmed VM pools, fast launch | Infrastructure-level only. No policy language, no exposure, no proofs. |
 | **CodeGate** | Firecracker + locked pip installs | Single-purpose (supply chain). No general policy engine. |
 
 **Nucleus's five differentiators:**
 
 1. **Capability lattice with monotonicity proof** — authority is a
    mathematical ratchet, not a config file.
-2. **Taint tracking with trifecta gate** — information flow control that
+2. **Exposure tracking with uninhabitable state gate** — information flow control that
    blocks exfiltration by construction.
 3. **"Prove the boundary, not the model"** — verify the enforcement kernel
    (tractable, seL4-style), not LLM behavior (impossible).
@@ -290,11 +290,11 @@ Each rung is shippable independently.
 ### Rung 1 — Verus SMT Proofs (in progress)
 
 - 297 proofs verified in CI (minimum gate)
-- Covers: lattice laws, trifecta operator, Heyting algebra, S4 modal
-  operators, taint monoid, graded monad laws, Galois connections, fail-closed
+- Covers: lattice laws, uninhabitable state operator, Heyting algebra, S4 modal
+  operators, exposure monoid, graded monad laws, Galois connections, fail-closed
   auth, capability coverage, budget monotonicity, delegation ceiling
 - **Key finding from proofs**: nucleus operator ν is NOT monotone (proven
-  counterexample — trifecta fires for y but not x). This was discovered by
+  counterexample — uninhabitable state fires for y but not x). This was discovered by
   the proofs, not by tests. The proofs are working.
 
 ### Rung 2 — Lean 4 Model (planned, Phase 1)
@@ -323,17 +323,17 @@ The moonshot is not "prove all the code." The moonshot is: **make the proven
 kernel tiny enough that proving it is realistic.** This is how seL4 thinking
 wins: reduce the surface you must trust.
 
-## Supply Chain Integrity (Taint Tracking Use Case)
+## Supply Chain Integrity (Exposure Tracking Use Case)
 
-The taint lattice has a concrete day-one demo: supply chain safety.
+The exposure lattice has a concrete day-one demo: supply chain safety.
 
-- Package installs from untrusted registries carry `untrusted_content` taint
-- Tainted dependencies cannot reach sinks (network, filesystem writes) without
+- Package installs from untrusted registries carry `untrusted_content` exposure
+- Exposed dependencies cannot reach sinks (network, filesystem writes) without
   explicit approval
-- Combined with `exfil_vector` taint on git push / network egress, the
-  trifecta gate blocks dependency-confusion attacks by construction
+- Combined with `exfil_vector` exposure on git push / network egress, the
+  uninhabitable state gate blocks dependency-confusion attacks by construction
 - This is what CodeGate does with a bespoke tool. Nucleus does it as a natural
-  consequence of the taint lattice.
+  consequence of the exposure lattice.
 
 ## Success Criteria
 
@@ -365,7 +365,7 @@ The taint lattice has a concrete day-one demo: supply chain safety.
 
 - Tier 2 cold start: <500ms with pre-warmed pools
 - Policy evaluation overhead: <1ms per decision
-- Taint tracking overhead: negligible (3-bool join)
+- Exposure tracking overhead: negligible (3-bool join)
 
 ## Iteration Plan
 
@@ -375,9 +375,9 @@ PR-sized increments that ship value while converging on the moonshot:
 |---|---|---|
 | PR0 | North Star + Verified Claims doc | This document, claims table, threat model |
 | PR1 | Python SDK skeleton | `Session`, exceptions, trace export, local proxy wiring |
-| PR2 | Policy schema + canonical profiles | Tiny stable policy surface, "break the trifecta" defaults |
+| PR2 | Policy schema + canonical profiles | Tiny stable policy surface, "break the uninhabitable state" defaults |
 | PR3 | Minimal kernel decision engine | Complete mediation for file/net/exec/publish, monotone session state |
-| PR4 | Taint plumbing | Taint on handles, tainted-to-sink gating + approval |
+| PR4 | Exposure plumbing | Exposure on handles, exposed-to-sink gating + approval |
 | PR5 | Executable spec + model checking | Lock semantics early, prevent drift |
 | PR6 | Proofs of the core invariants | Monotonicity + source-sink safety |
 | PR7 | `nucleus observe` | Progressive discovery mode, formal policy output |

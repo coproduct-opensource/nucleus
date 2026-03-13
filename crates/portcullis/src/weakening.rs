@@ -35,7 +35,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-use crate::capability::{Operation, TrifectaRisk};
+use crate::capability::{Operation, StateRisk};
 use crate::isolation::{FileIsolation, IsolationLattice, NetworkIsolation, ProcessIsolation};
 use crate::CapabilityLevel;
 
@@ -81,20 +81,20 @@ impl fmt::Display for WeakeningDimension {
 
 /// Quantified cost of a security weakening.
 ///
-/// The total cost is computed as: `base * trifecta_multiplier * isolation_multiplier`
+/// The total cost is computed as: `base * uninhabitable_multiplier * isolation_multiplier`
 ///
 /// # Cost Semantics
 ///
 /// - `base`: Raw cost of the weakening (0.0 = none, 1.0 = maximum single weakening)
-/// - `trifecta_multiplier`: Amplifies cost when approaching lethal trifecta
+/// - `uninhabitable_multiplier`: Amplifies cost when approaching uninhabitable_state
 /// - `isolation_multiplier`: Amplifies cost when weakening isolation
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct WeakeningCost {
     /// Base cost (0.0 = none, 1.0 = full weakening of one dimension)
     pub base: Decimal,
-    /// Multiplier for trifecta proximity (1x, 3x, 10x)
-    pub trifecta_multiplier: Decimal,
+    /// Multiplier for uninhabitable_state proximity (1x, 3x, 10x)
+    pub uninhabitable_multiplier: Decimal,
     /// Multiplier for isolation weakening (1x, 2x, 3x)
     pub isolation_multiplier: Decimal,
 }
@@ -104,7 +104,7 @@ impl WeakeningCost {
     pub fn zero() -> Self {
         Self {
             base: Decimal::ZERO,
-            trifecta_multiplier: Decimal::ONE,
+            uninhabitable_multiplier: Decimal::ONE,
             isolation_multiplier: Decimal::ONE,
         }
     }
@@ -113,16 +113,16 @@ impl WeakeningCost {
     pub fn new(base: Decimal) -> Self {
         Self {
             base,
-            trifecta_multiplier: Decimal::ONE,
+            uninhabitable_multiplier: Decimal::ONE,
             isolation_multiplier: Decimal::ONE,
         }
     }
 
-    /// Create a cost with base and trifecta multiplier.
-    pub fn with_trifecta(base: Decimal, trifecta_multiplier: Decimal) -> Self {
+    /// Create a cost with base and uninhabitable_state multiplier.
+    pub fn with_uninhabitable(base: Decimal, uninhabitable_multiplier: Decimal) -> Self {
         Self {
             base,
-            trifecta_multiplier,
+            uninhabitable_multiplier,
             isolation_multiplier: Decimal::ONE,
         }
     }
@@ -131,14 +131,14 @@ impl WeakeningCost {
     pub fn with_isolation(base: Decimal, isolation_multiplier: Decimal) -> Self {
         Self {
             base,
-            trifecta_multiplier: Decimal::ONE,
+            uninhabitable_multiplier: Decimal::ONE,
             isolation_multiplier,
         }
     }
 
     /// Compute the total cost.
     pub fn total(&self) -> Decimal {
-        self.base * self.trifecta_multiplier * self.isolation_multiplier
+        self.base * self.uninhabitable_multiplier * self.isolation_multiplier
     }
 
     /// Combine two costs (sum base, max multipliers).
@@ -148,7 +148,9 @@ impl WeakeningCost {
     pub fn combine(&self, other: &Self) -> Self {
         Self {
             base: self.base + other.base,
-            trifecta_multiplier: self.trifecta_multiplier.max(other.trifecta_multiplier),
+            uninhabitable_multiplier: self
+                .uninhabitable_multiplier
+                .max(other.uninhabitable_multiplier),
             isolation_multiplier: self.isolation_multiplier.max(other.isolation_multiplier),
         }
     }
@@ -180,10 +182,10 @@ impl fmt::Display for WeakeningCost {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{:.2} (base: {:.2}, trifecta: {:.1}x, isolation: {:.1}x)",
+            "{:.2} (base: {:.2}, uninhabitable_state: {:.1}x, isolation: {:.1}x)",
             self.total(),
             self.base,
-            self.trifecta_multiplier,
+            self.uninhabitable_multiplier,
             self.isolation_multiplier
         )
     }
@@ -201,8 +203,8 @@ pub struct WeakeningRequest {
     pub to_level: String,
     /// The computed cost of this weakening
     pub cost: WeakeningCost,
-    /// Trifecta impact (does this enable a trifecta component?)
-    pub trifecta_impact: TrifectaRisk,
+    ///  UninhabitableState impact (does this enable a uninhabitable_state component?)
+    pub uninhabitable_impact: StateRisk,
     /// Human-readable justification (if provided)
     pub justification: Option<String>,
 }
@@ -214,14 +216,14 @@ impl WeakeningRequest {
         from_level: impl Into<String>,
         to_level: impl Into<String>,
         cost: WeakeningCost,
-        trifecta_impact: TrifectaRisk,
+        uninhabitable_impact: StateRisk,
     ) -> Self {
         Self {
             dimension,
             from_level: from_level.into(),
             to_level: to_level.into(),
             cost,
-            trifecta_impact,
+            uninhabitable_impact,
             justification: None,
         }
     }
@@ -232,14 +234,14 @@ impl WeakeningRequest {
         from: CapabilityLevel,
         to: CapabilityLevel,
         cost: WeakeningCost,
-        trifecta_impact: TrifectaRisk,
+        uninhabitable_impact: StateRisk,
     ) -> Self {
         Self::new(
             WeakeningDimension::Capability(op),
             format!("{:?}", from),
             format!("{:?}", to),
             cost,
-            trifecta_impact,
+            uninhabitable_impact,
         )
     }
 
@@ -250,7 +252,7 @@ impl WeakeningRequest {
             "required",
             "not_required",
             cost,
-            TrifectaRisk::None,
+            StateRisk::Safe,
         )
     }
 
@@ -265,7 +267,7 @@ impl WeakeningRequest {
             from.as_str(),
             to.as_str(),
             cost,
-            TrifectaRisk::None,
+            StateRisk::Safe,
         )
     }
 
@@ -276,7 +278,7 @@ impl WeakeningRequest {
             from.as_str(),
             to.as_str(),
             cost,
-            TrifectaRisk::None,
+            StateRisk::Safe,
         )
     }
 
@@ -291,7 +293,7 @@ impl WeakeningRequest {
             from.as_str(),
             to.as_str(),
             cost,
-            TrifectaRisk::None,
+            StateRisk::Safe,
         )
     }
 
@@ -303,7 +305,8 @@ impl WeakeningRequest {
 
     /// Check if this weakening requires human approval.
     pub fn requires_approval(&self) -> bool {
-        self.trifecta_impact == TrifectaRisk::Complete || self.cost.total() > Decimal::new(5, 1)
+        self.uninhabitable_impact == StateRisk::Uninhabitable
+            || self.cost.total() > Decimal::new(5, 1)
         // > 0.5
     }
 }
@@ -312,8 +315,8 @@ impl fmt::Display for WeakeningRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{}: {} → {} (cost: {}, trifecta: {:?})",
-            self.dimension, self.from_level, self.to_level, self.cost, self.trifecta_impact
+            "{}: {} → {} (cost: {}, uninhabitable_state: {:?})",
+            self.dimension, self.from_level, self.to_level, self.cost, self.uninhabitable_impact
         )
     }
 }
@@ -336,13 +339,13 @@ pub struct WeakeningCostConfig {
     /// Cost: removing other operation obligation
     pub obligation_other_removal: Decimal,
 
-    // Trifecta multipliers
-    /// Multiplier when completing trifecta
-    pub trifecta_complete_multiplier: Decimal,
-    /// Multiplier when approaching trifecta (None/Low → Medium)
-    pub trifecta_approach_multiplier: Decimal,
-    /// Multiplier when at medium trifecta
-    pub trifecta_medium_multiplier: Decimal,
+    //  UninhabitableState multipliers
+    /// Multiplier when completing uninhabitable_state
+    pub uninhabitable_complete_multiplier: Decimal,
+    /// Multiplier when approaching uninhabitable_state (None/Low → Medium)
+    pub uninhabitable_approach_multiplier: Decimal,
+    /// Multiplier when at medium uninhabitable_state
+    pub uninhabitable_medium_multiplier: Decimal,
 
     // Process isolation costs
     /// Cost: MicroVM → Namespaced
@@ -393,10 +396,10 @@ impl Default for WeakeningCostConfig {
             obligation_exfil_removal: Decimal::new(5, 1), // 0.5
             obligation_other_removal: Decimal::new(2, 1), // 0.2
 
-            // Trifecta multipliers
-            trifecta_complete_multiplier: Decimal::new(10, 0), // 10x
-            trifecta_approach_multiplier: Decimal::new(3, 0),  // 3x
-            trifecta_medium_multiplier: Decimal::new(2, 0),    // 2x
+            //  UninhabitableState multipliers
+            uninhabitable_complete_multiplier: Decimal::new(10, 0), // 10x
+            uninhabitable_approach_multiplier: Decimal::new(3, 0),  // 3x
+            uninhabitable_medium_multiplier: Decimal::new(2, 0),    // 2x
 
             // Process isolation costs
             process_microvm_to_namespaced: Decimal::new(3, 1), // 0.3
@@ -452,14 +455,14 @@ impl WeakeningCostConfig {
         )
     }
 
-    /// Compute the trifecta multiplier.
-    pub fn trifecta_multiplier(&self, before: TrifectaRisk, after: TrifectaRisk) -> Decimal {
+    /// Compute the uninhabitable_state multiplier.
+    pub fn uninhabitable_multiplier(&self, before: StateRisk, after: StateRisk) -> Decimal {
         match (before, after) {
-            (_, TrifectaRisk::Complete) => self.trifecta_complete_multiplier,
-            (TrifectaRisk::None | TrifectaRisk::Low, TrifectaRisk::Medium) => {
-                self.trifecta_approach_multiplier
+            (_, StateRisk::Uninhabitable) => self.uninhabitable_complete_multiplier,
+            (StateRisk::Safe | StateRisk::Low, StateRisk::Medium) => {
+                self.uninhabitable_approach_multiplier
             }
-            (TrifectaRisk::Medium, TrifectaRisk::Medium) => self.trifecta_medium_multiplier,
+            (StateRisk::Medium, StateRisk::Medium) => self.uninhabitable_medium_multiplier,
             _ => Decimal::ONE,
         }
     }
@@ -608,22 +611,23 @@ impl WeakeningCostConfig {
             ),
         ];
 
-        // Compute trifecta risk before and after
+        // Compute uninhabitable_state risk before and after
         let constraint = crate::IncompatibilityConstraint::enforcing();
-        let floor_trifecta = constraint.trifecta_risk(&floor.capabilities);
-        let actual_trifecta = constraint.trifecta_risk(&actual.capabilities);
-        let trifecta_mult = self.trifecta_multiplier(floor_trifecta, actual_trifecta);
+        let floor_uninhabitable = constraint.state_risk(&floor.capabilities);
+        let actual_uninhabitable = constraint.state_risk(&actual.capabilities);
+        let uninhabitable_mult =
+            self.uninhabitable_multiplier(floor_uninhabitable, actual_uninhabitable);
 
         for &(op, floor_level, actual_level) in cap_checks {
             if actual_level > floor_level {
                 let mut cost = self.capability_cost(floor_level, actual_level);
-                cost.trifecta_multiplier = trifecta_mult;
+                cost.uninhabitable_multiplier = uninhabitable_mult;
                 gap.add(WeakeningRequest::capability(
                     op,
                     floor_level,
                     actual_level,
                     cost,
-                    actual_trifecta,
+                    actual_uninhabitable,
                 ));
             }
         }
@@ -647,7 +651,7 @@ impl WeakeningCostConfig {
                 format!("${}", floor.budget.max_cost_usd),
                 format!("${}", actual.budget.max_cost_usd),
                 WeakeningCost::new(base.min(Decimal::ONE)),
-                TrifectaRisk::None,
+                StateRisk::Safe,
             ));
         }
 
@@ -665,7 +669,7 @@ impl WeakeningCostConfig {
                     extra_paths.len()
                 ),
                 WeakeningCost::new(Decimal::new(2, 1)), // 0.2 per expansion
-                TrifectaRisk::None,
+                StateRisk::Safe,
             ));
         }
 
@@ -683,7 +687,7 @@ impl WeakeningCostConfig {
                     extra_cmds.len()
                 ),
                 WeakeningCost::new(Decimal::new(1, 1)), // 0.1 per expansion
-                TrifectaRisk::None,
+                StateRisk::Safe,
             ));
         }
 
@@ -702,7 +706,7 @@ impl WeakeningCostConfig {
                     extra_secs
                 ),
                 WeakeningCost::new(Decimal::new(1, 2)), // 0.01 per time extension
-                TrifectaRisk::None,
+                StateRisk::Safe,
             ));
         }
 
@@ -808,20 +812,20 @@ mod tests {
 
     #[test]
     fn test_weakening_cost_combine() {
-        let a = WeakeningCost::with_trifecta(Decimal::new(1, 1), Decimal::new(2, 0)); // 0.1, 2x
-        let b = WeakeningCost::with_trifecta(Decimal::new(2, 1), Decimal::new(3, 0)); // 0.2, 3x
+        let a = WeakeningCost::with_uninhabitable(Decimal::new(1, 1), Decimal::new(2, 0)); // 0.1, 2x
+        let b = WeakeningCost::with_uninhabitable(Decimal::new(2, 1), Decimal::new(3, 0)); // 0.2, 3x
 
         let combined = a.combine(&b);
         assert_eq!(combined.base, Decimal::new(3, 1)); // 0.3
-        assert_eq!(combined.trifecta_multiplier, Decimal::new(3, 0)); // max(2, 3) = 3
+        assert_eq!(combined.uninhabitable_multiplier, Decimal::new(3, 0)); // max(2, 3) = 3
     }
 
     #[test]
     fn test_weakening_cost_total() {
         let cost = WeakeningCost {
-            base: Decimal::new(1, 1),                 // 0.1
-            trifecta_multiplier: Decimal::new(2, 0),  // 2x
-            isolation_multiplier: Decimal::new(3, 0), // 3x
+            base: Decimal::new(1, 1),                     // 0.1
+            uninhabitable_multiplier: Decimal::new(2, 0), // 2x
+            isolation_multiplier: Decimal::new(3, 0),     // 3x
         };
         // 0.1 * 2 * 3 = 0.6
         assert_eq!(cost.total(), Decimal::new(6, 1));
@@ -850,13 +854,13 @@ mod tests {
     }
 
     #[test]
-    fn test_config_trifecta_multiplier() {
+    fn test_config_uninhabitable_multiplier() {
         let config = WeakeningCostConfig::default();
 
-        let mult = config.trifecta_multiplier(TrifectaRisk::Low, TrifectaRisk::Complete);
+        let mult = config.uninhabitable_multiplier(StateRisk::Low, StateRisk::Uninhabitable);
         assert_eq!(mult, Decimal::new(10, 0)); // 10x
 
-        let mult = config.trifecta_multiplier(TrifectaRisk::None, TrifectaRisk::Medium);
+        let mult = config.uninhabitable_multiplier(StateRisk::Safe, StateRisk::Medium);
         assert_eq!(mult, Decimal::new(3, 0)); // 3x
     }
 
@@ -884,7 +888,7 @@ mod tests {
             CapabilityLevel::Never,
             CapabilityLevel::Always,
             WeakeningCost::new(Decimal::new(3, 1)),
-            TrifectaRisk::Low,
+            StateRisk::Low,
         ));
 
         let mut gap2 = WeakeningGap::empty();
@@ -960,22 +964,22 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_gap_trifecta_multiplier_applied() {
+    fn test_compute_gap_uninhabitable_multiplier_applied() {
         let config = WeakeningCostConfig::default();
         let floor = crate::PermissionLattice::restrictive();
         let mut actual = floor.clone();
-        // Enable all three trifecta legs
+        // Enable all three exposure legs
         actual.capabilities.read_files = CapabilityLevel::Always; // private data
         actual.capabilities.web_fetch = CapabilityLevel::LowRisk; // untrusted content
         actual.capabilities.git_push = CapabilityLevel::LowRisk; // exfiltration
 
         let gap = config.compute_gap(&floor, &actual);
-        // All capability requests should have elevated trifecta multiplier
+        // All capability requests should have elevated uninhabitable_state multiplier
         for req in &gap.requests {
             if let WeakeningDimension::Capability(_) = &req.dimension {
                 assert!(
-                    req.cost.trifecta_multiplier > Decimal::ONE,
-                    "Expected trifecta multiplier > 1 for {:?}",
+                    req.cost.uninhabitable_multiplier > Decimal::ONE,
+                    "Expected uninhabitable_state multiplier > 1 for {:?}",
                     req.dimension
                 );
             }
@@ -989,7 +993,7 @@ mod tests {
             CapabilityLevel::Never,
             CapabilityLevel::LowRisk,
             WeakeningCost::new(Decimal::new(1, 1)), // 0.1
-            TrifectaRisk::Low,
+            StateRisk::Low,
         );
         assert!(!low_cost.requires_approval());
 
@@ -998,17 +1002,17 @@ mod tests {
             CapabilityLevel::Never,
             CapabilityLevel::Always,
             WeakeningCost::new(Decimal::new(6, 1)), // 0.6
-            TrifectaRisk::Medium,
+            StateRisk::Medium,
         );
         assert!(high_cost.requires_approval());
 
-        let trifecta = WeakeningRequest::capability(
+        let uninhabitable_state = WeakeningRequest::capability(
             Operation::GitPush,
             CapabilityLevel::Never,
             CapabilityLevel::Always,
-            WeakeningCost::new(Decimal::new(1, 1)), // 0.1 but Complete trifecta
-            TrifectaRisk::Complete,
+            WeakeningCost::new(Decimal::new(1, 1)), // 0.1 but Complete uninhabitable_state
+            StateRisk::Uninhabitable,
         );
-        assert!(trifecta.requires_approval());
+        assert!(uninhabitable_state.requires_approval());
     }
 }

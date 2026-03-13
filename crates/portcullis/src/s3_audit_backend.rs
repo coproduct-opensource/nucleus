@@ -304,13 +304,13 @@ mod tests {
     #[test]
     fn test_s3_object_key_format() {
         use crate::audit::PermissionEvent;
-        use crate::capability::TrifectaRisk;
+        use crate::capability::StateRisk;
 
         let entry = AuditEntry::new(
             "spiffe://test/agent",
             PermissionEvent::PermissionsDeclared {
                 description: "test".to_string(),
-                trifecta_risk: TrifectaRisk::None,
+                state_risk: StateRisk::Safe,
             },
         );
 
@@ -350,13 +350,13 @@ mod tests {
     #[test]
     fn test_s3_sign_entry_deterministic() {
         use crate::audit::PermissionEvent;
-        use crate::capability::TrifectaRisk;
+        use crate::capability::StateRisk;
 
         let entry = AuditEntry::new(
             "spiffe://test/agent",
             PermissionEvent::PermissionsDeclared {
                 description: "test".to_string(),
-                trifecta_risk: TrifectaRisk::None,
+                state_risk: StateRisk::Safe,
             },
         );
 

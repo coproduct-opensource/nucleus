@@ -9,6 +9,8 @@ spec:
   policy:
     type: profile
     name: safe_pr_fixer
+  network:
+    policy: package_registries
   credentials:
     env:
       LLM_API_TOKEN: "${LLM_API_TOKEN}"

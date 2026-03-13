@@ -137,7 +137,7 @@ pub static PRESETS: LazyLock<Vec<(&'static str, CapabilityLattice)>> = LazyLock:
             },
         ),
         (
-            "Trifecta Demo",
+            " UninhabitableState Demo",
             CapabilityLattice {
                 read_files: CapabilityLevel::Always, // Private data
                 write_files: CapabilityLevel::Never,
@@ -181,9 +181,9 @@ impl AttackScenario {
 pub const ATTACK_SCENARIOS: &[AttackScenario] = &[
     AttackScenario {
         name: "JSON Injection",
-        description: "Attempt to bypass trifecta_constraint by setting it to false in JSON",
-        attack_vector: r#"{"trifecta_constraint": false, "capabilities": {...}}"#,
-        defense: "Trifecta constraint is ALWAYS enforced during deserialization. The RawPermissionLattice impl ignores the input value and sets trifecta_constraint=true.",
+        description: "Attempt to bypass uninhabitable_constraint by setting it to false in JSON",
+        attack_vector: r#"{"uninhabitable_constraint": false, "capabilities": {...}}"#,
+        defense: " UninhabitableState constraint is ALWAYS enforced during deserialization. The RawPermissionLattice impl ignores the input value and sets uninhabitable_constraint=true.",
     },
     AttackScenario {
         name: "Curl Pipe Shell",
@@ -229,7 +229,7 @@ pub fn preset_descriptions() -> Vec<(&'static str, &'static str)> {
         ("1: Read Only", "Files only, no network/exec"),
         ("2: Web Research", "Network only, no files"),
         ("3: Local Dev", "Files + shell, no network"),
-        ("4: Full Access", "Everything (trifecta!)"),
-        ("5: Trifecta Demo", "Triggers auto-gating"),
+        ("4: Full Access", "Everything (uninhabitable_state!)"),
+        ("5:  UninhabitableState Demo", "Triggers auto-gating"),
     ]
 }

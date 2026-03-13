@@ -9,7 +9,7 @@
 - Budget exhaustion blocks further side effects.
 - Time window expiry blocks execution.
 
-## Trifecta (current)
+##  Uninhabitable state (current)
 - When private data + untrusted content + exfil path are all enabled, approvals are required for exfil operations.
 
 ## Network (current)

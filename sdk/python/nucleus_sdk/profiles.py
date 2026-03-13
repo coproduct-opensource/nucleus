@@ -115,8 +115,8 @@ class ProfileSpec:
     time: Optional[TimeSpec] = None
 
     @property
-    def trifecta_components(self) -> int:
-        """Count how many trifecta components are present.
+    def uninhabitable_state_components(self) -> int:
+        """Count how many uninhabitable state components are present.
 
         - private_data: read_files != NEVER
         - untrusted_content: web_search or web_fetch != NEVER
@@ -141,9 +141,9 @@ class ProfileSpec:
         return count
 
     @property
-    def trifecta_safe(self) -> bool:
-        """True if the trifecta can never fire (< 3 components present)."""
-        return self.trifecta_components < 3
+    def uninhabitable_state_safe(self) -> bool:
+        """True if the uninhabitable state can never fire (< 3 components present)."""
+        return self.uninhabitable_state_components < 3
 
 
 # Standard blocked paths shared by all canonical profiles.

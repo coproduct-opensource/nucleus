@@ -249,40 +249,40 @@ fn scan_mcp_configs(root: &Path) -> Vec<Finding> {
             let has_exec = EXEC_TOOL_PATTERNS.iter().any(|p| all_text.contains(p));
             let has_git = GIT_TOOL_PATTERNS.iter().any(|p| all_text.contains(p));
 
-            // Trifecta check: if server has all three legs of risk
-            let taint_legs = [has_fs, has_net || has_exec, has_git || has_exec]
+            //  UninhabitableState check: if server has all three legs of risk
+            let exposure_count = [has_fs, has_net || has_exec, has_git || has_exec]
                 .iter()
                 .filter(|&&b| b)
                 .count();
 
-            if taint_legs >= 3 {
+            if exposure_count >= 3 {
                 findings.push(Finding {
                     severity: Severity::Critical,
-                    rule_id: "trifecta-capable-server".to_string(),
+                    rule_id: "uninhabitable_state-capable-server".to_string(),
                     message: format!(
                         "MCP server '{}' has filesystem, network/exec, and git/publish \
-                         capabilities — trifecta-capable without policy enforcement.",
+                         capabilities — uninhabitable_state-capable without policy enforcement.",
                         name
                     ),
                     file: config_path.clone(),
                     recommendation: format!(
-                        "Mediate '{}' through nucleus to enforce trifecta gating. \
+                        "Mediate '{}' through nucleus to enforce uninhabitable_state gating. \
                          This prevents data exfiltration via the read→fetch→push chain.",
                         name
                     ),
                 });
-            } else if taint_legs == 2 {
+            } else if exposure_count == 2 {
                 findings.push(Finding {
                     severity: Severity::Warning,
                     rule_id: "dual-risk-server".to_string(),
                     message: format!(
-                        "MCP server '{}' has 2 of 3 trifecta legs — \
+                        "MCP server '{}' has 2 of 3 exposure legs — \
                          one additional capability could enable exfiltration.",
                         name
                     ),
                     file: config_path.clone(),
                     recommendation: format!(
-                        "Consider mediating '{}' through nucleus for taint tracking.",
+                        "Consider mediating '{}' through nucleus for exposure tracking.",
                         name
                     ),
                 });
@@ -854,7 +854,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trifecta_capable_server() {
+    fn test_uninhabitable_capable_server() {
         let dir = setup_dir();
         let config = serde_json::json!({
             "mcpServers": {
@@ -869,7 +869,7 @@ mod tests {
         let findings = scan_mcp_configs(dir.path());
         assert!(findings
             .iter()
-            .any(|f| f.rule_id == "trifecta-capable-server"));
+            .any(|f| f.rule_id == "uninhabitable_state-capable-server"));
     }
 
     #[test]

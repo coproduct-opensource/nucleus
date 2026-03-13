@@ -1,7 +1,7 @@
 //! Claude Code settings.json security scanner.
 //!
 //! Parses Claude Code's `settings.json` format and projects permission rules
-//! onto the portcullis CapabilityLattice for trifecta analysis.
+//! onto the portcullis CapabilityLattice for uninhabitable_state analysis.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -76,32 +76,33 @@ pub fn scan_claude_settings(
     let ask_rules = perms.map_or(0, |p| p.ask.len());
     let mcp_server_count = settings.mcp_servers.as_ref().map_or(0, |m| m.len());
 
-    // --- Trifecta analysis via CapabilityLattice projection ---
+    // ---  UninhabitableState analysis via CapabilityLattice projection ---
 
     if let Some(perms) = perms {
         let caps = project_to_capability_lattice(perms);
-        let trifecta_config = IncompatibilityConstraint::enforcing();
-        let trifecta_risk = trifecta_config.trifecta_risk(&caps);
+        let uninhabitable_state_config = IncompatibilityConstraint::enforcing();
+        let state_risk = uninhabitable_state_config.state_risk(&caps);
 
-        if trifecta_risk == portcullis::TrifectaRisk::Complete {
+        if state_risk == portcullis::StateRisk::Uninhabitable {
             findings.push(Finding {
                 severity: Severity::Critical,
-                category: "trifecta".to_string(),
-                title: "Lethal trifecta in Claude Code settings".to_string(),
+                category: "uninhabitable_state".to_string(),
+                title: "Lethal uninhabitable_state in Claude Code settings".to_string(),
                 description: "The allow rules grant private data access (Read/Glob/Grep) + \
                     untrusted content (WebFetch/WebSearch) + exfiltration (Bash) without \
-                    sufficient deny rules to break the trifecta. A prompt injection attack \
+                    sufficient deny rules to break the uninhabitable_state. A prompt injection attack \
                     could exfiltrate sensitive data."
                     .to_string(),
             });
-        } else if trifecta_risk == portcullis::TrifectaRisk::Medium {
+        } else if state_risk == portcullis::StateRisk::Medium {
             findings.push(Finding {
                 severity: Severity::Medium,
-                category: "trifecta".to_string(),
-                title: "Partial trifecta in Claude Code settings".to_string(),
-                description: "Two of three trifecta components are present in allow rules. \
+                category: "uninhabitable_state".to_string(),
+                title: "Partial uninhabitable_state in Claude Code settings".to_string(),
+                description:
+                    "Two of three uninhabitable_state components are present in allow rules. \
                     Adding the third would enable data exfiltration. Review deny rules."
-                    .to_string(),
+                        .to_string(),
             });
         }
 
@@ -274,7 +275,7 @@ pub fn scan_claude_settings(
     Ok((findings, summary))
 }
 
-/// Project Claude Code allow/deny rules to a CapabilityLattice for trifecta analysis.
+/// Project Claude Code allow/deny rules to a CapabilityLattice for uninhabitable_state analysis.
 fn project_to_capability_lattice(perms: &PermissionRules) -> CapabilityLattice {
     // Start from all-Never (not default, which is permissive)
     let mut caps = CapabilityLattice {
@@ -428,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn test_full_trifecta_detection() {
+    fn test_full_uninhabitable_detection() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         std::fs::write(
@@ -441,8 +442,8 @@ mod tests {
         assert!(
             findings
                 .iter()
-                .any(|f| f.category == "trifecta" && f.severity == Severity::Critical),
-            "Should detect lethal trifecta. Findings: {:?}",
+                .any(|f| f.category == "uninhabitable_state" && f.severity == Severity::Critical),
+            "Should detect uninhabitable_state. Findings: {:?}",
             findings
         );
         assert_eq!(summary.total_allow_rules, 3);
@@ -450,10 +451,10 @@ mod tests {
     }
 
     #[test]
-    fn test_trifecta_mitigated_by_deny() {
+    fn test_uninhabitable_mitigated_by_deny() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
-        // Deny bash entirely → breaks trifecta exfil leg
+        // Deny bash entirely → breaks uninhabitable_state exfil leg
         std::fs::write(
             &path,
             settings_json(
@@ -463,14 +464,14 @@ mod tests {
         .unwrap();
 
         let (findings, _) = scan_claude_settings(&path).unwrap();
-        let trifecta_findings: Vec<_> = findings
+        let uninhabitable_state_findings: Vec<_> = findings
             .iter()
-            .filter(|f| f.category == "trifecta" && f.severity == Severity::Critical)
+            .filter(|f| f.category == "uninhabitable_state" && f.severity == Severity::Critical)
             .collect();
         assert!(
-            trifecta_findings.is_empty(),
-            "Trifecta should be mitigated by deny rule. Got: {:?}",
-            trifecta_findings
+            uninhabitable_state_findings.is_empty(),
+            " UninhabitableState should be mitigated by deny rule. Got: {:?}",
+            uninhabitable_state_findings
         );
     }
 
@@ -506,7 +507,7 @@ mod tests {
         .unwrap();
 
         let (findings, summary) = scan_claude_settings(&path).unwrap();
-        // No trifecta (no WebFetch), has deny rules
+        // No uninhabitable_state (no WebFetch), has deny rules
         let critical: Vec<_> = findings
             .iter()
             .filter(|f| f.severity == Severity::Critical)
@@ -536,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn test_edit_write_bash_triggers_trifecta() {
+    fn test_edit_write_bash_triggers_uninhabitable() {
         // This is the real-world case from thaqi-renovation.json:
         // ["Edit", "Write", "Bash"] — unrestricted Bash implies ALL capabilities
         let dir = tempfile::tempdir().unwrap();
@@ -551,15 +552,15 @@ mod tests {
         assert!(
             findings
                 .iter()
-                .any(|f| f.category == "trifecta" && f.severity == Severity::Critical),
-            "Edit+Write+Bash should trigger CRITICAL trifecta because unrestricted \
+                .any(|f| f.category == "uninhabitable_state" && f.severity == Severity::Critical),
+            "Edit+Write+Bash should trigger CRITICAL uninhabitable_state because unrestricted \
              Bash implies read (cat), web (curl), and exfil. Findings: {:?}",
             findings
         );
     }
 
     #[test]
-    fn test_mcp_tool_exfil_can_complete_trifecta() {
+    fn test_mcp_tool_exfil_can_complete_uninhabitable() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         std::fs::write(
@@ -574,8 +575,8 @@ mod tests {
         assert!(
             findings
                 .iter()
-                .any(|f| f.category == "trifecta" && f.severity == Severity::Critical),
-            "MCP create_pr should count as exfiltration in trifecta analysis: {:?}",
+                .any(|f| f.category == "uninhabitable_state" && f.severity == Severity::Critical),
+            "MCP create_pr should count as exfiltration in uninhabitable_state analysis: {:?}",
             findings
         );
     }

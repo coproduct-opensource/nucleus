@@ -6,7 +6,7 @@
 //! ## Graded Guards
 //!
 //! The [`GradedGuard`] combines type-safe enforcement with risk tracking via
-//! the graded monad. Every guard decision carries a [`TrifectaRisk`] grade
+//! the graded monad. Every guard decision carries a [`StateRisk`] grade
 //! that accumulates through monadic composition:
 //!
 //! ```rust
@@ -19,7 +19,7 @@
 //!
 //! let result = guard.check_path("/workspace/src/lib.rs");
 //! assert!(result.value.is_ok());
-//! // Risk grade reflects trifecta exposure of the permission set
+//! // Risk grade reflects uninhabitable_state exposure of the permission set
 //! ```
 
 use std::marker::PhantomData;
@@ -27,7 +27,7 @@ use std::sync::RwLock;
 
 use sha2::{Digest, Sha256};
 
-use crate::capability::{IncompatibilityConstraint, Operation, TrifectaRisk};
+use crate::capability::{IncompatibilityConstraint, Operation, StateRisk};
 use crate::graded::Graded;
 use crate::heyting::permission_gap;
 use crate::PermissionLattice;
@@ -179,8 +179,8 @@ impl<E: std::fmt::Debug + std::fmt::Display> std::error::Error for GuardError<E>
 pub struct CheckProof {
     /// The operation that was checked and approved.
     operation: Operation,
-    /// Taint state at check time, for optimistic TOCTOU detection.
-    taint_snapshot: TaintSet,
+    /// Exposure state at check time, for optimistic TOCTOU detection.
+    exposure_snapshot: ExposureSet,
     /// Prevents external construction.
     _seal: (),
 }
@@ -207,14 +207,14 @@ impl std::fmt::Debug for CheckProof {
 /// Error from [`ToolCallGuard::execute_and_record`].
 ///
 /// Distinguishes between the closure failing (operation not recorded) and
-/// a TOCTOU race detected during record (operation executed but taint grew
+/// a TOCTOU race detected during record (operation executed but exposure grew
 /// concurrently, making the operation retroactively denied).
 #[derive(Debug)]
 pub enum ExecuteError<E> {
     /// The closure returned an error. Operation was NOT recorded.
     OperationFailed(E),
-    /// TOCTOU detected: taint grew between check and record.
-    /// The operation DID execute, and its taint WAS recorded for consistency,
+    /// TOCTOU detected: exposure grew between check and record.
+    /// The operation DID execute, and its exposure WAS recorded for consistency,
     /// but the caller should treat this as a denial.
     TocTouDenied {
         /// Human-readable reason for the TOCTOU denial.
@@ -246,7 +246,7 @@ impl<E: std::fmt::Debug + std::fmt::Display> std::error::Error for ExecuteError<
 /// # Example
 ///
 /// ```ignore
-/// use trifecta_guard::guard::{PermissionGuard, GuardedAction, GuardError};
+/// use exposure_guard::guard::{PermissionGuard, GuardedAction, GuardError};
 ///
 /// struct FileReadGuard {
 ///     allowed_paths: Vec<PathBuf>,
@@ -342,51 +342,51 @@ impl<A, E: Clone> PermissionGuard for CompositeGuard<A, E> {
     }
 }
 
-/// A permission guard that tracks trifecta risk as a grade.
+/// A permission guard that tracks uninhabitable_state risk as a grade.
 ///
-/// Every check returns `Graded<TrifectaRisk, Result<GuardedAction<A>, GuardError>>`,
+/// Every check returns `Graded<StateRisk, Result<GuardedAction<A>, GuardError>>`,
 /// so callers always see both the access decision AND the risk level of the
 /// permission set that produced it.
 ///
 /// The risk grade is computed from the underlying `PermissionLattice` via
 /// `IncompatibilityConstraint::enforcing()`. This means even allowed actions
-/// carry their trifecta risk — enabling downstream systems to add extra
+/// carry their uninhabitable_state risk — enabling downstream systems to add extra
 /// oversight for operations that are technically permitted but high-risk.
 pub struct GradedGuard {
     perms: PermissionLattice,
-    risk: TrifectaRisk,
+    risk: StateRisk,
 }
 
 impl GradedGuard {
     /// Create a new graded guard from a permission lattice.
     ///
-    /// The trifecta risk is computed once at construction and carried through
+    /// The uninhabitable_state risk is computed once at construction and carried through
     /// all subsequent checks.
     pub fn new(perms: PermissionLattice) -> Self {
         let constraint = IncompatibilityConstraint::enforcing();
-        let risk = constraint.trifecta_risk(&perms.capabilities);
+        let risk = constraint.state_risk(&perms.capabilities);
         Self { perms, risk }
     }
 
-    /// Get the trifecta risk grade of this guard's permission set.
-    pub fn risk(&self) -> TrifectaRisk {
+    /// Get the uninhabitable_state risk grade of this guard's permission set.
+    pub fn risk(&self) -> StateRisk {
         self.risk
     }
 
     /// Check if an operation is allowed, returning a graded result.
     ///
-    /// The grade carries the trifecta risk regardless of whether the
+    /// The grade carries the uninhabitable_state risk regardless of whether the
     /// operation is allowed or denied.
     pub fn check_operation(
         &self,
         operation: Operation,
-    ) -> Graded<TrifectaRisk, Result<GuardedAction<Operation>, GuardError>> {
+    ) -> Graded<StateRisk, Result<GuardedAction<Operation>, GuardError>> {
         let requires_approval = self.perms.requires_approval(operation);
 
-        let result = if requires_approval && self.risk == TrifectaRisk::Complete {
+        let result = if requires_approval && self.risk == StateRisk::Uninhabitable {
             Err(GuardError::Denied {
                 reason: format!(
-                    "{:?} denied: trifecta risk is Complete and operation requires approval",
+                    "{:?} denied: uninhabitable_state risk is Complete and operation requires approval",
                     operation
                 ),
             })
@@ -404,7 +404,7 @@ impl GradedGuard {
     pub fn check_path(
         &self,
         path: &str,
-    ) -> Graded<TrifectaRisk, Result<GuardedAction<String>, GuardError>> {
+    ) -> Graded<StateRisk, Result<GuardedAction<String>, GuardError>> {
         let allowed = self.perms.paths.can_access(std::path::Path::new(path));
 
         let result = if allowed {
@@ -426,9 +426,9 @@ impl GradedGuard {
     pub fn permission_gap_to(
         &self,
         target: &PermissionLattice,
-    ) -> Graded<TrifectaRisk, crate::CapabilityLattice> {
+    ) -> Graded<StateRisk, crate::CapabilityLattice> {
         let constraint = IncompatibilityConstraint::enforcing();
-        let target_risk = constraint.trifecta_risk(&target.capabilities);
+        let target_risk = constraint.state_risk(&target.capabilities);
         let gap = permission_gap(&self.perms.capabilities, &target.capabilities);
         Graded::new(target_risk, gap)
     }
@@ -449,9 +449,9 @@ impl GradedGuard {
 /// time). This closes the gap between static permission checking and runtime
 /// enforcement by tracking the *sequence* of operations within a session.
 ///
-/// Unlike [`GradedGuard`] which checks if the *permission set* has trifecta
+/// Unlike [`GradedGuard`] which checks if the *permission set* has uninhabitable_state
 /// risk, `ToolCallGuard` checks if the *execution sequence* would complete
-/// the trifecta — catching read→fetch→exfil attack chains even when
+/// the uninhabitable_state — catching read→fetch→exfil attack chains even when
 /// individual operations pass their static permission checks.
 ///
 /// # Typestate Protocol
@@ -460,7 +460,7 @@ impl GradedGuard {
 ///
 /// 1. `check(operation)` → returns `CheckProof` (linear, non-Clone token)
 /// 2. `execute_and_record(proof, closure)` → consumes the proof, runs the
-///    closure, and records taint atomically on success
+///    closure, and records exposure atomically on success
 ///
 /// Rust's ownership system guarantees that `execute_and_record` cannot be
 /// called without a preceding `check`, and the proof cannot be reused.
@@ -469,30 +469,30 @@ pub trait ToolCallGuard: Send + Sync {
     /// Check if a tool call is permitted given the current session state.
     ///
     /// Returns a [`CheckProof`] token on success. The token captures a
-    /// snapshot of the taint state for optimistic TOCTOU detection.
+    /// snapshot of the exposure state for optimistic TOCTOU detection.
     /// The token MUST be consumed by [`execute_and_record`].
     fn check(&self, operation: Operation) -> Result<CheckProof, GuardError>;
 
-    /// Execute an operation and record its taint atomically.
+    /// Execute an operation and record its exposure atomically.
     ///
     /// Consumes the [`CheckProof`] token (compile-time linearity).
     /// Runs the closure without holding any lock. On closure success:
     ///
     /// 1. Acquires write lock
-    /// 2. TOCTOU check: compares taint snapshot against current state
-    /// 3. If taint grew and re-projection would now deny → records taint
+    /// 2. TOCTOU check: compares exposure snapshot against current state
+    /// 3. If exposure grew and re-projection would now deny → records exposure
     ///    (for consistency) but returns [`ExecuteError::TocTouDenied`]
-    /// 4. Otherwise records taint and returns `Ok(value)`
+    /// 4. Otherwise records exposure and returns `Ok(value)`
     ///
-    /// On closure failure: does NOT record taint (no phantom risk).
+    /// On closure failure: does NOT record exposure (no phantom risk).
     fn execute_and_record<T, E>(
         &self,
         proof: CheckProof,
         f: impl FnOnce() -> Result<T, E>,
     ) -> Result<T, ExecuteError<E>>;
 
-    /// Get the current accumulated trifecta risk for this session.
-    fn accumulated_risk(&self) -> TrifectaRisk;
+    /// Get the current accumulated uninhabitable_state risk for this session.
+    fn accumulated_risk(&self) -> StateRisk;
 
     /// Verify tool schema integrity (rug-pull detection).
     ///
@@ -502,38 +502,38 @@ pub trait ToolCallGuard: Send + Sync {
     fn verify_schema(&self, current_hash: &str) -> Result<(), GuardError>;
 }
 
-/// Session-scoped runtime trifecta guard.
+/// Session-scoped runtime uninhabitable_state guard.
 ///
 /// Tracks the sequence of operations executed in an MCP session and blocks
-/// operations that would complete the lethal trifecta (private data access +
+/// operations that would complete the uninhabitable_state (private data access +
 /// untrusted content + exfiltration).
 ///
 /// Also pins the tool schema at session start for rug-pull detection.
 ///
 /// # Deprecation
 ///
-/// Use [`GradedTaintGuard`] instead. This guard is retained for backward
+/// Use [`GradedExposureGuard`] instead. This guard is retained for backward
 /// compatibility and testing but now delegates all security decisions to
-/// the verified `taint_core` kernel — the same code path that
-/// `GradedTaintGuard` uses and that is structurally bisimilar to the
+/// the verified `exposure_core` kernel — the same code path that
+/// `GradedExposureGuard` uses and that is structurally bisimilar to the
 /// Verus-verified spec functions.
 #[deprecated(
     since = "0.5.0",
-    note = "Use GradedTaintGuard instead — it uses the same verified taint_core kernel with O(1) taint tracking"
+    note = "Use GradedExposureGuard instead — it uses the same verified exposure_core kernel with O(1) exposure tracking"
 )]
-pub struct RuntimeTrifectaGuard {
+pub struct RuntimeStateGuard {
     /// The underlying permission lattice for static checks.
     perms: PermissionLattice,
     /// Operations executed in this session (retained for inspection/debugging).
     executed_ops: RwLock<Vec<Operation>>,
-    /// Accumulated taint from all recorded operations — delegates to taint_core.
-    taint: RwLock<TaintSet>,
+    /// Accumulated exposure from all recorded operations — delegates to exposure_core.
+    exposure: RwLock<ExposureSet>,
     /// Pinned SHA-256 of tool list at session init.
     pinned_schema_hash: String,
 }
 
 #[allow(deprecated)]
-impl RuntimeTrifectaGuard {
+impl RuntimeStateGuard {
     /// Create a new guard for a session.
     ///
     /// `tool_schemas` is a string representation of the tool list, hashed
@@ -547,14 +547,14 @@ impl RuntimeTrifectaGuard {
         Self {
             perms,
             executed_ops: RwLock::new(Vec::new()),
-            taint: RwLock::new(TaintSet::empty()),
+            exposure: RwLock::new(ExposureSet::empty()),
             pinned_schema_hash: hash,
         }
     }
 }
 
 #[allow(deprecated)]
-impl ToolCallGuard for RuntimeTrifectaGuard {
+impl ToolCallGuard for RuntimeStateGuard {
     fn check(&self, operation: Operation) -> Result<CheckProof, GuardError> {
         use crate::CapabilityLevel;
 
@@ -566,33 +566,33 @@ impl ToolCallGuard for RuntimeTrifectaGuard {
             });
         }
 
-        // Layer 2: Session taint projection via verified shared kernel
+        // Layer 2: Session exposure projection via verified shared kernel
         //
-        // Delegates to taint_core::should_deny — the pure decision function
+        // Delegates to exposure_core::should_deny — the pure decision function
         // whose logic is structurally bisimilar to the Verus exec fn
         // `exec_guard_check`.
-        let current = self.taint.read().expect("taint lock poisoned");
-        if crate::taint_core::should_deny(
+        let current = self.exposure.read().expect("exposure lock poisoned");
+        if crate::exposure_core::should_deny(
             &current,
             operation,
             self.perms.requires_approval(operation),
-            self.perms.trifecta_constraint,
+            self.perms.uninhabitable_constraint,
         ) {
-            let projected = crate::taint_core::project_taint(&current, operation);
+            let projected = crate::exposure_core::project_exposure(&current, operation);
             return Err(GuardError::Denied {
                 reason: format!(
-                    "{:?} denied: would complete trifecta (taint: {} → {})",
+                    "{:?} denied: would uninhabitable_state (exposure: {} → {})",
                     operation, current, projected,
                 ),
             });
         }
 
-        // Snapshot taint for TOCTOU detection
-        let taint_snapshot = current.clone();
+        // Snapshot exposure for TOCTOU detection
+        let exposure_snapshot = current.clone();
 
         Ok(CheckProof {
             operation,
-            taint_snapshot,
+            exposure_snapshot,
             _seal: (),
         })
     }
@@ -609,37 +609,40 @@ impl ToolCallGuard for RuntimeTrifectaGuard {
         };
 
         // Acquire write locks for atomic TOCTOU check + record
-        let mut taint = self.taint.write().expect("taint lock poisoned");
+        let mut exposure = self.exposure.write().expect("exposure lock poisoned");
         let mut ops = self.executed_ops.write().expect("ops lock poisoned");
 
-        // TOCTOU detection: check if taint grew since check()
-        if *taint != proof.taint_snapshot && self.perms.trifecta_constraint {
-            // Re-check with current (grown) taint using taint_core
-            let projected = crate::taint_core::project_taint(&taint, proof.operation);
+        // TOCTOU detection: check if exposure grew since check()
+        if *exposure != proof.exposure_snapshot && self.perms.uninhabitable_constraint {
+            // Re-check with current (grown) exposure using exposure_core
+            let projected = crate::exposure_core::project_exposure(&exposure, proof.operation);
 
-            if projected.is_trifecta_complete() && self.perms.requires_approval(proof.operation) {
-                // Record taint anyway (operation DID execute) for consistency
+            if projected.is_uninhabitable() && self.perms.requires_approval(proof.operation) {
+                // Record exposure anyway (operation DID execute) for consistency
                 ops.push(proof.operation);
-                *taint = crate::taint_core::apply_record(&taint, proof.operation);
+                *exposure = crate::exposure_core::apply_record(&exposure, proof.operation);
                 return Err(ExecuteError::TocTouDenied {
                     reason: format!(
-                        "{:?}: concurrent taint growth detected ({} → {}); \
+                        "{:?}: concurrent exposure growth detected ({} → {}); \
                          operation would now be denied (projected: {})",
-                        proof.operation, proof.taint_snapshot, *taint, projected,
+                        proof.operation, proof.exposure_snapshot, *exposure, projected,
                     ),
                 });
             }
         }
 
-        // Record the operation's taint via taint_core
+        // Record the operation's exposure via exposure_core
         ops.push(proof.operation);
-        *taint = crate::taint_core::apply_record(&taint, proof.operation);
+        *exposure = crate::exposure_core::apply_record(&exposure, proof.operation);
 
         Ok(value)
     }
 
-    fn accumulated_risk(&self) -> TrifectaRisk {
-        self.taint.read().expect("taint lock poisoned").to_risk()
+    fn accumulated_risk(&self) -> StateRisk {
+        self.exposure
+            .read()
+            .expect("exposure lock poisoned")
+            .to_risk()
     }
 
     fn verify_schema(&self, current_hash: &str) -> Result<(), GuardError> {
@@ -657,26 +660,26 @@ impl ToolCallGuard for RuntimeTrifectaGuard {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// GradedTaintGuard — the beautiful version
+// GradedExposureGuard — the beautiful version
 //
 // Rather than tracking Vec<Operation> and rescanning O(n), this uses a
-// 3-bit semilattice (TaintSet) as the grade monoid for the Graded monad.
-// Taint accumulation is O(1) per operation and compositional by
-// construction: the monoid homomorphism λ: Operation → TaintSet
+// 3-bit semilattice (ExposureSet) as the grade monoid for the Graded monad.
+// Exposure accumulation is O(1) per operation and compositional by
+// construction: the monoid homomorphism λ: Operation → ExposureSet
 // factors through the graded bind (>>=).
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Taint labels for the three legs of the lethal trifecta.
+/// Exposure labels for the three legs of the uninhabitable_state.
 ///
 /// These form a free semilattice (join = set union) that the graded monad
 /// carries as its grade. When the join reaches `{PrivateData, UntrustedContent,
-/// ExfilVector}`, the trifecta is complete.
+/// ExfilVector}`, the uninhabitable_state is complete.
 ///
 /// These 3 core labels are FROZEN — they have Verus proofs covering
 /// monotonicity, session safety, and irreversibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum TaintLabel {
+pub enum ExposureLabel {
     /// Private data was accessed (read_files, glob_search, grep_search)
     PrivateData,
     /// Untrusted external content was ingested (web_fetch, web_search)
@@ -685,78 +688,78 @@ pub enum TaintLabel {
     ExfilVector,
 }
 
-/// Extension taint label for emerging threat categories.
+/// Extension exposure label for emerging threat categories.
 ///
 /// Extension labels participate in the same join-semilattice (union) as core
-/// labels, but do NOT affect the core trifecta predicate. They can be used
-/// by [`DangerousCombo`](crate::dangerous_combo::DangerousCombo) constraints
+/// labels, but do NOT affect the core uninhabitable_state predicate. They can be used
+/// by [`UninhabitableState`](crate::uninhabitable_state::UninhabitableState) constraints
 /// to define new dangerous combinations.
 ///
-/// Taint monotonicity (E1) holds for extension labels by the same argument
+/// Exposure monotonicity (E1) holds for extension labels by the same argument
 /// as core labels: set-union only grows, never shrinks.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct ExtensionTaintLabel(pub String);
+pub struct ExtensionExposureLabel(pub String);
 
-impl ExtensionTaintLabel {
-    /// Create a new extension taint label.
+impl ExtensionExposureLabel {
+    /// Create a new extension exposure label.
     pub fn new(name: impl Into<String>) -> Self {
         Self(name.into())
     }
 }
 
-impl std::fmt::Display for ExtensionTaintLabel {
+impl std::fmt::Display for ExtensionExposureLabel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-/// A taint set tracking which trifecta legs have been touched.
+/// A exposure set tracking which exposure legs have been touched.
 ///
 /// This is the grade monoid for our graded monad:
-/// - Identity: empty set (no taint)
-/// - Compose: set union (taint only accumulates, never decreases)
+/// - Identity: empty set (no exposure)
+/// - Compose: set union (exposure only accumulates, never decreases)
 ///
 /// The monoid laws hold trivially: union is associative with {} as identity.
-/// This gives us O(1) taint checking vs. O(n) scanning of `Vec<Operation>`.
+/// This gives us O(1) exposure checking vs. O(n) scanning of `Vec<Operation>`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default)]
-pub struct TaintSet {
-    /// FROZEN — Verus-verified core taint labels.
+pub struct ExposureSet {
+    /// FROZEN — Verus-verified core exposure labels.
     private_data: bool,
     untrusted_content: bool,
     exfil_vector: bool,
-    /// Extension taint labels for emerging threat categories.
-    /// Does NOT affect the core trifecta predicate.
+    /// Extension exposure labels for emerging threat categories.
+    /// Does NOT affect the core uninhabitable_state predicate.
     #[cfg(not(kani))]
-    extensions: std::collections::BTreeSet<ExtensionTaintLabel>,
+    extensions: std::collections::BTreeSet<ExtensionExposureLabel>,
 }
 
-impl TaintSet {
-    /// Empty taint set (no trifecta legs touched).
+impl ExposureSet {
+    /// Empty exposure set (no exposure legs touched).
     pub fn empty() -> Self {
         Self::default()
     }
 
-    /// Create a taint set from a single label.
-    pub fn singleton(label: TaintLabel) -> Self {
+    /// Create a exposure set from a single label.
+    pub fn singleton(label: ExposureLabel) -> Self {
         let mut s = Self::empty();
         match label {
-            TaintLabel::PrivateData => s.private_data = true,
-            TaintLabel::UntrustedContent => s.untrusted_content = true,
-            TaintLabel::ExfilVector => s.exfil_vector = true,
+            ExposureLabel::PrivateData => s.private_data = true,
+            ExposureLabel::UntrustedContent => s.untrusted_content = true,
+            ExposureLabel::ExfilVector => s.exfil_vector = true,
         }
         s
     }
 
-    /// Create a taint set from a single extension label.
+    /// Create a exposure set from a single extension label.
     #[cfg(not(kani))]
-    pub fn extension_singleton(label: ExtensionTaintLabel) -> Self {
+    pub fn extension_singleton(label: ExtensionExposureLabel) -> Self {
         let mut s = Self::empty();
         s.extensions.insert(label);
         s
     }
 
-    /// Union of two taint sets (the monoid operation).
+    /// Union of two exposure sets (the monoid operation).
     ///
     /// Core labels: bitwise OR (FROZEN).
     /// Extension labels: set union.
@@ -776,40 +779,40 @@ impl TaintSet {
         }
     }
 
-    /// Check if the complete trifecta is present.
-    pub fn is_trifecta_complete(&self) -> bool {
+    /// Check if the uninhabitable_state is present.
+    pub fn is_uninhabitable(&self) -> bool {
         self.private_data && self.untrusted_content && self.exfil_vector
     }
 
-    /// Convert to the corresponding TrifectaRisk level.
-    pub fn to_risk(&self) -> TrifectaRisk {
+    /// Convert to the corresponding StateRisk level.
+    pub fn to_risk(&self) -> StateRisk {
         let count =
             self.private_data as u8 + self.untrusted_content as u8 + self.exfil_vector as u8;
         match count {
-            0 => TrifectaRisk::None,
-            1 => TrifectaRisk::Low,
-            2 => TrifectaRisk::Medium,
-            _ => TrifectaRisk::Complete,
+            0 => StateRisk::Safe,
+            1 => StateRisk::Low,
+            2 => StateRisk::Medium,
+            _ => StateRisk::Uninhabitable,
         }
     }
 
-    /// Check if a specific taint label is present.
-    pub fn contains(&self, label: TaintLabel) -> bool {
+    /// Check if a specific exposure label is present.
+    pub fn contains(&self, label: ExposureLabel) -> bool {
         match label {
-            TaintLabel::PrivateData => self.private_data,
-            TaintLabel::UntrustedContent => self.untrusted_content,
-            TaintLabel::ExfilVector => self.exfil_vector,
+            ExposureLabel::PrivateData => self.private_data,
+            ExposureLabel::UntrustedContent => self.untrusted_content,
+            ExposureLabel::ExfilVector => self.exfil_vector,
         }
     }
 
-    /// Number of active taint legs.
+    /// Number of active exposure legs.
     pub fn count(&self) -> u8 {
         self.private_data as u8 + self.untrusted_content as u8 + self.exfil_vector as u8
     }
 
-    /// Check if this taint set is a superset of another.
+    /// Check if this exposure set is a superset of another.
     ///
-    /// Corresponds to `taint_subset(other, self)` in the Verus model.
+    /// Corresponds to `exposure_subset(other, self)` in the Verus model.
     /// Used by the E1 monotonicity invariant assertion.
     pub fn is_superset_of(&self, other: &Self) -> bool {
         let core_ok = (!other.private_data || self.private_data)
@@ -823,20 +826,20 @@ impl TaintSet {
         core_ok
     }
 
-    /// Check if a specific extension taint label is present.
+    /// Check if a specific extension exposure label is present.
     #[cfg(not(kani))]
-    pub fn contains_extension(&self, label: &ExtensionTaintLabel) -> bool {
+    pub fn contains_extension(&self, label: &ExtensionExposureLabel) -> bool {
         self.extensions.contains(label)
     }
 
-    /// Iterator over all extension labels present in this taint set.
+    /// Iterator over all extension labels present in this exposure set.
     #[cfg(not(kani))]
-    pub fn extension_labels(&self) -> impl Iterator<Item = &ExtensionTaintLabel> {
+    pub fn extension_labels(&self) -> impl Iterator<Item = &ExtensionExposureLabel> {
         self.extensions.iter()
     }
 }
 
-impl std::fmt::Display for TaintSet {
+impl std::fmt::Display for ExposureSet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut labels: Vec<String> = Vec::new();
         if self.private_data {
@@ -860,7 +863,7 @@ impl std::fmt::Display for TaintSet {
     }
 }
 
-impl crate::graded::RiskGrade for TaintSet {
+impl crate::graded::RiskGrade for ExposureSet {
     fn identity() -> Self {
         Self::empty()
     }
@@ -870,53 +873,53 @@ impl crate::graded::RiskGrade for TaintSet {
     }
 
     fn requires_intervention(&self) -> bool {
-        self.is_trifecta_complete()
+        self.is_uninhabitable()
     }
 }
 
-/// Classify an operation into its taint label.
+/// Classify an operation into its exposure label.
 ///
-/// This is the labeling function `λ: Operation → Option<TaintLabel>` that
-/// tags each tool call with which trifecta leg it contributes to.
+/// This is the labeling function `λ: Operation → Option<ExposureLabel>` that
+/// tags each tool call with which exposure leg it contributes to.
 /// Neutral operations (WriteFiles, EditFiles, GitCommit, ManagePods)
-/// return `None` — they don't contribute to the trifecta.
+/// return `None` — they don't contribute to the uninhabitable_state.
 ///
-/// Delegates to [`crate::taint_core::classify_operation`] — the verified
+/// Delegates to [`crate::exposure_core::classify_operation`] — the verified
 /// shared kernel.
-pub fn operation_taint(op: Operation) -> Option<TaintLabel> {
-    crate::taint_core::classify_operation(op)
+pub fn operation_exposure(op: Operation) -> Option<ExposureLabel> {
+    crate::exposure_core::classify_operation(op)
 }
 
-/// Session-scoped taint-tracking guard using the graded monad.
+/// Session-scoped exposure-tracking guard using the graded monad.
 ///
-/// Each tool call is modeled as `Graded<TaintSet, Operation>` — the taint
+/// Each tool call is modeled as `Graded<ExposureSet, Operation>` — the exposure
 /// label is the grade, the operation is the value. The session's accumulated
 /// state is the monadic composition (>>=) of all recorded tool calls.
 ///
 /// This is the **production** guard (replacing the deprecated
-/// [`RuntimeTrifectaGuard`]):
-/// - `RuntimeTrifectaGuard` (deprecated): tracks `Vec<Operation>`, delegates to `taint_core`
-/// - `GradedTaintGuard`: tracks `TaintSet` (3 bits), O(1) per check
+/// [`RuntimeStateGuard`]):
+/// - `RuntimeStateGuard` (deprecated): tracks `Vec<Operation>`, delegates to `exposure_core`
+/// - `GradedExposureGuard`: tracks `ExposureSet` (3 bits), O(1) per check
 ///
 /// Both produce identical decisions. The graded version makes the
-/// mathematical structure explicit: taint propagation is a monoid
-/// homomorphism from operation sequences to the taint semilattice.
+/// mathematical structure explicit: exposure propagation is a monoid
+/// homomorphism from operation sequences to the exposure semilattice.
 ///
 /// # Schema Pinning
 ///
 /// At session init, the full tool schema is SHA-256 hashed. Before each
 /// tool call, the schema can be verified against this pin. A mismatch
 /// indicates an MCP rug-pull attack.
-pub struct GradedTaintGuard {
+pub struct GradedExposureGuard {
     /// Static permission lattice for this session
     perms: PermissionLattice,
-    /// Accumulated taint from all recorded operations (the grade accumulator)
-    taint: RwLock<TaintSet>,
+    /// Accumulated exposure from all recorded operations (the grade accumulator)
+    exposure: RwLock<ExposureSet>,
     /// Pinned SHA-256 of tool schema at session init
     pinned_schema_hash: String,
 }
 
-impl GradedTaintGuard {
+impl GradedExposureGuard {
     /// Create a new session guard.
     ///
     /// `tool_schemas` is a canonical string representation of the available
@@ -929,14 +932,17 @@ impl GradedTaintGuard {
         };
         Self {
             perms,
-            taint: RwLock::new(TaintSet::empty()),
+            exposure: RwLock::new(ExposureSet::empty()),
             pinned_schema_hash: hash,
         }
     }
 
-    /// Get the current taint set.
-    pub fn taint(&self) -> TaintSet {
-        self.taint.read().expect("taint lock poisoned").clone()
+    /// Get the current exposure set.
+    pub fn exposure(&self) -> ExposureSet {
+        self.exposure
+            .read()
+            .expect("exposure lock poisoned")
+            .clone()
     }
 
     /// Get the underlying permission lattice.
@@ -950,7 +956,7 @@ impl GradedTaintGuard {
     }
 }
 
-impl ToolCallGuard for GradedTaintGuard {
+impl ToolCallGuard for GradedExposureGuard {
     fn check(&self, operation: Operation) -> Result<CheckProof, GuardError> {
         use crate::CapabilityLevel;
 
@@ -962,33 +968,37 @@ impl ToolCallGuard for GradedTaintGuard {
             });
         }
 
-        // Layer 2: Session taint projection via verified shared kernel
+        // Layer 2: Session exposure projection via verified shared kernel
         //
-        // Delegates to taint_core::should_deny — the pure decision function
+        // Delegates to exposure_core::should_deny — the pure decision function
         // whose logic is structurally bisimilar to the Verus exec fn
         // `exec_guard_check`.
-        let current = self.taint.read().expect("taint lock poisoned");
-        if crate::taint_core::should_deny(
+        let current = self.exposure.read().expect("exposure lock poisoned");
+        if crate::exposure_core::should_deny(
             &current,
             operation,
             self.perms.requires_approval(operation),
-            self.perms.trifecta_constraint,
+            self.perms.uninhabitable_constraint,
         ) {
-            let projected = crate::taint_core::project_taint(&current, operation);
+            let projected = crate::exposure_core::project_exposure(&current, operation);
             return Err(GuardError::Denied {
                 reason: format!(
-                    "{:?} denied: would complete trifecta (taint: {} → {})",
+                    "{:?} denied: would uninhabitable_state (exposure: {} → {})",
                     operation, current, projected,
                 ),
             });
         }
 
-        // Snapshot taint for TOCTOU detection
-        let taint_snapshot = self.taint.read().expect("taint lock poisoned").clone();
+        // Snapshot exposure for TOCTOU detection
+        let exposure_snapshot = self
+            .exposure
+            .read()
+            .expect("exposure lock poisoned")
+            .clone();
 
         Ok(CheckProof {
             operation,
-            taint_snapshot,
+            exposure_snapshot,
             _seal: (),
         })
     }
@@ -1005,47 +1015,50 @@ impl ToolCallGuard for GradedTaintGuard {
         };
 
         // Acquire write lock for atomic TOCTOU check + record
-        let mut taint = self.taint.write().expect("taint lock poisoned");
+        let mut exposure = self.exposure.write().expect("exposure lock poisoned");
 
-        // TOCTOU detection: check if taint grew since check()
-        if *taint != proof.taint_snapshot && self.perms.trifecta_constraint {
-            // Re-check with current (grown) taint using taint_core
-            let projected = crate::taint_core::project_taint(&taint, proof.operation);
+        // TOCTOU detection: check if exposure grew since check()
+        if *exposure != proof.exposure_snapshot && self.perms.uninhabitable_constraint {
+            // Re-check with current (grown) exposure using exposure_core
+            let projected = crate::exposure_core::project_exposure(&exposure, proof.operation);
 
-            if projected.is_trifecta_complete() && self.perms.requires_approval(proof.operation) {
-                // Record taint anyway (operation DID execute) for consistency
-                *taint = crate::taint_core::apply_record(&taint, proof.operation);
+            if projected.is_uninhabitable() && self.perms.requires_approval(proof.operation) {
+                // Record exposure anyway (operation DID execute) for consistency
+                *exposure = crate::exposure_core::apply_record(&exposure, proof.operation);
                 return Err(ExecuteError::TocTouDenied {
                     reason: format!(
-                        "{:?}: concurrent taint growth detected ({} → {}); \
+                        "{:?}: concurrent exposure growth detected ({} → {}); \
                          operation would now be denied (projected: {})",
-                        proof.operation, proof.taint_snapshot, *taint, projected,
+                        proof.operation, proof.exposure_snapshot, *exposure, projected,
                     ),
                 });
             }
         }
 
-        // Record the operation's taint via taint_core
+        // Record the operation's exposure via exposure_core
         //
-        // INVARIANT (E1, proven in Verus): apply_event_taint(t, e) ⊇ t
-        // Taint only grows — permissions only tighten. This debug assertion
-        // catches any regression where taint could shrink, which would
+        // INVARIANT (E1, proven in Verus): apply_event_exposure(t, e) ⊇ t
+        // Exposure only grows — permissions only tighten. This debug assertion
+        // catches any regression where exposure could shrink, which would
         // constitute a privilege escalation vulnerability.
-        let old_taint = taint.clone();
-        *taint = crate::taint_core::apply_record(&taint, proof.operation);
+        let old_exposure = exposure.clone();
+        *exposure = crate::exposure_core::apply_record(&exposure, proof.operation);
         debug_assert!(
-            taint.is_superset_of(&old_taint),
-            "E1 violation: taint shrank after recording {:?} ({} → {})",
+            exposure.is_superset_of(&old_exposure),
+            "E1 violation: exposure shrank after recording {:?} ({} → {})",
             proof.operation,
-            old_taint,
-            *taint,
+            old_exposure,
+            *exposure,
         );
 
         Ok(value)
     }
 
-    fn accumulated_risk(&self) -> TrifectaRisk {
-        self.taint.read().expect("taint lock poisoned").to_risk()
+    fn accumulated_risk(&self) -> StateRisk {
+        self.exposure
+            .read()
+            .expect("exposure lock poisoned")
+            .to_risk()
     }
 
     fn verify_schema(&self, current_hash: &str) -> Result<(), GuardError> {
@@ -1237,27 +1250,27 @@ mod tests {
         let guard = GradedGuard::new(perms);
 
         // read_only has only private data access (read_files: Always)
-        // so risk should be Low (1 trifecta component)
-        assert_eq!(guard.risk(), TrifectaRisk::Low);
+        // so risk should be Low (1 uninhabitable_state component)
+        assert_eq!(guard.risk(), StateRisk::Low);
 
         // ReadFile operation should be allowed
         let result = guard.check_operation(Operation::ReadFiles);
         assert!(result.value.is_ok());
-        assert_eq!(result.grade, TrifectaRisk::Low);
+        assert_eq!(result.grade, StateRisk::Low);
     }
 
     #[test]
-    fn test_graded_guard_permissive_denies_trifecta_exfiltration() {
+    fn test_graded_guard_permissive_denies_uninhabitable_exfiltration() {
         let perms = PermissionLattice::permissive();
         let guard = GradedGuard::new(perms);
 
-        // Permissive has full trifecta
-        assert_eq!(guard.risk(), TrifectaRisk::Complete);
+        // Permissive has complete uninhabitable_state
+        assert_eq!(guard.risk(), StateRisk::Uninhabitable);
 
         // Exfiltration operations that require approval should be denied
         let result = guard.check_operation(Operation::GitPush);
-        assert_eq!(result.grade, TrifectaRisk::Complete);
-        // GitPush requires approval under trifecta, so it should be denied
+        assert_eq!(result.grade, StateRisk::Uninhabitable);
+        // GitPush requires approval under uninhabitable_state, so it should be denied
         assert!(result.value.is_err());
     }
 
@@ -1297,8 +1310,8 @@ mod tests {
         let guard = GradedGuard::new(floor);
         let gap = guard.permission_gap_to(&target);
 
-        // Target has more trifecta components, so risk is higher
-        assert!(gap.grade >= TrifectaRisk::Medium);
+        // Target has more uninhabitable_state components, so risk is higher
+        assert!(gap.grade >= StateRisk::Medium);
 
         // The gap should show what's needed for the capabilities
         // that the floor doesn't have
@@ -1323,76 +1336,76 @@ mod tests {
             });
 
         // Risk should be composed (max of both checks)
-        assert_eq!(result.grade, TrifectaRisk::Low);
+        assert_eq!(result.grade, StateRisk::Low);
         assert!(result.value.is_ok());
     }
 
     // -----------------------------------------------------------------------
-    // RuntimeTrifectaGuard tests
+    // RuntimeStateGuard tests
     // -----------------------------------------------------------------------
 
-    fn trifecta_perms() -> PermissionLattice {
+    fn uninhabitable_perms() -> PermissionLattice {
         use crate::CapabilityLevel;
         let mut perms = PermissionLattice::default();
         perms.capabilities.read_files = CapabilityLevel::Always;
         perms.capabilities.web_fetch = CapabilityLevel::LowRisk;
         perms.capabilities.run_bash = CapabilityLevel::LowRisk;
-        perms.trifecta_constraint = true;
+        perms.uninhabitable_constraint = true;
         perms.normalize()
     }
 
     #[test]
     #[allow(deprecated)]
     fn test_session_risk_accumulates() {
-        let guard = RuntimeTrifectaGuard::new(trifecta_perms(), "[]");
+        let guard = RuntimeStateGuard::new(uninhabitable_perms(), "[]");
 
         // Start at None
-        assert_eq!(guard.accumulated_risk(), TrifectaRisk::None);
+        assert_eq!(guard.accumulated_risk(), StateRisk::Safe);
 
         // Read (private data leg)
         check_and_record(&guard, Operation::ReadFiles);
-        assert_eq!(guard.accumulated_risk(), TrifectaRisk::Low);
+        assert_eq!(guard.accumulated_risk(), StateRisk::Low);
 
         // Fetch (untrusted content leg)
         check_and_record(&guard, Operation::WebFetch);
-        assert_eq!(guard.accumulated_risk(), TrifectaRisk::Medium);
+        assert_eq!(guard.accumulated_risk(), StateRisk::Medium);
 
-        // RunBash (exfil leg) — should be BLOCKED because it completes trifecta
+        // RunBash (exfil leg) — should be BLOCKED because it completes uninhabitable_state
         let result = guard.check(Operation::RunBash);
         assert!(
             result.is_err(),
-            "RunBash should be blocked when completing trifecta"
+            "RunBash should be blocked when completing uninhabitable_state"
         );
 
         // Risk stays at Medium (RunBash was not recorded)
-        assert_eq!(guard.accumulated_risk(), TrifectaRisk::Medium);
+        assert_eq!(guard.accumulated_risk(), StateRisk::Medium);
     }
 
     #[test]
     #[allow(deprecated)]
     fn test_no_phantom_risk() {
-        let guard = RuntimeTrifectaGuard::new(trifecta_perms(), "[]");
+        let guard = RuntimeStateGuard::new(uninhabitable_perms(), "[]");
 
         // check() alone does NOT increase risk (proof is dropped, not consumed)
         let _proof1 = guard.check(Operation::ReadFiles).unwrap();
         let _proof2 = guard.check(Operation::WebFetch).unwrap();
-        assert_eq!(guard.accumulated_risk(), TrifectaRisk::None);
+        assert_eq!(guard.accumulated_risk(), StateRisk::Safe);
 
         // Only execute_and_record increases risk
         check_and_record(&guard, Operation::ReadFiles);
-        assert_eq!(guard.accumulated_risk(), TrifectaRisk::Low);
+        assert_eq!(guard.accumulated_risk(), StateRisk::Low);
     }
 
     #[test]
     #[allow(deprecated)]
     fn test_benign_sequence_allowed() {
-        let guard = RuntimeTrifectaGuard::new(trifecta_perms(), "[]");
+        let guard = RuntimeStateGuard::new(uninhabitable_perms(), "[]");
 
-        // Read, glob, grep — all private data, only 1 trifecta component
+        // Read, glob, grep — all private data, only 1 uninhabitable_state component
         check_and_record(&guard, Operation::ReadFiles);
         check_and_record(&guard, Operation::GlobSearch);
         check_and_record(&guard, Operation::GrepSearch);
-        assert_eq!(guard.accumulated_risk(), TrifectaRisk::Low);
+        assert_eq!(guard.accumulated_risk(), StateRisk::Low);
 
         // More reads are always fine
         assert!(guard.check(Operation::ReadFiles).is_ok());
@@ -1401,7 +1414,7 @@ mod tests {
     #[test]
     #[allow(deprecated)]
     fn test_schema_pinning_detects_mutation() {
-        let guard = RuntimeTrifectaGuard::new(trifecta_perms(), r#"[{"name":"read"}]"#);
+        let guard = RuntimeStateGuard::new(uninhabitable_perms(), r#"[{"name":"read"}]"#);
 
         // Same schema: OK
         let mut hasher = Sha256::new();
@@ -1418,33 +1431,33 @@ mod tests {
 
     #[test]
     #[allow(deprecated)]
-    fn test_two_leg_trifecta_allows_exfil() {
-        // If only 2 of 3 trifecta legs are present in permissions,
-        // exfil should be allowed (no trifecta constraint fires)
+    fn test_two_leg_uninhabitable_allows_exfil() {
+        // If only 2 of 3 exposure legs are present in permissions,
+        // exfil should be allowed (no uninhabitable_state constraint fires)
         use crate::CapabilityLevel;
         let mut perms = PermissionLattice::default();
         perms.capabilities.read_files = CapabilityLevel::Always;
         perms.capabilities.run_bash = CapabilityLevel::LowRisk;
         // No web_fetch — only 2 legs
-        perms.trifecta_constraint = true;
+        perms.uninhabitable_constraint = true;
         let perms = perms.normalize();
 
-        let guard = RuntimeTrifectaGuard::new(perms, "[]");
+        let guard = RuntimeStateGuard::new(perms, "[]");
 
         check_and_record(&guard, Operation::ReadFiles);
         // RunBash should be allowed — no untrusted content present
         check_and_record(&guard, Operation::RunBash);
-        assert_eq!(guard.accumulated_risk(), TrifectaRisk::Medium);
+        assert_eq!(guard.accumulated_risk(), StateRisk::Medium);
     }
 
     // -----------------------------------------------------------------------
-    // TaintSet monoid laws
+    // ExposureSet monoid laws
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_taint_set_identity() {
-        let empty = TaintSet::empty();
-        let s = TaintSet::singleton(TaintLabel::PrivateData);
+    fn test_exposure_set_identity() {
+        let empty = ExposureSet::empty();
+        let s = ExposureSet::singleton(ExposureLabel::PrivateData);
 
         // Left identity: empty ∪ s = s
         assert_eq!(empty.union(&s), s);
@@ -1453,81 +1466,81 @@ mod tests {
     }
 
     #[test]
-    fn test_taint_set_associativity() {
-        let a = TaintSet::singleton(TaintLabel::PrivateData);
-        let b = TaintSet::singleton(TaintLabel::UntrustedContent);
-        let c = TaintSet::singleton(TaintLabel::ExfilVector);
+    fn test_exposure_set_associativity() {
+        let a = ExposureSet::singleton(ExposureLabel::PrivateData);
+        let b = ExposureSet::singleton(ExposureLabel::UntrustedContent);
+        let c = ExposureSet::singleton(ExposureLabel::ExfilVector);
 
         // (a ∪ b) ∪ c = a ∪ (b ∪ c)
         assert_eq!(a.union(&b).union(&c), a.union(&b.union(&c)));
     }
 
     #[test]
-    fn test_taint_set_idempotent() {
-        let s = TaintSet::singleton(TaintLabel::PrivateData);
+    fn test_exposure_set_idempotent() {
+        let s = ExposureSet::singleton(ExposureLabel::PrivateData);
         // s ∪ s = s (semilattice: join is idempotent)
         assert_eq!(s.union(&s), s);
     }
 
     #[test]
-    fn test_taint_set_commutative() {
-        let a = TaintSet::singleton(TaintLabel::PrivateData);
-        let b = TaintSet::singleton(TaintLabel::UntrustedContent);
+    fn test_exposure_set_commutative() {
+        let a = ExposureSet::singleton(ExposureLabel::PrivateData);
+        let b = ExposureSet::singleton(ExposureLabel::UntrustedContent);
         // a ∪ b = b ∪ a
         assert_eq!(a.union(&b), b.union(&a));
     }
 
     #[test]
-    fn test_taint_set_trifecta_detection() {
-        let mut taint = TaintSet::empty();
-        assert!(!taint.is_trifecta_complete());
-        assert_eq!(taint.to_risk(), TrifectaRisk::None);
+    fn test_exposure_set_uninhabitable_detection() {
+        let mut exposure = ExposureSet::empty();
+        assert!(!exposure.is_uninhabitable());
+        assert_eq!(exposure.to_risk(), StateRisk::Safe);
 
-        taint = taint.union(&TaintSet::singleton(TaintLabel::PrivateData));
-        assert!(!taint.is_trifecta_complete());
-        assert_eq!(taint.to_risk(), TrifectaRisk::Low);
+        exposure = exposure.union(&ExposureSet::singleton(ExposureLabel::PrivateData));
+        assert!(!exposure.is_uninhabitable());
+        assert_eq!(exposure.to_risk(), StateRisk::Low);
 
-        taint = taint.union(&TaintSet::singleton(TaintLabel::UntrustedContent));
-        assert!(!taint.is_trifecta_complete());
-        assert_eq!(taint.to_risk(), TrifectaRisk::Medium);
+        exposure = exposure.union(&ExposureSet::singleton(ExposureLabel::UntrustedContent));
+        assert!(!exposure.is_uninhabitable());
+        assert_eq!(exposure.to_risk(), StateRisk::Medium);
 
-        taint = taint.union(&TaintSet::singleton(TaintLabel::ExfilVector));
-        assert!(taint.is_trifecta_complete());
-        assert_eq!(taint.to_risk(), TrifectaRisk::Complete);
+        exposure = exposure.union(&ExposureSet::singleton(ExposureLabel::ExfilVector));
+        assert!(exposure.is_uninhabitable());
+        assert_eq!(exposure.to_risk(), StateRisk::Uninhabitable);
     }
 
     #[test]
-    fn test_taint_set_risk_grade_impl() {
+    fn test_exposure_set_risk_grade_impl() {
         use crate::graded::RiskGrade;
 
         // Identity
-        assert_eq!(TaintSet::identity(), TaintSet::empty());
+        assert_eq!(ExposureSet::identity(), ExposureSet::empty());
 
         // Compose = union
-        let a = TaintSet::singleton(TaintLabel::PrivateData);
-        let b = TaintSet::singleton(TaintLabel::ExfilVector);
+        let a = ExposureSet::singleton(ExposureLabel::PrivateData);
+        let b = ExposureSet::singleton(ExposureLabel::ExfilVector);
         let composed = a.compose(&b);
-        assert!(composed.contains(TaintLabel::PrivateData));
-        assert!(composed.contains(TaintLabel::ExfilVector));
-        assert!(!composed.contains(TaintLabel::UntrustedContent));
+        assert!(composed.contains(ExposureLabel::PrivateData));
+        assert!(composed.contains(ExposureLabel::ExfilVector));
+        assert!(!composed.contains(ExposureLabel::UntrustedContent));
 
         // requires_intervention only at Complete
         assert!(!a.requires_intervention());
         assert!(!composed.requires_intervention());
-        let full = composed.compose(&TaintSet::singleton(TaintLabel::UntrustedContent));
+        let full = composed.compose(&ExposureSet::singleton(ExposureLabel::UntrustedContent));
         assert!(full.requires_intervention());
     }
 
     #[test]
-    fn test_taint_set_display() {
-        assert_eq!(format!("{}", TaintSet::empty()), "{}");
+    fn test_exposure_set_display() {
+        assert_eq!(format!("{}", ExposureSet::empty()), "{}");
         assert_eq!(
-            format!("{}", TaintSet::singleton(TaintLabel::PrivateData)),
+            format!("{}", ExposureSet::singleton(ExposureLabel::PrivateData)),
             "{PrivateData}"
         );
-        let full = TaintSet::singleton(TaintLabel::PrivateData)
-            .union(&TaintSet::singleton(TaintLabel::UntrustedContent))
-            .union(&TaintSet::singleton(TaintLabel::ExfilVector));
+        let full = ExposureSet::singleton(ExposureLabel::PrivateData)
+            .union(&ExposureSet::singleton(ExposureLabel::UntrustedContent))
+            .union(&ExposureSet::singleton(ExposureLabel::ExfilVector));
         assert_eq!(
             format!("{}", full),
             "{PrivateData, UntrustedContent, ExfilVector}"
@@ -1535,113 +1548,113 @@ mod tests {
     }
 
     #[test]
-    fn test_operation_taint_classification() {
+    fn test_operation_exposure_classification() {
         // Private data leg
         assert_eq!(
-            operation_taint(Operation::ReadFiles),
-            Some(TaintLabel::PrivateData)
+            operation_exposure(Operation::ReadFiles),
+            Some(ExposureLabel::PrivateData)
         );
         assert_eq!(
-            operation_taint(Operation::GlobSearch),
-            Some(TaintLabel::PrivateData)
+            operation_exposure(Operation::GlobSearch),
+            Some(ExposureLabel::PrivateData)
         );
         assert_eq!(
-            operation_taint(Operation::GrepSearch),
-            Some(TaintLabel::PrivateData)
+            operation_exposure(Operation::GrepSearch),
+            Some(ExposureLabel::PrivateData)
         );
 
         // Untrusted content leg
         assert_eq!(
-            operation_taint(Operation::WebFetch),
-            Some(TaintLabel::UntrustedContent)
+            operation_exposure(Operation::WebFetch),
+            Some(ExposureLabel::UntrustedContent)
         );
         assert_eq!(
-            operation_taint(Operation::WebSearch),
-            Some(TaintLabel::UntrustedContent)
+            operation_exposure(Operation::WebSearch),
+            Some(ExposureLabel::UntrustedContent)
         );
 
         // Exfil vector leg
         assert_eq!(
-            operation_taint(Operation::RunBash),
-            Some(TaintLabel::ExfilVector)
+            operation_exposure(Operation::RunBash),
+            Some(ExposureLabel::ExfilVector)
         );
         assert_eq!(
-            operation_taint(Operation::GitPush),
-            Some(TaintLabel::ExfilVector)
+            operation_exposure(Operation::GitPush),
+            Some(ExposureLabel::ExfilVector)
         );
         assert_eq!(
-            operation_taint(Operation::CreatePr),
-            Some(TaintLabel::ExfilVector)
+            operation_exposure(Operation::CreatePr),
+            Some(ExposureLabel::ExfilVector)
         );
 
         // Neutral operations
-        assert_eq!(operation_taint(Operation::WriteFiles), None);
-        assert_eq!(operation_taint(Operation::EditFiles), None);
-        assert_eq!(operation_taint(Operation::GitCommit), None);
-        assert_eq!(operation_taint(Operation::ManagePods), None);
+        assert_eq!(operation_exposure(Operation::WriteFiles), None);
+        assert_eq!(operation_exposure(Operation::EditFiles), None);
+        assert_eq!(operation_exposure(Operation::GitCommit), None);
+        assert_eq!(operation_exposure(Operation::ManagePods), None);
     }
 
     // -----------------------------------------------------------------------
-    // GradedTaintGuard tests
+    // GradedExposureGuard tests
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_graded_taint_guard_risk_accumulates() {
-        let guard = GradedTaintGuard::new(trifecta_perms(), "[]");
+    fn test_graded_exposure_guard_risk_accumulates() {
+        let guard = GradedExposureGuard::new(uninhabitable_perms(), "[]");
 
-        // Start at empty taint
-        assert_eq!(guard.taint(), TaintSet::empty());
-        assert_eq!(guard.accumulated_risk(), TrifectaRisk::None);
+        // Start at empty exposure
+        assert_eq!(guard.exposure(), ExposureSet::empty());
+        assert_eq!(guard.accumulated_risk(), StateRisk::Safe);
 
         // Read (private data)
         check_and_record(&guard, Operation::ReadFiles);
-        assert!(guard.taint().contains(TaintLabel::PrivateData));
-        assert_eq!(guard.accumulated_risk(), TrifectaRisk::Low);
+        assert!(guard.exposure().contains(ExposureLabel::PrivateData));
+        assert_eq!(guard.accumulated_risk(), StateRisk::Low);
 
         // Fetch (untrusted content)
         check_and_record(&guard, Operation::WebFetch);
-        assert!(guard.taint().contains(TaintLabel::UntrustedContent));
-        assert_eq!(guard.accumulated_risk(), TrifectaRisk::Medium);
+        assert!(guard.exposure().contains(ExposureLabel::UntrustedContent));
+        assert_eq!(guard.accumulated_risk(), StateRisk::Medium);
 
-        // RunBash (exfil) — BLOCKED: would complete trifecta
+        // RunBash (exfil) — BLOCKED: would uninhabitable_state
         let result = guard.check(Operation::RunBash);
         assert!(
             result.is_err(),
-            "RunBash should be blocked when completing trifecta"
+            "RunBash should be blocked when completing uninhabitable_state"
         );
-        assert_eq!(guard.accumulated_risk(), TrifectaRisk::Medium);
+        assert_eq!(guard.accumulated_risk(), StateRisk::Medium);
     }
 
     #[test]
-    fn test_graded_taint_guard_no_phantom_taint() {
-        let guard = GradedTaintGuard::new(trifecta_perms(), "[]");
+    fn test_graded_exposure_guard_no_phantom_exposure() {
+        let guard = GradedExposureGuard::new(uninhabitable_perms(), "[]");
 
-        // check() alone does NOT taint the session (proofs are dropped)
+        // check() alone does NOT expose the session (proofs are dropped)
         let _proof1 = guard.check(Operation::ReadFiles).unwrap();
         let _proof2 = guard.check(Operation::WebFetch).unwrap();
-        assert_eq!(guard.taint(), TaintSet::empty());
+        assert_eq!(guard.exposure(), ExposureSet::empty());
 
-        // Only execute_and_record taints
+        // Only execute_and_record exposures
         check_and_record(&guard, Operation::ReadFiles);
-        assert!(guard.taint().contains(TaintLabel::PrivateData));
+        assert!(guard.exposure().contains(ExposureLabel::PrivateData));
     }
 
     #[test]
-    fn test_graded_taint_guard_neutral_ops_no_taint() {
-        let guard = GradedTaintGuard::new(trifecta_perms(), "[]");
+    fn test_graded_exposure_guard_neutral_ops_no_exposure() {
+        let guard = GradedExposureGuard::new(uninhabitable_perms(), "[]");
 
         check_and_record(&guard, Operation::WriteFiles);
         check_and_record(&guard, Operation::EditFiles);
         check_and_record(&guard, Operation::GitCommit);
 
-        // Neutral ops don't contribute to taint
-        assert_eq!(guard.taint(), TaintSet::empty());
-        assert_eq!(guard.accumulated_risk(), TrifectaRisk::None);
+        // Neutral ops don't contribute to exposure
+        assert_eq!(guard.exposure(), ExposureSet::empty());
+        assert_eq!(guard.accumulated_risk(), StateRisk::Safe);
     }
 
     #[test]
-    fn test_graded_taint_guard_schema_pinning() {
-        let guard = GradedTaintGuard::new(trifecta_perms(), r#"[{"name":"read"}]"#);
+    fn test_graded_exposure_guard_schema_pinning() {
+        let guard = GradedExposureGuard::new(uninhabitable_perms(), r#"[{"name":"read"}]"#);
 
         // Same schema: OK
         let same_hash = {
@@ -1669,11 +1682,11 @@ mod tests {
 
     #[test]
     #[allow(deprecated)]
-    fn test_graded_taint_guard_agrees_with_runtime_guard() {
+    fn test_graded_exposure_guard_agrees_with_runtime_guard() {
         // Both guards should make identical decisions
-        let perms = trifecta_perms();
-        let runtime = RuntimeTrifectaGuard::new(perms.clone(), "[]");
-        let graded = GradedTaintGuard::new(perms, "[]");
+        let perms = uninhabitable_perms();
+        let runtime = RuntimeStateGuard::new(perms.clone(), "[]");
+        let graded = GradedExposureGuard::new(perms, "[]");
 
         let ops = vec![
             Operation::ReadFiles,
@@ -1696,7 +1709,7 @@ mod tests {
             }
         }
 
-        // Both should block RunBash now (trifecta complete)
+        // Both should block RunBash now (uninhabitable_state complete)
         assert!(runtime.check(Operation::RunBash).is_err());
         assert!(graded.check(Operation::RunBash).is_err());
 
@@ -1705,38 +1718,38 @@ mod tests {
     }
 
     #[test]
-    fn test_graded_taint_guard_as_graded_monad() {
+    fn test_graded_exposure_guard_as_graded_monad() {
         // Demonstrate the graded monad composition explicitly
         use crate::graded::{Graded, RiskGrade};
 
-        let guard = GradedTaintGuard::new(trifecta_perms(), "[]");
+        let guard = GradedExposureGuard::new(uninhabitable_perms(), "[]");
 
-        // Model each tool call as Graded<TaintSet, Operation>
+        // Model each tool call as Graded<ExposureSet, Operation>
         let read_call = Graded::new(
-            TaintSet::singleton(TaintLabel::PrivateData),
+            ExposureSet::singleton(ExposureLabel::PrivateData),
             Operation::ReadFiles,
         );
         let fetch_call = Graded::new(
-            TaintSet::singleton(TaintLabel::UntrustedContent),
+            ExposureSet::singleton(ExposureLabel::UntrustedContent),
             Operation::WebFetch,
         );
 
-        // Compose via >>= (and_then): taint accumulates through the monoid
+        // Compose via >>= (and_then): exposure accumulates through the monoid
         let composed = read_call.and_then(|_| fetch_call);
 
-        // The composed grade is the union of both taint sets
-        assert!(composed.grade.contains(TaintLabel::PrivateData));
-        assert!(composed.grade.contains(TaintLabel::UntrustedContent));
-        assert!(!composed.grade.contains(TaintLabel::ExfilVector));
-        assert_eq!(composed.grade.to_risk(), TrifectaRisk::Medium);
+        // The composed grade is the union of both exposure sets
+        assert!(composed.grade.contains(ExposureLabel::PrivateData));
+        assert!(composed.grade.contains(ExposureLabel::UntrustedContent));
+        assert!(!composed.grade.contains(ExposureLabel::ExfilVector));
+        assert_eq!(composed.grade.to_risk(), StateRisk::Medium);
 
-        // Adding an exfil call would complete the trifecta
+        // Adding an exfil call would complete the uninhabitable_state
         let exfil_call = Graded::new(
-            TaintSet::singleton(TaintLabel::ExfilVector),
+            ExposureSet::singleton(ExposureLabel::ExfilVector),
             Operation::RunBash,
         );
         let full = composed.and_then(|_| exfil_call);
-        assert!(full.grade.is_trifecta_complete());
+        assert!(full.grade.is_uninhabitable());
         assert!(full.grade.requires_intervention());
 
         // This is exactly what the guard does internally, but with
@@ -1752,64 +1765,64 @@ mod tests {
     ///
     /// Portcullis must block this even WITHOUT a prior ReadFiles:
     ///   WebFetch(UntrustedContent) → RunBash(projected: PrivateData+ExfilVector)
-    ///   = all 3 trifecta legs → DENIED.
+    ///   = all 3 exposure legs → DENIED.
     #[test]
     fn test_clinejection_blocked() {
-        let guard = GradedTaintGuard::new(trifecta_perms(), "[]");
+        let guard = GradedExposureGuard::new(uninhabitable_perms(), "[]");
 
         // Step 1: Read untrusted content (GitHub issue via WebFetch)
         check_and_record(&guard, Operation::WebFetch);
 
         // Step 2: Attempt RunBash (npm install from attacker).
         // RunBash projects PrivateData + ExfilVector (omnibus),
-        // completing the trifecta with UntrustedContent.
+        // completing the uninhabitable_state with UntrustedContent.
         let result = guard.check(Operation::RunBash);
         assert!(
             result.is_err(),
             "Clinejection: RunBash after WebFetch must be denied (omnibus projection)"
         );
 
-        // The taint should NOT have changed (check doesn't taint)
-        assert!(!guard.taint().contains(TaintLabel::PrivateData));
-        assert!(!guard.taint().contains(TaintLabel::ExfilVector));
+        // The exposure should NOT have changed (check doesn't exposure)
+        assert!(!guard.exposure().contains(ExposureLabel::PrivateData));
+        assert!(!guard.exposure().contains(ExposureLabel::ExfilVector));
     }
 
-    /// Verify that RunBash also triggers trifecta in the RuntimeTrifectaGuard.
+    /// Verify that RunBash also triggers uninhabitable_state in the RuntimeStateGuard.
     #[test]
     #[allow(deprecated)]
     fn test_clinejection_runtime_guard() {
-        let perms = trifecta_perms();
-        let guard = RuntimeTrifectaGuard::new(perms, "[]");
+        let perms = uninhabitable_perms();
+        let guard = RuntimeStateGuard::new(perms, "[]");
 
-        // WebFetch then RunBash — should complete trifecta
+        // WebFetch then RunBash — should uninhabitable_state
         check_and_record(&guard, Operation::WebFetch);
 
         let result = guard.check(Operation::RunBash);
         assert!(
             result.is_err(),
-            "Clinejection: RuntimeTrifectaGuard must also block WebFetch → RunBash"
+            "Clinejection: RuntimeStateGuard must also block WebFetch → RunBash"
         );
     }
 
     /// Verify that execute_and_record does NOT record on closure failure
-    /// (no phantom taint from failed operations).
+    /// (no phantom exposure from failed operations).
     #[test]
     fn test_execute_and_record_no_phantom_on_failure() {
-        let guard = GradedTaintGuard::new(trifecta_perms(), "[]");
+        let guard = GradedExposureGuard::new(uninhabitable_perms(), "[]");
 
         let proof = guard.check(Operation::ReadFiles).unwrap();
         let result = guard.execute_and_record(proof, || Err::<(), _>("io error"));
         assert!(result.is_err());
 
-        // Taint should be empty — failed operation not recorded
-        assert_eq!(guard.taint(), TaintSet::empty());
-        assert_eq!(guard.accumulated_risk(), TrifectaRisk::None);
+        // Exposure should be empty — failed operation not recorded
+        assert_eq!(guard.exposure(), ExposureSet::empty());
+        assert_eq!(guard.accumulated_risk(), StateRisk::Safe);
     }
 
     // -----------------------------------------------------------------------
-    // Exhaustive equivalence: RuntimeTrifectaGuard ≡ GradedTaintGuard
+    // Exhaustive equivalence: RuntimeStateGuard ≡ GradedExposureGuard
     //
-    // Now that RuntimeTrifectaGuard delegates to taint_core, both guards
+    // Now that RuntimeStateGuard delegates to exposure_core, both guards
     // MUST produce identical check/deny/risk decisions for ALL operation
     // permutations. This test checks every permutation of all 12 operations.
     // -----------------------------------------------------------------------
@@ -1847,8 +1860,8 @@ mod tests {
             }
         }
 
-        // Test critical 3-operation sequences (trifecta-completing paths)
-        let trifecta_legs: [Operation; 6] = [
+        // Test critical 3-operation sequences (uninhabitable-state-completing paths)
+        let exposure_legs: [Operation; 6] = [
             Operation::ReadFiles,
             Operation::WebFetch,
             Operation::RunBash,
@@ -1856,9 +1869,9 @@ mod tests {
             Operation::WebSearch,
             Operation::GitPush,
         ];
-        for &op1 in &trifecta_legs {
-            for &op2 in &trifecta_legs {
-                for &op3 in &trifecta_legs {
+        for &op1 in &exposure_legs {
+            for &op2 in &exposure_legs {
+                for &op3 in &exposure_legs {
                     assert_guards_agree(
                         &[op1, op2, op3],
                         &format!("[{:?}, {:?}, {:?}]", op1, op2, op3),
@@ -1868,13 +1881,13 @@ mod tests {
         }
     }
 
-    /// Helper: create both guards with trifecta_perms, feed the same
+    /// Helper: create both guards with uninhabitable_perms, feed the same
     /// operations, and assert every observable produces identical results.
     #[allow(deprecated)]
     fn assert_guards_agree(ops: &[Operation], label: &str) {
-        let perms = trifecta_perms();
-        let runtime = RuntimeTrifectaGuard::new(perms.clone(), "[]");
-        let graded = GradedTaintGuard::new(perms, "[]");
+        let perms = uninhabitable_perms();
+        let runtime = RuntimeStateGuard::new(perms.clone(), "[]");
+        let graded = GradedExposureGuard::new(perms, "[]");
 
         for (i, &op) in ops.iter().enumerate() {
             let r1 = runtime.check(op);

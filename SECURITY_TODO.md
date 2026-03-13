@@ -44,19 +44,19 @@ Status
 ## 3) Command exfiltration detection is program-name only
 
 Deficiency
-- `Executor::check_trifecta` detects network exfiltration by checking the first argv token against a small hardcoded list. `bash -c`, `python -c`, `node -e`, etc. can bypass this.
+- `Executor::check_uninhabitable` detects network exfiltration by checking the first argv token against a small hardcoded list. `bash -c`, `python -c`, `node -e`, etc. can bypass this.
 Refs: `crates/nucleus/src/command.rs:237`, `crates/nucleus/src/command.rs:282`
 
 Impact
-- Trifecta can be completed via indirect shell invocation without detection.
+-  Uninhabitable state can be completed via indirect shell invocation without detection.
 
 TODO
 - Extend detection to include shell-based indirection and common runtime executors.
 - Option: disallow `* -c` by default, or treat any `bash/sh/zsh/pwsh/python/node/ruby` as network-capable unless allowlisted.
 
 DoD (guarantees)
-- Adversarial tests: `bash -c 'curl ...'`, `python -c '...requests...'`, `node -e '...fetch...'` are blocked under trifecta.
-- Fuzz: generate command strings; ensure any network-capable flow under trifecta is denied.
+- Adversarial tests: `bash -c 'curl ...'`, `python -c '...requests...'`, `node -e '...fetch...'` are blocked under uninhabitable state.
+- Fuzz: generate command strings; ensure any network-capable flow under uninhabitable state is denied.
 Status
 - Partial: default command lattice now blocks common interpreter flags (`bash -c`, `python -c`, `node -e`, etc.); broader coverage and fuzzing pending.
 
@@ -86,7 +86,7 @@ Deficiency
 Refs: `crates/portcullis/src/lattice.rs:199`, `crates/portcullis/src/lattice.rs:214`, `crates/portcullis/src/lattice.rs:228`, `crates/portcullis/src/lattice.rs:479`
 
 Impact
-- Callers can create a permissive lattice that violates the trifecta and use it directly.
+- Callers can create a permissive lattice that violates the uninhabitable state and use it directly.
 
 TODO
 - Provide a `normalize()`/`nucleus()` constructor that applies the constraint and use it in all builders and presets.
@@ -96,7 +96,7 @@ DoD (guarantees)
 - Property tests: `normalize(normalize(x)) == normalize(x)` (idempotent), `x <= y => normalize(x) <= normalize(y)` (monotone), `normalize(x) <= x` (deflationary).
 - Construction tests: all public constructors yield `ν(x) = x` (safe).
 Status
-- Done (runtime): constructors/builders now apply `normalize()` when trifecta is enabled; property tests for ν are added at the capability level.
+- Done (runtime): constructors/builders now apply `normalize()` when uninhabitable state is enabled; property tests for ν are added at the capability level.
 
 ## 6) Approval requirements are trivially auto-approvable
 
@@ -171,7 +171,7 @@ DoD (guarantees)
 - Machine-checked proofs for ν laws.
 - CI gate that fails if proofs no longer check.
 Status
-- Done: 297 Verus SMT proofs (E1-E7: taint monotonicity, trace monotonicity, denial monotonicity, auth boundary, capability coverage, budget monotonicity, delegation ceiling) + 14 Kani BMC harnesses. Both Verus and Kani are required merge checks on main. See `crates/portcullis-verified/src/lib.rs`, `.github/workflows/verus.yml`, `.github/workflows/kani-nightly.yml`.
+- Done: 297 Verus SMT proofs (E1-E7: exposure monotonicity, trace monotonicity, denial monotonicity, auth boundary, capability coverage, budget monotonicity, delegation ceiling) + 14 Kani BMC harnesses. Both Verus and Kani are required merge checks on main. See `crates/portcullis-verified/src/lib.rs`, `.github/workflows/verus.yml`, `.github/workflows/kani-nightly.yml`.
 
 ## 10) Fuzzing coverage gaps
 

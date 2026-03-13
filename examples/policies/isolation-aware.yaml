@@ -6,7 +6,7 @@
 name: isolation-aware
 description: Policy with isolation-based constraints
 
-enforce_trifecta: true
+enforce_uninhabitable: true
 
 constraints:
   # Bash requires at least namespace isolation

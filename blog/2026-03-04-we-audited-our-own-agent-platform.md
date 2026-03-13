@@ -10,7 +10,7 @@ This is the story of what we found, why it matters for anyone running AI agents 
 
 ## The Threat Model Has Changed
 
-If you're running AI agents that can read files, process web content, and push code, you have what Simon Willison calls the [lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/):
+If you're running AI agents that can read files, process web content, and push code, you have what Simon Willison calls the [uninhabitable state](https://simonwillison.net/2025/Jun/16/the-uninhabitable-state/):
 
 ```
 Private Data Access  +  Untrusted Content  +  Exfiltration Vector
@@ -156,7 +156,7 @@ When your web app has a session expiry bug, an attacker can access user data. Wh
 - Inject webhook payloads that look like legitimate GitHub events
 - Register rogue executors that intercept credentials and prompts
 
-The lethal trifecta means that every orchestration vulnerability is also an exfiltration vulnerability. The agents have the access. The question is whether the guardrails are real.
+The uninhabitable state means that every orchestration vulnerability is also an exfiltration vulnerability. The agents have the access. The question is whether the guardrails are real.
 
 ## How We Catch This Now
 
@@ -169,7 +169,7 @@ nucleus-audit scan --pod-spec your-agent.yaml
 ```
 
 The scan checks for:
-- **Trifecta risk** — does this configuration combine private data, untrusted content, and exfiltration?
+- ** Uninhabitable state risk** — does this configuration combine private data, untrusted content, and exfiltration?
 - **Permission surface area** — how many capabilities are granted at autonomous levels?
 - **Network posture** — is egress restricted or wide open?
 - **Isolation level** — is the agent running in a VM, a container, or on bare metal?

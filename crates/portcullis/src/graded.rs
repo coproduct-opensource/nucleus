@@ -6,7 +6,7 @@
 //!
 //! # Security Applications
 //!
-//! The `TrifectaRisk` enum (`None < Low < Medium < Complete`) is already a graded
+//! The `StateRisk` enum (`None < Low < Medium < Complete`) is already a graded
 //! structure. Formalizing it as a graded monad enables:
 //!
 //! - **Composable risk tracking**: Risk accumulates correctly through operation chains
@@ -17,25 +17,25 @@
 //!
 //! ```rust
 //! use portcullis::graded::{Graded, RiskGrade};
-//! use portcullis::TrifectaRisk;
+//! use portcullis::StateRisk;
 //!
 //! // Pure computation with no risk
-//! let safe: Graded<TrifectaRisk, i32> = Graded::pure(42);
-//! assert_eq!(safe.grade, TrifectaRisk::None);
+//! let safe: Graded<StateRisk, i32> = Graded::pure(42);
+//! assert_eq!(safe.grade, StateRisk::Safe);
 //!
 //! // Chain computations, accumulating risk
 //! let result = safe
-//!     .and_then(|x| Graded::new(TrifectaRisk::Low, x * 2))
-//!     .and_then(|x| Graded::new(TrifectaRisk::Medium, x + 1));
+//!     .and_then(|x| Graded::new(StateRisk::Low, x * 2))
+//!     .and_then(|x| Graded::new(StateRisk::Medium, x + 1));
 //!
 //! // Risk composes to the maximum
-//! assert_eq!(result.grade, TrifectaRisk::Medium);
+//! assert_eq!(result.grade, StateRisk::Medium);
 //! ```
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::capability::{IncompatibilityConstraint, TrifectaRisk};
+use crate::capability::{IncompatibilityConstraint, StateRisk};
 use crate::weakening::WeakeningCost;
 use crate::PermissionLattice;
 
@@ -56,9 +56,9 @@ pub trait RiskGrade: Sized + Clone + PartialEq + Eq + PartialOrd + Ord + Default
     fn requires_intervention(&self) -> bool;
 }
 
-impl RiskGrade for TrifectaRisk {
+impl RiskGrade for StateRisk {
     fn identity() -> Self {
-        TrifectaRisk::None
+        StateRisk::Safe
     }
 
     fn compose(&self, other: &Self) -> Self {
@@ -67,11 +67,11 @@ impl RiskGrade for TrifectaRisk {
     }
 
     fn requires_intervention(&self) -> bool {
-        TrifectaRisk::requires_intervention(self)
+        StateRisk::requires_intervention(self)
     }
 }
 
-/// Product grade combining trifecta risk and weakening cost.
+/// Product grade combining uninhabitable_state risk and weakening cost.
 ///
 /// The monoid structure is `(max, combine)`:
 /// - Risk composes via `max`/join (lattice join)
@@ -82,20 +82,20 @@ impl RiskGrade for TrifectaRisk {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct RiskCost {
-    /// The trifecta risk level
-    pub risk: TrifectaRisk,
+    /// The uninhabitable_state risk level
+    pub risk: StateRisk,
     /// The accumulated weakening cost
     pub cost: WeakeningCost,
 }
 
 impl RiskCost {
     /// Create a new RiskCost from risk and cost components.
-    pub fn new(risk: TrifectaRisk, cost: WeakeningCost) -> Self {
+    pub fn new(risk: StateRisk, cost: WeakeningCost) -> Self {
         Self { risk, cost }
     }
 
     /// Create a RiskCost with only risk (zero cost).
-    pub fn from_risk(risk: TrifectaRisk) -> Self {
+    pub fn from_risk(risk: StateRisk) -> Self {
         Self {
             risk,
             cost: WeakeningCost::zero(),
@@ -105,7 +105,7 @@ impl RiskCost {
     /// Create a RiskCost with only cost (no risk).
     pub fn from_cost(cost: WeakeningCost) -> Self {
         Self {
-            risk: TrifectaRisk::None,
+            risk: StateRisk::Safe,
             cost,
         }
     }
@@ -114,7 +114,7 @@ impl RiskCost {
 impl Default for RiskCost {
     fn default() -> Self {
         Self {
-            risk: TrifectaRisk::None,
+            risk: StateRisk::Safe,
             cost: WeakeningCost::zero(),
         }
     }
@@ -138,7 +138,7 @@ impl Ord for RiskCost {
 impl RiskGrade for RiskCost {
     fn identity() -> Self {
         RiskCost {
-            risk: TrifectaRisk::None,
+            risk: StateRisk::Safe,
             cost: WeakeningCost::zero(),
         }
     }
@@ -252,15 +252,15 @@ impl<G: RiskGrade, A: Default> Default for Graded<G, A> {
     }
 }
 
-/// Evaluate an operation and track its trifecta risk.
+/// Evaluate an operation and track its uninhabitable_state risk.
 ///
 /// This is the primary way to enter the graded monad from a permission context.
-pub fn evaluate_with_risk<A, F>(perms: &PermissionLattice, operation: F) -> Graded<TrifectaRisk, A>
+pub fn evaluate_with_risk<A, F>(perms: &PermissionLattice, operation: F) -> Graded<StateRisk, A>
 where
     F: FnOnce(&PermissionLattice) -> A,
 {
     let constraint = IncompatibilityConstraint::enforcing();
-    let grade = constraint.trifecta_risk(&perms.capabilities);
+    let grade = constraint.state_risk(&perms.capabilities);
     let value = operation(perms);
 
     Graded { grade, value }
@@ -303,14 +303,14 @@ pub struct GradedPermissionCheck {
     /// Whether the permission check passed
     pub allowed: bool,
     /// The risk grade of the operation
-    pub risk: TrifectaRisk,
+    pub risk: StateRisk,
     /// Human-readable reason for the decision
     pub reason: String,
 }
 
 impl GradedPermissionCheck {
     /// Create a new graded permission check.
-    pub fn new(allowed: bool, risk: TrifectaRisk, reason: impl Into<String>) -> Self {
+    pub fn new(allowed: bool, risk: StateRisk, reason: impl Into<String>) -> Self {
         Self {
             allowed,
             risk,
@@ -319,13 +319,13 @@ impl GradedPermissionCheck {
     }
 
     /// Create an allowed check with a given risk.
-    pub fn allow(risk: TrifectaRisk, reason: impl Into<String>) -> Self {
+    pub fn allow(risk: StateRisk, reason: impl Into<String>) -> Self {
         Self::new(true, risk, reason)
     }
 
     /// Create a denied check.
     pub fn deny(reason: impl Into<String>) -> Self {
-        Self::new(false, TrifectaRisk::Complete, reason)
+        Self::new(false, StateRisk::Uninhabitable, reason)
     }
 
     /// Check if this result requires escalation.
@@ -340,10 +340,10 @@ pub fn check_permission_with_risk(
     operation: crate::capability::Operation,
 ) -> GradedPermissionCheck {
     let constraint = IncompatibilityConstraint::enforcing();
-    let risk = constraint.trifecta_risk(&perms.capabilities);
+    let risk = constraint.state_risk(&perms.capabilities);
 
     let requires_approval = perms.requires_approval(operation);
-    let allowed = !requires_approval || risk != TrifectaRisk::Complete;
+    let allowed = !requires_approval || risk != StateRisk::Uninhabitable;
 
     let reason = if requires_approval {
         format!("{:?} requires approval (risk: {:?})", operation, risk)
@@ -373,7 +373,7 @@ type EscalationCallback<G> = Box<dyn Fn(&G) + Send + Sync>;
 ///
 /// ```rust
 /// use portcullis::graded::{Graded, GradedPipeline};
-/// use portcullis::TrifectaRisk;
+/// use portcullis::StateRisk;
 /// use std::sync::atomic::{AtomicBool, Ordering};
 /// use std::sync::Arc;
 ///
@@ -381,17 +381,17 @@ type EscalationCallback<G> = Box<dyn Fn(&G) + Send + Sync>;
 /// let flag = escalated.clone();
 ///
 /// let pipeline = GradedPipeline::new()
-///     .with_escalation(move |risk: &TrifectaRisk| {
+///     .with_escalation(move |risk: &StateRisk| {
 ///         flag.store(true, Ordering::SeqCst);
 ///     });
 ///
 /// // Safe computation -- no escalation
-/// let safe = Graded::new(TrifectaRisk::Low, 42);
+/// let safe = Graded::new(StateRisk::Low, 42);
 /// let result = pipeline.run(safe);
 /// assert!(!escalated.load(Ordering::SeqCst));
 ///
 /// // Risky computation -- triggers escalation
-/// let risky = Graded::new(TrifectaRisk::Complete, 99);
+/// let risky = Graded::new(StateRisk::Uninhabitable, 99);
 /// let result = pipeline.run(risky);
 /// assert!(escalated.load(Ordering::SeqCst));
 /// ```
@@ -466,27 +466,27 @@ mod tests {
 
     #[test]
     fn test_graded_pure() {
-        let g: Graded<TrifectaRisk, i32> = Graded::pure(42);
-        assert_eq!(g.grade, TrifectaRisk::None);
+        let g: Graded<StateRisk, i32> = Graded::pure(42);
+        assert_eq!(g.grade, StateRisk::Safe);
         assert_eq!(g.value, 42);
     }
 
     #[test]
     fn test_graded_map() {
-        let g = Graded::new(TrifectaRisk::Low, 10);
+        let g = Graded::new(StateRisk::Low, 10);
         let mapped = g.map(|x| x * 2);
 
-        assert_eq!(mapped.grade, TrifectaRisk::Low);
+        assert_eq!(mapped.grade, StateRisk::Low);
         assert_eq!(mapped.value, 20);
     }
 
     #[test]
     fn test_graded_and_then_composes_risk() {
-        let g1 = Graded::new(TrifectaRisk::Low, 10);
-        let g2 = g1.and_then(|x| Graded::new(TrifectaRisk::Medium, x * 2));
+        let g1 = Graded::new(StateRisk::Low, 10);
+        let g2 = g1.and_then(|x| Graded::new(StateRisk::Medium, x * 2));
 
         // Risk should be composed (max of Low and Medium)
-        assert_eq!(g2.grade, TrifectaRisk::Medium);
+        assert_eq!(g2.grade, StateRisk::Medium);
         assert_eq!(g2.value, 20);
     }
 
@@ -494,9 +494,9 @@ mod tests {
     fn test_graded_monad_left_identity() {
         // pure(a).and_then(f) = f(a)
         let a = 42;
-        let f = |x: i32| Graded::new(TrifectaRisk::Low, x * 2);
+        let f = |x: i32| Graded::new(StateRisk::Low, x * 2);
 
-        let lhs = Graded::<TrifectaRisk, _>::pure(a).and_then(f);
+        let lhs = Graded::<StateRisk, _>::pure(a).and_then(f);
         let rhs = f(a);
 
         assert_eq!(lhs.value, rhs.value);
@@ -507,7 +507,7 @@ mod tests {
     #[test]
     fn test_graded_monad_right_identity() {
         // m.and_then(pure) = m
-        let m = Graded::new(TrifectaRisk::Medium, 42);
+        let m = Graded::new(StateRisk::Medium, 42);
         let result = m.clone().and_then(Graded::pure);
 
         assert_eq!(result.value, m.value);
@@ -518,9 +518,9 @@ mod tests {
     #[test]
     fn test_graded_monad_associativity() {
         // (m.and_then(f)).and_then(g) = m.and_then(|x| f(x).and_then(g))
-        let m = Graded::new(TrifectaRisk::Low, 10);
-        let f = |x: i32| Graded::new(TrifectaRisk::Low, x * 2);
-        let g = |x: i32| Graded::new(TrifectaRisk::Medium, x + 1);
+        let m = Graded::new(StateRisk::Low, 10);
+        let f = |x: i32| Graded::new(StateRisk::Low, x * 2);
+        let g = |x: i32| Graded::new(StateRisk::Medium, x + 1);
 
         let lhs = m.clone().and_then(f).and_then(g);
         let rhs = m.and_then(|x| f(x).and_then(g));
@@ -531,20 +531,20 @@ mod tests {
 
     #[test]
     fn test_risk_grade_identity() {
-        let g = TrifectaRisk::Medium;
+        let g = StateRisk::Medium;
 
         // identity * g = g
-        assert_eq!(TrifectaRisk::identity().compose(&g), g);
+        assert_eq!(StateRisk::identity().compose(&g), g);
 
         // g * identity = g
-        assert_eq!(g.compose(&TrifectaRisk::identity()), g);
+        assert_eq!(g.compose(&StateRisk::identity()), g);
     }
 
     #[test]
     fn test_risk_grade_associativity() {
-        let a = TrifectaRisk::Low;
-        let b = TrifectaRisk::Medium;
-        let c = TrifectaRisk::Complete;
+        let a = StateRisk::Low;
+        let b = StateRisk::Medium;
+        let c = StateRisk::Uninhabitable;
 
         // (a * b) * c = a * (b * c)
         let lhs = a.compose(&b).compose(&c);
@@ -556,15 +556,15 @@ mod tests {
     #[test]
     fn test_sequence() {
         let graded_values = vec![
-            Graded::new(TrifectaRisk::None, 1),
-            Graded::new(TrifectaRisk::Low, 2),
-            Graded::new(TrifectaRisk::Medium, 3),
+            Graded::new(StateRisk::Safe, 1),
+            Graded::new(StateRisk::Low, 2),
+            Graded::new(StateRisk::Medium, 3),
         ];
 
         let result = sequence(graded_values);
 
         // Grade should be the composition (max) of all
-        assert_eq!(result.grade, TrifectaRisk::Medium);
+        assert_eq!(result.grade, StateRisk::Medium);
         assert_eq!(result.value, vec![1, 2, 3]);
     }
 
@@ -573,16 +573,16 @@ mod tests {
         let items = vec![1, 2, 3];
         let f = |x: i32| {
             let risk = if x > 2 {
-                TrifectaRisk::Medium
+                StateRisk::Medium
             } else {
-                TrifectaRisk::Low
+                StateRisk::Low
             };
             Graded::new(risk, x * 2)
         };
 
         let result = traverse(items, f);
 
-        assert_eq!(result.grade, TrifectaRisk::Medium); // max of all
+        assert_eq!(result.grade, StateRisk::Medium); // max of all
         assert_eq!(result.value, vec![2, 4, 6]);
     }
 
@@ -591,8 +591,8 @@ mod tests {
         let perms = PermissionLattice::permissive();
         let result = evaluate_with_risk(&perms, |p| p.description.clone());
 
-        // Permissive has trifecta, so risk should be Complete
-        assert_eq!(result.grade, TrifectaRisk::Complete);
+        // Permissive has uninhabitable_state, so risk should be Complete
+        assert_eq!(result.grade, StateRisk::Uninhabitable);
     }
 
     #[test]
@@ -600,9 +600,9 @@ mod tests {
         let perms = PermissionLattice::read_only();
         let result = evaluate_with_risk(&perms, |p| p.description.clone());
 
-        // read_only has 1 trifecta component (read_files: Always = private data access)
+        // read_only has 1 uninhabitable_state component (read_files: Always = private data access)
         // so risk is Low, not None
-        assert_eq!(result.grade, TrifectaRisk::Low);
+        assert_eq!(result.grade, StateRisk::Low);
     }
 
     #[test]
@@ -612,23 +612,23 @@ mod tests {
         let perms = PermissionLattice::fix_issue();
         let check = check_permission_with_risk(&perms, Operation::GitPush);
 
-        // fix_issue should have trifecta risk for git_push
-        assert!(check.risk >= TrifectaRisk::Medium);
+        // fix_issue should have uninhabitable_state risk for git_push
+        assert!(check.risk >= StateRisk::Medium);
     }
 
     #[test]
     fn test_elevate() {
-        let g = Graded::new(TrifectaRisk::Low, 42);
-        let elevated = g.elevate(TrifectaRisk::Medium);
+        let g = Graded::new(StateRisk::Low, 42);
+        let elevated = g.elevate(StateRisk::Medium);
 
-        assert_eq!(elevated.grade, TrifectaRisk::Medium);
+        assert_eq!(elevated.grade, StateRisk::Medium);
         assert_eq!(elevated.value, 42);
     }
 
     #[test]
     fn test_requires_intervention() {
-        let safe = Graded::new(TrifectaRisk::None, 42);
-        let risky = Graded::new(TrifectaRisk::Complete, 42);
+        let safe = Graded::new(StateRisk::Safe, 42);
+        let risky = Graded::new(StateRisk::Uninhabitable, 42);
 
         assert!(!safe.requires_intervention());
         assert!(risky.requires_intervention());
@@ -641,17 +641,17 @@ mod tests {
     #[test]
     fn test_risk_cost_identity() {
         let id = RiskCost::identity();
-        assert_eq!(id.risk, TrifectaRisk::None);
+        assert_eq!(id.risk, StateRisk::Safe);
         assert!(id.cost.is_zero());
     }
 
     #[test]
     fn test_risk_cost_compose_risk_is_max() {
-        let a = RiskCost::from_risk(TrifectaRisk::Low);
-        let b = RiskCost::from_risk(TrifectaRisk::Medium);
+        let a = RiskCost::from_risk(StateRisk::Low);
+        let b = RiskCost::from_risk(StateRisk::Medium);
         let composed = a.compose(&b);
 
-        assert_eq!(composed.risk, TrifectaRisk::Medium);
+        assert_eq!(composed.risk, StateRisk::Medium);
     }
 
     #[test]
@@ -670,25 +670,25 @@ mod tests {
         use rust_decimal::Decimal;
 
         let a = RiskCost::new(
-            TrifectaRisk::Low,
-            WeakeningCost::with_trifecta(Decimal::new(1, 1), Decimal::new(2, 0)),
+            StateRisk::Low,
+            WeakeningCost::with_uninhabitable(Decimal::new(1, 1), Decimal::new(2, 0)),
         );
         let b = RiskCost::new(
-            TrifectaRisk::Medium,
-            WeakeningCost::with_trifecta(Decimal::new(3, 1), Decimal::new(5, 0)),
+            StateRisk::Medium,
+            WeakeningCost::with_uninhabitable(Decimal::new(3, 1), Decimal::new(5, 0)),
         );
         let composed = a.compose(&b);
 
-        assert_eq!(composed.risk, TrifectaRisk::Medium);
+        assert_eq!(composed.risk, StateRisk::Medium);
         assert_eq!(composed.cost.base, Decimal::new(4, 1)); // 0.1 + 0.3
-        assert_eq!(composed.cost.trifecta_multiplier, Decimal::new(5, 0)); // max(2, 5)
+        assert_eq!(composed.cost.uninhabitable_multiplier, Decimal::new(5, 0)); // max(2, 5)
     }
 
     #[test]
     fn test_risk_cost_monoid_identity_law() {
         use rust_decimal::Decimal;
 
-        let g = RiskCost::new(TrifectaRisk::Medium, WeakeningCost::new(Decimal::new(5, 1)));
+        let g = RiskCost::new(StateRisk::Medium, WeakeningCost::new(Decimal::new(5, 1)));
 
         // identity * g = g
         let left = RiskCost::identity().compose(&g);
@@ -705,10 +705,10 @@ mod tests {
     fn test_risk_cost_monoid_associativity() {
         use rust_decimal::Decimal;
 
-        let a = RiskCost::new(TrifectaRisk::Low, WeakeningCost::new(Decimal::new(1, 1)));
-        let b = RiskCost::new(TrifectaRisk::Medium, WeakeningCost::new(Decimal::new(2, 1)));
+        let a = RiskCost::new(StateRisk::Low, WeakeningCost::new(Decimal::new(1, 1)));
+        let b = RiskCost::new(StateRisk::Medium, WeakeningCost::new(Decimal::new(2, 1)));
         let c = RiskCost::new(
-            TrifectaRisk::Complete,
+            StateRisk::Uninhabitable,
             WeakeningCost::new(Decimal::new(3, 1)),
         );
 
@@ -718,14 +718,17 @@ mod tests {
 
         assert_eq!(lhs.risk, rhs.risk);
         assert_eq!(lhs.cost.base, rhs.cost.base);
-        assert_eq!(lhs.cost.trifecta_multiplier, rhs.cost.trifecta_multiplier);
+        assert_eq!(
+            lhs.cost.uninhabitable_multiplier,
+            rhs.cost.uninhabitable_multiplier
+        );
         assert_eq!(lhs.cost.isolation_multiplier, rhs.cost.isolation_multiplier);
     }
 
     #[test]
     fn test_risk_cost_requires_intervention() {
-        let safe = RiskCost::from_risk(TrifectaRisk::Medium);
-        let risky = RiskCost::from_risk(TrifectaRisk::Complete);
+        let safe = RiskCost::from_risk(StateRisk::Medium);
+        let risky = RiskCost::from_risk(StateRisk::Uninhabitable);
 
         assert!(!safe.requires_intervention());
         assert!(risky.requires_intervention());
@@ -735,11 +738,9 @@ mod tests {
     fn test_risk_cost_ordering() {
         use rust_decimal::Decimal;
 
-        let low_cheap = RiskCost::new(TrifectaRisk::Low, WeakeningCost::new(Decimal::new(1, 1)));
-        let low_expensive =
-            RiskCost::new(TrifectaRisk::Low, WeakeningCost::new(Decimal::new(9, 1)));
-        let medium_cheap =
-            RiskCost::new(TrifectaRisk::Medium, WeakeningCost::new(Decimal::new(1, 1)));
+        let low_cheap = RiskCost::new(StateRisk::Low, WeakeningCost::new(Decimal::new(1, 1)));
+        let low_expensive = RiskCost::new(StateRisk::Low, WeakeningCost::new(Decimal::new(9, 1)));
+        let medium_cheap = RiskCost::new(StateRisk::Medium, WeakeningCost::new(Decimal::new(1, 1)));
 
         // Risk is primary ordering
         assert!(low_cheap < medium_cheap);
@@ -752,7 +753,7 @@ mod tests {
     #[test]
     fn test_risk_cost_graded_monad_pure() {
         let g: Graded<RiskCost, i32> = Graded::pure(42);
-        assert_eq!(g.grade.risk, TrifectaRisk::None);
+        assert_eq!(g.grade.risk, StateRisk::Safe);
         assert!(g.grade.cost.is_zero());
         assert_eq!(g.value, 42);
     }
@@ -762,17 +763,17 @@ mod tests {
         use rust_decimal::Decimal;
 
         let g1 = Graded::new(
-            RiskCost::new(TrifectaRisk::Low, WeakeningCost::new(Decimal::new(1, 1))),
+            RiskCost::new(StateRisk::Low, WeakeningCost::new(Decimal::new(1, 1))),
             10,
         );
         let g2 = g1.and_then(|x| {
             Graded::new(
-                RiskCost::new(TrifectaRisk::Medium, WeakeningCost::new(Decimal::new(2, 1))),
+                RiskCost::new(StateRisk::Medium, WeakeningCost::new(Decimal::new(2, 1))),
                 x * 2,
             )
         });
 
-        assert_eq!(g2.grade.risk, TrifectaRisk::Medium);
+        assert_eq!(g2.grade.risk, StateRisk::Medium);
         assert_eq!(g2.grade.cost.base, Decimal::new(3, 1)); // 0.1 + 0.2
         assert_eq!(g2.value, 20);
     }
@@ -783,22 +784,22 @@ mod tests {
 
         let values = vec![
             Graded::new(
-                RiskCost::new(TrifectaRisk::None, WeakeningCost::new(Decimal::new(1, 1))),
+                RiskCost::new(StateRisk::Safe, WeakeningCost::new(Decimal::new(1, 1))),
                 1,
             ),
             Graded::new(
-                RiskCost::new(TrifectaRisk::Low, WeakeningCost::new(Decimal::new(2, 1))),
+                RiskCost::new(StateRisk::Low, WeakeningCost::new(Decimal::new(2, 1))),
                 2,
             ),
             Graded::new(
-                RiskCost::new(TrifectaRisk::Medium, WeakeningCost::new(Decimal::new(3, 1))),
+                RiskCost::new(StateRisk::Medium, WeakeningCost::new(Decimal::new(3, 1))),
                 3,
             ),
         ];
 
         let result = sequence(values);
 
-        assert_eq!(result.grade.risk, TrifectaRisk::Medium);
+        assert_eq!(result.grade.risk, StateRisk::Medium);
         assert_eq!(result.grade.cost.base, Decimal::new(6, 1)); // 0.1 + 0.2 + 0.3
         assert_eq!(result.value, vec![1, 2, 3]);
     }
@@ -809,13 +810,13 @@ mod tests {
 
     #[test]
     fn test_pipeline_no_escalation_callback() {
-        let pipeline: GradedPipeline<TrifectaRisk> = GradedPipeline::new();
+        let pipeline: GradedPipeline<StateRisk> = GradedPipeline::new();
         assert!(!pipeline.has_escalation());
 
         // Should pass through without panic even with Complete risk
-        let risky = Graded::new(TrifectaRisk::Complete, 42);
+        let risky = Graded::new(StateRisk::Uninhabitable, 42);
         let result = pipeline.run(risky);
-        assert_eq!(result.grade, TrifectaRisk::Complete);
+        assert_eq!(result.grade, StateRisk::Uninhabitable);
         assert_eq!(result.value, 42);
     }
 
@@ -827,17 +828,17 @@ mod tests {
         let fired = Arc::new(AtomicBool::new(false));
         let flag = fired.clone();
 
-        let pipeline = GradedPipeline::new().with_escalation(move |_: &TrifectaRisk| {
+        let pipeline = GradedPipeline::new().with_escalation(move |_: &StateRisk| {
             flag.store(true, Ordering::SeqCst);
         });
 
         // Below intervention threshold: should NOT fire
-        let safe = Graded::new(TrifectaRisk::Medium, 42);
+        let safe = Graded::new(StateRisk::Medium, 42);
         let _ = pipeline.run(safe);
         assert!(!fired.load(Ordering::SeqCst));
 
         // At intervention threshold: should fire
-        let risky = Graded::new(TrifectaRisk::Complete, 99);
+        let risky = Graded::new(StateRisk::Uninhabitable, 99);
         let _ = pipeline.run(risky);
         assert!(fired.load(Ordering::SeqCst));
     }
@@ -850,12 +851,12 @@ mod tests {
         let count = Arc::new(AtomicU32::new(0));
         let counter = count.clone();
 
-        let pipeline = GradedPipeline::new().with_escalation(move |_: &TrifectaRisk| {
+        let pipeline = GradedPipeline::new().with_escalation(move |_: &StateRisk| {
             counter.fetch_add(1, Ordering::SeqCst);
         });
 
         // None, Low, Medium: all below intervention
-        for risk in [TrifectaRisk::None, TrifectaRisk::Low, TrifectaRisk::Medium] {
+        for risk in [StateRisk::Safe, StateRisk::Low, StateRisk::Medium] {
             let g = Graded::new(risk, 42);
             let _ = pipeline.run(g);
         }
@@ -871,15 +872,15 @@ mod tests {
         let fired = Arc::new(AtomicBool::new(false));
         let flag = fired.clone();
 
-        let pipeline = GradedPipeline::new().with_escalation(move |_: &TrifectaRisk| {
+        let pipeline = GradedPipeline::new().with_escalation(move |_: &StateRisk| {
             flag.store(true, Ordering::SeqCst);
         });
 
         // Start below threshold, compose to above threshold
-        let start = Graded::new(TrifectaRisk::Medium, 10);
-        let result = pipeline.and_then(start, |x| Graded::new(TrifectaRisk::Complete, x * 2));
+        let start = Graded::new(StateRisk::Medium, 10);
+        let result = pipeline.and_then(start, |x| Graded::new(StateRisk::Uninhabitable, x * 2));
 
-        assert_eq!(result.grade, TrifectaRisk::Complete);
+        assert_eq!(result.grade, StateRisk::Uninhabitable);
         assert_eq!(result.value, 20);
         assert!(fired.load(Ordering::SeqCst));
     }
@@ -892,14 +893,14 @@ mod tests {
         let fired = Arc::new(AtomicBool::new(false));
         let flag = fired.clone();
 
-        let pipeline = GradedPipeline::new().with_escalation(move |_: &TrifectaRisk| {
+        let pipeline = GradedPipeline::new().with_escalation(move |_: &StateRisk| {
             flag.store(true, Ordering::SeqCst);
         });
 
-        let start = Graded::new(TrifectaRisk::Low, 10);
-        let result = pipeline.and_then(start, |x| Graded::new(TrifectaRisk::Low, x + 5));
+        let start = Graded::new(StateRisk::Low, 10);
+        let result = pipeline.and_then(start, |x| Graded::new(StateRisk::Low, x + 5));
 
-        assert_eq!(result.grade, TrifectaRisk::Low);
+        assert_eq!(result.grade, StateRisk::Low);
         assert_eq!(result.value, 15);
         assert!(!fired.load(Ordering::SeqCst));
     }
@@ -915,26 +916,26 @@ mod tests {
 
         let pipeline = GradedPipeline::new().with_escalation(move |grade: &RiskCost| {
             // Callback receives the full RiskCost
-            assert_eq!(grade.risk, TrifectaRisk::Complete);
+            assert_eq!(grade.risk, StateRisk::Uninhabitable);
             flag.store(true, Ordering::SeqCst);
         });
 
         let start = Graded::new(
-            RiskCost::new(TrifectaRisk::Medium, WeakeningCost::new(Decimal::new(2, 1))),
+            RiskCost::new(StateRisk::Medium, WeakeningCost::new(Decimal::new(2, 1))),
             "hello",
         );
 
         let result = pipeline.and_then(start, |s| {
             Graded::new(
                 RiskCost::new(
-                    TrifectaRisk::Complete,
+                    StateRisk::Uninhabitable,
                     WeakeningCost::new(Decimal::new(5, 1)),
                 ),
                 format!("{} world", s),
             )
         });
 
-        assert_eq!(result.grade.risk, TrifectaRisk::Complete);
+        assert_eq!(result.grade.risk, StateRisk::Uninhabitable);
         assert_eq!(result.grade.cost.base, Decimal::new(7, 1)); // 0.2 + 0.5
         assert_eq!(result.value, "hello world");
         assert!(fired.load(Ordering::SeqCst));
@@ -942,13 +943,13 @@ mod tests {
 
     #[test]
     fn test_pipeline_default() {
-        let pipeline: GradedPipeline<TrifectaRisk> = GradedPipeline::default();
+        let pipeline: GradedPipeline<StateRisk> = GradedPipeline::default();
         assert!(!pipeline.has_escalation());
     }
 
     #[test]
     fn test_pipeline_debug() {
-        let pipeline: GradedPipeline<TrifectaRisk> = GradedPipeline::new();
+        let pipeline: GradedPipeline<StateRisk> = GradedPipeline::new();
         let debug = format!("{:?}", pipeline);
         assert!(debug.contains("GradedPipeline"));
         assert!(debug.contains("has_escalation"));
@@ -958,7 +959,7 @@ mod tests {
     fn test_risk_cost_display() {
         use rust_decimal::Decimal;
 
-        let rc = RiskCost::new(TrifectaRisk::Medium, WeakeningCost::new(Decimal::new(5, 1)));
+        let rc = RiskCost::new(StateRisk::Medium, WeakeningCost::new(Decimal::new(5, 1)));
         let display = format!("{}", rc);
         assert!(display.contains("Medium"));
         assert!(display.contains("0.5")); // base cost in display

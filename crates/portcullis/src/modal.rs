@@ -320,25 +320,25 @@ pub struct EscalationStep {
     pub to_level: CapabilityLevel,
     /// Estimated cost of this step (from WeakeningCostConfig).
     pub cost: rust_decimal::Decimal,
-    /// Whether this step completes the trifecta.
-    pub completes_trifecta: bool,
+    /// Whether this step completes the uninhabitable_state.
+    pub completes_uninhabitable: bool,
 }
 
 /// An ordered escalation path from current to target permissions.
 ///
 /// Steps are ranked by cost (cheapest first), allowing agents to request
-/// the most affordable approvals first. Steps that complete the trifecta
+/// the most affordable approvals first. Steps that complete the uninhabitable_state
 /// are always ranked last regardless of base cost, since they require
 /// the most scrutiny.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct EscalationPath {
-    /// Ordered steps (cheapest non-trifecta first, trifecta-completing last).
+    /// Ordered steps (cheapest non-uninhabitable_state first, uninhabitable-state-completing last).
     pub steps: Vec<EscalationStep>,
     /// Total cost of all steps.
     pub total_cost: rust_decimal::Decimal,
-    /// Whether the full path completes the trifecta.
-    pub completes_trifecta: bool,
+    /// Whether the full path completes the uninhabitable_state.
+    pub completes_uninhabitable: bool,
 }
 
 impl EscalationPath {
@@ -358,8 +358,8 @@ impl ModalContext {
     ///
     /// Uses the `WeakeningCostConfig` to price each approval step, then orders
     /// them so:
-    /// 1. Non-trifecta steps sorted by ascending cost
-    /// 2. Trifecta-completing steps last (highest scrutiny)
+    /// 1. Non-uninhabitable_state steps sorted by ascending cost
+    /// 2. uninhabitable_state-completing steps last (highest scrutiny)
     ///
     /// Returns `None` if the target is not achievable (exceeds ceiling).
     pub fn escalation_path(
@@ -421,14 +421,14 @@ impl ModalContext {
             ),
         ];
 
-        // Build a running capability to track trifecta impact
+        // Build a running capability to track uninhabitable_state impact
         let running_caps = self.necessary.capabilities.clone();
 
         for &(op, from_level, to_level) in cap_checks {
             if to_level > from_level {
                 let cost = cost_config.capability_cost(from_level, to_level);
 
-                // Check if granting this step would complete the trifecta
+                // Check if granting this step would complete the uninhabitable_state
                 let mut test_caps = running_caps.clone();
                 match op {
                     Operation::ReadFiles => test_caps.read_files = to_level,
@@ -441,33 +441,35 @@ impl ModalContext {
                     Operation::CreatePr => test_caps.create_pr = to_level,
                     _ => {}
                 }
-                let completes = constraint.is_trifecta_complete(&test_caps)
-                    && !constraint.is_trifecta_complete(&running_caps);
+                let completes = constraint.is_uninhabitable(&test_caps)
+                    && !constraint.is_uninhabitable(&running_caps);
 
                 steps.push(EscalationStep {
                     operation: op,
                     from_level,
                     to_level,
                     cost: cost.total(),
-                    completes_trifecta: completes,
+                    completes_uninhabitable: completes,
                 });
             }
         }
 
-        // Sort: non-trifecta by cost ascending, trifecta-completing last
-        steps.sort_by(|a, b| match (a.completes_trifecta, b.completes_trifecta) {
-            (false, true) => std::cmp::Ordering::Less,
-            (true, false) => std::cmp::Ordering::Greater,
-            _ => a.cost.cmp(&b.cost),
-        });
+        // Sort: non-uninhabitable_state by cost ascending, uninhabitable-state-completing last
+        steps.sort_by(
+            |a, b| match (a.completes_uninhabitable, b.completes_uninhabitable) {
+                (false, true) => std::cmp::Ordering::Less,
+                (true, false) => std::cmp::Ordering::Greater,
+                _ => a.cost.cmp(&b.cost),
+            },
+        );
 
         let total_cost = steps.iter().map(|s| s.cost).sum();
-        let completes_trifecta = steps.iter().any(|s| s.completes_trifecta);
+        let completes_uninhabitable = steps.iter().any(|s| s.completes_uninhabitable);
 
         Some(EscalationPath {
             steps,
             total_cost,
-            completes_trifecta,
+            completes_uninhabitable,
         })
     }
 }
@@ -575,8 +577,8 @@ mod tests {
 
         let git_push = CapabilityModal::from_perms(&perms, Operation::GitPush);
 
-        // git_push should be gated in fix_issue due to trifecta
-        if perms.is_trifecta_vulnerable() {
+        // git_push should be gated in fix_issue due to uninhabitable_state
+        if perms.is_uninhabitable_vulnerable() {
             assert!(git_push.requires_approval);
             assert!(!git_push.can_exercise());
             assert!(git_push.can_exercise_with_approval());
@@ -635,20 +637,20 @@ mod tests {
 
         // Steps should be ordered by cost (cheapest first)
         for window in path.steps.windows(2) {
-            if !window[0].completes_trifecta && !window[1].completes_trifecta {
+            if !window[0].completes_uninhabitable && !window[1].completes_uninhabitable {
                 assert!(window[0].cost <= window[1].cost);
             }
         }
     }
 
     #[test]
-    fn test_escalation_path_trifecta_completing_last() {
+    fn test_escalation_path_uninhabitable_completing_last() {
         let perms = PermissionLattice::restrictive();
         let ceiling = PermissionLattice::permissive();
         let context = ModalContext::with_ceiling(perms, ceiling);
         let config = crate::weakening::WeakeningCostConfig::default();
 
-        // Target with full trifecta: private data + untrusted content + exfil
+        // Target with complete uninhabitable_state: private data + untrusted content + exfil
         let mut target = PermissionLattice::restrictive();
         target.capabilities.read_files = CapabilityLevel::Always; // already Always in restrictive
         target.capabilities.web_fetch = CapabilityLevel::LowRisk;
@@ -656,14 +658,15 @@ mod tests {
 
         let path = context.escalation_path(&target, &config).unwrap();
 
-        // If there are trifecta-completing steps, they should be last
-        if path.completes_trifecta {
-            let last_non_trifecta = path.steps.iter().rposition(|s| !s.completes_trifecta);
-            let first_trifecta = path.steps.iter().position(|s| s.completes_trifecta);
-            if let (Some(last_nt), Some(first_t)) = (last_non_trifecta, first_trifecta) {
+        // If there are uninhabitable-state-completing steps, they should be last
+        if path.completes_uninhabitable {
+            let last_non_uninhabitable =
+                path.steps.iter().rposition(|s| !s.completes_uninhabitable);
+            let first_uninhabitable = path.steps.iter().position(|s| s.completes_uninhabitable);
+            if let (Some(last_nt), Some(first_t)) = (last_non_uninhabitable, first_uninhabitable) {
                 assert!(
                     last_nt < first_t,
-                    "Trifecta-completing steps should come after non-trifecta steps"
+                    "uninhabitable_state-completing steps should come after non-uninhabitable_state steps"
                 );
             }
         }

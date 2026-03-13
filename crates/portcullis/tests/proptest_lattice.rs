@@ -273,11 +273,11 @@ proptest! {
     // We intentionally skip distributivity tests for BudgetLattice.
 
     // ============================================
-    // Trifecta Constraint Invariants
+    //  UninhabitableState Constraint Invariants
     // ============================================
 
     #[test]
-    fn trifecta_constraint_obligations_only_exfil(a in arb_capability_lattice()) {
+    fn uninhabitable_constraint_obligations_only_exfil(a in arb_capability_lattice()) {
         use portcullis::IncompatibilityConstraint;
 
         let constraint = IncompatibilityConstraint::enforcing();
@@ -290,7 +290,7 @@ proptest! {
             ));
         }
 
-        if !constraint.is_trifecta_complete(&a) {
+        if !constraint.is_uninhabitable(&a) {
             prop_assert!(obligations.approvals.is_empty());
         } else {
             if a.git_push >= CapabilityLevel::LowRisk {
@@ -313,7 +313,7 @@ proptest! {
         let perms = PermissionLattice {
             capabilities: a,
             obligations: Default::default(),
-            trifecta_constraint: enforce,
+            uninhabitable_constraint: enforce,
             ..PermissionLattice::default()
         };
 
@@ -330,7 +330,7 @@ proptest! {
         let perms = PermissionLattice {
             capabilities: a,
             obligations: Default::default(),
-            trifecta_constraint: true,
+            uninhabitable_constraint: true,
             ..PermissionLattice::default()
         };
 
@@ -352,17 +352,17 @@ proptest! {
         a in arb_capability_lattice(),
         b in arb_capability_lattice()
     ) {
-        // Build two permission lattices with trifecta constraint enforced
+        // Build two permission lattices with uninhabitable_state constraint enforced
         let perms_a = PermissionLattice {
             capabilities: a,
             obligations: Default::default(),
-            trifecta_constraint: true,
+            uninhabitable_constraint: true,
             ..PermissionLattice::default()
         };
         let perms_b = PermissionLattice {
             capabilities: b,
             obligations: Default::default(),
-            trifecta_constraint: true,
+            uninhabitable_constraint: true,
             ..PermissionLattice::default()
         };
 

@@ -8,9 +8,9 @@
 //!
 //! | Attack Class | Primary Defense | Test Group |
 //! |---|---|---|
-//! | #1 RoguePilot (prompt injection → exfil) | Trifecta Guard | `trifecta_guard` |
+//! | #1 RoguePilot (prompt injection → exfil) |  UninhabitableState Guard | `exposure_guard` |
 //! | #5 Path traversal / credential theft | PathLattice sandbox | `path_security` |
-//! | #6 DNS exfil / command injection | CommandLattice + Trifecta | `command_security` |
+//! | #6 DNS exfil / command injection | CommandLattice +  UninhabitableState | `command_security` |
 //! | Delegation privilege escalation | Monotonic meet | `delegation_monotonicity` |
 //! | Permission lattice tampering | EffectivePermissions checksum | `permission_integrity` |
 //!
@@ -23,16 +23,15 @@
 
 use portcullis::{
     CapabilityLattice, CapabilityLevel, CommandLattice, EffectivePermissions,
-    IncompatibilityConstraint, Obligations, Operation, PathLattice, PermissionLattice,
-    TrifectaRisk,
+    IncompatibilityConstraint, Obligations, Operation, PathLattice, PermissionLattice, StateRisk,
 };
 use std::path::Path;
 
 // ============================================================================
-// Test Group 1: Trifecta Guard
+// Test Group 1:  UninhabitableState Guard
 // Defends against: Attack #1 (RoguePilot), Attack #6 (DNS exfiltration)
 //
-// The "lethal trifecta" is the combination of:
+// The "uninhabitable_state" is the combination of:
 //   1. Private data access (read_files, glob_search, grep_search)
 //   2. Untrusted content exposure (web_fetch, web_search)
 //   3. Exfiltration vector (git_push, create_pr, run_bash)
@@ -43,11 +42,11 @@ use std::path::Path;
 /// Attack #1 (RoguePilot) / Attack #6 (DNS exfil): When an agent has
 /// read_files + web_fetch + run_bash, a prompt injection can read secrets,
 /// embed them in DNS queries or HTTP requests, and exfiltrate via bash.
-/// The trifecta guard must detect this as TrifectaRisk::Complete.
+/// The uninhabitable_state guard must detect this as StateRisk::Uninhabitable.
 ///
 /// CVE-2025-53109 class: prompt injection leading to data exfiltration.
 #[test]
-fn test_trifecta_detects_read_fetch_bash_combination() {
+fn test_uninhabitable_detects_read_fetch_bash_combination() {
     let caps = CapabilityLattice {
         read_files: CapabilityLevel::Always, // 1. Private data access
         web_fetch: CapabilityLevel::LowRisk, // 2. Untrusted content exposure
@@ -60,25 +59,25 @@ fn test_trifecta_detects_read_fetch_bash_combination() {
     };
 
     let constraint = IncompatibilityConstraint::enforcing();
-    let risk = constraint.trifecta_risk(&caps);
+    let risk = constraint.state_risk(&caps);
 
     assert_eq!(
         risk,
-        TrifectaRisk::Complete,
-        "read_files + web_fetch + run_bash must be detected as Complete trifecta"
+        StateRisk::Uninhabitable,
+        "read_files + web_fetch + run_bash must be detected as Complete uninhabitable_state"
     );
     assert!(
         risk.requires_intervention(),
-        "Complete trifecta must require intervention"
+        "Complete uninhabitable_state must require intervention"
     );
 }
 
 /// Attack #1 (RoguePilot): When exfiltration vectors (run_bash, git_push)
-/// are disabled, the trifecta is incomplete even if the agent can read
+/// are disabled, the uninhabitable_state is incomplete even if the agent can read
 /// files and fetch untrusted content. This verifies that removing the
 /// exfiltration leg breaks the attack chain.
 #[test]
-fn test_trifecta_safe_without_exfil() {
+fn test_uninhabitable_safe_without_exfil() {
     let caps = CapabilityLattice {
         read_files: CapabilityLevel::Always, // 1. Private data access
         web_fetch: CapabilityLevel::LowRisk, // 2. Untrusted content exposure
@@ -89,20 +88,20 @@ fn test_trifecta_safe_without_exfil() {
     };
 
     let constraint = IncompatibilityConstraint::enforcing();
-    let risk = constraint.trifecta_risk(&caps);
+    let risk = constraint.state_risk(&caps);
 
     assert_ne!(
         risk,
-        TrifectaRisk::Complete,
-        "Without exfiltration vectors, trifecta must NOT be Complete"
+        StateRisk::Uninhabitable,
+        "Without exfiltration vectors, uninhabitable_state must NOT be Complete"
     );
     assert!(
         !risk.requires_intervention(),
-        "Incomplete trifecta should not require intervention"
+        "Inuninhabitable_state should not require intervention"
     );
 }
 
-/// Attack #1 (RoguePilot): When the trifecta is detected on a full
+/// Attack #1 (RoguePilot): When the uninhabitable_state is detected on a full
 /// PermissionLattice, the meet operation must add approval obligations
 /// to exfiltration operations. This ensures that even if an agent is
 /// granted dangerous capabilities, the system gates the exfil path
@@ -111,8 +110,8 @@ fn test_trifecta_safe_without_exfil() {
 /// This tests the nucleus operator nu: L -> L' which projects onto
 /// the quotient lattice of safe configurations.
 #[test]
-fn test_trifecta_constraint_adds_obligations() {
-    // Create a PermissionLattice with all three trifecta legs
+fn test_uninhabitable_constraint_adds_obligations() {
+    // Create a PermissionLattice with all three exposure legs
     let dangerous = PermissionLattice {
         capabilities: CapabilityLattice {
             read_files: CapabilityLevel::Always, // Private data
@@ -123,42 +122,42 @@ fn test_trifecta_constraint_adds_obligations() {
             ..Default::default()
         },
         obligations: Obligations::default(), // Start with no obligations
-        trifecta_constraint: true,
+        uninhabitable_constraint: true,
         ..Default::default()
     };
 
-    // The meet with itself triggers normalization via the trifecta constraint
+    // The meet with itself triggers normalization via the uninhabitable_state constraint
     let safe = dangerous.meet(&dangerous);
 
     // All exfiltration operations must now require approval
     assert!(
         safe.requires_approval(Operation::GitPush),
-        "GitPush must require approval when trifecta is complete"
+        "GitPush must require approval when uninhabitable_state is complete"
     );
     assert!(
         safe.requires_approval(Operation::CreatePr),
-        "CreatePr must require approval when trifecta is complete"
+        "CreatePr must require approval when uninhabitable_state is complete"
     );
     assert!(
         safe.requires_approval(Operation::RunBash),
-        "RunBash must require approval when trifecta is complete"
+        "RunBash must require approval when uninhabitable_state is complete"
     );
 
-    // Non-exfiltration operations should NOT gain obligations from trifecta
+    // Non-exfiltration operations should NOT gain obligations from uninhabitable_state
     // (WebFetch is untrusted content, not exfiltration)
     let constraint = IncompatibilityConstraint::enforcing();
-    let trifecta_obligations = constraint.obligations_for(&safe.capabilities);
+    let uninhabitable_state_obligations = constraint.obligations_for(&safe.capabilities);
     assert!(
-        !trifecta_obligations.requires(Operation::WebFetch),
-        "WebFetch is not an exfiltration vector and should not gain trifecta obligations"
+        !uninhabitable_state_obligations.requires(Operation::WebFetch),
+        "WebFetch is not an exfiltration vector and should not gain uninhabitable_state obligations"
     );
 }
 
 /// Attack #1 (RoguePilot): Verify the graded risk levels form a proper
-/// lattice ordering. An agent with only one trifecta component should
+/// lattice ordering. An agent with only one uninhabitable_state component should
 /// be Low risk, two components Medium, and all three Complete.
 #[test]
-fn test_trifecta_risk_grading_is_monotone() {
+fn test_state_risk_grading_is_monotone() {
     let constraint = IncompatibilityConstraint::enforcing();
 
     // Zero components: all capabilities disabled
@@ -177,33 +176,33 @@ fn test_trifecta_risk_grading_is_monotone() {
         manage_pods: CapabilityLevel::Never,
         extensions: std::collections::BTreeMap::new(),
     };
-    assert_eq!(constraint.trifecta_risk(&zero), TrifectaRisk::None);
+    assert_eq!(constraint.state_risk(&zero), StateRisk::Safe);
 
     // One component: just private data access
     let one = CapabilityLattice {
         read_files: CapabilityLevel::Always,
         ..zero.clone()
     };
-    assert_eq!(constraint.trifecta_risk(&one), TrifectaRisk::Low);
+    assert_eq!(constraint.state_risk(&one), StateRisk::Low);
 
     // Two components: private data + untrusted content
     let two = CapabilityLattice {
         web_fetch: CapabilityLevel::LowRisk,
         ..one.clone()
     };
-    assert_eq!(constraint.trifecta_risk(&two), TrifectaRisk::Medium);
+    assert_eq!(constraint.state_risk(&two), StateRisk::Medium);
 
     // Three components: private data + untrusted content + exfiltration
     let three = CapabilityLattice {
         run_bash: CapabilityLevel::LowRisk,
         ..two.clone()
     };
-    assert_eq!(constraint.trifecta_risk(&three), TrifectaRisk::Complete);
+    assert_eq!(constraint.state_risk(&three), StateRisk::Uninhabitable);
 
     // Verify monotonicity: None < Low < Medium < Complete
-    assert!(TrifectaRisk::None < TrifectaRisk::Low);
-    assert!(TrifectaRisk::Low < TrifectaRisk::Medium);
-    assert!(TrifectaRisk::Medium < TrifectaRisk::Complete);
+    assert!(StateRisk::Safe < StateRisk::Low);
+    assert!(StateRisk::Low < StateRisk::Medium);
+    assert!(StateRisk::Medium < StateRisk::Uninhabitable);
 }
 
 // ============================================================================
@@ -631,32 +630,32 @@ fn test_effective_permissions_detect_tampering() {
 }
 
 /// Permission tampering: Verify that the checksum changes when the
-/// trifecta constraint is disabled. An attacker who can flip this
-/// bit gains unguarded access to the lethal trifecta.
+/// uninhabitable_state constraint is disabled. An attacker who can flip this
+/// bit gains unguarded access to the uninhabitable_state.
 #[test]
 #[cfg(feature = "testing")]
-fn test_integrity_detects_trifecta_disable() {
+fn test_integrity_detects_uninhabitable_disable() {
     let perms = PermissionLattice::default();
     let effective = EffectivePermissions::new(perms);
     assert!(effective.verify_integrity());
 
-    // Tamper: disable trifecta constraint
+    // Tamper: disable uninhabitable_state constraint
     let mut tampered = effective.clone();
-    tampered.lattice.trifecta_constraint = false;
+    tampered.lattice.uninhabitable_constraint = false;
     assert!(
         !tampered.verify_integrity(),
-        "Disabling trifecta_constraint must be detected as tampering"
+        "Disabling uninhabitable_constraint must be detected as tampering"
     );
 }
 
 /// Permission deserialization bypass: When a PermissionLattice is
-/// deserialized from JSON, the trifecta_constraint field must ALWAYS
+/// deserialized from JSON, the uninhabitable_constraint field must ALWAYS
 /// be set to true, regardless of what the JSON payload says. This
 /// prevents an attacker from crafting a payload with
-/// "trifecta_constraint": false to bypass the lethal trifecta guard.
+/// "uninhabitable_constraint": false to bypass the uninhabitable_state guard.
 #[test]
 #[cfg(feature = "serde")]
-fn test_deserialization_always_enforces_trifecta() {
+fn test_deserialization_always_enforces_uninhabitable() {
     let malicious_json = r#"{
         "id": "00000000-0000-0000-0000-000000000001",
         "description": "bypass attempt",
@@ -679,7 +678,7 @@ fn test_deserialization_always_enforces_trifecta() {
         "budget": {"max_cost_usd": "10", "consumed_usd": "0", "max_input_tokens": 100000, "max_output_tokens": 10000},
         "commands": {"allowed": [], "blocked": []},
         "time": {"valid_from": "2024-01-01T00:00:00Z", "valid_until": "2030-01-01T00:00:00Z"},
-        "trifecta_constraint": false,
+        "uninhabitable_constraint": false,
         "created_at": "2024-01-01T00:00:00Z",
         "created_by": "attacker"
     }"#;
@@ -689,12 +688,12 @@ fn test_deserialization_always_enforces_trifecta() {
 
     // The constraint must ALWAYS be true after deserialization
     assert!(
-        perms.trifecta_constraint,
-        "trifecta_constraint must be forced to true on deserialization, \
+        perms.uninhabitable_constraint,
+        "uninhabitable_constraint must be forced to true on deserialization, \
          regardless of JSON input"
     );
 
-    // Since trifecta is complete (all three legs present), exfil must require approval
+    // Since uninhabitable_state is complete (all three legs present), exfil must require approval
     assert!(
         perms.requires_approval(Operation::GitPush),
         "GitPush must require approval after deserialization normalization"

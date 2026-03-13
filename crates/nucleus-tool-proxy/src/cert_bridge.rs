@@ -173,7 +173,7 @@ pub fn dimensions_to_ceiling(dimensions: &[PermissionDimension]) -> PermissionLa
     // - default() adds obligations via normalize() that break Galois closure-extensive
     // - default() adds non-empty CommandLattice::allowed that breaks commands.leq()
     // - permissive() creates a time window from Utc::now() (non-deterministic)
-    // The trifecta enforcement happens in the meet() with the certificate.
+    // The uninhabitable_state enforcement happens in the meet() with the certificate.
     PermissionLattice {
         id: uuid::Uuid::nil(),
         description: String::new(),
@@ -197,7 +197,7 @@ pub fn dimensions_to_ceiling(dimensions: &[PermissionDimension]) -> PermissionLa
             Utc::now() - Duration::days(365 * 100),
             Utc::now() + Duration::days(365 * 100),
         ),
-        trifecta_constraint: false,
+        uninhabitable_constraint: false,
         minimum_isolation: None,
         created_at: Utc::now(),
         created_by: String::new(),
@@ -208,7 +208,7 @@ pub fn dimensions_to_ceiling(dimensions: &[PermissionDimension]) -> PermissionLa
 ///
 /// The effective permissions are `verified.effective ∧ ceiling(granted)`,
 /// using the lattice meet operation. This preserves all invariants
-/// (trifecta enforcement, obligations, paths, budget, commands, time)
+/// (uninhabitable_state enforcement, obligations, paths, budget, commands, time)
 /// and is provably correct: meet is monotone and deflationary.
 ///
 /// # Security Invariant

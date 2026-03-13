@@ -6,7 +6,7 @@
 name: secure-review
 description: Read-heavy policy for code review tasks
 
-enforce_trifecta: true
+enforce_uninhabitable: true
 
 constraints:
   # All file writes require approval in review mode

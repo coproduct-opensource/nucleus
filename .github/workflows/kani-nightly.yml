@@ -46,9 +46,9 @@ jobs:
             -p portcullis
             --solver cadical
             --harness proof_capability_distributive
-            --harness proof_taintset_monoid_identity
-            --harness proof_taintset_trifecta_iff_count_three
-            --harness proof_operation_taint_completeness
+            --harness proof_exposureset_monoid_identity
+            --harness proof_exposureset_uninhabitable_iff_count_three
+            --harness proof_operation_exposure_completeness
             --harness proof_clinejection_blocked
       - name: Proof count regression gate
         run: |

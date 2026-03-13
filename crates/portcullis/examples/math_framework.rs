@@ -8,12 +8,12 @@
 //! 5. Graded Monad - Composable risk tracking
 
 use portcullis::{
-    frame::{BoundedLattice, Nucleus, SafePermissionLattice, TrifectaQuotient},
+    frame::{BoundedLattice, Nucleus, SafePermissionLattice, UninhabitableQuotient},
     galois::presets,
     graded::{evaluate_with_risk, Graded, RiskGrade},
     heyting::{entails, permission_gap, ConditionalPermission},
     modal::{all_capability_modals, ModalContext, ModalPermissions},
-    CapabilityLattice, CapabilityLevel, Operation, PermissionLattice, TrifectaRisk,
+    CapabilityLattice, CapabilityLevel, Operation, PermissionLattice, StateRisk,
 };
 
 fn main() {
@@ -39,13 +39,16 @@ fn example_frame_and_nucleus() {
     println!("  • j(x) ≤ x           (deflationary)");
     println!("  • j(x ∧ y) = j(x) ∧ j(y)  (preserves meets)\n");
 
-    // Create the trifecta quotient nucleus
-    let nucleus = TrifectaQuotient::new();
+    // Create the uninhabitable_state quotient nucleus
+    let nucleus = UninhabitableQuotient::new();
 
-    // A dangerous permission set (has all three trifecta components)
+    // A dangerous permission set (has all three uninhabitable_state components)
     let dangerous = PermissionLattice::permissive();
     println!("Original permissions: {}", dangerous.description);
-    println!("  - Has trifecta: {}", dangerous.is_trifecta_vulnerable());
+    println!(
+        "  - Has uninhabitable_state: {}",
+        dangerous.is_uninhabitable_vulnerable()
+    );
 
     // Project through the nucleus
     let projected = nucleus.apply(&dangerous);
@@ -60,7 +63,7 @@ fn example_frame_and_nucleus() {
     let safe = SafePermissionLattice::from_nucleus(&nucleus, dangerous);
     println!("\nSafePermissionLattice created (type-level safety guarantee)");
     println!(
-        "  - Inner lattice is trifecta-safe: {}",
+        "  - Inner lattice is uninhabitable_state-safe: {}",
         nucleus.is_fixed_point(safe.inner())
     );
 
@@ -216,7 +219,7 @@ fn example_modal_operators() {
     println!("  □A (necessity): what is GUARANTEED (no approval needed)");
     println!("  ◇A (possibility): what is ACHIEVABLE (with escalation)\n");
 
-    // Use fix_issue which has trifecta obligations
+    // Use fix_issue which has uninhabitable_state obligations
     let perms = PermissionLattice::fix_issue();
     println!("Permission profile: {}", perms.description);
 
@@ -270,7 +273,7 @@ fn example_graded_monad() {
     println!("  bind: M_g(A) -> (A -> M_h(B)) -> M_{{g*h}}(B)  (risk composes)\n");
 
     // Pure computation (no risk)
-    let safe: Graded<TrifectaRisk, i32> = Graded::pure(42);
+    let safe: Graded<StateRisk, i32> = Graded::pure(42);
     println!("Pure computation:");
     println!("  - Value: {}", safe.value);
     println!("  - Risk: {:?}", safe.grade);
@@ -280,15 +283,15 @@ fn example_graded_monad() {
     let result = safe
         .and_then(|x| {
             println!("  Step 1: multiply by 2 (Low risk)");
-            Graded::new(TrifectaRisk::Low, x * 2)
+            Graded::new(StateRisk::Low, x * 2)
         })
         .and_then(|x| {
             println!("  Step 2: add 10 (Medium risk)");
-            Graded::new(TrifectaRisk::Medium, x + 10)
+            Graded::new(StateRisk::Medium, x + 10)
         })
         .and_then(|x| {
             println!("  Step 3: divide by 2 (Low risk)");
-            Graded::new(TrifectaRisk::Low, x / 2)
+            Graded::new(StateRisk::Low, x / 2)
         });
 
     println!("\nFinal result:");
@@ -313,15 +316,15 @@ fn example_graded_monad() {
 
     // Demonstrate monoid laws
     println!("\nRisk grade monoid laws:");
-    let a = TrifectaRisk::Low;
-    let b = TrifectaRisk::Medium;
+    let a = StateRisk::Low;
+    let b = StateRisk::Medium;
     println!(
         "  - identity * a = a: {}",
-        TrifectaRisk::identity().compose(&a) == a
+        StateRisk::identity().compose(&a) == a
     );
     println!(
         "  - a * identity = a: {}",
-        a.compose(&TrifectaRisk::identity()) == a
+        a.compose(&StateRisk::identity()) == a
     );
     println!("  - Low.compose(Medium) = {:?}", a.compose(&b));
 

@@ -887,8 +887,8 @@ impl IntoResponse for ApiError {
             ApiError::Nucleus(NucleusError::TimeViolation { .. }) => {
                 (StatusCode::REQUEST_TIMEOUT, "time_violation", None, None)
             }
-            ApiError::Nucleus(NucleusError::TrifectaBlocked { .. }) => {
-                (StatusCode::FORBIDDEN, "trifecta_blocked", None, None)
+            ApiError::Nucleus(NucleusError::StateBlocked { .. }) => {
+                (StatusCode::FORBIDDEN, "uninhabitable_blocked", None, None)
             }
             ApiError::Nucleus(NucleusError::InsufficientCapability { .. }) => {
                 (StatusCode::FORBIDDEN, "insufficient_capability", None, None)
@@ -2077,7 +2077,7 @@ async fn web_fetch(
         }));
     }
 
-    // Check if trifecta requires approval for web_fetch
+    // Check if uninhabitable_state requires approval for web_fetch
     if policy.requires_approval(Operation::WebFetch) {
         // Check if policy allows this operation (zero-prompt mode)
         let policy_allows =
@@ -2158,7 +2158,7 @@ async fn web_fetch(
         .unwrap_or("");
     web_fetch_policy::check_mime_type(content_type).map_err(ApiError::WebFetch)?;
 
-    // Collect response headers + add taint metadata
+    // Collect response headers + add exposure metadata
     let mut response_headers: HashMap<String, String> = response
         .headers()
         .iter()
@@ -2169,10 +2169,10 @@ async fn web_fetch(
         })
         .collect();
 
-    // Taint provenance: mark all web-fetched content as untrusted.
-    // Downstream tool calls can use these headers for taint tracking.
+    // Exposure provenance: mark all web-fetched content as untrusted.
+    // Downstream tool calls can use these headers for exposure tracking.
     response_headers.insert(
-        "x-nucleus-taint".to_string(),
+        "x-nucleus-exposure".to_string(),
         "UntrustedContent".to_string(),
     );
     if let Some(host) = url::Url::parse(&url_str)
@@ -2243,7 +2243,7 @@ async fn glob_search(
         }));
     }
 
-    // Check if trifecta requires approval
+    // Check if uninhabitable_state requires approval
     if policy.requires_approval(Operation::GlobSearch) {
         let policy_allows =
             check_identity_policy(&state, auth_ctx.as_ref(), &format!("glob {}", req.pattern));
@@ -2380,7 +2380,7 @@ async fn grep_search(
         }));
     }
 
-    // Check if trifecta requires approval
+    // Check if uninhabitable_state requires approval
     if policy.requires_approval(Operation::GrepSearch) {
         let policy_allows =
             check_identity_policy(&state, auth_ctx.as_ref(), &format!("grep {}", req.pattern));
@@ -2558,7 +2558,7 @@ async fn web_search(
         }));
     }
 
-    // Check if trifecta requires approval
+    // Check if uninhabitable_state requires approval
     if policy.requires_approval(Operation::WebSearch) {
         let policy_allows = check_identity_policy(
             &state,

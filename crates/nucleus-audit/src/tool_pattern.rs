@@ -28,19 +28,19 @@ pub enum ToolKind {
     Unknown(String),
 }
 
-#[allow(dead_code)] // Public API for trifecta classification
+#[allow(dead_code)] // Public API for uninhabitable_state classification
 impl ToolKind {
-    /// Does this tool provide private data access (trifecta leg 1)?
+    /// Does this tool provide private data access (exposure leg 1)?
     pub fn is_private_data_access(&self) -> bool {
         matches!(self, ToolKind::Read | ToolKind::Glob | ToolKind::Grep)
     }
 
-    /// Does this tool provide untrusted content exposure (trifecta leg 2)?
+    /// Does this tool provide untrusted content exposure (exposure leg 2)?
     pub fn is_untrusted_content(&self) -> bool {
         matches!(self, ToolKind::WebFetch | ToolKind::WebSearch)
     }
 
-    /// Does this tool provide an exfiltration vector (trifecta leg 3)?
+    /// Does this tool provide an exfiltration vector (exposure leg 3)?
     pub fn is_exfil_vector(&self) -> bool {
         matches!(self, ToolKind::Bash)
     }
@@ -467,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trifecta_classification() {
+    fn test_uninhabitable_classification() {
         assert!(ToolKind::Read.is_private_data_access());
         assert!(ToolKind::Grep.is_private_data_access());
         assert!(!ToolKind::Bash.is_private_data_access());

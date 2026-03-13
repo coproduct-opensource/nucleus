@@ -239,8 +239,8 @@ pub struct RestrictionDetail {
 pub enum RestrictionReason {
     /// Parent ceiling is more restrictive than the request.
     CeilingExceeded,
-    /// Trifecta constraint demoted this capability.
-    TrifectaDemotion,
+    ///  UninhabitableState constraint demoted this capability.
+    UninhabitableStateDemotion,
     /// Budget exceeded available amount.
     BudgetExceeded,
     /// Path access narrowed (blocked paths added, allowed paths reduced).
@@ -257,8 +257,8 @@ pub enum RestrictionReason {
 pub struct MeetJustification {
     /// Dimensions that were restricted.
     pub restrictions: Vec<RestrictionDetail>,
-    /// Whether the trifecta constraint was applied.
-    pub trifecta_applied: bool,
+    /// Whether the uninhabitable_state constraint was applied.
+    pub uninhabitable_applied: bool,
     /// Whether any dimension was narrowed.
     pub was_narrowed: bool,
     /// Human-readable summary of the decision.
@@ -341,7 +341,7 @@ pub fn meet_with_justification(
     for &(name, parent_level, requested_level, effective_level) in &cap_checks {
         if effective_level < requested_level {
             let reason = if effective_level < parent_level.min(requested_level) {
-                RestrictionReason::TrifectaDemotion
+                RestrictionReason::UninhabitableStateDemotion
             } else {
                 RestrictionReason::CeilingExceeded
             };
@@ -366,8 +366,9 @@ pub fn meet_with_justification(
         });
     }
 
-    let trifecta_applied = (parent.trifecta_constraint || requested.trifecta_constraint)
-        && result.is_trifecta_vulnerable();
+    let uninhabitable_applied = (parent.uninhabitable_constraint
+        || requested.uninhabitable_constraint)
+        && result.is_uninhabitable_vulnerable();
     let was_narrowed = !restrictions.is_empty();
 
     let summary = if restrictions.is_empty() {
@@ -378,8 +379,8 @@ pub fn meet_with_justification(
             "{} dimension(s) restricted: {}{}",
             restrictions.len(),
             dims.join(", "),
-            if trifecta_applied {
-                " (trifecta constraint active)"
+            if uninhabitable_applied {
+                " (uninhabitable_state constraint active)"
             } else {
                 ""
             }
@@ -388,7 +389,7 @@ pub fn meet_with_justification(
 
     let justification = MeetJustification {
         restrictions,
-        trifecta_applied,
+        uninhabitable_applied,
         was_narrowed,
         summary,
     };

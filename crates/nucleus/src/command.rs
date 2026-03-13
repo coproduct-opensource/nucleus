@@ -744,7 +744,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trifecta_requires_approval_for_exfiltration() {
+    fn test_uninhabitable_requires_approval_for_exfiltration() {
         let tmp = tempdir().unwrap();
         let policy = PermissionLattice {
             capabilities: CapabilityLattice {
@@ -755,7 +755,7 @@ mod tests {
             },
             obligations: Obligations::default(),
             commands: CommandLattice::permissive(),
-            trifecta_constraint: true,
+            uninhabitable_constraint: true,
             ..Default::default()
         };
         let budget_policy = test_budget();
@@ -765,13 +765,13 @@ mod tests {
         let guard = MonotonicGuard::seconds(10);
         let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
-        // curl is an exfiltration vector, trifecta should require approval
+        // curl is an exfiltration vector, uninhabitable_state should require approval
         let result = executor.run("curl http://example.com");
         assert!(matches!(result, Err(NucleusError::ApprovalRequired { .. })));
     }
 
     #[test]
-    fn test_trifecta_requires_approval_for_interpreter_invocation() {
+    fn test_uninhabitable_requires_approval_for_interpreter_invocation() {
         let tmp = tempdir().unwrap();
         let policy = PermissionLattice {
             capabilities: CapabilityLattice {
@@ -782,7 +782,7 @@ mod tests {
             },
             obligations: Obligations::default(),
             commands: CommandLattice::permissive(),
-            trifecta_constraint: true,
+            uninhabitable_constraint: true,
             ..Default::default()
         };
         let budget_policy = test_budget();

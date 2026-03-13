@@ -3,7 +3,7 @@
 # Can read source code and run test commands, but cannot modify source
 # files or push results. Write is limited to test output artifacts.
 #
-# Trifecta analysis:
+#  Uninhabitable state analysis:
 #   - Private data: read_files=always (present)
 #   - Untrusted content: web_fetch=never (absent)
 #   - Exfiltration: git_push=never, create_pr=never (absent)

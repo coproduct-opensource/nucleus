@@ -17,13 +17,13 @@
 //! - Inherits all lattice laws from the component lattice
 //! - Meet/join are element-wise min/max
 //!
-//! ## Nucleus Operator (trifecta normalization)
+//! ## Nucleus Operator (uninhabitable_state normalization)
 //! - Idempotent: ν(ν(x)) = ν(x)
 //! - Deflationary: ν(x) ≤ x (adds obligations, never removes)
 //! - **Not meet-preserving**: ν(x∧y) ≠ ν(x)∧ν(y) in general
 //!   (counterexample: threshold triggers for one input but not the meet)
 //! - **Not monotone**: x≤y does not imply ν(x)≤ν(y) in general
-//!   (counterexample: trifecta fires for y but not x)
+//!   (counterexample: uninhabitable_state fires for y but not x)
 //! - Both properties DO hold on the image of ν (fixed points)
 //! - The quotient meet (perm_meet, which normalizes) always produces
 //!   fixed points and is commutative
@@ -47,32 +47,32 @@
 //! - ◇ is idempotent: ◇(◇p) = ◇p
 //! - ◇ distributes over capability join
 //! - Modal chain: □p ≤ p ≤ ◇p
-//! - Necessity breaks trifecta when full obligations present
+//! - Necessity breaks uninhabitable_state when full obligations present
 //!
 //! ## Weakening Cost Monoid
 //! - (Cost, combine, zero) forms a commutative monoid
 //! - combine: additive base, max multipliers
 //! - Associativity, commutativity, identity element
 //!
-//! ## GradedTaintGuard — TaintSet Monoid (Phase 6)
-//! - TaintSet: 3-bool semilattice (private_data, untrusted_content, exfil_vector)
+//! ## GradedExposureGuard — ExposureSet Monoid (Phase 6)
+//! - ExposureSet: 3-bool semilattice (private_data, untrusted_content, exfil_vector)
 //! - Monoid laws: identity (left/right), commutativity, associativity, idempotence
-//! - Taint classification: operation → label totality, risk monotonicity
-//! - Guard decisions: trifecta blocks exfil, incomplete taint allows, accumulation monotone
-//! - Bridge: TaintSet trifecta ↔ CapLattice trifecta, guard agrees with nucleus operator
-//! - Executable specs: empty, singleton, union, is_trifecta, count
+//! - Exposure classification: operation → label totality, risk monotonicity
+//! - Guard decisions: uninhabitable_state blocks exfil, incomplete exposure allows, accumulation monotone
+//! - Bridge: ExposureSet uninhabitable_state ↔ CapLattice uninhabitable_state, guard agrees with nucleus operator
+//! - Executable specs: empty, singleton, union, is_uninhabitable, count
 //!
 //! ## MCP Session Safety — Trace-Based Verification (Phase 7)
 //! - McpEvent: (operation, succeeded) pair modeling tool call outcomes
-//! - Trace taint: Seq<McpEvent> fold via recursive apply_event_taint
-//! - Session safety: trifecta-complete trace → all future exfil ops denied
-//! - Trifecta irreversibility: once latched, never unlatched (monotone latch)
-//! - Free monoid homomorphism: trace concatenation = taint union
-//! - Phantom taint freedom: failed operations contribute nothing
-//! - Three-step minimum: at least 3 non-neutral successes needed for trifecta
+//! - Trace exposure: Seq<McpEvent> fold via recursive apply_event_exposure
+//! - Session safety: uninhabitable trace → all future exfil ops denied
+//! -  UninhabitableState irreversibility: once latched, never unlatched (monotone latch)
+//! - Free monoid homomorphism: trace concatenation = exposure union
+//! - Phantom exposure freedom: failed operations contribute nothing
+//! - Three-step minimum: at least 3 non-neutral successes needed for uninhabitable_state
 //!
 //! ## Graded Monad Laws (Phase 0 completion)
-//! - Grade monoid: TrifectaRisk as max-monoid over {0,1,2,3}
+//! - Grade monoid: StateRisk as max-monoid over {0,1,2,3}
 //! - Mon1-Mon5: identity, associativity, commutativity, idempotence
 //! - Graded monad: (grade, value) pair with max-monoid grading
 //! - ML1-ML3: left identity, right identity, associativity of monadic bind
@@ -113,7 +113,7 @@
 //! - Adding links can only shrink ceiling (monotone)
 //! - Singleton chain = that link
 //! - Fixed point when all links identical
-//! - Trifecta risk of ceiling ≤ risk of any link
+//! -  UninhabitableState risk of ceiling ≤ risk of any link
 //!
 //! ## Galois Connection Properties (Phase 0 completion)
 //! - Domain: CapabilityLevel as 3-element chain {0=Never, 1=LowRisk, 2=Always}
@@ -624,12 +624,12 @@ proof fn proof_lattice_order_consistent(a: CapLattice, b: CapLattice)
 }
 
 // ============================================================================
-// Trifecta Detection
+//  UninhabitableState Detection
 // ============================================================================
 
-/// Models the lethal trifecta risk assessment.
+/// Models the uninhabitable_state risk assessment.
 ///
-/// The trifecta is complete when ALL THREE are present at ≥ LowRisk:
+/// The uninhabitable_state is complete when ALL THREE are present at ≥ LowRisk:
 /// 1. Private data access (read_files OR glob_search OR grep_search)
 /// 2. Untrusted content (web_fetch OR web_search)
 /// 3. Exfiltration vector (git_push OR create_pr OR run_bash)
@@ -645,22 +645,22 @@ pub open spec fn has_exfiltration(l: CapLattice) -> bool {
     l.f3 >= 1 || l.f9 >= 1 || l.f10 >= 1  // run_bash, git_push, create_pr
 }
 
-pub open spec fn is_trifecta_complete(l: CapLattice) -> bool {
+pub open spec fn is_uninhabitable(l: CapLattice) -> bool {
     has_private_access(l) && has_untrusted_content(l) && has_exfiltration(l)
 }
 
-/// Meet can only decrease or maintain trifecta risk (monotonicity).
+/// Meet can only decrease or maintain uninhabitable_state risk (monotonicity).
 ///
-/// If neither a nor b has the trifecta, their meet doesn't either.
+/// If neither a nor b has the uninhabitable_state, their meet doesn't either.
 /// This is because meet takes the min of each component, so if a component
 /// is Never in either input, it's Never in the output.
-proof fn proof_trifecta_meet_monotone(a: CapLattice, b: CapLattice)
+proof fn proof_uninhabitable_meet_monotone(a: CapLattice, b: CapLattice)
     requires
         valid_lattice(a),
         valid_lattice(b),
-        !is_trifecta_complete(a),
+        !is_uninhabitable(a),
     ensures
-        !is_trifecta_complete(lattice_meet(a, b)),
+        !is_uninhabitable(lattice_meet(a, b)),
 {
 }
 
@@ -699,7 +699,7 @@ proof fn proof_join_preserves_validity(a: CapLattice, b: CapLattice)
 // Obligations: modeled as 3 booleans (the exfiltration gates)
 // ============================================================================
 
-/// Models the obligations relevant to the trifecta nucleus.
+/// Models the obligations relevant to the uninhabitable_state nucleus.
 ///
 /// In the real code, Obligations is a BTreeSet<Operation>. For verification
 /// we only model the 3 exfiltration-vector obligations that the nucleus
@@ -765,15 +765,15 @@ pub open spec fn obs_full() -> Obs {
 pub struct Perm {
     pub caps: CapLattice,
     pub obs: Obs,
-    pub trifecta_constraint: bool,
+    pub uninhabitable_constraint: bool,
 }
 
-/// Compute the trifecta obligations for a given capability set.
+/// Compute the uninhabitable_state obligations for a given capability set.
 ///
-/// If the trifecta is complete, returns obligations requiring approval
+/// If the uninhabitable_state is complete, returns obligations requiring approval
 /// for each exfiltration vector that is ≥ LowRisk.
-pub open spec fn trifecta_obligations(caps: CapLattice) -> Obs {
-    if is_trifecta_complete(caps) {
+pub open spec fn uninhabitable_state_obligations(caps: CapLattice) -> Obs {
+    if is_uninhabitable(caps) {
         Obs {
             run_bash: caps.f3 >= 1,   // run_bash ≥ LowRisk
             git_push: caps.f9 >= 1,   // git_push ≥ LowRisk
@@ -784,39 +784,39 @@ pub open spec fn trifecta_obligations(caps: CapLattice) -> Obs {
     }
 }
 
-/// The nucleus operator ν: normalize a permission by adding trifecta obligations.
+/// The nucleus operator ν: normalize a permission by adding uninhabitable_state obligations.
 ///
 /// This models portcullis::PermissionLattice::normalize().
-/// If trifecta_constraint is true and the trifecta is complete,
+/// If uninhabitable_constraint is true and the uninhabitable_state is complete,
 /// add approval obligations for the exfiltration vectors.
 pub open spec fn nucleus(p: Perm) -> Perm {
-    if p.trifecta_constraint {
+    if p.uninhabitable_constraint {
         Perm {
             caps: p.caps,
-            obs: obs_union(p.obs, trifecta_obligations(p.caps)),
-            trifecta_constraint: true,
+            obs: obs_union(p.obs, uninhabitable_state_obligations(p.caps)),
+            uninhabitable_constraint: true,
         }
     } else {
         p
     }
 }
 
-/// Permission meet: capabilities meet + obligations union + trifecta enforcement.
+/// Permission meet: capabilities meet + obligations union + uninhabitable_state enforcement.
 ///
 /// Models PermissionLattice::meet() from lattice.rs.
 pub open spec fn perm_meet(a: Perm, b: Perm) -> Perm {
     let caps = lattice_meet(a.caps, b.caps);
     let obs = obs_union(a.obs, b.obs);
-    let enforce = a.trifecta_constraint || b.trifecta_constraint;
+    let enforce = a.uninhabitable_constraint || b.uninhabitable_constraint;
     let final_obs = if enforce {
-        obs_union(obs, trifecta_obligations(caps))
+        obs_union(obs, uninhabitable_state_obligations(caps))
     } else {
         obs
     };
     Perm {
         caps: caps,
         obs: final_obs,
-        trifecta_constraint: enforce,
+        uninhabitable_constraint: enforce,
     }
 }
 
@@ -825,9 +825,9 @@ pub open spec fn perm_leq(a: Perm, b: Perm) -> bool {
     lattice_leq(a.caps, b.caps) && obs_leq(a.obs, b.obs)
 }
 
-/// Valid permission: all capabilities valid, trifecta constraint is true.
+/// Valid permission: all capabilities valid, uninhabitable_state constraint is true.
 pub open spec fn valid_perm(p: Perm) -> bool {
-    valid_lattice(p.caps) && p.trifecta_constraint
+    valid_lattice(p.caps) && p.uninhabitable_constraint
 }
 
 // ============================================================================
@@ -839,15 +839,15 @@ pub open spec fn valid_perm(p: Perm) -> bool {
 /// ν(ν(x)) = ν(x) — applying the nucleus twice equals applying it once.
 ///
 /// This is the key idempotency property. After normalization, re-normalizing
-/// changes nothing because the trifecta obligations are already present.
+/// changes nothing because the uninhabitable_state obligations are already present.
 proof fn proof_nucleus_idempotent(p: Perm)
     requires
         valid_perm(p),
     ensures
         nucleus(nucleus(p)) == nucleus(p),
 {
-    // After first application, trifecta_constraint is true and obligations
-    // already include trifecta_obligations(caps). The second application
+    // After first application, uninhabitable_constraint is true and obligations
+    // already include uninhabitable_state_obligations(caps). The second application
     // unions the same obligations again, which is idempotent (a || a == a).
 }
 
@@ -865,7 +865,7 @@ proof fn proof_nucleus_deflationary(p: Perm)
         perm_leq(nucleus(p), p),
 {
     // Capabilities are unchanged (same caps), so caps ≤ holds trivially.
-    // Obligations: nucleus(p).obs = union(p.obs, trifecta_obs(p.caps))
+    // Obligations: nucleus(p).obs = union(p.obs, uninhabitable_state_obs(p.caps))
     // which is a superset of p.obs, so obs_leq holds.
 }
 
@@ -874,15 +874,15 @@ proof fn proof_nucleus_deflationary(p: Perm)
 // The nucleus ν does NOT distribute over meets in general:
 //   ν(x ∧ y) ≠ ν(x) ∧ ν(y)
 //
-// The fundamental reason: trifecta_obligations is a THRESHOLD function.
-// When we meet two permissions, the meet can destroy the trifecta
+// The fundamental reason: uninhabitable_state_obligations is a THRESHOLD function.
+// When we meet two permissions, the meet can destroy the uninhabitable_state
 // (e.g., removing all private access), losing the obligations that
 // ν would have added to the individual inputs.
 //
-// Concretely: if a has full capabilities (trifecta complete) and
-// b has no private access (trifecta incomplete), then:
-//   - meet(a,b) has no private access → trifecta incomplete → ν adds nothing
-//   - But ν(a) already has trifecta obligations, which persist in ν(a) ∧ ν(b)
+// Concretely: if a has full capabilities (uninhabitable_state complete) and
+// b has no private access (uninhabitable_state incomplete), then:
+//   - meet(a,b) has no private access → uninhabitable_state incomplete → ν adds nothing
+//   - But ν(a) already has uninhabitable_state obligations, which persist in ν(a) ∧ ν(b)
 //
 // This means the nucleus as defined is NOT a nucleus in the frame-theoretic
 // sense. It IS an idempotent, deflationary operator (a "kernel operator"),
@@ -894,15 +894,15 @@ proof fn proof_nucleus_deflationary(p: Perm)
 
 /// Counterexample: ν does not preserve meets.
 ///
-/// Witness: a = full caps (trifecta complete), b = no private access.
-/// LHS ν(a∧b) has no trifecta obligations; RHS (ν(a))∧(ν(b)) does.
+/// Witness: a = full caps (uninhabitable_state complete), b = no private access.
+/// LHS ν(a∧b) has no uninhabitable_state obligations; RHS (ν(a))∧(ν(b)) does.
 proof fn proof_nucleus_not_meet_preserving()
     ensures
         ({
             let a = Perm {
                 caps: lattice_top(),
                 obs: obs_empty(),
-                trifecta_constraint: true,
+                uninhabitable_constraint: true,
             };
             let b = Perm {
                 caps: CapLattice {
@@ -910,7 +910,7 @@ proof fn proof_nucleus_not_meet_preserving()
                     f6: 2, f7: 2, f8: 2, f9: 2, f10: 2, f11: 2,
                 },
                 obs: obs_empty(),
-                trifecta_constraint: true,
+                uninhabitable_constraint: true,
             };
             // ν(meet(a,b)) ≠ meet(ν(a), ν(b))
             nucleus(perm_meet(a, b)) != perm_meet(nucleus(a), nucleus(b))
@@ -920,7 +920,7 @@ proof fn proof_nucleus_not_meet_preserving()
 
 /// The quotient meet always produces fixed points of ν.
 ///
-/// Since perm_meet already applies trifecta_obligations internally,
+/// Since perm_meet already applies uninhabitable_state_obligations internally,
 /// applying ν again is idempotent: ν(perm_meet(a,b)) = perm_meet(a,b).
 /// This is the correct algebraic structure — the quotient meet IS the
 /// normalized meet, so fixed points are closed under it.
@@ -931,8 +931,8 @@ proof fn proof_quotient_meet_is_fixed_point(a: Perm, b: Perm)
     ensures
         nucleus(perm_meet(a, b)) == perm_meet(a, b),
 {
-    // perm_meet already unions trifecta_obligations(meet_caps) into obs.
-    // nucleus unions trifecta_obligations(meet_caps) again — idempotent.
+    // perm_meet already unions uninhabitable_state_obligations(meet_caps) into obs.
+    // nucleus unions uninhabitable_state_obligations(meet_caps) again — idempotent.
 }
 
 /// The quotient meet is commutative: perm_meet(a,b) = perm_meet(b,a).
@@ -957,19 +957,19 @@ proof fn proof_quotient_meet_commutative(a: Perm, b: Perm)
 // The nucleus is NOT monotone in general: x ≤ y does NOT imply ν(x) ≤ ν(y).
 //
 // The issue: if a ≤ b (fewer caps, more obligations), then b might have
-// the trifecta complete while a doesn't (a has fewer capabilities, possibly
+// the uninhabitable_state complete while a doesn't (a has fewer capabilities, possibly
 // below the threshold). The nucleus adds obligations to b but not to a,
 // making ν(b) more constrained than ν(a) in the obligation dimension —
 // but ν(a) should be MORE constrained for ν(a) ≤ ν(b) to hold.
 //
 // This is the dual of the meet preservation failure: the threshold
-// function is_trifecta_complete is upward-monotone in capabilities,
+// function is_uninhabitable is upward-monotone in capabilities,
 // but the OBLIGATION addition is downward in the permission order.
 
 /// Counterexample: ν is not monotone.
 ///
-/// Witness: a has no private access (trifecta incomplete), b has all caps.
-/// a ≤ b holds, but ν(a) has no trifecta obligations while ν(b) does,
+/// Witness: a has no private access (uninhabitable_state incomplete), b has all caps.
+/// a ≤ b holds, but ν(a) has no uninhabitable_state obligations while ν(b) does,
 /// so ν(a) ≤ ν(b) fails (ν(a) has fewer obligations = LARGER, not smaller).
 proof fn proof_nucleus_not_monotone()
     ensures
@@ -980,12 +980,12 @@ proof fn proof_nucleus_not_monotone()
                     f6: 2, f7: 2, f8: 2, f9: 2, f10: 2, f11: 2,
                 },
                 obs: obs_empty(),
-                trifecta_constraint: true,
+                uninhabitable_constraint: true,
             };
             let b = Perm {
                 caps: lattice_top(),
                 obs: obs_empty(),
-                trifecta_constraint: true,
+                uninhabitable_constraint: true,
             };
             // a ≤ b holds ...
             perm_leq(a, b)
@@ -995,19 +995,19 @@ proof fn proof_nucleus_not_monotone()
 {
 }
 
-/// Trifecta completeness is upward-monotone in capabilities.
+///  UninhabitableState completeness is upward-monotone in capabilities.
 ///
-/// If a has fewer capabilities than b, and a triggers the trifecta,
-/// then b also triggers the trifecta. (Each trifecta component is
+/// If a has fewer capabilities than b, and a triggers the uninhabitable_state,
+/// then b also triggers the uninhabitable_state. (Each uninhabitable_state component is
 /// a disjunction of capability levels ≥ 1, and meet only decreases.)
-proof fn proof_trifecta_upward_monotone(a: CapLattice, b: CapLattice)
+proof fn proof_uninhabitable_upward_monotone(a: CapLattice, b: CapLattice)
     requires
         valid_lattice(a),
         valid_lattice(b),
         lattice_leq(a, b),
-        is_trifecta_complete(a),
+        is_uninhabitable(a),
     ensures
-        is_trifecta_complete(b),
+        is_uninhabitable(b),
 {
 }
 
@@ -1030,31 +1030,31 @@ proof fn proof_nucleus_monotone_on_fixed_points(a: Perm, b: Perm)
 
 /// Fixed points of the nucleus are exactly the "safe" configurations.
 ///
-/// A permission is a fixed point (ν(x) = x) iff the trifecta obligations
+/// A permission is a fixed point (ν(x) = x) iff the uninhabitable_state obligations
 /// are already present in the obligations set.
 proof fn proof_nucleus_fixed_point_characterization(p: Perm)
     requires
         valid_perm(p),
     ensures
         (nucleus(p) == p) <==> (
-            obs_union(p.obs, trifecta_obligations(p.caps)) == p.obs
+            obs_union(p.obs, uninhabitable_state_obligations(p.caps)) == p.obs
         ),
 {
 }
 
-/// Trifecta obligations are monotone under meet: if one input doesn't have
-/// the trifecta, the meet doesn't either, so obligations don't increase.
-proof fn proof_trifecta_obligations_meet_safe(a: CapLattice, b: CapLattice)
+///  UninhabitableState obligations are monotone under meet: if one input doesn't have
+/// the uninhabitable_state, the meet doesn't either, so obligations don't increase.
+proof fn proof_uninhabitable_obligations_meet_safe(a: CapLattice, b: CapLattice)
     requires
         valid_lattice(a),
         valid_lattice(b),
-        !is_trifecta_complete(a),
+        !is_uninhabitable(a),
     ensures
-        trifecta_obligations(lattice_meet(a, b)) == obs_empty(),
+        uninhabitable_state_obligations(lattice_meet(a, b)) == obs_empty(),
 {
-    // If a doesn't have the trifecta, meet(a,b) can't either
-    // (meet only reduces capabilities). trifecta_obligations returns empty.
-    proof_trifecta_meet_monotone(a, b);
+    // If a doesn't have the uninhabitable_state, meet(a,b) can't either
+    // (meet only reduces capabilities). uninhabitable_state_obligations returns empty.
+    proof_uninhabitable_meet_monotone(a, b);
 }
 
 /// The nucleus maps the top element (full permissions) to a safe configuration
@@ -1068,7 +1068,7 @@ proof fn proof_nucleus_top_has_obligations(p: Perm)
         nucleus(p).obs.git_push,
         nucleus(p).obs.create_pr,
 {
-    // Top has all capabilities at Always (2), so trifecta is complete.
+    // Top has all capabilities at Always (2), so uninhabitable_state is complete.
     // All exfiltration vectors are at Always >= LowRisk, so all get obligations.
 }
 
@@ -1080,8 +1080,8 @@ proof fn proof_nucleus_bottom_is_identity(p: Perm)
     ensures
         nucleus(p).obs == p.obs,
 {
-    // Bottom has all capabilities at Never (0), so trifecta is not complete.
-    // trifecta_obligations returns empty, union with empty = identity.
+    // Bottom has all capabilities at Never (0), so uninhabitable_state is not complete.
+    // uninhabitable_state_obligations returns empty, union with empty = identity.
 }
 
 // ============================================================================
@@ -1174,57 +1174,57 @@ proof fn proof_obs_union_is_meet(a: Obs, b: Obs)
 // Fixed Point Helper Lemmas
 // ============================================================================
 
-/// A fixed point's obligations subsume its trifecta obligations.
+/// A fixed point's obligations subsume its uninhabitable_state obligations.
 ///
-/// If ν(p) = p, then p.obs already includes trifecta_obligations(p.caps).
+/// If ν(p) = p, then p.obs already includes uninhabitable_state_obligations(p.caps).
 /// This follows directly from the fixed point characterization.
-proof fn lemma_fixed_point_includes_trifecta(p: Perm)
+proof fn lemma_fixed_point_includes_uninhabitable(p: Perm)
     requires
         valid_perm(p),
         nucleus(p) == p,
     ensures
-        obs_union(p.obs, trifecta_obligations(p.caps)) == p.obs,
+        obs_union(p.obs, uninhabitable_state_obligations(p.caps)) == p.obs,
 {
-    // nucleus(p) = Perm { caps: p.caps, obs: union(p.obs, trifecta_obs(p.caps)), ... }
-    // nucleus(p) == p implies union(p.obs, trifecta_obs(p.caps)) == p.obs
+    // nucleus(p) = Perm { caps: p.caps, obs: union(p.obs, uninhabitable_state_obs(p.caps)), ... }
+    // nucleus(p) == p implies union(p.obs, uninhabitable_state_obs(p.caps)) == p.obs
 }
 
-/// When both inputs are fixed points, trifecta_obligations of their meet
+/// When both inputs are fixed points, uninhabitable_state_obligations of their meet
 /// is subsumed by the union of their obligations.
 ///
-/// Key insight: if trifecta is complete for meet(a,b), then by upward
-/// monotonicity it's complete for both a and b. Each trifecta obligation
+/// Key insight: if uninhabitable_state is complete for meet(a,b), then by upward
+/// monotonicity it's complete for both a and b. Each uninhabitable_state obligation
 /// flag in the meet (e.g., run_bash) requires min(a.f3, b.f3) >= 1,
-/// meaning a.f3 >= 1, so trifecta_obligations(a).run_bash = true,
+/// meaning a.f3 >= 1, so uninhabitable_state_obligations(a).run_bash = true,
 /// and since a is a fixed point, a.obs.run_bash = true.
-proof fn lemma_trifecta_obs_meet_subsumed(a: Perm, b: Perm)
+proof fn lemma_uninhabitable_obs_meet_subsumed(a: Perm, b: Perm)
     requires
         valid_perm(a),
         valid_perm(b),
         nucleus(a) == a,
         nucleus(b) == b,
     ensures
-        obs_union(obs_union(a.obs, b.obs), trifecta_obligations(lattice_meet(a.caps, b.caps)))
+        obs_union(obs_union(a.obs, b.obs), uninhabitable_state_obligations(lattice_meet(a.caps, b.caps)))
             == obs_union(a.obs, b.obs),
 {
-    // First, establish that a.obs and b.obs already include their trifecta obs.
-    lemma_fixed_point_includes_trifecta(a);
-    lemma_fixed_point_includes_trifecta(b);
+    // First, establish that a.obs and b.obs already include their uninhabitable_state obs.
+    lemma_fixed_point_includes_uninhabitable(a);
+    lemma_fixed_point_includes_uninhabitable(b);
 
-    // For the meet's trifecta obligations, we need:
-    // trifecta_obs(meet(a,b)) subsumed by union(a.obs, b.obs)
+    // For the meet's uninhabitable_state obligations, we need:
+    // uninhabitable_state_obs(meet(a,b)) subsumed by union(a.obs, b.obs)
     //
-    // Case 1: trifecta NOT complete for meet(a,b).
-    //   Then trifecta_obligations returns empty. union with empty = identity. ✓
+    // Case 1: uninhabitable_state NOT complete for meet(a,b).
+    //   Then uninhabitable_state_obligations returns empty. union with empty = identity. ✓
     //
-    // Case 2: trifecta IS complete for meet(a,b).
+    // Case 2: uninhabitable_state IS complete for meet(a,b).
     //   Since meet(a,b) ≤ a and meet(a,b) ≤ b (deflationary),
-    //   by trifecta upward monotonicity, trifecta is complete for a and b.
+    //   by uninhabitable_state upward monotonicity, uninhabitable_state is complete for a and b.
     //
     //   For each flag (e.g., run_bash):
-    //     trifecta_obs(meet).run_bash = true
+    //     uninhabitable_state_obs(meet).run_bash = true
     //     → meet.f3 >= 1 → min(a.f3, b.f3) >= 1 → a.f3 >= 1
-    //     → trifecta_obs(a).run_bash = true (since trifecta complete for a)
+    //     → uninhabitable_state_obs(a).run_bash = true (since uninhabitable_state complete for a)
     //     → a.obs.run_bash = true (since a is fixed point)
     //     → union(a.obs, b.obs).run_bash = true ✓
     //
@@ -1235,23 +1235,23 @@ proof fn lemma_trifecta_obs_meet_subsumed(a: Perm, b: Perm)
     proof_meet_preserves_validity(a.caps, b.caps);
     proof_meet_deflationary(a.caps, b.caps);
 
-    if is_trifecta_complete(meet_caps) {
-        // Trifecta is complete for the meet. By upward monotonicity
-        // (meet ≤ a and meet ≤ b), trifecta is complete for both a and b.
-        proof_trifecta_upward_monotone(meet_caps, a.caps);
-        proof_trifecta_upward_monotone(meet_caps, b.caps);
+    if is_uninhabitable(meet_caps) {
+        //  UninhabitableState is complete for the meet. By upward monotonicity
+        // (meet ≤ a and meet ≤ b), uninhabitable_state is complete for both a and b.
+        proof_uninhabitable_upward_monotone(meet_caps, a.caps);
+        proof_uninhabitable_upward_monotone(meet_caps, b.caps);
         // Now Z3 knows:
-        //   is_trifecta_complete(a.caps) && is_trifecta_complete(b.caps)
-        //   a.obs includes trifecta_obs(a.caps) (from fixed point property)
-        //   Each flag in trifecta_obs(meet) implies the flag in trifecta_obs(a)
+        //   is_uninhabitable(a.caps) && is_uninhabitable(b.caps)
+        //   a.obs includes uninhabitable_state_obs(a.caps) (from fixed point property)
+        //   Each flag in uninhabitable_state_obs(meet) implies the flag in uninhabitable_state_obs(a)
         //   which implies the flag in a.obs.
     } else {
-        // Trifecta not complete for meet → trifecta_obligations = empty.
+        //  UninhabitableState not complete for meet → uninhabitable_state_obligations = empty.
         // Union with empty is identity. Trivially holds.
     }
 }
 
-/// On fixed points, perm_meet simplifies: the trifecta_obligations term
+/// On fixed points, perm_meet simplifies: the uninhabitable_state_obligations term
 /// is redundant because it's already subsumed by the input obligations.
 proof fn lemma_perm_meet_on_fixed_points(a: Perm, b: Perm)
     requires
@@ -1262,9 +1262,9 @@ proof fn lemma_perm_meet_on_fixed_points(a: Perm, b: Perm)
     ensures
         perm_meet(a, b).obs == obs_union(a.obs, b.obs),
         perm_meet(a, b).caps == lattice_meet(a.caps, b.caps),
-        perm_meet(a, b).trifecta_constraint == true,
+        perm_meet(a, b).uninhabitable_constraint == true,
 {
-    lemma_trifecta_obs_meet_subsumed(a, b);
+    lemma_uninhabitable_obs_meet_subsumed(a, b);
 }
 
 // ============================================================================
@@ -1313,18 +1313,18 @@ proof fn proof_quotient_meet_associative_on_fixed_points(a: Perm, b: Perm, c: Pe
     let ab = perm_meet(a, b);
     let bc = perm_meet(b, c);
 
-    // ab and bc have trifecta_constraint = true and valid caps
+    // ab and bc have uninhabitable_constraint = true and valid caps
     assert(valid_lattice(ab.caps));
     assert(valid_lattice(bc.caps));
-    assert(ab.trifecta_constraint == true);
-    assert(bc.trifecta_constraint == true);
+    assert(ab.uninhabitable_constraint == true);
+    assert(bc.uninhabitable_constraint == true);
 
     // Prove ab and bc are fixed points so we can use the lemma
     assert(nucleus(ab) == ab) by {
-        lemma_trifecta_obs_meet_subsumed(a, b);
+        lemma_uninhabitable_obs_meet_subsumed(a, b);
     }
     assert(nucleus(bc) == bc) by {
-        lemma_trifecta_obs_meet_subsumed(b, c);
+        lemma_uninhabitable_obs_meet_subsumed(b, c);
     }
 
     // Now apply the simplification to the triple meets
@@ -1342,13 +1342,13 @@ proof fn proof_quotient_meet_associative_on_fixed_points(a: Perm, b: Perm, c: Pe
     // Equal by lattice meet associativity.
     proof_lattice_meet_associative(a.caps, b.caps, c.caps);
 
-    // And trifecta_constraint = true on both sides.
+    // And uninhabitable_constraint = true on both sides.
 }
 
 /// Counterexample: perm_meet is NOT associative on arbitrary (non-fixed-point) inputs.
 ///
-/// Witness: a and b have full caps (trifecta complete) but empty obligations.
-/// c has no private access. The intermediate meet(a,b) triggers trifecta
+/// Witness: a and b have full caps (uninhabitable_state complete) but empty obligations.
+/// c has no private access. The intermediate meet(a,b) triggers uninhabitable_state
 /// obligations that persist, but meet(b,c) doesn't trigger them.
 proof fn proof_perm_meet_not_associative()
     ensures
@@ -1356,12 +1356,12 @@ proof fn proof_perm_meet_not_associative()
             let a = Perm {
                 caps: lattice_top(),
                 obs: obs_empty(),
-                trifecta_constraint: true,
+                uninhabitable_constraint: true,
             };
             let b = Perm {
                 caps: lattice_top(),
                 obs: obs_empty(),
-                trifecta_constraint: true,
+                uninhabitable_constraint: true,
             };
             let c = Perm {
                 caps: CapLattice {
@@ -1369,15 +1369,15 @@ proof fn proof_perm_meet_not_associative()
                     f6: 2, f7: 2, f8: 2, f9: 2, f10: 2, f11: 2,
                 },
                 obs: obs_empty(),
-                trifecta_constraint: true,
+                uninhabitable_constraint: true,
             };
             perm_meet(perm_meet(a, b), c) != perm_meet(a, perm_meet(b, c))
         }),
 {
-    // LHS: meet(a,b) has trifecta complete → adds {t,t,t} obligations
+    // LHS: meet(a,b) has uninhabitable_state complete → adds {t,t,t} obligations
     //       meet(that, c) carries those obligations forward
-    // RHS: meet(b,c) has no private access → no trifecta obligations
-    //       meet(a, that) also has no private access → no trifecta obligations
+    // RHS: meet(b,c) has no private access → no uninhabitable_state obligations
+    //       meet(a, that) also has no private access → no uninhabitable_state obligations
     // LHS.obs = {t,t,t}, RHS.obs = {} — provably different
 }
 
@@ -1404,7 +1404,7 @@ proof fn proof_delegation_ceiling(delegator: Perm, requested: Perm)
     // Caps: meet(delegator.caps, requested.caps) ≤ delegator.caps
     proof_meet_deflationary(delegator.caps, requested.caps);
 
-    // Obs: union(delegator.obs, requested.obs, trifecta_obs) ⊇ delegator.obs
+    // Obs: union(delegator.obs, requested.obs, uninhabitable_state_obs) ⊇ delegator.obs
     // obs_leq checks that delegator.obs implies result.obs — which holds
     // since result.obs is a superset of delegator.obs.
 }
@@ -1429,9 +1429,9 @@ proof fn proof_delegation_chain_monotone(a: Perm, b: Perm, c: Perm)
     // We need valid_perm for the intermediate
     let ab = perm_meet(a, b);
     assert(valid_lattice(ab.caps));
-    assert(ab.trifecta_constraint == true);
+    assert(ab.uninhabitable_constraint == true);
     proof_delegation_ceiling(
-        Perm { caps: ab.caps, obs: ab.obs, trifecta_constraint: ab.trifecta_constraint },
+        Perm { caps: ab.caps, obs: ab.obs, uninhabitable_constraint: ab.uninhabitable_constraint },
         c,
     );
 }
@@ -1761,7 +1761,7 @@ pub open spec fn necessity(p: Perm) -> Perm {
     Perm {
         caps: cap_necessity(p.caps, p.obs),
         obs: p.obs,
-        trifecta_constraint: p.trifecta_constraint,
+        uninhabitable_constraint: p.uninhabitable_constraint,
     }
 }
 
@@ -1929,9 +1929,9 @@ proof fn proof_possibility_distributes_over_join(
 
 /// Necessity and possibility have disjoint effects on fixed points:
 /// if p is a fixed point of ν (already normalized), then □p's capabilities
-/// are exactly the "safe" subset — the trifecta cannot be complete in □p
-/// when p has full trifecta obligations.
-proof fn proof_necessity_breaks_trifecta_on_full_obligations(caps: CapLattice, obs: Obs)
+/// are exactly the "safe" subset — the uninhabitable_state cannot be complete in □p
+/// when p has full uninhabitable_state obligations.
+proof fn proof_necessity_breaks_uninhabitable_on_full_obligations(caps: CapLattice, obs: Obs)
     requires
         valid_lattice(caps),
         obs.run_bash,
@@ -1949,8 +1949,8 @@ proof fn proof_necessity_breaks_trifecta_on_full_obligations(caps: CapLattice, o
 // ============================================================================
 //
 // The WeakeningCost from weakening.rs has:
-//   total = base * trifecta_multiplier * isolation_multiplier
-//   combine(a, b) = Cost { base: a+b, trifecta: max(a,b), isolation: max(a,b) }
+//   total = base * uninhabitable_multiplier * isolation_multiplier
+//   combine(a, b) = Cost { base: a+b, uninhabitable_state: max(a,b), isolation: max(a,b) }
 //
 // We verify that (Cost, combine, zero) forms a commutative monoid.
 // This models portcullis::weakening::WeakeningCost::combine.
@@ -1960,28 +1960,28 @@ proof fn proof_necessity_breaks_trifecta_on_full_obligations(caps: CapLattice, o
 /// Invariant: multipliers ≥ 1 (enforced by valid_cost).
 pub struct Cost {
     pub base: nat,
-    pub trifecta_mult: nat,
+    pub uninhabitable_mult: nat,
     pub isolation_mult: nat,
 }
 
 /// A cost is valid when multipliers are ≥ 1.
 pub open spec fn valid_cost(c: Cost) -> bool {
-    c.trifecta_mult >= 1 && c.isolation_mult >= 1
+    c.uninhabitable_mult >= 1 && c.isolation_mult >= 1
 }
 
 /// The zero cost (identity for combine).
 pub open spec fn cost_zero() -> Cost {
-    Cost { base: 0, trifecta_mult: 1, isolation_mult: 1 }
+    Cost { base: 0, uninhabitable_mult: 1, isolation_mult: 1 }
 }
 
 /// Combine two costs: additive base, max multipliers.
 pub open spec fn cost_combine(a: Cost, b: Cost) -> Cost {
     Cost {
         base: a.base + b.base,
-        trifecta_mult: if a.trifecta_mult >= b.trifecta_mult {
-            a.trifecta_mult
+        uninhabitable_mult: if a.uninhabitable_mult >= b.uninhabitable_mult {
+            a.uninhabitable_mult
         } else {
-            b.trifecta_mult
+            b.uninhabitable_mult
         },
         isolation_mult: if a.isolation_mult >= b.isolation_mult {
             a.isolation_mult
@@ -1991,9 +1991,9 @@ pub open spec fn cost_combine(a: Cost, b: Cost) -> Cost {
     }
 }
 
-/// The total cost: base × trifecta × isolation.
+/// The total cost: base × uninhabitable_state × isolation.
 pub open spec fn cost_total(c: Cost) -> nat {
-    c.base * c.trifecta_mult * c.isolation_mult
+    c.base * c.uninhabitable_mult * c.isolation_mult
 }
 
 /// combine preserves validity.
@@ -2069,13 +2069,13 @@ proof fn proof_cost_total_nonneg(c: Cost)
 // ============================================================================
 
 // ============================================================================
-// Tier A: Trifecta Risk Grading
+// Tier A:  UninhabitableState Risk Grading
 // ============================================================================
 
-/// Count of trifecta components present at ≥ LowRisk.
+/// Count of uninhabitable_state components present at ≥ LowRisk.
 ///
-/// Models IncompatibilityConstraint::trifecta_risk() counting logic.
-pub open spec fn trifecta_count(c: CapLattice) -> nat {
+/// Models IncompatibilityConstraint::state_risk() counting logic.
+pub open spec fn uninhabitable_state_count(c: CapLattice) -> nat {
     (if has_private_access(c) { 1nat } else { 0nat })
     + (if has_untrusted_content(c) { 1nat } else { 0nat })
     + (if has_exfiltration(c) { 1nat } else { 0nat })
@@ -2083,35 +2083,35 @@ pub open spec fn trifecta_count(c: CapLattice) -> nat {
 
 /// Risk level: 0=None, 1=Low, 2=Medium, 3=Complete.
 ///
-/// Models TrifectaRisk enum as u8.
-pub open spec fn trifecta_risk_level(c: CapLattice) -> nat {
-    trifecta_count(c)
+/// Models StateRisk enum as u8.
+pub open spec fn state_risk_level(c: CapLattice) -> nat {
+    uninhabitable_state_count(c)
 }
 
-/// Trifecta count is bounded: always ∈ {0, 1, 2, 3}.
-proof fn proof_trifecta_count_bounded(c: CapLattice)
+///  UninhabitableState count is bounded: always ∈ {0, 1, 2, 3}.
+proof fn proof_uninhabitable_count_bounded(c: CapLattice)
     requires
         valid_lattice(c),
     ensures
-        trifecta_count(c) <= 3,
+        uninhabitable_state_count(c) <= 3,
 {
 }
 
-/// Trifecta risk == 3 (Complete) iff all three components present.
-proof fn proof_trifecta_complete_iff_count_three(c: CapLattice)
+///  UninhabitableState risk == 3 (Complete) iff all three components present.
+proof fn proof_uninhabitable_complete_iff_count_three(c: CapLattice)
     requires
         valid_lattice(c),
     ensures
-        is_trifecta_complete(c) <==> trifecta_count(c) == 3,
+        is_uninhabitable(c) <==> uninhabitable_state_count(c) == 3,
 {
 }
 
-/// Bottom has zero trifecta risk.
-proof fn proof_trifecta_bottom_zero_risk(c: CapLattice)
+/// Bottom has zero uninhabitable_state risk.
+proof fn proof_uninhabitable_bottom_zero_risk(c: CapLattice)
     requires
         c == lattice_bot(),
     ensures
-        trifecta_count(c) == 0,
+        uninhabitable_state_count(c) == 0,
         !has_private_access(c),
         !has_untrusted_content(c),
         !has_exfiltration(c),
@@ -2120,17 +2120,17 @@ proof fn proof_trifecta_bottom_zero_risk(c: CapLattice)
 
 /// Risk is monotone: a ≤ b ⟹ risk(a) ≤ risk(b).
 ///
-/// If a has fewer capabilities than b, a can't have more trifecta
+/// If a has fewer capabilities than b, a can't have more uninhabitable_state
 /// components active than b. Each component is a disjunction of
 /// capability levels ≥ 1, and since a ≤ b pointwise, if a.field ≥ 1
 /// then b.field ≥ 1.
-proof fn proof_trifecta_risk_monotone(a: CapLattice, b: CapLattice)
+proof fn proof_state_risk_monotone(a: CapLattice, b: CapLattice)
     requires
         valid_lattice(a),
         valid_lattice(b),
         lattice_leq(a, b),
     ensures
-        trifecta_count(a) <= trifecta_count(b),
+        uninhabitable_state_count(a) <= uninhabitable_state_count(b),
 {
     // For each component: if a has it active, b must too (since a ≤ b).
     // has_private_access: a.f0 >= 1 ∨ a.f4 >= 1 ∨ a.f5 >= 1
@@ -2143,37 +2143,37 @@ proof fn proof_trifecta_risk_monotone(a: CapLattice, b: CapLattice)
 /// Meet can only decrease or maintain risk.
 ///
 /// risk(a ∧ b) ≤ risk(a) and risk(a ∧ b) ≤ risk(b).
-proof fn proof_trifecta_meet_risk_decreases(a: CapLattice, b: CapLattice)
+proof fn proof_uninhabitable_meet_risk_decreases(a: CapLattice, b: CapLattice)
     requires
         valid_lattice(a),
         valid_lattice(b),
     ensures
-        trifecta_count(lattice_meet(a, b)) <= trifecta_count(a),
-        trifecta_count(lattice_meet(a, b)) <= trifecta_count(b),
+        uninhabitable_state_count(lattice_meet(a, b)) <= uninhabitable_state_count(a),
+        uninhabitable_state_count(lattice_meet(a, b)) <= uninhabitable_state_count(b),
 {
     proof_meet_preserves_validity(a, b);
     proof_meet_deflationary(a, b);
     // meet(a,b) ≤ a, so by risk monotonicity:
-    proof_trifecta_risk_monotone(lattice_meet(a, b), a);
+    proof_state_risk_monotone(lattice_meet(a, b), a);
     // meet(a,b) ≤ b:
     let m = lattice_meet(a, b);
     // Need to show m ≤ b. Since meet is commutative, meet(b,a) = meet(a,b)
     // and meet(b,a) ≤ b.
     proof_lattice_meet_commutative(a, b);
     proof_meet_deflationary(b, a);
-    proof_trifecta_risk_monotone(lattice_meet(a, b), b);
+    proof_state_risk_monotone(lattice_meet(a, b), b);
 }
 
 /// Join can only increase or maintain risk.
 ///
 /// risk(a ∨ b) ≥ risk(a) and risk(a ∨ b) ≥ risk(b).
-proof fn proof_trifecta_join_risk_increases(a: CapLattice, b: CapLattice)
+proof fn proof_uninhabitable_join_risk_increases(a: CapLattice, b: CapLattice)
     requires
         valid_lattice(a),
         valid_lattice(b),
     ensures
-        trifecta_count(lattice_join(a, b)) >= trifecta_count(a),
-        trifecta_count(lattice_join(a, b)) >= trifecta_count(b),
+        uninhabitable_state_count(lattice_join(a, b)) >= uninhabitable_state_count(a),
+        uninhabitable_state_count(lattice_join(a, b)) >= uninhabitable_state_count(b),
 {
     proof_join_preserves_validity(a, b);
     // join(a,b) ≥ a pointwise, so risk monotonicity applies.
@@ -2184,60 +2184,60 @@ proof fn proof_trifecta_join_risk_increases(a: CapLattice, b: CapLattice)
     proof_lattice_absorption_meet_join(a, b);
     // Now lattice_leq(a, join(a,b)) by order consistency
     proof_lattice_order_consistent(a, lattice_join(a, b));
-    proof_trifecta_risk_monotone(a, lattice_join(a, b));
+    proof_state_risk_monotone(a, lattice_join(a, b));
 
     // Similarly b ≤ join(a,b)
     proof_lattice_join_commutative(a, b);
     proof_lattice_absorption_meet_join(b, a);
     proof_lattice_order_consistent(b, lattice_join(b, a));
-    proof_trifecta_risk_monotone(b, lattice_join(a, b));
+    proof_state_risk_monotone(b, lattice_join(a, b));
 }
 
-/// No trifecta ⟹ no obligations.
+/// No uninhabitable_state ⟹ no obligations.
 ///
-/// When the trifecta is not complete, trifecta_obligations returns empty.
-proof fn proof_no_trifecta_no_obligations(c: CapLattice)
+/// When the uninhabitable_state is not complete, uninhabitable_state_obligations returns empty.
+proof fn proof_no_uninhabitable_no_obligations(c: CapLattice)
     requires
         valid_lattice(c),
-        !is_trifecta_complete(c),
+        !is_uninhabitable(c),
     ensures
-        trifecta_obligations(c) == obs_empty(),
+        uninhabitable_state_obligations(c) == obs_empty(),
 {
 }
 
-/// Trifecta obligations only target exfiltration operations.
+///  UninhabitableState obligations only target exfiltration operations.
 ///
-/// The obligations produced by trifecta detection are always a subset
+/// The obligations produced by uninhabitable_state detection are always a subset
 /// of {run_bash, git_push, create_pr} — never for read, search, etc.
-/// This is structural: trifecta_obligations() only sets those 3 flags.
-proof fn proof_trifecta_obligations_only_exfil(c: CapLattice)
+/// This is structural: uninhabitable_state_obligations() only sets those 3 flags.
+proof fn proof_uninhabitable_obligations_only_exfil(c: CapLattice)
     requires
         valid_lattice(c),
     ensures
         // The obligations struct only has run_bash/git_push/create_pr fields.
         // This proof documents that the model matches the production code:
         // obligations_for() only inserts RunBash, GitPush, CreatePr.
-        trifecta_obligations(c).run_bash ==>
-            (is_trifecta_complete(c) && c.f3 >= 1),
-        trifecta_obligations(c).git_push ==>
-            (is_trifecta_complete(c) && c.f9 >= 1),
-        trifecta_obligations(c).create_pr ==>
-            (is_trifecta_complete(c) && c.f10 >= 1),
+        uninhabitable_state_obligations(c).run_bash ==>
+            (is_uninhabitable(c) && c.f3 >= 1),
+        uninhabitable_state_obligations(c).git_push ==>
+            (is_uninhabitable(c) && c.f9 >= 1),
+        uninhabitable_state_obligations(c).create_pr ==>
+            (is_uninhabitable(c) && c.f10 >= 1),
 {
 }
 
-/// Trifecta obligations cover ALL active exfiltration vectors.
+///  UninhabitableState obligations cover ALL active exfiltration vectors.
 ///
-/// If the trifecta is complete and an exfil vector is at ≥ LowRisk,
+/// If the uninhabitable_state is complete and an exfil vector is at ≥ LowRisk,
 /// that operation gets an approval obligation. No exfil vector escapes.
-proof fn proof_trifecta_obligations_cover_active_exfil(c: CapLattice)
+proof fn proof_uninhabitable_obligations_cover_active_exfil(c: CapLattice)
     requires
         valid_lattice(c),
-        is_trifecta_complete(c),
+        is_uninhabitable(c),
     ensures
-        c.f3 >= 1 ==> trifecta_obligations(c).run_bash,
-        c.f9 >= 1 ==> trifecta_obligations(c).git_push,
-        c.f10 >= 1 ==> trifecta_obligations(c).create_pr,
+        c.f3 >= 1 ==> uninhabitable_state_obligations(c).run_bash,
+        c.f9 >= 1 ==> uninhabitable_state_obligations(c).git_push,
+        c.f10 >= 1 ==> uninhabitable_state_obligations(c).create_pr,
 {
 }
 
@@ -2267,14 +2267,14 @@ proof fn proof_normalize_only_adds_obligations(p: Perm)
     ensures
         obs_leq(nucleus(p).obs, p.obs),
 {
-    // nucleus(p).obs = union(p.obs, trifecta_obs(p.caps))
+    // nucleus(p).obs = union(p.obs, uninhabitable_state_obs(p.caps))
     // union with anything is a superset, so leq holds.
 }
 
-/// Normalize is a no-op when trifecta constraint is disabled.
+/// Normalize is a no-op when uninhabitable_state constraint is disabled.
 proof fn proof_normalize_noop_without_constraint(p: Perm)
     requires
-        !p.trifecta_constraint,
+        !p.uninhabitable_constraint,
     ensures
         nucleus(p) == p,
 {
@@ -2303,7 +2303,7 @@ proof fn proof_safe_meet_is_safe(a: Perm, b: Perm)
 //
 // This is the critical enforcement boundary. These proofs verify that
 // the GradedGuard::check_operation() logic correctly blocks dangerous
-// operations under trifecta risk.
+// operations under uninhabitable_state risk.
 // ============================================================================
 
 /// Operations modeled as u8 indices into the CapLattice.
@@ -2334,16 +2334,16 @@ pub open spec fn requires_approval(obs: Obs, op: nat) -> bool {
 /// - Otherwise → allowed
 ///
 /// Note: in the real code, risk is computed from the *same* permission set,
-/// so requires_approval && risk==Complete means the trifecta is complete
+/// so requires_approval && risk==Complete means the uninhabitable_state is complete
 /// and this operation is an exfil vector that has an obligation.
 pub open spec fn check_operation_allowed(obs: Obs, risk: nat, op: nat) -> bool {
     !(requires_approval(obs, op) && risk == 3)
 }
 
-/// Complete trifecta risk + approval required → operation denied.
+/// Complete uninhabitable_state risk + approval required → operation denied.
 ///
 /// This is the core enforcement invariant of GradedGuard::check_operation().
-proof fn proof_check_denies_trifecta_exfil(obs: Obs, op: nat)
+proof fn proof_check_denies_uninhabitable_exfil(obs: Obs, op: nat)
     requires
         requires_approval(obs, op),
     ensures
@@ -2369,10 +2369,10 @@ proof fn proof_check_allows_below_complete(obs: Obs, risk: nat, op: nat)
 {
 }
 
-/// **THE CRITICAL PROOF**: normalize + check_operation blocks lethal trifecta exfil.
+/// **THE CRITICAL PROOF**: normalize + check_operation blocks uninhabitable_state exfil.
 ///
 /// If we normalize a permission set and then check an exfiltration operation:
-/// - If the trifecta is complete, the operation is denied
+/// - If the uninhabitable_state is complete, the operation is denied
 /// - Specifically: for any exfil op that's active (≥ LowRisk), normalize
 ///   adds an obligation, and check_operation with risk=Complete denies it
 ///
@@ -2381,16 +2381,16 @@ proof fn proof_check_allows_below_complete(obs: Obs, risk: nat, op: nat)
 proof fn proof_normalized_blocks_complete_exfil(p: Perm)
     requires
         valid_perm(p),
-        is_trifecta_complete(p.caps),
+        is_uninhabitable(p.caps),
         // run_bash is active (exfil vector present)
         p.caps.f3 >= 1,
     ensures
         // After normalize, check_operation denies run_bash
         !check_operation_allowed(nucleus(p).obs, 3, 3),
 {
-    // Step 1: trifecta is complete, so trifecta_obligations adds run_bash obligation
-    // Step 2: nucleus(p).obs = union(p.obs, trifecta_obligations(p.caps))
-    // Step 3: trifecta_obligations(p.caps).run_bash == true (since complete && f3 >= 1)
+    // Step 1: uninhabitable_state is complete, so uninhabitable_state_obligations adds run_bash obligation
+    // Step 2: nucleus(p).obs = union(p.obs, uninhabitable_state_obligations(p.caps))
+    // Step 3: uninhabitable_state_obligations(p.caps).run_bash == true (since complete && f3 >= 1)
     // Step 4: therefore nucleus(p).obs.run_bash == true
     // Step 5: requires_approval(nucleus(p).obs, 3) == true
     // Step 6: check_operation_allowed(obs, 3, 3) == !(true && true) == false
@@ -2400,7 +2400,7 @@ proof fn proof_normalized_blocks_complete_exfil(p: Perm)
 proof fn proof_normalized_blocks_git_push_exfil(p: Perm)
     requires
         valid_perm(p),
-        is_trifecta_complete(p.caps),
+        is_uninhabitable(p.caps),
         p.caps.f9 >= 1,
     ensures
         !check_operation_allowed(nucleus(p).obs, 3, 9),
@@ -2411,7 +2411,7 @@ proof fn proof_normalized_blocks_git_push_exfil(p: Perm)
 proof fn proof_normalized_blocks_create_pr_exfil(p: Perm)
     requires
         valid_perm(p),
-        is_trifecta_complete(p.caps),
+        is_uninhabitable(p.caps),
         p.caps.f10 >= 1,
     ensures
         !check_operation_allowed(nucleus(p).obs, 3, 10),
@@ -2421,7 +2421,7 @@ proof fn proof_normalized_blocks_create_pr_exfil(p: Perm)
 /// Read-only profile has no exfil obligations → all operations allowed.
 ///
 /// A permission set with no exfiltration capability cannot have
-/// a complete trifecta, so no obligations are added by normalize.
+/// a uninhabitable_state, so no obligations are added by normalize.
 proof fn proof_read_only_always_safe(p: Perm)
     requires
         valid_perm(p),
@@ -2439,12 +2439,12 @@ proof fn proof_read_only_always_safe(p: Perm)
         !requires_approval(nucleus(p).obs, 9),
         !requires_approval(nucleus(p).obs, 10),
         // So all operations pass the guard
-        check_operation_allowed(nucleus(p).obs, trifecta_risk_level(p.caps) as nat, 3),
-        check_operation_allowed(nucleus(p).obs, trifecta_risk_level(p.caps) as nat, 9),
-        check_operation_allowed(nucleus(p).obs, trifecta_risk_level(p.caps) as nat, 10),
+        check_operation_allowed(nucleus(p).obs, state_risk_level(p.caps) as nat, 3),
+        check_operation_allowed(nucleus(p).obs, state_risk_level(p.caps) as nat, 9),
+        check_operation_allowed(nucleus(p).obs, state_risk_level(p.caps) as nat, 10),
 {
-    // With no exfil capability, trifecta can't be complete (missing component 3).
-    // So trifecta_obligations returns empty. nucleus(p).obs = union(p.obs, empty) = p.obs.
+    // With no exfil capability, uninhabitable_state can't be complete (missing component 3).
+    // So uninhabitable_state_obligations returns empty. nucleus(p).obs = union(p.obs, empty) = p.obs.
     // p.obs has no exfil obligations, so requires_approval is false for all exfil ops.
 }
 
@@ -2484,18 +2484,18 @@ proof fn proof_guard_monotone_obligations(a_obs: Obs, b_obs: Obs, risk: nat, op:
     //     So check_operation_allowed(a_obs, risk, op) = true. ✓
 }
 
-/// **END-TO-END TRIFECTA SAFETY**: The full composition.
+/// **END-TO-END uninhabitable_state SAFETY**: The full composition.
 ///
-/// For ANY permission set with a complete trifecta and ANY active
+/// For ANY permission set with a uninhabitable_state and ANY active
 /// exfiltration operation: normalize → compute risk → check_operation
 /// results in DENIAL.
 ///
 /// This proves the system as a whole prevents autonomous exfiltration
-/// when the lethal trifecta is present.
-proof fn proof_end_to_end_trifecta_safe(p: Perm, op: nat)
+/// when the uninhabitable_state is present.
+proof fn proof_end_to_end_uninhabitable_safe(p: Perm, op: nat)
     requires
         valid_perm(p),
-        is_trifecta_complete(p.caps),
+        is_uninhabitable(p.caps),
         is_exfil_op(op),
         // The exfil op is active in the capability set
         (op == 3 ==> p.caps.f3 >= 1),
@@ -2505,19 +2505,19 @@ proof fn proof_end_to_end_trifecta_safe(p: Perm, op: nat)
         // After normalize, the operation is denied at Complete risk
         !check_operation_allowed(
             nucleus(p).obs,
-            trifecta_risk_level(p.caps) as nat,
+            state_risk_level(p.caps) as nat,
             op,
         ),
 {
-    // Step 1: trifecta is complete → risk level = 3
-    proof_trifecta_complete_iff_count_three(p.caps);
-    assert(trifecta_risk_level(p.caps) == 3);
+    // Step 1: uninhabitable_state is complete → risk level = 3
+    proof_uninhabitable_complete_iff_count_three(p.caps);
+    assert(state_risk_level(p.caps) == 3);
 
     // Step 2: normalize adds obligations for active exfil vectors
-    // nucleus(p).obs = union(p.obs, trifecta_obligations(p.caps))
-    // Since trifecta is complete and the exfil op is active,
+    // nucleus(p).obs = union(p.obs, uninhabitable_state_obligations(p.caps))
+    // Since uninhabitable_state is complete and the exfil op is active,
     // the corresponding obligation flag is set.
-    proof_trifecta_obligations_cover_active_exfil(p.caps);
+    proof_uninhabitable_obligations_cover_active_exfil(p.caps);
 
     // Step 3: requires_approval is true for this op
     // Step 4: check_operation with risk=3 denies
@@ -2659,30 +2659,30 @@ fn exec_has_exfiltration(c: CapLattice) -> (result: bool)
     c.f3 >= 1 || c.f9 >= 1 || c.f10 >= 1
 }
 
-/// Executable: check if the lethal trifecta is complete.
+/// Executable: check if the uninhabitable_state is complete.
 ///
-/// Mirrors: `IncompatibilityConstraint::is_trifecta_complete()` in production.
-fn exec_is_trifecta_complete(c: CapLattice) -> (result: bool)
+/// Mirrors: `IncompatibilityConstraint::is_uninhabitable()` in production.
+fn exec_is_uninhabitable(c: CapLattice) -> (result: bool)
     requires
         valid_lattice(c),
     ensures
-        result == is_trifecta_complete(c),
+        result == is_uninhabitable(c),
 {
     exec_has_private_access(c)
         && exec_has_untrusted_content(c)
         && exec_has_exfiltration(c)
 }
 
-/// Executable: compute trifecta risk level (0=None, 1=Low, 2=Medium, 3=Complete).
+/// Executable: compute uninhabitable_state risk level (0=None, 1=Low, 2=Medium, 3=Complete).
 ///
-/// Mirrors: `IncompatibilityConstraint::trifecta_risk()` in production.
+/// Mirrors: `IncompatibilityConstraint::state_risk()` in production.
 /// This is the function HN skeptics care about — it's real Rust, and Verus
 /// verifies it matches the spec that all the algebraic proofs reference.
-fn exec_trifecta_risk(c: CapLattice) -> (risk: u8)
+fn exec_state_risk(c: CapLattice) -> (risk: u8)
     requires
         valid_lattice(c),
     ensures
-        risk as nat == trifecta_count(c),
+        risk as nat == uninhabitable_state_count(c),
         risk <= 3,
 {
     let p: u8 = if exec_has_private_access(c) { 1 } else { 0 };
@@ -2691,17 +2691,17 @@ fn exec_trifecta_risk(c: CapLattice) -> (risk: u8)
     p + u + e
 }
 
-/// Executable: compute trifecta obligations.
+/// Executable: compute uninhabitable_state obligations.
 ///
 /// Mirrors: `IncompatibilityConstraint::obligations_for()` in production.
-/// If trifecta is complete, gates each active exfiltration vector.
-fn exec_trifecta_obligations(c: CapLattice) -> (obs: Obs)
+/// If uninhabitable_state is complete, gates each active exfiltration vector.
+fn exec_uninhabitable_obligations(c: CapLattice) -> (obs: Obs)
     requires
         valid_lattice(c),
     ensures
-        obs == trifecta_obligations(c),
+        obs == uninhabitable_state_obligations(c),
 {
-    if exec_is_trifecta_complete(c) {
+    if exec_is_uninhabitable(c) {
         Obs {
             run_bash: c.f3 >= 1,
             git_push: c.f9 >= 1,
@@ -2729,19 +2729,19 @@ fn exec_obs_union(a: Obs, b: Obs) -> (result: Obs)
 /// Executable: the nucleus operator (normalize).
 ///
 /// Mirrors: `PermissionLattice::normalize()` in production.
-/// Adds trifecta obligations if constraint is enabled.
+/// Adds uninhabitable_state obligations if constraint is enabled.
 fn exec_nucleus(p: Perm) -> (result: Perm)
     requires
         valid_perm(p),
     ensures
         result == nucleus(p),
 {
-    if p.trifecta_constraint {
-        let tri_obs = exec_trifecta_obligations(p.caps);
+    if p.uninhabitable_constraint {
+        let tri_obs = exec_uninhabitable_obligations(p.caps);
         Perm {
             caps: p.caps,
             obs: exec_obs_union(p.obs, tri_obs),
-            trifecta_constraint: true,
+            uninhabitable_constraint: true,
         }
     } else {
         p
@@ -2784,22 +2784,22 @@ fn exec_budget_allows(consumed: u64, max_budget: u64, amount: u64) -> (allowed: 
     consumed + amount <= max_budget
 }
 
-/// **THE CROWN JEWEL**: Executable end-to-end trifecta safety.
+/// **THE CROWN JEWEL**: Executable end-to-end uninhabitable_state safety.
 ///
 /// This is a REAL Rust function that Verus verifies will ALWAYS deny
-/// autonomous exfiltration when the lethal trifecta is present.
+/// autonomous exfiltration when the uninhabitable_state is present.
 ///
 /// The function chains: normalize → risk computation → guard decision.
-/// Verus proves the postcondition: if trifecta complete + exfil op active → denied.
+/// Verus proves the postcondition: if uninhabitable_state complete + exfil op active → denied.
 ///
 /// This directly addresses the audit findings in executable code, not just a model.
 fn exec_end_to_end_check(p: Perm, op: u8) -> (allowed: bool)
     requires
         valid_perm(p),
     ensures
-        // THE SAFETY GUARANTEE: if trifecta is complete and op is an active
+        // THE SAFETY GUARANTEE: if uninhabitable_state is complete and op is an active
         // exfil vector, the operation is DENIED after normalization.
-        (is_trifecta_complete(p.caps)
+        (is_uninhabitable(p.caps)
             && is_exfil_op(op as nat)
             && (op == 3 ==> p.caps.f3 >= 1)
             && (op == 9 ==> p.caps.f9 >= 1)
@@ -2807,19 +2807,19 @@ fn exec_end_to_end_check(p: Perm, op: u8) -> (allowed: bool)
             ==> !allowed,
 {
     let normalized = exec_nucleus(p);
-    let risk = exec_trifecta_risk(normalized.caps);
+    let risk = exec_state_risk(normalized.caps);
     let result = exec_check_operation(normalized.obs, risk, op);
 
     // Help Z3 connect the dots through the exec chain
     proof {
-        if is_trifecta_complete(p.caps)
+        if is_uninhabitable(p.caps)
             && is_exfil_op(op as nat)
             && (op == 3 ==> p.caps.f3 >= 1)
             && (op == 9 ==> p.caps.f9 >= 1)
             && (op == 10 ==> p.caps.f10 >= 1)
         {
-            proof_trifecta_complete_iff_count_three(p.caps);
-            proof_trifecta_obligations_cover_active_exfil(p.caps);
+            proof_uninhabitable_complete_iff_count_three(p.caps);
+            proof_uninhabitable_obligations_cover_active_exfil(p.caps);
         }
     }
 
@@ -2833,7 +2833,7 @@ fn exec_end_to_end_check(p: Perm, op: u8) -> (allowed: bool)
 // 1. perm_leq is transitive (needed for chain composition)
 // 2. n-hop chains maintain monotone attenuation
 // 3. meet witness correctness (justification matches actual meet)
-// 4. chain properties: depth bounded, trifecta preserved
+// 4. chain properties: depth bounded, uninhabitable_state preserved
 // ============================================================================
 
 // --- Transitivity of the product lattice order ---
@@ -2955,21 +2955,21 @@ proof fn proof_meet_witness_correct(parent: Perm, requested: Perm)
     // therefore perm_meet(parent, requested) ≤ requested
 }
 
-/// **Chain delegation preserves trifecta constraint**: If the root has
-/// trifecta_constraint = true, then all chain elements do too.
+/// **Chain delegation preserves uninhabitable_state constraint**: If the root has
+/// uninhabitable_constraint = true, then all chain elements do too.
 ///
-/// This is immediate from perm_meet: if either input has trifecta_constraint,
+/// This is immediate from perm_meet: if either input has uninhabitable_constraint,
 /// the result has it too. So once it's set, it propagates.
-proof fn proof_chain_delegation_preserves_trifecta(parent: Perm, requested: Perm)
+proof fn proof_chain_delegation_preserves_uninhabitable(parent: Perm, requested: Perm)
     requires
         valid_perm(parent),
         valid_perm(requested),
-        parent.trifecta_constraint,
+        parent.uninhabitable_constraint,
     ensures
-        perm_meet(parent, requested).trifecta_constraint,
+        perm_meet(parent, requested).uninhabitable_constraint,
 {
-    // perm_meet sets trifecta_constraint = a.tc || b.tc
-    // Since parent.trifecta_constraint is true, the result is true.
+    // perm_meet sets uninhabitable_constraint = a.tc || b.tc
+    // Since parent.uninhabitable_constraint is true, the result is true.
 }
 
 /// **Monotone chain unforgeable**: In a valid chain where each step has
@@ -3074,7 +3074,7 @@ pub open spec fn preset_permissive() -> Perm {
     Perm {
         caps: caps,
         obs: Obs { run_bash: true, git_push: true, create_pr: true },
-        trifecta_constraint: true,
+        uninhabitable_constraint: true,
     }
 }
 
@@ -3085,7 +3085,7 @@ pub open spec fn preset_restrictive() -> Perm {
             f6: 0, f7: 0, f8: 0, f9: 0, f10: 0, f11: 0,
         },
         obs: obs_empty(),
-        trifecta_constraint: true,
+        uninhabitable_constraint: true,
     }
 }
 
@@ -3096,7 +3096,7 @@ pub open spec fn preset_read_only() -> Perm {
             f6: 0, f7: 0, f8: 0, f9: 0, f10: 0, f11: 0,
         },
         obs: obs_empty(),
-        trifecta_constraint: true,
+        uninhabitable_constraint: true,
     }
 }
 
@@ -3107,7 +3107,7 @@ pub open spec fn preset_network_only() -> Perm {
             f6: 1, f7: 1, f8: 0, f9: 0, f10: 0, f11: 0,
         },
         obs: obs_empty(),
-        trifecta_constraint: true,
+        uninhabitable_constraint: true,
     }
 }
 
@@ -3118,7 +3118,7 @@ pub open spec fn preset_web_research() -> Perm {
             f6: 1, f7: 1, f8: 0, f9: 0, f10: 0, f11: 0,
         },
         obs: obs_empty(),
-        trifecta_constraint: true,
+        uninhabitable_constraint: true,
     }
 }
 
@@ -3129,7 +3129,7 @@ pub open spec fn preset_code_review() -> Perm {
             f6: 1, f7: 0, f8: 0, f9: 0, f10: 0, f11: 0,
         },
         obs: obs_empty(),
-        trifecta_constraint: true,
+        uninhabitable_constraint: true,
     }
 }
 
@@ -3140,7 +3140,7 @@ pub open spec fn preset_edit_only() -> Perm {
             f6: 0, f7: 0, f8: 0, f9: 0, f10: 0, f11: 0,
         },
         obs: obs_empty(),
-        trifecta_constraint: true,
+        uninhabitable_constraint: true,
     }
 }
 
@@ -3185,9 +3185,9 @@ proof fn proof_presets_are_valid()
 
 proof fn proof_normalized_perm_is_fixed_point(p: Perm)
     requires
-        p.trifecta_constraint,
-        obs_leq(p.obs, obs_union(p.obs, trifecta_obligations(p.caps))),
-        obs_leq(obs_union(p.obs, trifecta_obligations(p.caps)), p.obs),
+        p.uninhabitable_constraint,
+        obs_leq(p.obs, obs_union(p.obs, uninhabitable_state_obligations(p.caps))),
+        obs_leq(obs_union(p.obs, uninhabitable_state_obligations(p.caps)), p.obs),
     ensures
         nucleus(p) == p,
 {}
@@ -3195,7 +3195,7 @@ proof fn proof_normalized_perm_is_fixed_point(p: Perm)
 // ============================================================================
 // Phase 5 — Tier F: Delegation-Guard Composition Proofs
 //
-// THE GRAND THEOREM: verified delegation chain + trifecta → DENIED.
+// THE GRAND THEOREM: verified delegation chain + uninhabitable_state → DENIED.
 // ============================================================================
 
 pub open spec fn verified_chain_invariant(root: Perm, leaf: Perm) -> bool {
@@ -3203,17 +3203,17 @@ pub open spec fn verified_chain_invariant(root: Perm, leaf: Perm) -> bool {
     && nucleus(root) == root
     && nucleus(leaf) == leaf
     && perm_leq(leaf, root)
-    && leaf.trifecta_constraint
+    && leaf.uninhabitable_constraint
 }
 
 pub open spec fn pipeline_denies_exfil(leaf: Perm, op: nat) -> bool {
-    is_trifecta_complete(leaf.caps) && is_exfil_op(op) ==>
-        !check_operation_allowed(leaf.obs, trifecta_risk_level(leaf.caps), op)
+    is_uninhabitable(leaf.caps) && is_exfil_op(op) ==>
+        !check_operation_allowed(leaf.obs, state_risk_level(leaf.caps), op)
 }
 
-proof fn proof_perm_meet_preserves_trifecta(a: Perm, b: Perm)
-    requires a.trifecta_constraint || b.trifecta_constraint,
-    ensures (perm_meet(a, b)).trifecta_constraint,
+proof fn proof_perm_meet_preserves_uninhabitable(a: Perm, b: Perm)
+    requires a.uninhabitable_constraint || b.uninhabitable_constraint,
+    ensures (perm_meet(a, b)).uninhabitable_constraint,
 {}
 
 proof fn proof_delegation_preserves_fixed_point(root: Perm, requested: Perm)
@@ -3241,8 +3241,8 @@ proof fn proof_chain_two_hop_fixed_point(root: Perm, req1: Perm, req2: Perm)
     proof_delegation_preserves_fixed_point(root, req1);
     assert(nucleus(mid) == mid);
     assert(valid_lattice(mid.caps));
-    assert(mid.trifecta_constraint);
-    let mid_perm = Perm { caps: mid.caps, obs: mid.obs, trifecta_constraint: mid.trifecta_constraint };
+    assert(mid.uninhabitable_constraint);
+    let mid_perm = Perm { caps: mid.caps, obs: mid.obs, uninhabitable_constraint: mid.uninhabitable_constraint };
     proof_delegation_preserves_fixed_point(mid_perm, req2);
 }
 
@@ -3250,29 +3250,29 @@ proof fn proof_fixed_point_guard_denies_exfil(leaf: Perm, op: nat)
     requires
         valid_perm(leaf),
         nucleus(leaf) == leaf,
-        is_trifecta_complete(leaf.caps),
+        is_uninhabitable(leaf.caps),
         is_exfil_op(op),
         (op == 3 ==> leaf.caps.f3 >= 1),
         (op == 9 ==> leaf.caps.f9 >= 1),
         (op == 10 ==> leaf.caps.f10 >= 1),
     ensures
-        !check_operation_allowed(leaf.obs, trifecta_risk_level(leaf.caps), op),
+        !check_operation_allowed(leaf.obs, state_risk_level(leaf.caps), op),
 {
-    proof_trifecta_complete_iff_count_three(leaf.caps);
-    proof_trifecta_obligations_cover_active_exfil(leaf.caps);
+    proof_uninhabitable_complete_iff_count_three(leaf.caps);
+    proof_uninhabitable_obligations_cover_active_exfil(leaf.caps);
 }
 
 /// THE GRAND THEOREM: verified delegation chain denies exfiltration.
 proof fn proof_verified_chain_denies_exfil(root: Perm, leaf: Perm, op: nat)
     requires
         verified_chain_invariant(root, leaf),
-        is_trifecta_complete(leaf.caps),
+        is_uninhabitable(leaf.caps),
         is_exfil_op(op),
         (op == 3 ==> leaf.caps.f3 >= 1),
         (op == 9 ==> leaf.caps.f9 >= 1),
         (op == 10 ==> leaf.caps.f10 >= 1),
     ensures
-        !check_operation_allowed(leaf.obs, trifecta_risk_level(leaf.caps), op),
+        !check_operation_allowed(leaf.obs, state_risk_level(leaf.caps), op),
 {
     assert(valid_perm(leaf));
     assert(nucleus(leaf) == leaf);
@@ -3307,13 +3307,13 @@ proof fn proof_permissive_delegation_guard(requested: Perm, op: nat)
         valid_perm(requested),
         valid_lattice(requested.caps),
         is_exfil_op(op),
-        is_trifecta_complete(lattice_meet(preset_permissive().caps, requested.caps)),
+        is_uninhabitable(lattice_meet(preset_permissive().caps, requested.caps)),
         (op == 3 ==> cap_meet(preset_permissive().caps.f3, requested.caps.f3) >= 1),
         (op == 9 ==> cap_meet(preset_permissive().caps.f9, requested.caps.f9) >= 1),
         (op == 10 ==> cap_meet(preset_permissive().caps.f10, requested.caps.f10) >= 1),
     ensures ({
         let leaf = perm_meet(preset_permissive(), requested);
-        !check_operation_allowed(leaf.obs, trifecta_risk_level(leaf.caps), op)
+        !check_operation_allowed(leaf.obs, state_risk_level(leaf.caps), op)
     }),
 {
     let root = preset_permissive();
@@ -3339,7 +3339,7 @@ fn exec_verified_chain_guard_check(
         allowed ==> !(
             perm_leq(mid, root)
             && perm_leq(leaf, mid)
-            && is_trifecta_complete(leaf.caps)
+            && is_uninhabitable(leaf.caps)
             && is_exfil_op(op as nat)
             && (op == 3 ==> leaf.caps.f3 >= 1)
             && (op == 9 ==> leaf.caps.f9 >= 1)
@@ -3353,18 +3353,18 @@ fn exec_verified_chain_guard_check(
         return false;
     }
 
-    let risk = exec_trifecta_risk(leaf.caps);
+    let risk = exec_state_risk(leaf.caps);
     let allowed = exec_check_operation(leaf.obs, risk, op);
 
     proof {
-        if is_trifecta_complete(leaf.caps)
+        if is_uninhabitable(leaf.caps)
             && is_exfil_op(op as nat)
             && (op == 3 ==> leaf.caps.f3 >= 1)
             && (op == 9 ==> leaf.caps.f9 >= 1)
             && (op == 10 ==> leaf.caps.f10 >= 1)
         {
-            proof_trifecta_complete_iff_count_three(leaf.caps);
-            proof_trifecta_obligations_cover_active_exfil(leaf.caps);
+            proof_uninhabitable_complete_iff_count_three(leaf.caps);
+            proof_uninhabitable_obligations_cover_active_exfil(leaf.caps);
         }
     }
 
@@ -3377,7 +3377,7 @@ fn exec_verified_chain_guard_check(
 
 pub struct CostModel {
     pub base: nat,
-    pub trifecta_mult: nat,
+    pub uninhabitable_mult: nat,
     pub isolation_mult: nat,
 }
 
@@ -3385,7 +3385,7 @@ pub open spec fn cap_weakening_cost(from: CapLevel, to: CapLevel) -> nat {
     if to > from { (to - from) as nat } else { 0 }
 }
 
-pub open spec fn trifecta_multiplier(risk_before: nat, risk_after: nat) -> nat {
+pub open spec fn uninhabitable_multiplier(risk_before: nat, risk_after: nat) -> nat {
     if risk_after > risk_before {
         (1 + (risk_after - risk_before)) as nat
     } else {
@@ -3412,13 +3412,13 @@ proof fn proof_cap_cost_monotone(from: CapLevel, mid: CapLevel, to: CapLevel)
         cap_weakening_cost(from, mid) <= cap_weakening_cost(from, to),
 {}
 
-proof fn proof_trifecta_mult_monotone(
+proof fn proof_uninhabitable_mult_monotone(
     risk_before: nat, risk_mid: nat, risk_after: nat
 )
     requires risk_before <= risk_mid, risk_mid <= risk_after,
     ensures
-        trifecta_multiplier(risk_before, risk_mid)
-            <= trifecta_multiplier(risk_before, risk_after),
+        uninhabitable_multiplier(risk_before, risk_mid)
+            <= uninhabitable_multiplier(risk_before, risk_after),
 {}
 
 proof fn proof_no_weakening_zero_cost(level: CapLevel)
@@ -3441,9 +3441,9 @@ proof fn proof_trust_ceiling_monotone(
         lattice_leq(trust_enforce(a, ceiling), trust_enforce(b, ceiling)),
 {}
 
-proof fn proof_untrusted_profile_no_trifecta(caps: CapLattice)
+proof fn proof_untrusted_profile_no_uninhabitable(caps: CapLattice)
     requires valid_lattice(caps),
-    ensures !is_trifecta_complete(trust_enforce(caps, untrusted_ceiling())),
+    ensures !is_uninhabitable(trust_enforce(caps, untrusted_ceiling())),
 {
     let result = trust_enforce(caps, untrusted_ceiling());
     assert(result.f3 == cap_meet(caps.f3, 0));
@@ -3458,17 +3458,17 @@ proof fn proof_market_cost_commutative(a: Cost, b: Cost)
 }
 
 // ============================================================================
-// Phase 6: GradedTaintGuard — TaintSet Monoid & Guard Decision Proofs
+// Phase 6: GradedExposureGuard — ExposureSet Monoid & Guard Decision Proofs
 //
-// The GradedTaintGuard uses a 3-bit semilattice (TaintSet) as the grade
-// monoid in a graded monad. Each tool call is tagged with a TaintLabel
+// The GradedExposureGuard uses a 3-bit semilattice (ExposureSet) as the grade
+// monoid in a graded monad. Each tool call is tagged with a ExposureLabel
 // (PrivateData, UntrustedContent, ExfilVector), and the session's accumulated
-// taint is the monoidal composition (union). When the trifecta is complete
+// exposure is the monoidal composition (union). When the uninhabitable_state is complete
 // (all 3 legs present), exfiltration operations are blocked.
 //
 // These proofs verify:
-// - Tier H: TaintSet is a valid monoid + join-semilattice (5 proofs)
-// - Tier I: Taint classification is correct and risk is monotone (4 proofs)
+// - Tier H: ExposureSet is a valid monoid + join-semilattice (5 proofs)
+// - Tier I: Exposure classification is correct and risk is monotone (4 proofs)
 // - Tier J: Guard decisions are sound (4 proofs)
 // - Tier K: Bridge to existing nucleus model (2 proofs)
 // - Tier L: Executable spec functions (5 exec fns)
@@ -3476,74 +3476,74 @@ proof fn proof_market_cost_commutative(a: Cost, b: Cost)
 
 // --- Spec Types ---
 
-/// Spec mirror of portcullis::guard::TaintSet.
-/// Three booleans tracking which trifecta legs have been touched.
+/// Spec mirror of portcullis::guard::ExposureSet.
+/// Three booleans tracking which exposure legs have been touched.
 #[derive(Clone, Copy)]
-pub struct SpecTaintSet {
+pub struct SpecExposureSet {
     pub private_data: bool,
     pub untrusted_content: bool,
     pub exfil_vector: bool,
 }
 
-/// Empty taint set — the monoid identity.
-pub open spec fn taint_empty() -> SpecTaintSet {
-    SpecTaintSet { private_data: false, untrusted_content: false, exfil_vector: false }
+/// Empty exposure set — the monoid identity.
+pub open spec fn exposure_empty() -> SpecExposureSet {
+    SpecExposureSet { private_data: false, untrusted_content: false, exfil_vector: false }
 }
 
-/// Union of two taint sets — the monoid operation.
-pub open spec fn taint_union(a: SpecTaintSet, b: SpecTaintSet) -> SpecTaintSet {
-    SpecTaintSet {
+/// Union of two exposure sets — the monoid operation.
+pub open spec fn exposure_union(a: SpecExposureSet, b: SpecExposureSet) -> SpecExposureSet {
+    SpecExposureSet {
         private_data: a.private_data || b.private_data,
         untrusted_content: a.untrusted_content || b.untrusted_content,
         exfil_vector: a.exfil_vector || b.exfil_vector,
     }
 }
 
-/// Singleton taint set from a label (0=PrivateData, 1=UntrustedContent, 2=ExfilVector).
-pub open spec fn taint_singleton(label: nat) -> SpecTaintSet {
-    SpecTaintSet {
+/// Singleton exposure set from a label (0=PrivateData, 1=UntrustedContent, 2=ExfilVector).
+pub open spec fn exposure_singleton(label: nat) -> SpecExposureSet {
+    SpecExposureSet {
         private_data: label == 0,
         untrusted_content: label == 1,
         exfil_vector: label == 2,
     }
 }
 
-/// Check if trifecta is complete — all 3 legs present.
-pub open spec fn taint_is_trifecta_complete(s: SpecTaintSet) -> bool {
+/// Check if uninhabitable_state is complete — all 3 legs present.
+pub open spec fn exposure_is_uninhabitable(s: SpecExposureSet) -> bool {
     s.private_data && s.untrusted_content && s.exfil_vector
 }
 
-/// Count of active taint legs.
-pub open spec fn taint_count(s: SpecTaintSet) -> nat {
+/// Count of active exposure legs.
+pub open spec fn exposure_count(s: SpecExposureSet) -> nat {
     (if s.private_data { 1 as nat } else { 0 })
     + (if s.untrusted_content { 1 as nat } else { 0 })
     + (if s.exfil_vector { 1 as nat } else { 0 })
 }
 
-/// Check if a taint set contains a specific label.
-pub open spec fn taint_contains(s: SpecTaintSet, label: nat) -> bool {
+/// Check if a exposure set contains a specific label.
+pub open spec fn exposure_contains(s: SpecExposureSet, label: nat) -> bool {
     (label == 0 && s.private_data)
     || (label == 1 && s.untrusted_content)
     || (label == 2 && s.exfil_vector)
 }
 
-/// Valid taint label: 0, 1, or 2.
-pub open spec fn valid_taint_label(label: nat) -> bool {
+/// Valid exposure label: 0, 1, or 2.
+pub open spec fn valid_exposure_label(label: nat) -> bool {
     label <= 2
 }
 
-/// Map an operation (nat) to its taint label, or 3 for neutral ops.
+/// Map an operation (nat) to its exposure label, or 3 for neutral ops.
 ///
-/// Mirrors portcullis::guard::operation_taint(op: Operation).
+/// Mirrors portcullis::guard::operation_exposure(op: Operation).
 /// Leg 1 (PrivateData=0): ReadFiles=0, GlobSearch=4, GrepSearch=5
 /// Leg 2 (UntrustedContent=1): WebFetch=6, WebSearch=7
 /// Leg 3 (ExfilVector=2): RunBash=3, GitPush=9, CreatePr=10
 /// Neutral (returns 3): WriteFiles=1, EditFiles=2, GitCommit=8, ManagePods=11
-pub open spec fn operation_taint_label(op: nat) -> nat {
+pub open spec fn operation_exposure_label(op: nat) -> nat {
     if op == 0 || op == 4 || op == 5 { 0 }       // PrivateData
     else if op == 6 || op == 7 { 1 }              // UntrustedContent
     else if op == 3 || op == 9 || op == 10 { 2 }  // ExfilVector
-    else { 3 }                                     // Neutral (no taint)
+    else { 3 }                                     // Neutral (no exposure)
 }
 
 /// Valid operation index: 0..11.
@@ -3551,176 +3551,176 @@ pub open spec fn valid_operation(op: nat) -> bool {
     op <= 11
 }
 
-/// Is this a neutral operation (no taint contribution)?
+/// Is this a neutral operation (no exposure contribution)?
 pub open spec fn is_neutral_op(op: nat) -> bool {
     op == 1 || op == 2 || op == 8 || op == 11
 }
 
-/// Taint set subset relation: a ⊆ b (each leg of a implies the same leg of b).
-pub open spec fn taint_subset(a: SpecTaintSet, b: SpecTaintSet) -> bool {
+/// Exposure set subset relation: a ⊆ b (each leg of a implies the same leg of b).
+pub open spec fn exposure_subset(a: SpecExposureSet, b: SpecExposureSet) -> bool {
     (a.private_data ==> b.private_data)
     && (a.untrusted_content ==> b.untrusted_content)
     && (a.exfil_vector ==> b.exfil_vector)
 }
 
 // ============================================================================
-// Tier H: TaintSet Monoid Laws (5 proofs)
+// Tier H: ExposureSet Monoid Laws (5 proofs)
 // ============================================================================
 
 /// H1: Left identity — empty.union(s) == s
-proof fn proof_taintset_identity_left(s: SpecTaintSet)
-    ensures taint_union(taint_empty(), s) == s,
+proof fn proof_exposureset_identity_left(s: SpecExposureSet)
+    ensures exposure_union(exposure_empty(), s) == s,
 {}
 
 /// H2: Right identity — s.union(empty) == s
-proof fn proof_taintset_identity_right(s: SpecTaintSet)
-    ensures taint_union(s, taint_empty()) == s,
+proof fn proof_exposureset_identity_right(s: SpecExposureSet)
+    ensures exposure_union(s, exposure_empty()) == s,
 {}
 
 /// H3: Commutativity — a.union(b) == b.union(a)
-proof fn proof_taintset_union_commutative(a: SpecTaintSet, b: SpecTaintSet)
-    ensures taint_union(a, b) == taint_union(b, a),
+proof fn proof_exposureset_union_commutative(a: SpecExposureSet, b: SpecExposureSet)
+    ensures exposure_union(a, b) == exposure_union(b, a),
 {}
 
 /// H4: Associativity — a.union(b.union(c)) == a.union(b).union(c)
-proof fn proof_taintset_union_associative(
-    a: SpecTaintSet, b: SpecTaintSet, c: SpecTaintSet,
+proof fn proof_exposureset_union_associative(
+    a: SpecExposureSet, b: SpecExposureSet, c: SpecExposureSet,
 )
-    ensures taint_union(a, taint_union(b, c)) == taint_union(taint_union(a, b), c),
+    ensures exposure_union(a, exposure_union(b, c)) == exposure_union(exposure_union(a, b), c),
 {}
 
 /// H5: Idempotence — s.union(s) == s
-proof fn proof_taintset_union_idempotent(s: SpecTaintSet)
-    ensures taint_union(s, s) == s,
+proof fn proof_exposureset_union_idempotent(s: SpecExposureSet)
+    ensures exposure_union(s, s) == s,
 {}
 
 // ============================================================================
-// Tier I: Taint Classification Correctness (4 proofs)
+// Tier I: Exposure Classification Correctness (4 proofs)
 // ============================================================================
 
-/// I1: Every valid operation maps to a valid taint label (0..2) or neutral (3).
-proof fn proof_operation_taint_total(op: nat)
+/// I1: Every valid operation maps to a valid exposure label (0..2) or neutral (3).
+proof fn proof_operation_exposure_total(op: nat)
     requires valid_operation(op),
-    ensures operation_taint_label(op) <= 3,
+    ensures operation_exposure_label(op) <= 3,
 {}
 
-/// I2: Trifecta is complete iff all three legs are present.
-proof fn proof_trifecta_iff_all_three(s: SpecTaintSet)
+/// I2:  UninhabitableState is complete iff all three legs are present.
+proof fn proof_uninhabitable_iff_all_three(s: SpecExposureSet)
     ensures
-        taint_is_trifecta_complete(s) <==>
+        exposure_is_uninhabitable(s) <==>
             (s.private_data && s.untrusted_content && s.exfil_vector),
 {}
 
 /// I3: Risk (count) is monotone under subset — if a ⊆ b, count(a) ≤ count(b).
-proof fn proof_taint_risk_monotone(a: SpecTaintSet, b: SpecTaintSet)
-    requires taint_subset(a, b),
-    ensures taint_count(a) <= taint_count(b),
+proof fn proof_exposure_risk_monotone(a: SpecExposureSet, b: SpecExposureSet)
+    requires exposure_subset(a, b),
+    ensures exposure_count(a) <= exposure_count(b),
 {}
 
-/// I4: Count is bounded [0, 3] and count == 3 iff trifecta complete.
-proof fn proof_taintset_count_bounds(s: SpecTaintSet)
+/// I4: Count is bounded [0, 3] and count == 3 iff uninhabitable_state complete.
+proof fn proof_exposureset_count_bounds(s: SpecExposureSet)
     ensures
-        taint_count(s) <= 3,
-        taint_count(s) == 3 <==> taint_is_trifecta_complete(s),
+        exposure_count(s) <= 3,
+        exposure_count(s) == 3 <==> exposure_is_uninhabitable(s),
 {}
 
 // ============================================================================
 // Tier J: Guard Decision Theorems (4 proofs)
 // ============================================================================
 
-/// J1: If taint is trifecta-complete and the operation requires approval,
+/// J1: If exposure is uninhabitable and the operation requires approval,
 /// the guard denies it.
 ///
-/// This connects the TaintSet model to the existing check_operation_allowed:
-/// when taint_count == 3, the risk parameter is 3 (Complete), and combined
+/// This connects the ExposureSet model to the existing check_operation_allowed:
+/// when exposure_count == 3, the risk parameter is 3 (Complete), and combined
 /// with requires_approval, the check returns false (denied).
-proof fn proof_guard_blocks_on_trifecta(
-    taint: SpecTaintSet, obs: Obs, op: nat,
+proof fn proof_guard_blocks_on_uninhabitable(
+    exposure: SpecExposureSet, obs: Obs, op: nat,
 )
     requires
-        taint_is_trifecta_complete(taint),
+        exposure_is_uninhabitable(exposure),
         requires_approval(obs, op),
     ensures
         !check_operation_allowed(obs, 3, op),
 {}
 
-/// J2: If taint is NOT trifecta-complete, the taint risk alone cannot cause denial.
+/// J2: If exposure is NOT uninhabitable, the exposure risk alone cannot cause denial.
 ///
-/// When taint_count < 3, the risk parameter is < 3, and check_operation_allowed
+/// When exposure_count < 3, the risk parameter is < 3, and check_operation_allowed
 /// always returns true regardless of obligations (risk < Complete → allowed).
-proof fn proof_guard_allows_incomplete_taint(
-    taint: SpecTaintSet, obs: Obs, op: nat,
+proof fn proof_guard_allows_incomplete_exposure(
+    exposure: SpecExposureSet, obs: Obs, op: nat,
 )
-    requires !taint_is_trifecta_complete(taint),
-    ensures check_operation_allowed(obs, taint_count(taint), op),
+    requires !exposure_is_uninhabitable(exposure),
+    ensures check_operation_allowed(obs, exposure_count(exposure), op),
 {
-    // taint_count(taint) < 3 when not trifecta-complete (from I4)
-    proof_taintset_count_bounds(taint);
+    // exposure_count(exposure) < 3 when not uninhabitable (from I4)
+    proof_exposureset_count_bounds(exposure);
     // check_operation_allowed with risk < 3 always allows (existing proof)
 }
 
-/// J3: Recording a taint label (union with singleton) can only increase taint,
-/// never decrease. The new taint is a superset of the old.
-proof fn proof_taint_accumulation_monotone(
-    before: SpecTaintSet, label: nat,
+/// J3: Recording a exposure label (union with singleton) can only increase exposure,
+/// never decrease. The new exposure is a superset of the old.
+proof fn proof_exposure_accumulation_monotone(
+    before: SpecExposureSet, label: nat,
 )
-    requires valid_taint_label(label),
+    requires valid_exposure_label(label),
     ensures
-        taint_subset(before, taint_union(before, taint_singleton(label))),
-        taint_count(before) <= taint_count(taint_union(before, taint_singleton(label))),
+        exposure_subset(before, exposure_union(before, exposure_singleton(label))),
+        exposure_count(before) <= exposure_count(exposure_union(before, exposure_singleton(label))),
 {
-    proof_taint_risk_monotone(
+    proof_exposure_risk_monotone(
         before,
-        taint_union(before, taint_singleton(label)),
+        exposure_union(before, exposure_singleton(label)),
     );
 }
 
-/// J4: Neutral operations (write, edit, commit, pods) produce no taint label.
-proof fn proof_neutral_ops_no_taint(op: nat)
+/// J4: Neutral operations (write, edit, commit, pods) produce no exposure label.
+proof fn proof_neutral_ops_no_exposure(op: nat)
     requires is_neutral_op(op),
-    ensures operation_taint_label(op) == 3,
+    ensures operation_exposure_label(op) == 3,
 {}
 
 // ============================================================================
 // Tier K: Bridge to Existing Nucleus Model (2 proofs)
 // ============================================================================
 
-/// K1: When a TaintSet has trifecta complete, and we have a CapLattice
-/// that also has the trifecta complete (private + untrusted + exfil),
-/// then taint_count == 3 matches the existing is_trifecta_complete(caps).
+/// K1: When a ExposureSet has uninhabitable_state complete, and we have a CapLattice
+/// that also has the uninhabitable_state complete (private + untrusted + exfil),
+/// then exposure_count == 3 matches the existing is_uninhabitable(caps).
 ///
-/// This bridges the O(1) TaintSet check to the O(n) CapLattice check:
-/// both agree on when the trifecta is complete.
-proof fn proof_taint_risk_bridge(
-    taint: SpecTaintSet, caps: CapLattice,
+/// This bridges the O(1) ExposureSet check to the O(n) CapLattice check:
+/// both agree on when the uninhabitable_state is complete.
+proof fn proof_exposure_risk_bridge(
+    exposure: SpecExposureSet, caps: CapLattice,
 )
     requires
         valid_lattice(caps),
-        // Link: taint legs track which cap-lattice components are active
-        taint.private_data == has_private_access(caps),
-        taint.untrusted_content == has_untrusted_content(caps),
-        taint.exfil_vector == has_exfiltration(caps),
+        // Link: exposure legs track which cap-lattice components are active
+        exposure.private_data == has_private_access(caps),
+        exposure.untrusted_content == has_untrusted_content(caps),
+        exposure.exfil_vector == has_exfiltration(caps),
     ensures
-        taint_is_trifecta_complete(taint) <==> is_trifecta_complete(caps),
+        exposure_is_uninhabitable(exposure) <==> is_uninhabitable(caps),
 {}
 
-/// K2: When taint is complete and an exfil op requires approval under the
+/// K2: When exposure is complete and an exfil op requires approval under the
 /// nucleus model, the guard's denial (via check_operation_allowed with
 /// risk=3) is consistent with the nucleus operator adding obligations.
 ///
 /// Specifically: if nucleus(p) would add an obligation for this op
-/// (because trifecta is complete and the cap is ≥ LowRisk), then
+/// (because uninhabitable_state is complete and the cap is ≥ LowRisk), then
 /// check_operation_allowed(nucleus(p).obs, 3, op) == false.
 proof fn proof_guard_agrees_with_nucleus(
-    p: Perm, taint: SpecTaintSet, op: nat,
+    p: Perm, exposure: SpecExposureSet, op: nat,
 )
     requires
         valid_perm(p),
-        // Taint tracks the same trifecta components as the cap lattice
-        taint.private_data == has_private_access(p.caps),
-        taint.untrusted_content == has_untrusted_content(p.caps),
-        taint.exfil_vector == has_exfiltration(p.caps),
-        taint_is_trifecta_complete(taint),
+        // Exposure tracks the same uninhabitable_state components as the cap lattice
+        exposure.private_data == has_private_access(p.caps),
+        exposure.untrusted_content == has_untrusted_content(p.caps),
+        exposure.exfil_vector == has_exfiltration(p.caps),
+        exposure_is_uninhabitable(exposure),
         is_exfil_op(op),
         requires_approval(nucleus(p).obs, op),
     ensures
@@ -3731,52 +3731,52 @@ proof fn proof_guard_agrees_with_nucleus(
 // Tier L: Exec Functions (5 executable spec functions)
 // ============================================================================
 
-/// L1: Create an empty taint set.
-exec fn exec_taintset_empty() -> (result: SpecTaintSet)
-    ensures result == taint_empty(),
+/// L1: Create an empty exposure set.
+exec fn exec_exposureset_empty() -> (result: SpecExposureSet)
+    ensures result == exposure_empty(),
 {
-    SpecTaintSet { private_data: false, untrusted_content: false, exfil_vector: false }
+    SpecExposureSet { private_data: false, untrusted_content: false, exfil_vector: false }
 }
 
-/// L2: Create a singleton taint set from a label.
-exec fn exec_taintset_singleton(label: u8) -> (result: SpecTaintSet)
+/// L2: Create a singleton exposure set from a label.
+exec fn exec_exposureset_singleton(label: u8) -> (result: SpecExposureSet)
     requires label <= 2,
     ensures
-        result == taint_singleton(label as nat),
-        taint_contains(result, label as nat),
-        taint_count(result) == 1,
+        result == exposure_singleton(label as nat),
+        exposure_contains(result, label as nat),
+        exposure_count(result) == 1,
 {
-    SpecTaintSet {
+    SpecExposureSet {
         private_data: label == 0,
         untrusted_content: label == 1,
         exfil_vector: label == 2,
     }
 }
 
-/// L3: Compute the union of two taint sets.
-exec fn exec_taintset_union(a: SpecTaintSet, b: SpecTaintSet) -> (result: SpecTaintSet)
+/// L3: Compute the union of two exposure sets.
+exec fn exec_exposureset_union(a: SpecExposureSet, b: SpecExposureSet) -> (result: SpecExposureSet)
     ensures
-        result == taint_union(a, b),
-        forall|l: nat| valid_taint_label(l) ==>
-            (taint_contains(result, l) <==> (taint_contains(a, l) || taint_contains(b, l))),
+        result == exposure_union(a, b),
+        forall|l: nat| valid_exposure_label(l) ==>
+            (exposure_contains(result, l) <==> (exposure_contains(a, l) || exposure_contains(b, l))),
 {
-    SpecTaintSet {
+    SpecExposureSet {
         private_data: a.private_data || b.private_data,
         untrusted_content: a.untrusted_content || b.untrusted_content,
         exfil_vector: a.exfil_vector || b.exfil_vector,
     }
 }
 
-/// L4: Check if trifecta is complete.
-exec fn exec_taintset_is_trifecta(s: SpecTaintSet) -> (result: bool)
-    ensures result <==> taint_is_trifecta_complete(s),
+/// L4: Check if uninhabitable_state is complete.
+exec fn exec_exposureset_is_uninhabitable(s: SpecExposureSet) -> (result: bool)
+    ensures result <==> exposure_is_uninhabitable(s),
 {
     s.private_data && s.untrusted_content && s.exfil_vector
 }
 
-/// L5: Count active taint legs.
-exec fn exec_taint_count(s: SpecTaintSet) -> (result: u8)
-    ensures result as nat == taint_count(s),
+/// L5: Count active exposure legs.
+exec fn exec_exposure_count(s: SpecExposureSet) -> (result: u8)
+    ensures result as nat == exposure_count(s),
 {
     (if s.private_data { 1u8 } else { 0u8 })
     + (if s.untrusted_content { 1u8 } else { 0u8 })
@@ -3784,24 +3784,24 @@ exec fn exec_taint_count(s: SpecTaintSet) -> (result: u8)
 }
 
 // ============================================================================
-// Phase 7: MCP Session Safety — Trace-Based Taint Verification
+// Phase 7: MCP Session Safety — Trace-Based Exposure Verification
 //
 // The MCP interposition model: each tool call is an McpEvent carrying an
 // operation index and success flag. A session is a trace (Seq<McpEvent>).
-// Taint accumulates monotonically across successful events. The security
-// theorem: once the trifecta latches, all subsequent exfil ops are denied.
+// Exposure accumulates monotonically across successful events. The security
+// theorem: once the uninhabitable_state latches, all subsequent exfil ops are denied.
 //
 // This is the FIRST formally verified MCP session security model.
 //
 // Proofs:
-// - M1: Trace taint monotonicity (each event only grows taint)
-// - M2: Session safety theorem (trifecta blocks all future exfil)
-// - M3: Free monoid homomorphism (trace concatenation = taint union)
-// - M4: Phantom taint freedom (failed events contribute nothing)
+// - M1: Trace exposure monotonicity (each event only grows exposure)
+// - M2: Session safety theorem (uninhabitable_state blocks all future exfil)
+// - M3: Free monoid homomorphism (trace concatenation = exposure union)
+// - M4: Phantom exposure freedom (failed events contribute nothing)
 // - M5: Neutral ops preserve safety (write/edit/commit/pods invisible)
-// - M6: Trifecta irreversibility (once latched, stays latched)
+// - M6:  UninhabitableState irreversibility (once latched, stays latched)
 // - M7: Guard projection soundness (check predicts record outcome)
-// - M8: Three-step trifecta minimum (no spurious firing)
+// - M8: Three-step uninhabitable_state minimum (no spurious firing)
 // ============================================================================
 
 // --- Spec Types ---
@@ -3824,42 +3824,42 @@ pub open spec fn valid_event(e: McpEvent) -> bool {
     valid_operation(e.op)
 }
 
-/// Apply one event to a taint set: union with singleton iff succeeded
-/// and the operation has a non-neutral taint label.
-pub open spec fn apply_event_taint(
-    taint: SpecTaintSet,
+/// Apply one event to a exposure set: union with singleton iff succeeded
+/// and the operation has a non-neutral exposure label.
+pub open spec fn apply_event_exposure(
+    exposure: SpecExposureSet,
     event: McpEvent,
-) -> SpecTaintSet {
-    if event.succeeded && operation_taint_label(event.op) <= 2 {
-        taint_union(taint, taint_singleton(operation_taint_label(event.op)))
+) -> SpecExposureSet {
+    if event.succeeded && operation_exposure_label(event.op) <= 2 {
+        exposure_union(exposure, exposure_singleton(operation_exposure_label(event.op)))
     } else {
-        taint
+        exposure
     }
 }
 
-/// Compute accumulated taint for a trace prefix of length n.
+/// Compute accumulated exposure for a trace prefix of length n.
 ///
-/// Recursive fold: trace_taint_at(trace, 0) = taint_empty(),
-/// trace_taint_at(trace, i+1) = apply_event_taint(trace_taint_at(trace, i), trace[i]).
-pub open spec fn trace_taint_at(
+/// Recursive fold: trace_exposure_at(trace, 0) = exposure_empty(),
+/// trace_exposure_at(trace, i+1) = apply_event_exposure(trace_exposure_at(trace, i), trace[i]).
+pub open spec fn trace_exposure_at(
     trace: Seq<McpEvent>,
     n: nat,
-) -> SpecTaintSet
+) -> SpecExposureSet
     decreases n,
 {
     if n == 0 {
-        taint_empty()
+        exposure_empty()
     } else {
-        apply_event_taint(
-            trace_taint_at(trace, (n - 1) as nat),
+        apply_event_exposure(
+            trace_exposure_at(trace, (n - 1) as nat),
             trace[(n - 1) as int],
         )
     }
 }
 
-/// Taint of an entire trace.
-pub open spec fn trace_taint(trace: Seq<McpEvent>) -> SpecTaintSet {
-    trace_taint_at(trace, trace.len())
+/// Exposure of an entire trace.
+pub open spec fn trace_exposure(trace: Seq<McpEvent>) -> SpecExposureSet {
+    trace_exposure_at(trace, trace.len())
 }
 
 /// All events in a trace are valid operations.
@@ -3869,28 +3869,28 @@ pub open spec fn trace_valid(trace: Seq<McpEvent>) -> bool {
 
 /// The guard's check decision: would this operation be denied?
 ///
-/// Models the production GradedTaintGuard::check():
-///   1. Project taint: union(current, singleton(label))
-///   2. If projected is trifecta-complete AND requires_approval → deny
+/// Models the production GradedExposureGuard::check():
+///   1. Project exposure: union(current, singleton(label))
+///   2. If projected is uninhabitable AND requires_approval → deny
 pub open spec fn guard_would_deny(
     obs: Obs,
-    current_taint: SpecTaintSet,
+    current_exposure: SpecExposureSet,
     op: nat,
 ) -> bool {
     let projected = if op == 3 {
         // RunBash (op=3) is omnibus: projects PrivateData(0) + ExfilVector(2).
         // Bash can read any file (cat) AND exfiltrate (curl), so the
         // CHECK conservatively projects both legs.
-        taint_union(
-            taint_union(current_taint, taint_singleton(0)),
-            taint_singleton(2),
+        exposure_union(
+            exposure_union(current_exposure, exposure_singleton(0)),
+            exposure_singleton(2),
         )
-    } else if operation_taint_label(op) <= 2 {
-        taint_union(current_taint, taint_singleton(operation_taint_label(op)))
+    } else if operation_exposure_label(op) <= 2 {
+        exposure_union(current_exposure, exposure_singleton(operation_exposure_label(op)))
     } else {
-        current_taint
+        current_exposure
     };
-    taint_is_trifecta_complete(projected) && requires_approval(obs, op)
+    exposure_is_uninhabitable(projected) && requires_approval(obs, op)
 }
 
 /// Count of successful non-neutral events in a trace.
@@ -3907,7 +3907,7 @@ pub open spec fn count_successful_nonneutral(
             trace.subrange(0, (n - 1) as int),
         );
         let last = trace[(n - 1) as int];
-        if last.succeeded && operation_taint_label(last.op) <= 2 {
+        if last.succeeded && operation_exposure_label(last.op) <= 2 {
             prefix_count + 1
         } else {
             prefix_count
@@ -3916,24 +3916,24 @@ pub open spec fn count_successful_nonneutral(
 }
 
 // ============================================================================
-// M4: Phantom Taint Freedom
+// M4: Phantom Exposure Freedom
 // ============================================================================
 
-/// M4: Failed operations contribute no taint.
+/// M4: Failed operations contribute no exposure.
 ///
 /// If an event has succeeded == false, applying it is the identity.
 /// Models the production code where guard.record() is only called
 /// in the Ok arm of the sandbox operation.
-proof fn proof_phantom_taint_freedom(
-    taint: SpecTaintSet,
+proof fn proof_phantom_exposure_freedom(
+    exposure: SpecExposureSet,
     event: McpEvent,
 )
     requires !event.succeeded,
-    ensures apply_event_taint(taint, event) == taint,
+    ensures apply_event_exposure(exposure, event) == exposure,
 {}
 
-/// M4-corollary: A trace of all-failed events has empty taint.
-proof fn proof_all_failed_trace_empty_taint(
+/// M4-corollary: A trace of all-failed events has empty exposure.
+proof fn proof_all_failed_trace_empty_exposure(
     trace: Seq<McpEvent>,
     n: nat,
 )
@@ -3942,11 +3942,11 @@ proof fn proof_all_failed_trace_empty_taint(
         forall|i: int| 0 <= i < trace.len() ==>
             !(#[trigger] trace[i]).succeeded,
     ensures
-        trace_taint_at(trace, n) == taint_empty(),
+        trace_exposure_at(trace, n) == exposure_empty(),
     decreases n,
 {
     if n > 0 {
-        proof_all_failed_trace_empty_taint(trace, (n - 1) as nat);
+        proof_all_failed_trace_empty_exposure(trace, (n - 1) as nat);
     }
 }
 
@@ -3954,15 +3954,15 @@ proof fn proof_all_failed_trace_empty_taint(
 // M5: Neutral Operations Preserve Safety
 // ============================================================================
 
-/// M5: Neutral operations do not change the taint set.
-proof fn proof_neutral_op_preserves_taint(
-    taint: SpecTaintSet,
+/// M5: Neutral operations do not change the exposure set.
+proof fn proof_neutral_op_preserves_exposure(
+    exposure: SpecExposureSet,
     event: McpEvent,
 )
     requires is_neutral_op(event.op),
-    ensures apply_event_taint(taint, event) == taint,
+    ensures apply_event_exposure(exposure, event) == exposure,
 {
-    proof_neutral_ops_no_taint(event.op);
+    proof_neutral_ops_no_exposure(event.op);
 }
 
 // ============================================================================
@@ -3971,12 +3971,12 @@ proof fn proof_neutral_op_preserves_taint(
 
 /// M7: The guard's check projection is sound w.r.t. what record produces.
 ///
-/// For a successful event, apply_event_taint produces taint that is a
+/// For a successful event, apply_event_exposure produces exposure that is a
 /// subset of guard_would_deny's projection. Equality holds for all ops
 /// except RunBash (op=3), where the guard conservatively over-projects
 /// (PrivateData + ExfilVector) while record only adds ExfilVector.
 proof fn proof_guard_projection_sound(
-    current_taint: SpecTaintSet,
+    current_exposure: SpecExposureSet,
     op: nat,
 )
     requires valid_operation(op),
@@ -3984,29 +3984,29 @@ proof fn proof_guard_projection_sound(
         let event = McpEvent { op: op, succeeded: true };
         let projected = if op == 3 {
             // RunBash omnibus projection: PrivateData(0) + ExfilVector(2)
-            taint_union(
-                taint_union(current_taint, taint_singleton(0)),
-                taint_singleton(2),
+            exposure_union(
+                exposure_union(current_exposure, exposure_singleton(0)),
+                exposure_singleton(2),
             )
-        } else if operation_taint_label(op) <= 2 {
-            taint_union(current_taint, taint_singleton(operation_taint_label(op)))
+        } else if operation_exposure_label(op) <= 2 {
+            exposure_union(current_exposure, exposure_singleton(operation_exposure_label(op)))
         } else {
-            current_taint
+            current_exposure
         };
-        // Record taint is a subset of the guard's projection (sound over-approximation)
-        taint_subset(apply_event_taint(current_taint, event), projected)
+        // Record exposure is a subset of the guard's projection (sound over-approximation)
+        exposure_subset(apply_event_exposure(current_exposure, event), projected)
     }),
 {
     let event = McpEvent { op: op, succeeded: true };
-    let actual = apply_event_taint(current_taint, event);
+    let actual = apply_event_exposure(current_exposure, event);
     if op == 3 {
         // RunBash: actual = union(current, singleton(2))  [ExfilVector only]
         //          projected = union(union(current, singleton(0)), singleton(2))
         // actual ⊆ projected because projected has everything actual has, plus singleton(0)
-        let proj_inner = taint_union(current_taint, taint_singleton(0));
-        let projected = taint_union(proj_inner, taint_singleton(2));
+        let proj_inner = exposure_union(current_exposure, exposure_singleton(0));
+        let projected = exposure_union(proj_inner, exposure_singleton(2));
         // actual = union(current, singleton(2))
-        assert(actual == taint_union(current_taint, taint_singleton(2)));
+        assert(actual == exposure_union(current_exposure, exposure_singleton(2)));
         // projected.private_data = current.private_data || true = true
         // projected.untrusted_content = current.untrusted_content (unchanged)
         // projected.exfil_vector = current.exfil_vector || true = true
@@ -4021,13 +4021,13 @@ proof fn proof_guard_projection_sound(
 }
 
 // ============================================================================
-// M1: Trace Taint Monotonicity
+// M1: Trace Exposure Monotonicity
 // ============================================================================
 
-/// M1: Each event can only grow the accumulated taint.
+/// M1: Each event can only grow the accumulated exposure.
 ///
-/// trace_taint_at(trace, n+1) is a superset of trace_taint_at(trace, n).
-proof fn proof_trace_taint_monotone(
+/// trace_exposure_at(trace, n+1) is a superset of trace_exposure_at(trace, n).
+proof fn proof_trace_exposure_monotone(
     trace: Seq<McpEvent>,
     n: nat,
 )
@@ -4035,30 +4035,30 @@ proof fn proof_trace_taint_monotone(
         trace_valid(trace),
         n < trace.len(),
     ensures
-        taint_subset(
-            trace_taint_at(trace, n),
-            trace_taint_at(trace, (n + 1) as nat),
+        exposure_subset(
+            trace_exposure_at(trace, n),
+            trace_exposure_at(trace, (n + 1) as nat),
         ),
 {
-    let before = trace_taint_at(trace, n);
+    let before = trace_exposure_at(trace, n);
     let event = trace[n as int];
-    if event.succeeded && operation_taint_label(event.op) <= 2 {
-        proof_taint_accumulation_monotone(
+    if event.succeeded && operation_exposure_label(event.op) <= 2 {
+        proof_exposure_accumulation_monotone(
             before,
-            operation_taint_label(event.op),
+            operation_exposure_label(event.op),
         );
     }
 }
 
 // ============================================================================
-// M6: Trifecta Irreversibility (THE LATCH)
+// M6:  UninhabitableState Irreversibility (THE LATCH)
 // ============================================================================
 
-/// M6: Once trifecta-complete, always trifecta-complete.
+/// M6: Once uninhabitable, always uninhabitable.
 ///
-/// If trace_taint_at(trace, prefix_len) is trifecta-complete, then
-/// trace_taint_at(trace, n) is also trifecta-complete for all n >= prefix_len.
-proof fn proof_trifecta_irreversible(
+/// If trace_exposure_at(trace, prefix_len) is uninhabitable, then
+/// trace_exposure_at(trace, n) is also uninhabitable for all n >= prefix_len.
+proof fn proof_uninhabitable_irreversible(
     trace: Seq<McpEvent>,
     prefix_len: nat,
     n: nat,
@@ -4067,17 +4067,17 @@ proof fn proof_trifecta_irreversible(
         trace_valid(trace),
         prefix_len <= n,
         n <= trace.len(),
-        taint_is_trifecta_complete(trace_taint_at(trace, prefix_len)),
+        exposure_is_uninhabitable(trace_exposure_at(trace, prefix_len)),
     ensures
-        taint_is_trifecta_complete(trace_taint_at(trace, n)),
+        exposure_is_uninhabitable(trace_exposure_at(trace, n)),
     decreases (n - prefix_len),
 {
     if prefix_len < n {
-        // Show step n-1 → n preserves trifecta-completeness
-        proof_trifecta_irreversible(trace, prefix_len, (n - 1) as nat);
-        // Now: taint_is_trifecta_complete(trace_taint_at(trace, n-1))
-        proof_trace_taint_monotone(trace, (n - 1) as nat);
-        // taint_subset(at(n-1), at(n))
+        // Show step n-1 → n preserves uninhabitableness
+        proof_uninhabitable_irreversible(trace, prefix_len, (n - 1) as nat);
+        // Now: exposure_is_uninhabitable(trace_exposure_at(trace, n-1))
+        proof_trace_exposure_monotone(trace, (n - 1) as nat);
+        // exposure_subset(at(n-1), at(n))
         // All 3 legs true in at(n-1) → all 3 legs true in at(n)
     }
 }
@@ -4088,10 +4088,10 @@ proof fn proof_trifecta_irreversible(
 
 /// M2: THE SESSION SAFETY THEOREM
 ///
-/// For any valid trace where the accumulated taint is trifecta-complete,
+/// For any valid trace where the accumulated exposure is uninhabitable,
 /// the guard denies all subsequent exfil operations that require approval.
 ///
-/// This composes J1 (trifecta blocks exfil) with trace monotonicity
+/// This composes J1 (uninhabitable_state blocks exfil) with trace monotonicity
 /// to give a MULTI-STEP security guarantee.
 proof fn proof_session_safety(
     trace: Seq<McpEvent>,
@@ -4100,70 +4100,70 @@ proof fn proof_session_safety(
 )
     requires
         trace_valid(trace),
-        taint_is_trifecta_complete(trace_taint(trace)),
+        exposure_is_uninhabitable(trace_exposure(trace)),
         valid_operation(next_op),
         requires_approval(obs, next_op),
     ensures
-        guard_would_deny(obs, trace_taint(trace), next_op),
+        guard_would_deny(obs, trace_exposure(trace), next_op),
 {
-    let current = trace_taint(trace);
-    // The projected taint is always a superset of current.
-    // Since current is already trifecta-complete, the projection is also
-    // trifecta-complete (union can only add more true bits).
+    let current = trace_exposure(trace);
+    // The projected exposure is always a superset of current.
+    // Since current is already uninhabitable, the projection is also
+    // uninhabitable (union can only add more true bits).
     if next_op == 3 {
         // RunBash omnibus: projected = union(union(current, singleton(0)), singleton(2))
-        let proj1 = taint_union(current, taint_singleton(0));
-        let projected = taint_union(proj1, taint_singleton(2));
-        // current is trifecta-complete → all legs true → projected all legs true
+        let proj1 = exposure_union(current, exposure_singleton(0));
+        let projected = exposure_union(proj1, exposure_singleton(2));
+        // current is uninhabitable → all legs true → projected all legs true
         assert(projected.private_data);
         assert(projected.untrusted_content);
         assert(projected.exfil_vector);
-        assert(taint_is_trifecta_complete(projected));
-    } else if operation_taint_label(next_op) <= 2 {
-        let projected = taint_union(
+        assert(exposure_is_uninhabitable(projected));
+    } else if operation_exposure_label(next_op) <= 2 {
+        let projected = exposure_union(
             current,
-            taint_singleton(operation_taint_label(next_op)),
+            exposure_singleton(operation_exposure_label(next_op)),
         );
-        proof_taint_accumulation_monotone(
+        proof_exposure_accumulation_monotone(
             current,
-            operation_taint_label(next_op),
+            operation_exposure_label(next_op),
         );
     }
-    // else: projected == current, already trifecta-complete
+    // else: projected == current, already uninhabitable
 }
 
 // ============================================================================
 // M3: Free Monoid Homomorphism (Trace Composition)
 // ============================================================================
 
-/// Helper: apply_event distributes over taint_union (left factor unchanged).
+/// Helper: apply_event distributes over exposure_union (left factor unchanged).
 ///
-/// apply_event_taint(union(A, B), e) == union(A, apply_event_taint(B, e))
+/// apply_event_exposure(union(A, B), e) == union(A, apply_event_exposure(B, e))
 proof fn lemma_apply_distributes_over_union(
-    a: SpecTaintSet,
-    b: SpecTaintSet,
+    a: SpecExposureSet,
+    b: SpecExposureSet,
     event: McpEvent,
 )
     ensures
-        apply_event_taint(taint_union(a, b), event) ==
-            taint_union(a, apply_event_taint(b, event)),
+        apply_event_exposure(exposure_union(a, b), event) ==
+            exposure_union(a, apply_event_exposure(b, event)),
 {
-    if event.succeeded && operation_taint_label(event.op) <= 2 {
-        let label = operation_taint_label(event.op);
-        let singleton = taint_singleton(label);
+    if event.succeeded && operation_exposure_label(event.op) <= 2 {
+        let label = operation_exposure_label(event.op);
+        let singleton = exposure_singleton(label);
         // LHS = union(union(a, b), singleton)
         // RHS = union(a, union(b, singleton))
         // Equal by associativity (H4)
-        proof_taintset_union_associative(a, b, singleton);
+        proof_exposureset_union_associative(a, b, singleton);
     }
     // else: both sides are union(a, b), trivially equal
 }
 
-/// Helper: trace_taint_at on concatenation relates to individual traces.
+/// Helper: trace_exposure_at on concatenation relates to individual traces.
 ///
-/// For indices in the first segment, trace_taint_at of the concatenation
-/// equals trace_taint_at of the first segment.
-proof fn lemma_concat_prefix_taint(
+/// For indices in the first segment, trace_exposure_at of the concatenation
+/// equals trace_exposure_at of the first segment.
+proof fn lemma_concat_prefix_exposure(
     s1: Seq<McpEvent>,
     s2: Seq<McpEvent>,
     n: nat,
@@ -4171,21 +4171,21 @@ proof fn lemma_concat_prefix_taint(
     requires
         n <= s1.len(),
     ensures
-        trace_taint_at(s1.add(s2), n) == trace_taint_at(s1, n),
+        trace_exposure_at(s1.add(s2), n) == trace_exposure_at(s1, n),
     decreases n,
 {
     if n > 0 {
-        lemma_concat_prefix_taint(s1, s2, (n - 1) as nat);
+        lemma_concat_prefix_exposure(s1, s2, (n - 1) as nat);
         // s1.add(s2)[n-1] == s1[n-1] when n-1 < s1.len()
         assert(s1.add(s2)[(n - 1) as int] == s1[(n - 1) as int]);
     }
 }
 
-/// M3: Trace taint is a monoid homomorphism.
+/// M3: Trace exposure is a monoid homomorphism.
 ///
-/// trace_taint(s1 ++ s2) == taint_union(trace_taint(s1), trace_taint(s2))
+/// trace_exposure(s1 ++ s2) == exposure_union(trace_exposure(s1), trace_exposure(s2))
 ///
-/// The taint of concatenated sessions is the union of individual taints.
+/// The exposure of concatenated sessions is the union of individual exposures.
 /// This is the FREE MONOID structure of the graded monad.
 proof fn proof_trace_composition(
     s1: Seq<McpEvent>,
@@ -4195,18 +4195,18 @@ proof fn proof_trace_composition(
         trace_valid(s1),
         trace_valid(s2),
     ensures
-        trace_taint(s1.add(s2)) == taint_union(
-            trace_taint(s1),
-            trace_taint(s2),
+        trace_exposure(s1.add(s2)) == exposure_union(
+            trace_exposure(s1),
+            trace_exposure(s2),
         ),
     decreases s2.len(),
 {
     if s2.len() == 0 {
-        // trace_taint(s2) == taint_empty()
-        // trace_taint(s1 ++ []) == trace_taint(s1)
-        // union(trace_taint(s1), taint_empty()) == trace_taint(s1)
+        // trace_exposure(s2) == exposure_empty()
+        // trace_exposure(s1 ++ []) == trace_exposure(s1)
+        // union(trace_exposure(s1), exposure_empty()) == trace_exposure(s1)
         assert(s1.add(s2) =~= s1);
-        proof_taintset_identity_right(trace_taint(s1));
+        proof_exposureset_identity_right(trace_exposure(s1));
     } else {
         let n2 = s2.len();
         let s2_prefix = s2.subrange(0, (n2 - 1) as int);
@@ -4214,11 +4214,11 @@ proof fn proof_trace_composition(
         let concat = s1.add(s2);
         let concat_prefix = s1.add(s2_prefix);
 
-        // IH: trace_taint(s1 ++ s2_prefix) == union(tt(s1), tt(s2_prefix))
+        // IH: trace_exposure(s1 ++ s2_prefix) == union(tt(s1), tt(s2_prefix))
         proof_trace_composition(s1, s2_prefix);
 
-        // Now: trace_taint(concat) = apply_event(trace_taint_at(concat, |concat|-1), last)
-        // And: trace_taint_at(concat, |concat|-1) == trace_taint(concat_prefix)
+        // Now: trace_exposure(concat) = apply_event(trace_exposure_at(concat, |concat|-1), last)
+        // And: trace_exposure_at(concat, |concat|-1) == trace_exposure(concat_prefix)
         // because concat[0..|concat|-1] has the same elements as concat_prefix
         assert(concat.len() == s1.len() + s2.len());
         assert(concat_prefix.len() == s1.len() + s2_prefix.len());
@@ -4238,43 +4238,43 @@ proof fn proof_trace_composition(
             }
         }
 
-        // Therefore trace_taint_at(concat, |concat_prefix|) == trace_taint(concat_prefix)
-        lemma_trace_taint_eq_on_prefix(concat, concat_prefix);
+        // Therefore trace_exposure_at(concat, |concat_prefix|) == trace_exposure(concat_prefix)
+        lemma_trace_exposure_eq_on_prefix(concat, concat_prefix);
 
         // Explicit chain for Z3 stability:
-        let taint_prefix = trace_taint_at(concat, concat_prefix.len());
-        assert(taint_prefix == trace_taint(concat_prefix));
-        // IH: trace_taint(concat_prefix) == union(tt(s1), tt(s2_prefix))
-        let ih_result = taint_union(trace_taint(s1), trace_taint(s2_prefix));
-        assert(trace_taint(concat_prefix) == ih_result);
-        assert(taint_prefix == ih_result);
+        let exposure_prefix = trace_exposure_at(concat, concat_prefix.len());
+        assert(exposure_prefix == trace_exposure(concat_prefix));
+        // IH: trace_exposure(concat_prefix) == union(tt(s1), tt(s2_prefix))
+        let ih_result = exposure_union(trace_exposure(s1), trace_exposure(s2_prefix));
+        assert(trace_exposure(concat_prefix) == ih_result);
+        assert(exposure_prefix == ih_result);
 
         // concat's last element is `last` = s2[n2-1]
         assert(concat[(concat.len() - 1) as int] == last);
 
-        // trace_taint(concat) = apply_event(taint_prefix, last)
+        // trace_exposure(concat) = apply_event(exposure_prefix, last)
         //   = apply_event(union(tt(s1), tt(s2_prefix)), last)
         //   = union(tt(s1), apply_event(tt(s2_prefix), last))   [distributes]
         lemma_apply_distributes_over_union(
-            trace_taint(s1),
-            trace_taint(s2_prefix),
+            trace_exposure(s1),
+            trace_exposure(s2_prefix),
             last,
         );
-        // Connect trace_taint_at(s2, n2-1) to trace_taint(s2_prefix):
+        // Connect trace_exposure_at(s2, n2-1) to trace_exposure(s2_prefix):
         // s2_prefix = s2.subrange(0, n2-1), so s2[i] == s2_prefix[i] for i < n2-1
         assert forall|i: int| 0 <= i < s2_prefix.len()
             implies #[trigger] s2[i] == s2_prefix[i]
         by { }
-        lemma_trace_taint_eq_on_prefix(s2, s2_prefix);
-        assert(trace_taint_at(s2, s2_prefix.len()) == trace_taint(s2_prefix));
-        // trace_taint(s2) = trace_taint_at(s2, n2) = apply_event(trace_taint_at(s2, n2-1), s2[n2-1])
-        // Since trace_taint_at(s2, n2-1) == trace_taint(s2_prefix) and s2[n2-1] == last:
-        assert(trace_taint(s2) == apply_event_taint(trace_taint(s2_prefix), last));
+        lemma_trace_exposure_eq_on_prefix(s2, s2_prefix);
+        assert(trace_exposure_at(s2, s2_prefix.len()) == trace_exposure(s2_prefix));
+        // trace_exposure(s2) = trace_exposure_at(s2, n2) = apply_event(trace_exposure_at(s2, n2-1), s2[n2-1])
+        // Since trace_exposure_at(s2, n2-1) == trace_exposure(s2_prefix) and s2[n2-1] == last:
+        assert(trace_exposure(s2) == apply_event_exposure(trace_exposure(s2_prefix), last));
     }
 }
 
-/// Helper: if two traces agree on first n elements, their taint_at(n) is equal.
-proof fn lemma_trace_taint_eq_on_prefix(
+/// Helper: if two traces agree on first n elements, their exposure_at(n) is equal.
+proof fn lemma_trace_exposure_eq_on_prefix(
     a: Seq<McpEvent>,
     b: Seq<McpEvent>,
 )
@@ -4282,7 +4282,7 @@ proof fn lemma_trace_taint_eq_on_prefix(
         b.len() <= a.len(),
         forall|i: int| 0 <= i < b.len() ==> #[trigger] a[i] == b[i],
     ensures
-        trace_taint_at(a, b.len()) == trace_taint(b),
+        trace_exposure_at(a, b.len()) == trace_exposure(b),
     decreases b.len(),
 {
     if b.len() > 0 {
@@ -4294,40 +4294,40 @@ proof fn lemma_trace_taint_eq_on_prefix(
         by {
             assert(b_prefix[i] == b[i]);
         }
-        lemma_trace_taint_eq_on_prefix(a, b_prefix);
-        // IH gives: trace_taint_at(a, n-1) == trace_taint(b_prefix)
-        let taint_before_a = trace_taint_at(a, (n - 1) as nat);
-        let taint_before_b = trace_taint(b_prefix);
-        assert(taint_before_a == taint_before_b);
+        lemma_trace_exposure_eq_on_prefix(a, b_prefix);
+        // IH gives: trace_exposure_at(a, n-1) == trace_exposure(b_prefix)
+        let exposure_before_a = trace_exposure_at(a, (n - 1) as nat);
+        let exposure_before_b = trace_exposure(b_prefix);
+        assert(exposure_before_a == exposure_before_b);
 
-        // Connect trace_taint_at(b, n-1) to trace_taint(b_prefix):
+        // Connect trace_exposure_at(b, n-1) to trace_exposure(b_prefix):
         // b_prefix = b.subrange(0, n-1), so b[i] == b_prefix[i] for i < n-1
         assert forall|i: int| 0 <= i < b_prefix.len()
             implies #[trigger] b[i] == b_prefix[i]
         by { }
-        lemma_trace_taint_eq_on_prefix(b, b_prefix);
-        let taint_b_before = trace_taint_at(b, (n - 1) as nat);
-        assert(taint_b_before == taint_before_b);
+        lemma_trace_exposure_eq_on_prefix(b, b_prefix);
+        let exposure_b_before = trace_exposure_at(b, (n - 1) as nat);
+        assert(exposure_b_before == exposure_before_b);
 
         // Precondition gives: a[n-1] == b[n-1]
         assert(a[(n - 1) as int] == b[(n - 1) as int]);
 
         // Unfold both sides:
-        // trace_taint_at(a, n) = apply_event(taint_before_a, a[n-1])
-        // trace_taint_at(b, n) = apply_event(taint_b_before, b[n-1])
-        // Since taint_before_a == taint_b_before and a[n-1] == b[n-1]:
-        assert(trace_taint_at(a, n) == trace_taint_at(b, n));
-        // trace_taint(b) == trace_taint_at(b, b.len()) == trace_taint_at(b, n)
-        assert(trace_taint(b) == trace_taint_at(b, n));
+        // trace_exposure_at(a, n) = apply_event(exposure_before_a, a[n-1])
+        // trace_exposure_at(b, n) = apply_event(exposure_b_before, b[n-1])
+        // Since exposure_before_a == exposure_b_before and a[n-1] == b[n-1]:
+        assert(trace_exposure_at(a, n) == trace_exposure_at(b, n));
+        // trace_exposure(b) == trace_exposure_at(b, b.len()) == trace_exposure_at(b, n)
+        assert(trace_exposure(b) == trace_exposure_at(b, n));
     }
 }
 
 // ============================================================================
-// M8: Three-Step Trifecta Minimum
+// M8: Three-Step  UninhabitableState Minimum
 // ============================================================================
 
-/// Helper: taint_count is bounded by count of successful non-neutral events.
-proof fn lemma_taint_count_bounded_by_events(
+/// Helper: exposure_count is bounded by count of successful non-neutral events.
+proof fn lemma_exposure_count_bounded_by_events(
     trace: Seq<McpEvent>,
     n: nat,
 )
@@ -4335,7 +4335,7 @@ proof fn lemma_taint_count_bounded_by_events(
         trace_valid(trace),
         n <= trace.len(),
     ensures
-        taint_count(trace_taint_at(trace, n)) <= count_successful_nonneutral(
+        exposure_count(trace_exposure_at(trace, n)) <= count_successful_nonneutral(
             trace.subrange(0, n as int),
         ),
     decreases n,
@@ -4343,12 +4343,12 @@ proof fn lemma_taint_count_bounded_by_events(
     if n > 0 {
         let prefix = trace.subrange(0, (n - 1) as int);
         let full = trace.subrange(0, n as int);
-        lemma_taint_count_bounded_by_events(trace, (n - 1) as nat);
-        // IH: taint_count(at(n-1)) <= count_nonneutral(trace[0..n-1])
+        lemma_exposure_count_bounded_by_events(trace, (n - 1) as nat);
+        // IH: exposure_count(at(n-1)) <= count_nonneutral(trace[0..n-1])
 
-        let before = trace_taint_at(trace, (n - 1) as nat);
+        let before = trace_exposure_at(trace, (n - 1) as nat);
         let event = trace[(n - 1) as int];
-        let after = trace_taint_at(trace, n);
+        let after = trace_exposure_at(trace, n);
 
         // Z3 stability: establish subrange relationships explicitly
         // full[0..n-1] == prefix
@@ -4365,19 +4365,19 @@ proof fn lemma_taint_count_bounded_by_events(
         let full_prefix = full.subrange(0, (n - 1) as int);
         assert(full_prefix =~= prefix);
 
-        if event.succeeded && operation_taint_label(event.op) <= 2 {
-            let label = operation_taint_label(event.op);
-            let singleton = taint_singleton(label);
+        if event.succeeded && operation_exposure_label(event.op) <= 2 {
+            let label = operation_exposure_label(event.op);
+            let singleton = exposure_singleton(label);
             // after = union(before, singleton)
-            assert(after == taint_union(before, singleton));
-            // taint_count(union(a, singleton)) <= taint_count(a) + 1
+            assert(after == exposure_union(before, singleton));
+            // exposure_count(union(a, singleton)) <= exposure_count(a) + 1
             // Each bool: (a_bit || s_bit) adds at most 1 if a_bit was false
-            assert(taint_count(after) <= taint_count(before) + 1);
+            assert(exposure_count(after) <= exposure_count(before) + 1);
             // count_nonneutral(full) == count_nonneutral(prefix) + 1
             assert(count_successful_nonneutral(full)
                 == count_successful_nonneutral(prefix) + 1);
         } else {
-            // No taint change
+            // No exposure change
             assert(after == before);
             // count_nonneutral(full) >= count_nonneutral(prefix)
             assert(count_successful_nonneutral(full)
@@ -4386,40 +4386,40 @@ proof fn lemma_taint_count_bounded_by_events(
     }
 }
 
-/// M8: At least 3 successful non-neutral events needed for trifecta.
+/// M8: At least 3 successful non-neutral events needed for uninhabitable_state.
 ///
 /// No trace with fewer than 3 successful non-neutral events can have
-/// trifecta-complete taint. The guard never fires spuriously.
-proof fn proof_trifecta_minimum_three_steps(
+/// uninhabitable exposure. The guard never fires spuriously.
+proof fn proof_uninhabitable_minimum_three_steps(
     trace: Seq<McpEvent>,
 )
     requires
         trace_valid(trace),
         count_successful_nonneutral(trace) < 3,
     ensures
-        !taint_is_trifecta_complete(trace_taint(trace)),
+        !exposure_is_uninhabitable(trace_exposure(trace)),
 {
-    lemma_taint_count_bounded_by_events(trace, trace.len());
+    lemma_exposure_count_bounded_by_events(trace, trace.len());
     // Explicit chain for Z3 stability:
     // trace.subrange(0, trace.len() as int) =~= trace
     assert(trace.subrange(0, trace.len() as int) =~= trace);
-    let tc = taint_count(trace_taint(trace));
+    let tc = exposure_count(trace_exposure(trace));
     let cnn = count_successful_nonneutral(trace);
     assert(tc <= cnn);
     assert(cnn < 3);
     assert(tc < 3);
-    proof_taintset_count_bounds(trace_taint(trace));
-    // taint_count < 3 → !trifecta_complete (from I4)
+    proof_exposureset_count_bounds(trace_exposure(trace));
+    // exposure_count < 3 → !state_uninhabitable (from I4)
 }
 
 // ============================================================================
 // Phase 7 — Exec Functions
 // ============================================================================
 
-/// Executable: map operation to taint label.
-exec fn exec_operation_taint_label(op: u8) -> (label: u8)
+/// Executable: map operation to exposure label.
+exec fn exec_operation_exposure_label(op: u8) -> (label: u8)
     requires op <= 11,
-    ensures label as nat == operation_taint_label(op as nat),
+    ensures label as nat == operation_exposure_label(op as nat),
 {
     if op == 0 || op == 4 || op == 5 {
         0  // PrivateData
@@ -4432,55 +4432,55 @@ exec fn exec_operation_taint_label(op: u8) -> (label: u8)
     }
 }
 
-/// Executable: apply one event to a taint set.
+/// Executable: apply one event to a exposure set.
 exec fn exec_apply_event(
-    taint: SpecTaintSet,
+    exposure: SpecExposureSet,
     op: u8,
     succeeded: bool,
-) -> (result: SpecTaintSet)
+) -> (result: SpecExposureSet)
     requires op <= 11,
     ensures
-        result == apply_event_taint(
-            taint,
+        result == apply_event_exposure(
+            exposure,
             McpEvent { op: op as nat, succeeded: succeeded },
         ),
 {
     if succeeded {
-        let label = exec_operation_taint_label(op);
+        let label = exec_operation_exposure_label(op);
         if label <= 2 {
-            exec_taintset_union(taint, exec_taintset_singleton(label))
+            exec_exposureset_union(exposure, exec_exposureset_singleton(label))
         } else {
-            taint
+            exposure
         }
     } else {
-        taint
+        exposure
     }
 }
 
 /// Executable: check if the guard would deny an operation.
 exec fn exec_guard_check(
-    taint: SpecTaintSet,
+    exposure: SpecExposureSet,
     obs: Obs,
     op: u8,
 ) -> (denied: bool)
     requires op <= 11,
-    ensures denied == guard_would_deny(obs, taint, op as nat),
+    ensures denied == guard_would_deny(obs, exposure, op as nat),
 {
     let projected = if op == 3 {
         // RunBash: omnibus projection — PrivateData(0) + ExfilVector(2)
-        exec_taintset_union(
-            exec_taintset_union(taint, exec_taintset_singleton(0)),
-            exec_taintset_singleton(2),
+        exec_exposureset_union(
+            exec_exposureset_union(exposure, exec_exposureset_singleton(0)),
+            exec_exposureset_singleton(2),
         )
     } else {
-        let label = exec_operation_taint_label(op);
+        let label = exec_operation_exposure_label(op);
         if label <= 2 {
-            exec_taintset_union(taint, exec_taintset_singleton(label))
+            exec_exposureset_union(exposure, exec_exposureset_singleton(label))
         } else {
-            taint
+            exposure
         }
     };
-    let complete = exec_taintset_is_trifecta(projected);
+    let complete = exec_exposureset_is_uninhabitable(projected);
     let approval = (op == 3 && obs.run_bash)
         || (op == 9 && obs.git_push)
         || (op == 10 && obs.create_pr);
@@ -4491,11 +4491,11 @@ exec fn exec_guard_check(
 // Phase 8 — Session Fold: Guard-Aware Trace Semantics
 // ============================================================================
 //
-// Phase 7 models trace_taint_at: every event contributes taint unconditionally.
+// Phase 7 models trace_exposure_at: every event contributes exposure unconditionally.
 // But the production check→op→record pipeline DENIES certain operations,
-// meaning denied events never execute and never contribute taint.
+// meaning denied events never execute and never contribute exposure.
 //
-// session_fold_spec models this: it's trace_taint_at with guard denial
+// session_fold_spec models this: it's trace_exposure_at with guard denial
 // integrated. This is the true semantics of the production pipeline.
 
 // ============================================================================
@@ -4504,25 +4504,25 @@ exec fn exec_guard_check(
 
 /// Fold a trace through the guard protocol at step n.
 ///
-/// Unlike trace_taint_at (which accumulates unconditionally),
+/// Unlike trace_exposure_at (which accumulates unconditionally),
 /// this fold checks guard_would_deny at each step: denied events
-/// produce no taint change (modeling the production check→op→record cycle).
+/// produce no exposure change (modeling the production check→op→record cycle).
 pub open spec fn session_fold_spec_at(
     trace: Seq<McpEvent>,
     obs: Obs,
     n: nat,
-) -> SpecTaintSet
+) -> SpecExposureSet
     decreases n,
 {
     if n == 0 {
-        taint_empty()
+        exposure_empty()
     } else {
         let prev = session_fold_spec_at(trace, obs, (n - 1) as nat);
         let event = trace[(n - 1) as int];
         if guard_would_deny(obs, prev, event.op) {
-            prev // Denied: taint unchanged (no phantom taint from denials)
+            prev // Denied: exposure unchanged (no phantom exposure from denials)
         } else {
-            apply_event_taint(prev, event)
+            apply_event_exposure(prev, event)
         }
     }
 }
@@ -4531,7 +4531,7 @@ pub open spec fn session_fold_spec_at(
 pub open spec fn session_fold_spec(
     trace: Seq<McpEvent>,
     obs: Obs,
-) -> SpecTaintSet {
+) -> SpecExposureSet {
     session_fold_spec_at(trace, obs, trace.len())
 }
 
@@ -4544,35 +4544,35 @@ pub open spec fn session_fold_spec(
 /// Models the production pattern in mcp.rs:
 ///   1. guard.check(op) → denied?
 ///   2. if !denied: sandbox executes op → succeeded?
-///   3. if !denied && succeeded: guard.record(op) → taint grows
+///   3. if !denied && succeeded: guard.record(op) → exposure grows
 ///
-/// Returns (denied, new_taint).
+/// Returns (denied, new_exposure).
 exec fn exec_full_tool_call(
-    taint: SpecTaintSet,
+    exposure: SpecExposureSet,
     obs: Obs,
     op: u8,
     op_succeeded: bool,
-) -> (result: (bool, SpecTaintSet))
+) -> (result: (bool, SpecExposureSet))
     requires op <= 11,
     ensures ({
-        let (denied, new_taint) = result;
+        let (denied, new_exposure) = result;
         // Check decision matches spec
-        denied == guard_would_deny(obs, taint, op as nat)
-        // Denied ops produce no phantom taint (M4 at exec level)
-        && (denied ==> new_taint == taint)
-        // Allowed ops update taint correctly (M7 at exec level)
-        && (!denied ==> new_taint == apply_event_taint(
-            taint,
+        denied == guard_would_deny(obs, exposure, op as nat)
+        // Denied ops produce no phantom exposure (M4 at exec level)
+        && (denied ==> new_exposure == exposure)
+        // Allowed ops update exposure correctly (M7 at exec level)
+        && (!denied ==> new_exposure == apply_event_exposure(
+            exposure,
             McpEvent { op: op as nat, succeeded: op_succeeded },
         ))
     }),
 {
-    let denied = exec_guard_check(taint, obs, op);
+    let denied = exec_guard_check(exposure, obs, op);
     if denied {
-        (true, taint)
+        (true, exposure)
     } else {
-        let new_taint = exec_apply_event(taint, op, op_succeeded);
-        (false, new_taint)
+        let new_exposure = exec_apply_event(exposure, op, op_succeeded);
+        (false, new_exposure)
     }
 }
 
@@ -4582,51 +4582,51 @@ exec fn exec_full_tool_call(
 
 /// B3: Exec-level session safety refinement.
 ///
-/// When taint is trifecta-complete, exec_full_tool_call ALWAYS denies
+/// When exposure is uninhabitable, exec_full_tool_call ALWAYS denies
 /// operations requiring approval. This bridges exec to M2.
 proof fn proof_exec_session_safety_refinement(
-    taint: SpecTaintSet,
+    exposure: SpecExposureSet,
     obs: Obs,
     op: u8,
 )
     requires
-        taint_is_trifecta_complete(taint),
+        exposure_is_uninhabitable(exposure),
         op <= 11,
         valid_operation(op as nat),
         requires_approval(obs, op as nat),
     ensures
-        guard_would_deny(obs, taint, op as nat),
+        guard_would_deny(obs, exposure, op as nat),
 {
-    // guard_would_deny projects taint then checks trifecta + approval.
-    // Taint is already trifecta-complete.
-    // Any projection (union with more labels) preserves trifecta.
+    // guard_would_deny projects exposure then checks uninhabitable_state + approval.
+    // Exposure is already uninhabitable.
+    // Any projection (union with more labels) preserves uninhabitable_state.
     if op == 3 {
-        // RunBash omnibus: projected = union(union(taint, singleton(0)), singleton(2))
-        let proj1 = taint_union(taint, taint_singleton(0));
-        let projected = taint_union(proj1, taint_singleton(2));
+        // RunBash omnibus: projected = union(union(exposure, singleton(0)), singleton(2))
+        let proj1 = exposure_union(exposure, exposure_singleton(0));
+        let projected = exposure_union(proj1, exposure_singleton(2));
         assert(projected.private_data);
         assert(projected.untrusted_content);
         assert(projected.exfil_vector);
-        assert(taint_is_trifecta_complete(projected));
+        assert(exposure_is_uninhabitable(projected));
     } else {
-        let label = operation_taint_label(op as nat);
+        let label = operation_exposure_label(op as nat);
         if label <= 2 {
-            let singleton = taint_singleton(label);
-            let projected = taint_union(taint, singleton);
+            let singleton = exposure_singleton(label);
+            let projected = exposure_union(exposure, singleton);
             assert(projected.private_data);
             assert(projected.untrusted_content);
             assert(projected.exfil_vector);
-            assert(taint_is_trifecta_complete(projected));
+            assert(exposure_is_uninhabitable(projected));
         } else {
-            assert(taint_is_trifecta_complete(taint));
+            assert(exposure_is_uninhabitable(exposure));
         }
     }
 }
 
-/// B4: Session fold taint is monotone at each step.
+/// B4: Session fold exposure is monotone at each step.
 ///
-/// The taint at step n is a subset of the taint at step n+1.
-/// Denied events preserve taint; allowed events may grow it.
+/// The exposure at step n is a subset of the exposure at step n+1.
+/// Denied events preserve exposure; allowed events may grow it.
 proof fn proof_session_fold_monotone(
     trace: Seq<McpEvent>,
     obs: Obs,
@@ -4636,7 +4636,7 @@ proof fn proof_session_fold_monotone(
         n < trace.len(),
         forall|i: int| 0 <= i < trace.len() ==> valid_event(#[trigger] trace[i]),
     ensures
-        taint_subset(
+        exposure_subset(
             session_fold_spec_at(trace, obs, n),
             session_fold_spec_at(trace, obs, (n + 1) as nat),
         ),
@@ -4648,17 +4648,17 @@ proof fn proof_session_fold_monotone(
     if guard_would_deny(obs, prev, event.op) {
         // Denied: next == prev, trivially subset
         assert(next == prev);
-        // taint_subset is reflexive
-        assert(taint_subset(prev, prev));
+        // exposure_subset is reflexive
+        assert(exposure_subset(prev, prev));
     } else {
-        // Allowed: next == apply_event_taint(prev, event)
-        assert(next == apply_event_taint(prev, event));
-        if event.succeeded && operation_taint_label(event.op) <= 2 {
+        // Allowed: next == apply_event_exposure(prev, event)
+        assert(next == apply_event_exposure(prev, event));
+        if event.succeeded && operation_exposure_label(event.op) <= 2 {
             // apply_event = union(prev, singleton(label))
             // union is monotone: prev ⊆ union(prev, x)
-            let label = operation_taint_label(event.op);
-            let singleton = taint_singleton(label);
-            let result = taint_union(prev, singleton);
+            let label = operation_exposure_label(event.op);
+            let singleton = exposure_singleton(label);
+            let result = exposure_union(prev, singleton);
             assert(next == result);
             // Explicit subset: each leg of prev implies same leg of result
             assert(prev.private_data ==> result.private_data);
@@ -4667,16 +4667,16 @@ proof fn proof_session_fold_monotone(
         } else {
             // Failed or neutral: next == prev
             assert(next == prev);
-            assert(taint_subset(prev, prev));
+            assert(exposure_subset(prev, prev));
         }
     }
 }
 
-/// Helper: session fold taint stays trifecta-complete once latched.
+/// Helper: session fold exposure stays uninhabitable once latched.
 ///
-/// If taint is trifecta-complete at step k, it's trifecta-complete at step n ≥ k.
-/// This uses the session fold semantics (with denial), not raw trace_taint_at.
-proof fn lemma_session_fold_trifecta_latch(
+/// If exposure is uninhabitable at step k, it's uninhabitable at step n ≥ k.
+/// This uses the session fold semantics (with denial), not raw trace_exposure_at.
+proof fn lemma_session_fold_uninhabitable_latch(
     trace: Seq<McpEvent>,
     obs: Obs,
     k: nat,
@@ -4686,51 +4686,51 @@ proof fn lemma_session_fold_trifecta_latch(
         k <= n,
         n <= trace.len(),
         forall|i: int| 0 <= i < trace.len() ==> valid_event(#[trigger] trace[i]),
-        taint_is_trifecta_complete(session_fold_spec_at(trace, obs, k)),
+        exposure_is_uninhabitable(session_fold_spec_at(trace, obs, k)),
     ensures
-        taint_is_trifecta_complete(session_fold_spec_at(trace, obs, n)),
+        exposure_is_uninhabitable(session_fold_spec_at(trace, obs, n)),
     decreases (n - k),
 {
     if k < n {
-        // Inductive step: show taint at k+1 is still trifecta-complete
+        // Inductive step: show exposure at k+1 is still uninhabitable
         proof_session_fold_monotone(trace, obs, k);
-        let taint_k = session_fold_spec_at(trace, obs, k);
-        let taint_k1 = session_fold_spec_at(trace, obs, (k + 1) as nat);
-        assert(taint_subset(taint_k, taint_k1));
-        // trifecta_complete(taint_k) + taint_k ⊆ taint_k1 → trifecta_complete(taint_k1)
-        assert(taint_k.private_data);
-        assert(taint_k.untrusted_content);
-        assert(taint_k.exfil_vector);
-        assert(taint_k1.private_data);
-        assert(taint_k1.untrusted_content);
-        assert(taint_k1.exfil_vector);
-        assert(taint_is_trifecta_complete(taint_k1));
+        let exposure_k = session_fold_spec_at(trace, obs, k);
+        let exposure_k1 = session_fold_spec_at(trace, obs, (k + 1) as nat);
+        assert(exposure_subset(exposure_k, exposure_k1));
+        // state_uninhabitable(exposure_k) + exposure_k ⊆ exposure_k1 → state_uninhabitable(exposure_k1)
+        assert(exposure_k.private_data);
+        assert(exposure_k.untrusted_content);
+        assert(exposure_k.exfil_vector);
+        assert(exposure_k1.private_data);
+        assert(exposure_k1.untrusted_content);
+        assert(exposure_k1.exfil_vector);
+        assert(exposure_is_uninhabitable(exposure_k1));
         // Recurse for the remaining steps
-        lemma_session_fold_trifecta_latch(trace, obs, (k + 1) as nat, n);
+        lemma_session_fold_uninhabitable_latch(trace, obs, (k + 1) as nat, n);
     }
 }
 
 /// B5: Session fold safety — THE CROWN JEWEL of exec refinement.
 ///
-/// Once taint becomes trifecta-complete during a session fold,
+/// Once exposure becomes uninhabitable during a session fold,
 /// all subsequent operations requiring approval are denied by the guard.
 ///
 /// This is the production-level analog of M2 + M6:
-/// - M2 (session safety): trifecta → denial
-/// - M6 (irreversibility): trifecta latch never unsets
+/// - M2 (session safety): uninhabitable_state → denial
+/// - M6 (irreversibility): uninhabitable_state latch never unsets
 /// Combined here with guard-aware fold semantics.
 proof fn proof_session_fold_safety(
     trace: Seq<McpEvent>,
     obs: Obs,
-    trifecta_step: nat,
+    uninhabitable_state_step: nat,
     n: nat,
 )
     requires
-        trifecta_step <= n,
+        uninhabitable_state_step <= n,
         n < trace.len(),
         forall|i: int| 0 <= i < trace.len() ==> valid_event(#[trigger] trace[i]),
-        taint_is_trifecta_complete(
-            session_fold_spec_at(trace, obs, trifecta_step),
+        exposure_is_uninhabitable(
+            session_fold_spec_at(trace, obs, uninhabitable_state_step),
         ),
         valid_operation(trace[n as int].op),
         requires_approval(obs, trace[n as int].op),
@@ -4741,29 +4741,29 @@ proof fn proof_session_fold_safety(
             trace[n as int].op,
         ),
 {
-    // Step 1: Taint at step n is still trifecta-complete (latch)
-    lemma_session_fold_trifecta_latch(trace, obs, trifecta_step, n);
-    let taint_n = session_fold_spec_at(trace, obs, n);
-    assert(taint_is_trifecta_complete(taint_n));
+    // Step 1: Exposure at step n is still uninhabitable (latch)
+    lemma_session_fold_uninhabitable_latch(trace, obs, uninhabitable_state_step, n);
+    let exposure_n = session_fold_spec_at(trace, obs, n);
+    assert(exposure_is_uninhabitable(exposure_n));
 
-    // Step 2: guard_would_deny on trifecta-complete taint (exec refinement)
+    // Step 2: guard_would_deny on uninhabitable exposure (exec refinement)
     let op = trace[n as int].op;
     if op == 3 {
-        // RunBash omnibus: projected = union(union(taint_n, singleton(0)), singleton(2))
-        let proj1 = taint_union(taint_n, taint_singleton(0));
-        let projected = taint_union(proj1, taint_singleton(2));
+        // RunBash omnibus: projected = union(union(exposure_n, singleton(0)), singleton(2))
+        let proj1 = exposure_union(exposure_n, exposure_singleton(0));
+        let projected = exposure_union(proj1, exposure_singleton(2));
         assert(projected.private_data);
         assert(projected.untrusted_content);
         assert(projected.exfil_vector);
-        assert(taint_is_trifecta_complete(projected));
+        assert(exposure_is_uninhabitable(projected));
     } else {
-        let label = operation_taint_label(op);
+        let label = operation_exposure_label(op);
         if label <= 2 {
-            let projected = taint_union(taint_n, taint_singleton(label));
+            let projected = exposure_union(exposure_n, exposure_singleton(label));
             assert(projected.private_data);
             assert(projected.untrusted_content);
             assert(projected.exfil_vector);
-            assert(taint_is_trifecta_complete(projected));
+            assert(exposure_is_uninhabitable(projected));
         }
     }
     // requires_approval is given, so guard_would_deny holds
@@ -4774,15 +4774,15 @@ proof fn proof_session_fold_safety(
 // ============================================================================
 //
 // These proofs establish information-flow properties analogous to seL4's
-// noninterference theorems. They go beyond trace safety (M2: "trifecta → denial")
-// to prove that certain COMBINATIONS of taint legs NECESSARILY lead to denial,
+// noninterference theorems. They go beyond trace safety (M2: "uninhabitable_state → denial")
+// to prove that certain COMBINATIONS of exposure legs NECESSARILY lead to denial,
 // regardless of the trace's PrivateData history.
 
-/// Helper: individual taint label latch through session fold.
+/// Helper: individual exposure label latch through session fold.
 ///
 /// If a specific label (private_data, untrusted_content, or exfil_vector) is
 /// set at step k, it remains set at step n >= k. This generalizes the
-/// trifecta latch to individual labels.
+/// uninhabitable_state latch to individual labels.
 proof fn lemma_session_fold_label_latch(
     trace: Seq<McpEvent>,
     obs: Obs,
@@ -4804,15 +4804,15 @@ proof fn lemma_session_fold_label_latch(
     decreases (n - k),
 {
     if k < n {
-        // By B4 (monotone): taint_subset(fold[k], fold[k+1])
+        // By B4 (monotone): exposure_subset(fold[k], fold[k+1])
         proof_session_fold_monotone(trace, obs, k);
-        let taint_k = session_fold_spec_at(trace, obs, k);
-        let taint_k1 = session_fold_spec_at(trace, obs, (k + 1) as nat);
-        assert(taint_subset(taint_k, taint_k1));
-        // taint_subset means each true field in k implies true in k+1
-        assert(taint_k.private_data ==> taint_k1.private_data);
-        assert(taint_k.untrusted_content ==> taint_k1.untrusted_content);
-        assert(taint_k.exfil_vector ==> taint_k1.exfil_vector);
+        let exposure_k = session_fold_spec_at(trace, obs, k);
+        let exposure_k1 = session_fold_spec_at(trace, obs, (k + 1) as nat);
+        assert(exposure_subset(exposure_k, exposure_k1));
+        // exposure_subset means each true field in k implies true in k+1
+        assert(exposure_k.private_data ==> exposure_k1.private_data);
+        assert(exposure_k.untrusted_content ==> exposure_k1.untrusted_content);
+        assert(exposure_k.exfil_vector ==> exposure_k1.exfil_vector);
         // Recurse for the remaining steps
         lemma_session_fold_label_latch(trace, obs, (k + 1) as nat, n);
     }
@@ -4824,54 +4824,54 @@ proof fn lemma_session_fold_label_latch(
 
 /// N1: RunBash denial is INDEPENDENT of PrivateData history.
 ///
-/// If untrusted content is present in the taint state, RunBash is denied
+/// If untrusted content is present in the exposure state, RunBash is denied
 /// regardless of whether private data was ever accessed. The omnibus
 /// projection adds PrivateData + ExfilVector, making PrivateData history
 /// irrelevant to the denial decision.
 ///
-/// This is a 2-safety hyperproperty: comparing two taint states that
+/// This is a 2-safety hyperproperty: comparing two exposure states that
 /// differ only on PrivateData, both are denied for RunBash.
 proof fn proof_omnibus_noninterference(
-    taint_with_private: SpecTaintSet,
-    taint_without_private: SpecTaintSet,
+    exposure_with_private: SpecExposureSet,
+    exposure_without_private: SpecExposureSet,
     obs: Obs,
 )
     requires
         // Both have untrusted content
-        taint_with_private.untrusted_content,
-        taint_without_private.untrusted_content,
+        exposure_with_private.untrusted_content,
+        exposure_without_private.untrusted_content,
         // They may differ on private_data and exfil_vector
         // (no constraint — the proof is unconditional on those fields)
         // Obligations gate RunBash
         obs.run_bash,
     ensures
         // BOTH deny RunBash — PrivateData state is irrelevant
-        guard_would_deny(obs, taint_with_private, 3),
-        guard_would_deny(obs, taint_without_private, 3),
+        guard_would_deny(obs, exposure_with_private, 3),
+        guard_would_deny(obs, exposure_without_private, 3),
 {
     // RunBash (op=3) omnibus projection:
-    //   projected = union(union(taint, singleton(0)), singleton(2))
-    //   projected.private_data = taint.private_data || true = true
-    //   projected.untrusted_content = taint.untrusted_content (unchanged)
-    //   projected.exfil_vector = taint.exfil_vector || true = true
+    //   projected = union(union(exposure, singleton(0)), singleton(2))
+    //   projected.private_data = exposure.private_data || true = true
+    //   projected.untrusted_content = exposure.untrusted_content (unchanged)
+    //   projected.exfil_vector = exposure.exfil_vector || true = true
     //
-    // For taint_with_private:
-    let proj_with_inner = taint_union(taint_with_private, taint_singleton(0));
-    let proj_with = taint_union(proj_with_inner, taint_singleton(2));
+    // For exposure_with_private:
+    let proj_with_inner = exposure_union(exposure_with_private, exposure_singleton(0));
+    let proj_with = exposure_union(proj_with_inner, exposure_singleton(2));
     assert(proj_with.private_data);       // singleton(0) forces true
     assert(proj_with.untrusted_content);  // from precondition
     assert(proj_with.exfil_vector);       // singleton(2) forces true
-    assert(taint_is_trifecta_complete(proj_with));
+    assert(exposure_is_uninhabitable(proj_with));
 
-    // For taint_without_private:
-    let proj_without_inner = taint_union(taint_without_private, taint_singleton(0));
-    let proj_without = taint_union(proj_without_inner, taint_singleton(2));
+    // For exposure_without_private:
+    let proj_without_inner = exposure_union(exposure_without_private, exposure_singleton(0));
+    let proj_without = exposure_union(proj_without_inner, exposure_singleton(2));
     assert(proj_without.private_data);       // singleton(0) forces true
     assert(proj_without.untrusted_content);  // from precondition
     assert(proj_without.exfil_vector);       // singleton(2) forces true
-    assert(taint_is_trifecta_complete(proj_without));
+    assert(exposure_is_uninhabitable(proj_without));
 
-    // Both projected taints are trifecta-complete + obs.run_bash → both denied
+    // Both projected exposures are uninhabitable + obs.run_bash → both denied
 }
 
 // ============================================================================
@@ -4880,7 +4880,7 @@ proof fn proof_omnibus_noninterference(
 
 /// N2: Once untrusted content enters the session, ALL future RunBash is blocked.
 ///
-/// This is stronger than M2: it doesn't require trifecta-complete taint.
+/// This is stronger than M2: it doesn't require uninhabitable exposure.
 /// UntrustedContent ALONE (from WebFetch/WebSearch) is sufficient to
 /// permanently block RunBash, because the omnibus projection adds the
 /// remaining two legs (PrivateData + ExfilVector).
@@ -4899,7 +4899,7 @@ proof fn proof_contamination_barrier(
         n < trace.len(),
         // A successful UntrustedContent event at contamination_step
         trace[contamination_step as int].succeeded,
-        operation_taint_label(trace[contamination_step as int].op) == 1, // UntrustedContent
+        operation_exposure_label(trace[contamination_step as int].op) == 1, // UntrustedContent
         // The event at contamination_step was NOT denied by the guard
         !guard_would_deny(obs, session_fold_spec_at(trace, obs, contamination_step), trace[contamination_step as int].op),
         // RunBash at step n with obligations
@@ -4912,30 +4912,30 @@ proof fn proof_contamination_barrier(
 {
     // Step 1: Show UntrustedContent is set after contamination_step
     let k = contamination_step;
-    let taint_k = session_fold_spec_at(trace, obs, k);
+    let exposure_k = session_fold_spec_at(trace, obs, k);
     let event_k = trace[k as int];
-    // Event was not denied, so fold[k+1] = apply_event_taint(fold[k], event_k)
-    let taint_k1 = session_fold_spec_at(trace, obs, (k + 1) as nat);
-    assert(taint_k1 == apply_event_taint(taint_k, event_k));
-    // event_k.succeeded && operation_taint_label(event_k.op) == 1
-    // → apply_event_taint unions with singleton(1) = UntrustedContent
-    let singleton_uc = taint_singleton(1);
-    assert(taint_k1 == taint_union(taint_k, singleton_uc));
-    assert(taint_k1.untrusted_content); // singleton(1).untrusted_content == true
+    // Event was not denied, so fold[k+1] = apply_event_exposure(fold[k], event_k)
+    let exposure_k1 = session_fold_spec_at(trace, obs, (k + 1) as nat);
+    assert(exposure_k1 == apply_event_exposure(exposure_k, event_k));
+    // event_k.succeeded && operation_exposure_label(event_k.op) == 1
+    // → apply_event_exposure unions with singleton(1) = UntrustedContent
+    let singleton_uc = exposure_singleton(1);
+    assert(exposure_k1 == exposure_union(exposure_k, singleton_uc));
+    assert(exposure_k1.untrusted_content); // singleton(1).untrusted_content == true
 
     // Step 2: UntrustedContent latches through the fold to step n
     lemma_session_fold_label_latch(trace, obs, (k + 1) as nat, n);
-    let taint_n = session_fold_spec_at(trace, obs, n);
-    assert(taint_n.untrusted_content);
+    let exposure_n = session_fold_spec_at(trace, obs, n);
+    assert(exposure_n.untrusted_content);
 
-    // Step 3: RunBash omnibus projection on taint_n gives trifecta
+    // Step 3: RunBash omnibus projection on exposure_n gives uninhabitable_state
     // (same argument as N1)
-    let proj_inner = taint_union(taint_n, taint_singleton(0));
-    let projected = taint_union(proj_inner, taint_singleton(2));
+    let proj_inner = exposure_union(exposure_n, exposure_singleton(0));
+    let projected = exposure_union(proj_inner, exposure_singleton(2));
     assert(projected.private_data);      // singleton(0)
     assert(projected.untrusted_content); // latched from step k+1
     assert(projected.exfil_vector);      // singleton(2)
-    assert(taint_is_trifecta_complete(projected));
+    assert(exposure_is_uninhabitable(projected));
     // obs.run_bash → requires_approval(obs, 3) → guard_would_deny
 }
 
@@ -4947,7 +4947,7 @@ proof fn proof_contamination_barrier(
 ///
 /// Unlike RunBash (which has omnibus projection), GitPush and CreatePr
 /// only project ExfilVector. So both PrivateData AND UntrustedContent
-/// must be present in the session fold for the trifecta to complete.
+/// must be present in the session fold for the uninhabitable_state to complete.
 ///
 /// This is the classical 3-leg argument restated in session fold terms
 /// with the guard-aware semantics.
@@ -4969,21 +4969,21 @@ proof fn proof_full_path_noninterference(
     ensures
         guard_would_deny(obs, session_fold_spec_at(trace, obs, n), trace[n as int].op),
 {
-    let taint_n = session_fold_spec_at(trace, obs, n);
+    let exposure_n = session_fold_spec_at(trace, obs, n);
     let op = trace[n as int].op;
-    // GitPush(9): operation_taint_label(9) = 2 (ExfilVector)
-    // CreatePr(10): operation_taint_label(10) = 2 (ExfilVector)
+    // GitPush(9): operation_exposure_label(9) = 2 (ExfilVector)
+    // CreatePr(10): operation_exposure_label(10) = 2 (ExfilVector)
     // Both project ExfilVector via the standard path (not omnibus)
-    let label = operation_taint_label(op);
+    let label = operation_exposure_label(op);
     assert(label == 2); // Both ops have ExfilVector label
-    let projected = taint_union(taint_n, taint_singleton(label));
-    // projected.private_data = taint_n.private_data = true (precondition)
+    let projected = exposure_union(exposure_n, exposure_singleton(label));
+    // projected.private_data = exposure_n.private_data = true (precondition)
     assert(projected.private_data);
-    // projected.untrusted_content = taint_n.untrusted_content = true (precondition)
+    // projected.untrusted_content = exposure_n.untrusted_content = true (precondition)
     assert(projected.untrusted_content);
-    // projected.exfil_vector = taint_n.exfil_vector || true = true (singleton(2))
+    // projected.exfil_vector = exposure_n.exfil_vector || true = true (singleton(2))
     assert(projected.exfil_vector);
-    assert(taint_is_trifecta_complete(projected));
+    assert(exposure_is_uninhabitable(projected));
     // requires_approval is given → guard_would_deny
 }
 
@@ -4991,11 +4991,11 @@ proof fn proof_full_path_noninterference(
 // Phase 9C: Structural Bisimulation — Verified Shared Core
 //
 // These proofs establish that the pure decision functions in
-// portcullis::taint_core are structurally bisimilar to the verified
+// portcullis::exposure_core are structurally bisimilar to the verified
 // exec functions. The proofs verify that:
 //
-// 1. classify_operation ↔ exec_operation_taint_label (S1)
-// 2. project_taint ↔ guard_would_deny projection arm (S2)
+// 1. classify_operation ↔ exec_operation_exposure_label (S1)
+// 2. project_exposure ↔ guard_would_deny projection arm (S2)
 // 3. should_deny ↔ exec_guard_check (S3)
 // 4. apply_record ↔ exec_apply_event (S4)
 //
@@ -5009,21 +5009,21 @@ proof fn proof_full_path_noninterference(
 // This is weaker than seL4's direct verification of production binary,
 // but stronger than testing alone because:
 // - The spec↔exec link is machine-checked (Z3 SMT)
-// - The exec↔production link is exhaustively tested (all 12 ops × all 8 taint states)
+// - The exec↔production link is exhaustively tested (all 12 ops × all 8 exposure states)
 // - Any drift between exec and production is caught mechanically
 // ============================================================================
 
 /// S1: classify_operation bisimulation — the Verus exec function for
-/// operation_taint_label exactly mirrors the spec.
+/// operation_exposure_label exactly mirrors the spec.
 ///
-/// This was already proved by exec_operation_taint_label's ensures clause.
+/// This was already proved by exec_operation_exposure_label's ensures clause.
 /// We add an explicit bisimulation proof that enumerates all 12 operations
 /// and verifies the exec fn matches the spec for each.
 proof fn proof_s1_classify_bisimulation()
     ensures
         // All 12 operations map correctly
         forall|op: nat| valid_operation(op) ==> ({
-            let label = operation_taint_label(op);
+            let label = operation_exposure_label(op);
             // PrivateData ops: ReadFiles=0, GlobSearch=4, GrepSearch=5
             ((op == 0 || op == 4 || op == 5) ==> label == 0)
             // UntrustedContent ops: WebFetch=6, WebSearch=7
@@ -5036,38 +5036,38 @@ proof fn proof_s1_classify_bisimulation()
 {
 }
 
-/// S2: project_taint bisimulation — the guard's taint projection
+/// S2: project_exposure bisimulation — the guard's exposure projection
 /// for any operation matches the spec's projection arm.
 ///
-/// For RunBash (op=3): projection = union(union(taint, singleton(0)), singleton(2))
-/// For other ops: projection = union(taint, singleton(label)) or identity
-proof fn proof_s2_project_bisimulation(taint: SpecTaintSet, op: nat)
+/// For RunBash (op=3): projection = union(union(exposure, singleton(0)), singleton(2))
+/// For other ops: projection = union(exposure, singleton(label)) or identity
+proof fn proof_s2_project_bisimulation(exposure: SpecExposureSet, op: nat)
     requires valid_operation(op),
     ensures ({
         // The projection used by guard_would_deny matches what
-        // project_taint would compute
+        // project_exposure would compute
         let projected = if op == 3 {
-            taint_union(
-                taint_union(taint, taint_singleton(0)),
-                taint_singleton(2),
+            exposure_union(
+                exposure_union(exposure, exposure_singleton(0)),
+                exposure_singleton(2),
             )
-        } else if operation_taint_label(op) <= 2 {
-            taint_union(taint, taint_singleton(operation_taint_label(op)))
+        } else if operation_exposure_label(op) <= 2 {
+            exposure_union(exposure, exposure_singleton(operation_exposure_label(op)))
         } else {
-            taint
+            exposure
         };
-        // The projected taint is always a superset of the input
-        taint_subset(taint, projected)
+        // The projected exposure is always a superset of the input
+        exposure_subset(exposure, projected)
         // And the projection is deterministic
         && projected == (if op == 3 {
-            taint_union(
-                taint_union(taint, taint_singleton(0)),
-                taint_singleton(2),
+            exposure_union(
+                exposure_union(exposure, exposure_singleton(0)),
+                exposure_singleton(2),
             )
-        } else if operation_taint_label(op) <= 2 {
-            taint_union(taint, taint_singleton(operation_taint_label(op)))
+        } else if operation_exposure_label(op) <= 2 {
+            exposure_union(exposure, exposure_singleton(operation_exposure_label(op)))
         } else {
-            taint
+            exposure
         })
     }),
 {
@@ -5077,31 +5077,31 @@ proof fn proof_s2_project_bisimulation(taint: SpecTaintSet, op: nat)
 /// computes the same result as exec_guard_check.
 ///
 /// Both follow the same algorithm:
-///   1. Project taint (with RunBash omnibus)
-///   2. Check if projected is trifecta-complete
+///   1. Project exposure (with RunBash omnibus)
+///   2. Check if projected is uninhabitable
 ///   3. Check if operation requires approval
 ///   4. Deny iff both conditions hold
 ///
-/// When trifecta_constraint is false, should_deny returns false
+/// When uninhabitable_constraint is false, should_deny returns false
 /// regardless (short-circuit), matching the production code.
 proof fn proof_s3_should_deny_bisimulation(
-    taint: SpecTaintSet,
+    exposure: SpecExposureSet,
     obs: Obs,
     op: nat,
-    trifecta_constraint: bool,
+    uninhabitable_constraint: bool,
 )
     requires valid_operation(op),
     ensures ({
-        let deny_with_constraint = guard_would_deny(obs, taint, op);
-        let production_result = if trifecta_constraint {
+        let deny_with_constraint = guard_would_deny(obs, exposure, op);
+        let production_result = if uninhabitable_constraint {
             deny_with_constraint
         } else {
             false
         };
         // When constraint is enabled, should_deny = guard_would_deny
-        (trifecta_constraint ==> production_result == deny_with_constraint)
+        (uninhabitable_constraint ==> production_result == deny_with_constraint)
         // When constraint is disabled, should_deny = false
-        && (!trifecta_constraint ==> !production_result)
+        && (!uninhabitable_constraint ==> !production_result)
     }),
 {
 }
@@ -5109,55 +5109,55 @@ proof fn proof_s3_should_deny_bisimulation(
 /// S4: apply_record bisimulation — the production apply_record function
 /// matches exec_apply_event for succeeded=true events.
 ///
-/// Key difference from project_taint: RunBash records ONLY ExfilVector
+/// Key difference from project_exposure: RunBash records ONLY ExfilVector
 /// (label=2), not the omnibus {PrivateData, ExfilVector}. The omnibus
 /// projection is a conservative over-approximation used for CHECKING;
 /// the record reflects what actually happened.
-proof fn proof_s4_apply_record_bisimulation(taint: SpecTaintSet, op: nat)
+proof fn proof_s4_apply_record_bisimulation(exposure: SpecExposureSet, op: nat)
     requires valid_operation(op),
     ensures
-        apply_event_taint(taint, McpEvent { op: op, succeeded: true })
-            == (if operation_taint_label(op) <= 2 {
-                taint_union(taint, taint_singleton(operation_taint_label(op)))
+        apply_event_exposure(exposure, McpEvent { op: op, succeeded: true })
+            == (if operation_exposure_label(op) <= 2 {
+                exposure_union(exposure, exposure_singleton(operation_exposure_label(op)))
             } else {
-                taint
+                exposure
             }),
 {
 }
 
 /// S5: Record-project gap — apply_record is always a subset of
-/// project_taint. The gap exists only for RunBash (op=3).
+/// project_exposure. The gap exists only for RunBash (op=3).
 ///
 /// This proves the production code is SOUND: the check is more
 /// conservative than the record, so anything the check allows is
 /// safe to record.
-proof fn proof_s5_record_project_gap(taint: SpecTaintSet, op: nat)
+proof fn proof_s5_record_project_gap(exposure: SpecExposureSet, op: nat)
     requires valid_operation(op),
     ensures ({
-        let recorded = apply_event_taint(taint, McpEvent { op: op, succeeded: true });
+        let recorded = apply_event_exposure(exposure, McpEvent { op: op, succeeded: true });
         let projected = if op == 3 {
-            taint_union(
-                taint_union(taint, taint_singleton(0)),
-                taint_singleton(2),
+            exposure_union(
+                exposure_union(exposure, exposure_singleton(0)),
+                exposure_singleton(2),
             )
-        } else if operation_taint_label(op) <= 2 {
-            taint_union(taint, taint_singleton(operation_taint_label(op)))
+        } else if operation_exposure_label(op) <= 2 {
+            exposure_union(exposure, exposure_singleton(operation_exposure_label(op)))
         } else {
-            taint
+            exposure
         };
-        taint_subset(recorded, projected)
+        exposure_subset(recorded, projected)
     }),
 {
     // This follows from proof_guard_projection_sound, restated here
     // for clarity as a structural bisimulation property.
     if op == 3 {
-        let recorded = apply_event_taint(taint, McpEvent { op: 3, succeeded: true });
-        let projected = taint_union(
-            taint_union(taint, taint_singleton(0)),
-            taint_singleton(2),
+        let recorded = apply_event_exposure(exposure, McpEvent { op: 3, succeeded: true });
+        let projected = exposure_union(
+            exposure_union(exposure, exposure_singleton(0)),
+            exposure_singleton(2),
         );
-        // recorded = union(taint, singleton(2))
-        // projected = union(union(taint, singleton(0)), singleton(2))
+        // recorded = union(exposure, singleton(2))
+        // projected = union(union(exposure, singleton(0)), singleton(2))
         // recorded ⊆ projected because projected has everything recorded has, plus singleton(0)
         assert(recorded.private_data ==> projected.private_data);
         assert(recorded.untrusted_content ==> projected.untrusted_content);
@@ -5285,7 +5285,7 @@ proof fn proof_p5_protocol_deterministic()
 // algebraic structures from the roadmap:
 //
 // 1. Graded monad laws (ML1-ML3) + grade monoid laws (Mon1-Mon3)
-//    - Grade: TrifectaRisk as 4-element total order {0,1,2,3}, compose = max
+//    - Grade: StateRisk as 4-element total order {0,1,2,3}, compose = max
 //    - Monad: Graded<G, A> = (grade, value) pair
 //    - pure(v) = (0, v), bind((g,v), f) = let (h,w) = f(v); (max(g,h), w)
 //
@@ -5298,11 +5298,11 @@ proof fn proof_p5_protocol_deterministic()
 // All proofs are Z3-decidable (finite domains, no induction needed).
 // ═══════════════════════════════════════════════════════════════════════════
 
-// --- Grade monoid: TrifectaRisk as max-monoid over {0,1,2,3} ---
+// --- Grade monoid: StateRisk as max-monoid over {0,1,2,3} ---
 
 /// Grade composition: max of two risk levels.
 ///
-/// Models `TrifectaRisk::join()` / `RiskGrade::compose()`.
+/// Models `StateRisk::join()` / `RiskGrade::compose()`.
 spec fn grade_compose(a: nat, b: nat) -> nat
     recommends a <= 3, b <= 3,
 {
@@ -5311,7 +5311,7 @@ spec fn grade_compose(a: nat, b: nat) -> nat
 
 /// Grade identity: risk level 0 (None).
 ///
-/// Models `TrifectaRisk::None` / `RiskGrade::identity()`.
+/// Models `StateRisk::Safe` / `RiskGrade::identity()`.
 spec fn grade_identity() -> nat { 0 }
 
 /// Mon1: Left identity — compose(identity, g) = g
@@ -5337,7 +5337,7 @@ proof fn proof_mon3_associativity(a: nat, b: nat, c: nat)
 
 /// Mon4 (bonus): Commutativity — compose(a, b) = compose(b, a)
 ///
-/// TrifectaRisk uses max, which is commutative.
+/// StateRisk uses max, which is commutative.
 proof fn proof_mon4_commutativity(a: nat, b: nat)
     requires a <= 3, b <= 3,
     ensures grade_compose(a, b) == grade_compose(b, a),
@@ -5357,7 +5357,7 @@ proof fn proof_mon5_idempotence(a: nat)
 
 /// Graded value: a pair (grade, value).
 ///
-/// Models `Graded<TrifectaRisk, A>` where A is abstracted to nat.
+/// Models `Graded<StateRisk, A>` where A is abstracted to nat.
 struct SpecGraded {
     grade: nat,
     value: nat,
@@ -5574,76 +5574,76 @@ proof fn proof_g7_gamma_monotone(r1: nat, r2: nat, threshold: nat)
 // The hardening checklist marks "No privilege relaxation after creation" as
 // PARTIAL. These proofs establish the foundational property:
 //
-//   Taint only grows → permissions only tighten → no privilege escalation.
+//   Exposure only grows → permissions only tighten → no privilege escalation.
 //
-// E1: Taint monotonicity — apply_event_taint always produces a superset
-// E2: Trace taint monotonicity — trace_taint_at(trace, i) ⊆ trace_taint_at(trace, j) for i ≤ j
+// E1: Exposure monotonicity — apply_event_exposure always produces a superset
+// E2: Trace exposure monotonicity — trace_exposure_at(trace, i) ⊆ trace_exposure_at(trace, j) for i ≤ j
 // E3: Denial monotonicity — once denied, always denied (corollary of E1+E2)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// E1: Taint monotonicity — apply_event_taint(t, e) ⊇ t
+/// E1: Exposure monotonicity — apply_event_exposure(t, e) ⊇ t
 ///
-/// For any event e, the taint after applying e is a superset of the taint
-/// before. This is the fundamental property: taint only grows, never shrinks.
+/// For any event e, the exposure after applying e is a superset of the exposure
+/// before. This is the fundamental property: exposure only grows, never shrinks.
 ///
-/// This holds because apply_event_taint either:
+/// This holds because apply_event_exposure either:
 ///   - adds a singleton (union with singleton ⊇ original), or
-///   - returns the taint unchanged (neutral/failed events)
-proof fn proof_e1_event_taint_monotone(taint: SpecTaintSet, event: McpEvent)
+///   - returns the exposure unchanged (neutral/failed events)
+proof fn proof_e1_event_exposure_monotone(exposure: SpecExposureSet, event: McpEvent)
     requires valid_event(event),
-    ensures taint_subset(taint, apply_event_taint(taint, event)),
+    ensures exposure_subset(exposure, apply_event_exposure(exposure, event)),
 {
     // Case 1: succeeded and non-neutral → union with singleton
     // Case 2: failed or neutral → identity
-    // In both cases, result ⊇ taint (union is inflationary)
+    // In both cases, result ⊇ exposure (union is inflationary)
 }
 
-/// E2: Trace taint monotonicity — trace_taint_at(trace, i) ⊆ trace_taint_at(trace, j) for i ≤ j
+/// E2: Trace exposure monotonicity — trace_exposure_at(trace, i) ⊆ trace_exposure_at(trace, j) for i ≤ j
 ///
-/// Accumulated taint at any point in a trace is a subset of accumulated
-/// taint at any later point. This is the inductive consequence of E1:
-/// each step either grows taint or leaves it unchanged.
-proof fn proof_e2_trace_taint_monotone(trace: Seq<McpEvent>, i: nat, j: nat)
+/// Accumulated exposure at any point in a trace is a subset of accumulated
+/// exposure at any later point. This is the inductive consequence of E1:
+/// each step either grows exposure or leaves it unchanged.
+proof fn proof_e2_trace_exposure_monotone(trace: Seq<McpEvent>, i: nat, j: nat)
     requires
         i <= j,
         j <= trace.len(),
         trace_valid(trace),
     ensures
-        taint_subset(trace_taint_at(trace, i), trace_taint_at(trace, j)),
+        exposure_subset(trace_exposure_at(trace, i), trace_exposure_at(trace, j)),
     decreases j - i,
 {
     if i == j {
-        // Base case: taint_subset(t, t) is trivially true
+        // Base case: exposure_subset(t, t) is trivially true
     } else {
-        // Inductive step: show trace_taint_at(trace, i) ⊆ trace_taint_at(trace, j)
-        // by: trace_taint_at(trace, i) ⊆ trace_taint_at(trace, j-1) (IH)
-        //     trace_taint_at(trace, j-1) ⊆ trace_taint_at(trace, j) (E1)
+        // Inductive step: show trace_exposure_at(trace, i) ⊆ trace_exposure_at(trace, j)
+        // by: trace_exposure_at(trace, i) ⊆ trace_exposure_at(trace, j-1) (IH)
+        //     trace_exposure_at(trace, j-1) ⊆ trace_exposure_at(trace, j) (E1)
         //     ⊆ is transitive
 
         // IH: i ⊆ j-1
-        proof_e2_trace_taint_monotone(trace, i, (j - 1) as nat);
+        proof_e2_trace_exposure_monotone(trace, i, (j - 1) as nat);
 
         // E1: j-1 ⊆ j
-        let taint_before = trace_taint_at(trace, (j - 1) as nat);
+        let exposure_before = trace_exposure_at(trace, (j - 1) as nat);
         let event = trace[(j - 1) as int];
-        proof_e1_event_taint_monotone(taint_before, event);
+        proof_e1_event_exposure_monotone(exposure_before, event);
 
-        // Transitivity of taint_subset
-        let taint_i = trace_taint_at(trace, i);
-        let taint_j1 = trace_taint_at(trace, (j - 1) as nat);
-        let taint_j = trace_taint_at(trace, j);
+        // Transitivity of exposure_subset
+        let exposure_i = trace_exposure_at(trace, i);
+        let exposure_j1 = trace_exposure_at(trace, (j - 1) as nat);
+        let exposure_j = trace_exposure_at(trace, j);
 
-        // Assert the chain: taint_i ⊆ taint_j1 ⊆ taint_j
-        assert(taint_subset(taint_i, taint_j1));
-        assert(taint_subset(taint_j1, taint_j));
+        // Assert the chain: exposure_i ⊆ exposure_j1 ⊆ exposure_j
+        assert(exposure_subset(exposure_i, exposure_j1));
+        assert(exposure_subset(exposure_j1, exposure_j));
 
-        // Unfolding taint_subset transitivity for Z3
-        assert(taint_i.private_data ==> taint_j1.private_data);
-        assert(taint_j1.private_data ==> taint_j.private_data);
-        assert(taint_i.untrusted_content ==> taint_j1.untrusted_content);
-        assert(taint_j1.untrusted_content ==> taint_j.untrusted_content);
-        assert(taint_i.exfil_vector ==> taint_j1.exfil_vector);
-        assert(taint_j1.exfil_vector ==> taint_j.exfil_vector);
+        // Unfolding exposure_subset transitivity for Z3
+        assert(exposure_i.private_data ==> exposure_j1.private_data);
+        assert(exposure_j1.private_data ==> exposure_j.private_data);
+        assert(exposure_i.untrusted_content ==> exposure_j1.untrusted_content);
+        assert(exposure_j1.untrusted_content ==> exposure_j.untrusted_content);
+        assert(exposure_i.exfil_vector ==> exposure_j1.exfil_vector);
+        assert(exposure_j1.exfil_vector ==> exposure_j.exfil_vector);
     }
 }
 
@@ -5651,8 +5651,8 @@ proof fn proof_e2_trace_taint_monotone(trace: Seq<McpEvent>, i: nat, j: nat)
 ///
 /// If an operation would be denied at time i in a trace, it will also be
 /// denied at all later times j > i. This follows from:
-///   - taint only grows (E2)
-///   - guard_would_deny is monotone in taint: more taint → more denials
+///   - exposure only grows (E2)
+///   - guard_would_deny is monotone in exposure: more exposure → more denials
 ///
 /// This is the formal statement of "no privilege escalation":
 /// once the guard blocks an operation, no future events can unblock it.
@@ -5668,52 +5668,52 @@ proof fn proof_e3_denial_monotone(
         j <= trace.len(),
         trace_valid(trace),
         valid_operation(op),
-        guard_would_deny(obs, trace_taint_at(trace, i), op),
+        guard_would_deny(obs, trace_exposure_at(trace, i), op),
     ensures
-        guard_would_deny(obs, trace_taint_at(trace, j), op),
+        guard_would_deny(obs, trace_exposure_at(trace, j), op),
 {
-    // From E2: trace_taint_at(trace, i) ⊆ trace_taint_at(trace, j)
-    proof_e2_trace_taint_monotone(trace, i, j);
+    // From E2: trace_exposure_at(trace, i) ⊆ trace_exposure_at(trace, j)
+    proof_e2_trace_exposure_monotone(trace, i, j);
 
-    let taint_i = trace_taint_at(trace, i);
-    let taint_j = trace_taint_at(trace, j);
+    let exposure_i = trace_exposure_at(trace, i);
+    let exposure_j = trace_exposure_at(trace, j);
 
-    // guard_would_deny checks if projected taint is trifecta-complete.
-    // Projected taint = union(current, singleton(label(op))).
-    // Since taint_i ⊆ taint_j:
+    // guard_would_deny checks if projected exposure is uninhabitable.
+    // Projected exposure = union(current, singleton(label(op))).
+    // Since exposure_i ⊆ exposure_j:
     //   projected_i ⊆ projected_j
-    //   trifecta_complete(projected_i) ⟹ trifecta_complete(projected_j)
+    //   state_uninhabitable(projected_i) ⟹ state_uninhabitable(projected_j)
     //
     // For RunBash (op=3), projected = union(union(current, singleton(0)), singleton(2))
     // For others: projected = union(current, singleton(label(op)))
     // In both cases, monotonicity of union ensures projected_i ⊆ projected_j.
 
-    assert(taint_subset(taint_i, taint_j));
+    assert(exposure_subset(exposure_i, exposure_j));
 
     // Unfold the projection for Z3 to see monotonicity
     if op == 3 {
         // RunBash omnibus case
-        let proj_i = taint_union(taint_union(taint_i, taint_singleton(0)), taint_singleton(2));
-        let proj_j = taint_union(taint_union(taint_j, taint_singleton(0)), taint_singleton(2));
+        let proj_i = exposure_union(exposure_union(exposure_i, exposure_singleton(0)), exposure_singleton(2));
+        let proj_j = exposure_union(exposure_union(exposure_j, exposure_singleton(0)), exposure_singleton(2));
 
-        // proj_i ⊆ proj_j because taint_i ⊆ taint_j and union is monotone
+        // proj_i ⊆ proj_j because exposure_i ⊆ exposure_j and union is monotone
         assert(proj_i.private_data ==> proj_j.private_data);
         assert(proj_i.untrusted_content ==> proj_j.untrusted_content);
         assert(proj_i.exfil_vector ==> proj_j.exfil_vector);
-        assert(taint_is_trifecta_complete(proj_i) ==> taint_is_trifecta_complete(proj_j));
-    } else if operation_taint_label(op) <= 2 {
-        // Normal tainted operation
-        let label = operation_taint_label(op);
-        let proj_i = taint_union(taint_i, taint_singleton(label));
-        let proj_j = taint_union(taint_j, taint_singleton(label));
+        assert(exposure_is_uninhabitable(proj_i) ==> exposure_is_uninhabitable(proj_j));
+    } else if operation_exposure_label(op) <= 2 {
+        // Normal exposed operation
+        let label = operation_exposure_label(op);
+        let proj_i = exposure_union(exposure_i, exposure_singleton(label));
+        let proj_j = exposure_union(exposure_j, exposure_singleton(label));
 
         assert(proj_i.private_data ==> proj_j.private_data);
         assert(proj_i.untrusted_content ==> proj_j.untrusted_content);
         assert(proj_i.exfil_vector ==> proj_j.exfil_vector);
-        assert(taint_is_trifecta_complete(proj_i) ==> taint_is_trifecta_complete(proj_j));
+        assert(exposure_is_uninhabitable(proj_i) ==> exposure_is_uninhabitable(proj_j));
     } else {
         // Neutral operation — projected == current, so same logic
-        assert(taint_is_trifecta_complete(taint_i) ==> taint_is_trifecta_complete(taint_j));
+        assert(exposure_is_uninhabitable(exposure_i) ==> exposure_is_uninhabitable(exposure_j));
     }
 }
 
@@ -5995,7 +5995,7 @@ proof fn proof_e5_surjective(caps: CapLattice)
 /// E5.4: Never blocks all private-data operations.
 ///
 /// If ReadFiles, GlobSearch, and GrepSearch are all Never,
-/// then has_private_access is false — no private taint can be acquired.
+/// then has_private_access is false — no private exposure can be acquired.
 proof fn proof_e5_never_blocks_private(caps: CapLattice)
     requires
         cap_level_for_op(caps, 0) == 0,  // ReadFiles = Never
@@ -6008,7 +6008,7 @@ proof fn proof_e5_never_blocks_private(caps: CapLattice)
 /// E5.5: Never blocks all untrusted-content operations.
 ///
 /// If WebSearch and WebFetch are both Never,
-/// then has_untrusted_content is false — no untrusted taint.
+/// then has_untrusted_content is false — no untrusted exposure.
 proof fn proof_e5_never_blocks_untrusted(caps: CapLattice)
     requires
         cap_level_for_op(caps, 6) == 0,  // WebSearch = Never
@@ -6020,7 +6020,7 @@ proof fn proof_e5_never_blocks_untrusted(caps: CapLattice)
 /// E5.6: Never blocks all exfiltration operations.
 ///
 /// If RunBash, GitPush, and CreatePr are all Never,
-/// then has_exfiltration is false — no exfil taint.
+/// then has_exfiltration is false — no exfil exposure.
 proof fn proof_e5_never_blocks_exfil(caps: CapLattice)
     requires
         cap_level_for_op(caps, 3) == 0,   // RunBash = Never
@@ -6074,23 +6074,23 @@ proof fn proof_e5_meet_preserves_never(a: CapLattice, b: CapLattice, op: nat)
         cap_level_for_op(lattice_meet(a, b), op) == 0,
 {}
 
-/// E5.11: Bottom blocks trifecta.
+/// E5.11: Bottom blocks uninhabitable_state.
 ///
-/// The bottom lattice (all Never) prevents the trifecta from forming.
+/// The bottom lattice (all Never) prevents the uninhabitable_state from forming.
 /// This is a corollary of E5.4 + E5.5 + E5.6 combined.
-proof fn proof_e5_bottom_prevents_trifecta()
+proof fn proof_e5_bottom_prevents_uninhabitable()
     ensures
-        !is_trifecta_complete(lattice_bot()),
+        !is_uninhabitable(lattice_bot()),
 {
     proof_e5_never_blocks_private(lattice_bot());
 }
 
-/// E5.12: Never on any trifecta leg prevents trifecta.
+/// E5.12: Never on any exposure leg prevents uninhabitable_state.
 ///
-/// If all operations in ANY one of the three trifecta legs are Never,
-/// the trifecta cannot complete. This is the formal basis for
-/// "block one leg to break the trifecta" mitigation.
-proof fn proof_e5_block_any_leg_breaks_trifecta(caps: CapLattice, leg: nat)
+/// If all operations in ANY one of the three exposure legs are Never,
+/// the uninhabitable_state cannot complete. This is the formal basis for
+/// "block one leg to break the uninhabitable_state" mitigation.
+proof fn proof_e5_block_any_leg_breaks_uninhabitable(caps: CapLattice, leg: nat)
     requires
         leg <= 2,
         // Leg 0: private data (ops 0, 4, 5)
@@ -6111,7 +6111,7 @@ proof fn proof_e5_block_any_leg_breaks_trifecta(caps: CapLattice, leg: nat)
             && cap_level_for_op(caps, 10) == 0
         ),
     ensures
-        !is_trifecta_complete(caps),
+        !is_uninhabitable(caps),
 {
     if leg == 0 {
         proof_e5_never_blocks_private(caps);
@@ -6325,7 +6325,7 @@ pub open spec fn chain_ceiling(chain: Seq<Perm>, n: nat) -> Perm
         Perm {
             caps: lattice_top(),
             obs: Obs { run_bash: false, git_push: false, create_pr: false },
-            trifecta_constraint: true,
+            uninhabitable_constraint: true,
         }
     } else if n == 1 {
         chain[0int]
@@ -6441,30 +6441,30 @@ proof fn proof_e7_identical_chain_fixed_point(chain: Seq<Perm>, p: Perm, n: nat)
         assert(chain[(n - 1) as int] == p);
         proof_lattice_meet_idempotent(p.caps);
         proof_obs_union_idempotent(p.obs);
-        assert(nucleus(p).obs == obs_union(p.obs, trifecta_obligations(p.caps)));
+        assert(nucleus(p).obs == obs_union(p.obs, uninhabitable_state_obligations(p.caps)));
         assert(nucleus(p).obs == p.obs);
-        assert(obs_union(p.obs, trifecta_obligations(p.caps)) == p.obs);
+        assert(obs_union(p.obs, uninhabitable_state_obligations(p.caps)) == p.obs);
         assert(lattice_meet(p.caps, p.caps) == p.caps);
         assert(obs_union(p.obs, p.obs) == p.obs);
-        assert(p.trifecta_constraint || p.trifecta_constraint == p.trifecta_constraint);
+        assert(p.uninhabitable_constraint || p.uninhabitable_constraint == p.uninhabitable_constraint);
         assert(perm_meet(p, p) == p);
     }
 }
 
-/// E7.7: Trifecta detection is monotone through ceiling.
-proof fn proof_e7_ceiling_trifecta_monotone(chain: Seq<Perm>, n: nat)
+/// E7.7:  UninhabitableState detection is monotone through ceiling.
+proof fn proof_e7_ceiling_uninhabitable_monotone(chain: Seq<Perm>, n: nat)
     requires
         n >= 1,
         n <= chain.len(),
         chain_all_valid(chain, n),
-        !is_trifecta_complete(chain[0int].caps),
+        !is_uninhabitable(chain[0int].caps),
     ensures
-        !is_trifecta_complete(chain_ceiling(chain, n).caps),
+        !is_uninhabitable(chain_ceiling(chain, n).caps),
     decreases n,
 {
     if n == 1 {
     } else {
-        proof_e7_ceiling_trifecta_monotone(chain, (n - 1) as nat);
+        proof_e7_ceiling_uninhabitable_monotone(chain, (n - 1) as nat);
         let prev = chain_ceiling(chain, (n - 1) as nat);
         let link = chain[(n - 1) as int];
         let result_caps = lattice_meet(prev.caps, link.caps);

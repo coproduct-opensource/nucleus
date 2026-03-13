@@ -4,7 +4,7 @@
 //! monotonic meet (delegate_to) at each edge. The structural differentiator
 //! vs flat sandbox models: sub-pod permissions are always ≤ parent ceiling.
 
-use portcullis::{CapabilityLevel, IncompatibilityConstraint, PermissionLattice, TrifectaRisk};
+use portcullis::{CapabilityLevel, IncompatibilityConstraint, PermissionLattice, StateRisk};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -88,11 +88,11 @@ fn draw_tree_panel(f: &mut Frame, state: &DelegationForestState, area: Rect) {
         // Node marker
         let marker = if node_id == 0 { "▶ " } else { "● " };
 
-        // Trifecta check
+        //  UninhabitableState check
         let is_vulnerable = node
             .effective_perms
             .as_ref()
-            .map(|p| p.is_trifecta_vulnerable())
+            .map(|p| p.is_uninhabitable_vulnerable())
             .unwrap_or(false);
 
         let name_color = if is_selected {
@@ -260,7 +260,7 @@ fn draw_detail_panel(f: &mut Frame, state: &DelegationForestState, area: Rect) {
     // Mini heatmap of effective capabilities
     if let Some(ref eff) = node.effective_perms {
         let heatmap = capability_heatmap(&eff.capabilities);
-        let trifecta = trifecta_badge(eff);
+        let uninhabitable_state = uninhabitable_state_badge(eff);
         let budget_str = format!("${:.2}", budget_for_preset(node.preset_index));
 
         lines.push(Line::from(vec![
@@ -277,7 +277,7 @@ fn draw_detail_panel(f: &mut Frame, state: &DelegationForestState, area: Rect) {
             ),
             Span::raw(heatmap),
             Span::raw("  "),
-            trifecta,
+            uninhabitable_state,
             Span::styled(
                 format!("  {}", budget_str),
                 Style::default().fg(Color::DarkGray),
@@ -367,15 +367,15 @@ fn capability_heatmap(caps: &portcullis::CapabilityLattice) -> String {
         .collect()
 }
 
-/// Generate trifecta risk badge.
-fn trifecta_badge(perms: &PermissionLattice) -> Span<'static> {
+/// Generate uninhabitable_state risk badge.
+fn uninhabitable_state_badge(perms: &PermissionLattice) -> Span<'static> {
     let constraint = IncompatibilityConstraint::enforcing();
-    let risk = constraint.trifecta_risk(&perms.capabilities);
+    let risk = constraint.state_risk(&perms.capabilities);
     match risk {
-        TrifectaRisk::None => Span::styled("[SAFE]", Style::default().fg(Color::Green)),
-        TrifectaRisk::Low => Span::styled("[LOW]", Style::default().fg(Color::Green)),
-        TrifectaRisk::Medium => Span::styled("[MED]", Style::default().fg(Color::Yellow)),
-        TrifectaRisk::Complete => Span::styled(
+        StateRisk::Safe => Span::styled("[SAFE]", Style::default().fg(Color::Green)),
+        StateRisk::Low => Span::styled("[LOW]", Style::default().fg(Color::Green)),
+        StateRisk::Medium => Span::styled("[MED]", Style::default().fg(Color::Yellow)),
+        StateRisk::Uninhabitable => Span::styled(
             "[GATED]",
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         ),

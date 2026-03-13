@@ -2,7 +2,7 @@
 //!
 //! Profiles are resolved in priority order:
 //! 1. **Canonical YAML profiles** from [`portcullis::profile::ProfileRegistry`]
-//!    (10 profiles with trifecta analysis, descriptions, budgets, and time limits)
+//!    (10 profiles with uninhabitable_state analysis, descriptions, budgets, and time limits)
 //! 2. **Short aliases** that map to canonical names (e.g., "review" → "code-review")
 //! 3. **Legacy profiles** built into [`PermissionLattice`] (for profiles not yet
 //!    migrated to YAML)
@@ -76,7 +76,7 @@ pub fn list() -> Result<()> {
     println!();
 
     // Canonical profiles (from YAML with descriptions)
-    println!("Canonical profiles (declarative YAML with trifecta analysis):");
+    println!("Canonical profiles (declarative YAML with uninhabitable_state analysis):");
     println!();
     for name in registry.names() {
         if let Some(spec) = registry.get(name) {
@@ -96,7 +96,10 @@ pub fn list() -> Result<()> {
         ("fix-issue", "Write + bash + git commit (no push/PR)"),
         ("database-client", "DB CLI only (psql/mysql/redis)"),
         ("demo", "Demo-friendly permissions with approvals"),
-        ("full", "Everything enabled (trifecta still enforced!)"),
+        (
+            "full",
+            "Everything enabled (uninhabitable_state still enforced!)",
+        ),
         ("restrictive", "Minimal permissions (default)"),
     ];
     println!();
@@ -110,7 +113,7 @@ pub fn list() -> Result<()> {
     println!("Usage:");
     println!("  nucleus run --profile codegen \"Generate the feature\"");
     println!();
-    println!("Note: Even 'full' profile enforces the trifecta constraint.");
+    println!("Note: Even 'full' profile enforces the uninhabitable_state constraint.");
     println!("      Exfiltration is blocked when private data + untrusted content");
     println!("      are both accessible.");
 

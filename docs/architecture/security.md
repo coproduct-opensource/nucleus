@@ -115,7 +115,7 @@ File access uses cap-std for capability-based security:
 
 The permission lattice provides mathematical guarantees:
 - Capabilities can only tighten through composition
-- Dangerous combinations (trifecta) trigger additional gates
+- Dangerous combinations (uninhabitable state) trigger additional gates
 - No silent policy relaxation
 
 ### Layer 5: Environment Isolation
@@ -127,9 +127,9 @@ Spawned processes receive only explicitly allowed environment variables:
 
 ---
 
-## The Lethal Trifecta
+## The Uninhabitable State
 
-Nucleus specifically guards against the [lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/):
+Nucleus specifically guards against the [uninhabitable state](https://simonwillison.net/2025/Jun/16/the-uninhabitable-state/):
 
 ```
 Private Data    +    Untrusted Content    +    Exfiltration Vector
@@ -342,7 +342,7 @@ Nucleus does not protect against:
 
 - [CISA Secure by Design](https://www.cisa.gov/secure-by-design)
 - [NSA Guidance on Memory Safe Languages](https://media.defense.gov/2022/Nov/10/2003112742/-1/-1/0/CSI_SOFTWARE_MEMORY_SAFETY.PDF)
-- [The Lethal Trifecta - Simon Willison](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/)
+- [The Uninhabitable State - Simon Willison](https://simonwillison.net/2025/Jun/16/the-uninhabitable-state/)
 - [SPIFFE Specification](https://spiffe.io/docs/latest/spiffe-about/spiffe-concepts/)
 - [OWASP Input Validation Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Input_Validation_Cheat_Sheet.html)
 - [Firecracker Security](https://firecracker-microvm.github.io/docs/security/)

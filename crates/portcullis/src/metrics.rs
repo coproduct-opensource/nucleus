@@ -10,7 +10,7 @@
 //!
 //! 1. **Core traits** - `ReputationMetrics`, `MetricsCollector`
 //! 2. **Default implementations** - In-memory collectors for testing
-//! 3. **Standard metrics** - Deviation rate, approval rate, trifecta frequency
+//! 3. **Standard metrics** - Deviation rate, approval rate, uninhabitable_state frequency
 //!
 //! # Standard Metrics
 //!
@@ -18,7 +18,7 @@
 //! |--------|-------------|----------------|
 //! | `deviation_rate` | Weakenings requested / operations | Higher = more deviation from declared |
 //! | `approval_rate` | Approvals granted / approvals requested | Higher = better track record |
-//! | `trifecta_frequency` | Trifecta completions / sessions | Higher = more risky behavior |
+//! | `uninhabitable_frequency` |  UninhabitableState completions / sessions | Higher = more risky behavior |
 //! | `avg_weakening_cost` | Total cost / weakenings | Higher = bigger deviations |
 //! | `block_rate` | Executions blocked / operations | Higher = hitting policy limits |
 //!
@@ -46,7 +46,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use crate::capability::{Operation, TrifectaRisk};
+use crate::capability::{Operation, StateRisk};
 use crate::weakening::WeakeningCost;
 
 /// Standard metrics that reputation systems can query.
@@ -66,11 +66,11 @@ pub trait ReputationMetrics: Send + Sync {
     /// A rate of 0.0 means all approval requests were denied.
     fn approval_rate(&self, identity: &str) -> f64;
 
-    /// Trifecta frequency: completions / sessions (0.0 - 1.0+).
+    ///  UninhabitableState frequency: completions / sessions (0.0 - 1.0+).
     ///
-    /// A rate of 0.0 means the trifecta was never completed.
+    /// A rate of 0.0 means the uninhabitable_state was never completed.
     /// Higher rates indicate more frequent dangerous permission combinations.
-    fn trifecta_frequency(&self, identity: &str) -> f64;
+    fn uninhabitable_frequency(&self, identity: &str) -> f64;
 
     /// Average weakening cost per weakening.
     fn avg_weakening_cost(&self, identity: &str) -> rust_decimal::Decimal;
@@ -90,16 +90,17 @@ pub trait ReputationMetrics: Send + Sync {
     /// ```text
     /// score = (1 - deviation_rate) * 0.25
     ///       + approval_rate * 0.25
-    ///       + (1 - trifecta_frequency) * 0.25
+    ///       + (1 - uninhabitable_frequency) * 0.25
     ///       + (1 - block_rate) * 0.25
     /// ```
     fn reputation_score(&self, identity: &str) -> f64 {
         let deviation = (1.0 - self.deviation_rate(identity).min(1.0)).max(0.0);
         let approval = self.approval_rate(identity);
-        let trifecta = (1.0 - self.trifecta_frequency(identity).min(1.0)).max(0.0);
+        let uninhabitable_state = (1.0 - self.uninhabitable_frequency(identity).min(1.0)).max(0.0);
         let block = (1.0 - self.block_rate(identity).min(1.0)).max(0.0);
 
-        (deviation * 0.25 + approval * 0.25 + trifecta * 0.25 + block * 0.25).clamp(0.0, 1.0)
+        (deviation * 0.25 + approval * 0.25 + uninhabitable_state * 0.25 + block * 0.25)
+            .clamp(0.0, 1.0)
     }
 
     /// Get all metrics as a structured report.
@@ -108,7 +109,7 @@ pub trait ReputationMetrics: Send + Sync {
             identity: identity.to_string(),
             deviation_rate: self.deviation_rate(identity),
             approval_rate: self.approval_rate(identity),
-            trifecta_frequency: self.trifecta_frequency(identity),
+            uninhabitable_frequency: self.uninhabitable_frequency(identity),
             avg_weakening_cost: self.avg_weakening_cost(identity),
             block_rate: self.block_rate(identity),
             reputation_score: self.reputation_score(identity),
@@ -126,8 +127,8 @@ pub struct MetricsReport {
     pub deviation_rate: f64,
     /// Approval rate.
     pub approval_rate: f64,
-    /// Trifecta frequency.
-    pub trifecta_frequency: f64,
+    ///  UninhabitableState frequency.
+    pub uninhabitable_frequency: f64,
     /// Average weakening cost.
     pub avg_weakening_cost: rust_decimal::Decimal,
     /// Block rate.
@@ -147,8 +148,8 @@ impl std::fmt::Display for MetricsReport {
         writeln!(f, "  Approval rate:     {:.2}%", self.approval_rate * 100.0)?;
         writeln!(
             f,
-            "  Trifecta freq:     {:.2}%",
-            self.trifecta_frequency * 100.0
+            "   UninhabitableState freq:     {:.2}%",
+            self.uninhabitable_frequency * 100.0
         )?;
         writeln!(f, "  Avg cost:          {}", self.avg_weakening_cost)?;
         writeln!(f, "  Block rate:        {:.2}%", self.block_rate * 100.0)?;
@@ -186,8 +187,8 @@ pub enum MetricEvent {
     /// An approval was denied.
     ApprovalDenied,
 
-    /// The trifecta was completed.
-    TrifectaCompleted,
+    /// The uninhabitable_state was completed.
+    UninhabitableStateCompleted,
 
     /// A session started.
     SessionStarted,
@@ -221,7 +222,7 @@ struct IdentityCounters {
     approvals_requested: u64,
     approvals_granted: u64,
     approvals_denied: u64,
-    trifecta_completions: u64,
+    uninhabitable_completions: u64,
     sessions_started: u64,
     sessions_ended: u64,
     executions_blocked: u64,
@@ -282,10 +283,10 @@ impl ReputationMetrics for InMemoryMetrics {
         counters.approvals_granted as f64 / counters.approvals_requested as f64
     }
 
-    fn trifecta_frequency(&self, identity: &str) -> f64 {
+    fn uninhabitable_frequency(&self, identity: &str) -> f64 {
         let counters = self.get_counters(identity);
         let sessions = counters.sessions_started.max(1);
-        counters.trifecta_completions as f64 / sessions as f64
+        counters.uninhabitable_completions as f64 / sessions as f64
     }
 
     fn avg_weakening_cost(&self, identity: &str) -> rust_decimal::Decimal {
@@ -327,8 +328,8 @@ impl MetricsCollector for InMemoryMetrics {
             MetricEvent::ApprovalDenied => {
                 entry.approvals_denied += 1;
             }
-            MetricEvent::TrifectaCompleted => {
-                entry.trifecta_completions += 1;
+            MetricEvent::UninhabitableStateCompleted => {
+                entry.uninhabitable_completions += 1;
             }
             MetricEvent::SessionStarted => {
                 entry.sessions_started += 1;
@@ -361,8 +362,8 @@ pub struct ReputationWeights {
     pub deviation_weight: f64,
     /// Weight for approval rate (default 0.25).
     pub approval_weight: f64,
-    /// Weight for trifecta frequency (default 0.25).
-    pub trifecta_weight: f64,
+    /// Weight for uninhabitable_state frequency (default 0.25).
+    pub uninhabitable_weight: f64,
     /// Weight for block rate (default 0.25).
     pub block_weight: f64,
 }
@@ -372,7 +373,7 @@ impl Default for ReputationWeights {
         Self {
             deviation_weight: 0.25,
             approval_weight: 0.25,
-            trifecta_weight: 0.25,
+            uninhabitable_weight: 0.25,
             block_weight: 0.25,
         }
     }
@@ -381,14 +382,16 @@ impl Default for ReputationWeights {
 impl ReputationWeights {
     /// Validate that weights sum to 1.0.
     pub fn validate(&self) -> Result<(), &'static str> {
-        let total =
-            self.deviation_weight + self.approval_weight + self.trifecta_weight + self.block_weight;
+        let total = self.deviation_weight
+            + self.approval_weight
+            + self.uninhabitable_weight
+            + self.block_weight;
         if (total - 1.0).abs() > 0.001 {
             return Err("weights must sum to 1.0");
         }
         if self.deviation_weight < 0.0
             || self.approval_weight < 0.0
-            || self.trifecta_weight < 0.0
+            || self.uninhabitable_weight < 0.0
             || self.block_weight < 0.0
         {
             return Err("weights must be non-negative");
@@ -400,12 +403,13 @@ impl ReputationWeights {
     pub fn score(&self, metrics: &dyn ReputationMetrics, identity: &str) -> f64 {
         let deviation = (1.0 - metrics.deviation_rate(identity).min(1.0)).max(0.0);
         let approval = metrics.approval_rate(identity);
-        let trifecta = (1.0 - metrics.trifecta_frequency(identity).min(1.0)).max(0.0);
+        let uninhabitable_state =
+            (1.0 - metrics.uninhabitable_frequency(identity).min(1.0)).max(0.0);
         let block = (1.0 - metrics.block_rate(identity).min(1.0)).max(0.0);
 
         (deviation * self.deviation_weight
             + approval * self.approval_weight
-            + trifecta * self.trifecta_weight
+            + uninhabitable_state * self.uninhabitable_weight
             + block * self.block_weight)
             .clamp(0.0, 1.0)
     }
@@ -421,18 +425,18 @@ pub struct DeviationReport {
     pub declared_description: String,
     /// Description of actual (ceiling) permissions.
     pub actual_description: String,
-    /// Trifecta risk of declared permissions.
-    pub declared_trifecta: TrifectaRisk,
-    /// Trifecta risk of actual permissions.
-    pub actual_trifecta: TrifectaRisk,
+    ///  UninhabitableState risk of declared permissions.
+    pub declared_uninhabitable: StateRisk,
+    ///  UninhabitableState risk of actual permissions.
+    pub actual_uninhabitable: StateRisk,
     /// Total weakening cost.
     pub total_cost: rust_decimal::Decimal,
     /// Number of capability weakenings.
     pub capability_weakenings: usize,
     /// Number of obligation removals.
     pub obligation_removals: usize,
-    /// Whether the trifecta was completed.
-    pub trifecta_completed: bool,
+    /// Whether the uninhabitable_state was completed.
+    pub state_uninhabitable: bool,
     /// Individual deviation details.
     pub deviations: Vec<DeviationDetail>,
 }
@@ -449,8 +453,8 @@ pub struct DeviationDetail {
     pub actual: String,
     /// The cost of this deviation.
     pub cost: rust_decimal::Decimal,
-    /// The trifecta impact.
-    pub trifecta_impact: TrifectaRisk,
+    /// The uninhabitable_state impact.
+    pub uninhabitable_impact: StateRisk,
 }
 
 impl std::fmt::Display for DeviationReport {
@@ -459,12 +463,12 @@ impl std::fmt::Display for DeviationReport {
         writeln!(
             f,
             "  Declared: {} ({:?})",
-            self.declared_description, self.declared_trifecta
+            self.declared_description, self.declared_uninhabitable
         )?;
         writeln!(
             f,
             "  Actual:   {} ({:?})",
-            self.actual_description, self.actual_trifecta
+            self.actual_description, self.actual_uninhabitable
         )?;
         writeln!(f, "  Total cost: {}", self.total_cost)?;
         writeln!(
@@ -472,16 +476,16 @@ impl std::fmt::Display for DeviationReport {
             "  Weakenings: {} capability, {} obligation",
             self.capability_weakenings, self.obligation_removals
         )?;
-        if self.trifecta_completed {
-            writeln!(f, "  TRIFECTA COMPLETED")?;
+        if self.state_uninhabitable {
+            writeln!(f, "  uninhabitable_state COMPLETED")?;
         }
         if !self.deviations.is_empty() {
             writeln!(f, "  Deviations:")?;
             for d in &self.deviations {
                 writeln!(
                     f,
-                    "    - {:?}: {} → {} (cost: {}, trifecta: {:?})",
-                    d.operation, d.declared, d.actual, d.cost, d.trifecta_impact
+                    "    - {:?}: {} → {} (cost: {}, uninhabitable_state: {:?})",
+                    d.operation, d.declared, d.actual, d.cost, d.uninhabitable_impact
                 )?;
             }
         }
@@ -509,7 +513,7 @@ pub fn build_deviation_report(
                     declared: w.from_level.clone(),
                     actual: w.to_level.clone(),
                     cost: w.cost.total(),
-                    trifecta_impact: w.trifecta_impact,
+                    uninhabitable_impact: w.uninhabitable_impact,
                 });
             }
             WeakeningDimension::ObligationRemoval(op) => {
@@ -519,7 +523,7 @@ pub fn build_deviation_report(
                     declared: "Required".to_string(),
                     actual: "Removed".to_string(),
                     cost: w.cost.total(),
-                    trifecta_impact: w.trifecta_impact,
+                    uninhabitable_impact: w.uninhabitable_impact,
                 });
             }
             _ => {}
@@ -530,12 +534,12 @@ pub fn build_deviation_report(
         identity: identity.to_string(),
         declared_description: result.floor.description.clone(),
         actual_description: result.ceiling.description.clone(),
-        declared_trifecta: result.floor_trifecta,
-        actual_trifecta: result.ceiling_trifecta,
+        declared_uninhabitable: result.floor_uninhabitable,
+        actual_uninhabitable: result.ceiling_uninhabitable,
         total_cost: result.total_cost.total(),
         capability_weakenings,
         obligation_removals,
-        trifecta_completed: result.completes_trifecta(),
+        state_uninhabitable: result.completes_uninhabitable(),
         deviations,
     }
 }
@@ -591,17 +595,17 @@ mod tests {
     }
 
     #[test]
-    fn test_in_memory_metrics_trifecta_frequency() {
+    fn test_in_memory_metrics_uninhabitable_frequency() {
         let metrics = InMemoryMetrics::new();
         let identity = "spiffe://test/agent-1";
 
-        // 4 sessions, 1 trifecta completion
+        // 4 sessions, 1 uninhabitable_state completion
         for _ in 0..4 {
             metrics.record(identity, MetricEvent::SessionStarted);
         }
-        metrics.record(identity, MetricEvent::TrifectaCompleted);
+        metrics.record(identity, MetricEvent::UninhabitableStateCompleted);
 
-        let freq = metrics.trifecta_frequency(identity);
+        let freq = metrics.uninhabitable_frequency(identity);
         assert!((freq - 0.25).abs() < 0.001); // 1/4 = 0.25
     }
 
@@ -610,7 +614,7 @@ mod tests {
         let metrics = InMemoryMetrics::new();
         let identity = "spiffe://test/agent-1";
 
-        // Perfect behavior: no deviations, all approvals granted, no trifecta, no blocks
+        // Perfect behavior: no deviations, all approvals granted, no uninhabitable_state, no blocks
         metrics.record(identity, MetricEvent::SessionStarted);
         for _ in 0..10 {
             metrics.record(
@@ -634,7 +638,7 @@ mod tests {
 
         metrics.record(identity, MetricEvent::SessionStarted);
 
-        // All bad: many deviations, denied approvals, trifecta, blocks
+        // All bad: many deviations, denied approvals, uninhabitable_state, blocks
         for _ in 0..10 {
             metrics.record(
                 identity,
@@ -652,7 +656,7 @@ mod tests {
         }
         metrics.record(identity, MetricEvent::ApprovalRequested);
         metrics.record(identity, MetricEvent::ApprovalDenied);
-        metrics.record(identity, MetricEvent::TrifectaCompleted);
+        metrics.record(identity, MetricEvent::UninhabitableStateCompleted);
 
         let score = metrics.reputation_score(identity);
         // Should be low but > 0
@@ -665,7 +669,7 @@ mod tests {
         let metrics = InMemoryMetrics::new();
         let identity = "spiffe://test/agent-1";
 
-        // Only trifecta is bad
+        // Only uninhabitable_state is bad
         metrics.record(identity, MetricEvent::SessionStarted);
         metrics.record(
             identity,
@@ -673,23 +677,23 @@ mod tests {
                 operation: Operation::ReadFiles,
             },
         );
-        metrics.record(identity, MetricEvent::TrifectaCompleted);
+        metrics.record(identity, MetricEvent::UninhabitableStateCompleted);
 
         // Default weights
         let default_score = metrics.reputation_score(identity);
 
-        // Custom weights emphasizing trifecta
+        // Custom weights emphasizing uninhabitable_state
         let weights = ReputationWeights {
             deviation_weight: 0.1,
             approval_weight: 0.1,
-            trifecta_weight: 0.7,
+            uninhabitable_weight: 0.7,
             block_weight: 0.1,
         };
         assert!(weights.validate().is_ok());
 
         let custom_score = weights.score(&metrics, identity);
 
-        // Custom score should be lower because trifecta is heavily weighted
+        // Custom score should be lower because uninhabitable_state is heavily weighted
         assert!(custom_score < default_score);
     }
 
@@ -718,12 +722,12 @@ mod tests {
         let identity = "spiffe://test/agent-1";
 
         metrics.record(identity, MetricEvent::SessionStarted);
-        metrics.record(identity, MetricEvent::TrifectaCompleted);
+        metrics.record(identity, MetricEvent::UninhabitableStateCompleted);
 
-        assert_eq!(metrics.trifecta_frequency(identity), 1.0);
+        assert_eq!(metrics.uninhabitable_frequency(identity), 1.0);
 
         metrics.reset(identity);
 
-        assert_eq!(metrics.trifecta_frequency(identity), 0.0);
+        assert_eq!(metrics.uninhabitable_frequency(identity), 0.0);
     }
 }
