@@ -31,6 +31,7 @@ mod observe;
 mod profiles;
 mod run;
 mod setup;
+mod shell;
 mod start;
 mod stop;
 mod token;
@@ -60,6 +61,9 @@ enum Commands {
 
     /// Execute a task with enforced permissions
     Run(Box<run::RunArgs>),
+
+    /// Launch interactive Claude Code with nucleus security context
+    Shell(shell::ShellArgs),
 
     /// Set up nucleus environment (Lima VM, artifacts, secrets)
     Setup(setup::SetupArgs),
@@ -116,6 +120,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Audit(args) => audit::execute(args),
         Commands::Run(args) => run::execute(*args, &config_path).await,
+        Commands::Shell(args) => shell::execute(args).await,
         Commands::Setup(args) => setup::execute(args).await,
         Commands::Start(args) => start::execute(args).await,
         Commands::Stop(args) => stop::execute(args).await,

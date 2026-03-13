@@ -729,16 +729,20 @@ fn create_pod_via_node(
     }
 }
 
-struct McpEnvConfig<'a> {
-    proxy_url: &'a str,
-    auth_secret: Option<&'a str>,
-    approval_secret: Option<&'a str>,
-    spec_path: &'a Path,
-    kernel_trace: Option<&'a Path>,
-    sandbox_token: Option<&'a str>,
+pub struct McpEnvConfig<'a> {
+    pub proxy_url: &'a str,
+    pub auth_secret: Option<&'a str>,
+    pub approval_secret: Option<&'a str>,
+    pub spec_path: &'a Path,
+    pub kernel_trace: Option<&'a Path>,
+    pub sandbox_token: Option<&'a str>,
 }
 
-fn write_mcp_config(mcp_path: &Path, mcp_command: &Path, env_cfg: &McpEnvConfig<'_>) -> Result<()> {
+pub fn write_mcp_config(
+    mcp_path: &Path,
+    mcp_command: &Path,
+    env_cfg: &McpEnvConfig<'_>,
+) -> Result<()> {
     #[derive(Serialize)]
     struct McpServer {
         #[serde(rename = "type")]
@@ -837,7 +841,7 @@ fn run_claude_mcp(
     cmd.output().context("failed to spawn claude")
 }
 
-fn build_mcp_allowed_tools(policy: &PermissionLattice) -> Vec<String> {
+pub fn build_mcp_allowed_tools(policy: &PermissionLattice) -> Vec<String> {
     let mut tools = Vec::new();
     if policy.capabilities.read_files >= CapabilityLevel::LowRisk {
         tools.push("mcp__nucleus__read".to_string());
