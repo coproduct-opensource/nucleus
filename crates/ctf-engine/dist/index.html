@@ -27,8 +27,19 @@
     <meta name="twitter:image" content="https://nucleus.dev/ctf/static/img/og.svg" />
 
     <!-- Trunk: build the lib target (not the CLI binary) and copy static assets -->
-    <link data-trunk rel="rust" data-target-name="ctf_engine" />
-    <link data-trunk rel="copy-dir" href="static/" />
+
+<script type="module">
+import init, * as bindings from '/ctf-engine-8acb433ad3477857.js';
+const wasm = await init({ module_or_path: '/ctf-engine-8acb433ad3477857_bg.wasm' });
+
+
+window.wasmBindings = bindings;
+
+
+dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
+
+</script>
+
 
     <style>
       :root {
@@ -411,7 +422,7 @@
         .header-right { flex-direction: column; gap: 8px; }
       }
     </style>
-  </head>
+  <link rel="modulepreload" href="/ctf-engine-8acb433ad3477857.js" crossorigin="anonymous" integrity="sha384-T1K4DRIy+GI42Q8DmgYXYhXT/D3oYJ3FGoW959bEHoxxIzRDKu1zL2X+ZI3SmyPe"><link rel="preload" href="/ctf-engine-8acb433ad3477857_bg.wasm" crossorigin="anonymous" integrity="sha384-atHPOqPjNsEOwG+0PwB+x76xirK3xpA+6aCd7OcjQEP5OezIThbqHTn0nHx3ALe5" as="fetch" type="application/wasm"></head>
   <body>
 
     <!-- ── Landing Page ──────────────────────────────────────────────── -->

@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0d1117"/>
+      <stop offset="100%" stop-color="#161b22"/>
+    </linearGradient>
+    <linearGradient id="redGlow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f85149" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#f85149" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <!-- Top border accent -->
+  <rect width="1200" height="3" fill="#f85149"/>
+  <!-- Grid pattern -->
+  <g opacity="0.05" stroke="#58a6ff" stroke-width="0.5">
+    <line x1="0" y1="100" x2="1200" y2="100"/>
+    <line x1="0" y1="200" x2="1200" y2="200"/>
+    <line x1="0" y1="300" x2="1200" y2="300"/>
+    <line x1="0" y1="400" x2="1200" y2="400"/>
+    <line x1="0" y1="500" x2="1200" y2="500"/>
+    <line x1="200" y1="0" x2="200" y2="630"/>
+    <line x1="400" y1="0" x2="400" y2="630"/>
+    <line x1="600" y1="0" x2="600" y2="630"/>
+    <line x1="800" y1="0" x2="800" y2="630"/>
+    <line x1="1000" y1="0" x2="1000" y2="630"/>
+  </g>
+  <!-- Lock icon -->
+  <g transform="translate(100, 160)">
+    <rect x="12" y="40" width="56" height="44" rx="6" fill="none" stroke="#f85149" stroke-width="3"/>
+    <path d="M22 40 V28 A18 18 0 0 1 58 28 V40" fill="none" stroke="#f85149" stroke-width="3"/>
+    <circle cx="40" cy="58" r="5" fill="#f85149"/>
+    <line x1="40" y1="63" x2="40" y2="72" stroke="#f85149" stroke-width="3"/>
+  </g>
+  <!-- Title -->
+  <text x="200" y="200" font-family="SF Mono, Cascadia Code, Fira Code, monospace" font-size="64" font-weight="700" fill="#e6edf3">
+    THE <tspan fill="#f85149">VAULT</tspan>
+  </text>
+  <text x="200" y="240" font-family="SF Mono, Cascadia Code, Fira Code, monospace" font-size="22" fill="#8b949e">
+    Nucleus CTF Challenge
+  </text>
+  <!-- Tagline -->
+  <text x="200" y="310" font-family="SF Mono, Cascadia Code, Fira Code, monospace" font-size="26" fill="#e6edf3">
+    Can your AI agent break out of a
+  </text>
+  <text x="200" y="345" font-family="SF Mono, Cascadia Code, Fira Code, monospace" font-size="26" fill="#e6edf3">
+    formally verified sandbox?
+  </text>
+  <text x="200" y="390" font-family="SF Mono, Cascadia Code, Fira Code, monospace" font-size="22" fill="#8b949e">
+    Probably not. Try anyway.
+  </text>
+  <!-- Stats boxes -->
+  <g transform="translate(200, 430)">
+    <rect width="160" height="70" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+    <text x="80" y="30" text-anchor="middle" font-family="SF Mono, monospace" font-size="28" font-weight="700" fill="#3fb950">297</text>
+    <text x="80" y="52" text-anchor="middle" font-family="SF Mono, monospace" font-size="13" fill="#8b949e">Verus Proofs</text>
+  </g>
+  <g transform="translate(380, 430)">
+    <rect width="160" height="70" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+    <text x="80" y="30" text-anchor="middle" font-family="SF Mono, monospace" font-size="28" font-weight="700" fill="#58a6ff">7</text>
+    <text x="80" y="52" text-anchor="middle" font-family="SF Mono, monospace" font-size="13" fill="#8b949e">Levels</text>
+  </g>
+  <g transform="translate(560, 430)">
+    <rect width="160" height="70" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+    <text x="80" y="30" text-anchor="middle" font-family="SF Mono, monospace" font-size="28" font-weight="700" fill="#d29922">6</text>
+    <text x="80" y="52" text-anchor="middle" font-family="SF Mono, monospace" font-size="13" fill="#8b949e">Real CVEs</text>
+  </g>
+  <g transform="translate(740, 430)">
+    <rect width="160" height="70" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1"/>
+    <text x="80" y="30" text-anchor="middle" font-family="SF Mono, monospace" font-size="28" font-weight="700" fill="#bc8cff">0ms</text>
+    <text x="80" y="52" text-anchor="middle" font-family="SF Mono, monospace" font-size="13" fill="#8b949e">WASM Verdicts</text>
+  </g>
+  <!-- Bottom bar -->
+  <rect y="590" width="1200" height="40" fill="#161b22"/>
+  <text x="600" y="616" text-anchor="middle" font-family="SF Mono, monospace" font-size="14" fill="#8b949e">
+    nucleus.dev/ctf | github.com/coproduct-opensource/nucleus
+  </text>
+</svg>

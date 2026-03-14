@@ -16,8 +16,33 @@ pub use level::{Defense, Level, LevelMeta};
 pub use sandbox::{ToolCall, Verdict, StepResult, AttackResult};
 
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::closure::Closure;
 
 // ── WASM API ────────────────────────────────────────────────────────────
+
+/// Called by trunk's auto-init after WASM loads.
+/// Bridges WASM bindings to the external ctf.js app script via window.__initCtf.
+#[wasm_bindgen(start)]
+pub fn start() {
+    let ctf = js_sys::Object::new();
+
+    let gl = Closure::wrap(Box::new(get_levels) as Box<dyn Fn() -> JsValue>);
+    js_sys::Reflect::set(&ctf, &"get_levels".into(), gl.as_ref().unchecked_ref()).ok();
+    gl.forget();
+
+    let sa = Closure::wrap(Box::new(|level: u8, json: String| {
+        submit_attack(level, &json)
+    }) as Box<dyn Fn(u8, String) -> JsValue>);
+    js_sys::Reflect::set(&ctf, &"submit_attack".into(), sa.as_ref().unchecked_ref()).ok();
+    sa.forget();
+
+    if let Ok(init_fn) = js_sys::Reflect::get(&js_sys::global(), &"__initCtf".into()) {
+        if init_fn.is_function() {
+            let f: js_sys::Function = init_fn.unchecked_into();
+            f.call1(&JsValue::NULL, &ctf).ok();
+        }
+    }
+}
 
 /// Get metadata for all levels as JSON.
 #[wasm_bindgen]
