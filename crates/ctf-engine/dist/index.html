@@ -26,12 +26,14 @@
     <meta name="twitter:description" content="Can your AI agent break out of a formally verified sandbox? Probably not. Try anyway." />
     <meta name="twitter:image" content="https://nucleus.dev/ctf/static/img/og.svg" />
 
+    <!-- Load ctf.js first so __initCtf is defined when WASM start() runs -->
+    <script src="static/js/ctf.js"></script>
+
     <!-- Trunk: build the lib target (not the CLI binary) and copy static assets -->
-    <script src="/static/js/ctf.js"></script>
 
 <script type="module">
-import init, * as bindings from '/ctf-engine-8acb433ad3477857.js';
-const wasm = await init({ module_or_path: '/ctf-engine-8acb433ad3477857_bg.wasm' });
+import init, * as bindings from '/ctf-engine-488915328c77a97b.js';
+const wasm = await init({ module_or_path: '/ctf-engine-488915328c77a97b_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -423,7 +425,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
         .header-right { flex-direction: column; gap: 8px; }
       }
     </style>
-  <link rel="modulepreload" href="/ctf-engine-8acb433ad3477857.js" crossorigin="anonymous" integrity="sha384-T1K4DRIy+GI42Q8DmgYXYhXT/D3oYJ3FGoW959bEHoxxIzRDKu1zL2X+ZI3SmyPe"><link rel="preload" href="/ctf-engine-8acb433ad3477857_bg.wasm" crossorigin="anonymous" integrity="sha384-atHPOqPjNsEOwG+0PwB+x76xirK3xpA+6aCd7OcjQEP5OezIThbqHTn0nHx3ALe5" as="fetch" type="application/wasm"></head>
+  <link rel="modulepreload" href="/ctf-engine-488915328c77a97b.js" crossorigin="anonymous" integrity="sha384-SsO2NeuQ/h0I/z77M2QxULiWGOi6UetINjFplerFpGQ1NQxnGym1NfGaQs58Q2QY"><link rel="preload" href="/ctf-engine-488915328c77a97b_bg.wasm" crossorigin="anonymous" integrity="sha384-vnxz7lNVb/aWwYXtXoaWAK8fBOp/coaPM84R2bOEhcOQUQoIJ/y5nqGoiuknL4Xm" as="fetch" type="application/wasm"></head>
   <body>
 
     <!-- ── Landing Page ──────────────────────────────────────────────── -->

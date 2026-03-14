@@ -26,8 +26,10 @@
     <meta name="twitter:description" content="Can your AI agent break out of a formally verified sandbox? Probably not. Try anyway." />
     <meta name="twitter:image" content="https://nucleus.dev/ctf/static/img/og.svg" />
 
-    <!-- Trunk: build the lib target (not the CLI binary) and copy static assets -->
+    <!-- Load ctf.js first so __initCtf is defined when WASM start() runs -->
     <script src="static/js/ctf.js"></script>
+
+    <!-- Trunk: build the lib target (not the CLI binary) and copy static assets -->
     <link data-trunk rel="rust" data-target-name="ctf_engine" />
     <link data-trunk rel="copy-dir" href="static/" />
 

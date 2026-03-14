@@ -24,6 +24,7 @@ use wasm_bindgen::closure::Closure;
 /// Bridges WASM bindings to the external ctf.js app script via window.__initCtf.
 #[wasm_bindgen(start)]
 pub fn start() {
+    console_error_panic_hook::set_once();
     let ctf = js_sys::Object::new();
 
     let gl = Closure::wrap(Box::new(get_levels) as Box<dyn Fn() -> JsValue>);
@@ -35,6 +36,9 @@ pub fn start() {
     }) as Box<dyn Fn(u8, String) -> JsValue>);
     js_sys::Reflect::set(&ctf, &"submit_attack".into(), sa.as_ref().unchecked_ref()).ok();
     sa.forget();
+
+    // Always store the ctf object so ctf.js can pick it up after DOM is ready.
+    js_sys::Reflect::set(&js_sys::global(), &"__ctf".into(), &ctf).ok();
 
     if let Ok(init_fn) = js_sys::Reflect::get(&js_sys::global(), &"__initCtf".into()) {
         if init_fn.is_function() {

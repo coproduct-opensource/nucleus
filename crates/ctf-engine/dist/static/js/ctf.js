@@ -1,11 +1,10 @@
-// CTF app logic. WASM bindings are passed in via window.__initCtf(ctf).
-// This file is loaded as a regular script (not a module) so it works
-// with trunk's hashed WASM filenames without import path issues.
+// CTF app logic. Initialises from window.wasmBindings (set by trunk's
+// module script) or falls back to the legacy window.__initCtf(ctf) path.
 
 (function() {
   'use strict';
 
-  window.__initCtf = function(ctf) {
+  function boot(ctf) {
     var currentLevel = 1;
     var totalScore = 0;
     var allDefenses = new Set();
@@ -240,5 +239,10 @@
 
     // Default: show landing
     selectLevel(1);
-  };
+  }
+
+  // ctf.js loads in <head> before the WASM module script.
+  // WASM start() calls window.__initCtf(ctf) after init.
+  // Module scripts are deferred, so DOM is ready when boot() runs.
+  window.__initCtf = boot;
 })();
