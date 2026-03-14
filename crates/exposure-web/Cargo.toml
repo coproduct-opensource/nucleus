@@ -1,0 +1,22 @@
+[package]
+name = "exposure-web"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT OR Apache-2.0"
+description = "Web-based interactive playground for the uninhabitable state prevention system"
+repository = "https://github.com/coproduct-opensource/nucleus"
+keywords = ["ai", "security", "wasm", "demo"]
+categories = ["wasm"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ratzilla = "0.3"
+ratatui = { version = "0.30", default-features = false, features = ["all-widgets"] }
+exposure-playground = { path = "../exposure-playground", default-features = false }
+
+# Enable JS-based random for WASM (needed by uuid v4 and getrandom)
+getrandom = { version = "0.2", features = ["js"] }
+uuid = { version = "1", features = ["v4", "js"] }

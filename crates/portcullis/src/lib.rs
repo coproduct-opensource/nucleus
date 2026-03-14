@@ -90,6 +90,7 @@ pub mod audit;
 pub mod audit_backend;
 mod budget;
 mod capability;
+#[cfg(feature = "crypto")]
 pub mod certificate;
 mod command;
 pub mod constraint;
@@ -105,7 +106,7 @@ pub mod graded;
 pub mod guard;
 pub mod heyting;
 /// Kernel decision engine — complete mediation with monotone session state.
-#[cfg(feature = "serde")]
+#[cfg(all(feature = "serde", feature = "crypto"))]
 pub mod kernel;
 /// MCP mediation: classify and gate arbitrary MCP tool calls against the
 /// permission lattice with exposure tracking.
@@ -128,6 +129,7 @@ pub mod s3_audit_backend;
 /// Attenuation tokens — compact delegation credentials for wire transport.
 ///
 /// Requires the `serde` feature for serialization.
+#[cfg(feature = "crypto")]
 pub mod token;
 
 pub mod identity;
@@ -206,6 +208,7 @@ pub use audit::{
     AuditEntry, AuditLog, ChainVerificationError, IdentityAuditSummary, PermissionEvent,
     RetentionPolicy,
 };
+#[cfg(feature = "crypto")]
 pub use certificate::{
     canonical_permissions_hash, verify_certificate, CertificateDelegationError, CertificateError,
     LatticeCertificate, VerifiedPermissions,
@@ -218,6 +221,7 @@ pub use metrics::{
     build_deviation_report, DeviationDetail, DeviationReport, InMemoryMetrics, MetricEvent,
     MetricsCollector, MetricsReport, ReputationMetrics, ReputationWeights,
 };
+#[cfg(feature = "crypto")]
 pub use token::{AttenuationToken, SessionProvenance, TokenError};
 pub use uninhabitable_state::{ConstraintNucleus, CoreExposureRequirement, UninhabitableState};
 

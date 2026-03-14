@@ -1,82 +1,59 @@
-//!  UninhabitableState Playground - Interactive TUI for demonstrating the Uninhabitable State prevention system.
+//! Web frontend for the exposure playground.
 //!
-//! This application provides a visual, interactive demonstration of how the
-//! portcullis permission system prevents dangerous capability combinations.
+//! Compiles the same ratatui UI to WASM via ratzilla's DomBackend.
+//! All app state, demo data, and rendering logic is shared with the
+//! native TUI via the `exposure-playground` library crate.
 
-use std::io;
-use std::time::Duration;
-
-use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
-use ratatui::{backend::CrosstermBackend, Terminal};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use exposure_playground::app::{App, MeetSide, Screen};
 use exposure_playground::ui;
+use ratzilla::event::KeyCode;
+use ratzilla::ratatui::Terminal;
+use ratzilla::{DomBackend, WebRenderer};
 
-fn main() -> io::Result<()> {
-    // Setup terminal
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+fn main() {
+    let backend = DomBackend::new().expect("failed to create DomBackend");
+    let mut terminal = Terminal::new(backend).expect("failed to create terminal");
 
-    // Create app and run
-    let mut app = App::new();
-    let result = run_app(&mut terminal, &mut app);
+    let app = Rc::new(RefCell::new(App::new()));
 
-    // Restore terminal
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
+    // Key event handler
+    let app_key = Rc::clone(&app);
+    terminal.on_key_event(move |key_event| {
+        let mut app = app_key.borrow_mut();
+        let code = key_event.code;
 
-    if let Err(err) = result {
-        eprintln!("Error: {err:?}");
-    }
-
-    Ok(())
-}
-
-fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
-    loop {
-        terminal.draw(|f| ui::draw(f, app))?;
-
-        // Poll for events with timeout
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                // Global quit keys
-                if key.code == KeyCode::Char('q')
-                    || (key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL))
-                {
-                    return Ok(());
-                }
-
-                // Handle input based on current screen
-                match app.screen {
-                    Screen::UninhabitableState => handle_uninhabitable_input(app, key.code),
-                    Screen::TraceChain => handle_trace_input(app, key.code),
-                    Screen::Attacks => handle_attacks_input(app, key.code),
-                    Screen::Matrix => handle_matrix_input(app, key.code),
-                    Screen::Hasse => handle_hasse_input(app, key.code),
-                    Screen::Meet => handle_meet_input(app, key.code),
-                    Screen::ChainBuilder => handle_chain_builder_input(app, key.code),
-                    Screen::DelegationForest => handle_delegation_forest_input(app, key.code),
-                    Screen::Help => handle_help_input(app, key.code),
-                }
-            }
+        // Global quit is a no-op in web (no terminal to restore)
+        // Instead, 'q' on the main screen shows help
+        if code == KeyCode::Char('q') && app.screen == Screen::UninhabitableState {
+            app.screen = Screen::Help;
+            return;
         }
-    }
+
+        match app.screen {
+            Screen::UninhabitableState => handle_uninhabitable(&mut app, code),
+            Screen::TraceChain => handle_trace(&mut app, code),
+            Screen::Attacks => handle_attacks(&mut app, code),
+            Screen::Matrix => handle_matrix(&mut app, code),
+            Screen::Hasse => handle_hasse(&mut app, code),
+            Screen::Meet => handle_meet(&mut app, code),
+            Screen::ChainBuilder => handle_chain_builder(&mut app, code),
+            Screen::DelegationForest => handle_delegation_forest(&mut app, code),
+            Screen::Help => handle_help(&mut app, code),
+        }
+    });
+
+    // Render loop
+    let app_draw = Rc::clone(&app);
+    terminal.draw_web(move |f| {
+        let app = app_draw.borrow();
+        ui::draw(f, &app);
+    });
 }
 
-fn handle_uninhabitable_input(app: &mut App, key: KeyCode) {
+fn handle_uninhabitable(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Char('1') => app.load_preset(0),
         KeyCode::Char('2') => app.load_preset(1),
@@ -101,7 +78,7 @@ fn handle_uninhabitable_input(app: &mut App, key: KeyCode) {
     }
 }
 
-fn handle_trace_input(app: &mut App, key: KeyCode) {
+fn handle_trace(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Char('e') => app.extend_chain(),
         KeyCode::Char('v') => app.verify_chain(),
@@ -112,7 +89,7 @@ fn handle_trace_input(app: &mut App, key: KeyCode) {
     }
 }
 
-fn handle_attacks_input(app: &mut App, key: KeyCode) {
+fn handle_attacks(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Up | KeyCode::Char('k') => app.prev_attack(),
         KeyCode::Down | KeyCode::Char('j') => app.next_attack(),
@@ -123,16 +100,7 @@ fn handle_attacks_input(app: &mut App, key: KeyCode) {
     }
 }
 
-fn handle_help_input(app: &mut App, key: KeyCode) {
-    match key {
-        KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('?') | KeyCode::Enter => {
-            app.screen = Screen::UninhabitableState
-        }
-        _ => {}
-    }
-}
-
-fn handle_matrix_input(app: &mut App, key: KeyCode) {
+fn handle_matrix(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Up | KeyCode::Char('k') => {
             if app.matrix_selected_row > 0 {
@@ -152,7 +120,7 @@ fn handle_matrix_input(app: &mut App, key: KeyCode) {
     }
 }
 
-fn handle_hasse_input(app: &mut App, key: KeyCode) {
+fn handle_hasse(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Right | KeyCode::Char('l') => app.hasse_state.next_node(),
         KeyCode::Left | KeyCode::Char('h') => app.hasse_state.prev_node(),
@@ -161,16 +129,13 @@ fn handle_hasse_input(app: &mut App, key: KeyCode) {
         KeyCode::Char('m') => app.hasse_state.toggle_meet_mode(),
         KeyCode::Enter | KeyCode::Char(' ') => {
             if app.hasse_state.meet_mode {
-                // Compute meet between first and second selected nodes
                 if let Some(_result) = app.hasse_state.select_meet_second() {
-                    // Could show result in a popup or switch to Meet screen
                     app.screen = Screen::Meet;
                 }
             }
         }
         KeyCode::Esc | KeyCode::Backspace => {
             if app.hasse_state.meet_mode {
-                // Cancel meet mode
                 app.hasse_state.meet_mode = false;
                 app.hasse_state.meet_first = None;
             } else {
@@ -182,7 +147,7 @@ fn handle_hasse_input(app: &mut App, key: KeyCode) {
     }
 }
 
-fn handle_meet_input(app: &mut App, key: KeyCode) {
+fn handle_meet(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Tab => app.meet_playground.toggle_side(),
         KeyCode::Char('1') => app.meet_playground.selecting = MeetSide::Left,
@@ -190,17 +155,14 @@ fn handle_meet_input(app: &mut App, key: KeyCode) {
         KeyCode::Up | KeyCode::Char('k') => app.meet_playground.prev_preset(),
         KeyCode::Down | KeyCode::Char('j') => app.meet_playground.next_preset(),
         KeyCode::Enter | KeyCode::Char(' ') => app.meet_playground.compute_meet(),
-        KeyCode::Char('p') => {
-            // Pick from preset list (just cycle for now)
-            app.meet_playground.next_preset();
-        }
+        KeyCode::Char('p') => app.meet_playground.next_preset(),
         KeyCode::Esc | KeyCode::Backspace => app.screen = Screen::UninhabitableState,
         KeyCode::Char('?') => app.screen = Screen::Help,
         _ => {}
     }
 }
 
-fn handle_chain_builder_input(app: &mut App, key: KeyCode) {
+fn handle_chain_builder(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Char('e') => app.chain_builder.add_link(),
         KeyCode::Char('d') => app.chain_builder.remove_last(),
@@ -214,7 +176,7 @@ fn handle_chain_builder_input(app: &mut App, key: KeyCode) {
     }
 }
 
-fn handle_delegation_forest_input(app: &mut App, key: KeyCode) {
+fn handle_delegation_forest(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Left | KeyCode::Char('h') => app.delegation_forest.go_to_parent(),
         KeyCode::Right | KeyCode::Char('l') => app.delegation_forest.go_to_first_child(),
@@ -227,6 +189,15 @@ fn handle_delegation_forest_input(app: &mut App, key: KeyCode) {
         KeyCode::Char('c') => app.delegation_forest.toggle_comparison(),
         KeyCode::Esc | KeyCode::Backspace => app.screen = Screen::UninhabitableState,
         KeyCode::Char('?') => app.screen = Screen::Help,
+        _ => {}
+    }
+}
+
+fn handle_help(app: &mut App, key: KeyCode) {
+    match key {
+        KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('?') | KeyCode::Enter => {
+            app.screen = Screen::UninhabitableState;
+        }
         _ => {}
     }
 }

@@ -18,7 +18,8 @@ members = [
     "crates/nucleus-permission-market", # Lagrangian permission pricing oracle
 ]
 # Verified with Verus (not standard cargo); run: .verus/verus-x86-macos/verus crates/portcullis-verified/src/lib.rs
-exclude = ["crates/portcullis-verified"]
+# exposure-web and ctf-engine are WASM-only (wasm32-unknown-unknown); build with: cd crates/<name> && trunk build
+exclude = ["crates/portcullis-verified", "crates/exposure-web", "crates/ctf-engine"]
 resolver = "2"
 
 [workspace.package]
