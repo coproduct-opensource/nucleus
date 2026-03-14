@@ -5,6 +5,23 @@
   'use strict';
 
   function boot(ctf) {
+    // Mobile responsive fixes — injected via JS to survive Depot caching
+    var mobileCSS = document.createElement('style');
+    mobileCSS.textContent = [
+      '.step-reason { overflow-wrap: anywhere; word-break: break-all; }',
+      '.step-item { overflow-wrap: anywhere; word-break: break-word; min-width: 0; }',
+      '@media (max-width: 768px) {',
+      '  #app { height: auto; min-height: 100vh; overflow-x: hidden; max-width: 100vw; }',
+      '  .panel { padding: 12px; }',
+      '  textarea#attack-input { min-height: 120px; }',
+      '  .exposure-leg .leg-label { font-size: 10px; }',
+      '  .exposure-leg { padding: 6px 4px; }',
+      '  .defense-chip { display: block; margin: 4px 0; width: 100%; }',
+      '  .step-item { padding: 8px 10px; max-width: calc(100vw - 24px); }',
+      '}'
+    ].join('\n');
+    document.head.appendChild(mobileCSS);
+
     var currentLevel = 1;
     var totalScore = 0;
     var allDefenses = new Set();
