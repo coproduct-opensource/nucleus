@@ -342,7 +342,9 @@ fn build_shell_pod_spec(
 fn resolve_binary_path(path: &str) -> Result<PathBuf> {
     let candidate = PathBuf::from(path);
     if candidate.exists() {
-        return Ok(candidate);
+        return candidate
+            .canonicalize()
+            .context("failed to canonicalize binary path");
     }
 
     if !candidate.is_absolute()
