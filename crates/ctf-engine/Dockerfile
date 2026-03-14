@@ -3,6 +3,7 @@
 # Then deploy from workspace root: fly deploy
 FROM joseluisq/static-web-server:2.41.0-alpine
 
+# Cache bust: mobile responsive v2
 COPY crates/ctf-engine/dist /public
 
 ENV SERVER_PORT=8080
