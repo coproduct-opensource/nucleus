@@ -27,6 +27,7 @@
     <meta name="twitter:image" content="https://nucleus.dev/ctf/static/img/og.svg" />
 
     <!-- Trunk: build the lib target (not the CLI binary) and copy static assets -->
+    <script src="/static/js/ctf.js"></script>
 
 <script type="module">
 import init, * as bindings from '/ctf-engine-8acb433ad3477857.js';
@@ -551,6 +552,5 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
       </div>
     </div>
 
-    <script src="static/js/ctf.js"></script>
   </body>
 </html>
