@@ -26,19 +26,19 @@ use crate::{
 
 /// The full product lattice combining all permission dimensions.
 ///
-/// The lattice enforces a key security invariant: the "lethal trifecta"
+/// The lattice enforces a key security invariant: the "uninhabitable_state"
 /// (private data access + untrusted content + exfiltration) cannot exist
 /// at fully autonomous levels. When this combination is detected, the
 /// exfiltration vector gains approval obligations.
 ///
 /// This is modeled as a guarded lattice: L' = { (caps, obligations(caps)) | caps ∈ L }
-/// where `guard` demotes exfiltration capabilities when trifecta is detected.
+/// where `guard` demotes exfiltration capabilities when uninhabitable_state is detected.
 ///
 /// # Security
 ///
-/// The `trifecta_constraint` field is always enforced upon deserialization,
+/// The `uninhabitable_constraint` field is always enforced upon deserialization,
 /// regardless of the value in the serialized data. This prevents attacks
-/// where a malicious payload sets `trifecta_constraint: false` to bypass
+/// where a malicious payload sets `uninhabitable_constraint: false` to bypass
 /// the security invariant.
 ///
 /// # Product Lattice Structure
@@ -48,7 +48,7 @@ use crate::{
 ///
 /// Meet Operation (∧):
 /// • Caps: min(level_a, level_b)
-/// • Obligations: union with trifecta constraint
+/// • Obligations: union with uninhabitable_state constraint
 /// • Paths(allowed): intersection
 /// • Paths(blocked): union
 /// • Budget: min(cap_a, cap_b)
@@ -78,14 +78,14 @@ pub struct PermissionLattice {
     /// Temporal bounds
     pub time: TimeLattice,
 
-    /// Trifecta constraint - enforces that lethal combinations require approval
+    ///  UninhabitableState constraint - enforces that lethal combinations require approval
     ///
     /// # Security
     ///
     /// This field is ALWAYS set to `true` upon deserialization, regardless of
-    /// the value in the serialized data. Use `with_trifecta_disabled()` in
+    /// the value in the serialized data. Use `with_uninhabitable_disabled()` in
     /// code if you explicitly need to disable the constraint (e.g., for testing).
-    pub trifecta_constraint: bool,
+    pub uninhabitable_constraint: bool,
 
     /// Minimum isolation level required to use this policy.
     ///
@@ -120,9 +120,12 @@ struct RawPermissionLattice {
     budget: BudgetLattice,
     commands: CommandLattice,
     time: TimeLattice,
-    #[serde(default = "default_trifecta_constraint")]
+    #[serde(
+        default = "default_uninhabitable_constraint",
+        alias = "trifecta_constraint"
+    )]
     #[allow(dead_code)]
-    trifecta_constraint: bool, // Ignored during deserialization
+    uninhabitable_constraint: bool, // Ignored during deserialization
     #[serde(default)]
     minimum_isolation: Option<IsolationLattice>,
     created_at: DateTime<Utc>,
@@ -137,7 +140,7 @@ impl<'de> Deserialize<'de> for PermissionLattice {
     {
         let raw = RawPermissionLattice::deserialize(deserializer)?;
 
-        // Security: Always enforce trifecta constraint regardless of input
+        // Security: Always enforce uninhabitable_state constraint regardless of input
         let lattice = Self {
             id: raw.id,
             description: raw.description,
@@ -148,7 +151,7 @@ impl<'de> Deserialize<'de> for PermissionLattice {
             budget: raw.budget,
             commands: raw.commands,
             time: raw.time,
-            trifecta_constraint: true, // ALWAYS true after deserialization
+            uninhabitable_constraint: true, // ALWAYS true after deserialization
             minimum_isolation: raw.minimum_isolation,
             created_at: raw.created_at,
             created_by: raw.created_by,
@@ -158,7 +161,7 @@ impl<'de> Deserialize<'de> for PermissionLattice {
     }
 }
 
-fn default_trifecta_constraint() -> bool {
+fn default_uninhabitable_constraint() -> bool {
     true
 }
 
@@ -182,7 +185,7 @@ impl Default for PermissionLattice {
             budget: BudgetLattice::default(),
             commands: CommandLattice::default(),
             time: TimeLattice::default(),
-            trifecta_constraint: true,
+            uninhabitable_constraint: true,
             minimum_isolation: None,
             created_at: Utc::now(),
             created_by: "system".to_string(),
@@ -253,10 +256,10 @@ impl PermissionLattice {
         PermissionLatticeBuilder::default()
     }
 
-    /// Create a version with trifecta constraint explicitly disabled.
+    /// Create a version with uninhabitable_state constraint explicitly disabled.
     ///
     /// # Security Warning
-    /// Disable trifecta constraint enforcement.
+    /// Disable uninhabitable_state constraint enforcement.
     ///
     /// # Security Warning
     ///
@@ -265,17 +268,17 @@ impl PermissionLattice {
     ///
     /// **DO NOT** use in production code.
     #[cfg(feature = "testing")]
-    pub fn with_trifecta_disabled(mut self) -> Self {
-        self.trifecta_constraint = false;
+    pub fn with_uninhabitable_disabled(mut self) -> Self {
+        self.uninhabitable_constraint = false;
         self
     }
 
     /// Apply the nucleus (ν) to normalize this permission lattice.
     ///
-    /// If trifecta enforcement is enabled, this adds approval obligations to
-    /// break any lethal trifecta configuration.
+    /// If uninhabitable_state enforcement is enabled, this adds approval obligations to
+    /// break any uninhabitable_state configuration.
     pub fn normalize(mut self) -> Self {
-        if self.trifecta_constraint {
+        if self.uninhabitable_constraint {
             let constraint = IncompatibilityConstraint::enforcing();
             let required = constraint.obligations_for(&self.capabilities);
             self.obligations = self.obligations.union(&required);
@@ -286,21 +289,21 @@ impl PermissionLattice {
     /// Meet operation: greatest lower bound of two permission lattices.
     ///
     /// This always returns permissions ≤ both inputs, with an additional
-    /// constraint: if the result would form a "lethal trifecta" (private data
+    /// constraint: if the result would form a "uninhabitable_state" (private data
     /// access + untrusted content exposure + exfiltration capability all at
     /// autonomous levels), approval obligations are added.
     ///
     /// This models the guarded lattice L' = { (caps, guard(caps)) | caps ∈ L }
-    /// where trifecta-complete configurations are mapped to their
+    /// where uninhabitable configurations are mapped to their
     /// human-gated counterparts.
     pub fn meet(&self, other: &Self) -> Self {
         let base_caps = self.capabilities.meet(&other.capabilities);
 
         let base_obligations = self.obligations.union(&other.obligations);
 
-        // Apply trifecta constraint if either input enforces it
-        let enforce_trifecta = self.trifecta_constraint || other.trifecta_constraint;
-        let obligations = if enforce_trifecta {
+        // Apply uninhabitable_state constraint if either input enforces it
+        let enforce_uninhabitable = self.uninhabitable_constraint || other.uninhabitable_constraint;
+        let obligations = if enforce_uninhabitable {
             let constraint = IncompatibilityConstraint::enforcing();
             base_obligations.union(&constraint.obligations_for(&base_caps))
         } else {
@@ -326,7 +329,7 @@ impl PermissionLattice {
             budget: self.budget.meet(&other.budget),
             commands: self.commands.meet(&other.commands),
             time: self.time.meet(&other.time),
-            trifecta_constraint: enforce_trifecta,
+            uninhabitable_constraint: enforce_uninhabitable,
             minimum_isolation,
             created_at: Utc::now(),
             created_by: "meet_operation".to_string(),
@@ -336,15 +339,15 @@ impl PermissionLattice {
     /// Join operation: least upper bound of two permission lattices.
     ///
     /// This returns the most permissive combination of both inputs.
-    /// The trifecta constraint is applied if BOTH inputs enforce it.
+    /// The uninhabitable_state constraint is applied if BOTH inputs enforce it.
     pub fn join(&self, other: &Self) -> Self {
         let base_caps = self.capabilities.join(&other.capabilities);
 
         let base_obligations = self.obligations.intersection(&other.obligations);
 
-        // Apply trifecta constraint only if BOTH inputs enforce it
-        let enforce_trifecta = self.trifecta_constraint && other.trifecta_constraint;
-        let obligations = if enforce_trifecta {
+        // Apply uninhabitable_state constraint only if BOTH inputs enforce it
+        let enforce_uninhabitable = self.uninhabitable_constraint && other.uninhabitable_constraint;
+        let obligations = if enforce_uninhabitable {
             let constraint = IncompatibilityConstraint::enforcing();
             base_obligations.union(&constraint.obligations_for(&base_caps))
         } else {
@@ -375,17 +378,17 @@ impl PermissionLattice {
             budget: self.budget.join(&other.budget),
             commands: self.commands.join(&other.commands),
             time: self.time.join(&other.time),
-            trifecta_constraint: enforce_trifecta,
+            uninhabitable_constraint: enforce_uninhabitable,
             minimum_isolation,
             created_at: Utc::now(),
             created_by: "join_operation".to_string(),
         }
     }
 
-    /// Check if current capabilities would form a lethal trifecta.
-    pub fn is_trifecta_vulnerable(&self) -> bool {
+    /// Check if current capabilities would form a uninhabitable_state.
+    pub fn is_uninhabitable_vulnerable(&self) -> bool {
         let constraint = IncompatibilityConstraint::enforcing();
-        constraint.is_trifecta_complete(&self.capabilities)
+        constraint.is_uninhabitable(&self.capabilities)
     }
 
     /// Check if an operation requires approval.
@@ -767,7 +770,7 @@ impl PermissionLattice {
     /// - **Cannot push or create PRs** — the CI script does that
     /// - Web fetch allowed (docs lookup), but no broad web search
     ///
-    /// **Trifecta Analysis**: private data (read=Always) + untrusted content
+    /// ** UninhabitableState Analysis**: private data (read=Always) + untrusted content
     /// (web_fetch=LowRisk) present, but exfiltration absent (git_push=Never,
     /// create_pr=Never, run_bash=LowRisk but constrained). Two of three
     /// components → no approval escalation needed.
@@ -880,7 +883,7 @@ impl PermissionLattice {
     /// Create a demo-friendly permission set for tool-proxy integrations.
     ///
     /// This is permissive enough for live demos but still enforces approvals
-    /// on sensitive operations (writes, edits, and trifecta exfil paths).
+    /// on sensitive operations (writes, edits, and uninhabitable_state exfil paths).
     pub fn demo() -> Self {
         let mut obligations = Obligations::default();
         obligations.insert(Operation::WriteFiles);
@@ -942,8 +945,8 @@ impl PermissionLattice {
     /// - Access web (GitHub API) to fetch PR details and post comments
     /// - Cannot write files, execute bash, or push changes
     ///
-    /// **Trifecta Analysis**: No exfiltration capability (git_push=Never, create_pr=Never,
-    /// run_bash=Never), so trifecta protection is not triggered.
+    /// ** UninhabitableState Analysis**: No exfiltration capability (git_push=Never, create_pr=Never,
+    /// run_bash=Never), so uninhabitable_state protection is not triggered.
     ///
     /// Note: run_bash is disabled because it's an exfiltration vector. The agent
     /// can still analyze diffs using file reads and web fetch for GitHub API.
@@ -984,8 +987,8 @@ impl PermissionLattice {
     /// - Commit changes locally
     /// - Have NO network access (fully isolated)
     ///
-    /// **Trifecta Analysis**: No untrusted content exposure (web_fetch=Never, web_search=Never),
-    /// so trifecta protection is not triggered despite having write capabilities.
+    /// ** UninhabitableState Analysis**: No untrusted content exposure (web_fetch=Never, web_search=Never),
+    /// so uninhabitable_state protection is not triggered despite having write capabilities.
     pub fn codegen() -> Self {
         let lattice = Self {
             description: "Code generation permissions (network-isolated)".to_string(),
@@ -1023,7 +1026,7 @@ impl PermissionLattice {
     /// - Access web (GitHub API) to check CI status
     /// - Push/merge approved PRs
     ///
-    /// **Trifecta Analysis**: Has all three components (read + web + git_push),
+    /// ** UninhabitableState Analysis**: Has all three components (read + web + git_push),
     /// so git_push will require approval. This is intentional - approval should
     /// be gated on CI status verification.
     pub fn pr_approve() -> Self {
@@ -1061,9 +1064,9 @@ impl PermissionLattice {
     /// spawning and monitoring other nucleus pods. The orchestrator cannot
     /// write files, run commands, or access the web directly.
     ///
-    /// **Trifecta Analysis**: private access (read/glob/grep) present,
+    /// ** UninhabitableState Analysis**: private access (read/glob/grep) present,
     /// untrusted content absent (web_*: Never), exfiltration absent
-    /// (git/bash: Never). Only 1/3 components → `TrifectaRisk::Low`.
+    /// (git/bash: Never). Only 1/3 components → `StateRisk::Low`.
     /// No approval obligations required.
     ///
     /// **Delegation**: The orchestrator's own permissions are narrow, but it
@@ -1110,7 +1113,7 @@ pub struct PermissionLatticeBuilder {
     budget: Option<BudgetLattice>,
     commands: Option<CommandLattice>,
     time: Option<TimeLattice>,
-    trifecta_constraint: Option<bool>,
+    uninhabitable_constraint: Option<bool>,
     minimum_isolation: Option<IsolationLattice>,
     created_by: Option<String>,
 }
@@ -1158,14 +1161,14 @@ impl PermissionLatticeBuilder {
         self
     }
 
-    /// Set whether to enforce trifecta constraint.
+    /// Set whether to enforce uninhabitable_state constraint.
     ///
     /// # Security Warning
     ///
     /// Setting this to `false` disables the core security invariant.
     /// Only use this for testing or in fully trusted environments.
-    pub fn trifecta_constraint(mut self, enforce: bool) -> Self {
-        self.trifecta_constraint = Some(enforce);
+    pub fn uninhabitable_constraint(mut self, enforce: bool) -> Self {
+        self.uninhabitable_constraint = Some(enforce);
         self
     }
 
@@ -1195,7 +1198,7 @@ impl PermissionLatticeBuilder {
             budget: self.budget.unwrap_or_default(),
             commands: self.commands.unwrap_or_default(),
             time: self.time.unwrap_or_default(),
-            trifecta_constraint: self.trifecta_constraint.unwrap_or(true),
+            uninhabitable_constraint: self.uninhabitable_constraint.unwrap_or(true),
             minimum_isolation: self.minimum_isolation,
             created_at: Utc::now(),
             created_by: self.created_by.unwrap_or_else(|| "builder".to_string()),
@@ -1338,17 +1341,17 @@ mod tests {
             .description("Test permissions")
             .capabilities(CapabilityLattice::restrictive())
             .budget(BudgetLattice::with_cost_limit(1.0))
-            .trifecta_constraint(true)
+            .uninhabitable_constraint(true)
             .created_by("test")
             .build();
 
         assert_eq!(lattice.description, "Test permissions");
         assert_eq!(lattice.budget.max_cost_usd, Decimal::ONE);
-        assert!(lattice.trifecta_constraint);
+        assert!(lattice.uninhabitable_constraint);
     }
 
     #[test]
-    fn test_trifecta_is_enforced_in_meet() {
+    fn test_uninhabitable_is_enforced_in_meet() {
         let dangerous = PermissionLattice {
             capabilities: CapabilityLattice {
                 read_files: CapabilityLevel::Always,
@@ -1358,7 +1361,7 @@ mod tests {
                 ..Default::default()
             },
             obligations: Obligations::default(),
-            trifecta_constraint: true,
+            uninhabitable_constraint: true,
             ..Default::default()
         };
 
@@ -1383,8 +1386,8 @@ mod tests {
 
     #[cfg(feature = "serde")]
     #[test]
-    fn test_trifecta_bypass_via_deserialization_blocked() {
-        // Attempt to bypass trifecta constraint via JSON
+    fn test_uninhabitable_bypass_via_deserialization_blocked() {
+        // Attempt to bypass uninhabitable_state constraint via JSON
         let json = r#"{
             "id": "00000000-0000-0000-0000-000000000001",
             "description": "malicious",
@@ -1407,7 +1410,7 @@ mod tests {
             "budget": {"max_cost_usd": "5", "consumed_usd": "0", "max_input_tokens": 100000, "max_output_tokens": 10000},
             "commands": {"allowed": [], "blocked": []},
             "time": {"valid_from": "2024-01-01T00:00:00Z", "valid_until": "2025-01-01T00:00:00Z"},
-            "trifecta_constraint": false,
+            "uninhabitable_constraint": false,
             "created_at": "2024-01-01T00:00:00Z",
             "created_by": "attacker"
         }"#;
@@ -1416,8 +1419,8 @@ mod tests {
 
         // Despite the JSON saying false, the constraint should be enforced
         assert!(
-            perms.trifecta_constraint,
-            "Trifecta constraint should always be true after deserialization"
+            perms.uninhabitable_constraint,
+            " UninhabitableState constraint should always be true after deserialization"
         );
     }
 
@@ -1426,9 +1429,9 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_pr_review_no_trifecta() {
+    fn test_pr_review_no_uninhabitable() {
         // pr_review has read + web access, but NO exfiltration capability
-        // (git_push=Never, create_pr=Never, run_bash=Never), so trifecta is not complete
+        // (git_push=Never, create_pr=Never, run_bash=Never), so uninhabitable_state is not complete
         let perms = PermissionLattice::pr_review();
 
         // Verify capabilities match expected profile
@@ -1441,10 +1444,10 @@ mod tests {
         assert_eq!(perms.capabilities.write_files, CapabilityLevel::Never);
         assert_eq!(perms.capabilities.edit_files, CapabilityLevel::Never);
 
-        // Trifecta should NOT be detected (no exfil capability)
+        //  UninhabitableState should NOT be detected (no exfil capability)
         assert!(
-            !perms.is_trifecta_vulnerable(),
-            "pr_review should NOT trigger trifecta (no exfiltration capability)"
+            !perms.is_uninhabitable_vulnerable(),
+            "pr_review should NOT trigger uninhabitable_state (no exfiltration capability)"
         );
 
         // No approvals should be required
@@ -1455,9 +1458,9 @@ mod tests {
     }
 
     #[test]
-    fn test_codegen_no_trifecta() {
+    fn test_codegen_no_uninhabitable() {
         // codegen has read + write + bash, but NO untrusted content exposure
-        // (web_fetch=Never, web_search=Never), so trifecta is not complete
+        // (web_fetch=Never, web_search=Never), so uninhabitable_state is not complete
         let perms = PermissionLattice::codegen();
 
         // Verify capabilities match expected profile
@@ -1471,23 +1474,23 @@ mod tests {
         assert_eq!(perms.capabilities.git_push, CapabilityLevel::Never);
         assert_eq!(perms.capabilities.create_pr, CapabilityLevel::Never);
 
-        // Trifecta should NOT be detected (no untrusted content)
+        //  UninhabitableState should NOT be detected (no untrusted content)
         assert!(
-            !perms.is_trifecta_vulnerable(),
-            "codegen should NOT trigger trifecta (no untrusted content exposure)"
+            !perms.is_uninhabitable_vulnerable(),
+            "codegen should NOT trigger uninhabitable_state (no untrusted content exposure)"
         );
 
-        // No approvals should be required for bash since no trifecta
+        // No approvals should be required for bash since no uninhabitable_state
         assert!(
             !perms.requires_approval(Operation::RunBash),
-            "run_bash should not require approval (no trifecta)"
+            "run_bash should not require approval (no uninhabitable_state)"
         );
     }
 
     #[test]
-    fn test_pr_approve_has_trifecta() {
+    fn test_pr_approve_has_uninhabitable() {
         // pr_approve has all three: read + web + git_push
-        // This SHOULD trigger trifecta protection
+        // This SHOULD trigger uninhabitable_state protection
         let perms = PermissionLattice::pr_approve();
 
         // Verify capabilities match expected profile
@@ -1499,13 +1502,13 @@ mod tests {
         assert_eq!(perms.capabilities.edit_files, CapabilityLevel::Never);
         assert_eq!(perms.capabilities.create_pr, CapabilityLevel::Never);
 
-        // Trifecta SHOULD be detected
+        //  UninhabitableState SHOULD be detected
         assert!(
-            perms.is_trifecta_vulnerable(),
-            "pr_approve SHOULD trigger trifecta (has read + web + git_push)"
+            perms.is_uninhabitable_vulnerable(),
+            "pr_approve SHOULD trigger uninhabitable_state (has read + web + git_push)"
         );
 
-        // git_push should require approval due to trifecta
+        // git_push should require approval due to uninhabitable_state
         assert!(
             perms.requires_approval(Operation::GitPush),
             "git_push should require approval in pr_approve (CI-gated)"
@@ -1514,7 +1517,7 @@ mod tests {
         // run_bash also requires approval since it's an exfil vector
         assert!(
             perms.requires_approval(Operation::RunBash),
-            "run_bash should require approval in pr_approve (trifecta active)"
+            "run_bash should require approval in pr_approve (uninhabitable_state active)"
         );
     }
 
@@ -1595,16 +1598,16 @@ mod tests {
         // No pod management
         assert_eq!(perms.capabilities.manage_pods, CapabilityLevel::Never);
 
-        // Trifecta IS triggered (read + web_fetch + run_bash), and normalize()
+        //  UninhabitableState IS triggered (read + web_fetch + run_bash), and normalize()
         // correctly adds approval obligations on bash. This is the right behavior:
         // bash requires human approval, while git_push/create_pr are fully blocked.
         assert!(
-            perms.is_trifecta_vulnerable(),
-            "safe_pr_fixer has trifecta (bash is exfil vector), obligations mitigate"
+            perms.is_uninhabitable_vulnerable(),
+            "safe_pr_fixer has uninhabitable_state (bash is exfil vector), obligations mitigate"
         );
         assert!(
             perms.requires_approval(Operation::RunBash),
-            "run_bash should require approval (trifecta mitigation)"
+            "run_bash should require approval (uninhabitable_state mitigation)"
         );
     }
 
@@ -1673,7 +1676,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_orchestrator_no_trifecta() {
+    fn test_orchestrator_no_uninhabitable() {
         let perms = PermissionLattice::orchestrator();
 
         // Verify core capability: manage_pods is Always
@@ -1698,10 +1701,10 @@ mod tests {
         assert_eq!(perms.capabilities.glob_search, CapabilityLevel::LowRisk);
         assert_eq!(perms.capabilities.grep_search, CapabilityLevel::LowRisk);
 
-        // Trifecta: only 1/3 components (private access), no untrusted or exfil
+        // UninhabitableState: only 1/3 components (private access), no untrusted or exfil
         assert!(
-            !perms.is_trifecta_vulnerable(),
-            "orchestrator should NOT trigger trifecta"
+            !perms.is_uninhabitable_vulnerable(),
+            "orchestrator should NOT trigger uninhabitable_state"
         );
 
         // No approval obligations required

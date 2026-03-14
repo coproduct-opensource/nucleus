@@ -6,7 +6,7 @@
 name: rate-limited
 description: Policy with rate limiting constraints
 
-enforce_trifecta: true
+enforce_uninhabitable: true
 
 constraints:
   # Rate limit web fetches

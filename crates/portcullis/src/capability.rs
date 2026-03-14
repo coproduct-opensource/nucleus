@@ -69,7 +69,7 @@ pub enum Operation {
 /// Extension operation not covered by Verus proofs.
 ///
 /// The 12 core operations above are frozen — they have 297 Verus verification
-/// conditions proving lattice laws, taint monotonicity, and session safety.
+/// conditions proving lattice laws, exposure monotonicity, and session safety.
 /// Extension operations participate in the same product lattice (meet = pointwise min,
 /// join = pointwise max) but are verified only by property tests, not SMT proofs.
 ///
@@ -223,33 +223,35 @@ impl Default for CapabilityLattice {
     }
 }
 
-/// Incompatibility constraint that enforces trifecta prevention.
+/// Incompatibility constraint that enforces uninhabitable_state prevention.
 ///
-/// Graded risk level for trifecta completeness.
+/// Graded risk level for uninhabitable_state completeness.
 ///
 /// This implements a graded topology (fuzzy subobject classifier) rather than
 /// a binary one, enabling proportional response to risk levels.
 ///
-/// The ordering forms a bounded lattice: `None < Low < Medium < Complete`
+/// The ordering forms a bounded lattice: `Safe < Low < Medium < Uninhabitable`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
-pub enum TrifectaRisk {
-    /// No trifecta components present (0 of 3)
+pub enum StateRisk {
+    /// No uninhabitable_state components present (0 of 3)
     #[default]
-    None = 0,
+    #[cfg_attr(feature = "serde", serde(alias = "none"))]
+    Safe = 0,
     /// One component present (1 of 3) - low risk
     Low = 1,
     /// Two components present (2 of 3) - medium risk, escalation likely
     Medium = 2,
-    /// All three components present - complete trifecta, requires intervention
-    Complete = 3,
+    /// All three components present - uninhabitable_state, requires intervention
+    #[cfg_attr(feature = "serde", serde(alias = "complete"))]
+    Uninhabitable = 3,
 }
 
-impl TrifectaRisk {
+impl StateRisk {
     /// Returns true if this risk level requires approval obligations
     pub fn requires_intervention(&self) -> bool {
-        *self == TrifectaRisk::Complete
+        *self == StateRisk::Uninhabitable
     }
 
     /// Meet operation: takes the minimum risk level
@@ -263,7 +265,7 @@ impl TrifectaRisk {
     }
 }
 
-/// The "lethal trifecta" is the combination of:
+/// The "uninhabitable_state" is the combination of:
 /// 1. Private data access (read_files, glob_search, grep_search)
 /// 2. Untrusted content exposure (web_fetch, web_search)
 /// 3. Exfiltration vector (git_push, create_pr, run_bash)
@@ -276,29 +278,29 @@ impl TrifectaRisk {
 /// untrusted content and exfiltration could enable prompt injection attacks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct IncompatibilityConstraint {
-    /// Whether to enforce trifecta prevention
-    pub enforce_trifecta: bool,
+    /// Whether to enforce uninhabitable_state prevention
+    pub enforce_uninhabitable: bool,
 }
 
 impl IncompatibilityConstraint {
     /// Create an enforcing constraint.
     pub fn enforcing() -> Self {
         Self {
-            enforce_trifecta: true,
+            enforce_uninhabitable: true,
         }
     }
 
-    /// Compute the graded trifecta risk level.
+    /// Compute the graded uninhabitable_state risk level.
     ///
-    /// Returns a `TrifectaRisk` indicating how many of the three trifecta
+    /// Returns a `StateRisk` indicating how many of the three uninhabitable_state
     /// components are present at autonomous levels (≥ LowRisk):
     /// - `None`: 0 components
     /// - `Low`: 1 component
     /// - `Medium`: 2 components
     /// - `Complete`: all 3 components (intervention required)
-    pub fn trifecta_risk(&self, caps: &CapabilityLattice) -> TrifectaRisk {
-        if !self.enforce_trifecta {
-            return TrifectaRisk::None;
+    pub fn state_risk(&self, caps: &CapabilityLattice) -> StateRisk {
+        if !self.enforce_uninhabitable {
+            return StateRisk::Safe;
         }
 
         // Information disclosure: reading files OR searching file structure/contents
@@ -313,28 +315,28 @@ impl IncompatibilityConstraint {
 
         let count = has_private_access as u8 + has_untrusted as u8 + has_exfil as u8;
         match count {
-            0 => TrifectaRisk::None,
-            1 => TrifectaRisk::Low,
-            2 => TrifectaRisk::Medium,
-            _ => TrifectaRisk::Complete,
+            0 => StateRisk::Safe,
+            1 => StateRisk::Low,
+            2 => StateRisk::Medium,
+            _ => StateRisk::Uninhabitable,
         }
     }
 
-    /// Check if capabilities form a complete trifecta at autonomous levels.
+    /// Check if capabilities form a uninhabitable_state at autonomous levels.
     ///
     /// Returns true if:
     /// 1. Private data access (read_files) >= LowRisk
     /// 2. Untrusted content exposure (web_fetch OR web_search) >= LowRisk
     /// 3. Exfiltration vector (git_push OR create_pr OR run_bash) >= LowRisk
-    pub fn is_trifecta_complete(&self, caps: &CapabilityLattice) -> bool {
-        self.trifecta_risk(caps) == TrifectaRisk::Complete
+    pub fn is_uninhabitable(&self, caps: &CapabilityLattice) -> bool {
+        self.state_risk(caps) == StateRisk::Uninhabitable
     }
 
-    /// Check if capabilities form a complete trifecta at autonomous levels.
+    /// Check if capabilities form a uninhabitable_state at autonomous levels.
     /// (Legacy alias for backward compatibility)
-    #[deprecated(since = "0.2.0", note = "Use trifecta_risk() for graded assessment")]
-    pub fn is_trifecta_complete_legacy(&self, caps: &CapabilityLattice) -> bool {
-        if !self.enforce_trifecta {
+    #[deprecated(since = "0.2.0", note = "Use state_risk() for graded assessment")]
+    pub fn is_uninhabitable_legacy(&self, caps: &CapabilityLattice) -> bool {
+        if !self.enforce_uninhabitable {
             return false;
         }
 
@@ -351,9 +353,9 @@ impl IncompatibilityConstraint {
         has_private_access && has_untrusted && has_exfil
     }
 
-    /// Compute approval obligations required to break a lethal trifecta.
+    /// Compute approval obligations required to break a uninhabitable_state.
     pub fn obligations_for(&self, caps: &CapabilityLattice) -> Obligations {
-        if !self.is_trifecta_complete(caps) {
+        if !self.is_uninhabitable(caps) {
             return Obligations::default();
         }
 
@@ -570,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trifecta_detection() {
+    fn test_uninhabitable_detection() {
         let caps = CapabilityLattice {
             read_files: CapabilityLevel::Always,
             web_fetch: CapabilityLevel::LowRisk,
@@ -579,11 +581,11 @@ mod tests {
         };
 
         let constraint = IncompatibilityConstraint::enforcing();
-        assert!(constraint.is_trifecta_complete(&caps));
+        assert!(constraint.is_uninhabitable(&caps));
     }
 
     #[test]
-    fn test_trifecta_not_complete_without_all_three() {
+    fn test_uninhabitable_not_complete_without_all_three() {
         let caps = CapabilityLattice {
             read_files: CapabilityLevel::Always,
             web_fetch: CapabilityLevel::Never,
@@ -593,11 +595,11 @@ mod tests {
         };
 
         let constraint = IncompatibilityConstraint::enforcing();
-        assert!(!constraint.is_trifecta_complete(&caps));
+        assert!(!constraint.is_uninhabitable(&caps));
     }
 
     #[test]
-    fn test_trifecta_constraint_adds_obligations() {
+    fn test_uninhabitable_constraint_adds_obligations() {
         let caps = CapabilityLattice {
             read_files: CapabilityLevel::Always,
             web_fetch: CapabilityLevel::LowRisk,
@@ -651,7 +653,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trifecta_with_glob_search() {
+    fn test_uninhabitable_with_glob_search() {
         // glob_search should count as information disclosure
         let caps = CapabilityLattice {
             read_files: CapabilityLevel::Never,    // No direct file reading
@@ -662,11 +664,11 @@ mod tests {
         };
 
         let constraint = IncompatibilityConstraint::enforcing();
-        assert!(constraint.is_trifecta_complete(&caps));
+        assert!(constraint.is_uninhabitable(&caps));
     }
 
     #[test]
-    fn test_trifecta_with_grep_search() {
+    fn test_uninhabitable_with_grep_search() {
         // grep_search should count as information disclosure
         let caps = CapabilityLattice {
             read_files: CapabilityLevel::Never,    // No direct file reading
@@ -677,11 +679,11 @@ mod tests {
         };
 
         let constraint = IncompatibilityConstraint::enforcing();
-        assert!(constraint.is_trifecta_complete(&caps));
+        assert!(constraint.is_uninhabitable(&caps));
     }
 
     #[test]
-    fn test_trifecta_risk_with_search_only() {
+    fn test_state_risk_with_search_only() {
         // Just search capabilities should count as 1 component (private access)
         // Must disable all other capabilities to avoid false positives
         let caps = CapabilityLattice {
@@ -701,6 +703,6 @@ mod tests {
         };
 
         let constraint = IncompatibilityConstraint::enforcing();
-        assert_eq!(constraint.trifecta_risk(&caps), TrifectaRisk::Low);
+        assert_eq!(constraint.state_risk(&caps), StateRisk::Low);
     }
 }

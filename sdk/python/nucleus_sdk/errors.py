@@ -37,11 +37,11 @@ class PolicyDenied(AccessDenied):
     pass
 
 
-class TrifectaBlocked(AccessDenied):
-    """Raised when an operation would complete the taint trifecta.
+class StateBlocked(AccessDenied):
+    """Raised when an operation would complete the exposure uninhabitable state.
 
-    The taint trifecta fires when a session has accumulated all three
-    taint labels (private_data + untrusted_content + exfil_vector) and
+    The exposure uninhabitable state fires when a session has accumulated all three
+    exposure labels (private_data + untrusted_content + exfil_vector) and
     an exfiltration-capable operation is attempted without approval.
     """
 
@@ -72,8 +72,8 @@ def from_error_payload(payload: dict, status: int) -> NucleusError:
     if kind == "budget_exceeded":
         return BudgetExceeded(message, kind=kind, status=status, operation=operation)
 
-    if kind == "trifecta_blocked":
-        return TrifectaBlocked(message, kind=kind, status=status, operation=operation)
+    if kind == "uninhabitable_blocked":
+        return StateBlocked(message, kind=kind, status=status, operation=operation)
 
     if kind in {
         "path_denied",

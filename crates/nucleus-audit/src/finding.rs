@@ -36,8 +36,8 @@ pub struct ScanReport {
     pub pod_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy_profile: Option<String>,
-    pub trifecta_risk: String,
-    pub trifecta_enforced: bool,
+    pub state_risk: String,
+    pub uninhabitable_state_enforced: bool,
     pub permission_surface: PermissionSurface,
     pub network_posture: String,
     pub isolation_level: String,
@@ -58,8 +58,8 @@ impl Default for ScanReport {
         Self {
             pod_name: None,
             policy_profile: None,
-            trifecta_risk: "None".to_string(),
-            trifecta_enforced: false,
+            state_risk: "None".to_string(),
+            uninhabitable_state_enforced: false,
             permission_surface: PermissionSurface::default(),
             network_posture: "unspecified".to_string(),
             isolation_level: "none".to_string(),
@@ -87,7 +87,7 @@ pub struct RuntimeMetrics {
     pub total_entries: usize,
     pub chain_valid: bool,
     pub deviations: usize,
-    pub trifecta_completions: usize,
+    pub uninhabitable_completions: usize,
     pub blocks: usize,
     pub identities: usize,
 }

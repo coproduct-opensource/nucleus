@@ -47,7 +47,7 @@
 //! | Test | Attack | Defense |
 //! |------|--------|---------|
 //! | `scenario_1_*` | Multi-agent delegation hijacking (Trail of Bits PajaMAS) | Meet operation |
-//! | `scenario_2_*` | Trifecta completion via delegation chain | Trifecta constraint on meet |
+//! | `scenario_2_*` |  UninhabitableState completion via delegation chain |  UninhabitableState constraint on meet |
 //! | `scenario_3_*` | Budget laundering through sub-agents | Budget meet + charge tracking |
 //! | `scenario_4_*` | Confused deputy (OWASP ASI03) | MeetJustification audit trail |
 //! | `scenario_5_*` | Kiro-class destructive autonomy | Ceiling theorem on trace chain |
@@ -66,7 +66,7 @@ use portcullis::{
     audit::{AuditEntry, AuditLog, PermissionEvent},
     delegation::meet_with_justification,
     BudgetLattice, CapabilityLevel, EffectivePermissions, IncompatibilityConstraint,
-    PermissionLattice, TrifectaRisk,
+    PermissionLattice, StateRisk,
 };
 use rust_decimal::Decimal;
 
@@ -394,18 +394,18 @@ fn scenario_1d_full_chain_auditable() {
 }
 
 // ============================================================================
-// Scenario 2: Trifecta Completion via Delegation Chain
+// Scenario 2:  UninhabitableState Completion via Delegation Chain
 //
-// Attacker attempts to assemble the lethal trifecta by combining capabilities
+// Attacker attempts to assemble the uninhabitable_state by combining capabilities
 // from different agents in the chain: read_files from Coder, web_fetch from
-// Scout, git_push from Orchestrator. The meet operation + trifecta constraint
+// Scout, git_push from Orchestrator. The meet operation + uninhabitable_state constraint
 // prevents any single delegation from accumulating all three.
 // ============================================================================
 
 /// Even if an attacker could somehow combine Scout's web capabilities with
-/// Coder's code capabilities, the trifecta constraint would fire on the meet.
+/// Coder's code capabilities, the uninhabitable_state constraint would fire on the meet.
 #[test]
-fn scenario_2_trifecta_blocks_combined_capabilities() {
+fn scenario_2_uninhabitable_blocks_combined_capabilities() {
     // Hypothetical: what if Scout somehow had web_fetch AND Coder had read + push?
     let mut scout_like = PermissionLattice::new("synthetic scout-like");
     scout_like.capabilities.read_files = CapabilityLevel::Always;
@@ -414,18 +414,18 @@ fn scenario_2_trifecta_blocks_combined_capabilities() {
     scout_like.capabilities.run_bash = CapabilityLevel::LowRisk;
     scout_like.capabilities.git_push = CapabilityLevel::LowRisk;
 
-    // Check: the trifecta constraint detects this as Complete
+    // Check: the uninhabitable_state constraint detects this as Complete
     let constraint = IncompatibilityConstraint::enforcing();
-    let risk = constraint.trifecta_risk(&scout_like.capabilities);
-    assert_eq!(risk, TrifectaRisk::Complete);
+    let risk = constraint.state_risk(&scout_like.capabilities);
+    assert_eq!(risk, StateRisk::Uninhabitable);
 
-    // When we normalize (apply the trifecta nucleus), exfiltration
+    // When we normalize (apply the uninhabitable_state nucleus), exfiltration
     // operations get approval obligations added
     let obligations = constraint.obligations_for(&scout_like.capabilities);
     assert!(
         obligations.requires(portcullis::Operation::RunBash)
             || obligations.requires(portcullis::Operation::GitPush),
-        "trifecta must add approval obligations to exfiltration ops"
+        "uninhabitable_state must add approval obligations to exfiltration ops"
     );
 }
 
@@ -545,8 +545,8 @@ fn scenario_4_confused_deputy_leaves_forensic_trail() {
             portcullis::delegation::RestrictionReason::CeilingExceeded => {
                 // Parent didn't have this capability — correct
             }
-            portcullis::delegation::RestrictionReason::TrifectaDemotion => {
-                // Trifecta constraint demoted this — correct
+            portcullis::delegation::RestrictionReason::UninhabitableStateDemotion => {
+                //  UninhabitableState constraint demoted this — correct
             }
             portcullis::delegation::RestrictionReason::BudgetExceeded => {
                 // Budget exceeded parent — correct

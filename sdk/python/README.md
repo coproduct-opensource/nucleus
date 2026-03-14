@@ -60,5 +60,5 @@ Legacy fallback: HMAC signing using the same header format as the CLI examples. 
 - `command_denied`
 - `budget_exhausted`
 - `time_violation`
-- `trifecta_blocked`
+- `uninhabitable_blocked`
 - `insufficient_capability`

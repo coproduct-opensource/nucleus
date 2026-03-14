@@ -16,7 +16,7 @@ We're six months into building something different.
 
 The standard answer to AI agent security is containerization. Run the agent in Docker, restrict the network, call it a day.
 
-This is necessary but nowhere near sufficient. Containers protect the *host*. They don't protect the *data inside the container*. An agent with read access to your codebase, web access to fetch untrusted content, and git push access to exfiltrate — that agent is dangerous *inside* the sandbox. This is Simon Willison's [lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/):
+This is necessary but nowhere near sufficient. Containers protect the *host*. They don't protect the *data inside the container*. An agent with read access to your codebase, web access to fetch untrusted content, and git push access to exfiltrate — that agent is dangerous *inside* the sandbox. This is Simon Willison's [uninhabitable state](https://simonwillison.net/2025/Jun/16/the-uninhabitable-state/):
 
 ```
 Private Data Access  +  Untrusted Content  +  Exfiltration Vector  =  Data Exfiltration via Prompt Injection
@@ -26,7 +26,7 @@ You need a *permission kernel* — something that understands the *relationships
 
 ## What We Built
 
-[Nucleus](https://github.com/coproduct-opensource/nucleus) is an open-source security runtime for AI agents. The core is `portcullis`, a ~5,000 LOC Rust library that models permissions as a mathematical lattice: capabilities form a bounded distributive lattice, obligations use reversed subset ordering, and a normalization operator detects the trifecta and adds mandatory approval gates.
+[Nucleus](https://github.com/coproduct-opensource/nucleus) is an open-source security runtime for AI agents. The core is `portcullis`, a ~5,000 LOC Rust library that models permissions as a mathematical lattice: capabilities form a bounded distributive lattice, obligations use reversed subset ordering, and a normalization operator detects the uninhabitable state and adds mandatory approval gates.
 
 Six months ago, we [audited our own platform](https://github.com/coproduct-opensource/nucleus/blob/main/blog/2026-03-04-we-audited-our-own-agent-platform.md) and found 5 critical fail-open vulnerabilities. Every bug followed the same pattern: security was present in code but absent in enforcement. We had Kani model-checking proofs. We had 233 proptest property tests. We had 70 OWASP LLM attack scenarios. None of them caught a single one of the 5 bugs.
 
@@ -41,15 +41,15 @@ The [`portcullis-verified`](https://github.com/coproduct-opensource/nucleus/tree
 **Capability lattice (37 proofs):**
 - 7 lattice laws (commutativity, associativity, idempotence, absorption, distributivity, bounded) for a 3-element total order
 - Full product lattice: 12-dimensional CapabilityLattice inherits all laws, including distributivity (which required per-component lemma invocations to avoid Z3 resource limits)
-- Trifecta detection monotonicity: if the meet of two lattice elements doesn't have the trifecta, neither does the meet (capabilities can only decrease under meet)
+-  Uninhabitable state detection monotonicity: if the meet of two lattice elements doesn't have the uninhabitable state, neither does the meet (capabilities can only decrease under meet)
 
 **Nucleus operator (12 proofs):**
 - Idempotent: normalizing twice equals normalizing once
 - Deflationary: normalization only adds obligations, never removes them
-- Fixed point characterization: a permission is already normalized iff its obligations include the trifecta gates
+- Fixed point characterization: a permission is already normalized iff its obligations include the uninhabitable state gates
 - Quotient meet produces fixed points
 - Quotient meet is commutative
-- Trifecta completeness is upward-monotone in capabilities
+-  Uninhabitable state completeness is upward-monotone in capabilities
 - Top element gets full obligations, bottom is identity
 
 **And then the interesting part:** two properties we expected to prove turned out to be *false*.
@@ -62,26 +62,26 @@ We tried to prove:
 
 Both are required for the operator to be a *nucleus* in the frame-theoretic sense. Both turned out to be false, and we proved it with machine-checked counterexamples.
 
-**Why meet preservation fails:** Take `a` with full capabilities (trifecta complete) and `b` with no private data access (trifecta incomplete). Their meet inherits `b`'s lack of private access, destroying the trifecta. So `ν(a ∧ b)` adds no obligations. But `ν(a)` has full trifecta obligations, which survive into `ν(a) ∧ ν(b)`. The two sides are provably unequal.
+**Why meet preservation fails:** Take `a` with full capabilities (uninhabitable state complete) and `b` with no private data access (uninhabitable state incomplete). Their meet inherits `b`'s lack of private access, destroying the uninhabitable state. So `ν(a ∧ b)` adds no obligations. But `ν(a)` has full uninhabitable state obligations, which survive into `ν(a) ∧ ν(b)`. The two sides are provably unequal.
 
 ```rust
 // Machine-checked counterexample (Z3-verified)
 proof fn proof_nucleus_not_meet_preserving()
     ensures ({
-        let a = Perm { caps: lattice_top(), obs: obs_empty(), trifecta_constraint: true };
+        let a = Perm { caps: lattice_top(), obs: obs_empty(), uninhabitable_constraint: true };
         let b = Perm {
             caps: CapLattice { f0: 0, f1: 2, f2: 2, f3: 2, f4: 0, f5: 0,
                                f6: 2, f7: 2, f8: 2, f9: 2, f10: 2, f11: 2 },
-            obs: obs_empty(), trifecta_constraint: true,
+            obs: obs_empty(), uninhabitable_constraint: true,
         };
         nucleus(perm_meet(a, b)) != perm_meet(nucleus(a), nucleus(b))
     })
 { }
 ```
 
-**Why monotonicity fails:** Take `a ≤ b` where `a` lacks private access (trifecta incomplete) and `b` has everything (trifecta complete). The nucleus adds obligations to `b` but not to `a`. Since fewer obligations = *larger* in our reversed order, `ν(a)` ends up strictly larger than `ν(b)` — the opposite of what monotonicity requires.
+**Why monotonicity fails:** Take `a ≤ b` where `a` lacks private access (uninhabitable state incomplete) and `b` has everything (uninhabitable state complete). The nucleus adds obligations to `b` but not to `a`. Since fewer obligations = *larger* in our reversed order, `ν(a)` ends up strictly larger than `ν(b)` — the opposite of what monotonicity requires.
 
-**Why this matters:** The trifecta detection is a *threshold function* — a conjunction of three disjunctions. Threshold functions are not lattice homomorphisms. This is not a bug in our code. It's a fundamental mathematical property of how we detect dangerous capability combinations. The operator is idempotent and deflationary, but it's not a nucleus. It's a *kernel operator* on a non-distributive quotient.
+**Why this matters:** The uninhabitable state detection is a *threshold function* — a conjunction of three disjunctions. Threshold functions are not lattice homomorphisms. This is not a bug in our code. It's a fundamental mathematical property of how we detect dangerous capability combinations. The operator is idempotent and deflationary, but it's not a nucleus. It's a *kernel operator* on a non-distributive quotient.
 
 We could have papered over this. Instead, we published the counterexamples as verified proofs. If you're going to claim formal verification, the whole point is that you can't hide from what the math tells you.
 

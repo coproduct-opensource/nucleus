@@ -124,7 +124,7 @@ fn severity_to_sarif_level(severity: &Severity) -> &'static str {
 /// Normalize a finding category into a stable SARIF rule ID.
 ///
 /// Rule IDs follow the pattern `nucleus/<category>`, e.g. `nucleus/credentials`,
-/// `nucleus/trifecta`, `nucleus/network`.
+/// `nucleus/uninhabitable_state`, `nucleus/network`.
 fn rule_id_from_category(category: &str) -> String {
     format!("nucleus/{}", category.to_lowercase().replace(' ', "-"))
 }
@@ -246,8 +246,9 @@ pub fn scan_report_to_sarif(report: &ScanReport) -> SarifLog {
 fn category_description(category: &str) -> String {
     match category {
         "credentials" => "Credential exposure in agent configuration".to_string(),
-        "trifecta" => {
-            "Lethal trifecta risk: private data + untrusted content + exfiltration".to_string()
+        "uninhabitable_state" => {
+            "Lethal uninhabitable_state risk: private data + untrusted content + exfiltration"
+                .to_string()
         }
         "network" => "Network security posture issue".to_string(),
         "isolation" => "Insufficient isolation for agent execution".to_string(),

@@ -10,7 +10,7 @@
 //! # policy.yaml
 //! name: secure-workspace
 //! description: Enforce workspace boundaries and approval flows
-//! enforce_trifecta: true  # default: true
+//! enforce_uninhabitable: true  # default: true
 //!
 //! constraints:
 //!   - name: workspace-writes
@@ -63,17 +63,17 @@ pub struct PolicySpec {
     #[serde(default)]
     pub description: Option<String>,
 
-    /// Whether to enforce the built-in trifecta constraint.
+    /// Whether to enforce the built-in uninhabitable_state constraint.
     /// Default: true (safe by default).
-    #[serde(default = "default_enforce_trifecta")]
-    pub enforce_trifecta: bool,
+    #[serde(default = "default_enforce_uninhabitable")]
+    pub enforce_uninhabitable: bool,
 
     /// List of constraints to apply.
     #[serde(default)]
     pub constraints: Vec<ConstraintSpec>,
 }
 
-fn default_enforce_trifecta() -> bool {
+fn default_enforce_uninhabitable() -> bool {
     true
 }
 
@@ -222,10 +222,10 @@ impl PolicySpec {
 
         let mut policy = Policy::new(&self.name);
 
-        // Note: enforce_trifecta is always true unless testing feature is enabled
+        // Note: enforce_uninhabitable is always true unless testing feature is enabled
         #[cfg(feature = "testing")]
-        if !self.enforce_trifecta {
-            policy = policy.without_trifecta();
+        if !self.enforce_uninhabitable {
+            policy = policy.without_uninhabitable();
         }
 
         for constraint_spec in &self.constraints {
@@ -304,7 +304,7 @@ impl ConstraintSpec {
 pub struct PolicySpecBuilder {
     name: String,
     description: Option<String>,
-    enforce_trifecta: bool,
+    enforce_uninhabitable: bool,
     constraints: Vec<ConstraintSpec>,
 }
 
@@ -314,7 +314,7 @@ impl PolicySpecBuilder {
         Self {
             name: name.into(),
             description: None,
-            enforce_trifecta: true,
+            enforce_uninhabitable: true,
             constraints: Vec::new(),
         }
     }
@@ -325,9 +325,9 @@ impl PolicySpecBuilder {
         self
     }
 
-    /// Set whether to enforce trifecta.
-    pub fn enforce_trifecta(mut self, enforce: bool) -> Self {
-        self.enforce_trifecta = enforce;
+    /// Set whether to enforce uninhabitable_state.
+    pub fn enforce_uninhabitable(mut self, enforce: bool) -> Self {
+        self.enforce_uninhabitable = enforce;
         self
     }
 
@@ -342,7 +342,7 @@ impl PolicySpecBuilder {
         PolicySpec {
             name: self.name,
             description: self.description,
-            enforce_trifecta: self.enforce_trifecta,
+            enforce_uninhabitable: self.enforce_uninhabitable,
             constraints: self.constraints,
         }
     }
@@ -404,7 +404,7 @@ mod tests {
     const EXAMPLE_YAML: &str = r#"
 name: secure-workspace
 description: Enforce workspace boundaries
-enforce_trifecta: true
+enforce_uninhabitable: true
 
 constraints:
   - name: workspace-writes
@@ -430,7 +430,7 @@ constraints:
             spec.description,
             Some("Enforce workspace boundaries".to_string())
         );
-        assert!(spec.enforce_trifecta);
+        assert!(spec.enforce_uninhabitable);
         assert_eq!(spec.constraints.len(), 2);
 
         let c1 = &spec.constraints[0];
@@ -474,7 +474,7 @@ constraints:
         let spec = PolicySpec {
             name: "".to_string(),
             description: None,
-            enforce_trifecta: true,
+            enforce_uninhabitable: true,
             constraints: vec![],
         };
 
@@ -525,7 +525,7 @@ constraints:
         let toml = r#"
 name = "toml-policy"
 description = "A TOML policy"
-enforce_trifecta = true
+enforce_uninhabitable = true
 
 [[constraints]]
 name = "example"

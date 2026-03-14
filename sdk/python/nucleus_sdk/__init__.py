@@ -11,7 +11,7 @@ from .profiles import (
 )
 from .auth import MtlsConfig, HmacAuth
 from .session import Session
-from .taint import TaintGuard, TaintLabel, TaintSet
+from .exposure import exposureGuard, ExposureLabel, ExposureSet
 from .trace import Trace, TraceEntry
 from .types import (
     CommandOutput,
@@ -27,7 +27,7 @@ from .errors import (
     ApprovalRequired,
     AccessDenied,
     PolicyDenied,
-    TrifectaBlocked,
+    StateBlocked,
     BudgetExceeded,
     AuthError,
     RequestError,
@@ -52,9 +52,9 @@ __all__ = [
     "MtlsConfig",
     "HmacAuth",
     "Session",
-    "TaintGuard",
-    "TaintLabel",
-    "TaintSet",
+    "exposureGuard",
+    "ExposureLabel",
+    "ExposureSet",
     "Trace",
     "TraceEntry",
     "CommandOutput",
@@ -68,7 +68,7 @@ __all__ = [
     "ApprovalRequired",
     "AccessDenied",
     "PolicyDenied",
-    "TrifectaBlocked",
+    "StateBlocked",
     "BudgetExceeded",
     "AuthError",
     "RequestError",

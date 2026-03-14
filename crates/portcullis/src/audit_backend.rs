@@ -382,14 +382,14 @@ pub fn recover_from_file(path: &Path, secret: &[u8]) -> Result<Vec<AuditEntry>, 
 mod tests {
     use super::*;
     use crate::audit::PermissionEvent;
-    use crate::capability::TrifectaRisk;
+    use crate::capability::StateRisk;
 
     fn make_entry(seq: u64, identity: &str) -> AuditEntry {
         let mut entry = AuditEntry::new(
             identity,
             PermissionEvent::PermissionsDeclared {
                 description: format!("test entry {}", seq),
-                trifecta_risk: TrifectaRisk::None,
+                state_risk: StateRisk::Safe,
             },
         );
         entry.sequence = seq;
@@ -554,7 +554,7 @@ mod tests {
             "spiffe://test/agent-1",
             PermissionEvent::PermissionsDeclared {
                 description: "test".to_string(),
-                trifecta_risk: TrifectaRisk::None,
+                state_risk: StateRisk::Safe,
             },
         ));
         log.record(AuditEntry::new(
@@ -590,7 +590,7 @@ mod tests {
             "spiffe://test/agent-1",
             PermissionEvent::PermissionsDeclared {
                 description: "after recovery".to_string(),
-                trifecta_risk: TrifectaRisk::Low,
+                state_risk: StateRisk::Low,
             },
         ));
         assert_eq!(recovered.total_entries(), 3);

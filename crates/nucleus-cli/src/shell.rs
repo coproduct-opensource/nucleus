@@ -25,7 +25,7 @@ use crate::run::{build_mcp_allowed_tools, write_mcp_config, McpEnvConfig};
 ///
 /// All built-in Claude tools are replaced by sandboxed equivalents that
 /// flow through the nucleus permission lattice. The tool-proxy enforces
-/// capabilities, budget, command restrictions, and taint tracking.
+/// capabilities, budget, command restrictions, and exposure tracking.
 #[derive(Args, Debug)]
 pub struct ShellArgs {
     /// Working directory (default: current directory)

@@ -9,7 +9,7 @@ Each policy is a YAML file with:
 ```yaml
 name: policy-name
 description: Human-readable description
-enforce_trifecta: true  # Enable lethal trifecta protection
+enforce_uninhabitable: true  # Enable uninhabitable state protection
 
 constraints:
   - name: constraint-name
@@ -27,7 +27,7 @@ constraints:
 | `operation` | string | Current operation (`read_files`, `write_files`, etc.) |
 | `path` | string | File path being accessed |
 | `url` | string | URL being fetched |
-| `trifecta_risk` | string | `none`, `low`, `medium`, `complete` |
+| `state_risk` | string | `none`, `low`, `medium`, `complete` |
 | `budget_remaining` | float | Remaining budget fraction (0.0-1.0) |
 | `has_approval` | bool | Whether human approval was granted |
 | `request_rate` | int | Requests per minute |
@@ -65,8 +65,8 @@ Demonstrates rate limiting. Operations require approval when request rates excee
 ### `research-mode.yaml`
 Read-only research policy. No file modifications, git, or bash without approval.
 
-### `trifecta-demo.yaml`
-Demonstrates the lethal trifecta protection (private data + untrusted content + exfiltration).
+### `uninhabitable-demo.yaml`
+Demonstrates the uninhabitable state protection (private data + untrusted content + exfiltration).
 
 ### `isolation-aware.yaml`
 Demonstrates isolation-based constraints. Different operations require different levels of process, file, and network isolation.
@@ -98,9 +98,9 @@ The isolation lattice has three dimensions:
 | `filtered` | Allowlist-only firewall |
 | `airgapped` | No network (vsock only) |
 
-## The Lethal Trifecta
+## The Uninhabitable State
 
-The `enforce_trifecta: true` setting (default) protects against the combination of:
+The `enforce_uninhabitable: true` setting (default) protects against the combination of:
 
 1. **Private data access** - Reading files (potential secrets)
 2. **Untrusted content** - Fetching from the web (potential prompt injection)

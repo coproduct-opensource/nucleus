@@ -24,7 +24,7 @@ cargo build -p nucleus-tool-proxy --release
   --audit-log /tmp/nucleus-demo-audit.log
 ```
 
-The `demo` profile includes the trifecta (read + web + bash), so all bash commands require approval.
+The `demo` profile includes the uninhabitable state (read + web + bash), so all bash commands require approval.
 
 ## 3. Test Permission Enforcement
 
@@ -62,13 +62,13 @@ nucleus_call "read" '{"path":".env"}' | jq '.error'
 # Output: "nucleus error: access denied: path '.env' blocked by policy"
 ```
 
-**Run git status (requires approval due to trifecta):**
+**Run git status (requires approval due to uninhabitable state):**
 ```bash
 nucleus_call "run" '{"command":"git status"}' | jq '.'
 # Output: {"error":"nucleus error: approval required...","kind":"approval_required"}
 ```
 
-**Run bash -c (blocked by command policy + trifecta):**
+**Run bash -c (blocked by command policy + uninhabitable state):**
 ```bash
 nucleus_call "run" '{"command":"bash -c \"echo hi\""}' | jq '.kind'
 # Output: "approval_required"
@@ -91,23 +91,23 @@ Each entry includes:
 |------|----------|--------|
 | Read README.md | Success | Allowed path |
 | Read .env | Blocked | Sensitive path pattern |
-| git status | Approval required | Trifecta active (read + web + bash) |
-| bash -c | Approval required | Shell interpreter blocked + trifecta |
+| git status | Approval required |  Uninhabitable state active (read + web + bash) |
+| bash -c | Approval required | Shell interpreter blocked + uninhabitable state |
 
-## Why Trifecta Triggers
+## Why  Uninhabitable state Triggers
 
 The `demo` profile has:
 - `read_files: Always` (private data access)
 - `web_fetch: LowRisk` (untrusted content)
 - `run_bash: LowRisk` (exfiltration vector)
 
-All three legs of the "lethal trifecta" are present, so Nucleus automatically requires approval for exfiltration operations (`run_bash`, `git_push`, `create_pr`).
+All three legs of the "uninhabitable state" are present, so Nucleus automatically requires approval for exfiltration operations (`run_bash`, `git_push`, `create_pr`).
 
 This protects against prompt injection attacks that could steal secrets via web content.
 
 ## Test with Network-Isolated Profile
 
-For testing without trifecta protection, use the `codegen` profile which has no web access:
+For testing without uninhabitable state protection, use the `codegen` profile which has no web access:
 
 ```yaml
 # codegen-pod.yaml
@@ -132,7 +132,7 @@ spec:
   --audit-log /tmp/codegen-audit.log
 ```
 
-With `codegen`, bash commands will succeed without approval (no trifecta because `web_fetch: Never`).
+With `codegen`, bash commands will succeed without approval (no uninhabitable state because `web_fetch: Never`).
 
 ---
 

@@ -323,7 +323,7 @@ impl ProfileSpec {
 
     /// Build a [`PermissionLattice`] from this profile specification.
     ///
-    /// The resulting lattice is always normalized (trifecta enforcement applied).
+    /// The resulting lattice is always normalized (uninhabitable_state enforcement applied).
     pub fn build(&self) -> Result<PermissionLattice, ProfileError> {
         self.validate()?;
 
@@ -400,7 +400,7 @@ impl ProfileSpec {
             budget,
             commands: CommandLattice::permissive(),
             time,
-            trifecta_constraint: true,
+            uninhabitable_constraint: true,
             minimum_isolation: None,
             created_at: chrono::Utc::now(),
             created_by: "profile".to_string(),
@@ -527,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn test_safe_pr_fixer_breaks_trifecta() {
+    fn test_safe_pr_fixer_breaks_uninhabitable() {
         let registry = ProfileRegistry::canonical().unwrap();
         let lattice = registry.resolve("safe-pr-fixer").unwrap();
 
@@ -647,7 +647,7 @@ mod tests {
         assert_eq!(lattice.capabilities.git_push, CapabilityLevel::LowRisk);
         assert_eq!(lattice.capabilities.create_pr, CapabilityLevel::LowRisk);
 
-        // But they require approval (trifecta: read + web + exfil)
+        // But they require approval (uninhabitable_state: read + web + exfil)
         assert!(lattice.requires_approval(Operation::GitPush));
         assert!(lattice.requires_approval(Operation::CreatePr));
 

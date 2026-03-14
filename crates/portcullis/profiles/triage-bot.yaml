@@ -4,7 +4,7 @@
 # for context (e.g., linked issues, docs). Cannot write, edit, run
 # commands, or push anything. Ideal for issue triage and labeling.
 #
-# Trifecta analysis:
+#  Uninhabitable state analysis:
 #   - Private data: read_files=always (present)
 #   - Untrusted content: web_fetch=low_risk (present)
 #   - Exfiltration: git_push=never, run_bash=never, create_pr=never (absent)

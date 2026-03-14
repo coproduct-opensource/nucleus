@@ -3,7 +3,7 @@
 # Can read the entire codebase for context, but writes are scoped to
 # documentation files. No network egress, no bash, no git push.
 #
-# Trifecta analysis:
+#  Uninhabitable state analysis:
 #   - Private data: read_files=always (present)
 #   - Untrusted content: web_fetch=never, web_search=never (absent)
 #   - Exfiltration: git_push=never, run_bash=never (absent)

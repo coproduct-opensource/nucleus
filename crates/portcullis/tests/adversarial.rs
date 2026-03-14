@@ -12,13 +12,13 @@ use std::path::Path;
 use std::path::PathBuf;
 
 // ============================================
-// Trifecta Bypass Attempts
+//  UninhabitableState Bypass Attempts
 // ============================================
 
 #[test]
 #[cfg(feature = "serde")]
-fn trifecta_bypass_via_deserialization_rejected() {
-    // Attempt to bypass trifecta constraint via crafted JSON
+fn uninhabitable_bypass_via_deserialization_rejected() {
+    // Attempt to bypass uninhabitable_state constraint via crafted JSON
     let malicious_json = r#"{
         "id": "00000000-0000-0000-0000-000000000001",
         "description": "malicious payload",
@@ -41,7 +41,7 @@ fn trifecta_bypass_via_deserialization_rejected() {
         "budget": {"max_cost_usd": "5", "consumed_usd": "0", "max_input_tokens": 100000, "max_output_tokens": 10000},
         "commands": {"allowed": [], "blocked": []},
         "time": {"valid_from": "2024-01-01T00:00:00Z", "valid_until": "2030-01-01T00:00:00Z"},
-        "trifecta_constraint": false,
+        "uninhabitable_constraint": false,
         "created_at": "2024-01-01T00:00:00Z",
         "created_by": "attacker"
     }"#;
@@ -51,39 +51,39 @@ fn trifecta_bypass_via_deserialization_rejected() {
 
     // The constraint should ALWAYS be true after deserialization
     assert!(
-        perms.trifecta_constraint,
-        "Trifecta constraint should be enforced regardless of JSON input"
+        perms.uninhabitable_constraint,
+        " UninhabitableState constraint should be enforced regardless of JSON input"
     );
 }
 
 #[test]
 #[cfg(feature = "testing")]
-fn trifecta_cannot_be_disabled_through_meet() {
-    // Create permission set with trifecta constraint enabled
+fn uninhabitable_cannot_be_disabled_through_meet() {
+    // Create permission set with uninhabitable_state constraint enabled
     let mut enabled = PermissionLattice::default();
     enabled.capabilities.read_files = CapabilityLevel::Always;
     enabled.capabilities.web_fetch = CapabilityLevel::LowRisk;
-    enabled.capabilities.git_push = CapabilityLevel::LowRisk; // Would be trifecta
+    enabled.capabilities.git_push = CapabilityLevel::LowRisk; // Would be uninhabitable_state
 
-    // Create permission set with trifecta constraint disabled
-    let mut disabled = PermissionLattice::default().with_trifecta_disabled();
+    // Create permission set with uninhabitable_state constraint disabled
+    let mut disabled = PermissionLattice::default().with_uninhabitable_disabled();
     disabled.capabilities.read_files = CapabilityLevel::Always;
     disabled.capabilities.web_fetch = CapabilityLevel::LowRisk;
-    disabled.capabilities.git_push = CapabilityLevel::LowRisk; // Would be trifecta if enabled
+    disabled.capabilities.git_push = CapabilityLevel::LowRisk; // Would be uninhabitable_state if enabled
 
     // Meet should inherit the constraint from the enabled one
     let result = enabled.meet(&disabled);
 
-    // Should enforce trifecta (since at least one parent enforces it)
+    // Should enforce uninhabitable_state (since at least one parent enforces it)
     assert!(
-        result.trifecta_constraint,
-        "Meet with any enforcing parent should enforce trifecta"
+        result.uninhabitable_constraint,
+        "Meet with any enforcing parent should enforce uninhabitable_state"
     );
 
-    // Exfiltration should require approval because trifecta is complete
+    // Exfiltration should require approval because uninhabitable_state is complete
     assert!(
         result.requires_approval(Operation::GitPush),
-        "Git push should require approval when trifecta is detected"
+        "Git push should require approval when uninhabitable_state is detected"
     );
 }
 

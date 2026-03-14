@@ -1615,6 +1615,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "exposure-playground"
+version = "1.0.0"
+dependencies = [
+ "crossterm",
+ "portcullis",
+ "ratatui",
+]
+
+[[package]]
 name = "fancy-regex"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5344,15 +5353,6 @@ dependencies = [
  "tracing-core",
  "tracing-log",
  "tracing-serde",
-]
-
-[[package]]
-name = "trifecta-playground"
-version = "1.0.0"
-dependencies = [
- "crossterm",
- "portcullis",
- "ratatui",
 ]
 
 [[package]]

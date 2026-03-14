@@ -1,16 +1,16 @@
 [package]
-name = "trifecta-playground"
+name = "exposure-playground"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Interactive TUI demonstrating the Lethal Trifecta prevention system"
+description = "Interactive TUI demonstrating the Uninhabitable State prevention system"
 repository = "https://github.com/coproduct-opensource/nucleus"
 keywords = ["ai", "security", "tui", "demo"]
 categories = ["command-line-utilities"]
 
 [[bin]]
-name = "trifecta-playground"
+name = "exposure-playground"
 path = "src/main.rs"
 
 [dependencies]

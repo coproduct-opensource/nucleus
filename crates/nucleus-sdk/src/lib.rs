@@ -21,7 +21,7 @@
 //!     .auth(HmacAuth::new(b"my-secret", Some("agent")))
 //!     .build()?;
 //!
-//! // Open a scoped session with trifecta-safe permissions
+//! // Open a scoped session with uninhabitable_state-safe permissions
 //! let session = nucleus.intent(Intent::FixIssue).await?;
 //!
 //! // All operations enforced by portcullis inside the pod

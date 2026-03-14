@@ -59,7 +59,7 @@ Side effects (filesystem/commands)
 
 ### policy model (shared)
 - Capability lattice + obligations.
-- Normalization (nu) enforces trifecta constraints.
+- Normalization (nu) enforces uninhabitable state constraints.
 
 ## Data Flows
 

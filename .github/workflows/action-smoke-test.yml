@@ -112,12 +112,12 @@ jobs:
 
           echo "PASS: Lattice ordering invariants hold"
 
-      - name: 'Dry-run: trifecta constraint'
+      - name: 'Dry-run: uninhabitable state constraint'
         run: |
-          # safe_pr_fixer should have trifecta constraint enabled
+          # safe_pr_fixer should have uninhabitable state constraint enabled
           OUTPUT=$(nucleus run --local --profile safe_pr_fixer --dry-run "test" 2>&1)
-          echo "$OUTPUT" | grep -qi "trifecta" || echo "::warning::Trifecta constraint not visible in dry-run output"
-          echo "Trifecta check complete"
+          echo "$OUTPUT" | grep -qi "uninhabitable state" || echo "::warning:: Uninhabitable state constraint not visible in dry-run output"
+          echo " Uninhabitable state check complete"
 
       - name: 'Dry-run: entrypoint script validation'
         run: |

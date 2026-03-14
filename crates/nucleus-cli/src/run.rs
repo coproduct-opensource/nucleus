@@ -281,7 +281,10 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
         );
         println!("  Budget: ${:.2}", policy.budget.max_cost_usd);
         println!("  Timeout: {}s", args.timeout);
-        println!("  Trifecta constraint: {}", policy.trifecta_constraint);
+        println!(
+            "   UninhabitableState constraint: {}",
+            policy.uninhabitable_constraint
+        );
         if let Some(ref resolved) = resolved {
             println!("  Node URL: {}", resolved.node_url);
             println!("  Kernel: {}", resolved.kernel_path);
@@ -831,7 +834,7 @@ fn run_claude_mcp(
     // redundant here and prevents the agent from implementing in non-interactive
     // (--print) mode — it falls back to plan-only without human approval.
     //
-    // The trifecta's approval obligations (e.g., bash requires human sign-off)
+    // The uninhabitable_state's approval obligations (e.g., bash requires human sign-off)
     // are meaningful for interactive use, but in CI there's no human to approve.
     // The tool-proxy's command allowlist and capability levels are the actual
     // security boundary.

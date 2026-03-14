@@ -10,10 +10,10 @@ and invalidates Verus verification conditions.
 
 | Contract | Frozen Element | Verified By |
 |----------|---------------|-------------|
-| **Operations** | 12 core `Operation` enum variants + taint classifications | Verus VCs, conformance tests |
-| **Taint Labels** | 3 core `TaintLabel` variants + trifecta predicate | Verus VCs (E1-E3, M1-M8) |
+| **Operations** | 12 core `Operation` enum variants + exposure classifications | Verus VCs, conformance tests |
+| **Exposure Labels** | 3 core `ExposureLabel` variants + uninhabitable state predicate | Verus VCs (E1-E3, M1-M8) |
 | **CapabilityLevel** | `Never`, `LowRisk`, `Always` as named constants | Verus VCs, lattice law tests |
-| **Trifecta Predicate** | `is_trifecta_complete()` examines only core 3 labels | Verus VCs |
+| ** Uninhabitable state Predicate** | `is_uninhabitable()` examines only core 3 labels | Verus VCs |
 | **PodSpec** | `apiVersion: nucleus/v1`, field names, policy profile names | Integration tests |
 | **MCP Tools** | `read`, `write`, `run`, `glob`, `grep`, `web_fetch` | Tool-proxy tests |
 | **gRPC** | `nucleus.node.v1.NodeService` RPCs and message field numbers 1-8 | Proto compatibility |
@@ -28,12 +28,12 @@ These mechanisms allow growth without breaking v1.0 contracts or invalidating pr
 | Extension Point | Mechanism | Default Behavior |
 |----------------|-----------|-----------------|
 | New operations | `CapabilityLattice.extensions: BTreeMap<ExtensionOperation, CapabilityLevel>` | Unknown ops default to `Never` (fail-closed) |
-| New taint labels | `TaintSet.extensions: BTreeSet<ExtensionTaintLabel>` | Extension labels don't affect core trifecta |
-| New constraints | `ConstraintNucleus.additional: Vec<DangerousCombo>` | Only trifecta in slot 0; additional combos add obligations |
+| New exposure labels | `ExposureSet.extensions: BTreeSet<ExtensionExposureLabel>` | Extension labels don't affect core uninhabitable state |
+| New constraints | `ConstraintNucleus.additional: Vec<UninhabitableState>` | Only uninhabitable state in slot 0; additional combos add obligations |
 | New capability levels | Future u16 values between existing constants (v1.1+) | Unknown string values deserialize to `Never` |
 | New receipt fields | `ExecutionReceipt.extensions: BTreeMap<String, String>` + `version` bump | v1 verifiers check `v1_content_hash`, ignore extensions |
 | New audit fields | `AuditEntry.extensions: BTreeMap<String, String>` + `schema_version` bump | v1 `content_hash()` only covers v1 fields |
-| Multi-agent | `WorkspaceGuard` trait (interface only in v1.0) | Single-agent `GradedTaintGuard` is the v1 implementation |
+| Multi-agent | `WorkspaceGuard` trait (interface only in v1.0) | Single-agent `GradedExposureGuard` is the v1 implementation |
 
 ## Why Proofs Survive Extensions
 
@@ -44,20 +44,20 @@ remain valid without re-verification:
    `BTreeMap`. Lattice laws hold by the universal property of products in **Lat** —
    the product of lattices is a lattice, regardless of indexing set cardinality.
 
-2. **Powerset embedding**: `TaintSet` extension labels form a separate `BTreeSet`.
+2. **Powerset embedding**: `ExposureSet` extension labels form a separate `BTreeSet`.
    The join-semilattice law (monotonicity under union) holds for any set, and the
-   core trifecta predicate only examines the frozen 3-bool core.
+   core uninhabitable state predicate only examines the frozen 3-bool core.
 
-3. **Nucleus composition**: Each `DangerousCombo` is a deflationary endomorphism
+3. **Nucleus composition**: Each `UninhabitableState` is a deflationary endomorphism
    (only adds obligations). Composition of deflationary endomorphisms is deflationary.
-   The trifecta remains slot 0 and is always applied first.
+   The uninhabitable state remains slot 0 and is always applied first.
 
 ## Proof Obligations for Extensions
 
-When adding a new `DangerousCombo`, the implementor must demonstrate:
+When adding a new `UninhabitableState`, the implementor must demonstrate:
 
 1. The combo's nucleus is deflationary (only adds obligations, never removes)
-2. Property tests pass for the combo (template in `dangerous_combo.rs` tests)
+2. Property tests pass for the combo (template in `uninhabitable_state.rs` tests)
 3. The combo composes correctly with existing constraints
 
 No Verus re-verification is needed for extensions that follow these rules.

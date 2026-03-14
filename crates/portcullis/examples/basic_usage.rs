@@ -1,4 +1,4 @@
-//! Basic usage example demonstrating trifecta prevention.
+//! Basic usage example demonstrating uninhabitable_state prevention.
 
 use portcullis::{
     CapabilityLattice, CapabilityLevel, IncompatibilityConstraint, Operation, PermissionLattice,
@@ -7,8 +7,8 @@ use portcullis::{
 fn main() {
     println!("=== Lattice Guard Basic Usage ===\n");
 
-    // Demonstrate the lethal trifecta detection
-    println!("1. Creating a dangerous capability set with all three trifecta elements:");
+    // Demonstrate the uninhabitable_state detection
+    println!("1. Creating a dangerous capability set with all three uninhabitable_state elements:");
     let dangerous = CapabilityLattice {
         read_files: CapabilityLevel::Always, // Private data access
         web_fetch: CapabilityLevel::LowRisk, // Untrusted content exposure
@@ -19,13 +19,13 @@ fn main() {
     println!("   - web_fetch: LowRisk (untrusted content)");
     println!("   - git_push: LowRisk (exfiltration vector)");
 
-    // Check if trifecta is complete
+    // Check if uninhabitable_state is complete
     let constraint = IncompatibilityConstraint::enforcing();
-    let is_dangerous = constraint.is_trifecta_complete(&dangerous);
-    println!("\n   Trifecta complete: {}", is_dangerous);
+    let is_dangerous = constraint.is_uninhabitable(&dangerous);
+    println!("\n    UninhabitableState complete: {}", is_dangerous);
 
     // Compute obligations
-    println!("\n2. Computing trifecta obligations:");
+    println!("\n2. Computing uninhabitable_state obligations:");
     let obligations = constraint.obligations_for(&dangerous);
     println!(
         "   - approval required for git_push: {}",
@@ -37,11 +37,11 @@ fn main() {
     );
 
     // Using the full permission lattice
-    println!("\n3. Using PermissionLattice with automatic trifecta enforcement:");
+    println!("\n3. Using PermissionLattice with automatic uninhabitable_state enforcement:");
     let perms = PermissionLattice {
         capabilities: dangerous.clone(),
         obligations: Default::default(),
-        trifecta_constraint: true,
+        uninhabitable_constraint: true,
         ..Default::default()
     };
 

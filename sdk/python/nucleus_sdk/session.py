@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, Optional, TypeVar
 from .client import ProxyClient
 from .errors import AccessDenied, ApprovalRequired
 from .profiles import ProfileRegistry, ProfileSpec
-from .taint import TaintGuard
+from .exposure import exposureGuard
 from .trace import Trace
 from .tools.fs import FileHandle
 from .tools.net import NetHandle
@@ -18,17 +18,17 @@ T = TypeVar("T")
 
 class Session:
     """High-level session that wraps a ProxyClient with typed tool handles,
-    automatic trace recording, and taint tracking.
+    automatic trace recording, and exposure tracking.
 
-    The session tracks taint across tool calls using a monotone 3-bool
-    semilattice. When all three taint labels co-occur (the "trifecta"),
-    exfiltration-capable operations raise ``TrifectaBlocked`` unless
+    The session tracks exposure across tool calls using a monotone 3-bool
+    semilattice. When all three exposure labels co-occur (the "uninhabitable state"),
+    exfiltration-capable operations raise ``StateBlocked`` unless
     explicitly approved.
 
     Usage::
 
         with Session(profile="codegen") as s:
-            readme = s.fs.read("README.md")          # adds private_data taint
+            readme = s.fs.read("README.md")          # adds private_datan exposure
             s.fs.write("out.txt", readme.upper())     # neutral
             result = s.approve("fetch", lambda: s.net.fetch("https://example.com"))
 
@@ -44,7 +44,7 @@ class Session:
         proxy_url: Optional[str] = None,
         proxy: Optional[ProxyClient] = None,
         timeout: float = 30.0,
-        trifecta_enabled: bool = True,
+        uninhabitable_state_enabled: bool = True,
         validate_profile: bool = False,
     ) -> None:
         self.profile = profile
@@ -52,7 +52,7 @@ class Session:
         self._timeout = timeout
         self._trace = Trace()
         self._external_proxy = proxy
-        self._taint_guard = TaintGuard(trifecta_enabled=trifecta_enabled)
+        self._exposure_guard = exposureGuard(uninhabitable_state_enabled=uninhabitable_state_enabled)
 
         # Resolve profile spec from canonical registry.
         if Session._canonical_registry is None:
@@ -81,9 +81,9 @@ class Session:
                 )
             self._proxy = ProxyClient(self._proxy_url, timeout=self._timeout)
 
-        self._fs = FileHandle(self._proxy, self._trace, self._taint_guard)
-        self._net = NetHandle(self._proxy, self._trace, self._taint_guard)
-        self._git = GitHandle(self._proxy, self._trace, self._taint_guard)
+        self._fs = FileHandle(self._proxy, self._trace, self._exposure_guard)
+        self._net = NetHandle(self._proxy, self._trace, self._exposure_guard)
+        self._git = GitHandle(self._proxy, self._trace, self._exposure_guard)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # type: ignore[no-untyped-def]
@@ -129,9 +129,9 @@ class Session:
         return self._profile_spec
 
     @property
-    def taint_summary(self) -> str:
-        """Human-readable summary of the current session taint state."""
-        return self._taint_guard.summary()
+    def exposure_summary(self) -> str:
+        """Human-readable summary of the current session exposure state."""
+        return self._exposure_guard.summary()
 
     # -- approval helper ---------------------------------------------------
 

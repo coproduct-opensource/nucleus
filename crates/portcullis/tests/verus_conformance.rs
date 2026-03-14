@@ -20,8 +20,8 @@
 
 use portcullis::guard::GradedGuard;
 use portcullis::{
-    operation_taint, CapabilityLattice, CapabilityLevel, IncompatibilityConstraint, Obligations,
-    Operation, PathLattice, PermissionLattice, TaintLabel, TaintSet, TrifectaRisk,
+    operation_exposure, CapabilityLattice, CapabilityLevel, ExposureLabel, ExposureSet,
+    IncompatibilityConstraint, Obligations, Operation, PathLattice, PermissionLattice, StateRisk,
 };
 use proptest::prelude::*;
 
@@ -29,8 +29,8 @@ use proptest::prelude::*;
 ///
 /// The production `Default::default()` pre-populates obligations for WriteFiles,
 /// EditFiles, WebSearch, etc. as baseline safety. The Verus model only models
-/// trifecta-derived obligations. This helper starts clean so conformance tests
-/// verify the trifecta model in isolation.
+/// uninhabitable_state-derived obligations. This helper starts clean so conformance tests
+/// verify the uninhabitable_state model in isolation.
 fn perms_with_empty_obligations(caps: CapabilityLattice) -> PermissionLattice {
     PermissionLattice {
         capabilities: caps,
@@ -67,28 +67,28 @@ fn model_has_exfiltration(caps: &CapabilityLattice) -> bool {
         || caps.create_pr >= CapabilityLevel::LowRisk
 }
 
-/// Mirror of Verus `trifecta_count(c)`: sum of 3 bools
-fn model_trifecta_count(caps: &CapabilityLattice) -> u8 {
+/// Mirror of Verus `uninhabitable_state_count(c)`: sum of 3 bools
+fn model_uninhabitable_count(caps: &CapabilityLattice) -> u8 {
     model_has_private_access(caps) as u8
         + model_has_untrusted_content(caps) as u8
         + model_has_exfiltration(caps) as u8
 }
 
-/// Mirror of Verus `trifecta_risk_level(c)`: equals trifecta_count
-fn model_trifecta_risk_level(caps: &CapabilityLattice) -> u8 {
-    model_trifecta_count(caps)
+/// Mirror of Verus `state_risk_level(c)`: equals uninhabitable_state_count
+fn model_state_risk_level(caps: &CapabilityLattice) -> u8 {
+    model_uninhabitable_count(caps)
 }
 
-/// Mirror of Verus `is_trifecta_complete(c)`: all 3 present
-fn model_is_trifecta_complete(caps: &CapabilityLattice) -> bool {
+/// Mirror of Verus `is_uninhabitable(c)`: all 3 present
+fn model_is_uninhabitable(caps: &CapabilityLattice) -> bool {
     model_has_private_access(caps)
         && model_has_untrusted_content(caps)
         && model_has_exfiltration(caps)
 }
 
-/// Mirror of Verus `trifecta_obligations(caps)`: if complete, gate exfil vectors
-fn model_trifecta_obligations(caps: &CapabilityLattice) -> (bool, bool, bool) {
-    if model_is_trifecta_complete(caps) {
+/// Mirror of Verus `uninhabitable_state_obligations(caps)`: if complete, gate exfil vectors
+fn model_uninhabitable_obligations(caps: &CapabilityLattice) -> (bool, bool, bool) {
+    if model_is_uninhabitable(caps) {
         (
             caps.run_bash >= CapabilityLevel::LowRisk, // run_bash obligated
             caps.git_push >= CapabilityLevel::LowRisk, // git_push obligated
@@ -115,10 +115,10 @@ fn model_requires_approval(obligations: &Obligations, op: &Operation) -> bool {
 /// !(requires_approval(obs, op) && risk == 3)
 fn model_check_operation_allowed(
     obligations: &Obligations,
-    risk: TrifectaRisk,
+    risk: StateRisk,
     op: &Operation,
 ) -> bool {
-    !(model_requires_approval(obligations, op) && risk == TrifectaRisk::Complete)
+    !(model_requires_approval(obligations, op) && risk == StateRisk::Uninhabitable)
 }
 
 /// Mirror of Verus `budget_allows(consumed, max, amount)`:
@@ -201,25 +201,25 @@ fn arb_operation() -> impl Strategy<Value = Operation> {
 }
 
 // ============================================================================
-// Tier A: Trifecta Risk Conformance
+// Tier A:  UninhabitableState Risk Conformance
 // ============================================================================
 
 proptest! {
-    /// CONFORMANCE: model trifecta_risk_level matches production trifecta_risk().
+    /// CONFORMANCE: model state_risk_level matches production state_risk().
     ///
     /// This is the most critical conformance test. The Verus proofs verify
-    /// properties of `trifecta_risk_level(c)` (the model). This test asserts
-    /// that the production `IncompatibilityConstraint::trifecta_risk()` returns
+    /// properties of `state_risk_level(c)` (the model). This test asserts
+    /// that the production `IncompatibilityConstraint::state_risk()` returns
     /// the same value. If they diverge, the proofs don't apply to production.
     #[test]
-    fn conformance_trifecta_risk(caps in arb_capability_lattice()) {
+    fn conformance_state_risk(caps in arb_capability_lattice()) {
         let constraint = IncompatibilityConstraint::enforcing();
-        let prod_risk = constraint.trifecta_risk(&caps);
-        let model_risk = model_trifecta_risk_level(&caps);
+        let prod_risk = constraint.state_risk(&caps);
+        let model_risk = model_state_risk_level(&caps);
 
         prop_assert_eq!(
             prod_risk as u8, model_risk,
-            "CONFORMANCE VIOLATION: production trifecta_risk={:?} ({}) != model risk_level={} for caps={:?}",
+            "CONFORMANCE VIOLATION: production state_risk={:?} ({}) != model risk_level={} for caps={:?}",
             prod_risk, prod_risk as u8, model_risk, caps
         );
     }
@@ -228,14 +228,14 @@ proptest! {
     #[test]
     fn conformance_has_private_access(caps in arb_capability_lattice()) {
         let constraint = IncompatibilityConstraint::enforcing();
-        let prod_risk = constraint.trifecta_risk(&caps);
+        let prod_risk = constraint.state_risk(&caps);
         let model_private = model_has_private_access(&caps);
 
         // If no private access in model, production risk should be at most Medium
         // (missing one component means ≤ 2)
         if !model_private {
             prop_assert!(
-                prod_risk <= TrifectaRisk::Medium,
+                prod_risk <= StateRisk::Medium,
                 "Model says no private access but production risk is {:?}", prod_risk
             );
         }
@@ -245,12 +245,12 @@ proptest! {
     #[test]
     fn conformance_has_untrusted_content(caps in arb_capability_lattice()) {
         let constraint = IncompatibilityConstraint::enforcing();
-        let prod_risk = constraint.trifecta_risk(&caps);
+        let prod_risk = constraint.state_risk(&caps);
         let model_untrusted = model_has_untrusted_content(&caps);
 
         if !model_untrusted {
             prop_assert!(
-                prod_risk <= TrifectaRisk::Medium,
+                prod_risk <= StateRisk::Medium,
                 "Model says no untrusted content but production risk is {:?}", prod_risk
             );
         }
@@ -260,23 +260,23 @@ proptest! {
     #[test]
     fn conformance_has_exfiltration(caps in arb_capability_lattice()) {
         let constraint = IncompatibilityConstraint::enforcing();
-        let prod_risk = constraint.trifecta_risk(&caps);
+        let prod_risk = constraint.state_risk(&caps);
         let model_exfil = model_has_exfiltration(&caps);
 
         if !model_exfil {
             prop_assert!(
-                prod_risk <= TrifectaRisk::Medium,
+                prod_risk <= StateRisk::Medium,
                 "Model says no exfiltration but production risk is {:?}", prod_risk
             );
         }
     }
 
-    /// CONFORMANCE: model is_trifecta_complete ↔ production is_trifecta_complete.
+    /// CONFORMANCE: model is_uninhabitable ↔ production is_uninhabitable.
     #[test]
-    fn conformance_trifecta_complete(caps in arb_capability_lattice()) {
+    fn conformance_uninhabitable_complete(caps in arb_capability_lattice()) {
         let constraint = IncompatibilityConstraint::enforcing();
-        let prod_complete = constraint.is_trifecta_complete(&caps);
-        let model_complete = model_is_trifecta_complete(&caps);
+        let prod_complete = constraint.is_uninhabitable(&caps);
+        let model_complete = model_is_uninhabitable(&caps);
 
         prop_assert_eq!(
             prod_complete, model_complete,
@@ -285,22 +285,22 @@ proptest! {
         );
     }
 
-    /// CONFORMANCE: model trifecta_count is bounded [0, 3].
+    /// CONFORMANCE: model uninhabitable_state_count is bounded [0, 3].
     ///
-    /// Mirrors Verus proof_trifecta_count_bounded.
+    /// Mirrors Verus proof_uninhabitable_count_bounded.
     #[test]
-    fn conformance_trifecta_count_bounded(caps in arb_capability_lattice()) {
-        let count = model_trifecta_count(&caps);
-        prop_assert!(count <= 3, "trifecta_count {} > 3", count);
+    fn conformance_uninhabitable_count_bounded(caps in arb_capability_lattice()) {
+        let count = model_uninhabitable_count(&caps);
+        prop_assert!(count <= 3, "uninhabitable_state_count {} > 3", count);
     }
 
-    /// CONFORMANCE: model risk_level = 3 iff trifecta complete.
+    /// CONFORMANCE: model risk_level = 3 iff uninhabitable_state complete.
     ///
-    /// Mirrors Verus proof_trifecta_complete_iff_count_three.
+    /// Mirrors Verus proof_uninhabitable_complete_iff_count_three.
     #[test]
     fn conformance_complete_iff_three(caps in arb_capability_lattice()) {
-        let complete = model_is_trifecta_complete(&caps);
-        let count = model_trifecta_count(&caps);
+        let complete = model_is_uninhabitable(&caps);
+        let count = model_uninhabitable_count(&caps);
 
         prop_assert_eq!(
             complete, count == 3,
@@ -310,13 +310,13 @@ proptest! {
 }
 
 // ============================================================================
-// Tier A: Trifecta Obligations Conformance
+// Tier A:  UninhabitableState Obligations Conformance
 // ============================================================================
 
 proptest! {
     /// CONFORMANCE: model obligations match production obligations_for().
     ///
-    /// The Verus model `trifecta_obligations(caps)` produces an Obs struct
+    /// The Verus model `uninhabitable_state_obligations(caps)` produces an Obs struct
     /// with 3 bools. The production `IncompatibilityConstraint::obligations_for()`
     /// produces an `Obligations` with a `BTreeSet<Operation>`. This test bridges
     /// the type gap: same semantics, different representations.
@@ -324,7 +324,7 @@ proptest! {
     fn conformance_obligations_for(caps in arb_capability_lattice()) {
         let constraint = IncompatibilityConstraint::enforcing();
         let prod_obs = constraint.obligations_for(&caps);
-        let (model_bash, model_push, model_pr) = model_trifecta_obligations(&caps);
+        let (model_bash, model_push, model_pr) = model_uninhabitable_obligations(&caps);
 
         prop_assert_eq!(
             prod_obs.requires(Operation::RunBash), model_bash,
@@ -345,13 +345,13 @@ proptest! {
 
     /// CONFORMANCE: obligations only target exfil ops (never read/search/etc).
     ///
-    /// Mirrors Verus proof_trifecta_obligations_only_exfil.
+    /// Mirrors Verus proof_uninhabitable_obligations_only_exfil.
     #[test]
     fn conformance_obligations_only_exfil(caps in arb_capability_lattice()) {
         let constraint = IncompatibilityConstraint::enforcing();
         let obs = constraint.obligations_for(&caps);
 
-        // Non-exfil operations must NEVER have obligations from trifecta
+        // Non-exfil operations must NEVER have obligations from uninhabitable_state
         prop_assert!(!obs.requires(Operation::ReadFiles), "ReadFiles should never be obligated");
         prop_assert!(!obs.requires(Operation::WriteFiles), "WriteFiles should never be obligated");
         prop_assert!(!obs.requires(Operation::EditFiles), "EditFiles should never be obligated");
@@ -363,17 +363,17 @@ proptest! {
         prop_assert!(!obs.requires(Operation::ManagePods), "ManagePods should never be obligated");
     }
 
-    /// CONFORMANCE: no trifecta → empty obligations.
+    /// CONFORMANCE: no uninhabitable_state → empty obligations.
     ///
-    /// Mirrors Verus proof_no_trifecta_no_obligations.
+    /// Mirrors Verus proof_no_uninhabitable_no_obligations.
     #[test]
-    fn conformance_no_trifecta_no_obligations(caps in arb_capability_lattice()) {
+    fn conformance_no_uninhabitable_no_obligations(caps in arb_capability_lattice()) {
         let constraint = IncompatibilityConstraint::enforcing();
-        if !constraint.is_trifecta_complete(&caps) {
+        if !constraint.is_uninhabitable(&caps) {
             let obs = constraint.obligations_for(&caps);
             prop_assert!(
                 obs.is_empty(),
-                "No trifecta but non-empty obligations: {:?} for caps={:?}",
+                "No uninhabitable_state but non-empty obligations: {:?} for caps={:?}",
                 obs, caps
             );
         }
@@ -516,20 +516,20 @@ proptest! {
         );
     }
 
-    /// CONFORMANCE: end-to-end trifecta safety.
+    /// CONFORMANCE: end-to-end uninhabitable_state safety.
     ///
-    /// Mirrors Verus proof_end_to_end_trifecta_safe:
-    /// For any complete trifecta + active exfil op → denied after normalize.
+    /// Mirrors Verus proof_end_to_end_uninhabitable_safe:
+    /// For any uninhabitable_state + active exfil op → denied after normalize.
     ///
     /// This is THE critical test — it asserts in production what Verus proves
     /// about the model. If this fails, the formal proof doesn't protect us.
     #[test]
-    fn conformance_end_to_end_trifecta_safe(
+    fn conformance_end_to_end_uninhabitable_safe(
         caps in arb_capability_lattice(),
         op in arb_exfil_operation(),
     ) {
         let constraint = IncompatibilityConstraint::enforcing();
-        if !constraint.is_trifecta_complete(&caps) {
+        if !constraint.is_uninhabitable(&caps) {
             return Ok(());
         }
 
@@ -544,16 +544,16 @@ proptest! {
             return Ok(());
         }
 
-        // Normalize (applies trifecta obligations)
+        // Normalize (applies uninhabitable_state obligations)
         let perms = perms_with_empty_obligations(caps.clone()).normalize();
 
         let guard = GradedGuard::new(perms);
 
-        // THE ASSERTION: after normalize, trifecta exfil is DENIED
+        // THE ASSERTION: after normalize, uninhabitable_state exfil is DENIED
         let result = guard.check_operation(op);
         prop_assert!(
             result.value.is_err(),
-            "END-TO-END SAFETY VIOLATION: {:?} was ALLOWED despite complete trifecta! caps={:?}",
+            "END-TO-END SAFETY VIOLATION: {:?} was ALLOWED despite uninhabitable_state! caps={:?}",
             op, caps
         );
     }
@@ -566,7 +566,7 @@ proptest! {
 proptest! {
     /// CONFORMANCE: risk is monotone under ≤ (more caps → more risk).
     ///
-    /// Mirrors Verus proof_trifecta_risk_monotone: a ≤ b ⟹ risk(a) ≤ risk(b)
+    /// Mirrors Verus proof_state_risk_monotone: a ≤ b ⟹ risk(a) ≤ risk(b)
     #[test]
     fn conformance_risk_monotone(
         a in arb_capability_lattice(),
@@ -578,8 +578,8 @@ proptest! {
         }
 
         let constraint = IncompatibilityConstraint::enforcing();
-        let risk_a = constraint.trifecta_risk(&a) as u8;
-        let risk_b = constraint.trifecta_risk(&b) as u8;
+        let risk_a = constraint.state_risk(&a) as u8;
+        let risk_b = constraint.state_risk(&b) as u8;
 
         prop_assert!(
             risk_a <= risk_b,
@@ -590,7 +590,7 @@ proptest! {
 
     /// CONFORMANCE: meet decreases risk.
     ///
-    /// Mirrors Verus proof_trifecta_meet_risk_decreases.
+    /// Mirrors Verus proof_uninhabitable_meet_risk_decreases.
     #[test]
     fn conformance_meet_decreases_risk(
         a in arb_capability_lattice(),
@@ -598,9 +598,9 @@ proptest! {
     ) {
         let constraint = IncompatibilityConstraint::enforcing();
         let m = a.meet(&b);
-        let risk_a = constraint.trifecta_risk(&a) as u8;
-        let risk_b = constraint.trifecta_risk(&b) as u8;
-        let risk_m = constraint.trifecta_risk(&m) as u8;
+        let risk_a = constraint.state_risk(&a) as u8;
+        let risk_b = constraint.state_risk(&b) as u8;
+        let risk_m = constraint.state_risk(&m) as u8;
 
         prop_assert!(
             risk_m <= risk_a && risk_m <= risk_b,
@@ -611,7 +611,7 @@ proptest! {
 
     /// CONFORMANCE: join increases risk.
     ///
-    /// Mirrors Verus proof_trifecta_join_risk_increases.
+    /// Mirrors Verus proof_uninhabitable_join_risk_increases.
     #[test]
     fn conformance_join_increases_risk(
         a in arb_capability_lattice(),
@@ -619,9 +619,9 @@ proptest! {
     ) {
         let constraint = IncompatibilityConstraint::enforcing();
         let j = a.join(&b);
-        let risk_a = constraint.trifecta_risk(&a) as u8;
-        let risk_b = constraint.trifecta_risk(&b) as u8;
-        let risk_j = constraint.trifecta_risk(&j) as u8;
+        let risk_a = constraint.state_risk(&a) as u8;
+        let risk_b = constraint.state_risk(&b) as u8;
+        let risk_j = constraint.state_risk(&j) as u8;
 
         prop_assert!(
             risk_j >= risk_a && risk_j >= risk_b,
@@ -786,24 +786,24 @@ proptest! {
         prop_assert!(result.leq(&requested), "meet result should be ≤ requested");
     }
 
-    /// CONFORMANCE: delegation preserves trifecta constraint.
+    /// CONFORMANCE: delegation preserves uninhabitable_state constraint.
     ///
-    /// Mirrors Verus proof_chain_delegation_preserves_trifecta.
-    /// If parent has trifecta_constraint = true, the meet result does too.
+    /// Mirrors Verus proof_chain_delegation_preserves_uninhabitable.
+    /// If parent has uninhabitable_constraint = true, the meet result does too.
     #[test]
-    fn conformance_delegation_preserves_trifecta(
+    fn conformance_delegation_preserves_uninhabitable(
         parent_caps in arb_capability_lattice(),
         requested_caps in arb_capability_lattice(),
     ) {
         let parent = perms_with_empty_obligations(parent_caps);
-        prop_assert!(parent.trifecta_constraint, "default should have trifecta on");
+        prop_assert!(parent.uninhabitable_constraint, "default should have uninhabitable_state on");
 
         let requested = perms_with_empty_obligations(requested_caps);
         let result = parent.meet(&requested);
 
         prop_assert!(
-            result.trifecta_constraint,
-            "trifecta constraint must propagate through meet"
+            result.uninhabitable_constraint,
+            "uninhabitable_state constraint must propagate through meet"
         );
     }
 
@@ -856,7 +856,7 @@ proptest! {
             prop_assert_eq!(
                 once.obligations.requires(op),
                 twice.obligations.requires(op),
-                "normalize should be idempotent on trifecta obligations for {:?}",
+                "normalize should be idempotent on uninhabitable_state obligations for {:?}",
                 op,
             );
         }
@@ -926,7 +926,7 @@ proptest! {
         let root = perms_with_empty_obligations(root_caps).normalize();
         let leaf = root.meet(&perms_with_empty_obligations(req_caps));
 
-        if !model_is_trifecta_complete(&leaf.capabilities) {
+        if !model_is_uninhabitable(&leaf.capabilities) {
             return Ok(());
         }
 
@@ -944,7 +944,7 @@ proptest! {
         let result = guard.check_operation(op);
         prop_assert!(
             result.value.is_err(),
-            "Chain + trifecta + exfil must DENY. Op={:?}, risk={:?}",
+            "Chain + uninhabitable_state + exfil must DENY. Op={:?}, risk={:?}",
             op,
             guard.risk(),
         );
@@ -1049,11 +1049,11 @@ fn conformance_preset_edit_only_is_fixed_point() {
     assert_eq!(p.capabilities, p.clone().normalize().capabilities);
 }
 
-/// CONFORMANCE: Untrusted profile prevents trifecta.
+/// CONFORMANCE: Untrusted profile prevents uninhabitable_state.
 ///
-/// Mirrors Verus proof_untrusted_profile_no_trifecta.
+/// Mirrors Verus proof_untrusted_profile_no_uninhabitable.
 #[test]
-fn conformance_untrusted_profile_prevents_trifecta() {
+fn conformance_untrusted_profile_prevents_uninhabitable() {
     let ceiling = CapabilityLattice {
         read_files: CapabilityLevel::Always,
         write_files: CapabilityLevel::LowRisk,
@@ -1073,8 +1073,8 @@ fn conformance_untrusted_profile_prevents_trifecta() {
     let all_caps = CapabilityLattice::permissive();
     let enforced = all_caps.meet(&ceiling);
     assert!(
-        !model_is_trifecta_complete(&enforced),
-        "untrusted ceiling must prevent trifecta even on permissive caps"
+        !model_is_uninhabitable(&enforced),
+        "untrusted ceiling must prevent uninhabitable_state even on permissive caps"
     );
     assert_eq!(enforced.run_bash, CapabilityLevel::Never);
     assert_eq!(enforced.git_push, CapabilityLevel::Never);
@@ -1082,65 +1082,65 @@ fn conformance_untrusted_profile_prevents_trifecta() {
 }
 
 // ============================================================================
-// Tier G: TaintSet Monoid Conformance (bridges Phase 6 proofs to production)
+// Tier G: ExposureSet Monoid Conformance (bridges Phase 6 proofs to production)
 //
-// These tests verify that the production TaintSet code matches the Verus
-// SpecTaintSet model. The Verus proofs verify monoid laws, risk monotonicity,
+// These tests verify that the production ExposureSet code matches the Verus
+// SpecExposureSet model. The Verus proofs verify monoid laws, risk monotonicity,
 // and guard decision theorems on the spec model. These conformance tests
 // ensure the production code exhibits the same behavior.
 // ============================================================================
 
-fn arb_taint_label() -> impl Strategy<Value = TaintLabel> {
+fn arb_exposure_label() -> impl Strategy<Value = ExposureLabel> {
     prop_oneof![
-        Just(TaintLabel::PrivateData),
-        Just(TaintLabel::UntrustedContent),
-        Just(TaintLabel::ExfilVector),
+        Just(ExposureLabel::PrivateData),
+        Just(ExposureLabel::UntrustedContent),
+        Just(ExposureLabel::ExfilVector),
     ]
 }
 
-fn arb_taint_set() -> impl Strategy<Value = TaintSet> {
+fn arb_exposure_set() -> impl Strategy<Value = ExposureSet> {
     (any::<bool>(), any::<bool>(), any::<bool>()).prop_map(|(p, u, e)| {
-        let mut s = TaintSet::empty();
+        let mut s = ExposureSet::empty();
         if p {
-            s = s.union(&TaintSet::singleton(TaintLabel::PrivateData));
+            s = s.union(&ExposureSet::singleton(ExposureLabel::PrivateData));
         }
         if u {
-            s = s.union(&TaintSet::singleton(TaintLabel::UntrustedContent));
+            s = s.union(&ExposureSet::singleton(ExposureLabel::UntrustedContent));
         }
         if e {
-            s = s.union(&TaintSet::singleton(TaintLabel::ExfilVector));
+            s = s.union(&ExposureSet::singleton(ExposureLabel::ExfilVector));
         }
         s
     })
 }
 
 proptest! {
-    /// CONFORMANCE H1+H2: TaintSet identity — empty.union(s) == s == s.union(empty).
+    /// CONFORMANCE H1+H2: ExposureSet identity — empty.union(s) == s == s.union(empty).
     ///
-    /// Mirrors Verus proof_taintset_identity_left + proof_taintset_identity_right.
+    /// Mirrors Verus proof_exposureset_identity_left + proof_exposureset_identity_right.
     #[test]
-    fn conformance_taintset_identity(s in arb_taint_set()) {
-        let empty = TaintSet::empty();
+    fn conformance_exposureset_identity(s in arb_exposure_set()) {
+        let empty = ExposureSet::empty();
         prop_assert_eq!(empty.union(&s), s.clone(), "left identity failed");
         prop_assert_eq!(s.union(&empty), s, "right identity failed");
     }
 
-    /// CONFORMANCE H3: TaintSet union is commutative.
+    /// CONFORMANCE H3: ExposureSet union is commutative.
     ///
-    /// Mirrors Verus proof_taintset_union_commutative.
+    /// Mirrors Verus proof_exposureset_union_commutative.
     #[test]
-    fn conformance_taintset_commutative(a in arb_taint_set(), b in arb_taint_set()) {
+    fn conformance_exposureset_commutative(a in arb_exposure_set(), b in arb_exposure_set()) {
         prop_assert_eq!(a.union(&b), b.union(&a));
     }
 
-    /// CONFORMANCE H4: TaintSet union is associative.
+    /// CONFORMANCE H4: ExposureSet union is associative.
     ///
-    /// Mirrors Verus proof_taintset_union_associative.
+    /// Mirrors Verus proof_exposureset_union_associative.
     #[test]
-    fn conformance_taintset_associative(
-        a in arb_taint_set(),
-        b in arb_taint_set(),
-        c in arb_taint_set(),
+    fn conformance_exposureset_associative(
+        a in arb_exposure_set(),
+        b in arb_exposure_set(),
+        c in arb_exposure_set(),
     ) {
         prop_assert_eq!(
             a.union(&b.union(&c)),
@@ -1148,52 +1148,52 @@ proptest! {
         );
     }
 
-    /// CONFORMANCE H5: TaintSet union is idempotent.
+    /// CONFORMANCE H5: ExposureSet union is idempotent.
     ///
-    /// Mirrors Verus proof_taintset_union_idempotent.
+    /// Mirrors Verus proof_exposureset_union_idempotent.
     #[test]
-    fn conformance_taintset_idempotent(s in arb_taint_set()) {
+    fn conformance_exposureset_idempotent(s in arb_exposure_set()) {
         prop_assert_eq!(s.union(&s), s);
     }
 
-    /// CONFORMANCE I2: Trifecta complete iff all three legs present.
+    /// CONFORMANCE I2:  UninhabitableState complete iff all three legs present.
     ///
-    /// Mirrors Verus proof_trifecta_iff_all_three.
+    /// Mirrors Verus proof_uninhabitable_iff_all_three.
     #[test]
-    fn conformance_taintset_trifecta_iff_all_three(s in arb_taint_set()) {
-        let all_present = s.contains(TaintLabel::PrivateData)
-            && s.contains(TaintLabel::UntrustedContent)
-            && s.contains(TaintLabel::ExfilVector);
+    fn conformance_exposureset_uninhabitable_iff_all_three(s in arb_exposure_set()) {
+        let all_present = s.contains(ExposureLabel::PrivateData)
+            && s.contains(ExposureLabel::UntrustedContent)
+            && s.contains(ExposureLabel::ExfilVector);
         prop_assert_eq!(
-            s.is_trifecta_complete(), all_present,
-            "trifecta_complete={} but all_present={} for {:?}",
-            s.is_trifecta_complete(), all_present, s
+            s.is_uninhabitable(), all_present,
+            "uninhabitable_state_complete={} but all_present={} for {:?}",
+            s.is_uninhabitable(), all_present, s
         );
     }
 
-    /// CONFORMANCE I4: Count bounded [0, 3] and count == 3 iff trifecta.
+    /// CONFORMANCE I4: Count bounded [0, 3] and count == 3 iff uninhabitable_state.
     ///
-    /// Mirrors Verus proof_taintset_count_bounds.
+    /// Mirrors Verus proof_exposureset_count_bounds.
     #[test]
-    fn conformance_taintset_count_bounds(s in arb_taint_set()) {
+    fn conformance_exposureset_count_bounds(s in arb_exposure_set()) {
         prop_assert!(s.count() <= 3, "count {} > 3", s.count());
         prop_assert_eq!(
-            s.count() == 3, s.is_trifecta_complete(),
-            "count==3 is {} but trifecta is {}", s.count() == 3, s.is_trifecta_complete()
+            s.count() == 3, s.is_uninhabitable(),
+            "count==3 is {} but uninhabitable_state is {}", s.count() == 3, s.is_uninhabitable()
         );
     }
 
-    /// CONFORMANCE J3: Recording a label only increases taint (monotone accumulation).
+    /// CONFORMANCE J3: Recording a label only increases exposure (monotone accumulation).
     ///
-    /// Mirrors Verus proof_taint_accumulation_monotone.
+    /// Mirrors Verus proof_exposure_accumulation_monotone.
     #[test]
-    fn conformance_taint_accumulation_monotone(
-        before in arb_taint_set(),
-        label in arb_taint_label(),
+    fn conformance_exposure_accumulation_monotone(
+        before in arb_exposure_set(),
+        label in arb_exposure_label(),
     ) {
-        let after = before.union(&TaintSet::singleton(label));
+        let after = before.union(&ExposureSet::singleton(label));
         // after is a superset of before
-        for l in [TaintLabel::PrivateData, TaintLabel::UntrustedContent, TaintLabel::ExfilVector] {
+        for l in [ExposureLabel::PrivateData, ExposureLabel::UntrustedContent, ExposureLabel::ExfilVector] {
             if before.contains(l) {
                 prop_assert!(after.contains(l), "accumulation lost label {:?}", l);
             }
@@ -1201,42 +1201,42 @@ proptest! {
         prop_assert!(after.count() >= before.count(), "count decreased");
     }
 
-    /// CONFORMANCE J4: Neutral operations produce no taint label.
+    /// CONFORMANCE J4: Neutral operations produce no exposure label.
     ///
-    /// Mirrors Verus proof_neutral_ops_no_taint.
+    /// Mirrors Verus proof_neutral_ops_no_exposure.
     #[test]
-    fn conformance_neutral_ops_no_taint(op in prop_oneof![
+    fn conformance_neutral_ops_no_exposure(op in prop_oneof![
         Just(Operation::WriteFiles),
         Just(Operation::EditFiles),
         Just(Operation::GitCommit),
         Just(Operation::ManagePods),
     ]) {
         prop_assert_eq!(
-            operation_taint(op), None,
-            "neutral op {:?} should produce no taint", op
+            operation_exposure(op), None,
+            "neutral op {:?} should produce no exposure", op
         );
     }
 
-    /// CONFORMANCE I1: Every operation maps to a valid taint label or None.
+    /// CONFORMANCE I1: Every operation maps to a valid exposure label or None.
     ///
-    /// Mirrors Verus proof_operation_taint_total.
+    /// Mirrors Verus proof_operation_exposure_total.
     #[test]
-    fn conformance_operation_taint_total(op in arb_operation()) {
-        let label = operation_taint(op);
-        // Either None (neutral) or a valid TaintLabel
+    fn conformance_operation_exposure_total(op in arb_operation()) {
+        let label = operation_exposure(op);
+        // Either None (neutral) or a valid ExposureLabel
         match label {
             None => {} // neutral — valid
-            Some(TaintLabel::PrivateData)
-            | Some(TaintLabel::UntrustedContent)
-            | Some(TaintLabel::ExfilVector) => {} // valid label
+            Some(ExposureLabel::PrivateData)
+            | Some(ExposureLabel::UntrustedContent)
+            | Some(ExposureLabel::ExfilVector) => {} // valid label
         }
     }
 
-    /// CONFORMANCE I3: Risk (count) is monotone — subset taint ≤ superset taint.
+    /// CONFORMANCE I3: Risk (count) is monotone — subset exposure ≤ superset exposure.
     ///
-    /// Mirrors Verus proof_taint_risk_monotone.
+    /// Mirrors Verus proof_exposure_risk_monotone.
     #[test]
-    fn conformance_taint_risk_monotone(a in arb_taint_set(), b in arb_taint_set()) {
+    fn conformance_exposure_risk_monotone(a in arb_exposure_set(), b in arb_exposure_set()) {
         let merged = a.union(&b);
         // a ⊆ merged, so count(a) ≤ count(merged)
         prop_assert!(
@@ -1249,33 +1249,33 @@ proptest! {
         );
     }
 
-    /// CONFORMANCE K1: TaintSet trifecta agrees with CapLattice trifecta.
+    /// CONFORMANCE K1: ExposureSet uninhabitable_state agrees with CapLattice uninhabitable_state.
     ///
-    /// Mirrors Verus proof_taint_risk_bridge.
-    /// When a TaintSet is built from the same capability lattice components,
-    /// both agree on trifecta completeness.
+    /// Mirrors Verus proof_exposure_risk_bridge.
+    /// When a ExposureSet is built from the same capability lattice components,
+    /// both agree on uninhabitable_state completeness.
     #[test]
-    fn conformance_taint_risk_bridge(caps in arb_capability_lattice()) {
-        // Build taint set from the same cap lattice components
-        let mut taint = TaintSet::empty();
+    fn conformance_exposure_risk_bridge(caps in arb_capability_lattice()) {
+        // Build exposure set from the same cap lattice components
+        let mut exposure = ExposureSet::empty();
         if model_has_private_access(&caps) {
-            taint = taint.union(&TaintSet::singleton(TaintLabel::PrivateData));
+            exposure = exposure.union(&ExposureSet::singleton(ExposureLabel::PrivateData));
         }
         if model_has_untrusted_content(&caps) {
-            taint = taint.union(&TaintSet::singleton(TaintLabel::UntrustedContent));
+            exposure = exposure.union(&ExposureSet::singleton(ExposureLabel::UntrustedContent));
         }
         if model_has_exfiltration(&caps) {
-            taint = taint.union(&TaintSet::singleton(TaintLabel::ExfilVector));
+            exposure = exposure.union(&ExposureSet::singleton(ExposureLabel::ExfilVector));
         }
 
         let constraint = IncompatibilityConstraint::enforcing();
-        let cap_complete = constraint.is_trifecta_complete(&caps);
-        let taint_complete = taint.is_trifecta_complete();
+        let cap_complete = constraint.is_uninhabitable(&caps);
+        let exposure_complete = exposure.is_uninhabitable();
 
         prop_assert_eq!(
-            taint_complete, cap_complete,
-            "BRIDGE VIOLATION: taint_complete={} != cap_complete={} for caps={:?}",
-            taint_complete, cap_complete, caps
+            exposure_complete, cap_complete,
+            "BRIDGE VIOLATION: exposure_complete={} != cap_complete={} for caps={:?}",
+            exposure_complete, cap_complete, caps
         );
     }
 }
@@ -1283,76 +1283,76 @@ proptest! {
 // ============================================================================
 // Tier H: MCP Session Trace Conformance (bridges Phase 7 proofs to production)
 //
-// These tests verify the session-level trace properties: taint monotonicity,
-// phantom taint freedom, neutral ops, trifecta irreversibility, and the
+// These tests verify the session-level trace properties: exposure monotonicity,
+// phantom exposure freedom, neutral ops, uninhabitable_state irreversibility, and the
 // composition (free monoid homomorphism) property.
 // ============================================================================
 
 /// Model an MCP event: (operation, succeeded)
-fn apply_event(taint: &TaintSet, op: Operation, succeeded: bool) -> TaintSet {
+fn apply_event(exposure: &ExposureSet, op: Operation, succeeded: bool) -> ExposureSet {
     if succeeded {
-        if let Some(label) = operation_taint(op) {
-            taint.union(&TaintSet::singleton(label))
+        if let Some(label) = operation_exposure(op) {
+            exposure.union(&ExposureSet::singleton(label))
         } else {
-            taint.clone()
+            exposure.clone()
         }
     } else {
-        taint.clone()
+        exposure.clone()
     }
 }
 
-/// Compute trace taint by folding over events.
-fn trace_taint(events: &[(Operation, bool)]) -> TaintSet {
-    let mut taint = TaintSet::empty();
+/// Compute trace exposure by folding over events.
+fn trace_exposure(events: &[(Operation, bool)]) -> ExposureSet {
+    let mut exposure = ExposureSet::empty();
     for &(op, succeeded) in events {
-        taint = apply_event(&taint, op, succeeded);
+        exposure = apply_event(&exposure, op, succeeded);
     }
-    taint
+    exposure
 }
 
 proptest! {
-    /// CONFORMANCE M1: Trace taint monotonicity — each event only grows taint.
+    /// CONFORMANCE M1: Trace exposure monotonicity — each event only grows exposure.
     ///
-    /// Mirrors Verus proof_trace_taint_monotone.
+    /// Mirrors Verus proof_trace_exposure_monotone.
     #[test]
-    fn conformance_trace_taint_monotone(
+    fn conformance_trace_exposure_monotone(
         ops in proptest::collection::vec(
             (arb_operation(), any::<bool>()),
             0..20,
         ),
     ) {
-        let mut taint = TaintSet::empty();
+        let mut exposure = ExposureSet::empty();
         for &(op, succeeded) in &ops {
-            let before = taint.clone();
-            taint = apply_event(&taint, op, succeeded);
+            let before = exposure.clone();
+            exposure = apply_event(&exposure, op, succeeded);
             // Monotone: every leg that was true stays true
-            for l in [TaintLabel::PrivateData, TaintLabel::UntrustedContent, TaintLabel::ExfilVector] {
+            for l in [ExposureLabel::PrivateData, ExposureLabel::UntrustedContent, ExposureLabel::ExfilVector] {
                 if before.contains(l) {
-                    prop_assert!(taint.contains(l), "lost taint leg {:?}", l);
+                    prop_assert!(exposure.contains(l), "lost exposure leg {:?}", l);
                 }
             }
-            prop_assert!(taint.count() >= before.count(), "count decreased");
+            prop_assert!(exposure.count() >= before.count(), "count decreased");
         }
     }
 
-    /// CONFORMANCE M4: Phantom taint freedom — failed events contribute nothing.
+    /// CONFORMANCE M4: Phantom exposure freedom — failed events contribute nothing.
     ///
-    /// Mirrors Verus proof_phantom_taint_freedom.
+    /// Mirrors Verus proof_phantom_exposure_freedom.
     #[test]
-    fn conformance_phantom_taint_freedom(
-        before in arb_taint_set(),
+    fn conformance_phantom_exposure_freedom(
+        before in arb_exposure_set(),
         op in arb_operation(),
     ) {
         let after = apply_event(&before, op, false);
-        prop_assert_eq!(after, before, "failed event changed taint for {:?}", op);
+        prop_assert_eq!(after, before, "failed event changed exposure for {:?}", op);
     }
 
-    /// CONFORMANCE M5: Neutral ops don't change taint.
+    /// CONFORMANCE M5: Neutral ops don't change exposure.
     ///
-    /// Mirrors Verus proof_neutral_op_preserves_taint.
+    /// Mirrors Verus proof_neutral_op_preserves_exposure.
     #[test]
     fn conformance_neutral_op_preserves(
-        before in arb_taint_set(),
+        before in arb_exposure_set(),
         op in prop_oneof![
             Just(Operation::WriteFiles),
             Just(Operation::EditFiles),
@@ -1360,38 +1360,38 @@ proptest! {
             Just(Operation::ManagePods),
         ],
     ) {
-        // Even if succeeded, neutral ops don't add taint
+        // Even if succeeded, neutral ops don't add exposure
         let after = apply_event(&before, op, true);
-        prop_assert_eq!(after, before, "neutral op {:?} changed taint", op);
+        prop_assert_eq!(after, before, "neutral op {:?} changed exposure", op);
     }
 
-    /// CONFORMANCE M6: Trifecta irreversibility — once latched, always latched.
+    /// CONFORMANCE M6:  UninhabitableState irreversibility — once latched, always latched.
     ///
-    /// Mirrors Verus proof_trifecta_irreversible.
+    /// Mirrors Verus proof_uninhabitable_irreversible.
     #[test]
-    fn conformance_trifecta_irreversible(
+    fn conformance_uninhabitable_irreversible(
         ops in proptest::collection::vec(
             (arb_operation(), any::<bool>()),
             0..20,
         ),
     ) {
-        let mut taint = TaintSet::empty();
+        let mut exposure = ExposureSet::empty();
         let mut latched = false;
         for &(op, succeeded) in &ops {
-            taint = apply_event(&taint, op, succeeded);
-            if taint.is_trifecta_complete() {
+            exposure = apply_event(&exposure, op, succeeded);
+            if exposure.is_uninhabitable() {
                 latched = true;
             }
             if latched {
                 prop_assert!(
-                    taint.is_trifecta_complete(),
-                    "trifecta unlatched after op {:?} (succeeded={})", op, succeeded
+                    exposure.is_uninhabitable(),
+                    "uninhabitable_state unlatched after op {:?} (succeeded={})", op, succeeded
                 );
             }
         }
     }
 
-    /// CONFORMANCE M3: Free monoid homomorphism — trace_taint(s1++s2) == union(tt(s1), tt(s2)).
+    /// CONFORMANCE M3: Free monoid homomorphism — trace_exposure(s1++s2) == union(tt(s1), tt(s2)).
     ///
     /// Mirrors Verus proof_trace_composition.
     #[test]
@@ -1405,11 +1405,11 @@ proptest! {
             0..10,
         ),
     ) {
-        let t1 = trace_taint(&s1);
-        let t2 = trace_taint(&s2);
+        let t1 = trace_exposure(&s1);
+        let t2 = trace_exposure(&s2);
         let mut combined = s1.clone();
         combined.extend_from_slice(&s2);
-        let t_combined = trace_taint(&combined);
+        let t_combined = trace_exposure(&combined);
 
         prop_assert_eq!(
             t_combined, t1.union(&t2),
@@ -1417,20 +1417,20 @@ proptest! {
         );
     }
 
-    /// CONFORMANCE M8: Three-step minimum — fewer than 3 non-neutral successes can't trigger trifecta.
+    /// CONFORMANCE M8: Three-step minimum — fewer than 3 non-neutral successes can't trigger uninhabitable_state.
     ///
-    /// Mirrors Verus proof_trifecta_minimum_three_steps.
+    /// Mirrors Verus proof_uninhabitable_minimum_three_steps.
     #[test]
-    fn conformance_trifecta_minimum(
+    fn conformance_uninhabitable_minimum(
         ops in proptest::collection::vec(
             (arb_operation(), any::<bool>()),
             0..2, // 0 or 1 events — always < 3 non-neutral successes
         ),
     ) {
-        let taint = trace_taint(&ops);
+        let exposure = trace_exposure(&ops);
         prop_assert!(
-            !taint.is_trifecta_complete(),
-            "trifecta triggered with only {} events", ops.len()
+            !exposure.is_uninhabitable(),
+            "uninhabitable_state triggered with only {} events", ops.len()
         );
     }
 }
@@ -1439,56 +1439,56 @@ proptest! {
 // Tier I: Session Fold Conformance (bridges Phase 8 proofs to production)
 //
 // These tests verify the guard-aware session fold: denied events don't
-// contribute taint, and the trifecta latch holds across the fold.
+// contribute exposure, and the uninhabitable_state latch holds across the fold.
 // ============================================================================
 
 /// Model the guard denial check (pure function, no RwLock).
-/// Mirrors GradedTaintGuard::check() trifecta path.
+/// Mirrors GradedExposureGuard::check() uninhabitable_state path.
 ///
 /// RunBash is omnibus: projects both PrivateData and ExfilVector.
-fn model_guard_would_deny(current: &TaintSet, op: Operation, requires_approval: bool) -> bool {
+fn model_guard_would_deny(current: &ExposureSet, op: Operation, requires_approval: bool) -> bool {
     let projected = if op == Operation::RunBash {
         // RunBash omnibus: projects PrivateData + ExfilVector
         current
-            .union(&TaintSet::singleton(TaintLabel::PrivateData))
-            .union(&TaintSet::singleton(TaintLabel::ExfilVector))
-    } else if let Some(label) = operation_taint(op) {
-        current.union(&TaintSet::singleton(label))
+            .union(&ExposureSet::singleton(ExposureLabel::PrivateData))
+            .union(&ExposureSet::singleton(ExposureLabel::ExfilVector))
+    } else if let Some(label) = operation_exposure(op) {
+        current.union(&ExposureSet::singleton(label))
     } else {
         current.clone()
     };
-    projected.is_trifecta_complete() && requires_approval
+    projected.is_uninhabitable() && requires_approval
 }
 
 /// Model the full check→op→record cycle.
-/// Returns (denied, new_taint).
+/// Returns (denied, new_exposure).
 fn model_full_tool_call(
-    taint: &TaintSet,
+    exposure: &ExposureSet,
     op: Operation,
     succeeded: bool,
     requires_approval: bool,
-) -> (bool, TaintSet) {
-    let denied = model_guard_would_deny(taint, op, requires_approval);
+) -> (bool, ExposureSet) {
+    let denied = model_guard_would_deny(exposure, op, requires_approval);
     if denied {
-        (true, taint.clone())
+        (true, exposure.clone())
     } else {
-        (false, apply_event(taint, op, succeeded))
+        (false, apply_event(exposure, op, succeeded))
     }
 }
 
-/// Compute session fold taint: like trace_taint but with guard denials.
-fn session_fold_taint(
+/// Compute session fold exposure: like trace_exposure but with guard denials.
+fn session_fold_exposure(
     events: &[(Operation, bool)],
     requires_approval_fn: &dyn Fn(Operation) -> bool,
-) -> TaintSet {
-    let mut taint = TaintSet::empty();
+) -> ExposureSet {
+    let mut exposure = ExposureSet::empty();
     for &(op, succeeded) in events {
-        let denied = model_guard_would_deny(&taint, op, requires_approval_fn(op));
+        let denied = model_guard_would_deny(&exposure, op, requires_approval_fn(op));
         if !denied {
-            taint = apply_event(&taint, op, succeeded);
+            exposure = apply_event(&exposure, op, succeeded);
         }
     }
-    taint
+    exposure
 }
 
 /// Map an operation to whether it requires approval (exfil ops only).
@@ -1500,25 +1500,25 @@ fn exfil_requires_approval(op: Operation) -> bool {
 }
 
 proptest! {
-    /// CONFORMANCE B1: exec_full_tool_call — denied ops don't change taint.
+    /// CONFORMANCE B1: exec_full_tool_call — denied ops don't change exposure.
     ///
     /// Mirrors Verus exec_full_tool_call postcondition.
     #[test]
-    fn conformance_full_tool_call_denied_no_taint(
-        taint in arb_taint_set(),
+    fn conformance_full_tool_call_denied_no_exposure(
+        exposure in arb_exposure_set(),
         op in arb_operation(),
         succeeded in any::<bool>(),
     ) {
-        let (denied, new_taint) = model_full_tool_call(&taint, op, succeeded, true);
+        let (denied, new_exposure) = model_full_tool_call(&exposure, op, succeeded, true);
         if denied {
             prop_assert_eq!(
-                new_taint, taint,
-                "denied op {:?} changed taint", op
+                new_exposure, exposure,
+                "denied op {:?} changed exposure", op
             );
         }
     }
 
-    /// CONFORMANCE B3: Trifecta-complete taint always denies approval-requiring ops.
+    /// CONFORMANCE B3: uninhabitable_state-complete exposure always denies approval-requiring ops.
     ///
     /// Mirrors Verus proof_exec_session_safety_refinement.
     #[test]
@@ -1529,20 +1529,20 @@ proptest! {
             Just(Operation::CreatePr),
         ],
     ) {
-        // Build a trifecta-complete taint set
-        let taint = TaintSet::singleton(TaintLabel::PrivateData)
-            .union(&TaintSet::singleton(TaintLabel::UntrustedContent))
-            .union(&TaintSet::singleton(TaintLabel::ExfilVector));
-        prop_assert!(taint.is_trifecta_complete());
+        // Build an uninhabitable_state-complete exposure set
+        let exposure = ExposureSet::singleton(ExposureLabel::PrivateData)
+            .union(&ExposureSet::singleton(ExposureLabel::UntrustedContent))
+            .union(&ExposureSet::singleton(ExposureLabel::ExfilVector));
+        prop_assert!(exposure.is_uninhabitable());
 
-        let denied = model_guard_would_deny(&taint, op, true);
+        let denied = model_guard_would_deny(&exposure, op, true);
         prop_assert!(
             denied,
-            "trifecta-complete taint should deny {:?} with approval required", op
+            "uninhabitable_state-complete exposure should deny {:?} with approval required", op
         );
     }
 
-    /// CONFORMANCE B4: Session fold taint is monotone.
+    /// CONFORMANCE B4: Session fold exposure is monotone.
     ///
     /// Mirrors Verus proof_session_fold_monotone.
     #[test]
@@ -1552,23 +1552,23 @@ proptest! {
             0..20,
         ),
     ) {
-        let mut taint = TaintSet::empty();
+        let mut exposure = ExposureSet::empty();
         for &(op, succeeded) in &ops {
-            let before = taint.clone();
-            let denied = model_guard_would_deny(&taint, op, exfil_requires_approval(op));
+            let before = exposure.clone();
+            let denied = model_guard_would_deny(&exposure, op, exfil_requires_approval(op));
             if !denied {
-                taint = apply_event(&taint, op, succeeded);
+                exposure = apply_event(&exposure, op, succeeded);
             }
-            // Monotone: taint never decreases even with denials
-            for l in [TaintLabel::PrivateData, TaintLabel::UntrustedContent, TaintLabel::ExfilVector] {
+            // Monotone: exposure never decreases even with denials
+            for l in [ExposureLabel::PrivateData, ExposureLabel::UntrustedContent, ExposureLabel::ExfilVector] {
                 if before.contains(l) {
-                    prop_assert!(taint.contains(l), "lost taint leg {:?} in session fold", l);
+                    prop_assert!(exposure.contains(l), "lost exposure leg {:?} in session fold", l);
                 }
             }
         }
     }
 
-    /// CONFORMANCE B5: Session fold safety — trifecta latch across guard-aware fold.
+    /// CONFORMANCE B5: Session fold safety — uninhabitable_state latch across guard-aware fold.
     ///
     /// Mirrors Verus proof_session_fold_safety.
     #[test]
@@ -1578,33 +1578,33 @@ proptest! {
             0..20,
         ),
     ) {
-        let mut taint = TaintSet::empty();
+        let mut exposure = ExposureSet::empty();
         let mut latched = false;
         for &(op, succeeded) in &ops {
             let requires_approval = exfil_requires_approval(op);
-            let denied = model_guard_would_deny(&taint, op, requires_approval);
+            let denied = model_guard_would_deny(&exposure, op, requires_approval);
 
-            // If trifecta is latched, exfil ops with approval MUST be denied
+            // If uninhabitable_state is latched, exfil ops with approval MUST be denied
             if latched && requires_approval {
                 prop_assert!(
                     denied,
-                    "trifecta-latched session allowed {:?} (requires_approval=true)", op
+                    "uninhabitable_state-latched session allowed {:?} (requires_approval=true)", op
                 );
             }
 
             if !denied {
-                taint = apply_event(&taint, op, succeeded);
+                exposure = apply_event(&exposure, op, succeeded);
             }
 
-            if taint.is_trifecta_complete() {
+            if exposure.is_uninhabitable() {
                 latched = true;
             }
         }
     }
 
-    /// CONFORMANCE B-FOLD: Session fold produces ⊆ raw trace taint.
+    /// CONFORMANCE B-FOLD: Session fold produces ⊆ raw trace exposure.
     ///
-    /// Guard denials can only reduce taint compared to unconstrained execution.
+    /// Guard denials can only reduce exposure compared to unconstrained execution.
     #[test]
     fn conformance_session_fold_subset_of_trace(
         ops in proptest::collection::vec(
@@ -1612,11 +1612,11 @@ proptest! {
             0..15,
         ),
     ) {
-        let raw = trace_taint(&ops);
-        let folded = session_fold_taint(&ops, &exfil_requires_approval);
+        let raw = trace_exposure(&ops);
+        let folded = session_fold_exposure(&ops, &exfil_requires_approval);
 
-        // folded ⊆ raw (guard denials can only prevent taint accumulation)
-        for l in [TaintLabel::PrivateData, TaintLabel::UntrustedContent, TaintLabel::ExfilVector] {
+        // folded ⊆ raw (guard denials can only prevent exposure accumulation)
+        for l in [ExposureLabel::PrivateData, ExposureLabel::UntrustedContent, ExposureLabel::ExfilVector] {
             if folded.contains(l) {
                 prop_assert!(
                     raw.contains(l),
@@ -1633,26 +1633,26 @@ proptest! {
     /// CONFORMANCE N1: Omnibus noninterference.
     ///
     /// If UntrustedContent is set, RunBash is denied regardless of PrivateData.
-    /// Tests the 2-safety property: two taint states differing only on PrivateData
+    /// Tests the 2-safety property: two exposure states differing only on PrivateData
     /// both deny RunBash.
     #[test]
     fn conformance_omnibus_noninterference(
         has_exfil in proptest::bool::ANY,
     ) {
-        // Build two taint states: one with PrivateData, one without.
+        // Build two exposure states: one with PrivateData, one without.
         // Both have UntrustedContent.
-        let mut with_private = TaintSet::empty()
-            .union(&TaintSet::singleton(TaintLabel::UntrustedContent));
-        let mut without_private = TaintSet::empty()
-            .union(&TaintSet::singleton(TaintLabel::UntrustedContent));
+        let mut with_private = ExposureSet::empty()
+            .union(&ExposureSet::singleton(ExposureLabel::UntrustedContent));
+        let mut without_private = ExposureSet::empty()
+            .union(&ExposureSet::singleton(ExposureLabel::UntrustedContent));
 
         // Add PrivateData to only one
-        with_private = with_private.union(&TaintSet::singleton(TaintLabel::PrivateData));
+        with_private = with_private.union(&ExposureSet::singleton(ExposureLabel::PrivateData));
 
         // Optionally add ExfilVector to both (shouldn't matter)
         if has_exfil {
-            with_private = with_private.union(&TaintSet::singleton(TaintLabel::ExfilVector));
-            without_private = without_private.union(&TaintSet::singleton(TaintLabel::ExfilVector));
+            with_private = with_private.union(&ExposureSet::singleton(ExposureLabel::ExfilVector));
+            without_private = without_private.union(&ExposureSet::singleton(ExposureLabel::ExfilVector));
         }
 
         // Both must deny RunBash (when RunBash requires approval)
@@ -1690,49 +1690,49 @@ proptest! {
         trace.extend(post_ops);
 
         // Compute session fold up to the point before RunBash attempt
-        let taint_before_runbash = session_fold_taint(&trace, &exfil_requires_approval);
+        let exposure_before_runbash = session_fold_exposure(&trace, &exfil_requires_approval);
 
         // RunBash must be denied (UntrustedContent latched + omnibus projection)
-        let denied = model_guard_would_deny(&taint_before_runbash, Operation::RunBash, true);
+        let denied = model_guard_would_deny(&exposure_before_runbash, Operation::RunBash, true);
 
         // UntrustedContent must have latched
         prop_assert!(
-            taint_before_runbash.contains(TaintLabel::UntrustedContent),
+            exposure_before_runbash.contains(ExposureLabel::UntrustedContent),
             "N2: UntrustedContent should latch after WebFetch"
         );
         prop_assert!(
             denied,
-            "N2 violated: RunBash not denied after WebFetch contamination (taint: {})",
-            taint_before_runbash
+            "N2 violated: RunBash not denied after WebFetch contamination (exposure: {})",
+            exposure_before_runbash
         );
     }
 
     /// CONFORMANCE N3: Full-path noninterference for GitPush/CreatePr.
     ///
     /// When both PrivateData and UntrustedContent are set, GitPush/CreatePr
-    /// are denied (classical 3-leg trifecta).
+    /// are denied (classical 3-leg uninhabitable_state).
     #[test]
     fn conformance_full_path_noninterference(
         has_exfil in proptest::bool::ANY,
     ) {
-        // Build taint with both PrivateData and UntrustedContent
-        let mut taint = TaintSet::empty()
-            .union(&TaintSet::singleton(TaintLabel::PrivateData))
-            .union(&TaintSet::singleton(TaintLabel::UntrustedContent));
+        // Build exposure with both PrivateData and UntrustedContent
+        let mut exposure = ExposureSet::empty()
+            .union(&ExposureSet::singleton(ExposureLabel::PrivateData))
+            .union(&ExposureSet::singleton(ExposureLabel::UntrustedContent));
 
         if has_exfil {
-            taint = taint.union(&TaintSet::singleton(TaintLabel::ExfilVector));
+            exposure = exposure.union(&ExposureSet::singleton(ExposureLabel::ExfilVector));
         }
 
         // GitPush must be denied
-        let denied_push = model_guard_would_deny(&taint, Operation::GitPush, true);
+        let denied_push = model_guard_would_deny(&exposure, Operation::GitPush, true);
         prop_assert!(
             denied_push,
             "N3 violated: GitPush not denied with PrivateData+UntrustedContent"
         );
 
         // CreatePr must be denied
-        let denied_pr = model_guard_would_deny(&taint, Operation::CreatePr, true);
+        let denied_pr = model_guard_would_deny(&exposure, Operation::CreatePr, true);
         prop_assert!(
             denied_pr,
             "N3 violated: CreatePr not denied with PrivateData+UntrustedContent"
@@ -1744,18 +1744,18 @@ proptest! {
 // Phase 9C: Structural Bisimulation Conformance Tests
 //
 // These tests bridge the Verus exec functions to the production
-// taint_core functions, completing the verification chain:
+// exposure_core functions, completing the verification chain:
 //
-//   Verus spec fns ←[SMT proof]→ Verus exec fns ←[these tests]→ taint_core fns
+//   Verus spec fns ←[SMT proof]→ Verus exec fns ←[these tests]→ exposure_core fns
 //
 // The Verus exec functions are re-implemented here in plain Rust
 // (identical logic, no Verus syntax) and tested against the production
-// taint_core module exhaustively over all 12 operations × 8 taint states.
+// exposure_core module exhaustively over all 12 operations × 8 exposure states.
 // ============================================================================
 
 mod structural_bisimulation {
-    use portcullis::taint_core;
-    use portcullis::{operation_taint, Operation, TaintLabel, TaintSet};
+    use portcullis::exposure_core;
+    use portcullis::{operation_exposure, ExposureLabel, ExposureSet, Operation};
     use proptest::prelude::*;
 
     /// All 12 operations for exhaustive testing.
@@ -1774,8 +1774,8 @@ mod structural_bisimulation {
         Operation::ManagePods, // 11
     ];
 
-    /// Re-implementation of Verus `exec_operation_taint_label`.
-    fn verus_operation_taint_label(op: u8) -> u8 {
+    /// Re-implementation of Verus `exec_operation_exposure_label`.
+    fn verus_operation_exposure_label(op: u8) -> u8 {
         if op == 0 || op == 4 || op == 5 {
             0 // PrivateData
         } else if op == 6 || op == 7 {
@@ -1805,59 +1805,59 @@ mod structural_bisimulation {
         }
     }
 
-    /// Convert Verus label (0,1,2) to TaintLabel.
-    fn label_to_taint(label: u8) -> Option<TaintLabel> {
+    /// Convert Verus label (0,1,2) to ExposureLabel.
+    fn label_to_exposure(label: u8) -> Option<ExposureLabel> {
         match label {
-            0 => Some(TaintLabel::PrivateData),
-            1 => Some(TaintLabel::UntrustedContent),
-            2 => Some(TaintLabel::ExfilVector),
+            0 => Some(ExposureLabel::PrivateData),
+            1 => Some(ExposureLabel::UntrustedContent),
+            2 => Some(ExposureLabel::ExfilVector),
             _ => None,
         }
     }
 
     /// Re-implementation of Verus `exec_guard_check`.
-    fn verus_guard_check(taint: &TaintSet, op: u8, requires_approval: bool) -> bool {
+    fn verus_guard_check(exposure: &ExposureSet, op: u8, requires_approval: bool) -> bool {
         let projected = if op == 3 {
             // RunBash omnibus
-            taint
-                .union(&TaintSet::singleton(TaintLabel::PrivateData))
-                .union(&TaintSet::singleton(TaintLabel::ExfilVector))
+            exposure
+                .union(&ExposureSet::singleton(ExposureLabel::PrivateData))
+                .union(&ExposureSet::singleton(ExposureLabel::ExfilVector))
         } else {
-            let label = verus_operation_taint_label(op);
+            let label = verus_operation_exposure_label(op);
             if label <= 2 {
-                taint.union(&TaintSet::singleton(label_to_taint(label).unwrap()))
+                exposure.union(&ExposureSet::singleton(label_to_exposure(label).unwrap()))
             } else {
-                taint.clone()
+                exposure.clone()
             }
         };
-        projected.is_trifecta_complete() && requires_approval
+        projected.is_uninhabitable() && requires_approval
     }
 
     /// Re-implementation of Verus `exec_apply_event` (succeeded=true).
-    fn verus_apply_event(taint: &TaintSet, op: u8) -> TaintSet {
-        let label = verus_operation_taint_label(op);
+    fn verus_apply_event(exposure: &ExposureSet, op: u8) -> ExposureSet {
+        let label = verus_operation_exposure_label(op);
         if label <= 2 {
-            taint.union(&TaintSet::singleton(label_to_taint(label).unwrap()))
+            exposure.union(&ExposureSet::singleton(label_to_exposure(label).unwrap()))
         } else {
-            taint.clone()
+            exposure.clone()
         }
     }
 
-    /// All 8 possible taint states (3 bools = 2^3).
-    fn all_taint_states() -> Vec<TaintSet> {
+    /// All 8 possible exposure states (3 bools = 2^3).
+    fn all_exposure_states() -> Vec<ExposureSet> {
         let mut states = Vec::new();
         for pd in [false, true] {
             for uc in [false, true] {
                 for ev in [false, true] {
-                    let mut t = TaintSet::empty();
+                    let mut t = ExposureSet::empty();
                     if pd {
-                        t = t.union(&TaintSet::singleton(TaintLabel::PrivateData));
+                        t = t.union(&ExposureSet::singleton(ExposureLabel::PrivateData));
                     }
                     if uc {
-                        t = t.union(&TaintSet::singleton(TaintLabel::UntrustedContent));
+                        t = t.union(&ExposureSet::singleton(ExposureLabel::UntrustedContent));
                     }
                     if ev {
-                        t = t.union(&TaintSet::singleton(TaintLabel::ExfilVector));
+                        t = t.union(&ExposureSet::singleton(ExposureLabel::ExfilVector));
                     }
                     states.push(t);
                 }
@@ -1866,19 +1866,19 @@ mod structural_bisimulation {
         states
     }
 
-    // --- S1: classify_operation ↔ exec_operation_taint_label ---
+    // --- S1: classify_operation ↔ exec_operation_exposure_label ---
 
     #[test]
     fn bisim_s1_classify_exhaustive() {
         // Exhaustively verify all 12 operations match between
-        // taint_core::classify_operation and verus exec_operation_taint_label
+        // exposure_core::classify_operation and verus exec_operation_exposure_label
         for op in ALL_OPS {
-            let production = taint_core::classify_operation(op);
-            let verus_label = verus_operation_taint_label(op_to_nat(op));
+            let production = exposure_core::classify_operation(op);
+            let verus_label = verus_operation_exposure_label(op_to_nat(op));
             let production_label: u8 = match production {
-                Some(TaintLabel::PrivateData) => 0,
-                Some(TaintLabel::UntrustedContent) => 1,
-                Some(TaintLabel::ExfilVector) => 2,
+                Some(ExposureLabel::PrivateData) => 0,
+                Some(ExposureLabel::UntrustedContent) => 1,
+                Some(ExposureLabel::ExfilVector) => 2,
                 None => 3,
             };
             assert_eq!(
@@ -1890,44 +1890,44 @@ mod structural_bisimulation {
     }
 
     #[test]
-    fn bisim_s1_classify_agrees_with_operation_taint() {
-        // Verify taint_core::classify_operation == guard::operation_taint
-        // (since classify_operation IS operation_taint's backing impl)
+    fn bisim_s1_classify_agrees_with_operation_exposure() {
+        // Verify exposure_core::classify_operation == guard::operation_exposure
+        // (since classify_operation IS operation_exposure's backing impl)
         for op in ALL_OPS {
             assert_eq!(
-                taint_core::classify_operation(op),
-                operation_taint(op),
-                "classify_operation disagrees with operation_taint for {:?}",
+                exposure_core::classify_operation(op),
+                operation_exposure(op),
+                "classify_operation disagrees with operation_exposure for {:?}",
                 op
             );
         }
     }
 
-    // --- S2: project_taint ↔ guard_would_deny projection arm ---
+    // --- S2: project_exposure ↔ guard_would_deny projection arm ---
 
     #[test]
     fn bisim_s2_project_exhaustive() {
-        // Exhaustively verify all 12 ops × 8 taint states
-        for taint in all_taint_states() {
+        // Exhaustively verify all 12 ops × 8 exposure states
+        for exposure in all_exposure_states() {
             for op in ALL_OPS {
-                let production = taint_core::project_taint(&taint, op);
+                let production = exposure_core::project_exposure(&exposure, op);
                 // Re-implement the Verus projection logic
                 let verus = if op == Operation::RunBash {
-                    taint
-                        .union(&TaintSet::singleton(TaintLabel::PrivateData))
-                        .union(&TaintSet::singleton(TaintLabel::ExfilVector))
+                    exposure
+                        .union(&ExposureSet::singleton(ExposureLabel::PrivateData))
+                        .union(&ExposureSet::singleton(ExposureLabel::ExfilVector))
                 } else {
-                    let label = verus_operation_taint_label(op_to_nat(op));
+                    let label = verus_operation_exposure_label(op_to_nat(op));
                     if label <= 2 {
-                        taint.union(&TaintSet::singleton(label_to_taint(label).unwrap()))
+                        exposure.union(&ExposureSet::singleton(label_to_exposure(label).unwrap()))
                     } else {
-                        taint.clone()
+                        exposure.clone()
                     }
                 };
                 assert_eq!(
                     production, verus,
-                    "S2 bisim failed for {:?} with taint {}: production={}, verus={}",
-                    op, taint, production, verus
+                    "S2 bisim failed for {:?} with exposure {}: production={}, verus={}",
+                    op, exposure, production, verus
                 );
             }
         }
@@ -1937,26 +1937,26 @@ mod structural_bisimulation {
 
     #[test]
     fn bisim_s3_should_deny_exhaustive() {
-        // Exhaustively verify all 12 ops × 8 taint states × 2 approval × 2 constraint
-        for taint in all_taint_states() {
+        // Exhaustively verify all 12 ops × 8 exposure states × 2 approval × 2 constraint
+        for exposure in all_exposure_states() {
             for op in ALL_OPS {
                 for requires_approval in [false, true] {
-                    for trifecta_constraint in [false, true] {
-                        let production = taint_core::should_deny(
-                            &taint,
+                    for uninhabitable_constraint in [false, true] {
+                        let production = exposure_core::should_deny(
+                            &exposure,
                             op,
                             requires_approval,
-                            trifecta_constraint,
+                            uninhabitable_constraint,
                         );
-                        let verus = if trifecta_constraint {
-                            verus_guard_check(&taint, op_to_nat(op), requires_approval)
+                        let verus = if uninhabitable_constraint {
+                            verus_guard_check(&exposure, op_to_nat(op), requires_approval)
                         } else {
                             false
                         };
                         assert_eq!(
                             production, verus,
-                            "S3 bisim failed for {:?} taint={} approval={} constraint={}: prod={}, verus={}",
-                            op, taint, requires_approval, trifecta_constraint, production, verus
+                            "S3 bisim failed for {:?} exposure={} approval={} constraint={}: prod={}, verus={}",
+                            op, exposure, requires_approval, uninhabitable_constraint, production, verus
                         );
                     }
                 }
@@ -1968,15 +1968,15 @@ mod structural_bisimulation {
 
     #[test]
     fn bisim_s4_apply_record_exhaustive() {
-        // Exhaustively verify all 12 ops × 8 taint states
-        for taint in all_taint_states() {
+        // Exhaustively verify all 12 ops × 8 exposure states
+        for exposure in all_exposure_states() {
             for op in ALL_OPS {
-                let production = taint_core::apply_record(&taint, op);
-                let verus = verus_apply_event(&taint, op_to_nat(op));
+                let production = exposure_core::apply_record(&exposure, op);
+                let verus = verus_apply_event(&exposure, op_to_nat(op));
                 assert_eq!(
                     production, verus,
-                    "S4 bisim failed for {:?} with taint {}: production={}, verus={}",
-                    op, taint, production, verus
+                    "S4 bisim failed for {:?} with exposure {}: production={}, verus={}",
+                    op, exposure, production, verus
                 );
             }
         }
@@ -1986,23 +1986,23 @@ mod structural_bisimulation {
 
     #[test]
     fn bisim_s5_record_subset_of_project() {
-        // For all ops × all taint states, apply_record result is a
-        // subset of project_taint result
-        for taint in all_taint_states() {
+        // For all ops × all exposure states, apply_record result is a
+        // subset of project_exposure result
+        for exposure in all_exposure_states() {
             for op in ALL_OPS {
-                let recorded = taint_core::apply_record(&taint, op);
-                let projected = taint_core::project_taint(&taint, op);
+                let recorded = exposure_core::apply_record(&exposure, op);
+                let projected = exposure_core::project_exposure(&exposure, op);
                 // Check subset: each leg of recorded implies leg of projected
                 assert!(
-                    (!recorded.contains(TaintLabel::PrivateData)
-                        || projected.contains(TaintLabel::PrivateData))
-                        && (!recorded.contains(TaintLabel::UntrustedContent)
-                            || projected.contains(TaintLabel::UntrustedContent))
-                        && (!recorded.contains(TaintLabel::ExfilVector)
-                            || projected.contains(TaintLabel::ExfilVector)),
-                    "S5 violated for {:?} with taint {}: recorded={} not subset of projected={}",
+                    (!recorded.contains(ExposureLabel::PrivateData)
+                        || projected.contains(ExposureLabel::PrivateData))
+                        && (!recorded.contains(ExposureLabel::UntrustedContent)
+                            || projected.contains(ExposureLabel::UntrustedContent))
+                        && (!recorded.contains(ExposureLabel::ExfilVector)
+                            || projected.contains(ExposureLabel::ExfilVector)),
+                    "S5 violated for {:?} with exposure {}: recorded={} not subset of projected={}",
                     op,
-                    taint,
+                    exposure,
                     recorded,
                     projected
                 );
@@ -2015,40 +2015,40 @@ mod structural_bisimulation {
     #[test]
     fn bisim_s5_gap_only_runbash() {
         // For all non-RunBash ops, record == project (no gap)
-        for taint in all_taint_states() {
+        for exposure in all_exposure_states() {
             for op in ALL_OPS {
                 if op == Operation::RunBash {
                     continue;
                 }
-                let recorded = taint_core::apply_record(&taint, op);
-                let projected = taint_core::project_taint(&taint, op);
+                let recorded = exposure_core::apply_record(&exposure, op);
+                let projected = exposure_core::project_exposure(&exposure, op);
                 assert_eq!(
                     recorded, projected,
-                    "S5-gap: non-RunBash op {:?} has record≠project gap (taint={})",
-                    op, taint
+                    "S5-gap: non-RunBash op {:?} has record≠project gap (exposure={})",
+                    op, exposure
                 );
             }
         }
     }
 
-    // --- Proptest: random taint + random op bisimulation ---
+    // --- Proptest: random exposure + random op bisimulation ---
 
-    fn arb_taint() -> impl Strategy<Value = TaintSet> {
+    fn arb_exposure() -> impl Strategy<Value = ExposureSet> {
         (
             proptest::bool::ANY,
             proptest::bool::ANY,
             proptest::bool::ANY,
         )
             .prop_map(|(pd, uc, ev)| {
-                let mut t = TaintSet::empty();
+                let mut t = ExposureSet::empty();
                 if pd {
-                    t = t.union(&TaintSet::singleton(TaintLabel::PrivateData));
+                    t = t.union(&ExposureSet::singleton(ExposureLabel::PrivateData));
                 }
                 if uc {
-                    t = t.union(&TaintSet::singleton(TaintLabel::UntrustedContent));
+                    t = t.union(&ExposureSet::singleton(ExposureLabel::UntrustedContent));
                 }
                 if ev {
-                    t = t.union(&TaintSet::singleton(TaintLabel::ExfilVector));
+                    t = t.union(&ExposureSet::singleton(ExposureLabel::ExfilVector));
                 }
                 t
             })
@@ -2075,12 +2075,12 @@ mod structural_bisimulation {
         /// Proptest: classify_operation matches Verus exec on random inputs.
         #[test]
         fn proptest_bisim_classify(op in arb_op()) {
-            let production = taint_core::classify_operation(op);
-            let verus_label = verus_operation_taint_label(op_to_nat(op));
+            let production = exposure_core::classify_operation(op);
+            let verus_label = verus_operation_exposure_label(op_to_nat(op));
             let production_label: u8 = match production {
-                Some(TaintLabel::PrivateData) => 0,
-                Some(TaintLabel::UntrustedContent) => 1,
-                Some(TaintLabel::ExfilVector) => 2,
+                Some(ExposureLabel::PrivateData) => 0,
+                Some(ExposureLabel::UntrustedContent) => 1,
+                Some(ExposureLabel::ExfilVector) => 2,
                 None => 3,
             };
             prop_assert_eq!(production_label, verus_label);
@@ -2089,43 +2089,43 @@ mod structural_bisimulation {
         /// Proptest: should_deny matches Verus exec_guard_check on random inputs.
         #[test]
         fn proptest_bisim_should_deny(
-            taint in arb_taint(),
+            exposure in arb_exposure(),
             op in arb_op(),
             requires_approval in proptest::bool::ANY,
         ) {
-            let production = taint_core::should_deny(&taint, op, requires_approval, true);
-            let verus = verus_guard_check(&taint, op_to_nat(op), requires_approval);
+            let production = exposure_core::should_deny(&exposure, op, requires_approval, true);
+            let verus = verus_guard_check(&exposure, op_to_nat(op), requires_approval);
             prop_assert_eq!(production, verus);
         }
 
         /// Proptest: apply_record matches Verus exec_apply_event on random inputs.
         #[test]
         fn proptest_bisim_apply_record(
-            taint in arb_taint(),
+            exposure in arb_exposure(),
             op in arb_op(),
         ) {
-            let production = taint_core::apply_record(&taint, op);
-            let verus = verus_apply_event(&taint, op_to_nat(op));
+            let production = exposure_core::apply_record(&exposure, op);
+            let verus = verus_apply_event(&exposure, op_to_nat(op));
             prop_assert_eq!(production, verus);
         }
 
-        /// Proptest: project_taint result is always a superset of apply_record result.
+        /// Proptest: project_exposure result is always a superset of apply_record result.
         #[test]
         fn proptest_bisim_record_subset_project(
-            taint in arb_taint(),
+            exposure in arb_exposure(),
             op in arb_op(),
         ) {
-            let recorded = taint_core::apply_record(&taint, op);
-            let projected = taint_core::project_taint(&taint, op);
+            let recorded = exposure_core::apply_record(&exposure, op);
+            let projected = exposure_core::project_exposure(&exposure, op);
             prop_assert!(
-                (!recorded.contains(TaintLabel::PrivateData)
-                    || projected.contains(TaintLabel::PrivateData))
-                && (!recorded.contains(TaintLabel::UntrustedContent)
-                    || projected.contains(TaintLabel::UntrustedContent))
-                && (!recorded.contains(TaintLabel::ExfilVector)
-                    || projected.contains(TaintLabel::ExfilVector)),
-                "record not subset of project for {:?} taint={}",
-                op, taint
+                (!recorded.contains(ExposureLabel::PrivateData)
+                    || projected.contains(ExposureLabel::PrivateData))
+                && (!recorded.contains(ExposureLabel::UntrustedContent)
+                    || projected.contains(ExposureLabel::UntrustedContent))
+                && (!recorded.contains(ExposureLabel::ExfilVector)
+                    || projected.contains(ExposureLabel::ExfilVector)),
+                "record not subset of project for {:?} exposure={}",
+                op, exposure
             );
         }
     }
@@ -2134,8 +2134,8 @@ mod structural_bisimulation {
 // ═══════════════════════════════════════════════════════════════════════════
 // CONFORMANCE P: Protocol Linearity (typestate automaton)
 //
-// These tests verify that the production GradedTaintGuard and
-// RuntimeTrifectaGuard enforce the check → execute_and_record protocol,
+// These tests verify that the production GradedExposureGuard and
+// RuntimeStateGuard enforce the check → execute_and_record protocol,
 // matching the Verus 2-state automaton proofs (P1–P5).
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2143,16 +2143,16 @@ mod structural_bisimulation {
 #[allow(deprecated)]
 mod protocol_conformance {
     use portcullis::{
-        CapabilityLevel, GradedTaintGuard, Operation, PermissionLattice, RuntimeTrifectaGuard,
-        ToolCallGuard, TrifectaRisk,
+        CapabilityLevel, GradedExposureGuard, Operation, PermissionLattice, RuntimeStateGuard,
+        StateRisk, ToolCallGuard,
     };
 
-    fn trifecta_perms() -> PermissionLattice {
+    fn uninhabitable_perms() -> PermissionLattice {
         let mut perms = PermissionLattice::default();
         perms.capabilities.read_files = CapabilityLevel::Always;
         perms.capabilities.web_fetch = CapabilityLevel::LowRisk;
         perms.capabilities.run_bash = CapabilityLevel::LowRisk;
-        perms.trifecta_constraint = true;
+        perms.uninhabitable_constraint = true;
         perms.normalize()
     }
 
@@ -2162,22 +2162,22 @@ mod protocol_conformance {
     /// matches: check() produces a proof, execute_and_record() consumes it.
     #[test]
     fn conformance_p1_check_before_record() {
-        let guard = GradedTaintGuard::new(trifecta_perms(), "[]");
+        let guard = GradedExposureGuard::new(uninhabitable_perms(), "[]");
 
         // Must call check() first to get a proof
         let proof = guard.check(Operation::ReadFiles).unwrap();
         // Proof is consumed by execute_and_record
         let result = guard.execute_and_record(proof, || Ok::<_, String>(()));
         assert!(result.is_ok());
-        assert_eq!(guard.accumulated_risk(), TrifectaRisk::Low);
+        assert_eq!(guard.accumulated_risk(), StateRisk::Low);
     }
 
     /// P2/P3 conformance: check → execute_and_record cycle works for both guards.
     #[test]
     fn conformance_p2_p3_cycle_both_guards() {
-        let perms = trifecta_perms();
-        let graded = GradedTaintGuard::new(perms.clone(), "[]");
-        let runtime = RuntimeTrifectaGuard::new(perms, "[]");
+        let perms = uninhabitable_perms();
+        let graded = GradedExposureGuard::new(perms.clone(), "[]");
+        let runtime = RuntimeStateGuard::new(perms, "[]");
 
         // Both guards should support the check → execute_and_record cycle
         let p1 = graded.check(Operation::ReadFiles).unwrap();
@@ -2194,25 +2194,25 @@ mod protocol_conformance {
     }
 
     /// P4 conformance: dropping a CheckProof without consuming it does NOT
-    /// record taint (no phantom risk from unconsumed proofs).
+    /// record exposure (no phantom risk from unconsumed proofs).
     #[test]
     fn conformance_p4_dropped_proof_no_phantom() {
-        let guard = GradedTaintGuard::new(trifecta_perms(), "[]");
+        let guard = GradedExposureGuard::new(uninhabitable_perms(), "[]");
 
         // Get a proof but don't consume it
         let _proof = guard.check(Operation::ReadFiles).unwrap();
         // Drop the proof (goes out of scope)
         drop(_proof);
 
-        // Taint should be empty — proof was not consumed
-        assert_eq!(guard.accumulated_risk(), TrifectaRisk::None);
+        // Exposure should be empty — proof was not consumed
+        assert_eq!(guard.accumulated_risk(), StateRisk::Safe);
     }
 
     /// P5 conformance: the protocol is deterministic — check always
-    /// succeeds or fails consistently given the same taint state.
+    /// succeeds or fails consistently given the same exposure state.
     #[test]
     fn conformance_p5_deterministic_check() {
-        let guard = GradedTaintGuard::new(trifecta_perms(), "[]");
+        let guard = GradedExposureGuard::new(uninhabitable_perms(), "[]");
 
         // Two checks for the same operation should both succeed
         let proof1 = guard.check(Operation::ReadFiles);
@@ -2226,7 +2226,7 @@ mod protocol_conformance {
             .unwrap();
         drop(proof2);
 
-        // After tainting with WebFetch, RunBash check consistently fails
+        // After exposureing with WebFetch, RunBash check consistently fails
         let proof3 = guard.check(Operation::WebFetch).unwrap();
         guard
             .execute_and_record(proof3, || Ok::<_, String>(()))
@@ -2238,43 +2238,43 @@ mod protocol_conformance {
         assert!(r2.is_err());
     }
 
-    /// Execute_and_record with failed closure does NOT record taint.
+    /// Execute_and_record with failed closure does NOT record exposure.
     #[test]
-    fn conformance_closure_failure_no_taint() {
-        let guard = GradedTaintGuard::new(trifecta_perms(), "[]");
+    fn conformance_closure_failure_no_exposure() {
+        let guard = GradedExposureGuard::new(uninhabitable_perms(), "[]");
 
         let proof = guard.check(Operation::ReadFiles).unwrap();
         let result = guard.execute_and_record(proof, || Err::<(), _>("simulated IO error"));
         assert!(result.is_err());
-        assert_eq!(guard.accumulated_risk(), TrifectaRisk::None);
+        assert_eq!(guard.accumulated_risk(), StateRisk::Safe);
 
         // Can still do a successful check → record
         let proof2 = guard.check(Operation::ReadFiles).unwrap();
         guard
             .execute_and_record(proof2, || Ok::<_, String>(()))
             .unwrap();
-        assert_eq!(guard.accumulated_risk(), TrifectaRisk::Low);
+        assert_eq!(guard.accumulated_risk(), StateRisk::Low);
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CONFORMANCE GM: Graded Monad Laws
 //
-// These tests verify that the production Graded<TrifectaRisk, A> type
+// These tests verify that the production Graded<StateRisk, A> type
 // satisfies the monad laws proven in Verus (proof_ml1 through proof_ml3).
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod graded_monad_conformance {
     use portcullis::graded::{Graded, RiskGrade};
-    use portcullis::TrifectaRisk;
+    use portcullis::StateRisk;
 
-    /// All four TrifectaRisk levels for exhaustive testing.
-    const ALL_RISKS: [TrifectaRisk; 4] = [
-        TrifectaRisk::None,
-        TrifectaRisk::Low,
-        TrifectaRisk::Medium,
-        TrifectaRisk::Complete,
+    /// All four StateRisk levels for exhaustive testing.
+    const ALL_RISKS: [StateRisk; 4] = [
+        StateRisk::Safe,
+        StateRisk::Low,
+        StateRisk::Medium,
+        StateRisk::Uninhabitable,
     ];
 
     /// Mon1 conformance: left identity — compose(identity, g) = g
@@ -2282,7 +2282,7 @@ mod graded_monad_conformance {
     fn conformance_mon1_left_identity() {
         for &g in &ALL_RISKS {
             assert_eq!(
-                TrifectaRisk::identity().compose(&g),
+                StateRisk::identity().compose(&g),
                 g,
                 "Mon1 failed for {:?}",
                 g,
@@ -2295,7 +2295,7 @@ mod graded_monad_conformance {
     fn conformance_mon2_right_identity() {
         for &g in &ALL_RISKS {
             assert_eq!(
-                g.compose(&TrifectaRisk::identity()),
+                g.compose(&StateRisk::identity()),
                 g,
                 "Mon2 failed for {:?}",
                 g,
@@ -2353,7 +2353,7 @@ mod graded_monad_conformance {
             let a = 42i32;
             let f = |_: i32| Graded::new(fg, 99i32);
 
-            let lhs: Graded<TrifectaRisk, i32> = Graded::pure(a).and_then(f);
+            let lhs: Graded<StateRisk, i32> = Graded::pure(a).and_then(f);
             let rhs = f(a);
 
             assert_eq!(lhs.grade, rhs.grade, "ML1 grade failed for {:?}", fg);
@@ -2365,7 +2365,7 @@ mod graded_monad_conformance {
     #[test]
     fn conformance_ml2_right_identity() {
         for &g in &ALL_RISKS {
-            let m: Graded<TrifectaRisk, i32> = Graded::new(g, 42);
+            let m: Graded<StateRisk, i32> = Graded::new(g, 42);
             let result = m.clone().and_then(Graded::pure);
 
             assert_eq!(result.grade, m.grade, "ML2 grade failed for {:?}", g);
@@ -2380,7 +2380,7 @@ mod graded_monad_conformance {
         for &mg in &ALL_RISKS {
             for &fg in &ALL_RISKS {
                 for &gg in &ALL_RISKS {
-                    let m: Graded<TrifectaRisk, i32> = Graded::new(mg, 1);
+                    let m: Graded<StateRisk, i32> = Graded::new(mg, 1);
                     let f = |x: i32| Graded::new(fg, x + 10);
                     let g = |x: i32| Graded::new(gg, x * 2);
 
@@ -2602,17 +2602,17 @@ mod galois_conformance {
 // CONFORMANCE E: Enforcement Boundary — Permission Monotonicity
 //
 // These tests verify the Phase 2 enforcement properties proven in Verus:
-// E1 (event taint monotone), E2 (trace taint monotone), E3 (denial monotone).
+// E1 (event exposure monotone), E2 (trace exposure monotone), E3 (denial monotone).
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
 mod enforcement_monotonicity {
     use portcullis::{
-        CapabilityLevel, GradedTaintGuard, Operation, PermissionLattice, TaintLabel, TaintSet,
-        ToolCallGuard,
+        CapabilityLevel, ExposureLabel, ExposureSet, GradedExposureGuard, Operation,
+        PermissionLattice, ToolCallGuard,
     };
 
-    fn trifecta_perms() -> PermissionLattice {
+    fn uninhabitable_perms() -> PermissionLattice {
         let mut perms = PermissionLattice::default();
         perms.capabilities.read_files = CapabilityLevel::Always;
         perms.capabilities.web_fetch = CapabilityLevel::LowRisk;
@@ -2622,7 +2622,7 @@ mod enforcement_monotonicity {
         perms.capabilities.web_search = CapabilityLevel::LowRisk;
         perms.capabilities.git_push = CapabilityLevel::LowRisk;
         perms.capabilities.create_pr = CapabilityLevel::LowRisk;
-        perms.trifecta_constraint = true;
+        perms.uninhabitable_constraint = true;
         perms.normalize()
     }
 
@@ -2644,34 +2644,34 @@ mod enforcement_monotonicity {
 
     /// E1 conformance: apply_record always produces a superset.
     ///
-    /// For every operation, taint_core::apply_record(t, op) ⊇ t.
+    /// For every operation, exposure_core::apply_record(t, op) ⊇ t.
     #[test]
-    fn conformance_e1_event_taint_monotone() {
-        use portcullis::taint_core;
+    fn conformance_e1_event_exposure_monotone() {
+        use portcullis::exposure_core;
 
-        // Test with every possible starting taint set (2^3 = 8 combinations)
+        // Test with every possible starting exposure set (2^3 = 8 combinations)
         let labels = [
-            TaintLabel::PrivateData,
-            TaintLabel::UntrustedContent,
-            TaintLabel::ExfilVector,
+            ExposureLabel::PrivateData,
+            ExposureLabel::UntrustedContent,
+            ExposureLabel::ExfilVector,
         ];
 
         for pd in [false, true] {
             for uc in [false, true] {
                 for ev in [false, true] {
-                    let mut starting = TaintSet::empty();
+                    let mut starting = ExposureSet::empty();
                     if pd {
-                        starting = starting.union(&TaintSet::singleton(labels[0]));
+                        starting = starting.union(&ExposureSet::singleton(labels[0]));
                     }
                     if uc {
-                        starting = starting.union(&TaintSet::singleton(labels[1]));
+                        starting = starting.union(&ExposureSet::singleton(labels[1]));
                     }
                     if ev {
-                        starting = starting.union(&TaintSet::singleton(labels[2]));
+                        starting = starting.union(&ExposureSet::singleton(labels[2]));
                     }
 
                     for &op in &ALL_OPS {
-                        let result = taint_core::apply_record(&starting, op);
+                        let result = exposure_core::apply_record(&starting, op);
                         assert!(
                             result.is_superset_of(&starting),
                             "E1 violation: apply_record({}, {:?}) = {} is NOT a superset",
@@ -2685,13 +2685,13 @@ mod enforcement_monotonicity {
         }
     }
 
-    /// E2 conformance: trace taint is monotone through guard operations.
+    /// E2 conformance: trace exposure is monotone through guard operations.
     ///
-    /// Feed a sequence of operations through GradedTaintGuard and verify
+    /// Feed a sequence of operations through GradedExposureGuard and verify
     /// that accumulated_risk never decreases.
     #[test]
-    fn conformance_e2_trace_taint_monotone() {
-        let guard = GradedTaintGuard::new(trifecta_perms(), "[]");
+    fn conformance_e2_trace_exposure_monotone() {
+        let guard = GradedExposureGuard::new(uninhabitable_perms(), "[]");
 
         let ops = vec![
             Operation::ReadFiles,
@@ -2703,7 +2703,7 @@ mod enforcement_monotonicity {
         ];
 
         let mut prev_risk = guard.accumulated_risk();
-        let mut prev_taint = guard.taint();
+        let mut prev_exposure = guard.exposure();
 
         for &op in &ops {
             if let Ok(proof) = guard.check(op) {
@@ -2711,7 +2711,7 @@ mod enforcement_monotonicity {
             }
 
             let new_risk = guard.accumulated_risk();
-            let new_taint = guard.taint();
+            let new_exposure = guard.exposure();
 
             assert!(
                 new_risk >= prev_risk,
@@ -2721,27 +2721,27 @@ mod enforcement_monotonicity {
                 op,
             );
             assert!(
-                new_taint.is_superset_of(&prev_taint),
-                "E2 violation: taint shrank from {} to {} after {:?}",
-                prev_taint,
-                new_taint,
+                new_exposure.is_superset_of(&prev_exposure),
+                "E2 violation: exposure shrank from {} to {} after {:?}",
+                prev_exposure,
+                new_exposure,
                 op,
             );
 
             prev_risk = new_risk;
-            prev_taint = new_taint;
+            prev_exposure = new_exposure;
         }
     }
 
     /// E3 conformance: once denied, always denied.
     ///
-    /// After the trifecta is reached, verify that the denied operation
+    /// After the uninhabitable_state is reached, verify that the denied operation
     /// remains denied regardless of what other operations are recorded.
     #[test]
     fn conformance_e3_denial_monotone() {
-        let guard = GradedTaintGuard::new(trifecta_perms(), "[]");
+        let guard = GradedExposureGuard::new(uninhabitable_perms(), "[]");
 
-        // Build up to trifecta: read + fetch → RunBash would complete it
+        // Build up to uninhabitable_state: read + fetch → RunBash would complete it
         let proof = guard.check(Operation::ReadFiles).unwrap();
         guard
             .execute_and_record(proof, || Ok::<_, String>(()))
@@ -2752,10 +2752,10 @@ mod enforcement_monotonicity {
             .execute_and_record(proof, || Ok::<_, String>(()))
             .unwrap();
 
-        // RunBash should now be denied (trifecta would complete)
+        // RunBash should now be denied (uninhabitable_state would complete)
         assert!(
             guard.check(Operation::RunBash).is_err(),
-            "RunBash should be denied with ReadFiles + WebFetch taint"
+            "RunBash should be denied with ReadFiles + WebFetch exposure"
         );
 
         // Record more neutral operations
@@ -2770,30 +2770,30 @@ mod enforcement_monotonicity {
                 .unwrap();
         }
 
-        // RunBash should STILL be denied (taint only grew)
+        // RunBash should STILL be denied (exposure only grew)
         assert!(
             guard.check(Operation::RunBash).is_err(),
-            "E3 violation: RunBash allowed after taint growth (should stay denied)"
+            "E3 violation: RunBash allowed after exposure growth (should stay denied)"
         );
 
-        // Also check that GitPush/CreatePr are denied (same trifecta legs)
+        // Also check that GitPush/CreatePr are denied (same exposure legs)
         assert!(
             guard.check(Operation::GitPush).is_err(),
-            "E3 violation: GitPush allowed after trifecta (should be denied)"
+            "E3 violation: GitPush allowed after uninhabitable_state (should be denied)"
         );
         assert!(
             guard.check(Operation::CreatePr).is_err(),
-            "E3 violation: CreatePr allowed after trifecta (should be denied)"
+            "E3 violation: CreatePr allowed after uninhabitable_state (should be denied)"
         );
     }
 
     /// E3+ conformance: denial is permanent across all operation permutations.
     ///
-    /// For every possible 2-operation prefix that creates a trifecta denial,
+    /// For every possible 2-operation prefix that creates an uninhabitable_state denial,
     /// verify that the denied operation stays denied after recording neutral ops.
     #[test]
     fn conformance_e3_exhaustive() {
-        let trifecta_creators: [(Operation, Operation, Operation); 3] = [
+        let uninhabitable_state_creators: [(Operation, Operation, Operation); 3] = [
             (
                 Operation::ReadFiles,
                 Operation::WebFetch,
@@ -2818,10 +2818,10 @@ mod enforcement_monotonicity {
             Operation::ManagePods,
         ];
 
-        for (leg1, leg2, denied_op) in &trifecta_creators {
-            let guard = GradedTaintGuard::new(trifecta_perms(), "[]");
+        for (leg1, leg2, denied_op) in &uninhabitable_state_creators {
+            let guard = GradedExposureGuard::new(uninhabitable_perms(), "[]");
 
-            // Record the two trifecta legs
+            // Record the two exposure legs
             let proof = guard.check(*leg1).unwrap();
             guard
                 .execute_and_record(proof, || Ok::<_, String>(()))
@@ -3256,7 +3256,7 @@ mod capability_coverage {
         }
     }
 
-    /// E5.4 conformance: Never blocks per trifecta leg (private data).
+    /// E5.4 conformance: Never blocks per exposure leg (private data).
     #[test]
     fn conformance_e5_never_blocks_private() {
         let caps = all_never();
@@ -3271,7 +3271,7 @@ mod capability_coverage {
         );
     }
 
-    /// E5.5 conformance: Never blocks per trifecta leg (untrusted content).
+    /// E5.5 conformance: Never blocks per exposure leg (untrusted content).
     #[test]
     fn conformance_e5_never_blocks_untrusted() {
         let caps = all_never();
@@ -3279,7 +3279,7 @@ mod capability_coverage {
         assert_eq!(caps.level_for(Operation::WebFetch), CapabilityLevel::Never);
     }
 
-    /// E5.6 conformance: Never blocks per trifecta leg (exfiltration).
+    /// E5.6 conformance: Never blocks per exposure leg (exfiltration).
     #[test]
     fn conformance_e5_never_blocks_exfil() {
         let caps = all_never();
@@ -3392,17 +3392,17 @@ mod capability_coverage {
         }
     }
 
-    /// E5.10 conformance: blocking any trifecta leg prevents trifecta detection.
+    /// E5.10 conformance: blocking any exposure leg prevents uninhabitable_state detection.
     #[test]
-    fn conformance_e5_block_any_leg_breaks_trifecta() {
+    fn conformance_e5_block_any_leg_breaks_uninhabitable() {
         use portcullis::IncompatibilityConstraint;
 
         let constraint = IncompatibilityConstraint::enforcing();
 
         let full = all_always();
         assert!(
-            constraint.is_trifecta_complete(&full),
-            "full lattice should be trifecta-complete"
+            constraint.is_uninhabitable(&full),
+            "full lattice should be uninhabitable"
         );
 
         // Block private data leg (ReadFiles, GlobSearch, GrepSearch → Never)
@@ -3411,8 +3411,8 @@ mod capability_coverage {
         no_private.glob_search = CapabilityLevel::Never;
         no_private.grep_search = CapabilityLevel::Never;
         assert!(
-            !constraint.is_trifecta_complete(&no_private),
-            "blocking private leg should prevent trifecta"
+            !constraint.is_uninhabitable(&no_private),
+            "blocking private leg should prevent uninhabitable_state"
         );
 
         // Block untrusted content leg (WebSearch, WebFetch → Never)
@@ -3420,8 +3420,8 @@ mod capability_coverage {
         no_untrusted.web_search = CapabilityLevel::Never;
         no_untrusted.web_fetch = CapabilityLevel::Never;
         assert!(
-            !constraint.is_trifecta_complete(&no_untrusted),
-            "blocking untrusted leg should prevent trifecta"
+            !constraint.is_uninhabitable(&no_untrusted),
+            "blocking untrusted leg should prevent uninhabitable_state"
         );
 
         // Block exfiltration leg (RunBash, GitPush, CreatePr → Never)
@@ -3430,8 +3430,8 @@ mod capability_coverage {
         no_exfil.git_push = CapabilityLevel::Never;
         no_exfil.create_pr = CapabilityLevel::Never;
         assert!(
-            !constraint.is_trifecta_complete(&no_exfil),
-            "blocking exfil leg should prevent trifecta"
+            !constraint.is_uninhabitable(&no_exfil),
+            "blocking exfil leg should prevent uninhabitable_state"
         );
     }
 }
@@ -3629,15 +3629,15 @@ fn production_chain_ceiling(chain: &[PermissionLattice]) -> PermissionLattice {
     result
 }
 
-/// Create a PermissionLattice from caps with trifecta_constraint = true.
+/// Create a PermissionLattice from caps with uninhabitable_constraint = true.
 /// This matches the Verus `valid_perm(p)` requirement.
 fn perm_from_caps_enforcing(caps: CapabilityLattice) -> PermissionLattice {
     let mut p = perms_with_empty_obligations(caps);
-    p.trifecta_constraint = true;
-    // Apply nucleus normalization: add trifecta obligations if needed
+    p.uninhabitable_constraint = true;
+    // Apply nucleus normalization: add uninhabitable_state obligations if needed
     let constraint = IncompatibilityConstraint::enforcing();
-    let trifecta_obs = constraint.obligations_for(&p.capabilities);
-    p.obligations = p.obligations.union(&trifecta_obs);
+    let uninhabitable_state_obs = constraint.obligations_for(&p.capabilities);
+    p.obligations = p.obligations.union(&uninhabitable_state_obs);
     p
 }
 
@@ -3749,15 +3749,15 @@ proptest! {
     }
 }
 
-// E7.6 CONFORMANCE: Trifecta is monotone through ceiling.
+// E7.6 CONFORMANCE:  UninhabitableState is monotone through ceiling.
 //
-// If the ceiling is NOT trifecta-complete, then it doesn't matter that
-// individual links had trifecta — the ceiling's reduced capabilities
+// If the ceiling is NOT uninhabitable, then it doesn't matter that
+// individual links had uninhabitable_state — the ceiling's reduced capabilities
 // break it.
 #[test]
-fn conformance_e7_trifecta_monotone_through_ceiling() {
-    // Chain where individual links have trifecta but ceiling doesn't
-    let full_trifecta = CapabilityLattice {
+fn conformance_e7_uninhabitable_monotone_through_ceiling() {
+    // Chain where individual links have uninhabitable_state but ceiling doesn't
+    let full_uninhabitable = CapabilityLattice {
         read_files: CapabilityLevel::Always, // private
         web_fetch: CapabilityLevel::Always,  // untrusted
         run_bash: CapabilityLevel::Always,   // exfil
@@ -3773,17 +3773,17 @@ fn conformance_e7_trifecta_monotone_through_ceiling() {
     };
 
     let chain = vec![
-        perm_from_caps_enforcing(full_trifecta),
+        perm_from_caps_enforcing(full_uninhabitable),
         perm_from_caps_enforcing(no_exfil),
     ];
     let ceiling = production_chain_ceiling(&chain);
 
     // Ceiling should have no exfiltration (meet of Always and Never = Never)
     let constraint = IncompatibilityConstraint::enforcing();
-    let risk = constraint.trifecta_risk(&ceiling.capabilities);
+    let risk = constraint.state_risk(&ceiling.capabilities);
     assert!(
-        risk != TrifectaRisk::Complete,
-        "ceiling should not have complete trifecta when one link blocks exfil"
+        risk != StateRisk::Uninhabitable,
+        "ceiling should not have uninhabitable_state when one link blocks exfil"
     );
 }
 

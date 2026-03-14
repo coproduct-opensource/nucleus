@@ -1,7 +1,7 @@
 """Typed response objects for nucleus SDK tool handles.
 
 Every tool handle method returns a typed object instead of a raw dict.
-Each response carries optional taint metadata so callers can inspect
+Each response carries exposure metadata so callers can inspect
 the security state that produced the result.
 """
 

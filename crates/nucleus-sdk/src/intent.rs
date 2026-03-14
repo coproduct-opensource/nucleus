@@ -21,7 +21,7 @@ pub enum Intent {
     ResearchWeb,
     /// Code review: read files + glob + grep. No write, no network.
     CodeReview,
-    /// Fix an issue: full code editing with trifecta obligations.
+    /// Fix an issue: full code editing with uninhabitable_state obligations.
     FixIssue,
     /// Generate code: write files in workspace. No network (network-isolated).
     GenerateCode,
@@ -64,7 +64,7 @@ impl Intent {
         match self {
             Intent::ResearchWeb => "Web research: read + web access, no writes",
             Intent::CodeReview => "Code review: read + search, no writes or network",
-            Intent::FixIssue => "Fix issue: full code editing with trifecta obligations",
+            Intent::FixIssue => "Fix issue: full code editing with uninhabitable_state obligations",
             Intent::GenerateCode => "Generate code: write files, no network (isolated)",
             Intent::Release => "Release: git push + PR operations, CI-gated",
             Intent::DatabaseClient => "Database client: network to allowed hosts, no file write",
@@ -154,7 +154,7 @@ impl IntentProfile {
             .collect()
     }
 
-    /// Check which operations have approval obligations (gated by trifecta enforcement).
+    /// Check which operations have approval obligations (gated by uninhabitable_state enforcement).
     pub fn gated_operations(&self) -> Vec<portcullis::Operation> {
         self.lattice.obligations.approvals.iter().copied().collect()
     }
@@ -340,11 +340,11 @@ mod tests {
     }
 
     #[test]
-    fn test_fix_issue_has_trifecta_awareness() {
+    fn test_fix_issue_has_uninhabitable_awareness() {
         let profile = IntentProfile::resolve(Intent::FixIssue).unwrap();
 
         // Fix issue has broad capabilities — check that gated ops exist
-        // (trifecta enforcement adds approval obligations)
+        // (uninhabitable_state enforcement adds approval obligations)
         let _gated = profile.gated_operations();
         let allowed = profile.allowed_operations();
 

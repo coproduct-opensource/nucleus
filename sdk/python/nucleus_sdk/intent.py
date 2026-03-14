@@ -50,10 +50,10 @@ INTENT_PROFILES: Dict[Intent, IntentProfile] = {
     Intent.FIX_ISSUE: IntentProfile(
         intent=Intent.FIX_ISSUE,
         profile="fix_issue",
-        description="Edit + run tools; approvals required when trifecta is active.",
+        description="Edit + run tools; approvals required when uninhabitable state is active.",
         allowed_ops=["read", "write", "run", "glob", "grep"],
         gated_ops=["run", "web_fetch", "web_search", "git_push"],
-        notes="Exfiltration vectors may require approval when trifecta is complete.",
+        notes="Exfiltration vectors may require approval when uninhabitable state is complete.",
     ),
     Intent.GENERATE_CODE: IntentProfile(
         intent=Intent.GENERATE_CODE,

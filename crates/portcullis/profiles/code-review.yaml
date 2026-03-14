@@ -4,7 +4,7 @@
 # CVE databases). Cannot write, edit, execute, push, or create PRs.
 # Web search requires approval because it introduces untrusted content.
 #
-# Trifecta analysis:
+#  Uninhabitable state analysis:
 #   - Private data: read_files=always (present)
 #   - Untrusted content: web_search=low_risk (present, with approval)
 #   - Exfiltration: git_push=never, run_bash=never, create_pr=never (absent)

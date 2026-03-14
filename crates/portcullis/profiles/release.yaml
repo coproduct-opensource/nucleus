@@ -3,11 +3,11 @@
 # The agent can read, write, edit, run tests, fetch web content, and
 # push/create PRs. Push and PR creation require explicit human approval.
 #
-# Trifecta analysis:
+#  Uninhabitable state analysis:
 #   - Private data: read_files=always (present)
 #   - Untrusted content: web_fetch=low_risk (present)
 #   - Exfiltration: git_push=low_risk, create_pr=low_risk (present)
-#   => All three components present. Trifecta normalization adds approval
+#   => All three components present.  Uninhabitable state normalization adds approval
 #      obligations on exfil operations (git_push, create_pr, run_bash).
 
 name: release

@@ -11,13 +11,13 @@ You have a permission profile. Check it before acting.
 
 If you have read_files + web access + git push all enabled,
 exfiltration actions (git push, create PR, bash) require human approval.
-This is the "trifecta protection" - it prevents prompt injection attacks
+This is the "uninhabitable state protection" - it prevents prompt injection attacks
 from stealing secrets.
 ```
 
 ---
 
-## The Problem: Lethal Trifecta
+## The Problem: Uninhabitable State
 
 When an AI agent has all three of these capabilities at autonomous levels:
 
@@ -124,7 +124,7 @@ edit_files: low_risk  git_commit: low_risk  run_bash: low_risk
 ```
 
 ### `fix-issue`
-Full development workflow with trifecta protection.
+Full development workflow with uninhabitable state protection.
 
 ```
 read_files: always    web_search: low_risk  git_push: low_risk*
@@ -132,7 +132,7 @@ write_files: low_risk web_fetch: low_risk   create_pr: low_risk*
 edit_files: low_risk  git_commit: low_risk
 run_bash: low_risk
 
-* Requires approval due to trifecta detection
+* Requires approval due to uninhabitable state detection
 ```
 
 ### `release`
@@ -181,7 +181,7 @@ write_files: never    web_fetch: low_risk   create_pr: never
 edit_files: never     git_commit: never     run_bash: never
 ```
 
-**Trifecta status**: NOT vulnerable (no exfiltration capability)
+** Uninhabitable state status**: NOT vulnerable (no exfiltration capability)
 
 Use case: Review PRs, post comments via GitHub API, analyze diffs.
 Note: run_bash is disabled because it's an exfil vector when combined with web access.
@@ -195,7 +195,7 @@ write_files: low_risk web_fetch: never      create_pr: never
 edit_files: low_risk  git_commit: low_risk  run_bash: low_risk
 ```
 
-**Trifecta status**: NOT vulnerable (no untrusted content exposure)
+** Uninhabitable state status**: NOT vulnerable (no untrusted content exposure)
 
 Use case: Implement features in a Firecracker microVM, run tests, commit locally.
 Network isolation prevents prompt injection attacks from web content.
@@ -208,19 +208,19 @@ read_files: always    web_search: low_risk  git_push: low_risk*
 write_files: never    web_fetch: low_risk   create_pr: never
 edit_files: never     git_commit: never     run_bash: low_risk*
 
-* Requires approval (trifecta-gated)
+* Requires approval (uninhabitable state-gated)
 ```
 
-**Trifecta status**: VULNERABLE → git_push and run_bash require approval
+** Uninhabitable state status**: VULNERABLE → git_push and run_bash require approval
 
 Use case: Verify CI status via GitHub API, then merge approved PRs.
-The trifecta protection means git_push is gated on human/CI approval.
+The uninhabitable state protection means git_push is gated on human/CI approval.
 
 ---
 
-## Trifecta Detection
+##  Uninhabitable state Detection
 
-When nucleus detects the lethal trifecta, it **automatically adds approval obligations** to exfiltration vectors:
+When nucleus detects the uninhabitable state, it **automatically adds approval obligations** to exfiltration vectors:
 
 ```
 Your permissions:
@@ -228,7 +228,7 @@ Your permissions:
   web_fetch: low_risk    ← Untrusted content ✓
   git_push: low_risk     ← Exfiltration vector ✓
 
-Trifecta detected! Adding approval requirement:
+ Uninhabitable state detected! Adding approval requirement:
   git_push: requires approval
   create_pr: requires approval
   run_bash: requires approval
@@ -260,7 +260,7 @@ When you receive a permission profile, check:
    - `low_risk` = safe operations okay
    - `always` = go ahead
 
-2. **Is trifecta active?**
+2. **Is uninhabitable state active?**
    - If `read_files >= low_risk` AND `web_* >= low_risk` AND `git_push >= low_risk`
    - Then `git_push`, `create_pr`, `run_bash` need approval
 
@@ -360,7 +360,7 @@ This is enforced mathematically via lattice meet operation.
 │  low_risk  Allowed for safe operations.                     │
 │  always    Always allowed.                                  │
 ├─────────────────────────────────────────────────────────────┤
-│                    TRIFECTA RULE                            │
+│                    uninhabitable state RULE                            │
 ├─────────────────────────────────────────────────────────────┤
 │  IF   read_files ≥ low_risk                                 │
 │  AND  (web_fetch OR web_search) ≥ low_risk                  │
@@ -376,7 +376,7 @@ This is enforced mathematically via lattice meet operation.
 │  code-review          Read + web search, no modifications   │
 │  edit-only            Write/edit, no exec or web            │
 │  local-dev            Write + shell, no web                 │
-│  fix-issue            Full dev workflow, trifecta protected │
+│  fix-issue            Full dev workflow, uninhabitable state protected │
 │  release              Push/PR with approvals                │
 │  database-client      DB CLI only                           │
 │  demo                 For demos, blocks interpreters        │

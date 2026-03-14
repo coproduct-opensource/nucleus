@@ -9,6 +9,19 @@ spec:
   policy:
     type: profile
     name: safe_pr_fixer
+  network:
+    dns_allow:
+      - crates.io
+      - static.crates.io
+      - index.crates.io
+      - registry.npmjs.org
+      - pypi.org
+      - files.pythonhosted.org
+      - github.com
+      - api.github.com
+      - uploads.github.com
+      - objects.githubusercontent.com
+      - api.anthropic.com
   credentials:
     env:
       LLM_API_TOKEN: "${LLM_API_TOKEN}"

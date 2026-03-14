@@ -7,7 +7,7 @@ from ..types import CommandOutput
 
 if TYPE_CHECKING:
     from ..client import ProxyClient
-    from ..taint import TaintGuard
+    from ..exposure import exposureGuard
     from ..trace import Trace
 
 
@@ -16,18 +16,18 @@ class GitHandle:
 
     Git commands are executed via ProxyClient.run() with appropriate
     arguments.  All calls are recorded in the session trace. An optional
-    TaintGuard enforces the trifecta gate before each operation.
+    exposureGuard enforces the uninhabitable state gate before each operation.
     """
 
     def __init__(
         self,
         proxy: ProxyClient,
         trace: Trace,
-        taint_guard: Optional[TaintGuard] = None,
+        exposure_guard: Optional[exposureGuard] = None,
     ) -> None:
         self._proxy = proxy
         self._trace = trace
-        self._guard = taint_guard
+        self._guard = exposure_guard
 
     def _run_git(
         self,

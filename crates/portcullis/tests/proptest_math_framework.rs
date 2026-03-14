@@ -8,11 +8,11 @@
 #[cfg(feature = "cel")]
 use portcullis::constraint::{Constraint, Policy, PolicyContext};
 use portcullis::{
-    frame::{BoundedLattice, Lattice, Nucleus, TrifectaQuotient},
+    frame::{BoundedLattice, Lattice, Nucleus, UninhabitableQuotient},
     graded::{Graded, RiskGrade},
     heyting::HeytingAlgebra,
     isolation::{FileIsolation, IsolationLattice, NetworkIsolation, ProcessIsolation},
-    CapabilityLattice, CapabilityLevel, Operation, PermissionLattice, TrifectaRisk,
+    CapabilityLattice, CapabilityLevel, Operation, PermissionLattice, StateRisk,
 };
 use proptest::prelude::*;
 
@@ -77,12 +77,12 @@ fn arb_capability_lattice() -> impl Strategy<Value = CapabilityLattice> {
         )
 }
 
-fn arb_trifecta_risk() -> impl Strategy<Value = TrifectaRisk> {
+fn arb_state_risk() -> impl Strategy<Value = StateRisk> {
     prop_oneof![
-        Just(TrifectaRisk::None),
-        Just(TrifectaRisk::Low),
-        Just(TrifectaRisk::Medium),
-        Just(TrifectaRisk::Complete),
+        Just(StateRisk::Safe),
+        Just(StateRisk::Low),
+        Just(StateRisk::Medium),
+        Just(StateRisk::Uninhabitable),
     ]
 }
 
@@ -164,7 +164,7 @@ proptest! {
 
     #[test]
     fn nucleus_is_idempotent(perms in arb_permission_lattice()) {
-        let nucleus = TrifectaQuotient::new();
+        let nucleus = UninhabitableQuotient::new();
         let once = nucleus.apply(&perms);
         let twice = nucleus.apply(&once);
 
@@ -175,7 +175,7 @@ proptest! {
 
     #[test]
     fn nucleus_is_deflationary(perms in arb_permission_lattice()) {
-        let nucleus = TrifectaQuotient::new();
+        let nucleus = UninhabitableQuotient::new();
         let projected = nucleus.apply(&perms);
 
         // j(x) ≤ x in terms of capabilities (permissions can only decrease or stay same)
@@ -188,7 +188,7 @@ proptest! {
         a in arb_permission_lattice(),
         b in arb_permission_lattice()
     ) {
-        let nucleus = TrifectaQuotient::new();
+        let nucleus = UninhabitableQuotient::new();
 
         // j(a ∧ b) = j(a) ∧ j(b)
         let lhs = nucleus.apply(&a.meet(&b));
@@ -244,11 +244,11 @@ proptest! {
     // ============================================
 
     #[test]
-    fn graded_left_identity(a in -1000i32..1000i32, g in arb_trifecta_risk()) {
+    fn graded_left_identity(a in -1000i32..1000i32, g in arb_state_risk()) {
         // pure(a).and_then(f) = f(a)
         let f = move |x: i32| Graded::new(g, x * 2);
 
-        let lhs = Graded::<TrifectaRisk, _>::pure(a).and_then(f);
+        let lhs = Graded::<StateRisk, _>::pure(a).and_then(f);
         let rhs = f(a);
 
         prop_assert_eq!(lhs.value, rhs.value);
@@ -256,7 +256,7 @@ proptest! {
     }
 
     #[test]
-    fn graded_right_identity(a in -1000i32..1000i32, g in arb_trifecta_risk()) {
+    fn graded_right_identity(a in -1000i32..1000i32, g in arb_state_risk()) {
         // m.and_then(pure) = m
         let m = Graded::new(g, a);
         let result = m.clone().and_then(Graded::pure);
@@ -268,9 +268,9 @@ proptest! {
     #[test]
     fn graded_associativity(
         a in -1000i32..1000i32,
-        g1 in arb_trifecta_risk(),
-        g2 in arb_trifecta_risk(),
-        g3 in arb_trifecta_risk()
+        g1 in arb_state_risk(),
+        g2 in arb_state_risk(),
+        g3 in arb_state_risk()
     ) {
         // (m.and_then(f)).and_then(g) = m.and_then(|x| f(x).and_then(g))
         let m = Graded::new(g1, a);
@@ -289,22 +289,22 @@ proptest! {
     // ============================================
 
     #[test]
-    fn risk_grade_left_identity(g in arb_trifecta_risk()) {
+    fn risk_grade_left_identity(g in arb_state_risk()) {
         // identity * g = g
-        prop_assert_eq!(TrifectaRisk::identity().compose(&g), g);
+        prop_assert_eq!(StateRisk::identity().compose(&g), g);
     }
 
     #[test]
-    fn risk_grade_right_identity(g in arb_trifecta_risk()) {
+    fn risk_grade_right_identity(g in arb_state_risk()) {
         // g * identity = g
-        prop_assert_eq!(g.compose(&TrifectaRisk::identity()), g);
+        prop_assert_eq!(g.compose(&StateRisk::identity()), g);
     }
 
     #[test]
     fn risk_grade_associativity(
-        a in arb_trifecta_risk(),
-        b in arb_trifecta_risk(),
-        c in arb_trifecta_risk()
+        a in arb_state_risk(),
+        b in arb_state_risk(),
+        c in arb_state_risk()
     ) {
         // (a * b) * c = a * (b * c)
         let lhs = a.compose(&b).compose(&c);
@@ -426,7 +426,7 @@ fn arb_policy_context() -> impl Strategy<Value = PolicyContext> {
     (
         arb_operation(),
         arb_capability_lattice(),
-        arb_trifecta_risk(),
+        arb_state_risk(),
         0.0f64..=1.0f64,
         prop::bool::ANY,
         0u32..100u32,
@@ -435,7 +435,7 @@ fn arb_policy_context() -> impl Strategy<Value = PolicyContext> {
         .prop_map(|(op, caps, risk, budget, approval, rate, isolation)| {
             PolicyContext::new(op)
                 .with_capabilities(caps)
-                .with_trifecta_risk(risk)
+                .with_state_risk(risk)
                 .with_budget(budget)
                 .with_approval(approval)
                 .with_request_rate(rate)
@@ -533,14 +533,14 @@ proptest! {
         prop_assert_eq!(once, twice, "Policy evaluate must be idempotent");
     }
 
-    /// Trifecta detection: when all three trifecta capabilities are present,
+    ///  UninhabitableState detection: when all three uninhabitable_state capabilities are present,
     /// exfiltration operations should require approval.
     #[test]
-    fn trifecta_adds_obligations_when_complete(
+    fn uninhabitable_adds_obligations_when_complete(
         op in arb_operation(),
         budget in 0.0f64..=1.0f64
     ) {
-        // Full trifecta: read + web + push
+        // Full uninhabitable_state: read + web + push
         let caps = CapabilityLattice {
             read_files: CapabilityLevel::Always,
             web_fetch: CapabilityLevel::LowRisk,
@@ -550,17 +550,17 @@ proptest! {
 
         let ctx = PolicyContext::new(op)
             .with_capabilities(caps)
-            .with_trifecta_risk(TrifectaRisk::Complete)
+            .with_state_risk(StateRisk::Uninhabitable)
             .with_budget(budget);
 
-        // Default policy enforces trifecta
+        // Default policy enforces uninhabitable_state
         let policy = Policy::new("secure");
         let obligations = policy.evaluate(&ctx).unwrap();
 
-        // With full trifecta, git_push should require approval
+        // With full uninhabitable_state, git_push should require approval
         prop_assert!(
             obligations.requires(Operation::GitPush),
-            "Full trifecta should require approval for git_push"
+            "Full uninhabitable_state should require approval for git_push"
         );
     }
 }

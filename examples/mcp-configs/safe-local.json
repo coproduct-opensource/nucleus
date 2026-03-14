@@ -2,7 +2,7 @@
   "mcpServers": {
     "filesystem": {
       "command": "npx",
-      "args": ["-y", "@anthropic/mcp-filesystem", "/tmp/workspace"]
+      "args": ["@anthropic/mcp-filesystem@0.1.0", "/tmp/workspace"]
     }
   }
 }

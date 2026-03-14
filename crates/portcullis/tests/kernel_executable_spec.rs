@@ -8,26 +8,26 @@
 //!
 //! If these tests pass:
 //! 1. **Monotone permissions**: effective permissions never increase during a session
-//! 2. **Monotone taint**: accumulated taint never decreases during a session
+//! 2. **Monotone exposure**: accumulated exposure never decreases during a session
 //! 3. **Complete mediation**: every Operation produces a verdict (no panics, no gaps)
-//! 4. **Dynamic taint gate soundness**: if trifecta would complete AND op is exfil,
+//! 4. **Dynamic exposure gate soundness**: if uninhabitable_state would complete AND op is exfil,
 //!    the kernel requires approval (unless pre-approved)
-//! 5. **Taint accumulation correctness**: only allowed ops contribute taint
+//! 5. **Exposure accumulation correctness**: only allowed ops contribute exposure
 //! 6. **Budget monotonicity**: consumed_usd never decreases
 //! 7. **Trace integrity**: trace length == decision_count, sequences are monotone
 //!
 //! # Relation to Kani proofs
 //!
 //! The Kani proofs in `kani.rs` verify algebraic properties of the *lattice types*
-//! (TaintSet, PermissionLattice, etc.) via bounded model checking. This file
+//! (ExposureSet, PermissionLattice, etc.) via bounded model checking. This file
 //! verifies the *kernel engine* — the stateful orchestrator that uses those types.
 //! Together they provide end-to-end verification from lattice algebra to runtime
 //! enforcement.
 
 use portcullis::kernel::{DenyReason, Kernel, Verdict};
 use portcullis::{
-    CapabilityLattice, CapabilityLevel, CommandLattice, Obligations, Operation, PermissionLattice,
-    TaintLabel, TaintSet,
+    CapabilityLattice, CapabilityLevel, CommandLattice, ExposureLabel, ExposureSet, Obligations,
+    Operation, PermissionLattice,
 };
 use proptest::prelude::*;
 use rust_decimal::Decimal;
@@ -36,15 +36,15 @@ use rust_decimal::Decimal;
 // Reference Model — the executable spec
 // ============================================================================
 
-/// Classify an operation into its taint label (reference implementation).
-fn spec_classify(op: Operation) -> Option<TaintLabel> {
+/// Classify an operation into its exposure label (reference implementation).
+fn spec_classify(op: Operation) -> Option<ExposureLabel> {
     match op {
         Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch => {
-            Some(TaintLabel::PrivateData)
+            Some(ExposureLabel::PrivateData)
         }
-        Operation::WebFetch | Operation::WebSearch => Some(TaintLabel::UntrustedContent),
+        Operation::WebFetch | Operation::WebSearch => Some(ExposureLabel::UntrustedContent),
         Operation::RunBash | Operation::GitPush | Operation::CreatePr => {
-            Some(TaintLabel::ExfilVector)
+            Some(ExposureLabel::ExfilVector)
         }
         Operation::WriteFiles
         | Operation::EditFiles
@@ -61,23 +61,23 @@ fn spec_is_exfil(op: Operation) -> bool {
     )
 }
 
-/// Project taint after an operation (reference implementation).
-fn spec_project_taint(current: &TaintSet, op: Operation) -> TaintSet {
+/// Project exposure after an operation (reference implementation).
+fn spec_project_exposure(current: &ExposureSet, op: Operation) -> ExposureSet {
     if op == Operation::RunBash {
         current
-            .union(&TaintSet::singleton(TaintLabel::PrivateData))
-            .union(&TaintSet::singleton(TaintLabel::ExfilVector))
+            .union(&ExposureSet::singleton(ExposureLabel::PrivateData))
+            .union(&ExposureSet::singleton(ExposureLabel::ExfilVector))
     } else if let Some(label) = spec_classify(op) {
-        current.union(&TaintSet::singleton(label))
+        current.union(&ExposureSet::singleton(label))
     } else {
         current.clone()
     }
 }
 
-/// Record taint from an allowed operation (reference implementation).
-fn spec_apply_record(current: &TaintSet, op: Operation) -> TaintSet {
+/// Record exposure from an allowed operation (reference implementation).
+fn spec_apply_record(current: &ExposureSet, op: Operation) -> ExposureSet {
     if let Some(label) = spec_classify(op) {
-        current.union(&TaintSet::singleton(label))
+        current.union(&ExposureSet::singleton(label))
     } else {
         current.clone()
     }
@@ -187,19 +187,19 @@ proptest! {
 }
 
 // ============================================================================
-// Property: Monotone taint through operation sequences
+// Property: Monotone exposure through operation sequences
 // ============================================================================
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
     #[test]
-    fn prop_taint_monotone_through_session(
+    fn prop_exposure_monotone_through_session(
         caps in arb_capability_lattice(),
         ops in arb_operation_sequence(),
     ) {
         let mut perms = PermissionLattice::builder()
-            .description("taint-test")
+            .description("exposure-test")
             .capabilities(caps)
             .commands(CommandLattice::permissive())
             .build();
@@ -207,35 +207,35 @@ proptest! {
 
         let mut kernel = Kernel::new(perms);
 
-        let mut prev_taint_count = kernel.taint().count();
+        let mut prev_exposure_count = kernel.exposure().count();
 
         for op in ops {
             let d = kernel.decide(op, "test-subject");
 
-            // Taint count must never decrease
-            let new_count = kernel.taint().count();
+            // Exposure count must never decrease
+            let new_count = kernel.exposure().count();
             prop_assert!(
-                new_count >= prev_taint_count,
-                "taint decreased from {} to {} after {:?} (verdict: {:?})",
-                prev_taint_count,
+                new_count >= prev_exposure_count,
+                "exposure decreased from {} to {} after {:?} (verdict: {:?})",
+                prev_exposure_count,
                 new_count,
                 op,
                 d.verdict,
             );
 
-            // TaintTransition must be consistent
+            // ExposureTransition must be consistent
             prop_assert_eq!(
-                d.taint_transition.pre_count, prev_taint_count,
+                d.exposure_transition.pre_count, prev_exposure_count,
                 "pre_count mismatch in decision {}",
                 d.sequence,
             );
             prop_assert_eq!(
-                d.taint_transition.post_count, new_count,
+                d.exposure_transition.post_count, new_count,
                 "post_count mismatch in decision {}",
                 d.sequence,
             );
 
-            prev_taint_count = new_count;
+            prev_exposure_count = new_count;
         }
     }
 }
@@ -281,19 +281,19 @@ proptest! {
 }
 
 // ============================================================================
-// Property: Dynamic taint gate soundness
+// Property: Dynamic exposure gate soundness
 // ============================================================================
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
 
     #[test]
-    fn prop_dynamic_taint_gate_soundness(
+    fn prop_dynamic_exposure_gate_soundness(
         caps in arb_capability_lattice(),
         ops in arb_operation_sequence(),
     ) {
         let mut perms = PermissionLattice::builder()
-            .description("taint-gate-test")
+            .description("exposure-gate-test")
             .capabilities(caps)
             .commands(CommandLattice::permissive())
             .build();
@@ -302,17 +302,17 @@ proptest! {
 
         let mut kernel = Kernel::new(perms);
 
-        // Track our own reference taint accumulator
-        let mut ref_taint = TaintSet::empty();
+        // Track our own reference exposure accumulator
+        let mut ref_exposure = ExposureSet::empty();
 
         for op in ops {
-            let pre_trifecta = ref_taint.is_trifecta_complete();
-            let projected = spec_project_taint(&ref_taint, op);
-            let would_complete = !pre_trifecta && projected.is_trifecta_complete();
+            let pre_uninhabitable = ref_exposure.is_uninhabitable();
+            let projected = spec_project_exposure(&ref_exposure, op);
+            let would_complete = !pre_uninhabitable && projected.is_uninhabitable();
 
             let d = kernel.decide(op, "test-subject");
 
-            // If dynamic gate should fire: trifecta would newly complete AND op is exfil
+            // If dynamic gate should fire: uninhabitable_state would newly complete AND op is exfil
             if would_complete && spec_is_exfil(op) {
                 // The kernel must either:
                 // - RequiresApproval (dynamic gate fired)
@@ -324,28 +324,28 @@ proptest! {
                 );
             }
 
-            // Update reference taint (only if operation was allowed)
+            // Update reference exposure (only if operation was allowed)
             if d.verdict.is_allowed() {
-                ref_taint = spec_apply_record(&ref_taint, op);
+                ref_exposure = spec_apply_record(&ref_exposure, op);
             }
         }
     }
 }
 
 // ============================================================================
-// Property: Taint only advances on allowed operations
+// Property: Exposure only advances on allowed operations
 // ============================================================================
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
     #[test]
-    fn prop_taint_only_on_allow(
+    fn prop_exposure_only_on_allow(
         caps in arb_capability_lattice(),
         ops in arb_operation_sequence(),
     ) {
         let mut perms = PermissionLattice::builder()
-            .description("taint-allow-test")
+            .description("exposure-allow-test")
             .capabilities(caps)
             .commands(CommandLattice::permissive())
             .build();
@@ -354,15 +354,15 @@ proptest! {
         let mut kernel = Kernel::new(perms);
 
         for op in ops {
-            let pre_count = kernel.taint().count();
+            let pre_count = kernel.exposure().count();
             let d = kernel.decide(op, "test-subject");
-            let post_count = kernel.taint().count();
+            let post_count = kernel.exposure().count();
 
             if d.verdict.is_denied() || matches!(d.verdict, Verdict::RequiresApproval) {
-                // Denied/gated operations must NOT advance taint
+                // Denied/gated operations must NOT advance exposure
                 prop_assert_eq!(
                     pre_count, post_count,
-                    "taint advanced on denied/gated op {:?}: {} -> {}",
+                    "exposure advanced on denied/gated op {:?}: {} -> {}",
                     op, pre_count, post_count,
                 );
             }
@@ -462,14 +462,14 @@ proptest! {
 }
 
 // ============================================================================
-// Property: Taint transition contributed_label matches spec_classify
+// Property: Exposure transition contributed_label matches spec_classify
 // ============================================================================
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
     #[test]
-    fn prop_taint_transition_label_matches_spec(
+    fn prop_exposure_transition_label_matches_spec(
         caps in arb_capability_lattice(),
         ops in arb_operation_sequence(),
     ) {
@@ -485,7 +485,7 @@ proptest! {
             let d = kernel.decide(op, "test-subject");
             let expected_label = spec_classify(op);
             prop_assert_eq!(
-                d.taint_transition.contributed_label, expected_label,
+                d.exposure_transition.contributed_label, expected_label,
                 "contributed_label mismatch for {:?}",
                 op,
             );
@@ -528,7 +528,7 @@ fn spec_clinejection_blocked() {
     // Step 1: WebFetch injects untrusted content
     let d = kernel.decide(Operation::WebFetch, "https://attacker.com/payload.js");
     assert!(d.verdict.is_allowed());
-    assert!(kernel.taint().contains(TaintLabel::UntrustedContent));
+    assert!(kernel.exposure().contains(ExposureLabel::UntrustedContent));
 
     // Step 2: RunBash (npm install with preinstall hook) → dynamic gate
     let d = kernel.decide(Operation::RunBash, "npm install");
@@ -537,7 +537,7 @@ fn spec_clinejection_blocked() {
         "Clinejection: RunBash after WebFetch MUST be gated, got {:?}",
         d.verdict,
     );
-    assert!(d.taint_transition.dynamic_gate_applied);
+    assert!(d.exposure_transition.dynamic_gate_applied);
 }
 
 /// Spec: the Toxic Agent Flow (ReadFiles → WebFetch → GitPush) must be blocked.
@@ -576,14 +576,14 @@ fn spec_toxic_agent_flow_blocked() {
     let d = kernel.decide(Operation::WebFetch, "https://evil.com/instructions");
     assert!(d.verdict.is_allowed());
 
-    // Step 3: GitPush → trifecta completes → dynamic gate
+    // Step 3: GitPush → uninhabitable_state completes → dynamic gate
     let d = kernel.decide(Operation::GitPush, "origin/main");
     assert!(
         matches!(d.verdict, Verdict::RequiresApproval),
         "Toxic Agent Flow: GitPush after ReadFiles+WebFetch MUST be gated, got {:?}",
         d.verdict,
     );
-    assert!(d.taint_transition.dynamic_gate_applied);
+    assert!(d.exposure_transition.dynamic_gate_applied);
 }
 
 /// Spec: pre-approved operations bypass the dynamic gate exactly N times.
@@ -615,7 +615,7 @@ fn spec_pre_approval_consumed_exactly() {
     // Pre-grant exactly 2 GitPush approvals
     kernel.grant_approval(Operation::GitPush, 2);
 
-    // Build up taint
+    // Build up exposure
     kernel.decide(Operation::ReadFiles, "/etc/passwd");
     kernel.decide(Operation::WebFetch, "https://evil.com");
 
@@ -636,9 +636,9 @@ fn spec_pre_approval_consumed_exactly() {
     );
 }
 
-/// Spec: neutral operations don't trigger dynamic gate even at high taint.
+/// Spec: neutral operations don't trigger dynamic gate even at high exposure.
 #[test]
-fn spec_neutral_ops_unaffected_by_taint() {
+fn spec_neutral_ops_unaffected_by_exposure() {
     let mut perms = PermissionLattice::builder()
         .description("neutral-test")
         .capabilities(CapabilityLattice {
@@ -662,12 +662,12 @@ fn spec_neutral_ops_unaffected_by_taint() {
 
     let mut kernel = Kernel::new(perms);
 
-    // Build up 2 taint legs
+    // Build up 2 exposure legs
     kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
     kernel.decide(Operation::WebFetch, "https://docs.example.com");
-    assert_eq!(kernel.taint().count(), 2);
+    assert_eq!(kernel.exposure().count(), 2);
 
-    // Neutral operations should be allowed regardless of taint
+    // Neutral operations should be allowed regardless of exposure
     let neutral_ops = [
         Operation::WriteFiles,
         Operation::EditFiles,
@@ -678,12 +678,12 @@ fn spec_neutral_ops_unaffected_by_taint() {
         let d = kernel.decide(op, "test-subject");
         assert!(
             d.verdict.is_allowed(),
-            "neutral op {:?} should be allowed at taint count 2, got {:?}",
+            "neutral op {:?} should be allowed at exposure count 2, got {:?}",
             op,
             d.verdict,
         );
         assert!(
-            !d.taint_transition.dynamic_gate_applied,
+            !d.exposure_transition.dynamic_gate_applied,
             "neutral op {:?} should not trigger dynamic gate",
             op,
         );

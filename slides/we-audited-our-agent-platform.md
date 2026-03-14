@@ -102,7 +102,7 @@ When **all three** are present at autonomous levels:
 
 **Prompt injection = Data exfiltration**
 
-*— Simon Willison, ["The Lethal Trifecta"](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/)*
+*— Simon Willison, ["The Uninhabitable State"](https://simonwillison.net/2025/Jun/16/the-uninhabitable-state/)*
 
 ---
 
@@ -338,7 +338,7 @@ nucleus-audit scan --pod-spec your-agent.yaml
 # ║  Pod: yolo-agent                                            ║
 # ║  Findings: 4 critical, 2 high, 1 medium                    ║
 # ╠══════════════════════════════════════════════════════════════╣
-# ║  [CRITICAL] Lethal trifecta detected                        ║
+# ║  [CRITICAL] Lethal uninhabitable state detected                        ║
 # ║  [CRITICAL] 7 credentials exposed                           ║
 # ║  [HIGH]     No network restrictions                         ║
 # ║  [HIGH]     No VM isolation                                 ║
@@ -462,7 +462,7 @@ frame distributivity, nucleus operator properties, isolation lattice.**
 | Attack (Real CVE) | Vector | Nucleus Defense | Verdict |
 |---|---|---|---|
 | RoguePilot (Orca 2025) | Symlink credential theft | cap-std path resolution | Defended |
-| Rules File Backdoor | Unicode injection | Network isolation + trifecta | Partial |
+| Rules File Backdoor | Unicode injection | Network isolation + uninhabitable state | Partial |
 | Config File Exec (CVE-2025-59536) | Config as code | Sandbox proof requirement | Strong |
 | DNS Exfiltration (CVE-2025-55284) | Ping → DNS leak | **5 independent layers** | Strong |
 | MCP Tool Poisoning (Invariant Labs) | Dynamic tool injection | Compile-time tool defs | Immune |
@@ -499,7 +499,7 @@ What's proven today vs. what isn't:
 |-------|-----------|--------|
 | Lattice algebra (meet, join, distributivity) | **Yes** | Kani SMT, proptest |
 | Nucleus operator (idempotent, deflationary, monotone) | **Yes** | Kani SMT |
-| Trifecta constraint (obligations added correctly) | **Yes** | Proptest, OWASP gauntlet |
+|  Uninhabitable state constraint (obligations added correctly) | **Yes** | Proptest, OWASP gauntlet |
 | Attack resilience (real CVEs blocked) | **Yes** | OWASP gauntlet, fuzz |
 | Daemon activates enforcement on all paths | **No** | Found by audit |
 | Config defaults are fail-closed | **No** | Found by audit |

@@ -17,7 +17,7 @@ cargo run -p nucleus-tool-proxy -- \
   --audit-log /tmp/nucleus-demo-audit.log
 ```
 
-Note: The `demo` profile has the trifecta (read + web + bash), so all bash commands
+Note: The `demo` profile has the uninhabitable state (read + web + bash), so all bash commands
 require approval. This is the secure default when an agent has access to both
 private data and untrusted web content.
 

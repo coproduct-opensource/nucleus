@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use portcullis::{CapabilityLevel, GradedTaintGuard, Operation, ToolCallGuard};
+use portcullis::{CapabilityLevel, GradedExposureGuard, Operation, ToolCallGuard};
 use rmcp::{
     handler::server::router::tool::ToolRouter, handler::server::wrapper::Parameters, model::*,
     tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt,
@@ -109,12 +109,12 @@ pub struct WebFetchParams {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
-/// MCP server with session-scoped trifecta guard and schema pinning.
+/// MCP server with session-scoped uninhabitable_state guard and schema pinning.
 pub struct NucleusMcpServer {
     state: Arc<AppState>,
     tool_router: ToolRouter<Self>,
-    /// Session-scoped taint-tracking guard (graded monad).
-    guard: Arc<GradedTaintGuard>,
+    /// Session-scoped exposure-tracking guard (graded monad).
+    guard: Arc<GradedExposureGuard>,
 }
 
 /// Convert a tool-level error into a CallToolResult error.
@@ -132,7 +132,7 @@ impl NucleusMcpServer {
         let tool_schemas = format!("{:?}", tool_router.list_all());
         let policy = state.runtime.policy().clone();
 
-        let guard = Arc::new(GradedTaintGuard::new(policy, &tool_schemas));
+        let guard = Arc::new(GradedExposureGuard::new(policy, &tool_schemas));
 
         Self {
             state,
@@ -452,7 +452,7 @@ impl NucleusMcpServer {
     // web_fetch — unified security controls (identical to HTTP path)
     //
     // Enforces: URL validation, DNS allowlist, URL allowlist, MIME gating,
-    // redirect target verification, and trifecta gate via GradedTaintGuard.
+    // redirect target verification, and uninhabitable_state gate via GradedExposureGuard.
     // -----------------------------------------------------------------------
 
     #[tool(description = "Fetch a URL (HTTP GET/POST/PUT/DELETE)")]
@@ -516,7 +516,7 @@ impl NucleusMcpServer {
 
         // Perform async fetch with full security controls.
         // NOTE: The fetch happens before execute_and_record() intentionally.
-        // execute_and_record's purpose is TOCTOU detection (checking if taint
+        // execute_and_record's purpose is TOCTOU detection (checking if exposure
         // changed between check() and record). The closure runs WITHOUT holding
         // locks, so completing the async I/O first minimizes the TOCTOU window.
         let max_bytes = self.state.web_fetch_max_bytes;

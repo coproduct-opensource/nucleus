@@ -1,13 +1,13 @@
 # Basic Code Generation Policy
 #
 # A permissive policy for AI agents doing code generation tasks.
-# Trifecta enforcement is enabled by default.
+#  Uninhabitable state enforcement is enabled by default.
 
 name: basic-codegen
 description: Policy for code generation with workspace boundaries
 
-# Built-in trifecta enforcement (private data + untrusted content + exfiltration)
-enforce_trifecta: true
+# Built-in uninhabitable state enforcement (private data + untrusted content + exfiltration)
+enforce_uninhabitable: true
 
 constraints:
   # Require approval for writes outside workspace

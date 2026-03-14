@@ -16,8 +16,8 @@
 //! | Capability | Individual CapabilityLattice fields | `Always` (⊤) | Yes: product of linear orders |
 //! | Pipeline stage | Algebraic Gap, Graded Risk, Modal | Skipped | Yes: explanation-only |
 //!
-//! **Trifecta caveat**: Dropping capability fields fills them with `Always`, which may
-//! trigger trifecta obligations (conservative = sound).
+//! ** UninhabitableState caveat**: Dropping capability fields fills them with `Always`, which may
+//! trigger uninhabitable_state obligations (conservative = sound).
 
 use crate::capability::{CapabilityLevel, Operation};
 use crate::pipeline::PipelineTrace;
@@ -94,7 +94,7 @@ impl CapabilityMask {
     const CREATE_PR: u16 = 1 << 10;
     const MANAGE_PODS: u16 = 1 << 11;
 
-    // Trifecta groups
+    //  UninhabitableState groups
     const PRIVATE_ACCESS: u16 = Self::READ_FILES | Self::GLOB_SEARCH | Self::GREP_SEARCH;
     const UNTRUSTED: u16 = Self::WEB_SEARCH | Self::WEB_FETCH;
     const EXFILTRATION: u16 = Self::GIT_PUSH | Self::CREATE_PR | Self::RUN_BASH;
@@ -115,22 +115,22 @@ impl CapabilityMask {
     }
 
     /// Create a mask for only the fields relevant to specific operations.
-    /// Automatically includes trifecta peers when any trifecta member is requested.
+    /// Automatically includes uninhabitable_state peers when any uninhabitable_state member is requested.
     pub fn for_operations(ops: &[Operation]) -> Self {
         let mut bits: u16 = 0;
-        let mut needs_trifecta_expansion = false;
+        let mut needs_uninhabitable_expansion = false;
 
         for op in ops {
             let bit = Self::operation_to_bit(*op);
             bits |= bit;
             if bit & (Self::PRIVATE_ACCESS | Self::UNTRUSTED | Self::EXFILTRATION) != 0 {
-                needs_trifecta_expansion = true;
+                needs_uninhabitable_expansion = true;
             }
         }
 
-        // If any trifecta-relevant cap is requested, include all trifecta caps
+        // If any uninhabitable_state-relevant cap is requested, include all uninhabitable_state caps
         // so the constraint can be properly evaluated
-        if needs_trifecta_expansion {
+        if needs_uninhabitable_expansion {
             bits |= Self::PRIVATE_ACCESS | Self::UNTRUSTED | Self::EXFILTRATION;
         }
 
@@ -260,7 +260,7 @@ pub fn project(perms: &PermissionLattice, config: &DropoutConfig) -> PermissionL
     // Obligations ordering: more obligations = smaller (more constrained).
     // For inflationary projection (project(x) ≥ x), we need projected obligations
     // to be ≤ (fewer than) the original. So we either keep original or drop to empty.
-    // We do NOT re-enforce trifecta on projected capabilities, because filling
+    // We do NOT re-enforce uninhabitable_state on projected capabilities, because filling
     // dropped caps with Always would add spurious obligations, making the result smaller.
     let obligations = if config.sub_lattices.is_active(SubLatticeMask::OBLIGATIONS) {
         perms.obligations.clone()
@@ -312,7 +312,7 @@ pub fn project(perms: &PermissionLattice, config: &DropoutConfig) -> PermissionL
         commands,
         time,
         // Metadata — preserve from original
-        trifecta_constraint: perms.trifecta_constraint,
+        uninhabitable_constraint: perms.uninhabitable_constraint,
         ..perms.clone()
     }
 }
@@ -393,7 +393,7 @@ fn project_capabilities(
 /// **Invariant**: `projected_meet(a, b, config) ≥ a.meet(b)` (over-approximation).
 ///
 /// We project the *result* rather than the *inputs* because projecting inputs
-/// before meet can trigger spurious trifecta obligations (more obligations =
+/// before meet can trigger spurious uninhabitable_state obligations (more obligations =
 /// smaller in lattice order, violating the over-approximation guarantee).
 pub fn projected_meet(
     a: &PermissionLattice,
@@ -706,16 +706,16 @@ mod tests {
         assert_eq!(projected.capabilities.git_push, CapabilityLevel::Always);
     }
 
-    // ── Trifecta rechecked on capability dropout ──
+    // ──  UninhabitableState rechecked on capability dropout ──
 
     #[test]
-    fn test_trifecta_rechecked_on_capability_dropout() {
-        // Start with a safe permission (no trifecta)
+    fn test_uninhabitable_rechecked_on_capability_dropout() {
+        // Start with a safe permission (no uninhabitable_state)
         let perms = PermissionLattice::read_only();
-        assert!(!perms.is_trifecta_vulnerable());
+        assert!(!perms.is_uninhabitable_vulnerable());
 
         // Dropping capabilities fills with Always — the projected capabilities
-        // form a trifecta, but the projection itself does NOT add obligations
+        // form an uninhabitable_state, but the projection itself does NOT add obligations
         // (that would violate the inflationary invariant).
         let config = DropoutConfig {
             sub_lattices: SubLatticeMask::all(),
@@ -723,11 +723,11 @@ mod tests {
             pipeline_stages: PipelineStageMask::all(),
         };
         let projected = project(&perms, &config);
-        // All dropped fields become Always → trifecta is detectable on capabilities
+        // All dropped fields become Always → uninhabitable_state is detectable on capabilities
         let constraint = IncompatibilityConstraint::enforcing();
-        assert!(constraint.is_trifecta_complete(&projected.capabilities));
+        assert!(constraint.is_uninhabitable(&projected.capabilities));
         // But obligations are preserved from original (not inflated), ensuring soundness
-        // The pipeline stages will detect the trifecta risk via graded evaluation
+        // The pipeline stages will detect the uninhabitable_state risk via graded evaluation
         assert!(perms.leq(&projected), "Projection must remain inflationary");
     }
 
@@ -757,13 +757,13 @@ mod tests {
         assert!((report.evaluation_fraction - 0.25).abs() < f64::EPSILON);
     }
 
-    // ── for_operations includes trifecta ──
+    // ── for_operations includes uninhabitable_state ──
 
     #[test]
-    fn test_for_operations_includes_trifecta() {
-        // Requesting just git_push should auto-include all trifecta caps
+    fn test_for_operations_includes_uninhabitable() {
+        // Requesting just git_push should auto-include all uninhabitable_state caps
         let mask = CapabilityMask::for_operations(&[Operation::GitPush]);
-        // Must include all trifecta members
+        // Must include all uninhabitable_state members
         assert!(mask.is_active(CapabilityMask::READ_FILES));
         assert!(mask.is_active(CapabilityMask::GLOB_SEARCH));
         assert!(mask.is_active(CapabilityMask::GREP_SEARCH));
@@ -775,8 +775,8 @@ mod tests {
     }
 
     #[test]
-    fn test_for_operations_non_trifecta() {
-        // Requesting git_commit (not trifecta) should only include git_commit
+    fn test_for_operations_non_uninhabitable() {
+        // Requesting git_commit (not uninhabitable_state) should only include git_commit
         let mask = CapabilityMask::for_operations(&[Operation::GitCommit]);
         assert!(mask.is_active(CapabilityMask::GIT_COMMIT));
         assert!(!mask.is_active(CapabilityMask::GIT_PUSH));

@@ -67,7 +67,7 @@ Status key: `DONE`, `PARTIAL`, `TODO`.
 - **No privilege relaxation after creation**
   - Pass: permission state can only tighten or the pod is terminated.
   - Current: `DONE` (Verus-proven E1-E3 enforcement boundary + runtime debug_assert).
-  - Evidence: `crates/portcullis-verified/src/lib.rs` (E1: taint monotonicity, E2: trace monotonicity, E3: denial monotonicity), `crates/portcullis/src/guard.rs` (debug_assert in execute_and_record)
+  - Evidence: `crates/portcullis-verified/src/lib.rs` (E1: exposure monotonicity, E2: trace monotonicity, E3: denial monotonicity), `crates/portcullis/src/guard.rs` (debug_assert in execute_and_record)
 - **Network policy drift detection**
   - Pass: host checks iptables drift and fails closed on deviation.
   - Current: `DONE`.
@@ -105,8 +105,8 @@ Status key: `DONE`, `PARTIAL`, `TODO`.
   - Pass: only text and structured data MIME types are allowed; binary formats blocked.
   - Current: `DONE` (allowlist: text/*, application/json, application/xml, etc.).
   - Evidence: `crates/nucleus-tool-proxy/src/main.rs` (web_fetch handler)
-- **Taint provenance on fetched content**
-  - Pass: all web-fetched content is tagged with `X-Nucleus-Taint: UntrustedContent` + source domain.
+- **Exposure provenance on fetched content**
+  - Pass: all web-fetched content is tagged with `X-Nucleus-Exposure: UntrustedContent` + source domain.
   - Current: `DONE`.
   - Evidence: `crates/nucleus-tool-proxy/src/main.rs` (response headers)
 - **URL pattern allowlisting**

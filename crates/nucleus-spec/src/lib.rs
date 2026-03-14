@@ -981,17 +981,17 @@ spec:
             portcullis::CapabilityLevel::LowRisk,
         );
 
-        // Trifecta IS complete (read + web_fetch + run_bash), but that's
+        //  UninhabitableState IS complete (read + web_fetch + run_bash), but that's
         // correct: normalize() adds approval obligations on exfil channels.
         // The key constraint is that git_push and create_pr are Never.
         assert!(
-            lattice.is_trifecta_vulnerable(),
-            "safe_pr_fixer has trifecta (bash is exfil vector), obligations mitigate"
+            lattice.is_uninhabitable_vulnerable(),
+            "safe_pr_fixer has uninhabitable_state (bash is exfil vector), obligations mitigate"
         );
-        // Bash should require approval due to trifecta normalization
+        // Bash should require approval due to uninhabitable_state normalization
         assert!(
             lattice.requires_approval(portcullis::Operation::RunBash),
-            "run_bash should require approval in safe_pr_fixer (trifecta mitigation)"
+            "run_bash should require approval in safe_pr_fixer (uninhabitable_state mitigation)"
         );
     }
 
@@ -1022,9 +1022,9 @@ spec:
     }
 
     #[test]
-    fn test_canonical_profiles_trifecta_safety() {
+    fn test_canonical_profiles_uninhabitable_safety() {
         // All canonical profiles must either:
-        // 1. Not complete the trifecta, OR
+        // 1. Not complete the uninhabitable_state, OR
         // 2. Have approval obligations on exfiltration vectors
         let canonical = ["safe-pr-fixer", "doc-editor", "test-runner", "triage-bot"];
         for name in canonical {
@@ -1033,8 +1033,8 @@ spec:
             };
             let lattice = spec.resolve().unwrap();
 
-            if lattice.is_trifecta_vulnerable() {
-                // If trifecta is present, exfiltration vectors must have
+            if lattice.is_uninhabitable_vulnerable() {
+                // If uninhabitable_state is present, exfiltration vectors must have
                 // approval obligations or be Never
                 let git_push_safe = lattice.capabilities.git_push
                     == portcullis::CapabilityLevel::Never
@@ -1048,7 +1048,7 @@ spec:
 
                 assert!(
                     git_push_safe && create_pr_safe && run_bash_safe,
-                    "Profile '{}' has trifecta but exfil vectors are not gated: \
+                    "Profile '{}' has uninhabitable_state but exfil vectors are not gated: \
                      git_push={:?} (approval={}), create_pr={:?} (approval={}), \
                      run_bash={:?} (approval={})",
                     name,
@@ -1060,7 +1060,7 @@ spec:
                     lattice.requires_approval(portcullis::Operation::RunBash),
                 );
             }
-            // If no trifecta, profile is safe by construction — no assertion needed
+            // If no uninhabitable_state, profile is safe by construction — no assertion needed
         }
     }
 }

@@ -5,7 +5,7 @@
 # Ideal for research tasks that combine local code context with
 # external documentation, API references, or CVE databases.
 #
-# Trifecta analysis:
+#  Uninhabitable state analysis:
 #   - Private data: read_files=low_risk (present)
 #   - Untrusted content: web_search=low_risk, web_fetch=low_risk (present)
 #   - Exfiltration: git_push=never, run_bash=never, create_pr=never (absent)

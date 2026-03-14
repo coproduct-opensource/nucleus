@@ -12,5 +12,5 @@ pub use nucleus_spec::{
 // Permission lattice types
 pub use portcullis::{
     CapabilityLattice, CapabilityLevel, IncompatibilityConstraint, Obligations, Operation,
-    PermissionLattice, TrifectaRisk,
+    PermissionLattice, StateRisk,
 };

@@ -41,11 +41,11 @@ Nucleus supports multiple isolation levels depending on the deployment environme
 - Process-level isolation only
 - Shared host kernel
 - Full network access (no isolation)
-- Trifecta guard still enforces approval requirements
+-  Uninhabitable state guard still enforces approval requirements
 
 **What's enforced:**
 - Command lattice (blocked commands like `gh auth`)
-- Approval obligations (trifecta constraint)
+- Approval obligations (uninhabitable state constraint)
 - Budget limits
 - Path restrictions (via cap-std)
 
@@ -91,7 +91,7 @@ For macOS users without firecracker support (Intel Macs, M1/M2), Lima provides a
 │  │  │  nucleus-tool-proxy (per-pod process)            │  │ │
 │  │  │    - Policy enforcement                          │  │ │
 │  │  │    - Command lattice                             │  │ │
-│  │  │    - Trifecta guard                              │  │ │
+│  │  │    -  Uninhabitable state guard                              │  │ │
 │  │  └──────────────────────────────────────────────────┘  │ │
 │  │  /workspace (mounted from host)                        │ │
 │  └────────────────────────────────────────────────────────┘ │
@@ -150,9 +150,9 @@ Command lattice blocks:
 - `gh auth *`, `gh config *` (credential manipulation)
 - Writes to `.git/hooks`, `.claude/`, etc.
 
-## Trifecta Guard
+##  Uninhabitable state Guard
 
-Regardless of driver, nucleus enforces the [lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/) constraint:
+Regardless of driver, nucleus enforces the [uninhabitable state](https://simonwillison.net/2025/Jun/16/the-uninhabitable-state/) constraint:
 
 When all three capabilities are present at autonomous levels:
 1. **Private data access** (read_files)
@@ -182,7 +182,7 @@ This is defense-in-depth: even if network/VM isolation fails, the agent cannot a
 ## Defense-in-Depth Layers
 
 ```
-Layer 5: Approval obligations (trifecta guard)
+Layer 5: Approval obligations (uninhabitable state guard)
 Layer 4: Command lattice (blocked commands)
 Layer 3: Path sandboxing (cap-std)
 Layer 2: Network isolation (iptables/dns_allow) [firecracker only]
@@ -193,11 +193,11 @@ Layer 0: Host kernel
 Even when lower layers are unavailable (e.g., local driver), higher layers still provide meaningful security:
 - Command blocking prevents `gh auth login`
 - Path sandboxing prevents writes outside workspace
-- Trifecta guard requires approval for exfiltration
+-  Uninhabitable state guard requires approval for exfiltration
 
 ## References
 
 - [How to Sandbox AI Agents in 2026](https://northflank.com/blog/how-to-sandbox-ai-agents) - Isolation technology comparison
 - [NVIDIA Sandboxing Guidance](https://developer.nvidia.com/blog/practical-security-guidance-for-sandboxing-agentic-workflows-and-managing-execution-risk/) - Mandatory controls
 - [Lima v2.0 for AI Workflows](https://www.cncf.io/blog/2025/12/11/lima-v2-0-new-features-for-secure-ai-workflows/) - Lima security features
-- [The Lethal Trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/) - Original threat model
+- [The Uninhabitable State](https://simonwillison.net/2025/Jun/16/the-uninhabitable-state/) - Original threat model

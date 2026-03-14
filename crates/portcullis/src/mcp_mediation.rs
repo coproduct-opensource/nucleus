@@ -4,7 +4,7 @@
 //! This module provides the policy enforcement bridge between any MCP client
 //! and any set of upstream MCP servers. It classifies tool names into
 //! [`Operation`] types, checks them against a [`PermissionLattice`], tracks
-//! taint, and produces audit-ready observations.
+//! exposure, and produces audit-ready observations.
 //!
 //! ## Design
 //!
@@ -51,10 +51,10 @@
 use std::collections::BTreeMap;
 
 use crate::capability::{CapabilityLevel, Operation};
-use crate::guard::{TaintLabel, TaintSet};
+use crate::exposure_core::{apply_record, classify_operation, project_exposure};
+use crate::guard::{ExposureLabel, ExposureSet};
 use crate::lattice::PermissionLattice;
 use crate::observe::{Observation, ObserveSession};
-use crate::taint_core::{apply_record, classify_operation, project_taint};
 
 /// Verdict from the mediator for an MCP tool call.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,10 +63,10 @@ pub enum MediationVerdict {
     Allow {
         /// The classified operation.
         operation: Operation,
-        /// Taint label this operation contributes.
-        taint_label: Option<TaintLabel>,
+        /// Exposure label this operation contributes.
+        exposure_label: Option<ExposureLabel>,
     },
-    /// Tool call requires explicit approval (trifecta would complete).
+    /// Tool call requires explicit approval (uninhabitable_state would complete).
     RequiresApproval {
         /// The classified operation.
         operation: Operation,
@@ -290,12 +290,12 @@ impl Default for ToolClassifier {
 
 /// MCP mediation engine that gates tool calls against the permission lattice.
 ///
-/// Combines tool classification, capability checking, and taint tracking
+/// Combines tool classification, capability checking, and exposure tracking
 /// into a single mediation decision for each MCP tool call.
 pub struct McpMediator {
     policy: PermissionLattice,
     classifier: ToolClassifier,
-    taint: TaintSet,
+    exposure: ExposureSet,
     /// Optional observer for recording tool calls.
     observer: Option<ObserveSession>,
     /// Whether unclassified tools are denied (true = fail-closed, default).
@@ -308,7 +308,7 @@ impl McpMediator {
         Self {
             policy,
             classifier,
-            taint: TaintSet::empty(),
+            exposure: ExposureSet::empty(),
             observer: None,
             deny_unclassified: true,
         }
@@ -344,7 +344,7 @@ impl McpMediator {
                     // Fail-open: allow unclassified tools without mediation
                     return MediationVerdict::Allow {
                         operation: Operation::RunBash, // Most conservative classification
-                        taint_label: Some(TaintLabel::ExfilVector),
+                        exposure_label: Some(ExposureLabel::ExfilVector),
                     };
                 }
             }
@@ -359,35 +359,35 @@ impl McpMediator {
             };
         }
 
-        // Check trifecta constraint
+        // Check uninhabitable_state constraint
         let requires_approval = self.policy.requires_approval(operation);
         if requires_approval {
-            let projected = project_taint(&self.taint, operation);
-            if projected.is_trifecta_complete() && self.policy.trifecta_constraint {
+            let projected = project_exposure(&self.exposure, operation);
+            if projected.is_uninhabitable() && self.policy.uninhabitable_constraint {
                 return MediationVerdict::RequiresApproval {
                     operation,
                     reason: format!(
-                        "operation {:?} on '{}' would complete the trifecta — approval required",
+                        "operation {:?} on '{}' would complete the uninhabitable_state — approval required",
                         operation, subject
                     ),
                 };
             }
         }
 
-        let taint_label = classify_operation(operation);
+        let exposure_label = classify_operation(operation);
         MediationVerdict::Allow {
             operation,
-            taint_label,
+            exposure_label,
         }
     }
 
-    /// Record a successful tool call, advancing taint state.
+    /// Record a successful tool call, advancing exposure state.
     ///
-    /// Call this after the tool call succeeds to update the taint accumulator.
-    /// Must be called to maintain accurate trifecta tracking.
+    /// Call this after the tool call succeeds to update the exposure accumulator.
+    /// Must be called to maintain accurate uninhabitable_state tracking.
     pub fn record_success(&mut self, tool_name: &str, subject: &str) {
         if let Some(operation) = self.classifier.classify(tool_name) {
-            self.taint = apply_record(&self.taint, operation);
+            self.exposure = apply_record(&self.exposure, operation);
 
             if let Some(observer) = &mut self.observer {
                 observer.record(Observation::new(operation, subject));
@@ -395,7 +395,7 @@ impl McpMediator {
         }
     }
 
-    /// Record a failed tool call (doesn't advance taint).
+    /// Record a failed tool call (doesn't advance exposure).
     pub fn record_failure(&mut self, tool_name: &str, subject: &str) {
         if let Some(operation) = self.classifier.classify(tool_name) {
             if let Some(observer) = &mut self.observer {
@@ -404,14 +404,14 @@ impl McpMediator {
         }
     }
 
-    /// Get current taint state.
-    pub fn taint(&self) -> &TaintSet {
-        &self.taint
+    /// Get current exposure state.
+    pub fn exposure(&self) -> &ExposureSet {
+        &self.exposure
     }
 
-    /// Check if the trifecta is currently complete.
-    pub fn is_trifecta_complete(&self) -> bool {
-        self.taint.is_trifecta_complete()
+    /// Check if the uninhabitable_state is currently complete.
+    pub fn is_uninhabitable(&self) -> bool {
+        self.exposure.is_uninhabitable()
     }
 
     /// Get the list of tool names that are allowed by the current policy.
@@ -608,30 +608,32 @@ mod tests {
     }
 
     #[test]
-    fn test_mediator_taint_tracking() {
+    fn test_mediator_exposure_tracking() {
         let policy = restrictive_policy();
         let mut mediator = McpMediator::new(policy, ToolClassifier::default());
 
-        assert_eq!(mediator.taint().count(), 0);
+        assert_eq!(mediator.exposure().count(), 0);
 
         mediator.record_success("read_file", "secrets.txt");
-        assert_eq!(mediator.taint().count(), 1);
-        assert!(mediator.taint().contains(TaintLabel::PrivateData));
+        assert_eq!(mediator.exposure().count(), 1);
+        assert!(mediator.exposure().contains(ExposureLabel::PrivateData));
 
         mediator.record_success("web_fetch", "https://evil.com");
-        assert_eq!(mediator.taint().count(), 2);
-        assert!(mediator.taint().contains(TaintLabel::UntrustedContent));
+        assert_eq!(mediator.exposure().count(), 2);
+        assert!(mediator
+            .exposure()
+            .contains(ExposureLabel::UntrustedContent));
 
-        assert!(!mediator.is_trifecta_complete());
+        assert!(!mediator.is_uninhabitable());
     }
 
     #[test]
-    fn test_mediator_failed_calls_dont_advance_taint() {
+    fn test_mediator_failed_calls_dont_advance_exposure() {
         let policy = restrictive_policy();
         let mut mediator = McpMediator::new(policy, ToolClassifier::default());
 
         mediator.record_failure("read_file", "secrets.txt");
-        assert_eq!(mediator.taint().count(), 0);
+        assert_eq!(mediator.exposure().count(), 0);
     }
 
     #[test]
@@ -671,23 +673,23 @@ mod tests {
     }
 
     #[test]
-    fn test_mediator_trifecta_requires_approval() {
-        // Build a policy where exfil ops require approval under trifecta
+    fn test_mediator_uninhabitable_requires_approval() {
+        // Build a policy where exfil ops require approval under uninhabitable_state
         let mut policy = PermissionLattice::default();
         policy.capabilities.read_files = CapabilityLevel::Always;
         policy.capabilities.web_fetch = CapabilityLevel::LowRisk;
         policy.capabilities.git_push = CapabilityLevel::LowRisk;
-        policy.trifecta_constraint = true;
-        // Normalize to add trifecta obligations
+        policy.uninhabitable_constraint = true;
+        // Normalize to add uninhabitable_state obligations
         policy = policy.normalize();
 
         let mut mediator = McpMediator::new(policy, ToolClassifier::default());
 
-        // Build up taint: private data + untrusted content
+        // Build up exposure: private data + untrusted content
         mediator.record_success("read", "secrets.txt");
         mediator.record_success("web_fetch", "https://evil.com");
 
-        // Now git_push would complete the trifecta
+        // Now git_push would complete the uninhabitable_state
         let verdict = mediator.check_tool("git_push", "origin main");
         assert!(
             matches!(verdict, MediationVerdict::RequiresApproval { .. }),

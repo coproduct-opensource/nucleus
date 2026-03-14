@@ -57,9 +57,9 @@ pub enum NucleusError {
         reason: String,
     },
 
-    /// Trifecta detected - operation would complete the lethal trifecta.
-    #[error("trifecta blocked: operation '{operation}' would enable data exfiltration")]
-    TrifectaBlocked {
+    ///  UninhabitableState detected - operation would complete the uninhabitable_state.
+    #[error("uninhabitable_state blocked: operation '{operation}' would enable data exfiltration")]
+    StateBlocked {
         /// The operation that was blocked.
         operation: String,
     },

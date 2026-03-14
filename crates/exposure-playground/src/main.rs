@@ -1,4 +1,4 @@
-//! Trifecta Playground - Interactive TUI for demonstrating the Lethal Trifecta prevention system.
+//!  UninhabitableState Playground - Interactive TUI for demonstrating the Uninhabitable State prevention system.
 //!
 //! This application provides a visual, interactive demonstration of how the
 //! portcullis permission system prevents dangerous capability combinations.
@@ -64,7 +64,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
 
                 // Handle input based on current screen
                 match app.screen {
-                    Screen::Trifecta => handle_trifecta_input(app, key.code),
+                    Screen::UninhabitableState => handle_uninhabitable_input(app, key.code),
                     Screen::TraceChain => handle_trace_input(app, key.code),
                     Screen::Attacks => handle_attacks_input(app, key.code),
                     Screen::Matrix => handle_matrix_input(app, key.code),
@@ -79,7 +79,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
     }
 }
 
-fn handle_trifecta_input(app: &mut App, key: KeyCode) {
+fn handle_uninhabitable_input(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Char('1') => app.load_preset(0),
         KeyCode::Char('2') => app.load_preset(1),
@@ -109,7 +109,7 @@ fn handle_trace_input(app: &mut App, key: KeyCode) {
         KeyCode::Char('e') => app.extend_chain(),
         KeyCode::Char('v') => app.verify_chain(),
         KeyCode::Char('r') => app.reset_chain(),
-        KeyCode::Esc | KeyCode::Backspace => app.screen = Screen::Trifecta,
+        KeyCode::Esc | KeyCode::Backspace => app.screen = Screen::UninhabitableState,
         KeyCode::Char('?') => app.screen = Screen::Help,
         _ => {}
     }
@@ -120,7 +120,7 @@ fn handle_attacks_input(app: &mut App, key: KeyCode) {
         KeyCode::Up | KeyCode::Char('k') => app.prev_attack(),
         KeyCode::Down | KeyCode::Char('j') => app.next_attack(),
         KeyCode::Enter | KeyCode::Char(' ') => app.run_attack(),
-        KeyCode::Esc | KeyCode::Backspace => app.screen = Screen::Trifecta,
+        KeyCode::Esc | KeyCode::Backspace => app.screen = Screen::UninhabitableState,
         KeyCode::Char('?') => app.screen = Screen::Help,
         _ => {}
     }
@@ -129,7 +129,7 @@ fn handle_attacks_input(app: &mut App, key: KeyCode) {
 fn handle_help_input(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('?') | KeyCode::Enter => {
-            app.screen = Screen::Trifecta
+            app.screen = Screen::UninhabitableState
         }
         _ => {}
     }
@@ -149,7 +149,7 @@ fn handle_matrix_input(app: &mut App, key: KeyCode) {
         }
         KeyCode::Char('m') => app.screen = Screen::Meet,
         KeyCode::Char('h') => app.screen = Screen::Hasse,
-        KeyCode::Esc | KeyCode::Backspace => app.screen = Screen::Trifecta,
+        KeyCode::Esc | KeyCode::Backspace => app.screen = Screen::UninhabitableState,
         KeyCode::Char('?') => app.screen = Screen::Help,
         _ => {}
     }
@@ -177,7 +177,7 @@ fn handle_hasse_input(app: &mut App, key: KeyCode) {
                 app.hasse_state.meet_mode = false;
                 app.hasse_state.meet_first = None;
             } else {
-                app.screen = Screen::Trifecta;
+                app.screen = Screen::UninhabitableState;
             }
         }
         KeyCode::Char('?') => app.screen = Screen::Help,
@@ -197,7 +197,7 @@ fn handle_meet_input(app: &mut App, key: KeyCode) {
             // Pick from preset list (just cycle for now)
             app.meet_playground.next_preset();
         }
-        KeyCode::Esc | KeyCode::Backspace => app.screen = Screen::Trifecta,
+        KeyCode::Esc | KeyCode::Backspace => app.screen = Screen::UninhabitableState,
         KeyCode::Char('?') => app.screen = Screen::Help,
         _ => {}
     }
@@ -211,7 +211,7 @@ fn handle_chain_builder_input(app: &mut App, key: KeyCode) {
         KeyCode::Char('v') => app.chain_builder.compute_ceiling(),
         KeyCode::Up | KeyCode::Char('k') => app.chain_builder.prev_link(),
         KeyCode::Down | KeyCode::Char('j') => app.chain_builder.next_link(),
-        KeyCode::Esc | KeyCode::Backspace => app.screen = Screen::Trifecta,
+        KeyCode::Esc | KeyCode::Backspace => app.screen = Screen::UninhabitableState,
         KeyCode::Char('?') => app.screen = Screen::Help,
         _ => {}
     }
@@ -228,7 +228,7 @@ fn handle_delegation_forest_input(app: &mut App, key: KeyCode) {
         KeyCode::Char('p') => app.delegation_forest.cycle_preset(),
         KeyCode::Char('e') => app.delegation_forest.attempt_escalation(),
         KeyCode::Char('c') => app.delegation_forest.toggle_comparison(),
-        KeyCode::Esc | KeyCode::Backspace => app.screen = Screen::Trifecta,
+        KeyCode::Esc | KeyCode::Backspace => app.screen = Screen::UninhabitableState,
         KeyCode::Char('?') => app.screen = Screen::Help,
         _ => {}
     }

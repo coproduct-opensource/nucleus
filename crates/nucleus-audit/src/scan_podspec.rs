@@ -39,39 +39,39 @@ pub fn scan_pod_spec(
         nucleus_spec::PolicySpec::Inline { .. } => "inline".to_string(),
     };
 
-    let trifecta_config = portcullis::IncompatibilityConstraint::enforcing();
-    let trifecta_risk = trifecta_config.trifecta_risk(&lattice.capabilities);
-    let trifecta_enforced = lattice.trifecta_constraint;
+    let uninhabitable_state_config = portcullis::IncompatibilityConstraint::enforcing();
+    let state_risk = uninhabitable_state_config.state_risk(&lattice.capabilities);
+    let uninhabitable_state_enforced = lattice.uninhabitable_constraint;
 
-    if !trifecta_enforced {
+    if !uninhabitable_state_enforced {
         findings.push(Finding {
             severity: Severity::Critical,
-            category: "trifecta".to_string(),
-            title: "Trifecta enforcement disabled".to_string(),
-            description: "The lethal trifecta constraint is disabled. An agent with \
+            category: "uninhabitable_state".to_string(),
+            title: " UninhabitableState enforcement disabled".to_string(),
+            description: "The uninhabitable_state constraint is disabled. An agent with \
                 private data access + untrusted content + external communication can \
                 exfiltrate data without approval gates."
                 .to_string(),
         });
     }
 
-    let trifecta_str = format!("{:?}", trifecta_risk);
-    if trifecta_risk == portcullis::TrifectaRisk::Complete && trifecta_enforced {
+    let uninhabitable_state_str = format!("{:?}", state_risk);
+    if state_risk == portcullis::StateRisk::Uninhabitable && uninhabitable_state_enforced {
         findings.push(Finding {
             severity: Severity::Medium,
-            category: "trifecta".to_string(),
-            title: "Complete trifecta with enforcement".to_string(),
-            description: "All three trifecta components are present. Enforcement is \
+            category: "uninhabitable_state".to_string(),
+            title: "Complete uninhabitable_state with enforcement".to_string(),
+            description: "All three uninhabitable_state components are present. Enforcement is \
                 enabled so exfiltration operations will require approval, but the \
                 attack surface is maximal."
                 .to_string(),
         });
-    } else if trifecta_risk == portcullis::TrifectaRisk::Complete && !trifecta_enforced {
+    } else if state_risk == portcullis::StateRisk::Uninhabitable && !uninhabitable_state_enforced {
         findings.push(Finding {
             severity: Severity::Critical,
-            category: "trifecta".to_string(),
-            title: "Complete trifecta WITHOUT enforcement".to_string(),
-            description: "All three trifecta components are present and enforcement \
+            category: "uninhabitable_state".to_string(),
+            title: "Complete uninhabitable_state WITHOUT enforcement".to_string(),
+            description: "All three uninhabitable_state components are present and enforcement \
                 is disabled. This agent can read private data, fetch untrusted content, \
                 and push to external systems without any approval gate."
                 .to_string(),
@@ -305,8 +305,8 @@ pub fn scan_pod_spec(
     Ok(ScanReport {
         pod_name: spec.metadata.name,
         policy_profile: Some(policy_profile),
-        trifecta_risk: trifecta_str,
-        trifecta_enforced,
+        state_risk: uninhabitable_state_str,
+        uninhabitable_state_enforced,
         permission_surface: PermissionSurface {
             total_capabilities: cap_fields.len(),
             always_allowed,
@@ -335,7 +335,7 @@ fn analyze_audit_log(
     let log = portcullis::audit::AuditLog::in_memory();
     let mut identities: HashSet<String> = HashSet::new();
     let mut deviations = 0usize;
-    let mut trifecta_completions = 0usize;
+    let mut uninhabitable_completions = 0usize;
     let mut blocks = 0usize;
     let mut total = 0usize;
 
@@ -364,8 +364,8 @@ fn analyze_audit_log(
         if entry.is_deviation() {
             deviations += 1;
         }
-        if let Some(portcullis::TrifectaRisk::Complete) = entry.trifecta_impact() {
-            trifecta_completions += 1;
+        if let Some(portcullis::StateRisk::Uninhabitable) = entry.uninhabitable_impact() {
+            uninhabitable_completions += 1;
         }
         if matches!(
             &entry.event,
@@ -392,20 +392,24 @@ fn analyze_audit_log(
         });
     }
 
-    if trifecta_completions > 0 {
+    if uninhabitable_completions > 0 {
         findings.push(Finding {
             severity: Severity::High,
             category: "runtime".to_string(),
             title: format!(
-                "{} trifecta completion{} detected",
-                trifecta_completions,
-                if trifecta_completions == 1 { "" } else { "s" }
+                "{} uninhabitable_state completion{} detected",
+                uninhabitable_completions,
+                if uninhabitable_completions == 1 {
+                    ""
+                } else {
+                    "s"
+                }
             ),
             description: format!(
-                "The audit log contains {} events where all three lethal trifecta \
+                "The audit log contains {} events where all three uninhabitable_state \
                  components were active simultaneously. Review these events for \
                  potential data exfiltration.",
-                trifecta_completions
+                uninhabitable_completions
             ),
         });
     }
@@ -436,7 +440,7 @@ fn analyze_audit_log(
         total_entries: total,
         chain_valid,
         deviations,
-        trifecta_completions,
+        uninhabitable_completions,
         blocks,
         identities: identities.len(),
     })

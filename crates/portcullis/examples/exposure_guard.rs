@@ -1,25 +1,25 @@
-//! Trifecta guard example — demonstrates how the lethal trifecta
+//!  UninhabitableState guard example — demonstrates how the uninhabitable_state
 //! (private data + untrusted content + exfiltration) is detected and mitigated.
 //!
-//! Run with: `cargo run --example trifecta_guard -p portcullis`
+//! Run with: `cargo run --example exposure_guard -p portcullis`
 //!
-//! The "lethal trifecta" is:
+//! The "uninhabitable_state" is:
 //! 1. Access to private data (read_files, read credentials)
 //! 2. Exposure to untrusted content (web_fetch, web_search)
 //! 3. External communication (git_push, run_bash, create_pr)
 //!
 //! When all three are present, prompt injection attacks can exfiltrate
-//! private data. The trifecta guard adds approval obligations to
-//! exfiltration operations when the trifecta is complete.
+//! private data. The uninhabitable_state guard adds approval obligations to
+//! exfiltration operations when the uninhabitable_state is complete.
 
 use portcullis::{
     BoundedLattice, CapabilityLattice, CapabilityLevel, IncompatibilityConstraint, Operation,
-    PermissionLattice, TrifectaRisk,
+    PermissionLattice, StateRisk,
 };
 
 fn main() {
     println!("╔══════════════════════════════════════════════════════════════════╗");
-    println!("║         Trifecta Guard: Lethal Combination Detection            ║");
+    println!("║          UninhabitableState Guard: Lethal Combination Detection            ║");
     println!("╚══════════════════════════════════════════════════════════════════╝\n");
 
     let constraint = IncompatibilityConstraint::enforcing();
@@ -32,12 +32,12 @@ fn main() {
         grep_search: CapabilityLevel::Always,
         ..CapabilityLattice::bottom()
     };
-    let risk = constraint.trifecta_risk(&safe);
+    let risk = constraint.state_risk(&safe);
     println!("   Capabilities: read_files, glob_search, grep_search");
     println!("   Risk: {:?}", risk);
     println!(
-        "   Trifecta complete: {}\n",
-        constraint.is_trifecta_complete(&safe)
+        "    UninhabitableState complete: {}\n",
+        constraint.is_uninhabitable(&safe)
     );
 
     // Scenario 2: Partial — read + web (no exfil vector)
@@ -48,28 +48,28 @@ fn main() {
         web_search: CapabilityLevel::LowRisk,
         ..CapabilityLattice::bottom()
     };
-    let risk = constraint.trifecta_risk(&partial);
+    let risk = constraint.state_risk(&partial);
     println!("   Capabilities: read_files, web_fetch, web_search");
     println!("   Risk: {:?}", risk);
     println!(
-        "   Trifecta complete: {}\n",
-        constraint.is_trifecta_complete(&partial)
+        "    UninhabitableState complete: {}\n",
+        constraint.is_uninhabitable(&partial)
     );
 
-    // Scenario 3: Complete trifecta — read + web + bash
-    println!("Scenario 3: Read + Web + Bash (COMPLETE TRIFECTA)");
+    // Scenario 3: Complete uninhabitable_state — read + web + bash
+    println!("Scenario 3: Read + Web + Bash (COMPLETE uninhabitable_state)");
     let dangerous = CapabilityLattice {
         read_files: CapabilityLevel::Always,
         web_fetch: CapabilityLevel::LowRisk,
         run_bash: CapabilityLevel::LowRisk,
         ..CapabilityLattice::bottom()
     };
-    let risk = constraint.trifecta_risk(&dangerous);
+    let risk = constraint.state_risk(&dangerous);
     println!("   Capabilities: read_files, web_fetch, run_bash");
     println!("   Risk: {:?}", risk);
     println!(
-        "   Trifecta complete: {}",
-        constraint.is_trifecta_complete(&dangerous)
+        "    UninhabitableState complete: {}",
+        constraint.is_uninhabitable(&dangerous)
     );
 
     // Show obligations
@@ -86,11 +86,11 @@ fn main() {
         }
     }
 
-    // Scenario 4: Automatic trifecta enforcement via PermissionLattice
+    // Scenario 4: Automatic uninhabitable_state enforcement via PermissionLattice
     println!("\nScenario 4: Automatic enforcement via meet()");
     let perms = PermissionLattice {
         capabilities: dangerous.clone(),
-        trifecta_constraint: true,
+        uninhabitable_constraint: true,
         ..Default::default()
     };
     let enforced = perms.meet(&perms);
@@ -115,19 +115,22 @@ fn main() {
     ];
 
     for (name, profile) in &profiles {
-        let risk = constraint.trifecta_risk(&profile.capabilities);
-        let vulnerable = constraint.is_trifecta_complete(&profile.capabilities);
+        let risk = constraint.state_risk(&profile.capabilities);
+        let vulnerable = constraint.is_uninhabitable(&profile.capabilities);
         let risk_str = match risk {
-            TrifectaRisk::None => "None    ",
-            TrifectaRisk::Low => "Low     ",
-            TrifectaRisk::Medium => "Medium  ",
-            TrifectaRisk::Complete => "Complete",
+            StateRisk::Safe => "None    ",
+            StateRisk::Low => "Low     ",
+            StateRisk::Medium => "Medium  ",
+            StateRisk::Uninhabitable => "Complete",
         };
-        println!("   {:<14} risk={} trifecta={}", name, risk_str, vulnerable);
+        println!(
+            "   {:<14} risk={} uninhabitable_state={}",
+            name, risk_str, vulnerable
+        );
     }
 
     println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("The trifecta guard ensures that when an agent has access to private");
+    println!("The uninhabitable_state guard ensures that when an agent has access to private");
     println!("data AND untrusted content, any exfiltration path requires human");
     println!("approval — even if each capability was individually authorized.");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");

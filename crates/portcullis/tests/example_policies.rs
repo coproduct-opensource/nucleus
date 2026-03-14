@@ -25,20 +25,20 @@ fn load_policy(name: &str) -> PolicySpec {
 fn test_basic_codegen_loads() {
     let spec = load_policy("basic-codegen.yaml");
     assert_eq!(spec.name, "basic-codegen");
-    assert!(spec.enforce_trifecta);
+    assert!(spec.enforce_uninhabitable);
     assert_eq!(spec.constraints.len(), 3);
 
     // Should build successfully
     let policy = spec.build().expect("Failed to build basic-codegen");
     assert_eq!(policy.name(), "basic-codegen");
-    assert!(policy.enforces_trifecta());
+    assert!(policy.enforces_uninhabitable());
 }
 
 #[test]
 fn test_secure_review_loads() {
     let spec = load_policy("secure-review.yaml");
     assert_eq!(spec.name, "secure-review");
-    assert!(spec.enforce_trifecta);
+    assert!(spec.enforce_uninhabitable);
     assert_eq!(spec.constraints.len(), 4);
 
     let policy = spec.build().expect("Failed to build secure-review");
@@ -66,13 +66,13 @@ fn test_research_mode_loads() {
 }
 
 #[test]
-fn test_trifecta_demo_loads() {
-    let spec = load_policy("trifecta-demo.yaml");
-    assert_eq!(spec.name, "trifecta-demo");
-    assert!(spec.enforce_trifecta);
+fn test_uninhabitable_demo_loads() {
+    let spec = load_policy("uninhabitable-demo.yaml");
+    assert_eq!(spec.name, "uninhabitable-demo");
+    assert!(spec.enforce_uninhabitable);
     assert_eq!(spec.constraints.len(), 3);
 
-    let policy = spec.build().expect("Failed to build trifecta-demo");
+    let policy = spec.build().expect("Failed to build uninhabitable-demo");
     assert_eq!(policy.constraints().len(), 3);
 }
 
@@ -80,7 +80,7 @@ fn test_trifecta_demo_loads() {
 fn test_isolation_aware_loads() {
     let spec = load_policy("isolation-aware.yaml");
     assert_eq!(spec.name, "isolation-aware");
-    assert!(spec.enforce_trifecta);
+    assert!(spec.enforce_uninhabitable);
     assert_eq!(spec.constraints.len(), 5);
 
     let policy = spec.build().expect("Failed to build isolation-aware");

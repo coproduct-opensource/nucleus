@@ -7,7 +7,7 @@
 
 use portcullis::permissive::{PermissiveExecution, PermissiveExecutor};
 use portcullis::weakening::{WeakeningCost, WeakeningCostConfig, WeakeningRequest};
-use portcullis::{CapabilityLevel, IsolationLattice, Operation, PermissionLattice, TrifectaRisk};
+use portcullis::{CapabilityLevel, IsolationLattice, Operation, PermissionLattice, StateRisk};
 use proptest::prelude::*;
 use rust_decimal::Decimal;
 
@@ -40,12 +40,12 @@ fn arb_operation() -> impl Strategy<Value = Operation> {
     ]
 }
 
-fn arb_trifecta_risk() -> impl Strategy<Value = TrifectaRisk> {
+fn arb_state_risk() -> impl Strategy<Value = StateRisk> {
     prop_oneof![
-        Just(TrifectaRisk::None),
-        Just(TrifectaRisk::Low),
-        Just(TrifectaRisk::Medium),
-        Just(TrifectaRisk::Complete),
+        Just(StateRisk::Safe),
+        Just(StateRisk::Low),
+        Just(StateRisk::Medium),
+        Just(StateRisk::Uninhabitable),
     ]
 }
 
@@ -67,9 +67,9 @@ fn arb_weakening_cost() -> impl Strategy<Value = WeakeningCost> {
         (1u32..10u32).prop_map(|n| Decimal::new(n as i64, 0)),
         (1u32..5u32).prop_map(|n| Decimal::new(n as i64, 0)),
     )
-        .prop_map(|(base, trifecta, isolation)| WeakeningCost {
+        .prop_map(|(base, uninhabitable_state, isolation)| WeakeningCost {
             base,
-            trifecta_multiplier: trifecta,
+            uninhabitable_multiplier: uninhabitable_state,
             isolation_multiplier: isolation,
         })
 }
@@ -80,10 +80,10 @@ fn arb_weakening_request() -> impl Strategy<Value = WeakeningRequest> {
         arb_capability_level(),
         arb_capability_level(),
         arb_weakening_cost(),
-        arb_trifecta_risk(),
+        arb_state_risk(),
     )
-        .prop_map(|(op, from, to, cost, trifecta)| {
-            WeakeningRequest::capability(op, from, to, cost, trifecta)
+        .prop_map(|(op, from, to, cost, uninhabitable_state)| {
+            WeakeningRequest::capability(op, from, to, cost, uninhabitable_state)
         })
 }
 
@@ -149,7 +149,7 @@ proptest! {
 
         prop_assert_eq!(combined.base, cost.base);
         // Multipliers take max, zero has 1.0 multipliers
-        prop_assert!(combined.trifecta_multiplier >= cost.trifecta_multiplier);
+        prop_assert!(combined.uninhabitable_multiplier >= cost.uninhabitable_multiplier);
     }
 
     /// WeakeningCost::combine is commutative for base
@@ -264,15 +264,15 @@ proptest! {
 }
 
 // ============================================
-// Trifecta Multiplier Properties
+//  UninhabitableState Multiplier Properties
 // ============================================
 
 proptest! {
-    /// Complete trifecta has highest multiplier
+    /// Complete uninhabitable_state has highest multiplier
     #[test]
-    fn trifecta_complete_has_max_multiplier(before in arb_trifecta_risk()) {
+    fn state_uninhabitable_has_max_multiplier(before in arb_state_risk()) {
         let config = WeakeningCostConfig::default();
-        let multiplier = config.trifecta_multiplier(before, TrifectaRisk::Complete);
+        let multiplier = config.uninhabitable_multiplier(before, StateRisk::Uninhabitable);
 
         // Complete should have 10x multiplier
         prop_assert_eq!(multiplier, Decimal::new(10, 0));
@@ -280,11 +280,11 @@ proptest! {
 
     /// No change from Complete doesn't increase multiplier
     #[test]
-    fn trifecta_same_level_multiplier_is_one_or_more(_before in arb_trifecta_risk()) {
+    fn uninhabitable_state_same_level_multiplier_is_one_or_more(_before in arb_state_risk()) {
         let config = WeakeningCostConfig::default();
 
         // Same level (not increasing) should have multiplier >= 1
-        let multiplier = config.trifecta_multiplier(TrifectaRisk::None, TrifectaRisk::None);
+        let multiplier = config.uninhabitable_multiplier(StateRisk::Safe, StateRisk::Safe);
         prop_assert!(multiplier >= Decimal::ONE);
     }
 }
@@ -303,40 +303,40 @@ proptest! {
             CapabilityLevel::Never,
             CapabilityLevel::Always,
             high_cost,
-            TrifectaRisk::Medium,
+            StateRisk::Medium,
         );
 
         prop_assert!(request.requires_approval(), "High cost requests should require approval");
     }
 
-    /// Complete trifecta requests require approval regardless of cost
+    /// Complete uninhabitable_state requests require approval regardless of cost
     #[test]
-    fn trifecta_complete_requires_approval(op in arb_operation()) {
+    fn state_uninhabitable_requires_approval(op in arb_operation()) {
         let low_cost = WeakeningCost::new(Decimal::new(1, 2)); // 0.01
         let request = WeakeningRequest::capability(
             op,
             CapabilityLevel::Never,
             CapabilityLevel::LowRisk,
             low_cost,
-            TrifectaRisk::Complete,
+            StateRisk::Uninhabitable,
         );
 
-        prop_assert!(request.requires_approval(), "Complete trifecta should require approval");
+        prop_assert!(request.requires_approval(), "Complete uninhabitable_state should require approval");
     }
 
-    /// Low cost, low trifecta requests don't require approval
+    /// Low cost, low uninhabitable_state requests don't require approval
     #[test]
-    fn low_cost_low_trifecta_no_approval(op in arb_operation()) {
+    fn low_cost_low_uninhabitable_no_approval(op in arb_operation()) {
         let low_cost = WeakeningCost::new(Decimal::new(1, 2)); // 0.01
         let request = WeakeningRequest::capability(
             op,
             CapabilityLevel::Never,
             CapabilityLevel::LowRisk,
             low_cost,
-            TrifectaRisk::None,
+            StateRisk::Safe,
         );
 
-        prop_assert!(!request.requires_approval(), "Low cost, no trifecta should not require approval");
+        prop_assert!(!request.requires_approval(), "Low cost, no uninhabitable_state should not require approval");
     }
 }
 
@@ -389,18 +389,18 @@ fn test_codegen_to_permissive_gap() {
         "Should have weakenings from codegen to permissive"
     );
 
-    // Should detect trifecta completion
-    let trifecta_weakenings: Vec<_> = gap
+    // Should detect uninhabitable_state completion
+    let uninhabitable_state_weakenings: Vec<_> = gap
         .requests
         .iter()
-        .filter(|w| w.trifecta_impact == TrifectaRisk::Complete)
+        .filter(|w| w.uninhabitable_impact == StateRisk::Uninhabitable)
         .collect();
 
-    // At least some operations should complete trifecta
+    // At least some operations should uninhabitable_state
     assert!(
-        !trifecta_weakenings.is_empty()
-            || gap.total_cost.trifecta_multiplier >= Decimal::new(10, 0),
-        "Should detect trifecta risk"
+        !uninhabitable_state_weakenings.is_empty()
+            || gap.total_cost.uninhabitable_multiplier >= Decimal::new(10, 0),
+        "Should detect uninhabitable_state risk"
     );
 }
 

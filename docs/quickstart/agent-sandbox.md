@@ -21,7 +21,7 @@ This guide covers two paths:
 | Memory overhead | ~50MB | ~130MB | ~5MB |
 | Startup time | <1s | ~1-2s | <125ms |
 | Permission model | Pod RBAC only | Pod RBAC only | Lattice-guard |
-| Trifecta detection | No | No | Yes |
+|  Uninhabitable state detection | No | No | Yes |
 | Budget enforcement | No | No | Yes |
 
 Use Agent Sandbox + kata-fc when you need:
@@ -31,7 +31,7 @@ Use Agent Sandbox + kata-fc when you need:
 
 Use Nucleus directly when you need:
 - Fine-grained permission policies (portcullis)
-- Automatic trifecta detection (prompt injection defense)
+- Automatic uninhabitable state detection (prompt injection defense)
 - Lower memory footprint and faster startup
 
 ---
