@@ -116,6 +116,57 @@ $ nucleus-audit scan --mcp-config .mcp.json
 
 See [`examples/`](examples/) for more configs: [Claude Code settings](examples/claude-settings/), [MCP configs](examples/mcp-configs/), [PodSpecs](examples/podspecs/).
 
+## Interactive Shell: Run Claude Code Under Nucleus
+
+Launch an interactive Claude Code session where **every tool call flows through the nucleus permission lattice**. Built-in tools (Bash, Read, Write, etc.) are replaced by sandboxed equivalents enforced by the tool-proxy.
+
+```bash
+# Install nucleus CLI (includes shell, audit, profiles, token commands)
+cargo install --git https://github.com/coproduct-opensource/nucleus nucleus-cli
+
+# Launch with the default codegen profile
+nucleus shell
+
+# Use a specific profile and working directory
+nucleus shell --profile safe_pr_fixer --dir ~/projects/my-repo
+
+# Set a budget cap
+nucleus shell --profile local_dev --max-cost 5.00
+
+# Pass credentials as environment variables
+nucleus shell --env LLM_API_TOKEN=your-token --env DATABASE_URL=postgres://...
+
+# Record a kernel decision trace for post-hoc analysis
+nucleus shell --profile codegen --kernel-trace ./trace.jsonl
+```
+
+**What happens under the hood:**
+1. Nucleus spawns `nucleus-tool-proxy` with your chosen permission profile
+2. An MCP config is generated that routes all tools through the proxy
+3. Claude Code launches with only the sandboxed MCP tools visible — built-in tools are disabled
+4. Every side effect (file read/write, bash, git, web fetch) is checked against the permission lattice in real-time
+5. When the session ends, an audit summary shows all operations and any denials
+
+```
+$ nucleus shell --profile code_review
+nucleus shell | profile=code_review budget=$5.00 timeout=7200s
+  tools: read, glob, grep, web_fetch
+  audit: /tmp/nucleus-shell-abc123/audit.log
+
+> claude starts in interactive mode...
+
+--- nucleus audit summary ---
+  total entries: 47
+  read_file: 32
+  glob: 8
+  grep: 7
+  log: /tmp/nucleus-shell-abc123/audit.log
+```
+
+Use `--print-config` to inspect the generated MCP config without launching Claude (useful for custom integrations).
+
+See [`nucleus profiles`](#permission-profiles) for the full list of available profiles.
+
 ## The Uninhabitable State
 
 The core security primitive. When an agent has all three capabilities at autonomous levels, prompt injection becomes data exfiltration:
