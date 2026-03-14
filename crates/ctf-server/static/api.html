@@ -52,25 +52,19 @@
 <a href="/" class="cta">Play in Browser</a>
 <a href="/openapi.json" class="cta cta-secondary">OpenAPI Spec</a>
 
-<h2>Quick Start for ChatGPT</h2>
-<p>Paste this URL into any ChatGPT conversation and ask it to play:</p>
+<h2>Quick Start: Any AI Chat</h2>
+<p>Paste this into <strong>ChatGPT, Claude, Gemini, or any AI chat</strong>:</p>
 <div class="prompt-box">
-  <button class="copy-btn" onclick="navigator.clipboard.writeText('https://nucleus-ctf.fly.dev/api/v1/prompt')">Copy</button>
-  <code>https://nucleus-ctf.fly.dev/api/v1/prompt</code>
+  <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('prompt-text').textContent)">Copy</button>
+  <p id="prompt-text">Read https://nucleus-ctf.fly.dev/api/v1/prompt then use your code interpreter to call the API and play all 7 levels. Try to beat 1100 points.</p>
 </div>
-<p>Or tell ChatGPT:</p>
-<div class="prompt-box">
-  <button class="copy-btn" onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy</button>
-  <p>Read https://nucleus-ctf.fly.dev/api/v1/prompt and follow the instructions to play The Vault CTF. Use the API to submit your attacks and try to get the highest score.</p>
-</div>
+<p>The AI will read the instructions, use its Python sandbox to call the API, craft attacks for all 7 levels, and report its score.</p>
 
-<h2>Custom GPT Setup</h2>
-<ol>
-  <li>Go to <a href="https://chatgpt.com">chatgpt.com</a> &rarr; My GPTs &rarr; Create a GPT</li>
-  <li>Under <strong>Actions</strong> &rarr; Import from URL &rarr; <code>https://nucleus-ctf.fly.dev/openapi.json</code></li>
-  <li>Set instructions: <em>"Call listLevels first, then craft attacks for all 7 levels using runChallenge"</em></li>
-  <li>Save and play!</li>
-</ol>
+<h3>Why code interpreter?</h3>
+<p>AI chat tools can browse web pages but <strong>cannot make POST requests from browsing mode</strong>. The <code>/api/v1/prompt</code> endpoint returns instructions that tell the AI to use its code execution sandbox (Python <code>requests</code> library) to call the challenge API directly.</p>
+
+<h3>Alternative: OpenAPI Import</h3>
+<p>If your platform supports OpenAPI Actions, import the spec at <code>/openapi.json</code>. All POST endpoints have <code>x-openai-isConsequential: false</code> so they run without confirmation prompts.</p>
 
 <h2>Endpoints</h2>
 
@@ -180,15 +174,16 @@
   ]
 }'</code></pre>
 
-<h2>For Other AI Platforms</h2>
+<h2>Platform Integration</h2>
 <table>
-  <thead><tr><th>Platform</th><th>Integration</th></tr></thead>
+  <thead><tr><th>Platform</th><th>Best Method</th><th>How</th></tr></thead>
   <tbody>
-    <tr><td>ChatGPT</td><td>Custom GPT with OpenAPI import, or browse <code>/api/v1/prompt</code></td></tr>
-    <tr><td>Claude</td><td>MCP server (<code>ctf-mcp</code> binary) or HTTP API</td></tr>
-    <tr><td>Gemini</td><td>Function calling via OpenAPI spec</td></tr>
-    <tr><td>Cursor / Windsurf</td><td>MCP server or HTTP API</td></tr>
-    <tr><td>Any HTTP client</td><td>curl / fetch / requests — no auth needed</td></tr>
+    <tr><td>ChatGPT</td><td>Code interpreter</td><td>Paste prompt: "Read /api/v1/prompt and use code interpreter to play"</td></tr>
+    <tr><td>Claude (chat)</td><td>Analysis tool</td><td>Same prompt — Claude uses its Python sandbox</td></tr>
+    <tr><td>Claude Code</td><td>MCP or HTTP</td><td>Add <code>ctf-mcp</code> as MCP server, or curl the API</td></tr>
+    <tr><td>Gemini</td><td>Code execution</td><td>Same prompt — Gemini uses its code execution</td></tr>
+    <tr><td>Cursor / Windsurf</td><td>MCP server</td><td>Add <code>ctf-mcp</code> to MCP config</td></tr>
+    <tr><td>Any HTTP client</td><td>Direct API</td><td>curl / fetch / requests — no auth needed</td></tr>
   </tbody>
 </table>
 
