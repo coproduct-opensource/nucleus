@@ -12,8 +12,11 @@ keywords = ["ai", "security", "permissions", "agents", "lattice", "quotient"]
 categories = ["authentication", "development-tools"]
 
 [features]
-default = ["serde"]
+default = ["serde", "crypto"]
 serde = ["dep:serde", "dep:serde_json", "rust_decimal/serde", "chrono/serde", "uuid/serde"]
+
+# Ed25519 signing (ring) — disable for WASM targets where ring can't compile
+crypto = ["dep:ring"]
 
 # CEL-based policy constraints
 cel = ["dep:cel-interpreter"]
@@ -44,8 +47,8 @@ tracing = { workspace = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 
-# Ed25519 signatures for attested delegation certificates
-ring = { workspace = true }
+# Ed25519 signatures for attested delegation certificates (optional for WASM)
+ring = { workspace = true, optional = true }
 
 # Base64 encoding for compact token transport
 base64 = { workspace = true }

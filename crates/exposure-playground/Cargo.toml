@@ -9,11 +9,20 @@ repository = "https://github.com/coproduct-opensource/nucleus"
 keywords = ["ai", "security", "tui", "demo"]
 categories = ["command-line-utilities"]
 
+[lib]
+name = "exposure_playground"
+path = "src/lib.rs"
+
 [[bin]]
 name = "exposure-playground"
 path = "src/main.rs"
+required-features = ["native"]
+
+[features]
+default = ["native"]
+native = ["dep:crossterm", "ratatui/crossterm"]
 
 [dependencies]
-ratatui = "0.30"
-crossterm = "0.29"
-portcullis = { path = "../portcullis" }
+ratatui = { version = "0.30", default-features = false, features = ["all-widgets"] }
+crossterm = { version = "0.29", optional = true }
+portcullis = { path = "../portcullis", default-features = false }
