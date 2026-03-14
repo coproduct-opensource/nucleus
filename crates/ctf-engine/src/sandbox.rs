@@ -42,9 +42,7 @@ pub enum Verdict {
         proof: Option<String>,
     },
     /// Tool is not available at this level.
-    Unavailable {
-        tool: String,
-    },
+    Unavailable { tool: String },
 }
 
 /// Result of a single step in the attack sequence.

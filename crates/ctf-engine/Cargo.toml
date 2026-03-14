@@ -9,21 +9,28 @@ description = "Browser-native CTF engine: can your AI agent exfiltrate from a fo
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+wasm = [
+    "dep:wasm-bindgen",
+    "dep:serde-wasm-bindgen",
+    "dep:js-sys",
+    "dep:console_error_panic_hook",
+    "uuid/js",
+]
+
 [dependencies]
 portcullis = { path = "../portcullis", default-features = false, features = ["serde"] }
-
-# Enable wasmbind for chrono so Utc::now() uses js_sys::Date instead of SystemTime
-chrono = { version = "0.4", features = ["wasmbind"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-wasm-bindgen = "0.2"
-serde-wasm-bindgen = "0.6"
-js-sys = "0.3"
-console_error_panic_hook = "0.1"
 
-# Enable JS-based random for WASM (needed by uuid v4)
-getrandom = { version = "0.2", features = ["js"] }
-uuid = { version = "1", features = ["v4", "js"] }
+# WASM-only deps (enabled via `wasm` feature)
+wasm-bindgen = { version = "0.2.114", optional = true }
+serde-wasm-bindgen = { version = "0.6", optional = true }
+js-sys = { version = "0.3", optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
+# uuid needed to enable js feature for WASM (pulled in via portcullis)
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"

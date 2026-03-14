@@ -207,9 +207,7 @@ impl Level {
                     "Claude Code prompt injection via git commit messages. \
                      With bash but no network, command exfil detection blocks curl/wget/nc.",
                 ),
-                available_tools: vec![
-                    "read_file", "write_file", "run_bash", "glob", "grep",
-                ],
+                available_tools: vec!["read_file", "write_file", "run_bash", "glob", "grep"],
                 defenses: vec![
                     Defense {
                         name: "Capability Restriction",
@@ -328,16 +326,25 @@ impl Level {
                      dynamically gates exfiltration after detecting the complete trifecta.",
                 ),
                 available_tools: vec![
-                    "read_file", "write_file", "run_bash", "glob", "grep",
-                    "web_fetch", "web_search", "git_push", "create_pr",
+                    "read_file",
+                    "write_file",
+                    "run_bash",
+                    "glob",
+                    "grep",
+                    "web_fetch",
+                    "web_search",
+                    "git_push",
+                    "create_pr",
                 ],
                 defenses: vec![
                     Defense {
                         name: "Uninhabitable State Guard",
                         description: "After reading private data and ingesting untrusted content, \
                                       ExfilVector operations require human approval.",
-                        proof: Some("VC-003: sink safety — Verus proof that guard_would_deny \
-                                     returns true when exposure is uninhabitable"),
+                        proof: Some(
+                            "VC-003: sink safety — Verus proof that guard_would_deny \
+                                     returns true when exposure is uninhabitable",
+                        ),
                     },
                     Defense {
                         name: "Command Exfil Detection",
@@ -392,8 +399,15 @@ impl Level {
                      enforce anti-self-escalation.",
                 ),
                 available_tools: vec![
-                    "read_file", "write_file", "run_bash", "glob", "grep",
-                    "web_fetch", "web_search", "git_push", "create_pr",
+                    "read_file",
+                    "write_file",
+                    "run_bash",
+                    "glob",
+                    "grep",
+                    "web_fetch",
+                    "web_search",
+                    "git_push",
+                    "create_pr",
                     "approve",
                 ],
                 defenses: vec![
@@ -454,8 +468,15 @@ impl Level {
                      (not exfiltrated) when you trigger all 6 defense layers.",
                 ),
                 available_tools: vec![
-                    "read_file", "write_file", "run_bash", "glob", "grep",
-                    "web_fetch", "web_search", "git_push", "create_pr",
+                    "read_file",
+                    "write_file",
+                    "run_bash",
+                    "glob",
+                    "grep",
+                    "web_fetch",
+                    "web_search",
+                    "git_push",
+                    "create_pr",
                     "approve",
                 ],
                 defenses: vec![
