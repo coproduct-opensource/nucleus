@@ -10,6 +10,27 @@
     mobileCSS.textContent = [
       '.step-reason { overflow-wrap: anywhere; word-break: break-all; }',
       '.step-item { overflow-wrap: anywhere; word-break: break-word; min-width: 0; }',
+      // Explainer tabs
+      '.explainer { margin-top: 12px; }',
+      '.explainer-tabs { display: flex; gap: 0; border-bottom: 1px solid #30363d; }',
+      '.explainer-tab {',
+      '  background: none; border: 1px solid transparent; border-bottom: none;',
+      '  color: #8b949e; padding: 6px 14px; font-family: inherit; font-size: 12px;',
+      '  cursor: pointer; border-radius: 4px 4px 0 0; transition: all 0.15s;',
+      '}',
+      '.explainer-tab:hover { color: #e6edf3; }',
+      '.explainer-tab.active {',
+      '  background: #161b22; border-color: #30363d; color: #e6edf3;',
+      '  margin-bottom: -1px; padding-bottom: 7px;',
+      '}',
+      '.explainer-tab.active[data-level="beginner"] { color: #3fb950; }',
+      '.explainer-tab.active[data-level="intermediate"] { color: #58a6ff; }',
+      '.explainer-tab.active[data-level="advanced"] { color: #bc8cff; }',
+      '.explainer-body {',
+      '  background: #161b22; border: 1px solid #30363d; border-top: none;',
+      '  border-radius: 0 0 6px 6px; padding: 12px; font-size: 13px;',
+      '  color: #8b949e; line-height: 1.5;',
+      '}',
       '@media (max-width: 768px) {',
       '  #app { height: auto; min-height: 100vh; overflow-x: hidden; max-width: 100vw; }',
       '  .panel { padding: 12px; }',
@@ -18,6 +39,8 @@
       '  .exposure-leg { padding: 6px 4px; }',
       '  .defense-chip { display: block; margin: 4px 0; width: 100%; }',
       '  .step-item { padding: 8px 10px; max-width: calc(100vw - 24px); }',
+      '  .explainer-tab { padding: 5px 10px; font-size: 11px; }',
+      '  .explainer-body { font-size: 12px; padding: 10px; }',
       '}'
     ].join('\n');
     document.head.appendChild(mobileCSS);
@@ -64,12 +87,49 @@
         '<div class="cve-desc">' + meta.tagline + '</div>' +
         (meta.cve ? '<div class="cve-id">' + meta.cve + '</div>' : '') +
         (meta.cve_description ? '<div class="cve-desc">' + meta.cve_description + '</div>' : '');
+      renderExplainer(meta.explainer);
       var toolsDiv = document.getElementById('tools-available');
       toolsDiv.innerHTML = meta.available_tools.map(function(t) {
         return '<span class="tool-chip">' + t + '</span>';
       }).join('');
       clearResults();
       loadExample(n);
+    }
+
+    function renderExplainer(explainer) {
+      var container = document.getElementById('explainer-container');
+      if (!container) {
+        container = document.createElement('div');
+        container.id = 'explainer-container';
+        container.className = 'explainer';
+        var card = document.getElementById('cve-card');
+        card.parentNode.insertBefore(container, card.nextSibling);
+      }
+      var tabs = [
+        { key: 'beginner', label: 'Beginner' },
+        { key: 'intermediate', label: 'Intermediate' },
+        { key: 'advanced', label: 'Advanced' }
+      ];
+      var activeTab = container.getAttribute('data-active') || 'beginner';
+      container.innerHTML =
+        '<div class="explainer-tabs">' +
+          tabs.map(function(t) {
+            return '<button class="explainer-tab' +
+              (t.key === activeTab ? ' active' : '') +
+              '" data-level="' + t.key + '">' + t.label + '</button>';
+          }).join('') +
+        '</div>' +
+        '<div class="explainer-body">' + explainer[activeTab] + '</div>';
+      container.setAttribute('data-active', activeTab);
+      container.querySelectorAll('.explainer-tab').forEach(function(tab) {
+        tab.addEventListener('click', function() {
+          container.setAttribute('data-active', tab.dataset.level);
+          container.querySelector('.explainer-body').textContent = explainer[tab.dataset.level];
+          container.querySelectorAll('.explainer-tab').forEach(function(t) {
+            t.classList.toggle('active', t.dataset.level === tab.dataset.level);
+          });
+        });
+      });
     }
 
     function loadExample(n) {

@@ -12,7 +12,7 @@ mod sandbox;
 mod engine;
 
 pub use engine::CtfEngine;
-pub use level::{Defense, Level, LevelMeta};
+pub use level::{Defense, Explainer, Level, LevelMeta};
 pub use sandbox::{ToolCall, Verdict, StepResult, AttackResult};
 
 use wasm_bindgen::prelude::*;
