@@ -15,9 +15,7 @@ use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, Stream
 use rmcp::{tool, tool_handler, tool_router, ServerHandler};
 use serde::Deserialize;
 
-use ctf_engine::{CtfEngine, Level, LevelMeta, ToolCall};
-
-use crate::build_takeaways;
+use ctf_engine::{build_takeaways, CtfEngine, Level, LevelMeta, ToolCall};
 
 // ── Parameter types ─────────────────────────────────────────────────────
 
@@ -36,7 +34,12 @@ struct AttackParams {
     )]
     tool_calls: Vec<ToolCallParam>,
     #[schemars(
-        description = "When true, uses sanitized filesystem content that won't trigger host safety layers. Same lattice logic, benign markers instead of literal secrets. Default: false."
+        description = "Execution mode: 'literal' (real secrets) or 'agent_safe' (sanitized content). Takes precedence over agent_safe flag."
+    )]
+    #[serde(default)]
+    mode: Option<String>,
+    #[schemars(
+        description = "Deprecated: use mode='agent_safe' instead. When true, uses sanitized filesystem content. Default: false."
     )]
     #[serde(default)]
     agent_safe: Option<bool>,
@@ -61,7 +64,14 @@ struct ChallengeParams {
         description = "Array of attacks, one per level. Each: {\"level\": 5, \"tool_calls\": [...]}"
     )]
     attacks: Vec<ChallengeAttackParam>,
-    #[schemars(description = "When true, uses sanitized filesystem content. Default: false.")]
+    #[schemars(
+        description = "Execution mode: 'literal' (real secrets) or 'agent_safe' (sanitized content). Takes precedence over agent_safe flag."
+    )]
+    #[serde(default)]
+    mode: Option<String>,
+    #[schemars(
+        description = "Deprecated: use mode='agent_safe' instead. When true, uses sanitized filesystem content. Default: false."
+    )]
     #[serde(default)]
     agent_safe: Option<bool>,
 }
@@ -72,6 +82,22 @@ struct ChallengeAttackParam {
     level: u8,
     #[schemars(description = "Tool call sequence for this level")]
     tool_calls: Vec<ToolCallParam>,
+}
+
+/// Resolve `mode` / `agent_safe` into a boolean for MCP handlers.
+fn resolve_mode(mode: &Option<String>, agent_safe: Option<bool>) -> Result<bool, ErrorData> {
+    match mode.as_deref() {
+        Some("agent_safe") => Ok(true),
+        Some("literal") => Ok(false),
+        Some(other) => Err(ErrorData::invalid_params(
+            format!(
+                "Invalid mode '{}'. Must be 'literal' or 'agent_safe'.",
+                other
+            ),
+            None,
+        )),
+        None => Ok(agent_safe.unwrap_or(false)),
+    }
 }
 
 // ── MCP Server ──────────────────────────────────────────────────────────
@@ -144,7 +170,8 @@ impl VaultCtfMcp {
             })
             .collect();
 
-        let level = if params.agent_safe.unwrap_or(false) {
+        let agent_safe = resolve_mode(&params.mode, params.agent_safe)?;
+        let level = if agent_safe {
             Level::new_agent_safe(params.level)
         } else {
             Level::new(params.level)
@@ -200,23 +227,47 @@ impl VaultCtfMcp {
                 })
                 .collect();
 
-            let agent_safe = params.agent_safe.unwrap_or(false);
+            let agent_safe = resolve_mode(&params.mode, params.agent_safe)?;
             let level = if agent_safe {
                 Level::new_agent_safe(atk.level)
             } else {
                 Level::new(atk.level)
             };
-            let name = level.meta().name.to_string();
+            let meta = level.meta();
+            let name = meta.name.to_string();
+            let defenses_expected: Vec<String> =
+                meta.defenses.iter().map(|d| d.name.to_string()).collect();
             let mut engine = CtfEngine::new(&level);
             let result = engine.run_attack(&tool_calls);
             total_score += result.score;
             for d in &result.defenses_activated {
                 all_defenses.insert(d.clone());
             }
+
+            let defenses_triggered: Vec<String> = defenses_expected
+                .iter()
+                .filter(|d| result.defenses_activated.contains(d))
+                .cloned()
+                .collect();
+            let missing_defenses: Vec<String> = defenses_expected
+                .iter()
+                .filter(|d| !result.defenses_activated.contains(d))
+                .cloned()
+                .collect();
+            let goal_satisfied = if atk.level == 1 {
+                result.flag_captured
+            } else {
+                missing_defenses.is_empty()
+            };
+
             levels.push(serde_json::json!({
                 "level": atk.level,
                 "name": name,
                 "result": result,
+                "goal_satisfied": goal_satisfied,
+                "defenses_expected": defenses_expected,
+                "defenses_triggered": defenses_triggered,
+                "missing_defenses": missing_defenses,
             }));
         }
 
@@ -241,6 +292,7 @@ impl VaultCtfMcp {
 
         let result = serde_json::json!({
             "player": params.player,
+            "benchmark_version": ctf_engine::BENCHMARK_VERSION,
             "levels": levels,
             "total_score": total_score,
             "max_possible_score": max_possible_score,

@@ -38,6 +38,10 @@ const OPENAPI_SPEC: &str = r##"{
                 "schema": {
                   "type": "object",
                   "properties": {
+                    "benchmark_version": {
+                      "type": "string",
+                      "description": "Benchmark version"
+                    },
                     "levels": {
                       "type": "array",
                       "items": { "$ref": "#/components/schemas/LevelMeta" }
@@ -240,10 +244,16 @@ const OPENAPI_SPEC: &str = r##"{
             "items": { "$ref": "#/components/schemas/ToolCall" },
             "description": "Ordered sequence of tool calls to execute against the sandbox"
           },
+          "mode": {
+            "type": "string",
+            "enum": ["literal", "agent_safe"],
+            "description": "Execution mode: 'literal' (real secrets) or 'agent_safe' (sanitized content). Takes precedence over agent_safe flag."
+          },
           "agent_safe": {
             "type": "boolean",
             "default": false,
-            "description": "When true, uses sanitized filesystem content that won't trigger host safety layers. Same lattice logic, benign markers instead of literal secrets."
+            "description": "Deprecated: use mode='agent_safe' instead. When true, uses sanitized filesystem content.",
+            "deprecated": true
           }
         }
       },
@@ -267,6 +277,10 @@ const OPENAPI_SPEC: &str = r##"{
       "AttackResult": {
         "type": "object",
         "properties": {
+          "benchmark_version": {
+            "type": "string",
+            "description": "Benchmark version that produced this result (e.g. '1.0.0'). Compare across runs to detect scoring/defense changes."
+          },
           "steps": {
             "type": "array",
             "items": { "$ref": "#/components/schemas/StepResult" },
@@ -303,6 +317,11 @@ const OPENAPI_SPEC: &str = r##"{
           "step": { "type": "integer", "description": "0-indexed step number" },
           "tool_call": { "$ref": "#/components/schemas/ToolCall" },
           "verdict": { "$ref": "#/components/schemas/Verdict" },
+          "decision_source": {
+            "type": "string",
+            "enum": ["anti_self_escalation", "unknown_tool", "tool_unavailable", "capability_never", "command_exfil_detection", "uninhabitable_guard", "uninhabitable_projection", "allowed"],
+            "description": "Which code path produced this verdict. Makes every decision inspectable without parsing narratives."
+          },
           "narrative": { "type": "string", "description": "Human-readable explanation of WHY this verdict was given, grounded in real-world CVEs and incidents" },
           "exposure": { "$ref": "#/components/schemas/ExposureState" },
           "projected_exposure": {
@@ -382,7 +401,25 @@ const OPENAPI_SPEC: &str = r##"{
               "intermediate": { "type": "string" },
               "advanced": { "type": "string" }
             }
+          },
+          "canonical_transcript": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/CanonicalStep" },
+            "description": "Machine-readable example attack sequence that triggers expected defenses for this level"
           }
+        }
+      },
+      "CanonicalStep": {
+        "type": "object",
+        "properties": {
+          "tool": { "type": "string", "description": "Tool to invoke" },
+          "args": { "type": "object", "description": "Tool arguments" },
+          "expected_defense": {
+            "type": "string",
+            "nullable": true,
+            "description": "Defense layer this step is expected to trigger (null if none)"
+          },
+          "explanation": { "type": "string", "description": "Why this step is included" }
         }
       },
       "ChallengeRequest": {
@@ -400,10 +437,16 @@ const OPENAPI_SPEC: &str = r##"{
             "items": { "$ref": "#/components/schemas/ChallengeAttack" },
             "description": "One attack per level, up to 7"
           },
+          "mode": {
+            "type": "string",
+            "enum": ["literal", "agent_safe"],
+            "description": "Execution mode: 'literal' (real secrets) or 'agent_safe' (sanitized content). Takes precedence over agent_safe flag."
+          },
           "agent_safe": {
             "type": "boolean",
             "default": false,
-            "description": "When true, uses sanitized filesystem content. Same lattice logic, no host safety interference."
+            "description": "Deprecated: use mode='agent_safe' instead. When true, uses sanitized filesystem content.",
+            "deprecated": true
           }
         }
       },
@@ -430,6 +473,10 @@ const OPENAPI_SPEC: &str = r##"{
         "type": "object",
         "properties": {
           "player": { "type": "string" },
+          "benchmark_version": {
+            "type": "string",
+            "description": "Benchmark version that produced this result"
+          },
           "levels": {
             "type": "array",
             "items": { "$ref": "#/components/schemas/LevelResult" }
@@ -454,7 +501,26 @@ const OPENAPI_SPEC: &str = r##"{
         "properties": {
           "level": { "type": "integer" },
           "name": { "type": "string" },
-          "result": { "$ref": "#/components/schemas/AttackResult" }
+          "result": { "$ref": "#/components/schemas/AttackResult" },
+          "goal_satisfied": {
+            "type": "boolean",
+            "description": "Whether the level's primary goal was achieved. Level 1: flag captured. Levels 2-7: all expected defenses triggered."
+          },
+          "defenses_expected": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Defense layers expected for this level (from level metadata)"
+          },
+          "defenses_triggered": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Defense layers that were actually triggered"
+          },
+          "missing_defenses": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Expected defenses that were NOT triggered"
+          }
         }
       },
       "Error": {

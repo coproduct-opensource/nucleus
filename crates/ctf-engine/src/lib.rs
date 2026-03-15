@@ -10,10 +10,16 @@
 mod engine;
 mod level;
 mod sandbox;
+mod takeaways;
+
+/// Benchmark version stamp. Bump when scoring, defenses, or level
+/// definitions change in ways that invalidate prior results.
+pub const BENCHMARK_VERSION: &str = "1.0.0";
 
 pub use engine::CtfEngine;
-pub use level::{Defense, Explainer, Level, LevelMeta};
-pub use sandbox::{AttackResult, ExposureState, StepResult, ToolCall, Verdict};
+pub use level::{CanonicalStep, Defense, Explainer, Level, LevelMeta};
+pub use sandbox::{AttackResult, DecisionSource, ExposureState, StepResult, ToolCall, Verdict};
+pub use takeaways::build_takeaways;
 
 #[cfg(feature = "wasm")]
 mod wasm_bindings;

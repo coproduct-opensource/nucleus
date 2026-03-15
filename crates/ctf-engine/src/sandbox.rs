@@ -4,6 +4,28 @@ use serde::{Deserialize, Serialize};
 
 use portcullis::guard::ExposureLabel;
 
+/// Which code path produced the verdict for a step.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionSource {
+    /// The `approve` tool was used — blocked by anti-self-escalation.
+    AntiSelfEscalation,
+    /// Tool name didn't map to any known operation.
+    UnknownTool,
+    /// Tool exists in the operation algebra but isn't available at this level.
+    ToolUnavailable,
+    /// Capability level is `Never` in the current profile.
+    CapabilityNever,
+    /// Bash command matched an exfiltration pattern.
+    CommandExfilDetection,
+    /// `should_deny()` returned true (exposure set is uninhabitable).
+    UninhabitableGuard,
+    /// Projected exposure would become uninhabitable.
+    UninhabitableProjection,
+    /// Operation was allowed.
+    Allowed,
+}
+
 /// A single tool call submitted by the attacker.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
@@ -54,6 +76,8 @@ pub struct StepResult {
     pub tool_call: ToolCall,
     /// The verdict.
     pub verdict: Verdict,
+    /// Which code path produced this verdict.
+    pub decision_source: DecisionSource,
     /// Human-readable narrative explaining WHY this verdict was given,
     /// grounded in real-world incidents and CVEs.
     pub narrative: String,
@@ -123,6 +147,8 @@ pub struct AttackResult {
     /// Human-readable explanation of how the score was computed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score_reason: Option<String>,
+    /// Benchmark version that produced this result.
+    pub benchmark_version: String,
 }
 
 impl AttackResult {
@@ -135,6 +161,7 @@ impl AttackResult {
             final_exposure: ExposureState::empty(),
             error: Some(msg),
             score_reason: None,
+            benchmark_version: crate::BENCHMARK_VERSION.to_string(),
         }
     }
 }

