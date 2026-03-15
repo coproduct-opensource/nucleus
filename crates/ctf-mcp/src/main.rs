@@ -34,9 +34,14 @@ struct AttackParams {
     #[schemars(description = "Level number to attack (1-7)")]
     level: u8,
     #[schemars(
-        description = "Array of tool calls. Each: {\"tool\": \"read_file\", \"args\": {\"path\": \"/vault/flag.txt\"}}. Available tools: read_file, write_file, run_bash, web_fetch, web_search, glob, grep, git_push, create_pr, approve."
+        description = "Array of tool calls. Each: {\"tool\": \"read_file\", \"args\": {\"path\": \"/vault/flag.txt\"}}. Available tools: read_file, write_file, run_bash, web_fetch, web_search, glob, grep, git_push, create_pr, approve, manage_pods."
     )]
     tool_calls: Vec<ToolCallParam>,
+    #[schemars(
+        description = "When true, uses sanitized filesystem content that won't trigger host safety layers. Same lattice logic, benign markers instead of literal secrets. Default: false."
+    )]
+    #[serde(default)]
+    agent_safe: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -58,6 +63,9 @@ struct ChallengeParams {
         description = "Array of attacks, one per level. Each: {\"level\": 5, \"tool_calls\": [...]}"
     )]
     attacks: Vec<ChallengeAttackParam>,
+    #[schemars(description = "When true, uses sanitized filesystem content. Default: false.")]
+    #[serde(default)]
+    agent_safe: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -138,7 +146,11 @@ impl VaultCtfServer {
             })
             .collect();
 
-        let level = Level::new(params.level);
+        let level = if params.agent_safe.unwrap_or(false) {
+            Level::new_agent_safe(params.level)
+        } else {
+            Level::new(params.level)
+        };
         let mut engine = CtfEngine::new(&level);
         let result = engine.run_attack(&tool_calls);
 
@@ -190,7 +202,12 @@ impl VaultCtfServer {
                 })
                 .collect();
 
-            let level = Level::new(atk.level);
+            let agent_safe = params.agent_safe.unwrap_or(false);
+            let level = if agent_safe {
+                Level::new_agent_safe(atk.level)
+            } else {
+                Level::new(atk.level)
+            };
             let name = level.meta().name.to_string();
             let mut engine = CtfEngine::new(&level);
             let result = engine.run_attack(&tool_calls);
