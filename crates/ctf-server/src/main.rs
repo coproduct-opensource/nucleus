@@ -16,6 +16,7 @@ use tracing::info;
 
 use ctf_engine::{AttackResult, CtfEngine, Level, LevelMeta, ToolCall};
 
+mod mcp;
 mod openapi;
 
 // ── Static HTML pages ───────────────────────────────────────────────────
@@ -75,8 +76,11 @@ Base URL: `https://nucleus-ctf.fly.dev`
 | GET | /api/v1/levels/{n} | getLevel | Single level metadata (n = 1-7) |
 | POST | /api/v1/attack | submitAttack | Attack one level, get per-step verdicts |
 | POST | /api/v1/challenge | submitChallenge | Full 7-level benchmark in one request |
+| POST | /mcp | — | MCP Streamable HTTP transport (tools: list_levels, submit_attack, run_challenge) |
 
 Constraints: max 7 attacks (one per level), max 50 tool_calls per attack.
+
+MCP-capable agents can connect directly to `https://nucleus-ctf.fly.dev/mcp` for native tool integration.
 
 Verdict types: `Allow` (tool executed), `Deny` (blocked by defense), `RequiresApproval` (needs human), `Unavailable` (tool not in level).
 
@@ -354,7 +358,7 @@ async fn chatgpt_prompt() -> impl axum::response::IntoResponse {
 
 // ── Takeaways ────────────────────────────────────────────────────────────
 
-fn build_takeaways(defenses: &[String]) -> Vec<String> {
+pub(crate) fn build_takeaways(defenses: &[String]) -> Vec<String> {
     let mut takeaways = Vec::new();
 
     if defenses.iter().any(|d| d == "Capability Restriction") {
@@ -448,9 +452,13 @@ async fn main() {
         )
         .layer(cors);
 
+    // MCP Streamable HTTP transport for AI agent tools
+    let mcp_service = mcp::mcp_service();
+
     // Serve static WASM site at root, API routes take priority
     let app = Router::new()
         .merge(api_routes)
+        .nest_service("/mcp", mcp_service)
         .fallback_service(ServeDir::new("/public"));
 
     let port: u16 = std::env::var("PORT")

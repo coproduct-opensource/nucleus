@@ -181,16 +181,26 @@
   ]
 }'</code></pre>
 
+<h2>MCP (Model Context Protocol)</h2>
+<p>The CTF exposes an MCP Streamable HTTP endpoint for native agent tool integration:</p>
+<div class="endpoint">
+  <span class="method post">POST</span>
+  <span class="path">/mcp</span>
+  <p class="desc">MCP Streamable HTTP transport. Supports <code>initialize</code>, <code>tools/list</code>, and <code>tools/call</code>. Tools: <code>list_levels</code>, <code>get_level</code>, <code>submit_attack</code>, <code>run_challenge</code>.</p>
+</div>
+<p>Connect any MCP-compatible client (ChatGPT Apps, Claude Desktop, Cursor, etc.) to <code>https://nucleus-ctf.fly.dev/mcp</code>. No auth required.</p>
+
 <h2>Platform Integration</h2>
 <table>
   <thead><tr><th>Platform</th><th>Best Method</th><th>How</th></tr></thead>
   <tbody>
-    <tr><td>ChatGPT</td><td>Code interpreter</td><td>Paste prompt: "Read /api/v1/prompt and use code interpreter to play"</td></tr>
-    <tr><td>Claude (chat)</td><td>Analysis tool</td><td>Same prompt — Claude uses its Python sandbox</td></tr>
-    <tr><td>Claude Code</td><td>MCP or HTTP</td><td>Add <code>ctf-mcp</code> as MCP server, or curl the API</td></tr>
+    <tr><td>ChatGPT</td><td>MCP App or code interpreter</td><td>Connect MCP at <code>/mcp</code>, or paste prompt with code interpreter</td></tr>
+    <tr><td>Claude (chat)</td><td>Analysis tool</td><td>Paste prompt — Claude uses its Python sandbox</td></tr>
+    <tr><td>Claude Code / Desktop</td><td>MCP</td><td>Add remote MCP server: <code>https://nucleus-ctf.fly.dev/mcp</code></td></tr>
     <tr><td>Gemini</td><td>Code execution</td><td>Same prompt — Gemini uses its code execution</td></tr>
-    <tr><td>Cursor / Windsurf</td><td>MCP server</td><td>Add <code>ctf-mcp</code> to MCP config</td></tr>
-    <tr><td>Any HTTP client</td><td>Direct API</td><td>curl / fetch / requests — no auth needed</td></tr>
+    <tr><td>Cursor / Windsurf</td><td>MCP</td><td>Add remote MCP server URL to MCP config</td></tr>
+    <tr><td>Any MCP client</td><td>MCP Streamable HTTP</td><td>POST JSON-RPC to <code>/mcp</code></td></tr>
+    <tr><td>Any HTTP client</td><td>Direct REST API</td><td>curl / fetch / requests — no auth needed</td></tr>
   </tbody>
 </table>
 
