@@ -1080,6 +1080,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ck-kernel"
+version = "1.0.0"
+dependencies = [
+ "blake3",
+ "chrono",
+ "ck-policy",
+ "ck-types",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "ck-policy"
 version = "1.0.0"
 dependencies = [
