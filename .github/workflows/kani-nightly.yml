@@ -5,11 +5,13 @@ on:
     branches: ["main"]
     paths:
       - "crates/portcullis/src/**"
+      - "crates/ck-*/src/**"
       - ".kani-minimum-proofs"
       - ".github/workflows/kani-nightly.yml"
   pull_request:
     paths:
       - "crates/portcullis/src/**"
+      - "crates/ck-*/src/**"
       - ".kani-minimum-proofs"
       - ".github/workflows/kani-nightly.yml"
   schedule:
@@ -70,6 +72,35 @@ jobs:
           echo "- **Solver:** CaDiCaL" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Minimum required:** $MINIMUM" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Full suite:** nightly + workflow_dispatch" >> "$GITHUB_STEP_SUMMARY"
+
+  # Constitutional Kernel: all 6 harnesses — lightweight, runs on every PR
+  kani-constitutional:
+    name: Kani (constitutional kernel)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        with:
+          cache-on-failure: true
+      - name: Cache Kani toolchain
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.kani
+          key: kani-toolchain-${{ runner.os }}-${{ hashFiles('.github/workflows/kani-nightly.yml') }}
+      - name: Run Kani (constitutional kernel)
+        uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
+        with:
+          args: "-p ck-kernel --solver cadical"
+      - name: Summary
+        if: always()
+        run: |
+          PROOF_COUNT=$(grep -c '#\[kani::proof\]' crates/ck-kernel/src/kani.rs)
+          echo "## Kani BMC — Constitutional Kernel" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Harnesses verified:** $PROOF_COUNT" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Proved invariants:** capability non-escalation, governance monotonicity, lineage integrity, budget boundedness, constitutional self-merge rejection" >> "$GITHUB_STEP_SUMMARY"
 
   # Full tier: all harnesses including normalize_* — nightly and on-demand only
   # normalize_* harnesses each take 15+ minutes due to large symbolic state space

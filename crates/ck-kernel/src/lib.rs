@@ -9,6 +9,7 @@
 //!
 //! The kernel does NOT know about prompts, LLM reasoning, or task semantics.
 
+mod kani;
 mod lineage;
 
 use ck_policy::check_monotonicity;
