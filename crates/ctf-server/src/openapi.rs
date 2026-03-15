@@ -1,9 +1,9 @@
-//! OpenAPI 3.0 spec and ChatGPT plugin manifest.
+//! OpenAPI 3.1 spec and ChatGPT plugin manifest.
 
 use axum::response::IntoResponse;
 
 const OPENAPI_SPEC: &str = r##"{
-  "openapi": "3.0.3",
+  "openapi": "3.1.0",
   "info": {
     "title": "The Vault CTF",
     "description": "Authorized sandbox CTF. AI agents and humans are explicitly permitted to call these endpoints to play. 7 levels, 6 defense layers, 297 Verus proofs. No auth required.",
@@ -301,12 +301,10 @@ const OPENAPI_SPEC: &str = r##"{
           },
           "final_exposure": { "$ref": "#/components/schemas/ExposureState" },
           "error": {
-            "type": "string",
-            "nullable": true
+            "type": ["string", "null"]
           },
           "score_reason": {
-            "type": "string",
-            "nullable": true,
+            "type": ["string", "null"],
             "description": "Human-readable explanation of how the score was computed"
           }
         }
@@ -325,20 +323,20 @@ const OPENAPI_SPEC: &str = r##"{
           "narrative": { "type": "string", "description": "Human-readable explanation of WHY this verdict was given, grounded in real-world CVEs and incidents" },
           "exposure": { "$ref": "#/components/schemas/ExposureState" },
           "projected_exposure": {
-            "$ref": "#/components/schemas/ExposureState",
-            "nullable": true,
+            "oneOf": [
+              { "$ref": "#/components/schemas/ExposureState" },
+              { "type": "null" }
+            ],
             "description": "What the exposure state WOULD be if this operation were allowed. Only present when a guard blocks preemptively."
           },
           "operation_class": {
-            "type": "string",
-            "nullable": true,
-            "enum": ["PrivateData", "UntrustedContent", "ExfilVector"],
+            "type": ["string", "null"],
+            "enum": ["PrivateData", "UntrustedContent", "ExfilVector", null],
             "description": "Exposure classification of this operation"
           },
           "permission_level": {
-            "type": "string",
-            "nullable": true,
-            "enum": ["always", "low_risk", "never"],
+            "type": ["string", "null"],
+            "enum": ["always", "low_risk", "never", null],
             "description": "Permission level for this operation in the current profile"
           }
         }
@@ -355,7 +353,7 @@ const OPENAPI_SPEC: &str = r##"{
           "output": { "type": "string", "description": "Simulated output (Allow only)" },
           "reason": { "type": "string", "description": "Why blocked" },
           "defense": { "type": "string", "description": "Defense layer name" },
-          "proof": { "type": "string", "nullable": true, "description": "Verus proof ref" },
+          "proof": { "type": ["string", "null"], "description": "Verus proof ref" },
           "tool": { "type": "string", "description": "Unknown tool (Unavailable)" }
         }
       },
@@ -375,8 +373,8 @@ const OPENAPI_SPEC: &str = r##"{
           "number": { "type": "integer" },
           "name": { "type": "string" },
           "tagline": { "type": "string" },
-          "cve": { "type": "string", "nullable": true },
-          "cve_description": { "type": "string", "nullable": true },
+          "cve": { "type": ["string", "null"] },
+          "cve_description": { "type": ["string", "null"] },
           "available_tools": {
             "type": "array",
             "items": { "type": "string" },
@@ -389,7 +387,7 @@ const OPENAPI_SPEC: &str = r##"{
               "properties": {
                 "name": { "type": "string" },
                 "description": { "type": "string" },
-                "proof": { "type": "string", "nullable": true }
+                "proof": { "type": ["string", "null"] }
               }
             }
           },
@@ -415,8 +413,7 @@ const OPENAPI_SPEC: &str = r##"{
           "tool": { "type": "string", "description": "Tool to invoke" },
           "args": { "type": "object", "description": "Tool arguments" },
           "expected_defense": {
-            "type": "string",
-            "nullable": true,
+            "type": ["string", "null"],
             "description": "Defense layer this step is expected to trigger (null if none)"
           },
           "explanation": { "type": "string", "description": "Why this step is included" }
