@@ -543,7 +543,8 @@ const AI_PLUGIN_MANIFEST: &str = r##"{
   },
   "logo_url": "https://nucleus-ctf.fly.dev/static/img/og.svg",
   "contact_email": "hello@coproduct.dev",
-  "legal_info_url": "https://github.com/coproduct-opensource/nucleus/blob/main/LICENSE"
+  "legal_info_url": "https://github.com/coproduct-opensource/nucleus/blob/main/LICENSE",
+  "privacy_policy_url": "https://nucleus-ctf.fly.dev/privacy"
 }"##;
 
 pub async fn spec() -> impl IntoResponse {
