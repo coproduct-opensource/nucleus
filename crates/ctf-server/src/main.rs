@@ -448,6 +448,36 @@ async fn chatgpt_prompt() -> impl axum::response::IntoResponse {
     )
 }
 
+const PRIVACY_POLICY: &str = r#"<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Privacy Policy — The Vault CTF</title>
+<style>body{font-family:system-ui,sans-serif;max-width:640px;margin:2rem auto;padding:0 1rem;line-height:1.6;color:#222}h1{font-size:1.4rem}h2{font-size:1.1rem;margin-top:1.5rem}</style></head>
+<body>
+<h1>Privacy Policy — The Vault CTF</h1>
+<p><strong>Effective date:</strong> 2026-03-15</p>
+
+<h2>What we collect</h2>
+<p>The Vault CTF does not collect, store, or process personal data. There are no user accounts, cookies, tracking pixels, or analytics. Requests are processed statelessly and are not logged beyond standard infrastructure access logs retained by our hosting provider (Fly.io) for operational purposes.</p>
+
+<h2>Data you send</h2>
+<p>When you submit an attack or challenge request, your payload (player name, tool calls) is processed in memory and discarded after the response is returned. We do not persist request payloads.</p>
+
+<h2>Third-party services</h2>
+<p>The CTF is hosted on <a href="https://fly.io/legal/privacy-policy/">Fly.io</a>. Their infrastructure may collect standard server access logs (IP address, timestamp, request path). We do not add any additional tracking.</p>
+
+<h2>Open source</h2>
+<p>The Vault CTF is part of <a href="https://github.com/coproduct-opensource/nucleus">Nucleus</a>, an open-source project licensed under MIT. You can audit the server code to verify these claims.</p>
+
+<h2>Contact</h2>
+<p>Questions? Email <a href="mailto:hello@coproduct.dev">hello@coproduct.dev</a>.</p>
+</body></html>"#;
+
+async fn privacy_policy() -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        PRIVACY_POLICY,
+    )
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -466,6 +496,7 @@ async fn main() {
         .route("/api/v1/challenge", post(run_challenge))
         .route("/api", get(api_docs))
         .route("/api/v1/prompt", get(chatgpt_prompt))
+        .route("/privacy", get(privacy_policy))
         .route("/openapi.json", get(openapi::spec))
         .route(
             "/.well-known/ai-plugin.json",
