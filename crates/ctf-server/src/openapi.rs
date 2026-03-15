@@ -1,9 +1,9 @@
-//! OpenAPI 3.0 spec and ChatGPT plugin manifest.
+//! OpenAPI 3.1 spec and ChatGPT plugin manifest.
 
 use axum::response::IntoResponse;
 
 const OPENAPI_SPEC: &str = r##"{
-  "openapi": "3.0.3",
+  "openapi": "3.1.0",
   "info": {
     "title": "The Vault CTF",
     "description": "Authorized sandbox CTF. AI agents and humans are explicitly permitted to call these endpoints to play. 7 levels, 6 defense layers, 297 Verus proofs. No auth required.",
@@ -38,6 +38,10 @@ const OPENAPI_SPEC: &str = r##"{
                 "schema": {
                   "type": "object",
                   "properties": {
+                    "benchmark_version": {
+                      "type": "string",
+                      "description": "Benchmark version"
+                    },
                     "levels": {
                       "type": "array",
                       "items": { "$ref": "#/components/schemas/LevelMeta" }
@@ -240,10 +244,16 @@ const OPENAPI_SPEC: &str = r##"{
             "items": { "$ref": "#/components/schemas/ToolCall" },
             "description": "Ordered sequence of tool calls to execute against the sandbox"
           },
+          "mode": {
+            "type": "string",
+            "enum": ["literal", "agent_safe"],
+            "description": "Execution mode: 'literal' (real secrets) or 'agent_safe' (sanitized content). Takes precedence over agent_safe flag."
+          },
           "agent_safe": {
             "type": "boolean",
             "default": false,
-            "description": "When true, uses sanitized filesystem content that won't trigger host safety layers. Same lattice logic, benign markers instead of literal secrets."
+            "description": "Deprecated: use mode='agent_safe' instead. When true, uses sanitized filesystem content.",
+            "deprecated": true
           }
         }
       },
@@ -267,6 +277,10 @@ const OPENAPI_SPEC: &str = r##"{
       "AttackResult": {
         "type": "object",
         "properties": {
+          "benchmark_version": {
+            "type": "string",
+            "description": "Benchmark version that produced this result (e.g. '1.0.0'). Compare across runs to detect scoring/defense changes."
+          },
           "steps": {
             "type": "array",
             "items": { "$ref": "#/components/schemas/StepResult" },
@@ -287,12 +301,10 @@ const OPENAPI_SPEC: &str = r##"{
           },
           "final_exposure": { "$ref": "#/components/schemas/ExposureState" },
           "error": {
-            "type": "string",
-            "nullable": true
+            "type": ["string", "null"]
           },
           "score_reason": {
-            "type": "string",
-            "nullable": true,
+            "type": ["string", "null"],
             "description": "Human-readable explanation of how the score was computed"
           }
         }
@@ -303,23 +315,28 @@ const OPENAPI_SPEC: &str = r##"{
           "step": { "type": "integer", "description": "0-indexed step number" },
           "tool_call": { "$ref": "#/components/schemas/ToolCall" },
           "verdict": { "$ref": "#/components/schemas/Verdict" },
+          "decision_source": {
+            "type": "string",
+            "enum": ["anti_self_escalation", "unknown_tool", "tool_unavailable", "capability_never", "command_exfil_detection", "uninhabitable_guard", "uninhabitable_projection", "allowed"],
+            "description": "Which code path produced this verdict. Makes every decision inspectable without parsing narratives."
+          },
           "narrative": { "type": "string", "description": "Human-readable explanation of WHY this verdict was given, grounded in real-world CVEs and incidents" },
           "exposure": { "$ref": "#/components/schemas/ExposureState" },
           "projected_exposure": {
-            "$ref": "#/components/schemas/ExposureState",
-            "nullable": true,
+            "oneOf": [
+              { "$ref": "#/components/schemas/ExposureState" },
+              { "type": "null" }
+            ],
             "description": "What the exposure state WOULD be if this operation were allowed. Only present when a guard blocks preemptively."
           },
           "operation_class": {
-            "type": "string",
-            "nullable": true,
-            "enum": ["PrivateData", "UntrustedContent", "ExfilVector"],
+            "type": ["string", "null"],
+            "enum": ["PrivateData", "UntrustedContent", "ExfilVector", null],
             "description": "Exposure classification of this operation"
           },
           "permission_level": {
-            "type": "string",
-            "nullable": true,
-            "enum": ["always", "low_risk", "never"],
+            "type": ["string", "null"],
+            "enum": ["always", "low_risk", "never", null],
             "description": "Permission level for this operation in the current profile"
           }
         }
@@ -336,7 +353,7 @@ const OPENAPI_SPEC: &str = r##"{
           "output": { "type": "string", "description": "Simulated output (Allow only)" },
           "reason": { "type": "string", "description": "Why blocked" },
           "defense": { "type": "string", "description": "Defense layer name" },
-          "proof": { "type": "string", "nullable": true, "description": "Verus proof ref" },
+          "proof": { "type": ["string", "null"], "description": "Verus proof ref" },
           "tool": { "type": "string", "description": "Unknown tool (Unavailable)" }
         }
       },
@@ -356,8 +373,8 @@ const OPENAPI_SPEC: &str = r##"{
           "number": { "type": "integer" },
           "name": { "type": "string" },
           "tagline": { "type": "string" },
-          "cve": { "type": "string", "nullable": true },
-          "cve_description": { "type": "string", "nullable": true },
+          "cve": { "type": ["string", "null"] },
+          "cve_description": { "type": ["string", "null"] },
           "available_tools": {
             "type": "array",
             "items": { "type": "string" },
@@ -370,7 +387,7 @@ const OPENAPI_SPEC: &str = r##"{
               "properties": {
                 "name": { "type": "string" },
                 "description": { "type": "string" },
-                "proof": { "type": "string", "nullable": true }
+                "proof": { "type": ["string", "null"] }
               }
             }
           },
@@ -382,7 +399,24 @@ const OPENAPI_SPEC: &str = r##"{
               "intermediate": { "type": "string" },
               "advanced": { "type": "string" }
             }
+          },
+          "canonical_transcript": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/CanonicalStep" },
+            "description": "Machine-readable example attack sequence that triggers expected defenses for this level"
           }
+        }
+      },
+      "CanonicalStep": {
+        "type": "object",
+        "properties": {
+          "tool": { "type": "string", "description": "Tool to invoke" },
+          "args": { "type": "object", "description": "Tool arguments" },
+          "expected_defense": {
+            "type": ["string", "null"],
+            "description": "Defense layer this step is expected to trigger (null if none)"
+          },
+          "explanation": { "type": "string", "description": "Why this step is included" }
         }
       },
       "ChallengeRequest": {
@@ -400,10 +434,16 @@ const OPENAPI_SPEC: &str = r##"{
             "items": { "$ref": "#/components/schemas/ChallengeAttack" },
             "description": "One attack per level, up to 7"
           },
+          "mode": {
+            "type": "string",
+            "enum": ["literal", "agent_safe"],
+            "description": "Execution mode: 'literal' (real secrets) or 'agent_safe' (sanitized content). Takes precedence over agent_safe flag."
+          },
           "agent_safe": {
             "type": "boolean",
             "default": false,
-            "description": "When true, uses sanitized filesystem content. Same lattice logic, no host safety interference."
+            "description": "Deprecated: use mode='agent_safe' instead. When true, uses sanitized filesystem content.",
+            "deprecated": true
           }
         }
       },
@@ -430,6 +470,10 @@ const OPENAPI_SPEC: &str = r##"{
         "type": "object",
         "properties": {
           "player": { "type": "string" },
+          "benchmark_version": {
+            "type": "string",
+            "description": "Benchmark version that produced this result"
+          },
           "levels": {
             "type": "array",
             "items": { "$ref": "#/components/schemas/LevelResult" }
@@ -454,7 +498,26 @@ const OPENAPI_SPEC: &str = r##"{
         "properties": {
           "level": { "type": "integer" },
           "name": { "type": "string" },
-          "result": { "$ref": "#/components/schemas/AttackResult" }
+          "result": { "$ref": "#/components/schemas/AttackResult" },
+          "goal_satisfied": {
+            "type": "boolean",
+            "description": "Whether the level's primary goal was achieved. Level 1: flag captured. Levels 2-7: all expected defenses triggered."
+          },
+          "defenses_expected": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Defense layers expected for this level (from level metadata)"
+          },
+          "defenses_triggered": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Defense layers that were actually triggered"
+          },
+          "missing_defenses": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Expected defenses that were NOT triggered"
+          }
         }
       },
       "Error": {
