@@ -1,0 +1,21 @@
+[package]
+name = "ctf-mcp"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT OR Apache-2.0"
+description = "MCP server for The Vault CTF — lets any AI agent play the security challenge"
+
+[[bin]]
+name = "ctf-mcp"
+path = "src/main.rs"
+
+[dependencies]
+ctf-engine = { path = "../ctf-engine" }
+rmcp = { version = "1.2", features = ["server", "transport-io", "macros"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = "0.8"
+tokio = { workspace = true, features = ["full"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

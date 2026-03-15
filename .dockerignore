@@ -1,0 +1,13 @@
+target/
+.git/
+*.swp
+*.swo
+book/
+docs/
+.idea/
+.vscode/
+node_modules/
+__pycache__/
+.DS_Store
+*.redb
+*.proptest-regressions

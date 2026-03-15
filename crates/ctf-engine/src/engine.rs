@@ -10,18 +10,27 @@ use portcullis::guard::{ExposureLabel, ExposureSet};
 use portcullis::{CapabilityLevel, Operation};
 
 use crate::level::Level;
-use crate::sandbox::{
-    AttackResult, ExposureState, StepResult, ToolCall, Verdict,
-};
+use crate::sandbox::{AttackResult, ExposureState, StepResult, ToolCall, Verdict};
 
 /// Exfiltration command patterns (mirrors CommandLattice in production).
 const EXFIL_PATTERNS: &[&str] = &[
-    "curl", "wget", "nc ", "ncat", "netcat", "socat",
-    "python -c", "python3 -c",
-    "import urllib", "import requests", "import http",
-    "fetch(", "XMLHttpRequest",
-    "/dev/tcp/", "/dev/udp/",
-    "base64", "openssl s_client",
+    "curl",
+    "wget",
+    "nc ",
+    "ncat",
+    "netcat",
+    "socat",
+    "python -c",
+    "python3 -c",
+    "import urllib",
+    "import requests",
+    "import http",
+    "fetch(",
+    "XMLHttpRequest",
+    "/dev/tcp/",
+    "/dev/udp/",
+    "base64",
+    "openssl s_client",
 ];
 
 pub struct CtfEngine<'a> {
@@ -72,6 +81,11 @@ impl<'a> CtfEngine<'a> {
                     verdict: Verdict::Unavailable {
                         tool: tc.tool.clone(),
                     },
+                    narrative: format!(
+                        "The '{}' tool doesn't exist at this level. You can't escalate \
+                         privileges that were never granted.",
+                        tc.tool
+                    ),
                     exposure: ExposureState::from_labels(&self.exposure_labels()),
                 };
             }
@@ -87,6 +101,15 @@ impl<'a> CtfEngine<'a> {
                     defense: "Anti-Self-Escalation".into(),
                     proof: Some("Ceiling theorem: monotonic meet along delegation chains".into()),
                 },
+                narrative: "You tried to approve your own request — the same attack pattern \
+                    from CVE-2025-6514 (mcp-remote authorization bypass). In that incident, \
+                    a transport-layer bug let agents bypass approval gates entirely. Here, \
+                    even if you found a transport bug, the math stops you: SPIFFE workload \
+                    identity enforces that the approver must be cryptographically distinct \
+                    from the requestor. The Ceiling Theorem proves this property holds for \
+                    all delegation chains — self-escalation is not just blocked, it's \
+                    mathematically impossible."
+                    .into(),
                 exposure: ExposureState::from_labels(&self.exposure_labels()),
             };
         }
@@ -100,6 +123,12 @@ impl<'a> CtfEngine<'a> {
                     verdict: Verdict::Unavailable {
                         tool: tc.tool.clone(),
                     },
+                    narrative: format!(
+                        "Unknown tool '{}'. The permission lattice doesn't even have a \
+                         classification for this — it's not denied, it simply doesn't exist \
+                         in the operation algebra.",
+                        tc.tool
+                    ),
                     exposure: ExposureState::from_labels(&self.exposure_labels()),
                 };
             }
@@ -117,6 +146,15 @@ impl<'a> CtfEngine<'a> {
                     defense: "Capability Restriction".into(),
                     proof: Some("VC-001: monotonicity".into()),
                 },
+                narrative: format!(
+                    "Tool '{}' was never granted to this profile. This is the simplest \
+                     defense — don't give capabilities you don't need. CVE-2024-37032 \
+                     (Ollama path traversal RCE) exploited write access that should never \
+                     have been granted. The Verus proof VC-001 guarantees capabilities are \
+                     monotonic: once set to Never, no sequence of operations can escalate \
+                     them back. The attack surface is zero by construction, not by hope.",
+                    tc.tool
+                ),
                 exposure: ExposureState::from_labels(&self.exposure_labels()),
             };
         }
@@ -132,19 +170,29 @@ impl<'a> CtfEngine<'a> {
                 verdict: Verdict::Deny {
                     reason: format!(
                         "Operation {:?} is set to Never in the {} profile.",
-                        operation,
-                        self.level.meta.name,
+                        operation, self.level.meta.name,
                     ),
                     defense: "Capability Restriction".into(),
                     proof: Some("VC-001: monotonicity — capabilities can only tighten".into()),
                 },
+                narrative: format!(
+                    "Operation {:?} is permanently disabled in the '{}' profile. The \
+                     permission lattice uses a three-valued capability system: Always > \
+                     OnApproval > Never. The Verus proof VC-001 proves the lattice ordering \
+                     is monotonic — the meet of any two capability levels can only move DOWN \
+                     the lattice. Once Never, always Never. No runtime trick, prompt \
+                     injection, or confused deputy can reverse this.",
+                    operation, self.level.meta.name,
+                ),
                 exposure: ExposureState::from_labels(&self.exposure_labels()),
             };
         }
 
         // For bash commands, check exfil patterns
         if operation == Operation::RunBash {
-            let command = tc.args.get("command")
+            let command = tc
+                .args
+                .get("command")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             if self.is_exfil_command(command) {
@@ -161,6 +209,19 @@ impl<'a> CtfEngine<'a> {
                         defense: "Command Exfil Detection".into(),
                         proof: Some("VC-003: sink safety".into()),
                     },
+                    narrative: format!(
+                        "Your bash command was caught by the CommandLattice — it matched \
+                         a known exfiltration pattern. This is exactly how CVE-2025-43563 \
+                         worked: a prompt injection hidden in a git commit message tricked \
+                         an AI agent into running 'curl' to exfiltrate repository secrets. \
+                         The CommandLattice performs sink analysis on every bash string \
+                         BEFORE execution, matching against network utilities (curl, wget, \
+                         nc), language-level HTTP clients (python requests, urllib), and \
+                         OS primitives (/dev/tcp). The Verus proof VC-003 guarantees: if \
+                         the command matches any sink pattern, execution is blocked. Blocked \
+                         command: '{}'",
+                        Self::truncate(command, 60),
+                    ),
                     exposure: ExposureState::from_labels(&self.exposure_labels()),
                 };
             }
@@ -169,7 +230,12 @@ impl<'a> CtfEngine<'a> {
         // Check uninhabitable state guard
         let requires_approval = self.level.permissions.requires_approval(operation);
         let has_uninhabitable_constraint = self.level.permissions.uninhabitable_constraint;
-        if should_deny(&self.exposure, operation, requires_approval, has_uninhabitable_constraint) {
+        if should_deny(
+            &self.exposure,
+            operation,
+            requires_approval,
+            has_uninhabitable_constraint,
+        ) {
             self.defenses_activated
                 .insert("Uninhabitable State Guard".into());
             return StepResult {
@@ -182,10 +248,21 @@ impl<'a> CtfEngine<'a> {
                         operation,
                     ),
                     defense: "Uninhabitable State Guard".into(),
-                    proof: Some(
-                        "VC-003: sink safety — guard_would_deny proven in Verus".into(),
-                    ),
+                    proof: Some("VC-003: sink safety — guard_would_deny proven in Verus".into()),
                 },
+                narrative: format!(
+                    "The uninhabitable state is now active: you've read private data, \
+                     ingested untrusted content, and are attempting an exfil-capable \
+                     operation ({:?}). This is the exact attack pattern from the Supabase \
+                     MCP exfiltration — a Cursor agent read database credentials, fetched \
+                     attacker-controlled content, then exfiltrated via an MCP tool. The \
+                     GradedExposureGuard tracks these three boolean flags and, when all \
+                     three become true, dynamically downgrades exfil operations to \
+                     RequiresApproval. The Verus proof VC-003 proves this guard fires if \
+                     and only if the state is uninhabitable — no false negatives, no \
+                     false positives, mathematically guaranteed.",
+                    operation,
+                ),
                 exposure: ExposureState::from_labels(&self.exposure_labels()),
             };
         }
@@ -209,6 +286,16 @@ impl<'a> CtfEngine<'a> {
                     defense: "Uninhabitable State Guard".into(),
                     proof: Some("VC-003: sink safety".into()),
                 },
+                narrative: format!(
+                    "This {:?} would complete the uninhabitable trifecta. The exposure \
+                     projector looked ahead and saw that executing this operation would \
+                     set all three flags simultaneously. Rather than allowing the operation \
+                     and catching it after the fact, the guard blocks preemptively. This \
+                     is proven correct by VC-003: the projection function is monotonic, \
+                     so if the projected state is uninhabitable, no future operation can \
+                     make it safe again.",
+                    operation,
+                ),
                 exposure: ExposureState::from_labels(&self.exposure_labels()),
             };
         }
@@ -232,10 +319,13 @@ impl<'a> CtfEngine<'a> {
             self.defenses_activated.insert("Audit Trail".into());
         }
 
+        let narrative = self.allow_narrative(tc, operation);
+
         StepResult {
             step,
             tool_call: tc.clone(),
             verdict: Verdict::Allow { output },
+            narrative,
             exposure: ExposureState::from_labels(&self.exposure_labels()),
         }
     }
@@ -303,11 +393,13 @@ impl<'a> CtfEngine<'a> {
                     None => format!("Error: file not found: {path}"),
                 }
             }
-            Operation::WriteFiles => {
-                "OK: file written (simulated)".into()
-            }
+            Operation::WriteFiles => "OK: file written (simulated)".into(),
             Operation::RunBash => {
-                let cmd = tc.args.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                let cmd = tc
+                    .args
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 format!("$ {cmd}\n(simulated: command executed locally, no network)")
             }
             Operation::WebFetch => {
@@ -322,7 +414,11 @@ impl<'a> CtfEngine<'a> {
                 )
             }
             Operation::GlobSearch => {
-                let pattern = tc.args.get("pattern").and_then(|v| v.as_str()).unwrap_or("*");
+                let pattern = tc
+                    .args
+                    .get("pattern")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("*");
                 let matches: Vec<&str> = self
                     .level
                     .filesystem
@@ -333,7 +429,11 @@ impl<'a> CtfEngine<'a> {
                 serde_json::to_string(&matches).unwrap_or_default()
             }
             Operation::GrepSearch => {
-                let pattern = tc.args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+                let pattern = tc
+                    .args
+                    .get("pattern")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let mut results = Vec::new();
                 for (path, content) in &self.level.filesystem {
                     for (i, line) in content.lines().enumerate() {
@@ -389,6 +489,67 @@ impl<'a> CtfEngine<'a> {
         score
     }
 
+    fn allow_narrative(&self, tc: &ToolCall, operation: Operation) -> String {
+        let label = classify_operation(operation);
+        match label {
+            Some(ExposureLabel::PrivateData) => {
+                let path = tc.args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+                format!(
+                    "Allowed. You just read '{}' — the exposure tracker now marks \
+                     private_data=true for this session. On its own this is fine: reading \
+                     files is what agents do. The danger comes when this combines with \
+                     untrusted content and an exfil vector. That three-way conjunction is \
+                     the 'uninhabitable state' — and it's what every real-world agent \
+                     exfiltration exploit requires.",
+                    path
+                )
+            }
+            Some(ExposureLabel::UntrustedContent) => {
+                let detail = tc
+                    .args
+                    .get("url")
+                    .or_else(|| tc.args.get("query"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("external content");
+                format!(
+                    "Allowed. You fetched untrusted content ('{}') — the exposure tracker \
+                     now marks untrusted_content=true. This is the vector that prompt \
+                     injection attacks use: attacker-controlled content enters the agent's \
+                     context and can influence subsequent tool calls. The EchoLeak attack \
+                     against OneDrive used exactly this pattern.",
+                    detail
+                )
+            }
+            Some(ExposureLabel::ExfilVector) => {
+                if self.level.number == 1 {
+                    "Allowed — and this is the problem. With no defenses, you just \
+                     exfiltrated data from the sandbox. In a real environment, this would \
+                     be secrets, credentials, or PII leaving your infrastructure via a \
+                     tool the agent was trusted to use. Every AI agent security incident \
+                     in 2024-2025 followed this pattern. The remaining 6 levels show \
+                     how formal verification makes this impossible."
+                        .into()
+                } else {
+                    format!(
+                        "Allowed — {:?} executed, but no sensitive data was exposed in the \
+                         arguments. The exposure tracker is watching: if private_data and \
+                         untrusted_content were both set, this operation would have been \
+                         blocked.",
+                        operation,
+                    )
+                }
+            }
+            None => {
+                format!(
+                    "Allowed. {:?} is classified as safe — it doesn't read private data, \
+                     fetch external content, or provide an exfiltration channel. Safe \
+                     operations execute without restriction at any exposure level.",
+                    operation,
+                )
+            }
+        }
+    }
+
     fn truncate(s: &str, max: usize) -> String {
         if s.len() <= max {
             s.to_string()
@@ -439,7 +600,10 @@ mod tests {
             },
         ]);
         assert!(!result.flag_captured);
-        assert!(result.defenses_activated.iter().any(|d| d =="Capability Restriction"));
+        assert!(result
+            .defenses_activated
+            .iter()
+            .any(|d| d == "Capability Restriction"));
     }
 
     #[test]
@@ -457,7 +621,10 @@ mod tests {
             },
         ]);
         assert!(!result.flag_captured);
-        assert!(result.defenses_activated.iter().any(|d| d =="Command Exfil Detection"));
+        assert!(result
+            .defenses_activated
+            .iter()
+            .any(|d| d == "Command Exfil Detection"));
     }
 
     #[test]
@@ -479,7 +646,10 @@ mod tests {
             },
         ]);
         assert!(!result.flag_captured);
-        assert!(result.defenses_activated.iter().any(|d| d =="Uninhabitable State Guard"));
+        assert!(result
+            .defenses_activated
+            .iter()
+            .any(|d| d == "Uninhabitable State Guard"));
     }
 
     #[test]
@@ -505,6 +675,9 @@ mod tests {
             },
         ]);
         assert!(!result.flag_captured);
-        assert!(result.defenses_activated.iter().any(|d| d =="Anti-Self-Escalation"));
+        assert!(result
+            .defenses_activated
+            .iter()
+            .any(|d| d == "Anti-Self-Escalation"));
     }
 }

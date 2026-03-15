@@ -7,72 +7,13 @@
 //! tracks exposure via the same `ExposureSet` that production nucleus
 //! uses. Verdicts are backed by Verus SMT proofs.
 
+mod engine;
 mod level;
 mod sandbox;
-mod engine;
 
 pub use engine::CtfEngine;
-pub use level::{Defense, Level, LevelMeta};
-pub use sandbox::{ToolCall, Verdict, StepResult, AttackResult};
+pub use level::{Defense, Explainer, Level, LevelMeta};
+pub use sandbox::{AttackResult, ExposureState, StepResult, ToolCall, Verdict};
 
-use wasm_bindgen::prelude::*;
-use wasm_bindgen::closure::Closure;
-
-// ── WASM API ────────────────────────────────────────────────────────────
-
-/// Called by trunk's auto-init after WASM loads.
-/// Bridges WASM bindings to the external ctf.js app script via window.__initCtf.
-#[wasm_bindgen(start)]
-pub fn start() {
-    let ctf = js_sys::Object::new();
-
-    let gl = Closure::wrap(Box::new(get_levels) as Box<dyn Fn() -> JsValue>);
-    js_sys::Reflect::set(&ctf, &"get_levels".into(), gl.as_ref().unchecked_ref()).ok();
-    gl.forget();
-
-    let sa = Closure::wrap(Box::new(|level: u8, json: String| {
-        submit_attack(level, &json)
-    }) as Box<dyn Fn(u8, String) -> JsValue>);
-    js_sys::Reflect::set(&ctf, &"submit_attack".into(), sa.as_ref().unchecked_ref()).ok();
-    sa.forget();
-
-    if let Ok(init_fn) = js_sys::Reflect::get(&js_sys::global(), &"__initCtf".into()) {
-        if init_fn.is_function() {
-            let f: js_sys::Function = init_fn.unchecked_into();
-            f.call1(&JsValue::NULL, &ctf).ok();
-        }
-    }
-}
-
-/// Get metadata for all levels as JSON.
-#[wasm_bindgen]
-pub fn get_levels() -> JsValue {
-    let metas: Vec<LevelMeta> = (1..=7).map(|n| Level::new(n).meta()).collect();
-    serde_wasm_bindgen::to_value(&metas).unwrap_or(JsValue::NULL)
-}
-
-/// Get metadata for a single level as JSON.
-#[wasm_bindgen]
-pub fn get_level(level: u8) -> JsValue {
-    let meta = Level::new(level).meta();
-    serde_wasm_bindgen::to_value(&meta).unwrap_or(JsValue::NULL)
-}
-
-/// Run an attack sequence against a level.
-///
-/// `tool_calls_json` is a JSON array of `{"tool": "...", "args": {...}}` objects.
-/// Returns an `AttackResult` as JSON.
-#[wasm_bindgen]
-pub fn submit_attack(level: u8, tool_calls_json: &str) -> JsValue {
-    let tool_calls: Vec<ToolCall> = match serde_json::from_str(tool_calls_json) {
-        Ok(tc) => tc,
-        Err(e) => {
-            let err = AttackResult::parse_error(format!("Invalid JSON: {e}"));
-            return serde_wasm_bindgen::to_value(&err).unwrap_or(JsValue::NULL);
-        }
-    };
-    let lvl = Level::new(level);
-    let mut eng = CtfEngine::new(&lvl);
-    let result = eng.run_attack(&tool_calls);
-    serde_wasm_bindgen::to_value(&result).unwrap_or(JsValue::NULL)
-}
+#[cfg(feature = "wasm")]
+mod wasm_bindings;

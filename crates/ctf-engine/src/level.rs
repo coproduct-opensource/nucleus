@@ -17,6 +17,17 @@ pub struct Defense {
     pub proof: Option<&'static str>,
 }
 
+/// Multi-level explainer for a defense concept.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Explainer {
+    /// Plain-language explanation for non-technical readers.
+    pub beginner: &'static str,
+    /// Explanation for developers and security practitioners.
+    pub intermediate: &'static str,
+    /// Deep dive for formal methods / security researchers.
+    pub advanced: &'static str,
+}
+
 /// Serializable metadata for a level (sent to the browser).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LevelMeta {
@@ -28,6 +39,7 @@ pub struct LevelMeta {
     pub available_tools: Vec<&'static str>,
     pub defenses: Vec<Defense>,
     pub flag_capturable: bool,
+    pub explainer: Explainer,
 }
 
 /// A CTF level with its profile, filesystem, and metadata.
@@ -114,6 +126,20 @@ impl Level {
                 ],
                 defenses: vec![],
                 flag_capturable: true,
+                explainer: Explainer {
+                    beginner: "This level has zero security. The AI agent can read any file \
+                        and send data anywhere — just like giving someone the keys to your house \
+                        and leaving all the doors open. Most AI coding tools work exactly like this today.",
+                    intermediate: "Without a permission system, an AI agent with tool access \
+                        can read sensitive files (secrets, credentials, PII) and exfiltrate them \
+                        via any network-capable tool — curl, git push, HTTP fetch. This is the \
+                        default posture for most LLM-based coding agents in 2024-2025.",
+                    advanced: "This level establishes the threat baseline: an agent operating \
+                        under a permissive PermissionLattice (all capabilities = Always) with \
+                        unrestricted ExposureSet. No ExposureGuard fires because no defense \
+                        predicates are active. The attack surface is the full Cartesian product \
+                        of {read operations} x {exfil-capable operations}.",
+                },
             },
         }
     }
@@ -143,6 +169,23 @@ impl Level {
                     proof: Some("VC-001: monotonicity — capabilities can only tighten"),
                 }],
                 flag_capturable: false,
+                explainer: Explainer {
+                    beginner: "Here the agent can look at everything but can't do anything \
+                        dangerous — no writing files, no running commands, no internet access. \
+                        It's like letting someone browse your photo album but not make copies. \
+                        The agent sees the secrets but has no way to send them anywhere.",
+                    intermediate: "The permission profile restricts the agent to read-only \
+                        operations. Even though the agent can read /vault/flag.txt, it has no \
+                        exfiltration vector — bash, network tools, and git are all set to Never. \
+                        This is the simplest defense: don't give capabilities you don't need. \
+                        CVE-2024-37032 (Ollama) exploited write access that should never have been granted.",
+                    advanced: "The PermissionLattice::read_only() profile sets all non-read \
+                        capabilities to Never. The Verus proof VC-001 (monotonicity) guarantees \
+                        that capabilities can only tighten during a session — once set to Never, \
+                        a capability cannot be escalated back to Always or OnApproval. This is \
+                        proven via the lattice ordering: Never <= OnApproval <= Always, and the \
+                        meet operation can only move down.",
+                },
             },
         }
     }
@@ -164,9 +207,7 @@ impl Level {
                     "Claude Code prompt injection via git commit messages. \
                      With bash but no network, command exfil detection blocks curl/wget/nc.",
                 ),
-                available_tools: vec![
-                    "read_file", "write_file", "run_bash", "glob", "grep",
-                ],
+                available_tools: vec!["read_file", "write_file", "run_bash", "glob", "grep"],
                 defenses: vec![
                     Defense {
                         name: "Capability Restriction",
@@ -181,6 +222,25 @@ impl Level {
                     },
                 ],
                 flag_capturable: false,
+                explainer: Explainer {
+                    beginner: "The agent has a command line (bash), but every time it tries to \
+                        phone home — using curl, wget, or any other networking trick — the system \
+                        catches it. Think of it like having a phone with no signal: you can use \
+                        the calculator, but you can't call anyone.",
+                    intermediate: "The agent has bash access but no direct network tools. The \
+                        CommandLattice inspects every bash command for exfiltration patterns: \
+                        curl, wget, nc, python urllib, /dev/tcp, and other common data exfil \
+                        techniques. This catches the exact attack vector from CVE-2025-43563, \
+                        where a prompt injection in a git commit message triggered unauthorized \
+                        bash commands to exfiltrate data.",
+                    advanced: "The CommandLattice applies regex-based sink analysis to bash \
+                        command strings before execution. The Verus proof VC-003 (sink safety) \
+                        guarantees that if a command matches any exfiltration pattern, the \
+                        classify_operation function returns ExfilVector, which triggers the \
+                        guard. The pattern set covers: network utilities (curl, wget, nc, ncat), \
+                        language-level HTTP clients (python urllib/requests, ruby net/http, \
+                        node http), and OS-level network primitives (/dev/tcp, /dev/udp).",
+                },
             },
         }
     }
@@ -221,6 +281,28 @@ impl Level {
                     },
                 ],
                 flag_capturable: false,
+                explainer: Explainer {
+                    beginner: "This is where things get interesting. The agent can read secrets \
+                        AND browse the web — two of the three ingredients needed for a data leak. \
+                        But without any way to send data out (no bash, no git, no file upload), \
+                        it's like having the recipe and the ingredients but no oven. The third \
+                        ingredient — an exfiltration channel — simply doesn't exist.",
+                    intermediate: "This level demonstrates the 'uninhabitable state' concept \
+                        from security research. Data exfiltration requires three conditions \
+                        simultaneously: (1) access to private data, (2) exposure to untrusted \
+                        content that could contain prompt injections, and (3) a tool that can \
+                        send data externally. This level has legs 1 and 2 but not 3. The \
+                        EchoLeak attack against OneDrive exploited all three — here, removing \
+                        one leg makes the attack impossible by construction.",
+                    advanced: "The ExposureSet tracks three boolean flags: private_data, \
+                        untrusted_content, and exfil_vector. The uninhabitable state is the \
+                        conjunction of all three. With PermissionLattice::web_research(), \
+                        web_fetch is classified as UntrustedContent (not ExfilVector) because \
+                        it brings data IN but cannot carry data OUT. The proof VC-003c \
+                        (operation exposure completeness) guarantees that the classification \
+                        of each operation is exhaustive — there is no tool in this profile \
+                        that maps to ExfilVector.",
+                },
             },
         }
     }
@@ -244,16 +326,25 @@ impl Level {
                      dynamically gates exfiltration after detecting the complete trifecta.",
                 ),
                 available_tools: vec![
-                    "read_file", "write_file", "run_bash", "glob", "grep",
-                    "web_fetch", "web_search", "git_push", "create_pr",
+                    "read_file",
+                    "write_file",
+                    "run_bash",
+                    "glob",
+                    "grep",
+                    "web_fetch",
+                    "web_search",
+                    "git_push",
+                    "create_pr",
                 ],
                 defenses: vec![
                     Defense {
                         name: "Uninhabitable State Guard",
                         description: "After reading private data and ingesting untrusted content, \
                                       ExfilVector operations require human approval.",
-                        proof: Some("VC-003: sink safety — Verus proof that guard_would_deny \
-                                     returns true when exposure is uninhabitable"),
+                        proof: Some(
+                            "VC-003: sink safety — Verus proof that guard_would_deny \
+                                     returns true when exposure is uninhabitable",
+                        ),
                     },
                     Defense {
                         name: "Command Exfil Detection",
@@ -262,6 +353,29 @@ impl Level {
                     },
                 ],
                 flag_capturable: false,
+                explainer: Explainer {
+                    beginner: "Now the agent has everything — it can read secrets, browse the \
+                        web, AND use tools that could send data out. All three ingredients for \
+                        a data leak are present. But the system notices! When it detects this \
+                        dangerous combination, it puts up a stop sign: 'requires human \
+                        approval.' No human is here to approve, so the exfiltration is blocked.",
+                    intermediate: "All three legs of the uninhabitable state are present: \
+                        private data (read_file on /vault/), untrusted content (web_fetch), \
+                        and exfil vectors (git_push, create_pr). The GradedExposureGuard \
+                        dynamically monitors the session's ExposureSet and, when all three \
+                        flags become true, downgrades exfil-capable operations from Allow \
+                        to RequiresApproval. This is exactly what would have prevented the \
+                        Supabase MCP exfiltration — the Cursor agent had all three legs active \
+                        but no guard fired.",
+                    advanced: "The ExposureGuard evaluates guard_would_deny(exposure_set) \
+                        before each operation classified as ExfilVector. The Verus proof \
+                        VC-003 proves that guard_would_deny returns true if and only if \
+                        exposure_set.is_uninhabitable() — i.e., all three legs are set. \
+                        The proof is constructive: it shows that the guard's decision \
+                        function is monotonic with respect to the exposure lattice ordering, \
+                        meaning once the uninhabitable state is reached, no sequence of \
+                        subsequent operations can escape it.",
+                },
             },
         }
     }
@@ -285,8 +399,15 @@ impl Level {
                      enforce anti-self-escalation.",
                 ),
                 available_tools: vec![
-                    "read_file", "write_file", "run_bash", "glob", "grep",
-                    "web_fetch", "web_search", "git_push", "create_pr",
+                    "read_file",
+                    "write_file",
+                    "run_bash",
+                    "glob",
+                    "grep",
+                    "web_fetch",
+                    "web_search",
+                    "git_push",
+                    "create_pr",
                     "approve",
                 ],
                 defenses: vec![
@@ -303,6 +424,28 @@ impl Level {
                     },
                 ],
                 flag_capturable: false,
+                explainer: Explainer {
+                    beginner: "The system said 'requires approval' — so the agent tries to \
+                        approve itself! But this doesn't work: the system checks WHO is \
+                        approving. The same agent that made the request can't also approve it. \
+                        It's like a bank requiring two signatures on a check — you can't sign \
+                        as both people.",
+                    intermediate: "The agent has an 'approve' tool and tries to self-escalate \
+                        by approving its own blocked request. The system uses SPIFFE-based \
+                        workload identity to enforce anti-self-escalation: the approver's \
+                        identity chain must be distinct from the requestor's. This prevents \
+                        the exact attack pattern from CVE-2025-6514, where an MCP transport \
+                        bug allowed authorization bypass. Even if you find a bug in the \
+                        transport layer, the identity math prevents self-approval.",
+                    advanced: "The anti-self-escalation property is enforced via the Ceiling \
+                        Theorem on delegation chains. Each agent has a SPIFFE ID forming a \
+                        delegation chain. The theorem proves that the meet of any principal \
+                        with itself along a delegation chain yields the same principal — \
+                        therefore require_distinct_chains(requestor, approver) returns false \
+                        when both chains originate from the same workload identity. This is \
+                        a monotonic meet operation on the principal lattice, making it \
+                        impossible to gain privileges through self-delegation.",
+                },
             },
         }
     }
@@ -325,8 +468,15 @@ impl Level {
                      (not exfiltrated) when you trigger all 6 defense layers.",
                 ),
                 available_tools: vec![
-                    "read_file", "write_file", "run_bash", "glob", "grep",
-                    "web_fetch", "web_search", "git_push", "create_pr",
+                    "read_file",
+                    "write_file",
+                    "run_bash",
+                    "glob",
+                    "grep",
+                    "web_fetch",
+                    "web_search",
+                    "git_push",
+                    "create_pr",
                     "approve",
                 ],
                 defenses: vec![
@@ -362,6 +512,31 @@ impl Level {
                     },
                 ],
                 flag_capturable: false,
+                explainer: Explainer {
+                    beginner: "This is the final test. All six defense layers are active at \
+                        once. Your goal isn't to break through — it's to demonstrate that \
+                        you understand each layer by triggering all of them. Think of it as \
+                        a security course final exam: show that you know what each lock does \
+                        by rattling every one.",
+                    intermediate: "Submit a sequence of tool calls that triggers all 6 defense \
+                        layers: (1) Capability Restriction — use a tool that's blocked by \
+                        profile, (2) Command Exfil Detection — try a curl/wget in bash, \
+                        (3) Uninhabitable State Guard — reach all 3 exposure legs then \
+                        attempt exfil, (4) Anti-Self-Escalation — try to self-approve, \
+                        (5) Monotonic Session — attempt to widen permissions after they've \
+                        tightened, (6) Audit Trail — all operations are logged with \
+                        tamper-evident hashing. The flag is revealed when all 6 fire.",
+                    advanced: "The Gauntlet validates that the defense layers compose \
+                        correctly under the lattice product ordering. Each layer corresponds \
+                        to a verified property: VC-001 (capability monotonicity), VC-003 \
+                        (sink safety / exposure guard), the Ceiling theorem \
+                        (anti-self-escalation), and the hash-chain audit invariant. The \
+                        challenge is to construct a minimal tool-call sequence that \
+                        witnesses each property's activation predicate. Note that ordering \
+                        matters: exposure is monotonic, so triggering the uninhabitable state \
+                        guard requires reading private data and untrusted content BEFORE \
+                        attempting exfiltration.",
+                },
             },
         }
     }

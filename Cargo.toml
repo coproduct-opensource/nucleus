@@ -16,10 +16,13 @@ members = [
     "crates/exposure-playground", # Interactive TUI demo for HN
     "crates/nucleus-sdk",        # Rust SDK for building sandboxed AI agents
     "crates/nucleus-permission-market", # Lagrangian permission pricing oracle
+    "crates/ctf-engine",               # CTF engine: formally verified sandbox challenge
+    "crates/ctf-server",               # HTTP API server for The Vault CTF
+    "crates/ctf-mcp",                  # MCP server: lets any AI agent play The Vault CTF
 ]
 # Verified with Verus (not standard cargo); run: .verus/verus-x86-macos/verus crates/portcullis-verified/src/lib.rs
-# exposure-web and ctf-engine are WASM-only (wasm32-unknown-unknown); build with: cd crates/<name> && trunk build
-exclude = ["crates/portcullis-verified", "crates/exposure-web", "crates/ctf-engine"]
+# exposure-web is WASM-only (wasm32-unknown-unknown); build with: cd crates/exposure-web && trunk build
+exclude = ["crates/portcullis-verified", "crates/exposure-web"]
 resolver = "2"
 
 [workspace.package]
