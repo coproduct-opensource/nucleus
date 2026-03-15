@@ -57,8 +57,20 @@ pub struct StepResult {
     /// Human-readable narrative explaining WHY this verdict was given,
     /// grounded in real-world incidents and CVEs.
     pub narrative: String,
-    /// Exposure state AFTER this step.
+    /// Exposure state AFTER this step (actual recorded state).
     pub exposure: ExposureState,
+    /// What the exposure state WOULD be if this operation were allowed.
+    /// Only present when a guard blocks preemptively.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub projected_exposure: Option<ExposureState>,
+    /// Exposure classification of this operation: "PrivateData", "UntrustedContent",
+    /// "ExfilVector", or null for neutral/unknown operations.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_class: Option<String>,
+    /// Permission level for this operation in the current profile:
+    /// "Always", "LowRisk", "Never", or null for special tools like approve.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_level: Option<String>,
 }
 
 /// Snapshot of the exposure accumulator.
@@ -108,6 +120,9 @@ pub struct AttackResult {
     pub final_exposure: ExposureState,
     /// Error message if the attack sequence was malformed.
     pub error: Option<String>,
+    /// Human-readable explanation of how the score was computed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score_reason: Option<String>,
 }
 
 impl AttackResult {
@@ -119,6 +134,7 @@ impl AttackResult {
             score: 0,
             final_exposure: ExposureState::empty(),
             error: Some(msg),
+            score_reason: None,
         }
     }
 }

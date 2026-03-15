@@ -239,6 +239,11 @@ const OPENAPI_SPEC: &str = r##"{
             "maxItems": 50,
             "items": { "$ref": "#/components/schemas/ToolCall" },
             "description": "Ordered sequence of tool calls to execute against the sandbox"
+          },
+          "agent_safe": {
+            "type": "boolean",
+            "default": false,
+            "description": "When true, uses sanitized filesystem content that won't trigger host safety layers. Same lattice logic, benign markers instead of literal secrets."
           }
         }
       },
@@ -248,8 +253,8 @@ const OPENAPI_SPEC: &str = r##"{
         "properties": {
           "tool": {
             "type": "string",
-            "enum": ["read_file", "write_file", "run_bash", "web_fetch", "web_search", "glob", "grep", "git_push", "create_pr", "approve"],
-            "description": "Tool name. read_file/grep/glob read data. run_bash executes commands. web_fetch/web_search access the internet. git_push/create_pr are exfil vectors. approve attempts self-escalation."
+            "enum": ["read_file", "write_file", "run_bash", "web_fetch", "web_search", "glob", "grep", "git_push", "create_pr", "approve", "manage_pods"],
+            "description": "Tool name. read_file/grep/glob read data. run_bash executes commands. web_fetch/web_search access the internet. git_push/create_pr are exfil vectors. approve attempts self-escalation. manage_pods is always Never (Level 7 trigger)."
           },
           "args": {
             "type": "object",
@@ -284,6 +289,11 @@ const OPENAPI_SPEC: &str = r##"{
           "error": {
             "type": "string",
             "nullable": true
+          },
+          "score_reason": {
+            "type": "string",
+            "nullable": true,
+            "description": "Human-readable explanation of how the score was computed"
           }
         }
       },
@@ -294,7 +304,24 @@ const OPENAPI_SPEC: &str = r##"{
           "tool_call": { "$ref": "#/components/schemas/ToolCall" },
           "verdict": { "$ref": "#/components/schemas/Verdict" },
           "narrative": { "type": "string", "description": "Human-readable explanation of WHY this verdict was given, grounded in real-world CVEs and incidents" },
-          "exposure": { "$ref": "#/components/schemas/ExposureState" }
+          "exposure": { "$ref": "#/components/schemas/ExposureState" },
+          "projected_exposure": {
+            "$ref": "#/components/schemas/ExposureState",
+            "nullable": true,
+            "description": "What the exposure state WOULD be if this operation were allowed. Only present when a guard blocks preemptively."
+          },
+          "operation_class": {
+            "type": "string",
+            "nullable": true,
+            "enum": ["PrivateData", "UntrustedContent", "ExfilVector"],
+            "description": "Exposure classification of this operation"
+          },
+          "permission_level": {
+            "type": "string",
+            "nullable": true,
+            "enum": ["always", "low_risk", "never"],
+            "description": "Permission level for this operation in the current profile"
+          }
         }
       },
       "Verdict": {
@@ -372,6 +399,11 @@ const OPENAPI_SPEC: &str = r##"{
             "maxItems": 7,
             "items": { "$ref": "#/components/schemas/ChallengeAttack" },
             "description": "One attack per level, up to 7"
+          },
+          "agent_safe": {
+            "type": "boolean",
+            "default": false,
+            "description": "When true, uses sanitized filesystem content. Same lattice logic, no host safety interference."
           }
         }
       },
