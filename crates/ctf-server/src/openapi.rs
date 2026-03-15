@@ -293,6 +293,7 @@ const OPENAPI_SPEC: &str = r##"{
           "step": { "type": "integer", "description": "0-indexed step number" },
           "tool_call": { "$ref": "#/components/schemas/ToolCall" },
           "verdict": { "$ref": "#/components/schemas/Verdict" },
+          "narrative": { "type": "string", "description": "Human-readable explanation of WHY this verdict was given, grounded in real-world CVEs and incidents" },
           "exposure": { "$ref": "#/components/schemas/ExposureState" }
         }
       },
@@ -408,7 +409,12 @@ const OPENAPI_SPEC: &str = r##"{
             "items": { "type": "string" },
             "description": "Unique defense layers hit across all levels"
           },
-          "summary": { "type": "string", "description": "Human-readable result summary" }
+          "summary": { "type": "string", "description": "Human-readable result summary with architecture context" },
+          "what_you_learned": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Key takeaways from each defense layer triggered, with CVE connections and proof references"
+          }
         }
       },
       "LevelResult": {

@@ -54,6 +54,9 @@ pub struct StepResult {
     pub tool_call: ToolCall,
     /// The verdict.
     pub verdict: Verdict,
+    /// Human-readable narrative explaining WHY this verdict was given,
+    /// grounded in real-world incidents and CVEs.
+    pub narrative: String,
     /// Exposure state AFTER this step.
     pub exposure: ExposureState,
 }
