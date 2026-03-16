@@ -33,9 +33,13 @@ pub struct CandidateAmendment {
 ///
 /// Validates candidates against constitutional invariants and maintains
 /// the accepted lineage. The kernel is intentionally simple — it checks
-/// structure, monotonicity, evidence completeness, and appends lineage.
+/// structure, monotonicity, signatures, evidence completeness, and appends lineage.
 pub struct Kernel {
     lineage: LineageStore,
+    /// When set, Ed25519 signatures on witness bundles are cryptographically
+    /// verified during admission. When None, signature verification is skipped
+    /// (test mode only — production MUST configure trusted keys).
+    signature_verifier: Option<ck_types::witness::SignatureVerifier>,
 }
 
 impl Kernel {
@@ -47,7 +51,10 @@ impl Kernel {
     pub fn new_with_sha(genesis_digest: ArtifactDigest, git_commit_sha: Option<String>) -> Self {
         let mut lineage = LineageStore::new();
         lineage.admit_genesis(genesis_digest, git_commit_sha);
-        Self { lineage }
+        Self {
+            lineage,
+            signature_verifier: None,
+        }
     }
 
     /// Create a new kernel with an empty lineage (no git SHA on genesis).
@@ -69,13 +76,39 @@ impl Kernel {
             return Err("Cannot restore kernel from empty lineage".into());
         }
         let lineage = LineageStore::restore(records)?;
-        Ok(Self { lineage })
+        Ok(Self {
+            lineage,
+            signature_verifier: None,
+        })
+    }
+
+    /// Configure signature verification for admission.
+    ///
+    /// When set, `admit()` will cryptographically verify Ed25519 signatures
+    /// on witness bundles before accepting them. Production kernels MUST
+    /// call this — unverified signatures are a test-mode-only convenience.
+    pub fn with_signature_verifier(
+        mut self,
+        verifier: ck_types::witness::SignatureVerifier,
+    ) -> Self {
+        self.signature_verifier = Some(verifier);
+        self
     }
 
     /// Submit a candidate amendment for admission.
     ///
     /// Returns `Accepted` with lineage record, or `Rejected` with reasons.
+    /// `changed_files` is optional — when provided, may_not_modify rules are enforced.
     pub fn admit(&mut self, candidate: CandidateAmendment) -> AdmissionDecision {
+        self.admit_with_files(candidate, &[])
+    }
+
+    /// Submit a candidate amendment with file-level amendment rule enforcement.
+    pub fn admit_with_files(
+        &mut self,
+        candidate: CandidateAmendment,
+        changed_files: &[String],
+    ) -> AdmissionDecision {
         let mut reasons = Vec::new();
 
         // 1. Parent must be known and admitted
@@ -126,6 +159,19 @@ impl Kernel {
                 });
             }
             return AdmissionDecision::Rejected { reasons };
+        }
+
+        // 3.5. Cryptographic signature verification (when configured)
+        if let Some(ref verifier) = self.signature_verifier {
+            if let Err(sig_errors) = verifier.verify(&candidate.witness) {
+                for e in sig_errors {
+                    reasons.push(RejectionReason {
+                        invariant: ConstitutionalInvariant::GovernanceMonotonicity,
+                        message: format!("Signature verification failed: {}", e),
+                    });
+                }
+                return AdmissionDecision::Rejected { reasons };
+            }
         }
 
         // 4. Parent/candidate digests must match witness
@@ -184,6 +230,28 @@ impl Kernel {
                 "Amendment REJECTED — constitutional violation"
             );
             return AdmissionDecision::Rejected { reasons };
+        }
+
+        // 5.5. Enforce may_modify / may_not_modify amendment rules
+        if !changed_files.is_empty() {
+            let rules = &candidate.witness.policy_after.amendment_rules;
+            for file in changed_files {
+                // Check may_not_modify: these paths are never allowed on ordinary path
+                for forbidden in &rules.may_not_modify {
+                    if file.contains(forbidden.as_str()) {
+                        reasons.push(RejectionReason {
+                            invariant: ConstitutionalInvariant::GovernanceMonotonicity,
+                            message: format!(
+                                "File '{}' matches may_not_modify rule '{}'",
+                                file, forbidden
+                            ),
+                        });
+                    }
+                }
+            }
+            if !reasons.is_empty() {
+                return AdmissionDecision::Rejected { reasons };
+            }
         }
 
         // 6. Check required verifier reports based on patch class
@@ -988,6 +1056,66 @@ mod tests {
         assert!(
             matches!(result, AdmissionDecision::Rejected { .. }),
             "admit_constitutional must require Constitutional class: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_may_not_modify_enforced() {
+        let genesis = ArtifactDigest::from_bytes(b"genesis");
+        let mut kernel = Kernel::new(genesis.clone());
+
+        let candidate = ArtifactDigest::from_bytes(b"sneaky");
+        let witness = make_witness(&genesis, &candidate, test_manifest(), true, true, None);
+
+        // The test_manifest has may_not_modify: ["kernel_checker"]
+        let changed = vec!["src/kernel_checker/mod.rs".to_string()];
+
+        let result = kernel.admit_with_files(
+            CandidateAmendment {
+                parent_digest: genesis,
+                candidate_digest: candidate,
+                patch_class: PatchClass::Config,
+                witness,
+            },
+            &changed,
+        );
+
+        assert!(
+            matches!(result, AdmissionDecision::Rejected { .. }),
+            "Modifying may_not_modify path must be rejected: {result:?}"
+        );
+        if let AdmissionDecision::Rejected { reasons } = result {
+            assert!(
+                reasons.iter().any(|r| r.message.contains("may_not_modify")),
+                "Should cite may_not_modify: {reasons:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_admit_with_files_allows_safe_paths() {
+        let genesis = ArtifactDigest::from_bytes(b"genesis");
+        let mut kernel = Kernel::new(genesis.clone());
+
+        let candidate = ArtifactDigest::from_bytes(b"safe");
+        let witness = make_witness(&genesis, &candidate, test_manifest(), true, true, None);
+
+        // These paths don't match any may_not_modify rules
+        let changed = vec!["src/config/settings.rs".to_string()];
+
+        let result = kernel.admit_with_files(
+            CandidateAmendment {
+                parent_digest: genesis,
+                candidate_digest: candidate,
+                patch_class: PatchClass::Config,
+                witness,
+            },
+            &changed,
+        );
+
+        assert!(
+            matches!(result, AdmissionDecision::Accepted { .. }),
+            "Safe paths should be accepted: {result:?}"
         );
     }
 }
