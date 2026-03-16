@@ -1,0 +1,12 @@
+[package]
+name = "ck-policy"
+description = "Constitutional Kernel — policy subset and monotonicity checks"
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+
+[dependencies]
+ck-types = { path = "../ck-types" }
+
+[dev-dependencies]
+pretty_assertions = "1"

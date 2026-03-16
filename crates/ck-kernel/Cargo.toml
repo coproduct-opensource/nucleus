@@ -1,0 +1,21 @@
+[package]
+name = "ck-kernel"
+description = "Constitutional Kernel — admission engine and lineage store"
+version.workspace = true
+edition.workspace = true
+license = "MIT"
+
+[dependencies]
+ck-types = { path = "../ck-types" }
+ck-policy = { path = "../ck-policy" }
+blake3 = "1"
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(kani)'] }
+
+[dev-dependencies]
+pretty_assertions = "1"

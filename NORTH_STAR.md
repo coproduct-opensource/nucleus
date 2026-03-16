@@ -79,6 +79,43 @@ The agent process must not have ambient authority. The kernel is the only place 
 | **3** | Implementation alignment | Property tests, Kani/Verus proofs, boundary fuzzing. |
 | **4** | TCB minimization | Reduce the trusted computing base as a measurable deliverable. |
 
+## Verification North Star: verify-rust-std Equivalence
+
+**Target:** Reach parity with AWS's [verify-rust-std](https://github.com/model-checking/verify-rust-std) effort in verification density — measured by proof-to-code ratio, not absolute count.
+
+### Current State (March 2026)
+
+| Metric | Nucleus (portcullis) | Workstream-KG | Combined |
+|---|---|---|---|
+| Verus SMT VCs | 297 | — | 297 |
+| Kani BMC proofs | 32 | 30 | 62 |
+| Verus↔prod conformance | 17 proptests | — | 17 |
+| Runtime conservation laws | — | 10 | 10 |
+| Unit tests | 597 | 1,895 | 2,492 |
+
+### Targets
+
+| Milestone | Verus VCs | Kani Proofs | What |
+|---|---|---|---|
+| **Current** | 297 | 62 | Lattice laws + BMC safety |
+| **T1: 500/100** | 500 | 100 | Add Verus to conservation laws, Kani to Lyapunov monotonicity |
+| **T2: 1000/200** | 1,000 | 200 | Verify reconciler convergence properties, executor pool fairness |
+| **T3: verify-rust-std density** | — | — | Proof-to-code ratio ≥ AWS std lib effort |
+
+### Credible Claims (honest framing)
+
+- **"Most formally verified AI agent permission system"** — true today, zero competition
+- **"Only project using both Verus AND Kani"** on the same codebase — SMT + BMC dual verification
+- **"Only AI orchestrator with runtime conservation laws backed by formal verification"** — Gas Town, Agent Sandbox, Kagent have zero
+- **NOT "most formally verified OSS project"** — seL4 (200K lines Isabelle proof) and CompCert are orders of magnitude ahead in absolute terms
+
+### Strategy
+
+1. **Maximize proof-to-code ratio** on the enforcement boundary (portcullis), not on application logic
+2. **Automate harness generation** — follow Hifitime's pattern of auto-generating Kani harnesses for new functions
+3. **Verus for algebraic properties** (lattice laws, monotonicity), **Kani for safety** (no panics, bounded behavior)
+4. **Conservation laws bridge the gap** — runtime enforcement of invariants that are too expensive to statically verify
+
 ## Iteration Plan (PR-sized)
 
 | PR | Scope |
