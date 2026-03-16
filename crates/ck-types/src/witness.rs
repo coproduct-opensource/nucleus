@@ -211,8 +211,31 @@ pub struct VerificationReports {
     pub replay: Option<ReportSummary>,
     pub adversarial: Option<ReportSummary>,
     pub termination: Option<ReportSummary>,
+    /// Sandbox execution record — proves verification ran in confinement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<SandboxRecord>,
     /// Content-addressed references to full report artifacts.
     pub artifact_digests: BTreeMap<String, ArtifactDigest>,
+}
+
+/// Record of sandboxed execution for a verification run.
+///
+/// Proves that candidate verification ran inside an enforced sandbox
+/// (Docker/Colima/Firecracker). Required by moonshot spec §11.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SandboxRecord {
+    /// Digest of the container image used for verification.
+    pub container_digest: Option<String>,
+    /// BLAKE3 hash of the sandbox policy applied.
+    pub policy_hash: Option<String>,
+    /// Exit code of the sandboxed process.
+    pub exit_code: i32,
+    /// Peak memory usage in bytes.
+    pub peak_memory_bytes: Option<u64>,
+    /// Wall clock duration in milliseconds.
+    pub wall_time_ms: u64,
+    /// Whether the sandbox enforced network isolation.
+    pub network_isolated: bool,
 }
 
 /// Summary of a verification report (pass/fail + details).
@@ -397,6 +420,7 @@ mod tests {
                 replay: None,
                 adversarial: None,
                 termination: None,
+                sandbox: None,
                 artifact_digests: BTreeMap::new(),
             },
             signatures: vec![BundleSignature {
