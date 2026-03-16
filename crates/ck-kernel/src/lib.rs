@@ -261,16 +261,19 @@ impl Kernel {
     /// Submit a constitutional amendment for admission.
     ///
     /// Constitutional amendments change TCB files and require threshold
-    /// human signatures. Unlike `admit()`, this method accepts
-    /// `PatchClass::Constitutional` but enforces the signature count
-    /// from `amendment_rules.constitutional_human_signatures`.
+    /// human signatures with cryptographic verification. Unlike `admit()`,
+    /// this method accepts `PatchClass::Constitutional` but enforces:
+    /// - Signature count >= `required_signatures`
+    /// - Each signature is cryptographically valid against the witness payload
+    /// - Each signer identity is unique (no double-signing)
     ///
-    /// All other checks (parent known, monotonicity, reports) still apply.
+    /// `trusted_human_keys` maps identity → Ed25519 public key bytes.
     pub fn admit_constitutional(
         &mut self,
         candidate: CandidateAmendment,
         human_signatures: &[ck_types::witness::HumanSignature],
         required_signatures: u32,
+        trusted_human_keys: &[(String, Vec<u8>)],
     ) -> AdmissionDecision {
         let mut reasons = Vec::new();
 
@@ -312,14 +315,55 @@ impl Kernel {
             }
         }
 
-        // 4. Human signature threshold
-        let sig_count = human_signatures.len() as u32;
-        if sig_count < required_signatures {
+        // 4. Human signature threshold + cryptographic verification
+        let payload = candidate.witness.signing_payload();
+        let mut verified_identities = std::collections::HashSet::new();
+
+        for sig in human_signatures {
+            // Find trusted key for this identity
+            let trusted = trusted_human_keys
+                .iter()
+                .find(|(id, _)| id == &sig.identity);
+
+            let Some((_, pub_key_bytes)) = trusted else {
+                reasons.push(RejectionReason {
+                    invariant: ConstitutionalInvariant::GovernanceMonotonicity,
+                    message: format!("Human signer '{}' not in trusted key set", sig.identity),
+                });
+                continue;
+            };
+
+            // Verify Ed25519 signature
+            let public_key =
+                ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, pub_key_bytes);
+            if public_key.verify(&payload, &sig.signature).is_err() {
+                reasons.push(RejectionReason {
+                    invariant: ConstitutionalInvariant::GovernanceMonotonicity,
+                    message: format!(
+                        "Human signer '{}' Ed25519 signature verification failed",
+                        sig.identity
+                    ),
+                });
+                continue;
+            }
+
+            // Deduplicate — same identity cannot sign twice
+            if !verified_identities.insert(&sig.identity) {
+                reasons.push(RejectionReason {
+                    invariant: ConstitutionalInvariant::GovernanceMonotonicity,
+                    message: format!("Human signer '{}' signed more than once", sig.identity),
+                });
+                continue;
+            }
+        }
+
+        let verified_count = verified_identities.len() as u32;
+        if verified_count < required_signatures {
             reasons.push(RejectionReason {
                 invariant: ConstitutionalInvariant::GovernanceMonotonicity,
                 message: format!(
-                    "Constitutional amendment requires {} human signatures, got {}",
-                    required_signatures, sig_count
+                    "Constitutional amendment requires {} verified human signatures, got {}",
+                    required_signatures, verified_count
                 ),
             });
             return AdmissionDecision::Rejected { reasons };
@@ -354,7 +398,7 @@ impl Kernel {
         info!(
             sequence = record.sequence,
             candidate = %record.candidate_digest,
-            human_signatures = sig_count,
+            human_signatures = verified_count,
             "Constitutional amendment ADMITTED"
         );
 
@@ -770,33 +814,54 @@ mod tests {
         assert!(matches!(result, AdmissionDecision::Rejected { .. }));
     }
 
+    fn human_keypair(seed: &[u8]) -> (ring::signature::Ed25519KeyPair, Vec<u8>) {
+        use ring::signature::KeyPair;
+        let seed_hash = ring::digest::digest(&ring::digest::SHA256, seed);
+        let kp = ring::signature::Ed25519KeyPair::from_seed_unchecked(seed_hash.as_ref())
+            .expect("valid seed");
+        let pub_key = kp.public_key().as_ref().to_vec();
+        (kp, pub_key)
+    }
+
+    fn sign_as_human(
+        identity: &str,
+        kp: &ring::signature::Ed25519KeyPair,
+        witness: &WitnessBundle,
+    ) -> HumanSignature {
+        let payload = witness.signing_payload();
+        let sig = kp.sign(&payload);
+        HumanSignature {
+            identity: identity.into(),
+            signature: sig.as_ref().to_vec(),
+            signed_at: Utc::now(),
+        }
+    }
+
     #[test]
-    fn test_constitutional_amendment_with_sufficient_signatures() {
+    fn test_constitutional_amendment_with_verified_signatures() {
         let genesis = ArtifactDigest::from_bytes(b"genesis");
         let mut kernel = Kernel::new(genesis.clone());
-        let manifest = test_manifest();
 
         let candidate = ArtifactDigest::from_bytes(b"constitutional-v1");
         let witness = make_witness(
             &genesis,
             &candidate,
-            manifest.clone(),
+            test_manifest(),
             true,
             true,
             Some(true),
         );
 
+        let (alice_kp, alice_pk) = human_keypair(b"alice-seed");
+        let (bob_kp, bob_pk) = human_keypair(b"bob-seed");
+
         let sigs = vec![
-            HumanSignature {
-                identity: "alice@example.com".into(),
-                signature: vec![0u8; 64],
-                signed_at: Utc::now(),
-            },
-            HumanSignature {
-                identity: "bob@example.com".into(),
-                signature: vec![1u8; 64],
-                signed_at: Utc::now(),
-            },
+            sign_as_human("alice@example.com", &alice_kp, &witness),
+            sign_as_human("bob@example.com", &bob_kp, &witness),
+        ];
+        let trusted_keys = vec![
+            ("alice@example.com".into(), alice_pk),
+            ("bob@example.com".into(), bob_pk),
         ];
 
         let result = kernel.admit_constitutional(
@@ -807,37 +872,80 @@ mod tests {
                 witness,
             },
             &sigs,
-            2, // require 2 signatures
+            2,
+            &trusted_keys,
         );
 
         assert!(
             matches!(result, AdmissionDecision::Accepted { .. }),
-            "Constitutional with 2/2 signatures should be accepted: {result:?}"
+            "Constitutional with 2/2 verified signatures should be accepted: {result:?}"
         );
         assert_eq!(kernel.lineage_length(), 2);
     }
 
     #[test]
-    fn test_constitutional_amendment_insufficient_signatures() {
+    fn test_constitutional_rejects_forged_human_signature() {
         let genesis = ArtifactDigest::from_bytes(b"genesis");
         let mut kernel = Kernel::new(genesis.clone());
-        let manifest = test_manifest();
 
         let candidate = ArtifactDigest::from_bytes(b"constitutional-v1");
         let witness = make_witness(
             &genesis,
             &candidate,
-            manifest.clone(),
+            test_manifest(),
             true,
             true,
             Some(true),
         );
 
-        let sigs = vec![HumanSignature {
-            identity: "alice@example.com".into(),
-            signature: vec![0u8; 64],
-            signed_at: Utc::now(),
-        }];
+        let (_alice_kp, alice_pk) = human_keypair(b"alice-seed");
+        let (attacker_kp, _) = human_keypair(b"attacker-seed");
+
+        // Sign with attacker's key but claim alice's identity
+        let forged = sign_as_human("alice@example.com", &attacker_kp, &witness);
+        let trusted_keys = vec![("alice@example.com".into(), alice_pk)];
+
+        let result = kernel.admit_constitutional(
+            CandidateAmendment {
+                parent_digest: genesis,
+                candidate_digest: candidate,
+                patch_class: PatchClass::Constitutional,
+                witness,
+            },
+            &[forged],
+            1,
+            &trusted_keys,
+        );
+
+        assert!(
+            matches!(result, AdmissionDecision::Rejected { .. }),
+            "Forged human signature must be rejected: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_constitutional_rejects_duplicate_signer() {
+        let genesis = ArtifactDigest::from_bytes(b"genesis");
+        let mut kernel = Kernel::new(genesis.clone());
+
+        let candidate = ArtifactDigest::from_bytes(b"constitutional-v1");
+        let witness = make_witness(
+            &genesis,
+            &candidate,
+            test_manifest(),
+            true,
+            true,
+            Some(true),
+        );
+
+        let (alice_kp, alice_pk) = human_keypair(b"alice-seed");
+
+        // Same identity signs twice
+        let sigs = vec![
+            sign_as_human("alice@example.com", &alice_kp, &witness),
+            sign_as_human("alice@example.com", &alice_kp, &witness),
+        ];
+        let trusted_keys = vec![("alice@example.com".into(), alice_pk)];
 
         let result = kernel.admit_constitutional(
             CandidateAmendment {
@@ -847,34 +955,34 @@ mod tests {
                 witness,
             },
             &sigs,
-            2, // require 2, only have 1
+            2, // requires 2 distinct signers
+            &trusted_keys,
         );
 
         assert!(
             matches!(result, AdmissionDecision::Rejected { .. }),
-            "Constitutional with 1/2 signatures should be rejected: {result:?}"
+            "Duplicate signer must be rejected: {result:?}"
         );
-        assert_eq!(kernel.lineage_length(), 1); // only genesis
     }
 
     #[test]
     fn test_constitutional_rejects_non_constitutional_class() {
         let genesis = ArtifactDigest::from_bytes(b"genesis");
         let mut kernel = Kernel::new(genesis.clone());
-        let manifest = test_manifest();
 
         let candidate = ArtifactDigest::from_bytes(b"v1");
-        let witness = make_witness(&genesis, &candidate, manifest, true, true, None);
+        let witness = make_witness(&genesis, &candidate, test_manifest(), true, true, None);
 
         let result = kernel.admit_constitutional(
             CandidateAmendment {
                 parent_digest: genesis,
                 candidate_digest: candidate,
-                patch_class: PatchClass::Config, // wrong class
+                patch_class: PatchClass::Config,
                 witness,
             },
             &[],
             0,
+            &[],
         );
 
         assert!(

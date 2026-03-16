@@ -110,7 +110,10 @@ impl SignatureVerifier {
     /// valid signature from any trusted signer (legacy behavior).
     pub fn verify(&self, bundle: &WitnessBundle) -> Result<(), Vec<String>> {
         if self.trusted_keys.is_empty() {
-            return Ok(()); // no trusted keys configured = skip verification
+            return Err(vec![
+                "No trusted keys configured — signature verification cannot proceed (fail-closed)"
+                    .into(),
+            ]);
         }
 
         let payload = bundle.signing_payload();
@@ -588,10 +591,11 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_trusted_keys_skips_verification() {
+    fn test_empty_trusted_keys_rejects_fail_closed() {
         let bundle = test_bundle();
         let verifier = SignatureVerifier::new(vec![]);
-        assert!(verifier.verify(&bundle).is_ok());
+        let err = verifier.verify(&bundle).unwrap_err();
+        assert!(err.iter().any(|e| e.contains("fail-closed")));
     }
 
     #[test]

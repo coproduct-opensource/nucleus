@@ -1088,6 +1088,7 @@ dependencies = [
  "ck-policy",
  "ck-types",
  "pretty_assertions",
+ "ring",
  "serde",
  "serde_json",
  "tracing",
