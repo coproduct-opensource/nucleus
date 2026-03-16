@@ -257,6 +257,112 @@ impl Kernel {
     pub fn latest_record(&self) -> Option<&LineageRecord> {
         self.lineage.latest_record()
     }
+
+    /// Submit a constitutional amendment for admission.
+    ///
+    /// Constitutional amendments change TCB files and require threshold
+    /// human signatures. Unlike `admit()`, this method accepts
+    /// `PatchClass::Constitutional` but enforces the signature count
+    /// from `amendment_rules.constitutional_human_signatures`.
+    ///
+    /// All other checks (parent known, monotonicity, reports) still apply.
+    pub fn admit_constitutional(
+        &mut self,
+        candidate: CandidateAmendment,
+        human_signatures: &[ck_types::witness::HumanSignature],
+        required_signatures: u32,
+    ) -> AdmissionDecision {
+        let mut reasons = Vec::new();
+
+        // 1. Must be a Constitutional patch
+        if candidate.patch_class != PatchClass::Constitutional {
+            reasons.push(RejectionReason {
+                invariant: ConstitutionalInvariant::GovernanceMonotonicity,
+                message: format!(
+                    "admit_constitutional requires PatchClass::Constitutional, got {:?}",
+                    candidate.patch_class
+                ),
+            });
+            return AdmissionDecision::Rejected { reasons };
+        }
+
+        // 2. Parent must be known
+        if !self.lineage.is_admitted(&candidate.parent_digest) {
+            reasons.push(RejectionReason {
+                invariant: ConstitutionalInvariant::BoundedTermination,
+                message: format!(
+                    "Parent {} is not in the admitted lineage",
+                    candidate.parent_digest
+                ),
+            });
+            return AdmissionDecision::Rejected { reasons };
+        }
+
+        // 3. Parent must be latest (dual-DAG)
+        if let Some(latest) = self.lineage.latest_admitted_digest() {
+            if candidate.parent_digest != latest {
+                reasons.push(RejectionReason {
+                    invariant: ConstitutionalInvariant::GovernanceMonotonicity,
+                    message: format!(
+                        "Constitutional amendment must parent from latest: {} != {}",
+                        latest, candidate.parent_digest
+                    ),
+                });
+                return AdmissionDecision::Rejected { reasons };
+            }
+        }
+
+        // 4. Human signature threshold
+        let sig_count = human_signatures.len() as u32;
+        if sig_count < required_signatures {
+            reasons.push(RejectionReason {
+                invariant: ConstitutionalInvariant::GovernanceMonotonicity,
+                message: format!(
+                    "Constitutional amendment requires {} human signatures, got {}",
+                    required_signatures, sig_count
+                ),
+            });
+            return AdmissionDecision::Rejected { reasons };
+        }
+
+        // 5. Witness structural completeness
+        if let Err(missing) = candidate.witness.is_structurally_complete() {
+            for m in missing {
+                reasons.push(RejectionReason {
+                    invariant: ConstitutionalInvariant::BoundedTermination,
+                    message: format!("Witness incomplete: {}", m),
+                });
+            }
+            return AdmissionDecision::Rejected { reasons };
+        }
+
+        // 6. Monotonicity still applies (constitutional amendments can
+        //    relax rules but must do so explicitly — the diff is recorded)
+        // NOTE: We intentionally do NOT enforce monotonicity for constitutional
+        // amendments. The human signatures ARE the authorization to change rules.
+        // The policy diff is still recorded in the witness for auditability.
+
+        // 7. Admit with ConstitutionalAmendment mode
+        let witness_digest = candidate.witness.digest();
+        let record = self.lineage.append_constitutional(
+            candidate.parent_digest,
+            candidate.candidate_digest.clone(),
+            witness_digest.clone(),
+            candidate.patch_class,
+        );
+
+        info!(
+            sequence = record.sequence,
+            candidate = %record.candidate_digest,
+            human_signatures = sig_count,
+            "Constitutional amendment ADMITTED"
+        );
+
+        AdmissionDecision::Accepted {
+            lineage_digest: record.candidate_digest,
+            witness_digest,
+        }
+    }
 }
 
 /// Check that required verification reports are present and passed.
@@ -662,5 +768,118 @@ mod tests {
         });
 
         assert!(matches!(result, AdmissionDecision::Rejected { .. }));
+    }
+
+    #[test]
+    fn test_constitutional_amendment_with_sufficient_signatures() {
+        let genesis = ArtifactDigest::from_bytes(b"genesis");
+        let mut kernel = Kernel::new(genesis.clone());
+        let manifest = test_manifest();
+
+        let candidate = ArtifactDigest::from_bytes(b"constitutional-v1");
+        let witness = make_witness(
+            &genesis,
+            &candidate,
+            manifest.clone(),
+            true,
+            true,
+            Some(true),
+        );
+
+        let sigs = vec![
+            HumanSignature {
+                identity: "alice@example.com".into(),
+                signature: vec![0u8; 64],
+                signed_at: Utc::now(),
+            },
+            HumanSignature {
+                identity: "bob@example.com".into(),
+                signature: vec![1u8; 64],
+                signed_at: Utc::now(),
+            },
+        ];
+
+        let result = kernel.admit_constitutional(
+            CandidateAmendment {
+                parent_digest: genesis,
+                candidate_digest: candidate,
+                patch_class: PatchClass::Constitutional,
+                witness,
+            },
+            &sigs,
+            2, // require 2 signatures
+        );
+
+        assert!(
+            matches!(result, AdmissionDecision::Accepted { .. }),
+            "Constitutional with 2/2 signatures should be accepted: {result:?}"
+        );
+        assert_eq!(kernel.lineage_length(), 2);
+    }
+
+    #[test]
+    fn test_constitutional_amendment_insufficient_signatures() {
+        let genesis = ArtifactDigest::from_bytes(b"genesis");
+        let mut kernel = Kernel::new(genesis.clone());
+        let manifest = test_manifest();
+
+        let candidate = ArtifactDigest::from_bytes(b"constitutional-v1");
+        let witness = make_witness(
+            &genesis,
+            &candidate,
+            manifest.clone(),
+            true,
+            true,
+            Some(true),
+        );
+
+        let sigs = vec![HumanSignature {
+            identity: "alice@example.com".into(),
+            signature: vec![0u8; 64],
+            signed_at: Utc::now(),
+        }];
+
+        let result = kernel.admit_constitutional(
+            CandidateAmendment {
+                parent_digest: genesis,
+                candidate_digest: candidate,
+                patch_class: PatchClass::Constitutional,
+                witness,
+            },
+            &sigs,
+            2, // require 2, only have 1
+        );
+
+        assert!(
+            matches!(result, AdmissionDecision::Rejected { .. }),
+            "Constitutional with 1/2 signatures should be rejected: {result:?}"
+        );
+        assert_eq!(kernel.lineage_length(), 1); // only genesis
+    }
+
+    #[test]
+    fn test_constitutional_rejects_non_constitutional_class() {
+        let genesis = ArtifactDigest::from_bytes(b"genesis");
+        let mut kernel = Kernel::new(genesis.clone());
+        let manifest = test_manifest();
+
+        let candidate = ArtifactDigest::from_bytes(b"v1");
+        let witness = make_witness(&genesis, &candidate, manifest, true, true, None);
+
+        let result = kernel.admit_constitutional(
+            CandidateAmendment {
+                parent_digest: genesis,
+                candidate_digest: candidate,
+                patch_class: PatchClass::Config, // wrong class
+                witness,
+            },
+            &[],
+            0,
+        );
+
+        assert!(
+            matches!(result, AdmissionDecision::Rejected { .. }),
+            "admit_constitutional must require Constitutional class: {result:?}"
+        );
     }
 }

@@ -110,6 +110,34 @@ impl LineageStore {
         record
     }
 
+    /// Append a constitutional amendment to the lineage.
+    ///
+    /// Constitutional amendments change TCB files and require human authorization.
+    /// They are recorded with `AdmissionMode::ConstitutionalAmendment`.
+    pub fn append_constitutional(
+        &mut self,
+        parent: ArtifactDigest,
+        candidate: ArtifactDigest,
+        witness_digest: ArtifactDigest,
+        patch_class: PatchClass,
+    ) -> LineageRecord {
+        let record = LineageRecord {
+            sequence: self.next_sequence,
+            parent_digest: parent,
+            candidate_digest: candidate.clone(),
+            witness_digest,
+            patch_class,
+            timestamp_utc: Utc::now(),
+            admitted: true,
+            admission_mode: AdmissionMode::ConstitutionalAmendment,
+            git_commit_sha: None,
+        };
+        self.admitted.insert(candidate.as_str().to_string());
+        self.records.push(record.clone());
+        self.next_sequence += 1;
+        record
+    }
+
     /// Import an external commit as a trusted base into the lineage.
     ///
     /// Same as `append` but with `AdmissionMode::Imported` and an associated

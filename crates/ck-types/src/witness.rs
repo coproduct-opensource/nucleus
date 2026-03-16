@@ -264,6 +264,20 @@ impl PolicyDiffReport {
     }
 }
 
+/// A human signature authorizing a constitutional amendment.
+///
+/// Constitutional patches (TCB changes) cannot be self-merged by the kernel.
+/// They require threshold human signatures as an external authority check.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HumanSignature {
+    /// Identity of the human signer (e.g., GitHub username, email).
+    pub identity: String,
+    /// Ed25519 signature over the witness bundle signing payload.
+    pub signature: Vec<u8>,
+    /// When this signature was created.
+    pub signed_at: DateTime<Utc>,
+}
+
 /// Role of a witness bundle signer.
 ///
 /// The moonshot spec requires 4 distinct signer roles to ensure no single
