@@ -48,6 +48,23 @@ impl Kernel {
         Self { lineage }
     }
 
+    /// Restore a kernel from persisted lineage records.
+    ///
+    /// Rebuilds the in-memory lineage from a list of previously admitted
+    /// records (e.g., loaded from a database). Records are replayed in
+    /// order without re-running admission checks — the caller guarantees
+    /// they were previously validated.
+    ///
+    /// The first record is treated as genesis. Returns an error if records
+    /// are empty or if sequence numbers are not monotonically increasing.
+    pub fn restore(records: Vec<LineageRecord>) -> Result<Self, String> {
+        if records.is_empty() {
+            return Err("Cannot restore kernel from empty lineage".into());
+        }
+        let lineage = LineageStore::restore(records)?;
+        Ok(Self { lineage })
+    }
+
     /// Submit a candidate amendment for admission.
     ///
     /// Returns `Accepted` with lineage record, or `Rejected` with reasons.

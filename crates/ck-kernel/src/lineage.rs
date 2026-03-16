@@ -36,6 +36,37 @@ impl LineageStore {
         }
     }
 
+    /// Restore from persisted records.
+    ///
+    /// Accepts a list of lineage records (genesis + descendants) and
+    /// rebuilds the in-memory state. Records must be ordered by sequence
+    /// number and have monotonically increasing sequences.
+    pub fn restore(records: Vec<LineageRecord>) -> Result<Self, String> {
+        if records.is_empty() {
+            return Err("Cannot restore from empty records".into());
+        }
+
+        let mut admitted = HashSet::new();
+        let mut max_seq = 0u64;
+
+        for (i, record) in records.iter().enumerate() {
+            if i > 0 && record.sequence <= max_seq {
+                return Err(format!(
+                    "Sequence numbers must be monotonically increasing: {} <= {}",
+                    record.sequence, max_seq
+                ));
+            }
+            max_seq = record.sequence;
+            admitted.insert(record.candidate_digest.as_str().to_string());
+        }
+
+        Ok(Self {
+            next_sequence: max_seq + 1,
+            admitted,
+            records,
+        })
+    }
+
     /// Admit the genesis artifact (root of the lineage).
     pub fn admit_genesis(&mut self, digest: ArtifactDigest) {
         let record = LineageRecord {
@@ -129,6 +160,45 @@ mod tests {
         store.admit_genesis(ArtifactDigest::from_bytes(b"genesis"));
         let unknown = ArtifactDigest::from_bytes(b"unknown");
         assert!(!store.is_admitted(&unknown));
+    }
+
+    #[test]
+    fn test_restore_from_records() {
+        let mut store = LineageStore::new();
+        let g = ArtifactDigest::from_bytes(b"genesis");
+        store.admit_genesis(g.clone());
+
+        let v1 = ArtifactDigest::from_bytes(b"v1");
+        let w1 = ArtifactDigest::from_bytes(b"w1");
+        store.append(g.clone(), v1.clone(), w1, PatchClass::Config);
+
+        let v2 = ArtifactDigest::from_bytes(b"v2");
+        let w2 = ArtifactDigest::from_bytes(b"w2");
+        store.append(v1.clone(), v2.clone(), w2, PatchClass::Controller);
+
+        // Restore from the records
+        let records = store.records().to_vec();
+        let restored = LineageStore::restore(records).unwrap();
+
+        assert_eq!(restored.len(), 3);
+        assert!(restored.is_admitted(&g));
+        assert!(restored.is_admitted(&v1));
+        assert!(restored.is_admitted(&v2));
+        assert!(!restored.is_admitted(&ArtifactDigest::from_bytes(b"unknown")));
+
+        // New appends should continue from the correct sequence
+        let mut restored = restored;
+        let v3 = ArtifactDigest::from_bytes(b"v3");
+        let w3 = ArtifactDigest::from_bytes(b"w3");
+        let record = restored.append(v2, v3.clone(), w3, PatchClass::Config);
+        assert_eq!(record.sequence, 3);
+        assert!(restored.is_admitted(&v3));
+    }
+
+    #[test]
+    fn test_restore_empty_fails() {
+        let result = LineageStore::restore(vec![]);
+        assert!(result.is_err());
     }
 
     #[test]

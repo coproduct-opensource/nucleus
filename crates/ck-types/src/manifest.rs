@@ -149,6 +149,59 @@ impl IoSurface {
             && self.tool_namespaces.is_subset(&other.tool_namespaces)
             && self.repo_write_targets.is_subset(&other.repo_write_targets)
     }
+
+    /// Returns the axes where `self` exceeds `other`.
+    pub fn escalations_over(&self, other: &Self) -> Vec<String> {
+        let mut escalations = Vec::new();
+        let check = |name: &str, child: &BTreeSet<String>, parent: &BTreeSet<String>| {
+            let excess: BTreeSet<_> = child.difference(parent).collect();
+            if !excess.is_empty() {
+                Some(format!(
+                    "{}: +[{}]",
+                    name,
+                    excess.into_iter().cloned().collect::<Vec<_>>().join(", ")
+                ))
+            } else {
+                None
+            }
+        };
+        if let Some(e) = check(
+            "outbound_domains",
+            &self.outbound_domains,
+            &other.outbound_domains,
+        ) {
+            escalations.push(e);
+        }
+        if let Some(e) = check(
+            "local_file_roots",
+            &self.local_file_roots,
+            &other.local_file_roots,
+        ) {
+            escalations.push(e);
+        }
+        if let Some(e) = check(
+            "env_vars_readable",
+            &self.env_vars_readable,
+            &other.env_vars_readable,
+        ) {
+            escalations.push(e);
+        }
+        if let Some(e) = check(
+            "tool_namespaces",
+            &self.tool_namespaces,
+            &other.tool_namespaces,
+        ) {
+            escalations.push(e);
+        }
+        if let Some(e) = check(
+            "repo_write_targets",
+            &self.repo_write_targets,
+            &other.repo_write_targets,
+        ) {
+            escalations.push(e);
+        }
+        escalations
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

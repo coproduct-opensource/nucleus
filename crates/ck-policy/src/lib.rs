@@ -41,15 +41,11 @@ pub fn check_monotonicity(parent: &PolicyManifest, child: &PolicyManifest) -> Mo
 
     // 2. I/O confinement
     let io_escalations = if parent.amendment_rules.require_monotone_io {
-        let confined = child.io_surface.is_subset_of(&parent.io_surface);
-        if !confined {
+        let e = child.io_surface.escalations_over(&parent.io_surface);
+        if !e.is_empty() {
             violated.push(ConstitutionalInvariant::IoConfinement);
         }
-        if confined {
-            vec![]
-        } else {
-            vec!["I/O surface widened".into()]
-        }
+        e
     } else {
         vec![]
     };
@@ -192,6 +188,15 @@ mod tests {
             .diff
             .violated_invariants
             .contains(&ConstitutionalInvariant::IoConfinement));
+        // Detailed escalation report should mention the specific domain
+        assert!(
+            v.diff
+                .io_escalations
+                .iter()
+                .any(|e| e.contains("exfiltrate.io")),
+            "Expected detailed I/O escalation report, got: {:?}",
+            v.diff.io_escalations
+        );
     }
 
     #[test]
