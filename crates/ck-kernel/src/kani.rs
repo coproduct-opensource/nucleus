@@ -127,7 +127,10 @@ fn make_witness_for_proof(
             signer: "ci".into(),
             algorithm: "ed25519".into(),
             signature: "sig".into(),
+            role: None,
         }],
+        source_tree_digest: None,
+        build_container_digest: None,
     }
 }
 

@@ -27,6 +27,13 @@ pub struct WitnessBundle {
     pub policy_after: PolicyManifest,
     pub reports: VerificationReports,
     pub signatures: Vec<BundleSignature>,
+    /// BLAKE3 digest of the full source tree at the candidate commit.
+    /// Binds the witness to the actual artifact, not just the commit SHA.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_tree_digest: Option<ArtifactDigest>,
+    /// Digest of the build container image used for verification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_container_digest: Option<ArtifactDigest>,
 }
 
 impl WitnessBundle {
@@ -71,16 +78,36 @@ impl WitnessBundle {
 pub struct SignatureVerifier {
     /// Map of signer name → Ed25519 public key bytes (32 bytes).
     trusted_keys: Vec<(String, Vec<u8>)>,
+    /// Roles that must be present for a bundle to be fully verified.
+    /// If empty, any single valid signature suffices (legacy mode).
+    required_roles: Vec<SignerRole>,
 }
 
 impl SignatureVerifier {
-    /// Create a verifier with the given trusted public keys.
+    /// Create a verifier with the given trusted public keys (legacy mode).
     pub fn new(trusted_keys: Vec<(String, Vec<u8>)>) -> Self {
-        Self { trusted_keys }
+        Self {
+            trusted_keys,
+            required_roles: vec![],
+        }
     }
 
-    /// Verify that the bundle has at least one valid Ed25519 signature
-    /// from a trusted signer.
+    /// Create a verifier that requires specific roles to be present.
+    pub fn with_required_roles(
+        trusted_keys: Vec<(String, Vec<u8>)>,
+        required_roles: Vec<SignerRole>,
+    ) -> Self {
+        Self {
+            trusted_keys,
+            required_roles,
+        }
+    }
+
+    /// Verify that the bundle has valid Ed25519 signatures.
+    ///
+    /// If `required_roles` is set, verifies that each required role has
+    /// at least one valid signature. Otherwise, requires at least one
+    /// valid signature from any trusted signer (legacy behavior).
     pub fn verify(&self, bundle: &WitnessBundle) -> Result<(), Vec<String>> {
         if self.trusted_keys.is_empty() {
             return Ok(()); // no trusted keys configured = skip verification
@@ -88,6 +115,7 @@ impl SignatureVerifier {
 
         let payload = bundle.signing_payload();
         let mut errors = Vec::new();
+        let mut valid_roles = std::collections::HashSet::new();
         let mut valid_count = 0;
 
         for sig in &bundle.signatures {
@@ -127,13 +155,31 @@ impl SignatureVerifier {
                 ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, pub_key_bytes);
 
             match public_key.verify(&payload, &sig_bytes) {
-                Ok(()) => valid_count += 1,
+                Ok(()) => {
+                    valid_count += 1;
+                    if let Some(role) = sig.role {
+                        valid_roles.insert(role);
+                    }
+                }
                 Err(_) => {
                     errors.push(format!(
                         "Signer '{}': Ed25519 signature verification failed",
                         sig.signer
                     ));
                 }
+            }
+        }
+
+        // Check role requirements
+        if !self.required_roles.is_empty() {
+            let missing: Vec<_> = self
+                .required_roles
+                .iter()
+                .filter(|r| !valid_roles.contains(r))
+                .collect();
+            if !missing.is_empty() {
+                errors.push(format!("Missing required role signatures: {:?}", missing));
+                return Err(errors);
             }
         }
 
@@ -195,24 +241,80 @@ impl PolicyDiffReport {
     }
 }
 
+/// Role of a witness bundle signer.
+///
+/// The moonshot spec requires 4 distinct signer roles to ensure no single
+/// component can forge a complete witness. Each role signs at a different
+/// pipeline stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SignerRole {
+    /// Signs after build verification passes.
+    Build,
+    /// Signs after formal proof (Kani) obligations are met.
+    Proof,
+    /// Signs after independent replay verification succeeds.
+    Replay,
+    /// Signs at kernel admission time — the final gate.
+    Admission,
+}
+
 /// Cryptographic signature on the witness bundle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BundleSignature {
     pub signer: String,
     pub algorithm: String,
     pub signature: String,
+    /// The role this signature fulfills in the evidence pipeline.
+    /// Legacy bundles may have `None` (pre-multi-role era).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<SignerRole>,
+}
+
+/// How an artifact entered the constitutional lineage.
+///
+/// The dual-DAG model (spec §10) distinguishes git ancestry from
+/// constitutional ancestry. Each admission mode documents how and why
+/// a node was added to the constitutional DAG.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionMode {
+    /// Initial bootstrap — trusted by construction.
+    Genesis,
+    /// Ordinary self-amendment: passed kernel checks on the ordinary path.
+    /// This is the normal admission mode for agent-generated patches.
+    #[default]
+    #[serde(alias = "admitted")]
+    OrdinarySelfAmendment,
+    /// External commit adopted as trusted base — weaker evidence.
+    /// Used when `main` advances out-of-band.
+    Imported,
+    /// Constitutional amendment: changes to TCB files, requires human signatures.
+    /// The kernel itself cannot issue this mode on the ordinary path.
+    ConstitutionalAmendment,
+    /// Human-signed bypass — external authority override.
+    HumanOverride,
 }
 
 /// A record in the lineage store.
+///
+/// In the dual-DAG model, `parent_digest` tracks the constitutional parent
+/// (latest admitted node), while `git_commit_sha` tracks git ancestry.
+/// These may diverge when out-of-band commits advance `main`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LineageRecord {
     pub sequence: u64,
+    /// The constitutional parent (latest admitted node at time of admission).
     pub parent_digest: ArtifactDigest,
     pub candidate_digest: ArtifactDigest,
     pub witness_digest: ArtifactDigest,
     pub patch_class: PatchClass,
     pub timestamp_utc: DateTime<Utc>,
     pub admitted: bool,
+    #[serde(default)]
+    pub admission_mode: AdmissionMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_commit_sha: Option<String>,
 }
 
 #[cfg(test)]
@@ -301,7 +403,10 @@ mod tests {
                 signer: "kernel-ci".into(),
                 algorithm: "ed25519".into(),
                 signature: "deadbeef".into(),
+                role: None,
             }],
+            source_tree_digest: None,
+            build_container_digest: None,
         }
     }
 
@@ -363,13 +468,23 @@ mod tests {
         bundle: &WitnessBundle,
         key_pair: &ring::signature::Ed25519KeyPair,
     ) -> BundleSignature {
+        sign_bundle_with_role(bundle, key_pair, "test-ci", None)
+    }
+
+    fn sign_bundle_with_role(
+        bundle: &WitnessBundle,
+        key_pair: &ring::signature::Ed25519KeyPair,
+        signer_name: &str,
+        role: Option<SignerRole>,
+    ) -> BundleSignature {
         use base64::Engine;
         let payload = bundle.signing_payload();
         let sig = key_pair.sign(&payload);
         BundleSignature {
-            signer: "test-ci".into(),
+            signer: signer_name.into(),
             algorithm: "ed25519".into(),
             signature: base64::engine::general_purpose::STANDARD.encode(sig.as_ref()),
+            role,
         }
     }
 
@@ -426,6 +541,7 @@ mod tests {
             signer: "test".into(),
             algorithm: "none".into(),
             signature: "unsigned".into(),
+            role: None,
         }];
 
         let (_, pub_key) = test_keypair();
@@ -456,9 +572,66 @@ mod tests {
             signer: "extra".into(),
             algorithm: "ed25519".into(),
             signature: "deadbeef".into(),
+            role: None,
         }];
         let payload_different_sigs = bundle.signing_payload();
         // Payload should be identical regardless of signatures content
         assert_eq!(payload_with_sigs, payload_different_sigs);
+    }
+
+    #[test]
+    fn test_role_based_verification_requires_all_roles() {
+        let (build_kp, build_pk) = test_keypair();
+        let (admission_kp, admission_pk) = test_keypair();
+
+        let mut bundle = test_bundle();
+        bundle.signatures = vec![
+            sign_bundle_with_role(
+                &bundle,
+                &build_kp,
+                "build-verifier",
+                Some(SignerRole::Build),
+            ),
+            sign_bundle_with_role(
+                &bundle,
+                &admission_kp,
+                "admission-verifier",
+                Some(SignerRole::Admission),
+            ),
+        ];
+
+        let verifier = SignatureVerifier::with_required_roles(
+            vec![
+                ("build-verifier".into(), build_pk),
+                ("admission-verifier".into(), admission_pk),
+            ],
+            vec![SignerRole::Build, SignerRole::Admission],
+        );
+        assert!(verifier.verify(&bundle).is_ok());
+    }
+
+    #[test]
+    fn test_role_based_verification_rejects_missing_role() {
+        let (build_kp, build_pk) = test_keypair();
+        let (_admission_kp, admission_pk) = test_keypair();
+
+        let mut bundle = test_bundle();
+        // Only sign with Build role — Admission role is missing
+        bundle.signatures = vec![sign_bundle_with_role(
+            &bundle,
+            &build_kp,
+            "build-verifier",
+            Some(SignerRole::Build),
+        )];
+
+        let verifier = SignatureVerifier::with_required_roles(
+            vec![
+                ("build-verifier".into(), build_pk),
+                ("admission-verifier".into(), admission_pk),
+            ],
+            vec![SignerRole::Build, SignerRole::Admission],
+        );
+        let err = verifier.verify(&bundle).unwrap_err();
+        assert!(err.iter().any(|e| e.contains("Missing required role")));
     }
 }
