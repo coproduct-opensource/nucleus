@@ -32,6 +32,16 @@ impl PolicyManifest {
         let canonical = serde_json::to_vec(self).expect("PolicyManifest is always serializable");
         ArtifactDigest::from_bytes(&canonical)
     }
+
+    /// Deserialize from a TOML string (e.g., `PolicyManifest.toml`).
+    pub fn from_toml(s: &str) -> Result<Self, toml::de::Error> {
+        toml::from_str(s)
+    }
+
+    /// Serialize to a canonical TOML string.
+    pub fn to_toml(&self) -> String {
+        toml::to_string_pretty(self).expect("PolicyManifest is always serializable")
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -457,5 +467,59 @@ mod tests {
         let d1 = m.digest();
         let d2 = m.digest();
         assert_eq!(d1, d2);
+    }
+
+    #[test]
+    fn test_toml_roundtrip() {
+        let original = PolicyManifest {
+            version: 1,
+            capabilities: base_capabilities(),
+            io_surface: IoSurface {
+                outbound_domains: ["api.github.com".into()].into(),
+                local_file_roots: ["/workspace".into()].into(),
+                env_vars_readable: ["HOME".into()].into(),
+                tool_namespaces: BTreeSet::new(),
+                repo_write_targets: BTreeSet::new(),
+            },
+            budget_bounds: BudgetBounds {
+                max_tokens: 200_000,
+                max_wall_ms: 1_800_000,
+                max_cpu_ms: 1_200_000,
+                max_memory_bytes: 4_000_000_000,
+                max_network_calls: 200,
+                max_files_touched: 50,
+                max_dollar_spend_millicents: 500_000,
+                max_patch_attempts: 3,
+            },
+            proof_requirements: ProofRequirements {
+                config_patch: ["build_pass".into(), "tests_pass".into()].into(),
+                controller_patch: ["build_pass".into(), "kani_pass".into()].into(),
+                evaluator_patch: ["build_pass".into()].into(),
+            },
+            amendment_rules: AmendmentRules {
+                may_modify: ["controller_code".into()].into(),
+                may_not_modify: ["kernel_checker".into()].into(),
+                require_monotone_capabilities: true,
+                require_monotone_io: true,
+                require_monotone_proofreq: true,
+                constitutional_human_signatures: 2,
+            },
+        };
+
+        let toml_str = original.to_toml();
+        let parsed = PolicyManifest::from_toml(&toml_str).unwrap();
+        assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn test_from_toml_rejects_invalid() {
+        let result = PolicyManifest::from_toml("not valid toml {{{");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_toml_rejects_missing_fields() {
+        let result = PolicyManifest::from_toml("[capabilities]\nmax_parallel_tasks = 4\n");
+        assert!(result.is_err());
     }
 }
