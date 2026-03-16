@@ -121,6 +121,7 @@ fn make_witness_for_proof(
             replay: None,
             adversarial: None,
             termination: None,
+            sandbox: None,
             artifact_digests: BTreeMap::new(),
         },
         signatures: vec![BundleSignature {
