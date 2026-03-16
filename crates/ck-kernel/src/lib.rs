@@ -42,10 +42,17 @@ impl Kernel {
     /// Create a new kernel with an empty lineage.
     ///
     /// The genesis artifact is automatically admitted as the root.
-    pub fn new(genesis_digest: ArtifactDigest) -> Self {
+    /// If `git_commit_sha` is provided, it is stored on the genesis record
+    /// so the verification bridge can create worktrees at the correct ref.
+    pub fn new_with_sha(genesis_digest: ArtifactDigest, git_commit_sha: Option<String>) -> Self {
         let mut lineage = LineageStore::new();
-        lineage.admit_genesis(genesis_digest);
+        lineage.admit_genesis(genesis_digest, git_commit_sha);
         Self { lineage }
+    }
+
+    /// Create a new kernel with an empty lineage (no git SHA on genesis).
+    pub fn new(genesis_digest: ArtifactDigest) -> Self {
+        Self::new_with_sha(genesis_digest, None)
     }
 
     /// Restore a kernel from persisted lineage records.
@@ -81,6 +88,22 @@ impl Kernel {
                 ),
             });
             return AdmissionDecision::Rejected { reasons };
+        }
+
+        // 1.5. Dual-DAG enforcement: ordinary amendments must parent from
+        //      the latest admitted node. This prevents out-of-band commits
+        //      from silently becoming constitutional lineage ancestors.
+        if let Some(latest) = self.lineage.latest_admitted_digest() {
+            if candidate.parent_digest != latest {
+                reasons.push(RejectionReason {
+                    invariant: ConstitutionalInvariant::GovernanceMonotonicity,
+                    message: format!(
+                        "Ordinary amendment must parent from latest admitted node {}; got {}",
+                        latest, candidate.parent_digest
+                    ),
+                });
+                return AdmissionDecision::Rejected { reasons };
+            }
         }
 
         // 2. Patch class must be well-formed
@@ -205,6 +228,34 @@ impl Kernel {
     /// Get the full lineage as an ordered list of records.
     pub fn lineage(&self) -> &[LineageRecord] {
         self.lineage.records()
+    }
+
+    /// Import an external commit as a trusted base into the lineage.
+    ///
+    /// The parent must already be in the lineage (no disconnected islands).
+    /// Returns the new lineage record with `AdmissionMode::Imported`.
+    pub fn import_trusted_base(
+        &mut self,
+        parent_digest: ArtifactDigest,
+        candidate_digest: ArtifactDigest,
+        git_commit_sha: Option<String>,
+    ) -> Result<LineageRecord, String> {
+        if !self.lineage.is_admitted(&parent_digest) {
+            return Err(format!(
+                "Parent {} is not in the admitted lineage — cannot import disconnected artifact",
+                parent_digest
+            ));
+        }
+        Ok(self.lineage.import(
+            parent_digest,
+            candidate_digest,
+            git_commit_sha.unwrap_or_default(),
+        ))
+    }
+
+    /// Get the most recent lineage record.
+    pub fn latest_record(&self) -> Option<&LineageRecord> {
+        self.lineage.latest_record()
     }
 }
 
@@ -389,7 +440,10 @@ mod tests {
                 signer: "kernel-ci".into(),
                 algorithm: "ed25519".into(),
                 signature: "test-sig".into(),
+                role: None,
             }],
+            source_tree_digest: None,
+            build_container_digest: None,
         }
     }
 
