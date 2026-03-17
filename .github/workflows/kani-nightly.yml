@@ -97,19 +97,20 @@ jobs:
           args: >-
             -p ck-kernel
             --solver cadical
-            --harness proof_rejected_never_in_lineage
-            --harness proof_budget_escalation_always_rejected
-            --harness proof_constitutional_self_merge_impossible
-            --harness proof_identical_policy_config_patch_admitted
+            --harness proof_budget_escalation_detected
+            --harness proof_capability_escalation_detected_bitmask
+            --harness proof_io_confinement_detected_bitmask
+            --harness proof_combined_monotonicity_complete
+            --harness proof_capability_subset_transitive
       - name: Summary
         if: always()
         run: |
           TOTAL=$(grep -c '#\[kani::proof\]' crates/ck-kernel/src/kani.rs)
           echo "## Kani BMC — Constitutional Kernel (fast tier)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Harnesses verified:** 4 / $TOTAL (fast tier)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Proved:** lineage integrity, budget boundedness, constitutional self-merge rejection, identical-policy admission" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Nightly:** capability escalation, governance weakening, I/O surface (7 symbolic BTreeSet proofs)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Harnesses verified:** 5 / $TOTAL (fast tier — pure bitmask)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Proved:** budget escalation, capability non-escalation, I/O confinement, combined monotonicity, lattice transitivity" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Nightly:** 11 symbolic BTreeSet proofs via admit() pipeline" >> "$GITHUB_STEP_SUMMARY"
 
   # Constitutional Kernel (full): all 11 harnesses including symbolic BTreeSet proofs
   # symbolic_set() proofs take 5-15 min each due to BTreeSet node machinery.
