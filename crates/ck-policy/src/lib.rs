@@ -9,6 +9,10 @@
 //! 3. Resource boundedness: `Budget(child) ≤ Budget(parent)`
 //! 4. Governance monotonicity: `ProofReq(child) ⊇ ProofReq(parent)`
 
+pub mod preflight;
+
+pub use preflight::{validate_candidate, validate_structure, PolicyViolation, PreflightResult};
+
 use ck_types::manifest::PolicyManifest;
 use ck_types::witness::PolicyDiffReport;
 use ck_types::ConstitutionalInvariant;
