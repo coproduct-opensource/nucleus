@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentdojo-portcullis"
+version = "0.1.0"
+description = "Portcullis exposure-lattice defense adapter for AgentDojo benchmark"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "agentdojo>=0.1.30",
+]
+
+[project.scripts]
+portcullis-bench = "portcullis_defense.run_benchmark:main"
+
+[tool.setuptools]
+packages = ["portcullis_defense"]

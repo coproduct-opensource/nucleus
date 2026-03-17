@@ -143,13 +143,17 @@ fn make_witness(
             replay: None,
             adversarial: None,
             termination: None,
+            sandbox: None,
             artifact_digests: BTreeMap::new(),
         },
         signatures: vec![BundleSignature {
             signer: "kernel-ci".into(),
             algorithm: "ed25519".into(),
             signature: "demo-signature-would-be-real-in-production".into(),
+            role: None,
         }],
+        source_tree_digest: None,
+        build_container_digest: None,
     }
 }
 

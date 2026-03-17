@@ -17,7 +17,7 @@ pub use digest::ArtifactDigest;
 pub use manifest::{
     AmendmentRules, BudgetBounds, CapabilitySet, IoSurface, PolicyManifest, ProofRequirements,
 };
-pub use witness::{SignatureVerifier, WitnessBundle};
+pub use witness::{AdmissionMode, SignatureVerifier, WitnessBundle};
 
 /// Classification of self-modification by danger level.
 ///
