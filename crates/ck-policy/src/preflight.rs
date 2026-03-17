@@ -405,4 +405,246 @@ mod tests {
             .iter()
             .any(|v| v.message.contains("max_tokens")));
     }
+
+    #[test]
+    fn test_validate_structure_multiple_zero_budget_fields_single_violation() {
+        let mut m = base_manifest();
+        m.budget_bounds.max_tokens = 0;
+        m.budget_bounds.max_wall_ms = 0;
+        m.budget_bounds.max_memory_bytes = 0;
+        let r = validate_structure(&m);
+        assert!(!r.valid);
+        // All zero fields reported in a single violation, not multiple.
+        let resource_violations: Vec<_> = r
+            .violations
+            .iter()
+            .filter(|v| v.invariant == ConstitutionalInvariant::ResourceBoundedness)
+            .collect();
+        assert_eq!(resource_violations.len(), 1, "Expected single ResourceBoundedness violation");
+        let msg = &resource_violations[0].message;
+        assert!(msg.contains("max_tokens"), "Missing max_tokens in: {}", msg);
+        assert!(msg.contains("max_wall_ms"), "Missing max_wall_ms in: {}", msg);
+        assert!(msg.contains("max_memory_bytes"), "Missing max_memory_bytes in: {}", msg);
+    }
+
+    #[test]
+    fn test_validate_structure_both_violations() {
+        let mut m = base_manifest();
+        // Introduce overlap between may_modify and may_not_modify.
+        m.amendment_rules.may_modify.insert("kernel_checker".into());
+        // And zero out a budget field.
+        m.budget_bounds.max_patch_attempts = 0;
+        let r = validate_structure(&m);
+        assert!(!r.valid);
+        assert_eq!(r.violations.len(), 2, "Expected 2 violations, got: {:?}", r.violations);
+        let invariants: Vec<_> = r.violations.iter().map(|v| v.invariant).collect();
+        assert!(invariants.contains(&ConstitutionalInvariant::BoundedTermination));
+        assert!(invariants.contains(&ConstitutionalInvariant::ResourceBoundedness));
+    }
+
+    // ── validate_candidate with monotonicity flags disabled ───────────────
+
+    #[test]
+    fn test_candidate_monotonicity_cap_disabled_allows_escalation() {
+        let mut parent = base_manifest();
+        parent.amendment_rules.require_monotone_capabilities = false;
+        let mut candidate = parent.clone();
+        candidate.capabilities.network_allow.insert("anywhere.com".into());
+        candidate.capabilities.tools_allow.insert("rootkit".into());
+        let r = validate_candidate(&parent, &candidate);
+        assert!(r.valid, "Cap escalation allowed when require_monotone_capabilities=false: {:?}", r.violations);
+    }
+
+    #[test]
+    fn test_candidate_monotonicity_io_disabled_allows_widening() {
+        let mut parent = base_manifest();
+        parent.amendment_rules.require_monotone_io = false;
+        let mut candidate = parent.clone();
+        candidate.io_surface.outbound_domains.insert("exfil.io".into());
+        candidate.io_surface.env_vars_readable.insert("SECRET_KEY".into());
+        let r = validate_candidate(&parent, &candidate);
+        assert!(r.valid, "IO widening allowed when require_monotone_io=false: {:?}", r.violations);
+    }
+
+    #[test]
+    fn test_candidate_monotonicity_proofreq_disabled_allows_weakening() {
+        let mut parent = base_manifest();
+        parent.amendment_rules.require_monotone_proofreq = false;
+        let mut candidate = parent.clone();
+        candidate.proof_requirements.controller_patch.clear();
+        let r = validate_candidate(&parent, &candidate);
+        assert!(r.valid, "Proof weakening allowed when require_monotone_proofreq=false: {:?}", r.violations);
+    }
+
+    #[test]
+    fn test_candidate_budget_always_checked_even_when_monotonicity_disabled() {
+        // All monotonicity flags off, but budget still enforced.
+        let mut parent = base_manifest();
+        parent.amendment_rules.require_monotone_capabilities = false;
+        parent.amendment_rules.require_monotone_io = false;
+        parent.amendment_rules.require_monotone_proofreq = false;
+
+        let mut candidate = parent.clone();
+        // Cap/IO/proofreq escalations are fine because flags are disabled.
+        candidate.capabilities.network_allow.insert("anywhere.com".into());
+        // But budget escalation must still fail.
+        candidate.budget_bounds.max_tokens = 999_999_999;
+
+        let r = validate_candidate(&parent, &candidate);
+        assert!(!r.valid, "Budget escalation must fail regardless of monotonicity flags");
+        assert!(r
+            .violations
+            .iter()
+            .any(|v| v.invariant == ConstitutionalInvariant::ResourceBoundedness));
+    }
+
+    // ── validate_candidate: specific capability axes ──────────────────────
+
+    #[test]
+    fn test_filesystem_read_escalation() {
+        let parent = base_manifest();
+        let mut candidate = parent.clone();
+        candidate.capabilities.filesystem_read.insert("/etc/secrets".into());
+        let r = validate_candidate(&parent, &candidate);
+        assert!(!r.valid);
+        assert!(r
+            .violations
+            .iter()
+            .any(|v| v.invariant == ConstitutionalInvariant::CapabilityNonEscalation));
+        assert!(r
+            .violations
+            .iter()
+            .any(|v| v.message.contains("/etc/secrets")));
+    }
+
+    #[test]
+    fn test_max_parallel_tasks_escalation() {
+        let parent = base_manifest();
+        let mut candidate = parent.clone();
+        candidate.capabilities.max_parallel_tasks = parent.capabilities.max_parallel_tasks + 1;
+        let r = validate_candidate(&parent, &candidate);
+        assert!(!r.valid);
+        assert!(r
+            .violations
+            .iter()
+            .any(|v| v.invariant == ConstitutionalInvariant::CapabilityNonEscalation));
+    }
+
+    #[test]
+    fn test_secret_classes_escalation() {
+        let parent = base_manifest();
+        let mut candidate = parent.clone();
+        candidate.capabilities.secret_classes.insert("prod-db-creds".into());
+        let r = validate_candidate(&parent, &candidate);
+        assert!(!r.valid);
+        assert!(r
+            .violations
+            .iter()
+            .any(|v| v.invariant == ConstitutionalInvariant::CapabilityNonEscalation));
+    }
+
+    // ── validate_candidate: specific IO surface axes ─────────────────────
+
+    #[test]
+    fn test_local_file_roots_widening() {
+        let parent = base_manifest();
+        let mut candidate = parent.clone();
+        candidate.io_surface.local_file_roots.insert("/host".into());
+        let r = validate_candidate(&parent, &candidate);
+        assert!(!r.valid);
+        assert!(r
+            .violations
+            .iter()
+            .any(|v| v.invariant == ConstitutionalInvariant::IoConfinement));
+        assert!(r
+            .violations
+            .iter()
+            .any(|v| v.message.contains("/host")));
+    }
+
+    #[test]
+    fn test_env_vars_readable_widening() {
+        let parent = base_manifest();
+        let mut candidate = parent.clone();
+        candidate.io_surface.env_vars_readable.insert("AWS_SECRET_KEY".into());
+        let r = validate_candidate(&parent, &candidate);
+        assert!(!r.valid);
+        assert!(r
+            .violations
+            .iter()
+            .any(|v| v.invariant == ConstitutionalInvariant::IoConfinement));
+    }
+
+    #[test]
+    fn test_repo_write_targets_widening() {
+        let parent = base_manifest();
+        let mut candidate = parent.clone();
+        candidate.io_surface.repo_write_targets.insert("attacker/stolen-repo".into());
+        let r = validate_candidate(&parent, &candidate);
+        assert!(!r.valid);
+        assert!(r
+            .violations
+            .iter()
+            .any(|v| v.invariant == ConstitutionalInvariant::IoConfinement));
+    }
+
+    // ── PreflightResult API ───────────────────────────────────────────────
+
+    #[test]
+    fn test_preflight_result_ok_invariants() {
+        let r = PreflightResult::ok();
+        assert!(r.valid);
+        assert!(r.violations.is_empty());
+    }
+
+    #[test]
+    fn test_preflight_result_invalid_sets_valid_false() {
+        let v = PolicyViolation {
+            invariant: ConstitutionalInvariant::CapabilityNonEscalation,
+            message: "test".into(),
+        };
+        let r = PreflightResult::invalid(vec![v]);
+        assert!(!r.valid);
+        assert_eq!(r.violations.len(), 1);
+    }
+
+    // ── validate_structure vs validate_candidate independence ─────────────
+
+    #[test]
+    fn test_structure_check_ignores_monotonicity() {
+        // A manifest with zero budget is structurally invalid even if it is
+        // a valid child of its parent (tighter budget = fine monotonically).
+        let parent = base_manifest();
+        let mut candidate = parent.clone();
+        candidate.budget_bounds.max_tokens = 0; // zero is invalid structurally
+
+        // validate_structure catches it.
+        let s = validate_structure(&candidate);
+        assert!(!s.valid);
+
+        // validate_candidate does NOT catch zero budget (monotonically it is tighter).
+        let r = validate_candidate(&parent, &candidate);
+        assert!(r.valid, "Zero budget is tighter (0 ≤ parent), so validate_candidate should pass");
+    }
+
+    #[test]
+    fn test_candidate_check_ignores_structure_violations() {
+        // Overlapping may_modify / may_not_modify is a structural issue,
+        // but validate_candidate doesn't check structure — only monotonicity.
+        let parent = base_manifest();
+        let mut candidate = parent.clone();
+        candidate.amendment_rules.may_modify.insert("kernel_checker".into()); // overlap
+
+        let s = validate_structure(&candidate);
+        assert!(!s.valid, "Overlap must be caught by validate_structure");
+
+        let r = validate_candidate(&parent, &candidate);
+        // Same overlap in both parent and candidate — monotonicity check is neutral.
+        // The result depends on whether parent also has the overlap, but either way
+        // validate_candidate should not introduce a GovernanceMonotonicity violation
+        // solely because of the may_modify overlap (that is a structure concern).
+        // Here parent doesn't have the overlap, but candidate's may_modify just grew —
+        // that doesn't affect any monotonicity axis (may_modify is not checked there).
+        assert!(r.valid, "Structural overlap should not trigger monotonicity failure");
+    }
 }
