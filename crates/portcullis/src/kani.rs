@@ -145,6 +145,7 @@ fn build_ordered_permissions() -> (PermissionLattice, PermissionLattice) {
 
 #[kani::proof]
 #[kani::solver(cadical)]
+#[kani::unwind(4)]
 fn proof_normalize_idempotent() {
     let (lhs, _) = build_ordered_permissions();
     let once = lhs.clone().normalize();
@@ -154,6 +155,7 @@ fn proof_normalize_idempotent() {
 
 #[kani::proof]
 #[kani::solver(cadical)]
+#[kani::unwind(4)]
 fn proof_normalize_deflationary() {
     let (lhs, _) = build_ordered_permissions();
     let normalized = lhs.clone().normalize();
