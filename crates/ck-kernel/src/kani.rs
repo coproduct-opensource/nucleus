@@ -16,6 +16,7 @@
 //! 4. Budget escalation on ordinary path is impossible (symbolic)
 //! 5. Constitutional self-merge is always rejected
 //! 6. Valid amendment with identical policy always admitted
+//! 7a-7e. I/O surface widening on ordinary path is impossible (one proof per axis)
 
 #![cfg(kani)]
 
@@ -35,6 +36,8 @@ const DOMAIN_UNIVERSE: &[&str] = &["a.com", "b.com", "c.com"];
 const PATH_UNIVERSE: &[&str] = &["/workspace", "/tmp", "/etc"];
 const TOOL_UNIVERSE: &[&str] = &["builder", "tester", "kani"];
 const PROOF_UNIVERSE: &[&str] = &["build_pass", "tests_pass", "kani_pass"];
+const ENV_UNIVERSE: &[&str] = &["HOME", "PATH", "SECRET"];
+const REPO_UNIVERSE: &[&str] = &["org/repo1", "org/repo2", "org/repo3"];
 
 /// Build a symbolic BTreeSet by choosing membership for each element.
 fn symbolic_set(universe: &[&str]) -> BTreeSet<String> {
@@ -167,6 +170,8 @@ fn make_witness_for_proof(
         }],
         source_tree_digest: None,
         build_container_digest: None,
+        manifest_digest_before: None,
+        manifest_digest_after: None,
     }
 }
 
@@ -175,6 +180,7 @@ fn make_witness_for_proof(
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[kani::proof]
+#[kani::solver(cadical)]
 #[kani::unwind(5)]
 fn proof_capability_escalation_always_rejected() {
     let pp = parent_policy();
@@ -211,6 +217,7 @@ fn proof_capability_escalation_always_rejected() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[kani::proof]
+#[kani::solver(cadical)]
 #[kani::unwind(5)]
 fn proof_governance_weakening_always_rejected() {
     let pp = parent_policy();
@@ -247,6 +254,7 @@ fn proof_governance_weakening_always_rejected() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[kani::proof]
+#[kani::solver(cadical)]
 fn proof_rejected_never_in_lineage() {
     let genesis = ArtifactDigest::from_hex("genesis");
     let mut kernel = Kernel::new(genesis.clone());
@@ -281,6 +289,7 @@ fn proof_rejected_never_in_lineage() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[kani::proof]
+#[kani::solver(cadical)]
 fn proof_budget_escalation_always_rejected() {
     let pp = parent_policy();
     let genesis = ArtifactDigest::from_hex("genesis");
@@ -324,6 +333,7 @@ fn proof_budget_escalation_always_rejected() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[kani::proof]
+#[kani::solver(cadical)]
 fn proof_constitutional_self_merge_impossible() {
     let policy = parent_policy();
     let genesis = ArtifactDigest::from_hex("genesis");
@@ -356,6 +366,7 @@ fn proof_constitutional_self_merge_impossible() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[kani::proof]
+#[kani::solver(cadical)]
 fn proof_identical_policy_config_patch_admitted() {
     let policy = parent_policy();
     let genesis = ArtifactDigest::from_hex("genesis");
@@ -382,4 +393,95 @@ fn proof_identical_policy_config_patch_admitted() {
     assert!(matches!(decision, AdmissionDecision::Accepted { .. }));
     assert!(kernel.is_admitted(&candidate));
     assert_eq!(kernel.lineage_length(), 2);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PROOF 7a-7e: I/O surface widening is ALWAYS rejected (one axis per proof)
+//
+// Split into per-axis proofs for tractable verification time.
+// Each proof symbolizes one IoSurface field while keeping others identical
+// to parent, then assumes the symbolic set is a strict superset.
+// Together they cover all 5 axes of IoSurface.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Helper: prove that widening a single IoSurface axis is always rejected.
+fn prove_io_axis_rejection(
+    mutate: fn(&mut ck_types::manifest::IoSurface),
+    is_widened: fn(&ck_types::manifest::IoSurface, &ck_types::manifest::IoSurface) -> bool,
+) {
+    let pp = parent_policy();
+    let genesis = ArtifactDigest::from_hex("genesis");
+    let mut kernel = Kernel::new(genesis.clone());
+
+    let mut child = pp.clone();
+    mutate(&mut child.io_surface);
+    kani::assume(is_widened(&child.io_surface, &pp.io_surface));
+
+    let candidate = ArtifactDigest::from_hex("candidate");
+    let witness =
+        make_witness_for_proof(&genesis, &candidate, PatchClass::Config, &pp, &child, false);
+
+    let decision = kernel.admit(CandidateAmendment {
+        parent_digest: genesis,
+        candidate_digest: candidate.clone(),
+        patch_class: PatchClass::Config,
+        witness,
+    });
+
+    assert!(matches!(decision, AdmissionDecision::Rejected { .. }));
+    assert!(!kernel.is_admitted(&candidate));
+}
+
+#[kani::proof]
+#[kani::solver(cadical)]
+#[kani::unwind(5)]
+fn proof_io_outbound_domains_widening_rejected() {
+    prove_io_axis_rejection(
+        |io| io.outbound_domains = symbolic_set(DOMAIN_UNIVERSE),
+        |child, parent| !child.outbound_domains.is_subset(&parent.outbound_domains),
+    );
+}
+
+#[kani::proof]
+#[kani::solver(cadical)]
+#[kani::unwind(5)]
+fn proof_io_local_file_roots_widening_rejected() {
+    prove_io_axis_rejection(
+        |io| io.local_file_roots = symbolic_set(PATH_UNIVERSE),
+        |child, parent| !child.local_file_roots.is_subset(&parent.local_file_roots),
+    );
+}
+
+#[kani::proof]
+#[kani::solver(cadical)]
+#[kani::unwind(5)]
+fn proof_io_env_vars_widening_rejected() {
+    prove_io_axis_rejection(
+        |io| io.env_vars_readable = symbolic_set(ENV_UNIVERSE),
+        |child, parent| !child.env_vars_readable.is_subset(&parent.env_vars_readable),
+    );
+}
+
+#[kani::proof]
+#[kani::solver(cadical)]
+#[kani::unwind(5)]
+fn proof_io_tool_namespaces_widening_rejected() {
+    prove_io_axis_rejection(
+        |io| io.tool_namespaces = symbolic_set(TOOL_UNIVERSE),
+        |child, parent| !child.tool_namespaces.is_subset(&parent.tool_namespaces),
+    );
+}
+
+#[kani::proof]
+#[kani::solver(cadical)]
+#[kani::unwind(5)]
+fn proof_io_repo_write_targets_widening_rejected() {
+    prove_io_axis_rejection(
+        |io| io.repo_write_targets = symbolic_set(REPO_UNIVERSE),
+        |child, parent| {
+            !child
+                .repo_write_targets
+                .is_subset(&parent.repo_write_targets)
+        },
+    );
 }
