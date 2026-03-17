@@ -16,6 +16,7 @@
 //! 4. Budget escalation on ordinary path is impossible (symbolic)
 //! 5. Constitutional self-merge is always rejected
 //! 6. Valid amendment with identical policy always admitted
+//! 7. I/O surface widening on ordinary path is impossible (symbolic, all 5 axes)
 
 #![cfg(kani)]
 
@@ -35,6 +36,8 @@ const DOMAIN_UNIVERSE: &[&str] = &["a.com", "b.com", "c.com"];
 const PATH_UNIVERSE: &[&str] = &["/workspace", "/tmp", "/etc"];
 const TOOL_UNIVERSE: &[&str] = &["builder", "tester", "kani"];
 const PROOF_UNIVERSE: &[&str] = &["build_pass", "tests_pass", "kani_pass"];
+const ENV_UNIVERSE: &[&str] = &["HOME", "PATH", "SECRET"];
+const REPO_UNIVERSE: &[&str] = &["org/repo1", "org/repo2", "org/repo3"];
 
 /// Build a symbolic BTreeSet by choosing membership for each element.
 fn symbolic_set(universe: &[&str]) -> BTreeSet<String> {
@@ -390,4 +393,62 @@ fn proof_identical_policy_config_patch_admitted() {
     assert!(matches!(decision, AdmissionDecision::Accepted { .. }));
     assert!(kernel.is_admitted(&candidate));
     assert_eq!(kernel.lineage_length(), 2);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PROOF 7: I/O surface widening is ALWAYS rejected (symbolic all 5 axes)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[kani::proof]
+#[kani::solver(cadical)]
+#[kani::unwind(5)]
+fn proof_io_surface_widening_always_rejected() {
+    let pp = parent_policy();
+    let genesis = ArtifactDigest::from_hex("genesis");
+    let mut kernel = Kernel::new(genesis.clone());
+
+    // Child has SYMBOLIC I/O surface: each axis drawn from its universe
+    let mut child = pp.clone();
+    child.io_surface.outbound_domains = symbolic_set(DOMAIN_UNIVERSE);
+    child.io_surface.local_file_roots = symbolic_set(PATH_UNIVERSE);
+    child.io_surface.env_vars_readable = symbolic_set(ENV_UNIVERSE);
+    child.io_surface.tool_namespaces = symbolic_set(TOOL_UNIVERSE);
+    child.io_surface.repo_write_targets = symbolic_set(REPO_UNIVERSE);
+
+    // Assume the child I/O surface is NOT a subset of parent's
+    // (i.e., at least one axis has an element the parent doesn't)
+    let parent_io = &pp.io_surface;
+    let child_io = &child.io_surface;
+    kani::assume(
+        !child_io
+            .outbound_domains
+            .is_subset(&parent_io.outbound_domains)
+            || !child_io
+                .local_file_roots
+                .is_subset(&parent_io.local_file_roots)
+            || !child_io
+                .env_vars_readable
+                .is_subset(&parent_io.env_vars_readable)
+            || !child_io
+                .tool_namespaces
+                .is_subset(&parent_io.tool_namespaces)
+            || !child_io
+                .repo_write_targets
+                .is_subset(&parent_io.repo_write_targets),
+    );
+
+    let candidate = ArtifactDigest::from_hex("candidate");
+    let witness =
+        make_witness_for_proof(&genesis, &candidate, PatchClass::Config, &pp, &child, false);
+
+    let decision = kernel.admit(CandidateAmendment {
+        parent_digest: genesis,
+        candidate_digest: candidate.clone(),
+        patch_class: PatchClass::Config,
+        witness,
+    });
+
+    // THEOREM: ANY I/O surface widening is rejected
+    assert!(matches!(decision, AdmissionDecision::Rejected { .. }));
+    assert!(!kernel.is_admitted(&candidate));
 }
