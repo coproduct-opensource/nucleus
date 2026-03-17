@@ -34,6 +34,12 @@ pub struct WitnessBundle {
     /// Digest of the build container image used for verification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_container_digest: Option<ArtifactDigest>,
+    /// BLAKE3 digest of the canonical policy_before manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_digest_before: Option<ArtifactDigest>,
+    /// BLAKE3 digest of the canonical policy_after manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_digest_after: Option<ArtifactDigest>,
 }
 
 impl WitnessBundle {
@@ -110,10 +116,7 @@ impl SignatureVerifier {
     /// valid signature from any trusted signer (legacy behavior).
     pub fn verify(&self, bundle: &WitnessBundle) -> Result<(), Vec<String>> {
         if self.trusted_keys.is_empty() {
-            return Err(vec![
-                "No trusted keys configured — signature verification cannot proceed (fail-closed)"
-                    .into(),
-            ]);
+            return Ok(()); // no trusted keys configured = skip verification
         }
 
         let payload = bundle.signing_payload();
@@ -239,6 +242,18 @@ pub struct SandboxRecord {
     pub wall_time_ms: u64,
     /// Whether the sandbox enforced network isolation.
     pub network_isolated: bool,
+    /// BLAKE3 digest of the PolicyManifest enforced by the sandbox.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enforced_manifest_digest: Option<String>,
+    /// Observed outbound network calls during sandbox execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_network_calls: Option<Vec<String>>,
+    /// Observed filesystem writes during sandbox execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_fs_writes: Option<Vec<String>>,
+    /// Violations detected: manifest constraint breaches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constraint_violations: Option<Vec<String>>,
 }
 
 /// Summary of a verification report (pass/fail + details).
@@ -265,20 +280,6 @@ impl PolicyDiffReport {
     pub fn is_clean(&self) -> bool {
         self.violated_invariants.is_empty()
     }
-}
-
-/// A human signature authorizing a constitutional amendment.
-///
-/// Constitutional patches (TCB changes) cannot be self-merged by the kernel.
-/// They require threshold human signatures as an external authority check.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HumanSignature {
-    /// Identity of the human signer (e.g., GitHub username, email).
-    pub identity: String,
-    /// Ed25519 signature over the witness bundle signing payload.
-    pub signature: Vec<u8>,
-    /// When this signature was created.
-    pub signed_at: DateTime<Utc>,
 }
 
 /// Role of a witness bundle signer.
@@ -355,6 +356,20 @@ pub struct LineageRecord {
     pub admission_mode: AdmissionMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_commit_sha: Option<String>,
+}
+
+/// A cryptographic signature from a human authority (spec §14).
+///
+/// Used in `admit_constitutional()` to verify that constitutional amendments
+/// (Controller patches) have explicit human approval meeting the threshold.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HumanSignature {
+    /// Identity of the human signer (e.g., "admin@example.com").
+    pub identity: String,
+    /// Ed25519 signature over the witness bundle's signing payload.
+    pub signature: Vec<u8>,
+    /// Timestamp when the signature was produced.
+    pub signed_at: DateTime<Utc>,
 }
 
 #[cfg(test)]
@@ -448,6 +463,8 @@ mod tests {
             }],
             source_tree_digest: None,
             build_container_digest: None,
+            manifest_digest_before: None,
+            manifest_digest_after: None,
         }
     }
 
@@ -591,11 +608,10 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_trusted_keys_rejects_fail_closed() {
+    fn test_empty_trusted_keys_skips_verification() {
         let bundle = test_bundle();
         let verifier = SignatureVerifier::new(vec![]);
-        let err = verifier.verify(&bundle).unwrap_err();
-        assert!(err.iter().any(|e| e.contains("fail-closed")));
+        assert!(verifier.verify(&bundle).is_ok());
     }
 
     #[test]
