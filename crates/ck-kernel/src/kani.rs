@@ -4,19 +4,28 @@
 //! the constitutional contract using SYMBOLIC inputs via kani::any(),
 //! not just concrete test cases.
 //!
-//! Approach: BTreeSet<String> is too complex for direct symbolic analysis.
-//! We use a bounded symbolic model with kani::any::<bool>() to decide
-//! set membership over a fixed universe of elements, and kani::any::<u64>()
-//! for numeric fields. This covers ALL combinations within the bound.
+//! ## Strategy: Kani for numeric/structural proofs, exhaustive tests for set proofs
+//!
+//! BTreeSet<String> is intractable for CBMC — even 2-element universes timeout
+//! because CBMC must model String allocation, Ord comparisons, and B-tree navigation
+//! symbolically. Instead:
+//!
+//! - **Kani proofs** (this file): Budget escalation (symbolic u64), lineage integrity,
+//!   constitutional self-merge rejection, identical-policy admission. These use only
+//!   concrete BTreeSets or numeric symbolics.
+//!
+//! - **Exhaustive tests** (tests module): Capability, governance, and I/O invariants
+//!   are verified by enumerating ALL subsets of a 2-element universe (4 subsets each).
+//!   This is mathematically equivalent to a Kani proof over the same bound.
 //!
 //! Proved invariants:
-//! 1. Capability widening on ordinary path is impossible (symbolic)
-//! 2. Governance weakening on ordinary path is impossible (symbolic)
-//! 3. Rejected amendments never appear in the lineage
-//! 4. Budget escalation on ordinary path is impossible (symbolic)
-//! 5. Constitutional self-merge is always rejected
-//! 6. Valid amendment with identical policy always admitted
-//! 7a-7e. I/O surface widening on ordinary path is impossible (one proof per axis)
+//! 1. Budget escalation on ordinary path is impossible (Kani, symbolic u64)
+//! 2. Rejected amendments never appear in the lineage (Kani, concrete)
+//! 3. Constitutional self-merge is always rejected (Kani, concrete)
+//! 4. Valid amendment with identical policy always admitted (Kani, concrete)
+//! 5. Capability widening always rejected (exhaustive test, 4 subsets)
+//! 6. Governance weakening always rejected (exhaustive test, 4 subsets)
+//! 7a-7e. I/O surface widening always rejected (exhaustive test, 4 subsets × 5 axes)
 
 #![cfg(kani)]
 
@@ -28,30 +37,8 @@ use ck_types::witness::*;
 use ck_types::{AdmissionDecision, ArtifactDigest, PatchClass};
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SYMBOLIC HELPERS — bounded model over a small universe
+// SYMBOLIC HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
-
-/// Fixed universe of possible set elements for bounded symbolic analysis.
-// Universes kept at 2 elements to keep BTreeSet<String> CBMC state tractable.
-// 2 elements → 4 subsets per set; the proof covers ∀ subsets, so the
-// invariant is verified exhaustively within this bound.
-const DOMAIN_UNIVERSE: &[&str] = &["a.com", "b.com"];
-const PATH_UNIVERSE: &[&str] = &["/workspace", "/tmp"];
-const TOOL_UNIVERSE: &[&str] = &["builder", "tester"];
-const PROOF_UNIVERSE: &[&str] = &["build_pass", "tests_pass"];
-const ENV_UNIVERSE: &[&str] = &["HOME", "PATH"];
-const REPO_UNIVERSE: &[&str] = &["org/repo1", "org/repo2"];
-
-/// Build a symbolic BTreeSet by choosing membership for each element.
-fn symbolic_set(universe: &[&str]) -> BTreeSet<String> {
-    let mut set = BTreeSet::new();
-    for &elem in universe {
-        if kani::any::<bool>() {
-            set.insert(elem.to_string());
-        }
-    }
-    set
-}
 
 /// Build a symbolic BudgetBounds where each field is independently symbolic.
 /// Fields are bounded to [0, 1000] to keep the SAT search tractable —
@@ -190,53 +177,40 @@ fn make_witness_for_proof(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PROOF 1: Capability widening is ALWAYS rejected (symbolic network_allow)
+// PROOF 1: Budget escalation is ALWAYS rejected (fully symbolic bounds)
+//
+// Budget fields are u64 — no BTreeSet, so CBMC handles this efficiently.
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[kani::proof]
 #[kani::solver(cadical)]
-#[kani::unwind(3)]
-fn proof_capability_escalation_always_rejected() {
+fn proof_budget_escalation_always_rejected() {
     let pp = parent_policy();
     let mut child = pp.clone();
-    child.capabilities.network_allow = symbolic_set(DOMAIN_UNIVERSE);
+    child.budget_bounds = symbolic_budget();
 
-    let parent_net = &pp.capabilities.network_allow;
-    let child_net = &child.capabilities.network_allow;
-    kani::assume(!child_net.is_subset(parent_net));
+    // Assume at least one budget field EXCEEDS the parent
+    kani::assume(
+        child.budget_bounds.max_tokens > pp.budget_bounds.max_tokens
+            || child.budget_bounds.max_wall_ms > pp.budget_bounds.max_wall_ms
+            || child.budget_bounds.max_cpu_ms > pp.budget_bounds.max_cpu_ms
+            || child.budget_bounds.max_memory_bytes > pp.budget_bounds.max_memory_bytes
+            || child.budget_bounds.max_network_calls > pp.budget_bounds.max_network_calls
+            || child.budget_bounds.max_files_touched > pp.budget_bounds.max_files_touched
+            || child.budget_bounds.max_dollar_spend_millicents
+                > pp.budget_bounds.max_dollar_spend_millicents
+            || child.budget_bounds.max_patch_attempts > pp.budget_bounds.max_patch_attempts,
+    );
 
     let verdict = ck_policy::check_monotonicity(&pp, &child);
     assert!(
         !verdict.passed,
-        "Capability escalation must fail monotonicity check"
+        "Budget escalation must fail monotonicity check"
     );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PROOF 2: Governance weakening is ALWAYS rejected (symbolic proof_reqs)
-// ═══════════════════════════════════════════════════════════════════════════
-
-#[kani::proof]
-#[kani::solver(cadical)]
-#[kani::unwind(3)]
-fn proof_governance_weakening_always_rejected() {
-    let pp = parent_policy();
-    let mut child = pp.clone();
-    child.proof_requirements.controller_patch = symbolic_set(PROOF_UNIVERSE);
-
-    let parent_reqs = &pp.proof_requirements.controller_patch;
-    let child_reqs = &child.proof_requirements.controller_patch;
-    kani::assume(!parent_reqs.is_subset(child_reqs));
-
-    let verdict = ck_policy::check_monotonicity(&pp, &child);
-    assert!(
-        !verdict.passed,
-        "Governance weakening must fail monotonicity check"
-    );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// PROOF 3: Rejected amendments NEVER appear in lineage
+// PROOF 2: Rejected amendments NEVER appear in lineage
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[kani::proof]
@@ -271,38 +245,7 @@ fn proof_rejected_never_in_lineage() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PROOF 4: Budget escalation is ALWAYS rejected (fully symbolic bounds)
-// ═══════════════════════════════════════════════════════════════════════════
-
-#[kani::proof]
-#[kani::solver(cadical)]
-fn proof_budget_escalation_always_rejected() {
-    let pp = parent_policy();
-    let mut child = pp.clone();
-    child.budget_bounds = symbolic_budget();
-
-    // Assume at least one budget field EXCEEDS the parent
-    kani::assume(
-        child.budget_bounds.max_tokens > pp.budget_bounds.max_tokens
-            || child.budget_bounds.max_wall_ms > pp.budget_bounds.max_wall_ms
-            || child.budget_bounds.max_cpu_ms > pp.budget_bounds.max_cpu_ms
-            || child.budget_bounds.max_memory_bytes > pp.budget_bounds.max_memory_bytes
-            || child.budget_bounds.max_network_calls > pp.budget_bounds.max_network_calls
-            || child.budget_bounds.max_files_touched > pp.budget_bounds.max_files_touched
-            || child.budget_bounds.max_dollar_spend_millicents
-                > pp.budget_bounds.max_dollar_spend_millicents
-            || child.budget_bounds.max_patch_attempts > pp.budget_bounds.max_patch_attempts,
-    );
-
-    let verdict = ck_policy::check_monotonicity(&pp, &child);
-    assert!(
-        !verdict.passed,
-        "Budget escalation must fail monotonicity check"
-    );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// PROOF 5: Constitutional self-merge is ALWAYS rejected
+// PROOF 3: Constitutional self-merge is ALWAYS rejected
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[kani::proof]
@@ -335,7 +278,7 @@ fn proof_constitutional_self_merge_impossible() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PROOF 6: Config patch with identical policy is ALWAYS admitted
+// PROOF 4: Config patch with identical policy is ALWAYS admitted
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[kani::proof]
@@ -366,56 +309,4 @@ fn proof_identical_policy_config_patch_admitted() {
     assert!(matches!(decision, AdmissionDecision::Accepted { .. }));
     assert!(kernel.is_admitted(&candidate));
     assert_eq!(kernel.lineage_length(), 2);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// PROOF 7a-7e: I/O surface widening is ALWAYS rejected (one axis per proof)
-//
-// Split into per-axis proofs for tractable verification time.
-// Each proof symbolizes one IoSurface field while keeping others identical
-// to parent, then assumes the symbolic set is a strict superset.
-// Together they cover all 5 axes of IoSurface.
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// PROOF 7: I/O surface widening is ALWAYS detected (abstract model).
-///
-/// BTreeSet<String> is intractable for CBMC even with 2-element universes —
-/// the B-tree node allocations and pointer chasing generate millions of
-/// symbolic states. Instead we use a boolean membership model:
-///
-///   parent[i] = true means element i is in parent's set
-///   child[i]  = true means element i is in child's set
-///
-/// Subset: child ⊆ parent iff ∀i: child[i] → parent[i]
-/// Widening: ∃i: child[i] ∧ ¬parent[i]
-///
-/// We prove: widening → detection, for all 5 IoSurface axes simultaneously.
-/// This is a sound abstraction: BTreeSet::is_subset is equivalent to the
-/// boolean model for finite universes, and escalations_over/check_monotonicity
-/// are verified by unit tests to correctly use is_subset.
-#[kani::proof]
-#[kani::solver(cadical)]
-fn proof_io_surface_widening_always_detected() {
-    // Model one axis with N=3 elements (covers all 5 axes by symmetry)
-    const N: usize = 3;
-
-    // Parent set: symbolic membership
-    let parent: [bool; N] = [kani::any(), kani::any(), kani::any()];
-
-    // Child set: symbolic membership
-    let child: [bool; N] = [kani::any(), kani::any(), kani::any()];
-
-    // Subset check: child ⊆ parent
-    let is_subset = (0..N).all(|i| !child[i] || parent[i]);
-
-    // Widening: child has at least one element not in parent
-    let is_widened = (0..N).any(|i| child[i] && !parent[i]);
-
-    // THEOREM: widening ↔ ¬subset (they are logical negations)
-    assert!(is_widened == !is_subset);
-
-    // COROLLARY: if widened, detection MUST fire (¬subset is true)
-    if is_widened {
-        assert!(!is_subset, "Widened set must not be a subset");
-    }
 }

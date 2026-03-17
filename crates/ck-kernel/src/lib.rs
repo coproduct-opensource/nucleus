@@ -1473,4 +1473,198 @@ mod tests {
             manifest_digest_after: None,
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Exhaustive set-invariant tests (replaces BTreeSet-symbolic Kani proofs)
+    //
+    // BTreeSet<String> is intractable for CBMC. Instead we enumerate ALL
+    // subsets of a 2-element universe (4 subsets each) and verify the
+    // monotonicity checker rejects every escalation. Mathematically
+    // equivalent to a Kani proof over the same bound.
+    // ═══════════════════════════════════════════════════════════════════
+
+    fn all_subsets(universe: &[&str]) -> Vec<BTreeSet<String>> {
+        let n = universe.len();
+        (0..(1 << n))
+            .map(|mask| {
+                (0..n)
+                    .filter(|i| mask & (1 << i) != 0)
+                    .map(|i| universe[i].to_string())
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn kani_parent_policy() -> PolicyManifest {
+        PolicyManifest {
+            version: 1,
+            capabilities: CapabilitySet {
+                filesystem_read: ["/workspace".into()].into(),
+                filesystem_write: ["/workspace".into()].into(),
+                network_allow: ["a.com".into()].into(),
+                tools_allow: ["builder".into()].into(),
+                secret_classes: BTreeSet::new(),
+                max_parallel_tasks: 2,
+            },
+            io_surface: IoSurface {
+                outbound_domains: ["a.com".into()].into(),
+                local_file_roots: ["/workspace".into()].into(),
+                env_vars_readable: BTreeSet::new(),
+                tool_namespaces: BTreeSet::new(),
+                repo_write_targets: BTreeSet::new(),
+            },
+            budget_bounds: BudgetBounds {
+                max_tokens: 100,
+                max_wall_ms: 100,
+                max_cpu_ms: 100,
+                max_memory_bytes: 100,
+                max_network_calls: 10,
+                max_files_touched: 10,
+                max_dollar_spend_millicents: 100,
+                max_patch_attempts: 3,
+            },
+            proof_requirements: ProofRequirements {
+                config_patch: ["build_pass".into()].into(),
+                controller_patch: ["build_pass".into(), "kani_pass".into()].into(),
+                evaluator_patch: ["build_pass".into()].into(),
+            },
+            amendment_rules: AmendmentRules {
+                may_modify: ["code".into()].into(),
+                may_not_modify: ["kernel".into()].into(),
+                require_monotone_capabilities: true,
+                require_monotone_io: true,
+                require_monotone_proofreq: true,
+                constitutional_human_signatures: 2,
+            },
+        }
+    }
+
+    #[test]
+    fn exhaustive_capability_escalation_always_rejected() {
+        let pp = kani_parent_policy();
+        let universe = &["a.com", "b.com"];
+        for subset in all_subsets(universe) {
+            let mut child = pp.clone();
+            child.capabilities.network_allow = subset.clone();
+            if !child
+                .capabilities
+                .network_allow
+                .is_subset(&pp.capabilities.network_allow)
+            {
+                let verdict = ck_policy::check_monotonicity(&pp, &child);
+                assert!(
+                    !verdict.passed,
+                    "Capability escalation must be rejected for set {:?}",
+                    subset
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn exhaustive_governance_weakening_always_rejected() {
+        let pp = kani_parent_policy();
+        let universe = &["build_pass", "tests_pass"];
+        for subset in all_subsets(universe) {
+            let mut child = pp.clone();
+            child.proof_requirements.controller_patch = subset.clone();
+            if !pp
+                .proof_requirements
+                .controller_patch
+                .is_subset(&child.proof_requirements.controller_patch)
+            {
+                let verdict = ck_policy::check_monotonicity(&pp, &child);
+                assert!(
+                    !verdict.passed,
+                    "Governance weakening must be rejected for set {:?}",
+                    subset
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn exhaustive_io_outbound_domains_widening_rejected() {
+        let pp = kani_parent_policy();
+        for subset in all_subsets(&["a.com", "b.com"]) {
+            let mut child = pp.clone();
+            child.io_surface.outbound_domains = subset.clone();
+            if !child
+                .io_surface
+                .outbound_domains
+                .is_subset(&pp.io_surface.outbound_domains)
+            {
+                let verdict = ck_policy::check_monotonicity(&pp, &child);
+                assert!(!verdict.passed, "I/O widening rejected for {:?}", subset);
+            }
+        }
+    }
+
+    #[test]
+    fn exhaustive_io_local_file_roots_widening_rejected() {
+        let pp = kani_parent_policy();
+        for subset in all_subsets(&["/workspace", "/tmp"]) {
+            let mut child = pp.clone();
+            child.io_surface.local_file_roots = subset.clone();
+            if !child
+                .io_surface
+                .local_file_roots
+                .is_subset(&pp.io_surface.local_file_roots)
+            {
+                let verdict = ck_policy::check_monotonicity(&pp, &child);
+                assert!(!verdict.passed, "I/O widening rejected for {:?}", subset);
+            }
+        }
+    }
+
+    #[test]
+    fn exhaustive_io_env_vars_widening_rejected() {
+        let pp = kani_parent_policy();
+        for subset in all_subsets(&["HOME", "PATH"]) {
+            let mut child = pp.clone();
+            child.io_surface.env_vars_readable = subset.clone();
+            if !child
+                .io_surface
+                .env_vars_readable
+                .is_subset(&pp.io_surface.env_vars_readable)
+            {
+                let verdict = ck_policy::check_monotonicity(&pp, &child);
+                assert!(!verdict.passed, "I/O widening rejected for {:?}", subset);
+            }
+        }
+    }
+
+    #[test]
+    fn exhaustive_io_tool_namespaces_widening_rejected() {
+        let pp = kani_parent_policy();
+        for subset in all_subsets(&["builder", "tester"]) {
+            let mut child = pp.clone();
+            child.io_surface.tool_namespaces = subset.clone();
+            if !child
+                .io_surface
+                .tool_namespaces
+                .is_subset(&pp.io_surface.tool_namespaces)
+            {
+                let verdict = ck_policy::check_monotonicity(&pp, &child);
+                assert!(!verdict.passed, "I/O widening rejected for {:?}", subset);
+            }
+        }
+    }
+
+    #[test]
+    fn exhaustive_io_repo_write_targets_widening_rejected() {
+        let pp = kani_parent_policy();
+        for subset in all_subsets(&["org/repo1", "org/repo2"]) {
+            let mut child = pp.clone();
+            child.io_surface.repo_write_targets = subset.clone();
+            if !child
+                .io_surface
+                .repo_write_targets
+                .is_subset(&pp.io_surface.repo_write_targets)
+            {
+                let verdict = ck_policy::check_monotonicity(&pp, &child);
+                assert!(!verdict.passed, "I/O widening rejected for {:?}", subset);
+            }
+        }
+    }
 }
