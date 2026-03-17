@@ -198,32 +198,18 @@ fn make_witness_for_proof(
 #[kani::unwind(3)]
 fn proof_capability_escalation_always_rejected() {
     let pp = parent_policy();
-    let genesis = ArtifactDigest::from_hex("genesis");
-    let mut kernel = Kernel::new(genesis.clone());
-
-    // Child has a SYMBOLIC network_allow set drawn from DOMAIN_UNIVERSE
     let mut child = pp.clone();
     child.capabilities.network_allow = symbolic_set(DOMAIN_UNIVERSE);
 
-    // Assume the child is a STRICT superset (has something parent doesn't)
     let parent_net = &pp.capabilities.network_allow;
     let child_net = &child.capabilities.network_allow;
     kani::assume(!child_net.is_subset(parent_net));
 
-    let candidate = ArtifactDigest::from_hex("candidate");
-    let witness =
-        make_witness_for_proof(&genesis, &candidate, PatchClass::Config, &pp, &child, false);
-
-    let decision = kernel.admit(CandidateAmendment {
-        parent_digest: genesis,
-        candidate_digest: candidate.clone(),
-        patch_class: PatchClass::Config,
-        witness,
-    });
-
-    // THEOREM: ANY capability escalation is rejected
-    assert!(matches!(decision, AdmissionDecision::Rejected { .. }));
-    assert!(!kernel.is_admitted(&candidate));
+    let verdict = ck_policy::check_monotonicity(&pp, &child);
+    assert!(
+        !verdict.passed,
+        "Capability escalation must fail monotonicity check"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -235,32 +221,18 @@ fn proof_capability_escalation_always_rejected() {
 #[kani::unwind(3)]
 fn proof_governance_weakening_always_rejected() {
     let pp = parent_policy();
-    let genesis = ArtifactDigest::from_hex("genesis");
-    let mut kernel = Kernel::new(genesis.clone());
-
-    // Child has SYMBOLIC proof requirements (subset of PROOF_UNIVERSE)
     let mut child = pp.clone();
     child.proof_requirements.controller_patch = symbolic_set(PROOF_UNIVERSE);
 
-    // Assume child WEAKENS requirements (child is strict subset of parent)
     let parent_reqs = &pp.proof_requirements.controller_patch;
     let child_reqs = &child.proof_requirements.controller_patch;
-    kani::assume(!parent_reqs.is_subset(child_reqs)); // parent has something child dropped
+    kani::assume(!parent_reqs.is_subset(child_reqs));
 
-    let candidate = ArtifactDigest::from_hex("candidate");
-    let witness =
-        make_witness_for_proof(&genesis, &candidate, PatchClass::Config, &pp, &child, false);
-
-    let decision = kernel.admit(CandidateAmendment {
-        parent_digest: genesis,
-        candidate_digest: candidate.clone(),
-        patch_class: PatchClass::Config,
-        witness,
-    });
-
-    // THEOREM: ANY governance weakening is rejected
-    assert!(matches!(decision, AdmissionDecision::Rejected { .. }));
-    assert!(!kernel.is_admitted(&candidate));
+    let verdict = ck_policy::check_monotonicity(&pp, &child);
+    assert!(
+        !verdict.passed,
+        "Governance weakening must fail monotonicity check"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -306,10 +278,6 @@ fn proof_rejected_never_in_lineage() {
 #[kani::solver(cadical)]
 fn proof_budget_escalation_always_rejected() {
     let pp = parent_policy();
-    let genesis = ArtifactDigest::from_hex("genesis");
-    let mut kernel = Kernel::new(genesis.clone());
-
-    // Child has FULLY SYMBOLIC budget bounds
     let mut child = pp.clone();
     child.budget_bounds = symbolic_budget();
 
@@ -326,20 +294,11 @@ fn proof_budget_escalation_always_rejected() {
             || child.budget_bounds.max_patch_attempts > pp.budget_bounds.max_patch_attempts,
     );
 
-    let candidate = ArtifactDigest::from_hex("candidate");
-    let witness =
-        make_witness_for_proof(&genesis, &candidate, PatchClass::Config, &pp, &child, false);
-
-    let decision = kernel.admit(CandidateAmendment {
-        parent_digest: genesis,
-        candidate_digest: candidate.clone(),
-        patch_class: PatchClass::Config,
-        witness,
-    });
-
-    // THEOREM: ANY budget escalation is rejected
-    assert!(matches!(decision, AdmissionDecision::Rejected { .. }));
-    assert!(!kernel.is_admitted(&candidate));
+    let verdict = ck_policy::check_monotonicity(&pp, &child);
+    assert!(
+        !verdict.passed,
+        "Budget escalation must fail monotonicity check"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
