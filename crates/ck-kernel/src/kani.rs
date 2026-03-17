@@ -16,7 +16,7 @@
 //! 4. Budget escalation on ordinary path is impossible (symbolic)
 //! 5. Constitutional self-merge is always rejected
 //! 6. Valid amendment with identical policy always admitted
-//! 7. I/O surface widening on ordinary path is impossible (symbolic, all 5 axes)
+//! 7a-7e. I/O surface widening on ordinary path is impossible (one proof per axis)
 
 #![cfg(kani)]
 
@@ -396,46 +396,26 @@ fn proof_identical_policy_config_patch_admitted() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PROOF 7: I/O surface widening is ALWAYS rejected (symbolic all 5 axes)
+// PROOF 7a-7e: I/O surface widening is ALWAYS rejected (one axis per proof)
+//
+// Split into per-axis proofs for tractable verification time.
+// Each proof symbolizes one IoSurface field while keeping others identical
+// to parent, then assumes the symbolic set is a strict superset.
+// Together they cover all 5 axes of IoSurface.
 // ═══════════════════════════════════════════════════════════════════════════
 
-#[kani::proof]
-#[kani::solver(cadical)]
-#[kani::unwind(5)]
-fn proof_io_surface_widening_always_rejected() {
+/// Helper: prove that widening a single IoSurface axis is always rejected.
+fn prove_io_axis_rejection(
+    mutate: fn(&mut ck_types::manifest::IoSurface),
+    is_widened: fn(&ck_types::manifest::IoSurface, &ck_types::manifest::IoSurface) -> bool,
+) {
     let pp = parent_policy();
     let genesis = ArtifactDigest::from_hex("genesis");
     let mut kernel = Kernel::new(genesis.clone());
 
-    // Child has SYMBOLIC I/O surface: each axis drawn from its universe
     let mut child = pp.clone();
-    child.io_surface.outbound_domains = symbolic_set(DOMAIN_UNIVERSE);
-    child.io_surface.local_file_roots = symbolic_set(PATH_UNIVERSE);
-    child.io_surface.env_vars_readable = symbolic_set(ENV_UNIVERSE);
-    child.io_surface.tool_namespaces = symbolic_set(TOOL_UNIVERSE);
-    child.io_surface.repo_write_targets = symbolic_set(REPO_UNIVERSE);
-
-    // Assume the child I/O surface is NOT a subset of parent's
-    // (i.e., at least one axis has an element the parent doesn't)
-    let parent_io = &pp.io_surface;
-    let child_io = &child.io_surface;
-    kani::assume(
-        !child_io
-            .outbound_domains
-            .is_subset(&parent_io.outbound_domains)
-            || !child_io
-                .local_file_roots
-                .is_subset(&parent_io.local_file_roots)
-            || !child_io
-                .env_vars_readable
-                .is_subset(&parent_io.env_vars_readable)
-            || !child_io
-                .tool_namespaces
-                .is_subset(&parent_io.tool_namespaces)
-            || !child_io
-                .repo_write_targets
-                .is_subset(&parent_io.repo_write_targets),
-    );
+    mutate(&mut child.io_surface);
+    kani::assume(is_widened(&child.io_surface, &pp.io_surface));
 
     let candidate = ArtifactDigest::from_hex("candidate");
     let witness =
@@ -448,7 +428,60 @@ fn proof_io_surface_widening_always_rejected() {
         witness,
     });
 
-    // THEOREM: ANY I/O surface widening is rejected
     assert!(matches!(decision, AdmissionDecision::Rejected { .. }));
     assert!(!kernel.is_admitted(&candidate));
+}
+
+#[kani::proof]
+#[kani::solver(cadical)]
+#[kani::unwind(5)]
+fn proof_io_outbound_domains_widening_rejected() {
+    prove_io_axis_rejection(
+        |io| io.outbound_domains = symbolic_set(DOMAIN_UNIVERSE),
+        |child, parent| !child.outbound_domains.is_subset(&parent.outbound_domains),
+    );
+}
+
+#[kani::proof]
+#[kani::solver(cadical)]
+#[kani::unwind(5)]
+fn proof_io_local_file_roots_widening_rejected() {
+    prove_io_axis_rejection(
+        |io| io.local_file_roots = symbolic_set(PATH_UNIVERSE),
+        |child, parent| !child.local_file_roots.is_subset(&parent.local_file_roots),
+    );
+}
+
+#[kani::proof]
+#[kani::solver(cadical)]
+#[kani::unwind(5)]
+fn proof_io_env_vars_widening_rejected() {
+    prove_io_axis_rejection(
+        |io| io.env_vars_readable = symbolic_set(ENV_UNIVERSE),
+        |child, parent| !child.env_vars_readable.is_subset(&parent.env_vars_readable),
+    );
+}
+
+#[kani::proof]
+#[kani::solver(cadical)]
+#[kani::unwind(5)]
+fn proof_io_tool_namespaces_widening_rejected() {
+    prove_io_axis_rejection(
+        |io| io.tool_namespaces = symbolic_set(TOOL_UNIVERSE),
+        |child, parent| !child.tool_namespaces.is_subset(&parent.tool_namespaces),
+    );
+}
+
+#[kani::proof]
+#[kani::solver(cadical)]
+#[kani::unwind(5)]
+fn proof_io_repo_write_targets_widening_rejected() {
+    prove_io_axis_rejection(
+        |io| io.repo_write_targets = symbolic_set(REPO_UNIVERSE),
+        |child, parent| {
+            !child
+                .repo_write_targets
+                .is_subset(&parent.repo_write_targets)
+        },
+    );
 }
