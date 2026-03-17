@@ -73,11 +73,11 @@ jobs:
           echo "- **Minimum required:** $MINIMUM" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Full suite:** nightly + workflow_dispatch" >> "$GITHUB_STEP_SUMMARY"
 
-  # Constitutional Kernel: all 6 harnesses — lightweight, runs on every PR
+  # Constitutional Kernel: 11 harnesses (6 original + 5 I/O axis proofs)
   kani-constitutional:
     name: Kani (constitutional kernel)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
