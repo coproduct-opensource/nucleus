@@ -54,6 +54,10 @@ pub struct Kernel {
     lineage: LineageStore,
     /// Signature verification policy. Production MUST use `Enforced`.
     signature_policy: SignaturePolicy,
+    /// Maps candidate_digest → policy_after for admitted amendments.
+    /// Used to verify that a new amendment's policy_before matches
+    /// the parent's actual admitted policy (anti-forgery).
+    admitted_policies: std::collections::HashMap<String, ck_types::manifest::PolicyManifest>,
 }
 
 impl Kernel {
@@ -68,6 +72,7 @@ impl Kernel {
         Self {
             lineage,
             signature_policy: SignaturePolicy::SkipForTesting,
+            admitted_policies: std::collections::HashMap::new(),
         }
     }
 
@@ -93,6 +98,7 @@ impl Kernel {
         Ok(Self {
             lineage,
             signature_policy: SignaturePolicy::SkipForTesting,
+            admitted_policies: std::collections::HashMap::new(),
         })
     }
 
@@ -211,6 +217,23 @@ impl Kernel {
             return AdmissionDecision::Rejected { reasons };
         }
 
+        // 4.5. Policy continuity: witness.policy_before must match the parent's
+        //      admitted policy. This prevents an attacker from lying about the
+        //      parent's policy to smuggle in escalations.
+        if let Some(parent_policy) = self.admitted_policies.get(candidate.parent_digest.as_str()) {
+            if candidate.witness.policy_before != *parent_policy {
+                reasons.push(RejectionReason {
+                    invariant: ConstitutionalInvariant::GovernanceMonotonicity,
+                    message:
+                        "witness.policy_before does not match parent's admitted policy (forgery?)"
+                            .into(),
+                });
+                return AdmissionDecision::Rejected { reasons };
+            }
+        }
+        // If no stored policy (genesis or restored kernel), trust the witness.
+        // Production kernels should restore policies alongside lineage records.
+
         // 5. Monotonicity check (the constitutional contract)
         let verdict = check_monotonicity(
             &candidate.witness.policy_before,
@@ -283,6 +306,11 @@ impl Kernel {
 
         // 7. All checks passed — admit
         let witness_digest = candidate.witness.digest();
+        // Store the admitted policy for future policy_before verification
+        self.admitted_policies.insert(
+            candidate.candidate_digest.as_str().to_string(),
+            candidate.witness.policy_after.clone(),
+        );
         let record = self.lineage.append(
             candidate.parent_digest,
             candidate.candidate_digest.clone(),
@@ -1200,5 +1228,249 @@ mod tests {
             matches!(result, AdmissionDecision::Accepted { .. }),
             "SkipForTesting should admit: {result:?}"
         );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Adversarial scenario tests — the coups we stop
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_adversarial_patch_laundering_rejected() {
+        // Attack: Classify a Controller patch as Config to avoid kani proof requirement.
+        // The patch modifies controller code but the class says Config.
+        // Defense: admit_with_files checks changed_files against may_not_modify.
+        let genesis = ArtifactDigest::from_bytes(b"genesis");
+        let mut kernel = Kernel::new(genesis.clone());
+
+        let candidate = ArtifactDigest::from_bytes(b"laundered");
+        let witness = make_witness(&genesis, &candidate, test_manifest(), true, true, None);
+
+        // Claim it's Config but touch kernel_checker (in may_not_modify)
+        let changed = vec!["kernel_checker/src/lib.rs".to_string()];
+        let result = kernel.admit_with_files(
+            CandidateAmendment {
+                parent_digest: genesis,
+                candidate_digest: candidate,
+                patch_class: PatchClass::Config,
+                witness,
+            },
+            &changed,
+        );
+
+        assert!(
+            matches!(result, AdmissionDecision::Rejected { .. }),
+            "Patch laundering must be rejected: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_adversarial_replay_attack_rejected() {
+        // Attack: Resubmit an already-admitted witness for a different candidate.
+        // The witness has valid structure but points to a parent/candidate pair
+        // that doesn't match the new submission.
+        let genesis = ArtifactDigest::from_bytes(b"genesis");
+        let mut kernel = Kernel::new(genesis.clone());
+
+        // First: admit v2 legitimately
+        let v2 = ArtifactDigest::from_bytes(b"v2");
+        let witness_v2 = make_witness(&genesis, &v2, test_manifest(), true, true, None);
+        let result = kernel.admit(CandidateAmendment {
+            parent_digest: genesis.clone(),
+            candidate_digest: v2.clone(),
+            patch_class: PatchClass::Config,
+            witness: witness_v2.clone(),
+        });
+        assert!(matches!(result, AdmissionDecision::Accepted { .. }));
+
+        // Attack: replay the v2 witness but claim it's for v3
+        let v3 = ArtifactDigest::from_bytes(b"v3");
+        let result = kernel.admit(CandidateAmendment {
+            parent_digest: v2,
+            candidate_digest: v3,
+            patch_class: PatchClass::Config,
+            witness: witness_v2, // reused! candidate_digest won't match
+        });
+
+        assert!(
+            matches!(result, AdmissionDecision::Rejected { .. }),
+            "Replay attack must be rejected: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_adversarial_lineage_tampering_detected() {
+        // Attack: Submit an amendment claiming a parent that was never admitted.
+        // This simulates lineage tampering — inserting a fake ancestor.
+        let genesis = ArtifactDigest::from_bytes(b"genesis");
+        let mut kernel = Kernel::new(genesis.clone());
+
+        let fake_parent = ArtifactDigest::from_bytes(b"fake-injected-ancestor");
+        let candidate = ArtifactDigest::from_bytes(b"candidate");
+        let witness = make_witness(&fake_parent, &candidate, test_manifest(), true, true, None);
+
+        let result = kernel.admit(CandidateAmendment {
+            parent_digest: fake_parent,
+            candidate_digest: candidate,
+            patch_class: PatchClass::Config,
+            witness,
+        });
+
+        assert!(
+            matches!(result, AdmissionDecision::Rejected { .. }),
+            "Lineage tampering must be rejected: {result:?}"
+        );
+        assert_eq!(kernel.lineage_length(), 1, "Lineage must not grow");
+    }
+
+    #[test]
+    fn test_adversarial_sandbox_relaxation_rejected() {
+        // Attack: Widen io_surface (add exfiltration domain) while keeping
+        // capabilities identical, hoping the monotonicity check misses it.
+        // Defense: io_surface has its own monotonicity check.
+        let genesis = ArtifactDigest::from_bytes(b"genesis");
+        let mut kernel = Kernel::new(genesis.clone());
+
+        let mut widened = test_manifest();
+        widened
+            .io_surface
+            .outbound_domains
+            .insert("exfiltrate.evil".into());
+
+        let candidate = ArtifactDigest::from_bytes(b"widened");
+        let witness = make_witness_with_policies(
+            &genesis,
+            &candidate,
+            PatchClass::Config,
+            &test_manifest(),
+            &widened,
+        );
+
+        let result = kernel.admit(CandidateAmendment {
+            parent_digest: genesis,
+            candidate_digest: candidate,
+            patch_class: PatchClass::Config,
+            witness,
+        });
+
+        assert!(
+            matches!(result, AdmissionDecision::Rejected { .. }),
+            "Sandbox relaxation must be rejected: {result:?}"
+        );
+        if let AdmissionDecision::Rejected { reasons } = result {
+            assert!(
+                reasons
+                    .iter()
+                    .any(|r| r.invariant == ConstitutionalInvariant::IoConfinement),
+                "Must cite IoConfinement: {reasons:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_adversarial_policy_code_mismatch() {
+        // Attack: Submit a patch where policy_after claims no change, but the
+        // actual code widens authority. Since the kernel only sees the manifest,
+        // the defense is that policy_before must match the parent's stored policy.
+        // If the attacker lies about policy_before, it won't match the parent.
+        let genesis = ArtifactDigest::from_bytes(b"genesis");
+        let mut kernel = Kernel::new(genesis.clone());
+
+        // Legitimate v2 with specific policy
+        let v2 = ArtifactDigest::from_bytes(b"v2");
+        let witness = make_witness(&genesis, &v2, test_manifest(), true, true, None);
+        let _ = kernel.admit(CandidateAmendment {
+            parent_digest: genesis,
+            candidate_digest: v2.clone(),
+            patch_class: PatchClass::Config,
+            witness,
+        });
+
+        // Attack: v3 claims policy_before is a weaker policy than what v2 actually has.
+        // This would let the attacker smuggle in an escalation.
+        let mut fake_before = test_manifest();
+        fake_before
+            .capabilities
+            .network_allow
+            .insert("evil.com".into()); // lie: claim parent already had this
+        let mut fake_after = fake_before.clone(); // "no change"
+        fake_after
+            .capabilities
+            .network_allow
+            .insert("evil.com".into());
+
+        let v3 = ArtifactDigest::from_bytes(b"v3");
+        let witness =
+            make_witness_with_policies(&v2, &v3, PatchClass::Config, &fake_before, &fake_after);
+
+        let result = kernel.admit(CandidateAmendment {
+            parent_digest: v2,
+            candidate_digest: v3,
+            patch_class: PatchClass::Config,
+            witness,
+        });
+
+        // The kernel checks policy_before against the stored parent policy.
+        // If they don't match, the amendment is rejected.
+        assert!(
+            matches!(result, AdmissionDecision::Rejected { .. }),
+            "Policy/code mismatch must be rejected: {result:?}"
+        );
+    }
+
+    /// Helper: build witness with explicit before/after policies.
+    fn make_witness_with_policies(
+        parent: &ArtifactDigest,
+        candidate: &ArtifactDigest,
+        patch_class: PatchClass,
+        policy_before: &PolicyManifest,
+        policy_after: &PolicyManifest,
+    ) -> WitnessBundle {
+        use chrono::Utc;
+
+        WitnessBundle {
+            bundle_version: 1,
+            parent_digest: parent.clone(),
+            candidate_digest: candidate.clone(),
+            patch_digest: ArtifactDigest::from_hex("abcd"),
+            patch_class,
+            timestamp_utc: Utc::now(),
+            toolchain: ToolchainInfo {
+                container_digest: None,
+                rustc_version: "1.85.0".into(),
+                kani_version: None,
+                kernel_version: "0.1.0".into(),
+            },
+            policy_before: policy_before.clone(),
+            policy_after: policy_after.clone(),
+            reports: VerificationReports {
+                build: Some(ReportSummary {
+                    passed: true,
+                    summary: "ok".into(),
+                    artifact_digest: None,
+                }),
+                tests: Some(ReportSummary {
+                    passed: true,
+                    summary: "ok".into(),
+                    artifact_digest: None,
+                }),
+                kani: None,
+                policy_diff: None,
+                replay: None,
+                adversarial: None,
+                termination: None,
+                sandbox: None,
+                artifact_digests: BTreeMap::new(),
+            },
+            signatures: vec![BundleSignature {
+                signer: "ci".into(),
+                algorithm: "ed25519".into(),
+                signature: "sig".into(),
+                role: None,
+            }],
+            source_tree_digest: None,
+            build_container_digest: None,
+            manifest_digest_before: None,
+            manifest_digest_after: None,
+        }
     }
 }
