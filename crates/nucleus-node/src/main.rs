@@ -1470,7 +1470,7 @@ async fn spawn_container_pod(
         .cloned()
         .unwrap_or_else(|| state.container_network.clone());
 
-    let host_config = bollard::secret::HostConfig {
+    let host_config = bollard::models::HostConfig {
         network_mode: Some(network_mode),
         binds: Some(binds),
         memory: spec
@@ -1520,7 +1520,7 @@ async fn spawn_container_pod(
         (None, None)
     };
 
-    let config = bollard::secret::ContainerCreateBody {
+    let config = bollard::models::ContainerCreateBody {
         image: Some(image.clone()),
         entrypoint,
         cmd,

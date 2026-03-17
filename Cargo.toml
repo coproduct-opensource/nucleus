@@ -55,7 +55,7 @@ tokio-rustls = "0.26"
 tokio-test = "0.4"
 
 # CLI
-clap = { version = "4.5", features = ["derive", "env"] }
+clap = { version = "4.6", features = ["derive", "env"] }
 
 # Logging/tracing
 tracing = "0.1"
@@ -97,7 +97,7 @@ tempfile = "3"
 proptest = "1.10"
 
 # AWS SDK (optional, for remote audit sink)
-aws-sdk-s3 = "1.124"
+aws-sdk-s3 = "1.126"
 aws-config = { version = "1.6", features = ["behavior-version-latest"] }
 
 # Build
