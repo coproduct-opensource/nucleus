@@ -167,6 +167,8 @@ fn make_witness_for_proof(
         }],
         source_tree_digest: None,
         build_container_digest: None,
+        manifest_digest_before: None,
+        manifest_digest_after: None,
     }
 }
 
