@@ -183,7 +183,7 @@ fn make_witness_for_proof(
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[kani::proof]
-#[kani::solver(cadical)]
+#[kani::solver(kissat)]
 fn proof_budget_escalation_always_rejected() {
     let pp = parent_policy();
     let mut child = pp.clone();
@@ -216,7 +216,7 @@ fn proof_budget_escalation_always_rejected() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[kani::proof]
-#[kani::solver(cadical)]
+#[kani::solver(kissat)]
 fn proof_rejected_never_in_lineage() {
     let genesis = ArtifactDigest::from_hex("genesis");
     let mut kernel = Kernel::new(genesis.clone());
@@ -251,7 +251,7 @@ fn proof_rejected_never_in_lineage() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[kani::proof]
-#[kani::solver(cadical)]
+#[kani::solver(kissat)]
 fn proof_constitutional_self_merge_impossible() {
     let policy = parent_policy();
     let genesis = ArtifactDigest::from_hex("genesis");
@@ -284,7 +284,7 @@ fn proof_constitutional_self_merge_impossible() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[kani::proof]
-#[kani::solver(cadical)]
+#[kani::solver(kissat)]
 fn proof_identical_policy_config_patch_admitted() {
     let policy = parent_policy();
     let genesis = ArtifactDigest::from_hex("genesis");
