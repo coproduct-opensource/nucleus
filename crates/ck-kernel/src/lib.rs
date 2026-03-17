@@ -29,6 +29,22 @@ pub struct CandidateAmendment {
     pub witness: ck_types::WitnessBundle,
 }
 
+/// Policy for how the kernel handles signature verification during admission.
+///
+/// Production deployments MUST use `Enforced`. `SkipForTesting` exists
+/// only for unit tests that exercise non-signature admission logic.
+/// There is no silent "off" mode — every kernel must make an explicit choice.
+pub enum SignaturePolicy {
+    /// Verify Ed25519 signatures on witness bundles. Reject if invalid.
+    Enforced(ck_types::witness::SignatureVerifier),
+    /// Skip signature verification entirely. Test mode only.
+    ///
+    /// Using this in production means ANY witness bundle will be accepted
+    /// regardless of signatures. This is intentionally named to make
+    /// accidental production use obvious in code review.
+    SkipForTesting,
+}
+
 /// The constitutional kernel admission engine.
 ///
 /// Validates candidates against constitutional invariants and maintains
@@ -36,10 +52,8 @@ pub struct CandidateAmendment {
 /// structure, monotonicity, signatures, evidence completeness, and appends lineage.
 pub struct Kernel {
     lineage: LineageStore,
-    /// When set, Ed25519 signatures on witness bundles are cryptographically
-    /// verified during admission. When None, signature verification is skipped
-    /// (test mode only — production MUST configure trusted keys).
-    signature_verifier: Option<ck_types::witness::SignatureVerifier>,
+    /// Signature verification policy. Production MUST use `Enforced`.
+    signature_policy: SignaturePolicy,
 }
 
 impl Kernel {
@@ -53,7 +67,7 @@ impl Kernel {
         lineage.admit_genesis(genesis_digest, git_commit_sha);
         Self {
             lineage,
-            signature_verifier: None,
+            signature_policy: SignaturePolicy::SkipForTesting,
         }
     }
 
@@ -78,20 +92,20 @@ impl Kernel {
         let lineage = LineageStore::restore(records)?;
         Ok(Self {
             lineage,
-            signature_verifier: None,
+            signature_policy: SignaturePolicy::SkipForTesting,
         })
     }
 
     /// Configure signature verification for admission.
     ///
-    /// When set, `admit()` will cryptographically verify Ed25519 signatures
+    /// When called, `admit()` will cryptographically verify Ed25519 signatures
     /// on witness bundles before accepting them. Production kernels MUST
-    /// call this — unverified signatures are a test-mode-only convenience.
+    /// call this — `SkipForTesting` is a test-mode-only convenience.
     pub fn with_signature_verifier(
         mut self,
         verifier: ck_types::witness::SignatureVerifier,
     ) -> Self {
-        self.signature_verifier = Some(verifier);
+        self.signature_policy = SignaturePolicy::Enforced(verifier);
         self
     }
 
@@ -161,16 +175,22 @@ impl Kernel {
             return AdmissionDecision::Rejected { reasons };
         }
 
-        // 3.5. Cryptographic signature verification (when configured)
-        if let Some(ref verifier) = self.signature_verifier {
-            if let Err(sig_errors) = verifier.verify(&candidate.witness) {
-                for e in sig_errors {
-                    reasons.push(RejectionReason {
-                        invariant: ConstitutionalInvariant::GovernanceMonotonicity,
-                        message: format!("Signature verification failed: {}", e),
-                    });
+        // 3.5. Cryptographic signature verification (fail-closed)
+        match &self.signature_policy {
+            SignaturePolicy::Enforced(verifier) => {
+                if let Err(sig_errors) = verifier.verify(&candidate.witness) {
+                    for e in sig_errors {
+                        reasons.push(RejectionReason {
+                            invariant: ConstitutionalInvariant::GovernanceMonotonicity,
+                            message: format!("Signature verification failed: {}", e),
+                        });
+                    }
+                    return AdmissionDecision::Rejected { reasons };
                 }
-                return AdmissionDecision::Rejected { reasons };
+            }
+            SignaturePolicy::SkipForTesting => {
+                // Test mode: intentionally skip signature verification.
+                // Production kernels MUST use SignaturePolicy::Enforced.
             }
         }
 
@@ -1116,6 +1136,67 @@ mod tests {
         assert!(
             matches!(result, AdmissionDecision::Accepted { .. }),
             "Safe paths should be accepted: {result:?}"
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // SignaturePolicy tests
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_enforced_empty_keys_rejects_all() {
+        // When Enforced with no trusted keys, SignatureVerifier::verify()
+        // itself rejects (fail-closed). This simulates the production
+        // failure mode when keyring is unavailable.
+        let genesis = ArtifactDigest::from_bytes(b"genesis");
+        let mut kernel =
+            Kernel::new(genesis.clone()).with_signature_verifier(SignatureVerifier::new(vec![]));
+
+        let candidate = ArtifactDigest::from_bytes(b"v2");
+        let witness = make_witness(&genesis, &candidate, test_manifest(), true, true, None);
+
+        let result = kernel.admit(CandidateAmendment {
+            parent_digest: genesis,
+            candidate_digest: candidate,
+            patch_class: PatchClass::Config,
+            witness,
+        });
+
+        assert!(
+            matches!(result, AdmissionDecision::Rejected { .. }),
+            "Enforced with no keys must reject: {result:?}"
+        );
+        if let AdmissionDecision::Rejected { reasons } = result {
+            assert!(
+                reasons
+                    .iter()
+                    .any(|r| r.message.contains("No trusted keys")),
+                "Should mention missing keys: {reasons:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_skip_for_testing_admits_without_signatures() {
+        // Documents that SkipForTesting allows unsigned witnesses.
+        // This is the default for Kernel::new() — test mode only.
+        let genesis = ArtifactDigest::from_bytes(b"genesis");
+        let mut kernel = Kernel::new(genesis.clone());
+        // kernel.signature_policy is SkipForTesting by default
+
+        let candidate = ArtifactDigest::from_bytes(b"v2");
+        let witness = make_witness(&genesis, &candidate, test_manifest(), true, true, None);
+
+        let result = kernel.admit(CandidateAmendment {
+            parent_digest: genesis,
+            candidate_digest: candidate,
+            patch_class: PatchClass::Config,
+            witness,
+        });
+
+        assert!(
+            matches!(result, AdmissionDecision::Accepted { .. }),
+            "SkipForTesting should admit: {result:?}"
         );
     }
 }
