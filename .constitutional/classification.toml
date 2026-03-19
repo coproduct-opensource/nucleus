@@ -1,0 +1,35 @@
+# Patch classification rules for the constitutional merge gate.
+#
+# Maps file paths to patch classes. The gate classifies each PR by
+# the highest-danger file it touches.
+
+# Constitutional: these files define the rules themselves.
+# Requires human crypto signatures to modify.
+constitutional_paths = [
+    "PolicyManifest.toml",
+    ".constitutional/",
+    "crates/ck-kernel/src/kani.rs",
+    "crates/portcullis/src/kani.rs",
+    "LICENSE",
+]
+
+# Controller: core enforcement and admission logic.
+# Requires Kani verification in sandbox.
+controller_paths = [
+    "crates/ck-kernel/src/lib.rs",
+    "crates/ck-kernel/src/lineage.rs",
+    "crates/portcullis/src/",
+    "crates/nucleus/src/",
+    "crates/nucleus-node/src/",
+    "crates/nucleus-identity/src/",
+]
+
+# Evaluator: policy checking, type definitions, scoring.
+# Requires build + tests.
+evaluator_paths = [
+    "crates/ck-policy/src/",
+    "crates/ck-types/src/",
+    "crates/nucleus-spec/src/",
+]
+
+# Everything else is Config (docs, tests, examples, CI, scripts).
