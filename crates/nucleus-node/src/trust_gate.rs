@@ -196,14 +196,27 @@ pub fn apply_trust_enforcement(verification: &mut TrustVerification, spec: &mut 
         verification.enforced.to_string(),
     );
 
-    // The actual lattice enforcement happens in the policy resolver
-    // which reads these labels and calls TrustProfile::enforce().
+    // Store continuous reputation score for lattice-based autonomy.
+    // The policy resolver reads this and calls TrustProfile::from_reputation_score()
+    // instead of discrete bracket → profile mapping.
+    let reputation_score = match verification.bracket.as_str() {
+        "A" => 0.95,
+        "B" => 0.82,
+        "C" => 0.65,
+        "D" => 0.45,
+        _ => 0.2,
+    };
+    spec.metadata.labels.insert(
+        "trust.coproduct.one/reputation-score".to_string(),
+        format!("{reputation_score:.2}"),
+    );
 }
 
 /// Map attestation bracket to portcullis trust profile name.
 ///
-/// Mirrors `portcullis::trust::TrustProfile::from_attestation_bracket()`
-/// without requiring a portcullis dependency in nucleus-node.
+/// Used for logging and metadata labels. The actual permission scoping
+/// uses `TrustProfile::from_reputation_score()` for continuous lattice
+/// autonomy (no discrete brackets in enforcement).
 fn bracket_to_profile(bracket: &str) -> &'static str {
     match bracket.to_uppercase().as_str() {
         "A" => "operator",
@@ -211,6 +224,16 @@ fn bracket_to_profile(bracket: &str) -> &'static str {
         "D" => "untrusted",
         _ => "airgapped",
     }
+}
+
+/// Map discount factor to a continuous reputation score.
+///
+/// The trust API's discount_factor is in [0.5, 1.0] where lower = better.
+/// We invert to [0.0, 1.0] where higher = better for portcullis scoring.
+pub fn discount_to_reputation_score(discount_factor: f64) -> f64 {
+    // discount_factor 0.5 → reputation 1.0 (best)
+    // discount_factor 1.0 → reputation 0.0 (worst)
+    ((1.0 - discount_factor) * 2.0).clamp(0.0, 1.0)
 }
 
 /// Extract agent identity from PodSpec metadata.
@@ -421,6 +444,16 @@ mod tests {
         assert!(!config.is_enabled());
         assert!(!config.enforce);
         assert_eq!(config.default_bracket, "C");
+    }
+
+    #[test]
+    fn test_discount_to_reputation_score() {
+        // Best discount (0.5) → highest reputation (1.0)
+        assert!((discount_to_reputation_score(0.5) - 1.0).abs() < 0.01);
+        // No discount (1.0) → zero reputation
+        assert!((discount_to_reputation_score(1.0) - 0.0).abs() < 0.01);
+        // Middle discount (0.75) → middle reputation (0.5)
+        assert!((discount_to_reputation_score(0.75) - 0.5).abs() < 0.01);
     }
 
     #[test]
