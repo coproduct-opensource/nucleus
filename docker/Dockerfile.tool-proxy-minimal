@@ -1,0 +1,12 @@
+# Minimal tool-proxy image for dogfooding (no Claude CLI).
+# Uses a pre-built binary from the host.
+#
+# Build:
+#   cargo build --release -p nucleus-tool-proxy
+#   docker build -f docker/Dockerfile.tool-proxy-minimal -t nucleus-tool-proxy:latest .
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates git curl && rm -rf /var/lib/apt/lists/*
+COPY target/release/nucleus-tool-proxy /usr/local/bin/
+RUN mkdir -p /workspace
+WORKDIR /workspace
+ENTRYPOINT ["nucleus-tool-proxy"]
