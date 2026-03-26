@@ -273,7 +273,7 @@ impl<'a> CtfEngine<'a> {
 
         // Check uninhabitable state guard
         let requires_approval = self.level.permissions.requires_approval(operation);
-        let has_uninhabitable_constraint = self.level.permissions.uninhabitable_constraint;
+        let has_uninhabitable_constraint = self.level.permissions.is_uninhabitable_enforced();
         if should_deny(
             &self.exposure,
             operation,

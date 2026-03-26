@@ -86,12 +86,13 @@ pub struct PermissionLattice {
     /// the value in the serialized data. Use `with_uninhabitable_disabled()` in
     /// code if you explicitly need to disable the constraint (e.g., for testing).
     ///
-    /// This field is private in production builds. Use [`is_uninhabitable_enforced()`]
-    /// to read. Enable the `testing` feature for direct field access (test builds only).
-    #[cfg(not(feature = "testing"))]
-    pub(crate) uninhabitable_constraint: bool,
-    /// See non-testing docs above. Public only with `testing` feature.
-    #[cfg(feature = "testing")]
+    /// **Security: prefer [`is_uninhabitable_enforced()`] for reads.**
+    ///
+    /// Direct mutation of this field bypasses the safety invariant.
+    /// The field is `pub` for struct literal construction, but setting it
+    /// to `false` disables the core security guarantee. Production code
+    /// should never set this to `false` — use `with_uninhabitable_disabled()`
+    /// (gated behind `testing` feature) for test scenarios only.
     pub uninhabitable_constraint: bool,
 
     /// Minimum isolation level required to use this policy.

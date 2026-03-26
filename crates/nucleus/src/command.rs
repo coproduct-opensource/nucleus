@@ -755,7 +755,7 @@ mod tests {
             },
             obligations: Obligations::default(),
             commands: CommandLattice::permissive(),
-            uninhabitable_constraint: true,
+
             ..Default::default()
         };
         let budget_policy = test_budget();
@@ -782,7 +782,7 @@ mod tests {
             },
             obligations: Obligations::default(),
             commands: CommandLattice::permissive(),
-            uninhabitable_constraint: true,
+
             ..Default::default()
         };
         let budget_policy = test_budget();

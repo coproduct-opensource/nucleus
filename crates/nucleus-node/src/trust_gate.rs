@@ -80,12 +80,14 @@ pub struct TrustVerification {
 
 /// Response from the trust API discount endpoint.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct DiscountResponse {
     discount_factor: f64,
     reputation_context: ReputationContext,
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct ReputationContext {
     execution_score: f64,
     reviewer_score: f64,

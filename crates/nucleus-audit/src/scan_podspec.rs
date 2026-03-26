@@ -41,7 +41,7 @@ pub fn scan_pod_spec(
 
     let uninhabitable_state_config = portcullis::IncompatibilityConstraint::enforcing();
     let state_risk = uninhabitable_state_config.state_risk(&lattice.capabilities);
-    let uninhabitable_state_enforced = lattice.uninhabitable_constraint;
+    let uninhabitable_state_enforced = lattice.is_uninhabitable_enforced();
 
     if !uninhabitable_state_enforced {
         findings.push(Finding {

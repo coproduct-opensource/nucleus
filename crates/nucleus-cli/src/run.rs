@@ -283,7 +283,7 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
         println!("  Timeout: {}s", args.timeout);
         println!(
             "   UninhabitableState constraint: {}",
-            policy.uninhabitable_constraint
+            policy.is_uninhabitable_enforced()
         );
         if let Some(ref resolved) = resolved {
             println!("  Node URL: {}", resolved.node_url);
