@@ -171,6 +171,28 @@ impl TrustProfile {
         }
     }
 
+    /// Derive a trust profile from an attestation bracket grade.
+    ///
+    /// Maps Coproduct Trust attestation brackets (A-F) to portcullis
+    /// trust profiles. This enables dynamic permission scoping based
+    /// on an agent's demonstrated reputation.
+    ///
+    /// | Bracket | Profile | Rationale |
+    /// |---------|---------|-----------|
+    /// | A | `operator()` | Exceptional track record — full trust |
+    /// | B | `tenant()` | Good — full caps with approval gates |
+    /// | C | `tenant()` | Adequate — same as B (conservative) |
+    /// | D | `untrusted()` | Below average — read-only + search |
+    /// | F | `airgapped()` | Poor — maximum restriction |
+    pub fn from_attestation_bracket(bracket: &str) -> Self {
+        match bracket.to_uppercase().as_str() {
+            "A" => Self::operator(),
+            "B" | "C" => Self::tenant(),
+            "D" => Self::untrusted(),
+            _ => Self::airgapped(), // F or unknown
+        }
+    }
+
     /// Apply this profile as a ceiling on capabilities and a floor on isolation.
     ///
     /// Returns the restricted capabilities and the effective isolation.
@@ -383,5 +405,43 @@ mod tests {
         assert_eq!(TrustProfile::tenant().name, "tenant");
         assert_eq!(TrustProfile::untrusted().name, "untrusted");
         assert_eq!(TrustProfile::airgapped().name, "airgapped");
+    }
+
+    #[test]
+    fn attestation_bracket_a_gets_operator() {
+        let profile = TrustProfile::from_attestation_bracket("A");
+        assert_eq!(profile.name, "operator");
+    }
+
+    #[test]
+    fn attestation_bracket_b_gets_tenant() {
+        let profile = TrustProfile::from_attestation_bracket("B");
+        assert_eq!(profile.name, "tenant");
+
+        // C also gets tenant
+        let profile_c = TrustProfile::from_attestation_bracket("C");
+        assert_eq!(profile_c.name, "tenant");
+    }
+
+    #[test]
+    fn attestation_bracket_d_gets_untrusted() {
+        let profile = TrustProfile::from_attestation_bracket("D");
+        assert_eq!(profile.name, "untrusted");
+    }
+
+    #[test]
+    fn attestation_bracket_f_gets_airgapped() {
+        let profile = TrustProfile::from_attestation_bracket("F");
+        assert_eq!(profile.name, "airgapped");
+
+        // Unknown also gets airgapped (safe default)
+        let profile_unknown = TrustProfile::from_attestation_bracket("Z");
+        assert_eq!(profile_unknown.name, "airgapped");
+    }
+
+    #[test]
+    fn attestation_bracket_case_insensitive() {
+        assert_eq!(TrustProfile::from_attestation_bracket("a").name, "operator");
+        assert_eq!(TrustProfile::from_attestation_bracket("b").name, "tenant");
     }
 }
