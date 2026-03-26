@@ -86,13 +86,17 @@ pub struct PermissionLattice {
     /// the value in the serialized data. Use `with_uninhabitable_disabled()` in
     /// code if you explicitly need to disable the constraint (e.g., for testing).
     ///
-    /// **Security: prefer [`is_uninhabitable_enforced()`] for reads.**
+    /// Uninhabitable state constraint enforcement.
     ///
-    /// Direct mutation of this field bypasses the safety invariant.
-    /// The field is `pub` for struct literal construction, but setting it
-    /// to `false` disables the core security guarantee. Production code
-    /// should never set this to `false` — use `with_uninhabitable_disabled()`
-    /// (gated behind `testing` feature) for test scenarios only.
+    /// **Private in production builds.** Use [`is_uninhabitable_enforced()`]
+    /// to read, [`as_ceiling()`] for delegation ceilings.
+    ///
+    /// With the `testing` feature, the field is `pub` for adversarial tests
+    /// that need to verify constraint bypass is detected.
+    #[cfg(not(feature = "testing"))]
+    pub(crate) uninhabitable_constraint: bool,
+    /// See non-testing docs. Public only with `testing` feature for adversarial tests.
+    #[cfg(feature = "testing")]
     pub uninhabitable_constraint: bool,
 
     /// Minimum isolation level required to use this policy.
@@ -273,17 +277,29 @@ impl PermissionLattice {
         PermissionLatticeBuilder::default()
     }
 
-    /// Create a version with uninhabitable_state constraint explicitly disabled.
+    /// Convert to a delegation ceiling.
     ///
-    /// # Security Warning
-    /// Disable uninhabitable_state constraint enforcement.
+    /// Disables the uninhabitable state constraint on this lattice. Use this
+    /// when the lattice represents a **capability ceiling** for delegation,
+    /// not a directly enforced policy. The delegated (child) lattice will
+    /// have its own constraint enforcement via `normalize()`.
+    ///
+    /// This is the only production-available way to disable the constraint.
+    /// The intent is explicit: "this is a ceiling, not a policy."
+    pub fn as_ceiling(mut self) -> Self {
+        self.uninhabitable_constraint = false;
+        self
+    }
+
+    /// Create a version with uninhabitable_state constraint explicitly disabled.
     ///
     /// # Security Warning
     ///
     /// This method disables the core security invariant of this crate.
     /// Only available with the `testing` feature enabled.
     ///
-    /// **DO NOT** use in production code.
+    /// **DO NOT** use in production code. Use `as_ceiling()` if you need
+    /// a constraint-free lattice for delegation ceilings.
     #[cfg(feature = "testing")]
     pub fn with_uninhabitable_disabled(mut self) -> Self {
         self.uninhabitable_constraint = false;

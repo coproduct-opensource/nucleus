@@ -124,7 +124,7 @@ mod llm01_prompt_injection {
 
         // Despite the JSON saying uninhabitable_constraint: false, it should be enforced
         assert!(
-            perms.uninhabitable_constraint,
+            perms.is_uninhabitable_enforced(),
             " UninhabitableState constraint MUST be enforced regardless of JSON input"
         );
 
@@ -178,7 +178,7 @@ mod llm01_prompt_injection {
         let result = enforcing.meet(&not_enforcing);
 
         assert!(
-            result.uninhabitable_constraint,
+            result.is_uninhabitable_enforced(),
             "Meet with any enforcing parent MUST enforce uninhabitable_state"
         );
         assert!(
@@ -205,7 +205,7 @@ mod llm01_prompt_injection {
         let restored: PermissionLattice = serde_json::from_str(&json).expect("Should deserialize");
 
         assert!(
-            restored.uninhabitable_constraint,
+            restored.is_uninhabitable_enforced(),
             " UninhabitableState must be enforced after roundtrip"
         );
         assert!(
@@ -1516,7 +1516,7 @@ mod integration_attacks {
 
         // All three uninhabitable_state protections must be active
         assert!(
-            perms.uninhabitable_constraint,
+            perms.is_uninhabitable_enforced(),
             " UninhabitableState must be enforced despite payload"
         );
         assert!(
