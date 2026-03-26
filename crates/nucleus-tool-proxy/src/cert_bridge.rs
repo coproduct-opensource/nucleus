@@ -174,8 +174,9 @@ pub fn dimensions_to_ceiling(dimensions: &[PermissionDimension]) -> PermissionLa
     // - default() adds non-empty CommandLattice::allowed that breaks commands.leq()
     // - permissive() creates a time window from Utc::now() (non-deterministic)
     // The uninhabitable_state enforcement happens in the meet() with the certificate.
-    // Build as a ceiling — the uninhabitable state enforcement happens
-    // in the meet() with the certificate, not in the ceiling itself.
+    // Build a delegation ceiling — a true top element without normalization.
+    // Normalization adds obligations that break the Galois closure-extensive
+    // property. Use build_unnormalized() + uninhabitable_constraint(false).
     PermissionLattice::builder()
         .description("market-grant-ceiling")
         .capabilities(caps)
@@ -189,8 +190,8 @@ pub fn dimensions_to_ceiling(dimensions: &[PermissionDimension]) -> PermissionLa
             Utc::now() - Duration::days(365 * 100),
             Utc::now() + Duration::days(365 * 100),
         ))
-        .build()
-        .as_ceiling()
+        .uninhabitable_constraint(false)
+        .build_unnormalized()
 }
 
 /// Intersect a market grant with certificate-attested permissions.
@@ -344,11 +345,9 @@ mod tests {
 
     #[test]
     fn test_alpha_all_never_requests_nothing() {
-        let perms = PermissionLattice {
-            capabilities: all_never_capabilities(),
-            ..PermissionLattice::default()
-        }
-        .normalize();
+        let perms = PermissionLattice::builder()
+            .capabilities(all_never_capabilities())
+            .build();
         let verified = mint_and_verify(perms);
         let bid = certificate_to_bid(&verified);
 

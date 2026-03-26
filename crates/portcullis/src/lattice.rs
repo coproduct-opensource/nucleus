@@ -286,6 +286,12 @@ impl PermissionLattice {
     ///
     /// This is the only production-available way to disable the constraint.
     /// The intent is explicit: "this is a ceiling, not a policy."
+    /// Convert to a delegation ceiling.
+    ///
+    /// Disables the uninhabitable state constraint on this lattice. Use this
+    /// when the lattice represents a **capability ceiling** for delegation,
+    /// not a directly enforced policy. The delegated (child) lattice will
+    /// have its own constraint enforcement via `normalize()`.
     pub fn as_ceiling(mut self) -> Self {
         self.uninhabitable_constraint = false;
         self
@@ -1238,6 +1244,35 @@ impl PermissionLatticeBuilder {
         };
 
         lattice.normalize()
+    }
+
+    /// Build without normalization — for delegation ceilings that must
+    /// remain as pure top elements without obligation injection.
+    ///
+    /// Use `build()` for normal policies. Use this only when constructing
+    /// a ceiling lattice for Galois connection properties.
+    pub fn build_unnormalized(self) -> PermissionLattice {
+        PermissionLattice {
+            id: Uuid::new_v4(),
+            description: self
+                .description
+                .unwrap_or_else(|| "Custom permissions".to_string()),
+            derived_from: None,
+            capabilities: self.capabilities.unwrap_or_default(),
+            obligations: self.obligations.unwrap_or_default(),
+            paths: self.paths.unwrap_or_default(),
+            budget: self.budget.unwrap_or_default(),
+            // Use empty() not default() — default has a pre-populated allowlist
+            // which is MORE restrictive. For ceilings we want all-allowed (empty).
+            commands: self
+                .commands
+                .unwrap_or_else(crate::command::CommandLattice::empty),
+            time: self.time.unwrap_or_default(),
+            uninhabitable_constraint: self.uninhabitable_constraint.unwrap_or(true),
+            minimum_isolation: self.minimum_isolation,
+            created_at: Utc::now(),
+            created_by: self.created_by.unwrap_or_else(|| "builder".to_string()),
+        }
     }
 }
 
