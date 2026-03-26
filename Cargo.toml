@@ -43,7 +43,7 @@ type_complexity = "allow"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
-toml = "1.0"
+toml = "1.1"
 
 # Error handling
 thiserror = "2.0"
@@ -62,7 +62,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Crypto/signing
-sha2 = "0.10"
+sha2 = "0.11"
 hmac = "0.12"
 hex = "0.4"
 ring = "0.17"
@@ -74,7 +74,7 @@ x509-parser = { version = "0.18", features = ["verify"] }
 # HTTP
 reqwest = { version = "0.13", default-features = false }
 axum = { version = "0.8", features = ["macros", "json"] }
-ureq = { version = "3.2", features = ["json"] }
+ureq = { version = "3.3", features = ["json"] }
 
 # gRPC
 tonic = { version = "0.14", features = ["transport", "tls-ring"] }
@@ -94,10 +94,10 @@ base64 = "0.22"
 
 # Testing
 tempfile = "3"
-proptest = "1.10"
+proptest = "1.11"
 
 # AWS SDK (optional, for remote audit sink)
-aws-sdk-s3 = "1.126"
+aws-sdk-s3 = "1.127"
 aws-config = { version = "1.6", features = ["behavior-version-latest"] }
 
 # Build
