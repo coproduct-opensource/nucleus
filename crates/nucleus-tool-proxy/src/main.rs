@@ -278,6 +278,8 @@ pub(crate) struct AppState {
     sandbox_proof: sandbox_proof::SandboxProof,
     /// Root authority Ed25519 public key for delegation certificate verification.
     cert_root_pubkey: Option<Arc<Vec<u8>>>,
+    /// Session exposure guard for exit report (set when MCP server starts).
+    exposure_guard: Arc<std::sync::RwLock<Option<Arc<portcullis::GradedExposureGuard>>>>,
 }
 
 #[derive(Default)]
@@ -1181,6 +1183,7 @@ async fn main() -> Result<(), ApiError> {
             .as_deref()
             .and_then(|hex_str| hex::decode(hex_str).ok())
             .map(Arc::new),
+        exposure_guard: Arc::new(std::sync::RwLock::new(None)),
     };
 
     if let Err(err) = emit_boot_report(&state).await {
@@ -1218,6 +1221,7 @@ async fn main() -> Result<(), ApiError> {
     // Keep references for the exit report after shutdown
     let exit_audit = state.audit.clone();
     let exit_work_dir = spec.spec.work_dir.clone();
+    let exit_exposure = state.exposure_guard.clone();
 
     let app = app
         .with_state(state.clone())
@@ -1225,7 +1229,7 @@ async fn main() -> Result<(), ApiError> {
 
     if let Some(vsock) = resolve_vsock(&args, &spec)? {
         serve_vsock(app, vsock, args.announce_path).await?;
-        write_exit_report(&exit_audit, &exit_work_dir).await;
+        write_exit_report(&exit_audit, &exit_work_dir, &exit_exposure).await;
         return Ok(());
     }
 
@@ -1267,13 +1271,17 @@ async fn main() -> Result<(), ApiError> {
             .await?;
     }
 
-    write_exit_report(&exit_audit, &exit_work_dir).await;
+    write_exit_report(&exit_audit, &exit_work_dir, &exit_exposure).await;
 
     Ok(())
 }
 
-/// Write the exit report on shutdown.
-async fn write_exit_report(audit: &AuditLog, work_dir_path: &Path) {
+/// Write the exit report on shutdown (including verified exposure data).
+async fn write_exit_report(
+    audit: &AuditLog,
+    work_dir_path: &Path,
+    exposure_guard: &std::sync::RwLock<Option<Arc<portcullis::GradedExposureGuard>>>,
+) {
     let workspace_hash = match exit_report::hash_workspace(work_dir_path).await {
         Ok(h) => h,
         Err(e) => {
@@ -1283,7 +1291,44 @@ async fn write_exit_report(audit: &AuditLog, work_dir_path: &Path) {
     };
 
     let (tail_hash, count) = audit.tail_hash_and_count();
-    let report = exit_report::build_exit_report(workspace_hash, tail_hash, count, None);
+    let mut report = exit_report::build_exit_report(workspace_hash, tail_hash, count, None);
+
+    // Extract verified exposure from the session guard
+    if let Ok(guard_opt) = exposure_guard.read() {
+        if let Some(ref guard) = *guard_opt {
+            let exposure = guard.exposure();
+            if exposure.contains(portcullis::guard::ExposureLabel::PrivateData) {
+                report
+                    .observed_exposure_labels
+                    .push("PrivateData".to_string());
+            }
+            if exposure.contains(portcullis::guard::ExposureLabel::UntrustedContent) {
+                report
+                    .observed_exposure_labels
+                    .push("UntrustedContent".to_string());
+            }
+            if exposure.contains(portcullis::guard::ExposureLabel::ExfilVector) {
+                report
+                    .observed_exposure_labels
+                    .push("ExfilVector".to_string());
+            }
+            report.uninhabitable_reached = exposure.is_uninhabitable();
+            report.observed_risk_tier = match exposure.to_risk() {
+                portcullis::StateRisk::Safe => "safe",
+                portcullis::StateRisk::Low => "low",
+                portcullis::StateRisk::Medium => "medium",
+                portcullis::StateRisk::Uninhabitable => "critical",
+            }
+            .to_string();
+
+            info!(
+                exposure = ?report.observed_exposure_labels,
+                risk = %report.observed_risk_tier,
+                uninhabitable = report.uninhabitable_reached,
+                "exit report: verified exposure captured"
+            );
+        }
+    }
 
     let report_path = work_dir_path.join(".nucleus-exit-report.json");
     match serde_json::to_string_pretty(&report) {

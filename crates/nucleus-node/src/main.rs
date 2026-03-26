@@ -2813,12 +2813,15 @@ impl NodeService for GrpcService {
             trust_bracket: trust_bracket.clone(),
             trust_profile: trust_profile.clone(),
             attested_execution: trust_bracket.is_some(),
-            // Verified exposure is populated from McpMediator when available.
-            // The mediator lives in the tool proxy process — these fields
-            // are filled from the audit log or set to defaults if not available.
-            observed_exposure_labels: Vec::new(), // TODO: extract from audit log
-            observed_risk_tier: "unknown".to_string(),
-            uninhabitable_reached: false,
+            // Verified exposure from the tool proxy's GradedExposureGuard.
+            // Written to .nucleus-exit-report.json by the tool proxy at shutdown.
+            observed_exposure_labels: report.observed_exposure_labels.clone(),
+            observed_risk_tier: if report.observed_risk_tier.is_empty() {
+                "unknown".to_string()
+            } else {
+                report.observed_risk_tier.clone()
+            },
+            uninhabitable_reached: report.uninhabitable_reached,
         };
         let trust_config = self.state.trust_gate.clone();
         let http_client = self.state.http_client.clone();
