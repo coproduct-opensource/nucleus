@@ -2765,6 +2765,61 @@ impl NodeService for GrpcService {
             format!("{:x}", hasher.finalize())
         };
 
+        // Extract trust metadata from pod labels (set during create_pod_internal)
+        let trust_bracket = handle
+            .spec
+            .metadata
+            .labels
+            .get("trust.coproduct.one/bracket")
+            .cloned();
+        let trust_profile = handle
+            .spec
+            .metadata
+            .labels
+            .get("trust.coproduct.one/profile")
+            .cloned();
+        let agent_identity = handle
+            .spec
+            .metadata
+            .labels
+            .get("trust.coproduct.one/agent-id")
+            .or_else(|| handle.spec.metadata.labels.get("spiffe.io/identity"))
+            .cloned()
+            .or_else(|| handle.spec.metadata.name.clone())
+            .unwrap_or_else(|| id.to_string());
+
+        let sandbox_tier = trust_profile.clone().unwrap_or_default();
+        let spiffe_id = handle
+            .spec
+            .metadata
+            .labels
+            .get("spiffe.io/identity")
+            .cloned()
+            .unwrap_or_default();
+
+        // Report receipt to trust API (non-blocking)
+        let exit_code = match state {
+            PodState::Exited { code, .. } => code.unwrap_or(-1),
+            _ => -1,
+        };
+        let receipt_report = trust_gate::ReceiptReport {
+            agent_id: agent_identity,
+            session_id: id.to_string(),
+            success: exit_code == 0,
+            cost_usd: report.cost_usd,
+            tool_call_count: report.audit_entry_count,
+            workspace_hash: report.workspace_hash.clone(),
+            audit_tail_hash: report.audit_tail_hash.clone(),
+            trust_bracket: trust_bracket.clone(),
+            trust_profile: trust_profile.clone(),
+            attested_execution: trust_bracket.is_some(),
+        };
+        let trust_config = self.state.trust_gate.clone();
+        let http_client = self.state.http_client.clone();
+        tokio::spawn(async move {
+            trust_gate::report_receipt(&trust_config, &receipt_report, &http_client).await;
+        });
+
         Ok(GrpcResponse::new(proto::GetReceiptResponse {
             receipt: Some(proto::ExecutionReceipt {
                 pod_id: id.to_string(),
@@ -2773,8 +2828,8 @@ impl NodeService for GrpcService {
                 audit_entry_count: report.audit_entry_count,
                 timestamp_unix: report.timestamp_unix,
                 manifest_hash,
-                sandbox_tier: String::new(), // TODO: extract from pod metadata
-                spiffe_id: String::new(),    // TODO: extract from pod metadata
+                sandbox_tier,
+                spiffe_id,
                 version: 1,
                 v1_content_hash,
                 extensions: std::collections::HashMap::new(),

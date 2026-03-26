@@ -295,6 +295,122 @@ async fn lookup_reputation(
     Ok(bracket.to_string())
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// RECEIPT BRIDGE — feed execution results back to trust API
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Execution receipt data to send to the trust API.
+#[derive(Debug, Serialize)]
+pub struct ReceiptReport {
+    /// Agent identity
+    pub agent_id: String,
+    /// Pod/session ID
+    pub session_id: String,
+    /// Whether execution succeeded (exit code 0)
+    pub success: bool,
+    /// Execution cost in USD
+    pub cost_usd: f64,
+    /// Number of tool calls (audit entries)
+    pub tool_call_count: u64,
+    /// SHA-256 of workspace at exit (tamper evidence)
+    pub workspace_hash: String,
+    /// Hash of audit log tail (integrity proof)
+    pub audit_tail_hash: String,
+    /// Trust bracket that was applied to this execution
+    pub trust_bracket: Option<String>,
+    /// Trust profile that scoped the sandbox
+    pub trust_profile: Option<String>,
+    /// Whether the sandbox was reputation-scoped
+    pub attested_execution: bool,
+}
+
+/// Report an execution receipt to the Coproduct Trust API.
+///
+/// This is the receipt-to-trust bridge: cryptographically attested execution
+/// results feed back into reputation scoring. Receipt-backed data is worth
+/// more than hook-backed data because it's third-party verified by the sandbox.
+///
+/// Called from `get_receipt()` after the execution receipt is computed.
+/// Runs asynchronously — never blocks receipt delivery.
+pub async fn report_receipt(
+    config: &TrustGateConfig,
+    report: &ReceiptReport,
+    http_client: &reqwest::Client,
+) {
+    if !config.is_enabled() {
+        return;
+    }
+
+    let url = format!("{}/api/trust/session-complete", config.trust_api_url);
+
+    let body = serde_json::json!({
+        "session_id": report.session_id,
+        "agent_id": report.agent_id,
+        "success": report.success,
+        "score": if report.success { 0.85 } else { 0.3 },
+        "had_issues": !report.success,
+        // Extended fields for receipt-backed data
+        "hook_event_name": "ExecutionReceipt",
+    });
+
+    match http_client
+        .post(&url)
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            info!(
+                agent = %report.agent_id,
+                session = %report.session_id,
+                success = report.success,
+                cost = report.cost_usd,
+                tools = report.tool_call_count,
+                bracket = report.trust_bracket.as_deref().unwrap_or("-"),
+                attested = report.attested_execution,
+                "Trust gate: execution receipt reported"
+            );
+        }
+        Ok(resp) => {
+            debug!(
+                status = resp.status().as_u16(),
+                "Trust gate: receipt report returned non-success"
+            );
+        }
+        Err(e) => {
+            debug!(error = %e, "Trust gate: receipt report failed (non-blocking)");
+        }
+    }
+
+    // Also report each tool used via ingest (if we have audit data)
+    if report.tool_call_count > 0 {
+        let ingest_url = format!("{}/api/trust/ingest", config.trust_api_url);
+        let ingest_body = serde_json::json!({
+            "hook_event_name": "PostToolUse",
+            "session_id": report.session_id,
+            "agent_id": report.agent_id,
+            "tool_name": "nucleus_execution",
+            "tool_response": {
+                "success": report.success,
+                "source": "execution_receipt",
+                "workspace_hash": report.workspace_hash,
+                "audit_tail_hash": report.audit_tail_hash,
+                "tool_call_count": report.tool_call_count,
+                "cost_usd": report.cost_usd,
+                "attested": report.attested_execution,
+            }
+        });
+
+        let _ = http_client
+            .post(&ingest_url)
+            .json(&ingest_body)
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
