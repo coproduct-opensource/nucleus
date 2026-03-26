@@ -37,6 +37,7 @@ use auth::{AuthConfig, AuthError};
 mod cgroup;
 mod net;
 mod signed_proxy;
+mod trust_gate;
 mod vsock_bridge;
 
 pub use nucleus_proto::nucleus_node as proto;
@@ -264,6 +265,10 @@ struct NodeState {
     container_pool: Option<Arc<Semaphore>>,
     /// Docker client (initialized at startup when container driver is active).
     docker: Option<Arc<bollard::Docker>>,
+    /// Trust gate configuration for reputation-scoped sandboxes.
+    trust_gate: trust_gate::TrustGateConfig,
+    /// HTTP client for trust API calls.
+    http_client: reqwest::Client,
 }
 
 #[derive(Debug)]
@@ -552,6 +557,11 @@ async fn main() -> Result<(), ApiError> {
         container_network: args.container_network.clone(),
         container_pool,
         docker,
+        trust_gate: trust_gate::TrustGateConfig::from_env(),
+        http_client: reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap_or_default(),
     };
 
     // Routes that require HMAC auth
@@ -860,12 +870,20 @@ async fn auth_middleware(
 
 async fn create_pod_internal(
     state: &NodeState,
-    spec: PodSpec,
+    mut spec: PodSpec,
     parent_pod_id: Option<Uuid>,
     raw_yaml: Option<String>,
 ) -> Result<(Uuid, Option<String>), ApiError> {
     let id = Uuid::new_v4();
     let created_at = now_unix();
+
+    // ── Trust Gate: verify agent reputation, scope permissions ──────
+    if state.trust_gate.is_enabled() {
+        let mut verification =
+            trust_gate::verify_agent_trust(&state.trust_gate, &spec, &state.http_client).await;
+        trust_gate::apply_trust_enforcement(&mut verification, &mut spec);
+    }
+
     let pod_dir = state.state_dir.join("pods").join(id.to_string());
     tokio::fs::create_dir_all(&pod_dir).await?;
 
