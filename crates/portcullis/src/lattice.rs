@@ -85,6 +85,13 @@ pub struct PermissionLattice {
     /// This field is ALWAYS set to `true` upon deserialization, regardless of
     /// the value in the serialized data. Use `with_uninhabitable_disabled()` in
     /// code if you explicitly need to disable the constraint (e.g., for testing).
+    ///
+    /// This field is private in production builds. Use [`is_uninhabitable_enforced()`]
+    /// to read. Enable the `testing` feature for direct field access (test builds only).
+    #[cfg(not(feature = "testing"))]
+    pub(crate) uninhabitable_constraint: bool,
+    /// See non-testing docs above. Public only with `testing` feature.
+    #[cfg(feature = "testing")]
     pub uninhabitable_constraint: bool,
 
     /// Minimum isolation level required to use this policy.
@@ -240,6 +247,15 @@ impl std::fmt::Display for DelegationError {
 impl std::error::Error for DelegationError {}
 
 impl PermissionLattice {
+    /// Whether the uninhabitable state constraint is enforced.
+    ///
+    /// When `true` (the default and strongly recommended), lethal capability
+    /// combinations (private data + untrusted content + exfiltration) trigger
+    /// mandatory approval obligations.
+    pub fn is_uninhabitable_enforced(&self) -> bool {
+        self.uninhabitable_constraint
+    }
+
     /// Create a new permission lattice with the given description.
     pub fn new(description: impl Into<String>) -> Self {
         let lattice = Self {
