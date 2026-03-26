@@ -37,8 +37,8 @@ pub struct TrustGateConfig {
 impl Default for TrustGateConfig {
     fn default() -> Self {
         Self {
-            trust_api_url: String::new(), // Disabled by default
-            enforce: false,               // Log-only by default
+            trust_api_url: String::new(),     // Disabled by default
+            enforce: false,                   // Log-only by default
             default_bracket: "C".to_string(), // Adequate — tenant profile
         }
     }
@@ -176,10 +176,7 @@ pub async fn verify_agent_trust(
 ///
 /// In enforce mode, modifies the spec's policy. In log-only mode,
 /// computes the restriction but doesn't apply it.
-pub fn apply_trust_enforcement(
-    verification: &mut TrustVerification,
-    spec: &mut PodSpec,
-) {
+pub fn apply_trust_enforcement(verification: &mut TrustVerification, spec: &mut PodSpec) {
     let _profile_name = bracket_to_profile(&verification.bracket);
 
     // If the spec has a resolved permission lattice, enforce the trust profile
@@ -246,10 +243,7 @@ async fn verify_attestation(
         .await
         .map_err(|e| format!("HTTP error: {e}"))?;
 
-    let body: VerifyResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("JSON error: {e}"))?;
+    let body: VerifyResponse = resp.json().await.map_err(|e| format!("JSON error: {e}"))?;
 
     if body.verified {
         Ok(body
@@ -257,7 +251,9 @@ async fn verify_attestation(
             .map(|b| b.overall)
             .unwrap_or_else(|| config.default_bracket.clone()))
     } else {
-        Err(body.error.unwrap_or_else(|| "Verification failed".to_string()))
+        Err(body
+            .error
+            .unwrap_or_else(|| "Verification failed".to_string()))
     }
 }
 
@@ -278,10 +274,7 @@ async fn lookup_reputation(
         .await
         .map_err(|e| format!("HTTP error: {e}"))?;
 
-    let body: DiscountResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("JSON error: {e}"))?;
+    let body: DiscountResponse = resp.json().await.map_err(|e| format!("JSON error: {e}"))?;
 
     // Map discount factor to bracket
     // discount_factor is in [0.5, 1.0] — lower = better reputation
