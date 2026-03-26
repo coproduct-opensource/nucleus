@@ -230,6 +230,7 @@ fn bracket_to_profile(bracket: &str) -> &'static str {
 ///
 /// The trust API's discount_factor is in [0.5, 1.0] where lower = better.
 /// We invert to [0.0, 1.0] where higher = better for portcullis scoring.
+#[allow(dead_code)]
 pub fn discount_to_reputation_score(discount_factor: f64) -> f64 {
     // discount_factor 0.5 → reputation 1.0 (best)
     // discount_factor 1.0 → reputation 0.0 (worst)
@@ -345,6 +346,16 @@ pub struct ReceiptReport {
     pub trust_profile: Option<String>,
     /// Whether the sandbox was reputation-scoped
     pub attested_execution: bool,
+
+    // ── Verified exposure (from McpMediator, not claims) ──────────
+    /// Observed exposure legs during execution.
+    /// These come from the McpMediator's actual interception of tool calls,
+    /// NOT from tool description parsing. This is the ground truth.
+    pub observed_exposure_labels: Vec<String>,
+    /// Observed risk tier: safe, low, medium, critical.
+    pub observed_risk_tier: String,
+    /// Whether the uninhabitable state was reached during execution.
+    pub uninhabitable_reached: bool,
 }
 
 /// Report an execution receipt to the Coproduct Trust API.
@@ -371,8 +382,7 @@ pub async fn report_receipt(
         "agent_id": report.agent_id,
         "success": report.success,
         "score": if report.success { 0.85 } else { 0.3 },
-        "had_issues": !report.success,
-        // Extended fields for receipt-backed data
+        "had_issues": !report.success || report.uninhabitable_reached,
         "hook_event_name": "ExecutionReceipt",
     });
 
@@ -422,6 +432,12 @@ pub async fn report_receipt(
                 "tool_call_count": report.tool_call_count,
                 "cost_usd": report.cost_usd,
                 "attested": report.attested_execution,
+                // Verified exposure: from actual sandbox observation, not claims
+                "verified_exposure": {
+                    "observed_labels": report.observed_exposure_labels,
+                    "risk_tier": report.observed_risk_tier,
+                    "uninhabitable_reached": report.uninhabitable_reached,
+                }
             }
         });
 
