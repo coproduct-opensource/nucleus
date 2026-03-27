@@ -41,6 +41,8 @@ tonic-prost = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
 ipnet = "2.12"
 
 # GitHub OIDC support
@@ -57,6 +59,7 @@ oid-registry = "0.8"
 bollard = "0.20"
 
 nucleus = { path = "../nucleus" }
+portcullis = { path = "../portcullis" }
 nucleus-identity = { path = "../nucleus-identity" }
 nucleus-proto = { path = "../nucleus-proto" }
 nucleus-spec = { path = "../nucleus-spec" }

@@ -2752,7 +2752,10 @@ impl NodeService for GrpcService {
         let manifest_hash =
             nucleus_identity::approval_bundle::compute_manifest_hash(spec_yaml.as_bytes());
 
-        // Compute v1 content hash: SHA-256 of canonical v1 fields
+        // Compute v1 content hash: SHA-256 of canonical v1 fields.
+        // SECURITY: exposure labels, risk tier, and uninhabitable_reached are
+        // included so that any post-hoc swap of these values breaks the hash
+        // commitment. Labels are sorted before serialization for canonical form.
         let v1_content_hash = {
             use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
@@ -2762,6 +2765,34 @@ impl NodeService for GrpcService {
             hasher.update(report.audit_entry_count.to_le_bytes());
             hasher.update(report.timestamp_unix.to_le_bytes());
             hasher.update(manifest_hash.as_bytes());
+            // Commit to exposure labels: sort for canonical order, then
+            // serialize as a compact BTreeMap JSON object (sorted keys, no
+            // whitespace) so the byte sequence is deterministic.
+            let mut sorted_labels = report.observed_exposure_labels.clone();
+            sorted_labels.sort();
+            let exposure_canonical: std::collections::BTreeMap<&str, serde_json::Value> = [
+                (
+                    "observed_exposure_labels",
+                    serde_json::Value::Array(
+                        sorted_labels
+                            .into_iter()
+                            .map(serde_json::Value::String)
+                            .collect(),
+                    ),
+                ),
+                (
+                    "observed_risk_tier",
+                    serde_json::Value::String(report.observed_risk_tier.clone()),
+                ),
+                (
+                    "uninhabitable_reached",
+                    serde_json::Value::Bool(report.uninhabitable_reached),
+                ),
+            ]
+            .into_iter()
+            .collect();
+            let exposure_bytes = serde_json::to_vec(&exposure_canonical).unwrap_or_default();
+            hasher.update(&exposure_bytes);
             format!("{:x}", hasher.finalize())
         };
 
@@ -2822,6 +2853,9 @@ impl NodeService for GrpcService {
                 report.observed_risk_tier.clone()
             },
             uninhabitable_reached: report.uninhabitable_reached,
+            // Pass the hash so report_receipt() can register it with the
+            // receipt ledger before calling session-complete.
+            v1_content_hash: v1_content_hash.clone(),
         };
         let trust_config = self.state.trust_gate.clone();
         let http_client = self.state.http_client.clone();

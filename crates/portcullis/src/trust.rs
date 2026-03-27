@@ -553,15 +553,58 @@ mod tests {
 
     #[test]
     fn reputation_score_no_cliffs() {
-        // Verify there are no sudden jumps across a small delta
-        let scores: Vec<f64> = (0..100).map(|i| i as f64 / 100.0).collect();
+        // Property: from_reputation_score is a morphism of posets — the capability
+        // ceiling is monotone in the score. For all s1 ≤ s2, every field of
+        // from_reputation_score(s1).capability_ceiling must be ≤ the corresponding
+        // field in from_reputation_score(s2).capability_ceiling (CapabilityLevel order:
+        // Never ≤ LowRisk ≤ Always).
+        //
+        // Also verifies the cliff-free property: no single 0.01 step jumps directly
+        // Never → Always. The 0.1-wide transition zone in cap() guarantees this.
+        let scores: Vec<f64> = (0..=100).map(|i| i as f64 / 100.0).collect();
         for window in scores.windows(2) {
-            let a = TrustProfile::from_reputation_score(window[0]);
-            let b = TrustProfile::from_reputation_score(window[1]);
-            // Each step can change at most one capability level per operation
-            // (Never → LowRisk or LowRisk → Always, never Never → Always in one step)
-            // This is guaranteed by the 0.1 transition zone in the cap() function
-            let _ = (a, b); // Compiles = no panics for any score
+            let s1 = window[0];
+            let s2 = window[1];
+            assert!(s1 < s2);
+            let a = TrustProfile::from_reputation_score(s1);
+            let b = TrustProfile::from_reputation_score(s2);
+
+            // Monotonicity assertion for every capability field
+            macro_rules! assert_monotone {
+                ($field:ident) => {
+                    assert!(
+                        a.capability_ceiling.$field <= b.capability_ceiling.$field,
+                        "Morphism violated: {} decreased from s1={:.2} to s2={:.2}: {:?} > {:?}",
+                        stringify!($field),
+                        s1,
+                        s2,
+                        a.capability_ceiling.$field,
+                        b.capability_ceiling.$field
+                    );
+                    // No cliff: a single 0.01 step must not jump Never → Always
+                    assert!(
+                        !(a.capability_ceiling.$field == CapabilityLevel::Never
+                            && b.capability_ceiling.$field == CapabilityLevel::Always),
+                        "Cliff detected: {} jumped Never→Always from s1={:.2} to s2={:.2}",
+                        stringify!($field),
+                        s1,
+                        s2
+                    );
+                };
+            }
+
+            assert_monotone!(read_files);
+            assert_monotone!(glob_search);
+            assert_monotone!(grep_search);
+            assert_monotone!(web_search);
+            assert_monotone!(web_fetch);
+            assert_monotone!(write_files);
+            assert_monotone!(edit_files);
+            assert_monotone!(run_bash);
+            assert_monotone!(git_commit);
+            assert_monotone!(git_push);
+            assert_monotone!(create_pr);
+            assert_monotone!(manage_pods);
         }
     }
 
