@@ -1643,7 +1643,7 @@ mod tests {
     fn permissive_no_static_obligations() -> PermissionLattice {
         use portcullis::{CommandLattice, Obligations};
         let mut lattice = PermissionLattice::permissive();
-        lattice.uninhabitable_constraint = false;
+        lattice = lattice.with_uninhabitable_disabled();
         lattice.obligations = Obligations::default();
         lattice.commands = CommandLattice::empty();
         lattice

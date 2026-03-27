@@ -81,6 +81,53 @@ pub trait ReputationMetrics: Send + Sync {
     /// Higher rates indicate hitting policy limits more often.
     fn block_rate(&self, identity: &str) -> f64;
 
+    // ── Extended metrics (from Coproduct Trust) ───────────────────────
+    // These have default implementations returning neutral values so
+    // existing implementors don't break. Override when trust-service
+    // data is available.
+
+    /// Reviewer calibration score (0.0 - 1.0).
+    ///
+    /// Measures how accurately this identity predicts outcomes when reviewing.
+    /// 1.0 = perfectly calibrated predictions. 0.5 = no data (neutral).
+    ///
+    /// Computed as: 1 - mean(|predicted_score - actual_score|)
+    fn reviewer_calibration(&self, _identity: &str) -> f64 {
+        0.5 // Neutral default — no review data
+    }
+
+    /// Reviewer approve precision (0.0 - 1.0).
+    ///
+    /// Fraction of approvals that didn't require rework.
+    /// Higher = the reviewer's approvals are trustworthy.
+    fn approve_precision(&self, _identity: &str) -> f64 {
+        0.5 // Neutral default
+    }
+
+    /// Reviewer block precision (0.0 - 1.0).
+    ///
+    /// Fraction of blocks where the flagged issues actually materialized.
+    /// Higher = the reviewer's blocks are justified.
+    fn block_precision(&self, _identity: &str) -> f64 {
+        0.5 // Neutral default
+    }
+
+    /// Tool reliability for a specific tool (0.0 - 1.0).
+    ///
+    /// Fraction of invocations that succeeded. Tool identity is separate
+    /// from agent identity — use `mcp://server/tool` or `builtin://tool` URIs.
+    fn tool_reliability(&self, _tool_id: &str) -> f64 {
+        0.5 // Neutral default — no tool data
+    }
+
+    /// Attestation bracket for this identity.
+    ///
+    /// Returns a letter grade (A-F) as a string, or None if no attestation exists.
+    /// Used by `TrustProfile::from_attestation()` to derive permissions.
+    fn attestation_bracket(&self, _identity: &str) -> Option<String> {
+        None // No attestation by default
+    }
+
     /// Compute an aggregate reputation score (0.0 - 1.0).
     ///
     /// This is a weighted combination of all metrics.

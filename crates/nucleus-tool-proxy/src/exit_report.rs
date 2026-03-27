@@ -103,6 +103,10 @@ pub fn build_exit_report(
         output_tokens: usage.output_tokens,
         cache_read_tokens: usage.cache_read_tokens,
         cost_usd: usage.cost_usd,
+        // Exposure populated by write_exit_report() after guard extraction
+        observed_exposure_labels: Vec::new(),
+        observed_risk_tier: String::new(),
+        uninhabitable_reached: false,
     }
 }
 

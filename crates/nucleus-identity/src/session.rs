@@ -126,6 +126,37 @@ impl SessionIdentity {
         }
     }
 
+    /// Validate that a session is still usable before refreshing credentials.
+    ///
+    /// Returns `Err` if the session is expired or has insufficient remaining
+    /// lifetime for a credential refresh (which needs at least `min_remaining`
+    /// to complete safely).
+    ///
+    /// This prevents a race condition where a session expires between the
+    /// refresh request and the credential issuance.
+    pub fn validate_before_refresh(&self, min_remaining: Duration) -> Result<(), SessionError> {
+        if self.is_expired() {
+            return Err(SessionError::Expired {
+                session_id: self.session_id.to_string(),
+                expired_at: self.expires_at(),
+            });
+        }
+        match self.remaining() {
+            Some(remaining) if remaining < min_remaining => {
+                Err(SessionError::InsufficientLifetime {
+                    session_id: self.session_id.to_string(),
+                    remaining,
+                    required: min_remaining,
+                })
+            }
+            None => Err(SessionError::Expired {
+                session_id: self.session_id.to_string(),
+                expired_at: self.expires_at(),
+            }),
+            Some(_) => Ok(()),
+        }
+    }
+
     /// Converts to a SPIFFE URI string.
     ///
     /// Format: `spiffe://{trust-domain}/ns/{namespace}/sa/{service}/session/{session-id}`
@@ -423,5 +454,79 @@ mod tests {
         let ts1 = id1.timestamp_millis().unwrap();
         let ts2 = id2.timestamp_millis().unwrap();
         assert!(ts2 >= ts1, "later UUID should have >= timestamp");
+    }
+}
+
+/// Errors that can occur during session validation.
+#[derive(Debug, Clone)]
+pub enum SessionError {
+    /// The session has already expired.
+    Expired {
+        session_id: String,
+        expired_at: DateTime<Utc>,
+    },
+    /// The session does not have enough remaining lifetime.
+    InsufficientLifetime {
+        session_id: String,
+        remaining: Duration,
+        required: Duration,
+    },
+}
+
+impl fmt::Display for SessionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Expired {
+                session_id,
+                expired_at,
+            } => {
+                write!(f, "session {} expired at {}", session_id, expired_at)
+            }
+            Self::InsufficientLifetime {
+                session_id,
+                remaining,
+                required,
+            } => {
+                write!(
+                    f,
+                    "session {} has {:?} remaining but {:?} required for refresh",
+                    session_id, remaining, required
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for SessionError {}
+
+#[cfg(test)]
+mod session_refresh_tests {
+    use super::*;
+
+    #[test]
+    fn validate_before_refresh_succeeds_with_sufficient_lifetime() {
+        let parent = Identity::new("nucleus.local", "agents", "claude");
+        let session = SessionIdentity::new(parent, Duration::from_secs(3600));
+        let min_remaining = Duration::from_secs(60);
+        assert!(session.validate_before_refresh(min_remaining).is_ok());
+    }
+
+    #[test]
+    fn validate_before_refresh_fails_when_expired() {
+        let parent = Identity::new("nucleus.local", "agents", "claude");
+        // Create session with 0 TTL — already expired
+        let session = SessionIdentity::new(parent, Duration::from_secs(0));
+        std::thread::sleep(Duration::from_millis(10));
+        let result = session.validate_before_refresh(Duration::from_secs(60));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_before_refresh_fails_with_insufficient_lifetime() {
+        let parent = Identity::new("nucleus.local", "agents", "claude");
+        // 2 second TTL, require 60 seconds remaining
+        let session = SessionIdentity::new(parent, Duration::from_secs(2));
+        let result = session.validate_before_refresh(Duration::from_secs(60));
+        assert!(result.is_err());
     }
 }

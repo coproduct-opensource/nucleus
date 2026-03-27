@@ -313,7 +313,7 @@ proptest! {
         let perms = PermissionLattice {
             capabilities: a,
             obligations: Default::default(),
-            uninhabitable_constraint: enforce,
+            uninhabitable_constraint: enforce, // requires testing feature
             ..PermissionLattice::default()
         };
 
@@ -330,7 +330,6 @@ proptest! {
         let perms = PermissionLattice {
             capabilities: a,
             obligations: Default::default(),
-            uninhabitable_constraint: true,
             ..PermissionLattice::default()
         };
 
@@ -356,13 +355,11 @@ proptest! {
         let perms_a = PermissionLattice {
             capabilities: a,
             obligations: Default::default(),
-            uninhabitable_constraint: true,
             ..PermissionLattice::default()
         };
         let perms_b = PermissionLattice {
             capabilities: b,
             obligations: Default::default(),
-            uninhabitable_constraint: true,
             ..PermissionLattice::default()
         };
 

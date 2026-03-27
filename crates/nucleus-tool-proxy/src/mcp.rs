@@ -134,6 +134,11 @@ impl NucleusMcpServer {
 
         let guard = Arc::new(GradedExposureGuard::new(policy, &tool_schemas));
 
+        // Store guard reference in AppState for exit report exposure extraction
+        if let Ok(mut slot) = state.exposure_guard.write() {
+            *slot = Some(guard.clone());
+        }
+
         Self {
             state,
             tool_router,
