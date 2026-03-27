@@ -19,8 +19,13 @@
 //!   → return scoped PodSpec
 //! ```
 
+use std::sync::Arc;
+
+use base64::Engine as _;
+use hmac::{Hmac, Mac};
 use nucleus_spec::PodSpec;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use tracing::{debug, info, warn};
 
 /// Configuration for the trust gate.
@@ -32,6 +37,11 @@ pub struct TrustGateConfig {
     pub enforce: bool,
     /// Default bracket for agents without attestations
     pub default_bracket: String,
+    /// HMAC-SHA256 key for signing X-Nucleus-Signature on receipt POSTs.
+    /// Must match TRUST_RECEIPT_SECRET on the trust-service side.
+    /// When None, report_receipt() skips signing and the server will reject
+    /// requests with 401 unless it is running with insecure bypass enabled.
+    pub receipt_secret: Option<Arc<Vec<u8>>>,
 }
 
 impl Default for TrustGateConfig {
@@ -40,6 +50,7 @@ impl Default for TrustGateConfig {
             trust_api_url: String::new(),     // Disabled by default
             enforce: false,                   // Log-only by default
             default_bracket: "C".to_string(), // Adequate — tenant profile
+            receipt_secret: None,
         }
     }
 }
@@ -47,6 +58,11 @@ impl Default for TrustGateConfig {
 impl TrustGateConfig {
     /// Create from environment variables.
     pub fn from_env() -> Self {
+        let receipt_secret = std::env::var("TRUST_RECEIPT_SECRET")
+            .ok()
+            .and_then(|s| base64::prelude::BASE64_STANDARD.decode(&s).ok())
+            .map(Arc::new);
+
         Self {
             trust_api_url: std::env::var("TRUST_API_URL").unwrap_or_default(),
             enforce: std::env::var("TRUST_GATE_ENFORCE")
@@ -54,6 +70,7 @@ impl TrustGateConfig {
                 .unwrap_or(false),
             default_bracket: std::env::var("TRUST_DEFAULT_BRACKET")
                 .unwrap_or_else(|_| "C".to_string()),
+            receipt_secret,
         }
     }
 
@@ -386,13 +403,25 @@ pub async fn report_receipt(
         "hook_event_name": "ExecutionReceipt",
     });
 
-    match http_client
+    let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
+
+    let mut req = http_client
         .post(&url)
-        .json(&body)
+        .header("Content-Type", "application/json")
         .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await
-    {
+        .body(body_bytes.clone());
+
+    if let Some(secret) = &config.receipt_secret {
+        let sig = hmac_sha256_hex(secret, &body_bytes);
+        req = req.header("X-Nucleus-Signature", sig);
+    } else {
+        warn!(
+            "TRUST_RECEIPT_SECRET not set — sending session-complete without X-Nucleus-Signature; \
+             trust-service will reject with 401 unless TRUST_INSECURE_NO_SIGNATURE_VERIFICATION=true"
+        );
+    }
+
+    match req.send().await {
         Ok(resp) if resp.status().is_success() => {
             info!(
                 agent = %report.agent_id,
@@ -441,13 +470,35 @@ pub async fn report_receipt(
             }
         });
 
-        let _ = http_client
+        let ingest_bytes = serde_json::to_vec(&ingest_body).unwrap_or_default();
+
+        let mut ingest_req = http_client
             .post(&ingest_url)
-            .json(&ingest_body)
+            .header("Content-Type", "application/json")
             .timeout(std::time::Duration::from_secs(5))
-            .send()
-            .await;
+            .body(ingest_bytes.clone());
+
+        if let Some(secret) = &config.receipt_secret {
+            let sig = hmac_sha256_hex(secret, &ingest_bytes);
+            ingest_req = ingest_req.header("X-Nucleus-Signature", sig);
+        }
+
+        let _ = ingest_req.send().await;
     }
+}
+
+/// Compute HMAC-SHA256(secret, data) and return the result as a lowercase hex string.
+///
+/// This matches the verification logic in trust-service's `verify_nucleus_signature()`,
+/// which computes the MAC over the raw body bytes and compares it constant-time.
+fn hmac_sha256_hex(secret: &[u8], data: &[u8]) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any key length");
+    mac.update(data);
+    mac.finalize()
+        .into_bytes()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect()
 }
 
 #[cfg(test)]
@@ -480,5 +531,92 @@ mod tests {
         assert_eq!(bracket_to_profile("D"), "untrusted");
         assert_eq!(bracket_to_profile("F"), "airgapped");
         assert_eq!(bracket_to_profile("Z"), "airgapped");
+    }
+
+    #[test]
+    fn test_hmac_sha256_hex_matches_server_expectation() {
+        // Verify our signing matches the logic in trust-service verify_nucleus_signature():
+        //   mac = HMAC_SHA256(secret, body_bytes)
+        //   expected_hex = mac.finalize().into_bytes().map(|b| format!("{:02x}", b)).collect()
+        let secret = b"test-receipt-secret";
+        let body = b"{\"session_id\":\"abc\",\"success\":true}";
+
+        let sig = hmac_sha256_hex(secret, body);
+
+        // Signature must be 64 lowercase hex chars (32 bytes)
+        assert_eq!(sig.len(), 64);
+        assert!(sig
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
+
+        // Re-computing with the same inputs must yield the same signature (deterministic)
+        let sig2 = hmac_sha256_hex(secret, body);
+        assert_eq!(sig, sig2);
+
+        // Different secret → different signature
+        let sig_other = hmac_sha256_hex(b"different-secret", body);
+        assert_ne!(sig, sig_other);
+
+        // Different body → different signature
+        let sig_body = hmac_sha256_hex(secret, b"{\"session_id\":\"xyz\"}");
+        assert_ne!(sig, sig_body);
+    }
+
+    #[test]
+    fn test_config_with_receipt_secret() {
+        let secret_bytes = b"my-receipt-secret-32-bytes-long!!";
+        let config = TrustGateConfig {
+            trust_api_url: "https://trust.example.com".to_string(),
+            enforce: true,
+            default_bracket: "C".to_string(),
+            receipt_secret: Some(Arc::new(secret_bytes.to_vec())),
+        };
+
+        assert!(config.is_enabled());
+        assert!(config.receipt_secret.is_some());
+
+        // Verify the stored secret is the one we set
+        let stored = config.receipt_secret.as_ref().unwrap();
+        assert_eq!(stored.as_slice(), secret_bytes);
+    }
+
+    #[test]
+    fn test_config_default_has_no_receipt_secret() {
+        let config = TrustGateConfig::default();
+        assert!(config.receipt_secret.is_none());
+    }
+
+    /// Simulate what report_receipt() does for the session-complete body and verify
+    /// the resulting signature against the same algorithm used by trust-service.
+    #[test]
+    fn test_report_receipt_signature_is_verifiable() {
+        let secret = b"shared-receipt-secret";
+
+        // This mirrors the body construction in report_receipt()
+        let body = serde_json::json!({
+            "session_id": "sess-001",
+            "agent_id": "agent@example.com",
+            "success": true,
+            "score": 0.85_f64,
+            "had_issues": false,
+            "hook_event_name": "ExecutionReceipt",
+        });
+        let body_bytes = serde_json::to_vec(&body).unwrap();
+        let signature = hmac_sha256_hex(secret, &body_bytes);
+
+        // Server-side verification (mirrors trust-service verify_nucleus_signature)
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any key length");
+        mac.update(&body_bytes);
+        let expected: String = mac
+            .finalize()
+            .into_bytes()
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect();
+
+        assert_eq!(
+            signature, expected,
+            "Client-side signature must match server-side HMAC-SHA256 over the same body bytes"
+        );
     }
 }
