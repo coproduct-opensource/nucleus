@@ -2971,6 +2971,7 @@ dependencies = [
  "nucleus-proto",
  "nucleus-spec",
  "oid-registry",
+ "portcullis",
  "prost",
  "prost-types",
  "reqwest",

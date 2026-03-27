@@ -1155,3 +1155,101 @@ fn proof_nucleus_counterexample_witness() {
          the quotient-meet obligation union may have been removed"
     );
 }
+
+// ============================================================================
+// R-series: Refinement bridge — production CapabilityLevel matches Verus model
+// ============================================================================
+//
+// The Verus proofs in `portcullis-verified` verify a mathematical model where:
+//   - CapLevel = u8 with values in {0=Never, 1=LowRisk, 2=Always}
+//   - cap_meet(a, b) = min(a, b)
+//   - cap_join(a, b) = max(a, b)
+//   - cap_leq(a, b) = (a <= b)
+//
+// These Kani harnesses mechanically verify that the PRODUCTION `CapabilityLevel`
+// enum operations are exactly the same structure as that model: its discriminants
+// are {0, 1, 2}, `meet` is `std::cmp::min`, `join` is `std::cmp::max`, and the
+// derived `Ord` implementation orders by discriminant.
+//
+// This closes the gap between the Verus model and production code: without
+// these harnesses the two proof systems verify structurally identical but
+// formally separate objects. With them, Kani (bounded model checking)
+// mechanically certifies the isomorphism for all 9 input pairs.
+//
+// The companion `test_capability_level_refinement_exhaustive` unit test in
+// `portcullis/src/capability.rs` verifies the same property via exhaustive
+// enumeration and can be run with `cargo test`.
+//
+// Harness count in this file: 39 (#[kani::proof] harnesses total).
+// ck-kernel/src/kani.rs: 17 harnesses. Combined: 56.
+
+/// **R1 — meet refinement**: for all `a, b: CapabilityLevel`,
+///   `meet(a, b) as u8 == min(a as u8, b as u8)`.
+///
+/// The Verus model defines `cap_meet(a, b) = if a <= b { a } else { b }`,
+/// which is `min`. The production `CapabilityLevel::meet` calls `std::cmp::min`.
+/// This harness proves both compute the same value by exhaustive enumeration
+/// over all 9 input pairs (3 variants × 3 variants).
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_capability_level_meet_refinement() {
+    let a = level_from_u8(kani::any::<u8>());
+    let b = level_from_u8(kani::any::<u8>());
+
+    // Production operation
+    let prod_meet = a.meet(b) as u8;
+    // Verus model operation: cap_meet(a, b) = min
+    let model_meet = std::cmp::min(a as u8, b as u8);
+
+    assert!(
+        prod_meet == model_meet,
+        "R1: CapabilityLevel::meet as u8 must equal min of discriminants (Verus cap_meet)"
+    );
+}
+
+/// **R2 — join refinement**: for all `a, b: CapabilityLevel`,
+///   `join(a, b) as u8 == max(a as u8, b as u8)`.
+///
+/// The Verus model defines `cap_join(a, b) = if a >= b { a } else { b }`,
+/// which is `max`. The production `CapabilityLevel::join` calls `std::cmp::max`.
+/// This harness proves both compute the same value.
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_capability_level_join_refinement() {
+    let a = level_from_u8(kani::any::<u8>());
+    let b = level_from_u8(kani::any::<u8>());
+
+    // Production operation
+    let prod_join = a.join(b) as u8;
+    // Verus model operation: cap_join(a, b) = max
+    let model_join = std::cmp::max(a as u8, b as u8);
+
+    assert!(
+        prod_join == model_join,
+        "R2: CapabilityLevel::join as u8 must equal max of discriminants (Verus cap_join)"
+    );
+}
+
+/// **R3 — total order refinement**: for all `a, b: CapabilityLevel`,
+///   `(a <= b) == (a as u8 <= b as u8)`.
+///
+/// The Verus model defines `cap_leq(a, b) = (a <= b)` on u8 values.
+/// The production `CapabilityLevel` derives `Ord` via `#[derive(Ord)]` which
+/// uses declaration order. This harness proves the derived order equals the
+/// integer order on discriminants, bridging the Verus `cap_leq` to production.
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_capability_level_leq_refinement() {
+    let a = level_from_u8(kani::any::<u8>());
+    let b = level_from_u8(kani::any::<u8>());
+
+    // Production: derived Ord (declaration order = Never < LowRisk < Always)
+    let prod_leq = a <= b;
+    // Verus model: cap_leq(a, b) = (a as u8 <= b as u8)
+    let model_leq = (a as u8) <= (b as u8);
+
+    assert!(
+        prod_leq == model_leq,
+        "R3: CapabilityLevel total order must match u8 discriminant order (Verus cap_leq)"
+    );
+}

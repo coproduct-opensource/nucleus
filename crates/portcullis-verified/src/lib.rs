@@ -125,6 +125,29 @@
 //! - G4-G5: Closure and kernel idempotent
 //! - G6-G7: Both α and γ monotone
 //!
+//! # Refinement Bridge (Model ↔ Production)
+//!
+//! The types in this crate (`CapLevel = u8`, `CapLattice`, etc.) are a
+//! mathematical model, not the production `portcullis::CapabilityLevel` enum.
+//! The correctness argument has two layers:
+//!
+//! 1. **Verus** (this file): proves all lattice laws for the mathematical model.
+//!
+//! 2. **Kani harnesses R1/R2/R3** in `portcullis/src/kani.rs`: mechanically
+//!    verify the isomorphism between model and production via bounded model
+//!    checking over all 9 input pairs:
+//!    - R1: `CapabilityLevel::meet(a, b) as u8 == cap_meet(a as u8, b as u8)`
+//!    - R2: `CapabilityLevel::join(a, b) as u8 == cap_join(a as u8, b as u8)`
+//!    - R3: `(a <= b) == (a as u8 <= b as u8)`
+//!
+//! 3. **Unit test** `test_capability_level_refinement_exhaustive` in
+//!    `portcullis/src/capability.rs`: exhaustively checks R1/R2/R3 via
+//!    `cargo test` (no Kani toolchain required).
+//!
+//! Together, steps 1–3 form a mechanically verified chain: Verus proves the
+//! model correct, Kani and the exhaustive unit test prove the model is
+//! isomorphic to production, so the lattice laws hold for production code.
+//!
 //! # Running Verification
 //!
 //! ```bash
@@ -144,6 +167,20 @@ verus! {
 ///
 /// We use u8 rather than an enum because Verus's SMT encoding handles
 /// integer arithmetic natively, making proofs more automated.
+///
+/// # Refinement
+///
+/// The isomorphism between this model and the production `CapabilityLevel` enum
+/// is mechanically verified by Kani harnesses R1, R2, R3 in
+/// `portcullis/src/kani.rs`:
+///   - R1: `CapabilityLevel::meet(a, b) as u8 == cap_meet(a as u8, b as u8)`
+///   - R2: `CapabilityLevel::join(a, b) as u8 == cap_join(a as u8, b as u8)`
+///   - R3: `(a <= b) == (a as u8 <= b as u8)` (order on discriminants)
+///
+/// These harnesses close the gap between this Verus model and production code:
+/// without them, the two proof systems verify structurally identical but
+/// formally separate objects. With them, Kani certifies the isomorphism via
+/// bounded model checking over all 9 input pairs.
 pub type CapLevel = u8;
 
 /// Valid capability level: 0, 1, or 2.

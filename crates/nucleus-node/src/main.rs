@@ -2803,7 +2803,7 @@ impl NodeService for GrpcService {
             _ => -1,
         };
         let receipt_report = trust_gate::ReceiptReport {
-            agent_id: agent_identity,
+            agent_id: agent_identity.clone(),
             session_id: id.to_string(),
             success: exit_code == 0,
             cost_usd: report.cost_usd,
@@ -2822,10 +2822,23 @@ impl NodeService for GrpcService {
                 report.observed_risk_tier.clone()
             },
             uninhabitable_reached: report.uninhabitable_reached,
+            // Cryptographic session identity — required for the SandboxAttested
+            // upgrade path in the trust-service session-complete handler.
+            sandbox_identity: if spiffe_id.is_empty() {
+                agent_identity.clone()
+            } else {
+                spiffe_id.clone()
+            },
+            v1_content_hash: v1_content_hash.clone(),
         };
         let trust_config = self.state.trust_gate.clone();
         let http_client = self.state.http_client.clone();
         tokio::spawn(async move {
+            // In secure mode, pre-register the v1_content_hash so the handler
+            // can validate it when observed_exposure_labels are present.
+            // Without this, session-complete returns 422 and the
+            // NameHeuristic → SandboxAttested upgrade is silently dropped.
+            trust_gate::register_receipt_hash(&trust_config, &receipt_report, &http_client).await;
             trust_gate::report_receipt(&trust_config, &receipt_report, &http_client).await;
         });
 
