@@ -174,34 +174,24 @@ pub fn dimensions_to_ceiling(dimensions: &[PermissionDimension]) -> PermissionLa
     // - default() adds non-empty CommandLattice::allowed that breaks commands.leq()
     // - permissive() creates a time window from Utc::now() (non-deterministic)
     // The uninhabitable_state enforcement happens in the meet() with the certificate.
-    PermissionLattice {
-        id: uuid::Uuid::nil(),
-        description: String::new(),
-        derived_from: None,
-        capabilities: caps,
-        obligations: portcullis::Obligations::default(), // empty = most permissive
-        paths: portcullis::PathLattice::default(),       // empty = all allowed
-        budget: BudgetLattice {
+    // Build a delegation ceiling — a true top element without normalization.
+    // Normalization adds obligations that break the Galois closure-extensive
+    // property. Use build_unnormalized() + uninhabitable_constraint(false).
+    PermissionLattice::builder()
+        .description("market-grant-ceiling")
+        .capabilities(caps)
+        .budget(BudgetLattice {
             max_cost_usd: Decimal::from(1_000_000),
             max_input_tokens: u64::MAX,
             max_output_tokens: u64::MAX,
             ..Default::default()
-        },
-        commands: portcullis::CommandLattice {
-            allowed: Default::default(), // empty = all allowed
-            blocked: Default::default(), // empty = nothing blocked
-            allowed_rules: Default::default(),
-            blocked_rules: Default::default(),
-        },
-        time: TimeLattice::between(
+        })
+        .time(TimeLattice::between(
             Utc::now() - Duration::days(365 * 100),
             Utc::now() + Duration::days(365 * 100),
-        ),
-        uninhabitable_constraint: false,
-        minimum_isolation: None,
-        created_at: Utc::now(),
-        created_by: String::new(),
-    }
+        ))
+        .uninhabitable_constraint(false)
+        .build_unnormalized()
 }
 
 /// Intersect a market grant with certificate-attested permissions.
@@ -355,11 +345,9 @@ mod tests {
 
     #[test]
     fn test_alpha_all_never_requests_nothing() {
-        let perms = PermissionLattice {
-            capabilities: all_never_capabilities(),
-            ..PermissionLattice::default()
-        }
-        .normalize();
+        let perms = PermissionLattice::builder()
+            .capabilities(all_never_capabilities())
+            .build();
         let verified = mint_and_verify(perms);
         let bid = certificate_to_bid(&verified);
 

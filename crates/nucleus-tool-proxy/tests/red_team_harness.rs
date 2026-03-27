@@ -1063,7 +1063,6 @@ fn restrictive_policy() -> PermissionLattice {
 
 fn web_research_policy() -> PermissionLattice {
     let mut policy = PermissionLattice::web_research();
-    policy.uninhabitable_constraint = true;
     policy.paths.blocked.insert(".env*".to_string());
     policy.paths.blocked.insert(".ssh/*".to_string());
     policy.paths.blocked.insert("credentials.*".to_string());
@@ -1072,7 +1071,6 @@ fn web_research_policy() -> PermissionLattice {
 
 fn fix_issue_policy() -> PermissionLattice {
     let mut policy = PermissionLattice::fix_issue();
-    policy.uninhabitable_constraint = true;
     policy.paths.blocked.insert(".env*".to_string());
     policy.paths.blocked.insert(".ssh/*".to_string());
     policy.paths.blocked.insert("credentials.*".to_string());
@@ -1091,7 +1089,6 @@ fn full_uninhabitable_policy() -> PermissionLattice {
     perms.capabilities.create_pr = CapabilityLevel::LowRisk;
     perms.capabilities.write_files = CapabilityLevel::LowRisk;
     perms.capabilities.edit_files = CapabilityLevel::LowRisk;
-    perms.uninhabitable_constraint = true;
     perms.paths.blocked.insert(".env*".to_string());
     perms.paths.blocked.insert(".ssh/*".to_string());
     perms.paths.blocked.insert("credentials.*".to_string());
