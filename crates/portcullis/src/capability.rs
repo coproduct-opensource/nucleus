@@ -25,6 +25,33 @@ pub enum CapabilityLevel {
     Always = 2,
 }
 
+impl CapabilityLevel {
+    /// Meet (greatest lower bound) = min.
+    ///
+    /// Isomorphic to `cap_meet` in the Verus model (`portcullis-verified`):
+    ///   `cap_meet(a, b) = if a <= b { a } else { b }` = `std::cmp::min(a, b)`.
+    /// The Kani harnesses R1/R2/R3 in `portcullis/src/kani.rs` mechanically
+    /// verify this isomorphism for all 9 input pairs.
+    pub fn meet(self, other: Self) -> Self {
+        std::cmp::min(self, other)
+    }
+
+    /// Join (least upper bound) = max.
+    ///
+    /// Isomorphic to `cap_join` in the Verus model (`portcullis-verified`):
+    ///   `cap_join(a, b) = if a >= b { a } else { b }` = `std::cmp::max(a, b)`.
+    pub fn join(self, other: Self) -> Self {
+        std::cmp::max(self, other)
+    }
+
+    /// Partial order: `a ≤ b` in the capability lattice.
+    ///
+    /// Isomorphic to `cap_leq(a, b) = (a <= b)` in the Verus model.
+    pub fn leq(self, other: Self) -> bool {
+        self <= other
+    }
+}
+
 impl std::fmt::Display for CapabilityLevel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -569,6 +596,55 @@ mod tests {
     fn test_capability_level_ordering() {
         assert!(CapabilityLevel::Never < CapabilityLevel::LowRisk);
         assert!(CapabilityLevel::LowRisk < CapabilityLevel::Always);
+    }
+
+    /// Refinement test: exhaustively verifies that `CapabilityLevel::meet/join/leq`
+    /// match the Verus model functions `cap_meet/cap_join/cap_leq` from
+    /// `portcullis-verified` for all 9 input pairs.
+    ///
+    /// This is the conventional-Rust companion to the Kani harnesses R1/R2/R3
+    /// in `portcullis/src/kani.rs`. Both verify the same isomorphism; the Kani
+    /// harnesses use bounded model checking, this test uses exhaustive enumeration.
+    ///
+    /// The Verus model defines:
+    ///   cap_meet(a, b) = if a <= b { a } else { b }   (= min)
+    ///   cap_join(a, b) = if a >= b { a } else { b }   (= max)
+    ///   cap_leq(a, b)  = (a <= b)
+    #[test]
+    fn test_capability_level_refinement_exhaustive() {
+        let all = [
+            CapabilityLevel::Never,
+            CapabilityLevel::LowRisk,
+            CapabilityLevel::Always,
+        ];
+
+        for &a in &all {
+            for &b in &all {
+                // R1: meet matches Verus cap_meet = min
+                let prod_meet = a.meet(b) as u8;
+                let model_meet = std::cmp::min(a as u8, b as u8);
+                assert_eq!(
+                    prod_meet, model_meet,
+                    "R1 violation: meet({a:?},{b:?}) as u8 = {prod_meet} != min = {model_meet}"
+                );
+
+                // R2: join matches Verus cap_join = max
+                let prod_join = a.join(b) as u8;
+                let model_join = std::cmp::max(a as u8, b as u8);
+                assert_eq!(
+                    prod_join, model_join,
+                    "R2 violation: join({a:?},{b:?}) as u8 = {prod_join} != max = {model_join}"
+                );
+
+                // R3: leq matches Verus cap_leq = (a as u8 <= b as u8)
+                let prod_leq = a.leq(b);
+                let model_leq = (a as u8) <= (b as u8);
+                assert_eq!(
+                    prod_leq, model_leq,
+                    "R3 violation: leq({a:?},{b:?}) = {prod_leq} != model = {model_leq}"
+                );
+            }
+        }
     }
 
     #[test]
