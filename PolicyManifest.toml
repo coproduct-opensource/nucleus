@@ -1,48 +1,67 @@
 # PolicyManifest.toml — Constitutional policy for this repository
 #
-# These are the rules AI agents must follow when working in this repo.
-# An agent can modify code, fix bugs, write docs. But it cannot:
+# This file IS the constitution. It defines what AI agents can and cannot
+# do when working in this repo. The Constitutional Gate (a GitHub App)
+# checks every PR against this manifest before allowing merge.
+#
+# An agent can modify code, fix bugs, write tests, update docs. But it cannot:
 #   - Grant itself new filesystem or network access
-#   - Raise its own spending limits
-#   - Weaken the test requirements for future changes
-#   - Modify this file without a human signature
+#   - Raise its own budget or resource limits
+#   - Weaken the proof requirements for future changes
+#   - Modify this file without a human co-signature
+#
+# The key invariant is MONOTONICITY: agents can only tighten policy, never
+# loosen it. A PR that adds "evil.example.com" to network_allow is blocked.
+# A PR that removes an allowed domain passes. This is enforced by 48 Kani
+# bounded model checking proofs in the constitutional kernel (ck-kernel).
+#
+# To install: https://github.com/apps/constitutional-gate
+# Live demo of a blocked PR: https://github.com/coproduct-opensource/nucleus/pull/268
+# Signed receipt example: https://constitutional-gate.fly.dev
 
 version = 1
 
+# ── What the agent is allowed to do ──────────────────────────────────────
 [capabilities]
-filesystem_read = ["/workspace"]
-filesystem_write = ["/workspace"]
-network_allow = ["crates.io", "github.com"]
-tools_allow = ["Read", "Edit", "Write", "Bash", "Grep", "Glob"]
-secret_classes = []
-max_parallel_tasks = 2
+filesystem_read = ["/workspace"]               # Can read workspace files
+filesystem_write = ["/workspace"]              # Can write workspace files
+network_allow = ["crates.io", "github.com"]    # Can reach these domains only
+tools_allow = ["Read", "Edit", "Write", "Bash", "Grep", "Glob"]  # Allowed CLI tools
+secret_classes = []                            # No secret access
+max_parallel_tasks = 2                         # At most 2 concurrent tasks
 
+# ── Observable I/O boundary ──────────────────────────────────────────────
+# Defines what leaves the sandbox. Must be a subset of capabilities.
 [io_surface]
-outbound_domains = ["crates.io", "github.com"]
-local_file_roots = ["/workspace"]
-env_vars_readable = ["CARGO_HOME", "RUSTUP_HOME", "PATH"]
-tool_namespaces = ["file", "shell"]
-repo_write_targets = ["coproduct-opensource/nucleus"]
+outbound_domains = ["crates.io", "github.com"] # HTTP(S) destinations
+local_file_roots = ["/workspace"]              # Filesystem scope
+env_vars_readable = ["CARGO_HOME", "RUSTUP_HOME", "PATH"]  # Env visibility
+tool_namespaces = ["file", "shell"]            # Tool categories
+repo_write_targets = ["coproduct-opensource/nucleus"]  # Git push targets
 
+# ── Resource budget per task ─────────────────────────────────────────────
 [budget_bounds]
-max_tokens = 200000
-max_wall_ms = 1800000
-max_cpu_ms = 900000
-max_memory_bytes = 4000000000
-max_network_calls = 50
-max_files_touched = 30
-max_dollar_spend_millicents = 500000
-max_patch_attempts = 3
+max_tokens = 200000            # LLM token budget
+max_wall_ms = 1800000          # 30 minutes wall clock
+max_cpu_ms = 900000            # 15 minutes CPU time
+max_memory_bytes = 4000000000  # 4 GB RAM
+max_network_calls = 50         # HTTP request cap
+max_files_touched = 30         # File modification cap
+max_dollar_spend_millicents = 500000  # $5.00 USD cap
+max_patch_attempts = 3         # Retry limit per work item
 
+# ── What CI checks must pass before merge ────────────────────────────────
+# Patch classes: config (Cargo.toml, CI), controller (src/), evaluator (tests/)
 [proof_requirements]
-config_patch = []
-controller_patch = ["build_pass", "test_pass"]
-evaluator_patch = ["build_pass"]
+config_patch = []                              # Config changes: no extra proofs
+controller_patch = ["build_pass", "test_pass"] # Source changes: must build + test
+evaluator_patch = ["build_pass"]               # Test changes: must build
 
+# ── Rules for amending this constitution ─────────────────────────────────
 [amendment_rules]
 may_modify = ["crates/", "examples/", "docs/", "benchmarks/", "README.md"]
 may_not_modify = ["PolicyManifest.toml", "LICENSE", "SECURITY.md"]
-require_monotone_capabilities = true
-require_monotone_io = true
-require_monotone_proofreq = true
-constitutional_human_signatures = 1
+require_monotone_capabilities = true   # Can only remove capabilities, not add
+require_monotone_io = true             # Can only shrink I/O surface, not widen
+require_monotone_proofreq = true       # Can only add proof requirements, not remove
+constitutional_human_signatures = 1    # Human must co-sign any policy amendment
