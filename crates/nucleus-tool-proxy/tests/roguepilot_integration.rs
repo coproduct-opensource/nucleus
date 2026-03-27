@@ -41,7 +41,6 @@ fn full_uninhabitable_policy() -> PermissionLattice {
     perms.capabilities.run_bash = CapabilityLevel::LowRisk;
     perms.capabilities.git_push = CapabilityLevel::LowRisk;
     perms.capabilities.create_pr = CapabilityLevel::LowRisk;
-    perms.uninhabitable_constraint = true;
     perms.normalize()
 }
 
@@ -295,7 +294,6 @@ fn test_full_rogue_pilot_chain() {
     policy.capabilities.read_files = CapabilityLevel::Always;
     policy.capabilities.web_fetch = CapabilityLevel::LowRisk;
     policy.capabilities.run_bash = CapabilityLevel::LowRisk;
-    policy.uninhabitable_constraint = true;
     policy.paths.blocked.insert(".env*".to_string());
     let policy = policy.normalize();
 

@@ -502,6 +502,20 @@ pub struct ExitReport {
     /// Estimated cost in USD.
     #[serde(default)]
     pub cost_usd: f64,
+
+    // ── Verified Exposure (written by tool proxy's McpMediator) ───────
+    /// Observed exposure legs during execution.
+    /// e.g., ["PrivateData", "UntrustedContent", "ExfilVector"]
+    #[serde(default)]
+    pub observed_exposure_labels: Vec<String>,
+
+    /// Observed risk tier: "safe", "low", "medium", "critical".
+    #[serde(default)]
+    pub observed_risk_tier: String,
+
+    /// Whether the uninhabitable state was reached during execution.
+    #[serde(default)]
+    pub uninhabitable_reached: bool,
 }
 
 /// Errors resolving policies.

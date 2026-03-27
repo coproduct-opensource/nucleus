@@ -7,7 +7,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
 use nucleus_spec::{CredentialsSpec, PodSpec as SpecPodSpec, PodSpecInner, PolicySpec};
-use portcullis::{BudgetLattice, PermissionLattice};
+use portcullis::PermissionLattice;
 use rust_decimal::Decimal;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -100,17 +100,10 @@ pub async fn execute(args: ShellArgs) -> Result<()> {
     };
 
     // Override budget if specified
-    let policy = if let Some(max_cost) = args.max_cost {
-        PermissionLattice {
-            budget: BudgetLattice {
-                max_cost_usd: Decimal::try_from(max_cost).unwrap_or(Decimal::from(5)),
-                ..policy.budget
-            },
-            ..policy
-        }
-    } else {
-        policy
-    };
+    let mut policy = policy;
+    if let Some(max_cost) = args.max_cost {
+        policy.budget.max_cost_usd = Decimal::try_from(max_cost).unwrap_or(Decimal::from(5));
+    }
     let policy = policy.normalize();
 
     let run_id = Uuid::new_v4();

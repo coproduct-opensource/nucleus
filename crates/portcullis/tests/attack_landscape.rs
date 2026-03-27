@@ -122,7 +122,6 @@ fn test_uninhabitable_constraint_adds_obligations() {
             ..Default::default()
         },
         obligations: Obligations::default(), // Start with no obligations
-        uninhabitable_constraint: true,
         ..Default::default()
     };
 
@@ -688,7 +687,7 @@ fn test_deserialization_always_enforces_uninhabitable() {
 
     // The constraint must ALWAYS be true after deserialization
     assert!(
-        perms.uninhabitable_constraint,
+        perms.is_uninhabitable_enforced(),
         "uninhabitable_constraint must be forced to true on deserialization, \
          regardless of JSON input"
     );

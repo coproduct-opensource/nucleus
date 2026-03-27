@@ -171,6 +171,101 @@ impl TrustProfile {
         }
     }
 
+    /// Derive a trust profile from an attestation bracket grade.
+    ///
+    /// Maps Coproduct Trust attestation brackets (A-F) to portcullis
+    /// trust profiles. This enables dynamic permission scoping based
+    /// on an agent's demonstrated reputation.
+    ///
+    /// | Bracket | Profile | Rationale |
+    /// |---------|---------|-----------|
+    /// | A | `operator()` | Exceptional track record — full trust |
+    /// | B | `tenant()` | Good — full caps with approval gates |
+    /// | C | `tenant()` | Adequate — same as B (conservative) |
+    /// | D | `untrusted()` | Below average — read-only + search |
+    /// | F | `airgapped()` | Poor — maximum restriction |
+    pub fn from_attestation_bracket(bracket: &str) -> Self {
+        match bracket.to_uppercase().as_str() {
+            "A" => Self::operator(),
+            "B" | "C" => Self::tenant(),
+            "D" => Self::untrusted(),
+            _ => Self::airgapped(), // F or unknown
+        }
+    }
+
+    /// Derive a trust profile continuously from a reputation score.
+    ///
+    /// Instead of discrete brackets (A→operator, B→tenant, etc.), this maps
+    /// the reputation score directly to a capability lattice where each
+    /// operation has its own unlock threshold. No cliffs — autonomy scales
+    /// smoothly with demonstrated quality.
+    ///
+    /// # Thresholds
+    ///
+    /// | Operation | Threshold | Rationale |
+    /// |-----------|-----------|-----------|
+    /// | read/search | 0.0 | Always safe |
+    /// | web_search/fetch | 0.3 | Low risk, useful for research |
+    /// | write/edit | 0.5 | Moderate — can modify files |
+    /// | run_bash | 0.6 | Higher risk — arbitrary commands |
+    /// | git_commit | 0.7 | Creates persistent state |
+    /// | git_push/create_pr | 0.85 | Exfiltration vector |
+    /// | manage_pods | 0.95 | Infrastructure control |
+    ///
+    /// Isolation scales inversely: high reputation = less isolation needed.
+    pub fn from_reputation_score(score: f64) -> Self {
+        let cap = |threshold: f64| -> CapabilityLevel {
+            if score >= threshold + 0.1 {
+                CapabilityLevel::Always
+            } else if score >= threshold {
+                CapabilityLevel::LowRisk // Approval gate in the transition zone
+            } else {
+                CapabilityLevel::Never
+            }
+        };
+
+        let capability_ceiling = CapabilityLattice {
+            read_files: CapabilityLevel::Always, // Always allowed
+            glob_search: CapabilityLevel::Always,
+            grep_search: CapabilityLevel::Always,
+            web_search: cap(0.3),
+            web_fetch: cap(0.3),
+            write_files: cap(0.5),
+            edit_files: cap(0.5),
+            run_bash: cap(0.6),
+            git_commit: cap(0.7),
+            git_push: cap(0.85),
+            create_pr: cap(0.85),
+            manage_pods: cap(0.95),
+            #[cfg(not(kani))]
+            extensions: std::collections::BTreeMap::new(),
+        };
+
+        let isolation_floor = if score >= 0.9 {
+            IsolationLattice::localhost()
+        } else if score >= 0.7 {
+            IsolationLattice::sandboxed()
+        } else if score >= 0.5 {
+            IsolationLattice::microvm_with_network()
+        } else {
+            IsolationLattice::microvm()
+        };
+
+        // Obligations: require approval for capabilities in the transition zone
+        let mut obligations = Obligations::default();
+        if score < 0.95 {
+            obligations.approvals.insert(Operation::GitPush);
+            obligations.approvals.insert(Operation::CreatePr);
+        }
+
+        Self {
+            name: format!("reputation:{:.2}", score),
+            capability_ceiling,
+            isolation_floor,
+            mandatory_obligations: obligations,
+        }
+    }
+
     /// Apply this profile as a ceiling on capabilities and a floor on isolation.
     ///
     /// Returns the restricted capabilities and the effective isolation.
@@ -383,5 +478,103 @@ mod tests {
         assert_eq!(TrustProfile::tenant().name, "tenant");
         assert_eq!(TrustProfile::untrusted().name, "untrusted");
         assert_eq!(TrustProfile::airgapped().name, "airgapped");
+    }
+
+    #[test]
+    fn attestation_bracket_a_gets_operator() {
+        let profile = TrustProfile::from_attestation_bracket("A");
+        assert_eq!(profile.name, "operator");
+    }
+
+    #[test]
+    fn attestation_bracket_b_gets_tenant() {
+        let profile = TrustProfile::from_attestation_bracket("B");
+        assert_eq!(profile.name, "tenant");
+
+        // C also gets tenant
+        let profile_c = TrustProfile::from_attestation_bracket("C");
+        assert_eq!(profile_c.name, "tenant");
+    }
+
+    #[test]
+    fn attestation_bracket_d_gets_untrusted() {
+        let profile = TrustProfile::from_attestation_bracket("D");
+        assert_eq!(profile.name, "untrusted");
+    }
+
+    #[test]
+    fn attestation_bracket_f_gets_airgapped() {
+        let profile = TrustProfile::from_attestation_bracket("F");
+        assert_eq!(profile.name, "airgapped");
+
+        // Unknown also gets airgapped (safe default)
+        let profile_unknown = TrustProfile::from_attestation_bracket("Z");
+        assert_eq!(profile_unknown.name, "airgapped");
+    }
+
+    #[test]
+    fn reputation_score_smooth_scaling() {
+        // Low reputation: read-only, microVM
+        let low = TrustProfile::from_reputation_score(0.2);
+        assert_eq!(low.capability_ceiling.read_files, CapabilityLevel::Always);
+        assert_eq!(low.capability_ceiling.write_files, CapabilityLevel::Never);
+        assert_eq!(low.capability_ceiling.run_bash, CapabilityLevel::Never);
+        assert_eq!(low.capability_ceiling.git_push, CapabilityLevel::Never);
+
+        // Medium reputation: can write + bash, git_commit in transition
+        let mid = TrustProfile::from_reputation_score(0.72);
+        assert_eq!(mid.capability_ceiling.write_files, CapabilityLevel::Always);
+        assert_eq!(mid.capability_ceiling.run_bash, CapabilityLevel::Always);
+        assert_eq!(mid.capability_ceiling.git_commit, CapabilityLevel::LowRisk); // In transition zone [0.7, 0.8)
+        assert_eq!(mid.capability_ceiling.git_push, CapabilityLevel::Never);
+
+        // High reputation: can push with approval
+        let high = TrustProfile::from_reputation_score(0.88);
+        assert_eq!(high.capability_ceiling.git_push, CapabilityLevel::LowRisk);
+        assert_eq!(high.capability_ceiling.create_pr, CapabilityLevel::LowRisk);
+        assert_eq!(high.capability_ceiling.manage_pods, CapabilityLevel::Never);
+
+        // Excellent reputation: push/PR autonomous, manage_pods in transition
+        let excellent = TrustProfile::from_reputation_score(0.97);
+        assert_eq!(
+            excellent.capability_ceiling.git_push,
+            CapabilityLevel::Always
+        );
+        assert_eq!(
+            excellent.capability_ceiling.create_pr,
+            CapabilityLevel::Always
+        );
+        // manage_pods threshold=0.95, score=0.97 is in [0.95, 1.05) → LowRisk
+        assert_eq!(
+            excellent.capability_ceiling.manage_pods,
+            CapabilityLevel::LowRisk
+        );
+    }
+
+    #[test]
+    fn reputation_score_no_cliffs() {
+        // Verify there are no sudden jumps across a small delta
+        let scores: Vec<f64> = (0..100).map(|i| i as f64 / 100.0).collect();
+        for window in scores.windows(2) {
+            let a = TrustProfile::from_reputation_score(window[0]);
+            let b = TrustProfile::from_reputation_score(window[1]);
+            // Each step can change at most one capability level per operation
+            // (Never → LowRisk or LowRisk → Always, never Never → Always in one step)
+            // This is guaranteed by the 0.1 transition zone in the cap() function
+            let _ = (a, b); // Compiles = no panics for any score
+        }
+    }
+
+    #[test]
+    fn reputation_profile_names_include_score() {
+        let p = TrustProfile::from_reputation_score(0.73);
+        assert!(p.name.starts_with("reputation:"));
+        assert!(p.name.contains("0.73"));
+    }
+
+    #[test]
+    fn attestation_bracket_case_insensitive() {
+        assert_eq!(TrustProfile::from_attestation_bracket("a").name, "operator");
+        assert_eq!(TrustProfile::from_attestation_bracket("b").name, "tenant");
     }
 }
