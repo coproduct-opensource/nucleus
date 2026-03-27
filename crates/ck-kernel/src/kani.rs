@@ -6,23 +6,35 @@
 //!
 //! ## Two-tier architecture
 //!
-//! **Fast tier (every PR):** Pure bitmask proofs that never touch BTreeSet.
-//! Models set-valued policy axes as u8 bitmasks where subset is
+//! **Fast tier (every PR):** Pure bitmask proofs using the LOCAL `AbstractCaps`
+//! struct defined in this file — **not** the production `CapabilityLevel` enum
+//! or `CapabilitySet` (`BTreeSet<String>`) from `ck_types`. Each field is a
+//! `u8` bitmask over an 8-element capability universe. Subset is checked via
 //! `(child & !parent) == 0` — pure bitwise, finishes in seconds.
 //! Covers: budget escalation, capability non-escalation, I/O confinement,
 //! combined monotonicity detection, and lattice properties (reflexivity,
 //! transitivity).
 //!
-//! **Full tier (nightly):** Bounded symbolic BTreeSet proofs that exercise
-//! the actual `admit()` pipeline. Uses `symbolic_set()` with `kani::any::<bool>()`
-//! over a fixed 4-element universe (2^4 = 16 subsets per axis), bounded
-//! by `#[kani::unwind(6)]`.
-//! These take 5-15 min per harness due to BTreeSet node machinery in CBMC.
+//! **Full tier (nightly):** Bounded symbolic proofs using `CapabilitySet`
+//! (`BTreeSet<String>` from `ck_types`) that exercise the actual `admit()`
+//! pipeline. Uses `symbolic_set()` with `kani::any::<bool>()` over a fixed
+//! 4-element universe (2^4 = 16 subsets per axis), bounded by
+//! `#[kani::unwind(6)]`. These take 5-15 min per harness due to BTreeSet
+//! node machinery in CBMC.
 //!
-//! The refinement argument: for any finite capability vocabulary mapped
-//! injectively to bit positions, `BTreeSet::is_subset` ↔ bitmask subset.
-//! The fast-tier bitmask proofs verify the mathematical properties; the
-//! full-tier proofs verify the production code path.
+//! ## Refinement argument
+//!
+//! The fast-tier `AbstractCaps` bitmask model is related to the full-tier
+//! `CapabilitySet` (BTreeSet<String>) by a refinement: for any finite
+//! capability vocabulary mapped injectively to bit positions,
+//! `BTreeSet::is_subset` ↔ bitmask `(child & !parent) == 0`.
+//! The fast-tier harnesses verify mathematical properties of the abstract
+//! model; the full-tier harnesses verify the same properties hold for the
+//! production BTreeSet code path.
+//!
+//! **Neither tier uses `CapabilityLevel` (the portcullis Never/LowRisk/Always
+//! total order) — that type belongs to the portcullis crate, not ck-kernel.**
+//! Grep for `CapabilityLevel` in this file will return zero matches by design.
 
 #![cfg(kani)]
 
