@@ -51,7 +51,7 @@ fn uninhabitable_bypass_via_deserialization_rejected() {
 
     // The constraint should ALWAYS be true after deserialization
     assert!(
-        perms.uninhabitable_constraint,
+        perms.is_uninhabitable_enforced(),
         " UninhabitableState constraint should be enforced regardless of JSON input"
     );
 }
@@ -76,7 +76,7 @@ fn uninhabitable_cannot_be_disabled_through_meet() {
 
     // Should enforce uninhabitable_state (since at least one parent enforces it)
     assert!(
-        result.uninhabitable_constraint,
+        result.is_uninhabitable_enforced(),
         "Meet with any enforcing parent should enforce uninhabitable_state"
     );
 

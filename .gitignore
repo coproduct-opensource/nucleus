@@ -45,3 +45,4 @@ LOOPS.md
 .verus/verus-arm64-macos/
 .verus/verus-x86-linux/
 .verus/*.zip
+.claude/worktrees/

@@ -8,7 +8,7 @@ description = "A quotient lattice for AI agent permissions that prevents the 'un
 repository = "https://github.com/coproduct-opensource/nucleus"
 documentation = "https://docs.rs/portcullis"
 readme = "README.md"
-keywords = ["ai", "security", "permissions", "agents", "lattice", "quotient"]
+keywords = ["ai", "security", "permissions", "agents", "lattice"]
 categories = ["authentication", "development-tools"]
 
 [features]

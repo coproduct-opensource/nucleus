@@ -1,7 +1,7 @@
 #![cfg(kani)]
 
 use crate::{
-    frame::Lattice,
+    frame::{Lattice, Nucleus, UninhabitableQuotient},
     guard::{operation_exposure, ExposureLabel, ExposureSet},
     isolation::{FileIsolation, IsolationLattice, NetworkIsolation, ProcessIsolation},
     BudgetLattice, CapabilityLattice, CapabilityLevel, CommandLattice, Obligations, Operation,
@@ -1032,4 +1032,126 @@ fn proof_airgapped_blocks_network_ops() {
 fn proof_isolation_at_least_reflexive() {
     let a = isolation_from_bytes(kani::any(), kani::any(), kani::any());
     assert!(a.at_least(&a), "at_least must be reflexive");
+}
+
+// ===========================================================================
+// N-series: Nucleus / kernel-operator regression harnesses
+// ===========================================================================
+//
+// These harnesses pin the mathematical structure of `UninhabitableQuotient`
+// as a *deflationary idempotent kernel operator*, NOT a frame-theoretic
+// nucleus (which would additionally require meet-preservation).
+//
+// The independent Verus prover in `portcullis-verified` formally disproves
+// meet-preservation via `proof_nucleus_not_meet_preserving`. The harness
+// below reproduces that concrete counterexample witness using the production
+// Rust types so that any future code change that accidentally "fixes" meet-
+// preservation (incorrectly, by masking the obligation union) is caught.
+
+/// **N1 — Nucleus is idempotent**: j(j(x)) = j(x) for all inputs.
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_nucleus_idempotent() {
+    let nucleus = UninhabitableQuotient::new();
+    let mut perm = base_permission();
+    perm.capabilities = arbitrary_caps();
+    perm.obligations = {
+        let (obs, _) = obligations_from_masks(kani::any::<u16>(), 0);
+        obs
+    };
+    let jx = nucleus.apply(&perm);
+    let jjx = nucleus.apply(&jx);
+    assert!(
+        jx.capabilities == jjx.capabilities && jx.obligations == jjx.obligations,
+        "Nucleus must be idempotent: j(j(x)) != j(x)"
+    );
+}
+
+/// **N2 — Nucleus is deflationary**: j(x) ≤ x in capabilities for all inputs.
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_nucleus_deflationary() {
+    let nucleus = UninhabitableQuotient::new();
+    let mut perm = base_permission();
+    perm.capabilities = arbitrary_caps();
+    let jx = nucleus.apply(&perm);
+    assert!(
+        jx.capabilities.leq(&perm.capabilities),
+        "Nucleus must be deflationary: j(x).capabilities > x.capabilities"
+    );
+}
+
+/// **N3 — Counterexample witness: nucleus does NOT preserve meets**.
+///
+/// This is the concrete witness from the Verus proof
+/// `proof_nucleus_not_meet_preserving` in `portcullis-verified`:
+///
+/// - `a`: full caps (uninhabitable-complete), empty obligations
+/// - `b`: no private-access caps (read_files/glob/grep=Never), empty obligations
+///
+/// `j(a ∧ b)` adds no obligations (meet caps lack private access → not
+/// uninhabitable).  `j(a) ∧ j(b)` retains `j(a)`'s exfil-approval obligations
+/// from the quotient meet's union step.
+///
+/// This harness asserts the KNOWN VIOLATION to prevent regression: if someone
+/// changes the code so that this passes, it signals a masked bug (the obligation
+/// union in the quotient meet would have been removed).
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_nucleus_counterexample_witness() {
+    let nucleus = UninhabitableQuotient::new();
+
+    // a: full caps, empty obligations (not pre-normalized — avoids obligation bleed)
+    let mut a = base_permission();
+    a.capabilities = CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::Always,
+        edit_files: CapabilityLevel::Always,
+        run_bash: CapabilityLevel::Always,
+        glob_search: CapabilityLevel::Always,
+        grep_search: CapabilityLevel::Always,
+        web_search: CapabilityLevel::Always,
+        web_fetch: CapabilityLevel::Always,
+        git_commit: CapabilityLevel::Always,
+        git_push: CapabilityLevel::Always,
+        create_pr: CapabilityLevel::Always,
+        manage_pods: CapabilityLevel::Always,
+        // extensions excluded via #[cfg(not(kani))]
+    };
+    a.obligations = Obligations::default(); // empty
+
+    // b: no private-access caps, empty obligations
+    let mut b = a.clone();
+    b.capabilities.read_files = CapabilityLevel::Never;
+    b.capabilities.glob_search = CapabilityLevel::Never;
+    b.capabilities.grep_search = CapabilityLevel::Never;
+    b.obligations = Obligations::default(); // empty
+
+    let ja = nucleus.apply(&a);
+    let jb = nucleus.apply(&b);
+
+    // j(a) must have added obligations (a is uninhabitable-complete)
+    assert!(
+        !ja.obligations.is_empty(),
+        "N3: j(a) must have uninhabitable-state obligations for full-caps input"
+    );
+    // j(b) must NOT have added obligations (b is not uninhabitable without private access)
+    assert!(
+        jb.obligations.is_empty(),
+        "N3: j(b) must not add obligations when private access is absent"
+    );
+
+    // j(a ∧ b): quotient meet of a and b — meet caps lose private access
+    let j_a_meet_b = nucleus.apply(&a.meet(&b));
+    // j(a) ∧ j(b): quotient meet of j(a) and j(b) — j(a)'s obligations persist
+    let ja_meet_jb = ja.meet(&jb);
+
+    // The counterexample: j(a∧b) obligations must differ from j(a)∧j(b) obligations.
+    // If this assertion fails, the quotient-meet obligation-union was removed —
+    // that would be a security regression (obligations would silently disappear).
+    assert!(
+        j_a_meet_b.obligations != ja_meet_jb.obligations,
+        "N3 regression: j(a∧b) unexpectedly equals j(a)∧j(b) — \
+         the quotient-meet obligation union may have been removed"
+    );
 }

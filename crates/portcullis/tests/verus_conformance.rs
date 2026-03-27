@@ -796,13 +796,13 @@ proptest! {
         requested_caps in arb_capability_lattice(),
     ) {
         let parent = perms_with_empty_obligations(parent_caps);
-        prop_assert!(parent.uninhabitable_constraint, "default should have uninhabitable_state on");
+        prop_assert!(parent.is_uninhabitable_enforced(), "default should have uninhabitable_state on");
 
         let requested = perms_with_empty_obligations(requested_caps);
         let result = parent.meet(&requested);
 
         prop_assert!(
-            result.uninhabitable_constraint,
+            result.is_uninhabitable_enforced(),
             "uninhabitable_state constraint must propagate through meet"
         );
     }
@@ -2152,7 +2152,6 @@ mod protocol_conformance {
         perms.capabilities.read_files = CapabilityLevel::Always;
         perms.capabilities.web_fetch = CapabilityLevel::LowRisk;
         perms.capabilities.run_bash = CapabilityLevel::LowRisk;
-        perms.uninhabitable_constraint = true;
         perms.normalize()
     }
 
@@ -2622,7 +2621,6 @@ mod enforcement_monotonicity {
         perms.capabilities.web_search = CapabilityLevel::LowRisk;
         perms.capabilities.git_push = CapabilityLevel::LowRisk;
         perms.capabilities.create_pr = CapabilityLevel::LowRisk;
-        perms.uninhabitable_constraint = true;
         perms.normalize()
     }
 
@@ -3633,7 +3631,6 @@ fn production_chain_ceiling(chain: &[PermissionLattice]) -> PermissionLattice {
 /// This matches the Verus `valid_perm(p)` requirement.
 fn perm_from_caps_enforcing(caps: CapabilityLattice) -> PermissionLattice {
     let mut p = perms_with_empty_obligations(caps);
-    p.uninhabitable_constraint = true;
     // Apply nucleus normalization: add uninhabitable_state obligations if needed
     let constraint = IncompatibilityConstraint::enforcing();
     let uninhabitable_state_obs = constraint.obligations_for(&p.capabilities);

@@ -6,7 +6,7 @@ use nucleus_client::sign_http_headers;
 use nucleus_spec::{
     CredentialsSpec, ImageSpec, PodSpec as SpecPodSpec, PodSpecInner, PolicySpec, VsockSpec,
 };
-use portcullis::{BudgetLattice, CapabilityLevel, PermissionLattice};
+use portcullis::{CapabilityLevel, PermissionLattice};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -258,17 +258,10 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
     };
 
     // Override budget if specified
-    let policy = if let Some(max_cost) = args.max_cost {
-        PermissionLattice {
-            budget: BudgetLattice {
-                max_cost_usd: Decimal::try_from(max_cost).unwrap_or(Decimal::from(5)),
-                ..policy.budget
-            },
-            ..policy
-        }
-    } else {
-        policy
-    };
+    let mut policy = policy;
+    if let Some(max_cost) = args.max_cost {
+        policy.budget.max_cost_usd = Decimal::try_from(max_cost).unwrap_or(Decimal::from(5));
+    }
     let policy = policy.normalize();
 
     if args.dry_run {
@@ -283,7 +276,7 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
         println!("  Timeout: {}s", args.timeout);
         println!(
             "   UninhabitableState constraint: {}",
-            policy.uninhabitable_constraint
+            policy.is_uninhabitable_enforced()
         );
         if let Some(ref resolved) = resolved {
             println!("  Node URL: {}", resolved.node_url);

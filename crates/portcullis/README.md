@@ -58,7 +58,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-portcullis = "0.1"
+portcullis = "1"
 ```
 
 Basic usage:
