@@ -516,6 +516,14 @@ pub struct ExitReport {
     /// Whether the uninhabitable state was reached during execution.
     #[serde(default)]
     pub uninhabitable_reached: bool,
+
+    // ── Sandbox Identity (written by tool proxy at startup) ───────────
+    /// Cryptographic identity of the sandbox established at tool-proxy startup.
+    /// One of: SPIFFE ID (tier 1/2) or pod ID (tier 3 orchestrator token).
+    /// Used by the nucleus-node to populate `ReceiptReport.sandbox_identity`
+    /// so the trust API can verify the signing identity matches the agent.
+    #[serde(default)]
+    pub sandbox_identity: Option<String>,
 }
 
 /// Errors resolving policies.

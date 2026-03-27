@@ -19,8 +19,10 @@
 //!   → return scoped PodSpec
 //! ```
 
+use hmac::{Hmac, Mac};
 use nucleus_spec::PodSpec;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use tracing::{debug, info, warn};
 
 /// Configuration for the trust gate.
@@ -32,6 +34,10 @@ pub struct TrustGateConfig {
     pub enforce: bool,
     /// Default bracket for agents without attestations
     pub default_bracket: String,
+    /// Shared secret for HMAC-SHA256 signing of outbound receipt POSTs.
+    /// Used to prove to the trust API that receipts originate from a nucleus-node
+    /// instance, not an arbitrary client. Loaded from NUCLEUS_NODE_AUTH_SECRET.
+    pub auth_secret: Vec<u8>,
 }
 
 impl Default for TrustGateConfig {
@@ -40,6 +46,7 @@ impl Default for TrustGateConfig {
             trust_api_url: String::new(),     // Disabled by default
             enforce: false,                   // Log-only by default
             default_bracket: "C".to_string(), // Adequate — tenant profile
+            auth_secret: Vec::new(),
         }
     }
 }
@@ -54,6 +61,9 @@ impl TrustGateConfig {
                 .unwrap_or(false),
             default_bracket: std::env::var("TRUST_DEFAULT_BRACKET")
                 .unwrap_or_else(|_| "C".to_string()),
+            auth_secret: std::env::var("NUCLEUS_NODE_AUTH_SECRET")
+                .unwrap_or_default()
+                .into_bytes(),
         }
     }
 
@@ -356,6 +366,59 @@ pub struct ReceiptReport {
     pub observed_risk_tier: String,
     /// Whether the uninhabitable state was reached during execution.
     pub uninhabitable_reached: bool,
+
+    // ── Sandbox identity (from SandboxProof established at tool-proxy startup) ─
+    /// SPIFFE ID or pod ID from the sandbox proof. This is the cryptographic
+    /// identity that was verified when the tool-proxy started inside the sandbox.
+    /// Included in the receipt body so the trust API can cross-check the signing
+    /// identity against the agent identity declared in agent_id.
+    pub sandbox_identity: Option<String>,
+}
+
+/// Compute an HMAC-SHA256 signature over `body` bytes using `secret`.
+///
+/// Returns the hex-encoded signature string suitable for use in
+/// `X-Nucleus-Signature` headers on outbound trust API calls.
+fn hmac_sign(secret: &[u8], body: &[u8]) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any key length");
+    mac.update(body);
+    hex::encode(mac.finalize().into_bytes())
+}
+
+/// Compute a weighted reputation score from actual observed sandbox behavior.
+///
+/// Replaces the prior hardcoded `0.85 / 0.3` binary constant with a formula
+/// that reads from the observed fields in `ReceiptReport`.
+///
+/// # Formula
+///
+/// ```text
+/// score = base(success) + risk_tier_delta(observed_risk_tier)
+///       - uninhabitable_penalty
+/// ```
+///
+/// Clamped to `[0.0, 1.0]`.
+pub fn compute_reputation_score(report: &ReceiptReport) -> f64 {
+    // Base score from execution outcome
+    let base: f64 = if report.success { 0.72 } else { 0.20 };
+
+    // Risk tier adjustment based on actual observed tool behavior
+    let risk_delta: f64 = match report.observed_risk_tier.as_str() {
+        "safe" => 0.18,
+        "low" => 0.08,
+        "medium" => 0.00,
+        "critical" => -0.25,
+        _ => 0.00, // unknown/empty → neutral
+    };
+
+    // Heavy penalty if the uninhabitable policy boundary was tripped
+    let uninhabitable_penalty: f64 = if report.uninhabitable_reached {
+        0.30
+    } else {
+        0.00
+    };
+
+    (base + risk_delta - uninhabitable_penalty).clamp(0.0, 1.0)
 }
 
 /// Report an execution receipt to the Coproduct Trust API.
@@ -363,6 +426,11 @@ pub struct ReceiptReport {
 /// This is the receipt-to-trust bridge: cryptographically attested execution
 /// results feed back into reputation scoring. Receipt-backed data is worth
 /// more than hook-backed data because it's third-party verified by the sandbox.
+///
+/// Both outbound POST requests are signed with an HMAC-SHA256 signature
+/// (derived from `config.auth_secret`) placed in the `X-Nucleus-Signature`
+/// header. The trust API must verify this header before accepting a score
+/// update, preventing unsigned receipt injection.
 ///
 /// Called from `get_receipt()` after the execution receipt is computed.
 /// Runs asynchronously — never blocks receipt delivery.
@@ -375,20 +443,35 @@ pub async fn report_receipt(
         return;
     }
 
+    let score = compute_reputation_score(report);
+
     let url = format!("{}/api/trust/session-complete", config.trust_api_url);
 
     let body = serde_json::json!({
         "session_id": report.session_id,
         "agent_id": report.agent_id,
         "success": report.success,
-        "score": if report.success { 0.85 } else { 0.3 },
+        "score": score,
         "had_issues": !report.success || report.uninhabitable_reached,
         "hook_event_name": "ExecutionReceipt",
+        // Sandbox identity from the cryptographic SandboxProof established at
+        // tool-proxy startup. Allows the trust API to cross-check the signing
+        // identity against the declared agent_id.
+        "sandbox_identity": report.sandbox_identity,
+        // Observed risk data forwarded so the trust API can audit the score
+        "observed_risk_tier": report.observed_risk_tier,
+        "uninhabitable_reached": report.uninhabitable_reached,
+        "tool_call_count": report.tool_call_count,
     });
+
+    let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
+    let signature = hmac_sign(&config.auth_secret, &body_bytes);
 
     match http_client
         .post(&url)
-        .json(&body)
+        .header("X-Nucleus-Signature", &signature)
+        .header("Content-Type", "application/json")
+        .body(body_bytes)
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await
@@ -398,10 +481,13 @@ pub async fn report_receipt(
                 agent = %report.agent_id,
                 session = %report.session_id,
                 success = report.success,
+                score = score,
                 cost = report.cost_usd,
                 tools = report.tool_call_count,
                 bracket = report.trust_bracket.as_deref().unwrap_or("-"),
                 attested = report.attested_execution,
+                risk_tier = %report.observed_risk_tier,
+                uninhabitable = report.uninhabitable_reached,
                 "Trust gate: execution receipt reported"
             );
         }
@@ -423,6 +509,7 @@ pub async fn report_receipt(
             "hook_event_name": "PostToolUse",
             "session_id": report.session_id,
             "agent_id": report.agent_id,
+            "sandbox_identity": report.sandbox_identity,
             "tool_name": "nucleus_execution",
             "tool_response": {
                 "success": report.success,
@@ -441,9 +528,14 @@ pub async fn report_receipt(
             }
         });
 
+        let ingest_bytes = serde_json::to_vec(&ingest_body).unwrap_or_default();
+        let ingest_sig = hmac_sign(&config.auth_secret, &ingest_bytes);
+
         let _ = http_client
             .post(&ingest_url)
-            .json(&ingest_body)
+            .header("X-Nucleus-Signature", &ingest_sig)
+            .header("Content-Type", "application/json")
+            .body(ingest_bytes)
             .timeout(std::time::Duration::from_secs(5))
             .send()
             .await;
@@ -454,12 +546,32 @@ pub async fn report_receipt(
 mod tests {
     use super::*;
 
+    fn sample_report(success: bool, risk_tier: &str, uninhabitable: bool) -> ReceiptReport {
+        ReceiptReport {
+            agent_id: "test-agent".to_string(),
+            session_id: "sess-001".to_string(),
+            success,
+            cost_usd: 0.01,
+            tool_call_count: 5,
+            workspace_hash: "abc123".to_string(),
+            audit_tail_hash: "def456".to_string(),
+            trust_bracket: Some("B".to_string()),
+            trust_profile: Some("tenant".to_string()),
+            attested_execution: true,
+            observed_exposure_labels: vec![],
+            observed_risk_tier: risk_tier.to_string(),
+            uninhabitable_reached: uninhabitable,
+            sandbox_identity: Some("spiffe://nucleus.local/ns/default/sa/tool-proxy".to_string()),
+        }
+    }
+
     #[test]
     fn test_config_from_env_defaults() {
         let config = TrustGateConfig::default();
         assert!(!config.is_enabled());
         assert!(!config.enforce);
         assert_eq!(config.default_bracket, "C");
+        assert!(config.auth_secret.is_empty());
     }
 
     #[test]
@@ -480,5 +592,126 @@ mod tests {
         assert_eq!(bracket_to_profile("D"), "untrusted");
         assert_eq!(bracket_to_profile("F"), "airgapped");
         assert_eq!(bracket_to_profile("Z"), "airgapped");
+    }
+
+    // ── compute_reputation_score tests ─────────────────────────────────────
+
+    #[test]
+    fn test_score_success_safe_is_high() {
+        let report = sample_report(true, "safe", false);
+        let score = compute_reputation_score(&report);
+        // success(0.72) + safe(+0.18) = 0.90
+        assert!((score - 0.90).abs() < 0.001, "expected ~0.90, got {score}");
+    }
+
+    #[test]
+    fn test_score_success_medium_is_moderate() {
+        let report = sample_report(true, "medium", false);
+        let score = compute_reputation_score(&report);
+        // success(0.72) + medium(0.0) = 0.72
+        assert!((score - 0.72).abs() < 0.001, "expected ~0.72, got {score}");
+    }
+
+    #[test]
+    fn test_score_failure_critical_is_low() {
+        let report = sample_report(false, "critical", false);
+        let score = compute_reputation_score(&report);
+        // failure(0.20) + critical(-0.25) = clamped to 0.0
+        assert!(score < 0.01, "expected ~0.0, got {score}");
+    }
+
+    #[test]
+    fn test_score_uninhabitable_penalty() {
+        let report = sample_report(true, "safe", true);
+        let score = compute_reputation_score(&report);
+        // success(0.72) + safe(+0.18) - uninhabitable(0.30) = 0.60
+        assert!((score - 0.60).abs() < 0.001, "expected ~0.60, got {score}");
+    }
+
+    #[test]
+    fn test_score_failure_uninhabitable_critical_clamps_to_zero() {
+        let report = sample_report(false, "critical", true);
+        let score = compute_reputation_score(&report);
+        // failure(0.20) - critical(0.25) - uninhabitable(0.30) = -0.35 → clamped 0.0
+        assert_eq!(score, 0.0);
+    }
+
+    #[test]
+    fn test_score_unknown_risk_tier_is_neutral() {
+        let report_unknown = sample_report(true, "unknown", false);
+        let report_medium = sample_report(true, "medium", false);
+        // Both should produce the same score since unknown → 0 delta like medium
+        assert!(
+            (compute_reputation_score(&report_unknown) - compute_reputation_score(&report_medium))
+                .abs()
+                < 0.001
+        );
+    }
+
+    #[test]
+    fn test_score_always_in_bounds() {
+        for (success, tier, uninhabitable) in [
+            (true, "safe", false),
+            (true, "critical", true),
+            (false, "safe", false),
+            (false, "critical", true),
+            (true, "low", true),
+        ] {
+            let report = sample_report(success, tier, uninhabitable);
+            let score = compute_reputation_score(&report);
+            assert!(
+                (0.0..=1.0).contains(&score),
+                "score out of bounds: {score} for success={success} tier={tier} uninhabitable={uninhabitable}"
+            );
+        }
+    }
+
+    // ── hmac_sign tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_hmac_sign_deterministic() {
+        let secret = b"test-secret-key";
+        let body = b"hello world";
+        let sig1 = hmac_sign(secret, body);
+        let sig2 = hmac_sign(secret, body);
+        assert_eq!(sig1, sig2);
+    }
+
+    #[test]
+    fn test_hmac_sign_different_bodies_produce_different_sigs() {
+        let secret = b"test-secret-key";
+        let sig1 = hmac_sign(secret, b"body-one");
+        let sig2 = hmac_sign(secret, b"body-two");
+        assert_ne!(sig1, sig2);
+    }
+
+    #[test]
+    fn test_hmac_sign_different_secrets_produce_different_sigs() {
+        let sig1 = hmac_sign(b"secret-a", b"same body");
+        let sig2 = hmac_sign(b"secret-b", b"same body");
+        assert_ne!(sig1, sig2);
+    }
+
+    #[test]
+    fn test_hmac_sign_output_is_valid_hex() {
+        let sig = hmac_sign(b"key", b"data");
+        // HMAC-SHA256 produces 32 bytes → 64 hex chars
+        assert_eq!(sig.len(), 64);
+        assert!(sig.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_hmac_sign_verifiable_with_hmac_crate() {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+
+        let secret = b"verify-secret";
+        let body = b"receipt-body-bytes";
+        let sig_hex = hmac_sign(secret, body);
+
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret).unwrap();
+        mac.update(body);
+        let expected = hex::encode(mac.finalize().into_bytes());
+        assert_eq!(sig_hex, expected);
     }
 }

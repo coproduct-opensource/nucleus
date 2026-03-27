@@ -86,6 +86,7 @@ pub fn build_exit_report(
     audit_tail_hash: String,
     audit_entry_count: u64,
     token_usage: Option<TokenUsage>,
+    sandbox_identity: Option<String>,
 ) -> ExitReport {
     let timestamp_unix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -107,6 +108,7 @@ pub fn build_exit_report(
         observed_exposure_labels: Vec::new(),
         observed_risk_tier: String::new(),
         uninhabitable_reached: false,
+        sandbox_identity,
     }
 }
 
@@ -177,6 +179,7 @@ mod tests {
             "audit_hash".to_string(),
             10,
             None,
+            None,
         );
         assert_eq!(report.workspace_hash, "workspace_hash");
         assert_eq!(report.audit_tail_hash, "audit_hash");
@@ -184,6 +187,20 @@ mod tests {
         assert!(report.timestamp_unix > 0);
         assert_eq!(report.input_tokens, 0);
         assert_eq!(report.cost_usd, 0.0);
+        assert_eq!(report.sandbox_identity, None);
+    }
+
+    #[test]
+    fn test_build_exit_report_with_sandbox_identity() {
+        let spiffe_id = "spiffe://nucleus.local/ns/default/sa/tool-proxy".to_string();
+        let report = build_exit_report(
+            "hash".to_string(),
+            "tail".to_string(),
+            5,
+            None,
+            Some(spiffe_id.clone()),
+        );
+        assert_eq!(report.sandbox_identity, Some(spiffe_id));
     }
 
     #[test]
@@ -194,7 +211,8 @@ mod tests {
             cache_read_tokens: 200,
             cost_usd: 0.42,
         };
-        let report = build_exit_report("hash".to_string(), "tail".to_string(), 5, Some(usage));
+        let report =
+            build_exit_report("hash".to_string(), "tail".to_string(), 5, Some(usage), None);
         assert_eq!(report.input_tokens, 1500);
         assert_eq!(report.output_tokens, 500);
         assert_eq!(report.cache_read_tokens, 200);

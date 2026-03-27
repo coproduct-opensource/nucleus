@@ -2822,6 +2822,21 @@ impl NodeService for GrpcService {
                 report.observed_risk_tier.clone()
             },
             uninhabitable_reached: report.uninhabitable_reached,
+            // Prefer the sandbox_identity written into the exit report by the tool-proxy
+            // at startup (the actual SandboxProof identity). Fall back to the pod's
+            // spiffe.io/identity label which was set at pod-creation time and may be
+            // empty for tier-3 (OrchestratorToken) sandboxes.
+            sandbox_identity: report
+                .sandbox_identity
+                .clone()
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    if spiffe_id.is_empty() {
+                        None
+                    } else {
+                        Some(spiffe_id.clone())
+                    }
+                }),
         };
         let trust_config = self.state.trust_gate.clone();
         let http_client = self.state.http_client.clone();

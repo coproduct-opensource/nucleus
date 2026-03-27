@@ -1222,6 +1222,10 @@ async fn main() -> Result<(), ApiError> {
     let exit_audit = state.audit.clone();
     let exit_work_dir = spec.spec.work_dir.clone();
     let exit_exposure = state.exposure_guard.clone();
+    // Capture the sandbox proof identity so the exit report carries it.
+    // The nucleus-node reads this to populate ReceiptReport.sandbox_identity,
+    // which is then included in the signed receipt POST to the trust API.
+    let exit_sandbox_identity = Some(state.sandbox_proof.primary_identity());
 
     let app = app
         .with_state(state.clone())
@@ -1229,7 +1233,13 @@ async fn main() -> Result<(), ApiError> {
 
     if let Some(vsock) = resolve_vsock(&args, &spec)? {
         serve_vsock(app, vsock, args.announce_path).await?;
-        write_exit_report(&exit_audit, &exit_work_dir, &exit_exposure).await;
+        write_exit_report(
+            &exit_audit,
+            &exit_work_dir,
+            &exit_exposure,
+            exit_sandbox_identity,
+        )
+        .await;
         return Ok(());
     }
 
@@ -1271,7 +1281,13 @@ async fn main() -> Result<(), ApiError> {
             .await?;
     }
 
-    write_exit_report(&exit_audit, &exit_work_dir, &exit_exposure).await;
+    write_exit_report(
+        &exit_audit,
+        &exit_work_dir,
+        &exit_exposure,
+        exit_sandbox_identity,
+    )
+    .await;
 
     Ok(())
 }
@@ -1281,6 +1297,7 @@ async fn write_exit_report(
     audit: &AuditLog,
     work_dir_path: &Path,
     exposure_guard: &std::sync::RwLock<Option<Arc<portcullis::GradedExposureGuard>>>,
+    sandbox_identity: Option<String>,
 ) {
     let workspace_hash = match exit_report::hash_workspace(work_dir_path).await {
         Ok(h) => h,
@@ -1291,7 +1308,8 @@ async fn write_exit_report(
     };
 
     let (tail_hash, count) = audit.tail_hash_and_count();
-    let mut report = exit_report::build_exit_report(workspace_hash, tail_hash, count, None);
+    let mut report =
+        exit_report::build_exit_report(workspace_hash, tail_hash, count, None, sandbox_identity);
 
     // Extract verified exposure from the session guard
     if let Ok(guard_opt) = exposure_guard.read() {

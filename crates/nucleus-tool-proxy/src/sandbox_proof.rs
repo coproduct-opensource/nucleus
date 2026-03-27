@@ -56,6 +56,18 @@ impl SandboxProof {
             SandboxProof::OrchestratorToken { .. } => 3,
         }
     }
+
+    /// Primary identity string for inclusion in exit reports and receipts.
+    ///
+    /// Returns the SPIFFE ID for tier 1/2 proofs, or the pod ID (prefixed
+    /// with "pod:") for tier 3 orchestrator tokens.
+    pub fn primary_identity(&self) -> String {
+        match self {
+            SandboxProof::Attested { spiffe_id, .. } => spiffe_id.clone(),
+            SandboxProof::SpiffeIdentity { spiffe_id } => spiffe_id.clone(),
+            SandboxProof::OrchestratorToken { pod_id, .. } => format!("pod:{pod_id}"),
+        }
+    }
 }
 
 impl std::fmt::Display for SandboxProof {
@@ -471,6 +483,31 @@ mod tests {
         let secret = b"test-secret";
         let result = try_orchestrator_token("", secret);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_primary_identity() {
+        let attested = SandboxProof::Attested {
+            spiffe_id: "spiffe://example.local/wl/pod-1".into(),
+            kernel_hash: "aaa".into(),
+            rootfs_hash: "bbb".into(),
+            config_hash: "ccc".into(),
+        };
+        assert_eq!(
+            attested.primary_identity(),
+            "spiffe://example.local/wl/pod-1"
+        );
+
+        let spiffe = SandboxProof::SpiffeIdentity {
+            spiffe_id: "spiffe://example.local/wl/pod-2".into(),
+        };
+        assert_eq!(spiffe.primary_identity(), "spiffe://example.local/wl/pod-2");
+
+        let token = SandboxProof::OrchestratorToken {
+            pod_id: "pod-abc-123".into(),
+            spec_hash: "deadbeef".into(),
+        };
+        assert_eq!(token.primary_identity(), "pod:pod-abc-123");
     }
 
     #[test]
