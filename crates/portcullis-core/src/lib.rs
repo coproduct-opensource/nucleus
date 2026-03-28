@@ -15,15 +15,14 @@
 //!
 //! ## Relationship to the production `portcullis` crate
 //!
-//! The production `portcullis` crate defines its own `CapabilityLevel` with
-//! serde support, and depends on this crate. A compile-time assertion in
-//! `portcullis::capability` checks that the two enums have identical size,
-//! alignment, and discriminant values. If someone changes either enum without
-//! updating the other, the build fails.
+//! The production `portcullis` crate re-exports `CapabilityLevel` from this
+//! crate — there is ONE type, one source of truth, zero translation layers.
+//! The verified type IS the production type.
 //!
-//! They are separate types (not re-exported) because `portcullis-core` is
-//! intentionally zero-dependency for Aeneas translation, while the production
-//! `CapabilityLevel` needs `#[derive(Serialize, Deserialize)]`.
+//! Serde support is gated behind the optional `serde` feature flag.
+//! When `portcullis` depends on `portcullis-core` with `features = ["serde"]`,
+//! the type gains `Serialize`/`Deserialize`. Without the feature, the crate
+//! remains dependency-free for Aeneas translation.
 //!
 //! ## Aeneas pipeline
 //!
@@ -63,6 +62,8 @@
 /// - `Always` is the top element (⊤)
 /// - `meet` = min, `join` = max
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[repr(u8)]
 pub enum CapabilityLevel {
     /// Never allow — bottom element (⊥)
@@ -72,6 +73,16 @@ pub enum CapabilityLevel {
     LowRisk = 1,
     /// Always auto-approve — top element (⊤)
     Always = 2,
+}
+
+impl std::fmt::Display for CapabilityLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CapabilityLevel::Never => write!(f, "never"),
+            CapabilityLevel::LowRisk => write!(f, "low_risk"),
+            CapabilityLevel::Always => write!(f, "always"),
+        }
+    }
 }
 
 impl CapabilityLevel {

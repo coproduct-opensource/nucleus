@@ -36,7 +36,7 @@ remote-audit = ["dep:aws-sdk-s3", "dep:aws-config", "dep:tokio", "serde"]
 testing = []
 
 [dependencies]
-portcullis-core = { path = "../portcullis-core" }
+portcullis-core = { path = "../portcullis-core", features = ["serde"] }
 chrono = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }

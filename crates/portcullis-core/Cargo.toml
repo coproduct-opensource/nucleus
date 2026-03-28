@@ -6,18 +6,21 @@ license = "MIT"
 description = "Core capability lattice types — dependency-free for Aeneas verification"
 repository = "https://github.com/coproduct-opensource/nucleus"
 
-# This crate is intentionally dependency-free. The types here are the
-# verification target: Aeneas (Rust MIR → Lean 4) translates this crate
+# This crate is the single source of truth for CapabilityLevel.
+# The verification target: Aeneas (Rust MIR → Lean 4) translates this crate
 # into pure functional Lean code, where we prove HeytingAlgebra properties
 # against the same Mathlib instance used by portcullis-verified.
 #
-# DO NOT add dependencies. External crate types (serde, BTreeMap, etc.)
-# are not supported by Aeneas's Lean backend. If you need serde, use
-# the full `portcullis` crate which defines its own CapabilityLevel with
-# serde support and a compile-time assertion that the discriminants match.
+# By default this crate is dependency-free for Aeneas translation.
+# The optional `serde` feature enables serialization support when used
+# by the production `portcullis` crate (Aeneas ignores feature flags).
+
+[features]
+default = []
+serde = ["dep:serde"]
 
 [dependencies]
-# None — intentionally dependency-free for Aeneas translation
+serde = { version = "1", features = ["derive"], optional = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "allow", check-cfg = ['cfg(kani)'] }

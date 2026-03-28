@@ -7,50 +7,9 @@ use serde::{Deserialize, Serialize};
 
 /// Tool permission levels in lattice ordering.
 ///
-/// The ordering is: `Never < LowRisk < Always`
-///
-/// - `Never`: Never allow
-/// - `LowRisk`: Auto-approve for low-risk operations
-/// - `Always`: Always auto-approve
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
-pub enum CapabilityLevel {
-    /// Never allow
-    #[default]
-    Never = 0,
-    /// Auto-approve for low-risk operations
-    LowRisk = 1,
-    /// Always auto-approve
-    Always = 2,
-}
-
-// Compile-time correspondence check: portcullis-core CapabilityLevel must
-// match production CapabilityLevel (catches drift between verified and production).
-const _: () = {
-    assert!(
-        std::mem::size_of::<CapabilityLevel>()
-            == std::mem::size_of::<portcullis_core::CapabilityLevel>()
-    );
-    assert!(
-        std::mem::align_of::<CapabilityLevel>()
-            == std::mem::align_of::<portcullis_core::CapabilityLevel>()
-    );
-    // Discriminant correspondence: Never=0, LowRisk=1, Always=2
-    assert!(CapabilityLevel::Never as u8 == portcullis_core::CapabilityLevel::Never as u8);
-    assert!(CapabilityLevel::LowRisk as u8 == portcullis_core::CapabilityLevel::LowRisk as u8);
-    assert!(CapabilityLevel::Always as u8 == portcullis_core::CapabilityLevel::Always as u8);
-};
-
-impl std::fmt::Display for CapabilityLevel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CapabilityLevel::Never => write!(f, "never"),
-            CapabilityLevel::LowRisk => write!(f, "low_risk"),
-            CapabilityLevel::Always => write!(f, "always"),
-        }
-    }
-}
+/// Single source of truth: re-exported from `portcullis-core`.
+/// The verified type IS the production type — one type, zero translation layers.
+pub use portcullis_core::CapabilityLevel;
 
 /// Operations that can be gated by approval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
