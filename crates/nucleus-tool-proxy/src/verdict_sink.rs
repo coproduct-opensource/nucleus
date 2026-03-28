@@ -1,8 +1,10 @@
 //! Concrete VerdictSink for the tool-proxy process.
 //!
 //! Bridges the portcullis `VerdictSink` trait to the tool-proxy's existing
-//! lockdown flags and telemetry infrastructure. PR 1 covers lockdown
-//! enforcement and telemetry emission; audit log integration follows in PR 2.
+//! lockdown flags and telemetry infrastructure. Each verdict becomes a
+//! `tracing::info_span!` with duration and trace context propagation.
+//! When the `otel` feature is active, spans flow to OTLP backends as
+//! proper OpenTelemetry spans with parent-child relationships.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -53,7 +55,7 @@ impl ToolProxyVerdictSink {
         self.file_lockdown.load(Ordering::Acquire) || self.stream_lockdown.load(Ordering::Acquire)
     }
 
-    /// Map Operation to the short string names used by emit_verdict / audit log.
+    /// Map Operation to the short string names used by the audit log.
     fn operation_name(op: Operation) -> &'static str {
         match op {
             Operation::ReadFiles => "read",
@@ -71,21 +73,38 @@ impl ToolProxyVerdictSink {
         }
     }
 
-    /// Map a VerdictOutcome to the result string expected by emit_verdict.
-    fn outcome_to_result(outcome: &VerdictOutcome) -> String {
-        match outcome {
-            VerdictOutcome::Allow => "ok".to_string(),
-            VerdictOutcome::Deny { reason } => format!("denied:{reason}"),
-            VerdictOutcome::Error { error } => format!("denied:{error}"),
+    /// Extract the agent identity string for telemetry.
+    fn actor_str(actor: &ActorIdentity) -> &str {
+        match actor {
+            ActorIdentity::Authenticated { spiffe_id } => spiffe_id.as_str(),
+            ActorIdentity::StdioGuest => "stdio-guest",
+            ActorIdentity::Unknown => "unknown",
         }
     }
 
-    /// Extract the agent identity string for telemetry, if available.
-    fn actor_identity(actor: &ActorIdentity) -> Option<&str> {
-        match actor {
-            ActorIdentity::Authenticated { spiffe_id } => Some(spiffe_id.as_str()),
-            ActorIdentity::StdioGuest => Some("stdio-guest"),
-            ActorIdentity::Unknown => None,
+    /// Read current exposure state from the guard.
+    fn read_exposure(&self) -> telemetry::VerdictExposure {
+        if let Ok(guard_opt) = self.exposure_guard.read() {
+            if let Some(ref guard) = *guard_opt {
+                let exp = guard.exposure();
+                telemetry::VerdictExposure {
+                    private_data: exp.contains(portcullis::guard::ExposureLabel::PrivateData),
+                    untrusted_content: exp
+                        .contains(portcullis::guard::ExposureLabel::UntrustedContent),
+                    exfil_vector: exp.contains(portcullis::guard::ExposureLabel::ExfilVector),
+                    is_uninhabitable: exp.is_uninhabitable(),
+                }
+            } else {
+                telemetry::VerdictExposure::default()
+            }
+        } else {
+            tracing::error!("exposure_guard RwLock poisoned — reporting uninhabitable");
+            telemetry::VerdictExposure {
+                private_data: true,
+                untrusted_content: true,
+                exfil_vector: true,
+                is_uninhabitable: true,
+            }
         }
     }
 }
@@ -93,37 +112,69 @@ impl ToolProxyVerdictSink {
 impl VerdictSink for ToolProxyVerdictSink {
     fn record(&self, ctx: VerdictContext) -> Result<(), SinkError> {
         // 1. Check lockdown (may have been activated between preflight and now)
-        if self.is_locked() {
-            // Still emit telemetry so the late-lockdown event is visible
-            telemetry::emit_verdict(
-                Self::operation_name(ctx.operation),
-                &ctx.subject,
-                "denied:LOCKDOWN ACTIVE",
-                &self.capabilities,
-                &self.exposure_guard,
-                true, // lockdown_active
-                &self.policy_checksum,
-                Self::actor_identity(&ctx.actor),
-                &self.session_id,
-            );
+        let lockdown_active = self.is_locked();
+
+        let (verdict_str, deny_reason) = if lockdown_active {
+            ("deny", "LOCKDOWN ACTIVE".to_string())
+        } else {
+            match &ctx.outcome {
+                VerdictOutcome::Allow => ("allow", String::new()),
+                VerdictOutcome::Deny { reason } => ("deny", reason.clone()),
+                VerdictOutcome::Error { error } => ("error", error.clone()),
+            }
+        };
+
+        let caps = telemetry::VerdictCapabilities::from(&self.capabilities);
+        let exposure = self.read_exposure();
+        let actor = Self::actor_str(&ctx.actor);
+        let operation = Self::operation_name(ctx.operation);
+        let is_ok = matches!(ctx.outcome, VerdictOutcome::Allow) && !lockdown_active;
+
+        // 2. Emit a proper span (not an event) so it has duration and
+        //    propagates trace context.  When the `otel` layer is active,
+        //    `tracing-opentelemetry` exports this as an OTLP span with
+        //    parent-child relationships.
+        let span = tracing::info_span!(
+            target: "nucleus_permission",
+            "tool_call",
+            otel.kind = "INTERNAL",
+            otel.status_code = if is_ok { "OK" } else { "ERROR" },
+            nucleus.verdict = verdict_str,
+            nucleus.operation = operation,
+            nucleus.subject = %ctx.subject,
+            nucleus.deny_reason = %deny_reason,
+            nucleus.actor = actor,
+            // All 12 capability dimensions
+            cap.read_files = caps.read_files,
+            cap.write_files = caps.write_files,
+            cap.edit_files = caps.edit_files,
+            cap.run_bash = caps.run_bash,
+            cap.glob_search = caps.glob_search,
+            cap.grep_search = caps.grep_search,
+            cap.web_fetch = caps.web_fetch,
+            cap.web_search = caps.web_search,
+            cap.git_commit = caps.git_commit,
+            cap.git_push = caps.git_push,
+            cap.create_pr = caps.create_pr,
+            cap.manage_pods = caps.manage_pods,
+            // Exposure state
+            exposure.private_data = exposure.private_data,
+            exposure.untrusted_content = exposure.untrusted_content,
+            exposure.exfil_vector = exposure.exfil_vector,
+            exposure.uninhabitable = exposure.is_uninhabitable,
+            // Context
+            nucleus.lockdown_active = lockdown_active,
+            nucleus.lattice_checksum = %self.policy_checksum,
+            nucleus.session_id = %self.session_id,
+        );
+        let _enter = span.enter();
+        // Span duration = time spent in record(), giving it meaningful timing.
+
+        // 3. Return lockdown error after emitting telemetry so the event is visible.
+        if lockdown_active {
             return Err(SinkError::Locked);
         }
 
-        // 2. Emit telemetry for the actual outcome
-        let result_str = Self::outcome_to_result(&ctx.outcome);
-        telemetry::emit_verdict(
-            Self::operation_name(ctx.operation),
-            &ctx.subject,
-            &result_str,
-            &self.capabilities,
-            &self.exposure_guard,
-            false, // not locked
-            &self.policy_checksum,
-            Self::actor_identity(&ctx.actor),
-            &self.session_id,
-        );
-
-        // 3. Audit log integration deferred to PR 2 (requires async + AuditLog)
         Ok(())
     }
 
@@ -266,40 +317,20 @@ mod tests {
     }
 
     #[test]
-    fn outcome_to_result_mapping() {
+    fn actor_str_extraction() {
         assert_eq!(
-            ToolProxyVerdictSink::outcome_to_result(&VerdictOutcome::Allow),
-            "ok"
-        );
-        assert_eq!(
-            ToolProxyVerdictSink::outcome_to_result(&VerdictOutcome::Deny {
-                reason: "lockdown".into()
-            }),
-            "denied:lockdown"
-        );
-        assert_eq!(
-            ToolProxyVerdictSink::outcome_to_result(&VerdictOutcome::Error {
-                error: "I/O timeout".into()
-            }),
-            "denied:I/O timeout"
-        );
-    }
-
-    #[test]
-    fn actor_identity_extraction() {
-        assert_eq!(
-            ToolProxyVerdictSink::actor_identity(&ActorIdentity::Authenticated {
+            ToolProxyVerdictSink::actor_str(&ActorIdentity::Authenticated {
                 spiffe_id: "spiffe://test".into()
             }),
-            Some("spiffe://test")
+            "spiffe://test"
         );
         assert_eq!(
-            ToolProxyVerdictSink::actor_identity(&ActorIdentity::StdioGuest),
-            Some("stdio-guest")
+            ToolProxyVerdictSink::actor_str(&ActorIdentity::StdioGuest),
+            "stdio-guest"
         );
         assert_eq!(
-            ToolProxyVerdictSink::actor_identity(&ActorIdentity::Unknown),
-            None
+            ToolProxyVerdictSink::actor_str(&ActorIdentity::Unknown),
+            "unknown"
         );
     }
 }
