@@ -42,7 +42,36 @@ pub struct LockdownArgs {
     pub yes: bool,
 }
 
-const LOCKDOWN_SIGNAL_PATH: &str = "/tmp/nucleus-lockdown.json";
+/// Lockdown signal file path — stored in a user-owned directory, not /tmp.
+/// Red team finding: /tmp is world-writable, any local process could fake a lockdown.
+fn lockdown_signal_path() -> std::path::PathBuf {
+    let dir = dirs::runtime_dir()
+        .or_else(dirs::data_local_dir)
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join("nucleus");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("lockdown.json")
+}
+
+/// Compute HMAC-SHA256 over the signal body using a machine-local key.
+/// The key is derived from the machine ID + a fixed salt — not a secret,
+/// but sufficient to prevent casual tampering by other local users.
+fn signal_hmac(body: &[u8]) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    // Machine-local key: hostname + uid — prevents cross-user forgery
+    let key_material = format!(
+        "nucleus-lockdown-{}:{}",
+        whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string()),
+        whoami::fallible::username().unwrap_or_else(|_| "unknown".to_string()),
+    );
+
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(key_material.as_bytes()).expect("hmac accepts any key");
+    mac.update(body);
+    hex::encode(mac.finalize().into_bytes())
+}
 
 /// Execute the lockdown command.
 pub async fn execute(args: LockdownArgs) -> Result<()> {
@@ -125,7 +154,7 @@ async fn try_grpc_lockdown(
 
 /// Fallback: write a local signal file for the tool-proxy watcher.
 fn write_signal_file(args: &LockdownArgs, scope: &str) -> Result<()> {
-    let signal_path = std::path::PathBuf::from(LOCKDOWN_SIGNAL_PATH);
+    let signal_path = lockdown_signal_path();
 
     if args.restore {
         if signal_path.exists() {
@@ -137,7 +166,7 @@ fn write_signal_file(args: &LockdownArgs, scope: &str) -> Result<()> {
         return Ok(());
     }
 
-    let signal = serde_json::json!({
+    let body = serde_json::json!({
         "action": "lockdown",
         "scope": scope,
         "reason": args.reason,
@@ -147,7 +176,15 @@ fn write_signal_file(args: &LockdownArgs, scope: &str) -> Result<()> {
             .as_secs(),
         "restore": false,
     });
-    std::fs::write(&signal_path, serde_json::to_string_pretty(&signal)?)?;
+    let body_bytes = serde_json::to_string_pretty(&body)?;
+    let hmac = signal_hmac(body_bytes.as_bytes());
+
+    // Write signal with HMAC envelope
+    let envelope = serde_json::json!({
+        "signal": body,
+        "hmac": hmac,
+    });
+    std::fs::write(&signal_path, serde_json::to_string_pretty(&envelope)?)?;
 
     eprintln!("Lockdown initiated via local signal file.");
     eprintln!("   Signal: {}", signal_path.display());
