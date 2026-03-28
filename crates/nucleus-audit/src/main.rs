@@ -105,6 +105,8 @@ enum Command {
 enum ExportFormat {
     Json,
     Jsonl,
+    /// SOC 2 / EU AI Act compliance report — maps audit entries to control references.
+    Soc2,
 }
 
 #[derive(Debug, Clone, clap::ValueEnum)]
@@ -699,9 +701,90 @@ fn export_log(path: &Path, format: &ExportFormat) -> Result<(), AuditError> {
                 println!("{}", serde_json::to_string(entry).unwrap());
             }
         }
+        ExportFormat::Soc2 => {
+            export_soc2_report(&entries);
+        }
     }
 
     Ok(())
+}
+
+/// Map audit entries to SOC 2 / EU AI Act compliance controls.
+fn export_soc2_report(entries: &[serde_json::Value]) {
+    let mut controls: std::collections::BTreeMap<&str, Vec<&serde_json::Value>> =
+        std::collections::BTreeMap::new();
+
+    for entry in entries {
+        let event_type = entry
+            .get("event")
+            .and_then(|e| {
+                e.as_str()
+                    .or_else(|| e.get("type").and_then(|t| t.as_str()))
+            })
+            .unwrap_or("unknown");
+
+        // Map event types to SOC 2 controls and EU AI Act articles
+        let control_refs = match event_type {
+            s if s.contains("Deny") || s.contains("deny") || s.contains("Blocked") => {
+                vec![
+                    "CC6.1 (Logical Access)",
+                    "EU-AI-Act Art.9 (Risk Management)",
+                ]
+            }
+            s if s.contains("Allow") || s.contains("allow") => {
+                vec![
+                    "CC6.3 (Access Authorization)",
+                    "EU-AI-Act Art.14 (Human Oversight)",
+                ]
+            }
+            s if s.contains("Uninhabitable") || s.contains("uninhabitable") => {
+                vec![
+                    "CC6.1 (Logical Access)",
+                    "CC6.6 (System Operations)",
+                    "EU-AI-Act Art.9 (Risk Management)",
+                    "EU-AI-Act Art.15 (Accuracy/Robustness)",
+                ]
+            }
+            s if s.contains("Approval") || s.contains("approval") => {
+                vec![
+                    "CC6.2 (Access Review)",
+                    "EU-AI-Act Art.14 (Human Oversight)",
+                ]
+            }
+            s if s.contains("Escalat") || s.contains("escalat") => {
+                vec![
+                    "CC6.1 (Logical Access)",
+                    "CC7.2 (Anomaly Detection)",
+                    "EU-AI-Act Art.9 (Risk Management)",
+                ]
+            }
+            _ => vec!["CC6.3 (Access Authorization)"],
+        };
+
+        for ctrl in control_refs {
+            controls.entry(ctrl).or_default().push(entry);
+        }
+    }
+
+    let report = serde_json::json!({
+        "report_type": "SOC 2 / EU AI Act Compliance Evidence",
+        "generated_at": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        "generator": "nucleus-audit",
+        "total_entries": entries.len(),
+        "controls": controls.keys().collect::<Vec<_>>(),
+        "evidence_by_control": controls.iter().map(|(ctrl, events)| {
+            serde_json::json!({
+                "control": ctrl,
+                "event_count": events.len(),
+                "sample_events": events.iter().take(3).collect::<Vec<_>>(),
+            })
+        }).collect::<Vec<_>>(),
+    });
+
+    println!("{}", serde_json::to_string_pretty(&report).unwrap());
 }
 
 // --- crypto helpers ---
