@@ -20,9 +20,14 @@ path = "src/main.rs"
 portcullis = { path = "../portcullis", features = ["spec"] }
 nucleus-spec = { path = "../nucleus-spec" }
 nucleus-client = { path = "../nucleus-client" }
+nucleus-proto = { path = "../nucleus-proto" }
+
+# gRPC client
+tonic = { workspace = true }
 
 # CLI
 clap = { workspace = true }
+whoami = "1"
 
 # Async runtime
 tokio = { workspace = true, features = ["full", "process"] }

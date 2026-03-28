@@ -6,25 +6,18 @@
 //!
 //! # How it works
 //!
-//! 1. Connects to nucleus-node via gRPC
-//! 2. Sends a LockdownRequest with the target scope (all, specific pod, or label selector)
-//! 3. Node broadcasts a lattice meet(current, read_only) to every running pod
-//! 4. Each pod's tool-proxy receives the downgraded permissions via its watch channel
-//! 5. An AuditEntry of type ExecutionBlocked is appended to each affected pod's audit chain
-//!
-//! # Restoring
-//!
-//! `nucleus lockdown --restore` reverses the lockdown by restoring each pod's
-//! original permission lattice from the audit chain checkpoint.
+//! 1. Tries gRPC `NodeService::Lockdown` on the configured node address
+//! 2. Falls back to writing a local signal file if gRPC is unavailable
+//! 3. Both paths result in tool-proxy blocking all tool calls
 
 use anyhow::{bail, Result};
 use clap::Args;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Emergency lockdown — drop all agents to read-only
 #[derive(Args, Debug)]
 pub struct LockdownArgs {
-    /// Restore permissions after a lockdown (reverses the emergency downgrade)
+    /// Restore permissions after a lockdown
     #[arg(long)]
     pub restore: bool,
 
@@ -41,7 +34,7 @@ pub struct LockdownArgs {
     pub reason: String,
 
     /// Node gRPC address
-    #[arg(long, default_value = "http://localhost:50051")]
+    #[arg(long, default_value = "http://127.0.0.1:9180")]
     pub node_addr: String,
 
     /// Skip confirmation prompt
@@ -49,20 +42,18 @@ pub struct LockdownArgs {
     pub yes: bool,
 }
 
+const LOCKDOWN_SIGNAL_PATH: &str = "/tmp/nucleus-lockdown.json";
+
 /// Execute the lockdown command.
 pub async fn execute(args: LockdownArgs) -> Result<()> {
-    if args.restore {
-        return restore_lockdown(&args).await;
-    }
-
     let scope = match (&args.pod, &args.selector) {
         (Some(pod), _) => format!("pod {pod}"),
         (_, Some(sel)) => format!("pods matching '{sel}'"),
         _ => "ALL pods".to_string(),
     };
 
-    if !args.yes {
-        eprintln!("⚠  EMERGENCY LOCKDOWN: dropping {scope} to read-only permissions.");
+    if !args.yes && !args.restore {
+        eprintln!("WARNING: EMERGENCY LOCKDOWN — dropping {scope} to read-only permissions.");
         eprintln!("   Reason: {}", args.reason);
         eprintln!();
         eprint!("   Continue? [y/N] ");
@@ -74,68 +65,93 @@ pub async fn execute(args: LockdownArgs) -> Result<()> {
         }
     }
 
-    info!(scope = %scope, reason = %args.reason, "Initiating lockdown");
+    let action = if args.restore { "restore" } else { "lockdown" };
+    info!(scope = %scope, reason = %args.reason, action = action, "Lockdown command");
 
-    // TODO: Connect to nucleus-node gRPC and send LockdownRequest
-    // For now, scaffold the local-node path (single machine).
-    //
-    // The gRPC endpoint will be:
-    //   rpc Lockdown(LockdownRequest) returns (LockdownResponse)
-    //
-    // LockdownRequest {
-    //   scope: oneof { all, pod_id, label_selector }
-    //   reason: string
-    //   operator_id: string
-    // }
-    //
-    // LockdownResponse {
-    //   affected_pods: u32
-    //   audit_entries_created: u32
-    //   timestamp: Timestamp
-    // }
-
-    eprintln!("🔒 Lockdown initiated for {scope}");
-    eprintln!("   Reason: {}", args.reason);
-
-    // Phase 1: Local node lockdown via file-based signal
-    let lockdown_signal = std::path::PathBuf::from("/tmp/nucleus-lockdown.json");
-    let signal = serde_json::json!({
-        "action": "lockdown",
-        "scope": scope,
-        "reason": args.reason,
-        "timestamp": chrono::Utc::now().to_rfc3339(),
-        "restore": false,
-    });
-    std::fs::write(&lockdown_signal, serde_json::to_string_pretty(&signal)?)?;
-
-    eprintln!("   Signal written to {}", lockdown_signal.display());
-    eprintln!("   Use `nucleus lockdown --restore` to lift the lockdown.");
+    // Try gRPC first, fall back to local signal file
+    match try_grpc_lockdown(&args, &scope).await {
+        Ok(response) => {
+            if args.restore {
+                eprintln!("Lockdown lifted via gRPC.");
+            } else {
+                eprintln!(
+                    "Lockdown initiated via gRPC — {} pods affected, {} audit entries.",
+                    response.affected_pods, response.audit_entries_created
+                );
+            }
+        }
+        Err(e) => {
+            warn!(error = %e, "gRPC lockdown failed — falling back to local signal file");
+            write_signal_file(&args, &scope)?;
+        }
+    }
 
     Ok(())
 }
 
-/// Restore permissions after a lockdown.
-async fn restore_lockdown(args: &LockdownArgs) -> Result<()> {
-    info!(reason = %args.reason, "Restoring permissions after lockdown");
+/// Try to execute lockdown via gRPC to nucleus-node.
+async fn try_grpc_lockdown(
+    args: &LockdownArgs,
+    _scope: &str,
+) -> Result<nucleus_proto::nucleus_node::LockdownResponse> {
+    use nucleus_proto::nucleus_node::node_service_client::NodeServiceClient;
 
-    let lockdown_signal = std::path::PathBuf::from("/tmp/nucleus-lockdown.json");
-    if !lockdown_signal.exists() {
-        bail!("No active lockdown found. Nothing to restore.");
+    let mut client = NodeServiceClient::connect(args.node_addr.clone())
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to connect to {}: {}", args.node_addr, e))?;
+
+    let request = nucleus_proto::nucleus_node::LockdownRequest {
+        reason: args.reason.clone(),
+        operator_id: whoami::fallible::username().unwrap_or_else(|_| "unknown".to_string()),
+        restore: args.restore,
+        scope: match (&args.pod, &args.selector) {
+            (Some(pod), _) => Some(nucleus_proto::nucleus_node::lockdown_request::Scope::PodId(
+                pod.clone(),
+            )),
+            (_, Some(sel)) => Some(
+                nucleus_proto::nucleus_node::lockdown_request::Scope::LabelSelector(sel.clone()),
+            ),
+            _ => None, // All pods
+        },
+    };
+
+    let response = client
+        .lockdown(request)
+        .await
+        .map_err(|e| anyhow::anyhow!("Lockdown RPC failed: {}", e))?;
+
+    Ok(response.into_inner())
+}
+
+/// Fallback: write a local signal file for the tool-proxy watcher.
+fn write_signal_file(args: &LockdownArgs, scope: &str) -> Result<()> {
+    let signal_path = std::path::PathBuf::from(LOCKDOWN_SIGNAL_PATH);
+
+    if args.restore {
+        if signal_path.exists() {
+            std::fs::remove_file(&signal_path)?;
+            eprintln!("Lockdown lifted (signal file removed).");
+        } else {
+            eprintln!("No active lockdown found.");
+        }
+        return Ok(());
     }
 
     let signal = serde_json::json!({
-        "action": "restore",
+        "action": "lockdown",
+        "scope": scope,
         "reason": args.reason,
-        "timestamp": chrono::Utc::now().to_rfc3339(),
-        "restore": true,
+        "timestamp": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        "restore": false,
     });
-    std::fs::write(&lockdown_signal, serde_json::to_string_pretty(&signal)?)?;
+    std::fs::write(&signal_path, serde_json::to_string_pretty(&signal)?)?;
 
-    eprintln!("🔓 Lockdown lifted. Permissions restored.");
-    eprintln!("   The audit chain records both the lockdown and restoration.");
-
-    // Clean up signal file
-    let _ = std::fs::remove_file(&lockdown_signal);
+    eprintln!("Lockdown initiated via local signal file.");
+    eprintln!("   Signal: {}", signal_path.display());
+    eprintln!("   Use `nucleus lockdown --restore` to lift.");
 
     Ok(())
 }
@@ -145,28 +161,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_lockdown_args_default() {
+    fn test_scope_formatting() {
         let args = LockdownArgs {
             restore: false,
             pod: None,
             selector: None,
             reason: "test".to_string(),
-            node_addr: "http://localhost:50051".to_string(),
-            yes: true,
-        };
-        assert!(!args.restore);
-        assert!(args.pod.is_none());
-    }
-
-    #[test]
-    fn test_lockdown_scope_formatting() {
-        // All pods
-        let args = LockdownArgs {
-            restore: false,
-            pod: None,
-            selector: None,
-            reason: "test".to_string(),
-            node_addr: "http://localhost:50051".to_string(),
+            node_addr: "http://127.0.0.1:9180".to_string(),
             yes: true,
         };
         let scope = match (&args.pod, &args.selector) {
@@ -175,16 +176,14 @@ mod tests {
             _ => "ALL pods".to_string(),
         };
         assert_eq!(scope, "ALL pods");
+    }
 
-        // Specific pod
-        let args2 = LockdownArgs {
-            pod: Some("pod-123".to_string()),
-            ..args
-        };
-        let scope2 = match (&args2.pod, &args2.selector) {
+    #[test]
+    fn test_scope_pod() {
+        let scope = match (&Some("pod-123".to_string()), &None::<String>) {
             (Some(pod), _) => format!("pod {pod}"),
             _ => "ALL pods".to_string(),
         };
-        assert_eq!(scope2, "pod pod-123");
+        assert_eq!(scope, "pod pod-123");
     }
 }
