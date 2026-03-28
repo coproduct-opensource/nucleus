@@ -378,14 +378,18 @@ impl PermissionLattice {
     /// Join operation: least upper bound of two permission lattices.
     ///
     /// This returns the most permissive combination of both inputs.
-    /// The uninhabitable_state constraint is applied if BOTH inputs enforce it.
+    /// The uninhabitable_state constraint is applied if EITHER input enforces it.
+    /// This ensures the safety constraint is monotonically preserved upward —
+    /// an attacker cannot disable the uninhabitable check by joining with a
+    /// permissive lattice that has `uninhabitable_constraint = false`.
     pub fn join(&self, other: &Self) -> Self {
         let base_caps = self.capabilities.join(&other.capabilities);
 
         let base_obligations = self.obligations.intersection(&other.obligations);
 
-        // Apply uninhabitable_state constraint only if BOTH inputs enforce it
-        let enforce_uninhabitable = self.uninhabitable_constraint && other.uninhabitable_constraint;
+        // Apply uninhabitable_state constraint if EITHER input enforces it (OR-semantics).
+        // This prevents an attacker from weakening the safety check via join.
+        let enforce_uninhabitable = self.uninhabitable_constraint || other.uninhabitable_constraint;
         let obligations = if enforce_uninhabitable {
             let constraint = IncompatibilityConstraint::enforcing();
             base_obligations.union(&constraint.obligations_for(&base_caps))
@@ -1468,6 +1472,47 @@ mod tests {
         // Join should take the more permissive values
         assert!(result.budget.max_cost_usd >= a.budget.max_cost_usd);
         assert!(result.budget.max_cost_usd >= b.budget.max_cost_usd);
+    }
+
+    #[test]
+    fn test_join_preserves_uninhabitable_constraint_or_semantics() {
+        // Regression: join() previously used AND for uninhabitable_constraint,
+        // meaning an attacker who controlled one input could disable the safety
+        // check by providing uninhabitable_constraint=false.
+        let constrained = PermissionLattice {
+            uninhabitable_constraint: true,
+            ..Default::default()
+        };
+
+        // Simulate attacker-controlled input with constraint disabled.
+        // In practice this is only reachable via programmatic construction
+        // (deserialization always forces true), but join must be safe regardless.
+        let unconstrained = PermissionLattice {
+            uninhabitable_constraint: false,
+            ..Default::default()
+        };
+
+        // join(true, false) must be true (OR-semantics)
+        let result = constrained.join(&unconstrained);
+        assert!(
+            result.uninhabitable_constraint,
+            "join must preserve uninhabitable_constraint via OR-semantics"
+        );
+
+        // Commutative: join(false, true) must also be true
+        let result_rev = unconstrained.join(&constrained);
+        assert!(
+            result_rev.uninhabitable_constraint,
+            "join must be commutative for uninhabitable_constraint"
+        );
+
+        // join(true, true) = true
+        let both = constrained.join(&constrained);
+        assert!(both.uninhabitable_constraint);
+
+        // join(false, false) = false (both inputs opted out — no constraint to preserve)
+        let neither = unconstrained.join(&unconstrained);
+        assert!(!neither.uninhabitable_constraint);
     }
 
     #[cfg(feature = "serde")]
