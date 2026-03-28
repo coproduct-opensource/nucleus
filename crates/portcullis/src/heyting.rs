@@ -59,6 +59,20 @@ use crate::frame::{BoundedLattice, DistributiveLattice, Lattice};
 /// - `a → b`: "a implies b" (if a then b)
 /// - `¬a = a → ⊥`: pseudo-complement (intuitionistic negation)
 /// - Unlike Boolean algebras, `a ∨ ¬a` may not equal ⊤
+///
+/// # Sparse representation and `leq_himp`
+///
+/// For types that use a sparse map (e.g., `BTreeMap`) to represent dimensions,
+/// the absent-key semantic differs between regular lattice values and implication
+/// results:
+///
+/// - Regular lattice (capability set): absent key → `⊥` (fail-closed, security default)
+/// - Implication result `a → b`: absent key → `⊤` (correct: `level_implies(⊥,⊥) = ⊤`)
+///
+/// Because `leq()` uses the fail-closed `⊥` default for absent RHS keys, comparing
+/// `c ≤ (a → b)` with `c.leq(&a.implies(&b))` produces wrong answers when `c`
+/// contains keys absent from both `a` and `b`. Use `c.leq_himp(&a.implies(&b))`
+/// (provided by this trait) for all adjunction checks.
 pub trait HeytingAlgebra: BoundedLattice + DistributiveLattice {
     /// Heyting implication: the largest x such that `(x ∧ a) ≤ b`.
     ///
@@ -70,6 +84,18 @@ pub trait HeytingAlgebra: BoundedLattice + DistributiveLattice {
     /// - `⊤ → a = a` (modus ponens with truth)
     fn implies(&self, other: &Self) -> Self;
 
+    /// Compare `self ≤ himp` where `himp` is a Heyting implication result.
+    ///
+    /// This is the correct comparison for the adjunction `c ≤ (a → b)`. It
+    /// differs from `leq()` for sparse representations: absent keys in the
+    /// implication result should default to `⊤` (always satisfied), not `⊥`
+    /// (fail-closed). The default implementation delegates to `leq()`, which
+    /// is correct for dense/total representations where `implies()` always
+    /// produces a fully-populated result. Override for sparse representations.
+    fn leq_himp(&self, himp: &Self) -> bool {
+        self.leq(himp)
+    }
+
     /// Pseudo-complement (intuitionistic negation): `a → ⊥`.
     ///
     /// In a Heyting algebra, `¬a` is the largest element disjoint from `a`.
@@ -80,9 +106,15 @@ pub trait HeytingAlgebra: BoundedLattice + DistributiveLattice {
 
     /// Check if this element implies another (entailment).
     ///
-    /// Returns true if `self → other = ⊤`.
+    /// Returns true if `self → other = ⊤`, equivalently `self ≤ other`.
+    ///
+    /// The default implementation uses `leq()` directly rather than
+    /// `self.implies(other) == Self::top()` to avoid false negatives when
+    /// `implies()` stores explicit `⊤` entries that `top()` omits (a known
+    /// issue in sparse BTreeMap representations where `top()` has empty maps
+    /// but `implies()` may store `Always` entries for explicit extension keys).
     fn entails(&self, other: &Self) -> bool {
-        self.implies(other) == Self::top()
+        self.leq(other)
     }
 
     /// Bi-implication: `(a → b) ∧ (b → a)`.
@@ -98,7 +130,7 @@ pub trait HeytingAlgebra: BoundedLattice + DistributiveLattice {
 /// For a total order `Never < LowRisk < Always`:
 /// - `a → b = ⊤` if `a ≤ b` (implication is trivially true)
 /// - `a → b = b` if `a > b` (need to be at level b to satisfy)
-fn level_implies(a: CapabilityLevel, b: CapabilityLevel) -> CapabilityLevel {
+pub(crate) fn level_implies(a: CapabilityLevel, b: CapabilityLevel) -> CapabilityLevel {
     if a <= b {
         CapabilityLevel::Always // Top - trivially true
     } else {
@@ -149,7 +181,35 @@ impl DistributiveLattice for CapabilityLattice {}
 
 impl HeytingAlgebra for CapabilityLattice {
     fn implies(&self, other: &Self) -> Self {
-        // For a product of total orders, implication is computed pointwise
+        // For a product of total orders, implication is computed pointwise.
+        // Extension dimensions are included to preserve the Heyting adjunction:
+        //   (c ∧ a) ≤ b  ⟺  c ≤ (a ⇨ b)
+        // Dropping extensions from the result would break this adjunction for any
+        // lattice with non-empty extension capabilities (fail-closed default is Never,
+        // which is strictly smaller than the correct pointwise implication value).
+        //
+        // Storage convention: absent key in the result = Always (the mathematically
+        // correct default for an implication result, since level_implies(Never,Never)
+        // = Always). We therefore store only entries where the result is NOT Always
+        // (i.e., the non-trivial restrictions). This way the result map stays compact
+        // and callers using `leq_himp()` get the correct Always default.
+        #[cfg(not(kani))]
+        let ext = {
+            let mut ext = std::collections::BTreeMap::new();
+            for key in self.extensions.keys().chain(other.extensions.keys()) {
+                let a = self.extension_level(key);
+                let b = other.extension_level(key);
+                let v = level_implies(a, b);
+                // Only store non-Always entries: absent key in the implies result
+                // is semantically Always (see leq_himp). Always entries are the
+                // trivially-satisfied case and need not be stored.
+                if v != CapabilityLevel::Always {
+                    ext.insert(key.clone(), v);
+                }
+            }
+            ext
+        };
+
         Self {
             read_files: level_implies(self.read_files, other.read_files),
             write_files: level_implies(self.write_files, other.write_files),
@@ -164,8 +224,57 @@ impl HeytingAlgebra for CapabilityLattice {
             create_pr: level_implies(self.create_pr, other.create_pr),
             manage_pods: level_implies(self.manage_pods, other.manage_pods),
             #[cfg(not(kani))]
-            extensions: std::collections::BTreeMap::new(),
+            extensions: ext,
         }
+    }
+
+    /// Compare `self ≤ himp` where `himp` is the result of a Heyting implication.
+    ///
+    /// The sparse BTreeMap convention for implication results is:
+    ///   **absent key = `Always`** (not `Never`)
+    ///
+    /// Because `level_implies(Never, Never) = Always`, any key absent from both
+    /// operands of `a.implies(b)` would be `Always` in a dense representation.
+    /// The sparse result omits `Always` entries, so `leq()` (which uses `Never`
+    /// as the fail-closed default for absent RHS keys) gives the wrong answer.
+    /// This method uses `Always` as the absent-key default for `himp`.
+    ///
+    /// Use this for all adjunction checks: `c.leq_himp(&a.implies(&b))`.
+    /// Use `leq()` for regular policy enforcement (`requested.leq(&allowed)`).
+    #[cfg(not(kani))]
+    fn leq_himp(&self, himp: &Self) -> bool {
+        // Core 12 fields: same as regular leq (fully stored, no sparse issue)
+        let core_leq = self.read_files <= himp.read_files
+            && self.write_files <= himp.write_files
+            && self.edit_files <= himp.edit_files
+            && self.run_bash <= himp.run_bash
+            && self.glob_search <= himp.glob_search
+            && self.grep_search <= himp.grep_search
+            && self.web_search <= himp.web_search
+            && self.web_fetch <= himp.web_fetch
+            && self.git_commit <= himp.git_commit
+            && self.git_push <= himp.git_push
+            && self.create_pr <= himp.create_pr
+            && self.manage_pods <= himp.manage_pods;
+
+        if !core_leq {
+            return false;
+        }
+
+        // Extension check with Always-default for absent himp keys.
+        // The implies-result convention: absent = Always (trivially satisfied).
+        // Only fail if himp explicitly restricts a key below self's level.
+        for (key, &self_level) in &self.extensions {
+            // Key absent in himp = Always (implication default).
+            // self_level ≤ Always is always true.
+            if let Some(&himp_level) = himp.extensions.get(key) {
+                if self_level > himp_level {
+                    return false;
+                }
+            }
+        }
+        // Keys in himp not in self: self[K] = Never ≤ himp[K], always true.
+        true
     }
 }
 
@@ -202,8 +311,13 @@ impl<L: HeytingAlgebra> ConditionalPermission<L> {
     ///
     /// A permission `p` satisfies `condition → consequence` if:
     /// `p ≤ (condition → consequence)`
+    ///
+    /// Uses `leq_himp()` rather than `leq()` so that extension keys absent from
+    /// the implication result are treated as `Always` (the correct mathematical
+    /// default) rather than `Never` (the fail-closed security default used by
+    /// `leq()` for regular capability comparisons).
     pub fn is_satisfied_by(&self, perms: &L) -> bool {
-        perms.leq(&self.as_implication())
+        perms.leq_himp(&self.as_implication())
     }
 
     /// Apply modus ponens: if we have the condition, derive the consequence.
@@ -262,9 +376,12 @@ mod tests {
 
         let implication = a.implies(&b);
 
-        // Check the adjunction
+        // Check the adjunction — use leq_himp() (not leq()) because implies() uses
+        // the sparse absent=Always convention for extension keys; leq() would apply
+        // the Never default instead. For these core-field-only lattices leq() and
+        // leq_himp() are equivalent, but leq_himp() is the correct pattern.
         let lhs = c.meet(&a).leq(&b);
-        let rhs = c.leq(&implication);
+        let rhs = c.leq_himp(&implication);
 
         assert_eq!(lhs, rhs, "Heyting adjunction must hold");
     }
@@ -426,6 +543,238 @@ mod tests {
         let perms_without_read = CapabilityLattice::bottom();
         let result = rule.apply(&perms_without_read);
         assert!(result.is_none());
+    }
+
+    /// Concrete regression for the bug reported in the gap analysis:
+    /// a.extensions = {X: Never}, b.extensions = {X: LowRisk}, c.extensions = {X: LowRisk}
+    ///
+    /// `level_implies(Never, LowRisk) = Always` (since Never ≤ LowRisk). The implies
+    /// result now stores only non-Always entries (absent = Always convention), so K is
+    /// ABSENT from `a.implies(b)`. `leq_himp()` treats the absent key as Always, so
+    /// `c[K] = LowRisk ≤ Always` and the adjunction holds.
+    #[cfg(not(kani))]
+    #[test]
+    fn test_heyting_adjunction_extensions_regression() {
+        use crate::capability::ExtensionOperation;
+        use std::collections::BTreeMap;
+
+        let ext_op = ExtensionOperation::new("custom_op");
+
+        let a = CapabilityLattice {
+            extensions: {
+                let mut m = BTreeMap::new();
+                m.insert(ext_op.clone(), CapabilityLevel::Never);
+                m
+            },
+            ..CapabilityLattice::bottom()
+        };
+
+        let b = CapabilityLattice {
+            extensions: {
+                let mut m = BTreeMap::new();
+                m.insert(ext_op.clone(), CapabilityLevel::LowRisk);
+                m
+            },
+            ..CapabilityLattice::bottom()
+        };
+
+        let c = CapabilityLattice {
+            extensions: {
+                let mut m = BTreeMap::new();
+                m.insert(ext_op.clone(), CapabilityLevel::LowRisk);
+                m
+            },
+            ..CapabilityLattice::bottom()
+        };
+
+        // level_implies(Never, LowRisk) = Always.
+        // The new convention: absent key in implies result = Always.
+        // So K is NOT stored in the result (omitting Always entries keeps the map compact).
+        let implication = a.implies(&b);
+        assert!(
+            !implication.extensions.contains_key(&ext_op),
+            "level_implies(Never, LowRisk) = Always; Always entries are omitted (absent = Always convention)"
+        );
+
+        // leq_himp correctly interprets absent key in implication as Always:
+        // c[K] = LowRisk ≤ Always (absent-key default) = true
+        assert!(
+            c.leq_himp(&implication),
+            "leq_himp: c[K]=LowRisk ≤ absent key in implication = Always"
+        );
+
+        // Full adjunction check via leq_himp: (c ∧ a) ≤ b  ↔  c ≤ (a ⇨ b)
+        let lhs = c.meet(&a).leq(&b);
+        let rhs = c.leq_himp(&implication);
+        assert_eq!(
+            lhs, rhs,
+            "Heyting adjunction must hold for extension dimensions via leq_himp"
+        );
+    }
+
+    /// Exhaustive adjunction check over all (a, b, c) triples with one extension dimension.
+    ///
+    /// Tests all 27 triples (3 levels × 3 levels × 3 levels) where the extension key is
+    /// EXPLICITLY PRESENT in all three lattices. Also tests the sparse case where K is
+    /// absent from a and b but present in c. All cases use `leq_himp()` for the RHS
+    /// comparison (the correct method for adjunction checks).
+    #[cfg(not(kani))]
+    #[test]
+    fn test_heyting_adjunction_extensions_exhaustive() {
+        use crate::capability::ExtensionOperation;
+        use std::collections::BTreeMap;
+
+        let ext_op = ExtensionOperation::new("ext_dim");
+        let levels = [
+            CapabilityLevel::Never,
+            CapabilityLevel::LowRisk,
+            CapabilityLevel::Always,
+        ];
+
+        for &a_ext in &levels {
+            for &b_ext in &levels {
+                for &c_ext in &levels {
+                    // Always store the key explicitly (even Never) so implies() can
+                    // iterate over it and compute the correct pointwise result.
+                    let make_explicit = |level: CapabilityLevel| -> CapabilityLattice {
+                        let mut m = BTreeMap::new();
+                        m.insert(ext_op.clone(), level);
+                        CapabilityLattice {
+                            extensions: m,
+                            ..CapabilityLattice::bottom()
+                        }
+                    };
+
+                    let a = make_explicit(a_ext);
+                    let b = make_explicit(b_ext);
+                    let c = make_explicit(c_ext);
+
+                    let lhs = c.meet(&a).leq(&b);
+                    // Use leq_himp() for the RHS: the correct comparison against an
+                    // implication result (absent key = Always, not Never).
+                    let rhs = c.leq_himp(&a.implies(&b));
+
+                    assert_eq!(
+                        lhs, rhs,
+                        "Adjunction failed for a={:?} b={:?} c={:?}",
+                        a_ext, b_ext, c_ext
+                    );
+                }
+            }
+        }
+
+        // Sparse case: K absent from a and b, present in c. All 3 levels for c.
+        for &c_ext in &levels {
+            let a_sparse = CapabilityLattice {
+                extensions: BTreeMap::new(),
+                ..CapabilityLattice::bottom()
+            };
+            let b_sparse = CapabilityLattice {
+                extensions: BTreeMap::new(),
+                ..CapabilityLattice::bottom()
+            };
+            let c_sparse = {
+                let mut m = BTreeMap::new();
+                m.insert(ext_op.clone(), c_ext);
+                CapabilityLattice {
+                    extensions: m,
+                    ..CapabilityLattice::bottom()
+                }
+            };
+
+            let lhs = c_sparse.meet(&a_sparse).leq(&b_sparse);
+            let rhs = c_sparse.leq_himp(&a_sparse.implies(&b_sparse));
+            assert_eq!(
+                lhs, rhs,
+                "Sparse adjunction failed for c_ext={:?} (a,b have no entry for K)",
+                c_ext
+            );
+        }
+    }
+
+    /// Verifies the adjunction holds for the "sparse key" scenario using `leq_himp()`.
+    ///
+    /// When `c` has extension key K but neither `a` nor `b` mention K, the implication
+    /// `a.implies(b)` correctly omits an entry for K (since `level_implies(Never, Never)
+    /// = Always` and Always is the absent-key default for implication results). Using
+    /// `leq_himp()` — which treats absent keys in the RHS as `Always` — the adjunction
+    /// holds:
+    ///
+    ///   LHS: `(c ∧ a)[K] = min(LowRisk, Never) = Never ≤ Never = true`
+    ///   RHS: `c[K] = LowRisk ≤ Always = (a ⇨ b)[K] (absent = Always default) = true`
+    ///
+    /// Contrast with `leq()`: `leq()` uses `Never` as the absent-key default (the
+    /// fail-closed security default for regular capability enforcement), so
+    /// `c.leq(&a.implies(&b))` returns false for this case. `leq()` is CORRECT for
+    /// policy enforcement (`requested.leq(&allowed)`) but WRONG for adjunction checks.
+    /// Always use `leq_himp()` when comparing against an implication result.
+    #[cfg(not(kani))]
+    #[test]
+    fn test_heyting_adjunction_extensions_sparse_leq_himp() {
+        use crate::capability::ExtensionOperation;
+        use std::collections::BTreeMap;
+
+        let ext_op = ExtensionOperation::new("unknown_to_a_and_b");
+
+        // c knows about ext_op; a and b do not (sparse "absent = Never")
+        let a = CapabilityLattice {
+            extensions: BTreeMap::new(),
+            ..CapabilityLattice::bottom()
+        };
+        let b = CapabilityLattice {
+            extensions: BTreeMap::new(),
+            ..CapabilityLattice::bottom()
+        };
+        let c = CapabilityLattice {
+            extensions: {
+                let mut m = BTreeMap::new();
+                m.insert(ext_op.clone(), CapabilityLevel::LowRisk);
+                m
+            },
+            ..CapabilityLattice::bottom()
+        };
+
+        // LHS: (c ∧ a)[K] = min(LowRisk, Never) = Never ≤ Never = true
+        let lhs = c.meet(&a).leq(&b);
+        assert!(lhs, "LHS must be true: min(LowRisk,Never)=Never ≤ Never");
+
+        // The implication result omits K (both a and b have no entry for K).
+        // Absent key in implies result = Always (the correct implication default).
+        let implication = a.implies(&b);
+        assert!(
+            !implication.extensions.contains_key(&ext_op),
+            "Key absent from both operands should be absent from implies result \
+             (absent = Always by convention)"
+        );
+
+        // RHS via leq_himp: treats absent key in implication result as Always.
+        // c[K] = LowRisk ≤ Always = true. Adjunction holds.
+        let rhs_himp = c.leq_himp(&implication);
+        assert!(
+            rhs_himp,
+            "Adjunction must hold via leq_himp: c[K]=LowRisk ≤ Always (absent-key default)"
+        );
+        assert_eq!(
+            lhs, rhs_himp,
+            "Heyting adjunction (c ∧ a) ≤ b ↔ c ≤ (a ⇨ b) must hold via leq_himp"
+        );
+
+        // Document: leq() gives wrong answer here (Never default, not Always).
+        // This is intentional: leq() is the security-correct method for policy
+        // enforcement where absent key = "operation not permitted".
+        let rhs_leq = c.leq(&implication);
+        assert!(
+            !rhs_leq,
+            "leq() uses Never default for absent keys — correct for security enforcement, \
+             wrong for adjunction checks; use leq_himp() for adjunction checks"
+        );
+
+        // Confirm: level_implies(Never, Never) = Always
+        assert_eq!(
+            level_implies(CapabilityLevel::Never, CapabilityLevel::Never),
+            CapabilityLevel::Always,
+            "level_implies(Never, Never) = Always (the correct absent-key default)"
+        );
     }
 
     #[test]

@@ -217,7 +217,7 @@ Three layers, at different levels of maturity:
 | **Budget tracking** | Partial | AtomicBudget exists; pre-exec reservation works, post-exec accounting incomplete |
 | **SPIFFE identity** | Implemented | mTLS + cert management code exists; no SPIRE deployment |
 | **Command exfiltration detection** | Partial | Program-name matching; `bash -c` bypasses documented |
-| **Lean 4 model** | Not started | Planned: Aeneas translation for deeper mathematical verification |
+| **Lean 4 model** | Partial | Hand-written kernel-checked Lean 4 proof: `CapabilityLevel` as a `HeytingAlgebra` (27-case `decide`, Mathlib-linked). Discriminant correspondence enforced by CI test. Aeneas/Charon pipeline translation not yet started. |
 
 **Maturity key:** *Verified* = SMT proofs + tests. *Tested* = compiles, has passing tests, never deployed. *Partial* = works for some cases, known gaps. *Implemented* = code exists, minimal testing. *Not started* = in roadmap only.
 
@@ -269,7 +269,7 @@ Nucleus uses two complementary verification tools:
 - Adversarial inputs — 70 OWASP-inspired attack scenarios
 
 **What's planned but not started:**
-- Lean 4 mathematical model via Aeneas (Phase 1)
+- Full Aeneas/Charon pipeline translation of portcullis (Rust MIR → Lean 4)
 - Full enforcement boundary verification (Phase 2 — started with E1-E3)
 - Differential testing: Rust engine vs Lean model (Phase 3)
 - Extended TCB verification: sandbox, credentials, tool proxy (Phase 4)
