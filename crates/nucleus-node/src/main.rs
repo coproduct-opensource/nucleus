@@ -2869,6 +2869,38 @@ impl NodeService for GrpcService {
             }),
         }))
     }
+
+    async fn lockdown(
+        &self,
+        request: Request<proto::LockdownRequest>,
+    ) -> Result<GrpcResponse<proto::LockdownResponse>, Status> {
+        let req = request.into_inner();
+        let reason = if req.reason.is_empty() {
+            "emergency lockdown".to_string()
+        } else {
+            req.reason
+        };
+
+        tracing::warn!(
+            reason = %reason,
+            operator = %req.operator_id,
+            restore = req.restore,
+            "LOCKDOWN RPC received"
+        );
+
+        // TODO: iterate running pods, meet(current_permissions, read_only),
+        // write AuditEntry::ExecutionBlocked, signal tool-proxy lockdown_active.
+        // For now, return the scaffold response.
+
+        Ok(GrpcResponse::new(proto::LockdownResponse {
+            affected_pods: 0,
+            audit_entries_created: 0,
+            timestamp_unix: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        }))
+    }
 }
 
 /// Stream log file contents to a channel

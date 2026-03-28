@@ -149,4 +149,26 @@ service NodeService {
 
   // Execution receipt for auditing
   rpc GetReceipt(GetReceiptRequest) returns (GetReceiptResponse);
+
+  // Emergency lockdown — drop all agents to read-only
+  rpc Lockdown(LockdownRequest) returns (LockdownResponse);
+}
+
+// Emergency lockdown: drop all or targeted pods to read-only permissions.
+// The node broadcasts a lattice meet(current, read_only) to every affected pod.
+message LockdownRequest {
+  // Scope of the lockdown (empty = all pods)
+  oneof scope {
+    string pod_id = 1;          // Target a specific pod
+    string label_selector = 2;  // Target pods matching labels (e.g., "team=frontend")
+  }
+  string reason = 3;            // Human-readable reason (recorded in audit trail)
+  string operator_id = 4;       // Who initiated the lockdown
+  bool restore = 5;             // true = restore permissions, false = lockdown
+}
+
+message LockdownResponse {
+  uint32 affected_pods = 1;          // Number of pods affected
+  uint32 audit_entries_created = 2;  // Number of ExecutionBlocked audit entries written
+  uint64 timestamp_unix = 3;  // Unix timestamp in seconds
 }

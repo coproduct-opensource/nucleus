@@ -26,6 +26,7 @@ mod config;
 mod constants;
 mod doctor;
 mod keychain;
+mod lockdown;
 mod node;
 mod observe;
 mod profiles;
@@ -73,6 +74,9 @@ enum Commands {
 
     /// Stop nucleus-node and optionally the Lima VM
     Stop(stop::StopArgs),
+
+    /// Emergency lockdown — drop all agents to read-only
+    Lockdown(lockdown::LockdownArgs),
 
     /// Check setup status and diagnose issues
     Doctor,
@@ -124,6 +128,7 @@ async fn main() -> Result<()> {
         Commands::Setup(args) => setup::execute(args).await,
         Commands::Start(args) => start::execute(args).await,
         Commands::Stop(args) => stop::execute(args).await,
+        Commands::Lockdown(args) => lockdown::execute(args).await,
         Commands::Doctor => doctor::diagnose().await,
         Commands::Profiles => profiles::list(),
         Commands::Config => config::show(&config_path),
