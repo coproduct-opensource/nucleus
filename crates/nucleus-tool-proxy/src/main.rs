@@ -43,6 +43,7 @@ mod telemetry;
 #[allow(dead_code)]
 mod unicode_audit;
 mod validation;
+mod verdict_sink;
 mod web_fetch_policy;
 
 use attestation::{AttestationConfig, AttestationVerifier};
@@ -294,6 +295,8 @@ pub(crate) struct AppState {
     policy_checksum: String,
     /// Session ID (policy UUID) for telemetry grouping.
     session_id: String,
+    /// Shared verdict sink for lockdown + telemetry convergence (HTTP + MCP).
+    pub(crate) verdict_sink: Arc<dyn portcullis::verdict_sink::VerdictSink>,
 }
 
 /// OR-semantics: locked if EITHER signal file OR gRPC stream says locked.
@@ -1200,6 +1203,22 @@ async fn main() -> Result<(), ApiError> {
     let policy_checksum = runtime.policy().checksum();
     let session_id = runtime.policy().id.to_string();
 
+    // Pre-create shared state for lockdown + exposure so VerdictSink can share them.
+    let file_lockdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stream_lockdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let exposure_guard: Arc<std::sync::RwLock<Option<Arc<portcullis::GradedExposureGuard>>>> =
+        Arc::new(std::sync::RwLock::new(None));
+
+    let verdict_sink: Arc<dyn portcullis::verdict_sink::VerdictSink> =
+        Arc::new(verdict_sink::ToolProxyVerdictSink::new(
+            file_lockdown.clone(),
+            stream_lockdown.clone(),
+            runtime.policy().capabilities.clone(),
+            exposure_guard.clone(),
+            policy_checksum.clone(),
+            session_id.clone(),
+        ));
+
     let state = AppState {
         runtime: Arc::new(runtime),
         approvals,
@@ -1224,11 +1243,12 @@ async fn main() -> Result<(), ApiError> {
             .as_deref()
             .and_then(|hex_str| hex::decode(hex_str).ok())
             .map(Arc::new),
-        exposure_guard: Arc::new(std::sync::RwLock::new(None)),
-        file_lockdown: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        stream_lockdown: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        exposure_guard,
+        file_lockdown,
+        stream_lockdown,
         policy_checksum,
         session_id,
+        verdict_sink,
     };
 
     if let Err(err) = emit_boot_report(&state).await {
