@@ -1,0 +1,22 @@
+[package]
+name = "portcullis-core"
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+description = "Core capability lattice types — dependency-free for Aeneas verification"
+repository = "https://github.com/coproduct-opensource/nucleus"
+
+# This crate is intentionally dependency-free. The types here are the
+# verification target: Aeneas (Rust MIR → Lean 4) translates this crate
+# into pure functional Lean code, where we prove HeytingAlgebra properties
+# against the same Mathlib instance used by portcullis-verified.
+#
+# DO NOT add dependencies. External crate types (serde, BTreeMap, etc.)
+# are not supported by Aeneas's Lean backend. If you need serde, use
+# the full `portcullis` crate which re-exports these types with serde support.
+
+[dependencies]
+# None — intentionally dependency-free for Aeneas translation
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(kani)'] }
