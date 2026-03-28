@@ -9,6 +9,7 @@ on:
       - crates/**/Cargo.toml
       - deny.toml
   pull_request:
+  merge_group:
   schedule:
     - cron: "0 7 * * 1"
 
