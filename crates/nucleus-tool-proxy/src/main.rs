@@ -281,9 +281,11 @@ pub(crate) struct AppState {
     cert_root_pubkey: Option<Arc<Vec<u8>>>,
     /// Session exposure guard for exit report (set when MCP server starts).
     exposure_guard: Arc<std::sync::RwLock<Option<Arc<portcullis::GradedExposureGuard>>>>,
-    /// Emergency lockdown flag. When true, ALL tool calls are rejected with
-    /// ExecutionBlocked. Checked on every tool invocation before permission
-    /// evaluation. Set via the lockdown signal file or gRPC Lockdown RPC.
+    /// Emergency lockdown flag. When true, the proxy applies
+    /// `meet(current, read_only)` semantics: read-only operations
+    /// (read_files, glob_search, grep_search) continue working for
+    /// forensic investigation, while all mutating operations are blocked.
+    /// Set via the lockdown signal file or gRPC Lockdown RPC.
     lockdown_active: Arc<std::sync::atomic::AtomicBool>,
     /// SHA-256 checksum of the permission lattice for telemetry correlation.
     policy_checksum: String,
@@ -1294,7 +1296,10 @@ async fn main() -> Result<(), ApiError> {
                 if should_lock != was_locked {
                     lockdown_flag.store(should_lock, std::sync::atomic::Ordering::Release);
                     if should_lock {
-                        tracing::warn!("LOCKDOWN ACTIVATED via verified signal file");
+                        tracing::warn!(
+                            "LOCKDOWN ACTIVATED via verified signal file \
+                             — meet(current, read_only) applied, forensic reads still allowed"
+                        );
                     } else {
                         tracing::info!("Lockdown lifted via verified signal file");
                     }
@@ -1510,6 +1515,16 @@ async fn build_mtls_config(args: &Args) -> Result<MtlsConfig, ApiError> {
 const MAX_AUTH_BODY_BYTES: usize = 10 * 1024 * 1024;
 const APPROVE_PATH: &str = "/v1/approve";
 const HEALTH_PATH: &str = "/v1/health";
+
+/// Check whether a request path maps to a read-only operation that is allowed
+/// during lockdown.  This implements `meet(current, read_only)` semantics:
+/// operations that would be permitted under `PermissionLattice::read_only()`
+/// (i.e., `read_files`, `glob_search`, `grep_search` all at `Always`) pass
+/// through, while every mutating operation is blocked.
+fn is_allowed_during_lockdown(path: &str) -> bool {
+    matches!(path, "/v1/read" | "/v1/glob" | "/v1/grep" | "/v1/health")
+}
+
 const HEADER_ATTESTATION: &str = "x-nucleus-attestation";
 const HEADER_PERMISSION_BID: &str = "x-nucleus-permission-bid";
 const HEADER_DELEGATION_CERT: &str = "x-nucleus-delegation-cert";
@@ -1530,15 +1545,16 @@ async fn auth_middleware(
         return Ok(next.run(req).await);
     }
 
-    // Emergency lockdown check — reject ALL tool calls when lockdown is active.
-    // This is checked before any permission evaluation or attestation verification
-    // because lockdown overrides everything. The only exception is the health endpoint.
+    // Emergency lockdown check — apply meet(current, read_only) semantics.
+    // Read-only operations (read, glob, grep) continue working during lockdown
+    // to enable forensic investigation. All mutating operations are blocked.
     if state
         .lockdown_active
         .load(std::sync::atomic::Ordering::Acquire)
+        && !is_allowed_during_lockdown(parts.uri.path())
     {
         return Err(ApiError::Body(
-            "LOCKDOWN ACTIVE: all tool calls are blocked. \
+            "LOCKDOWN ACTIVE: mutating operations are blocked (read/glob/grep still allowed). \
              Use `nucleus lockdown --restore` to lift the lockdown."
                 .to_string(),
         ));
@@ -4323,5 +4339,71 @@ mod tests {
         let registry = ApprovalRegistry::default();
         let result = verify_and_load_approval_bundle("not.a.valid.jws", "spec", &registry);
         assert!(result.is_err());
+    }
+
+    // ── Lockdown meet(current, read_only) Tests ───────────────────────
+
+    #[test]
+    fn test_lockdown_allows_read_only_operations() {
+        // These operations map to PermissionLattice::read_only() capabilities
+        // that are set to Always: read_files, glob_search, grep_search.
+        assert!(
+            is_allowed_during_lockdown("/v1/read"),
+            "read should be allowed during lockdown"
+        );
+        assert!(
+            is_allowed_during_lockdown("/v1/glob"),
+            "glob should be allowed during lockdown"
+        );
+        assert!(
+            is_allowed_during_lockdown("/v1/grep"),
+            "grep should be allowed during lockdown"
+        );
+        assert!(
+            is_allowed_during_lockdown("/v1/health"),
+            "health should always be allowed"
+        );
+    }
+
+    #[test]
+    fn test_lockdown_blocks_mutating_operations() {
+        // Every mutating endpoint should be blocked during lockdown.
+        let blocked_paths = [
+            "/v1/write",
+            "/v1/run",
+            "/v1/web_fetch",
+            "/v1/web_search",
+            "/v1/approve",
+            "/v1/escalate",
+            "/v1/pod/create",
+            "/v1/pod/cancel",
+            "/v1/pod/list",
+            "/v1/pod/status",
+            "/v1/pod/logs",
+        ];
+        for path in &blocked_paths {
+            assert!(
+                !is_allowed_during_lockdown(path),
+                "{} should be blocked during lockdown",
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn test_lockdown_blocks_unknown_paths() {
+        // Unknown paths should be blocked by default (deny-by-default).
+        assert!(
+            !is_allowed_during_lockdown("/v1/unknown"),
+            "unknown paths should be blocked during lockdown"
+        );
+        assert!(
+            !is_allowed_during_lockdown("/v2/read"),
+            "non-v1 read should be blocked during lockdown"
+        );
+        assert!(
+            !is_allowed_during_lockdown(""),
+            "empty path should be blocked during lockdown"
+        );
     }
 }
