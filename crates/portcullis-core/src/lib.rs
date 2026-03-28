@@ -13,8 +13,17 @@
 //! - [`CapabilityLattice`] — product of 12 capability dimensions
 //! - `meet`, `join`, `leq` — lattice operations (pointwise min/max/≤)
 //!
-//! The full `portcullis` crate re-exports these types and adds serde,
-//! extension dimensions, and the exposure guard.
+//! ## Relationship to the production `portcullis` crate
+//!
+//! The production `portcullis` crate defines its own `CapabilityLevel` with
+//! serde support, and depends on this crate. A compile-time assertion in
+//! `portcullis::capability` checks that the two enums have identical size,
+//! alignment, and discriminant values. If someone changes either enum without
+//! updating the other, the build fails.
+//!
+//! They are separate types (not re-exported) because `portcullis-core` is
+//! intentionally zero-dependency for Aeneas translation, while the production
+//! `CapabilityLevel` needs `#[derive(Serialize, Deserialize)]`.
 //!
 //! ## Aeneas pipeline
 //!
@@ -26,12 +35,24 @@
 //!     → Mathlib HeytingAlgebra proof (connects to generated types)
 //! ```
 //!
-//! ## Correspondence with hand-written Lean model
+//! ## What the proof covers (and does not cover)
 //!
-//! The existing proof in `portcullis-verified/lean/` uses a hand-written
-//! Lean model of these types. The Aeneas pipeline replaces that model with
-//! machine-generated code, ensuring the proof covers production Rust —
-//! not a manually maintained mirror that could drift.
+//! The Aeneas pipeline generates the Lean **type** from this Rust crate and
+//! keeps it in sync via CI. The HeytingAlgebra proof is on the generated type
+//! (kernel-checked, no `sorry`). This means:
+//!
+//! - **Covered**: The type definition (`CapabilityLevel`, `CapabilityLattice`)
+//!   is machine-translated from Rust to Lean. The proof that these types form
+//!   a HeytingAlgebra is kernel-checked against the generated code.
+//!
+//! - **Not yet covered**: Function-level correspondence (proving that the Rust
+//!   `meet()` implementation equals the lattice meet in the Lean proof) requires
+//!   completing the `FunsExternal.lean` stubs. This is tracked as future work.
+//!
+//! - **Defense in depth**: 62 Kani proofs verify the production lattice operations
+//!   (meet monotonicity, Heyting adjunction, etc.) in CI on every PR. The Lean
+//!   proof verifies algebraic structure of the type. Together they provide
+//!   complementary assurance.
 
 /// Tool permission levels in lattice ordering.
 ///
