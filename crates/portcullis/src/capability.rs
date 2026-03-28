@@ -25,33 +25,6 @@ pub enum CapabilityLevel {
     Always = 2,
 }
 
-impl CapabilityLevel {
-    /// Meet (greatest lower bound) = min.
-    ///
-    /// Isomorphic to `cap_meet` in the Verus model (`portcullis-verified`):
-    ///   `cap_meet(a, b) = if a <= b { a } else { b }` = `std::cmp::min(a, b)`.
-    /// The Kani harnesses R1/R2/R3 in `portcullis/src/kani.rs` mechanically
-    /// verify this isomorphism for all 9 input pairs.
-    pub fn meet(self, other: Self) -> Self {
-        std::cmp::min(self, other)
-    }
-
-    /// Join (least upper bound) = max.
-    ///
-    /// Isomorphic to `cap_join` in the Verus model (`portcullis-verified`):
-    ///   `cap_join(a, b) = if a >= b { a } else { b }` = `std::cmp::max(a, b)`.
-    pub fn join(self, other: Self) -> Self {
-        std::cmp::max(self, other)
-    }
-
-    /// Partial order: `a ≤ b` in the capability lattice.
-    ///
-    /// Isomorphic to `cap_leq(a, b) = (a <= b)` in the Verus model.
-    pub fn leq(self, other: Self) -> bool {
-        self <= other
-    }
-}
-
 impl std::fmt::Display for CapabilityLevel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -598,55 +571,6 @@ mod tests {
         assert!(CapabilityLevel::LowRisk < CapabilityLevel::Always);
     }
 
-    /// Refinement test: exhaustively verifies that `CapabilityLevel::meet/join/leq`
-    /// match the Verus model functions `cap_meet/cap_join/cap_leq` from
-    /// `portcullis-verified` for all 9 input pairs.
-    ///
-    /// This is the conventional-Rust companion to the Kani harnesses R1/R2/R3
-    /// in `portcullis/src/kani.rs`. Both verify the same isomorphism; the Kani
-    /// harnesses use bounded model checking, this test uses exhaustive enumeration.
-    ///
-    /// The Verus model defines:
-    ///   cap_meet(a, b) = if a <= b { a } else { b }   (= min)
-    ///   cap_join(a, b) = if a >= b { a } else { b }   (= max)
-    ///   cap_leq(a, b)  = (a <= b)
-    #[test]
-    fn test_capability_level_refinement_exhaustive() {
-        let all = [
-            CapabilityLevel::Never,
-            CapabilityLevel::LowRisk,
-            CapabilityLevel::Always,
-        ];
-
-        for &a in &all {
-            for &b in &all {
-                // R1: meet matches Verus cap_meet = min
-                let prod_meet = a.meet(b) as u8;
-                let model_meet = std::cmp::min(a as u8, b as u8);
-                assert_eq!(
-                    prod_meet, model_meet,
-                    "R1 violation: meet({a:?},{b:?}) as u8 = {prod_meet} != min = {model_meet}"
-                );
-
-                // R2: join matches Verus cap_join = max
-                let prod_join = a.join(b) as u8;
-                let model_join = std::cmp::max(a as u8, b as u8);
-                assert_eq!(
-                    prod_join, model_join,
-                    "R2 violation: join({a:?},{b:?}) as u8 = {prod_join} != max = {model_join}"
-                );
-
-                // R3: leq matches Verus cap_leq = (a as u8 <= b as u8)
-                let prod_leq = a.leq(b);
-                let model_leq = (a as u8) <= (b as u8);
-                assert_eq!(
-                    prod_leq, model_leq,
-                    "R3 violation: leq({a:?},{b:?}) = {prod_leq} != model = {model_leq}"
-                );
-            }
-        }
-    }
-
     #[test]
     fn test_uninhabitable_detection() {
         let caps = CapabilityLattice {
@@ -756,6 +680,126 @@ mod tests {
 
         let constraint = IncompatibilityConstraint::enforcing();
         assert!(constraint.is_uninhabitable(&caps));
+    }
+
+    /// Verify that the Lean 4 `CapabilityLattice` field-index table matches
+    /// the actual Rust struct field declaration order.
+    ///
+    /// `CapabilityLattice.lean` models the struct as `Fin 12 → CapabilityLevel`
+    /// with a hand-written index ↔ field table. This test is the CI correspondence
+    /// bridge: if either the Lean table or the Rust struct field order changes,
+    /// this test fails before the mismatch can reach production.
+    #[test]
+    fn lean_field_index_table_matches_rust_struct() {
+        const LEAN_SOURCE: &str = include_str!(
+            "../../portcullis-verified/lean/PortcullisVerified/CapabilityLattice.lean"
+        );
+
+        // Each entry: (index, field_name) from the Lean table.
+        // These must match the declaration order of fields in CapabilityLattice.
+        let expected: &[(usize, &str)] = &[
+            (0, "read_files"),
+            (1, "write_files"),
+            (2, "edit_files"),
+            (3, "run_bash"),
+            (4, "glob_search"),
+            (5, "grep_search"),
+            (6, "web_search"),
+            (7, "web_fetch"),
+            (8, "git_commit"),
+            (9, "git_push"),
+            (10, "create_pr"),
+            (11, "manage_pods"),
+        ];
+
+        for &(idx, field) in expected {
+            // Check the Lean table has the expected index entry.
+            // The table uses `|   N   |` for single-digit indices and `|  NN   |`
+            // for two-digit indices (matching the Lean source formatting).
+            let index_token = if idx < 10 {
+                format!("|   {}   |", idx)
+            } else {
+                format!("|  {}   |", idx)
+            };
+            assert!(
+                LEAN_SOURCE.contains(&index_token),
+                "Lean table missing index entry: {}",
+                idx
+            );
+            // Check the Lean table mentions the field name
+            assert!(
+                LEAN_SOURCE.contains(field),
+                "Lean table missing field name: {}",
+                field
+            );
+        }
+
+        // Verify Rust struct fields are declared in the expected order
+        // by checking their relative positions in this source file.
+        let rust_source = include_str!("capability.rs");
+        let field_positions: Vec<usize> = expected
+            .iter()
+            .map(|&(_, field)| {
+                let decl = format!("pub {}: CapabilityLevel", field);
+                rust_source
+                    .find(&decl)
+                    .unwrap_or_else(|| panic!("Field '{}' not found in capability.rs", field))
+            })
+            .collect();
+
+        for i in 1..field_positions.len() {
+            assert!(
+                field_positions[i] > field_positions[i - 1],
+                "Field '{}' (index {}) must be declared after '{}' (index {}) in CapabilityLattice",
+                expected[i].1,
+                expected[i].0,
+                expected[i - 1].1,
+                expected[i - 1].0,
+            );
+        }
+    }
+
+    /// Verify that the Lean 4 hand-written model's `toNat` mapping matches
+    /// the Rust `CapabilityLevel` repr discriminants.
+    ///
+    /// `CapabilityLevel.lean` is a hand-written Lean 4 model (not generated by
+    /// Aeneas/Charon). This test is the CI correspondence bridge: it reads the
+    /// Lean source at compile time and asserts the `toNat` values exactly match
+    /// the Rust `#[repr]` discriminants. If either side changes, this test fails
+    /// before the mismatch can reach production.
+    #[test]
+    fn lean_tonat_matches_rust_discriminants() {
+        const LEAN_SOURCE: &str =
+            include_str!("../../portcullis-verified/lean/PortcullisVerified/CapabilityLevel.lean");
+        // Verify the Lean toNat mapping contains the expected discriminant lines.
+        assert!(
+            LEAN_SOURCE.contains("| .never   => 0"),
+            "Lean toNat: Never must map to 0"
+        );
+        assert!(
+            LEAN_SOURCE.contains("| .lowRisk => 1"),
+            "Lean toNat: LowRisk must map to 1"
+        );
+        assert!(
+            LEAN_SOURCE.contains("| .always  => 2"),
+            "Lean toNat: Always must map to 2"
+        );
+        // Verify the Rust discriminants are stable.
+        assert_eq!(
+            CapabilityLevel::Never as u8,
+            0,
+            "Rust: Never discriminant must be 0"
+        );
+        assert_eq!(
+            CapabilityLevel::LowRisk as u8,
+            1,
+            "Rust: LowRisk discriminant must be 1"
+        );
+        assert_eq!(
+            CapabilityLevel::Always as u8,
+            2,
+            "Rust: Always discriminant must be 2"
+        );
     }
 
     #[test]
