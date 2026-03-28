@@ -38,6 +38,7 @@ mod mtls;
 mod node_client;
 mod policy;
 mod sandbox_proof;
+mod telemetry;
 #[allow(dead_code)]
 mod unicode_audit;
 mod validation;
