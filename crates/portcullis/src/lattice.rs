@@ -598,6 +598,24 @@ impl PermissionLattice {
             },
             obligations: Obligations::default(),
             commands: CommandLattice::restrictive(),
+            paths: PathLattice {
+                allowed: std::collections::HashSet::new(), // empty = all readable
+                blocked: [
+                    // Defense-in-depth: block sensitive paths even though write
+                    // capabilities are Never. Belt-and-suspenders for lockdown.
+                    "**/.env",
+                    "**/.env.*",
+                    "**/secrets/**",
+                    "**/.ssh/**",
+                    "**/.gnupg/**",
+                    "**/.aws/**",
+                    "**/credentials*",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+                work_dir: None,
+            },
             ..Default::default()
         };
 
