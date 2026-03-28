@@ -19,6 +19,7 @@ members = [
     "crates/ctf-engine",               # CTF engine: formally verified sandbox challenge
     "crates/ctf-server",               # HTTP API server for The Vault CTF
     "crates/ctf-mcp",                  # MCP server: lets any AI agent play The Vault CTF
+    "crates/portcullis-core",            # Aeneas verification target: dependency-free lattice types
     "crates/ck-types",                  # Constitutional Kernel: core types, manifests, digests
     "crates/ck-policy",                 # Constitutional Kernel: monotonicity checker
     "crates/ck-kernel",                 # Constitutional Kernel: admission engine + lineage
