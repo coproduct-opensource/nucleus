@@ -73,12 +73,23 @@ pub fn init_otel_layer() -> Option<
     use opentelemetry_otlp::WithExportConfig as _;
 
     let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok()?;
+    let protocol =
+        std::env::var("OTEL_EXPORTER_OTLP_PROTOCOL").unwrap_or_else(|_| "grpc".to_string());
 
-    let exporter = opentelemetry_otlp::SpanExporter::builder()
-        .with_tonic()
-        .with_endpoint(&endpoint)
-        .build()
-        .ok()?;
+    // Support both gRPC (default) and http/protobuf (Grafana Cloud).
+    // Set OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf for Grafana Cloud.
+    let exporter = match protocol.as_str() {
+        "http/protobuf" => opentelemetry_otlp::SpanExporter::builder()
+            .with_http()
+            .with_endpoint(&endpoint)
+            .build()
+            .ok()?,
+        _ => opentelemetry_otlp::SpanExporter::builder()
+            .with_tonic()
+            .with_endpoint(&endpoint)
+            .build()
+            .ok()?,
+    };
 
     let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
         .with_batch_exporter(exporter)
