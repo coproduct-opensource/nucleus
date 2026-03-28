@@ -170,5 +170,5 @@ message LockdownRequest {
 message LockdownResponse {
   uint32 affected_pods = 1;          // Number of pods affected
   uint32 audit_entries_created = 2;  // Number of ExecutionBlocked audit entries written
-  google.protobuf.Timestamp timestamp = 3;
+  uint64 timestamp_unix = 3;  // Unix timestamp in seconds
 }
