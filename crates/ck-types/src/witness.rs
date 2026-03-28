@@ -44,8 +44,12 @@ pub struct WitnessBundle {
 
 impl WitnessBundle {
     /// Compute a canonical BLAKE3 digest of this witness bundle.
+    ///
+    /// Excludes the `signatures` field from the digest input — signatures are
+    /// computed OVER the digest, so including them would be circular. This uses
+    /// the same cleared-signatures representation as `signing_payload()`.
     pub fn digest(&self) -> ArtifactDigest {
-        let canonical = serde_json::to_vec(self).expect("WitnessBundle is always serializable");
+        let canonical = self.signing_payload();
         ArtifactDigest::from_bytes(&canonical)
     }
 
