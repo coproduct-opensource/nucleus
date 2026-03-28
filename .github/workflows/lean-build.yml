@@ -50,3 +50,16 @@ jobs:
         # Lean 4 type-checker.  No SMT oracle is involved — proofs discharge via
         # `decide` (finite enumeration over the 3-element CapabilityLevel type).
         # A non-zero exit code means the HeytingAlgebra instance failed to typecheck.
+
+      - name: Reject sorry (proof holes)
+        working-directory: crates/portcullis-verified/lean
+        run: |
+          # `sorry` is a Lean axiom that proves anything — used as a placeholder.
+          # lake build exits 0 even with sorry present, so we grep to catch holes.
+          # This was found by the QA adversarial pass.
+          if grep -rn 'sorry' PortcullisVerified/ --include='*.lean'; then
+            echo "ERROR: Lean proofs contain 'sorry' — proof has holes."
+            echo "All theorems must be fully proven, no placeholders."
+            exit 1
+          fi
+          echo "No sorry found — all proofs are complete."
