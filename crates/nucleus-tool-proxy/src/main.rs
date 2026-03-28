@@ -280,6 +280,10 @@ pub(crate) struct AppState {
     cert_root_pubkey: Option<Arc<Vec<u8>>>,
     /// Session exposure guard for exit report (set when MCP server starts).
     exposure_guard: Arc<std::sync::RwLock<Option<Arc<portcullis::GradedExposureGuard>>>>,
+    /// Emergency lockdown flag. When true, ALL tool calls are rejected with
+    /// ExecutionBlocked. Checked on every tool invocation before permission
+    /// evaluation. Set via the lockdown signal file or gRPC Lockdown RPC.
+    lockdown_active: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Default)]
@@ -1184,6 +1188,7 @@ async fn main() -> Result<(), ApiError> {
             .and_then(|hex_str| hex::decode(hex_str).ok())
             .map(Arc::new),
         exposure_guard: Arc::new(std::sync::RwLock::new(None)),
+        lockdown_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
     if let Err(err) = emit_boot_report(&state).await {
@@ -1413,6 +1418,20 @@ async fn auth_middleware(
     if parts.uri.path() == HEALTH_PATH {
         let req = axum::http::Request::from_parts(parts, Body::from(bytes));
         return Ok(next.run(req).await);
+    }
+
+    // Emergency lockdown check — reject ALL tool calls when lockdown is active.
+    // This is checked before any permission evaluation or attestation verification
+    // because lockdown overrides everything. The only exception is the health endpoint.
+    if state
+        .lockdown_active
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err(ApiError::Body(
+            "LOCKDOWN ACTIVE: all tool calls are blocked. \
+             Use `nucleus lockdown --restore` to lift the lockdown."
+                .to_string(),
+        ));
     }
 
     // Verify attestation if required
