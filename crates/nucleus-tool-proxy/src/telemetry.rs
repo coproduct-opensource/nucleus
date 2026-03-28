@@ -96,9 +96,14 @@ fn record_verdict(
         cap_write_files = capabilities.write_files,
         cap_edit_files = capabilities.edit_files,
         cap_run_bash = capabilities.run_bash,
+        cap_glob_search = capabilities.glob_search,
+        cap_grep_search = capabilities.grep_search,
         cap_web_fetch = capabilities.web_fetch,
         cap_web_search = capabilities.web_search,
+        cap_git_commit = capabilities.git_commit,
         cap_git_push = capabilities.git_push,
+        cap_create_pr = capabilities.create_pr,
+        cap_manage_pods = capabilities.manage_pods,
         exposure_private_data = exposure.private_data,
         exposure_untrusted_content = exposure.untrusted_content,
         exposure_exfil_vector = exposure.exfil_vector,
@@ -118,9 +123,14 @@ pub struct VerdictCapabilities {
     pub write_files: u8,
     pub edit_files: u8,
     pub run_bash: u8,
+    pub glob_search: u8,
+    pub grep_search: u8,
     pub web_fetch: u8,
     pub web_search: u8,
+    pub git_commit: u8,
     pub git_push: u8,
+    pub create_pr: u8,
+    pub manage_pods: u8,
 }
 
 impl From<&portcullis::CapabilityLattice> for VerdictCapabilities {
@@ -130,9 +140,14 @@ impl From<&portcullis::CapabilityLattice> for VerdictCapabilities {
             write_files: caps.write_files as u8,
             edit_files: caps.edit_files as u8,
             run_bash: caps.run_bash as u8,
+            glob_search: caps.glob_search as u8,
+            grep_search: caps.grep_search as u8,
             web_fetch: caps.web_fetch as u8,
             web_search: caps.web_search as u8,
+            git_commit: caps.git_commit as u8,
             git_push: caps.git_push as u8,
+            create_pr: caps.create_pr as u8,
+            manage_pods: caps.manage_pods as u8,
         }
     }
 }
