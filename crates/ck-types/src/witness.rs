@@ -129,6 +129,9 @@ impl SignatureVerifier {
         let mut errors = Vec::new();
         let mut valid_roles = std::collections::HashSet::new();
         let mut valid_count = 0;
+        // Track distinct public keys used for valid signatures.
+        // Role separation requires distinct keys — one key can't satisfy multiple roles.
+        let mut distinct_keys = std::collections::HashSet::<Vec<u8>>::new();
 
         for sig in &bundle.signatures {
             if sig.algorithm != "ed25519" {
@@ -169,6 +172,7 @@ impl SignatureVerifier {
             match public_key.verify(&payload, &sig_bytes) {
                 Ok(()) => {
                     valid_count += 1;
+                    distinct_keys.insert(pub_key_bytes.clone());
                     if let Some(role) = sig.role {
                         valid_roles.insert(role);
                     }
@@ -191,6 +195,19 @@ impl SignatureVerifier {
                 .collect();
             if !missing.is_empty() {
                 errors.push(format!("Missing required role signatures: {:?}", missing));
+                return Err(errors);
+            }
+
+            // Distinct key check: a single key registered under multiple signer
+            // names must not satisfy multiple required roles. The number of
+            // distinct public keys must be >= the number of required roles.
+            if distinct_keys.len() < self.required_roles.len() {
+                errors.push(format!(
+                    "Role separation violation: {} required roles but only {} distinct \
+                     signing keys used. Each role must be signed by a different key.",
+                    self.required_roles.len(),
+                    distinct_keys.len()
+                ));
                 return Err(errors);
             }
         }
