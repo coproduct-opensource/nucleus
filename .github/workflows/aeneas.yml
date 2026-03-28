@@ -1,0 +1,108 @@
+name: Aeneas Verification
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "crates/portcullis-core/**"
+      - ".github/workflows/aeneas.yml"
+  pull_request:
+    paths:
+      - "crates/portcullis-core/**"
+      - ".github/workflows/aeneas.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Pin Charon's required nightly (must match charon-pin in Aeneas repo)
+  CHARON_NIGHTLY: nightly-2026-02-07
+
+jobs:
+  aeneas-translate:
+    name: Aeneas (Rust → Lean 4)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      # --- Rust nightly for Charon ---
+      - name: Install Rust nightly for Charon
+        uses: dtolnay/rust-toolchain@56f84321dbab9ef3e21edae48f4f43da4b0a4a4a # master
+        with:
+          toolchain: ${{ env.CHARON_NIGHTLY }}
+          components: rustc-dev,llvm-tools-preview,rust-src
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        with:
+          cache-on-failure: true
+
+      # --- OCaml for Aeneas ---
+      - name: Install OCaml
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.2"
+
+      # --- Build Aeneas + Charon from source ---
+      - name: Cache Aeneas build
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: /tmp/aeneas-build
+          key: aeneas-${{ runner.os }}-${{ hashFiles('.github/workflows/aeneas.yml') }}
+
+      - name: Build Aeneas + Charon
+        run: |
+          if [ -x /tmp/aeneas-build/bin/aeneas ] && [ -x /tmp/aeneas-build/charon/bin/charon ]; then
+            echo "Using cached Aeneas build"
+          else
+            rm -rf /tmp/aeneas-build
+            git clone --depth 1 https://github.com/AeneasVerif/aeneas.git /tmp/aeneas-build
+            cd /tmp/aeneas-build
+            eval $(opam env)
+            opam install --deps-only ./src/aeneas.opam -y || true
+            # Install actual deps (opam file is minimal, real deps in dune)
+            opam install visitors ppxlib core_unix ocamlgraph progress domainslib \
+              ppx_deriving easy_logging zarith yojson menhir unionFind odoc -y
+            # Build Charon
+            gmake setup-charon || make setup-charon
+            # Build Aeneas
+            gmake build || make build
+          fi
+          echo "/tmp/aeneas-build/bin" >> "$GITHUB_PATH"
+          echo "/tmp/aeneas-build/charon/bin" >> "$GITHUB_PATH"
+
+      - name: Verify tools
+        run: |
+          charon version
+          aeneas -version
+
+      # --- Extract + Translate ---
+      - name: Charon MIR extraction
+        working-directory: crates/portcullis-core
+        run: charon cargo --preset aeneas
+
+      - name: Aeneas Lean 4 translation
+        run: |
+          mkdir -p crates/portcullis-core/lean/ci-generated
+          aeneas -backend lean portcullis_core.llbc \
+            -dest crates/portcullis-core/lean/ci-generated
+
+      # --- Verify generated code matches committed code ---
+      - name: Verify generated Lean matches committed
+        run: |
+          if ! diff -r crates/portcullis-core/lean/generated \
+                       crates/portcullis-core/lean/ci-generated; then
+            echo ""
+            echo "ERROR: Aeneas-generated Lean code does not match committed version."
+            echo "The Rust source in portcullis-core has changed but the generated"
+            echo "Lean code was not regenerated. Run:"
+            echo ""
+            echo "  ./scripts/aeneas-translate.sh"
+            echo ""
+            echo "and commit the updated crates/portcullis-core/lean/generated/"
+            exit 1
+          fi
+          echo "✓ Generated Lean code matches committed version"
