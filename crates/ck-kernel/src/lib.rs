@@ -90,14 +90,17 @@ impl Kernel {
     ///
     /// The first record is treated as genesis. Returns an error if records
     /// are empty or if sequence numbers are not monotonically increasing.
-    pub fn restore(records: Vec<LineageRecord>) -> Result<Self, String> {
+    pub fn restore(
+        records: Vec<LineageRecord>,
+        signature_policy: SignaturePolicy,
+    ) -> Result<Self, String> {
         if records.is_empty() {
             return Err("Cannot restore kernel from empty lineage".into());
         }
         let lineage = LineageStore::restore(records)?;
         Ok(Self {
             lineage,
-            signature_policy: SignaturePolicy::SkipForTesting,
+            signature_policy,
             admitted_policies: std::collections::HashMap::new(),
         })
     }

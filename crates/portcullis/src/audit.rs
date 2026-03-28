@@ -334,7 +334,7 @@ impl Default for RetentionPolicy {
     fn default() -> Self {
         Self {
             max_entries_per_identity: Some(10_000),
-            max_age: Some(Duration::from_secs(7 * 24 * 60 * 60)), // 7 days
+            max_age: Some(Duration::from_secs(180 * 24 * 60 * 60)), // 180 days (EU AI Act Article 19)
             max_total_entries: Some(1_000_000),
         }
     }

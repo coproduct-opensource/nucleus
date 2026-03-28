@@ -226,6 +226,7 @@ impl PolicyEngine {
     }
 
     /// Get the matching policy for logging/debugging.
+    #[allow(dead_code)]
     pub fn matching_policy(&self, spiffe_id: &str) -> Option<&IdentityPolicy> {
         self.policy_set.matching_policy(spiffe_id)
     }
