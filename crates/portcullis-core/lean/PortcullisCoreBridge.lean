@@ -1,13 +1,20 @@
-import Types
+import PortcullisCore.Types
+import PortcullisCore.CoreFuns
 import Mathlib.Order.Heyting.Basic
 
 /-!
-# HeytingAlgebra Instance for Aeneas-Generated CapabilityLevel
+# HeytingAlgebra + Function Correspondence for Aeneas-Generated CapabilityLevel
 
-Proves that the Aeneas-generated `portcullis_core.CapabilityLevel` —
-machine-translated from production Rust — is a `HeytingAlgebra`.
+Proves two things about the Aeneas-generated `portcullis_core.CapabilityLevel`:
 
-All proofs discharge via `decide` over the 3-element type.
+1. **Algebraic structure**: The type is a `HeytingAlgebra` (LinearOrder + HImp).
+2. **Function correspondence**: The Aeneas-generated monadic `meet` function
+   (translated from Rust MIR) computes the same result as the lattice `inf`.
+
+Together, these connect the Lean type-checker's algebraic verification to the
+actual Rust code's behavior via the Aeneas translation pipeline.
+
+All proofs discharge via `decide`/`simp` over the 3-element type.
 No SMT oracle, no Z3 — kernel-checked by the Lean 4 type-checker.
 -/
 
@@ -123,5 +130,42 @@ instance instGeneralizedHeytingAlgebra : GeneralizedHeytingAlgebra CapabilityLev
 instance instHeytingAlgebra : HeytingAlgebra CapabilityLevel where
   bot_le  := never_le
   himp_bot := himp_bot
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- Function correspondence: Rust meet() = lattice inf
+--
+-- The Aeneas-generated CapabilityLevel.meet (from Funs.lean) calls
+-- PartialOrd::le and returns the smaller element — this is exactly
+-- the lattice inf operation. We prove this correspondence, closing
+-- the loop between the Rust implementation and the algebraic proof.
+-- ═══════════════════════════════════════════════════════════════════════
+
+open Aeneas.Std (Result)
+
+/-- The Aeneas-generated `meet` never fails — it always returns `ok`. -/
+theorem meet_never_fails (a b : CapabilityLevel) :
+    ∃ r, portcullis_core.CapabilityLevel.meet a b = .ok r := by
+  cases a <;> cases b <;> exact ⟨_, rfl⟩
+
+/-- The Aeneas-generated `meet` computes the lattice inf (min).
+    This connects the Rust implementation to the algebraic structure. -/
+theorem meet_eq_inf (a b : CapabilityLevel) :
+    portcullis_core.CapabilityLevel.meet a b = .ok (a ⊓ b) := by
+  cases a <;> cases b <;> rfl
+
+/-- The Aeneas-generated `join` never fails. -/
+theorem join_never_fails (a b : CapabilityLevel) :
+    ∃ r, portcullis_core.CapabilityLevel.join a b = .ok r := by
+  cases a <;> cases b <;> exact ⟨_, rfl⟩
+
+/-- The Aeneas-generated `join` computes the lattice sup (max). -/
+theorem join_eq_sup (a b : CapabilityLevel) :
+    portcullis_core.CapabilityLevel.join a b = .ok (a ⊔ b) := by
+  cases a <;> cases b <;> rfl
+
+/-- The Aeneas-generated `implies` computes the Heyting implication. -/
+theorem implies_eq_himp (a b : CapabilityLevel) :
+    portcullis_core.CapabilityLevel.implies a b = .ok (a ⇨ b) := by
+  cases a <;> cases b <;> rfl
 
 end PortcullisCoreBridge

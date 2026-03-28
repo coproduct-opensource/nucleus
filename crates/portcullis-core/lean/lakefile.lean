@@ -16,12 +16,11 @@ require aeneas from git
 require mathlib from git
   "https://github.com/leanprover-community/mathlib4.git" @ "v4.28.0-rc1"
 
--- The Aeneas-generated Lean type definitions from portcullis-core Rust crate
--- (split-file mode: Types.lean has just the types, Funs.lean has implementations)
-lean_lib «PortcullisCoreTypes» where
-  roots := #[`Types]
+-- Aeneas-generated types, curated function subset, and external implementations
+lean_lib «PortcullisCore» where
+  roots := #[`PortcullisCore.Types, `PortcullisCore.CoreFuns, `PortcullisCore.FunsExternal]
   srcDir := "generated"
 
--- The HeytingAlgebra bridge proof
+-- HeytingAlgebra bridge proof + function correspondence theorems
 lean_lib «PortcullisCoreBridge» where
   roots := #[`PortcullisCoreBridge]
