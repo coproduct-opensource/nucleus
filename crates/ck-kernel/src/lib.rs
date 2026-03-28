@@ -197,6 +197,12 @@ impl Kernel {
             SignaturePolicy::SkipForTesting => {
                 // Test mode: intentionally skip signature verification.
                 // Production kernels MUST use SignaturePolicy::Enforced.
+                #[cfg(not(test))]
+                eprintln!(
+                    "WARNING: ck-kernel signature verification DISABLED (SkipForTesting). \
+                     Production deployments MUST call .with_signature_verifier(). \
+                     Any witness bundle will be accepted without cryptographic proof."
+                );
             }
         }
 
