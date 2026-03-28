@@ -2762,6 +2762,13 @@ impl NodeService for GrpcService {
             hasher.update(report.audit_entry_count.to_le_bytes());
             hasher.update(report.timestamp_unix.to_le_bytes());
             hasher.update(manifest_hash.as_bytes());
+            // Commit exposure labels into the hash — without this, the hash
+            // can be valid while the labels are tampered with, defeating the
+            // content-hash binding that the SandboxAttested upgrade path relies on.
+            for label in &report.observed_exposure_labels {
+                hasher.update(label.as_bytes());
+            }
+            hasher.update(report.observed_risk_tier.as_bytes());
             format!("{:x}", hasher.finalize())
         };
 

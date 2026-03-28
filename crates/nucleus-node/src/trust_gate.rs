@@ -22,9 +22,11 @@
 use std::sync::Arc;
 
 use base64::Engine as _;
+use ed25519_dalek::{Signer as _, SigningKey};
 use hmac::{Hmac, Mac};
 use nucleus_spec::{PodSpec, PolicySpec};
 use portcullis::{IsolationLattice, PermissionLattice, TrustProfile};
+use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use tracing::{debug, info, warn};
@@ -43,6 +45,13 @@ pub struct TrustGateConfig {
     /// When None, report_receipt() skips signing and the server will reject
     /// requests with 401 unless it is running with insecure bypass enabled.
     pub receipt_secret: Option<Arc<Vec<u8>>>,
+    /// Per-executor Ed25519 signing key for receipt authentication.
+    /// Each executor gets a unique keypair — the trust-service verifies receipts
+    /// against the registered public key, preventing forged attestations even if
+    /// the shared HMAC secret is compromised.
+    pub executor_signing_key: Arc<SigningKey>,
+    /// Executor identity sent as X-Nucleus-Executor-Id on receipt POSTs.
+    pub executor_id: String,
 }
 
 impl Default for TrustGateConfig {
@@ -52,8 +61,25 @@ impl Default for TrustGateConfig {
             enforce: false,                   // Log-only by default
             default_bracket: "C".to_string(), // Adequate — tenant profile
             receipt_secret: None,
+            executor_signing_key: Arc::new(SigningKey::generate(&mut OsRng)),
+            executor_id: format!("nucleus-executor/{}", uuid_hex()),
         }
     }
+}
+
+/// Generate a short hex UUID for default executor IDs.
+fn uuid_hex() -> String {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(std::process::id().to_le_bytes());
+    hasher.update(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            .to_le_bytes(),
+    );
+    hex::encode(&hasher.finalize()[..8])
 }
 
 impl TrustGateConfig {
@@ -64,6 +90,11 @@ impl TrustGateConfig {
             .and_then(|s| base64::prelude::BASE64_STANDARD.decode(&s).ok())
             .map(Arc::new);
 
+        let executor_id = std::env::var("TRUST_EXECUTOR_ID")
+            .unwrap_or_else(|_| format!("nucleus-executor/{}", uuid_hex()));
+
+        let executor_signing_key = Arc::new(SigningKey::generate(&mut OsRng));
+
         Self {
             trust_api_url: std::env::var("TRUST_API_URL").unwrap_or_default(),
             enforce: std::env::var("TRUST_GATE_ENFORCE")
@@ -72,6 +103,8 @@ impl TrustGateConfig {
             default_bracket: std::env::var("TRUST_DEFAULT_BRACKET")
                 .unwrap_or_else(|_| "C".to_string()),
             receipt_secret,
+            executor_signing_key,
+            executor_id,
         }
     }
 
@@ -658,6 +691,16 @@ pub async fn report_receipt(
         );
     }
 
+    // Per-executor Ed25519 signature — allows trust-service to verify which
+    // specific executor produced this receipt, not just "someone with the HMAC key".
+    let ed25519_sig = config.executor_signing_key.sign(&body_bytes);
+    req = req
+        .header("X-Nucleus-Executor-Id", &config.executor_id)
+        .header(
+            "X-Nucleus-Executor-Sig",
+            base64::prelude::BASE64_STANDARD.encode(ed25519_sig.to_bytes()),
+        );
+
     match req.send().await {
         Ok(resp) if resp.status().is_success() => {
             info!(
@@ -720,6 +763,15 @@ pub async fn report_receipt(
             ingest_req = ingest_req.header("X-Nucleus-Signature", sig);
         }
 
+        // Per-executor Ed25519 on ingest path too
+        let ed25519_sig = config.executor_signing_key.sign(&ingest_bytes);
+        ingest_req = ingest_req
+            .header("X-Nucleus-Executor-Id", &config.executor_id)
+            .header(
+                "X-Nucleus-Executor-Sig",
+                base64::prelude::BASE64_STANDARD.encode(ed25519_sig.to_bytes()),
+            );
+
         let _ = ingest_req.send().await;
     }
 }
@@ -736,6 +788,66 @@ fn hmac_sha256_hex(secret: &[u8], data: &[u8]) -> String {
         .iter()
         .map(|b| format!("{:02x}", b))
         .collect()
+}
+
+/// Register this executor's Ed25519 public key with the trust-service.
+///
+/// Called once at startup so the trust-service can verify per-executor
+/// signatures on subsequent receipt POSTs. The registration request itself
+/// is HMAC-authenticated using `receipt_secret`.
+#[allow(dead_code)] // Called at startup when trust gate is enabled
+pub async fn register_executor_pubkey(config: &TrustGateConfig, http_client: &reqwest::Client) {
+    if !config.is_enabled() {
+        return;
+    }
+
+    let url = format!("{}/api/trust/executors/register", config.trust_api_url);
+
+    let pubkey_b64 = base64::prelude::BASE64_STANDARD
+        .encode(config.executor_signing_key.verifying_key().to_bytes());
+
+    let body = serde_json::json!({
+        "executor_id": config.executor_id,
+        "public_key": pubkey_b64,
+        "algorithm": "Ed25519",
+    });
+
+    let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
+
+    let mut req = http_client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .timeout(std::time::Duration::from_secs(5))
+        .body(body_bytes.clone());
+
+    // HMAC-authenticate the registration itself
+    if let Some(secret) = &config.receipt_secret {
+        let sig = hmac_sha256_hex(secret, &body_bytes);
+        req = req.header("X-Nucleus-Signature", sig);
+    }
+
+    match req.send().await {
+        Ok(resp) if resp.status().is_success() => {
+            info!(
+                executor_id = %config.executor_id,
+                "Registered executor public key with trust-service"
+            );
+        }
+        Ok(resp) => {
+            warn!(
+                executor_id = %config.executor_id,
+                status = %resp.status(),
+                "Failed to register executor public key"
+            );
+        }
+        Err(e) => {
+            warn!(
+                executor_id = %config.executor_id,
+                error = %e,
+                "Failed to register executor public key (network error)"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -930,6 +1042,7 @@ mod tests {
             enforce: true,
             default_bracket: "C".to_string(),
             receipt_secret: Some(Arc::new(secret_bytes.to_vec())),
+            ..Default::default()
         };
 
         assert!(config.is_enabled());

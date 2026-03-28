@@ -68,8 +68,9 @@ Proofs are first-class artifacts, not academic exercises:
 
 - **Verus SMT proofs** — machine-checked invariants for the Rust kernel,
   erased at compile time (zero runtime overhead). CI-gated minimum: 297 proofs.
-- **Lean 4 model** (planned) — deeper mathematical reasoning via Aeneas
-  translation and Mathlib connections.
+- **Lean 4 model** (partial) — hand-written kernel-checked proof of
+  `CapabilityLevel` as a `HeytingAlgebra`; Aeneas pipeline translation
+  for the full portcullis crate is planned but not yet started.
 - **Differential testing** (planned) — Cedar pattern: millions of random inputs
   compared between Rust engine and Lean model.
 - **Public Verified Claims page** — each claim maps to a proof artifact and
@@ -209,10 +210,10 @@ or panics. No fail-open. No silent degradation.
 │  ├── permission enforcement        fail-closed      │
 │  └── sandbox boundary              proven panics    │
 ├─────────────────────────────────────────────────────┤
-│  Formal Model (Lean 4 via Aeneas)  planned          │
-│  ├── lattice algebra               Mathlib links    │
-│  ├── Heyting adjunction            Lean 4 proofs    │
-│  └── graded monad laws             Lean 4 proofs    │
+│  Formal Model (Lean 4, hand-written) partial         │
+│  ├── CapabilityLevel HeytingAlgebra Lean 4 proofs   │
+│  ├── Aeneas pipeline (full crate)  not started      │
+│  └── graded monad laws             planned          │
 ├─────────────────────────────────────────────────────┤
 │  Differential Testing              planned          │
 │  ├── Rust engine vs Lean model     cargo fuzz       │
@@ -297,12 +298,15 @@ Each rung is shippable independently.
   counterexample — uninhabitable state fires for y but not x). This was discovered by
   the proofs, not by tests. The proofs are working.
 
-### Rung 2 — Lean 4 Model (planned, Phase 1)
+### Rung 2 — Lean 4 Model (partial)
 
-- Translate portcullis to Lean 4 via Aeneas
-- Link to Mathlib for established algebraic structures
-- Deeper reasoning: induction over recursive structures, higher-order
-  properties that SMT solvers struggle with
+- **Done**: hand-written kernel-checked proof of `CapabilityLevel` as a
+  `HeytingAlgebra` (Mathlib-linked, 27-case `decide`). Discriminant
+  correspondence enforced by `lean_tonat_matches_rust_discriminants` CI test.
+  Kani R1/R2/R3 harnesses bridge the Lean proofs to bounded model checking.
+- **Planned**: Aeneas/Charon pipeline translation (Rust MIR → LLBC → Lean)
+  for the full portcullis crate; Mathlib links for broader algebraic structures;
+  graded monad laws in Lean 4.
 
 ### Rung 3 — Differential Testing (planned, Phase 3)
 
