@@ -61,6 +61,12 @@ clap = { version = "4.6", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
+# OpenTelemetry (opt-in via feature flags)
+opentelemetry = "0.31"
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic", "trace"] }
+tracing-opentelemetry = "0.32"
+
 # Crypto/signing
 sha2 = "0.10"
 hmac = "0.12"

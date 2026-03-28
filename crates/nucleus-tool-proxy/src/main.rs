@@ -38,6 +38,7 @@ mod mtls;
 mod node_client;
 mod policy;
 mod sandbox_proof;
+mod telemetry;
 #[allow(dead_code)]
 mod unicode_audit;
 mod validation;
@@ -1195,22 +1196,72 @@ async fn main() -> Result<(), ApiError> {
         warn!("failed to emit boot report: {err}");
     }
 
-    // Lockdown signal watcher: polls /tmp/nucleus-lockdown.json every 500ms.
-    // When the file exists with "action": "lockdown", sets lockdown_active to true.
-    // When the file is absent or has "action": "restore", sets it to false.
-    // This connects `nucleus lockdown` CLI to the tool-proxy enforcement gate.
+    // Lockdown signal watcher: polls the signal file every 500ms.
+    // Verifies HMAC before acting — prevents privilege escalation via
+    // world-writable signal file (red team finding).
     {
         let lockdown_flag = state.lockdown_active.clone();
         tokio::spawn(async move {
-            let signal_path = std::path::Path::new("/tmp/nucleus-lockdown.json");
+            // Same path logic as the CLI
+            let signal_path = dirs::runtime_dir()
+                .or_else(dirs::data_local_dir)
+                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+                .join("nucleus")
+                .join("lockdown.json");
+
             loop {
                 let should_lock = if signal_path.exists() {
-                    match tokio::fs::read_to_string(signal_path).await {
-                        Ok(content) => serde_json::from_str::<serde_json::Value>(&content)
-                            .ok()
-                            .and_then(|v| v.get("restore")?.as_bool())
-                            .map(|restore| !restore)
-                            .unwrap_or(true),
+                    match tokio::fs::read_to_string(&signal_path).await {
+                        Ok(content) => {
+                            // Parse envelope and verify HMAC
+                            if let Ok(envelope) =
+                                serde_json::from_str::<serde_json::Value>(&content)
+                            {
+                                let signal = envelope.get("signal");
+                                let claimed_hmac =
+                                    envelope.get("hmac").and_then(|h| h.as_str()).unwrap_or("");
+
+                                if let Some(signal_val) = signal {
+                                    // Recompute HMAC
+                                    let body = serde_json::to_string_pretty(signal_val)
+                                        .unwrap_or_default();
+
+                                    let key_material = format!(
+                                        "nucleus-lockdown-{}:{}",
+                                        whoami::fallible::hostname()
+                                            .unwrap_or_else(|_| "unknown".to_string()),
+                                        whoami::fallible::username()
+                                            .unwrap_or_else(|_| "unknown".to_string()),
+                                    );
+
+                                    use hmac::{Hmac, Mac};
+                                    use sha2::Sha256;
+                                    let mut mac =
+                                        Hmac::<Sha256>::new_from_slice(key_material.as_bytes())
+                                            .expect("hmac");
+                                    mac.update(body.as_bytes());
+                                    let expected = hex::encode(mac.finalize().into_bytes());
+
+                                    if expected == claimed_hmac {
+                                        signal_val
+                                            .get("restore")
+                                            .and_then(|r| r.as_bool())
+                                            .map(|restore| !restore)
+                                            .unwrap_or(true)
+                                    } else {
+                                        tracing::warn!(
+                                            "Lockdown signal HMAC mismatch — ignoring \
+                                             (possible tampering)"
+                                        );
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        }
                         Err(_) => false,
                     }
                 } else {
@@ -1221,9 +1272,9 @@ async fn main() -> Result<(), ApiError> {
                 if should_lock != was_locked {
                     lockdown_flag.store(should_lock, std::sync::atomic::Ordering::Release);
                     if should_lock {
-                        tracing::warn!("LOCKDOWN ACTIVATED via signal file");
+                        tracing::warn!("LOCKDOWN ACTIVATED via verified signal file");
                     } else {
-                        tracing::info!("Lockdown lifted via signal file");
+                        tracing::info!("Lockdown lifted via verified signal file");
                     }
                 }
 
