@@ -1195,6 +1195,43 @@ async fn main() -> Result<(), ApiError> {
         warn!("failed to emit boot report: {err}");
     }
 
+    // Lockdown signal watcher: polls /tmp/nucleus-lockdown.json every 500ms.
+    // When the file exists with "action": "lockdown", sets lockdown_active to true.
+    // When the file is absent or has "action": "restore", sets it to false.
+    // This connects `nucleus lockdown` CLI to the tool-proxy enforcement gate.
+    {
+        let lockdown_flag = state.lockdown_active.clone();
+        tokio::spawn(async move {
+            let signal_path = std::path::Path::new("/tmp/nucleus-lockdown.json");
+            loop {
+                let should_lock = if signal_path.exists() {
+                    match tokio::fs::read_to_string(signal_path).await {
+                        Ok(content) => serde_json::from_str::<serde_json::Value>(&content)
+                            .ok()
+                            .and_then(|v| v.get("restore")?.as_bool())
+                            .map(|restore| !restore)
+                            .unwrap_or(true),
+                        Err(_) => false,
+                    }
+                } else {
+                    false
+                };
+
+                let was_locked = lockdown_flag.load(std::sync::atomic::Ordering::Acquire);
+                if should_lock != was_locked {
+                    lockdown_flag.store(should_lock, std::sync::atomic::Ordering::Release);
+                    if should_lock {
+                        tracing::warn!("LOCKDOWN ACTIVATED via signal file");
+                    } else {
+                        tracing::info!("Lockdown lifted via signal file");
+                    }
+                }
+
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        });
+    }
+
     // MCP server mode: serve Model Context Protocol over stdio instead of HTTP.
     #[cfg(feature = "mcp")]
     if args.mcp {
