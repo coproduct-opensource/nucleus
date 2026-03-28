@@ -120,6 +120,24 @@ impl AuditEntry {
         self
     }
 
+    /// Attach a per-executor Ed25519 signature to this audit entry.
+    ///
+    /// The signature covers `content_hash()` — the SHA-256 of the entry's
+    /// canonical content. This makes each audit entry non-repudiable:
+    /// only the specific executor that observed the event can produce a
+    /// valid signature. Stored in the forward-compatible `extensions` map.
+    pub fn with_executor_signature(
+        mut self,
+        executor_id: impl Into<String>,
+        signature_b64: impl Into<String>,
+    ) -> Self {
+        self.extensions
+            .insert("executor_id".to_string(), executor_id.into());
+        self.extensions
+            .insert("executor_sig".to_string(), signature_b64.into());
+        self
+    }
+
     /// Compute the SHA-256 hash of this entry for chain linkage.
     ///
     /// The hash covers all fields including `prev_hash`, making the chain
