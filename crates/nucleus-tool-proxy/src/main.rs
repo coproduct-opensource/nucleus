@@ -32,6 +32,7 @@ mod auth;
 mod cert_bridge;
 mod exit_report;
 mod identity_fusion;
+mod lockdown_client;
 #[cfg(feature = "mcp")]
 mod mcp;
 mod mtls;
@@ -224,6 +225,10 @@ struct Args {
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_NODE_AUTH_SECRET")]
     node_auth_secret: Option<String>,
 
+    /// gRPC endpoint of nucleus-node for streaming lockdown commands.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_NODE_GRPC_URL")]
+    node_grpc_url: Option<String>,
+
     /// Delegation ceiling for sub-pod permissions (JSON-serialized PermissionLattice).
     /// Sub-pods cannot exceed this ceiling via delegate_to().
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_DELEGATION_CEILING")]
@@ -281,14 +286,25 @@ pub(crate) struct AppState {
     cert_root_pubkey: Option<Arc<Vec<u8>>>,
     /// Session exposure guard for exit report (set when MCP server starts).
     exposure_guard: Arc<std::sync::RwLock<Option<Arc<portcullis::GradedExposureGuard>>>>,
-    /// Emergency lockdown flag. When true, ALL tool calls are rejected with
-    /// ExecutionBlocked. Checked on every tool invocation before permission
-    /// evaluation. Set via the lockdown signal file or gRPC Lockdown RPC.
-    lockdown_active: Arc<std::sync::atomic::AtomicBool>,
+    /// File-based lockdown flag. Set by the signal file watcher.
+    file_lockdown: Arc<std::sync::atomic::AtomicBool>,
+    /// gRPC stream-based lockdown flag. Set by the lockdown streaming client.
+    stream_lockdown: Arc<std::sync::atomic::AtomicBool>,
     /// SHA-256 checksum of the permission lattice for telemetry correlation.
     policy_checksum: String,
     /// Session ID (policy UUID) for telemetry grouping.
     session_id: String,
+}
+
+/// OR-semantics: locked if EITHER signal file OR gRPC stream says locked.
+/// This prevents a race condition where one path could undo the other.
+fn is_locked(state: &AppState) -> bool {
+    state
+        .file_lockdown
+        .load(std::sync::atomic::Ordering::Acquire)
+        || state
+            .stream_lockdown
+            .load(std::sync::atomic::Ordering::Acquire)
 }
 
 #[derive(Default)]
@@ -1209,7 +1225,8 @@ async fn main() -> Result<(), ApiError> {
             .and_then(|hex_str| hex::decode(hex_str).ok())
             .map(Arc::new),
         exposure_guard: Arc::new(std::sync::RwLock::new(None)),
-        lockdown_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        file_lockdown: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        stream_lockdown: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         policy_checksum,
         session_id,
     };
@@ -1222,7 +1239,7 @@ async fn main() -> Result<(), ApiError> {
     // Verifies HMAC before acting — prevents privilege escalation via
     // world-writable signal file (red team finding).
     {
-        let lockdown_flag = state.lockdown_active.clone();
+        let lockdown_flag = state.file_lockdown.clone();
         tokio::spawn(async move {
             // Same path logic as the CLI
             let signal_path = dirs::runtime_dir()
@@ -1302,6 +1319,29 @@ async fn main() -> Result<(), ApiError> {
 
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
+        });
+    }
+
+    // Streaming lockdown watcher: connects to nucleus-node gRPC and receives
+    // LockdownCommand messages with sub-second latency.
+    if let Some(ref grpc_url) = args.node_grpc_url {
+        let stream_flag = state.stream_lockdown.clone();
+        let auth_secret = args
+            .node_auth_secret
+            .clone()
+            .unwrap_or_else(|| args.auth_secret.clone());
+        let config = lockdown_client::LockdownWatcherConfig {
+            node_grpc_url: grpc_url.clone(),
+            auth_secret,
+            proxy_id: format!(
+                "{}:{}",
+                whoami::fallible::hostname().unwrap_or_else(|_| "unknown".into()),
+                std::process::id()
+            ),
+            pod_id: std::env::var("NUCLEUS_POD_ID").ok(),
+        };
+        tokio::spawn(async move {
+            lockdown_client::run_lockdown_watcher(config, stream_flag).await;
         });
     }
 
@@ -1531,12 +1571,10 @@ async fn auth_middleware(
     }
 
     // Emergency lockdown check — reject ALL tool calls when lockdown is active.
+    // OR-semantics: locked if EITHER signal file OR gRPC stream says locked.
     // This is checked before any permission evaluation or attestation verification
     // because lockdown overrides everything. The only exception is the health endpoint.
-    if state
-        .lockdown_active
-        .load(std::sync::atomic::Ordering::Acquire)
-    {
+    if is_locked(&state) {
         return Err(ApiError::Body(
             "LOCKDOWN ACTIVE: all tool calls are blocked. \
              Use `nucleus lockdown --restore` to lift the lockdown."
@@ -3774,9 +3812,7 @@ async fn audit_event_with_context(
         result,
         &state.runtime.policy().capabilities,
         &state.exposure_guard,
-        state
-            .lockdown_active
-            .load(std::sync::atomic::Ordering::Acquire),
+        is_locked(state),
         &state.policy_checksum,
         ctx.spiffe_id.as_deref(),
         &state.session_id,

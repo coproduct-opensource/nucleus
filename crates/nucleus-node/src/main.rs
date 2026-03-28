@@ -269,6 +269,8 @@ struct NodeState {
     trust_gate: trust_gate::TrustGateConfig,
     /// HTTP client for trust API calls.
     http_client: reqwest::Client,
+    /// Broadcast channel for streaming lockdown commands to connected tool-proxies.
+    lockdown_tx: tokio::sync::broadcast::Sender<proto::LockdownCommand>,
 }
 
 #[derive(Debug)]
@@ -562,6 +564,7 @@ async fn main() -> Result<(), ApiError> {
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap_or_default(),
+        lockdown_tx: tokio::sync::broadcast::channel::<proto::LockdownCommand>(16).0,
     };
 
     // Routes that require HMAC auth
@@ -2885,28 +2888,107 @@ impl NodeService for GrpcService {
         let reason = if req.reason.is_empty() {
             "emergency lockdown".to_string()
         } else {
-            req.reason
+            req.reason.clone()
+        };
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let scope_str = match &req.scope {
+            Some(proto::lockdown_request::Scope::PodId(id)) => format!("pod:{id}"),
+            Some(proto::lockdown_request::Scope::LabelSelector(sel)) => format!("label:{sel}"),
+            None => "all".to_string(),
+        };
+
+        let cmd = proto::LockdownCommand {
+            active: !req.restore,
+            reason: reason.clone(),
+            operator_id: req.operator_id.clone(),
+            timestamp_unix: timestamp,
+            scope: scope_str.clone(),
+        };
+
+        // Broadcast to all connected tool-proxy streams
+        let broadcast_receivers = self.state.lockdown_tx.receiver_count();
+        let _send_result = self.state.lockdown_tx.send(cmd);
+
+        // Count affected pods by scope
+        let pods = self.state.pods.lock().await;
+        let affected_pods = match &req.scope {
+            Some(proto::lockdown_request::Scope::PodId(id)) => {
+                if pods.values().any(|p| p.id.to_string() == *id) {
+                    1u32
+                } else {
+                    0u32
+                }
+            }
+            Some(proto::lockdown_request::Scope::LabelSelector(_)) => {
+                // TODO: implement label matching on pods
+                pods.len() as u32
+            }
+            None => pods.len() as u32,
         };
 
         tracing::warn!(
             reason = %reason,
             operator = %req.operator_id,
             restore = req.restore,
-            "LOCKDOWN RPC received"
+            scope = %scope_str,
+            affected_pods,
+            broadcast_receivers,
+            "LOCKDOWN RPC — broadcast to connected proxies"
         );
 
-        // TODO: iterate running pods, meet(current_permissions, read_only),
-        // write AuditEntry::ExecutionBlocked, signal tool-proxy lockdown_active.
-        // For now, return the scaffold response.
-
         Ok(GrpcResponse::new(proto::LockdownResponse {
-            affected_pods: 0,
+            affected_pods,
+            // TODO: wire up actual audit entry creation when per-pod
+            // AuditEntry::ExecutionBlocked is implemented. Do not fabricate counts.
             audit_entries_created: 0,
-            timestamp_unix: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
+            timestamp_unix: timestamp,
         }))
+    }
+
+    type WatchLockdownStream = ReceiverStream<Result<proto::LockdownCommand, Status>>;
+
+    async fn watch_lockdown(
+        &self,
+        request: Request<tonic::Streaming<proto::LockdownAck>>,
+    ) -> Result<GrpcResponse<Self::WatchLockdownStream>, Status> {
+        auth::authorize_grpc_operation(
+            &request,
+            &self.state.authz_policy,
+            auth::Operation::CancelPod,
+        )?;
+
+        let mut ack_stream = request.into_inner();
+        let mut rx = self.state.lockdown_tx.subscribe();
+
+        let (tx, grpc_rx) = tokio::sync::mpsc::channel(16);
+
+        // Forwarder: broadcast → gRPC response stream
+        tokio::spawn(async move {
+            while let Ok(cmd) = rx.recv().await {
+                if tx.send(Ok(cmd)).await.is_err() {
+                    break; // client disconnected
+                }
+            }
+        });
+
+        // ACK consumer: log acknowledgements from the tool-proxy
+        tokio::spawn(async move {
+            while let Ok(Some(ack)) = ack_stream.message().await {
+                tracing::info!(
+                    proxy_id = %ack.proxy_id,
+                    applied = ack.applied,
+                    ack_ts = ack.timestamp_unix,
+                    "lockdown ACK received"
+                );
+            }
+        });
+
+        Ok(GrpcResponse::new(ReceiverStream::new(grpc_rx)))
     }
 }
 
