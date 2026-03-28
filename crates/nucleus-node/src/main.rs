@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -357,6 +357,7 @@ struct PodInfo {
     created_at_unix: u64,
     state: PodState,
     proxy_addr: Option<String>,
+    labels: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -975,6 +976,7 @@ impl PodHandle {
             created_at_unix: self.created_at,
             state,
             proxy_addr,
+            labels: self.spec.metadata.labels.clone(),
         }
     }
 
@@ -2895,19 +2897,86 @@ impl NodeService for GrpcService {
             "LOCKDOWN RPC received"
         );
 
-        // TODO: iterate running pods, meet(current_permissions, read_only),
-        // write AuditEntry::ExecutionBlocked, signal tool-proxy lockdown_active.
-        // For now, return the scaffold response.
+        // Collect pod handles under the lock, then release before async work.
+        let pods: Vec<Arc<PodHandle>> = {
+            let guard = self.state.pods.lock().await;
+            guard.values().cloned().collect()
+        };
+
+        let mut affected_pods: u32 = 0;
+
+        for pod in &pods {
+            let matches = match &req.scope {
+                Some(proto::lockdown_request::Scope::PodId(target_id)) => {
+                    pod.id.to_string() == *target_id
+                }
+                Some(proto::lockdown_request::Scope::LabelSelector(selector)) => {
+                    matches_label_selector(&pod.spec.metadata.labels, selector)
+                }
+                None => true, // empty scope = all pods
+            };
+
+            if !matches {
+                continue;
+            }
+
+            affected_pods += 1;
+
+            let action = if req.restore {
+                "lockdown_restored"
+            } else {
+                "lockdown_applied"
+            };
+            tracing::info!(
+                pod_id = %pod.id,
+                action = action,
+                reason = %reason,
+                operator = %req.operator_id,
+                "lockdown: pod affected"
+            );
+
+            // Write lifecycle audit event for the lockdown action.
+            let audit_path = pod
+                .log_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("audit.log");
+            write_lifecycle_audit(
+                &audit_path,
+                action,
+                &pod.id.to_string(),
+                &format!("reason={}, operator={}", reason, req.operator_id),
+            )
+            .await;
+
+            // TODO: lattice meet(current_permissions, read_only) via tool-proxy signal
+            // once lockdown_tx broadcast channel is added to NodeState.
+        }
 
         Ok(GrpcResponse::new(proto::LockdownResponse {
-            affected_pods: 0,
-            audit_entries_created: 0,
+            affected_pods,
+            audit_entries_created: 0, // TODO: count ExecutionBlocked audit entries once lattice meet is wired
             timestamp_unix: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),
         }))
     }
+}
+
+/// K8s-style label selector matching: "key=value,key2=value2".
+/// All pairs must match (AND semantics). Empty selector matches all.
+fn matches_label_selector(labels: &BTreeMap<String, String>, selector: &str) -> bool {
+    if selector.is_empty() {
+        return true;
+    }
+    selector.split(',').all(|pair| {
+        let mut parts = pair.splitn(2, '=');
+        match (parts.next(), parts.next()) {
+            (Some(key), Some(value)) => labels.get(key.trim()) == Some(&value.trim().to_string()),
+            _ => false,
+        }
+    })
 }
 
 /// Stream log file contents to a channel
@@ -3067,6 +3136,7 @@ fn pod_info_to_grpc(info: PodInfo) -> proto::PodInfo {
         exit_code,
         error,
         proxy_addr: info.proxy_addr.unwrap_or_default(),
+        labels: info.labels.into_iter().collect(),
     }
 }
 
@@ -3361,4 +3431,74 @@ fn apply_seccomp_flags(command: &mut Command, spec: &PodSpec) -> Result<(), ApiE
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn label_selector_empty_matches_all() {
+        let labels = BTreeMap::from([("team".into(), "backend".into())]);
+        assert!(matches_label_selector(&labels, ""));
+    }
+
+    #[test]
+    fn label_selector_empty_labels_no_match() {
+        let labels = BTreeMap::new();
+        assert!(!matches_label_selector(&labels, "team=backend"));
+    }
+
+    #[test]
+    fn label_selector_single_match() {
+        let labels = BTreeMap::from([("team".into(), "backend".into())]);
+        assert!(matches_label_selector(&labels, "team=backend"));
+    }
+
+    #[test]
+    fn label_selector_single_no_match() {
+        let labels = BTreeMap::from([("team".into(), "backend".into())]);
+        assert!(!matches_label_selector(&labels, "team=frontend"));
+    }
+
+    #[test]
+    fn label_selector_multiple_and_semantics() {
+        let labels = BTreeMap::from([
+            ("team".into(), "backend".into()),
+            ("env".into(), "prod".into()),
+        ]);
+        assert!(matches_label_selector(&labels, "team=backend,env=prod"));
+        assert!(!matches_label_selector(&labels, "team=backend,env=staging"));
+    }
+
+    #[test]
+    fn label_selector_whitespace_trimmed() {
+        let labels = BTreeMap::from([("team".into(), "backend".into())]);
+        assert!(matches_label_selector(&labels, " team = backend "));
+    }
+
+    #[test]
+    fn label_selector_missing_value_no_match() {
+        let labels = BTreeMap::from([("team".into(), "backend".into())]);
+        assert!(!matches_label_selector(&labels, "team"));
+    }
+
+    #[test]
+    fn label_selector_missing_key_in_labels() {
+        let labels = BTreeMap::from([("team".into(), "backend".into())]);
+        assert!(!matches_label_selector(&labels, "env=prod"));
+    }
+
+    #[test]
+    fn label_selector_value_with_equals_sign() {
+        // key=val=ue should parse as key="val=ue" thanks to splitn(2, '=')
+        let labels = BTreeMap::from([("expr".into(), "a=b".into())]);
+        assert!(matches_label_selector(&labels, "expr=a=b"));
+    }
+
+    #[test]
+    fn label_selector_empty_value() {
+        let labels = BTreeMap::from([("tag".into(), "".into())]);
+        assert!(matches_label_selector(&labels, "tag="));
+    }
 }
