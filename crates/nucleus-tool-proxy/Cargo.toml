@@ -52,8 +52,13 @@ nucleus = { path = "../nucleus" }
 nucleus-spec = { path = "../nucleus-spec" }
 nucleus-identity = { path = "../nucleus-identity" }
 nucleus-client = { path = "../nucleus-client", features = ["async-drand"] }
+nucleus-proto = { path = "../nucleus-proto" }
 portcullis = { path = "../portcullis", features = ["serde", "spec"] }
 nucleus-permission-market = { path = "../nucleus-permission-market" }
+
+tonic = { workspace = true }
+tokio-stream = "0.1"
+tokio-util = "0.7"
 
 base64 = { workspace = true }
 ring = { workspace = true }

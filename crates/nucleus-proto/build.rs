@@ -8,9 +8,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap()
         .join("nucleus-node/proto");
 
+    let proto_file = proto_dir.join("nucleus_node.proto");
+    println!("cargo:rerun-if-changed={}", proto_file.display());
+
     tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
-        .compile_protos(&[proto_dir.join("nucleus_node.proto")], &[proto_dir])?;
+        .compile_protos(&[proto_file], &[proto_dir])?;
     Ok(())
 }

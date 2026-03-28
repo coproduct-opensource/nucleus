@@ -8,8 +8,10 @@
 //! Auth: stdio transport implies the client is the pod's guest process —
 //! already authenticated by sandbox proof. HMAC auth is skipped.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome, VerdictSink};
 use portcullis::{CapabilityLevel, GradedExposureGuard, Operation, ToolCallGuard};
 use rmcp::{
     handler::server::router::tool::ToolRouter, handler::server::wrapper::Parameters, model::*,
@@ -115,6 +117,8 @@ pub struct NucleusMcpServer {
     tool_router: ToolRouter<Self>,
     /// Session-scoped exposure-tracking guard (graded monad).
     guard: Arc<GradedExposureGuard>,
+    /// Shared verdict sink for lockdown enforcement + telemetry.
+    sink: Arc<dyn VerdictSink>,
 }
 
 /// Convert a tool-level error into a CallToolResult error.
@@ -125,7 +129,7 @@ fn err_result(msg: impl std::fmt::Display) -> CallToolResult {
 #[tool_router]
 impl NucleusMcpServer {
     /// Create a new MCP server with session-scoped security enforcement.
-    pub fn new(state: Arc<AppState>) -> Self {
+    pub fn new(state: Arc<AppState>, sink: Arc<dyn VerdictSink>) -> Self {
         let tool_router = Self::tool_router();
 
         // Schema pinning: hash the tool list at session start for rug-pull detection
@@ -143,7 +147,20 @@ impl NucleusMcpServer {
             state,
             tool_router,
             guard,
+            sink,
         }
+    }
+
+    /// Record a verdict through the sink (best-effort -- never panics).
+    fn record_verdict(&self, operation: Operation, subject: &str, outcome: VerdictOutcome) {
+        let _ = self.sink.record(VerdictContext {
+            operation,
+            subject: subject.to_string(),
+            outcome,
+            actor: ActorIdentity::StdioGuest,
+            policy_rule: None,
+            extensions: BTreeMap::new(),
+        });
     }
 
     // -----------------------------------------------------------------------
@@ -155,9 +172,29 @@ impl NucleusMcpServer {
         &self,
         Parameters(params): Parameters<ReadParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Err(e) = self.sink.preflight(Operation::ReadFiles) {
+            self.record_verdict(
+                Operation::ReadFiles,
+                &params.path,
+                VerdictOutcome::Deny {
+                    reason: e.to_string(),
+                },
+            );
+            return Ok(err_result(e));
+        }
+
         let proof = match self.guard.check(Operation::ReadFiles) {
             Ok(p) => p,
-            Err(e) => return Ok(err_result(e)),
+            Err(e) => {
+                self.record_verdict(
+                    Operation::ReadFiles,
+                    &params.path,
+                    VerdictOutcome::Deny {
+                        reason: format!("{e}"),
+                    },
+                );
+                return Ok(err_result(e));
+            }
         };
 
         match self.guard.execute_and_record(proof, || {
@@ -165,8 +202,20 @@ impl NucleusMcpServer {
                 self.state.runtime.sandbox().read_to_string(&params.path)
             })
         }) {
-            Ok(contents) => Ok(CallToolResult::success(vec![Content::text(contents)])),
-            Err(e) => Ok(err_result(e)),
+            Ok(contents) => {
+                self.record_verdict(Operation::ReadFiles, &params.path, VerdictOutcome::Allow);
+                Ok(CallToolResult::success(vec![Content::text(contents)]))
+            }
+            Err(e) => {
+                self.record_verdict(
+                    Operation::ReadFiles,
+                    &params.path,
+                    VerdictOutcome::Error {
+                        error: format!("{e}"),
+                    },
+                );
+                Ok(err_result(e))
+            }
         }
     }
 
@@ -179,9 +228,29 @@ impl NucleusMcpServer {
         &self,
         Parameters(params): Parameters<WriteParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Err(e) = self.sink.preflight(Operation::WriteFiles) {
+            self.record_verdict(
+                Operation::WriteFiles,
+                &params.path,
+                VerdictOutcome::Deny {
+                    reason: e.to_string(),
+                },
+            );
+            return Ok(err_result(e));
+        }
+
         let proof = match self.guard.check(Operation::WriteFiles) {
             Ok(p) => p,
-            Err(e) => return Ok(err_result(e)),
+            Err(e) => {
+                self.record_verdict(
+                    Operation::WriteFiles,
+                    &params.path,
+                    VerdictOutcome::Deny {
+                        reason: format!("{e}"),
+                    },
+                );
+                return Ok(err_result(e));
+            }
         };
 
         match self.guard.execute_and_record(proof, || {
@@ -192,8 +261,20 @@ impl NucleusMcpServer {
                     .write(&params.path, params.contents.as_bytes())
             })
         }) {
-            Ok(()) => Ok(CallToolResult::success(vec![Content::text("ok")])),
-            Err(e) => Ok(err_result(e)),
+            Ok(()) => {
+                self.record_verdict(Operation::WriteFiles, &params.path, VerdictOutcome::Allow);
+                Ok(CallToolResult::success(vec![Content::text("ok")]))
+            }
+            Err(e) => {
+                self.record_verdict(
+                    Operation::WriteFiles,
+                    &params.path,
+                    VerdictOutcome::Error {
+                        error: format!("{e}"),
+                    },
+                );
+                Ok(err_result(e))
+            }
         }
     }
 
@@ -208,13 +289,42 @@ impl NucleusMcpServer {
         &self,
         Parameters(params): Parameters<RunParams>,
     ) -> Result<CallToolResult, McpError> {
+        let subject = params.args.join(" ");
+
+        if let Err(e) = self.sink.preflight(Operation::RunBash) {
+            self.record_verdict(
+                Operation::RunBash,
+                &subject,
+                VerdictOutcome::Deny {
+                    reason: e.to_string(),
+                },
+            );
+            return Ok(err_result(e));
+        }
+
         if params.args.is_empty() {
+            self.record_verdict(
+                Operation::RunBash,
+                &subject,
+                VerdictOutcome::Deny {
+                    reason: "args must not be empty".to_string(),
+                },
+            );
             return Ok(err_result("args must not be empty"));
         }
 
         let proof = match self.guard.check(Operation::RunBash) {
             Ok(p) => p,
-            Err(e) => return Ok(err_result(e)),
+            Err(e) => {
+                self.record_verdict(
+                    Operation::RunBash,
+                    &subject,
+                    VerdictOutcome::Deny {
+                        reason: format!("{e}"),
+                    },
+                );
+                return Ok(err_result(e));
+            }
         };
 
         match self.guard.execute_and_record(proof, || {
@@ -227,6 +337,7 @@ impl NucleusMcpServer {
             })
         }) {
             Ok(output) => {
+                self.record_verdict(Operation::RunBash, &subject, VerdictOutcome::Allow);
                 let run_result = RunResult {
                     exit_code: output.status.code().unwrap_or(-1),
                     stdout: String::from_utf8_lossy(&output.stdout).to_string(),
@@ -235,7 +346,16 @@ impl NucleusMcpServer {
                 let json = serde_json::to_string_pretty(&run_result).unwrap_or_default();
                 Ok(CallToolResult::success(vec![Content::text(json)]))
             }
-            Err(e) => Ok(err_result(e)),
+            Err(e) => {
+                self.record_verdict(
+                    Operation::RunBash,
+                    &subject,
+                    VerdictOutcome::Error {
+                        error: format!("{e}"),
+                    },
+                );
+                Ok(err_result(e))
+            }
         }
     }
 
@@ -248,14 +368,43 @@ impl NucleusMcpServer {
         &self,
         Parameters(params): Parameters<GlobParams>,
     ) -> Result<CallToolResult, McpError> {
+        let subject = params.pattern.clone();
+
+        if let Err(e) = self.sink.preflight(Operation::GlobSearch) {
+            self.record_verdict(
+                Operation::GlobSearch,
+                &subject,
+                VerdictOutcome::Deny {
+                    reason: e.to_string(),
+                },
+            );
+            return Ok(err_result(e));
+        }
+
         let proof = match self.guard.check(Operation::GlobSearch) {
             Ok(p) => p,
-            Err(e) => return Ok(err_result(e)),
+            Err(e) => {
+                self.record_verdict(
+                    Operation::GlobSearch,
+                    &subject,
+                    VerdictOutcome::Deny {
+                        reason: format!("{e}"),
+                    },
+                );
+                return Ok(err_result(e));
+            }
         };
 
         // Check capability level
         let level = self.state.runtime.policy().capabilities.glob_search;
         if level == CapabilityLevel::Never {
+            self.record_verdict(
+                Operation::GlobSearch,
+                &subject,
+                VerdictOutcome::Deny {
+                    reason: "glob_search capability is disabled".to_string(),
+                },
+            );
             return Ok(err_result("glob_search capability is disabled"));
         }
 
@@ -309,10 +458,22 @@ impl NucleusMcpServer {
                 Ok(results)
             })
         }) {
-            Ok(paths) => Ok(CallToolResult::success(vec![Content::text(
-                paths.join("\n"),
-            )])),
-            Err(e) => Ok(err_result(e)),
+            Ok(paths) => {
+                self.record_verdict(Operation::GlobSearch, &subject, VerdictOutcome::Allow);
+                Ok(CallToolResult::success(vec![Content::text(
+                    paths.join("\n"),
+                )]))
+            }
+            Err(e) => {
+                self.record_verdict(
+                    Operation::GlobSearch,
+                    &subject,
+                    VerdictOutcome::Error {
+                        error: format!("{e}"),
+                    },
+                );
+                Ok(err_result(e))
+            }
         }
     }
 
@@ -325,13 +486,42 @@ impl NucleusMcpServer {
         &self,
         Parameters(params): Parameters<GrepParams>,
     ) -> Result<CallToolResult, McpError> {
+        let subject = params.pattern.clone();
+
+        if let Err(e) = self.sink.preflight(Operation::GrepSearch) {
+            self.record_verdict(
+                Operation::GrepSearch,
+                &subject,
+                VerdictOutcome::Deny {
+                    reason: e.to_string(),
+                },
+            );
+            return Ok(err_result(e));
+        }
+
         let proof = match self.guard.check(Operation::GrepSearch) {
             Ok(p) => p,
-            Err(e) => return Ok(err_result(e)),
+            Err(e) => {
+                self.record_verdict(
+                    Operation::GrepSearch,
+                    &subject,
+                    VerdictOutcome::Deny {
+                        reason: format!("{e}"),
+                    },
+                );
+                return Ok(err_result(e));
+            }
         };
 
         let level = self.state.runtime.policy().capabilities.grep_search;
         if level == CapabilityLevel::Never {
+            self.record_verdict(
+                Operation::GrepSearch,
+                &subject,
+                VerdictOutcome::Deny {
+                    reason: "grep_search capability is disabled".to_string(),
+                },
+            );
             return Ok(err_result("grep_search capability is disabled"));
         }
 
@@ -448,8 +638,20 @@ impl NucleusMcpServer {
                 Ok(output)
             })
         }) {
-            Ok(matches) => Ok(CallToolResult::success(vec![Content::text(matches)])),
-            Err(e) => Ok(err_result(e)),
+            Ok(matches) => {
+                self.record_verdict(Operation::GrepSearch, &subject, VerdictOutcome::Allow);
+                Ok(CallToolResult::success(vec![Content::text(matches)]))
+            }
+            Err(e) => {
+                self.record_verdict(
+                    Operation::GrepSearch,
+                    &subject,
+                    VerdictOutcome::Error {
+                        error: format!("{e}"),
+                    },
+                );
+                Ok(err_result(e))
+            }
         }
     }
 
@@ -465,38 +667,100 @@ impl NucleusMcpServer {
         &self,
         Parameters(params): Parameters<WebFetchParams>,
     ) -> Result<CallToolResult, McpError> {
+        let subject = params.url.clone();
+
+        if let Err(e) = self.sink.preflight(Operation::WebFetch) {
+            self.record_verdict(
+                Operation::WebFetch,
+                &subject,
+                VerdictOutcome::Deny {
+                    reason: e.to_string(),
+                },
+            );
+            return Ok(err_result(e));
+        }
+
         let proof = match self.guard.check(Operation::WebFetch) {
             Ok(p) => p,
-            Err(e) => return Ok(err_result(e)),
+            Err(e) => {
+                self.record_verdict(
+                    Operation::WebFetch,
+                    &subject,
+                    VerdictOutcome::Deny {
+                        reason: format!("{e}"),
+                    },
+                );
+                return Ok(err_result(e));
+            }
         };
 
         let level = self.state.runtime.policy().capabilities.web_fetch;
         if level == CapabilityLevel::Never {
+            self.record_verdict(
+                Operation::WebFetch,
+                &subject,
+                VerdictOutcome::Deny {
+                    reason: "web_fetch capability is disabled".to_string(),
+                },
+            );
             return Ok(err_result("web_fetch capability is disabled"));
         }
 
         // Input validation (scheme, length, null bytes) — shared with HTTP path
         if let Err(e) = crate::web_fetch_policy::validate_url(&params.url) {
+            self.record_verdict(
+                Operation::WebFetch,
+                &subject,
+                VerdictOutcome::Deny {
+                    reason: e.to_string(),
+                },
+            );
             return Ok(err_result(e));
         }
 
         // Parse URL
         let parsed_url = match url::Url::parse(&params.url) {
             Ok(u) => u,
-            Err(e) => return Ok(err_result(format!("invalid URL: {e}"))),
+            Err(e) => {
+                let msg = format!("invalid URL: {e}");
+                self.record_verdict(
+                    Operation::WebFetch,
+                    &subject,
+                    VerdictOutcome::Deny {
+                        reason: msg.clone(),
+                    },
+                );
+                return Ok(err_result(msg));
+            }
         };
 
         // DNS allowlist — shared with HTTP path (fixed port-matching logic)
         {
             let host = match parsed_url.host_str() {
                 Some(h) => h,
-                None => return Ok(err_result("URL has no host")),
+                None => {
+                    self.record_verdict(
+                        Operation::WebFetch,
+                        &subject,
+                        VerdictOutcome::Deny {
+                            reason: "URL has no host".to_string(),
+                        },
+                    );
+                    return Ok(err_result("URL has no host"));
+                }
             };
             let port = parsed_url.port_or_known_default().unwrap_or(443);
             if let Err(e) =
                 crate::web_fetch_policy::check_dns_allowlist(&self.state.dns_allow, host, port)
             {
                 warn!(host = host, port = port, "DNS not in allow-list");
+                self.record_verdict(
+                    Operation::WebFetch,
+                    &subject,
+                    VerdictOutcome::Deny {
+                        reason: e.to_string(),
+                    },
+                );
                 return Ok(err_result(e));
             }
         }
@@ -505,6 +769,13 @@ impl NucleusMcpServer {
         if let Err(e) =
             crate::web_fetch_policy::check_url_allowlist(&self.state.url_allow, parsed_url.as_str())
         {
+            self.record_verdict(
+                Operation::WebFetch,
+                &subject,
+                VerdictOutcome::Deny {
+                    reason: e.to_string(),
+                },
+            );
             return Ok(err_result(e));
         }
 
@@ -516,7 +787,17 @@ impl NucleusMcpServer {
             "POST" => client.post(&params.url),
             "PUT" => client.put(&params.url),
             "DELETE" => client.delete(&params.url),
-            _ => return Ok(err_result(format!("unsupported method: {method}"))),
+            _ => {
+                let msg = format!("unsupported method: {method}");
+                self.record_verdict(
+                    Operation::WebFetch,
+                    &subject,
+                    VerdictOutcome::Deny {
+                        reason: msg.clone(),
+                    },
+                );
+                return Ok(err_result(msg));
+            }
         };
 
         // Perform async fetch with full security controls.
@@ -559,8 +840,20 @@ impl NucleusMcpServer {
         .await;
 
         match self.guard.execute_and_record(proof, || fetch_result) {
-            Ok(response) => Ok(CallToolResult::success(vec![Content::text(response)])),
-            Err(e) => Ok(err_result(e)),
+            Ok(response) => {
+                self.record_verdict(Operation::WebFetch, &subject, VerdictOutcome::Allow);
+                Ok(CallToolResult::success(vec![Content::text(response)]))
+            }
+            Err(e) => {
+                self.record_verdict(
+                    Operation::WebFetch,
+                    &subject,
+                    VerdictOutcome::Error {
+                        error: format!("{e}"),
+                    },
+                );
+                Ok(err_result(e))
+            }
         }
     }
 }
@@ -584,7 +877,8 @@ impl ServerHandler for NucleusMcpServer {
 pub async fn run_mcp_server(state: Arc<AppState>) -> Result<(), crate::ApiError> {
     info!("starting MCP server mode (stdio transport)");
 
-    let server = NucleusMcpServer::new(state);
+    let sink = state.verdict_sink.clone();
+    let server = NucleusMcpServer::new(state, sink);
     let service = server
         .serve(rmcp::transport::stdio())
         .await

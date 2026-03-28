@@ -145,6 +145,7 @@ pub mod progress;
 pub mod region;
 mod time;
 pub mod trust;
+pub mod verdict_sink;
 pub mod weakening;
 pub mod workspace;
 
@@ -224,6 +225,7 @@ pub use metrics::{
 #[cfg(feature = "crypto")]
 pub use token::{AttenuationToken, SessionProvenance, TokenError};
 pub use uninhabitable_state::{ConstraintNucleus, CoreExposureRequirement, UninhabitableState};
+pub use verdict_sink::{ActorIdentity, SinkError, VerdictContext, VerdictOutcome, VerdictSink};
 
 /// Check if a glob pattern matches a path.
 pub fn glob_match(pattern: &str, path: &str) -> bool {

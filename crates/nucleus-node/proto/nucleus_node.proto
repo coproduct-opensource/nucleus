@@ -153,6 +153,10 @@ service NodeService {
 
   // Emergency lockdown — drop all agents to read-only
   rpc Lockdown(LockdownRequest) returns (LockdownResponse);
+
+  // Streaming lockdown: tool-proxies hold open a bidirectional stream to
+  // receive lockdown commands with sub-second latency.
+  rpc WatchLockdown(stream LockdownAck) returns (stream LockdownCommand);
 }
 
 // Emergency lockdown: drop all or targeted pods to read-only permissions.
@@ -172,4 +176,18 @@ message LockdownResponse {
   uint32 affected_pods = 1;          // Number of pods affected
   uint32 audit_entries_created = 2;  // Number of ExecutionBlocked audit entries written
   uint64 timestamp_unix = 3;  // Unix timestamp in seconds
+}
+
+message LockdownCommand {
+  bool active = 1;
+  string reason = 2;
+  string operator_id = 3;
+  uint64 timestamp_unix = 4;
+  string scope = 5;  // "all", "pod:<id>", "label:<selector>"
+}
+
+message LockdownAck {
+  string proxy_id = 1;
+  bool applied = 2;
+  uint64 timestamp_unix = 3;
 }
