@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -21,6 +21,7 @@ use nucleus::{
 };
 use nucleus_permission_market::{PermissionBid, PermissionGrant, PermissionMarket};
 use nucleus_spec::{BudgetModelSpec, PodSpec};
+use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
@@ -292,8 +293,12 @@ pub(crate) struct AppState {
     /// gRPC stream-based lockdown flag. Set by the lockdown streaming client.
     stream_lockdown: Arc<std::sync::atomic::AtomicBool>,
     /// SHA-256 checksum of the permission lattice for telemetry correlation.
+    /// Kept for future audit-log integration in VerdictSink (PR 3).
+    #[allow(dead_code)]
     policy_checksum: String,
     /// Session ID (policy UUID) for telemetry grouping.
+    /// Kept for future audit-log integration in VerdictSink (PR 3).
+    #[allow(dead_code)]
     session_id: String,
     /// Shared verdict sink for lockdown + telemetry convergence (HTTP + MCP).
     pub(crate) verdict_sink: Arc<dyn portcullis::verdict_sink::VerdictSink>,
@@ -308,6 +313,21 @@ fn is_locked(state: &AppState) -> bool {
         || state
             .stream_lockdown
             .load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Extract an ActorIdentity from the auth context for verdict recording.
+fn actor_from_auth(auth: Option<&auth::AuthContext>) -> ActorIdentity {
+    if let Some(ctx) = auth {
+        if let Some(ref spiffe_id) = ctx.spiffe_id {
+            ActorIdentity::Authenticated {
+                spiffe_id: spiffe_id.clone(),
+            }
+        } else {
+            ActorIdentity::Unknown
+        }
+    } else {
+        ActorIdentity::Unknown
+    }
 }
 
 #[derive(Default)]
@@ -1968,206 +1988,227 @@ fn check_identity_policy(
 
 async fn read_file(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
     Json(req): Json<ReadRequest>,
 ) -> Result<Json<ReadResponse>, ApiError> {
+    let sink = &state.verdict_sink;
+    let operation = Operation::ReadFiles;
+    let auth_ctx = auth.map(|e| e.0);
+    let actor = actor_from_auth(auth_ctx.as_ref());
+
     // Validate inputs before any processing
     if let Err(e) = validation::validate_path(&req.path) {
-        let audit_ctx = AuditContext::from_auth(auth.as_ref().map(|a| &a.0), &state);
-        audit_failure(
-            &state,
-            &headers,
-            "read",
-            &req.path,
-            "validation_error",
-            audit_ctx,
-        )
-        .await;
+        let _ = sink.record(VerdictContext {
+            operation,
+            subject: req.path.clone(),
+            outcome: VerdictOutcome::Deny {
+                reason: format!("validation: {e}"),
+            },
+            actor,
+            policy_rule: None,
+            extensions: BTreeMap::new(),
+        });
         return Err(ApiError::Validation(e));
     }
 
     let path = req.path.clone();
-    let auth_ctx = auth.map(|e| e.0);
-    let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
 
     let contents = match state.runtime.sandbox().read_to_string(&path) {
         Ok(contents) => contents,
-        Err(NucleusError::ApprovalRequired { operation }) => {
+        Err(NucleusError::ApprovalRequired { operation: op }) => {
             // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
             if check_identity_policy(&state, auth_ctx.as_ref(), &format!("read {}", path))
-                || state.approvals.consume(&operation)
+                || state.approvals.consume(&op)
             {
-                let token = state
-                    .runtime
-                    .sandbox()
-                    .request_approval(operation.clone())?;
+                let token = state.runtime.sandbox().request_approval(op.clone())?;
                 state
                     .runtime
                     .sandbox()
                     .read_to_string_approved(&path, &token)?
             } else {
-                audit_failure(
-                    &state,
-                    &headers,
-                    "read",
-                    &path,
-                    "approval_required",
-                    audit_ctx.clone(),
-                )
-                .await;
-                return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
+                let _ = sink.record(VerdictContext {
                     operation,
+                    subject: path.clone(),
+                    outcome: VerdictOutcome::Deny {
+                        reason: "approval_required".to_string(),
+                    },
+                    actor,
+                    policy_rule: None,
+                    extensions: BTreeMap::new(),
+                });
+                return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
+                    operation: op,
                 }));
             }
         }
         Err(err) => {
-            audit_failure(
-                &state,
-                &headers,
-                "read",
-                &path,
-                &format!("{:?}", err),
-                audit_ctx.clone(),
-            )
-            .await;
+            let _ = sink.record(VerdictContext {
+                operation,
+                subject: path.clone(),
+                outcome: VerdictOutcome::Error {
+                    error: format!("{err:?}"),
+                },
+                actor,
+                policy_rule: None,
+                extensions: BTreeMap::new(),
+            });
             return Err(ApiError::Nucleus(err));
         }
     };
 
-    audit_event_with_context(&state, &headers, "read", &path, "ok", audit_ctx).await?;
+    let _ = sink.record(VerdictContext {
+        operation,
+        subject: path,
+        outcome: VerdictOutcome::Allow,
+        actor,
+        policy_rule: None,
+        extensions: BTreeMap::new(),
+    });
     Ok(Json(ReadResponse { contents }))
 }
 
 async fn write_file(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
     Json(req): Json<WriteRequest>,
 ) -> Result<Json<WriteResponse>, ApiError> {
+    let sink = &state.verdict_sink;
+    let operation = Operation::WriteFiles;
+    let auth_ctx = auth.map(|e| e.0);
+    let actor = actor_from_auth(auth_ctx.as_ref());
+
     // Validate inputs before any processing
     if let Err(e) = validation::validate_path(&req.path) {
-        let audit_ctx = AuditContext::from_auth(auth.as_ref().map(|a| &a.0), &state);
-        audit_failure(
-            &state,
-            &headers,
-            "write",
-            &req.path,
-            "validation_error",
-            audit_ctx,
-        )
-        .await;
+        let _ = sink.record(VerdictContext {
+            operation,
+            subject: req.path.clone(),
+            outcome: VerdictOutcome::Deny {
+                reason: format!("validation: {e}"),
+            },
+            actor,
+            policy_rule: None,
+            extensions: BTreeMap::new(),
+        });
         return Err(ApiError::Validation(e));
     }
 
     let path = req.path.clone();
     let contents = req.contents.clone();
-    let auth_ctx = auth.map(|e| e.0);
-    let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
 
     match state.runtime.sandbox().write(&path, contents.as_bytes()) {
         Ok(()) => {}
-        Err(NucleusError::ApprovalRequired { operation }) => {
+        Err(NucleusError::ApprovalRequired { operation: op }) => {
             // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
             if check_identity_policy(&state, auth_ctx.as_ref(), &format!("write {}", path))
-                || state.approvals.consume(&operation)
+                || state.approvals.consume(&op)
             {
-                let token = state
-                    .runtime
-                    .sandbox()
-                    .request_approval(operation.clone())?;
+                let token = state.runtime.sandbox().request_approval(op.clone())?;
                 state
                     .runtime
                     .sandbox()
                     .write_approved(&path, contents.as_bytes(), &token)?;
             } else {
-                audit_failure(
-                    &state,
-                    &headers,
-                    "write",
-                    &path,
-                    "approval_required",
-                    audit_ctx.clone(),
-                )
-                .await;
-                return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
+                let _ = sink.record(VerdictContext {
                     operation,
+                    subject: path.clone(),
+                    outcome: VerdictOutcome::Deny {
+                        reason: "approval_required".to_string(),
+                    },
+                    actor,
+                    policy_rule: None,
+                    extensions: BTreeMap::new(),
+                });
+                return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
+                    operation: op,
                 }));
             }
         }
         Err(err) => {
-            audit_failure(
-                &state,
-                &headers,
-                "write",
-                &path,
-                &format!("{:?}", err),
-                audit_ctx.clone(),
-            )
-            .await;
+            let _ = sink.record(VerdictContext {
+                operation,
+                subject: path.clone(),
+                outcome: VerdictOutcome::Error {
+                    error: format!("{err:?}"),
+                },
+                actor,
+                policy_rule: None,
+                extensions: BTreeMap::new(),
+            });
             return Err(ApiError::Nucleus(err));
         }
     }
 
-    audit_event_with_context(&state, &headers, "write", &path, "ok", audit_ctx).await?;
+    let _ = sink.record(VerdictContext {
+        operation,
+        subject: path,
+        outcome: VerdictOutcome::Allow,
+        actor,
+        policy_rule: None,
+        extensions: BTreeMap::new(),
+    });
     Ok(Json(WriteResponse { ok: true }))
 }
 
 async fn run_command(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
     Json(req): Json<RunRequest>,
 ) -> Result<Json<RunResponse>, ApiError> {
+    let sink = &state.verdict_sink;
+    let operation = Operation::RunBash;
+    let auth_ctx = auth.map(|e| e.0);
+    let actor = actor_from_auth(auth_ctx.as_ref());
+
     // Build display command for logging/auditing
     let display_command = req.args.join(" ");
 
     // Validate inputs before any processing
     if let Err(e) = validation::validate_command_args(&req.args) {
-        let audit_ctx = AuditContext::from_auth(auth.as_ref().map(|a| &a.0), &state);
-        audit_failure(
-            &state,
-            &headers,
-            "run",
-            &display_command,
-            "validation_error",
-            audit_ctx,
-        )
-        .await;
+        let _ = sink.record(VerdictContext {
+            operation,
+            subject: display_command.clone(),
+            outcome: VerdictOutcome::Deny {
+                reason: format!("validation: {e}"),
+            },
+            actor,
+            policy_rule: None,
+            extensions: BTreeMap::new(),
+        });
         return Err(ApiError::Validation(e));
     }
     if let Err(e) = validation::validate_stdin(req.stdin.as_deref()) {
-        let audit_ctx = AuditContext::from_auth(auth.as_ref().map(|a| &a.0), &state);
-        audit_failure(
-            &state,
-            &headers,
-            "run",
-            &display_command,
-            "validation_error",
-            audit_ctx,
-        )
-        .await;
+        let _ = sink.record(VerdictContext {
+            operation,
+            subject: display_command.clone(),
+            outcome: VerdictOutcome::Deny {
+                reason: format!("validation: {e}"),
+            },
+            actor,
+            policy_rule: None,
+            extensions: BTreeMap::new(),
+        });
         return Err(ApiError::Validation(e));
     }
     if let Some(ref dir) = req.directory {
         if let Err(e) = validation::validate_path(dir) {
-            let audit_ctx = AuditContext::from_auth(auth.as_ref().map(|a| &a.0), &state);
-            audit_failure(
-                &state,
-                &headers,
-                "run",
-                &display_command,
-                "validation_error",
-                audit_ctx,
-            )
-            .await;
+            let _ = sink.record(VerdictContext {
+                operation,
+                subject: display_command.clone(),
+                outcome: VerdictOutcome::Deny {
+                    reason: format!("validation: {e}"),
+                },
+                actor,
+                policy_rule: None,
+                extensions: BTreeMap::new(),
+            });
             return Err(ApiError::Validation(e));
         }
     }
 
     let executor = state.runtime.executor();
-    let auth_ctx = auth.map(|e| e.0);
-    let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
 
     // Extract optional parameters
     let stdin = req.stdin.as_deref();
@@ -2175,46 +2216,55 @@ async fn run_command(
 
     let output = match executor.run_args(&req.args, stdin, directory) {
         Ok(output) => output,
-        Err(NucleusError::ApprovalRequired { operation }) => {
+        Err(NucleusError::ApprovalRequired { operation: op }) => {
             // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
             if check_identity_policy(
                 &state,
                 auth_ctx.as_ref(),
                 &format!("execute {}", display_command),
-            ) || state.approvals.consume(&operation)
+            ) || state.approvals.consume(&op)
             {
-                let token = executor.request_approval(&operation)?;
+                let token = executor.request_approval(&op)?;
                 executor.run_args_with_approval(&req.args, stdin, directory, &token)?
             } else {
-                audit_failure(
-                    &state,
-                    &headers,
-                    "run",
-                    &display_command,
-                    "approval_required",
-                    audit_ctx.clone(),
-                )
-                .await;
-                return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
+                let _ = sink.record(VerdictContext {
                     operation,
+                    subject: display_command.clone(),
+                    outcome: VerdictOutcome::Deny {
+                        reason: "approval_required".to_string(),
+                    },
+                    actor,
+                    policy_rule: None,
+                    extensions: BTreeMap::new(),
+                });
+                return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
+                    operation: op,
                 }));
             }
         }
         Err(err) => {
-            audit_failure(
-                &state,
-                &headers,
-                "run",
-                &display_command,
-                &format!("{:?}", err),
-                audit_ctx.clone(),
-            )
-            .await;
+            let _ = sink.record(VerdictContext {
+                operation,
+                subject: display_command.clone(),
+                outcome: VerdictOutcome::Error {
+                    error: format!("{err:?}"),
+                },
+                actor,
+                policy_rule: None,
+                extensions: BTreeMap::new(),
+            });
             return Err(ApiError::Nucleus(err));
         }
     };
 
-    audit_event_with_context(&state, &headers, "run", &display_command, "ok", audit_ctx).await?;
+    let _ = sink.record(VerdictContext {
+        operation,
+        subject: display_command,
+        outcome: VerdictOutcome::Allow,
+        actor,
+        policy_rule: None,
+        extensions: BTreeMap::new(),
+    });
     Ok(Json(RunResponse {
         status: output.status.code().unwrap_or(-1),
         success: output.status.success(),
@@ -2225,43 +2275,45 @@ async fn run_command(
 
 async fn web_fetch(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
     Json(req): Json<WebFetchRequest>,
 ) -> Result<Json<WebFetchResponse>, ApiError> {
+    let sink = &state.verdict_sink;
+    let operation = Operation::WebFetch;
     let url_str = req.url.clone();
+    let auth_ctx = auth.map(|e| e.0);
+    let actor = actor_from_auth(auth_ctx.as_ref());
 
     // Validate inputs before any processing
     if let Err(e) = validation::validate_url(&req.url) {
-        let audit_ctx = AuditContext::from_auth(auth.as_ref().map(|a| &a.0), &state);
-        audit_failure(
-            &state,
-            &headers,
-            "web_fetch",
-            &url_str,
-            "validation_error",
-            audit_ctx,
-        )
-        .await;
+        let _ = sink.record(VerdictContext {
+            operation,
+            subject: url_str.clone(),
+            outcome: VerdictOutcome::Deny {
+                reason: format!("validation: {e}"),
+            },
+            actor,
+            policy_rule: None,
+            extensions: BTreeMap::new(),
+        });
         return Err(ApiError::Validation(e));
     }
-
-    let auth_ctx = auth.map(|e| e.0);
-    let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
 
     // Check web_fetch capability
     let policy = state.runtime.policy();
     let level = policy.capabilities.web_fetch;
     if level == CapabilityLevel::Never {
-        audit_failure(
-            &state,
-            &headers,
-            "web_fetch",
-            &url_str,
-            "insufficient_capability",
-            audit_ctx.clone(),
-        )
-        .await;
+        let _ = sink.record(VerdictContext {
+            operation,
+            subject: url_str.clone(),
+            outcome: VerdictOutcome::Deny {
+                reason: "insufficient_capability".to_string(),
+            },
+            actor,
+            policy_rule: None,
+            extensions: BTreeMap::new(),
+        });
         return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
             capability: "web_fetch".into(),
             actual: level,
@@ -2276,15 +2328,16 @@ async fn web_fetch(
             check_identity_policy(&state, auth_ctx.as_ref(), &format!("web_fetch {}", url_str));
 
         if !policy_allows && !state.approvals.consume("web_fetch") {
-            audit_failure(
-                &state,
-                &headers,
-                "web_fetch",
-                &url_str,
-                "approval_required",
-                audit_ctx.clone(),
-            )
-            .await;
+            let _ = sink.record(VerdictContext {
+                operation,
+                subject: url_str.clone(),
+                outcome: VerdictOutcome::Deny {
+                    reason: "approval_required".to_string(),
+                },
+                actor,
+                policy_rule: None,
+                extensions: BTreeMap::new(),
+            });
             return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
                 operation: format!("web_fetch {}", url_str),
             }));
@@ -2390,7 +2443,14 @@ async fn web_fetch(
         (String::from_utf8_lossy(&bytes).to_string(), None)
     };
 
-    audit_event_with_context(&state, &headers, "web_fetch", &url_str, "ok", audit_ctx).await?;
+    let _ = sink.record(VerdictContext {
+        operation,
+        subject: url_str,
+        outcome: VerdictOutcome::Allow,
+        actor,
+        policy_rule: None,
+        extensions: BTreeMap::new(),
+    });
     Ok(Json(WebFetchResponse {
         status,
         headers: response_headers,
@@ -2402,32 +2462,35 @@ async fn web_fetch(
 /// Glob pattern search within the sandbox.
 async fn glob_search(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
     Json(req): Json<GlobRequest>,
 ) -> Result<Json<GlobResponse>, ApiError> {
+    let sink = &state.verdict_sink;
+    let operation = Operation::GlobSearch;
+    let auth_ctx = auth.map(|e| e.0);
+    let actor = actor_from_auth(auth_ctx.as_ref());
+
     // Validate inputs before any processing
     validation::validate_pattern(&req.pattern).map_err(ApiError::Validation)?;
     if let Some(ref dir) = req.directory {
         validation::validate_path(dir).map_err(ApiError::Validation)?;
     }
 
-    let auth_ctx = auth.map(|e| e.0);
-    let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
-
     // Check glob_search capability
     let policy = state.runtime.policy();
     let level = policy.capabilities.glob_search;
     if level == CapabilityLevel::Never {
-        audit_failure(
-            &state,
-            &headers,
-            "glob",
-            &req.pattern,
-            "insufficient_capability",
-            audit_ctx.clone(),
-        )
-        .await;
+        let _ = sink.record(VerdictContext {
+            operation,
+            subject: req.pattern.clone(),
+            outcome: VerdictOutcome::Deny {
+                reason: "insufficient_capability".to_string(),
+            },
+            actor,
+            policy_rule: None,
+            extensions: BTreeMap::new(),
+        });
         return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
             capability: "glob_search".into(),
             actual: level,
@@ -2440,15 +2503,16 @@ async fn glob_search(
         let policy_allows =
             check_identity_policy(&state, auth_ctx.as_ref(), &format!("glob {}", req.pattern));
         if !policy_allows && !state.approvals.consume("glob_search") {
-            audit_failure(
-                &state,
-                &headers,
-                "glob",
-                &req.pattern,
-                "approval_required",
-                audit_ctx.clone(),
-            )
-            .await;
+            let _ = sink.record(VerdictContext {
+                operation,
+                subject: req.pattern.clone(),
+                outcome: VerdictOutcome::Deny {
+                    reason: "approval_required".to_string(),
+                },
+                actor,
+                policy_rule: None,
+                extensions: BTreeMap::new(),
+            });
             return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
                 operation: format!("glob {}", req.pattern),
             }));
@@ -2522,7 +2586,14 @@ async fn glob_search(
         }
     }
 
-    audit_event_with_context(&state, &headers, "glob", &req.pattern, "ok", audit_ctx).await?;
+    let _ = sink.record(VerdictContext {
+        operation,
+        subject: req.pattern,
+        outcome: VerdictOutcome::Allow,
+        actor,
+        policy_rule: None,
+        extensions: BTreeMap::new(),
+    });
     Ok(Json(GlobResponse {
         matches,
         truncated: if truncated { Some(true) } else { None },
@@ -2532,13 +2603,18 @@ async fn glob_search(
 /// Grep (regex content search) within the sandbox.
 async fn grep_search(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
     Json(req): Json<GrepRequest>,
 ) -> Result<Json<GrepResponse>, ApiError> {
     use regex::RegexBuilder;
     use std::io::{BufRead, BufReader};
     use walkdir::WalkDir;
+
+    let sink = &state.verdict_sink;
+    let operation = Operation::GrepSearch;
+    let auth_ctx = auth.map(|e| e.0);
+    let actor = actor_from_auth(auth_ctx.as_ref());
 
     // Validate inputs before any processing
     validation::validate_pattern(&req.pattern).map_err(ApiError::Validation)?;
@@ -2549,22 +2625,20 @@ async fn grep_search(
         validation::validate_pattern(glob_pattern).map_err(ApiError::Validation)?;
     }
 
-    let auth_ctx = auth.map(|e| e.0);
-    let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
-
     // Check grep_search capability
     let policy = state.runtime.policy();
     let level = policy.capabilities.grep_search;
     if level == CapabilityLevel::Never {
-        audit_failure(
-            &state,
-            &headers,
-            "grep",
-            &req.pattern,
-            "insufficient_capability",
-            audit_ctx.clone(),
-        )
-        .await;
+        let _ = sink.record(VerdictContext {
+            operation,
+            subject: req.pattern.clone(),
+            outcome: VerdictOutcome::Deny {
+                reason: "insufficient_capability".to_string(),
+            },
+            actor,
+            policy_rule: None,
+            extensions: BTreeMap::new(),
+        });
         return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
             capability: "grep_search".into(),
             actual: level,
@@ -2577,15 +2651,16 @@ async fn grep_search(
         let policy_allows =
             check_identity_policy(&state, auth_ctx.as_ref(), &format!("grep {}", req.pattern));
         if !policy_allows && !state.approvals.consume("grep_search") {
-            audit_failure(
-                &state,
-                &headers,
-                "grep",
-                &req.pattern,
-                "approval_required",
-                audit_ctx.clone(),
-            )
-            .await;
+            let _ = sink.record(VerdictContext {
+                operation,
+                subject: req.pattern.clone(),
+                outcome: VerdictOutcome::Deny {
+                    reason: "approval_required".to_string(),
+                },
+                actor,
+                policy_rule: None,
+                extensions: BTreeMap::new(),
+            });
             return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
                 operation: format!("grep {}", req.pattern),
             }));
@@ -2710,7 +2785,14 @@ async fn grep_search(
         }
     }
 
-    audit_event_with_context(&state, &headers, "grep", &req.pattern, "ok", audit_ctx).await?;
+    let _ = sink.record(VerdictContext {
+        operation,
+        subject: req.pattern,
+        outcome: VerdictOutcome::Allow,
+        actor,
+        policy_rule: None,
+        extensions: BTreeMap::new(),
+    });
     Ok(Json(GrepResponse {
         matches,
         truncated: if truncated { Some(true) } else { None },
@@ -2720,29 +2802,32 @@ async fn grep_search(
 /// Web search using configured backend.
 async fn web_search(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
     Json(req): Json<WebSearchRequest>,
 ) -> Result<Json<WebSearchResponse>, ApiError> {
+    let sink = &state.verdict_sink;
+    let operation = Operation::WebSearch;
+    let auth_ctx = auth.map(|e| e.0);
+    let actor = actor_from_auth(auth_ctx.as_ref());
+
     // Validate inputs before any processing
     validation::validate_query(&req.query).map_err(ApiError::Validation)?;
-
-    let auth_ctx = auth.map(|e| e.0);
-    let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
 
     // Check web_search capability
     let policy = state.runtime.policy();
     let level = policy.capabilities.web_search;
     if level == CapabilityLevel::Never {
-        audit_failure(
-            &state,
-            &headers,
-            "web_search",
-            &req.query,
-            "insufficient_capability",
-            audit_ctx.clone(),
-        )
-        .await;
+        let _ = sink.record(VerdictContext {
+            operation,
+            subject: req.query.clone(),
+            outcome: VerdictOutcome::Deny {
+                reason: "insufficient_capability".to_string(),
+            },
+            actor,
+            policy_rule: None,
+            extensions: BTreeMap::new(),
+        });
         return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
             capability: "web_search".into(),
             actual: level,
@@ -2758,15 +2843,16 @@ async fn web_search(
             &format!("web_search {}", req.query),
         );
         if !policy_allows && !state.approvals.consume("web_search") {
-            audit_failure(
-                &state,
-                &headers,
-                "web_search",
-                &req.query,
-                "approval_required",
-                audit_ctx.clone(),
-            )
-            .await;
+            let _ = sink.record(VerdictContext {
+                operation,
+                subject: req.query.clone(),
+                outcome: VerdictOutcome::Deny {
+                    reason: "approval_required".to_string(),
+                },
+                actor,
+                policy_rule: None,
+                extensions: BTreeMap::new(),
+            });
             return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
                 operation: format!("web_search {}", req.query),
             }));
@@ -2850,15 +2936,24 @@ async fn web_search(
         Vec::new()
     };
 
-    audit_event_with_context(&state, &headers, "web_search", &req.query, "ok", audit_ctx).await?;
+    let _ = sink.record(VerdictContext {
+        operation,
+        subject: req.query,
+        outcome: VerdictOutcome::Allow,
+        actor,
+        policy_rule: None,
+        extensions: BTreeMap::new(),
+    });
     Ok(Json(WebSearchResponse { results }))
 }
 
 async fn approve_operation(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     Json(req): Json<ApproveRequest>,
 ) -> Result<Json<ApproveResponse>, ApiError> {
+    let sink = &state.verdict_sink;
+
     // Rate limit approval requests to prevent DoS
     if !state.approval_rate_limiter.try_acquire() {
         return Err(ApiError::RateLimited);
@@ -2877,7 +2972,14 @@ async fn approve_operation(
     state
         .approvals
         .approve(&req.operation, req.count, expires_at);
-    audit_event(&state, &headers, "approve", &req.operation, "ok").await?;
+    let _ = sink.record(VerdictContext {
+        operation: Operation::ManagePods, // meta-operation: approval grant
+        subject: req.operation,
+        outcome: VerdictOutcome::Allow,
+        actor: ActorIdentity::Unknown,
+        policy_rule: None,
+        extensions: BTreeMap::new(),
+    });
     Ok(Json(ApproveResponse { ok: true }))
 }
 
@@ -2892,10 +2994,15 @@ async fn approve_operation(
 /// that matches an approver pattern in the escalation policy.
 async fn escalate_permissions(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
     Json(req): Json<EscalateRequest>,
 ) -> Result<Json<EscalateResponse>, ApiError> {
+    let sink = &state.verdict_sink;
+    let operation = Operation::ManagePods; // meta-operation: escalation
+    let auth_ctx = auth.map(|e| e.0);
+    let actor = actor_from_auth(auth_ctx.as_ref());
+
     // Rate limit escalation requests
     if !state.approval_rate_limiter.try_acquire() {
         return Err(ApiError::RateLimited);
@@ -2935,7 +3042,6 @@ async fn escalate_permissions(
     }
 
     // Extract approver's SPIFFE identity from mTLS
-    let auth_ctx = auth.map(|e| e.0);
     let approver_spiffe_id = auth_ctx
         .as_ref()
         .and_then(|a| a.spiffe_id.clone())
@@ -3019,27 +3125,26 @@ async fn escalate_permissions(
         .escalation_policies()
         .validate_escalation(&escalation_request, &approver_chain);
 
+    let escalation_subject = format!(
+        "escalation:{} -> {} (ttl={}s)",
+        requestor_chain.current_spiffe_id().unwrap_or("unknown"),
+        req.requested_preset,
+        req.ttl_seconds
+    );
+
     match policy_result {
         Ok(_policy) => {
             // Create the grant
             match EscalationGrant::new(&escalation_request, approver_chain, drand_round) {
                 Ok(grant) => {
-                    let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
-                    let audit_subject = format!(
-                        "escalation:{} -> {} (ttl={}s)",
-                        requestor_chain.current_spiffe_id().unwrap_or("unknown"),
-                        req.requested_preset,
-                        req.ttl_seconds
-                    );
-                    audit_event_with_context(
-                        &state,
-                        &headers,
-                        "escalate",
-                        &audit_subject,
-                        "granted",
-                        audit_ctx,
-                    )
-                    .await?;
+                    let _ = sink.record(VerdictContext {
+                        operation,
+                        subject: escalation_subject,
+                        outcome: VerdictOutcome::Allow,
+                        actor,
+                        policy_rule: None,
+                        extensions: BTreeMap::new(),
+                    });
 
                     tracing::info!(
                         requestor = %requestor_chain.current_spiffe_id().unwrap_or("unknown"),
@@ -3063,6 +3168,18 @@ async fn escalate_permissions(
                 }
                 Err(e) => {
                     let error_msg = escalation_error_to_string(&e);
+
+                    let _ = sink.record(VerdictContext {
+                        operation,
+                        subject: escalation_subject,
+                        outcome: VerdictOutcome::Deny {
+                            reason: error_msg.clone(),
+                        },
+                        actor,
+                        policy_rule: None,
+                        extensions: BTreeMap::new(),
+                    });
+
                     tracing::warn!(
                         requestor = %requestor_chain.current_spiffe_id().unwrap_or("unknown"),
                         approver = %approver_spiffe_id,
@@ -3084,22 +3201,17 @@ async fn escalate_permissions(
         }
         Err(e) => {
             let error_msg = escalation_error_to_string(&e);
-            let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
-            let audit_subject = format!(
-                "escalation:{} -> {} (denied: {})",
-                requestor_chain.current_spiffe_id().unwrap_or("unknown"),
-                req.requested_preset,
-                error_msg
-            );
-            audit_event_with_context(
-                &state,
-                &headers,
-                "escalate",
-                &audit_subject,
-                "denied",
-                audit_ctx,
-            )
-            .await?;
+
+            let _ = sink.record(VerdictContext {
+                operation,
+                subject: escalation_subject,
+                outcome: VerdictOutcome::Deny {
+                    reason: error_msg.clone(),
+                },
+                actor,
+                policy_rule: None,
+                extensions: BTreeMap::new(),
+            });
 
             tracing::warn!(
                 requestor = %requestor_chain.current_spiffe_id().unwrap_or("unknown"),
@@ -3297,12 +3409,13 @@ fn check_manage_pods(state: &AppState) -> Result<(), ApiError> {
 
 async fn create_sub_pod(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
     Json(req): Json<CreateSubPodRequest>,
 ) -> Result<Json<CreateSubPodResponse>, ApiError> {
+    let sink = &state.verdict_sink;
     let auth_ctx = auth.map(|e| e.0);
-    let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
+    let actor = actor_from_auth(auth_ctx.as_ref());
 
     // 1. Check manage_pods capability
     check_manage_pods(&state)?;
@@ -3354,16 +3467,15 @@ async fn create_sub_pod(
         .await
         .map_err(|e| ApiError::Spec(format!("node create_pod failed: {e}")))?;
 
-    // 7. Audit log
-    audit_event_with_context(
-        &state,
-        &headers,
-        "pod_create",
-        &format!("sub-pod {} (reason: {})", result.id, req.reason),
-        "created",
-        audit_ctx,
-    )
-    .await?;
+    // 7. Record verdict
+    let _ = sink.record(VerdictContext {
+        operation: Operation::ManagePods,
+        subject: format!("sub-pod {} (reason: {})", result.id, req.reason),
+        outcome: VerdictOutcome::Allow,
+        actor,
+        policy_rule: None,
+        extensions: BTreeMap::new(),
+    });
 
     Ok(Json(CreateSubPodResponse {
         pod_id: result.id.to_string(),
@@ -3442,12 +3554,13 @@ async fn get_pod_logs(
 
 async fn cancel_sub_pod(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
     Json(req): Json<PodIdRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let sink = &state.verdict_sink;
     let auth_ctx = auth.map(|e| e.0);
-    let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
+    let actor = actor_from_auth(auth_ctx.as_ref());
 
     check_manage_pods(&state)?;
 
@@ -3465,15 +3578,14 @@ async fn cancel_sub_pod(
         .await
         .map_err(|e| ApiError::Spec(format!("node cancel_pod failed: {e}")))?;
 
-    audit_event_with_context(
-        &state,
-        &headers,
-        "pod_cancel",
-        &format!("sub-pod {}", req.pod_id),
-        "cancelled",
-        audit_ctx,
-    )
-    .await?;
+    let _ = sink.record(VerdictContext {
+        operation: Operation::ManagePods,
+        subject: format!("sub-pod {}", req.pod_id),
+        outcome: VerdictOutcome::Allow,
+        actor,
+        policy_rule: None,
+        extensions: BTreeMap::new(),
+    });
 
     Ok(Json(
         serde_json::json!({ "status": "cancelled", "pod_id": req.pod_id }),
@@ -3705,36 +3817,6 @@ async fn build_audit_log(args: &Args, auth: &AuthConfig) -> Result<Arc<AuditLog>
     }))
 }
 
-/// Extended audit context for richer logging.
-#[derive(Clone)]
-struct AuditContext {
-    spiffe_id: Option<String>,
-    policy_rule: Option<String>,
-}
-
-impl AuditContext {
-    fn empty() -> Self {
-        Self {
-            spiffe_id: None,
-            policy_rule: None,
-        }
-    }
-
-    fn from_auth(auth: Option<&auth::AuthContext>, state: &AppState) -> Self {
-        let spiffe_id = auth.and_then(|a| a.spiffe_id.clone());
-        let policy_rule = spiffe_id.as_ref().and_then(|id| {
-            state
-                .policy_engine
-                .matching_policy(id)
-                .map(|p| p.pattern.clone())
-        });
-        Self {
-            spiffe_id,
-            policy_rule,
-        }
-    }
-}
-
 /// Parse and verify a lockdown signal file. Returns the desired lockdown state.
 ///
 /// FAIL-CLOSED: on any verification failure (bad HMAC, malformed JSON, missing
@@ -3791,91 +3873,6 @@ fn parse_and_verify_lockdown_signal(content: &str, current_state: bool) -> bool 
         .and_then(|r| r.as_bool())
         .map(|restore| !restore)
         .unwrap_or(true) // signal without "restore" field = lockdown active
-}
-
-async fn audit_event(
-    state: &AppState,
-    headers: &HeaderMap,
-    event: &str,
-    subject: &str,
-    result: &str,
-) -> Result<(), ApiError> {
-    audit_event_with_context(
-        state,
-        headers,
-        event,
-        subject,
-        result,
-        AuditContext::empty(),
-    )
-    .await
-}
-
-/// Log an audit event for a failed operation.
-///
-/// This is called when an operation fails due to policy denial, validation errors,
-/// or other reasons. The error kind is included in the result field.
-async fn audit_failure(
-    state: &AppState,
-    headers: &HeaderMap,
-    event: &str,
-    subject: &str,
-    error_kind: &str,
-    ctx: AuditContext,
-) {
-    // Failures are logged but we don't propagate audit errors for failed ops
-    // (the original error takes precedence)
-    let _ = audit_event_with_context(
-        state,
-        headers,
-        event,
-        subject,
-        &format!("denied:{}", error_kind),
-        ctx,
-    )
-    .await;
-}
-
-async fn audit_event_with_context(
-    state: &AppState,
-    headers: &HeaderMap,
-    event: &str,
-    subject: &str,
-    result: &str,
-    ctx: AuditContext,
-) -> Result<(), ApiError> {
-    telemetry::emit_verdict(
-        event,
-        subject,
-        result,
-        &state.runtime.policy().capabilities,
-        &state.exposure_guard,
-        is_locked(state),
-        &state.policy_checksum,
-        ctx.spiffe_id.as_deref(),
-        &state.session_id,
-    );
-    let actor = headers
-        .get("x-nucleus-actor")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-    state
-        .audit
-        .log(AuditEntry {
-            timestamp_unix: now_unix(),
-            actor,
-            event: event.to_string(),
-            subject: subject.to_string(),
-            result: result.to_string(),
-            prev_hash: String::new(),
-            hash: String::new(),
-            signature: String::new(),
-            drand_round: None, // Will be filled by AuditLog::log
-            spiffe_id: ctx.spiffe_id,
-            policy_rule: ctx.policy_rule,
-        })
-        .await?;
-    Ok(())
 }
 
 async fn emit_boot_report(state: &AppState) -> Result<(), ApiError> {
