@@ -2906,6 +2906,7 @@ dependencies = [
  "clap",
  "dirs",
  "hex",
+ "hmac",
  "nucleus-client",
  "nucleus-proto",
  "nucleus-spec",
@@ -3126,6 +3127,7 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
+ "dirs",
  "glob",
  "hex",
  "hmac",
@@ -3157,6 +3159,7 @@ dependencies = [
  "url",
  "uuid",
  "walkdir",
+ "whoami",
  "x509-parser",
 ]
 
