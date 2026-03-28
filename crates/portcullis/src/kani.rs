@@ -1271,7 +1271,7 @@ fn proof_r7a_sparse_key_adjunction() {
     };
 
     // c has slot0 present at an arbitrary level — this is the "sparse key" in c.
-    let c_level: CapabilityLevel = kani::any();
+    let c_level = level_from_u8(kani::any::<u8>());
     let c = ExtMock2 {
         slot0: Some(c_level),
         slot1: None,
