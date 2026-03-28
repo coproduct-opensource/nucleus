@@ -1,120 +1,15 @@
 //! Permission telemetry — OTLP spans for every tool call verdict.
 //!
-//! Emits structured OpenTelemetry spans with permission state, exposure,
-//! and verdict details. Plugs into any OTLP-compatible backend (Grafana,
-//! Datadog, Splunk, Jaeger).
+//! Provides OTel layer setup and the `VerdictCapabilities` / `VerdictExposure`
+//! structs consumed by `ToolProxyVerdictSink::record()` when it creates
+//! `tracing::info_span!` entries.
+//!
+//! Verdict recording itself lives in `verdict_sink.rs`, which creates a
+//! proper `tracing::info_span!` with duration and trace context propagation.
+//! When the `otel` feature is active, `tracing-opentelemetry` exports these
+//! as OTLP spans with parent-child relationships.
 //!
 //! Enable with `--features otel` and set `OTEL_EXPORTER_OTLP_ENDPOINT`.
-
-use std::sync::Arc;
-
-/// Emit a tool call verdict from the converged audit point.
-///
-/// Parses the result string to extract verdict (allow/deny) and deny reason,
-/// reads capability levels and exposure state, then delegates to `record_verdict`.
-#[allow(clippy::too_many_arguments)]
-pub fn emit_verdict(
-    operation: &str,
-    subject: &str,
-    result: &str,
-    capabilities: &portcullis::CapabilityLattice,
-    exposure_guard: &std::sync::RwLock<Option<Arc<portcullis::GradedExposureGuard>>>,
-    lockdown_active: bool,
-    lattice_checksum: &str,
-    agent_identity: Option<&str>,
-    session_id: &str,
-) {
-    let (verdict, deny_reason) = if let Some(reason) = result.strip_prefix("denied:") {
-        ("deny", Some(reason))
-    } else {
-        ("allow", None)
-    };
-    let caps = VerdictCapabilities::from(capabilities);
-    let exposure = if let Ok(guard_opt) = exposure_guard.read() {
-        if let Some(ref guard) = *guard_opt {
-            let exp = guard.exposure();
-            VerdictExposure {
-                private_data: exp.contains(portcullis::guard::ExposureLabel::PrivateData),
-                untrusted_content: exp.contains(portcullis::guard::ExposureLabel::UntrustedContent),
-                exfil_vector: exp.contains(portcullis::guard::ExposureLabel::ExfilVector),
-                is_uninhabitable: exp.is_uninhabitable(),
-            }
-        } else {
-            VerdictExposure::default()
-        }
-    } else {
-        tracing::error!("exposure_guard RwLock poisoned — reporting uninhabitable");
-        VerdictExposure {
-            private_data: true,
-            untrusted_content: true,
-            exfil_vector: true,
-            is_uninhabitable: true,
-        }
-    };
-    record_verdict(
-        operation,
-        subject,
-        verdict,
-        deny_reason,
-        &caps,
-        &exposure,
-        lattice_checksum,
-        agent_identity,
-        session_id,
-        lockdown_active,
-    );
-}
-
-/// Record a tool call verdict as a tracing event with structured attributes.
-///
-/// This function emits a tracing event (not a span) with all permission
-/// context. When the `otel` feature is enabled and an OTLP exporter is
-/// configured, these events flow to the telemetry backend as span events.
-///
-/// Without the `otel` feature, this still emits structured JSON via the
-/// standard `tracing` subscriber — useful for local debugging and JSONL logs.
-#[allow(clippy::too_many_arguments)]
-fn record_verdict(
-    operation: &str,
-    subject: &str,
-    verdict: &str,
-    deny_reason: Option<&str>,
-    capabilities: &VerdictCapabilities,
-    exposure: &VerdictExposure,
-    lattice_checksum: &str,
-    agent_identity: Option<&str>,
-    session_id: &str,
-    lockdown_active: bool,
-) {
-    tracing::info!(
-        target: "nucleus_permission",
-        verdict = verdict,
-        operation = operation,
-        subject = subject,
-        deny_reason = deny_reason.unwrap_or(""),
-        cap_read_files = capabilities.read_files,
-        cap_write_files = capabilities.write_files,
-        cap_edit_files = capabilities.edit_files,
-        cap_run_bash = capabilities.run_bash,
-        cap_glob_search = capabilities.glob_search,
-        cap_grep_search = capabilities.grep_search,
-        cap_web_fetch = capabilities.web_fetch,
-        cap_web_search = capabilities.web_search,
-        cap_git_commit = capabilities.git_commit,
-        cap_git_push = capabilities.git_push,
-        cap_create_pr = capabilities.create_pr,
-        cap_manage_pods = capabilities.manage_pods,
-        exposure_private_data = exposure.private_data,
-        exposure_untrusted_content = exposure.untrusted_content,
-        exposure_exfil_vector = exposure.exfil_vector,
-        exposure_uninhabitable = exposure.is_uninhabitable,
-        lattice_checksum = lattice_checksum,
-        agent_identity = agent_identity.unwrap_or("unknown"),
-        session_id = session_id,
-        lockdown_active = lockdown_active,
-        "permission_verdict",
-    );
-}
 
 /// Flattened capability levels for telemetry emission.
 /// Uses u8 values (0=Never, 1=LowRisk, 2=Always) for metrics aggregation.
