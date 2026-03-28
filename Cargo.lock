@@ -3494,6 +3494,7 @@ dependencies = [
  "hex",
  "hmac",
  "kani",
+ "portcullis-core",
  "proptest",
  "regex",
  "reqwest 0.13.2",

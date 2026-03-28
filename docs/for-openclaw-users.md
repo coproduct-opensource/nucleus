@@ -20,7 +20,7 @@ Nucleus replaces the YAML policy file with a **permission lattice** — a mathem
 | **Enforcement** | Kernel-level sandbox | Kernel-level sandbox + lattice intercept |
 | **Can agent modify policy?** | Yes (if it has filesystem access) | No (lattice is immutable, meet is monotonically decreasing) |
 | **Formal verification** | None | 62 Kani proofs + Lean 4 HeytingAlgebra instance |
-| **Proof covers production code?** | N/A | Yes — Aeneas translates Rust MIR to Lean, proof is against generated code |
+| **Proof covers production code?** | N/A | Type-level: Aeneas translates Rust type to Lean, proof is on generated type. Function-level: tracked as future work (Kani covers operations in CI) |
 | **Permission granularity** | Binary (allow/deny per endpoint) | 12 dimensions with 3 levels each (Never/LowRisk/Always) |
 | **Real-time observability** | Logs | OTLP spans with all 12 capability dimensions per verdict |
 | **Fleet lockdown** | Per-container restart | Sub-second gRPC broadcast to all agents |
@@ -130,7 +130,7 @@ lake build PortcullisVerified  # kernel-checks all theorems
 
 ### Aeneas Pipeline (Rust → Lean 4, machine-translated)
 
-The proof doesn't verify a hand-written model — it verifies the actual production Rust code via [Aeneas](https://github.com/AeneasVerif/aeneas):
+The Aeneas pipeline translates the Rust **type definitions** into Lean 4 via [Aeneas](https://github.com/AeneasVerif/aeneas):
 
 ```
 portcullis-core (Rust source)
@@ -140,6 +140,10 @@ portcullis-core (Rust source)
 ```
 
 If someone changes the Rust `CapabilityLevel` enum, the Aeneas pipeline regenerates the Lean code, and the proof either still type-checks or CI fails.
+
+**What this covers today**: The generated Lean type is proven to satisfy HeytingAlgebra axioms (kernel-checked, no `sorry`). A compile-time assertion in the production `portcullis` crate verifies that the core and production `CapabilityLevel` enums have matching discriminants — if they drift, the build fails.
+
+**What this does NOT yet cover**: Function-level correspondence (proving that the Rust `meet()` implementation equals the lattice meet from the proof) requires completing the `FunsExternal.lean` stubs. This is tracked as future work. In the meantime, 62 Kani proofs verify the production lattice operations (meet monotonicity, Heyting adjunction, etc.) on every PR.
 
 ## Architecture
 
@@ -197,7 +201,7 @@ NemoClaw's YAML policy becomes the *outer* boundary. Nucleus's lattice becomes t
 - **Fleet lockdown**: Sub-second via gRPC streaming, signal file fallback
 - **OTLP telemetry**: Every verdict as an OTel span, compatible with Grafana/Datadog/Splunk
 - **Compliance export**: SOC 2 format from the witness chain
-- **Aeneas pipeline**: Proof covers production Rust (not a hand-written model)
+- **Aeneas pipeline**: Type correspondence verified (Rust type → Lean type via Aeneas); function correspondence tracked as future work; 62 Kani proofs cover production operations in CI
 
 ## Learn More
 
