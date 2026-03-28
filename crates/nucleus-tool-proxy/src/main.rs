@@ -285,6 +285,10 @@ pub(crate) struct AppState {
     /// ExecutionBlocked. Checked on every tool invocation before permission
     /// evaluation. Set via the lockdown signal file or gRPC Lockdown RPC.
     lockdown_active: Arc<std::sync::atomic::AtomicBool>,
+    /// SHA-256 checksum of the permission lattice for telemetry correlation.
+    policy_checksum: String,
+    /// Session ID (policy UUID) for telemetry grouping.
+    session_id: String,
 }
 
 #[derive(Default)]
@@ -948,10 +952,23 @@ async fn main() -> Result<(), ApiError> {
     // Install rustls crypto provider before any TLS connections (web_fetch, etc.).
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .json()
-        .init();
+    {
+        use tracing_subscriber::prelude::*;
+
+        #[cfg(feature = "otel")]
+        let otel_layer = telemetry::init_otel_layer();
+        #[cfg(not(feature = "otel"))]
+        let otel_layer: Option<tracing_subscriber::layer::Identity> = None;
+
+        tracing_subscriber::registry()
+            .with(otel_layer)
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .with_filter(tracing_subscriber::EnvFilter::from_default_env()),
+            )
+            .init();
+    }
 
     let args = Args::parse();
 
@@ -1164,6 +1181,9 @@ async fn main() -> Result<(), ApiError> {
         creds
     };
 
+    let policy_checksum = runtime.policy().checksum();
+    let session_id = runtime.policy().id.to_string();
+
     let state = AppState {
         runtime: Arc::new(runtime),
         approvals,
@@ -1190,6 +1210,8 @@ async fn main() -> Result<(), ApiError> {
             .map(Arc::new),
         exposure_guard: Arc::new(std::sync::RwLock::new(None)),
         lockdown_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        policy_checksum,
+        session_id,
     };
 
     if let Err(err) = emit_boot_report(&state).await {
@@ -3746,6 +3768,19 @@ async fn audit_event_with_context(
     result: &str,
     ctx: AuditContext,
 ) -> Result<(), ApiError> {
+    telemetry::emit_verdict(
+        event,
+        subject,
+        result,
+        &state.runtime.policy().capabilities,
+        &state.exposure_guard,
+        state
+            .lockdown_active
+            .load(std::sync::atomic::Ordering::Acquire),
+        &state.policy_checksum,
+        ctx.spiffe_id.as_deref(),
+        &state.session_id,
+    );
     let actor = headers
         .get("x-nucleus-actor")
         .and_then(|v| v.to_str().ok())

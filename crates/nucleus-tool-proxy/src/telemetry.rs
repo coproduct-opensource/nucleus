@@ -6,6 +6,65 @@
 //!
 //! Enable with `--features otel` and set `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
+use std::sync::Arc;
+
+/// Emit a tool call verdict from the converged audit point.
+///
+/// Parses the result string to extract verdict (allow/deny) and deny reason,
+/// reads capability levels and exposure state, then delegates to `record_verdict`.
+#[allow(clippy::too_many_arguments)]
+pub fn emit_verdict(
+    operation: &str,
+    subject: &str,
+    result: &str,
+    capabilities: &portcullis::CapabilityLattice,
+    exposure_guard: &std::sync::RwLock<Option<Arc<portcullis::GradedExposureGuard>>>,
+    lockdown_active: bool,
+    lattice_checksum: &str,
+    agent_identity: Option<&str>,
+    session_id: &str,
+) {
+    let (verdict, deny_reason) = if let Some(reason) = result.strip_prefix("denied:") {
+        ("deny", Some(reason))
+    } else {
+        ("allow", None)
+    };
+    let caps = VerdictCapabilities::from(capabilities);
+    let exposure = if let Ok(guard_opt) = exposure_guard.read() {
+        if let Some(ref guard) = *guard_opt {
+            let exp = guard.exposure();
+            VerdictExposure {
+                private_data: exp.contains(portcullis::guard::ExposureLabel::PrivateData),
+                untrusted_content: exp.contains(portcullis::guard::ExposureLabel::UntrustedContent),
+                exfil_vector: exp.contains(portcullis::guard::ExposureLabel::ExfilVector),
+                is_uninhabitable: exp.is_uninhabitable(),
+            }
+        } else {
+            VerdictExposure::default()
+        }
+    } else {
+        tracing::error!("exposure_guard RwLock poisoned — reporting uninhabitable");
+        VerdictExposure {
+            private_data: true,
+            untrusted_content: true,
+            exfil_vector: true,
+            is_uninhabitable: true,
+        }
+    };
+    record_verdict(
+        operation,
+        subject,
+        verdict,
+        deny_reason,
+        &caps,
+        &exposure,
+        lattice_checksum,
+        agent_identity,
+        session_id,
+        lockdown_active,
+    );
+}
+
 /// Record a tool call verdict as a tracing event with structured attributes.
 ///
 /// This function emits a tracing event (not a span) with all permission
@@ -14,8 +73,8 @@
 ///
 /// Without the `otel` feature, this still emits structured JSON via the
 /// standard `tracing` subscriber — useful for local debugging and JSONL logs.
-#[allow(dead_code, clippy::too_many_arguments)]
-pub fn record_verdict(
+#[allow(clippy::too_many_arguments)]
+fn record_verdict(
     operation: &str,
     subject: &str,
     verdict: &str,
@@ -54,7 +113,6 @@ pub fn record_verdict(
 
 /// Flattened capability levels for telemetry emission.
 /// Uses u8 values (0=Never, 1=LowRisk, 2=Always) for metrics aggregation.
-#[allow(dead_code)]
 pub struct VerdictCapabilities {
     pub read_files: u8,
     pub write_files: u8,
@@ -80,7 +138,7 @@ impl From<&portcullis::CapabilityLattice> for VerdictCapabilities {
 }
 
 /// Flattened exposure state for telemetry emission.
-#[allow(dead_code)]
+#[derive(Default)]
 pub struct VerdictExposure {
     pub private_data: bool,
     pub untrusted_content: bool,
@@ -130,13 +188,11 @@ pub fn init_otel_layer() -> Option<
 }
 
 /// Shutdown OpenTelemetry (flush pending spans).
-/// In opentelemetry 0.31+, shutdown happens when the provider is dropped.
-/// Call this to force a flush before process exit.
+/// Replaces the global provider with a noop, dropping the real one which
+/// triggers flush of all pending spans.
 #[cfg(feature = "otel")]
 #[allow(dead_code)]
 pub fn shutdown_otel() {
-    // The provider is held globally via set_tracer_provider.
-    // Dropping it triggers flush. For explicit shutdown, we'd need
-    // to store the provider handle — for now, this is a no-op and
-    // the provider flushes on process exit.
+    let noop = opentelemetry::trace::noop::NoopTracerProvider::new();
+    opentelemetry::global::set_tracer_provider(noop);
 }
