@@ -1248,67 +1248,27 @@ async fn main() -> Result<(), ApiError> {
                 .join("nucleus")
                 .join("lockdown.json");
 
+            // Fail-closed lockdown: on ANY verification failure (bad HMAC, parse
+            // error, read error), preserve the current lockdown state rather than
+            // defaulting to unlocked. Only a verified signal can change the state.
             loop {
+                let current = lockdown_flag.load(std::sync::atomic::Ordering::Acquire);
                 let should_lock = if signal_path.exists() {
                     match tokio::fs::read_to_string(&signal_path).await {
-                        Ok(content) => {
-                            // Parse envelope and verify HMAC
-                            if let Ok(envelope) =
-                                serde_json::from_str::<serde_json::Value>(&content)
-                            {
-                                let signal = envelope.get("signal");
-                                let claimed_hmac =
-                                    envelope.get("hmac").and_then(|h| h.as_str()).unwrap_or("");
-
-                                if let Some(signal_val) = signal {
-                                    // Recompute HMAC
-                                    let body = serde_json::to_string_pretty(signal_val)
-                                        .unwrap_or_default();
-
-                                    let key_material = format!(
-                                        "nucleus-lockdown-{}:{}",
-                                        whoami::fallible::hostname()
-                                            .unwrap_or_else(|_| "unknown".to_string()),
-                                        whoami::fallible::username()
-                                            .unwrap_or_else(|_| "unknown".to_string()),
-                                    );
-
-                                    use hmac::{Hmac, Mac};
-                                    use sha2::Sha256;
-                                    let mut mac =
-                                        Hmac::<Sha256>::new_from_slice(key_material.as_bytes())
-                                            .expect("hmac");
-                                    mac.update(body.as_bytes());
-                                    let expected = hex::encode(mac.finalize().into_bytes());
-
-                                    if expected == claimed_hmac {
-                                        signal_val
-                                            .get("restore")
-                                            .and_then(|r| r.as_bool())
-                                            .map(|restore| !restore)
-                                            .unwrap_or(true)
-                                    } else {
-                                        tracing::warn!(
-                                            "Lockdown signal HMAC mismatch — ignoring \
-                                             (possible tampering)"
-                                        );
-                                        false
-                                    }
-                                } else {
-                                    false
-                                }
-                            } else {
-                                false
-                            }
+                        Ok(content) => parse_and_verify_lockdown_signal(&content, current),
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "Failed to read lockdown signal file — preserving current state"
+                            );
+                            current // fail-closed: preserve current state
                         }
-                        Err(_) => false,
                     }
                 } else {
-                    false
+                    false // no file = no lockdown (file must exist to lock)
                 };
 
-                let was_locked = lockdown_flag.load(std::sync::atomic::Ordering::Acquire);
-                if should_lock != was_locked {
+                if should_lock != current {
                     lockdown_flag.store(should_lock, std::sync::atomic::Ordering::Release);
                     if should_lock {
                         tracing::warn!("LOCKDOWN ACTIVATED via verified signal file");
@@ -3753,6 +3713,64 @@ impl AuditContext {
             policy_rule,
         }
     }
+}
+
+/// Parse and verify a lockdown signal file. Returns the desired lockdown state.
+///
+/// FAIL-CLOSED: on any verification failure (bad HMAC, malformed JSON, missing
+/// fields), returns `current_state` to preserve the existing lockdown. Only a
+/// verified, well-formed signal can change the state. This prevents an attacker
+/// from unlocking the system by corrupting or forging the signal file.
+fn parse_and_verify_lockdown_signal(content: &str, current_state: bool) -> bool {
+    let envelope: serde_json::Value = match serde_json::from_str(content) {
+        Ok(v) => v,
+        Err(_) => {
+            tracing::warn!("Lockdown signal file has invalid JSON — preserving current state");
+            return current_state;
+        }
+    };
+
+    let signal = match envelope.get("signal") {
+        Some(s) => s,
+        None => {
+            tracing::warn!(
+                "Lockdown signal file missing 'signal' field — preserving current state"
+            );
+            return current_state;
+        }
+    };
+
+    let claimed_hmac = envelope.get("hmac").and_then(|h| h.as_str()).unwrap_or("");
+
+    let body = serde_json::to_string_pretty(signal).unwrap_or_default();
+
+    // HMAC key: hostname:username. This is a tamper-detection mechanism against
+    // casual local attacks, not a cryptographic secret. For production fleet
+    // lockdown, use the gRPC streaming path with proper HMAC auth.
+    let key_material = format!(
+        "nucleus-lockdown-{}:{}",
+        whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string()),
+        whoami::fallible::username().unwrap_or_else(|_| "unknown".to_string()),
+    );
+
+    use hmac::{Hmac, Mac};
+    let mut mac = Hmac::<sha2::Sha256>::new_from_slice(key_material.as_bytes()).expect("hmac");
+    mac.update(body.as_bytes());
+    let expected = hex::encode(mac.finalize().into_bytes());
+
+    if expected != claimed_hmac {
+        tracing::warn!(
+            "Lockdown signal HMAC mismatch — preserving current state (possible tampering)"
+        );
+        return current_state; // fail-closed: preserve current state
+    }
+
+    // Verified signal — extract desired state
+    signal
+        .get("restore")
+        .and_then(|r| r.as_bool())
+        .map(|restore| !restore)
+        .unwrap_or(true) // signal without "restore" field = lockdown active
 }
 
 async fn audit_event(
