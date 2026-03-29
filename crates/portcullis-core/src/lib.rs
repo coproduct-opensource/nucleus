@@ -75,6 +75,16 @@ pub enum CapabilityLevel {
     Always = 2,
 }
 
+// Compile-time invariant: declaration order MUST match discriminant values.
+// The Aeneas-generated Lean code uses `read_discriminant` (declaration-order index)
+// while FunsExternal.lean uses `toNat` (discriminant value). These must be equal.
+// If someone reorders the enum variants, this assertion fails the build.
+const _: () = {
+    assert!(CapabilityLevel::Never as u8 == 0);
+    assert!(CapabilityLevel::LowRisk as u8 == 1);
+    assert!(CapabilityLevel::Always as u8 == 2);
+};
+
 impl std::fmt::Display for CapabilityLevel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
