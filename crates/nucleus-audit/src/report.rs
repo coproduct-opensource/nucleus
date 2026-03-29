@@ -177,6 +177,16 @@ pub fn print_scan_report(report: &ScanReport) {
         "PASS"
     };
     println!("══ Verdict: {} ══", verdict);
+
+    // PLG funnel: point users to enforcement after showing findings
+    if critical_count > 0 || high_count > 0 {
+        println!();
+        println!("  Enforce these rules on every PR:");
+        println!("    https://github.com/apps/mergeconstitution");
+        println!();
+        println!("  Generate a remediation profile:");
+        println!("    nucleus-audit scan --auto --suggest-profile > policy.yaml");
+    }
 }
 
 pub fn textwrap(s: &str, width: usize) -> Vec<String> {
