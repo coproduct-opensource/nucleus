@@ -75,8 +75,10 @@ struct HookSpecificOutput {
 #[derive(Serialize, Deserialize)]
 struct SessionState {
     profile: String,
-    exposure_bits: u8,
-    decision_count: u64,
+    /// Operations that were allowed — replayed on fresh Kernel to rebuild
+    /// exposure state. This is necessary because each hook invocation is a
+    /// separate process, but exposure must accumulate across the session.
+    allowed_ops: Vec<(String, String)>, // (operation, subject)
 }
 
 fn session_path(session_id: &str) -> PathBuf {
@@ -221,10 +223,155 @@ fn output_ask(reason: &str, context: &str) -> HookOutput {
 }
 
 // ---------------------------------------------------------------------------
+// Subcommands
+// ---------------------------------------------------------------------------
+
+fn print_help() {
+    eprintln!(
+        "nucleus-claude-hook — formally verified permission kernel for Claude Code\n\
+         \n\
+         USAGE:\n\
+         \x20 nucleus-claude-hook              (hook mode: reads JSON from stdin)\n\
+         \x20 nucleus-claude-hook --setup      (configure Claude Code settings.json)\n\
+         \x20 nucleus-claude-hook --status     (show active sessions and exposure)\n\
+         \n\
+         ENVIRONMENT:\n\
+         \x20 NUCLEUS_PROFILE  Permission profile (default: safe_pr_fixer)\n\
+         \x20                  Options: read_only, code_review, edit_only,\n\
+         \x20                  fix_issue, safe_pr_fixer, release, permissive\n\
+         \n\
+         PROFILES:\n\
+         \x20 read_only       Read + search only. No writes, no bash, no network.\n\
+         \x20 code_review     Read + web research. No writes.\n\
+         \x20 safe_pr_fixer   Write + edit + run + commit. No push, no PR. (default)\n\
+         \x20 fix_issue       Full dev. Approval required for git push.\n\
+         \x20 permissive      Everything allowed. Audit-only mode."
+    );
+}
+
+fn setup_hook() {
+    let settings_path = dirs_next::home_dir()
+        .map(|h| h.join(".claude").join("settings.json"))
+        .unwrap_or_else(|| PathBuf::from(".claude/settings.json"));
+
+    // Read existing settings or create new.
+    let mut settings: serde_json::Value = if settings_path.exists() {
+        let data = std::fs::read_to_string(&settings_path).unwrap_or_default();
+        serde_json::from_str(&data).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // Check if hook is already configured.
+    if let Some(hooks) = settings.get("hooks") {
+        if let Some(pre) = hooks.get("PreToolUse") {
+            let s = serde_json::to_string(pre).unwrap_or_default();
+            if s.contains("nucleus-claude-hook") {
+                eprintln!(
+                    "nucleus: hook already configured in {}",
+                    settings_path.display()
+                );
+                eprintln!(
+                    "nucleus: current profile = {}",
+                    std::env::var("NUCLEUS_PROFILE").unwrap_or_else(|_| "safe_pr_fixer".into())
+                );
+                return;
+            }
+        }
+    }
+
+    // Add the hook.
+    let hook_config = serde_json::json!([{
+        "matcher": "Bash|Read|Write|Edit|Glob|Grep|WebFetch|WebSearch",
+        "hooks": [{ "type": "command", "command": "nucleus-claude-hook" }]
+    }]);
+
+    settings["hooks"]["PreToolUse"] = hook_config;
+
+    // Ensure directory exists.
+    if let Some(parent) = settings_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    match std::fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&settings).unwrap_or_default(),
+    ) {
+        Ok(()) => {
+            eprintln!("nucleus: hook configured in {}", settings_path.display());
+            eprintln!(
+                "nucleus: profile = {} (set NUCLEUS_PROFILE to change)",
+                std::env::var("NUCLEUS_PROFILE").unwrap_or_else(|_| "safe_pr_fixer".into())
+            );
+            eprintln!("nucleus: restart Claude Code to activate");
+        }
+        Err(e) => {
+            eprintln!("nucleus: failed to write {}: {e}", settings_path.display());
+            std::process::exit(1);
+        }
+    }
+}
+
+fn show_status() {
+    let profile = std::env::var("NUCLEUS_PROFILE").unwrap_or_else(|_| "safe_pr_fixer".into());
+    eprintln!("nucleus-claude-hook status");
+    eprintln!("  profile: {profile}");
+
+    // Show active sessions.
+    let tmp = std::env::temp_dir();
+    let mut found = false;
+    if let Ok(entries) = std::fs::read_dir(&tmp) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("nucleus-hook-") && name.ends_with(".json") {
+                if let Ok(data) = std::fs::read_to_string(entry.path()) {
+                    if let Ok(state) = serde_json::from_str::<SessionState>(&data) {
+                        let session_id = name
+                            .strip_prefix("nucleus-hook-")
+                            .and_then(|s| s.strip_suffix(".json"))
+                            .unwrap_or("?");
+                        eprintln!(
+                            "  session {session_id}: {} ops, profile={}",
+                            state.allowed_ops.len(),
+                            state.profile,
+                        );
+                        found = true;
+                    }
+                }
+            }
+        }
+    }
+    if !found {
+        eprintln!("  no active sessions");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+
+    // Subcommands for setup and diagnostics.
+    if args.len() > 1 {
+        match args[1].as_str() {
+            "--setup" => {
+                setup_hook();
+                return;
+            }
+            "--status" => {
+                show_status();
+                return;
+            }
+            "--help" | "-h" => {
+                print_help();
+                return;
+            }
+            _ => {}
+        }
+    }
+
     let mut input = String::new();
     if std::io::stdin().read_to_string(&mut input).is_err() {
         // Can't read stdin — allow (fail open to avoid breaking Claude Code).
@@ -257,21 +404,40 @@ fn main() {
     let profile_name =
         std::env::var("NUCLEUS_PROFILE").unwrap_or_else(|_| "safe_pr_fixer".to_string());
 
-    // Load or create session.
-    let _session = load_session(&hook_input.session_id);
+    // Load or create session, then rebuild Kernel with accumulated exposure.
+    let mut session = load_session(&hook_input.session_id).unwrap_or(SessionState {
+        profile: profile_name.clone(),
+        allowed_ops: Vec::new(),
+    });
     let perms = resolve_profile(&profile_name);
     let mut kernel = Kernel::new(perms);
 
-    // Make the decision.
+    // Replay previous allowed operations to rebuild exposure state.
+    // This is the key to cross-invocation exposure tracking: each hook
+    // invocation is a separate process, but exposure must accumulate.
+    for (op_str, subj) in &session.allowed_ops {
+        if let Ok(prev_op) = Operation::try_from(op_str.as_str()) {
+            let _ = kernel.decide(prev_op, subj);
+        }
+    }
+
+    // Make the actual decision with accumulated exposure.
     let decision = kernel.decide(operation, &subject);
 
-    // Persist session state.
-    let state = SessionState {
-        profile: profile_name,
-        exposure_bits: kernel.exposure().count(),
-        decision_count: kernel.decision_count(),
-    };
-    save_session(&hook_input.session_id, &state);
+    // If allowed, record this operation for future replay.
+    if matches!(decision.verdict, Verdict::Allow) {
+        session
+            .allowed_ops
+            .push((operation.to_string(), subject.clone()));
+    }
+    save_session(&hook_input.session_id, &session);
+
+    // Log to stderr for visibility (Claude Code captures stderr).
+    let exposure_count = kernel.exposure().count();
+    eprintln!(
+        "nucleus: {} {} → {:?} [exposure: {}/3, profile: {}]",
+        operation, subject, decision.verdict, exposure_count, session.profile,
+    );
 
     // Map verdict to Claude Code hook response.
     let out = match decision.verdict {
@@ -283,9 +449,8 @@ fn main() {
             &format!("Nucleus: {operation} requires approval"),
             &format!(
                 "The nucleus permission kernel flagged this operation. \
-                 Exposure state: {} legs active. Profile: {}.",
-                kernel.exposure().count(),
-                state.profile,
+                 Exposure state: {exposure_count}/3 legs active. Profile: {}.",
+                session.profile,
             ),
         ),
     };
