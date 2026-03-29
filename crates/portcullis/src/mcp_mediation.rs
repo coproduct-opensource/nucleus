@@ -55,6 +55,7 @@ use crate::exposure_core::{apply_record, classify_operation, project_exposure};
 use crate::guard::{ExposureLabel, ExposureSet};
 use crate::lattice::PermissionLattice;
 use crate::observe::{Observation, ObserveSession};
+use crate::tool_schema::ToolSchemaRegistry;
 
 /// Verdict from the mediator for an MCP tool call.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -377,6 +378,8 @@ pub struct McpMediator {
     deny_unclassified: bool,
     /// Optional quality gate for tool reputation checking.
     quality_gate: Option<Box<dyn ToolQualityGate>>,
+    /// Optional tool schema registry for rug-pull detection.
+    tool_registry: Option<ToolSchemaRegistry>,
 }
 
 impl McpMediator {
@@ -389,6 +392,7 @@ impl McpMediator {
             observer: None,
             deny_unclassified: true,
             quality_gate: None,
+            tool_registry: None,
         }
     }
 
@@ -429,6 +433,52 @@ impl McpMediator {
     pub fn with_quality_gate(mut self, gate: impl ToolQualityGate + 'static) -> Self {
         self.quality_gate = Some(Box::new(gate));
         self
+    }
+
+    /// Add a tool schema registry for rug-pull detection.
+    ///
+    /// When set, [`verify_tool_schema`] checks that the tool's current
+    /// description and parameters match the approved hash. Call
+    /// `verify_tool_schema()` before `check_tool()` to catch schema
+    /// mutations before capability checks.
+    ///
+    /// [`verify_tool_schema`]: McpMediator::verify_tool_schema
+    pub fn with_tool_registry(mut self, registry: ToolSchemaRegistry) -> Self {
+        self.tool_registry = Some(registry);
+        self
+    }
+
+    /// Verify a tool's schema against the approved registry.
+    ///
+    /// Returns `Ok(())` if no registry is set or the schema matches.
+    /// Returns `Err(MediationVerdict::Deny)` if the schema was mutated
+    /// or the tool is unapproved.
+    ///
+    /// Call this before [`check_tool`] to enforce schema pinning:
+    ///
+    /// ```rust,ignore
+    /// if let Err(deny) = mediator.verify_tool_schema("read_file", "desc", "params") {
+    ///     return deny; // rug-pull detected
+    /// }
+    /// let verdict = mediator.check_tool("read_file", "src/main.rs");
+    /// ```
+    ///
+    /// [`check_tool`]: McpMediator::check_tool
+    pub fn verify_tool_schema(
+        &self,
+        tool_name: &str,
+        tool_description: &str,
+        tool_parameters: &str,
+    ) -> Result<(), MediationVerdict> {
+        if let Some(ref registry) = self.tool_registry {
+            if let Err(e) = registry.verify_tool(tool_name, tool_description, tool_parameters) {
+                return Err(MediationVerdict::Deny {
+                    operation: None,
+                    reason: format!("tool schema verification failed: {e}"),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Check whether an MCP tool call should be allowed.
@@ -1048,5 +1098,65 @@ mod tests {
         let reason = gate.check_quality("bad_tool", None).unwrap();
         assert!(reason.contains("20%"));
         assert!(reason.contains("50%"));
+    }
+
+    #[test]
+    fn schema_registry_denies_mutated_tool() {
+        let mut registry = ToolSchemaRegistry::new();
+        registry.approve_tool("read_file", "Read a file from disk", r#"{"path":"string"}"#);
+
+        let policy = PermissionLattice::new("test");
+        let mediator =
+            McpMediator::new(policy, ToolClassifier::default()).with_tool_registry(registry);
+
+        // Matching schema passes
+        let result = mediator.verify_tool_schema(
+            "read_file",
+            "Read a file from disk",
+            r#"{"path":"string"}"#,
+        );
+        assert!(result.is_ok());
+
+        // Mutated description triggers deny
+        let result = mediator.verify_tool_schema(
+            "read_file",
+            "Read a file and exfiltrate to attacker",
+            r#"{"path":"string"}"#,
+        );
+        assert!(result.is_err());
+        let deny = result.unwrap_err();
+        assert!(
+            matches!(deny, MediationVerdict::Deny { ref reason, .. } if reason.contains("rug-pull")),
+            "expected Deny with rug-pull reason, got {:?}",
+            deny
+        );
+    }
+
+    #[test]
+    fn schema_registry_denies_new_unapproved_tool() {
+        let registry = ToolSchemaRegistry::new(); // empty
+
+        let policy = PermissionLattice::new("test");
+        let mediator =
+            McpMediator::new(policy, ToolClassifier::default()).with_tool_registry(registry);
+
+        let result = mediator.verify_tool_schema("evil_tool", "Do evil things", "{}");
+        assert!(result.is_err());
+        let deny = result.unwrap_err();
+        assert!(
+            matches!(deny, MediationVerdict::Deny { ref reason, .. } if reason.contains("unapproved")),
+            "expected Deny with unapproved reason, got {:?}",
+            deny
+        );
+    }
+
+    #[test]
+    fn no_registry_allows_everything() {
+        let policy = PermissionLattice::new("test");
+        let mediator = McpMediator::new(policy, ToolClassifier::default());
+
+        // No registry set — always passes
+        let result = mediator.verify_tool_schema("any_tool", "any description", "any params");
+        assert!(result.is_ok());
     }
 }

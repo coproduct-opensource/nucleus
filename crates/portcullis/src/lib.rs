@@ -131,6 +131,11 @@ pub mod s3_audit_backend;
 /// Requires the `serde` feature for serialization.
 #[cfg(feature = "crypto")]
 pub mod token;
+/// MCP tool schema pinning: rug-pull detection for MCP servers.
+///
+/// Stores SHA-256 hashes of approved tool schemas and detects silent
+/// mutations post-approval.
+pub mod tool_schema;
 
 pub mod identity;
 pub mod intent;
@@ -224,6 +229,7 @@ pub use metrics::{
 };
 #[cfg(feature = "crypto")]
 pub use token::{AttenuationToken, SessionProvenance, TokenError};
+pub use tool_schema::{ApprovedToolSchema, SchemaError, ToolSchemaRegistry};
 pub use uninhabitable_state::{ConstraintNucleus, CoreExposureRequirement, UninhabitableState};
 pub use verdict_sink::{ActorIdentity, SinkError, VerdictContext, VerdictOutcome, VerdictSink};
 
