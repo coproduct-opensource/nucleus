@@ -107,3 +107,33 @@ jobs:
             exit 1
           fi
           echo "✓ Generated Lean code matches committed version"
+
+      # --- Verify proofs type-check ---
+      - name: Install elan (Lean toolchain)
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --no-modify-path
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Cache Lake / Mathlib build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            crates/portcullis-core/lean/.lake
+            ~/.elan
+          key: lean-aeneas-${{ runner.os }}-${{ hashFiles('crates/portcullis-core/lean/lean-toolchain', 'crates/portcullis-core/lean/lakefile.lean') }}
+          restore-keys: |
+            lean-aeneas-${{ runner.os }}-
+
+      - name: lake build (type-check proofs)
+        working-directory: crates/portcullis-core/lean
+        run: lake build PortcullisCoreBridge
+
+      - name: Reject sorry (proof holes)
+        working-directory: crates/portcullis-core/lean
+        run: |
+          if grep -rn 'sorry' PortcullisCoreBridge.lean generated/PortcullisCore/FunsExternal.lean generated/PortcullisCore/CoreFuns.lean; then
+            echo "ERROR: Lean proofs contain 'sorry' — proof has holes."
+            exit 1
+          fi
+          echo "✓ No sorry found — all proofs complete"
