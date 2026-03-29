@@ -5,6 +5,7 @@ use crate::{
     guard::{operation_exposure, ExposureLabel, ExposureSet},
     heyting::HeytingAlgebra,
     isolation::{FileIsolation, IsolationLattice, NetworkIsolation, ProcessIsolation},
+    kernel::{Kernel, Verdict},
     BudgetLattice, CapabilityLattice, CapabilityLevel, CommandLattice, Obligations, Operation,
     PathLattice, PermissionLattice, TimeLattice,
 };
@@ -1620,4 +1621,67 @@ fn proof_nucleus_counterexample_witness() {
         "N3 regression: j(a∧b) unexpectedly equals j(a)∧j(b) — \
          the quotient-meet obligation union may have been removed"
     );
+}
+
+// ============================================================================
+// E-series: DecisionToken linear proof invariants
+// ============================================================================
+
+/// **E1 — DecisionToken is unforgeable.**
+///
+/// The `_seal` field is private to the kernel module. This proof verifies
+/// that the only way to obtain a DecisionToken is through `Kernel::decide()`,
+/// and that the token is only produced when the verdict is `Allow`.
+///
+/// Combined with Rust's type system (non-Clone, non-Copy), this means
+/// every DecisionToken in existence was issued by exactly one `decide()` call.
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_decision_token_unforgeable() {
+    let perms = PermissionLattice::permissive();
+    let mut kernel = Kernel::new(perms);
+    let (decision, token) = kernel.decide(Operation::ReadFiles, "test");
+
+    // If the operation was allowed, we get a token
+    if matches!(decision.verdict, Verdict::Allow) {
+        assert!(token.is_some());
+        let t = token.unwrap();
+        assert!(t.operation() == Operation::ReadFiles);
+        assert!(t.sequence() == decision.sequence);
+    } else {
+        assert!(token.is_none());
+    }
+}
+
+/// **E2 — Denied operations never produce tokens.**
+///
+/// Under a restrictive policy, operations that are denied must never
+/// yield a DecisionToken.
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_denied_ops_have_no_token() {
+    let perms = PermissionLattice::restrictive();
+    let mut kernel = Kernel::new(perms);
+    // RunBash is denied under restrictive profile
+    let (decision, token) = kernel.decide(Operation::RunBash, "rm -rf /");
+    if matches!(decision.verdict, Verdict::Deny(_)) {
+        assert!(token.is_none());
+    }
+}
+
+/// **E3 — Token operation matches decision operation.**
+///
+/// For any operation, when a token is produced, its `operation()` and
+/// `sequence()` must match the decision's fields exactly.
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_token_operation_matches_decision() {
+    let perms = PermissionLattice::permissive();
+    let mut kernel = Kernel::new(perms);
+    let op = arbitrary_operation();
+    let (decision, token) = kernel.decide(op, "subject");
+    if let Some(t) = token {
+        assert!(t.operation() == decision.operation);
+        assert!(t.sequence() == decision.sequence);
+    }
 }

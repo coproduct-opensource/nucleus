@@ -31,6 +31,7 @@ nucleus-spec = { path = "../nucleus-spec" }
 portcullis = { path = "../portcullis", features = ["serde"] }
 
 [dev-dependencies]
+portcullis = { path = "../portcullis", features = ["serde", "testing"] }
 tempfile = { workspace = true }
 
 [lints]

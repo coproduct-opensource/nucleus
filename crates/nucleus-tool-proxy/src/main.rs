@@ -2038,7 +2038,7 @@ async fn read_file(
     // Kernel mediation
     {
         let mut kernel = state.kernel.lock().await;
-        let decision = kernel.decide(operation, &req.path);
+        let (decision, _token) = kernel.decide(operation, &req.path);
         match decision.verdict {
             Verdict::Allow => {}
             Verdict::Deny(_) => {
@@ -2157,7 +2157,7 @@ async fn write_file(
     // Kernel mediation
     {
         let mut kernel = state.kernel.lock().await;
-        let decision = kernel.decide(operation, &req.path);
+        let (decision, _token) = kernel.decide(operation, &req.path);
         match decision.verdict {
             Verdict::Allow => {}
             Verdict::Deny(_) => {
@@ -2312,7 +2312,7 @@ async fn run_command(
     // Kernel mediation
     {
         let mut kernel = state.kernel.lock().await;
-        let decision = kernel.decide(operation, &display_command);
+        let (decision, _token) = kernel.decide(operation, &display_command);
         match decision.verdict {
             Verdict::Allow => {}
             Verdict::Deny(_) => {
@@ -2441,7 +2441,7 @@ async fn web_fetch(
     // Kernel mediation
     {
         let mut kernel = state.kernel.lock().await;
-        let decision = kernel.decide(operation, &url_str);
+        let (decision, _token) = kernel.decide(operation, &url_str);
         match decision.verdict {
             Verdict::Allow => {}
             Verdict::Deny(_) => {
@@ -2653,7 +2653,7 @@ async fn glob_search(
     // Kernel mediation
     {
         let mut kernel = state.kernel.lock().await;
-        let decision = kernel.decide(operation, &req.pattern);
+        let (decision, _token) = kernel.decide(operation, &req.pattern);
         match decision.verdict {
             Verdict::Allow => {}
             Verdict::Deny(_) => {
@@ -2836,7 +2836,7 @@ async fn grep_search(
     // Kernel mediation
     {
         let mut kernel = state.kernel.lock().await;
-        let decision = kernel.decide(operation, &req.pattern);
+        let (decision, _token) = kernel.decide(operation, &req.pattern);
         match decision.verdict {
             Verdict::Allow => {}
             Verdict::Deny(_) => {
@@ -3060,7 +3060,7 @@ async fn web_search(
     // Kernel mediation
     {
         let mut kernel = state.kernel.lock().await;
-        let decision = kernel.decide(operation, &req.query);
+        let (decision, _token) = kernel.decide(operation, &req.query);
         match decision.verdict {
             Verdict::Allow => {}
             Verdict::Deny(_) => {

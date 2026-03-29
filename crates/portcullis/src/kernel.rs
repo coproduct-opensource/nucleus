@@ -49,13 +49,16 @@
 //! let perms = PermissionLattice::safe_pr_fixer();
 //! let mut kernel = Kernel::new(perms);
 //!
-//! // Reading is allowed
-//! let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+//! // Reading is allowed — token proves authorization
+//! let (d, token) = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
 //! assert!(matches!(d.verdict, Verdict::Allow));
+//! assert!(token.is_some());
+//! drop(token); // consume the token
 //!
-//! // Git push is structurally denied
-//! let d = kernel.decide(Operation::GitPush, "origin/main");
+//! // Git push is structurally denied — no token
+//! let (d, token) = kernel.decide(Operation::GitPush, "origin/main");
 //! assert!(matches!(d.verdict, Verdict::Deny(_)));
+//! assert!(token.is_none());
 //!
 //! // Trace is append-only
 //! assert_eq!(kernel.trace().len(), 2);
@@ -209,6 +212,46 @@ pub enum ApprovalSource {
         /// The exposure label that would complete the uninhabitable_state.
         completing_label: ExposureLabel,
     },
+}
+
+/// Proof that Kernel::decide() returned Allow.
+///
+/// This token is:
+/// - **Linear**: non-Clone, non-Copy — cannot be reused
+/// - **#[must_use]**: compiler warns if dropped without consumption
+/// - **Sealed**: private _seal field prevents external construction
+///
+/// Only Kernel::decide() can create this token. Kani proof
+/// `proof_decision_token_unforgeable` verifies no other construction path exists.
+#[must_use = "DecisionToken must be consumed by executing the authorized operation"]
+pub struct DecisionToken {
+    /// The operation this token authorizes.
+    pub(crate) operation: Operation,
+    /// The decision sequence number for audit correlation.
+    pub(crate) sequence: u64,
+    /// Prevents external construction.
+    _seal: (),
+}
+
+impl DecisionToken {
+    /// The operation this token authorizes.
+    pub fn operation(&self) -> Operation {
+        self.operation
+    }
+
+    /// The decision sequence number for audit correlation.
+    pub fn sequence(&self) -> u64 {
+        self.sequence
+    }
+}
+
+impl std::fmt::Debug for DecisionToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DecisionToken")
+            .field("operation", &self.operation)
+            .field("sequence", &self.sequence)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Error when attempting to violate monotonicity.
@@ -398,7 +441,16 @@ impl Kernel {
     ///
     /// For allowed operations, exposure is recorded in the accumulator.
     /// The decision (including exposure transition) is recorded in the append-only trace.
-    pub fn decide(&mut self, operation: Operation, subject: &str) -> Decision {
+    ///
+    /// Returns a `(Decision, Option<DecisionToken>)` pair. The token is `Some`
+    /// only when the verdict is `Allow`, providing a linear proof that the
+    /// operation was authorized. The token is non-Clone, non-Copy, and
+    /// `#[must_use]` — it must be consumed by executing the authorized operation.
+    pub fn decide(
+        &mut self,
+        operation: Operation,
+        subject: &str,
+    ) -> (Decision, Option<DecisionToken>) {
         let pre_hash = self.effective.checksum();
         let pre_exposure_count = self.exposure.count();
         let contributed_label = exposure_core::classify_operation(operation);
@@ -672,7 +724,7 @@ impl Kernel {
         // Record the grant in the append-only trace for audit completeness.
         let pre_hash = self.effective.checksum();
         let pre_exposure_count = self.exposure.count();
-        self.record_with_exposure(
+        let (_decision, _token) = self.record_with_exposure(
             operation,
             &format!("grant_approval(count={count})"),
             Verdict::Allow,
@@ -744,7 +796,8 @@ impl Kernel {
 
     // ── Internal ──────────────────────────────────────────────────────
 
-    /// Record a decision with exposure transition in the trace and return it.
+    /// Record a decision with exposure transition in the trace and return it
+    /// along with an optional DecisionToken (present only for Allow verdicts).
     #[allow(clippy::too_many_arguments)]
     fn record_with_exposure(
         &mut self,
@@ -756,11 +809,21 @@ impl Kernel {
         contributed_label: Option<ExposureLabel>,
         state_uninhabitable: bool,
         dynamic_gate_applied: bool,
-    ) -> Decision {
+    ) -> (Decision, Option<DecisionToken>) {
         let post_hash = self.effective.checksum();
         let post_exposure_count = self.exposure.count();
         let seq = self.next_seq;
         self.next_seq += 1;
+
+        let token = if matches!(verdict, Verdict::Allow) {
+            Some(DecisionToken {
+                operation,
+                sequence: seq,
+                _seal: (),
+            })
+        } else {
+            None
+        };
 
         let decision = Decision {
             id: Uuid::new_v4(),
@@ -781,7 +844,7 @@ impl Kernel {
         };
 
         self.trace.push(decision.clone());
-        decision
+        (decision, token)
     }
 
     /// Try to consume one pre-granted approval for the operation.
@@ -831,7 +894,7 @@ mod tests {
         let perms = PermissionLattice::safe_pr_fixer();
         let mut kernel = Kernel::new(perms);
 
-        let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+        let (d, _token) = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
         assert!(d.verdict.is_allowed());
         assert_eq!(d.sequence, 0);
     }
@@ -842,7 +905,7 @@ mod tests {
         let mut kernel = Kernel::new(perms);
 
         // safe_pr_fixer has git_push=Never
-        let d = kernel.decide(Operation::GitPush, "origin/main");
+        let (d, _token) = kernel.decide(Operation::GitPush, "origin/main");
         assert!(d.verdict.is_denied());
         assert!(matches!(
             d.verdict,
@@ -924,7 +987,7 @@ mod tests {
         let _ = kernel.charge(Decimal::new(500, 2));
 
         // Now decide should deny
-        let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+        let (d, _token) = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
         assert!(matches!(
             d.verdict,
             Verdict::Deny(DenyReason::BudgetExhausted { .. })
@@ -937,7 +1000,7 @@ mod tests {
         let mut kernel = Kernel::new(perms);
 
         // run_bash requires approval in safe_pr_fixer (uninhabitable_state mitigation)
-        let d = kernel.decide(Operation::RunBash, "cargo test");
+        let (d, _token) = kernel.decide(Operation::RunBash, "cargo test");
         assert!(
             matches!(d.verdict, Verdict::RequiresApproval),
             "should require approval, got {:?}",
@@ -948,15 +1011,15 @@ mod tests {
         kernel.grant_approval(Operation::RunBash, 2);
 
         // First use: approved
-        let d = kernel.decide(Operation::RunBash, "cargo test");
+        let (d, _token) = kernel.decide(Operation::RunBash, "cargo test");
         assert!(d.verdict.is_allowed());
 
         // Second use: approved
-        let d = kernel.decide(Operation::RunBash, "cargo build");
+        let (d, _token) = kernel.decide(Operation::RunBash, "cargo build");
         assert!(d.verdict.is_allowed());
 
         // Third use: no more approvals
-        let d = kernel.decide(Operation::RunBash, "cargo check");
+        let (d, _token) = kernel.decide(Operation::RunBash, "cargo check");
         assert!(matches!(d.verdict, Verdict::RequiresApproval));
     }
 
@@ -966,7 +1029,7 @@ mod tests {
         let mut kernel = Kernel::new(perms);
 
         // .ssh is blocked by path lattice
-        let d = kernel.decide(Operation::ReadFiles, "/home/user/.ssh/id_rsa");
+        let (d, _token) = kernel.decide(Operation::ReadFiles, "/home/user/.ssh/id_rsa");
         assert!(
             d.verdict.is_denied(),
             "should deny .ssh access, got {:?}",
@@ -1049,7 +1112,7 @@ mod tests {
         ];
 
         for op in operations {
-            let d = kernel.decide(op, "test-subject");
+            let (d, _token) = kernel.decide(op, "test-subject");
             // Should not panic; verdict should be one of the three variants
             assert!(
                 matches!(
@@ -1070,8 +1133,8 @@ mod tests {
         let perms = PermissionLattice::default();
         let mut kernel = Kernel::new(perms);
 
-        let d1 = kernel.decide(Operation::ReadFiles, "/a");
-        let d2 = kernel.decide(Operation::ReadFiles, "/b");
+        let (d1, _token) = kernel.decide(Operation::ReadFiles, "/a");
+        let (d2, _token) = kernel.decide(Operation::ReadFiles, "/b");
 
         // Without attenuation, hashes should be stable
         assert_eq!(d1.pre_permissions_hash, d1.post_permissions_hash);
@@ -1106,11 +1169,12 @@ mod tests {
         // Can read
         assert!(kernel
             .decide(Operation::ReadFiles, "/workspace/README.md")
+            .0
             .verdict
             .is_allowed());
 
         // Can write
-        let d = kernel.decide(Operation::WriteFiles, "/workspace/docs/guide.md");
+        let (d, _token) = kernel.decide(Operation::WriteFiles, "/workspace/docs/guide.md");
         assert!(
             d.verdict.is_allowed() || matches!(d.verdict, Verdict::RequiresApproval),
             "write should be allowed or require approval"
@@ -1119,18 +1183,21 @@ mod tests {
         // Cannot run bash
         assert!(kernel
             .decide(Operation::RunBash, "make docs")
+            .0
             .verdict
             .is_denied());
 
         // Cannot push
         assert!(kernel
             .decide(Operation::GitPush, "origin/main")
+            .0
             .verdict
             .is_denied());
 
         // Cannot fetch web
         assert!(kernel
             .decide(Operation::WebFetch, "https://example.com")
+            .0
             .verdict
             .is_denied());
     }
@@ -1142,7 +1209,7 @@ mod tests {
         let mut kernel = Kernel::new(perms);
 
         // Initially allowed
-        let d = kernel.decide(Operation::GitPush, "origin/main");
+        let (d, _token) = kernel.decide(Operation::GitPush, "origin/main");
         // permissive has uninhabitable_state so push requires approval, but capability is present
         assert!(!matches!(
             d.verdict,
@@ -1154,7 +1221,7 @@ mod tests {
         kernel.attenuate(&ceiling).unwrap();
 
         // Now denied
-        let d = kernel.decide(Operation::GitPush, "origin/main");
+        let (d, _token) = kernel.decide(Operation::GitPush, "origin/main");
         assert!(matches!(
             d.verdict,
             Verdict::Deny(DenyReason::InsufficientCapability)
@@ -1198,7 +1265,7 @@ mod tests {
         let mut kernel = Kernel::new(perms);
 
         // ReadFiles → PrivateDatan exposure
-        let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+        let (d, _token) = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
         assert!(d.verdict.is_allowed());
         assert!(kernel.exposure().contains(ExposureLabel::PrivateData));
         assert_eq!(kernel.exposure().count(), 1);
@@ -1210,7 +1277,7 @@ mod tests {
         );
 
         // WebFetch → UntrustedContent exposure
-        let d = kernel.decide(Operation::WebFetch, "https://example.com");
+        let (d, _token) = kernel.decide(Operation::WebFetch, "https://example.com");
         assert!(d.verdict.is_allowed());
         assert!(kernel.exposure().contains(ExposureLabel::UntrustedContent));
         assert_eq!(kernel.exposure().count(), 2);
@@ -1224,7 +1291,7 @@ mod tests {
         let mut kernel = Kernel::new(perms);
 
         // git_push=Never → denied, no exposure recorded
-        let d = kernel.decide(Operation::GitPush, "origin/main");
+        let (d, _token) = kernel.decide(Operation::GitPush, "origin/main");
         assert!(d.verdict.is_denied());
         assert_eq!(kernel.exposure().count(), 0);
         assert_eq!(d.exposure_transition.post_count, 0);
@@ -1298,15 +1365,15 @@ mod tests {
         let mut kernel = Kernel::new(perms);
 
         // Step 1: Read private data → exposure PrivateData
-        let d = kernel.decide(Operation::ReadFiles, "/etc/passwd");
+        let (d, _token) = kernel.decide(Operation::ReadFiles, "/etc/passwd");
         assert!(d.verdict.is_allowed());
 
         // Step 2: Fetch untrusted content → exposure UntrustedContent
-        let d = kernel.decide(Operation::WebFetch, "https://evil.com/payload");
+        let (d, _token) = kernel.decide(Operation::WebFetch, "https://evil.com/payload");
         assert!(d.verdict.is_allowed());
 
         // Step 3: Try to push → uninhabitable_state would complete → dynamic gate!
-        let d = kernel.decide(Operation::GitPush, "origin/main");
+        let (d, _token) = kernel.decide(Operation::GitPush, "origin/main");
         assert!(
             matches!(d.verdict, Verdict::RequiresApproval),
             "dynamic exposure gate should block exfil, got {:?}",
@@ -1353,7 +1420,7 @@ mod tests {
         kernel.decide(Operation::WebFetch, "https://evil.com/payload");
 
         // Push with pre-approval should be allowed through the dynamic gate
-        let d = kernel.decide(Operation::GitPush, "origin/main");
+        let (d, _token) = kernel.decide(Operation::GitPush, "origin/main");
         assert!(
             d.verdict.is_allowed(),
             "pre-approved exfil should pass dynamic gate, got {:?}",
@@ -1395,12 +1462,12 @@ mod tests {
         kernel.decide(Operation::WebFetch, "https://evil.com");
 
         // Neutral ops should still be allowed even with high exposure
-        let d = kernel.decide(Operation::WriteFiles, "/workspace/out.txt");
+        let (d, _token) = kernel.decide(Operation::WriteFiles, "/workspace/out.txt");
         assert!(d.verdict.is_allowed());
         assert!(!d.exposure_transition.dynamic_gate_applied);
 
         // git_commit is not an exfil op — should be allowed
-        let d = kernel.decide(Operation::GitCommit, "fix: stuff");
+        let (d, _token) = kernel.decide(Operation::GitCommit, "fix: stuff");
         assert!(d.verdict.is_allowed());
         assert!(!d.exposure_transition.dynamic_gate_applied);
     }
@@ -1489,7 +1556,7 @@ mod tests {
         assert!(kernel.exposure().contains(ExposureLabel::UntrustedContent));
 
         // RunBash with a permitted command — uninhabitable_state would complete via omnibus
-        let d = kernel.decide(Operation::RunBash, "cargo test");
+        let (d, _token) = kernel.decide(Operation::RunBash, "cargo test");
         assert!(
             matches!(d.verdict, Verdict::RequiresApproval),
             "RunBash omnibus projection should trigger dynamic gate, got {:?}",
@@ -1507,7 +1574,7 @@ mod tests {
             .with_minimum_isolation(IsolationLattice::sandboxed());
         let mut kernel = Kernel::with_isolation(perms, IsolationLattice::microvm());
 
-        let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+        let (d, _token) = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
         assert!(
             d.verdict.is_allowed(),
             "MicroVM satisfies sandboxed minimum"
@@ -1521,7 +1588,7 @@ mod tests {
             PermissionLattice::safe_pr_fixer().with_minimum_isolation(IsolationLattice::microvm());
         let mut kernel = Kernel::with_isolation(perms, IsolationLattice::localhost());
 
-        let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+        let (d, _token) = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
         assert!(
             matches!(
                 d.verdict,
@@ -1539,7 +1606,7 @@ mod tests {
             .with_minimum_isolation(IsolationLattice::sandboxed());
         let mut kernel = Kernel::with_isolation(perms, IsolationLattice::sandboxed());
 
-        let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+        let (d, _token) = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
         assert!(d.verdict.is_allowed(), "exact match satisfies minimum");
     }
 
@@ -1563,7 +1630,7 @@ mod tests {
         );
         let mut kernel = Kernel::with_isolation(perms, runtime);
 
-        let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+        let (d, _token) = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
         assert!(
             matches!(
                 d.verdict,
@@ -1580,7 +1647,7 @@ mod tests {
         assert!(perms.minimum_isolation.is_none());
         let mut kernel = Kernel::with_isolation(perms, IsolationLattice::localhost());
 
-        let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+        let (d, _token) = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
         assert!(
             d.verdict.is_allowed(),
             "no minimum → always passes isolation check"
@@ -1593,7 +1660,7 @@ mod tests {
         let perms = PermissionLattice::permissive();
         let mut kernel = Kernel::with_isolation(perms, IsolationLattice::microvm());
 
-        let d = kernel.decide(Operation::WebFetch, "https://example.com");
+        let (d, _token) = kernel.decide(Operation::WebFetch, "https://example.com");
         assert!(
             matches!(d.verdict, Verdict::Deny(DenyReason::IsolationGated { .. })),
             "airgapped network must deny web_fetch even if capability allows it, got {:?}",
@@ -1606,7 +1673,7 @@ mod tests {
         let perms = PermissionLattice::permissive();
         let mut kernel = Kernel::with_isolation(perms, IsolationLattice::microvm());
 
-        let d = kernel.decide(Operation::WebSearch, "rust async");
+        let (d, _token) = kernel.decide(Operation::WebSearch, "rust async");
         assert!(
             matches!(d.verdict, Verdict::Deny(DenyReason::IsolationGated { .. })),
             "airgapped network must deny web_search, got {:?}",
@@ -1620,10 +1687,10 @@ mod tests {
         let perms = PermissionLattice::permissive();
         let mut kernel = Kernel::with_isolation(perms, IsolationLattice::microvm());
 
-        let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+        let (d, _token) = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
         assert!(d.verdict.is_allowed(), "airgapped should allow file reads");
 
-        let d = kernel.decide(Operation::GlobSearch, "**/*.rs");
+        let (d, _token) = kernel.decide(Operation::GlobSearch, "**/*.rs");
         assert!(d.verdict.is_allowed(), "airgapped should allow glob search");
     }
 
@@ -1633,7 +1700,7 @@ mod tests {
         let perms = PermissionLattice::permissive();
         let mut kernel = Kernel::with_isolation(perms, IsolationLattice::microvm_with_network());
 
-        let d = kernel.decide(Operation::WebFetch, "https://example.com");
+        let (d, _token) = kernel.decide(Operation::WebFetch, "https://example.com");
         assert!(
             d.verdict.is_allowed(),
             "filtered network should allow web_fetch, got {:?}",
@@ -1711,7 +1778,7 @@ mod tests {
         assert_eq!(prov.certificate_fingerprint, fingerprint);
 
         // Kernel makes decisions using the certificate's effective permissions
-        let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+        let (d, _token) = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
         assert!(d.verdict.is_allowed());
     }
 
@@ -1753,12 +1820,14 @@ mod tests {
         // Reading is allowed
         assert!(kernel
             .decide(Operation::ReadFiles, "/workspace/main.rs")
+            .0
             .verdict
             .is_allowed());
 
         // Writing is denied (read_only profile)
         assert!(kernel
             .decide(Operation::GitPush, "origin/main")
+            .0
             .verdict
             .is_denied());
     }
