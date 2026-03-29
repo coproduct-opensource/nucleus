@@ -2012,7 +2012,7 @@ async fn read_file(
 
     // Validate inputs before any processing
     if let Err(e) = validation::validate_path(&req.path) {
-        let _ = sink.record(VerdictContext {
+        if let Err(e) = sink.record(VerdictContext {
             operation,
             subject: req.path.clone(),
             outcome: VerdictOutcome::Deny {
@@ -2021,7 +2021,9 @@ async fn read_file(
             actor,
             policy_rule: None,
             extensions: BTreeMap::new(),
-        });
+        }) {
+            warn!(error = %e, "verdict recording failed -- audit gap");
+        }
         return Err(ApiError::Validation(e));
     }
 
@@ -2040,7 +2042,7 @@ async fn read_file(
                     .sandbox()
                     .read_to_string_approved(&path, &token)?
             } else {
-                let _ = sink.record(VerdictContext {
+                if let Err(e) = sink.record(VerdictContext {
                     operation,
                     subject: path.clone(),
                     outcome: VerdictOutcome::Deny {
@@ -2049,14 +2051,16 @@ async fn read_file(
                     actor,
                     policy_rule: None,
                     extensions: BTreeMap::new(),
-                });
+                }) {
+                    warn!(error = %e, "verdict recording failed -- audit gap");
+                }
                 return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
                     operation: op,
                 }));
             }
         }
         Err(err) => {
-            let _ = sink.record(VerdictContext {
+            if let Err(e) = sink.record(VerdictContext {
                 operation,
                 subject: path.clone(),
                 outcome: VerdictOutcome::Error {
@@ -2065,19 +2069,23 @@ async fn read_file(
                 actor,
                 policy_rule: None,
                 extensions: BTreeMap::new(),
-            });
+            }) {
+                warn!(error = %e, "verdict recording failed -- audit gap");
+            }
             return Err(ApiError::Nucleus(err));
         }
     };
 
-    let _ = sink.record(VerdictContext {
+    if let Err(e) = sink.record(VerdictContext {
         operation,
         subject: path,
         outcome: VerdictOutcome::Allow,
         actor,
         policy_rule: None,
         extensions: BTreeMap::new(),
-    });
+    }) {
+        warn!(error = %e, "verdict recording failed -- audit gap");
+    }
     Ok(Json(ReadResponse { contents }))
 }
 
@@ -2094,7 +2102,7 @@ async fn write_file(
 
     // Validate inputs before any processing
     if let Err(e) = validation::validate_path(&req.path) {
-        let _ = sink.record(VerdictContext {
+        if let Err(e) = sink.record(VerdictContext {
             operation,
             subject: req.path.clone(),
             outcome: VerdictOutcome::Deny {
@@ -2103,7 +2111,9 @@ async fn write_file(
             actor,
             policy_rule: None,
             extensions: BTreeMap::new(),
-        });
+        }) {
+            warn!(error = %e, "verdict recording failed -- audit gap");
+        }
         return Err(ApiError::Validation(e));
     }
 
@@ -2123,7 +2133,7 @@ async fn write_file(
                     .sandbox()
                     .write_approved(&path, contents.as_bytes(), &token)?;
             } else {
-                let _ = sink.record(VerdictContext {
+                if let Err(e) = sink.record(VerdictContext {
                     operation,
                     subject: path.clone(),
                     outcome: VerdictOutcome::Deny {
@@ -2132,14 +2142,16 @@ async fn write_file(
                     actor,
                     policy_rule: None,
                     extensions: BTreeMap::new(),
-                });
+                }) {
+                    warn!(error = %e, "verdict recording failed -- audit gap");
+                }
                 return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
                     operation: op,
                 }));
             }
         }
         Err(err) => {
-            let _ = sink.record(VerdictContext {
+            if let Err(e) = sink.record(VerdictContext {
                 operation,
                 subject: path.clone(),
                 outcome: VerdictOutcome::Error {
@@ -2148,19 +2160,23 @@ async fn write_file(
                 actor,
                 policy_rule: None,
                 extensions: BTreeMap::new(),
-            });
+            }) {
+                warn!(error = %e, "verdict recording failed -- audit gap");
+            }
             return Err(ApiError::Nucleus(err));
         }
     }
 
-    let _ = sink.record(VerdictContext {
+    if let Err(e) = sink.record(VerdictContext {
         operation,
         subject: path,
         outcome: VerdictOutcome::Allow,
         actor,
         policy_rule: None,
         extensions: BTreeMap::new(),
-    });
+    }) {
+        warn!(error = %e, "verdict recording failed -- audit gap");
+    }
     Ok(Json(WriteResponse { ok: true }))
 }
 
@@ -2180,7 +2196,7 @@ async fn run_command(
 
     // Validate inputs before any processing
     if let Err(e) = validation::validate_command_args(&req.args) {
-        let _ = sink.record(VerdictContext {
+        if let Err(e) = sink.record(VerdictContext {
             operation,
             subject: display_command.clone(),
             outcome: VerdictOutcome::Deny {
@@ -2189,11 +2205,13 @@ async fn run_command(
             actor,
             policy_rule: None,
             extensions: BTreeMap::new(),
-        });
+        }) {
+            warn!(error = %e, "verdict recording failed -- audit gap");
+        }
         return Err(ApiError::Validation(e));
     }
     if let Err(e) = validation::validate_stdin(req.stdin.as_deref()) {
-        let _ = sink.record(VerdictContext {
+        if let Err(e) = sink.record(VerdictContext {
             operation,
             subject: display_command.clone(),
             outcome: VerdictOutcome::Deny {
@@ -2202,12 +2220,14 @@ async fn run_command(
             actor,
             policy_rule: None,
             extensions: BTreeMap::new(),
-        });
+        }) {
+            warn!(error = %e, "verdict recording failed -- audit gap");
+        }
         return Err(ApiError::Validation(e));
     }
     if let Some(ref dir) = req.directory {
         if let Err(e) = validation::validate_path(dir) {
-            let _ = sink.record(VerdictContext {
+            if let Err(e) = sink.record(VerdictContext {
                 operation,
                 subject: display_command.clone(),
                 outcome: VerdictOutcome::Deny {
@@ -2216,7 +2236,9 @@ async fn run_command(
                 actor,
                 policy_rule: None,
                 extensions: BTreeMap::new(),
-            });
+            }) {
+                warn!(error = %e, "verdict recording failed -- audit gap");
+            }
             return Err(ApiError::Validation(e));
         }
     }
@@ -2240,7 +2262,7 @@ async fn run_command(
                 let token = executor.request_approval(&op)?;
                 executor.run_args_with_approval(&req.args, stdin, directory, &token)?
             } else {
-                let _ = sink.record(VerdictContext {
+                if let Err(e) = sink.record(VerdictContext {
                     operation,
                     subject: display_command.clone(),
                     outcome: VerdictOutcome::Deny {
@@ -2249,14 +2271,16 @@ async fn run_command(
                     actor,
                     policy_rule: None,
                     extensions: BTreeMap::new(),
-                });
+                }) {
+                    warn!(error = %e, "verdict recording failed -- audit gap");
+                }
                 return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
                     operation: op,
                 }));
             }
         }
         Err(err) => {
-            let _ = sink.record(VerdictContext {
+            if let Err(e) = sink.record(VerdictContext {
                 operation,
                 subject: display_command.clone(),
                 outcome: VerdictOutcome::Error {
@@ -2265,19 +2289,23 @@ async fn run_command(
                 actor,
                 policy_rule: None,
                 extensions: BTreeMap::new(),
-            });
+            }) {
+                warn!(error = %e, "verdict recording failed -- audit gap");
+            }
             return Err(ApiError::Nucleus(err));
         }
     };
 
-    let _ = sink.record(VerdictContext {
+    if let Err(e) = sink.record(VerdictContext {
         operation,
         subject: display_command,
         outcome: VerdictOutcome::Allow,
         actor,
         policy_rule: None,
         extensions: BTreeMap::new(),
-    });
+    }) {
+        warn!(error = %e, "verdict recording failed -- audit gap");
+    }
     Ok(Json(RunResponse {
         status: output.status.code().unwrap_or(-1),
         success: output.status.success(),
@@ -2300,7 +2328,7 @@ async fn web_fetch(
 
     // Validate inputs before any processing
     if let Err(e) = validation::validate_url(&req.url) {
-        let _ = sink.record(VerdictContext {
+        if let Err(e) = sink.record(VerdictContext {
             operation,
             subject: url_str.clone(),
             outcome: VerdictOutcome::Deny {
@@ -2309,7 +2337,9 @@ async fn web_fetch(
             actor,
             policy_rule: None,
             extensions: BTreeMap::new(),
-        });
+        }) {
+            warn!(error = %e, "verdict recording failed -- audit gap");
+        }
         return Err(ApiError::Validation(e));
     }
 
@@ -2317,7 +2347,7 @@ async fn web_fetch(
     let policy = state.runtime.policy();
     let level = policy.capabilities.web_fetch;
     if level == CapabilityLevel::Never {
-        let _ = sink.record(VerdictContext {
+        if let Err(e) = sink.record(VerdictContext {
             operation,
             subject: url_str.clone(),
             outcome: VerdictOutcome::Deny {
@@ -2326,7 +2356,9 @@ async fn web_fetch(
             actor,
             policy_rule: None,
             extensions: BTreeMap::new(),
-        });
+        }) {
+            warn!(error = %e, "verdict recording failed -- audit gap");
+        }
         return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
             capability: "web_fetch".into(),
             actual: level,
@@ -2341,7 +2373,7 @@ async fn web_fetch(
             check_identity_policy(&state, auth_ctx.as_ref(), &format!("web_fetch {}", url_str));
 
         if !policy_allows && !state.approvals.consume("web_fetch") {
-            let _ = sink.record(VerdictContext {
+            if let Err(e) = sink.record(VerdictContext {
                 operation,
                 subject: url_str.clone(),
                 outcome: VerdictOutcome::Deny {
@@ -2350,7 +2382,9 @@ async fn web_fetch(
                 actor,
                 policy_rule: None,
                 extensions: BTreeMap::new(),
-            });
+            }) {
+                warn!(error = %e, "verdict recording failed -- audit gap");
+            }
             return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
                 operation: format!("web_fetch {}", url_str),
             }));
@@ -2456,14 +2490,16 @@ async fn web_fetch(
         (String::from_utf8_lossy(&bytes).to_string(), None)
     };
 
-    let _ = sink.record(VerdictContext {
+    if let Err(e) = sink.record(VerdictContext {
         operation,
         subject: url_str,
         outcome: VerdictOutcome::Allow,
         actor,
         policy_rule: None,
         extensions: BTreeMap::new(),
-    });
+    }) {
+        warn!(error = %e, "verdict recording failed -- audit gap");
+    }
     Ok(Json(WebFetchResponse {
         status,
         headers: response_headers,
@@ -2494,7 +2530,7 @@ async fn glob_search(
     let policy = state.runtime.policy();
     let level = policy.capabilities.glob_search;
     if level == CapabilityLevel::Never {
-        let _ = sink.record(VerdictContext {
+        if let Err(e) = sink.record(VerdictContext {
             operation,
             subject: req.pattern.clone(),
             outcome: VerdictOutcome::Deny {
@@ -2503,7 +2539,9 @@ async fn glob_search(
             actor,
             policy_rule: None,
             extensions: BTreeMap::new(),
-        });
+        }) {
+            warn!(error = %e, "verdict recording failed -- audit gap");
+        }
         return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
             capability: "glob_search".into(),
             actual: level,
@@ -2516,7 +2554,7 @@ async fn glob_search(
         let policy_allows =
             check_identity_policy(&state, auth_ctx.as_ref(), &format!("glob {}", req.pattern));
         if !policy_allows && !state.approvals.consume("glob_search") {
-            let _ = sink.record(VerdictContext {
+            if let Err(e) = sink.record(VerdictContext {
                 operation,
                 subject: req.pattern.clone(),
                 outcome: VerdictOutcome::Deny {
@@ -2525,7 +2563,9 @@ async fn glob_search(
                 actor,
                 policy_rule: None,
                 extensions: BTreeMap::new(),
-            });
+            }) {
+                warn!(error = %e, "verdict recording failed -- audit gap");
+            }
             return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
                 operation: format!("glob {}", req.pattern),
             }));
@@ -2599,14 +2639,16 @@ async fn glob_search(
         }
     }
 
-    let _ = sink.record(VerdictContext {
+    if let Err(e) = sink.record(VerdictContext {
         operation,
         subject: req.pattern,
         outcome: VerdictOutcome::Allow,
         actor,
         policy_rule: None,
         extensions: BTreeMap::new(),
-    });
+    }) {
+        warn!(error = %e, "verdict recording failed -- audit gap");
+    }
     Ok(Json(GlobResponse {
         matches,
         truncated: if truncated { Some(true) } else { None },
@@ -2642,7 +2684,7 @@ async fn grep_search(
     let policy = state.runtime.policy();
     let level = policy.capabilities.grep_search;
     if level == CapabilityLevel::Never {
-        let _ = sink.record(VerdictContext {
+        if let Err(e) = sink.record(VerdictContext {
             operation,
             subject: req.pattern.clone(),
             outcome: VerdictOutcome::Deny {
@@ -2651,7 +2693,9 @@ async fn grep_search(
             actor,
             policy_rule: None,
             extensions: BTreeMap::new(),
-        });
+        }) {
+            warn!(error = %e, "verdict recording failed -- audit gap");
+        }
         return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
             capability: "grep_search".into(),
             actual: level,
@@ -2664,7 +2708,7 @@ async fn grep_search(
         let policy_allows =
             check_identity_policy(&state, auth_ctx.as_ref(), &format!("grep {}", req.pattern));
         if !policy_allows && !state.approvals.consume("grep_search") {
-            let _ = sink.record(VerdictContext {
+            if let Err(e) = sink.record(VerdictContext {
                 operation,
                 subject: req.pattern.clone(),
                 outcome: VerdictOutcome::Deny {
@@ -2673,7 +2717,9 @@ async fn grep_search(
                 actor,
                 policy_rule: None,
                 extensions: BTreeMap::new(),
-            });
+            }) {
+                warn!(error = %e, "verdict recording failed -- audit gap");
+            }
             return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
                 operation: format!("grep {}", req.pattern),
             }));
@@ -2798,14 +2844,16 @@ async fn grep_search(
         }
     }
 
-    let _ = sink.record(VerdictContext {
+    if let Err(e) = sink.record(VerdictContext {
         operation,
         subject: req.pattern,
         outcome: VerdictOutcome::Allow,
         actor,
         policy_rule: None,
         extensions: BTreeMap::new(),
-    });
+    }) {
+        warn!(error = %e, "verdict recording failed -- audit gap");
+    }
     Ok(Json(GrepResponse {
         matches,
         truncated: if truncated { Some(true) } else { None },
@@ -2831,7 +2879,7 @@ async fn web_search(
     let policy = state.runtime.policy();
     let level = policy.capabilities.web_search;
     if level == CapabilityLevel::Never {
-        let _ = sink.record(VerdictContext {
+        if let Err(e) = sink.record(VerdictContext {
             operation,
             subject: req.query.clone(),
             outcome: VerdictOutcome::Deny {
@@ -2840,7 +2888,9 @@ async fn web_search(
             actor,
             policy_rule: None,
             extensions: BTreeMap::new(),
-        });
+        }) {
+            warn!(error = %e, "verdict recording failed -- audit gap");
+        }
         return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
             capability: "web_search".into(),
             actual: level,
@@ -2856,7 +2906,7 @@ async fn web_search(
             &format!("web_search {}", req.query),
         );
         if !policy_allows && !state.approvals.consume("web_search") {
-            let _ = sink.record(VerdictContext {
+            if let Err(e) = sink.record(VerdictContext {
                 operation,
                 subject: req.query.clone(),
                 outcome: VerdictOutcome::Deny {
@@ -2865,7 +2915,9 @@ async fn web_search(
                 actor,
                 policy_rule: None,
                 extensions: BTreeMap::new(),
-            });
+            }) {
+                warn!(error = %e, "verdict recording failed -- audit gap");
+            }
             return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
                 operation: format!("web_search {}", req.query),
             }));
@@ -2949,14 +3001,16 @@ async fn web_search(
         Vec::new()
     };
 
-    let _ = sink.record(VerdictContext {
+    if let Err(e) = sink.record(VerdictContext {
         operation,
         subject: req.query,
         outcome: VerdictOutcome::Allow,
         actor,
         policy_rule: None,
         extensions: BTreeMap::new(),
-    });
+    }) {
+        warn!(error = %e, "verdict recording failed -- audit gap");
+    }
     Ok(Json(WebSearchResponse { results }))
 }
 
@@ -2985,14 +3039,16 @@ async fn approve_operation(
     state
         .approvals
         .approve(&req.operation, req.count, expires_at);
-    let _ = sink.record(VerdictContext {
+    if let Err(e) = sink.record(VerdictContext {
         operation: Operation::ManagePods, // meta-operation: approval grant
         subject: req.operation,
         outcome: VerdictOutcome::Allow,
         actor: ActorIdentity::Unknown,
         policy_rule: None,
         extensions: BTreeMap::new(),
-    });
+    }) {
+        warn!(error = %e, "verdict recording failed -- audit gap");
+    }
     Ok(Json(ApproveResponse { ok: true }))
 }
 
@@ -3150,14 +3206,16 @@ async fn escalate_permissions(
             // Create the grant
             match EscalationGrant::new(&escalation_request, approver_chain, drand_round) {
                 Ok(grant) => {
-                    let _ = sink.record(VerdictContext {
+                    if let Err(e) = sink.record(VerdictContext {
                         operation,
                         subject: escalation_subject,
                         outcome: VerdictOutcome::Allow,
                         actor,
                         policy_rule: None,
                         extensions: BTreeMap::new(),
-                    });
+                    }) {
+                        warn!(error = %e, "verdict recording failed -- audit gap");
+                    }
 
                     tracing::info!(
                         requestor = %requestor_chain.current_spiffe_id().unwrap_or("unknown"),
@@ -3182,7 +3240,7 @@ async fn escalate_permissions(
                 Err(e) => {
                     let error_msg = escalation_error_to_string(&e);
 
-                    let _ = sink.record(VerdictContext {
+                    if let Err(e) = sink.record(VerdictContext {
                         operation,
                         subject: escalation_subject,
                         outcome: VerdictOutcome::Deny {
@@ -3191,7 +3249,9 @@ async fn escalate_permissions(
                         actor,
                         policy_rule: None,
                         extensions: BTreeMap::new(),
-                    });
+                    }) {
+                        warn!(error = %e, "verdict recording failed -- audit gap");
+                    }
 
                     tracing::warn!(
                         requestor = %requestor_chain.current_spiffe_id().unwrap_or("unknown"),
@@ -3215,7 +3275,7 @@ async fn escalate_permissions(
         Err(e) => {
             let error_msg = escalation_error_to_string(&e);
 
-            let _ = sink.record(VerdictContext {
+            if let Err(e) = sink.record(VerdictContext {
                 operation,
                 subject: escalation_subject,
                 outcome: VerdictOutcome::Deny {
@@ -3224,7 +3284,9 @@ async fn escalate_permissions(
                 actor,
                 policy_rule: None,
                 extensions: BTreeMap::new(),
-            });
+            }) {
+                warn!(error = %e, "verdict recording failed -- audit gap");
+            }
 
             tracing::warn!(
                 requestor = %requestor_chain.current_spiffe_id().unwrap_or("unknown"),
@@ -3481,14 +3543,16 @@ async fn create_sub_pod(
         .map_err(|e| ApiError::Spec(format!("node create_pod failed: {e}")))?;
 
     // 7. Record verdict
-    let _ = sink.record(VerdictContext {
+    if let Err(e) = sink.record(VerdictContext {
         operation: Operation::ManagePods,
         subject: format!("sub-pod {} (reason: {})", result.id, req.reason),
         outcome: VerdictOutcome::Allow,
         actor,
         policy_rule: None,
         extensions: BTreeMap::new(),
-    });
+    }) {
+        warn!(error = %e, "verdict recording failed -- audit gap");
+    }
 
     Ok(Json(CreateSubPodResponse {
         pod_id: result.id.to_string(),
@@ -3591,14 +3655,16 @@ async fn cancel_sub_pod(
         .await
         .map_err(|e| ApiError::Spec(format!("node cancel_pod failed: {e}")))?;
 
-    let _ = sink.record(VerdictContext {
+    if let Err(e) = sink.record(VerdictContext {
         operation: Operation::ManagePods,
         subject: format!("sub-pod {}", req.pod_id),
         outcome: VerdictOutcome::Allow,
         actor,
         policy_rule: None,
         extensions: BTreeMap::new(),
-    });
+    }) {
+        warn!(error = %e, "verdict recording failed -- audit gap");
+    }
 
     Ok(Json(
         serde_json::json!({ "status": "cancelled", "pod_id": req.pod_id }),

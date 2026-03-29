@@ -443,9 +443,42 @@ impl McpMediator {
                         tool_name: tool_name.to_string(),
                     };
                 } else {
-                    // Fail-open: allow unclassified tools without mediation
+                    // Fail-open for classification, but still check the permission
+                    // lattice. Unclassified tools are conservatively treated as
+                    // RunBash (highest-privilege operation) so the lattice check
+                    // catches policy violations even for unknown tool names.
+                    // SECURITY: Without this lattice check, unclassified tools
+                    // bypassed the permission lattice entirely when
+                    // deny_unclassified was false (Trail of Bits finding #1).
+                    let conservative_op = Operation::RunBash;
+                    let level = self.get_capability_level(conservative_op);
+                    if level == CapabilityLevel::Never {
+                        return MediationVerdict::Deny {
+                            operation: Some(conservative_op),
+                            reason: format!(
+                                "unclassified tool '{}' mapped to {:?} which is set to Never in policy",
+                                tool_name, conservative_op
+                            ),
+                        };
+                    }
+
+                    // Check uninhabitable_state constraint for the conservative op
+                    let requires_approval = self.policy.requires_approval(conservative_op);
+                    if requires_approval {
+                        let projected = project_exposure(&self.exposure, conservative_op);
+                        if projected.is_uninhabitable() && self.policy.uninhabitable_constraint {
+                            return MediationVerdict::RequiresApproval {
+                                operation: conservative_op,
+                                reason: format!(
+                                    "unclassified tool '{}' (mapped to {:?}) on '{}' would complete the uninhabitable_state — approval required",
+                                    tool_name, conservative_op, subject
+                                ),
+                            };
+                        }
+                    }
+
                     return MediationVerdict::Allow {
-                        operation: Operation::RunBash, // Most conservative classification
+                        operation: conservative_op,
                         exposure_label: Some(ExposureLabel::ExfilVector),
                     };
                 }
@@ -809,13 +842,35 @@ mod tests {
     }
 
     #[test]
-    fn test_mediator_unclassified_allowed_when_configured() {
+    fn test_mediator_unclassified_denied_when_conservative_op_is_never() {
+        // restrictive_policy() sets run_bash = Never, so unclassified tools
+        // (mapped to RunBash) should be denied even with allow_unclassified.
+        // Trail of Bits finding #1: previously this returned Allow, bypassing
+        // the permission lattice entirely.
         let policy = restrictive_policy();
         let mediator = McpMediator::new(policy, ToolClassifier::default()).allow_unclassified();
 
         let verdict = mediator.check_tool("frobnicate", "");
-        // Allowed but classified as RunBash (most conservative)
-        assert!(matches!(verdict, MediationVerdict::Allow { .. }));
+        assert!(
+            matches!(verdict, MediationVerdict::Deny { .. }),
+            "unclassified tool should be denied when RunBash is Never, got {:?}",
+            verdict
+        );
+    }
+
+    #[test]
+    fn test_mediator_unclassified_allowed_when_conservative_op_permitted() {
+        // When RunBash is allowed, unclassified tools pass the lattice check.
+        let mut policy = restrictive_policy();
+        policy.capabilities.run_bash = CapabilityLevel::LowRisk;
+        let mediator = McpMediator::new(policy, ToolClassifier::default()).allow_unclassified();
+
+        let verdict = mediator.check_tool("frobnicate", "");
+        assert!(
+            matches!(verdict, MediationVerdict::Allow { .. }),
+            "unclassified tool should be allowed when RunBash is LowRisk, got {:?}",
+            verdict
+        );
     }
 
     #[test]
