@@ -14,6 +14,7 @@ use clap::Parser;
 use nucleus::portcullis::escalation::{
     EscalationError, EscalationGrant, EscalationRequest, SpiffeTraceChain, SpiffeTraceLink,
 };
+use nucleus::portcullis::kernel::{Kernel, Verdict};
 use nucleus::portcullis::{CapabilityLevel, Operation, PermissionLattice};
 use nucleus::{
     ApprovalRequest, BudgetModel, CallbackApprover, NucleusError, PodRuntime,
@@ -302,6 +303,8 @@ pub(crate) struct AppState {
     session_id: String,
     /// Shared verdict sink for lockdown + telemetry convergence (HTTP + MCP).
     pub(crate) verdict_sink: Arc<dyn portcullis::verdict_sink::VerdictSink>,
+    /// Kernel decision engine for complete mediation (HTTP path).
+    pub(crate) kernel: Arc<tokio::sync::Mutex<Kernel>>,
 }
 
 /// OR-semantics: locked if EITHER signal file OR gRPC stream says locked.
@@ -1239,6 +1242,10 @@ async fn main() -> Result<(), ApiError> {
             session_id.clone(),
         ));
 
+    let kernel = Arc::new(tokio::sync::Mutex::new(Kernel::new(
+        runtime.policy().clone(),
+    )));
+
     let state = AppState {
         runtime: Arc::new(runtime),
         approvals,
@@ -1269,6 +1276,7 @@ async fn main() -> Result<(), ApiError> {
         policy_checksum,
         session_id,
         verdict_sink,
+        kernel,
     };
 
     if let Err(err) = emit_boot_report(&state).await {
@@ -2027,6 +2035,35 @@ async fn read_file(
         return Err(ApiError::Validation(e));
     }
 
+    // Kernel mediation
+    {
+        let mut kernel = state.kernel.lock().await;
+        let decision = kernel.decide(operation, &req.path);
+        match decision.verdict {
+            Verdict::Allow => {}
+            Verdict::Deny(_) => {
+                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+                    capability: format!("{operation:?}"),
+                    actual: CapabilityLevel::Never,
+                    required: CapabilityLevel::LowRisk,
+                }));
+            }
+            Verdict::RequiresApproval => {
+                info!(
+                    ?operation,
+                    subject = %req.path,
+                    exposure = decision.exposure_transition.post_count,
+                    "kernel requires approval"
+                );
+                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+                    capability: format!("{operation:?}"),
+                    actual: CapabilityLevel::Never,
+                    required: CapabilityLevel::LowRisk,
+                }));
+            }
+        }
+    }
+
     let path = req.path.clone();
 
     let contents = match state.runtime.sandbox().read_to_string(&path) {
@@ -2115,6 +2152,35 @@ async fn write_file(
             warn!(error = %e, "verdict recording failed -- audit gap");
         }
         return Err(ApiError::Validation(e));
+    }
+
+    // Kernel mediation
+    {
+        let mut kernel = state.kernel.lock().await;
+        let decision = kernel.decide(operation, &req.path);
+        match decision.verdict {
+            Verdict::Allow => {}
+            Verdict::Deny(_) => {
+                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+                    capability: format!("{operation:?}"),
+                    actual: CapabilityLevel::Never,
+                    required: CapabilityLevel::LowRisk,
+                }));
+            }
+            Verdict::RequiresApproval => {
+                info!(
+                    ?operation,
+                    subject = %req.path,
+                    exposure = decision.exposure_transition.post_count,
+                    "kernel requires approval"
+                );
+                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+                    capability: format!("{operation:?}"),
+                    actual: CapabilityLevel::Never,
+                    required: CapabilityLevel::LowRisk,
+                }));
+            }
+        }
     }
 
     let path = req.path.clone();
@@ -2243,6 +2309,35 @@ async fn run_command(
         }
     }
 
+    // Kernel mediation
+    {
+        let mut kernel = state.kernel.lock().await;
+        let decision = kernel.decide(operation, &display_command);
+        match decision.verdict {
+            Verdict::Allow => {}
+            Verdict::Deny(_) => {
+                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+                    capability: format!("{operation:?}"),
+                    actual: CapabilityLevel::Never,
+                    required: CapabilityLevel::LowRisk,
+                }));
+            }
+            Verdict::RequiresApproval => {
+                info!(
+                    ?operation,
+                    subject = %display_command,
+                    exposure = decision.exposure_transition.post_count,
+                    "kernel requires approval"
+                );
+                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+                    capability: format!("{operation:?}"),
+                    actual: CapabilityLevel::Never,
+                    required: CapabilityLevel::LowRisk,
+                }));
+            }
+        }
+    }
+
     let executor = state.runtime.executor();
 
     // Extract optional parameters
@@ -2341,6 +2436,35 @@ async fn web_fetch(
             warn!(error = %e, "verdict recording failed -- audit gap");
         }
         return Err(ApiError::Validation(e));
+    }
+
+    // Kernel mediation
+    {
+        let mut kernel = state.kernel.lock().await;
+        let decision = kernel.decide(operation, &url_str);
+        match decision.verdict {
+            Verdict::Allow => {}
+            Verdict::Deny(_) => {
+                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+                    capability: format!("{operation:?}"),
+                    actual: CapabilityLevel::Never,
+                    required: CapabilityLevel::LowRisk,
+                }));
+            }
+            Verdict::RequiresApproval => {
+                info!(
+                    ?operation,
+                    subject = %url_str,
+                    exposure = decision.exposure_transition.post_count,
+                    "kernel requires approval"
+                );
+                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+                    capability: format!("{operation:?}"),
+                    actual: CapabilityLevel::Never,
+                    required: CapabilityLevel::LowRisk,
+                }));
+            }
+        }
     }
 
     // Check web_fetch capability
@@ -2526,6 +2650,35 @@ async fn glob_search(
         validation::validate_path(dir).map_err(ApiError::Validation)?;
     }
 
+    // Kernel mediation
+    {
+        let mut kernel = state.kernel.lock().await;
+        let decision = kernel.decide(operation, &req.pattern);
+        match decision.verdict {
+            Verdict::Allow => {}
+            Verdict::Deny(_) => {
+                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+                    capability: format!("{operation:?}"),
+                    actual: CapabilityLevel::Never,
+                    required: CapabilityLevel::LowRisk,
+                }));
+            }
+            Verdict::RequiresApproval => {
+                info!(
+                    ?operation,
+                    subject = %req.pattern,
+                    exposure = decision.exposure_transition.post_count,
+                    "kernel requires approval"
+                );
+                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+                    capability: format!("{operation:?}"),
+                    actual: CapabilityLevel::Never,
+                    required: CapabilityLevel::LowRisk,
+                }));
+            }
+        }
+    }
+
     // Check glob_search capability
     let policy = state.runtime.policy();
     let level = policy.capabilities.glob_search;
@@ -2678,6 +2831,35 @@ async fn grep_search(
     }
     if let Some(ref glob_pattern) = req.file_glob {
         validation::validate_pattern(glob_pattern).map_err(ApiError::Validation)?;
+    }
+
+    // Kernel mediation
+    {
+        let mut kernel = state.kernel.lock().await;
+        let decision = kernel.decide(operation, &req.pattern);
+        match decision.verdict {
+            Verdict::Allow => {}
+            Verdict::Deny(_) => {
+                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+                    capability: format!("{operation:?}"),
+                    actual: CapabilityLevel::Never,
+                    required: CapabilityLevel::LowRisk,
+                }));
+            }
+            Verdict::RequiresApproval => {
+                info!(
+                    ?operation,
+                    subject = %req.pattern,
+                    exposure = decision.exposure_transition.post_count,
+                    "kernel requires approval"
+                );
+                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+                    capability: format!("{operation:?}"),
+                    actual: CapabilityLevel::Never,
+                    required: CapabilityLevel::LowRisk,
+                }));
+            }
+        }
     }
 
     // Check grep_search capability
@@ -2874,6 +3056,35 @@ async fn web_search(
 
     // Validate inputs before any processing
     validation::validate_query(&req.query).map_err(ApiError::Validation)?;
+
+    // Kernel mediation
+    {
+        let mut kernel = state.kernel.lock().await;
+        let decision = kernel.decide(operation, &req.query);
+        match decision.verdict {
+            Verdict::Allow => {}
+            Verdict::Deny(_) => {
+                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+                    capability: format!("{operation:?}"),
+                    actual: CapabilityLevel::Never,
+                    required: CapabilityLevel::LowRisk,
+                }));
+            }
+            Verdict::RequiresApproval => {
+                info!(
+                    ?operation,
+                    subject = %req.query,
+                    exposure = decision.exposure_transition.post_count,
+                    "kernel requires approval"
+                );
+                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+                    capability: format!("{operation:?}"),
+                    actual: CapabilityLevel::Never,
+                    required: CapabilityLevel::LowRisk,
+                }));
+            }
+        }
+    }
 
     // Check web_search capability
     let policy = state.runtime.policy();

@@ -668,6 +668,20 @@ impl Kernel {
     pub fn grant_approval(&mut self, operation: Operation, count: u32) {
         let entry = self.approvals.entry(operation).or_insert(0);
         *entry = entry.saturating_add(count);
+
+        // Record the grant in the append-only trace for audit completeness.
+        let pre_hash = self.effective.checksum();
+        let pre_exposure_count = self.exposure.count();
+        self.record_with_exposure(
+            operation,
+            &format!("grant_approval(count={count})"),
+            Verdict::Allow,
+            &pre_hash,
+            pre_exposure_count,
+            None, // no exposure contribution from granting approval
+            false,
+            false,
+        );
     }
 
     /// Get the append-only session trace.

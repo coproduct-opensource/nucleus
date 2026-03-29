@@ -1,0 +1,23 @@
+[package]
+name = "nucleus-claude-hook"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Claude Code PreToolUse hook backed by the Nucleus verified permission kernel"
+repository = "https://github.com/coproduct-opensource/nucleus"
+keywords = ["ai", "security", "claude-code", "permissions", "formal-verification"]
+categories = ["development-tools", "command-line-utilities"]
+
+[[bin]]
+name = "nucleus-claude-hook"
+path = "src/main.rs"
+
+[dependencies]
+portcullis = { path = "../portcullis", features = ["serde", "crypto"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+dirs-next = "2"
+
+[lints]
+workspace = true

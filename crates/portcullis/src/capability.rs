@@ -42,6 +42,66 @@ pub enum Operation {
     ManagePods,
 }
 
+impl Operation {
+    /// All 12 core operations.
+    pub const ALL: [Operation; 12] = [
+        Operation::ReadFiles,
+        Operation::WriteFiles,
+        Operation::EditFiles,
+        Operation::RunBash,
+        Operation::GlobSearch,
+        Operation::GrepSearch,
+        Operation::WebSearch,
+        Operation::WebFetch,
+        Operation::GitCommit,
+        Operation::GitPush,
+        Operation::CreatePr,
+        Operation::ManagePods,
+    ];
+}
+
+impl TryFrom<&str> for Operation {
+    type Error = String;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        match s {
+            "read_files" => Ok(Operation::ReadFiles),
+            "write_files" => Ok(Operation::WriteFiles),
+            "edit_files" => Ok(Operation::EditFiles),
+            "run_bash" => Ok(Operation::RunBash),
+            "glob_search" => Ok(Operation::GlobSearch),
+            "grep_search" => Ok(Operation::GrepSearch),
+            "web_search" => Ok(Operation::WebSearch),
+            "web_fetch" => Ok(Operation::WebFetch),
+            "git_commit" => Ok(Operation::GitCommit),
+            "git_push" => Ok(Operation::GitPush),
+            "create_pr" => Ok(Operation::CreatePr),
+            "manage_pods" => Ok(Operation::ManagePods),
+            other => Err(format!("unknown operation: {other}")),
+        }
+    }
+}
+
+impl std::fmt::Display for Operation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Operation::ReadFiles => "read_files",
+            Operation::WriteFiles => "write_files",
+            Operation::EditFiles => "edit_files",
+            Operation::RunBash => "run_bash",
+            Operation::GlobSearch => "glob_search",
+            Operation::GrepSearch => "grep_search",
+            Operation::WebSearch => "web_search",
+            Operation::WebFetch => "web_fetch",
+            Operation::GitCommit => "git_commit",
+            Operation::GitPush => "git_push",
+            Operation::CreatePr => "create_pr",
+            Operation::ManagePods => "manage_pods",
+        };
+        write!(f, "{s}")
+    }
+}
+
 /// Extension operation not covered by Verus proofs.
 ///
 /// The 12 core operations above are frozen — they have 297 Verus verification
@@ -914,5 +974,51 @@ mod tests {
         }
 
         assert_eq!(cases_checked, 256, "Should check all 4^4 = 256 cases");
+    }
+
+    #[test]
+    fn test_operation_try_from_all_variants() {
+        let names = [
+            "read_files",
+            "write_files",
+            "edit_files",
+            "run_bash",
+            "glob_search",
+            "grep_search",
+            "web_search",
+            "web_fetch",
+            "git_commit",
+            "git_push",
+            "create_pr",
+            "manage_pods",
+        ];
+        for name in &names {
+            assert!(Operation::try_from(*name).is_ok(), "should parse: {name}");
+        }
+    }
+
+    #[test]
+    fn test_operation_try_from_unknown() {
+        assert!(Operation::try_from("unknown_op").is_err());
+        assert!(Operation::try_from("").is_err());
+    }
+
+    #[test]
+    fn test_operation_display_roundtrip() {
+        for op in Operation::ALL {
+            let s = op.to_string();
+            let roundtrip = Operation::try_from(s.as_str()).unwrap();
+            assert_eq!(op, roundtrip, "roundtrip failed for {op:?}");
+        }
+    }
+
+    #[test]
+    fn test_operation_all_has_12_variants() {
+        assert_eq!(Operation::ALL.len(), 12);
+        // Verify uniqueness
+        let mut set = std::collections::BTreeSet::new();
+        for op in Operation::ALL {
+            assert!(set.insert(op), "duplicate in ALL: {op:?}");
+        }
     }
 }
