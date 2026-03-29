@@ -165,9 +165,20 @@ impl NucleusMcpServer {
         match decision.verdict {
             Verdict::Allow => Ok(()),
             Verdict::Deny(ref reason) => {
+                warn!(
+                    %operation, subject, sequence = decision.sequence,
+                    ?reason, "kernel: denied"
+                );
                 Err(err_result(format!("kernel denied {operation}: {reason:?}")))
             }
-            Verdict::RequiresApproval => Ok(()),
+            Verdict::RequiresApproval => {
+                // MCP (stdio) has no interactive approval channel — deny and log.
+                warn!(
+                    %operation, subject, sequence = decision.sequence,
+                    "kernel: requires_approval — no approval channel in MCP"
+                );
+                Err(err_result("operation requires approval"))
+            }
         }
     }
 

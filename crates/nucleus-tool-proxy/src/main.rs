@@ -1419,7 +1419,15 @@ async fn read_file(
                     required: CapabilityLevel::LowRisk,
                 }));
             }
-            Verdict::RequiresApproval => {}
+            Verdict::RequiresApproval => {
+                // Audit: kernel requires approval — delegating to sandbox approval flow.
+                info!(
+                    operation = %decision.operation,
+                    subject = %decision.subject,
+                    sequence = decision.sequence,
+                    "kernel: requires_approval — delegating to sandbox"
+                );
+            }
         }
     }
 
@@ -1513,7 +1521,15 @@ async fn write_file(
                     required: CapabilityLevel::LowRisk,
                 }));
             }
-            Verdict::RequiresApproval => {}
+            Verdict::RequiresApproval => {
+                // Audit: kernel requires approval — delegating to sandbox approval flow.
+                info!(
+                    operation = %decision.operation,
+                    subject = %decision.subject,
+                    sequence = decision.sequence,
+                    "kernel: requires_approval — delegating to sandbox"
+                );
+            }
         }
     }
 
@@ -1637,7 +1653,15 @@ async fn run_command(
                     required: CapabilityLevel::LowRisk,
                 }));
             }
-            Verdict::RequiresApproval => {}
+            Verdict::RequiresApproval => {
+                // Audit: kernel requires approval — delegating to sandbox approval flow.
+                info!(
+                    operation = %decision.operation,
+                    subject = %decision.subject,
+                    sequence = decision.sequence,
+                    "kernel: requires_approval — delegating to sandbox"
+                );
+            }
         }
     }
 
@@ -1737,7 +1761,15 @@ async fn web_fetch(
                     required: CapabilityLevel::LowRisk,
                 }));
             }
-            Verdict::RequiresApproval => {}
+            Verdict::RequiresApproval => {
+                // Audit: kernel requires approval — delegating to sandbox approval flow.
+                info!(
+                    operation = %decision.operation,
+                    subject = %decision.subject,
+                    sequence = decision.sequence,
+                    "kernel: requires_approval — delegating to sandbox"
+                );
+            }
         }
     }
 
@@ -1923,7 +1955,15 @@ async fn glob_search(
                     required: CapabilityLevel::LowRisk,
                 }));
             }
-            Verdict::RequiresApproval => {}
+            Verdict::RequiresApproval => {
+                // Audit: kernel requires approval — delegating to sandbox approval flow.
+                info!(
+                    operation = %decision.operation,
+                    subject = %decision.subject,
+                    sequence = decision.sequence,
+                    "kernel: requires_approval — delegating to sandbox"
+                );
+            }
         }
     }
 
@@ -2080,7 +2120,15 @@ async fn grep_search(
                     required: CapabilityLevel::LowRisk,
                 }));
             }
-            Verdict::RequiresApproval => {}
+            Verdict::RequiresApproval => {
+                // Audit: kernel requires approval — delegating to sandbox approval flow.
+                info!(
+                    operation = %decision.operation,
+                    subject = %decision.subject,
+                    sequence = decision.sequence,
+                    "kernel: requires_approval — delegating to sandbox"
+                );
+            }
         }
     }
 
@@ -2278,7 +2326,15 @@ async fn web_search(
                     required: CapabilityLevel::LowRisk,
                 }));
             }
-            Verdict::RequiresApproval => {}
+            Verdict::RequiresApproval => {
+                // Audit: kernel requires approval — delegating to sandbox approval flow.
+                info!(
+                    operation = %decision.operation,
+                    subject = %decision.subject,
+                    sequence = decision.sequence,
+                    "kernel: requires_approval — delegating to sandbox"
+                );
+            }
         }
     }
 
