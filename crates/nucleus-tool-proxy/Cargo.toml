@@ -52,7 +52,7 @@ nucleus = { path = "../nucleus" }
 nucleus-spec = { path = "../nucleus-spec" }
 nucleus-identity = { path = "../nucleus-identity" }
 nucleus-client = { path = "../nucleus-client", features = ["async-drand"] }
-portcullis = { path = "../portcullis", features = ["serde", "spec"] }
+portcullis = { path = "../portcullis", features = ["serde", "spec", "crypto"] }
 nucleus-permission-market = { path = "../nucleus-permission-market" }
 
 base64 = { workspace = true }

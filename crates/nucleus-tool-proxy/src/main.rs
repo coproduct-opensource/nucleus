@@ -6,14 +6,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::{to_bytes, Body};
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::http::HeaderMap;
+use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{middleware, Json, Router};
 use clap::Parser;
 use nucleus::portcullis::escalation::{
     EscalationError, EscalationGrant, EscalationRequest, SpiffeTraceChain, SpiffeTraceLink,
 };
+use nucleus::portcullis::kernel::{Kernel, Verdict};
 use nucleus::portcullis::{CapabilityLevel, Operation, PermissionLattice};
 use nucleus::{
     ApprovalRequest, BudgetModel, CallbackApprover, NucleusError, PodRuntime,
@@ -27,6 +28,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 
+mod approval;
 mod attestation;
 mod auth;
 mod cert_bridge;
@@ -39,18 +41,27 @@ mod node_client;
 mod policy;
 mod sandbox_proof;
 mod telemetry;
+pub(crate) mod types;
 #[allow(dead_code)]
 mod unicode_audit;
 mod validation;
 mod web_fetch_policy;
 
+#[cfg(test)]
+use approval::verify_and_load_approval_bundle;
+use approval::{load_approval_bundle, ApprovalNonceCache, ApprovalRateLimiter, ApprovalRegistry};
 use attestation::{AttestationConfig, AttestationVerifier};
-use auth::{AuthConfig, AuthError};
+use auth::AuthConfig;
 use base64::Engine as _;
 use mtls::{ClientCertInfo, MtlsConfig, MtlsConnectInfo, MtlsListener};
 use nucleus_client::drand::{DrandConfig, DrandFailMode};
-use nucleus_identity::approval_bundle::{compute_manifest_hash, ApprovalBundleVerifier};
 use policy::PolicyEngine;
+use types::{
+    ApiError, ApproveRequest, ApproveResponse, EscalateRequest, EscalateResponse, GlobRequest,
+    GlobResponse, GrepMatch, GrepRequest, GrepResponse, ReadRequest, ReadResponse, RunRequest,
+    RunResponse, SerializedTraceChain, WebFetchRequest, WebFetchResponse, WebSearchRequest,
+    WebSearchResponse, WebSearchResult, WriteRequest, WriteResponse, MAX_APPROVAL_TTL_SECS,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "nucleus-tool-proxy")]
@@ -291,132 +302,11 @@ pub(crate) struct AppState {
     policy_checksum: String,
     /// Session ID (policy UUID) for telemetry grouping.
     session_id: String,
+    /// Kernel decision engine for complete mediation (VC-002).
+    pub(crate) kernel: Arc<tokio::sync::Mutex<Kernel>>,
 }
 
-#[derive(Default)]
-struct ApprovalRegistry {
-    approvals: Mutex<HashMap<String, ApprovalEntry>>,
-}
-
-#[derive(Default)]
-struct ApprovalNonceCache {
-    entries: Mutex<HashMap<String, u64>>,
-}
-
-impl ApprovalNonceCache {
-    fn check_and_insert(&self, nonce: &str, expires_at_unix: u64, now: u64) -> bool {
-        let mut guard = self.entries.lock().unwrap();
-        guard.retain(|_, exp| *exp > now);
-        if guard.contains_key(nonce) {
-            return false;
-        }
-        guard.insert(nonce.to_string(), expires_at_unix);
-        true
-    }
-}
-
-/// Simple token bucket rate limiter for the approval endpoint.
-/// Prevents DoS attacks by limiting approval requests per second.
-struct ApprovalRateLimiter {
-    /// Maximum tokens (burst capacity)
-    max_tokens: u32,
-    /// Tokens added per second
-    refill_rate: u32,
-    /// Current token count and last refill timestamp
-    state: Mutex<(u32, u64)>,
-}
-
-impl ApprovalRateLimiter {
-    fn new(max_tokens: u32, refill_rate: u32) -> Self {
-        Self {
-            max_tokens,
-            refill_rate,
-            state: Mutex::new((max_tokens, now_unix())),
-        }
-    }
-
-    /// Try to consume a token. Returns true if allowed, false if rate limited.
-    fn try_acquire(&self) -> bool {
-        let mut guard = self.state.lock().unwrap();
-        let (tokens, last_refill) = &mut *guard;
-        let now = now_unix();
-
-        // Refill tokens based on elapsed time
-        let elapsed = now.saturating_sub(*last_refill);
-        if elapsed > 0 {
-            let refill = (elapsed as u32).saturating_mul(self.refill_rate);
-            *tokens = (*tokens).saturating_add(refill).min(self.max_tokens);
-            *last_refill = now;
-        }
-
-        // Try to consume a token
-        if *tokens > 0 {
-            *tokens -= 1;
-            true
-        } else {
-            false
-        }
-    }
-}
-
-impl Default for ApprovalRateLimiter {
-    fn default() -> Self {
-        // Allow 10 approvals per second with burst of 20
-        Self::new(20, 10)
-    }
-}
-
-#[derive(Clone, Copy)]
-struct ApprovalEntry {
-    count: usize,
-    expires_at_unix: Option<u64>,
-}
-
-impl ApprovalRegistry {
-    fn approve(&self, operation: &str, count: usize, expires_at_unix: Option<u64>) {
-        let mut guard = self.approvals.lock().unwrap();
-        let entry = guard.entry(operation.to_string()).or_insert(ApprovalEntry {
-            count: 0,
-            expires_at_unix,
-        });
-        entry.count += count;
-        entry.expires_at_unix = merge_expiry(entry.expires_at_unix, expires_at_unix);
-    }
-
-    fn consume(&self, operation: &str) -> bool {
-        let mut guard = self.approvals.lock().unwrap();
-        if let Some(entry) = guard.get_mut(operation) {
-            if is_expired(entry.expires_at_unix) {
-                guard.remove(operation);
-                return false;
-            }
-            if entry.count > 0 {
-                entry.count -= 1;
-                if entry.count == 0 {
-                    guard.remove(operation);
-                }
-                return true;
-            }
-        }
-        false
-    }
-}
-
-fn merge_expiry(existing: Option<u64>, incoming: Option<u64>) -> Option<u64> {
-    match (existing, incoming) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (Some(a), None) => Some(a),
-        (None, Some(b)) => Some(b),
-        (None, None) => None,
-    }
-}
-
-fn is_expired(expires_at_unix: Option<u64>) -> bool {
-    match expires_at_unix {
-        Some(ts) => ts <= now_unix(),
-        None => false,
-    }
-}
+// Approval registry, nonce cache, rate limiter moved to approval.rs
 
 /// Simple URL glob matcher for `url_allow` patterns.
 ///
@@ -463,491 +353,10 @@ fn url_glob_match_inner(pattern: &[u8], text: &[u8]) -> bool {
     false
 }
 
-/// Load and verify a signed approval bundle from the NUCLEUS_APPROVAL_BUNDLE env var.
-///
-/// If present and valid, populates the ApprovalRegistry with the approved operations.
-/// If `require` is true, the function returns an error when the env var is missing.
-fn load_approval_bundle(
-    spec_contents: &str,
-    approvals: &ApprovalRegistry,
-    require: bool,
-) -> Result<(), ApiError> {
-    let jws = match std::env::var("NUCLEUS_APPROVAL_BUNDLE") {
-        Ok(val) if !val.is_empty() => val,
-        _ => {
-            if require {
-                return Err(ApiError::Spec(
-                    "--require-approval-bundle is set but NUCLEUS_APPROVAL_BUNDLE is not set"
-                        .to_string(),
-                ));
-            }
-            return Ok(());
-        }
-    };
+// Approval bundle loading moved to approval.rs
+// Request/response types moved to types.rs
 
-    verify_and_load_approval_bundle(&jws, spec_contents, approvals)
-}
-
-/// Verify a JWS approval bundle and populate the ApprovalRegistry.
-fn verify_and_load_approval_bundle(
-    jws: &str,
-    spec_contents: &str,
-    approvals: &ApprovalRegistry,
-) -> Result<(), ApiError> {
-    let manifest_hash = compute_manifest_hash(spec_contents.as_bytes());
-
-    // Extract the embedded JWK from the JWS header for self-trust verification.
-    // In production, the expected key would come from a pinned trust store.
-    let header = {
-        let header_b64 = jws.split('.').next().ok_or_else(|| {
-            ApiError::Spec("approval bundle is not a valid JWS (no header)".to_string())
-        })?;
-        let header_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(header_b64)
-            .map_err(|e| ApiError::Spec(format!("approval bundle header decode error: {e}")))?;
-        let header: nucleus_identity::approval_bundle::ApprovalBundleHeader =
-            serde_json::from_slice(&header_bytes)
-                .map_err(|e| ApiError::Spec(format!("approval bundle header parse error: {e}")))?;
-        header
-    };
-
-    let verifier = ApprovalBundleVerifier::new();
-    let claims = verifier
-        .verify(jws, &header.jwk, &manifest_hash)
-        .map_err(|e| ApiError::Spec(format!("approval bundle verification failed: {e}")))?;
-
-    // Populate the ApprovalRegistry with the approved operations
-    let count = claims.max_uses.map(|n| n as usize).unwrap_or(usize::MAX);
-    let expiry = Some(claims.exp as u64);
-    for op in &claims.approved_operations {
-        approvals.approve(op, count, expiry);
-        info!(
-            operation = %op,
-            count = count,
-            expires_at = claims.exp,
-            event = "approval_bundle_loaded",
-            "pre-approved operation from signed bundle"
-        );
-    }
-
-    info!(
-        issuer = %claims.iss,
-        jti = %claims.jti,
-        operations = ?claims.approved_operations,
-        manifest_hash = %claims.manifest_hash,
-        event = "approval_bundle_verified",
-        "signed approval bundle verified and loaded"
-    );
-
-    Ok(())
-}
-
-#[derive(Debug, Deserialize)]
-struct ReadRequest {
-    path: String,
-}
-
-#[derive(Debug, Serialize)]
-struct ReadResponse {
-    contents: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct WriteRequest {
-    path: String,
-    contents: String,
-}
-
-#[derive(Debug, Serialize)]
-struct WriteResponse {
-    ok: bool,
-}
-
-/// Run command request using secure array-based format.
-///
-/// The array form prevents shell injection by executing commands directly
-/// without shell interpretation. Each array element is passed as a separate
-/// argument to the process.
-#[derive(Debug, Deserialize)]
-struct RunRequest {
-    /// Command as array, e.g. ["ls", "-la", "/tmp"]
-    args: Vec<String>,
-    /// Optional input to pass to command stdin
-    #[serde(default)]
-    stdin: Option<String>,
-    /// Optional working directory (relative to sandbox)
-    #[serde(default)]
-    directory: Option<String>,
-    /// Optional timeout in seconds (clamped to policy limit)
-    #[serde(default)]
-    #[allow(dead_code)] // Reserved for future timeout implementation
-    timeout_seconds: Option<u64>,
-}
-
-#[derive(Debug, Serialize)]
-struct RunResponse {
-    status: i32,
-    success: bool,
-    stdout: String,
-    stderr: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ApproveRequest {
-    operation: String,
-    #[serde(default = "default_approve_count")]
-    count: usize,
-    #[serde(default)]
-    expires_at_unix: Option<u64>,
-    #[serde(default)]
-    nonce: Option<String>,
-}
-
-fn default_approve_count() -> usize {
-    1
-}
-
-const MAX_APPROVAL_TTL_SECS: u64 = 300;
-
-#[derive(Debug, Serialize)]
-struct ApproveResponse {
-    ok: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct WebFetchRequest {
-    url: String,
-    #[serde(default)]
-    method: Option<String>,
-    #[serde(default)]
-    headers: Option<HashMap<String, String>>,
-    #[serde(default)]
-    body: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct WebFetchResponse {
-    status: u16,
-    headers: HashMap<String, String>,
-    body: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    truncated: Option<bool>,
-}
-
-/// Glob pattern search request.
-#[derive(Debug, Deserialize)]
-struct GlobRequest {
-    /// Glob pattern to match (e.g., "**/*.rs", "src/*.json")
-    pattern: String,
-    /// Optional directory to search in (relative to sandbox root)
-    #[serde(default)]
-    directory: Option<String>,
-    /// Maximum number of results to return
-    #[serde(default)]
-    max_results: Option<usize>,
-}
-
-/// Glob search response.
-#[derive(Debug, Serialize)]
-struct GlobResponse {
-    /// Matching file paths (relative to sandbox)
-    matches: Vec<String>,
-    /// True if results were truncated due to max_results
-    #[serde(skip_serializing_if = "Option::is_none")]
-    truncated: Option<bool>,
-}
-
-/// Grep (content search) request.
-#[derive(Debug, Deserialize)]
-struct GrepRequest {
-    /// Regex pattern to search for
-    pattern: String,
-    /// Optional file path to search in (relative to sandbox)
-    #[serde(default)]
-    path: Option<String>,
-    /// Optional glob pattern to filter files
-    #[serde(default, rename = "glob")]
-    file_glob: Option<String>,
-    /// Number of context lines before/after match
-    #[serde(default)]
-    context_lines: Option<usize>,
-    /// Maximum number of matches to return
-    #[serde(default)]
-    max_matches: Option<usize>,
-    /// Case-insensitive search
-    #[serde(default)]
-    case_insensitive: Option<bool>,
-}
-
-/// A single grep match result.
-#[derive(Debug, Serialize)]
-struct GrepMatch {
-    /// File path (relative to sandbox)
-    file: String,
-    /// Line number (1-indexed)
-    line: usize,
-    /// Matching line content
-    content: String,
-    /// Optional context lines before
-    #[serde(skip_serializing_if = "Option::is_none")]
-    context_before: Option<Vec<String>>,
-    /// Optional context lines after
-    #[serde(skip_serializing_if = "Option::is_none")]
-    context_after: Option<Vec<String>>,
-}
-
-/// Grep search response.
-#[derive(Debug, Serialize)]
-struct GrepResponse {
-    /// Matching results
-    matches: Vec<GrepMatch>,
-    /// True if results were truncated due to max_matches
-    #[serde(skip_serializing_if = "Option::is_none")]
-    truncated: Option<bool>,
-}
-
-/// Web search request.
-#[derive(Debug, Deserialize)]
-struct WebSearchRequest {
-    /// Search query
-    query: String,
-    /// Maximum number of results
-    #[serde(default)]
-    max_results: Option<usize>,
-}
-
-/// A single web search result.
-#[derive(Debug, Serialize)]
-struct WebSearchResult {
-    /// Result title
-    title: String,
-    /// Result URL
-    url: String,
-    /// Result snippet/description
-    #[serde(skip_serializing_if = "Option::is_none")]
-    snippet: Option<String>,
-}
-
-/// Web search response.
-#[derive(Debug, Serialize)]
-struct WebSearchResponse {
-    /// Search results
-    results: Vec<WebSearchResult>,
-}
-
-/// Request to escalate permissions for an agent.
-#[derive(Debug, Deserialize)]
-struct EscalateRequest {
-    /// The requesting agent's SPIFFE trace chain (serialized).
-    requestor_chain: SerializedTraceChain,
-    /// The approver's SPIFFE trace chain (serialized).
-    ///
-    /// SECURITY: The approver MUST submit their full chain for proper verification.
-    /// The server validates that:
-    /// 1. The chain's leaf identity matches the mTLS authenticated identity
-    /// 2. The chain is valid (non-expired, monotonically decreasing permissions)
-    /// 3. The chain has no overlap with the requestor's chain (anti-self-escalation)
-    approver_chain: SerializedTraceChain,
-    /// Requested permission preset (e.g., "fix_issue", "permissive").
-    requested_preset: String,
-    /// Justification for the escalation.
-    reason: String,
-    /// TTL in seconds for the escalated permissions.
-    ttl_seconds: u64,
-    /// Unique nonce to prevent replay attacks.
-    ///
-    /// SECURITY: Required. Each escalation request must have a unique nonce.
-    /// The server rejects requests with previously-seen nonces within the
-    /// drand tolerance window (~60 seconds).
-    nonce: String,
-}
-
-/// Serialized trace chain for transport.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SerializedTraceChain {
-    /// Chain ID.
-    id: String,
-    /// Links in the chain.
-    links: Vec<SerializedTraceLink>,
-}
-
-/// Serialized trace link for transport.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SerializedTraceLink {
-    /// Link ID.
-    id: String,
-    /// SPIFFE ID.
-    spiffe_id: String,
-    /// Permission preset name (for reconstruction).
-    preset: String,
-    /// Drand round when created.
-    drand_round: u64,
-    /// Creation timestamp (Unix seconds).
-    created_at: u64,
-    /// Expiry timestamp (Unix seconds), if any.
-    expires_at: Option<u64>,
-    /// Reason for this link.
-    reason: String,
-}
-
-/// Response from an escalation request.
-#[derive(Debug, Serialize)]
-struct EscalateResponse {
-    /// Whether the escalation was granted.
-    granted: bool,
-    /// The grant ID (if granted).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    grant_id: Option<String>,
-    /// Granted permission preset (if granted).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    granted_preset: Option<String>,
-    /// Expiry timestamp (Unix seconds).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    expires_at: Option<u64>,
-    /// Drand round of the grant.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    drand_round: Option<u64>,
-    /// Error message (if denied).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct ErrorBody {
-    error: String,
-    kind: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    operation: Option<String>,
-    /// Payment metadata for 402 responses (vendor-agnostic).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    payment: Option<nucleus_spec::PaymentRequiredInfo>,
-}
-
-#[derive(Debug, thiserror::Error)]
-enum ApiError {
-    #[error("spec error: {0}")]
-    Spec(String),
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("serde error: {0}")]
-    Serde(#[from] serde_yaml::Error),
-    #[error("nucleus error: {0}")]
-    Nucleus(#[from] NucleusError),
-    #[error("auth error: {0}")]
-    Auth(#[from] AuthError),
-    #[error("request body error: {0}")]
-    Body(String),
-    #[error("rate limited: too many approval requests")]
-    RateLimited,
-    #[error("web fetch error: {0}")]
-    WebFetch(String),
-    #[error("url not in dns_allow list: {0}")]
-    DnsNotAllowed(String),
-    #[error("attestation verification failed: {0}")]
-    AttestationFailed(String),
-    #[error("escalation error: {0}")]
-    Escalation(String),
-    #[error("validation error: {0}")]
-    Validation(#[from] validation::ValidationError),
-    #[error("permission bid denied: insufficient value")]
-    PermissionDenied(#[allow(unused)] nucleus_spec::PaymentRequiredInfo),
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        let (status, kind, operation, payment) = match &self {
-            ApiError::Nucleus(NucleusError::ApprovalRequired { operation }) => (
-                StatusCode::FORBIDDEN,
-                "approval_required",
-                Some(operation.clone()),
-                None,
-            ),
-            ApiError::Nucleus(NucleusError::BudgetExhausted {
-                requested,
-                remaining,
-            }) => {
-                let payment_info = nucleus_spec::PaymentRequiredInfo {
-                    amount_usd: *requested,
-                    reason: format!(
-                        "budget exhausted: requested ${requested:.4}, remaining ${remaining:.4}"
-                    ),
-                    kind: nucleus_spec::PaymentRequiredKind::BudgetExhausted {
-                        requested: *requested,
-                        remaining: *remaining,
-                    },
-                    recipient: std::env::var("NUCLEUS_PAYMENT_RECIPIENT").ok(),
-                    resource: None,
-                };
-                (
-                    StatusCode::PAYMENT_REQUIRED,
-                    "budget_exhausted",
-                    None,
-                    Some(payment_info),
-                )
-            }
-            ApiError::Nucleus(NucleusError::CommandDenied { .. }) => {
-                (StatusCode::FORBIDDEN, "command_denied", None, None)
-            }
-            ApiError::Nucleus(NucleusError::PathDenied { .. }) => {
-                (StatusCode::FORBIDDEN, "path_denied", None, None)
-            }
-            ApiError::Nucleus(NucleusError::SandboxEscape { .. }) => {
-                (StatusCode::FORBIDDEN, "sandbox_escape", None, None)
-            }
-            ApiError::Nucleus(NucleusError::Io(_)) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "io_error", None, None)
-            }
-            ApiError::Nucleus(NucleusError::TimeViolation { .. }) => {
-                (StatusCode::REQUEST_TIMEOUT, "time_violation", None, None)
-            }
-            ApiError::Nucleus(NucleusError::StateBlocked { .. }) => {
-                (StatusCode::FORBIDDEN, "uninhabitable_blocked", None, None)
-            }
-            ApiError::Nucleus(NucleusError::InsufficientCapability { .. }) => {
-                (StatusCode::FORBIDDEN, "insufficient_capability", None, None)
-            }
-            ApiError::Nucleus(NucleusError::InvalidApproval { operation }) => (
-                StatusCode::FORBIDDEN,
-                "invalid_approval",
-                Some(operation.clone()),
-                None,
-            ),
-            ApiError::Nucleus(NucleusError::InvalidCharge { .. }) => {
-                (StatusCode::BAD_REQUEST, "invalid_charge", None, None)
-            }
-            ApiError::Spec(_) => (StatusCode::BAD_REQUEST, "spec_error", None, None),
-            ApiError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, "io_error", None, None),
-            ApiError::Serde(_) => (StatusCode::BAD_REQUEST, "serde_error", None, None),
-            ApiError::Auth(_) => (StatusCode::UNAUTHORIZED, "auth_error", None, None),
-            ApiError::Body(_) => (StatusCode::BAD_REQUEST, "body_error", None, None),
-            ApiError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited", None, None),
-            ApiError::WebFetch(_) => (StatusCode::BAD_GATEWAY, "web_fetch_error", None, None),
-            ApiError::DnsNotAllowed(_) => (StatusCode::FORBIDDEN, "dns_not_allowed", None, None),
-            ApiError::AttestationFailed(_) => {
-                (StatusCode::FORBIDDEN, "attestation_failed", None, None)
-            }
-            ApiError::Escalation(_) => (StatusCode::FORBIDDEN, "escalation_denied", None, None),
-            ApiError::Validation(_) => (StatusCode::BAD_REQUEST, "validation_error", None, None),
-            ApiError::PermissionDenied(ref info) => (
-                StatusCode::PAYMENT_REQUIRED,
-                "permission_denied",
-                None,
-                Some(info.clone()),
-            ),
-        };
-
-        // Sanitize error message to prevent information disclosure
-        let sanitized_error = validation::sanitize_error_message(&self.to_string(), None);
-
-        let body = Json(ErrorBody {
-            error: sanitized_error,
-            kind: kind.to_string(),
-            operation,
-            payment,
-        });
-        (status, body).into_response()
-    }
-}
+// Types (ApiError, request/response structs, ErrorBody) moved to types.rs
 
 #[tokio::main]
 async fn main() -> Result<(), ApiError> {
@@ -1186,6 +595,10 @@ async fn main() -> Result<(), ApiError> {
     let policy_checksum = runtime.policy().checksum();
     let session_id = runtime.policy().id.to_string();
 
+    let kernel = Arc::new(tokio::sync::Mutex::new(Kernel::new(
+        runtime.policy().clone(),
+    )));
+
     let state = AppState {
         runtime: Arc::new(runtime),
         approvals,
@@ -1214,6 +627,7 @@ async fn main() -> Result<(), ApiError> {
         lockdown_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         policy_checksum,
         session_id,
+        kernel,
     };
 
     if let Err(err) = emit_boot_report(&state).await {
@@ -1989,6 +1403,26 @@ async fn read_file(
     let auth_ctx = auth.map(|e| e.0);
     let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
 
+    // Kernel mediation (VC-002): every I/O operation passes through the kernel.
+    {
+        let decision = state
+            .kernel
+            .lock()
+            .await
+            .decide(Operation::ReadFiles, &path);
+        match decision.verdict {
+            Verdict::Allow => {}
+            Verdict::Deny(ref _reason) => {
+                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+                    capability: format!("{}", Operation::ReadFiles),
+                    actual: CapabilityLevel::Never,
+                    required: CapabilityLevel::LowRisk,
+                }));
+            }
+            Verdict::RequiresApproval => {}
+        }
+    }
+
     let contents = match state.runtime.sandbox().read_to_string(&path) {
         Ok(contents) => contents,
         Err(NucleusError::ApprovalRequired { operation }) => {
@@ -2062,6 +1496,26 @@ async fn write_file(
     let contents = req.contents.clone();
     let auth_ctx = auth.map(|e| e.0);
     let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
+
+    // Kernel mediation (VC-002)
+    {
+        let decision = state
+            .kernel
+            .lock()
+            .await
+            .decide(Operation::WriteFiles, &path);
+        match decision.verdict {
+            Verdict::Allow => {}
+            Verdict::Deny(ref _reason) => {
+                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+                    capability: format!("{}", Operation::WriteFiles),
+                    actual: CapabilityLevel::Never,
+                    required: CapabilityLevel::LowRisk,
+                }));
+            }
+            Verdict::RequiresApproval => {}
+        }
+    }
 
     match state.runtime.sandbox().write(&path, contents.as_bytes()) {
         Ok(()) => {}
@@ -2167,6 +1621,26 @@ async fn run_command(
     let auth_ctx = auth.map(|e| e.0);
     let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
 
+    // Kernel mediation (VC-002)
+    {
+        let decision = state
+            .kernel
+            .lock()
+            .await
+            .decide(Operation::RunBash, &display_command);
+        match decision.verdict {
+            Verdict::Allow => {}
+            Verdict::Deny(ref _reason) => {
+                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+                    capability: format!("{}", Operation::RunBash),
+                    actual: CapabilityLevel::Never,
+                    required: CapabilityLevel::LowRisk,
+                }));
+            }
+            Verdict::RequiresApproval => {}
+        }
+    }
+
     // Extract optional parameters
     let stdin = req.stdin.as_deref();
     let directory = req.directory.as_deref();
@@ -2246,6 +1720,26 @@ async fn web_fetch(
 
     let auth_ctx = auth.map(|e| e.0);
     let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
+
+    // Kernel mediation (VC-002)
+    {
+        let decision = state
+            .kernel
+            .lock()
+            .await
+            .decide(Operation::WebFetch, &url_str);
+        match decision.verdict {
+            Verdict::Allow => {}
+            Verdict::Deny(ref _reason) => {
+                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+                    capability: format!("{}", Operation::WebFetch),
+                    actual: CapabilityLevel::Never,
+                    required: CapabilityLevel::LowRisk,
+                }));
+            }
+            Verdict::RequiresApproval => {}
+        }
+    }
 
     // Check web_fetch capability
     let policy = state.runtime.policy();
@@ -2413,6 +1907,26 @@ async fn glob_search(
     let auth_ctx = auth.map(|e| e.0);
     let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
 
+    // Kernel mediation (VC-002)
+    {
+        let decision = state
+            .kernel
+            .lock()
+            .await
+            .decide(Operation::GlobSearch, &req.pattern);
+        match decision.verdict {
+            Verdict::Allow => {}
+            Verdict::Deny(ref _reason) => {
+                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+                    capability: format!("{}", Operation::GlobSearch),
+                    actual: CapabilityLevel::Never,
+                    required: CapabilityLevel::LowRisk,
+                }));
+            }
+            Verdict::RequiresApproval => {}
+        }
+    }
+
     // Check glob_search capability
     let policy = state.runtime.policy();
     let level = policy.capabilities.glob_search;
@@ -2549,6 +2063,26 @@ async fn grep_search(
 
     let auth_ctx = auth.map(|e| e.0);
     let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
+
+    // Kernel mediation (VC-002)
+    {
+        let decision = state
+            .kernel
+            .lock()
+            .await
+            .decide(Operation::GrepSearch, &req.pattern);
+        match decision.verdict {
+            Verdict::Allow => {}
+            Verdict::Deny(ref _reason) => {
+                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+                    capability: format!("{}", Operation::GrepSearch),
+                    actual: CapabilityLevel::Never,
+                    required: CapabilityLevel::LowRisk,
+                }));
+            }
+            Verdict::RequiresApproval => {}
+        }
+    }
 
     // Check grep_search capability
     let policy = state.runtime.policy();
@@ -2727,6 +2261,26 @@ async fn web_search(
 
     let auth_ctx = auth.map(|e| e.0);
     let audit_ctx = AuditContext::from_auth(auth_ctx.as_ref(), &state);
+
+    // Kernel mediation (VC-002)
+    {
+        let decision = state
+            .kernel
+            .lock()
+            .await
+            .decide(Operation::WebSearch, &req.query);
+        match decision.verdict {
+            Verdict::Allow => {}
+            Verdict::Deny(ref _reason) => {
+                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+                    capability: format!("{}", Operation::WebSearch),
+                    actual: CapabilityLevel::Never,
+                    required: CapabilityLevel::LowRisk,
+                }));
+            }
+            Verdict::RequiresApproval => {}
+        }
+    }
 
     // Check web_search capability
     let policy = state.runtime.policy();
@@ -4078,6 +3632,7 @@ fn load_last_hash(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nucleus_identity::approval_bundle::compute_manifest_hash;
 
     #[test]
     fn test_rate_limiter_allows_burst() {

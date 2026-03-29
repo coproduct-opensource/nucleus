@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 
+use portcullis::kernel::{Kernel, Verdict};
 use portcullis::{CapabilityLevel, GradedExposureGuard, Operation, ToolCallGuard};
 use rmcp::{
     handler::server::router::tool::ToolRouter, handler::server::wrapper::Parameters, model::*,
@@ -115,6 +116,8 @@ pub struct NucleusMcpServer {
     tool_router: ToolRouter<Self>,
     /// Session-scoped exposure-tracking guard (graded monad).
     guard: Arc<GradedExposureGuard>,
+    /// Kernel decision engine for complete mediation (VC-002).
+    kernel: Arc<tokio::sync::Mutex<Kernel>>,
 }
 
 /// Convert a tool-level error into a CallToolResult error.
@@ -132,17 +135,39 @@ impl NucleusMcpServer {
         let tool_schemas = format!("{:?}", tool_router.list_all());
         let policy = state.runtime.policy().clone();
 
-        let guard = Arc::new(GradedExposureGuard::new(policy, &tool_schemas));
+        let guard = Arc::new(GradedExposureGuard::new(policy.clone(), &tool_schemas));
 
         // Store guard reference in AppState for exit report exposure extraction
         if let Ok(mut slot) = state.exposure_guard.write() {
             *slot = Some(guard.clone());
         }
 
+        let kernel = Arc::new(tokio::sync::Mutex::new(Kernel::new(policy)));
+
         Self {
             state,
             tool_router,
             guard,
+            kernel,
+        }
+    }
+
+    /// Consult the kernel for a mediation decision.
+    ///
+    /// Returns `Ok(())` when the operation is allowed, or `Err(CallToolResult)`
+    /// with an error message when the kernel denies the request.
+    async fn kernel_decide(
+        &self,
+        operation: Operation,
+        subject: &str,
+    ) -> Result<(), CallToolResult> {
+        let decision = self.kernel.lock().await.decide(operation, subject);
+        match decision.verdict {
+            Verdict::Allow => Ok(()),
+            Verdict::Deny(ref reason) => {
+                Err(err_result(format!("kernel denied {operation}: {reason:?}")))
+            }
+            Verdict::RequiresApproval => Ok(()),
         }
     }
 
@@ -159,6 +184,10 @@ impl NucleusMcpServer {
             Ok(p) => p,
             Err(e) => return Ok(err_result(e)),
         };
+
+        if let Err(deny) = self.kernel_decide(Operation::ReadFiles, &params.path).await {
+            return Ok(deny);
+        }
 
         match self.guard.execute_and_record(proof, || {
             tokio::task::block_in_place(|| {
@@ -183,6 +212,13 @@ impl NucleusMcpServer {
             Ok(p) => p,
             Err(e) => return Ok(err_result(e)),
         };
+
+        if let Err(deny) = self
+            .kernel_decide(Operation::WriteFiles, &params.path)
+            .await
+        {
+            return Ok(deny);
+        }
 
         match self.guard.execute_and_record(proof, || {
             tokio::task::block_in_place(|| {
@@ -216,6 +252,11 @@ impl NucleusMcpServer {
             Ok(p) => p,
             Err(e) => return Ok(err_result(e)),
         };
+
+        let subject = params.args.join(" ");
+        if let Err(deny) = self.kernel_decide(Operation::RunBash, &subject).await {
+            return Ok(deny);
+        }
 
         match self.guard.execute_and_record(proof, || {
             tokio::task::block_in_place(|| {
@@ -252,6 +293,13 @@ impl NucleusMcpServer {
             Ok(p) => p,
             Err(e) => return Ok(err_result(e)),
         };
+
+        if let Err(deny) = self
+            .kernel_decide(Operation::GlobSearch, &params.pattern)
+            .await
+        {
+            return Ok(deny);
+        }
 
         // Check capability level
         let level = self.state.runtime.policy().capabilities.glob_search;
@@ -329,6 +377,13 @@ impl NucleusMcpServer {
             Ok(p) => p,
             Err(e) => return Ok(err_result(e)),
         };
+
+        if let Err(deny) = self
+            .kernel_decide(Operation::GrepSearch, &params.pattern)
+            .await
+        {
+            return Ok(deny);
+        }
 
         let level = self.state.runtime.policy().capabilities.grep_search;
         if level == CapabilityLevel::Never {
@@ -469,6 +524,10 @@ impl NucleusMcpServer {
             Ok(p) => p,
             Err(e) => return Ok(err_result(e)),
         };
+
+        if let Err(deny) = self.kernel_decide(Operation::WebFetch, &params.url).await {
+            return Ok(deny);
+        }
 
         let level = self.state.runtime.policy().capabilities.web_fetch;
         if level == CapabilityLevel::Never {
