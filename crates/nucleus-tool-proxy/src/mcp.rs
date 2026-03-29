@@ -152,15 +152,21 @@ impl NucleusMcpServer {
     }
 
     /// Record a verdict through the sink (best-effort -- never panics).
+    ///
+    /// SECURITY: errors are logged at warn level so audit gaps are visible
+    /// in telemetry. Previously errors were silently discarded with `let _ =`,
+    /// making audit backend failures invisible (Trail of Bits finding #3).
     fn record_verdict(&self, operation: Operation, subject: &str, outcome: VerdictOutcome) {
-        let _ = self.sink.record(VerdictContext {
+        if let Err(e) = self.sink.record(VerdictContext {
             operation,
             subject: subject.to_string(),
             outcome,
             actor: ActorIdentity::StdioGuest,
             policy_rule: None,
             extensions: BTreeMap::new(),
-        });
+        }) {
+            warn!(error = %e, ?operation, subject, "verdict recording failed — audit gap");
+        }
     }
 
     // -----------------------------------------------------------------------

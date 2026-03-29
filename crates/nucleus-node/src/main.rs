@@ -2757,7 +2757,17 @@ impl NodeService for GrpcService {
         let manifest_hash =
             nucleus_identity::approval_bundle::compute_manifest_hash(spec_yaml.as_bytes());
 
-        // Compute v1 content hash: SHA-256 of canonical v1 fields
+        // Compute v1 content hash: SHA-256 of canonical v1 fields.
+        //
+        // Trust model (Trail of Bits finding #4): this hash covers CONTENT
+        // (what happened), not IDENTITY (who attested). The executor's Ed25519
+        // signature is sent separately in the X-Nucleus-Executor-Sig header and
+        // signs the serialized session-complete body (which includes this hash).
+        // Verification is two-phase:
+        //   1. Trust-service validates v1_content_hash was pre-registered.
+        //   2. Trust-service verifies Ed25519 signature against executor's
+        //      registered public key.
+        // See also: AuditEntry::content_hash() in portcullis/src/audit.rs.
         let v1_content_hash = {
             use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();

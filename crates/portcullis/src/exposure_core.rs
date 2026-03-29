@@ -101,10 +101,28 @@ pub fn should_deny(
 /// Returns the new exposure set after recording this operation.
 /// Only non-neutral operations modify the exposure.
 ///
-/// Note: RunBash records ONLY ExfilVector (its actual exposure label),
-/// NOT the omnibus projection. The omnibus projection is conservative
-/// over-approximation used in `project_exposure`/`should_deny` for
-/// safety. The record reflects what actually happened.
+/// ## Intentional asymmetry with `project_exposure` for RunBash
+///
+/// `project_exposure` conservatively adds `{PrivateData, ExfilVector}` for
+/// RunBash because bash *can* read files and exfiltrate data. This is the
+/// pre-check over-approximation: deny anything that *might* complete the
+/// uninhabitable state.
+///
+/// `apply_record` adds only `ExfilVector` (the actual classification from
+/// `classify_operation`), because the post-check records what the operation
+/// *actually contributed*, not what it theoretically could have done.
+///
+/// This asymmetry is by design (Trail of Bits finding #2):
+/// - **Pre-check (project_exposure)**: conservative for safety — blocks
+///   operations that *could* complete the uninhabitable state.
+/// - **Post-check (apply_record)**: precise for accuracy — records the
+///   actual exposure leg so that subsequent pre-checks start from an
+///   accurate baseline rather than an inflated one.
+///
+/// If `apply_record` used the omnibus projection, a single RunBash call
+/// would inflate the exposure to `{PrivateData, ExfilVector}` even if
+/// the command was `echo hello`. This would make subsequent web_fetch
+/// calls trigger uninhabitable_state warnings incorrectly.
 ///
 /// Verus equivalent: `apply_event_exposure(exposure, McpEvent{op, succeeded: true})`
 #[inline]

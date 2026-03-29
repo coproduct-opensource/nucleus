@@ -142,6 +142,34 @@ impl AuditEntry {
     ///
     /// The hash covers all fields including `prev_hash`, making the chain
     /// tamper-evident: modifying any entry invalidates all subsequent hashes.
+    ///
+    /// ## Trust model: content_hash vs executor_sig (Trail of Bits finding #4)
+    ///
+    /// The `content_hash` and `executor_sig` serve **different trust purposes**
+    /// and are intentionally independent:
+    ///
+    /// - **content_hash** covers WHAT HAPPENED: the canonical event content
+    ///   (sequence, timestamp, identity, event, correlation/session IDs,
+    ///   prev_hash). It forms the tamper-evident chain — modifying any field
+    ///   in any entry breaks all subsequent hashes.
+    ///
+    /// - **executor_sig** (in `extensions`) covers WHO ATTESTED: the Ed25519
+    ///   signature over `content_hash` by the specific executor that observed
+    ///   the event. It provides non-repudiation — only the executor with the
+    ///   private key can produce a valid signature for a given content hash.
+    ///
+    /// The `extensions` map (including `executor_sig`) is deliberately excluded
+    /// from `content_hash` because:
+    /// 1. Extensions are forward-compatible metadata, not canonical content.
+    /// 2. The signature signs the content_hash, creating a separate binding:
+    ///    `executor_sig = Ed25519(signing_key, content_hash)`.
+    /// 3. Including the signature in the hash would create a circular dependency.
+    /// 4. Verification is: check content_hash chain integrity, THEN verify
+    ///    executor_sig against the registered public key independently.
+    ///
+    /// An attacker who replaces executor_sig without the private key produces
+    /// an invalid signature that fails Ed25519 verification. An attacker who
+    /// modifies content breaks the hash chain. Both attack vectors are covered.
     pub fn content_hash(&self) -> String {
         let mut hasher = Sha256::new();
         hasher.update(self.sequence.to_le_bytes());
