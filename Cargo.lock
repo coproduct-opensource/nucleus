@@ -2897,6 +2897,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-claude-hook"
+version = "1.0.0"
+dependencies = [
+ "portcullis",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nucleus-cli"
 version = "1.0.0"
 dependencies = [

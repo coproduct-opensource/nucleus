@@ -23,6 +23,7 @@ members = [
     "crates/ck-types",                  # Constitutional Kernel: core types, manifests, digests
     "crates/ck-policy",                 # Constitutional Kernel: monotonicity checker
     "crates/ck-kernel",                 # Constitutional Kernel: admission engine + lineage
+    "crates/nucleus-claude-hook",        # Claude Code PreToolUse hook (verified kernel)
 ]
 # Verified with Verus (not standard cargo); run: .verus/verus-x86-macos/verus crates/portcullis-verified/src/lib.rs
 # exposure-web is WASM-only (wasm32-unknown-unknown); build with: cd crates/exposure-web && trunk build
