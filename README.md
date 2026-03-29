@@ -8,7 +8,7 @@
 
 **A formally verified permission lattice and security runtime for AI agents.**
 
-Nucleus is a security framework for AI agents that combines a mathematically verified permission algebra with a Firecracker-based enforcement runtime. The permission lattice has 297 SMT verification conditions checked by Z3 plus 32 bounded model checking proofs via Kani. The GitHub Action works end-to-end today. This README tries to be honest about what's real and what isn't.
+Nucleus is a security framework for AI agents that combines a mathematically verified permission algebra with a Firecracker-based enforcement runtime. The permission lattice has 297 SMT verification conditions (Verus/Z3), 62 bounded model checking proofs (Kani), and a Lean 4 HeytingAlgebra proof on the production Rust permission type via the Aeneas translation pipeline. This README tries to be honest about what's real and what isn't.
 
 > **Versioning note:** v1.0 means the **interface contract is stable** (see [`STABILITY.md`](STABILITY.md)), not that the system is "production-secure by default." The lattice is heavily verified; the runtime is tested but not yet battle-hardened in production traffic.
 
@@ -197,7 +197,7 @@ Three layers, at different levels of maturity:
 
 | Component | Maturity | Evidence |
 |-----------|----------|----------|
-| **Permission lattice** (portcullis) | Verified | 58K LOC, 942 tests, 297 Verus VCs, 32 Kani BMC proofs, 3 fuzz targets |
+| **Permission lattice** (portcullis) | Verified | 58K LOC, 942 tests, 297 Verus VCs, 62 Kani BMC proofs, 3 fuzz targets |
 | ** Uninhabitable state detection** | Verified | Static scan + runtime guard, monotonicity proven (E1-E3, Kani B1-B9) |
 | **Attenuation tokens** | Verified | Compact delegation credentials with Kani-proven invariants (D1-D7) |
 | **Delegation chains** | Tested | Monotone attenuation with `meet_with_justification`, audit-reconstructable chains |
@@ -217,13 +217,15 @@ Three layers, at different levels of maturity:
 | **Budget tracking** | Partial | AtomicBudget exists; pre-exec reservation works, post-exec accounting incomplete |
 | **SPIFFE identity** | Implemented | mTLS + cert management code exists; no SPIRE deployment |
 | **Command exfiltration detection** | Partial | Program-name matching; `bash -c` bypasses documented |
-| **Lean 4 model** | Partial | Hand-written kernel-checked Lean 4 proof: `CapabilityLevel` as a `HeytingAlgebra` (27-case `decide`, Mathlib-linked). Discriminant correspondence enforced by CI test. Aeneas/Charon pipeline translation not yet started. |
+| **Lean 4 proof (Aeneas)** | Verified | Lean 4 HeytingAlgebra instance on `CapabilityLevel` — the same type used in production (re-exported from `portcullis-core`). Aeneas translates Rust MIR to Lean; function correspondence proven via `rfl` (`meet_eq_inf`, `join_eq_sup`, `implies_eq_himp`). CI type-checks proofs and rejects `sorry`. |
+| **OTLP permission telemetry** | Tested | Every tool call verdict emits an OTel span with all 12 capability dimensions, exposure state, lockdown status. VerdictSink trait ensures both HTTP and MCP paths produce telemetry. Supports gRPC and http/protobuf (Grafana Cloud). |
+| **Fleet lockdown** | Tested | `nucleus lockdown` drops agents to read-only via gRPC streaming (sub-second). Lattice meet semantics: reads allowed for forensics, writes blocked. OR-semantics between signal file and gRPC stream. Label-based pod scoping. |
 
 **Maturity key:** *Verified* = SMT proofs + tests. *Tested* = compiles, has passing tests, never deployed. *Partial* = works for some cases, known gaps. *Implemented* = code exists, minimal testing. *Not started* = in roadmap only.
 
 ## Permission Lattice
 
-Permissions compose predictably via a mathematical lattice. This is the most mature part of Nucleus — 58K lines of Rust with 297 SMT verification conditions (Verus/Z3) and 32 bounded model checking proofs (Kani/CaDiCaL).
+Permissions compose predictably via a mathematical lattice. This is the most mature part of Nucleus — 58K lines of Rust with 297 SMT verification conditions (Verus/Z3) and 62 bounded model checking proofs (Kani/CaDiCaL).
 
 | Structure | What It Gives You | Status |
 |-----------|-------------------|--------|
@@ -240,11 +242,12 @@ For the theory: [docs/THEORY.md](docs/THEORY.md).
 
 ## Formal Verification
 
-Nucleus uses two complementary verification tools:
+Nucleus uses three complementary verification tools:
 - [Verus](https://verus-lang.github.io/verus/) (SMT-based, SOSP 2025 Best Paper) — 297 verification conditions checked by Z3
-- [Kani](https://model-checking.github.io/kani/) (bounded model checking) — 32 proofs checked by CaDiCaL SAT solver
+- [Kani](https://model-checking.github.io/kani/) (bounded model checking) — 62 proofs checked by CaDiCaL SAT solver
+- [Lean 4](https://lean-lang.org/) + [Aeneas](https://github.com/AeneasVerif/aeneas) (kernel-checked) — HeytingAlgebra proof on Aeneas-generated code from production Rust
 
-**What's proven (297 Verus VCs + 32 Kani proofs):**
+**What's proven (297 Verus VCs + 62 Kani proofs + Lean 4 HeytingAlgebra):**
 
 *Verus (SMT):*
 - Lattice laws: idempotent, commutative, associative, absorptive for all 12 capability dimensions
@@ -256,11 +259,19 @@ Nucleus uses two complementary verification tools:
 - Uninhabitable state: completeness detection, risk classification, session safety
 - Delegation: transitivity, ceiling theorem, chain composition
 
-*Kani (BMC):*
+*Kani (BMC, 62 proofs):*
 - B-series (9 proofs): Exposure set monoid identity/associativity, monotonicity, uninhabitable state-iff-count-equals-3, isolation lattice meet/join properties
 - D-series (7 proofs): Attenuation token invariants — token ≤ parent, token ≤ requested cap, chained attenuation, delegation ceiling preservation
 - E-series (3 proofs): Guard denial soundness, Clinejection defense, apply_record monotonicity
+- R-series (3 proofs): R1 Heyting adjunction, R2 pseudo-complement, R3 entailment — bridge proofs mirroring the Lean 4 HeytingAlgebra axioms
 - Structural (13 proofs): Lattice distributivity, frame law, budget monotonicity, capability level ordering
+- Additional (27 proofs): Normalize idempotent, conservation laws, Noetherian symmetry, refinement bridges
+
+*Lean 4 (kernel-checked, zero sorry):*
+- HeytingAlgebra instance on `CapabilityLevel` (the production type, re-exported from `portcullis-core`)
+- Function correspondence via `rfl`: `meet_eq_inf`, `join_eq_sup`, `implies_eq_himp` — the Lean kernel reduces both sides to identical terms
+- Aeneas pipeline: Charon extracts Rust MIR, Aeneas translates to Lean, CI diffs against committed output and type-checks proofs
+- Discriminant ordering invariant: compile-time assertion ensures declaration order = `#[repr(u8)]` values
 
 **What's tested but not formally verified:**
 - Modal operators (necessity/possibility, S4 axioms) — 16 property tests
@@ -268,10 +279,12 @@ Nucleus uses two complementary verification tools:
 - Full PermissionLattice composition — 130 proptest invariants
 - Adversarial inputs — 70 OWASP-inspired attack scenarios
 
-**What's planned but not started:**
-- Full Aeneas/Charon pipeline translation of portcullis (Rust MIR → Lean 4)
+**What's done but not yet at Verus/Kani level:**
+- Aeneas/Charon pipeline for `CapabilityLevel` (type + functions verified in Lean 4). `CapabilityLattice` extension dimensions (`BTreeMap`) are not modeled — they are covered by proptest but not by Lean or Kani.
+
+**What's planned:**
 - Full enforcement boundary verification (Phase 2 — started with E1-E3)
-- Differential testing: Rust engine vs Lean model (Phase 3)
+- Kani I/O confinement proof (issue #260)
 - Extended TCB verification: sandbox, credentials, tool proxy (Phase 4)
 
 See the full roadmap: [docs/north-star.md](docs/north-star.md).
