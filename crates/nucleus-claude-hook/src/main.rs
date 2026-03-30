@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 use portcullis::kernel::{Kernel, Verdict};
 use portcullis::{Operation, PermissionLattice};
+use portcullis_core::flow::NodeKind;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -51,6 +52,10 @@ struct SessionState {
     profile: String,
     /// Operations that were allowed (replayed to rebuild kernel exposure).
     allowed_ops: Vec<(String, String)>, // (operation, subject)
+    /// Flow graph observations: (NodeKind discriminant, operation, subject).
+    /// Replayed to rebuild the causal DAG across hook invocations.
+    #[serde(default)]
+    flow_observations: Vec<(u8, String, String)>,
 }
 
 fn session_state_path(session_id: &str) -> PathBuf {
@@ -237,6 +242,59 @@ fn extract_subject(tool_name: &str, input: &serde_json::Value) -> String {
             }
         }
         _ => "(unknown)".to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Flow label classification
+// ---------------------------------------------------------------------------
+
+/// Map an Operation to the NodeKind that represents its data contribution.
+///
+/// After an allowed operation executes, its result enters the session as
+/// an observation of this kind. This determines the IFC label assigned
+/// to the data: web content gets Adversarial/NoAuthority, file reads get
+/// Internal/Trusted, etc.
+fn operation_to_node_kind(op: Operation) -> NodeKind {
+    match op {
+        Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch => NodeKind::FileRead,
+        Operation::WebFetch | Operation::WebSearch => NodeKind::WebContent,
+        Operation::WriteFiles | Operation::EditFiles => NodeKind::OutboundAction,
+        Operation::RunBash => NodeKind::OutboundAction,
+        Operation::GitCommit | Operation::GitPush | Operation::CreatePr => NodeKind::OutboundAction,
+        Operation::ManagePods => NodeKind::OutboundAction,
+    }
+}
+
+/// Convert a NodeKind to a u8 discriminant for serialization.
+fn node_kind_to_u8(kind: NodeKind) -> u8 {
+    match kind {
+        NodeKind::UserPrompt => 0,
+        NodeKind::ToolResponse => 1,
+        NodeKind::WebContent => 2,
+        NodeKind::MemoryRead => 3,
+        NodeKind::MemoryWrite => 4,
+        NodeKind::FileRead => 5,
+        NodeKind::EnvVar => 6,
+        NodeKind::ModelPlan => 7,
+        NodeKind::Secret => 8,
+        NodeKind::OutboundAction => 9,
+    }
+}
+
+/// Convert a u8 discriminant back to NodeKind.
+fn u8_to_node_kind(v: u8) -> NodeKind {
+    match v {
+        0 => NodeKind::UserPrompt,
+        1 => NodeKind::ToolResponse,
+        2 => NodeKind::WebContent,
+        3 => NodeKind::MemoryRead,
+        4 => NodeKind::MemoryWrite,
+        5 => NodeKind::FileRead,
+        6 => NodeKind::EnvVar,
+        7 => NodeKind::ModelPlan,
+        8 => NodeKind::Secret,
+        _ => NodeKind::OutboundAction,
     }
 }
 
@@ -468,24 +526,43 @@ fn main() {
     }
 
     let mut kernel = Kernel::new(perms);
+    kernel.enable_flow_graph();
 
-    // Replay previous operations to rebuild exposure state
+    // Replay previous operations to rebuild exposure state AND flow graph.
+    // Each allowed op is: 1) replayed in the flat kernel for exposure,
+    // 2) observed in the flow graph as a data node.
+    let mut last_node_id: Option<u64> = None;
     for (op_str, subj) in &session.allowed_ops {
         if let Ok(op) = Operation::try_from(op_str.as_str()) {
             kernel.decide(op, subj);
         }
     }
+    for &(kind_u8, ref _op_str, ref _subj) in &session.flow_observations {
+        let kind = u8_to_node_kind(kind_u8);
+        let parents: Vec<u64> = last_node_id.into_iter().collect();
+        if let Ok(id) = kernel.observe(kind, &parents) {
+            last_node_id = Some(id);
+        }
+    }
 
-    // Make the actual decision
-    let (decision, _token) = kernel.decide(operation, &subject);
+    // Make the actual decision using the causal DAG.
+    // The current operation's parents are the last observation in the chain.
+    let parents: Vec<u64> = last_node_id.into_iter().collect();
+    let (decision, _token) = kernel.decide_with_parents(operation, &subject, &parents);
     let exposure_count = decision.exposure_transition.post_count;
 
     let output = match decision.verdict {
         Verdict::Allow => {
-            // Persist: operation will execute
+            // Persist: operation will execute — track in both exposure and flow graph
             session
                 .allowed_ops
                 .push((operation.to_string(), subject.clone()));
+            let obs_kind = operation_to_node_kind(operation);
+            session.flow_observations.push((
+                node_kind_to_u8(obs_kind),
+                operation.to_string(),
+                subject.clone(),
+            ));
             save_session(&input.session_id, &session);
             HookOutput {
                 decision: "approve".to_string(),
@@ -499,6 +576,12 @@ fn main() {
             session
                 .allowed_ops
                 .push((operation.to_string(), subject.clone()));
+            let obs_kind = operation_to_node_kind(operation);
+            session.flow_observations.push((
+                node_kind_to_u8(obs_kind),
+                operation.to_string(),
+                subject.clone(),
+            ));
             save_session(&input.session_id, &session);
             HookOutput {
                 decision: "ask_user".to_string(),
@@ -518,8 +601,12 @@ fn main() {
 
     // Log to stderr
     let verdict_str = &output.decision;
+    let flow_node = decision
+        .flow_node_id
+        .map(|id| format!(", flow_node: {id}"))
+        .unwrap_or_default();
     eprintln!(
-        "nucleus: {operation} {subject} -> {verdict_str} [exposure: {exposure_count}/3, profile: {profile_name}]"
+        "nucleus: {operation} {subject} -> {verdict_str} [exposure: {exposure_count}/3, profile: {profile_name}{flow_node}]"
     );
 
     // Write output to stdout
@@ -707,5 +794,73 @@ mod tests {
             "expected RequiresApproval, got {:?}",
             d3.verdict
         );
+    }
+
+    #[test]
+    fn test_flow_graph_blocks_web_tainted_write() {
+        // With flow graph enabled, web_fetch taints the session so that
+        // subsequent writes are blocked by flow control (authority escalation).
+        let perms = PermissionLattice::safe_pr_fixer();
+        let mut kernel = Kernel::new(perms);
+        kernel.enable_flow_graph();
+
+        // Observe web content
+        let web_id = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+
+        // Write depending on web content — blocked by flow control
+        let (d, _) =
+            kernel.decide_with_parents(Operation::WriteFiles, "/workspace/tainted.rs", &[web_id]);
+        assert!(
+            d.verdict.is_denied(),
+            "Web-tainted write should be denied by flow control, got {:?}",
+            d.verdict
+        );
+        assert!(d.flow_node_id.is_some());
+    }
+
+    #[test]
+    fn test_flow_graph_allows_clean_write() {
+        // Clean file read → write should be allowed
+        let perms = PermissionLattice::safe_pr_fixer();
+        let mut kernel = Kernel::new(perms);
+        kernel.enable_flow_graph();
+
+        let file_id = kernel.observe(NodeKind::FileRead, &[]).unwrap();
+
+        let (d, _) =
+            kernel.decide_with_parents(Operation::WriteFiles, "/workspace/clean.rs", &[file_id]);
+        assert!(
+            d.verdict.is_allowed(),
+            "Clean-parented write should be allowed, got {:?}",
+            d.verdict
+        );
+    }
+
+    #[test]
+    fn test_operation_to_node_kind() {
+        assert!(matches!(
+            operation_to_node_kind(Operation::ReadFiles),
+            NodeKind::FileRead
+        ));
+        assert!(matches!(
+            operation_to_node_kind(Operation::WebFetch),
+            NodeKind::WebContent
+        ));
+        assert!(matches!(
+            operation_to_node_kind(Operation::WriteFiles),
+            NodeKind::OutboundAction
+        ));
+        assert!(matches!(
+            operation_to_node_kind(Operation::RunBash),
+            NodeKind::OutboundAction
+        ));
+    }
+
+    #[test]
+    fn test_node_kind_roundtrip() {
+        for i in 0..10u8 {
+            let kind = u8_to_node_kind(i);
+            assert_eq!(node_kind_to_u8(kind), i);
+        }
     }
 }
