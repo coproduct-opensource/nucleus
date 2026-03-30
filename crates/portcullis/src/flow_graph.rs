@@ -29,6 +29,16 @@ pub enum FlowGraphError {
         /// Maximum allowed.
         max: usize,
     },
+    /// Parent ID 0 (sentinel) is not a valid parent reference.
+    SentinelParent,
+    /// The flow graph has not been enabled via `enable_flow_graph()`.
+    GraphNotEnabled,
+    /// A referenced parent was a denied action — denied actions did not
+    /// execute and cannot be causal ancestors.
+    DeniedParent(
+        /// The denied node ID.
+        NodeId,
+    ),
 }
 
 /// Result of inserting an action node (atomic check-and-insert).
@@ -46,9 +56,14 @@ pub struct FlowDecision {
 ///
 /// Nodes are indexed by sequential `NodeId` (u64). Index 0 is the sentinel
 /// (no parent). Real nodes start at 1.
+///
+/// Denied action nodes are tracked but cannot be referenced as parents —
+/// a denied action did not execute, so it has no causal effect.
 pub struct FlowGraph {
     nodes: Vec<Option<FlowNode>>,
     next_id: u64,
+    /// Node IDs of denied actions — cannot be used as parents.
+    denied: std::collections::BTreeSet<NodeId>,
 }
 
 impl FlowGraph {
@@ -57,6 +72,7 @@ impl FlowGraph {
         Self {
             nodes: vec![None], // index 0 = sentinel
             next_id: 1,
+            denied: std::collections::BTreeSet::new(),
         }
     }
 
@@ -105,6 +121,10 @@ impl FlowGraph {
         let id = self.next_id;
         self.nodes.push(Some(node));
         self.next_id += 1;
+        // Denied actions are inscribed for receipt/audit but cannot be parents
+        if matches!(verdict, FlowVerdict::Deny(_)) {
+            self.denied.insert(id);
+        }
         Ok(FlowDecision {
             verdict,
             node_id: id,
@@ -164,8 +184,14 @@ impl FlowGraph {
             });
         }
         for &pid in parents {
-            if pid > 0 && self.get(pid).is_none() {
+            if pid == 0 {
+                return Err(FlowGraphError::SentinelParent);
+            }
+            if self.get(pid).is_none() {
                 return Err(FlowGraphError::ParentNotFound(pid));
+            }
+            if self.denied.contains(&pid) {
+                return Err(FlowGraphError::DeniedParent(pid));
             }
         }
         Ok(())
@@ -351,6 +377,41 @@ mod tests {
         assert!(matches!(r.verdict, FlowVerdict::Deny(_)));
         let receipt = g.build_receipt_for(r.node_id, now).unwrap();
         assert!(receipt.display_chain().contains("BLOCKED"));
+    }
+
+    #[test]
+    fn sentinel_parent_rejected() {
+        let mut g = FlowGraph::new();
+        assert_eq!(
+            g.insert_observation(NodeKind::FileRead, &[0], 1000),
+            Err(FlowGraphError::SentinelParent)
+        );
+    }
+
+    #[test]
+    fn denied_action_cannot_be_parent() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        // This write is denied (web taint)
+        let denied = g.insert_action(Operation::WriteFiles, &[web], now).unwrap();
+        assert!(matches!(denied.verdict, FlowVerdict::Deny(_)));
+        // Trying to reference the denied node as a parent should fail
+        assert_eq!(
+            g.insert_observation(NodeKind::FileRead, &[denied.node_id], now),
+            Err(FlowGraphError::DeniedParent(denied.node_id))
+        );
+    }
+
+    #[test]
+    fn sentinel_parent_rejected_in_action() {
+        let mut g = FlowGraph::new();
+        assert!(matches!(
+            g.insert_action(Operation::WriteFiles, &[0], 1000),
+            Err(FlowGraphError::SentinelParent)
+        ));
     }
 
     // THE KEY TEST

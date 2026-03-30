@@ -424,18 +424,20 @@ impl Kernel {
     /// or `decide_with_parents()` calls. Observations are not flow-checked —
     /// they just record what data entered the session.
     ///
-    /// Panics if `enable_flow_graph()` was not called.
+    /// Returns `Err` if the flow graph is not enabled or if parent validation
+    /// fails. Callers must handle the error — do not use `.unwrap_or(0)` as
+    /// node ID 0 is the sentinel and will be rejected.
     pub fn observe(
         &mut self,
         kind: portcullis_core::flow::NodeKind,
         parents: &[u64],
-    ) -> Option<u64> {
+    ) -> Result<u64, crate::flow_graph::FlowGraphError> {
         let graph = self
             .flow_graph
             .as_mut()
-            .expect("enable_flow_graph() not called");
+            .ok_or(crate::flow_graph::FlowGraphError::GraphNotEnabled)?;
         let now = chrono::Utc::now().timestamp() as u64;
-        graph.insert_observation(kind, parents, now).ok()
+        graph.insert_observation(kind, parents, now)
     }
 
     /// Decide an operation with explicit causal parents from the DAG.
@@ -509,8 +511,14 @@ impl Kernel {
         }
 
         // DAG says allow — delegate to standard decide() for remaining checks
-        // (budget, capability, path, command, exposure, approvals)
+        // (budget, capability, path, command, exposure, approvals).
+        //
+        // Temporarily disable the flat flow_label so decide() doesn't re-check
+        // flow with the session-level accumulator. The DAG's per-action verdict
+        // supersedes the flat label — that's the whole point of the DAG.
+        let saved_flow_label = self.flow_label.take();
         let mut result = self.decide(operation, subject);
+        self.flow_label = saved_flow_label;
         result.0.flow_node_id = Some(flow_decision.node_id);
         result
     }
@@ -2379,5 +2387,44 @@ mod tests {
             d.verdict,
             Verdict::Deny(DenyReason::InsufficientCapability)
         ));
+    }
+
+    #[test]
+    fn dag_bypasses_flat_flow_label() {
+        // Issue #365: when both flow systems are enabled, the DAG should
+        // supersede the flat label — not double-deny.
+        let perms = PermissionLattice::safe_pr_fixer();
+        let mut kernel = Kernel::new(perms);
+        kernel.enable_flow_control(); // flat label
+        kernel.enable_flow_graph(); // DAG
+
+        // Read web content — taints the flat session label
+        let _web = kernel
+            .observe(portcullis_core::flow::NodeKind::WebContent, &[])
+            .unwrap();
+        // Also taint the flat label via a regular decide()
+        let (d, _) = kernel.decide(Operation::WebFetch, "https://example.com");
+        assert!(d.verdict.is_allowed());
+
+        // Now use the DAG with clean parents — should be allowed
+        // even though the flat label is tainted
+        let file = kernel
+            .observe(portcullis_core::flow::NodeKind::FileRead, &[])
+            .unwrap();
+        let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/clean.txt", &[file]);
+        assert!(
+            d.verdict.is_allowed(),
+            "DAG clean parents should override flat taint, got {:?}",
+            d.verdict
+        );
+    }
+
+    #[test]
+    fn dag_observe_returns_error_without_enable() {
+        // Issue #364: observe() should return Err, not panic
+        let perms = PermissionLattice::safe_pr_fixer();
+        let mut kernel = Kernel::new(perms);
+        let result = kernel.observe(portcullis_core::flow::NodeKind::FileRead, &[]);
+        assert!(result.is_err());
     }
 }
