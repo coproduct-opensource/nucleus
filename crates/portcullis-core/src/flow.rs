@@ -43,6 +43,15 @@ pub enum NodeKind {
     Secret,
     /// Outbound action (tool call, git push, PR, shell command).
     OutboundAction,
+    /// Context summarization — model compresses prior context.
+    /// Inherits taint from summarized content. The summary carries the
+    /// join of all labels from the summarized window, preserving the
+    /// maximum confidentiality and minimum integrity/authority.
+    Summarization,
+    /// Retry of a previously denied or failed action.
+    /// Carries the same label as the original attempt — retrying does
+    /// not launder taint.
+    Retry,
 }
 
 /// Intrinsic label for a node kind — the base label before propagation.
@@ -94,6 +103,31 @@ pub fn intrinsic_label(kind: NodeKind, now: u64) -> IFCLabel {
         },
         NodeKind::Secret => IFCLabel::secret(now),
         NodeKind::OutboundAction => IFCLabel {
+            confidentiality: ConfLevel::Public,
+            integrity: IntegLevel::Trusted,
+            provenance: ProvenanceSet::MODEL,
+            freshness: crate::Freshness {
+                observed_at: now,
+                ttl_secs: 0,
+            },
+            authority: AuthorityLevel::Directive,
+        },
+        // Summarization inherits from parents via propagation.
+        // The intrinsic label is neutral — the join with parent labels
+        // will carry forward any taint from the summarized content.
+        NodeKind::Summarization => IFCLabel {
+            confidentiality: ConfLevel::Public,
+            integrity: IntegLevel::Trusted,
+            provenance: ProvenanceSet::MODEL,
+            freshness: crate::Freshness {
+                observed_at: now,
+                ttl_secs: 0,
+            },
+            authority: AuthorityLevel::Directive,
+        },
+        // Retry has the same neutral intrinsic as Summarization.
+        // The taint comes from parents (the original attempt's data).
+        NodeKind::Retry => IFCLabel {
             confidentiality: ConfLevel::Public,
             integrity: IntegLevel::Trusted,
             provenance: ProvenanceSet::MODEL,
