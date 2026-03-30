@@ -12,6 +12,7 @@
 //! Closes: #102, #103
 
 use nucleus::Sandbox;
+use portcullis::kernel::{DecisionToken, Kernel};
 use portcullis::{
     CapabilityLevel, ExposureLabel, ExposureSet, GradedExposureGuard, Operation, PermissionLattice,
     StateRisk, ToolCallGuard,
@@ -25,6 +26,12 @@ fn check_and_record(guard: &impl ToolCallGuard, op: Operation) {
         .expect("execute_and_record failed");
 }
 use tempfile::tempdir;
+
+/// Helper: get a DecisionToken from a permissive kernel for testing.
+fn dt(kernel: &mut Kernel, op: Operation, subject: &str) -> DecisionToken {
+    let (_decision, tok) = kernel.decide(op, subject);
+    tok.expect("permissive kernel should allow this operation")
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -66,10 +73,12 @@ fn test_symlink_read_blocked_capstd() {
     std::fs::write(sandbox_dir.join("legit.txt"), "hello").unwrap();
 
     let policy = PermissionLattice::default();
+    let mut kernel = Kernel::new(policy.clone());
     let sandbox = Sandbox::new(&policy, &sandbox_dir).unwrap();
 
     // Legit file should be readable
-    let result = sandbox.read_to_string("legit.txt");
+    let tok = dt(&mut kernel, Operation::ReadFiles, "legit.txt");
+    let result = sandbox.read_to_string("legit.txt", &tok);
     assert!(
         result.is_ok(),
         "legit file should be readable: {:?}",
@@ -78,7 +87,8 @@ fn test_symlink_read_blocked_capstd() {
     assert_eq!(result.unwrap(), "hello");
 
     // Symlink should be blocked by cap-std (kernel-level enforcement)
-    let result = sandbox.read_to_string("link.txt");
+    let tok = dt(&mut kernel, Operation::ReadFiles, "link.txt");
+    let result = sandbox.read_to_string("link.txt", &tok);
     assert!(
         result.is_err(),
         "symlink read should be blocked by cap-std: {:?}",
@@ -103,6 +113,7 @@ fn test_symlink_read_mcp_parity() {
     std::os::unix::fs::symlink(&outside, sandbox_dir.join("escape.txt")).unwrap();
 
     let policy = PermissionLattice::default();
+    let mut kernel = Kernel::new(policy.clone());
     let sandbox = Sandbox::new(&policy, &sandbox_dir).unwrap();
     let guard = GradedExposureGuard::new(policy, "[]");
 
@@ -111,11 +122,13 @@ fn test_symlink_read_mcp_parity() {
     assert!(_proof.is_ok());
 
     // But cap-std blocks the symlink escape
-    let result = sandbox.read_to_string("escape.txt");
+    let tok = dt(&mut kernel, Operation::ReadFiles, "escape.txt");
+    let result = sandbox.read_to_string("escape.txt", &tok);
     assert!(result.is_err(), "symlink escape should fail via Sandbox");
 
     // Legit file works
-    let result = sandbox.read_to_string("ok.txt");
+    let tok = dt(&mut kernel, Operation::ReadFiles, "ok.txt");
+    let result = sandbox.read_to_string("ok.txt", &tok);
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), "safe content");
 }
@@ -139,10 +152,13 @@ fn test_symlink_write_blocked() {
     let mut policy = PermissionLattice::default();
     policy.capabilities.write_files = CapabilityLevel::LowRisk;
     policy.capabilities.edit_files = CapabilityLevel::LowRisk;
+    let mut kernel = Kernel::new(policy.clone());
     let sandbox = Sandbox::new(&policy, &sandbox_dir).unwrap();
 
-    // Write via symlink should fail
-    let result = sandbox.write("write_escape.txt", b"OVERWRITTEN_BY_ATTACKER");
+    // Write via symlink should fail (kernel may gate via obligations, so force token
+    // to test sandbox-level cap-std symlink defense)
+    let tok = kernel.issue_approved_token(Operation::WriteFiles, "test: symlink write");
+    let result = sandbox.write("write_escape.txt", b"OVERWRITTEN_BY_ATTACKER", &tok);
     assert!(
         result.is_err(),
         "symlink write should be blocked: {:?}",
@@ -169,22 +185,31 @@ fn test_path_traversal_blocked() {
     std::fs::write(sandbox_dir.join("ok.txt"), "safe").unwrap();
 
     let policy = PermissionLattice::default();
+    let mut kernel = Kernel::new(policy.clone());
     let sandbox = Sandbox::new(&policy, &sandbox_dir).unwrap();
 
     // Absolute path — rejected by policy (check_policy rejects absolute paths)
-    let result = sandbox.read_to_string("/etc/passwd");
+    let tok = dt(&mut kernel, Operation::ReadFiles, "/etc/passwd");
+    let result = sandbox.read_to_string("/etc/passwd", &tok);
     assert!(result.is_err(), "absolute path should be rejected");
 
     // Relative escape via .. — kernel prevents via Dir handle
-    let result = sandbox.read_to_string("../../etc/passwd");
+    let tok = dt(&mut kernel, Operation::ReadFiles, "../../etc/passwd");
+    let result = sandbox.read_to_string("../../etc/passwd", &tok);
     assert!(result.is_err(), "../ escape should be rejected");
 
     // Double-dot with extra nesting
-    let result = sandbox.read_to_string("src/../../../../etc/shadow");
+    let tok = dt(
+        &mut kernel,
+        Operation::ReadFiles,
+        "src/../../../../etc/shadow",
+    );
+    let result = sandbox.read_to_string("src/../../../../etc/shadow", &tok);
     assert!(result.is_err(), "deep ../ escape should be rejected");
 
     // Legit file still works
-    let result = sandbox.read_to_string("ok.txt");
+    let tok = dt(&mut kernel, Operation::ReadFiles, "ok.txt");
+    let result = sandbox.read_to_string("ok.txt", &tok);
     assert!(result.is_ok());
 }
 
@@ -252,12 +277,14 @@ fn test_credential_isolation() {
     std::fs::create_dir(&sandbox_dir).unwrap();
 
     let policy = PermissionLattice::default();
+    let mut kernel = Kernel::new(policy.clone());
     let sandbox = Sandbox::new(&policy, &sandbox_dir).unwrap();
 
     // The env var LLM_API_TOKEN should NOT be readable via file tools.
     // Even if an attacker tries to read /proc/self/environ (Linux) or
     // similar, the sandbox blocks absolute paths.
-    let result = sandbox.read_to_string("/proc/self/environ");
+    let tok = dt(&mut kernel, Operation::ReadFiles, "/proc/self/environ");
+    let result = sandbox.read_to_string("/proc/self/environ", &tok);
     assert!(
         result.is_err(),
         "/proc/self/environ should be blocked (absolute path)"
@@ -266,7 +293,12 @@ fn test_credential_isolation() {
     // Also verify: glob can't escape to find env files
     // (tested via sandbox boundary, not via Executor here since
     // Executor requires PodRuntime which is heavyweight)
-    let result = sandbox.read_to_string("../../../proc/self/environ");
+    let tok = dt(
+        &mut kernel,
+        Operation::ReadFiles,
+        "../../../proc/self/environ",
+    );
+    let result = sandbox.read_to_string("../../../proc/self/environ", &tok);
     assert!(result.is_err(), "traversal to /proc should be blocked");
 }
 
@@ -297,12 +329,15 @@ fn test_full_rogue_pilot_chain() {
     policy.paths.blocked.insert(".env*".to_string());
     let policy = policy.normalize();
 
+    let mut kernel = Kernel::new(policy.clone());
     let sandbox = Sandbox::new(&policy, &sandbox_dir).unwrap();
     let guard = GradedExposureGuard::new(policy.clone(), "[]");
 
     // ── Attack Step 1: Try to read .env (secrets) ──
-    // PathLattice should block .env files
-    let result = sandbox.read_to_string(".env");
+    // PathLattice should block .env files (kernel also blocks via path check,
+    // so force token to test sandbox layer)
+    let tok = kernel.issue_approved_token(Operation::ReadFiles, "test: .env read attempt");
+    let result = sandbox.read_to_string(".env", &tok);
     assert!(
         result.is_err(),
         ".env should be blocked by PathLattice: {:?}",
@@ -310,7 +345,8 @@ fn test_full_rogue_pilot_chain() {
     );
 
     // ── Attack Step 1b: Try to read via symlink (escape) ──
-    let result = sandbox.read_to_string("data.json");
+    let tok = dt(&mut kernel, Operation::ReadFiles, "data.json");
+    let result = sandbox.read_to_string("data.json", &tok);
     assert!(
         result.is_err(),
         "symlink escape should be blocked by cap-std: {:?}",
@@ -318,7 +354,8 @@ fn test_full_rogue_pilot_chain() {
     );
 
     // ── Attack Step 1c: Read a legitimate file (succeeds) ──
-    let result = sandbox.read_to_string("src/main.rs");
+    let tok = dt(&mut kernel, Operation::ReadFiles, "src/main.rs");
+    let result = sandbox.read_to_string("src/main.rs", &tok);
     assert!(result.is_ok(), "legit read should work");
     check_and_record(&guard, Operation::ReadFiles);
 

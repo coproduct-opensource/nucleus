@@ -53,7 +53,7 @@ nucleus-spec = { path = "../nucleus-spec" }
 nucleus-identity = { path = "../nucleus-identity" }
 nucleus-client = { path = "../nucleus-client", features = ["async-drand"] }
 nucleus-proto = { path = "../nucleus-proto" }
-portcullis = { path = "../portcullis", features = ["serde", "spec"] }
+portcullis = { path = "../portcullis", features = ["serde", "spec", "crypto"] }
 nucleus-permission-market = { path = "../nucleus-permission-market" }
 
 tonic = { workspace = true }

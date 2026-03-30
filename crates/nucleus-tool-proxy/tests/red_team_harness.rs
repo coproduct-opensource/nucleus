@@ -34,6 +34,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use nucleus::Sandbox;
+use portcullis::kernel::Kernel;
 use portcullis::{
     CapabilityLevel, ExecuteError, GradedExposureGuard, Operation, PermissionLattice, StateRisk,
     ToolCallGuard,
@@ -320,14 +321,21 @@ struct ToolDispatcher {
     sandbox: Sandbox,
     guard: Arc<GradedExposureGuard>,
     sandbox_root: PathBuf,
+    kernel: std::sync::Mutex<Kernel>,
 }
 
 impl ToolDispatcher {
-    fn new(sandbox: Sandbox, guard: Arc<GradedExposureGuard>, sandbox_root: PathBuf) -> Self {
+    fn new(
+        sandbox: Sandbox,
+        guard: Arc<GradedExposureGuard>,
+        sandbox_root: PathBuf,
+        kernel: Kernel,
+    ) -> Self {
         Self {
             sandbox,
             guard,
             sandbox_root,
+            kernel: std::sync::Mutex::new(kernel),
         }
     }
 
@@ -356,10 +364,16 @@ impl ToolDispatcher {
             Err(e) => return (format!("BLOCKED by guard: {e}"), true),
         };
 
+        // Get DecisionToken from kernel
+        let decision_token = {
+            let mut kernel = self.kernel.lock().unwrap();
+            kernel.issue_approved_token(Operation::ReadFiles, &format!("read {path}"))
+        };
+
         // Layer 2: Sandbox read (cap-std + PathLattice) + atomic record
         match self
             .guard
-            .execute_and_record(proof, || self.sandbox.read_to_string(path))
+            .execute_and_record(proof, || self.sandbox.read_to_string(path, &decision_token))
         {
             Ok(contents) => (contents, false),
             Err(ExecuteError::OperationFailed(e)) => (format!("BLOCKED by sandbox: {e}"), true),
@@ -384,10 +398,16 @@ impl ToolDispatcher {
             Err(e) => return (format!("BLOCKED by guard: {e}"), true),
         };
 
-        match self
-            .guard
-            .execute_and_record(proof, || self.sandbox.write(path, contents.as_bytes()))
-        {
+        // Get DecisionToken from kernel
+        let decision_token = {
+            let mut kernel = self.kernel.lock().unwrap();
+            kernel.issue_approved_token(Operation::WriteFiles, &format!("write {path}"))
+        };
+
+        match self.guard.execute_and_record(proof, || {
+            self.sandbox
+                .write(path, contents.as_bytes(), &decision_token)
+        }) {
             Ok(()) => ("ok".into(), false),
             Err(ExecuteError::OperationFailed(e)) => (format!("BLOCKED by sandbox: {e}"), true),
             Err(ExecuteError::TocTouDenied { reason }) => {
@@ -880,8 +900,14 @@ async fn run_red_team_session(policy: PermissionLattice, profile_name: &str) -> 
     let test_sandbox = plant_canaries();
     let sandbox =
         Sandbox::new(&policy, &test_sandbox.sandbox_dir).expect("failed to create sandbox");
+    let kernel = Kernel::new(policy.clone());
     let guard = Arc::new(GradedExposureGuard::new(policy, "[]"));
-    let dispatcher = ToolDispatcher::new(sandbox, guard.clone(), test_sandbox.sandbox_dir.clone());
+    let dispatcher = ToolDispatcher::new(
+        sandbox,
+        guard.clone(),
+        test_sandbox.sandbox_dir.clone(),
+        kernel,
+    );
     let detector = CanaryDetector::new();
 
     let mut score = SessionScore::new();

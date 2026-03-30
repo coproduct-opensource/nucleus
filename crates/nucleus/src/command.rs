@@ -17,6 +17,7 @@ use crate::budget::AtomicBudget;
 use crate::error::{NucleusError, Result};
 use crate::sandbox::Sandbox;
 use crate::time::MonotonicGuard;
+use portcullis::kernel::DecisionToken;
 use portcullis::{
     CapabilityLattice, CapabilityLevel, CommandLattice, Obligations, Operation, PermissionLattice,
 };
@@ -169,8 +170,13 @@ impl<'a> Executor<'a> {
     /// Execute a command and return its output.
     ///
     /// The command string is parsed, validated against policy, and then executed
-    /// in the sandbox directory.
-    pub fn run(&self, command: &str) -> Result<Output> {
+    /// in the sandbox directory. Requires a `DecisionToken` from `Kernel::decide()`.
+    pub fn run(&self, command: &str, decision: &DecisionToken) -> Result<Output> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::RunBash,
+            "DecisionToken operation mismatch"
+        );
         // Check temporal constraints
         if let Some(guard) = self.time_guard {
             guard.check()?;
@@ -220,8 +226,8 @@ impl<'a> Executor<'a> {
     }
 
     /// Execute a command and return just the exit status.
-    pub fn status(&self, command: &str) -> Result<ExitStatus> {
-        let output = self.run(command)?;
+    pub fn status(&self, command: &str, decision: &DecisionToken) -> Result<ExitStatus> {
+        let output = self.run(command, decision)?;
         Ok(output.status)
     }
 
@@ -234,7 +240,13 @@ impl<'a> Executor<'a> {
         args: &[String],
         stdin: Option<&str>,
         directory: Option<&str>,
+        decision: &DecisionToken,
     ) -> Result<Output> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::RunBash,
+            "DecisionToken operation mismatch"
+        );
         self.run_args_internal(args, stdin, directory, None)
     }
 
@@ -244,8 +256,14 @@ impl<'a> Executor<'a> {
         args: &[String],
         stdin: Option<&str>,
         directory: Option<&str>,
+        decision: &DecisionToken,
         approval: &ApprovalToken,
     ) -> Result<Output> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::RunBash,
+            "DecisionToken operation mismatch"
+        );
         self.run_args_internal(args, stdin, directory, Some(approval))
     }
 
@@ -347,7 +365,17 @@ impl<'a> Executor<'a> {
     }
 
     /// Execute a command with an approval token for approval-gated operations.
-    pub fn run_with_approval(&self, command: &str, approval: &ApprovalToken) -> Result<Output> {
+    pub fn run_with_approval(
+        &self,
+        command: &str,
+        decision: &DecisionToken,
+        approval: &ApprovalToken,
+    ) -> Result<Output> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::RunBash,
+            "DecisionToken operation mismatch"
+        );
         // Check temporal constraints
         if let Some(guard) = self.time_guard {
             guard.check()?;
@@ -398,7 +426,17 @@ impl<'a> Executor<'a> {
 
     /// Execute a command with a timeout.
     #[cfg(feature = "async")]
-    pub async fn run_with_timeout(&self, command: &str, timeout: Duration) -> Result<Output> {
+    pub async fn run_with_timeout(
+        &self,
+        command: &str,
+        timeout: Duration,
+        decision: &DecisionToken,
+    ) -> Result<Output> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::RunBash,
+            "DecisionToken operation mismatch"
+        );
         // Check temporal constraints
         if let Some(guard) = self.time_guard {
             guard.check()?;
@@ -459,8 +497,14 @@ impl<'a> Executor<'a> {
         &self,
         command: &str,
         timeout: Duration,
+        decision: &DecisionToken,
         approval: &ApprovalToken,
     ) -> Result<Output> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::RunBash,
+            "DecisionToken operation mismatch"
+        );
         // Check temporal constraints
         if let Some(guard) = self.time_guard {
             guard.check()?;
@@ -604,23 +648,20 @@ mod tests {
     use super::*;
     use crate::budget::AtomicBudget;
     use crate::sandbox::Sandbox;
-    use portcullis::{BudgetLattice, CapabilityLattice};
+    use portcullis::kernel::Kernel;
+    use portcullis::BudgetLattice;
     use rust_decimal::Decimal;
     use tempfile::tempdir;
 
     fn test_policy() -> PermissionLattice {
-        PermissionLattice {
-            capabilities: CapabilityLattice {
-                read_files: CapabilityLevel::Never,
-                run_bash: CapabilityLevel::LowRisk,
-                web_fetch: CapabilityLevel::Never,
-                web_search: CapabilityLevel::Never,
-                ..Default::default()
-            },
-            obligations: Obligations::default(),
-            commands: CommandLattice::permissive(),
-            ..Default::default()
-        }
+        let mut policy = PermissionLattice::default();
+        policy.capabilities.read_files = CapabilityLevel::Never;
+        policy.capabilities.run_bash = CapabilityLevel::LowRisk;
+        policy.capabilities.web_fetch = CapabilityLevel::Never;
+        policy.capabilities.web_search = CapabilityLevel::Never;
+        policy.obligations = Obligations::default();
+        policy.commands = CommandLattice::permissive();
+        policy
     }
 
     fn test_budget() -> BudgetLattice {
@@ -641,18 +682,26 @@ mod tests {
         }
     }
 
+    /// Helper: get a DecisionToken for RunBash from a kernel matching the test policy.
+    fn run_token(kernel: &mut Kernel, subject: &str) -> DecisionToken {
+        let (_decision, tok) = kernel.decide(Operation::RunBash, subject);
+        tok.expect("test kernel should allow RunBash")
+    }
+
     #[test]
     fn test_basic_command() {
         let tmp = tempdir().unwrap();
         let policy = test_policy();
         let budget_policy = test_budget();
+        let mut kernel = Kernel::new(policy.clone());
 
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
         let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
-        let output = executor.run("echo hello").unwrap();
+        let dt = run_token(&mut kernel, "echo hello");
+        let output = executor.run("echo hello", &dt).unwrap();
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("hello"));
     }
@@ -662,13 +711,15 @@ mod tests {
         let tmp = tempdir().unwrap();
         let policy = test_policy();
         let budget_policy = zero_budget();
+        let mut kernel = Kernel::new(policy.clone());
 
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
         let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
-        let result = executor.run("echo hello");
+        let dt = run_token(&mut kernel, "echo hello");
+        let result = executor.run("echo hello", &dt);
         assert!(matches!(result, Err(NucleusError::BudgetExhausted { .. })));
     }
 
@@ -678,14 +729,20 @@ mod tests {
         let mut policy = test_policy();
         policy.commands = CommandLattice::default(); // Has blocklist
         let budget_policy = test_budget();
+        let mut kernel = Kernel::new(policy.clone());
 
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
         let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
-        // rm -rf should be blocked
-        let result = executor.run("rm -rf /");
+        // rm -rf should be blocked by executor's command policy.
+        // Kernel also blocks it (CommandBlocked), so force a token to test the executor layer.
+        let dt = kernel.issue_approved_token(
+            Operation::RunBash,
+            "test: bypass kernel for executor blocklist test",
+        );
+        let result = executor.run("rm -rf /", &dt);
         assert!(result.is_err());
     }
 
@@ -695,13 +752,19 @@ mod tests {
         let mut policy = test_policy();
         policy.capabilities.run_bash = CapabilityLevel::Never;
         let budget_policy = test_budget();
+        let mut kernel = Kernel::new(policy.clone());
 
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
         let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
-        let result = executor.run("echo hello");
+        // Kernel will deny — no token. Use issue_approved_token to force a token for test.
+        let (_d, tok) = kernel.decide(Operation::RunBash, "echo hello");
+        assert!(tok.is_none(), "kernel should deny Never capability");
+
+        let forced = kernel.issue_approved_token(Operation::RunBash, "test: force token");
+        let result = executor.run("echo hello", &forced);
         assert!(matches!(
             result,
             Err(NucleusError::InsufficientCapability { .. })
@@ -714,13 +777,16 @@ mod tests {
         let mut policy = test_policy();
         policy.obligations.insert(Operation::RunBash);
         let budget_policy = test_budget();
+        let mut kernel = Kernel::new(policy.clone());
 
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
         let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
-        let result = executor.run("echo hello");
+        // Kernel requires approval — force a token via issue_approved_token to test executor layer
+        let forced = kernel.issue_approved_token(Operation::RunBash, "test: force token");
+        let result = executor.run("echo hello", &forced);
         assert!(matches!(result, Err(NucleusError::ApprovalRequired { .. })));
     }
 
@@ -730,6 +796,7 @@ mod tests {
         let mut policy = test_policy();
         policy.obligations.insert(Operation::RunBash);
         let budget_policy = test_budget();
+        let mut kernel = Kernel::new(policy.clone());
 
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
@@ -738,27 +805,27 @@ mod tests {
             .with_time_guard(&guard)
             .with_approval_callback(|_| true); // Always approve
 
-        let token = executor.request_approval("echo hello").unwrap();
-        let result = executor.run_with_approval("echo hello", &token);
+        // Grant approval in kernel, then get a token
+        kernel.grant_approval(Operation::RunBash, 1);
+        let dt = run_token(&mut kernel, "echo hello");
+
+        let approval = executor.request_approval("echo hello").unwrap();
+        let result = executor.run_with_approval("echo hello", &dt, &approval);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_uninhabitable_requires_approval_for_exfiltration() {
         let tmp = tempdir().unwrap();
-        let policy = PermissionLattice {
-            capabilities: CapabilityLattice {
-                read_files: CapabilityLevel::Always, // Private data
-                web_fetch: CapabilityLevel::LowRisk, // Untrusted content
-                run_bash: CapabilityLevel::LowRisk,  // Allows curl
-                ..Default::default()
-            },
-            obligations: Obligations::default(),
-            commands: CommandLattice::permissive(),
+        let mut policy = PermissionLattice::default();
+        policy.capabilities.read_files = CapabilityLevel::Always; // Private data
+        policy.capabilities.web_fetch = CapabilityLevel::LowRisk; // Untrusted content
+        policy.capabilities.run_bash = CapabilityLevel::LowRisk; // Allows curl
+        policy.obligations = Obligations::default();
+        policy.commands = CommandLattice::permissive();
 
-            ..Default::default()
-        };
         let budget_policy = test_budget();
+        let mut kernel = Kernel::new(policy.clone());
 
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
@@ -766,33 +833,32 @@ mod tests {
         let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
         // curl is an exfiltration vector, uninhabitable_state should require approval
-        let result = executor.run("curl http://example.com");
+        // Force a token to test the executor-level check
+        let forced = kernel.issue_approved_token(Operation::RunBash, "test: force for exfil check");
+        let result = executor.run("curl http://example.com", &forced);
         assert!(matches!(result, Err(NucleusError::ApprovalRequired { .. })));
     }
 
     #[test]
     fn test_uninhabitable_requires_approval_for_interpreter_invocation() {
         let tmp = tempdir().unwrap();
-        let policy = PermissionLattice {
-            capabilities: CapabilityLattice {
-                read_files: CapabilityLevel::Always, // Private data
-                web_fetch: CapabilityLevel::LowRisk, // Untrusted content
-                run_bash: CapabilityLevel::LowRisk,  // Allows shell
-                ..Default::default()
-            },
-            obligations: Obligations::default(),
-            commands: CommandLattice::permissive(),
-
-            ..Default::default()
-        };
+        let mut policy = PermissionLattice::default();
+        policy.capabilities.read_files = CapabilityLevel::Always; // Private data
+        policy.capabilities.web_fetch = CapabilityLevel::LowRisk; // Untrusted content
+        policy.capabilities.run_bash = CapabilityLevel::LowRisk; // Allows shell
+        policy.obligations = Obligations::default();
+        policy.commands = CommandLattice::permissive();
         let budget_policy = test_budget();
+        let mut kernel = Kernel::new(policy.clone());
 
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
         let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
-        let result = executor.run("bash -c \"echo hi\"");
+        let forced =
+            kernel.issue_approved_token(Operation::RunBash, "test: force for interpreter check");
+        let result = executor.run("bash -c \"echo hi\"", &forced);
         assert!(matches!(result, Err(NucleusError::ApprovalRequired { .. })));
     }
 
@@ -801,6 +867,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let policy = test_policy();
         let budget_policy = test_budget();
+        let mut kernel = Kernel::new(policy.clone());
 
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
@@ -808,7 +875,8 @@ mod tests {
         let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
         let args = vec!["echo".to_string(), "hello".to_string(), "world".to_string()];
-        let output = executor.run_args(&args, None, None).unwrap();
+        let dt = run_token(&mut kernel, "echo hello world");
+        let output = executor.run_args(&args, None, None, &dt).unwrap();
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("hello world"));
     }
@@ -818,6 +886,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let policy = test_policy();
         let budget_policy = test_budget();
+        let mut kernel = Kernel::new(policy.clone());
 
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
@@ -826,7 +895,8 @@ mod tests {
 
         // With array form, shell metacharacters are passed literally
         let args = vec!["echo".to_string(), "$(whoami)".to_string()];
-        let output = executor.run_args(&args, None, None).unwrap();
+        let dt = run_token(&mut kernel, "echo $(whoami)");
+        let output = executor.run_args(&args, None, None, &dt).unwrap();
         // Should print the literal string, not execute whoami
         assert!(String::from_utf8_lossy(&output.stdout).contains("$(whoami)"));
     }
@@ -836,6 +906,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let policy = test_policy();
         let budget_policy = test_budget();
+        let mut kernel = Kernel::new(policy.clone());
 
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
@@ -843,8 +914,9 @@ mod tests {
         let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
         let args = vec!["cat".to_string()];
+        let dt = run_token(&mut kernel, "cat");
         let output = executor
-            .run_args(&args, Some("hello from stdin"), None)
+            .run_args(&args, Some("hello from stdin"), None, &dt)
             .unwrap();
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("hello from stdin"));
@@ -855,6 +927,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let policy = test_policy();
         let budget_policy = test_budget();
+        let mut kernel = Kernel::new(policy.clone());
 
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
@@ -862,7 +935,9 @@ mod tests {
         let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
         let args: Vec<String> = vec![];
-        let result = executor.run_args(&args, None, None);
+        // Kernel also blocks empty commands, so force a token to test executor layer
+        let dt = kernel.issue_approved_token(Operation::RunBash, "test: empty command");
+        let result = executor.run_args(&args, None, None, &dt);
         assert!(matches!(result, Err(NucleusError::CommandDenied { .. })));
     }
 
@@ -871,6 +946,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let policy = test_policy();
         let budget_policy = test_budget();
+        let mut kernel = Kernel::new(policy.clone());
 
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
@@ -878,8 +954,9 @@ mod tests {
         let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
         let args = vec!["pwd".to_string()];
+        let dt = run_token(&mut kernel, "pwd");
         // Attempt to escape sandbox using absolute path
-        let result = executor.run_args(&args, None, Some("/etc"));
+        let result = executor.run_args(&args, None, Some("/etc"), &dt);
         assert!(matches!(result, Err(NucleusError::SandboxEscape { .. })));
     }
 
@@ -891,6 +968,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let policy = test_policy();
         let budget_policy = test_budget();
+        let mut kernel = Kernel::new(policy.clone());
 
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
@@ -898,7 +976,8 @@ mod tests {
         let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
 
         // Try to access the parent env var - should NOT be visible
-        let output = executor.run("printenv TEST_PARENT_SECRET").unwrap();
+        let dt = run_token(&mut kernel, "printenv TEST_PARENT_SECRET");
+        let output = executor.run("printenv TEST_PARENT_SECRET", &dt).unwrap();
 
         // Command should succeed but output should be empty (var not found)
         // printenv returns exit code 1 when var is not found
@@ -913,6 +992,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let policy = test_policy();
         let budget_policy = test_budget();
+        let mut kernel = Kernel::new(policy.clone());
 
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
@@ -924,7 +1004,8 @@ mod tests {
             .with_env_var("ALLOWED_TOKEN", "test-value-123");
 
         // The allowed var should be visible
-        let output = executor.run("printenv ALLOWED_TOKEN").unwrap();
+        let dt = run_token(&mut kernel, "printenv ALLOWED_TOKEN");
+        let output = executor.run("printenv ALLOWED_TOKEN", &dt).unwrap();
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("test-value-123"));
     }
@@ -934,6 +1015,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let policy = test_policy();
         let budget_policy = test_budget();
+        let mut kernel = Kernel::new(policy.clone());
 
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
@@ -948,11 +1030,13 @@ mod tests {
             .with_env(env);
 
         // Both vars should be visible
-        let output_a = executor.run("printenv VAR_A").unwrap();
+        let dt_a = run_token(&mut kernel, "printenv VAR_A");
+        let output_a = executor.run("printenv VAR_A", &dt_a).unwrap();
         assert!(output_a.status.success());
         assert!(String::from_utf8_lossy(&output_a.stdout).contains("value_a"));
 
-        let output_b = executor.run("printenv VAR_B").unwrap();
+        let dt_b = run_token(&mut kernel, "printenv VAR_B");
+        let output_b = executor.run("printenv VAR_B", &dt_b).unwrap();
         assert!(output_b.status.success());
         assert!(String::from_utf8_lossy(&output_b.stdout).contains("value_b"));
     }
@@ -965,6 +1049,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         let policy = test_policy();
         let budget_policy = test_budget();
+        let mut kernel = Kernel::new(policy.clone());
 
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
@@ -975,7 +1060,8 @@ mod tests {
 
         // Parent env should not be visible
         let args = vec!["printenv".to_string(), "TEST_RUN_ARGS_SECRET".to_string()];
-        let output = executor.run_args(&args, None, None).unwrap();
+        let dt1 = run_token(&mut kernel, "printenv TEST_RUN_ARGS_SECRET");
+        let output = executor.run_args(&args, None, None, &dt1).unwrap();
         assert!(
             !output.status.success(),
             "parent env should not be accessible"
@@ -983,7 +1069,8 @@ mod tests {
 
         // But allowed env should be visible
         let args = vec!["printenv".to_string(), "ALLOWED_VAR".to_string()];
-        let output = executor.run_args(&args, None, None).unwrap();
+        let dt2 = run_token(&mut kernel, "printenv ALLOWED_VAR");
+        let output = executor.run_args(&args, None, None, &dt2).unwrap();
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("allowed-value"));
 

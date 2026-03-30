@@ -210,7 +210,7 @@ proptest! {
         let mut prev_exposure_count = kernel.exposure().count();
 
         for op in ops {
-            let d = kernel.decide(op, "test-subject");
+            let (d, _token) = kernel.decide(op, "test-subject");
 
             // Exposure count must never decrease
             let new_count = kernel.exposure().count();
@@ -261,7 +261,7 @@ proptest! {
         let mut kernel = Kernel::new(perms);
 
         for (i, op) in ops.iter().enumerate() {
-            let d = kernel.decide(*op, "test-subject");
+            let (d, _token) = kernel.decide(*op, "test-subject");
 
             // Must produce a definitive verdict
             prop_assert!(
@@ -310,7 +310,7 @@ proptest! {
             let projected = spec_project_exposure(&ref_exposure, op);
             let would_complete = !pre_uninhabitable && projected.is_uninhabitable();
 
-            let d = kernel.decide(op, "test-subject");
+            let (d, _token) = kernel.decide(op, "test-subject");
 
             // If dynamic gate should fire: uninhabitable_state would newly complete AND op is exfil
             if would_complete && spec_is_exfil(op) {
@@ -355,7 +355,7 @@ proptest! {
 
         for op in ops {
             let pre_count = kernel.exposure().count();
-            let d = kernel.decide(op, "test-subject");
+            let (d, _token) = kernel.decide(op, "test-subject");
             let post_count = kernel.exposure().count();
 
             if d.verdict.is_denied() || matches!(d.verdict, Verdict::RequiresApproval) {
@@ -482,7 +482,7 @@ proptest! {
         let mut kernel = Kernel::new(perms);
 
         for op in ops {
-            let d = kernel.decide(op, "test-subject");
+            let (d, _token) = kernel.decide(op, "test-subject");
             let expected_label = spec_classify(op);
             prop_assert_eq!(
                 d.exposure_transition.contributed_label, expected_label,
@@ -526,12 +526,12 @@ fn spec_clinejection_blocked() {
     let mut kernel = Kernel::new(perms);
 
     // Step 1: WebFetch injects untrusted content
-    let d = kernel.decide(Operation::WebFetch, "https://attacker.com/payload.js");
+    let (d, _token) = kernel.decide(Operation::WebFetch, "https://attacker.com/payload.js");
     assert!(d.verdict.is_allowed());
     assert!(kernel.exposure().contains(ExposureLabel::UntrustedContent));
 
     // Step 2: RunBash (npm install with preinstall hook) → dynamic gate
-    let d = kernel.decide(Operation::RunBash, "npm install");
+    let (d, _token) = kernel.decide(Operation::RunBash, "npm install");
     assert!(
         matches!(d.verdict, Verdict::RequiresApproval),
         "Clinejection: RunBash after WebFetch MUST be gated, got {:?}",
@@ -569,15 +569,15 @@ fn spec_toxic_agent_flow_blocked() {
     let mut kernel = Kernel::new(perms);
 
     // Step 1: Read private data
-    let d = kernel.decide(Operation::ReadFiles, "/etc/passwd");
+    let (d, _token) = kernel.decide(Operation::ReadFiles, "/etc/passwd");
     assert!(d.verdict.is_allowed());
 
     // Step 2: Fetch untrusted content (attacker's payload)
-    let d = kernel.decide(Operation::WebFetch, "https://evil.com/instructions");
+    let (d, _token) = kernel.decide(Operation::WebFetch, "https://evil.com/instructions");
     assert!(d.verdict.is_allowed());
 
     // Step 3: GitPush → uninhabitable_state completes → dynamic gate
-    let d = kernel.decide(Operation::GitPush, "origin/main");
+    let (d, _token) = kernel.decide(Operation::GitPush, "origin/main");
     assert!(
         matches!(d.verdict, Verdict::RequiresApproval),
         "Toxic Agent Flow: GitPush after ReadFiles+WebFetch MUST be gated, got {:?}",
@@ -620,15 +620,15 @@ fn spec_pre_approval_consumed_exactly() {
     kernel.decide(Operation::WebFetch, "https://evil.com");
 
     // First push: approved (consumes 1 approval)
-    let d = kernel.decide(Operation::GitPush, "origin/feat-1");
+    let (d, _token) = kernel.decide(Operation::GitPush, "origin/feat-1");
     assert!(d.verdict.is_allowed(), "1st push should be pre-approved");
 
     // Second push: approved (consumes last approval)
-    let d = kernel.decide(Operation::GitPush, "origin/feat-2");
+    let (d, _token) = kernel.decide(Operation::GitPush, "origin/feat-2");
     assert!(d.verdict.is_allowed(), "2nd push should be pre-approved");
 
     // Third push: no approvals left → RequiresApproval
-    let d = kernel.decide(Operation::GitPush, "origin/feat-3");
+    let (d, _token) = kernel.decide(Operation::GitPush, "origin/feat-3");
     assert!(
         matches!(d.verdict, Verdict::RequiresApproval),
         "3rd push should require approval (exhausted), got {:?}",
@@ -675,7 +675,7 @@ fn spec_neutral_ops_unaffected_by_exposure() {
         Operation::ManagePods,
     ];
     for op in neutral_ops {
-        let d = kernel.decide(op, "test-subject");
+        let (d, _token) = kernel.decide(op, "test-subject");
         assert!(
             d.verdict.is_allowed(),
             "neutral op {:?} should be allowed at exposure count 2, got {:?}",

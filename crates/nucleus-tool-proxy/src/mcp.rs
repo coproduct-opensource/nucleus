@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use portcullis::kernel::{Kernel, Verdict};
 use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome, VerdictSink};
 use portcullis::{CapabilityLevel, GradedExposureGuard, Operation, ToolCallGuard};
 use rmcp::{
@@ -119,6 +120,8 @@ pub struct NucleusMcpServer {
     guard: Arc<GradedExposureGuard>,
     /// Shared verdict sink for lockdown enforcement + telemetry.
     sink: Arc<dyn VerdictSink>,
+    /// Kernel decision engine for complete mediation.
+    kernel: Arc<tokio::sync::Mutex<Kernel>>,
 }
 
 /// Convert a tool-level error into a CallToolResult error.
@@ -136,6 +139,8 @@ impl NucleusMcpServer {
         let tool_schemas = format!("{:?}", tool_router.list_all());
         let policy = state.runtime.policy().clone();
 
+        let kernel = Arc::new(tokio::sync::Mutex::new(Kernel::new(policy.clone())));
+
         let guard = Arc::new(GradedExposureGuard::new(policy, &tool_schemas));
 
         // Store guard reference in AppState for exit report exposure extraction
@@ -148,6 +153,43 @@ impl NucleusMcpServer {
             tool_router,
             guard,
             sink,
+            kernel,
+        }
+    }
+
+    /// Check the kernel for a decision on the given operation/subject.
+    ///
+    /// Returns `Ok(DecisionToken)` if allowed, or an MCP error result for deny/approval.
+    async fn kernel_decide(
+        &self,
+        operation: Operation,
+        subject: &str,
+    ) -> Result<portcullis::kernel::DecisionToken, CallToolResult> {
+        let mut kernel = self.kernel.lock().await;
+        let (decision, token) = kernel.decide(operation, subject);
+        match decision.verdict {
+            Verdict::Allow => Ok(token.expect("Allow verdict always produces token")),
+            Verdict::Deny(ref reason) => {
+                warn!(
+                    ?operation,
+                    subject,
+                    ?reason,
+                    exposure = decision.exposure_transition.post_count,
+                    "kernel denied MCP operation"
+                );
+                Err(err_result(format!("kernel denied: {reason:?}")))
+            }
+            Verdict::RequiresApproval => {
+                warn!(
+                    ?operation,
+                    subject,
+                    exposure = decision.exposure_transition.post_count,
+                    "kernel requires approval for MCP operation (no approval channel)"
+                );
+                Err(err_result(
+                    "kernel requires approval (no MCP approval channel)",
+                ))
+            }
         }
     }
 
@@ -189,6 +231,11 @@ impl NucleusMcpServer {
             return Ok(err_result(e));
         }
 
+        let decision_token = match self.kernel_decide(Operation::ReadFiles, &params.path).await {
+            Ok(dt) => dt,
+            Err(result) => return Ok(result),
+        };
+
         let proof = match self.guard.check(Operation::ReadFiles) {
             Ok(p) => p,
             Err(e) => {
@@ -205,7 +252,10 @@ impl NucleusMcpServer {
 
         match self.guard.execute_and_record(proof, || {
             tokio::task::block_in_place(|| {
-                self.state.runtime.sandbox().read_to_string(&params.path)
+                self.state
+                    .runtime
+                    .sandbox()
+                    .read_to_string(&params.path, &decision_token)
             })
         }) {
             Ok(contents) => {
@@ -245,6 +295,14 @@ impl NucleusMcpServer {
             return Ok(err_result(e));
         }
 
+        let decision_token = match self
+            .kernel_decide(Operation::WriteFiles, &params.path)
+            .await
+        {
+            Ok(dt) => dt,
+            Err(result) => return Ok(result),
+        };
+
         let proof = match self.guard.check(Operation::WriteFiles) {
             Ok(p) => p,
             Err(e) => {
@@ -261,10 +319,11 @@ impl NucleusMcpServer {
 
         match self.guard.execute_and_record(proof, || {
             tokio::task::block_in_place(|| {
-                self.state
-                    .runtime
-                    .sandbox()
-                    .write(&params.path, params.contents.as_bytes())
+                self.state.runtime.sandbox().write(
+                    &params.path,
+                    params.contents.as_bytes(),
+                    &decision_token,
+                )
             })
         }) {
             Ok(()) => {
@@ -308,6 +367,11 @@ impl NucleusMcpServer {
             return Ok(err_result(e));
         }
 
+        let decision_token = match self.kernel_decide(Operation::RunBash, &subject).await {
+            Ok(dt) => dt,
+            Err(result) => return Ok(result),
+        };
+
         if params.args.is_empty() {
             self.record_verdict(
                 Operation::RunBash,
@@ -339,6 +403,7 @@ impl NucleusMcpServer {
                     &params.args,
                     params.stdin.as_deref(),
                     params.directory.as_deref(),
+                    &decision_token,
                 )
             })
         }) {
@@ -385,6 +450,11 @@ impl NucleusMcpServer {
                 },
             );
             return Ok(err_result(e));
+        }
+
+        match self.kernel_decide(Operation::GlobSearch, &subject).await {
+            Ok(_decision_token) => {} // glob doesn't go through Sandbox I/O
+            Err(result) => return Ok(result),
         }
 
         let proof = match self.guard.check(Operation::GlobSearch) {
@@ -503,6 +573,11 @@ impl NucleusMcpServer {
                 },
             );
             return Ok(err_result(e));
+        }
+
+        match self.kernel_decide(Operation::GrepSearch, &subject).await {
+            Ok(_decision_token) => {} // grep doesn't go through Sandbox I/O
+            Err(result) => return Ok(result),
         }
 
         let proof = match self.guard.check(Operation::GrepSearch) {
@@ -684,6 +759,11 @@ impl NucleusMcpServer {
                 },
             );
             return Ok(err_result(e));
+        }
+
+        match self.kernel_decide(Operation::WebFetch, &subject).await {
+            Ok(_decision_token) => {} // web_fetch doesn't go through Sandbox I/O
+            Err(result) => return Ok(result),
         }
 
         let proof = match self.guard.check(Operation::WebFetch) {
