@@ -260,6 +260,31 @@ impl CapabilityLattice {
             && self.manage_pods.leq(other.manage_pods)
     }
 
+    /// Read-only projection: meet with the read-only ceiling.
+    ///
+    /// Preserves read capabilities (read_files, glob_search, grep_search,
+    /// web_search, web_fetch) at their current level while dropping all
+    /// write/execute/exfil capabilities to Never.
+    ///
+    /// This is the lockdown lattice: `current ⊓ read_only_ceiling`.
+    /// By the HeytingAlgebra deflationary property, the result ≤ current.
+    pub fn read_only(&self) -> Self {
+        self.meet(&Self {
+            read_files: CapabilityLevel::Always,
+            write_files: CapabilityLevel::Never,
+            edit_files: CapabilityLevel::Never,
+            run_bash: CapabilityLevel::Never,
+            glob_search: CapabilityLevel::Always,
+            grep_search: CapabilityLevel::Always,
+            web_search: CapabilityLevel::Always,
+            web_fetch: CapabilityLevel::Always,
+            git_commit: CapabilityLevel::Never,
+            git_push: CapabilityLevel::Never,
+            create_pr: CapabilityLevel::Never,
+            manage_pods: CapabilityLevel::Never,
+        })
+    }
+
     /// Heyting implication: pointwise →.
     pub fn implies(&self, other: &Self) -> Self {
         Self {
@@ -635,6 +660,37 @@ mod tests {
     fn lattice_idempotent_join() {
         let a = CapabilityLattice::default();
         assert_eq!(a.join(&a), a);
+    }
+
+    #[test]
+    fn read_only_preserves_reads() {
+        let full = CapabilityLattice::top();
+        let ro = full.read_only();
+        assert_eq!(ro.read_files, CapabilityLevel::Always);
+        assert_eq!(ro.glob_search, CapabilityLevel::Always);
+        assert_eq!(ro.grep_search, CapabilityLevel::Always);
+        assert_eq!(ro.web_search, CapabilityLevel::Always);
+        assert_eq!(ro.web_fetch, CapabilityLevel::Always);
+    }
+
+    #[test]
+    fn read_only_blocks_writes() {
+        let full = CapabilityLattice::top();
+        let ro = full.read_only();
+        assert_eq!(ro.write_files, CapabilityLevel::Never);
+        assert_eq!(ro.edit_files, CapabilityLevel::Never);
+        assert_eq!(ro.run_bash, CapabilityLevel::Never);
+        assert_eq!(ro.git_commit, CapabilityLevel::Never);
+        assert_eq!(ro.git_push, CapabilityLevel::Never);
+        assert_eq!(ro.create_pr, CapabilityLevel::Never);
+        assert_eq!(ro.manage_pods, CapabilityLevel::Never);
+    }
+
+    #[test]
+    fn read_only_is_deflationary() {
+        let a = CapabilityLattice::default();
+        let ro = a.read_only();
+        assert!(ro.leq(&a));
     }
 
     // ════════════════════════════════════════════════════════════════════
