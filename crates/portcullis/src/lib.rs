@@ -100,6 +100,7 @@ pub mod delegation;
 pub mod dropout;
 pub mod escalation;
 pub mod exposure_core;
+pub mod flow_graph;
 pub mod frame;
 pub mod galois;
 pub mod graded;
