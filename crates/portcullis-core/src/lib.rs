@@ -53,6 +53,8 @@
 //!   proof verifies algebraic structure of the type. Together they provide
 //!   complementary assurance.
 
+pub mod flow;
+
 /// Tool permission levels in lattice ordering.
 ///
 /// The ordering is: `Never < LowRisk < Always`
@@ -732,14 +734,18 @@ pub struct IFCLabel {
 }
 
 impl Default for IFCLabel {
-    /// Default: trusted user data with full authority.
+    /// Default: minimum privilege — public, untrusted, no provenance, no authority.
+    ///
+    /// The safe default. Forgetting to set a field results in LESS privilege,
+    /// not more. Use the named constructors (user_prompt, web_content, etc.)
+    /// for specific contexts.
     fn default() -> Self {
         Self {
             confidentiality: ConfLevel::Public,
-            integrity: IntegLevel::Trusted,
-            provenance: ProvenanceSet::USER,
+            integrity: IntegLevel::Untrusted,
+            provenance: ProvenanceSet::EMPTY,
             freshness: Freshness::default(),
-            authority: AuthorityLevel::Directive,
+            authority: AuthorityLevel::NoAuthority,
         }
     }
 }
@@ -779,6 +785,10 @@ impl IFCLabel {
     /// Confidentiality: a.conf ≤ b.conf (can't send secret to public)
     /// Integrity: a.integ ≥ b.integ (can't use untrusted where trusted needed)
     /// Authority: a.auth ≥ b.auth (can't use NoAuthority where Directive needed)
+    /// Provenance: a.prov ⊆ b.prov (target must accept all sources)
+    ///
+    /// Note: freshness is checked separately in `check_flow` (Rule 4) because
+    /// it depends on wall-clock time, not just the label lattice ordering.
     pub fn flows_to(self, target: Self) -> bool {
         self.confidentiality <= target.confidentiality
             && self.integrity >= target.integrity
@@ -797,13 +807,19 @@ impl IFCLabel {
         }
     }
 
-    /// Top label: secret, adversarial, all sources, no authority.
+    /// Top label: secret, adversarial, all sources, no authority, expired.
+    ///
+    /// The most restrictive possible label. Data with this label cannot
+    /// flow anywhere useful and will fail freshness checks.
     pub fn top() -> Self {
         Self {
             confidentiality: ConfLevel::Secret,
             integrity: IntegLevel::Adversarial,
             provenance: ProvenanceSet(0x3F), // all 6 bits
-            freshness: Freshness::default(),
+            freshness: Freshness {
+                observed_at: 0,
+                ttl_secs: 1, // expired immediately (observed_at=0, ttl=1 → expired at t=1)
+            },
             authority: AuthorityLevel::NoAuthority,
         }
     }
