@@ -70,7 +70,7 @@ pub fn intrinsic_label(kind: NodeKind, now: u64) -> IFCLabel {
                 observed_at: now,
                 ttl_secs: 0,
             },
-            authority: AuthorityLevel::Informational,
+            authority: AuthorityLevel::Directive,
         },
         NodeKind::EnvVar => IFCLabel {
             confidentiality: ConfLevel::Secret,
@@ -178,14 +178,14 @@ pub fn required_authority(op: Operation) -> AuthorityLevel {
         | Operation::GitPush
         | Operation::CreatePr
         | Operation::ManagePods => AuthorityLevel::Suggestive,
-        // Read operations only require Informational
+        // Read operations require no authority — pure observation
         Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch => {
-            AuthorityLevel::Informational
+            AuthorityLevel::NoAuthority
         }
         // Web operations: WebFetch can exfiltrate via URL params, requires Suggestive
         Operation::WebFetch => AuthorityLevel::Suggestive,
-        // WebSearch is read-only, Informational is sufficient
-        Operation::WebSearch => AuthorityLevel::Informational,
+        // WebSearch is read-only observation
+        Operation::WebSearch => AuthorityLevel::NoAuthority,
     }
 }
 

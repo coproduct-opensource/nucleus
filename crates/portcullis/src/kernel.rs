@@ -197,6 +197,14 @@ pub enum DenyReason {
         /// The isolation dimension that blocks this operation.
         dimension: String,
     },
+    /// Information flow control violation.
+    ///
+    /// The session's accumulated IFC label violates a flow enforcement rule.
+    /// Only checked when flow control is enabled via `enable_flow_control()`.
+    FlowViolation {
+        /// Which flow rule was violated (e.g., "Exfiltration", "AuthorityEscalation").
+        rule: String,
+    },
 }
 
 /// The source of a RequiresApproval verdict.
@@ -317,6 +325,15 @@ pub struct Kernel {
     /// [`Kernel::from_certificate`]. Provides an auditable chain from every
     /// decision back to the root authority.
     provenance: Option<SessionProvenance>,
+    /// Flow label accumulator — tracks information flow control labels across
+    /// the session. When enabled, `decide()` runs `check_flow` as an additional
+    /// defense-in-depth gate after all existing checks.
+    ///
+    /// The label is the join (least upper bound) of all intrinsic labels
+    /// for operations allowed in this session. It monotonically accumulates
+    /// taint: once web content is read, the session label gains `Adversarial`
+    /// integrity and `NoAuthority` authority.
+    flow_label: Option<portcullis_core::IFCLabel>,
 }
 
 impl Kernel {
@@ -350,7 +367,21 @@ impl Kernel {
             approvals: std::collections::BTreeMap::new(),
             exposure: ExposureSet::empty(),
             provenance: None,
+            flow_label: None,
         }
+    }
+
+    /// Enable information flow control for this session.
+    ///
+    /// When enabled, `decide()` accumulates IFC labels and runs `check_flow`
+    /// as a defense-in-depth gate. The initial label is the least restrictive
+    /// (bottom of the label lattice).
+    pub fn enable_flow_control(&mut self) {
+        let now = chrono::Utc::now().timestamp() as u64;
+        // Initialize with user_prompt label (Trusted, Directive) at current time.
+        // Do NOT use bottom() — its observed_at=0 poisons freshness joins,
+        // making the first WebFetch always-expired.
+        self.flow_label = Some(portcullis_core::IFCLabel::user_prompt(now));
     }
 
     /// Create a kernel session from cryptographically verified permissions.
@@ -389,6 +420,7 @@ impl Kernel {
             approvals: std::collections::BTreeMap::new(),
             exposure: ExposureSet::empty(),
             provenance: Some(provenance),
+            flow_label: None,
         }
     }
 
@@ -420,6 +452,7 @@ impl Kernel {
             approvals: std::collections::BTreeMap::new(),
             exposure: ExposureSet::empty(),
             provenance: Some(provenance),
+            flow_label: None,
         }
     }
 
@@ -581,7 +614,54 @@ impl Kernel {
             );
         }
 
-        // 6. Static approval check (obligations from lattice structure)
+        // 6. Flow control check (when enabled) — BEFORE approval paths.
+        //
+        // Two-phase design:
+        //   a) CHECK the action against the CURRENT session label
+        //   b) TAINT the session label with the operation's intrinsic label AFTER allow
+        //
+        // This means: reading web content is allowed (low authority requirement),
+        // but the session is TAINTED afterward. The NEXT write/push/PR will be
+        // checked against the tainted label and blocked if authority is insufficient.
+        if let Some(ref mut flow_label) = self.flow_label {
+            use portcullis_core::flow;
+
+            let now_unix = now.timestamp() as u64;
+
+            // Phase A: check the action against the current (pre-taint) label
+            let node = flow::FlowNode {
+                id: self.next_seq,
+                kind: flow::NodeKind::OutboundAction,
+                label: *flow_label,
+                parent_count: 0,
+                parents: [0; flow::MAX_PARENTS],
+                operation: Some(operation),
+            };
+
+            match flow::check_flow(&node, now_unix) {
+                flow::FlowVerdict::Deny(reason) => {
+                    return self.record_with_exposure(
+                        operation,
+                        subject,
+                        Verdict::Deny(DenyReason::FlowViolation {
+                            rule: format!("{:?}", reason),
+                        }),
+                        &pre_hash,
+                        pre_exposure_count,
+                        contributed_label,
+                        false,
+                        false,
+                    );
+                }
+                flow::FlowVerdict::Allow => {
+                    // Phase B: taint the session label with the operation's intrinsic
+                    let intrinsic = flow::intrinsic_label(Self::node_kind_for(operation), now_unix);
+                    *flow_label = flow_label.join(intrinsic);
+                }
+            }
+        }
+
+        // 7. Static approval check (obligations from lattice structure)
         if self.effective.requires_approval(operation) {
             if self.consume_approval(operation) {
                 // Approved — record exposure from this allowed operation
@@ -666,6 +746,23 @@ impl Kernel {
             state_uninhabitable,
             false,
         )
+    }
+
+    /// Map an Operation to the most appropriate FlowNode kind.
+    fn node_kind_for(op: Operation) -> portcullis_core::flow::NodeKind {
+        use portcullis_core::flow::NodeKind;
+        match op {
+            Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch => {
+                NodeKind::FileRead
+            }
+            Operation::WebFetch | Operation::WebSearch => NodeKind::WebContent,
+            Operation::WriteFiles | Operation::EditFiles => NodeKind::OutboundAction,
+            Operation::RunBash
+            | Operation::GitCommit
+            | Operation::GitPush
+            | Operation::CreatePr
+            | Operation::ManagePods => NodeKind::OutboundAction,
+        }
     }
 
     /// Tighten effective permissions by taking the meet with a ceiling.
@@ -1905,5 +2002,101 @@ mod tests {
         let prov = kernel.provenance().unwrap();
         assert_eq!(prov.root_identity, "spiffe://test/root");
         assert_eq!(prov.certificate_fingerprint, fingerprint);
+    }
+
+    // ── Flow control integration tests ───────────────────────────────
+
+    #[test]
+    fn flow_disabled_by_default() {
+        let perms = PermissionLattice::permissive();
+        let mut kernel = Kernel::new(perms);
+        // Without enable_flow_control(), web + write should work fine
+        let (d1, _) = kernel.decide(Operation::WebFetch, "https://example.com");
+        assert!(matches!(d1.verdict, Verdict::Allow));
+        let (d2, _) = kernel.decide(Operation::WriteFiles, "/tmp/test.txt");
+        assert!(matches!(d2.verdict, Verdict::Allow));
+    }
+
+    #[test]
+    fn flow_web_then_write_blocked() {
+        let perms = PermissionLattice::permissive();
+        let mut kernel = Kernel::new(perms);
+        kernel.enable_flow_control();
+
+        // WebFetch taints the session with Adversarial + NoAuthority
+        let (d1, _) = kernel.decide(Operation::WebFetch, "https://example.com");
+        assert!(matches!(d1.verdict, Verdict::Allow));
+
+        // WriteFiles now blocked — NoAuthority < Suggestive
+        let (d2, _) = kernel.decide(Operation::WriteFiles, "/tmp/test.txt");
+        assert!(
+            matches!(d2.verdict, Verdict::Deny(DenyReason::FlowViolation { .. })),
+            "Expected FlowViolation, got {:?}",
+            d2.verdict
+        );
+    }
+
+    #[test]
+    fn flow_web_then_read_allowed() {
+        let perms = PermissionLattice::permissive();
+        let mut kernel = Kernel::new(perms);
+        kernel.enable_flow_control();
+
+        // WebFetch taints session
+        let (d1, _) = kernel.decide(Operation::WebFetch, "https://example.com");
+        assert!(matches!(d1.verdict, Verdict::Allow));
+
+        // ReadFiles still allowed — only requires Informational authority
+        let (d2, _) = kernel.decide(Operation::ReadFiles, "/tmp/test.txt");
+        assert!(matches!(d2.verdict, Verdict::Allow));
+    }
+
+    #[test]
+    fn flow_pure_user_actions_allowed() {
+        let perms = PermissionLattice::permissive();
+        let mut kernel = Kernel::new(perms);
+        kernel.enable_flow_control();
+
+        // Pure user-directed actions (no web taint) should pass flow checks.
+        // Some ops may require approval from legacy checks — that's fine,
+        // we just verify they're not denied by FlowViolation.
+        let (d1, _) = kernel.decide(Operation::ReadFiles, "/src/main.rs");
+        assert!(matches!(d1.verdict, Verdict::Allow));
+        let (d2, _) = kernel.decide(Operation::WriteFiles, "/tmp/out.txt");
+        assert!(matches!(d2.verdict, Verdict::Allow));
+        let (d3, _) = kernel.decide(Operation::GitCommit, "fix: typo");
+        assert!(matches!(d3.verdict, Verdict::Allow));
+        // CreatePr may require approval via legacy static check — that's OK.
+        // What matters is it's NOT a FlowViolation.
+        let (d4, _) = kernel.decide(Operation::CreatePr, "fix typo");
+        assert!(
+            !matches!(d4.verdict, Verdict::Deny(DenyReason::FlowViolation { .. })),
+            "CreatePr should not be a flow violation: {:?}",
+            d4.verdict
+        );
+    }
+
+    #[test]
+    fn flow_check_runs_before_approvals() {
+        let mut perms = PermissionLattice::permissive();
+        // Force GitPush to require approval
+        perms.capabilities.git_push = CapabilityLevel::LowRisk;
+        let mut kernel = Kernel::new(perms);
+        kernel.enable_flow_control();
+
+        // Pre-grant approval for GitPush
+        kernel.grant_approval(Operation::GitPush, 1);
+
+        // Taint session with web content
+        let (d1, _) = kernel.decide(Operation::WebFetch, "https://evil.com");
+        assert!(matches!(d1.verdict, Verdict::Allow));
+
+        // GitPush should be DENIED by flow check even with pre-granted approval
+        let (d2, _) = kernel.decide(Operation::GitPush, "origin main");
+        assert!(
+            matches!(d2.verdict, Verdict::Deny(DenyReason::FlowViolation { .. })),
+            "Flow check must run before approval path! Got {:?}",
+            d2.verdict
+        );
     }
 }
