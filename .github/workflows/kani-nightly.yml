@@ -56,7 +56,8 @@ jobs:
         run: |
           PORTCULLIS=$(grep -c '#\[kani::proof\]' crates/portcullis/src/kani.rs)
           CK_KERNEL=$(grep -c '#\[kani::proof\]' crates/ck-kernel/src/kani.rs)
-          PROOF_COUNT=$((PORTCULLIS + CK_KERNEL))
+          CORE=$(grep -rc '#\[kani::proof\]' crates/portcullis-core/src/ || echo 0)
+          PROOF_COUNT=$((PORTCULLIS + CK_KERNEL + CORE))
           MINIMUM=$(cat .kani-minimum-proofs | tr -d '[:space:]')
           echo "Kani proof harnesses: $PROOF_COUNT (portcullis: $PORTCULLIS, ck-kernel: $CK_KERNEL, minimum: $MINIMUM)"
           if [ "$PROOF_COUNT" -lt "$MINIMUM" ]; then
@@ -68,7 +69,8 @@ jobs:
         run: |
           PORTCULLIS=$(grep -c '#\[kani::proof\]' crates/portcullis/src/kani.rs)
           CK_KERNEL=$(grep -c '#\[kani::proof\]' crates/ck-kernel/src/kani.rs)
-          PROOF_COUNT=$((PORTCULLIS + CK_KERNEL))
+          CORE=$(grep -rc '#\[kani::proof\]' crates/portcullis-core/src/ || echo 0)
+          PROOF_COUNT=$((PORTCULLIS + CK_KERNEL + CORE))
           MINIMUM=$(cat .kani-minimum-proofs | tr -d '[:space:]')
           echo "## Kani BMC Results (fast tier)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -171,7 +173,8 @@ jobs:
         run: |
           PORTCULLIS=$(grep -c '#\[kani::proof\]' crates/portcullis/src/kani.rs)
           CK_KERNEL=$(grep -c '#\[kani::proof\]' crates/ck-kernel/src/kani.rs)
-          PROOF_COUNT=$((PORTCULLIS + CK_KERNEL))
+          CORE=$(grep -rc '#\[kani::proof\]' crates/portcullis-core/src/ || echo 0)
+          PROOF_COUNT=$((PORTCULLIS + CK_KERNEL + CORE))
           MINIMUM=$(cat .kani-minimum-proofs | tr -d '[:space:]')
           echo "Kani proof harnesses: $PROOF_COUNT (portcullis: $PORTCULLIS, ck-kernel: $CK_KERNEL, minimum: $MINIMUM)"
           if [ "$PROOF_COUNT" -lt "$MINIMUM" ]; then
@@ -183,7 +186,8 @@ jobs:
         run: |
           PORTCULLIS=$(grep -c '#\[kani::proof\]' crates/portcullis/src/kani.rs)
           CK_KERNEL=$(grep -c '#\[kani::proof\]' crates/ck-kernel/src/kani.rs)
-          PROOF_COUNT=$((PORTCULLIS + CK_KERNEL))
+          CORE=$(grep -rc '#\[kani::proof\]' crates/portcullis-core/src/ || echo 0)
+          PROOF_COUNT=$((PORTCULLIS + CK_KERNEL + CORE))
           MINIMUM=$(cat .kani-minimum-proofs | tr -d '[:space:]')
           echo "## Kani BMC Results (full suite)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"

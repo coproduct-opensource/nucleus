@@ -15,7 +15,7 @@ Nucleus is a security framework for AI agents that combines a mathematically ver
 | Layer | Tool | Count | Scope |
 |-------|------|-------|-------|
 | **Proved** (unbounded) | Lean 4 + Mathlib | 55 theorems | HeytingAlgebra on production lattice ([Aeneas](https://github.com/AeneasVerif/aeneas)-generated types), exposure tracker monotonicity/soundness, IFC label authority confinement |
-| **Bounded-model-checked** | [Kani](https://github.com/model-checking/kani) BMC | 67 harnesses | DecisionToken linearity, lattice distributivity, exposure monoid laws, constitutional kernel invariants |
+| **Bounded-model-checked** | [Kani](https://github.com/model-checking/kani) BMC | 72 harnesses | DecisionToken linearity, lattice distributivity, exposure monoid laws, constitutional kernel invariants, flow enforcement rules |
 | **Tested** | Rust + CI | — | Sandbox isolation, path/command restrictions, network policy, end-to-end |
 
 This README tries to be honest about what's real and what isn't.

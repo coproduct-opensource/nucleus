@@ -266,6 +266,236 @@ pub fn check_flow(node: &FlowNode, now: u64) -> FlowVerdict {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Kani BMC harnesses — bounded model checking of flow enforcement rules
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+    use crate::*;
+
+    /// Generate a symbolic ConfLevel.
+    fn any_conf() -> ConfLevel {
+        let v: u8 = kani::any();
+        kani::assume(v <= 2);
+        match v {
+            0 => ConfLevel::Public,
+            1 => ConfLevel::Internal,
+            _ => ConfLevel::Secret,
+        }
+    }
+
+    /// Generate a symbolic IntegLevel.
+    fn any_integ() -> IntegLevel {
+        let v: u8 = kani::any();
+        kani::assume(v <= 2);
+        match v {
+            0 => IntegLevel::Adversarial,
+            1 => IntegLevel::Untrusted,
+            _ => IntegLevel::Trusted,
+        }
+    }
+
+    /// Generate a symbolic AuthorityLevel.
+    fn any_auth() -> AuthorityLevel {
+        let v: u8 = kani::any();
+        kani::assume(v <= 3);
+        match v {
+            0 => AuthorityLevel::NoAuthority,
+            1 => AuthorityLevel::Informational,
+            2 => AuthorityLevel::Suggestive,
+            _ => AuthorityLevel::Directive,
+        }
+    }
+
+    /// Generate a symbolic Operation.
+    fn any_operation() -> Operation {
+        let v: u8 = kani::any();
+        kani::assume(v < 12);
+        Operation::ALL[v as usize]
+    }
+
+    /// Generate a symbolic IFCLabel.
+    fn any_label() -> IFCLabel {
+        IFCLabel {
+            confidentiality: any_conf(),
+            integrity: any_integ(),
+            provenance: ProvenanceSet(kani::any::<u8>() & 0x3F),
+            freshness: Freshness {
+                observed_at: kani::any(),
+                ttl_secs: kani::any(),
+            },
+            authority: any_auth(),
+        }
+    }
+
+    fn any_node(op: Option<Operation>) -> FlowNode {
+        FlowNode {
+            id: kani::any(),
+            kind: NodeKind::OutboundAction,
+            label: any_label(),
+            parent_count: 0,
+            parents: [0; MAX_PARENTS],
+            operation: op,
+        }
+    }
+
+    /// **F1 — Secret data never reaches exfil sinks.**
+    ///
+    /// For any symbolic operation and label: if confidentiality is Secret
+    /// and the operation is an exfil vector (including WebFetch), check_flow
+    /// returns Deny(Exfiltration).
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn proof_no_secret_exfil() {
+        let op = any_operation();
+        let is_exfil = crate::is_exfil_operation(op) || op == Operation::WebFetch;
+        kani::assume(is_exfil);
+
+        let mut label = any_label();
+        label.confidentiality = ConfLevel::Secret;
+
+        let node = FlowNode {
+            id: 0,
+            kind: NodeKind::OutboundAction,
+            label,
+            parent_count: 0,
+            parents: [0; MAX_PARENTS],
+            operation: Some(op),
+        };
+
+        let now: u64 = kani::any();
+        kani::assume(!label.freshness.is_expired_at(now));
+
+        match check_flow(&node, now) {
+            FlowVerdict::Deny(FlowDenyReason::Exfiltration) => {} // expected
+            FlowVerdict::Deny(_) => {} // another rule caught it first — also safe
+            FlowVerdict::Allow => panic!("Secret data reached exfil sink!"),
+        }
+    }
+
+    /// **F2 — NoAuthority data cannot steer privileged actions.**
+    ///
+    /// For any symbolic operation that requires >= Suggestive authority:
+    /// if the label has NoAuthority, check_flow never returns Allow.
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn proof_authority_confinement() {
+        let op = any_operation();
+        let required = required_authority(op);
+        kani::assume(required >= AuthorityLevel::Suggestive);
+
+        let mut label = any_label();
+        label.authority = AuthorityLevel::NoAuthority;
+
+        let node = FlowNode {
+            id: 0,
+            kind: NodeKind::OutboundAction,
+            label,
+            parent_count: 0,
+            parents: [0; MAX_PARENTS],
+            operation: Some(op),
+        };
+
+        let now: u64 = kani::any();
+        kani::assume(!label.freshness.is_expired_at(now));
+
+        // Must not be allowed — some deny rule must fire
+        assert!(
+            !matches!(check_flow(&node, now), FlowVerdict::Allow),
+            "NoAuthority data steered a privileged action!"
+        );
+    }
+
+    /// **F3 — Adversarial data cannot reach trusted-required sinks.**
+    ///
+    /// For any symbolic operation requiring Trusted integrity: if the label
+    /// has Adversarial integrity, check_flow never returns Allow.
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn proof_no_integrity_laundering() {
+        let op = any_operation();
+        let required = required_integrity(op);
+        kani::assume(required == IntegLevel::Trusted);
+
+        let mut label = any_label();
+        label.integrity = IntegLevel::Adversarial;
+
+        let node = FlowNode {
+            id: 0,
+            kind: NodeKind::OutboundAction,
+            label,
+            parent_count: 0,
+            parents: [0; MAX_PARENTS],
+            operation: Some(op),
+        };
+
+        let now: u64 = kani::any();
+        kani::assume(!label.freshness.is_expired_at(now));
+
+        assert!(
+            !matches!(check_flow(&node, now), FlowVerdict::Allow),
+            "Adversarial data reached trusted-required sink!"
+        );
+    }
+
+    /// **F4 — Label propagation is monotone.**
+    ///
+    /// For any two symbolic labels and any intrinsic label:
+    /// propagate_label([a, b], intrinsic) >= a and >= b on covariant dims,
+    /// and <= a and <= b on contravariant dims.
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn proof_propagation_monotone() {
+        let a = any_label();
+        let b = any_label();
+        let intrinsic = any_label();
+        let result = propagate_label(&[a, b], intrinsic);
+
+        // Covariant: result >= max of inputs
+        assert!(result.confidentiality >= a.confidentiality);
+        assert!(result.confidentiality >= b.confidentiality);
+
+        // Contravariant: result <= min of inputs
+        assert!(result.integrity <= a.integrity);
+        assert!(result.integrity <= b.integrity);
+        assert!(result.authority <= a.authority);
+        assert!(result.authority <= b.authority);
+    }
+
+    /// **F5 — Legitimate user actions are allowed.**
+    ///
+    /// For any operation: a fully trusted, user-sourced, non-expired,
+    /// non-secret label with Directive authority is always allowed.
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn proof_trusted_user_allowed() {
+        let op = any_operation();
+        let label = IFCLabel {
+            confidentiality: ConfLevel::Internal,
+            integrity: IntegLevel::Trusted,
+            provenance: ProvenanceSet::USER,
+            freshness: Freshness {
+                observed_at: 1000,
+                ttl_secs: 0,
+            },
+            authority: AuthorityLevel::Directive,
+        };
+
+        let node = FlowNode {
+            id: 0,
+            kind: NodeKind::OutboundAction,
+            label,
+            parent_count: 0,
+            parents: [0; MAX_PARENTS],
+            operation: Some(op),
+        };
+
+        assert_eq!(check_flow(&node, 2000), FlowVerdict::Allow);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
