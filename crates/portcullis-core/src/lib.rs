@@ -279,6 +279,280 @@ impl CapabilityLattice {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Operation enum — the 12 core operations (Aeneas-translatable)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Operations that can be gated by approval.
+///
+/// These are the 12 core operations that form the dimensions of the
+/// capability lattice. Each maps 1:1 to a [`CapabilityLattice`] field.
+///
+/// `ExtensionOperation` (heap-allocated String) lives in the `portcullis`
+/// crate — it cannot be translated by Aeneas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[repr(u8)]
+pub enum Operation {
+    /// Read files from disk
+    ReadFiles = 0,
+    /// Write files to disk
+    WriteFiles = 1,
+    /// Edit files in place
+    EditFiles = 2,
+    /// Run shell commands
+    RunBash = 3,
+    /// Glob search
+    GlobSearch = 4,
+    /// Grep search
+    GrepSearch = 5,
+    /// Web search
+    WebSearch = 6,
+    /// Fetch URLs
+    WebFetch = 7,
+    /// Git commit
+    GitCommit = 8,
+    /// Git push
+    GitPush = 9,
+    /// Create PR
+    CreatePr = 10,
+    /// Manage sub-pods (create, list, monitor, cancel)
+    ManagePods = 11,
+}
+
+// Compile-time invariant: discriminants match declaration order for Aeneas.
+const _: () = {
+    assert!(Operation::ReadFiles as u8 == 0);
+    assert!(Operation::WriteFiles as u8 == 1);
+    assert!(Operation::EditFiles as u8 == 2);
+    assert!(Operation::RunBash as u8 == 3);
+    assert!(Operation::GlobSearch as u8 == 4);
+    assert!(Operation::GrepSearch as u8 == 5);
+    assert!(Operation::WebSearch as u8 == 6);
+    assert!(Operation::WebFetch as u8 == 7);
+    assert!(Operation::GitCommit as u8 == 8);
+    assert!(Operation::GitPush as u8 == 9);
+    assert!(Operation::CreatePr as u8 == 10);
+    assert!(Operation::ManagePods as u8 == 11);
+};
+
+impl Operation {
+    /// All 12 core operations.
+    pub const ALL: [Operation; 12] = [
+        Operation::ReadFiles,
+        Operation::WriteFiles,
+        Operation::EditFiles,
+        Operation::RunBash,
+        Operation::GlobSearch,
+        Operation::GrepSearch,
+        Operation::WebSearch,
+        Operation::WebFetch,
+        Operation::GitCommit,
+        Operation::GitPush,
+        Operation::CreatePr,
+        Operation::ManagePods,
+    ];
+}
+
+impl std::fmt::Display for Operation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Operation::ReadFiles => "read_files",
+            Operation::WriteFiles => "write_files",
+            Operation::EditFiles => "edit_files",
+            Operation::RunBash => "run_bash",
+            Operation::GlobSearch => "glob_search",
+            Operation::GrepSearch => "grep_search",
+            Operation::WebSearch => "web_search",
+            Operation::WebFetch => "web_fetch",
+            Operation::GitCommit => "git_commit",
+            Operation::GitPush => "git_push",
+            Operation::CreatePr => "create_pr",
+            Operation::ManagePods => "manage_pods",
+        };
+        write!(f, "{s}")
+    }
+}
+
+impl TryFrom<&str> for Operation {
+    type Error = OperationParseError;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        match s {
+            "read_files" => Ok(Operation::ReadFiles),
+            "write_files" => Ok(Operation::WriteFiles),
+            "edit_files" => Ok(Operation::EditFiles),
+            "run_bash" => Ok(Operation::RunBash),
+            "glob_search" => Ok(Operation::GlobSearch),
+            "grep_search" => Ok(Operation::GrepSearch),
+            "web_search" => Ok(Operation::WebSearch),
+            "web_fetch" => Ok(Operation::WebFetch),
+            "git_commit" => Ok(Operation::GitCommit),
+            "git_push" => Ok(Operation::GitPush),
+            "create_pr" => Ok(Operation::CreatePr),
+            "manage_pods" => Ok(Operation::ManagePods),
+            _ => Err(OperationParseError),
+        }
+    }
+}
+
+/// Error returned when parsing an unknown operation name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OperationParseError;
+
+impl std::fmt::Display for OperationParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown operation")
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Exposure types — the uninhabitable state detector (Aeneas-translatable)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Exposure classification for the uninhabitable state detector.
+///
+/// Each operation contributes at most one exposure label. When all three
+/// labels are present in a session, the uninhabitable state is reached
+/// and exfiltration operations are dynamically gated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum ExposureLabel {
+    /// Agent has accessed private/sensitive data (read_files, glob_search, grep_search)
+    PrivateData = 0,
+    /// Agent has accessed untrusted external content (web_fetch, web_search)
+    UntrustedContent = 1,
+    /// Agent has access to an exfiltration vector (run_bash, git_push, create_pr)
+    ExfilVector = 2,
+}
+
+// Compile-time invariant: discriminants match declaration order for Aeneas.
+const _: () = {
+    assert!(ExposureLabel::PrivateData as u8 == 0);
+    assert!(ExposureLabel::UntrustedContent as u8 == 1);
+    assert!(ExposureLabel::ExfilVector as u8 == 2);
+};
+
+/// 3-bit exposure accumulator for uninhabitable state detection.
+///
+/// Tracks which exposure legs have been touched during a session.
+/// Once a leg is set, it never resets (monotonicity invariant).
+/// When all 3 legs are set, the uninhabitable state is reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ExposureSet {
+    private_data: bool,
+    untrusted_content: bool,
+    exfil_vector: bool,
+}
+
+impl ExposureSet {
+    /// Empty exposure set (no exposure legs touched).
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Create an exposure set from a single label.
+    pub fn singleton(label: ExposureLabel) -> Self {
+        let mut s = Self::empty();
+        s.set(label);
+        s
+    }
+
+    /// Set a specific exposure label.
+    pub fn set(&mut self, label: ExposureLabel) {
+        match label {
+            ExposureLabel::PrivateData => self.private_data = true,
+            ExposureLabel::UntrustedContent => self.untrusted_content = true,
+            ExposureLabel::ExfilVector => self.exfil_vector = true,
+        }
+    }
+
+    /// Check if a specific exposure label is present.
+    pub fn contains(&self, label: ExposureLabel) -> bool {
+        match label {
+            ExposureLabel::PrivateData => self.private_data,
+            ExposureLabel::UntrustedContent => self.untrusted_content,
+            ExposureLabel::ExfilVector => self.exfil_vector,
+        }
+    }
+
+    /// Union of two exposure sets (the monoid operation).
+    pub fn union(&self, other: &Self) -> Self {
+        Self {
+            private_data: self.private_data || other.private_data,
+            untrusted_content: self.untrusted_content || other.untrusted_content,
+            exfil_vector: self.exfil_vector || other.exfil_vector,
+        }
+    }
+
+    /// Check if the uninhabitable state is present (all 3 legs active).
+    pub fn is_uninhabitable(&self) -> bool {
+        self.private_data && self.untrusted_content && self.exfil_vector
+    }
+
+    /// Number of active exposure legs (0..=3).
+    pub fn count(&self) -> u8 {
+        self.private_data as u8 + self.untrusted_content as u8 + self.exfil_vector as u8
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Exposure classification functions (Aeneas-translatable)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Classify an operation's exposure contribution.
+///
+/// Returns the exposure label that this operation contributes to the
+/// session's accumulated exposure, or None for neutral operations.
+pub fn classify_operation(op: Operation) -> Option<ExposureLabel> {
+    match op {
+        Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch => {
+            Some(ExposureLabel::PrivateData)
+        }
+        Operation::WebFetch | Operation::WebSearch => Some(ExposureLabel::UntrustedContent),
+        Operation::RunBash | Operation::GitPush | Operation::CreatePr => {
+            Some(ExposureLabel::ExfilVector)
+        }
+        Operation::WriteFiles
+        | Operation::EditFiles
+        | Operation::GitCommit
+        | Operation::ManagePods => None,
+    }
+}
+
+/// Project what the exposure set WOULD be if this operation is allowed.
+pub fn project_exposure(current: &ExposureSet, op: Operation) -> ExposureSet {
+    match classify_operation(op) {
+        Some(label) => {
+            let mut projected = *current;
+            projected.set(label);
+            projected
+        }
+        None => *current,
+    }
+}
+
+/// Record an allowed operation's exposure contribution.
+pub fn apply_record(current: &ExposureSet, op: Operation) -> ExposureSet {
+    project_exposure(current, op)
+}
+
+/// Check if an operation is an exfiltration vector.
+pub fn is_exfil_operation(op: Operation) -> bool {
+    matches!(classify_operation(op), Some(ExposureLabel::ExfilVector))
+}
+
+/// The dynamic exposure gate: should this operation be gated?
+///
+/// Returns true if the operation should require approval because:
+/// 1. The exposure set is already uninhabitable OR would become uninhabitable, AND
+/// 2. The operation is an exfiltration vector
+pub fn should_gate(current: &ExposureSet, op: Operation) -> bool {
+    let projected = project_exposure(current, op);
+    (current.is_uninhabitable() || projected.is_uninhabitable()) && is_exfil_operation(op)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,5 +635,198 @@ mod tests {
     fn lattice_idempotent_join() {
         let a = CapabilityLattice::default();
         assert_eq!(a.join(&a), a);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Operation tests
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn operation_all_has_12_variants() {
+        assert_eq!(Operation::ALL.len(), 12);
+    }
+
+    #[test]
+    fn operation_display_roundtrip() {
+        for op in Operation::ALL {
+            let s = op.to_string();
+            assert!(!s.is_empty(), "Display for {:?} should not be empty", op);
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // ExposureSet tests
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn exposure_set_empty_is_not_uninhabitable() {
+        assert!(!ExposureSet::empty().is_uninhabitable());
+        assert_eq!(ExposureSet::empty().count(), 0);
+    }
+
+    #[test]
+    fn exposure_set_singleton() {
+        let s = ExposureSet::singleton(ExposureLabel::PrivateData);
+        assert!(s.contains(ExposureLabel::PrivateData));
+        assert!(!s.contains(ExposureLabel::UntrustedContent));
+        assert!(!s.contains(ExposureLabel::ExfilVector));
+        assert_eq!(s.count(), 1);
+    }
+
+    #[test]
+    fn exposure_set_union_accumulates() {
+        let a = ExposureSet::singleton(ExposureLabel::PrivateData);
+        let b = ExposureSet::singleton(ExposureLabel::UntrustedContent);
+        let c = a.union(&b);
+        assert!(c.contains(ExposureLabel::PrivateData));
+        assert!(c.contains(ExposureLabel::UntrustedContent));
+        assert!(!c.contains(ExposureLabel::ExfilVector));
+        assert_eq!(c.count(), 2);
+    }
+
+    #[test]
+    fn exposure_set_all_three_is_uninhabitable() {
+        let s = ExposureSet::singleton(ExposureLabel::PrivateData)
+            .union(&ExposureSet::singleton(ExposureLabel::UntrustedContent))
+            .union(&ExposureSet::singleton(ExposureLabel::ExfilVector));
+        assert!(s.is_uninhabitable());
+        assert_eq!(s.count(), 3);
+    }
+
+    #[test]
+    fn exposure_set_union_idempotent() {
+        let s = ExposureSet::singleton(ExposureLabel::PrivateData);
+        assert_eq!(s.union(&s), s);
+    }
+
+    #[test]
+    fn exposure_set_union_commutative() {
+        let a = ExposureSet::singleton(ExposureLabel::PrivateData);
+        let b = ExposureSet::singleton(ExposureLabel::ExfilVector);
+        assert_eq!(a.union(&b), b.union(&a));
+    }
+
+    #[test]
+    fn exposure_set_union_associative() {
+        let a = ExposureSet::singleton(ExposureLabel::PrivateData);
+        let b = ExposureSet::singleton(ExposureLabel::UntrustedContent);
+        let c = ExposureSet::singleton(ExposureLabel::ExfilVector);
+        assert_eq!(a.union(&b).union(&c), a.union(&b.union(&c)));
+    }
+
+    #[test]
+    fn exposure_set_monotonicity() {
+        // Once set, a label cannot be unset
+        let mut s = ExposureSet::empty();
+        s.set(ExposureLabel::PrivateData);
+        assert!(s.contains(ExposureLabel::PrivateData));
+
+        // Union with empty doesn't lose information
+        let u = s.union(&ExposureSet::empty());
+        assert!(u.contains(ExposureLabel::PrivateData));
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Classification function tests
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn classify_operation_coverage() {
+        let expected = [
+            (Operation::ReadFiles, Some(ExposureLabel::PrivateData)),
+            (Operation::WriteFiles, None),
+            (Operation::EditFiles, None),
+            (Operation::RunBash, Some(ExposureLabel::ExfilVector)),
+            (Operation::GlobSearch, Some(ExposureLabel::PrivateData)),
+            (Operation::GrepSearch, Some(ExposureLabel::PrivateData)),
+            (Operation::WebSearch, Some(ExposureLabel::UntrustedContent)),
+            (Operation::WebFetch, Some(ExposureLabel::UntrustedContent)),
+            (Operation::GitCommit, None),
+            (Operation::GitPush, Some(ExposureLabel::ExfilVector)),
+            (Operation::CreatePr, Some(ExposureLabel::ExfilVector)),
+            (Operation::ManagePods, None),
+        ];
+        for (op, exp) in expected {
+            assert_eq!(classify_operation(op), exp, "mismatch for {:?}", op);
+        }
+    }
+
+    #[test]
+    fn project_exposure_adds_label() {
+        let empty = ExposureSet::empty();
+        let projected = project_exposure(&empty, Operation::ReadFiles);
+        assert!(projected.contains(ExposureLabel::PrivateData));
+        assert!(!projected.contains(ExposureLabel::UntrustedContent));
+        assert!(!projected.contains(ExposureLabel::ExfilVector));
+    }
+
+    #[test]
+    fn project_exposure_neutral_op_unchanged() {
+        let s = ExposureSet::singleton(ExposureLabel::PrivateData);
+        let projected = project_exposure(&s, Operation::WriteFiles);
+        assert_eq!(projected, s);
+    }
+
+    #[test]
+    fn is_exfil_operation_identifies_vectors() {
+        assert!(is_exfil_operation(Operation::RunBash));
+        assert!(is_exfil_operation(Operation::GitPush));
+        assert!(is_exfil_operation(Operation::CreatePr));
+        assert!(!is_exfil_operation(Operation::ReadFiles));
+        assert!(!is_exfil_operation(Operation::WebFetch));
+        assert!(!is_exfil_operation(Operation::WriteFiles));
+    }
+
+    #[test]
+    fn should_gate_blocks_completing_uninhabitable() {
+        // Two legs active: PrivateData + UntrustedContent
+        let exposure = ExposureSet::singleton(ExposureLabel::PrivateData)
+            .union(&ExposureSet::singleton(ExposureLabel::UntrustedContent));
+        // GitPush would complete the uninhabitable state → gated
+        assert!(should_gate(&exposure, Operation::GitPush));
+        // ReadFiles doesn't complete it (already has PrivateData) → not gated
+        assert!(!should_gate(&exposure, Operation::ReadFiles));
+        // WriteFiles is neutral → not gated
+        assert!(!should_gate(&exposure, Operation::WriteFiles));
+    }
+
+    #[test]
+    fn should_gate_already_uninhabitable() {
+        let full = ExposureSet::singleton(ExposureLabel::PrivateData)
+            .union(&ExposureSet::singleton(ExposureLabel::UntrustedContent))
+            .union(&ExposureSet::singleton(ExposureLabel::ExfilVector));
+        // Already uninhabitable → all exfil ops gated
+        assert!(should_gate(&full, Operation::GitPush));
+        assert!(should_gate(&full, Operation::CreatePr));
+        assert!(should_gate(&full, Operation::RunBash));
+        // Non-exfil ops still not gated
+        assert!(!should_gate(&full, Operation::ReadFiles));
+        assert!(!should_gate(&full, Operation::WebFetch));
+    }
+
+    #[test]
+    fn should_gate_safe_state_allows_everything() {
+        let empty = ExposureSet::empty();
+        for op in Operation::ALL {
+            assert!(
+                !should_gate(&empty, op),
+                "should not gate {:?} from empty state",
+                op
+            );
+        }
+    }
+
+    #[test]
+    fn apply_record_matches_project() {
+        // For the core types (no omnibus RunBash divergence), apply_record == project_exposure
+        for op in Operation::ALL {
+            let s = ExposureSet::singleton(ExposureLabel::PrivateData);
+            assert_eq!(
+                apply_record(&s, op),
+                project_exposure(&s, op),
+                "apply_record and project_exposure should agree for {:?}",
+                op
+            );
+        }
     }
 }
