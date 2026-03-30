@@ -8,7 +8,17 @@
 
 **A formally verified permission lattice and security runtime for AI agents.**
 
-Nucleus is a security framework for AI agents that combines a mathematically verified permission algebra with a Firecracker-based enforcement runtime. The permission lattice has 297 SMT verification conditions (Verus/Z3), 62 bounded model checking proofs (Kani), and a Lean 4 HeytingAlgebra proof on the production Rust permission type via the Aeneas translation pipeline. This README tries to be honest about what's real and what isn't.
+Nucleus is a security framework for AI agents that combines a mathematically verified permission algebra with a Firecracker-based enforcement runtime.
+
+**Verification assurance** (see [`FORMAL_METHODS.md`](FORMAL_METHODS.md) for the honest self-audit):
+
+| Layer | Tool | Count | Scope |
+|-------|------|-------|-------|
+| **Proved** (unbounded) | Lean 4 + Mathlib | 37 theorems | HeytingAlgebra on production lattice ([Aeneas](https://github.com/AeneasVerif/aeneas)-generated types), exposure tracker monotonicity/soundness/gate correctness |
+| **Bounded-model-checked** | [Kani](https://github.com/model-checking/kani) BMC | 67 harnesses | DecisionToken linearity, lattice distributivity, exposure monoid laws, constitutional kernel invariants |
+| **Tested** | Rust + CI | — | Sandbox isolation, path/command restrictions, network policy, end-to-end |
+
+This README tries to be honest about what's real and what isn't.
 
 > **Versioning note:** v1.0 means the **interface contract is stable** (see [`STABILITY.md`](STABILITY.md)), not that the system is "production-secure by default." The lattice is heavily verified; the runtime is tested but not yet battle-hardened in production traffic.
 

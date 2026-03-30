@@ -10,7 +10,7 @@ If you find a gap this document doesn't disclose, please file an issue.
 
 **What's proved:**
 - `CapabilityLevel` (3-element total order) is a `HeytingAlgebra` — full Mathlib instance
-- `CapabilityLattice` (12-dimensional product) is a `HeytingAlgebra` — 26 theorems
+- `CapabilityLattice` (12-dimensional product) is a `HeytingAlgebra` — 23 theorems
 - Function correspondence: the Aeneas-generated `meet`/`join`/`implies` compute the
   same result as the Mathlib lattice `⊓`/`⊔`/`⇨` — closing the loop between Rust and Lean
 - Monotonicity: `(a ⊓ b) ≤ a` — permissions can only tighten (VC-001)
@@ -115,15 +115,14 @@ These are important security properties that have NO formal verification:
 
 | Layer | Tool | Scope | Bound | Theorems | CI |
 |-------|------|-------|-------|----------|-----|
-| Lattice algebra | Lean 4 + Mathlib | `CapabilityLevel`, `CapabilityLattice` | Unbounded | 26 | Every PR (lean-build) |
-| Function correspondence | Lean 4 + Aeneas | Rust `meet`/`join`/`implies` = lattice ops | Unbounded | 7 | Every PR (lean-build) |
-| Exposure tracker | Lean 4 | `ExposureSet`, `classify_operation`, `should_gate` | Unbounded | 16 | Every PR (lean-build) |
+| Lattice algebra + correspondence | Lean 4 + Mathlib + Aeneas | `CapabilityLevel`, `CapabilityLattice` HeytingAlgebra + Rust fn = lattice op | Unbounded | 23 | Every PR (lean-build) |
+| Exposure tracker | Lean 4 | `ExposureSet`, `classify_operation`, `should_gate` | Unbounded | 14 | Every PR (lean-build) |
 | DecisionToken | Kani BMC | Token issuance, audit, exposure | Bounded | 5 | Every PR (fast), nightly (full) |
 | Permission algebra | Kani BMC | Distributivity, monotonicity, monoid laws | Bounded | 33 | Every PR (fast), nightly (full) |
 | Constitutional kernel | Kani BMC | Budget, capability, I/O invariants | Bounded | 17 | Every PR (fast), nightly (full) |
 | Sandbox/network/crypto | — | — | — | — | Unit tests only |
 
-**Total: 67 Kani BMC proofs + 49 Lean 4 theorems = 116 verification artifacts.**
+**Total: 67 Kani BMC harnesses + 37 Lean 4 theorems = 104 verification artifacts.**
 
 ## Known Limitations & Honest Caveats
 
@@ -152,15 +151,41 @@ These are important security properties that have NO formal verification:
    merge with a broken proof if it only breaks a nightly harness. The proof count
    regression gate catches deletion but not breakage of proofs not in the fast tier.
 
+## Why not OPA/Cedar + gVisor/Firecracker?
+
+The obvious skeptic question. Here's the honest answer:
+
+**OPA/Cedar** are policy evaluation engines. They answer "is this request allowed by
+this policy?" — Cedar with Lean 4 proofs of the evaluator. But they don't model
+**what capabilities an agent accumulates over time**. An agent that reads private data,
+fetches untrusted web content, and then pushes to git has a different risk profile than
+one that only reads files — even if each individual operation is "allowed" by the policy.
+Nucleus's exposure tracker is a monotonic accumulator that detects this combination
+(the "uninhabitable state"). Cedar doesn't have this concept.
+
+**gVisor/Firecracker** are container/VM isolation runtimes. They enforce that a process
+can't escape its sandbox. Nucleus uses Firecracker for isolation but adds a verified
+permission algebra INSIDE the sandbox — controlling what the agent can do, not just
+where it can run. gVisor doesn't know that `curl` after `cat /etc/passwd` is dangerous;
+Nucleus does, because the exposure tracker classified both operations.
+
+**The composition**: Nucleus is not a replacement for Cedar or Firecracker. It's the
+missing layer between them — a verified model of agent capability accumulation that
+neither policy evaluation (Cedar) nor container isolation (Firecracker) provides.
+You could run Nucleus inside a Firecracker VM with Cedar policies and get three
+complementary layers: Cedar says what's allowed, Nucleus tracks what's accumulated,
+Firecracker ensures the agent can't escape.
+
 ## Comparison to Other Projects
 
 | Project | Scope | Proof depth | Our gap |
 |---------|-------|-------------|---------|
 | seL4 | Microkernel | Full functional correctness, binary verified | We verify algebra + decision logic, not the full kernel or binary |
-| AWS Cedar | Authorization policy | Lean 4 policy evaluation | We verify the permission lattice structure, not full policy evaluation |
+| AWS Cedar | Authorization policy | Lean 4 policy evaluation | We verify capability accumulation, not policy evaluation |
+| OPA/Rego | Policy as code | No formal verification | We have Lean + Kani proofs; OPA has none |
 | HACL* | Cryptography | F* + C extraction | We trust ed25519-dalek, don't verify crypto ourselves |
 | CompCert | C compiler | Coq, binary-level | We use the standard "trusted compiler" assumption |
-| Aeneas (their own examples) | Rust → Lean | Borrow-checking soundness | We use Aeneas for types + functions, not full borrow-checking proof |
+| Aeneas (their examples) | Rust → Lean | Borrow-checking soundness | We use Aeneas for types + functions, not full borrow-checking proof |
 
 ## How to Reproduce
 
