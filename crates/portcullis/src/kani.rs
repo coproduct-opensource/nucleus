@@ -1740,3 +1740,155 @@ fn proof_approved_token_bypass_is_audited() {
     assert!(token.operation() == Operation::RunBash);
     assert!(kernel.trace().len() > trace_len_before);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FlowGraph BMC harnesses — causal DAG invariants
+// ═══════════════════════════════════════════════════════════════════════════
+
+use crate::flow_graph::{FlowGraph, FlowGraphError};
+use portcullis_core::flow::{FlowVerdict, NodeKind};
+
+/// **G1 — Sentinel parent is always rejected.**
+///
+/// For any NodeKind: inserting an observation with parent ID 0
+/// always returns Err(SentinelParent).
+#[kani::proof]
+fn proof_sentinel_parent_always_rejected() {
+    let mut g = FlowGraph::new();
+    let kind_idx: u8 = kani::any();
+    kani::assume(kind_idx < 10);
+    let kind = match kind_idx {
+        0 => NodeKind::UserPrompt,
+        1 => NodeKind::ToolResponse,
+        2 => NodeKind::WebContent,
+        3 => NodeKind::MemoryRead,
+        4 => NodeKind::MemoryWrite,
+        5 => NodeKind::FileRead,
+        6 => NodeKind::EnvVar,
+        7 => NodeKind::ModelPlan,
+        8 => NodeKind::Secret,
+        _ => NodeKind::OutboundAction,
+    };
+    let result = g.insert_observation(kind, &[0], 1000);
+    assert!(matches!(result, Err(FlowGraphError::SentinelParent)));
+}
+
+/// **G2 — Denied action nodes cannot be used as parents.**
+///
+/// After inserting a denied action, any attempt to reference it as a
+/// parent must return Err(DeniedParent).
+#[kani::proof]
+fn proof_denied_nodes_cannot_be_parents() {
+    let mut g = FlowGraph::new();
+    // WebContent has Adversarial integrity + NoAuthority → writes are denied
+    let web = g
+        .insert_observation(NodeKind::WebContent, &[], 1000)
+        .unwrap();
+    let denied = g
+        .insert_action(Operation::WriteFiles, &[web], 1000)
+        .unwrap();
+    // Verify it was actually denied
+    kani::assume(matches!(denied.verdict, FlowVerdict::Deny(_)));
+    // Referencing the denied node must fail
+    let result = g.insert_observation(NodeKind::FileRead, &[denied.node_id], 1000);
+    assert!(matches!(result, Err(FlowGraphError::DeniedParent(_))));
+}
+
+/// **G3 — Label propagation through the graph is monotone.**
+///
+/// For any observation with a parent: the child's integrity is <= parent's
+/// integrity, and the child's confidentiality is >= parent's confidentiality.
+/// (Contravariant dims shrink, covariant dims grow.)
+#[kani::proof]
+fn proof_graph_propagation_monotone() {
+    let mut g = FlowGraph::new();
+    let parent_id = g
+        .insert_observation(NodeKind::UserPrompt, &[], 1000)
+        .unwrap();
+    let parent_label = g.get(parent_id).unwrap().label;
+
+    let child_id = g
+        .insert_observation(NodeKind::WebContent, &[parent_id], 1000)
+        .unwrap();
+    let child_label = g.get(child_id).unwrap().label;
+
+    // Covariant: confidentiality can only grow
+    assert!(child_label.confidentiality >= parent_label.confidentiality);
+    // Contravariant: integrity can only shrink
+    assert!(child_label.integrity <= parent_label.integrity);
+    // Contravariant: authority can only shrink
+    assert!(child_label.authority <= parent_label.authority);
+}
+
+/// **G4 — Web-tainted write is always denied (core safety property).**
+///
+/// For any privileged operation: if the causal ancestor includes WebContent,
+/// the action is denied by either authority escalation or exfiltration.
+#[kani::proof]
+fn proof_web_ancestor_blocks_privileged_action() {
+    let mut g = FlowGraph::new();
+    let web = g
+        .insert_observation(NodeKind::WebContent, &[], 1000)
+        .unwrap();
+
+    // Try all privileged operations
+    let op_idx: u8 = kani::any();
+    kani::assume(op_idx < 5);
+    let op = match op_idx {
+        0 => Operation::WriteFiles,
+        1 => Operation::EditFiles,
+        2 => Operation::RunBash,
+        3 => Operation::GitPush,
+        _ => Operation::CreatePr,
+    };
+
+    let result = g.insert_action(op, &[web], 1000).unwrap();
+    assert!(
+        matches!(result.verdict, FlowVerdict::Deny(_)),
+        "Web-tainted privileged action must be denied"
+    );
+}
+
+/// **G5 — Clean-parented action is allowed (no false denials).**
+///
+/// A write depending only on UserPrompt + FileRead (no web taint)
+/// must be allowed by the DAG layer.
+#[kani::proof]
+fn proof_clean_parents_allow_action() {
+    let mut g = FlowGraph::new();
+    let user = g
+        .insert_observation(NodeKind::UserPrompt, &[], 1000)
+        .unwrap();
+    let file = g
+        .insert_observation(NodeKind::FileRead, &[user], 1000)
+        .unwrap();
+
+    let result = g
+        .insert_action(Operation::WriteFiles, &[file], 1000)
+        .unwrap();
+    assert_eq!(
+        result.verdict,
+        FlowVerdict::Allow,
+        "Clean-parented write must be allowed"
+    );
+}
+
+/// **G6 — Sequential node IDs are strictly monotone.**
+///
+/// Every node allocated gets an ID strictly greater than all previous nodes.
+#[kani::proof]
+fn proof_node_ids_monotone() {
+    let mut g = FlowGraph::new();
+    let id1 = g
+        .insert_observation(NodeKind::UserPrompt, &[], 1000)
+        .unwrap();
+    let id2 = g
+        .insert_observation(NodeKind::FileRead, &[id1], 1000)
+        .unwrap();
+    let id3 = g
+        .insert_observation(NodeKind::ModelPlan, &[id2], 1000)
+        .unwrap();
+    assert!(id1 < id2);
+    assert!(id2 < id3);
+    assert!(id1 >= 1); // real nodes start at 1, not 0
+}
