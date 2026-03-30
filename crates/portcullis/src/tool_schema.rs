@@ -203,7 +203,11 @@ impl ToolSchemaRegistry {
         hasher.update(description.as_bytes());
         hasher.update(b"\0");
         hasher.update(parameters.as_bytes());
-        format!("{:x}", hasher.finalize())
+        hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
     }
 
     /// SHA-256 hash of the entire approved tool set.
@@ -220,7 +224,11 @@ impl ToolSchemaRegistry {
             hasher.update(schema.combined_hash.as_bytes());
             hasher.update(b"\n");
         }
-        format!("{:x}", hasher.finalize())
+        hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
     }
 
     /// Number of approved tools in the registry.

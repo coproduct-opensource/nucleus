@@ -530,7 +530,11 @@ impl PermissionLattice {
         let data = serde_json::to_string(self).unwrap_or_default();
         let mut hasher = Sha256::new();
         hasher.update(data.as_bytes());
-        format!("{:x}", hasher.finalize())
+        hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
     }
 
     /// Compute a checksum for integrity verification (non-serde version).
@@ -539,7 +543,11 @@ impl PermissionLattice {
         let data = format!("{:?}", self);
         let mut hasher = Sha256::new();
         hasher.update(data.as_bytes());
-        format!("{:x}", hasher.finalize())
+        hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
     }
 
     /// Create a permissive permission set (for trusted contexts).

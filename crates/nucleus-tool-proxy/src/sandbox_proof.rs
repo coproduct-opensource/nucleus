@@ -429,7 +429,7 @@ mod tests {
 
     #[test]
     fn test_expired_token_rejected() {
-        use hmac::Mac;
+        use hmac::{digest::KeyInit, Mac};
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let secret = b"test-secret";

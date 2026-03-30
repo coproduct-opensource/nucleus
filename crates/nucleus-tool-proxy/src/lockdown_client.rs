@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use hmac::{Hmac, Mac};
+use hmac::{digest::KeyInit, Hmac, Mac};
 use nucleus_proto::nucleus_node::node_service_client::NodeServiceClient;
 use nucleus_proto::nucleus_node::{LockdownAck, LockdownCommand};
 use sha2::Sha256;

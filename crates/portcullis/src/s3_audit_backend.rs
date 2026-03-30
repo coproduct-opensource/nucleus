@@ -20,7 +20,7 @@
 use std::time::UNIX_EPOCH;
 
 use aws_sdk_s3::Client;
-use hmac::{Hmac, Mac};
+use hmac::{digest::KeyInit, Hmac, Mac};
 use sha2::Sha256;
 
 use crate::audit::AuditEntry;
