@@ -322,31 +322,32 @@ fn main() {
         return;
     }
 
-    // Read hook input from stdin
+    // Read hook input from stdin — FAIL CLOSED on any error.
+    // A security hook that approves on error is worse than no hook at all.
     let stdin = io::stdin();
     let line = match stdin.lock().lines().next() {
         Some(Ok(line)) => line,
         _ => {
-            // No input — likely piped empty. Output approve to be safe.
+            eprintln!("nucleus: no input on stdin — failing closed");
             let out = HookOutput {
-                decision: "approve".to_string(),
-                reason: None,
+                decision: "deny".to_string(),
+                reason: Some("nucleus: no hook input — failing closed".to_string()),
             };
             println!("{}", serde_json::to_string(&out).unwrap());
-            return;
+            std::process::exit(2);
         }
     };
 
     let input: HookInput = match serde_json::from_str(&line) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("nucleus: failed to parse hook input: {e}");
+            eprintln!("nucleus: failed to parse hook input: {e} — failing closed");
             let out = HookOutput {
-                decision: "approve".to_string(),
-                reason: Some(format!("parse error: {e}")),
+                decision: "deny".to_string(),
+                reason: Some(format!("nucleus: parse error — failing closed: {e}")),
             };
             println!("{}", serde_json::to_string(&out).unwrap());
-            return;
+            std::process::exit(2);
         }
     };
 
@@ -435,6 +436,12 @@ fn main() {
     let json = serde_json::to_string(&output).unwrap();
     println!("{json}");
     io::stdout().flush().ok();
+
+    // Exit non-zero on deny to block the tool call via exit code.
+    // Claude Code blocks on exit 2 regardless of JSON output.
+    if matches!(decision.verdict, Verdict::Deny(_)) {
+        std::process::exit(2);
+    }
 }
 
 // ---------------------------------------------------------------------------

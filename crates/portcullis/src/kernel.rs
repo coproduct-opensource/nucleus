@@ -806,6 +806,14 @@ impl Kernel {
     /// Calling `decide()` again would double-count the operation in the exposure
     /// accumulator, so this method issues a token without re-running the full
     /// decision pipeline.
+    /// # Safety contract
+    ///
+    /// This method bypasses the policy pipeline. The caller MUST have:
+    /// 1. Called `decide()` first and received `RequiresApproval`
+    /// 2. Obtained approval through a legitimate external mechanism
+    ///
+    /// Both `decide()` and this method are covered by Kani harnesses E1-E5.
+    /// Both paths record trace entries and update exposure tracking.
     pub fn issue_approved_token(&mut self, operation: Operation, reason: &str) -> DecisionToken {
         let pre_hash = self.effective.checksum();
         let pre_exposure_count = self.exposure.count();

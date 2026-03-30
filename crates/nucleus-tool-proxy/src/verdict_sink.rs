@@ -115,7 +115,21 @@ impl VerdictSink for ToolProxyVerdictSink {
         let lockdown_active = self.is_locked();
 
         let (verdict_str, deny_reason) = if lockdown_active {
-            ("deny", "LOCKDOWN ACTIVE".to_string())
+            // Lockdown applies read-only lattice projection: reads pass, writes/exfil blocked.
+            // Check if this operation is a read (allowed under lockdown).
+            let is_read_op = matches!(
+                ctx.operation,
+                Operation::ReadFiles
+                    | Operation::GlobSearch
+                    | Operation::GrepSearch
+                    | Operation::WebSearch
+                    | Operation::WebFetch
+            );
+            if is_read_op && matches!(ctx.outcome, VerdictOutcome::Allow) {
+                ("allow", String::new())
+            } else {
+                ("deny", "LOCKDOWN: read-only mode active".to_string())
+            }
         } else {
             match &ctx.outcome {
                 VerdictOutcome::Allow => ("allow", String::new()),
@@ -128,7 +142,7 @@ impl VerdictSink for ToolProxyVerdictSink {
         let exposure = self.read_exposure();
         let actor = Self::actor_str(&ctx.actor);
         let operation = Self::operation_name(ctx.operation);
-        let is_ok = matches!(ctx.outcome, VerdictOutcome::Allow) && !lockdown_active;
+        let is_ok = verdict_str == "allow";
 
         // 2. Emit a proper span (not an event) so it has duration and
         //    propagates trace context.  When the `otel` layer is active,
