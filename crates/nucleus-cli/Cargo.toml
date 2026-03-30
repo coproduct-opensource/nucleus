@@ -27,7 +27,7 @@ tonic = { workspace = true }
 
 # CLI
 clap = { workspace = true }
-whoami = "1"
+whoami = "2"
 
 # Async runtime
 tokio = { workspace = true, features = ["full", "process"] }
