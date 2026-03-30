@@ -1,12 +1,14 @@
-//! Causal DAG and flow checking for the Flow Kernel.
+//! Flow node types, label propagation, and flow policy checking.
 //!
-//! Every observation and every proposed side effect is a node in a signed
-//! causal DAG. Labels propagate through the DAG via Denning's lemma
-//! (join of parent labels ⊔ intrinsic label). Flow policy rules check
-//! every outbound action node against 5 enforcement rules.
+//! This module provides the TYPES and PURE FUNCTIONS for information
+//! flow control. It does NOT contain a graph data structure — the graph
+//! will live in the `portcullis` crate (Phase 3) which can use `alloc`.
 //!
-//! This module is dependency-free (no alloc, no std beyond core) for
-//! Aeneas translatability. The `FlowGraph` uses fixed-capacity arrays.
+//! Labels propagate via Denning's lemma (join of parent labels ⊔ intrinsic).
+//! Flow policy checks every outbound action node against 6 enforcement rules.
+//!
+//! **Current status**: types + pure functions + tests. Not yet wired into
+//! `Kernel::decide()` — integration is Phase 3 of the Flow Kernel plan.
 
 use crate::{AuthorityLevel, ConfLevel, IFCLabel, IntegLevel, Operation, ProvenanceSet};
 
@@ -14,8 +16,8 @@ use crate::{AuthorityLevel, ConfLevel, IFCLabel, IntegLevel, Operation, Provenan
 // Node types
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Content-addressed node ID (BLAKE3 hash, but represented as u64 for
-/// Aeneas translatability — full [u8; 32] lives in the runtime wrapper).
+/// Node identifier. Currently a plain u64 for Aeneas translatability.
+/// The runtime graph (Phase 3) will use content-addressed BLAKE3 hashes.
 pub type NodeId = u64;
 
 /// The kind of datum a flow node represents.
@@ -180,8 +182,10 @@ pub fn required_authority(op: Operation) -> AuthorityLevel {
         Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch => {
             AuthorityLevel::Informational
         }
-        // Web operations require Informational
-        Operation::WebSearch | Operation::WebFetch => AuthorityLevel::Informational,
+        // Web operations: WebFetch can exfiltrate via URL params, requires Suggestive
+        Operation::WebFetch => AuthorityLevel::Suggestive,
+        // WebSearch is read-only, Informational is sufficient
+        Operation::WebSearch => AuthorityLevel::Informational,
     }
 }
 
@@ -203,23 +207,36 @@ pub fn required_integrity(op: Operation) -> IntegLevel {
 
 /// Check whether a flow node's action is permitted by the flow policy.
 ///
-/// Enforces 5 rules:
-/// 1. No-exfil: secret data cannot flow to external sinks
+/// Enforces 6 rules:
+/// 1. No-exfil: secret data cannot flow to external sinks (incl. WebFetch)
 /// 2. No-authority-escalation: NoAuthority data cannot steer privileged actions
 /// 3. No-integrity-laundering: untrusted data cannot reach trusted-required sinks
-/// 4. Freshness: expired data cannot be used in decisions
-/// 5. Monotonicity: implicit (enforced by propagate_label's join)
+/// 4. No-web-exfil: web-provenance data cannot reach exfil sinks
+/// 5. Freshness: expired data cannot be used in decisions
+/// 6. Monotonicity: implicit (enforced by propagate_label's join)
 pub fn check_flow(node: &FlowNode, now: u64) -> FlowVerdict {
     let label = node.label;
 
-    // Only check outbound actions and memory writes
+    // Non-action nodes (observations, plan steps) are not checked — they
+    // don't perform side effects. The check happens when the node is used
+    // as a causal ancestor of an OutboundAction node.
     let op = match node.operation {
         Some(op) => op,
-        None => return FlowVerdict::Allow,
+        None => {
+            // Even without an operation, check freshness — expired data
+            // should not be used in any context.
+            if label.freshness.is_expired_at(now) {
+                return FlowVerdict::Deny(FlowDenyReason::FreshnessExpired);
+            }
+            return FlowVerdict::Allow;
+        }
     };
 
-    // Rule 1: No-exfil — secret data to external sinks
-    if label.confidentiality >= ConfLevel::Secret && crate::is_exfil_operation(op) {
+    // Rule 1: No-exfil — secret data to external sinks.
+    // WebFetch is an exfil vector (URL params can encode secrets) even though
+    // the legacy ExposureSet doesn't classify it as such.
+    let is_exfil = crate::is_exfil_operation(op) || op == Operation::WebFetch;
+    if label.confidentiality >= ConfLevel::Secret && is_exfil {
         return FlowVerdict::Deny(FlowDenyReason::Exfiltration);
     }
 
@@ -235,7 +252,12 @@ pub fn check_flow(node: &FlowNode, now: u64) -> FlowVerdict {
         return FlowVerdict::Deny(FlowDenyReason::IntegrityViolation);
     }
 
-    // Rule 4: Freshness check
+    // Rule 4: Provenance check — web-sourced data cannot reach exfil sinks
+    if label.provenance.contains(ProvenanceSet::WEB) && is_exfil {
+        return FlowVerdict::Deny(FlowDenyReason::Exfiltration);
+    }
+
+    // Rule 5: Freshness check
     if label.freshness.is_expired_at(now) {
         return FlowVerdict::Deny(FlowDenyReason::FreshnessExpired);
     }
@@ -328,9 +350,10 @@ mod tests {
 
     #[test]
     fn flow_blocks_integrity_laundering() {
-        // Adversarial data trying to git push (requires Trusted)
+        // Adversarial data with sufficient authority, trying to git push (requires Trusted integrity)
         let label = IFCLabel {
             integrity: IntegLevel::Adversarial,
+            authority: AuthorityLevel::Directive,
             ..IFCLabel::default()
         };
         let node = make_node(NodeKind::OutboundAction, label, Some(Operation::GitPush));
