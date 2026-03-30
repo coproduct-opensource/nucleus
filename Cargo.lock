@@ -2923,6 +2923,7 @@ version = "1.0.0"
 dependencies = [
  "dirs-next",
  "portcullis",
+ "portcullis-core",
  "serde",
  "serde_json",
 ]
