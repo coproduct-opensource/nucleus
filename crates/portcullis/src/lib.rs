@@ -125,11 +125,13 @@ pub mod observe;
 /// Requires the `spec` feature (includes `serde`, `cel`, `serde_yaml`, `toml`).
 #[cfg(feature = "spec")]
 pub mod profile;
-#[cfg(feature = "remote-audit")]
-pub mod s3_audit_backend;
 /// Attenuation tokens — compact delegation credentials for wire transport.
 ///
 /// Requires the `serde` feature for serialization.
+#[cfg(feature = "crypto")]
+pub mod receipt_sign;
+#[cfg(feature = "remote-audit")]
+pub mod s3_audit_backend;
 #[cfg(feature = "crypto")]
 pub mod token;
 /// MCP tool schema pinning: rug-pull detection for MCP servers.

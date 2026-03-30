@@ -53,6 +53,7 @@
 //!   proof verifies algebraic structure of the type. Together they provide
 //!   complementary assurance.
 
+pub mod declassify;
 pub mod flow;
 pub mod manifest;
 pub mod receipt;
@@ -677,6 +678,11 @@ impl ProvenanceSet {
     /// Subset check (for lattice ordering).
     pub fn is_subset_of(self, other: Self) -> bool {
         (self.0 & other.0) == self.0
+    }
+
+    /// Raw bitmask value (for serialization/signing).
+    pub fn bits(self) -> u8 {
+        self.0
     }
 }
 

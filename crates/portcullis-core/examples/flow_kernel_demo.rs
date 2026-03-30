@@ -137,6 +137,9 @@ fn main() {
         Err(SignatureError::VerificationNotImplemented) => {
             println!("  Signature: ❌ verification not implemented")
         }
+        Err(SignatureError::InvalidSignature) => {
+            println!("  Signature: ❌ invalid (tampered or wrong key)")
+        }
     }
 
     println!();
