@@ -36,3 +36,7 @@ lean_lib «FlowProofs» where
 -- Kernel decision logic proofs (decide_pure correctness)
 lean_lib «DecidePureProofs» where
   roots := #[`DecidePureProofs]
+
+-- Declassification rule safety proofs
+lean_lib «DeclassifyProofs» where
+  roots := #[`DeclassifyProofs]
