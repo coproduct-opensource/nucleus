@@ -28,3 +28,7 @@ lean_lib «PortcullisCoreBridge» where
 -- Exposure tracker proofs (uninhabitable state detector)
 lean_lib «ExposureProofs» where
   roots := #[`ExposureProofs]
+
+-- IFC label lattice proofs (Flow Kernel foundation)
+lean_lib «FlowProofs» where
+  roots := #[`FlowProofs]
