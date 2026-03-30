@@ -111,13 +111,15 @@ jobs:
       - name: Count Kani proofs
         id: kani-count
         run: |
-          PROOF_COUNT=$(grep -c '#\[kani::proof\]' crates/portcullis/src/kani.rs)
+          PORTCULLIS=$(grep -c '#\[kani::proof\]' crates/portcullis/src/kani.rs)
+          CK_KERNEL=$(grep -c '#\[kani::proof\]' crates/ck-kernel/src/kani.rs)
+          PROOF_COUNT=$((PORTCULLIS + CK_KERNEL))
           MINIMUM=$(cat .kani-minimum-proofs | tr -d '[:space:]')
           echo "count=$PROOF_COUNT" >> "$GITHUB_OUTPUT"
           echo "minimum=$MINIMUM" >> "$GITHUB_OUTPUT"
-          echo "Kani proof harnesses: $PROOF_COUNT (minimum: $MINIMUM)"
+          echo "Kani proof harnesses: $PROOF_COUNT (portcullis: $PORTCULLIS, ck-kernel: $CK_KERNEL, minimum: $MINIMUM)"
           if [ "$PROOF_COUNT" -lt "$MINIMUM" ]; then
-            echo "::error::Kani proof count regression: $PROOF_COUNT < $MINIMUM"
+            echo "::error::Kani proof count regression: $PROOF_COUNT < $MINIMUM (portcullis: $PORTCULLIS, ck-kernel: $CK_KERNEL)"
             exit 1
           fi
       - name: Count verification artifacts
