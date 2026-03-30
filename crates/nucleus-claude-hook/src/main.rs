@@ -80,8 +80,9 @@ fn save_session(session_id: &str, state: &SessionState) {
 
 /// Map a Claude Code tool name to a portcullis Operation.
 ///
-/// Returns `None` for tools that should be passed through without gating
-/// (e.g., Agent, mcp__* tools).
+/// Returns `None` only for the Agent meta-tool (orchestration, no side effects).
+/// MCP tools (`mcp__<server>__<tool>`) are classified by their tool name suffix,
+/// defaulting to RunBash (most restrictive) for unknown tools.
 fn map_tool(name: &str) -> Option<Operation> {
     match name {
         "Bash" => Some(Operation::RunBash),
@@ -92,12 +93,86 @@ fn map_tool(name: &str) -> Option<Operation> {
         "Grep" => Some(Operation::GrepSearch),
         "WebFetch" => Some(Operation::WebFetch),
         "WebSearch" => Some(Operation::WebSearch),
-        // Agent and MCP tools are passed through
+        // Agent is orchestration — no direct side effects
         "Agent" => None,
-        _ if name.starts_with("mcp__") => None,
-        // Unknown tools: pass through (fail-open for unknown tools,
-        // the kernel itself is fail-closed for known operations)
-        _ => None,
+        // MCP tools: classify by tool name, fail-closed for unknown
+        _ if name.starts_with("mcp__") => Some(classify_mcp_tool(name)),
+        // Unknown tools: fail-closed (RunBash = most restrictive)
+        _ => Some(Operation::RunBash),
+    }
+}
+
+/// Classify an MCP tool by its name suffix.
+///
+/// MCP tool names follow `mcp__<server>__<tool>`. We extract the tool
+/// portion and classify by known patterns. Unknown tools default to
+/// RunBash (the most restrictive operation — requires Always capability
+/// and contributes ExfilVector exposure).
+fn classify_mcp_tool(name: &str) -> Operation {
+    // Extract the tool name: mcp__server__tool_name → tool_name
+    let tool = name
+        .strip_prefix("mcp__")
+        .and_then(|rest| rest.split("__").nth(1))
+        .unwrap_or(name);
+
+    // Classify by known tool patterns.
+    // Order matters — more specific patterns before general ones.
+    match tool {
+        // Git PR tools (before "create" matches WriteFiles)
+        t if t.contains("pull_request") || t.contains("pr_create") => Operation::CreatePr,
+        // Git push/commit (before general patterns)
+        t if t.contains("push") || t.contains("commit") || t.contains("merge") => {
+            Operation::GitPush
+        }
+        // Exec/run tools (high priority — these are dangerous)
+        t if t.contains("run")
+            || t.contains("exec")
+            || t.contains("shell")
+            || t.contains("command")
+            || t.contains("bash")
+            || t.contains("terminal") =>
+        {
+            Operation::RunBash
+        }
+        // Web/fetch tools (before read, since "fetch" is network)
+        t if t.contains("fetch")
+            || t.contains("download")
+            || t.contains("http")
+            || t.contains("url")
+            || t.contains("browse") =>
+        {
+            Operation::WebFetch
+        }
+        // Write-like tools
+        t if t.contains("write")
+            || t.contains("create")
+            || t.contains("update")
+            || t.contains("delete")
+            || t.contains("put")
+            || t.contains("set")
+            || t.contains("insert")
+            || t.contains("edit")
+            || t.contains("modify") =>
+        {
+            Operation::WriteFiles
+        }
+        // Read-like tools
+        t if t.contains("read")
+            || t.contains("get")
+            || t.contains("list")
+            || t.contains("search")
+            || t.contains("query")
+            || t.contains("describe")
+            || t.contains("request") =>
+        {
+            Operation::ReadFiles
+        }
+        // Search tools
+        t if t.contains("grep") || t.contains("find") || t.contains("glob") => {
+            Operation::GlobSearch
+        }
+        // Unknown MCP tool → fail-closed as RunBash (most restrictive)
+        _ => Operation::RunBash,
     }
 }
 
@@ -148,6 +223,19 @@ fn extract_subject(tool_name: &str, input: &serde_json::Value) -> String {
             .and_then(|v| v.as_str())
             .unwrap_or("(unknown)")
             .to_string(),
+        _ if tool_name.starts_with("mcp__") => {
+            // For MCP tools, combine tool name + first string argument as subject
+            let tool_part = tool_name.strip_prefix("mcp__").unwrap_or(tool_name);
+            let arg = input
+                .as_object()
+                .and_then(|obj| obj.values().find_map(|v| v.as_str().map(|s| s.to_string())))
+                .unwrap_or_default();
+            if arg.is_empty() {
+                tool_part.to_string()
+            } else {
+                format!("{tool_part}: {arg}")
+            }
+        }
         _ => "(unknown)".to_string(),
     }
 }
@@ -484,9 +572,53 @@ mod tests {
 
     #[test]
     fn test_map_tool_passthrough() {
+        // Only Agent is passthrough — no side effects, just orchestration
         assert_eq!(map_tool("Agent"), None);
-        assert_eq!(map_tool("mcp__something"), None);
-        assert_eq!(map_tool("UnknownTool"), None);
+    }
+
+    #[test]
+    fn test_mcp_tools_are_gated() {
+        // MCP tools must NOT be passthrough — they go through kernel
+        assert!(map_tool("mcp__server__read_file").is_some());
+        assert!(map_tool("mcp__github__create_issue").is_some());
+        assert!(map_tool("mcp__unknown__unknown_tool").is_some());
+    }
+
+    #[test]
+    fn test_mcp_tool_classification() {
+        // Read-like
+        assert_eq!(map_tool("mcp__fs__read_file"), Some(Operation::ReadFiles));
+        assert_eq!(map_tool("mcp__db__get_record"), Some(Operation::ReadFiles));
+        assert_eq!(map_tool("mcp__api__list_items"), Some(Operation::ReadFiles));
+        // Write-like
+        assert_eq!(map_tool("mcp__fs__write_file"), Some(Operation::WriteFiles));
+        assert_eq!(
+            map_tool("mcp__db__create_record"),
+            Some(Operation::WriteFiles)
+        );
+        assert_eq!(
+            map_tool("mcp__db__delete_item"),
+            Some(Operation::WriteFiles)
+        );
+        // Web/fetch
+        assert_eq!(map_tool("mcp__http__fetch_url"), Some(Operation::WebFetch));
+        // Exec
+        assert_eq!(
+            map_tool("mcp__shell__run_command"),
+            Some(Operation::RunBash)
+        );
+        assert_eq!(map_tool("mcp__term__exec_script"), Some(Operation::RunBash));
+        // Git
+        assert_eq!(map_tool("mcp__git__push_branch"), Some(Operation::GitPush));
+        assert_eq!(map_tool("mcp__gh__pull_request"), Some(Operation::CreatePr));
+        // Unknown → fail-closed as RunBash
+        assert_eq!(map_tool("mcp__evil__pwn"), Some(Operation::RunBash));
+    }
+
+    #[test]
+    fn test_unknown_tools_fail_closed() {
+        // Unknown non-MCP tools also fail-closed
+        assert_eq!(map_tool("UnknownTool"), Some(Operation::RunBash));
     }
 
     #[test]
