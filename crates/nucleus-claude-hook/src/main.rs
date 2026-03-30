@@ -280,6 +280,8 @@ fn node_kind_to_u8(kind: NodeKind) -> u8 {
         NodeKind::ModelPlan => 7,
         NodeKind::Secret => 8,
         NodeKind::OutboundAction => 9,
+        NodeKind::Summarization => 10,
+        NodeKind::Retry => 11,
     }
 }
 
@@ -295,7 +297,9 @@ fn u8_to_node_kind(v: u8) -> NodeKind {
         6 => NodeKind::EnvVar,
         7 => NodeKind::ModelPlan,
         8 => NodeKind::Secret,
-        _ => NodeKind::OutboundAction,
+        9 => NodeKind::OutboundAction,
+        10 => NodeKind::Summarization,
+        _ => NodeKind::Retry,
     }
 }
 
@@ -886,7 +890,7 @@ mod tests {
 
     #[test]
     fn test_node_kind_roundtrip() {
-        for i in 0..10u8 {
+        for i in 0..12u8 {
             let kind = u8_to_node_kind(i);
             assert_eq!(node_kind_to_u8(kind), i);
         }
