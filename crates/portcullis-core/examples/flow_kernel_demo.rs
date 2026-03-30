@@ -21,6 +21,16 @@ fn main() {
     println!("║  Nucleus Flow Kernel — Invariant Exploit Demo               ║");
     println!("╚══════════════════════════════════════════════════════════════╝");
     println!();
+    println!("NOTE: This demonstrates the POLICY ENGINE (pure functions).");
+    println!("      Runtime integration with Kernel::decide() is not yet");
+    println!("      wired in. The labels and propagation shown here are");
+    println!("      what the system WOULD compute once integrated.");
+    println!();
+    println!("The Flow Kernel is indifferent to whether the LLM was tricked");
+    println!("by the prompt injection. Even if the model perfectly follows");
+    println!("the injected instructions, the label lattice prevents the");
+    println!("exfiltration because authority cannot be escalated by joining.");
+    println!();
 
     // ── Step 1: User asks agent to investigate a GitHub issue ──────────
     println!("Step 1: User asks agent to investigate GitHub issue #42");
@@ -37,12 +47,12 @@ fn main() {
     println!("          (web content cannot instruct the agent)");
 
     // ── Step 3: Agent reads private repo file ──────────────────────────
-    println!("\nStep 3: Agent reads /etc/secrets from private repo");
+    println!("\nStep 3: Agent reads private data from private repo");
     let private_file = labeled_node(
         3,
         NodeKind::FileRead,
         IFCLabel {
-            confidentiality: ConfLevel::Secret,
+            confidentiality: ConfLevel::Internal,
             integrity: IntegLevel::Trusted,
             provenance: ProvenanceSet::SYSTEM,
             freshness: Freshness {
@@ -64,10 +74,10 @@ fn main() {
     let plan = labeled_node(4, NodeKind::ModelPlan, plan_label);
     print_node("Plan node", &plan);
     println!("        → After propagation:");
-    println!("          confidentiality = Secret  (from private file)");
-    println!("          integrity       = Adversarial (from issue body)");
-    println!("          authority       = NoAuthority (from issue body)");
-    println!("          provenance      = User + Web + System (all sources)");
+    println!("          confidentiality = Internal (from user prompt + private file)");
+    println!("          integrity       = Adversarial (from issue body — least trusted wins)");
+    println!("          authority       = NoAuthority (from issue body — least authority wins)");
+    println!("          provenance      = User + Web + System (all sources tracked)");
 
     // ── Step 5: Agent attempts to create PR with private data ──────────
     println!("\nStep 5: Agent attempts to create PR containing private data");
