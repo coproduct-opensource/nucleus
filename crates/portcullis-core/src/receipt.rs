@@ -1,19 +1,27 @@
-//! Signed flow receipts — cryptographic evidence of flow decisions.
+//! Flow receipts — evidence of flow decisions.
 //!
 //! A `FlowReceipt` records:
 //! - The action that was blocked or allowed
 //! - The labeled observations that were causally sufficient
 //! - Which policy rule fired (for blocks)
-//! - A signature over the receipt
-//!
-//! Receipts enable deterministic replay: given a receipt, reconstruct
-//! the exact decision and verify the causal chain.
 //!
 //! ## Honest status
 //!
-//! Types and serialization only. Not yet wired into `Kernel::decide()`
-//! or `check_flow()`. Signatures use a placeholder — real Ed25519
-//! signing requires the `ed25519-dalek` crate (in `portcullis`, not here).
+//! Types and construction only. **Unsigned** — real Ed25519 signing
+//! requires the `ed25519-dalek` crate (in `portcullis`, not here).
+//! Not yet wired into `Kernel::decide()` or `check_flow()`.
+//!
+//! ## Trust model
+//!
+//! Receipts are constructed by `build_receipt()` from trusted inputs
+//! (the flow graph). They are NOT tamper-proof without signing.
+//! The `verify_signature()` stub always returns `Err(Unsigned)` to
+//! force callers to handle the unsigned case explicitly.
+//!
+//! The causal ancestors are assembled by the caller from the flow
+//! graph — there is no binding between the receipt and the graph.
+//! This is a known limitation until the flow graph (Phase 5+) provides
+//! atomic check-and-receipt construction.
 
 use crate::IFCLabel;
 use crate::flow::{FlowDenyReason, FlowNode, FlowVerdict, NodeId, NodeKind};
@@ -22,43 +30,50 @@ use crate::flow::{FlowDenyReason, FlowNode, FlowVerdict, NodeId, NodeKind};
 // Receipt types
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Maximum number of causal ancestors included in a receipt.
-/// Keeps receipts bounded for serialization. Deep causal chains
-/// are summarized (the deepest ancestors are included, intermediates elided).
+/// Maximum causal ancestors in a receipt.
 pub const MAX_RECEIPT_ANCESTORS: usize = 16;
 
-/// A signed flow receipt — cryptographic evidence of a flow decision.
+/// A flow receipt — evidence of a flow decision.
 ///
-/// Contains the action node, its causal ancestors with labels, the
-/// verdict, and which rule fired. The signature covers the entire
-/// receipt so it can be verified independently.
+/// **NOT signed.** The `signature` field is a placeholder. Use
+/// `verify_signature()` which currently always returns `Err(Unsigned)`.
+///
+/// Fields are `pub(crate)` to prevent external forgery. Use
+/// `build_receipt()` to construct.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FlowReceipt {
-    /// The action node that was checked.
-    pub action: ReceiptNode,
+    pub(crate) action: ReceiptNode,
+    pub(crate) ancestors: Vec<ReceiptNode>,
+    pub(crate) verdict: FlowVerdict,
+    pub(crate) rule_name: &'static str,
+    pub(crate) created_at: u64,
+    pub(crate) signature: [u8; 64],
+}
 
-    /// Causal ancestors that were sufficient for the decision.
-    /// Ordered from most recent to oldest (reverse causal order).
-    pub ancestors: Vec<ReceiptNode>,
-
-    /// The flow verdict (Allow or Deny with reason).
-    pub verdict: FlowVerdict,
-
-    /// Human-readable explanation of which rule fired.
-    pub rule_name: &'static str,
-
-    /// Unix timestamp when the receipt was created.
-    pub created_at: u64,
-
-    /// Signature over the receipt (placeholder — real signing in portcullis).
-    /// 64 bytes for Ed25519 signature, zeroed = unsigned.
-    pub signature: [u8; 64],
+/// Read-only accessors.
+impl FlowReceipt {
+    pub fn action(&self) -> &ReceiptNode {
+        &self.action
+    }
+    pub fn ancestors(&self) -> &[ReceiptNode] {
+        &self.ancestors
+    }
+    pub fn verdict(&self) -> FlowVerdict {
+        self.verdict
+    }
+    pub fn rule_name(&self) -> &'static str {
+        self.rule_name
+    }
+    pub fn created_at(&self) -> u64 {
+        self.created_at
+    }
+    pub fn is_signed(&self) -> bool {
+        self.signature != [0; 64]
+    }
 }
 
 /// A node summary for inclusion in a receipt.
-///
-/// Lighter than `FlowNode` — includes the label and kind but not
-/// the full parent array (the receipt itself encodes the causal chain).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReceiptNode {
     pub id: NodeId,
@@ -80,11 +95,7 @@ impl From<&FlowNode> for ReceiptNode {
 // Receipt construction
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Build a receipt from a flow decision.
-///
-/// `action` is the node that was checked. `ancestors` are the labeled
-/// nodes that were causally sufficient (the caller assembles these from
-/// the flow graph). `verdict` is the result of `check_flow()`.
+/// Build an unsigned receipt from a flow decision.
 pub fn build_receipt(
     action: &FlowNode,
     ancestors: &[&FlowNode],
@@ -117,67 +128,44 @@ pub fn build_receipt(
         verdict,
         rule_name,
         created_at: now,
-        signature: [0; 64], // Unsigned — signing happens in portcullis layer
+        signature: [0; 64], // Unsigned
     }
-}
-
-/// Verify that a receipt is internally consistent.
-///
-/// Checks:
-/// 1. If verdict is Deny, rule_name is non-empty
-/// 2. If verdict is Allow, rule_name is "allow"
-/// 3. Action node exists
-///
-/// Does NOT verify the signature (requires the signing key).
-/// Does NOT re-run check_flow (would require the full graph).
-pub fn verify_receipt_consistency(receipt: &FlowReceipt) -> Result<(), ReceiptError> {
-    match receipt.verdict {
-        FlowVerdict::Deny(_) => {
-            if receipt.rule_name == "allow" {
-                return Err(ReceiptError::DenyWithAllowRule);
-            }
-        }
-        FlowVerdict::Allow => {
-            if receipt.rule_name != "allow" {
-                return Err(ReceiptError::AllowWithDenyRule);
-            }
-        }
-    }
-
-    if receipt.ancestors.len() > MAX_RECEIPT_ANCESTORS {
-        return Err(ReceiptError::TooManyAncestors);
-    }
-
-    Ok(())
-}
-
-/// Receipt consistency errors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReceiptError {
-    /// Verdict is Deny but rule_name says "allow".
-    DenyWithAllowRule,
-    /// Verdict is Allow but rule_name is a deny rule.
-    AllowWithDenyRule,
-    /// More ancestors than MAX_RECEIPT_ANCESTORS.
-    TooManyAncestors,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Display — human-readable receipt rendering
+// Signature verification (stub)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Signature verification errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignatureError {
+    /// Receipt has not been signed (signature is all zeros).
+    Unsigned,
+    /// Signature verification not yet implemented.
+    VerificationNotImplemented,
+}
+
+/// Verify the receipt's signature.
+///
+/// **Currently always returns `Err`.** This forces callers to handle
+/// the unsigned case explicitly rather than silently trusting receipts.
+/// Real Ed25519 verification will be added in the `portcullis` crate.
+pub fn verify_signature(_receipt: &FlowReceipt) -> Result<(), SignatureError> {
+    if _receipt.signature == [0; 64] {
+        return Err(SignatureError::Unsigned);
+    }
+    Err(SignatureError::VerificationNotImplemented)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Display
 // ═══════════════════════════════════════════════════════════════════════════
 
 impl FlowReceipt {
-    /// Render the receipt as a human-readable causal chain.
+    /// Render as a human-readable causal chain.
     ///
-    /// Example output for a blocked exfiltration:
-    /// ```text
-    /// BLOCKED: no-exfil: secret data to external sink
-    /// Action: OutboundAction (id=42) label={Secret, Adversarial, NoAuthority}
-    /// Causal chain:
-    ///   ← WebContent (id=10) label={Public, Adversarial, NoAuthority}
-    ///   ← FileRead (id=20) label={Secret, Trusted, Directive}
-    ///   ← ModelPlan (id=30) label={Secret, Adversarial, NoAuthority}
-    /// ```
+    /// **Not a security function.** Output is only as trustworthy as
+    /// the receipt data. Do not use for audit without signature verification.
     pub fn display_chain(&self) -> String {
         let mut out = String::new();
 
@@ -211,6 +199,10 @@ impl FlowReceipt {
                     ancestor.label.authority,
                 ));
             }
+        }
+
+        if !self.is_signed() {
+            out.push_str("⚠ UNSIGNED — not cryptographically verified\n");
         }
 
         out
@@ -250,9 +242,8 @@ mod tests {
         let verdict = check_flow(&action, 2000);
         let receipt = build_receipt(&action, &[], verdict, 2000);
 
-        assert_eq!(receipt.verdict, FlowVerdict::Allow);
-        assert_eq!(receipt.rule_name, "allow");
-        assert!(verify_receipt_consistency(&receipt).is_ok());
+        assert_eq!(receipt.verdict(), FlowVerdict::Allow);
+        assert_eq!(receipt.rule_name(), "allow");
     }
 
     #[test]
@@ -263,18 +254,15 @@ mod tests {
         let receipt = build_receipt(&action, &[], verdict, 2000);
 
         assert_eq!(
-            receipt.verdict,
+            receipt.verdict(),
             FlowVerdict::Deny(FlowDenyReason::Exfiltration)
         );
-        assert!(receipt.rule_name.contains("no-exfil"));
-        assert!(verify_receipt_consistency(&receipt).is_ok());
+        assert!(receipt.rule_name().contains("no-exfil"));
     }
 
     #[test]
     fn receipt_with_causal_chain() {
         let now = 1000;
-
-        // Build a causal chain: web content → plan → action (blocked)
         let web = make_node(10, NodeKind::WebContent, IFCLabel::web_content(now), None);
         let repo = make_node(
             20,
@@ -291,13 +279,11 @@ mod tests {
             },
             None,
         );
-
         let plan_label = propagate_label(
             &[web.label, repo.label],
             intrinsic_label(NodeKind::ModelPlan, now),
         );
         let plan = make_node(30, NodeKind::ModelPlan, plan_label, None);
-
         let action_label = propagate_label(
             &[plan.label],
             intrinsic_label(NodeKind::OutboundAction, now),
@@ -312,24 +298,20 @@ mod tests {
         let verdict = check_flow(&action, now + 10);
         let receipt = build_receipt(&action, &[&web, &repo, &plan], verdict, now + 10);
 
-        // Blocked by authority escalation
         assert!(matches!(
-            receipt.verdict,
+            receipt.verdict(),
             FlowVerdict::Deny(FlowDenyReason::AuthorityEscalation)
         ));
-        assert_eq!(receipt.ancestors.len(), 3);
-        assert!(verify_receipt_consistency(&receipt).is_ok());
+        assert_eq!(receipt.ancestors().len(), 3);
 
-        // Display chain is human-readable
         let display = receipt.display_chain();
         assert!(display.contains("BLOCKED"));
         assert!(display.contains("WebContent"));
-        assert!(display.contains("FileRead"));
-        assert!(display.contains("ModelPlan"));
+        assert!(display.contains("UNSIGNED"));
     }
 
     #[test]
-    fn receipt_consistency_rejects_contradictions() {
+    fn verify_signature_rejects_unsigned() {
         let label = IFCLabel::user_prompt(1000);
         let action = make_node(
             1,
@@ -337,25 +319,14 @@ mod tests {
             label,
             Some(Operation::WriteFiles),
         );
+        let receipt = build_receipt(&action, &[], FlowVerdict::Allow, 2000);
 
-        // Manually create an inconsistent receipt
-        let bad_receipt = FlowReceipt {
-            action: ReceiptNode::from(&action),
-            ancestors: vec![],
-            verdict: FlowVerdict::Deny(FlowDenyReason::Exfiltration),
-            rule_name: "allow", // Contradiction!
-            created_at: 2000,
-            signature: [0; 64],
-        };
-
-        assert_eq!(
-            verify_receipt_consistency(&bad_receipt),
-            Err(ReceiptError::DenyWithAllowRule)
-        );
+        assert_eq!(verify_signature(&receipt), Err(SignatureError::Unsigned));
+        assert!(!receipt.is_signed());
     }
 
     #[test]
-    fn display_shows_blocked_chain() {
+    fn display_shows_unsigned_warning() {
         let label = IFCLabel::web_content(1000);
         let action = make_node(
             1,
@@ -366,7 +337,6 @@ mod tests {
         let verdict = check_flow(&action, 2000);
         let receipt = build_receipt(&action, &[], verdict, 2000);
         let display = receipt.display_chain();
-        assert!(display.contains("BLOCKED"));
-        assert!(display.contains("authority"));
+        assert!(display.contains("UNSIGNED"));
     }
 }
