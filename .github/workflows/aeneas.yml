@@ -65,15 +65,8 @@ jobs:
       - name: Aeneas Lean 4 translation
         run: |
           mkdir -p crates/portcullis-core/lean/ci-generated
-          # Aeneas exits 1 on partial errors (e.g., bool-field structs it can't
-          # translate). The lattice types/functions translate successfully and
-          # produce partial output files. We allow this and verify the generated
-          # portions match the committed code in the next step.
           aeneas -backend lean -split-files portcullis_core.llbc \
-            -dest crates/portcullis-core/lean/ci-generated || {
-            echo "Aeneas exited with partial errors (expected for exposure types)"
-            ls crates/portcullis-core/lean/ci-generated/
-          }
+            -dest crates/portcullis-core/lean/ci-generated
 
       # --- Verify generated code matches committed code ---
       # Only compares Aeneas-generated files (Types.lean, Funs.lean, FunsExternal_Template.lean).

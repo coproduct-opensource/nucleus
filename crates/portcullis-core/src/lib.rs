@@ -578,6 +578,60 @@ pub fn should_gate(current: &ExposureSet, op: Operation) -> bool {
     (current.is_uninhabitable() || projected.is_uninhabitable()) && is_exfil_operation(op)
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Pure decision logic — the Lean 4 verification target (Phase 2)
+//
+// This function captures the security-critical lattice-based decisions
+// without runtime dependencies (no chrono, no Path, no Decimal). It is
+// the kernel that will be translated to Lean via Aeneas and proved correct.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Pure verdict from the lattice decision logic.
+///
+/// Does NOT include runtime checks (time, budget, path, command, isolation).
+/// Those are checked in the full `Kernel::decide()` before calling this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PureVerdict {
+    /// The capability lattice allows this operation.
+    Allow,
+    /// The capability level is Never — operation is denied.
+    DenyCapability,
+    /// Static approval required (capability level is LowRisk).
+    RequiresApproval,
+    /// Dynamic exposure gate triggered — exfil blocked by uninhabitable state.
+    GateExfil,
+}
+
+/// Pure lattice-based decision logic.
+///
+/// Given the effective capability level for an operation and the current
+/// exposure state, determine the verdict. This is the function we prove
+/// correct in Lean 4.
+///
+/// The decision chain:
+/// 1. If capability level is Never → DenyCapability
+/// 2. If capability level is LowRisk → RequiresApproval
+/// 3. If exposure gate triggers → GateExfil
+/// 4. Otherwise → Allow
+pub fn decide_pure(level: CapabilityLevel, exposure: &ExposureSet, op: Operation) -> PureVerdict {
+    // Step 1: Capability level check
+    if level == CapabilityLevel::Never {
+        return PureVerdict::DenyCapability;
+    }
+
+    // Step 2: Static approval (LowRisk requires human approval)
+    if level == CapabilityLevel::LowRisk {
+        return PureVerdict::RequiresApproval;
+    }
+
+    // Step 3: Dynamic exposure gate
+    if should_gate(exposure, op) {
+        return PureVerdict::GateExfil;
+    }
+
+    PureVerdict::Allow
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
