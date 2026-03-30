@@ -154,6 +154,13 @@ pub struct RunArgs {
     #[arg(long)]
     pub local: bool,
 
+    /// Run with Claude Code hook enforcement (lightest weight).
+    /// Uses nucleus-claude-hook as a PreToolUse hook — no tool-proxy or MCP
+    /// server needed. Provides IFC flow labels, exposure tracking, and
+    /// capability gating with zero infrastructure.
+    #[arg(long)]
+    pub hook: bool,
+
     /// Environment variables to pass as credentials (KEY=VALUE).
     /// Can be specified multiple times: --env FOO=bar --env BAZ=qux
     #[arg(long = "env", value_name = "KEY=VALUE")]
@@ -270,7 +277,13 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
         println!("  Profile: {}", args.profile);
         println!(
             "  Mode: {}",
-            if args.local { "local" } else { "firecracker" }
+            if args.hook {
+                "hook"
+            } else if args.local {
+                "local"
+            } else {
+                "firecracker"
+            }
         );
         println!("  Budget: ${:.2}", policy.budget.max_cost_usd);
         println!("  Timeout: {}s", args.timeout);
@@ -293,6 +306,10 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
         println!("  git_push: {:?}", policy.capabilities.git_push);
         println!("  web_fetch: {:?}", policy.capabilities.web_fetch);
         return Ok(());
+    }
+
+    if args.hook {
+        return run_hook(&args, &policy, &work_dir, &prompt).await;
     }
 
     if args.local {
@@ -363,6 +380,71 @@ impl Drop for TmpDirGuard {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
     }
+}
+
+/// Run with Claude Code hook enforcement (lightest weight).
+///
+/// Writes a temporary settings.json that registers nucleus-claude-hook as
+/// the PreToolUse hook, then runs claude with that config. No tool-proxy
+/// or MCP server needed — the hook intercepts every tool call and runs it
+/// through the portcullis kernel with IFC flow labels.
+async fn run_hook(
+    args: &RunArgs,
+    policy: &PermissionLattice,
+    work_dir: &Path,
+    prompt: &str,
+) -> Result<()> {
+    let run_id = Uuid::new_v4();
+    let tmp_dir = std::env::temp_dir().join(format!("nucleus-hook-{run_id}"));
+    fs::create_dir_all(&tmp_dir)?;
+    let _tmp_guard = TmpDirGuard::new(tmp_dir.clone());
+
+    // Resolve hook binary
+    let hook_bin = resolve_binary_path("nucleus-claude-hook")?;
+    if !hook_bin.exists() {
+        bail!(
+            "nucleus-claude-hook not found at {:?}. Install with: cargo install --path crates/nucleus-claude-hook",
+            hook_bin
+        );
+    }
+
+    // Write temporary settings.json with the hook configured
+    let settings_path = tmp_dir.join("settings.json");
+    let profile_name = &args.profile;
+    let settings = serde_json::json!({
+        "hooks": {
+            "PreToolUse": [{
+                "type": "command",
+                "command": hook_bin.display().to_string(),
+            }]
+        }
+    });
+    fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+
+    info!(
+        hook_bin = %hook_bin.display(),
+        profile = %profile_name,
+        "Running Claude with nucleus-claude-hook enforcement"
+    );
+
+    let start = Instant::now();
+
+    let mut cmd = Command::new("claude");
+    cmd.arg("--print")
+        .arg("--model")
+        .arg(&args.model)
+        .arg("--max-budget-usd")
+        .arg(policy.budget.max_cost_usd.to_string())
+        .arg("--settings")
+        .arg(&settings_path)
+        .arg(prompt)
+        .current_dir(work_dir)
+        .env("NUCLEUS_PROFILE", profile_name);
+
+    let output = cmd.output().context("failed to spawn claude")?;
+    let duration = start.elapsed();
+
+    render_output(&output, duration, args.output.as_str())
 }
 
 /// Run in local mode: spawn tool-proxy as a subprocess (no Firecracker).
