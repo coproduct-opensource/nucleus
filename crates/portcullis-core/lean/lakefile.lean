@@ -32,3 +32,7 @@ lean_lib «ExposureProofs» where
 -- IFC label lattice proofs (Flow Kernel foundation)
 lean_lib «FlowProofs» where
   roots := #[`FlowProofs]
+
+-- Kernel decision logic proofs (decide_pure correctness)
+lean_lib «DecidePureProofs» where
+  roots := #[`DecidePureProofs]
