@@ -197,6 +197,14 @@ pub enum DenyReason {
         /// The isolation dimension that blocks this operation.
         dimension: String,
     },
+    /// Information flow control violation.
+    ///
+    /// The session's accumulated IFC label violates a flow enforcement rule.
+    /// Only checked when flow control is enabled via `enable_flow_control()`.
+    FlowViolation {
+        /// Which flow rule was violated (e.g., "Exfiltration", "AuthorityEscalation").
+        rule: String,
+    },
 }
 
 /// The source of a RequiresApproval verdict.
@@ -317,6 +325,15 @@ pub struct Kernel {
     /// [`Kernel::from_certificate`]. Provides an auditable chain from every
     /// decision back to the root authority.
     provenance: Option<SessionProvenance>,
+    /// Flow label accumulator — tracks information flow control labels across
+    /// the session. When enabled, `decide()` runs `check_flow` as an additional
+    /// defense-in-depth gate after all existing checks.
+    ///
+    /// The label is the join (least upper bound) of all intrinsic labels
+    /// for operations allowed in this session. It monotonically accumulates
+    /// taint: once web content is read, the session label gains `Adversarial`
+    /// integrity and `NoAuthority` authority.
+    flow_label: Option<portcullis_core::IFCLabel>,
 }
 
 impl Kernel {
@@ -350,7 +367,17 @@ impl Kernel {
             approvals: std::collections::BTreeMap::new(),
             exposure: ExposureSet::empty(),
             provenance: None,
+            flow_label: None,
         }
+    }
+
+    /// Enable information flow control for this session.
+    ///
+    /// When enabled, `decide()` accumulates IFC labels and runs `check_flow`
+    /// as a defense-in-depth gate. The initial label is the least restrictive
+    /// (bottom of the label lattice).
+    pub fn enable_flow_control(&mut self) {
+        self.flow_label = Some(portcullis_core::IFCLabel::bottom());
     }
 
     /// Create a kernel session from cryptographically verified permissions.
@@ -389,6 +416,7 @@ impl Kernel {
             approvals: std::collections::BTreeMap::new(),
             exposure: ExposureSet::empty(),
             provenance: Some(provenance),
+            flow_label: None,
         }
     }
 
@@ -420,6 +448,7 @@ impl Kernel {
             approvals: std::collections::BTreeMap::new(),
             exposure: ExposureSet::empty(),
             provenance: Some(provenance),
+            flow_label: None,
         }
     }
 
@@ -651,6 +680,53 @@ impl Kernel {
             );
         }
 
+        // 8. Flow control check (when enabled).
+        //
+        // Accumulates IFC labels across the session and gates actions
+        // based on the 6 flow enforcement rules. This is defense-in-depth:
+        // the legacy checks (capability, exposure gate) still run above.
+        if let Some(ref mut flow_label) = self.flow_label {
+            use portcullis_core::flow;
+
+            // Determine intrinsic label for this operation's data source
+            let now_unix = chrono::Utc::now().timestamp() as u64;
+            let intrinsic = flow::intrinsic_label(Self::node_kind_for(operation), now_unix);
+
+            // Propagate: join the current session label with the intrinsic
+            let new_label = flow_label.join(intrinsic);
+
+            // Build a flow node for check_flow
+            let node = flow::FlowNode {
+                id: self.next_seq,
+                kind: flow::NodeKind::OutboundAction,
+                label: new_label,
+                parent_count: 0,
+                parents: [0; flow::MAX_PARENTS],
+                operation: Some(operation),
+            };
+
+            match flow::check_flow(&node, now_unix) {
+                flow::FlowVerdict::Deny(reason) => {
+                    return self.record_with_exposure(
+                        operation,
+                        subject,
+                        Verdict::Deny(DenyReason::FlowViolation {
+                            rule: format!("{:?}", reason),
+                        }),
+                        &pre_hash,
+                        pre_exposure_count,
+                        contributed_label,
+                        false,
+                        false,
+                    );
+                }
+                flow::FlowVerdict::Allow => {
+                    // Update session flow label for next decision
+                    *flow_label = new_label;
+                }
+            }
+        }
+
         // All checks passed — record exposure and allow
         let pre_complete = self.exposure.is_uninhabitable();
         self.exposure = exposure_core::apply_record(&self.exposure, operation);
@@ -666,6 +742,23 @@ impl Kernel {
             state_uninhabitable,
             false,
         )
+    }
+
+    /// Map an Operation to the most appropriate FlowNode kind.
+    fn node_kind_for(op: Operation) -> portcullis_core::flow::NodeKind {
+        use portcullis_core::flow::NodeKind;
+        match op {
+            Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch => {
+                NodeKind::FileRead
+            }
+            Operation::WebFetch | Operation::WebSearch => NodeKind::WebContent,
+            Operation::WriteFiles | Operation::EditFiles => NodeKind::OutboundAction,
+            Operation::RunBash
+            | Operation::GitCommit
+            | Operation::GitPush
+            | Operation::CreatePr
+            | Operation::ManagePods => NodeKind::OutboundAction,
+        }
     }
 
     /// Tighten effective permissions by taking the meet with a ceiling.
