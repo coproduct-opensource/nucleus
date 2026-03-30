@@ -36,3 +36,7 @@ lean_lib «FlowProofs» where
 -- Kernel decision logic proofs (decide_pure correctness)
 lean_lib «DecidePureProofs» where
   roots := #[`DecidePureProofs]
+
+-- FlowGraph causal DAG proofs (label monotonicity, taint preservation)
+lean_lib «FlowGraphProofs» where
+  roots := #[`FlowGraphProofs]
