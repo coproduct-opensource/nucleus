@@ -54,6 +54,7 @@
 //!   complementary assurance.
 
 pub mod flow;
+pub mod manifest;
 
 /// Tool permission levels in lattice ordering.
 ///
