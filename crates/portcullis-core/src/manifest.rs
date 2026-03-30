@@ -1,11 +1,19 @@
 //! Tool manifest schema and admission control for the Flow Kernel.
 //!
 //! Every MCP tool declares its security-relevant properties in a manifest.
-//! Admission control rejects tools whose manifests permit unsafe flows
-//! (e.g., remote instruction fetch from unlabeled origins).
+//! Admission control rejects tools whose manifests permit unsafe flows.
 //!
-//! **Current status**: types + admission rules + tests. Integration with
-//! the tool schema registry (`portcullis/src/tool_schema.rs`) is planned.
+//! ## Honest status
+//!
+//! This module provides TYPES and ADMISSION RULES only. It is NOT yet
+//! wired into the MCP mediation layer or `Kernel::decide()`. Manifests
+//! are self-declarations — a malicious tool can lie. Runtime behavioral
+//! enforcement (verifying tools act according to their manifests) is
+//! future work.
+//!
+//! The admission rules defend against honest-but-misconfigured tools
+//! and tools that honestly declare dangerous capabilities. They do NOT
+//! defend against adversarial tools that lie in their manifests.
 
 use crate::{AuthorityLevel, ConfLevel, IntegLevel, Operation};
 
@@ -43,33 +51,29 @@ pub enum SinkClass {
     HumanVisible,
 }
 
-/// Maximum number of operations, instruction sources, and sinks per manifest.
-pub const MAX_MANIFEST_OPS: usize = 12;
-pub const MAX_MANIFEST_SOURCES: usize = 5;
-pub const MAX_MANIFEST_SINKS: usize = 5;
-
-/// Tool manifest — security-relevant declarations for an MCP tool.
+/// Tool manifest — security-relevant self-declarations for an MCP tool.
 ///
-/// Every tool MUST declare what capabilities it uses, where it gets
-/// instructions, and what sinks its output can reach. Admission control
-/// rejects tools with unsafe combinations.
+/// **Trust model**: Manifests are self-declared by the tool. Admission
+/// control rejects manifests that honestly declare unsafe combinations.
+/// A lying manifest passes admission — runtime behavioral verification
+/// is required to catch lies (not yet implemented).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolManifest {
     /// Tool name (must match the MCP tool name exactly).
-    pub name: [u8; 64],
-    pub name_len: u8,
+    /// Up to 128 bytes of UTF-8. Validated on construction.
+    pub name: ToolName,
 
     /// Operations this tool performs.
-    pub capabilities: [Option<Operation>; MAX_MANIFEST_OPS],
+    pub capabilities: Vec<Operation>,
 
     /// Does this tool fetch data from external URLs at runtime?
     pub remote_fetch: bool,
 
     /// Where can instructions come from that influence this tool's behavior?
-    pub instruction_sources: [Option<InstructionSource>; MAX_MANIFEST_SOURCES],
+    pub instruction_sources: Vec<InstructionSource>,
 
     /// What kinds of sinks can this tool's output reach?
-    pub admissible_sinks: [Option<SinkClass>; MAX_MANIFEST_SINKS],
+    pub admissible_sinks: Vec<SinkClass>,
 
     /// Maximum confidentiality level this tool handles.
     pub max_confidentiality: ConfLevel,
@@ -81,7 +85,32 @@ pub struct ToolManifest {
     pub output_authority: AuthorityLevel,
 
     /// Schema hash (SHA-256 of name + description + parameters).
+    /// Bridges to the existing `ToolSchemaRegistry` in portcullis.
+    /// Zero means "not yet computed" — the registry fills this in.
     pub schema_hash: [u8; 32],
+}
+
+/// Bounded tool name (up to 128 bytes, valid UTF-8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolName {
+    buf: [u8; 128],
+    len: u8,
+}
+
+impl ToolName {
+    /// Create a tool name from a string slice. Truncates to 128 bytes.
+    pub fn new(s: &str) -> Self {
+        let bytes = s.as_bytes();
+        let len = bytes.len().min(128) as u8;
+        let mut buf = [0u8; 128];
+        buf[..len as usize].copy_from_slice(&bytes[..len as usize]);
+        Self { buf, len }
+    }
+
+    pub fn as_str(&self) -> &str {
+        // Safety: constructed from valid UTF-8 in new()
+        core::str::from_utf8(&self.buf[..self.len as usize]).unwrap_or("")
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -108,7 +137,7 @@ pub enum AdmissionDenyReason {
 pub enum AdmissionVerdict {
     /// Tool is admitted.
     Admit,
-    /// Tool is rejected.
+    /// Tool is rejected with ALL reasons (not just the first).
     Reject(AdmissionDenyReason),
 }
 
@@ -116,10 +145,12 @@ pub enum AdmissionVerdict {
 ///
 /// Rejects tools with unsafe combinations of remote fetch, instruction
 /// sources, output sinks, and declared security levels.
+///
+/// **Limitation**: This checks the manifest, not the tool's behavior.
+/// A tool that lies in its manifest will pass admission.
 pub fn check_admission(manifest: &ToolManifest) -> AdmissionVerdict {
     // Rule 1: Must declare at least one capability
-    let has_capabilities = manifest.capabilities.iter().any(|c| c.is_some());
-    if !has_capabilities {
+    if manifest.capabilities.is_empty() {
         return AdmissionVerdict::Reject(AdmissionDenyReason::EmptyCapabilities);
     }
 
@@ -128,7 +159,7 @@ pub fn check_admission(manifest: &ToolManifest) -> AdmissionVerdict {
         let has_unlabeled = manifest
             .instruction_sources
             .iter()
-            .any(|s| matches!(s, Some(InstructionSource::Unlabeled)));
+            .any(|s| matches!(s, InstructionSource::Unlabeled));
         if has_unlabeled {
             return AdmissionVerdict::Reject(AdmissionDenyReason::RemoteFetchUnlabeledInstructions);
         }
@@ -138,7 +169,7 @@ pub fn check_admission(manifest: &ToolManifest) -> AdmissionVerdict {
     let has_external_sink = manifest
         .admissible_sinks
         .iter()
-        .any(|s| matches!(s, Some(SinkClass::ExternalNetwork)));
+        .any(|s| matches!(s, SinkClass::ExternalNetwork));
     if has_external_sink && !manifest.remote_fetch {
         return AdmissionVerdict::Reject(AdmissionDenyReason::UndeclaredExternalSink);
     }
@@ -152,7 +183,7 @@ pub fn check_admission(manifest: &ToolManifest) -> AdmissionVerdict {
     let has_transitive = manifest
         .instruction_sources
         .iter()
-        .any(|s| matches!(s, Some(InstructionSource::TransitiveTool)));
+        .any(|s| matches!(s, InstructionSource::TransitiveTool));
     if has_transitive && manifest.output_authority == AuthorityLevel::Directive {
         return AdmissionVerdict::Reject(AdmissionDenyReason::DirectiveFromTransitive);
     }
@@ -169,23 +200,17 @@ mod tests {
     use super::*;
 
     fn base_manifest() -> ToolManifest {
-        let mut m = ToolManifest {
-            name: [0; 64],
-            name_len: 9,
-            capabilities: [None; MAX_MANIFEST_OPS],
+        ToolManifest {
+            name: ToolName::new("read_file"),
+            capabilities: vec![Operation::ReadFiles],
             remote_fetch: false,
-            instruction_sources: [None; MAX_MANIFEST_SOURCES],
-            admissible_sinks: [None; MAX_MANIFEST_SINKS],
+            instruction_sources: vec![InstructionSource::Static],
+            admissible_sinks: vec![SinkClass::LocalMemory],
             max_confidentiality: ConfLevel::Internal,
             output_integrity: IntegLevel::Untrusted,
             output_authority: AuthorityLevel::Informational,
-            schema_hash: [0; 32],
-        };
-        m.name[..9].copy_from_slice(b"read_file");
-        m.capabilities[0] = Some(Operation::ReadFiles);
-        m.instruction_sources[0] = Some(InstructionSource::Static);
-        m.admissible_sinks[0] = Some(SinkClass::LocalMemory);
-        m
+            schema_hash: [0; 32], // Filled in by ToolSchemaRegistry
+        }
     }
 
     #[test]
@@ -197,7 +222,7 @@ mod tests {
     #[test]
     fn rejects_empty_capabilities() {
         let mut m = base_manifest();
-        m.capabilities = [None; MAX_MANIFEST_OPS];
+        m.capabilities.clear();
         assert_eq!(
             check_admission(&m),
             AdmissionVerdict::Reject(AdmissionDenyReason::EmptyCapabilities)
@@ -208,7 +233,7 @@ mod tests {
     fn rejects_remote_fetch_with_unlabeled_sources() {
         let mut m = base_manifest();
         m.remote_fetch = true;
-        m.instruction_sources[1] = Some(InstructionSource::Unlabeled);
+        m.instruction_sources.push(InstructionSource::Unlabeled);
         assert_eq!(
             check_admission(&m),
             AdmissionVerdict::Reject(AdmissionDenyReason::RemoteFetchUnlabeledInstructions)
@@ -218,8 +243,7 @@ mod tests {
     #[test]
     fn rejects_undeclared_external_sink() {
         let mut m = base_manifest();
-        m.admissible_sinks[1] = Some(SinkClass::ExternalNetwork);
-        // remote_fetch is false — undeclared
+        m.admissible_sinks.push(SinkClass::ExternalNetwork);
         assert_eq!(
             check_admission(&m),
             AdmissionVerdict::Reject(AdmissionDenyReason::UndeclaredExternalSink)
@@ -240,7 +264,8 @@ mod tests {
     #[test]
     fn rejects_directive_from_transitive() {
         let mut m = base_manifest();
-        m.instruction_sources[1] = Some(InstructionSource::TransitiveTool);
+        m.instruction_sources
+            .push(InstructionSource::TransitiveTool);
         m.output_authority = AuthorityLevel::Directive;
         assert_eq!(
             check_admission(&m),
@@ -252,29 +277,33 @@ mod tests {
     fn admits_remote_fetch_with_labeled_sources() {
         let mut m = base_manifest();
         m.remote_fetch = true;
-        m.admissible_sinks[1] = Some(SinkClass::ExternalNetwork);
-        // Instruction sources are all Static (labeled) — no Unlabeled
+        m.admissible_sinks.push(SinkClass::ExternalNetwork);
         assert_eq!(check_admission(&m), AdmissionVerdict::Admit);
     }
 
-    // ── Exploit scenario: tool-description poisoning ─────────────────
-
     #[test]
     fn rejects_poisoned_tool_manifest() {
-        // A malicious MCP server declares a tool that:
-        // - Fetches instructions from remote URLs
-        // - Has unlabeled instruction sources (poison vector)
-        // - Claims Directive authority (instruction escalation)
         let mut m = base_manifest();
         m.remote_fetch = true;
-        m.instruction_sources[1] = Some(InstructionSource::RemoteUrl);
-        m.instruction_sources[2] = Some(InstructionSource::Unlabeled);
+        m.instruction_sources.push(InstructionSource::RemoteUrl);
+        m.instruction_sources.push(InstructionSource::Unlabeled);
         m.output_authority = AuthorityLevel::Directive;
-
-        // REJECTED: remote fetch + unlabeled instructions
         assert_eq!(
             check_admission(&m),
             AdmissionVerdict::Reject(AdmissionDenyReason::RemoteFetchUnlabeledInstructions)
         );
+    }
+
+    #[test]
+    fn tool_name_truncates() {
+        let long_name = "a".repeat(200);
+        let name = ToolName::new(&long_name);
+        assert_eq!(name.as_str().len(), 128);
+    }
+
+    #[test]
+    fn tool_name_roundtrips() {
+        let name = ToolName::new("read_file");
+        assert_eq!(name.as_str(), "read_file");
     }
 }
