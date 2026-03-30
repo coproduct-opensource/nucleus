@@ -1641,30 +1641,31 @@ fn proof_nucleus_counterexample_witness() {
 fn proof_decision_token_unforgeable() {
     let perms = PermissionLattice::permissive();
     let mut kernel = Kernel::new(perms);
-    let (decision, token) = kernel.decide(Operation::ReadFiles, "test");
+    let op = arbitrary_operation();
+    let (decision, token) = kernel.decide(op, "test");
 
-    // If the operation was allowed, we get a token
+    // For ANY operation: Allow ↔ token present, token matches operation
     if matches!(decision.verdict, Verdict::Allow) {
         assert!(token.is_some());
         let t = token.unwrap();
-        assert!(t.operation() == Operation::ReadFiles);
+        assert!(t.operation() == op);
         assert!(t.sequence() == decision.sequence);
     } else {
         assert!(token.is_none());
     }
 }
 
-/// **E2 — Denied operations never produce tokens.**
+/// **E2 — Denied operations never produce tokens (symbolic).**
 ///
-/// Under a restrictive policy, operations that are denied must never
-/// yield a DecisionToken.
+/// Under a restrictive policy, for any symbolic operation, if the verdict
+/// is Deny then no token is produced.
 #[kani::proof]
 #[kani::solver(cadical)]
 fn proof_denied_ops_have_no_token() {
     let perms = PermissionLattice::restrictive();
     let mut kernel = Kernel::new(perms);
-    // RunBash is denied under restrictive profile
-    let (decision, token) = kernel.decide(Operation::RunBash, "rm -rf /");
+    let op = arbitrary_operation();
+    let (decision, token) = kernel.decide(op, "subject");
     if matches!(decision.verdict, Verdict::Deny(_)) {
         assert!(token.is_none());
     }
