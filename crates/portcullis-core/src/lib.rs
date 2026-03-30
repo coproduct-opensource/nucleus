@@ -53,6 +53,8 @@
 //!   proof verifies algebraic structure of the type. Together they provide
 //!   complementary assurance.
 
+pub mod flow;
+
 /// Tool permission levels in lattice ordering.
 ///
 /// The ordering is: `Never < LowRisk < Always`
