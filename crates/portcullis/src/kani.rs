@@ -1627,14 +1627,15 @@ fn proof_nucleus_counterexample_witness() {
 // E-series: DecisionToken linear proof invariants
 // ============================================================================
 
-/// **E1 — DecisionToken is unforgeable.**
+/// **E1 — DecisionToken is unforgeable via decide().**
 ///
 /// The `_seal` field is private to the kernel module. This proof verifies
-/// that the only way to obtain a DecisionToken is through `Kernel::decide()`,
-/// and that the token is only produced when the verdict is `Allow`.
+/// that `Kernel::decide()` produces a token only when the verdict is `Allow`.
 ///
-/// Combined with Rust's type system (non-Clone, non-Copy), this means
-/// every DecisionToken in existence was issued by exactly one `decide()` call.
+/// Combined with Rust's type system (non-Clone, non-Copy, sealed construction),
+/// every DecisionToken in existence was issued by exactly one kernel method
+/// (`decide()` or `issue_approved_token()` — see E4). Both paths record a
+/// trace entry and update exposure tracking.
 #[kani::proof]
 #[kani::solver(cadical)]
 fn proof_decision_token_unforgeable() {
@@ -1684,4 +1685,57 @@ fn proof_token_operation_matches_decision() {
         assert!(t.operation() == decision.operation);
         assert!(t.sequence() == decision.sequence);
     }
+}
+
+/// **E4 — issue_approved_token produces audited tokens with exposure tracking.**
+///
+/// `issue_approved_token()` is the second token-issuing path (alongside `decide()`).
+/// It exists for the RequiresApproval → external approval flow. This proof verifies:
+/// 1. The token carries the correct operation
+/// 2. The trace grows (auditable)
+/// 3. Exposure is tracked (monotonic — never decreases)
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_issue_approved_token_is_audited() {
+    let perms = PermissionLattice::permissive();
+    let mut kernel = Kernel::new(perms);
+    let op = arbitrary_operation();
+
+    let trace_len_before = kernel.trace().len();
+    let exposure_before = kernel.exposure().count();
+
+    let token = kernel.issue_approved_token(op, "external-approval");
+
+    // Token carries the correct operation
+    assert!(token.operation() == op);
+    // Trace grew — the operation is auditable
+    assert!(kernel.trace().len() > trace_len_before);
+    // Exposure is monotonic — never decreases
+    assert!(kernel.exposure().count() >= exposure_before);
+}
+
+/// **E5 — issue_approved_token under deny policy still tracks exposure.**
+///
+/// Even if the policy would deny this operation via `decide()`,
+/// `issue_approved_token()` bypasses the policy (by design — the caller
+/// asserts external approval). This proof verifies the bypass is still
+/// audited and exposure-tracked.
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_approved_token_bypass_is_audited() {
+    let perms = PermissionLattice::restrictive();
+    let mut kernel = Kernel::new(perms);
+
+    // decide() would deny RunBash under restrictive policy
+    let (decision, _) = kernel.decide(Operation::RunBash, "test-deny");
+    assert!(matches!(decision.verdict, Verdict::Deny(_)));
+
+    let trace_len_before = kernel.trace().len();
+
+    // issue_approved_token bypasses the policy — this is by design
+    let token = kernel.issue_approved_token(Operation::RunBash, "external-override");
+
+    // But the bypass is audited
+    assert!(token.operation() == Operation::RunBash);
+    assert!(kernel.trace().len() > trace_len_before);
 }

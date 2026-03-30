@@ -31,7 +31,7 @@ jobs:
 
       # --- Rust nightly for Charon ---
       - name: Install Rust nightly for Charon
-        uses: dtolnay/rust-toolchain@56f84321dbab9ef3e21edae48f4f43da4b0a4a4a # master
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
           toolchain: ${{ env.CHARON_NIGHTLY }}
           components: rustc-dev,llvm-tools-preview,rust-src
