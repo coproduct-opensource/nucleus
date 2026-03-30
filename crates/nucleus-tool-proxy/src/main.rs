@@ -2035,12 +2035,12 @@ async fn read_file(
         return Err(ApiError::Validation(e));
     }
 
-    // Kernel mediation
-    {
+    // Kernel mediation — obtain DecisionToken for sandbox I/O
+    let decision_token = {
         let mut kernel = state.kernel.lock().await;
-        let (decision, _token) = kernel.decide(operation, &req.path);
+        let (decision, token) = kernel.decide(operation, &req.path);
         match decision.verdict {
-            Verdict::Allow => {}
+            Verdict::Allow => token.expect("Allow verdict always produces token"),
             Verdict::Deny(_) => {
                 return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
                     capability: format!("{operation:?}"),
@@ -2062,22 +2062,30 @@ async fn read_file(
                 }));
             }
         }
-    }
+    };
 
     let path = req.path.clone();
 
-    let contents = match state.runtime.sandbox().read_to_string(&path) {
+    let contents = match state
+        .runtime
+        .sandbox()
+        .read_to_string(&path, &decision_token)
+    {
         Ok(contents) => contents,
         Err(NucleusError::ApprovalRequired { operation: op }) => {
             // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
             if check_identity_policy(&state, auth_ctx.as_ref(), &format!("read {}", path))
                 || state.approvals.consume(&op)
             {
-                let token = state.runtime.sandbox().request_approval(op.clone())?;
+                let approval = state.runtime.sandbox().request_approval(op.clone())?;
+                let approved_dt = {
+                    let mut kernel = state.kernel.lock().await;
+                    kernel.issue_approved_token(operation, &format!("approved: read {}", path))
+                };
                 state
                     .runtime
                     .sandbox()
-                    .read_to_string_approved(&path, &token)?
+                    .read_to_string_approved(&path, &approved_dt, &approval)?
             } else {
                 if let Err(e) = sink.record(VerdictContext {
                     operation,
@@ -2154,12 +2162,12 @@ async fn write_file(
         return Err(ApiError::Validation(e));
     }
 
-    // Kernel mediation
-    {
+    // Kernel mediation — obtain DecisionToken for sandbox I/O
+    let decision_token = {
         let mut kernel = state.kernel.lock().await;
-        let (decision, _token) = kernel.decide(operation, &req.path);
+        let (decision, token) = kernel.decide(operation, &req.path);
         match decision.verdict {
-            Verdict::Allow => {}
+            Verdict::Allow => token.expect("Allow verdict always produces token"),
             Verdict::Deny(_) => {
                 return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
                     capability: format!("{operation:?}"),
@@ -2181,23 +2189,33 @@ async fn write_file(
                 }));
             }
         }
-    }
+    };
 
     let path = req.path.clone();
     let contents = req.contents.clone();
 
-    match state.runtime.sandbox().write(&path, contents.as_bytes()) {
+    match state
+        .runtime
+        .sandbox()
+        .write(&path, contents.as_bytes(), &decision_token)
+    {
         Ok(()) => {}
         Err(NucleusError::ApprovalRequired { operation: op }) => {
             // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
             if check_identity_policy(&state, auth_ctx.as_ref(), &format!("write {}", path))
                 || state.approvals.consume(&op)
             {
-                let token = state.runtime.sandbox().request_approval(op.clone())?;
-                state
-                    .runtime
-                    .sandbox()
-                    .write_approved(&path, contents.as_bytes(), &token)?;
+                let approval = state.runtime.sandbox().request_approval(op.clone())?;
+                let approved_dt = {
+                    let mut kernel = state.kernel.lock().await;
+                    kernel.issue_approved_token(operation, &format!("approved: write {}", path))
+                };
+                state.runtime.sandbox().write_approved(
+                    &path,
+                    contents.as_bytes(),
+                    &approved_dt,
+                    &approval,
+                )?;
             } else {
                 if let Err(e) = sink.record(VerdictContext {
                     operation,
@@ -2309,12 +2327,12 @@ async fn run_command(
         }
     }
 
-    // Kernel mediation
-    {
+    // Kernel mediation — obtain DecisionToken for executor I/O
+    let decision_token = {
         let mut kernel = state.kernel.lock().await;
-        let (decision, _token) = kernel.decide(operation, &display_command);
+        let (decision, token) = kernel.decide(operation, &display_command);
         match decision.verdict {
-            Verdict::Allow => {}
+            Verdict::Allow => token.expect("Allow verdict always produces token"),
             Verdict::Deny(_) => {
                 return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
                     capability: format!("{operation:?}"),
@@ -2336,7 +2354,7 @@ async fn run_command(
                 }));
             }
         }
-    }
+    };
 
     let executor = state.runtime.executor();
 
@@ -2344,7 +2362,7 @@ async fn run_command(
     let stdin = req.stdin.as_deref();
     let directory = req.directory.as_deref();
 
-    let output = match executor.run_args(&req.args, stdin, directory) {
+    let output = match executor.run_args(&req.args, stdin, directory, &decision_token) {
         Ok(output) => output,
         Err(NucleusError::ApprovalRequired { operation: op }) => {
             // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
@@ -2354,8 +2372,21 @@ async fn run_command(
                 &format!("execute {}", display_command),
             ) || state.approvals.consume(&op)
             {
-                let token = executor.request_approval(&op)?;
-                executor.run_args_with_approval(&req.args, stdin, directory, &token)?
+                let approval = executor.request_approval(&op)?;
+                let approved_dt = {
+                    let mut kernel = state.kernel.lock().await;
+                    kernel.issue_approved_token(
+                        operation,
+                        &format!("approved: execute {}", display_command),
+                    )
+                };
+                executor.run_args_with_approval(
+                    &req.args,
+                    stdin,
+                    directory,
+                    &approved_dt,
+                    &approval,
+                )?
             } else {
                 if let Err(e) = sink.record(VerdictContext {
                     operation,
@@ -2441,7 +2472,7 @@ async fn web_fetch(
     // Kernel mediation
     {
         let mut kernel = state.kernel.lock().await;
-        let (decision, _token) = kernel.decide(operation, &url_str);
+        let (decision, _decision_token) = kernel.decide(operation, &url_str);
         match decision.verdict {
             Verdict::Allow => {}
             Verdict::Deny(_) => {
@@ -2653,7 +2684,7 @@ async fn glob_search(
     // Kernel mediation
     {
         let mut kernel = state.kernel.lock().await;
-        let (decision, _token) = kernel.decide(operation, &req.pattern);
+        let (decision, _decision_token) = kernel.decide(operation, &req.pattern);
         match decision.verdict {
             Verdict::Allow => {}
             Verdict::Deny(_) => {
@@ -2836,7 +2867,7 @@ async fn grep_search(
     // Kernel mediation
     {
         let mut kernel = state.kernel.lock().await;
-        let (decision, _token) = kernel.decide(operation, &req.pattern);
+        let (decision, _decision_token) = kernel.decide(operation, &req.pattern);
         match decision.verdict {
             Verdict::Allow => {}
             Verdict::Deny(_) => {
@@ -3060,7 +3091,7 @@ async fn web_search(
     // Kernel mediation
     {
         let mut kernel = state.kernel.lock().await;
-        let (decision, _token) = kernel.decide(operation, &req.query);
+        let (decision, _decision_token) = kernel.decide(operation, &req.query);
         match decision.verdict {
             Verdict::Allow => {}
             Verdict::Deny(_) => {

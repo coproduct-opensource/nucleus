@@ -794,6 +794,35 @@ impl Kernel {
         self.provenance.as_ref()
     }
 
+    /// Issue a DecisionToken after an external approval flow.
+    ///
+    /// SECURITY: Only call this after verifying the operation was approved
+    /// through an external mechanism (identity policy, pre-granted approval, etc.).
+    /// Records a trace entry for auditability.
+    ///
+    /// This exists for the case where `decide()` returned `RequiresApproval`,
+    /// an external mechanism (identity policy, pre-grant store) authorized the
+    /// operation, and the caller needs a token to pass to Sandbox/Executor I/O.
+    /// Calling `decide()` again would double-count the operation in the exposure
+    /// accumulator, so this method issues a token without re-running the full
+    /// decision pipeline.
+    pub fn issue_approved_token(&mut self, operation: Operation, reason: &str) -> DecisionToken {
+        let pre_hash = self.effective.checksum();
+        let pre_exposure_count = self.exposure.count();
+        self.exposure = exposure_core::apply_record(&self.exposure, operation);
+        let (_, token) = self.record_with_exposure(
+            operation,
+            reason,
+            Verdict::Allow,
+            &pre_hash,
+            pre_exposure_count,
+            None,
+            false,
+            false,
+        );
+        token.expect("Allow verdict always produces token")
+    }
+
     // ── Internal ──────────────────────────────────────────────────────
 
     /// Record a decision with exposure transition in the trace and return it

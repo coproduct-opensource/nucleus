@@ -33,6 +33,7 @@ use std::sync::Arc;
 
 use crate::approval::{ApprovalRequest, ApprovalToken, Approver, CallbackApprover};
 use crate::error::{NucleusError, Result};
+use portcullis::kernel::DecisionToken;
 use portcullis::{
     CapabilityLattice, CapabilityLevel, Obligations, Operation, PathLattice, PermissionLattice,
 };
@@ -117,12 +118,29 @@ impl Sandbox {
     /// Open a file for reading.
     ///
     /// The path is relative to the sandbox root. Policy is checked before opening.
-    pub fn open(&self, path: impl AsRef<Path>) -> Result<File> {
+    /// Requires a `DecisionToken` from `Kernel::decide()` proving the operation
+    /// was authorized.
+    pub fn open(&self, path: impl AsRef<Path>, decision: &DecisionToken) -> Result<File> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::ReadFiles,
+            "DecisionToken operation mismatch"
+        );
         self.open_internal(path.as_ref(), None)
     }
 
     /// Open a file for reading with an approval token.
-    pub fn open_approved(&self, path: impl AsRef<Path>, approval: &ApprovalToken) -> Result<File> {
+    pub fn open_approved(
+        &self,
+        path: impl AsRef<Path>,
+        decision: &DecisionToken,
+        approval: &ApprovalToken,
+    ) -> Result<File> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::ReadFiles,
+            "DecisionToken operation mismatch"
+        );
         self.open_internal(path.as_ref(), Some(approval))
     }
 
@@ -142,7 +160,17 @@ impl Sandbox {
     }
 
     /// Open a file with custom options.
-    pub fn open_with(&self, path: impl AsRef<Path>, options: &OpenOptions) -> Result<File> {
+    pub fn open_with(
+        &self,
+        path: impl AsRef<Path>,
+        options: &OpenOptions,
+        decision: &DecisionToken,
+    ) -> Result<File> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::EditFiles,
+            "DecisionToken operation mismatch"
+        );
         self.open_with_internal(path.as_ref(), options, None)
     }
 
@@ -151,8 +179,14 @@ impl Sandbox {
         &self,
         path: impl AsRef<Path>,
         options: &OpenOptions,
+        decision: &DecisionToken,
         approval: &ApprovalToken,
     ) -> Result<File> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::EditFiles,
+            "DecisionToken operation mismatch"
+        );
         self.open_with_internal(path.as_ref(), options, Some(approval))
     }
 
@@ -177,7 +211,12 @@ impl Sandbox {
     /// Create a new file for writing.
     ///
     /// The path is relative to the sandbox root. Policy is checked before creating.
-    pub fn create(&self, path: impl AsRef<Path>) -> Result<File> {
+    pub fn create(&self, path: impl AsRef<Path>, decision: &DecisionToken) -> Result<File> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::WriteFiles,
+            "DecisionToken operation mismatch"
+        );
         self.create_internal(path.as_ref(), None)
     }
 
@@ -185,8 +224,14 @@ impl Sandbox {
     pub fn create_approved(
         &self,
         path: impl AsRef<Path>,
+        decision: &DecisionToken,
         approval: &ApprovalToken,
     ) -> Result<File> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::WriteFiles,
+            "DecisionToken operation mismatch"
+        );
         self.create_internal(path.as_ref(), Some(approval))
     }
 
@@ -203,7 +248,12 @@ impl Sandbox {
     }
 
     /// Read a file's contents as bytes.
-    pub fn read(&self, path: impl AsRef<Path>) -> Result<Vec<u8>> {
+    pub fn read(&self, path: impl AsRef<Path>, decision: &DecisionToken) -> Result<Vec<u8>> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::ReadFiles,
+            "DecisionToken operation mismatch"
+        );
         self.read_internal(path.as_ref(), None)
     }
 
@@ -211,8 +261,14 @@ impl Sandbox {
     pub fn read_approved(
         &self,
         path: impl AsRef<Path>,
+        decision: &DecisionToken,
         approval: &ApprovalToken,
     ) -> Result<Vec<u8>> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::ReadFiles,
+            "DecisionToken operation mismatch"
+        );
         self.read_internal(path.as_ref(), Some(approval))
     }
 
@@ -227,7 +283,16 @@ impl Sandbox {
     }
 
     /// Read a file's contents as a string.
-    pub fn read_to_string(&self, path: impl AsRef<Path>) -> Result<String> {
+    pub fn read_to_string(
+        &self,
+        path: impl AsRef<Path>,
+        decision: &DecisionToken,
+    ) -> Result<String> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::ReadFiles,
+            "DecisionToken operation mismatch"
+        );
         self.read_to_string_internal(path.as_ref(), None)
     }
 
@@ -235,8 +300,14 @@ impl Sandbox {
     pub fn read_to_string_approved(
         &self,
         path: impl AsRef<Path>,
+        decision: &DecisionToken,
         approval: &ApprovalToken,
     ) -> Result<String> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::ReadFiles,
+            "DecisionToken operation mismatch"
+        );
         self.read_to_string_internal(path.as_ref(), Some(approval))
     }
 
@@ -257,7 +328,17 @@ impl Sandbox {
     }
 
     /// Write bytes to a file (creates if needed, truncates if exists).
-    pub fn write(&self, path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> Result<()> {
+    pub fn write(
+        &self,
+        path: impl AsRef<Path>,
+        contents: impl AsRef<[u8]>,
+        decision: &DecisionToken,
+    ) -> Result<()> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::WriteFiles,
+            "DecisionToken operation mismatch"
+        );
         self.write_internal(path.as_ref(), contents, None)
     }
 
@@ -266,8 +347,14 @@ impl Sandbox {
         &self,
         path: impl AsRef<Path>,
         contents: impl AsRef<[u8]>,
+        decision: &DecisionToken,
         approval: &ApprovalToken,
     ) -> Result<()> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::WriteFiles,
+            "DecisionToken operation mismatch"
+        );
         self.write_internal(path.as_ref(), contents, Some(approval))
     }
 
@@ -289,7 +376,12 @@ impl Sandbox {
     }
 
     /// Create a directory.
-    pub fn create_dir(&self, path: impl AsRef<Path>) -> Result<()> {
+    pub fn create_dir(&self, path: impl AsRef<Path>, decision: &DecisionToken) -> Result<()> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::WriteFiles,
+            "DecisionToken operation mismatch"
+        );
         self.create_dir_internal(path.as_ref(), None)
     }
 
@@ -297,8 +389,14 @@ impl Sandbox {
     pub fn create_dir_approved(
         &self,
         path: impl AsRef<Path>,
+        decision: &DecisionToken,
         approval: &ApprovalToken,
     ) -> Result<()> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::WriteFiles,
+            "DecisionToken operation mismatch"
+        );
         self.create_dir_internal(path.as_ref(), Some(approval))
     }
 
@@ -315,7 +413,12 @@ impl Sandbox {
     }
 
     /// Create a directory and all parent directories.
-    pub fn create_dir_all(&self, path: impl AsRef<Path>) -> Result<()> {
+    pub fn create_dir_all(&self, path: impl AsRef<Path>, decision: &DecisionToken) -> Result<()> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::WriteFiles,
+            "DecisionToken operation mismatch"
+        );
         self.create_dir_all_internal(path.as_ref(), None)
     }
 
@@ -323,8 +426,14 @@ impl Sandbox {
     pub fn create_dir_all_approved(
         &self,
         path: impl AsRef<Path>,
+        decision: &DecisionToken,
         approval: &ApprovalToken,
     ) -> Result<()> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::WriteFiles,
+            "DecisionToken operation mismatch"
+        );
         self.create_dir_all_internal(path.as_ref(), Some(approval))
     }
 
@@ -341,7 +450,12 @@ impl Sandbox {
     }
 
     /// Remove a file.
-    pub fn remove_file(&self, path: impl AsRef<Path>) -> Result<()> {
+    pub fn remove_file(&self, path: impl AsRef<Path>, decision: &DecisionToken) -> Result<()> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::EditFiles,
+            "DecisionToken operation mismatch"
+        );
         self.remove_file_internal(path.as_ref(), None)
     }
 
@@ -349,8 +463,14 @@ impl Sandbox {
     pub fn remove_file_approved(
         &self,
         path: impl AsRef<Path>,
+        decision: &DecisionToken,
         approval: &ApprovalToken,
     ) -> Result<()> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::EditFiles,
+            "DecisionToken operation mismatch"
+        );
         self.remove_file_internal(path.as_ref(), Some(approval))
     }
 
@@ -367,7 +487,12 @@ impl Sandbox {
     }
 
     /// Remove an empty directory.
-    pub fn remove_dir(&self, path: impl AsRef<Path>) -> Result<()> {
+    pub fn remove_dir(&self, path: impl AsRef<Path>, decision: &DecisionToken) -> Result<()> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::EditFiles,
+            "DecisionToken operation mismatch"
+        );
         self.remove_dir_internal(path.as_ref(), None)
     }
 
@@ -375,8 +500,14 @@ impl Sandbox {
     pub fn remove_dir_approved(
         &self,
         path: impl AsRef<Path>,
+        decision: &DecisionToken,
         approval: &ApprovalToken,
     ) -> Result<()> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::EditFiles,
+            "DecisionToken operation mismatch"
+        );
         self.remove_dir_internal(path.as_ref(), Some(approval))
     }
 
@@ -393,12 +524,27 @@ impl Sandbox {
     }
 
     /// Check if a path exists within the sandbox.
-    pub fn exists(&self, path: impl AsRef<Path>) -> bool {
+    pub fn exists(&self, path: impl AsRef<Path>, decision: &DecisionToken) -> bool {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::ReadFiles,
+            "DecisionToken operation mismatch"
+        );
         self.exists_internal(path.as_ref(), None)
     }
 
     /// Check if a path exists within the sandbox with an approval token.
-    pub fn exists_approved(&self, path: impl AsRef<Path>, approval: &ApprovalToken) -> bool {
+    pub fn exists_approved(
+        &self,
+        path: impl AsRef<Path>,
+        decision: &DecisionToken,
+        approval: &ApprovalToken,
+    ) -> bool {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::ReadFiles,
+            "DecisionToken operation mismatch"
+        );
         self.exists_internal(path.as_ref(), Some(approval))
     }
 
@@ -533,7 +679,12 @@ impl Sandbox {
     ///
     /// The returned sandbox is constrained to the subdirectory and inherits
     /// the parent's policy (which will further restrict access).
-    pub fn open_dir(&self, path: impl AsRef<Path>) -> Result<Sandbox> {
+    pub fn open_dir(&self, path: impl AsRef<Path>, decision: &DecisionToken) -> Result<Sandbox> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::ReadFiles,
+            "DecisionToken operation mismatch"
+        );
         self.open_dir_internal(path.as_ref(), None)
     }
 
@@ -541,8 +692,14 @@ impl Sandbox {
     pub fn open_dir_approved(
         &self,
         path: impl AsRef<Path>,
+        decision: &DecisionToken,
         approval: &ApprovalToken,
     ) -> Result<Sandbox> {
+        debug_assert_eq!(
+            decision.operation(),
+            Operation::ReadFiles,
+            "DecisionToken operation mismatch"
+        );
         self.open_dir_internal(path.as_ref(), Some(approval))
     }
 
@@ -572,53 +729,68 @@ impl Sandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use portcullis::kernel::Kernel;
     use tempfile::tempdir;
 
+    #[allow(clippy::field_reassign_with_default)]
     fn permissive_policy() -> PermissionLattice {
-        let mut policy = PermissionLattice {
-            paths: PathLattice::default(),
-            ..PermissionLattice::default()
-        };
+        let mut policy = PermissionLattice::default();
+        policy.paths = PathLattice::default();
         policy.obligations = Obligations::default();
         policy.capabilities.write_files = CapabilityLevel::LowRisk;
         policy.capabilities.edit_files = CapabilityLevel::LowRisk;
         policy
     }
 
+    #[allow(clippy::field_reassign_with_default)]
     fn sensitive_policy() -> PermissionLattice {
-        let mut policy = PermissionLattice {
-            paths: PathLattice::block_sensitive(),
-            ..PermissionLattice::default()
-        };
+        let mut policy = PermissionLattice::default();
+        policy.paths = PathLattice::block_sensitive();
         policy.obligations = Obligations::default();
         policy.capabilities.write_files = CapabilityLevel::LowRisk;
         policy.capabilities.edit_files = CapabilityLevel::LowRisk;
         policy
+    }
+
+    /// Helper: get a DecisionToken from a permissive kernel for a given operation.
+    fn token(kernel: &mut Kernel, op: Operation, subject: &str) -> DecisionToken {
+        let (_decision, tok) = kernel.decide(op, subject);
+        tok.expect("permissive kernel should allow this operation")
     }
 
     #[test]
     fn test_basic_read_write() {
         let tmp = tempdir().unwrap();
-        let sandbox = Sandbox::new(&permissive_policy(), tmp.path()).unwrap();
+        let policy = permissive_policy();
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
 
         // Write a file
-        sandbox.write("test.txt", b"hello world").unwrap();
+        let wt = token(&mut kernel, Operation::WriteFiles, "test.txt");
+        sandbox.write("test.txt", b"hello world", &wt).unwrap();
 
         // Read it back
-        let contents = sandbox.read_to_string("test.txt").unwrap();
+        let rt = token(&mut kernel, Operation::ReadFiles, "test.txt");
+        let contents = sandbox.read_to_string("test.txt", &rt).unwrap();
         assert_eq!(contents, "hello world");
     }
 
     #[test]
     fn test_policy_blocks_sensitive() {
         let tmp = tempdir().unwrap();
-        let sandbox = Sandbox::new(&sensitive_policy(), tmp.path()).unwrap();
+        let policy = sensitive_policy();
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
 
         // Should be able to write normal files
-        sandbox.write("readme.md", b"# Hello").unwrap();
+        let wt = token(&mut kernel, Operation::WriteFiles, "readme.md");
+        sandbox.write("readme.md", b"# Hello", &wt).unwrap();
 
-        // Should block .env files
-        let result = sandbox.write(".env", b"SECRET=foo");
+        // Should block .env files (sandbox policy blocks it; kernel also blocks via PathLattice)
+        // Force a token to test the sandbox's own path policy enforcement
+        let wt2 =
+            kernel.issue_approved_token(Operation::WriteFiles, "test: .env blocked by sandbox");
+        let result = sandbox.write(".env", b"SECRET=foo", &wt2);
         assert!(result.is_err());
     }
 
@@ -628,9 +800,16 @@ mod tests {
         let mut policy = permissive_policy();
         policy.capabilities.write_files = CapabilityLevel::Never;
 
+        let mut kernel = Kernel::new(policy.clone());
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
 
-        let result = sandbox.create("blocked.txt");
+        // Kernel will deny this — no token produced
+        let (_decision, tok) = kernel.decide(Operation::WriteFiles, "blocked.txt");
+        assert!(tok.is_none(), "kernel should deny Never capability");
+
+        // Even if we bypass the kernel (issue_approved_token for test), sandbox blocks it
+        let forced_token = kernel.issue_approved_token(Operation::WriteFiles, "test: force token");
+        let result = sandbox.create("blocked.txt", &forced_token);
         assert!(matches!(
             result,
             Err(NucleusError::InsufficientCapability { .. })
@@ -643,40 +822,65 @@ mod tests {
         let mut policy = permissive_policy();
         policy.obligations.insert(Operation::WriteFiles);
 
-        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
-        let result = sandbox.create("needs_approval.txt");
-        assert!(matches!(result, Err(NucleusError::ApprovalRequired { .. })));
+        let mut kernel = Kernel::new(policy.clone());
+
+        // Without pre-granted approval, kernel returns RequiresApproval — no token
+        let (decision, tok) = kernel.decide(Operation::WriteFiles, "needs_approval.txt");
+        assert!(
+            matches!(
+                decision.verdict,
+                portcullis::kernel::Verdict::RequiresApproval
+            ),
+            "should require approval"
+        );
+        assert!(tok.is_none());
+
+        // Grant approval, then get a token
+        kernel.grant_approval(Operation::WriteFiles, 1);
+        let (_, tok2) = kernel.decide(Operation::WriteFiles, "approved.txt");
+        let decision_token = tok2.expect("should get token after grant_approval");
 
         let approved = Sandbox::new(&policy, tmp.path())
             .unwrap()
             .with_approval_callback(|_| true);
-        let token = approved.request_approval("create approved.txt").unwrap();
-        let result = approved.create_approved("approved.txt", &token);
+        let approval_token = approved.request_approval("create approved.txt").unwrap();
+        let result = approved.create_approved("approved.txt", &decision_token, &approval_token);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_escape_via_absolute_path() {
         let tmp = tempdir().unwrap();
-        let sandbox = Sandbox::new(&permissive_policy(), tmp.path()).unwrap();
+        let policy = permissive_policy();
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
 
         // Absolute paths should be rejected at policy level
-        let result = sandbox.open("/etc/passwd");
+        let rt = token(&mut kernel, Operation::ReadFiles, "/etc/passwd");
+        let result = sandbox.open("/etc/passwd", &rt);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_subdirectory_sandbox() {
         let tmp = tempdir().unwrap();
-        let sandbox = Sandbox::new(&permissive_policy(), tmp.path()).unwrap();
+        let policy = permissive_policy();
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
 
         // Create a subdirectory
-        sandbox.create_dir("subdir").unwrap();
-        sandbox.write("subdir/file.txt", b"nested").unwrap();
+        let wt1 = token(&mut kernel, Operation::WriteFiles, "subdir");
+        sandbox.create_dir("subdir", &wt1).unwrap();
+
+        let wt2 = token(&mut kernel, Operation::WriteFiles, "subdir/file.txt");
+        sandbox.write("subdir/file.txt", b"nested", &wt2).unwrap();
 
         // Open as sub-sandbox
-        let subsandbox = sandbox.open_dir("subdir").unwrap();
-        let contents = subsandbox.read_to_string("file.txt").unwrap();
+        let rt1 = token(&mut kernel, Operation::ReadFiles, "subdir");
+        let subsandbox = sandbox.open_dir("subdir", &rt1).unwrap();
+
+        let rt2 = token(&mut kernel, Operation::ReadFiles, "file.txt");
+        let contents = subsandbox.read_to_string("file.txt", &rt2).unwrap();
         assert_eq!(contents, "nested");
     }
 }
