@@ -121,9 +121,10 @@ These are important security properties that have NO formal verification:
 | DecisionToken | Kani BMC | Token issuance, audit, exposure | Bounded | 5 | Every PR (fast), nightly (full) |
 | Permission algebra | Kani BMC | Distributivity, monotonicity, monoid laws | Bounded | 33 | Every PR (fast), nightly (full) |
 | Constitutional kernel | Kani BMC | Budget, capability, I/O invariants | Bounded | 17 | Every PR (fast), nightly (full) |
+| Flow enforcement rules | Kani BMC | No-secret-exfil, authority confinement, no-integrity-laundering, propagation monotonicity, trusted-user-allowed | Bounded | 5 | Nightly |
 | Sandbox/network/crypto | — | — | — | — | Unit tests only |
 
-**Total: 67 Kani BMC harnesses + 55 Lean 4 theorems = 122 verification artifacts.**
+**Total: 72 Kani BMC harnesses + 55 Lean 4 theorems = 127 verification artifacts.**
 
 ## Known Limitations & Honest Caveats
 
