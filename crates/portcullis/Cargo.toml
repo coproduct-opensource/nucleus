@@ -30,6 +30,9 @@ webhook = ["dep:reqwest", "dep:tokio", "serde"]
 # Remote append-only audit sink (S3-compatible: AWS S3, MinIO, R2, Tigris)
 remote-audit = ["dep:aws-sdk-s3", "dep:aws-config", "dep:tokio", "serde"]
 
+# Cedar policy language integration (CNCF Sandbox project)
+cedar = ["dep:cedar-policy", "serde"]
+
 # SECURITY: Enable this feature ONLY for testing. It exposes methods that
 # bypass security constraints (e.g., disabling uninhabitable state enforcement).
 # DO NOT enable in production builds.
@@ -65,6 +68,9 @@ regex = { workspace = true }
 
 # CEL expression evaluation (optional, for user-defined nuclei)
 cel-interpreter = { version = "0.10", optional = true }
+
+# Cedar policy language (CNCF Sandbox — human-readable, analyzable policies)
+cedar-policy = { version = "4", optional = true }
 
 # Policy specification parsing (optional)
 serde_yaml = { workspace = true, optional = true }
