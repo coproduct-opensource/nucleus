@@ -117,12 +117,13 @@ These are important security properties that have NO formal verification:
 |-------|------|-------|-------|----------|-----|
 | Lattice algebra + correspondence | Lean 4 + Mathlib + Aeneas | `CapabilityLevel`, `CapabilityLattice` HeytingAlgebra + Rust fn = lattice op | Unbounded | 23 | Every PR (lean-build) |
 | Exposure tracker | Lean 4 | `ExposureSet`, `classify_operation`, `should_gate` | Unbounded | 14 | Every PR (lean-build) |
+| IFC label lattice (Flow Kernel) | Lean 4 | Authority confinement, integrity taint, Invariant exploit theorem | Unbounded | 18 | Every PR (lean-build) |
 | DecisionToken | Kani BMC | Token issuance, audit, exposure | Bounded | 5 | Every PR (fast), nightly (full) |
 | Permission algebra | Kani BMC | Distributivity, monotonicity, monoid laws | Bounded | 33 | Every PR (fast), nightly (full) |
 | Constitutional kernel | Kani BMC | Budget, capability, I/O invariants | Bounded | 17 | Every PR (fast), nightly (full) |
 | Sandbox/network/crypto | — | — | — | — | Unit tests only |
 
-**Total: 67 Kani BMC harnesses + 37 Lean 4 theorems = 104 verification artifacts.**
+**Total: 67 Kani BMC harnesses + 55 Lean 4 theorems = 122 verification artifacts.**
 
 ## Known Limitations & Honest Caveats
 
