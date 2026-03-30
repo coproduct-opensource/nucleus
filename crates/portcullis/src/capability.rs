@@ -12,95 +12,10 @@ use serde::{Deserialize, Serialize};
 pub use portcullis_core::CapabilityLevel;
 
 /// Operations that can be gated by approval.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
-pub enum Operation {
-    /// Read files from disk
-    ReadFiles,
-    /// Write files to disk
-    WriteFiles,
-    /// Edit files in place
-    EditFiles,
-    /// Run shell commands
-    RunBash,
-    /// Glob search
-    GlobSearch,
-    /// Grep search
-    GrepSearch,
-    /// Web search
-    WebSearch,
-    /// Fetch URLs
-    WebFetch,
-    /// Git commit
-    GitCommit,
-    /// Git push
-    GitPush,
-    /// Create PR
-    CreatePr,
-    /// Manage sub-pods (create, list, monitor, cancel)
-    ManagePods,
-}
-
-impl Operation {
-    /// All 12 core operations.
-    pub const ALL: [Operation; 12] = [
-        Operation::ReadFiles,
-        Operation::WriteFiles,
-        Operation::EditFiles,
-        Operation::RunBash,
-        Operation::GlobSearch,
-        Operation::GrepSearch,
-        Operation::WebSearch,
-        Operation::WebFetch,
-        Operation::GitCommit,
-        Operation::GitPush,
-        Operation::CreatePr,
-        Operation::ManagePods,
-    ];
-}
-
-impl TryFrom<&str> for Operation {
-    type Error = String;
-
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        match s {
-            "read_files" => Ok(Operation::ReadFiles),
-            "write_files" => Ok(Operation::WriteFiles),
-            "edit_files" => Ok(Operation::EditFiles),
-            "run_bash" => Ok(Operation::RunBash),
-            "glob_search" => Ok(Operation::GlobSearch),
-            "grep_search" => Ok(Operation::GrepSearch),
-            "web_search" => Ok(Operation::WebSearch),
-            "web_fetch" => Ok(Operation::WebFetch),
-            "git_commit" => Ok(Operation::GitCommit),
-            "git_push" => Ok(Operation::GitPush),
-            "create_pr" => Ok(Operation::CreatePr),
-            "manage_pods" => Ok(Operation::ManagePods),
-            other => Err(format!("unknown operation: {other}")),
-        }
-    }
-}
-
-impl std::fmt::Display for Operation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            Operation::ReadFiles => "read_files",
-            Operation::WriteFiles => "write_files",
-            Operation::EditFiles => "edit_files",
-            Operation::RunBash => "run_bash",
-            Operation::GlobSearch => "glob_search",
-            Operation::GrepSearch => "grep_search",
-            Operation::WebSearch => "web_search",
-            Operation::WebFetch => "web_fetch",
-            Operation::GitCommit => "git_commit",
-            Operation::GitPush => "git_push",
-            Operation::CreatePr => "create_pr",
-            Operation::ManagePods => "manage_pods",
-        };
-        write!(f, "{s}")
-    }
-}
+///
+/// Single source of truth: re-exported from `portcullis-core`.
+/// The verified type IS the production type — one type, zero translation layers.
+pub use portcullis_core::{Operation, OperationParseError};
 
 /// Extension operation not covered by Verus proofs.
 ///

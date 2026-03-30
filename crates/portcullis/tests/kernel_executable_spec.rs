@@ -689,3 +689,61 @@ fn spec_neutral_ops_unaffected_by_exposure() {
         );
     }
 }
+
+/// Adversarial gap #10: Deny is never followed by Allow for the same
+/// operation in the same session (without intervening approval grant).
+///
+/// The kernel's monotonicity invariant means: if an operation is denied
+/// due to InsufficientCapability (level=Never), no subsequent call with
+/// the same operation can return Allow — because permissions only tighten.
+#[test]
+fn prop_deny_never_followed_by_allow_same_op() {
+    // Use a profile where some ops are denied
+    let perms = PermissionLattice::read_only();
+    let mut kernel = Kernel::new(perms);
+
+    // Collect denied operations
+    let mut denied_ops: Vec<Operation> = Vec::new();
+    for &op in &Operation::ALL {
+        let (d, _token) = kernel.decide(op, "test-subject");
+        if matches!(d.verdict, Verdict::Deny(DenyReason::InsufficientCapability)) {
+            denied_ops.push(op);
+        }
+    }
+
+    // Verify: calling the same denied ops again still denies them
+    assert!(!denied_ops.is_empty(), "read_only should deny some ops");
+    for &op in &denied_ops {
+        let (d, _token) = kernel.decide(op, "test-subject-retry");
+        assert!(
+            matches!(d.verdict, Verdict::Deny(DenyReason::InsufficientCapability)),
+            "op {:?} was denied, then allowed on retry — monotonicity violated",
+            op,
+        );
+    }
+
+    // Verify with a permissive profile that attenuating never widens
+    let permissive = PermissionLattice::permissive();
+    let mut kernel2 = Kernel::new(permissive);
+
+    // Allow everything first
+    for &op in &Operation::ALL {
+        let (d, _token) = kernel2.decide(op, "allowed");
+        // Some ops may require approval, but none should be InsufficientCapability
+        assert!(
+            !matches!(d.verdict, Verdict::Deny(DenyReason::InsufficientCapability)),
+            "permissive profile should not deny {:?} for capability",
+            op,
+        );
+    }
+
+    // Attenuate to restrictive
+    let _ = kernel2.attenuate(&PermissionLattice::restrictive());
+
+    // Now the same ops that were allowed should be denied
+    let (d, _token) = kernel2.decide(Operation::RunBash, "after-attenuate");
+    assert!(
+        matches!(d.verdict, Verdict::Deny(DenyReason::InsufficientCapability)),
+        "RunBash should be denied after attenuating to restrictive",
+    );
+}
