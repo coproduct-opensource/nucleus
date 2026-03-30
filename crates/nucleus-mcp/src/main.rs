@@ -4,6 +4,7 @@ use nucleus_client::sign_http_headers;
 use nucleus_spec::PodSpec;
 use portcullis::kernel::{Decision, DenyReason, Kernel, Verdict};
 use portcullis::{CapabilityLevel, Operation, PermissionLattice};
+use portcullis_core::flow::NodeKind;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -440,6 +441,15 @@ fn generate_session_id() -> String {
 /// Returns `None` for tools that don't map to exposure-relevant operations
 /// (e.g., pod management, which is classified as ManagePods but has no exposure
 /// contribution in the current exposure_core model).
+/// Map an Operation to the NodeKind for flow graph observations.
+fn operation_to_node_kind(op: Operation) -> NodeKind {
+    match op {
+        Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch => NodeKind::FileRead,
+        Operation::WebFetch | Operation::WebSearch => NodeKind::WebContent,
+        _ => NodeKind::OutboundAction,
+    }
+}
+
 fn tool_to_operation(tool_name: &str) -> Option<Operation> {
     match tool_name {
         "read" => Some(Operation::ReadFiles),
@@ -634,6 +644,12 @@ fn main() -> Result<()> {
     // state. Otherwise, use a permissive lattice (proxy handles enforcement).
     let kernel_lattice = policy.clone().unwrap_or_else(PermissionLattice::permissive);
     let mut kernel = Kernel::new(kernel_lattice);
+    kernel.enable_flow_graph();
+
+    // Track the last flow graph node ID for causal chaining.
+    // Each allowed operation produces an observation node; the next operation's
+    // parents are the prior observations, giving session-level flow tracking.
+    let mut last_flow_node: Option<u64> = None;
 
     // Open kernel trace file (JSONL) if --kernel-trace is specified.
     let trace = TraceWriter::open(args.kernel_trace.as_deref())?;
@@ -696,17 +712,23 @@ fn main() -> Result<()> {
                         continue;
                     }
                 };
-                let result =
-                    match call_tool(&client, &call, args.approval_prompt, &mut kernel, &trace) {
-                        Ok(text) => json!({
-                            "content": [{ "type": "text", "text": text }],
-                            "isError": false
-                        }),
-                        Err(err) => json!({
-                            "content": [{ "type": "text", "text": err.to_string() }],
-                            "isError": true
-                        }),
-                    };
+                let result = match call_tool(
+                    &client,
+                    &call,
+                    args.approval_prompt,
+                    &mut kernel,
+                    &trace,
+                    &mut last_flow_node,
+                ) {
+                    Ok(text) => json!({
+                        "content": [{ "type": "text", "text": text }],
+                        "isError": false
+                    }),
+                    Err(err) => json!({
+                        "content": [{ "type": "text", "text": err.to_string() }],
+                        "isError": true
+                    }),
+                };
                 write_result(&mut stdout, id, result)?;
             }
             "ping" => {
@@ -940,18 +962,29 @@ fn call_tool(
     approval_prompt: bool,
     kernel: &mut Kernel,
     trace: &TraceWriter,
+    last_flow_node: &mut Option<u64>,
 ) -> Result<String> {
     // Route every operation through the kernel decision engine.
     // The kernel provides: capability checks, monotone session state,
     // exposure tracking, budget tracking, time-based expiry, path/command
-    // restrictions, and complete audit trace.
+    // restrictions, flow control (IFC labels), and complete audit trace.
     if let Some(op) = tool_to_operation(&call.name) {
         let subject = extract_subject(&call.name, &call.arguments);
-        let (decision, _token) = kernel.decide(op, &subject);
+        // Use decide_with_parents for flow-aware decisions.
+        // Each operation's parents are the prior observations in the session.
+        let parents: Vec<u64> = (*last_flow_node).into_iter().collect();
+        let (decision, _token) = kernel.decide_with_parents(op, &subject, &parents);
         trace.record(&decision);
 
         match &decision.verdict {
             Verdict::Allow => {
+                // Observe the allowed operation in the flow graph for causal tracking.
+                let obs_kind = operation_to_node_kind(op);
+                let obs_parents: Vec<u64> = (*last_flow_node).into_iter().collect();
+                if let Ok(node_id) = kernel.observe(obs_kind, &obs_parents) {
+                    *last_flow_node = Some(node_id);
+                }
+
                 // Log exposure transitions
                 let tt = &decision.exposure_transition;
                 if tt.pre_count != tt.post_count {
@@ -987,7 +1020,7 @@ fn call_tool(
                     eprintln!("[nucleus-mcp] approved by human: tool={}", call.name);
                     // Grant a one-time approval and re-decide
                     kernel.grant_approval(op, 1);
-                    let (retry, _token) = kernel.decide(op, &subject);
+                    let (retry, _token) = kernel.decide_with_parents(op, &subject, &parents);
                     trace.record(&retry);
                     if !matches!(retry.verdict, Verdict::Allow) {
                         return Err(anyhow!(
