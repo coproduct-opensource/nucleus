@@ -392,39 +392,41 @@ fn main() {
     let (decision, _token) = kernel.decide(operation, &subject);
     let exposure_count = decision.exposure_transition.post_count;
 
-    let (output, allowed) = match decision.verdict {
-        Verdict::Allow => (
+    let output = match decision.verdict {
+        Verdict::Allow => {
+            // Persist: operation will execute
+            session
+                .allowed_ops
+                .push((operation.to_string(), subject.clone()));
+            save_session(&input.session_id, &session);
             HookOutput {
                 decision: "approve".to_string(),
                 reason: None,
-            },
-            true,
-        ),
-        Verdict::RequiresApproval => (
+            }
+        }
+        Verdict::RequiresApproval => {
+            // Persist optimistically: if the user approves, the operation runs
+            // without re-calling PreToolUse. Without this, the next invocation's
+            // exposure replay would miss this operation — a session tracking gap.
+            session
+                .allowed_ops
+                .push((operation.to_string(), subject.clone()));
+            save_session(&input.session_id, &session);
             HookOutput {
                 decision: "ask_user".to_string(),
                 reason: Some(format!(
                     "nucleus: exposure {exposure_count}/3 — requires human approval"
                 )),
-            },
-            false,
-        ),
-        Verdict::Deny(ref reason) => (
+            }
+        }
+        Verdict::Deny(ref reason) => {
+            // Do NOT persist: operation was blocked
             HookOutput {
                 decision: "deny".to_string(),
                 reason: Some(format!("nucleus: denied — {reason:?}")),
-            },
-            false,
-        ),
+            }
+        }
     };
-
-    // Persist session state if allowed
-    if allowed {
-        session
-            .allowed_ops
-            .push((operation.to_string(), subject.clone()));
-        save_session(&input.session_id, &session);
-    }
 
     // Log to stderr
     let verdict_str = &output.decision;

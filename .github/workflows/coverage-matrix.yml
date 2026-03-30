@@ -125,7 +125,7 @@ jobs:
       - name: Count verification artifacts
         id: counts
         run: |
-          VERUS_PROOF=$(grep -c '^proof fn\|^pub proof fn' crates/portcullis-verified/src/lib.rs)
+          VERUS_PROOF=0  # portcullis-verified removed; Verus proofs superseded by Lean 4 + Kani
           CONFORMANCE=$(grep -c 'proptest!' crates/portcullis/tests/verus_conformance.rs)
           echo "verus_proof=$VERUS_PROOF" >> "$GITHUB_OUTPUT"
           echo "conformance=$CONFORMANCE" >> "$GITHUB_OUTPUT"
