@@ -579,6 +579,326 @@ pub fn should_gate(current: &ExposureSet, op: Operation) -> bool {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Information Flow Control labels — the Flow Kernel foundation
+//
+// A product lattice of 5 dimensions that tracks data provenance, trust,
+// and authority through agent execution. This is the formal substrate
+// for defending against trust-boundary exploits (indirect prompt injection,
+// memory poisoning, confused-deputy attacks).
+//
+// Design follows Microsoft FIDES (arXiv:2505.23643) and classical
+// BLP+Biba composition with a novel AuthorityLevel dimension.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Confidentiality level — covariant (join = max).
+///
+/// Combining data from different confidentiality levels produces
+/// a label at the HIGHEST level. Secret data stays secret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(u8)]
+pub enum ConfLevel {
+    /// Publicly available data (web content, public repos, docs).
+    #[default]
+    Public = 0,
+    /// Internal data (private repos, user files, env vars).
+    Internal = 1,
+    /// Secret data (API keys, credentials, PII).
+    Secret = 2,
+}
+
+/// Integrity level — CONTRAVARIANT (join = min, least trusted wins).
+///
+/// Combining trusted data with untrusted data produces UNTRUSTED output.
+/// This is the Biba integrity model, inverted from BLP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(u8)]
+pub enum IntegLevel {
+    /// Adversarially controlled (public issue bodies, web scraping results).
+    Adversarial = 0,
+    /// Untrusted but not adversarial (MCP tool output, cached data).
+    Untrusted = 1,
+    /// Trusted (user prompts, system config, verified sources).
+    #[default]
+    Trusted = 2,
+}
+
+/// Authority-to-instruct level — CONTRAVARIANT (join = min).
+///
+/// The critical innovation: formal encoding of "can this data steer the agent?"
+/// Web content gets NoAuthority — it can be READ but cannot INSTRUCT.
+/// This kills indirect prompt injection at the type level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(u8)]
+pub enum AuthorityLevel {
+    /// Cannot instruct the agent in any way (web content, public issues).
+    NoAuthority = 0,
+    /// Informational only — can provide context but not direct actions.
+    Informational = 1,
+    /// Can suggest actions but requires approval (MCP tool descriptions).
+    Suggestive = 2,
+    /// Full authority to direct agent actions (user prompts, system config).
+    #[default]
+    Directive = 3,
+}
+
+/// Provenance bitset — covariant (join = union, all sources tracked).
+///
+/// Tracks which sources contributed to a datum. Represented as a 6-bit
+/// bitmask for Aeneas translatability (no BTreeSet, no Vec).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ProvenanceSet(u8);
+
+impl ProvenanceSet {
+    pub const USER: ProvenanceSet = ProvenanceSet(1 << 0);
+    pub const TOOL: ProvenanceSet = ProvenanceSet(1 << 1);
+    pub const WEB: ProvenanceSet = ProvenanceSet(1 << 2);
+    pub const MEMORY: ProvenanceSet = ProvenanceSet(1 << 3);
+    pub const MODEL: ProvenanceSet = ProvenanceSet(1 << 4);
+    pub const SYSTEM: ProvenanceSet = ProvenanceSet(1 << 5);
+
+    pub const EMPTY: ProvenanceSet = ProvenanceSet(0);
+
+    /// Union of two provenance sets.
+    pub fn union(self, other: Self) -> Self {
+        ProvenanceSet(self.0 | other.0)
+    }
+
+    /// Check if a specific source is present.
+    pub fn contains(self, other: Self) -> bool {
+        (self.0 & other.0) == other.0
+    }
+
+    /// Subset check (for lattice ordering).
+    pub fn is_subset_of(self, other: Self) -> bool {
+        (self.0 & other.0) == self.0
+    }
+}
+
+/// Freshness — covariant (join = oldest timestamp, shortest TTL).
+///
+/// Uses u64 unix timestamps for Aeneas translatability (no chrono).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Freshness {
+    /// Unix timestamp when the data was observed.
+    pub observed_at: u64,
+    /// Time-to-live in seconds (0 = no expiry).
+    pub ttl_secs: u64,
+}
+
+impl Freshness {
+    /// Join: oldest observation, shortest TTL.
+    pub fn join(self, other: Self) -> Self {
+        Self {
+            observed_at: self.observed_at.min(other.observed_at),
+            ttl_secs: if self.ttl_secs == 0 && other.ttl_secs == 0 {
+                0
+            } else if self.ttl_secs == 0 {
+                other.ttl_secs
+            } else if other.ttl_secs == 0 {
+                self.ttl_secs
+            } else {
+                self.ttl_secs.min(other.ttl_secs)
+            },
+        }
+    }
+
+    /// Check if data has expired at a given time.
+    pub fn is_expired_at(self, now: u64) -> bool {
+        self.ttl_secs > 0 && now > self.observed_at + self.ttl_secs
+    }
+}
+
+/// Information flow control label — 5-dimensional product lattice.
+///
+/// The lattice order follows BLP (confidentiality) + Biba (integrity)
+/// composition with authority confinement:
+///
+/// - Confidentiality: covariant — join = max (most secret wins)
+/// - Integrity: CONTRAVARIANT — join = min (least trusted wins)
+/// - Provenance: covariant — join = union (all sources tracked)
+/// - Freshness: covariant — join = oldest, shortest TTL
+/// - Authority: CONTRAVARIANT — join = min (least authority wins)
+///
+/// Key property: combining a trusted user prompt with web content produces
+/// `integrity = Adversarial, authority = NoAuthority`. This data cannot
+/// steer privileged actions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct IFCLabel {
+    pub confidentiality: ConfLevel,
+    pub integrity: IntegLevel,
+    pub provenance: ProvenanceSet,
+    pub freshness: Freshness,
+    pub authority: AuthorityLevel,
+}
+
+impl Default for IFCLabel {
+    /// Default: trusted user data with full authority.
+    fn default() -> Self {
+        Self {
+            confidentiality: ConfLevel::Public,
+            integrity: IntegLevel::Trusted,
+            provenance: ProvenanceSet::USER,
+            freshness: Freshness::default(),
+            authority: AuthorityLevel::Directive,
+        }
+    }
+}
+
+impl IFCLabel {
+    /// Join two labels (least upper bound in the product lattice).
+    ///
+    /// Confidentiality and provenance are covariant (max/union).
+    /// Integrity and authority are CONTRAVARIANT (min).
+    pub fn join(self, other: Self) -> Self {
+        Self {
+            confidentiality: if self.confidentiality >= other.confidentiality {
+                self.confidentiality
+            } else {
+                other.confidentiality
+            },
+            // Contravariant: least trusted wins
+            integrity: if self.integrity <= other.integrity {
+                self.integrity
+            } else {
+                other.integrity
+            },
+            provenance: self.provenance.union(other.provenance),
+            freshness: self.freshness.join(other.freshness),
+            // Contravariant: least authority wins
+            authority: if self.authority <= other.authority {
+                self.authority
+            } else {
+                other.authority
+            },
+        }
+    }
+
+    /// Check if this label flows to (is less restrictive than) another.
+    ///
+    /// `a.flows_to(b)` means data labeled `a` may be used where `b` is expected.
+    /// Confidentiality: a.conf ≤ b.conf (can't send secret to public)
+    /// Integrity: a.integ ≥ b.integ (can't use untrusted where trusted needed)
+    /// Authority: a.auth ≥ b.auth (can't use NoAuthority where Directive needed)
+    pub fn flows_to(self, target: Self) -> bool {
+        self.confidentiality <= target.confidentiality
+            && self.integrity >= target.integrity
+            && self.authority >= target.authority
+            && self.provenance.is_subset_of(target.provenance)
+    }
+
+    /// Bottom label: public, trusted, no provenance, no authority.
+    pub fn bottom() -> Self {
+        Self {
+            confidentiality: ConfLevel::Public,
+            integrity: IntegLevel::Trusted,
+            provenance: ProvenanceSet::EMPTY,
+            freshness: Freshness::default(),
+            authority: AuthorityLevel::Directive,
+        }
+    }
+
+    /// Top label: secret, adversarial, all sources, no authority.
+    pub fn top() -> Self {
+        Self {
+            confidentiality: ConfLevel::Secret,
+            integrity: IntegLevel::Adversarial,
+            provenance: ProvenanceSet(0x3F), // all 6 bits
+            freshness: Freshness::default(),
+            authority: AuthorityLevel::NoAuthority,
+        }
+    }
+
+    /// Intrinsic label for web content — the key indirect-injection defense.
+    pub fn web_content(now: u64) -> Self {
+        Self {
+            confidentiality: ConfLevel::Public,
+            integrity: IntegLevel::Adversarial,
+            provenance: ProvenanceSet::WEB,
+            freshness: Freshness {
+                observed_at: now,
+                ttl_secs: 3600,
+            },
+            authority: AuthorityLevel::NoAuthority,
+        }
+    }
+
+    /// Intrinsic label for user prompts — full trust and authority.
+    pub fn user_prompt(now: u64) -> Self {
+        Self {
+            confidentiality: ConfLevel::Internal,
+            integrity: IntegLevel::Trusted,
+            provenance: ProvenanceSet::USER,
+            freshness: Freshness {
+                observed_at: now,
+                ttl_secs: 0,
+            },
+            authority: AuthorityLevel::Directive,
+        }
+    }
+
+    /// Intrinsic label for secrets (API keys, credentials).
+    pub fn secret(now: u64) -> Self {
+        Self {
+            confidentiality: ConfLevel::Secret,
+            integrity: IntegLevel::Trusted,
+            provenance: ProvenanceSet::SYSTEM,
+            freshness: Freshness {
+                observed_at: now,
+                ttl_secs: 0,
+            },
+            authority: AuthorityLevel::NoAuthority,
+        }
+    }
+
+    /// Intrinsic label for MCP tool responses.
+    pub fn tool_response(now: u64) -> Self {
+        Self {
+            confidentiality: ConfLevel::Internal,
+            integrity: IntegLevel::Untrusted,
+            provenance: ProvenanceSet::TOOL,
+            freshness: Freshness {
+                observed_at: now,
+                ttl_secs: 0,
+            },
+            authority: AuthorityLevel::Informational,
+        }
+    }
+
+    /// Intrinsic label for memory entries.
+    pub fn memory_entry(now: u64) -> Self {
+        Self {
+            confidentiality: ConfLevel::Internal,
+            integrity: IntegLevel::Untrusted,
+            provenance: ProvenanceSet::MEMORY,
+            freshness: Freshness {
+                observed_at: now,
+                ttl_secs: 86400,
+            },
+            authority: AuthorityLevel::Informational,
+        }
+    }
+}
+
+/// Map an IFCLabel to the legacy ExposureSet (monotone homomorphism).
+///
+/// This is the quotient map φ that proves backward compatibility:
+/// the existing 3-bit exposure tracker is a sound abstraction of the
+/// full IFC label lattice.
+pub fn ifc_to_exposure(label: &IFCLabel, op: Operation) -> ExposureSet {
+    let mut s = ExposureSet::empty();
+    if label.confidentiality >= ConfLevel::Internal {
+        s.set(ExposureLabel::PrivateData);
+    }
+    if label.integrity <= IntegLevel::Untrusted {
+        s.set(ExposureLabel::UntrustedContent);
+    }
+    if is_exfil_operation(op) {
+        s.set(ExposureLabel::ExfilVector);
+    }
+    s
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Pure decision logic — the Lean 4 verification target (Phase 2)
 //
 // This function captures the security-critical lattice-based decisions
@@ -928,7 +1248,6 @@ mod tests {
 
     #[test]
     fn apply_record_matches_project() {
-        // For the core types (no omnibus RunBash divergence), apply_record == project_exposure
         for op in Operation::ALL {
             let s = ExposureSet::singleton(ExposureLabel::PrivateData);
             assert_eq!(
@@ -938,5 +1257,189 @@ mod tests {
                 op
             );
         }
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // IFC Label tests
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn ifc_join_confidentiality_covariant() {
+        let public = IFCLabel {
+            confidentiality: ConfLevel::Public,
+            ..IFCLabel::default()
+        };
+        let secret = IFCLabel {
+            confidentiality: ConfLevel::Secret,
+            ..IFCLabel::default()
+        };
+        assert_eq!(public.join(secret).confidentiality, ConfLevel::Secret);
+    }
+
+    #[test]
+    fn ifc_join_integrity_contravariant() {
+        let trusted = IFCLabel {
+            integrity: IntegLevel::Trusted,
+            ..IFCLabel::default()
+        };
+        let adversarial = IFCLabel {
+            integrity: IntegLevel::Adversarial,
+            ..IFCLabel::default()
+        };
+        // Least trusted wins
+        assert_eq!(trusted.join(adversarial).integrity, IntegLevel::Adversarial);
+    }
+
+    #[test]
+    fn ifc_join_authority_contravariant() {
+        let directive = IFCLabel {
+            authority: AuthorityLevel::Directive,
+            ..IFCLabel::default()
+        };
+        let no_auth = IFCLabel {
+            authority: AuthorityLevel::NoAuthority,
+            ..IFCLabel::default()
+        };
+        // Least authority wins
+        assert_eq!(
+            directive.join(no_auth).authority,
+            AuthorityLevel::NoAuthority
+        );
+    }
+
+    #[test]
+    fn ifc_join_provenance_union() {
+        let user = IFCLabel {
+            provenance: ProvenanceSet::USER,
+            ..IFCLabel::default()
+        };
+        let web = IFCLabel {
+            provenance: ProvenanceSet::WEB,
+            ..IFCLabel::default()
+        };
+        let joined = user.join(web);
+        assert!(joined.provenance.contains(ProvenanceSet::USER));
+        assert!(joined.provenance.contains(ProvenanceSet::WEB));
+    }
+
+    #[test]
+    fn ifc_web_content_plus_user_prompt_kills_authority() {
+        // THE key indirect-injection defense test:
+        // User prompt (Directive) + web content (NoAuthority) = NoAuthority
+        let user = IFCLabel::user_prompt(1000);
+        let web = IFCLabel::web_content(1000);
+        let combined = user.join(web);
+        assert_eq!(combined.authority, AuthorityLevel::NoAuthority);
+        assert_eq!(combined.integrity, IntegLevel::Adversarial);
+    }
+
+    #[test]
+    fn ifc_secret_does_not_flow_to_public() {
+        let secret = IFCLabel::secret(1000);
+        let public_sink = IFCLabel {
+            confidentiality: ConfLevel::Public,
+            ..IFCLabel::default()
+        };
+        assert!(!secret.flows_to(public_sink));
+    }
+
+    #[test]
+    fn ifc_untrusted_does_not_flow_to_trusted() {
+        let untrusted = IFCLabel {
+            integrity: IntegLevel::Untrusted,
+            ..IFCLabel::default()
+        };
+        let trusted_sink = IFCLabel {
+            integrity: IntegLevel::Trusted,
+            ..IFCLabel::default()
+        };
+        assert!(!untrusted.flows_to(trusted_sink));
+    }
+
+    #[test]
+    fn ifc_no_authority_does_not_flow_to_directive() {
+        let no_auth = IFCLabel {
+            authority: AuthorityLevel::NoAuthority,
+            ..IFCLabel::default()
+        };
+        let directive_sink = IFCLabel {
+            authority: AuthorityLevel::Directive,
+            ..IFCLabel::default()
+        };
+        assert!(!no_auth.flows_to(directive_sink));
+    }
+
+    #[test]
+    fn ifc_bottom_flows_to_everything() {
+        let bot = IFCLabel::bottom();
+        let top = IFCLabel::top();
+        assert!(bot.flows_to(top));
+    }
+
+    #[test]
+    fn ifc_top_flows_to_nothing_but_itself() {
+        let top = IFCLabel::top();
+        let bot = IFCLabel::bottom();
+        assert!(!top.flows_to(bot));
+        assert!(top.flows_to(top));
+    }
+
+    #[test]
+    fn ifc_quotient_map_backward_compatible() {
+        // The quotient φ maps IFCLabel to ExposureSet correctly
+        let secret_untrusted = IFCLabel {
+            confidentiality: ConfLevel::Secret,
+            integrity: IntegLevel::Untrusted,
+            ..IFCLabel::default()
+        };
+        let exposure = ifc_to_exposure(&secret_untrusted, Operation::GitPush);
+        assert!(exposure.contains(ExposureLabel::PrivateData));
+        assert!(exposure.contains(ExposureLabel::UntrustedContent));
+        assert!(exposure.contains(ExposureLabel::ExfilVector));
+        assert!(exposure.is_uninhabitable());
+    }
+
+    #[test]
+    fn ifc_quotient_public_trusted_is_safe() {
+        let safe = IFCLabel {
+            confidentiality: ConfLevel::Public,
+            integrity: IntegLevel::Trusted,
+            ..IFCLabel::default()
+        };
+        let exposure = ifc_to_exposure(&safe, Operation::ReadFiles);
+        assert!(!exposure.is_uninhabitable());
+    }
+
+    #[test]
+    fn ifc_freshness_join_oldest_shortest() {
+        let a = Freshness {
+            observed_at: 1000,
+            ttl_secs: 3600,
+        };
+        let b = Freshness {
+            observed_at: 500,
+            ttl_secs: 7200,
+        };
+        let joined = a.join(b);
+        assert_eq!(joined.observed_at, 500); // oldest
+        assert_eq!(joined.ttl_secs, 3600); // shortest
+    }
+
+    #[test]
+    fn ifc_freshness_expiry() {
+        let f = Freshness {
+            observed_at: 1000,
+            ttl_secs: 3600,
+        };
+        assert!(!f.is_expired_at(2000));
+        assert!(f.is_expired_at(5000));
+    }
+
+    #[test]
+    fn provenance_union_and_subset() {
+        let user_web = ProvenanceSet::USER.union(ProvenanceSet::WEB);
+        assert!(ProvenanceSet::USER.is_subset_of(user_web));
+        assert!(ProvenanceSet::WEB.is_subset_of(user_web));
+        assert!(!ProvenanceSet::MEMORY.is_subset_of(user_web));
     }
 }
