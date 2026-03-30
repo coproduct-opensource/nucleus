@@ -517,7 +517,7 @@ fn format_deny_reason(reason: &DenyReason) -> String {
         DenyReason::IsolationGated { dimension } => {
             format!("isolation gated: {dimension}")
         }
-        DenyReason::FlowViolation { rule } => {
+        DenyReason::FlowViolation { rule, .. } => {
             format!("flow violation: {rule}")
         }
     }

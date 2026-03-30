@@ -105,6 +105,13 @@ pub struct Decision {
     /// Exposure state transition caused by this decision.
     #[cfg_attr(feature = "serde", serde(alias = "taint_transition"))]
     pub exposure_transition: ExposureTransition,
+    /// If this decision was made via `decide_with_parents()`, the NodeId
+    /// assigned in the causal DAG. `None` for flat `decide()` calls.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub flow_node_id: Option<u64>,
 }
 
 /// Records the exposure state before and after a decision.
@@ -200,10 +207,17 @@ pub enum DenyReason {
     /// Information flow control violation.
     ///
     /// The session's accumulated IFC label violates a flow enforcement rule.
-    /// Only checked when flow control is enabled via `enable_flow_control()`.
+    /// Checked via `enable_flow_control()` (flat) or `decide_with_parents()` (DAG).
     FlowViolation {
         /// Which flow rule was violated (e.g., "Exfiltration", "AuthorityEscalation").
         rule: String,
+        /// Causal chain receipt when the violation came from `decide_with_parents()`.
+        /// Shows exactly which ancestor nodes contributed the taint.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        receipt: Option<String>,
     },
 }
 
@@ -334,6 +348,12 @@ pub struct Kernel {
     /// taint: once web content is read, the session label gains `Adversarial`
     /// integrity and `NoAuthority` authority.
     flow_label: Option<portcullis_core::IFCLabel>,
+    /// Optional causal DAG for precise per-action flow tracking.
+    ///
+    /// When enabled via `enable_flow_graph()`, `decide_with_parents()`
+    /// checks flow against actual causal dependencies instead of the
+    /// flat session-level label. This eliminates over-tainting.
+    flow_graph: Option<crate::flow_graph::FlowGraph>,
 }
 
 impl Kernel {
@@ -368,6 +388,7 @@ impl Kernel {
             exposure: ExposureSet::empty(),
             provenance: None,
             flow_label: None,
+            flow_graph: None,
         }
     }
 
@@ -382,6 +403,116 @@ impl Kernel {
         // Do NOT use bottom() — its observed_at=0 poisons freshness joins,
         // making the first WebFetch always-expired.
         self.flow_label = Some(portcullis_core::IFCLabel::user_prompt(now));
+    }
+
+    /// Enable the causal DAG for precise per-action flow tracking.
+    ///
+    /// When enabled, `decide_with_parents()` tracks actual data dependencies
+    /// instead of using the flat session-level label. This eliminates
+    /// over-tainting: actions that don't causally depend on untrusted data
+    /// are unaffected by it.
+    ///
+    /// The flat `decide()` still works as before — the DAG is only used
+    /// when callers explicitly provide parent node IDs.
+    pub fn enable_flow_graph(&mut self) {
+        self.flow_graph = Some(crate::flow_graph::FlowGraph::new());
+    }
+
+    /// Record a data-source observation in the causal DAG.
+    ///
+    /// Returns the `NodeId` for use as a parent in subsequent `observe()`
+    /// or `decide_with_parents()` calls. Observations are not flow-checked —
+    /// they just record what data entered the session.
+    ///
+    /// Panics if `enable_flow_graph()` was not called.
+    pub fn observe(
+        &mut self,
+        kind: portcullis_core::flow::NodeKind,
+        parents: &[u64],
+    ) -> Option<u64> {
+        let graph = self
+            .flow_graph
+            .as_mut()
+            .expect("enable_flow_graph() not called");
+        let now = chrono::Utc::now().timestamp() as u64;
+        graph.insert_observation(kind, parents, now).ok()
+    }
+
+    /// Decide an operation with explicit causal parents from the DAG.
+    ///
+    /// Like `decide()`, but instead of using the flat session-level label,
+    /// computes the flow label from the specified parent nodes. This means
+    /// an action depending only on local files won't be blocked by web
+    /// content read elsewhere in the session.
+    ///
+    /// Falls back to `decide()` if the flow graph is not enabled.
+    pub fn decide_with_parents(
+        &mut self,
+        operation: Operation,
+        subject: &str,
+        parents: &[u64],
+    ) -> (Decision, Option<DecisionToken>) {
+        let graph = match self.flow_graph.as_mut() {
+            Some(g) => g,
+            None => return self.decide(operation, subject),
+        };
+
+        let now = chrono::Utc::now().timestamp() as u64;
+
+        // Insert action into the DAG — atomic check-and-insert
+        let flow_decision = match graph.insert_action(operation, parents, now) {
+            Ok(fd) => fd,
+            Err(e) => {
+                // Parent validation failed — deny with error context
+                let pre_hash = self.effective.checksum();
+                let pre_exposure_count = self.exposure.count();
+                let contributed_label = exposure_core::classify_operation(operation);
+                return self.record_with_exposure(
+                    operation,
+                    subject,
+                    Verdict::Deny(DenyReason::FlowViolation {
+                        rule: format!("DAG error: {:?}", e),
+                        receipt: None,
+                    }),
+                    &pre_hash,
+                    pre_exposure_count,
+                    contributed_label,
+                    false,
+                    false,
+                );
+            }
+        };
+
+        // If the DAG says deny, short-circuit with a receipt
+        if let portcullis_core::flow::FlowVerdict::Deny(reason) = flow_decision.verdict {
+            let receipt_str = graph
+                .build_receipt_for(flow_decision.node_id, now)
+                .map(|r| r.display_chain());
+            let pre_hash = self.effective.checksum();
+            let pre_exposure_count = self.exposure.count();
+            let contributed_label = exposure_core::classify_operation(operation);
+            let mut result = self.record_with_exposure(
+                operation,
+                subject,
+                Verdict::Deny(DenyReason::FlowViolation {
+                    rule: format!("{:?}", reason),
+                    receipt: receipt_str,
+                }),
+                &pre_hash,
+                pre_exposure_count,
+                contributed_label,
+                false,
+                false,
+            );
+            result.0.flow_node_id = Some(flow_decision.node_id);
+            return result;
+        }
+
+        // DAG says allow — delegate to standard decide() for remaining checks
+        // (budget, capability, path, command, exposure, approvals)
+        let mut result = self.decide(operation, subject);
+        result.0.flow_node_id = Some(flow_decision.node_id);
+        result
     }
 
     /// Create a kernel session from cryptographically verified permissions.
@@ -421,6 +552,7 @@ impl Kernel {
             exposure: ExposureSet::empty(),
             provenance: Some(provenance),
             flow_label: None,
+            flow_graph: None,
         }
     }
 
@@ -453,6 +585,7 @@ impl Kernel {
             exposure: ExposureSet::empty(),
             provenance: Some(provenance),
             flow_label: None,
+            flow_graph: None,
         }
     }
 
@@ -645,6 +778,7 @@ impl Kernel {
                         subject,
                         Verdict::Deny(DenyReason::FlowViolation {
                             rule: format!("{:?}", reason),
+                            receipt: None,
                         }),
                         &pre_hash,
                         pre_exposure_count,
@@ -975,6 +1109,7 @@ impl Kernel {
                 state_uninhabitable,
                 dynamic_gate_applied,
             },
+            flow_node_id: None,
         };
 
         self.trace.push(decision.clone());
@@ -2098,5 +2233,151 @@ mod tests {
             "Flow check must run before approval path! Got {:?}",
             d2.verdict
         );
+    }
+
+    // --- Causal DAG integration tests (step 6 of bright-knitting-mitten) ---
+
+    #[test]
+    fn dag_independent_branches_no_overtaint() {
+        let perms = PermissionLattice::safe_pr_fixer();
+        let mut kernel = Kernel::new(perms);
+        kernel.enable_flow_graph();
+
+        // Task A: web content (adversarial)
+        let web_id = kernel
+            .observe(portcullis_core::flow::NodeKind::WebContent, &[])
+            .unwrap();
+        // Task B: local file (trusted) — NO dependency on web
+        let file_id = kernel
+            .observe(portcullis_core::flow::NodeKind::FileRead, &[])
+            .unwrap();
+
+        // Task B write depends ONLY on file — ALLOWED
+        let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/out.txt", &[file_id]);
+        assert!(
+            d.verdict.is_allowed(),
+            "File-only write should be allowed, got {:?}",
+            d.verdict
+        );
+        assert!(d.flow_node_id.is_some());
+
+        // Task A write depends on web — DENIED
+        let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/web.txt", &[web_id]);
+        assert!(
+            d.verdict.is_denied(),
+            "Web-tainted write should be denied, got {:?}",
+            d.verdict
+        );
+        assert!(matches!(
+            d.verdict,
+            Verdict::Deny(DenyReason::FlowViolation { .. })
+        ));
+    }
+
+    #[test]
+    fn dag_transitive_taint_propagation() {
+        let perms = PermissionLattice::safe_pr_fixer();
+        let mut kernel = Kernel::new(perms);
+        kernel.enable_flow_graph();
+
+        let web = kernel
+            .observe(portcullis_core::flow::NodeKind::WebContent, &[])
+            .unwrap();
+        // Model plan derived from web content
+        let plan = kernel
+            .observe(portcullis_core::flow::NodeKind::ModelPlan, &[web])
+            .unwrap();
+
+        // Write depending on plan (transitively depends on web) — DENIED
+        let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/derived.txt", &[plan]);
+        assert!(
+            d.verdict.is_denied(),
+            "Transitive web taint should propagate, got {:?}",
+            d.verdict
+        );
+    }
+
+    #[test]
+    fn dag_clean_chain_allowed() {
+        let perms = PermissionLattice::safe_pr_fixer();
+        let mut kernel = Kernel::new(perms);
+        kernel.enable_flow_graph();
+
+        let user = kernel
+            .observe(portcullis_core::flow::NodeKind::UserPrompt, &[])
+            .unwrap();
+        let file = kernel
+            .observe(portcullis_core::flow::NodeKind::FileRead, &[user])
+            .unwrap();
+        let plan = kernel
+            .observe(portcullis_core::flow::NodeKind::ModelPlan, &[file])
+            .unwrap();
+
+        // Write depending on clean chain: user → file → plan — ALLOWED
+        let (d, token) = kernel.decide_with_parents(Operation::WriteFiles, "/clean.txt", &[plan]);
+        assert!(d.verdict.is_allowed());
+        assert!(token.is_some());
+        assert!(d.flow_node_id.is_some());
+    }
+
+    #[test]
+    fn dag_denied_action_produces_receipt() {
+        let perms = PermissionLattice::safe_pr_fixer();
+        let mut kernel = Kernel::new(perms);
+        kernel.enable_flow_graph();
+
+        let web = kernel
+            .observe(portcullis_core::flow::NodeKind::WebContent, &[])
+            .unwrap();
+
+        let (d, _) = kernel.decide_with_parents(Operation::CreatePr, "my-pr", &[web]);
+        assert!(d.verdict.is_denied());
+        match &d.verdict {
+            Verdict::Deny(DenyReason::FlowViolation { receipt, .. }) => {
+                assert!(
+                    receipt.is_some(),
+                    "Denied DAG action should include receipt"
+                );
+                assert!(
+                    receipt.as_ref().unwrap().contains("BLOCKED"),
+                    "Receipt should contain BLOCKED"
+                );
+            }
+            other => panic!("Expected FlowViolation, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dag_fallback_without_enable() {
+        let perms = PermissionLattice::safe_pr_fixer();
+        let mut kernel = Kernel::new(perms);
+        // Don't call enable_flow_graph() — decide_with_parents should fall back to decide()
+
+        let (d, _) = kernel.decide_with_parents(Operation::ReadFiles, "/workspace/main.rs", &[]);
+        assert!(d.verdict.is_allowed());
+        assert!(d.flow_node_id.is_none(), "No DAG → no flow_node_id");
+    }
+
+    #[test]
+    fn dag_capability_check_still_applies() {
+        let perms = PermissionLattice::safe_pr_fixer();
+        let mut kernel = Kernel::new(perms);
+        kernel.enable_flow_graph();
+
+        let user = kernel
+            .observe(portcullis_core::flow::NodeKind::UserPrompt, &[])
+            .unwrap();
+
+        // DAG says allow (clean parents), but capability lattice says never for GitPush
+        let (d, _) = kernel.decide_with_parents(Operation::GitPush, "origin/main", &[user]);
+        assert!(
+            d.verdict.is_denied(),
+            "Capability check should still apply even when DAG allows, got {:?}",
+            d.verdict
+        );
+        assert!(matches!(
+            d.verdict,
+            Verdict::Deny(DenyReason::InsufficientCapability)
+        ));
     }
 }
