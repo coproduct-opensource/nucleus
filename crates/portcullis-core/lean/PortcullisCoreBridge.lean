@@ -168,4 +168,338 @@ theorem implies_eq_himp (a b : CapabilityLevel) :
     portcullis_core.CapabilityLevel.implies a b = .ok (a ⇨ b) := by
   cases a <;> cases b <;> rfl
 
+-- ═══════════════════════════════════════════════════════════════════════
+-- Complement correspondence
+-- ═══════════════════════════════════════════════════════════════════════
+
+/-- The Aeneas-generated `complement` never fails. -/
+theorem complement_never_fails (a : CapabilityLevel) :
+    ∃ r, portcullis_core.CapabilityLevel.complement a = .ok r := by
+  cases a <;> exact ⟨_, rfl⟩
+
+/-- The Aeneas-generated `complement` computes the lattice complement. -/
+theorem complement_eq_compl (a : CapabilityLevel) :
+    portcullis_core.CapabilityLevel.complement a = .ok aᶜ := by
+  cases a <;> rfl
+
+/-- The Aeneas-generated `leq` never fails. -/
+theorem leq_never_fails (a b : CapabilityLevel) :
+    ∃ r, portcullis_core.CapabilityLevel.leq a b = .ok r := by
+  cases a <;> cases b <;> exact ⟨_, rfl⟩
+
+/-- The Aeneas-generated `leq` computes the lattice ≤. -/
+theorem leq_eq_le (a b : CapabilityLevel) :
+    portcullis_core.CapabilityLevel.leq a b = .ok (decide (a ≤ b)) := by
+  cases a <;> cases b <;> rfl
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- Product lattice: CapabilityLattice is a HeytingAlgebra
+--
+-- CapabilityLattice is a structure of 12 CapabilityLevel fields.
+-- Since CapabilityLevel is a HeytingAlgebra, the product inherits the
+-- structure pointwise. We build up the full Mathlib typeclass chain:
+--
+--   LE → Preorder → PartialOrder
+--   Inf → SemilatticeInf ─┐
+--   Sup → SemilatticeSup ─┴→ Lattice
+--   Bot → OrderBot ─┐
+--   Top → OrderTop ─┴→ BoundedOrder
+--   HImp → GeneralizedHeytingAlgebra
+--   Compl → HeytingAlgebra
+--
+-- Every axiom reduces to the component-level CapabilityLevel proof.
+-- No SMT oracle, no Z3 — all kernel-checked by Lean 4.
+-- ═══════════════════════════════════════════════════════════════════════
+
+namespace ProductLattice
+
+-- ─── Pointwise operations (as raw functions) ─────────────────────────
+
+private def latticeLE (a b : CapabilityLattice) : Prop :=
+  a.read_files ≤ b.read_files ∧ a.write_files ≤ b.write_files ∧
+  a.edit_files ≤ b.edit_files ∧ a.run_bash ≤ b.run_bash ∧
+  a.glob_search ≤ b.glob_search ∧ a.grep_search ≤ b.grep_search ∧
+  a.web_search ≤ b.web_search ∧ a.web_fetch ≤ b.web_fetch ∧
+  a.git_commit ≤ b.git_commit ∧ a.git_push ≤ b.git_push ∧
+  a.create_pr ≤ b.create_pr ∧ a.manage_pods ≤ b.manage_pods
+
+private def latticeInf (a b : CapabilityLattice) : CapabilityLattice := {
+  read_files := a.read_files ⊓ b.read_files
+  write_files := a.write_files ⊓ b.write_files
+  edit_files := a.edit_files ⊓ b.edit_files
+  run_bash := a.run_bash ⊓ b.run_bash
+  glob_search := a.glob_search ⊓ b.glob_search
+  grep_search := a.grep_search ⊓ b.grep_search
+  web_search := a.web_search ⊓ b.web_search
+  web_fetch := a.web_fetch ⊓ b.web_fetch
+  git_commit := a.git_commit ⊓ b.git_commit
+  git_push := a.git_push ⊓ b.git_push
+  create_pr := a.create_pr ⊓ b.create_pr
+  manage_pods := a.manage_pods ⊓ b.manage_pods
+}
+
+private def latticeSup (a b : CapabilityLattice) : CapabilityLattice := {
+  read_files := a.read_files ⊔ b.read_files
+  write_files := a.write_files ⊔ b.write_files
+  edit_files := a.edit_files ⊔ b.edit_files
+  run_bash := a.run_bash ⊔ b.run_bash
+  glob_search := a.glob_search ⊔ b.glob_search
+  grep_search := a.grep_search ⊔ b.grep_search
+  web_search := a.web_search ⊔ b.web_search
+  web_fetch := a.web_fetch ⊔ b.web_fetch
+  git_commit := a.git_commit ⊔ b.git_commit
+  git_push := a.git_push ⊔ b.git_push
+  create_pr := a.create_pr ⊔ b.create_pr
+  manage_pods := a.manage_pods ⊔ b.manage_pods
+}
+
+private def latticeBot : CapabilityLattice := {
+  read_files := ⊥, write_files := ⊥, edit_files := ⊥,
+  run_bash := ⊥, glob_search := ⊥, grep_search := ⊥,
+  web_search := ⊥, web_fetch := ⊥, git_commit := ⊥,
+  git_push := ⊥, create_pr := ⊥, manage_pods := ⊥
+}
+
+private def latticeTop : CapabilityLattice := {
+  read_files := ⊤, write_files := ⊤, edit_files := ⊤,
+  run_bash := ⊤, glob_search := ⊤, grep_search := ⊤,
+  web_search := ⊤, web_fetch := ⊤, git_commit := ⊤,
+  git_push := ⊤, create_pr := ⊤, manage_pods := ⊤
+}
+
+private def latticeHImp (a b : CapabilityLattice) : CapabilityLattice := {
+  read_files := a.read_files ⇨ b.read_files
+  write_files := a.write_files ⇨ b.write_files
+  edit_files := a.edit_files ⇨ b.edit_files
+  run_bash := a.run_bash ⇨ b.run_bash
+  glob_search := a.glob_search ⇨ b.glob_search
+  grep_search := a.grep_search ⇨ b.grep_search
+  web_search := a.web_search ⇨ b.web_search
+  web_fetch := a.web_fetch ⇨ b.web_fetch
+  git_commit := a.git_commit ⇨ b.git_commit
+  git_push := a.git_push ⇨ b.git_push
+  create_pr := a.create_pr ⇨ b.create_pr
+  manage_pods := a.manage_pods ⇨ b.manage_pods
+}
+
+private def latticeCompl (a : CapabilityLattice) : CapabilityLattice := {
+  read_files := a.read_filesᶜ, write_files := a.write_filesᶜ,
+  edit_files := a.edit_filesᶜ, run_bash := a.run_bashᶜ,
+  glob_search := a.glob_searchᶜ, grep_search := a.grep_searchᶜ,
+  web_search := a.web_searchᶜ, web_fetch := a.web_fetchᶜ,
+  git_commit := a.git_commitᶜ, git_push := a.git_pushᶜ,
+  create_pr := a.create_prᶜ, manage_pods := a.manage_podsᶜ
+}
+
+-- ─── Full HeytingAlgebra instance (single definition) ────────────────
+--
+-- We define the entire HeytingAlgebra in one `where` block to avoid
+-- instance chain mismatches between LE, PartialOrder, SemilatticeInf.
+
+instance instHeytingAlgebra : HeytingAlgebra CapabilityLattice where
+  le := latticeLE
+  lt a b := latticeLE a b ∧ ¬latticeLE b a
+  inf := latticeInf
+  sup := latticeSup
+  bot := latticeBot
+  top := latticeTop
+  himp := latticeHImp
+  compl := latticeCompl
+  le_refl a :=
+    ⟨le_refl _, le_refl _, le_refl _, le_refl _, le_refl _, le_refl _,
+     le_refl _, le_refl _, le_refl _, le_refl _, le_refl _, le_refl _⟩
+  le_trans a b c hab hbc :=
+    ⟨le_trans hab.1 hbc.1, le_trans hab.2.1 hbc.2.1,
+     le_trans hab.2.2.1 hbc.2.2.1, le_trans hab.2.2.2.1 hbc.2.2.2.1,
+     le_trans hab.2.2.2.2.1 hbc.2.2.2.2.1,
+     le_trans hab.2.2.2.2.2.1 hbc.2.2.2.2.2.1,
+     le_trans hab.2.2.2.2.2.2.1 hbc.2.2.2.2.2.2.1,
+     le_trans hab.2.2.2.2.2.2.2.1 hbc.2.2.2.2.2.2.2.1,
+     le_trans hab.2.2.2.2.2.2.2.2.1 hbc.2.2.2.2.2.2.2.2.1,
+     le_trans hab.2.2.2.2.2.2.2.2.2.1 hbc.2.2.2.2.2.2.2.2.2.1,
+     le_trans hab.2.2.2.2.2.2.2.2.2.2.1 hbc.2.2.2.2.2.2.2.2.2.2.1,
+     le_trans hab.2.2.2.2.2.2.2.2.2.2.2 hbc.2.2.2.2.2.2.2.2.2.2.2⟩
+  lt_iff_le_not_ge _ _ := Iff.rfl
+  le_antisymm a b hab hba := by
+    have e1 := le_antisymm hab.1 hba.1
+    have e2 := le_antisymm hab.2.1 hba.2.1
+    have e3 := le_antisymm hab.2.2.1 hba.2.2.1
+    have e4 := le_antisymm hab.2.2.2.1 hba.2.2.2.1
+    have e5 := le_antisymm hab.2.2.2.2.1 hba.2.2.2.2.1
+    have e6 := le_antisymm hab.2.2.2.2.2.1 hba.2.2.2.2.2.1
+    have e7 := le_antisymm hab.2.2.2.2.2.2.1 hba.2.2.2.2.2.2.1
+    have e8 := le_antisymm hab.2.2.2.2.2.2.2.1 hba.2.2.2.2.2.2.2.1
+    have e9 := le_antisymm hab.2.2.2.2.2.2.2.2.1 hba.2.2.2.2.2.2.2.2.1
+    have e10 := le_antisymm hab.2.2.2.2.2.2.2.2.2.1 hba.2.2.2.2.2.2.2.2.2.1
+    have e11 := le_antisymm hab.2.2.2.2.2.2.2.2.2.2.1 hba.2.2.2.2.2.2.2.2.2.2.1
+    have e12 := le_antisymm hab.2.2.2.2.2.2.2.2.2.2.2 hba.2.2.2.2.2.2.2.2.2.2.2
+    cases a; cases b; simp_all
+  inf_le_left a b :=
+    ⟨inf_le_left, inf_le_left, inf_le_left, inf_le_left,
+     inf_le_left, inf_le_left, inf_le_left, inf_le_left,
+     inf_le_left, inf_le_left, inf_le_left, inf_le_left⟩
+  inf_le_right a b :=
+    ⟨inf_le_right, inf_le_right, inf_le_right, inf_le_right,
+     inf_le_right, inf_le_right, inf_le_right, inf_le_right,
+     inf_le_right, inf_le_right, inf_le_right, inf_le_right⟩
+  le_inf a b c hab hac :=
+    ⟨le_inf hab.1 hac.1, le_inf hab.2.1 hac.2.1,
+     le_inf hab.2.2.1 hac.2.2.1, le_inf hab.2.2.2.1 hac.2.2.2.1,
+     le_inf hab.2.2.2.2.1 hac.2.2.2.2.1,
+     le_inf hab.2.2.2.2.2.1 hac.2.2.2.2.2.1,
+     le_inf hab.2.2.2.2.2.2.1 hac.2.2.2.2.2.2.1,
+     le_inf hab.2.2.2.2.2.2.2.1 hac.2.2.2.2.2.2.2.1,
+     le_inf hab.2.2.2.2.2.2.2.2.1 hac.2.2.2.2.2.2.2.2.1,
+     le_inf hab.2.2.2.2.2.2.2.2.2.1 hac.2.2.2.2.2.2.2.2.2.1,
+     le_inf hab.2.2.2.2.2.2.2.2.2.2.1 hac.2.2.2.2.2.2.2.2.2.2.1,
+     le_inf hab.2.2.2.2.2.2.2.2.2.2.2 hac.2.2.2.2.2.2.2.2.2.2.2⟩
+  le_sup_left a b :=
+    ⟨le_sup_left, le_sup_left, le_sup_left, le_sup_left,
+     le_sup_left, le_sup_left, le_sup_left, le_sup_left,
+     le_sup_left, le_sup_left, le_sup_left, le_sup_left⟩
+  le_sup_right a b :=
+    ⟨le_sup_right, le_sup_right, le_sup_right, le_sup_right,
+     le_sup_right, le_sup_right, le_sup_right, le_sup_right,
+     le_sup_right, le_sup_right, le_sup_right, le_sup_right⟩
+  sup_le a b c hab hbc :=
+    ⟨sup_le hab.1 hbc.1, sup_le hab.2.1 hbc.2.1,
+     sup_le hab.2.2.1 hbc.2.2.1, sup_le hab.2.2.2.1 hbc.2.2.2.1,
+     sup_le hab.2.2.2.2.1 hbc.2.2.2.2.1,
+     sup_le hab.2.2.2.2.2.1 hbc.2.2.2.2.2.1,
+     sup_le hab.2.2.2.2.2.2.1 hbc.2.2.2.2.2.2.1,
+     sup_le hab.2.2.2.2.2.2.2.1 hbc.2.2.2.2.2.2.2.1,
+     sup_le hab.2.2.2.2.2.2.2.2.1 hbc.2.2.2.2.2.2.2.2.1,
+     sup_le hab.2.2.2.2.2.2.2.2.2.1 hbc.2.2.2.2.2.2.2.2.2.1,
+     sup_le hab.2.2.2.2.2.2.2.2.2.2.1 hbc.2.2.2.2.2.2.2.2.2.2.1,
+     sup_le hab.2.2.2.2.2.2.2.2.2.2.2 hbc.2.2.2.2.2.2.2.2.2.2.2⟩
+  bot_le a :=
+    ⟨bot_le, bot_le, bot_le, bot_le, bot_le, bot_le,
+     bot_le, bot_le, bot_le, bot_le, bot_le, bot_le⟩
+  le_top a :=
+    ⟨le_top, le_top, le_top, le_top, le_top, le_top,
+     le_top, le_top, le_top, le_top, le_top, le_top⟩
+  le_himp_iff a b c := by
+    show latticeLE a (latticeHImp b c) ↔ latticeLE (latticeInf a b) c
+    simp only [latticeLE, latticeHImp, latticeInf]
+    constructor
+    · intro ⟨h1,h2,h3,h4,h5,h6,h7,h8,h9,h10,h11,h12⟩
+      exact ⟨(PortcullisCoreBridge.le_himp_iff _ _ _).mp h1,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mp h2,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mp h3,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mp h4,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mp h5,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mp h6,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mp h7,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mp h8,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mp h9,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mp h10,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mp h11,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mp h12⟩
+    · intro ⟨h1,h2,h3,h4,h5,h6,h7,h8,h9,h10,h11,h12⟩
+      exact ⟨(PortcullisCoreBridge.le_himp_iff _ _ _).mpr h1,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mpr h2,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mpr h3,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mpr h4,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mpr h5,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mpr h6,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mpr h7,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mpr h8,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mpr h9,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mpr h10,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mpr h11,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mpr h12⟩
+  himp_bot a := by
+    show latticeHImp a latticeBot = latticeCompl a
+    simp only [latticeHImp, latticeBot, latticeCompl]
+    congr 1 <;> exact PortcullisCoreBridge.himp_bot _
+
+end ProductLattice
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- Product lattice function correspondence
+--
+-- The Aeneas-generated CapabilityLattice.meet/join/implies call
+-- CapabilityLevel.meet/join/implies pointwise. Since we proved those
+-- equal the lattice inf/sup/himp, the product operations compose.
+-- ═══════════════════════════════════════════════════════════════════════
+
+open ProductLattice in
+/-- The Aeneas-generated `CapabilityLattice.meet` computes pointwise inf.
+    Connects the Rust implementation to the algebraic structure. -/
+theorem lattice_meet_eq_inf (a b : CapabilityLattice) :
+    portcullis_core.CapabilityLattice.meet a b = .ok (a ⊓ b) := by
+  show _ = Result.ok (latticeInf a b)
+  simp [portcullis_core.CapabilityLattice.meet, meet_eq_inf, latticeInf]
+
+open ProductLattice in
+/-- The Aeneas-generated `CapabilityLattice.join` computes pointwise sup. -/
+theorem lattice_join_eq_sup (a b : CapabilityLattice) :
+    portcullis_core.CapabilityLattice.join a b = .ok (a ⊔ b) := by
+  show _ = Result.ok (latticeSup a b)
+  simp [portcullis_core.CapabilityLattice.join, join_eq_sup, latticeSup]
+
+open ProductLattice in
+/-- The Aeneas-generated `CapabilityLattice.implies` computes pointwise himp. -/
+theorem lattice_implies_eq_himp (a b : CapabilityLattice) :
+    portcullis_core.CapabilityLattice.implies a b = .ok (a ⇨ b) := by
+  show _ = Result.ok (latticeHImp a b)
+  simp [portcullis_core.CapabilityLattice.implies, implies_eq_himp, latticeHImp]
+
+open ProductLattice in
+/-- The Aeneas-generated `CapabilityLattice.bottom` is the lattice ⊥. -/
+theorem lattice_bottom_eq_bot :
+    portcullis_core.CapabilityLattice.bottom = .ok ⊥ := by
+  show _ = Result.ok latticeBot
+  simp [portcullis_core.CapabilityLattice.bottom, latticeBot]
+  constructor <;> rfl
+
+open ProductLattice in
+/-- The Aeneas-generated `CapabilityLattice.top` is the lattice ⊤. -/
+theorem lattice_top_eq_top :
+    portcullis_core.CapabilityLattice.top = .ok ⊤ := by
+  show _ = Result.ok latticeTop
+  simp [portcullis_core.CapabilityLattice.top, latticeTop]
+  constructor <;> rfl
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- MONOTONICITY — the core safety claim (VC-001)
+--
+-- Authority can only tighten: meet(current, restriction) ≤ current.
+-- This is the mathematical foundation of "permissions never escalate."
+-- ═══════════════════════════════════════════════════════════════════════
+
+/-- Meet is deflationary on CapabilityLevel: a ⊓ b ≤ a. -/
+theorem meet_deflationary (a b : CapabilityLevel) : a ⊓ b ≤ a := inf_le_left
+
+open ProductLattice in
+/-- **The 12-dimensional proof that permissions never escalate.**
+    For all 12 capability dimensions: (policy ⊓ session).field ≤ policy.field. -/
+theorem lattice_meet_deflationary_left (a b : CapabilityLattice) :
+    (a ⊓ b) ≤ a := by
+  show latticeLE (latticeInf a b) a
+  simp only [latticeLE, latticeInf]
+  exact ⟨inf_le_left, inf_le_left, inf_le_left, inf_le_left,
+         inf_le_left, inf_le_left, inf_le_left, inf_le_left,
+         inf_le_left, inf_le_left, inf_le_left, inf_le_left⟩
+
+open ProductLattice in
+/-- Meet is deflationary on the right. -/
+theorem lattice_meet_deflationary_right (a b : CapabilityLattice) :
+    (a ⊓ b) ≤ b := by
+  show latticeLE (latticeInf a b) b
+  simp only [latticeLE, latticeInf]
+  exact ⟨inf_le_right, inf_le_right, inf_le_right, inf_le_right,
+         inf_le_right, inf_le_right, inf_le_right, inf_le_right,
+         inf_le_right, inf_le_right, inf_le_right, inf_le_right⟩
+
+open ProductLattice in
+/-- Meet is idempotent: a ⊓ a = a. Applying the same policy twice is a no-op. -/
+theorem lattice_meet_idempotent (a : CapabilityLattice) : a ⊓ a = a := by
+  have h1 : (a ⊓ a) ≤ a := lattice_meet_deflationary_left a a
+  have h2 : a ≤ (a ⊓ a) := by
+    show latticeLE a (latticeInf a a)
+    simp only [latticeLE, latticeInf]
+    refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> exact le_inf (le_refl _) (le_refl _)
+  exact le_antisymm h1 h2
+
 end PortcullisCoreBridge
