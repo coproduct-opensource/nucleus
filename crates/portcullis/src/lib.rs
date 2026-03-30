@@ -114,6 +114,8 @@ pub mod kernel;
 ///
 /// Requires the `spec` feature (includes `serde`, `serde_yaml`, `toml`).
 #[cfg(feature = "spec")]
+pub mod manifest_registry;
+#[cfg(feature = "spec")]
 pub mod mcp_mediation;
 /// Progressive discovery: observe agent behavior and generate minimal policies.
 ///

@@ -10,6 +10,7 @@ use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
 use portcullis::kernel::{Kernel, Verdict};
+use portcullis::manifest_registry::ManifestRegistry;
 use portcullis::{Operation, PermissionLattice};
 use portcullis_core::flow::NodeKind;
 use serde::{Deserialize, Serialize};
@@ -511,6 +512,33 @@ fn main() {
             return;
         }
     };
+
+    // Check MCP tools against manifest registry (admission control).
+    // Loads manifests from .nucleus/manifests/*.toml in the working directory.
+    if input.tool_name.starts_with("mcp__") {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let registry = ManifestRegistry::load_from_dir(&cwd);
+        // Extract tool name: mcp__server__tool → server__tool
+        let mcp_tool_name = input
+            .tool_name
+            .strip_prefix("mcp__")
+            .unwrap_or(&input.tool_name);
+        if let Some(reason) = registry.is_rejected(mcp_tool_name) {
+            let out = HookOutput {
+                decision: "deny".to_string(),
+                reason: Some(format!(
+                    "nucleus: MCP tool '{}' rejected by manifest admission: {:?}",
+                    mcp_tool_name, reason
+                )),
+            };
+            eprintln!(
+                "nucleus: {} rejected by manifest admission: {:?}",
+                input.tool_name, reason
+            );
+            println!("{}", serde_json::to_string(&out).unwrap());
+            std::process::exit(2);
+        }
+    }
 
     let subject = extract_subject(&input.tool_name, &input.tool_input);
     let profile_name = default_profile_name();

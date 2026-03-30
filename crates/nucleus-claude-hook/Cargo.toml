@@ -14,7 +14,7 @@ name = "nucleus-claude-hook"
 path = "src/main.rs"
 
 [dependencies]
-portcullis = { path = "../portcullis", features = ["serde", "crypto"] }
+portcullis = { path = "../portcullis", features = ["serde", "crypto", "spec"] }
 portcullis-core = { path = "../portcullis-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
