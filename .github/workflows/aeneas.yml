@@ -65,7 +65,7 @@ jobs:
       - name: Aeneas Lean 4 translation
         run: |
           mkdir -p crates/portcullis-core/lean/ci-generated
-          aeneas -backend lean portcullis_core.llbc \
+          aeneas -backend lean -split-files portcullis_core.llbc \
             -dest crates/portcullis-core/lean/ci-generated
 
       # --- Verify generated code matches committed code ---
