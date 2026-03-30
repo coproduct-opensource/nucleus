@@ -143,7 +143,8 @@ fn main() {
     println!("═══════════════════════════════════════════════════════════════");
     println!("The malicious issue body (NoAuthority) could not steer the");
     println!("agent to exfiltrate private data. The information flow control");
-    println!("label lattice formally prevents trust-boundary violations.");
+    println!("label lattice provides the formal substrate to block");
+    println!("trust-boundary violations when labels are correctly applied.");
     println!();
     println!("Key insight: the issue body can be READ (for investigation)");
     println!("but cannot INSTRUCT (its authority level is too low to steer");

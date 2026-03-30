@@ -6,6 +6,14 @@ with the correct variance (confidentiality/provenance covariant,
 integrity/authority contravariant) and that the existing ExposureSet
 is a sound quotient of the full label.
 
+## Model correspondence
+
+These types are HAND-WRITTEN Lean models mirroring the Rust source in
+`portcullis-core/src/lib.rs`. Unlike the CapabilityLevel types (which are
+Aeneas-generated), the IFC types are not yet translatable by Aeneas.
+No structural correspondence test exists for these types — a variant
+added to the Rust enum will NOT cause a Lean build failure.
+
 ## Key theorems
 
 - **Authority confinement**: `NoAuthority` data cannot produce `Directive` output

@@ -630,7 +630,9 @@ pub enum IntegLevel {
 ///
 /// The critical innovation: formal encoding of "can this data steer the agent?"
 /// Web content gets NoAuthority — it can be READ but cannot INSTRUCT.
-/// This kills indirect prompt injection at the type level.
+/// When correctly labeled at runtime, this enables blocking indirect
+/// prompt injection — web content cannot acquire instruction authority
+/// regardless of what the LLM decides to do with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[repr(u8)]
 pub enum AuthorityLevel {
@@ -798,7 +800,10 @@ impl IFCLabel {
             && self.provenance.is_subset_of(target.provenance)
     }
 
-    /// Bottom label: public, trusted, no provenance, no authority.
+    /// Bottom label (least restrictive): public, trusted, no provenance, full authority.
+    ///
+    /// For contravariant dimensions (integrity, authority), bottom = maximum value
+    /// so that `join(x, bottom) = x` (joining with bottom doesn't restrict).
     pub fn bottom() -> Self {
         Self {
             confidentiality: ConfLevel::Public,
