@@ -91,6 +91,17 @@ impl FlowGraph {
         self.nodes.get(id as usize)?.as_ref()
     }
 
+    /// Apply a label modification to an existing node (for declassification).
+    ///
+    /// Only modifies the label — does not change the node's kind, parents,
+    /// or operation. Returns the previous label for audit.
+    pub fn modify_label(&mut self, id: NodeId, new_label: IFCLabel) -> Option<IFCLabel> {
+        let node = self.nodes.get_mut(id as usize)?.as_mut()?;
+        let old = node.label;
+        node.label = new_label;
+        Some(old)
+    }
+
     /// Insert a data-source observation. NOT flow-checked.
     pub fn insert_observation(
         &mut self,

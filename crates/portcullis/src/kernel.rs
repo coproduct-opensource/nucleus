@@ -354,6 +354,17 @@ pub struct Kernel {
     /// checks flow against actual causal dependencies instead of the
     /// flat session-level label. This eliminates over-tainting.
     flow_graph: Option<crate::flow_graph::FlowGraph>,
+    /// Declassification rules applied to flow labels before checking.
+    ///
+    /// Must be declared before the session starts (monotonicity of rule set).
+    /// Each application produces an audit entry in the trace.
+    declassification_rules: Vec<portcullis_core::declassify::DeclassificationRule>,
+    /// Optional Ed25519 signing key for receipt signing.
+    ///
+    /// When present, `decide_with_parents()` produces signed receipts
+    /// that downstream consumers can verify.
+    #[cfg(feature = "crypto")]
+    signing_key: Option<std::sync::Arc<ring::signature::Ed25519KeyPair>>,
 }
 
 impl Kernel {
@@ -389,6 +400,9 @@ impl Kernel {
             provenance: None,
             flow_label: None,
             flow_graph: None,
+            declassification_rules: Vec::new(),
+            #[cfg(feature = "crypto")]
+            signing_key: None,
         }
     }
 
@@ -418,6 +432,28 @@ impl Kernel {
         self.flow_graph = Some(crate::flow_graph::FlowGraph::new());
     }
 
+    /// Add a declassification rule to this session.
+    ///
+    /// Rules must be added before the session starts processing operations.
+    /// Each rule that fires during flow checking produces an audit-visible
+    /// label modification. Rules cannot escalate — only controlled downgrading
+    /// in the direction specified by the rule type.
+    pub fn add_declassification_rule(
+        &mut self,
+        rule: portcullis_core::declassify::DeclassificationRule,
+    ) {
+        self.declassification_rules.push(rule);
+    }
+
+    /// Set the Ed25519 signing key for receipt signing.
+    ///
+    /// When set, `decide_with_parents()` produces cryptographically signed
+    /// receipts that downstream audit systems can verify.
+    #[cfg(feature = "crypto")]
+    pub fn set_signing_key(&mut self, key: std::sync::Arc<ring::signature::Ed25519KeyPair>) {
+        self.signing_key = Some(key);
+    }
+
     /// Record a data-source observation in the causal DAG.
     ///
     /// Returns the `NodeId` for use as a parent in subsequent `observe()`
@@ -437,7 +473,25 @@ impl Kernel {
             .as_mut()
             .ok_or(crate::flow_graph::FlowGraphError::GraphNotEnabled)?;
         let now = chrono::Utc::now().timestamp() as u64;
-        graph.insert_observation(kind, parents, now)
+        let node_id = graph.insert_observation(kind, parents, now)?;
+
+        // Apply declassification rules to the observation's label.
+        // This is where controlled downgrading happens — e.g., a validated
+        // search tool's output gets Adversarial → Untrusted integrity.
+        if !self.declassification_rules.is_empty() {
+            if let Some(node) = graph.get(node_id) {
+                let mut label = node.label;
+                for rule in &self.declassification_rules {
+                    let result = rule.apply(label);
+                    if result.applied {
+                        label = result.label;
+                    }
+                }
+                graph.modify_label(node_id, label);
+            }
+        }
+
+        Ok(node_id)
     }
 
     /// Decide an operation with explicit causal parents from the DAG.
@@ -489,7 +543,14 @@ impl Kernel {
         if let portcullis_core::flow::FlowVerdict::Deny(reason) = flow_decision.verdict {
             let receipt_str = graph
                 .build_receipt_for(flow_decision.node_id, now)
-                .map(|r| r.display_chain());
+                .map(|mut r| {
+                    // Sign the receipt if a signing key is available
+                    #[cfg(feature = "crypto")]
+                    if let Some(ref key) = self.signing_key {
+                        crate::receipt_sign::sign_receipt(&mut r, key);
+                    }
+                    r.display_chain()
+                });
             let pre_hash = self.effective.checksum();
             let pre_exposure_count = self.exposure.count();
             let contributed_label = exposure_core::classify_operation(operation);
@@ -561,6 +622,9 @@ impl Kernel {
             provenance: Some(provenance),
             flow_label: None,
             flow_graph: None,
+            declassification_rules: Vec::new(),
+            #[cfg(feature = "crypto")]
+            signing_key: None,
         }
     }
 
@@ -594,6 +658,9 @@ impl Kernel {
             provenance: Some(provenance),
             flow_label: None,
             flow_graph: None,
+            declassification_rules: Vec::new(),
+            #[cfg(feature = "crypto")]
+            signing_key: None,
         }
     }
 
@@ -2426,5 +2493,84 @@ mod tests {
         let mut kernel = Kernel::new(perms);
         let result = kernel.observe(portcullis_core::flow::NodeKind::FileRead, &[]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn dag_declassification_allows_validated_tool() {
+        use portcullis_core::declassify::{DeclassificationRule, DeclassifyAction};
+        use portcullis_core::IntegLevel;
+
+        let perms = PermissionLattice::safe_pr_fixer();
+        let mut kernel = Kernel::new(perms);
+        kernel.enable_flow_graph();
+
+        // Add declassification rule: search API output gets Adversarial → Untrusted
+        kernel.add_declassification_rule(DeclassificationRule {
+            action: DeclassifyAction::RaiseIntegrity {
+                from: IntegLevel::Adversarial,
+                to: IntegLevel::Untrusted,
+            },
+            justification: "Search API returns curated content",
+        });
+
+        // Observe web content — normally Adversarial/NoAuthority
+        let web = kernel
+            .observe(portcullis_core::flow::NodeKind::WebContent, &[])
+            .unwrap();
+
+        // Without declassification, web content → write would be DENIED
+        // (NoAuthority cannot steer privileged actions).
+        // But the rule raised integrity from Adversarial → Untrusted.
+        // Authority is still NoAuthority, so writes are still denied by
+        // the authority check. This verifies declassification fires but
+        // doesn't grant more than it should.
+        let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/out.txt", &[web]);
+        assert!(
+            d.verdict.is_denied(),
+            "Authority is still NoAuthority — write should be denied even with raised integrity"
+        );
+    }
+
+    #[test]
+    fn dag_declassification_authority_upgrade() {
+        use portcullis_core::declassify::{DeclassificationRule, DeclassifyAction};
+        use portcullis_core::AuthorityLevel;
+
+        let perms = PermissionLattice::safe_pr_fixer();
+        let mut kernel = Kernel::new(perms);
+        kernel.enable_flow_graph();
+
+        // Raise authority: Informational → Suggestive (for curated tool output)
+        // ToolResponse starts at Informational authority
+        kernel.add_declassification_rule(DeclassificationRule {
+            action: DeclassifyAction::RaiseAuthority {
+                from: AuthorityLevel::Informational,
+                to: AuthorityLevel::Suggestive,
+            },
+            justification: "Tool output from validated API",
+        });
+
+        // Also raise integrity so both checks pass
+        kernel.add_declassification_rule(DeclassificationRule {
+            action: DeclassifyAction::RaiseIntegrity {
+                from: portcullis_core::IntegLevel::Adversarial,
+                to: portcullis_core::IntegLevel::Untrusted,
+            },
+            justification: "Validated API output",
+        });
+
+        let tool = kernel
+            .observe(portcullis_core::flow::NodeKind::ToolResponse, &[])
+            .unwrap();
+
+        // ToolResponse starts with Untrusted/Informational.
+        // Declassification raises authority to Suggestive.
+        // Write requires Suggestive authority — should now be allowed.
+        let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/out.txt", &[tool]);
+        assert!(
+            d.verdict.is_allowed(),
+            "Declassified tool response should allow write, got {:?}",
+            d.verdict
+        );
     }
 }
