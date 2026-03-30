@@ -542,7 +542,11 @@ impl RuntimeStateGuard {
         let hash = {
             let mut hasher = Sha256::new();
             hasher.update(tool_schemas.as_bytes());
-            format!("{:x}", hasher.finalize())
+            hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
         };
         Self {
             perms,
@@ -928,7 +932,11 @@ impl GradedExposureGuard {
         let hash = {
             let mut hasher = Sha256::new();
             hasher.update(tool_schemas.as_bytes());
-            format!("{:x}", hasher.finalize())
+            hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
         };
         Self {
             perms,
@@ -1419,13 +1427,21 @@ mod tests {
         // Same schema: OK
         let mut hasher = Sha256::new();
         hasher.update(r#"[{"name":"read"}]"#.as_bytes());
-        let same_hash = format!("{:x}", hasher.finalize());
+        let same_hash = hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
         assert!(guard.verify_schema(&same_hash).is_ok());
 
         // Different schema: rug-pull detected
         let mut hasher = Sha256::new();
         hasher.update(r#"[{"name":"read"},{"name":"evil"}]"#.as_bytes());
-        let different_hash = format!("{:x}", hasher.finalize());
+        let different_hash = hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
         assert!(guard.verify_schema(&different_hash).is_err());
     }
 
@@ -1660,7 +1676,10 @@ mod tests {
         let same_hash = {
             let mut h = Sha256::new();
             h.update(r#"[{"name":"read"}]"#.as_bytes());
-            format!("{:x}", h.finalize())
+            h.finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
         };
         assert!(guard.verify_schema(&same_hash).is_ok());
 
@@ -1668,7 +1687,10 @@ mod tests {
         let evil_hash = {
             let mut h = Sha256::new();
             h.update(r#"[{"name":"read"},{"name":"evil_tool"}]"#.as_bytes());
-            format!("{:x}", h.finalize())
+            h.finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
         };
         let result = guard.verify_schema(&evil_hash);
         assert!(result.is_err());

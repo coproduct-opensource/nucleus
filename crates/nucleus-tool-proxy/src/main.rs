@@ -1346,7 +1346,7 @@ async fn main() -> Result<(), ApiError> {
             auth_secret,
             proxy_id: format!(
                 "{}:{}",
-                whoami::fallible::hostname().unwrap_or_else(|_| "unknown".into()),
+                whoami::hostname().unwrap_or_else(|_| "unknown".into()),
                 std::process::id()
             ),
             pod_id: std::env::var("NUCLEUS_POD_ID").ok(),
@@ -4172,11 +4172,11 @@ fn parse_and_verify_lockdown_signal(content: &str, current_state: bool) -> bool 
     // lockdown, use the gRPC streaming path with proper HMAC auth.
     let key_material = format!(
         "nucleus-lockdown-{}:{}",
-        whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string()),
-        whoami::fallible::username().unwrap_or_else(|_| "unknown".to_string()),
+        whoami::hostname().unwrap_or_else(|_| "unknown".to_string()),
+        whoami::username().unwrap_or_else(|_| "unknown".to_string()),
     );
 
-    use hmac::{Hmac, Mac};
+    use hmac::{digest::KeyInit, Hmac, Mac};
     let mut mac = Hmac::<sha2::Sha256>::new_from_slice(key_material.as_bytes()).expect("hmac");
     mac.update(body.as_bytes());
     let expected = hex::encode(mac.finalize().into_bytes());

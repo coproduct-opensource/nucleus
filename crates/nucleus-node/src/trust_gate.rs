@@ -23,10 +23,10 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use ed25519_dalek::{Signer as _, SigningKey};
-use hmac::{Hmac, Mac};
+use hmac::{digest::KeyInit, Hmac, Mac};
 use nucleus_spec::{PodSpec, PolicySpec};
 use portcullis::{IsolationLattice, PermissionLattice, TrustProfile};
-use rand::rngs::OsRng;
+
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use tracing::{debug, info, warn};
@@ -61,7 +61,7 @@ impl Default for TrustGateConfig {
             enforce: false,                   // Log-only by default
             default_bracket: "C".to_string(), // Adequate — tenant profile
             receipt_secret: None,
-            executor_signing_key: Arc::new(SigningKey::generate(&mut OsRng)),
+            executor_signing_key: Arc::new(SigningKey::generate(&mut rand::rngs::OsRng)),
             executor_id: format!("nucleus-executor/{}", uuid_hex()),
         }
     }
@@ -93,7 +93,7 @@ impl TrustGateConfig {
         let executor_id = std::env::var("TRUST_EXECUTOR_ID")
             .unwrap_or_else(|_| format!("nucleus-executor/{}", uuid_hex()));
 
-        let executor_signing_key = Arc::new(SigningKey::generate(&mut OsRng));
+        let executor_signing_key = Arc::new(SigningKey::generate(&mut rand::rngs::OsRng));
 
         Self {
             trust_api_url: std::env::var("TRUST_API_URL").unwrap_or_default(),

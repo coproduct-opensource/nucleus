@@ -57,14 +57,14 @@ fn lockdown_signal_path() -> std::path::PathBuf {
 /// The key is derived from the machine ID + a fixed salt — not a secret,
 /// but sufficient to prevent casual tampering by other local users.
 fn signal_hmac(body: &[u8]) -> String {
-    use hmac::{Hmac, Mac};
+    use hmac::{digest::KeyInit, Hmac, Mac};
     use sha2::Sha256;
 
     // Machine-local key: hostname + uid — prevents cross-user forgery
     let key_material = format!(
         "nucleus-lockdown-{}:{}",
-        whoami::fallible::hostname().unwrap_or_else(|_| "unknown".to_string()),
-        whoami::fallible::username().unwrap_or_else(|_| "unknown".to_string()),
+        whoami::hostname().unwrap_or_else(|_| "unknown".to_string()),
+        whoami::username().unwrap_or_else(|_| "unknown".to_string()),
     );
 
     let mut mac =
@@ -131,7 +131,7 @@ async fn try_grpc_lockdown(
 
     let request = nucleus_proto::nucleus_node::LockdownRequest {
         reason: args.reason.clone(),
-        operator_id: whoami::fallible::username().unwrap_or_else(|_| "unknown".to_string()),
+        operator_id: whoami::username().unwrap_or_else(|_| "unknown".to_string()),
         restore: args.restore,
         scope: match (&args.pod, &args.selector) {
             (Some(pod), _) => Some(nucleus_proto::nucleus_node::lockdown_request::Scope::PodId(

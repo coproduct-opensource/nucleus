@@ -2784,7 +2784,11 @@ impl NodeService for GrpcService {
                 hasher.update(label.as_bytes());
             }
             hasher.update(report.observed_risk_tier.as_bytes());
-            format!("{:x}", hasher.finalize())
+            hasher
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
         };
 
         // Extract trust metadata from pod labels (set during create_pod_internal)
