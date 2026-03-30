@@ -24,3 +24,7 @@ lean_lib «PortcullisCore» where
 -- HeytingAlgebra bridge proof + function correspondence theorems
 lean_lib «PortcullisCoreBridge» where
   roots := #[`PortcullisCoreBridge]
+
+-- Exposure tracker proofs (uninhabitable state detector)
+lean_lib «ExposureProofs» where
+  roots := #[`ExposureProofs]
