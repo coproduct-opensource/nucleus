@@ -30,6 +30,7 @@ mod lockdown;
 mod node;
 mod observe;
 mod profiles;
+mod replay;
 mod run;
 mod setup;
 mod shell;
@@ -90,6 +91,9 @@ enum Commands {
     /// Observe agent behavior and generate a minimal policy profile
     Observe(observe::ObserveArgs),
 
+    /// Replay a kernel decision trace for audit
+    Replay(replay::ReplayArgs),
+
     /// Manage attenuation tokens for delegation
     Token(token::TokenArgs),
 
@@ -133,6 +137,7 @@ async fn main() -> Result<()> {
         Commands::Profiles => profiles::list(),
         Commands::Config => config::show(&config_path),
         Commands::Observe(args) => observe::execute(args),
+        Commands::Replay(args) => replay::execute(args),
         Commands::Token(args) => token::execute(args),
         Commands::Node(args) => node::execute(args).await,
     }
