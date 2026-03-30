@@ -55,6 +55,7 @@
 
 pub mod flow;
 pub mod manifest;
+pub mod receipt;
 
 /// Tool permission levels in lattice ordering.
 ///
