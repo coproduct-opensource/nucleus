@@ -71,6 +71,14 @@ impl FlowReceipt {
     pub fn is_signed(&self) -> bool {
         self.signature != [0; 64]
     }
+    /// Raw signature bytes (for verification).
+    pub fn signature_bytes(&self) -> &[u8; 64] {
+        &self.signature
+    }
+    /// Set the signature (called by signing code in `portcullis` crate).
+    pub fn set_signature(&mut self, sig: [u8; 64]) {
+        self.signature = sig;
+    }
 }
 
 /// A node summary for inclusion in a receipt.
@@ -143,6 +151,8 @@ pub enum SignatureError {
     Unsigned,
     /// Signature verification not yet implemented.
     VerificationNotImplemented,
+    /// Ed25519 signature is invalid (wrong key or tampered content).
+    InvalidSignature,
 }
 
 /// Verify the receipt's signature.
