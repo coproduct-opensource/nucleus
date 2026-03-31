@@ -43,14 +43,13 @@ fn spec_classify(op: Operation) -> Option<ExposureLabel> {
             Some(ExposureLabel::PrivateData)
         }
         Operation::WebFetch | Operation::WebSearch => Some(ExposureLabel::UntrustedContent),
-        Operation::RunBash | Operation::GitPush | Operation::CreatePr => {
+        Operation::RunBash | Operation::GitPush | Operation::CreatePr | Operation::SpawnAgent => {
             Some(ExposureLabel::ExfilVector)
         }
         Operation::WriteFiles
         | Operation::EditFiles
         | Operation::GitCommit
-        | Operation::ManagePods
-        | Operation::SpawnAgent => None,
+        | Operation::ManagePods => None,
     }
 }
 
@@ -58,7 +57,7 @@ fn spec_classify(op: Operation) -> Option<ExposureLabel> {
 fn spec_is_exfil(op: Operation) -> bool {
     matches!(
         op,
-        Operation::RunBash | Operation::GitPush | Operation::CreatePr
+        Operation::RunBash | Operation::GitPush | Operation::CreatePr | Operation::SpawnAgent
     )
 }
 
