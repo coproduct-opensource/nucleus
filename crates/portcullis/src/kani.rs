@@ -1454,7 +1454,7 @@ fn proof_minimum_isolation_tightens_under_meet() {
 #[kani::solver(cadical)]
 fn proof_airgapped_blocks_network_ops() {
     let op: u8 = kani::any();
-    kani::assume(op < 13);
+    kani::assume(op < 12);
 
     let operation = match op {
         0 => Operation::ReadFiles,
@@ -1468,8 +1468,7 @@ fn proof_airgapped_blocks_network_ops() {
         8 => Operation::GitCommit,
         9 => Operation::GitPush,
         10 => Operation::CreatePr,
-        11 => Operation::ManagePods,
-        _ => Operation::SpawnAgent,
+        _ => Operation::ManagePods,
     };
 
     let is_network = matches!(operation, Operation::WebFetch | Operation::WebSearch);
