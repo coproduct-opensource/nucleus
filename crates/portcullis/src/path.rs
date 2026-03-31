@@ -234,10 +234,15 @@ impl PathLattice {
     }
 
     /// Create a path lattice that blocks sensitive files.
+    ///
+    /// Includes agent configuration files (CLAUDE.md, .claude/) to prevent
+    /// prompt injection via untrusted repositories. See:
+    /// <https://www.stepsecurity.io/blog/hackerbot-claw-github-actions-exploitation>
     pub fn block_sensitive() -> Self {
         Self {
             allowed: HashSet::new(),
             blocked: [
+                // Secrets and credentials
                 ".env*",
                 "*.pem",
                 "*.key",
@@ -252,6 +257,16 @@ impl PathLattice {
                 "**/.pypirc",
                 "**/token*",
                 "**/password*",
+                // Agent config files — untrusted repos can manipulate agent behavior
+                // via prompt injection in these files (hackerbot-claw attack vector)
+                "**/CLAUDE.md",
+                "**/.claude/**",
+                "**/.cursorrules",
+                "**/.github/copilot-instructions.md",
+                // Nucleus config files — prevent policy tampering
+                "**/.nucleus/policy.toml",
+                "**/.nucleus/trust/**",
+                "**/.nucleus/manifests/**",
             ]
             .iter()
             .map(|s| s.to_string())
@@ -415,6 +430,42 @@ mod tests {
         assert!(!lattice.can_access(Path::new(".env")));
         assert!(!lattice.can_access(Path::new("secrets/api.key")));
         assert!(lattice.can_access(Path::new("src/main.rs")));
+    }
+
+    // Security: Agent config files blocked (#115)
+    #[test]
+    fn test_agent_config_files_blocked() {
+        let lattice = PathLattice::block_sensitive();
+
+        // CLAUDE.md — hackerbot-claw attack vector
+        assert!(
+            !lattice.can_access(Path::new("CLAUDE.md")),
+            "CLAUDE.md must be blocked"
+        );
+        assert!(
+            !lattice.can_access(Path::new(".claude/settings.json")),
+            ".claude/ must be blocked"
+        );
+
+        // Other agent config files
+        assert!(
+            !lattice.can_access(Path::new(".cursorrules")),
+            ".cursorrules must be blocked"
+        );
+
+        // Nucleus policy files
+        assert!(
+            !lattice.can_access(Path::new(".nucleus/policy.toml")),
+            ".nucleus/policy.toml must be blocked"
+        );
+        assert!(
+            !lattice.can_access(Path::new(".nucleus/trust/author.pub")),
+            ".nucleus/trust/ must be blocked"
+        );
+
+        // Normal files still allowed
+        assert!(lattice.can_access(Path::new("src/main.rs")));
+        assert!(lattice.can_access(Path::new("README.md")));
     }
 
     // Security: Path traversal tests
