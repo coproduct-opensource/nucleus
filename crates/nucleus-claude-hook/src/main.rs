@@ -1034,6 +1034,68 @@ fn run_status() {
 // --help
 // ---------------------------------------------------------------------------
 
+fn show_receipts(session_id: &str) {
+    let safe_id = sanitize_session_id(session_id);
+    let receipts_dir = session_dir().join("receipts");
+    let path = receipts_dir.join(format!("{safe_id}.jsonl"));
+
+    if !path.exists() {
+        println!("No receipts found for session '{session_id}'");
+        return;
+    }
+
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            println!("Failed to read receipts: {e}");
+            return;
+        }
+    };
+
+    let mut count = 0u32;
+    let mut allowed = 0u32;
+    let mut denied = 0u32;
+
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
+            let op = entry["operation"].as_str().unwrap_or("?");
+            let subject = entry["subject"].as_str().unwrap_or("?");
+            let verdict = entry["verdict"].as_str().unwrap_or("?");
+            let comp = entry["compartment"].as_str().unwrap_or("");
+
+            let icon = if verdict.contains("Deny") {
+                denied += 1;
+                "\x1b[31m\u{2717}\x1b[0m"
+            } else {
+                allowed += 1;
+                "\x1b[32m\u{2713}\x1b[0m"
+            };
+
+            let comp_tag = if comp.is_empty() {
+                String::new()
+            } else {
+                format!(" [{comp}]")
+            };
+
+            let short = if subject.len() > 50 {
+                format!("{}...", &subject[..47])
+            } else {
+                subject.to_string()
+            };
+
+            println!("  {icon} {op:<25} {short}{comp_tag}");
+            count += 1;
+        }
+    }
+
+    println!();
+    println!("Total: {count} receipts ({allowed} allowed, {denied} denied)");
+    println!("Chain file: {}", path.display());
+}
+
 fn run_doctor() {
     let mut ok = true;
 
@@ -1269,6 +1331,38 @@ fn main() {
                 println!("  {p}");
             }
             println!("\nUsage: nucleus-claude-hook --show-profile <name>");
+        }
+        return;
+    }
+
+    // View receipt chain for a session (#561)
+    if let Some(pos) = args.iter().position(|a| a == "--receipts") {
+        if let Some(session_id) = args.get(pos + 1) {
+            show_receipts(session_id);
+        } else {
+            // List all receipt files
+            let receipts_dir = session_dir().join("receipts");
+            if receipts_dir.exists() {
+                println!("Receipt chains:");
+                if let Ok(entries) = std::fs::read_dir(&receipts_dir) {
+                    for entry in entries.flatten() {
+                        if entry.path().extension().is_some_and(|e| e == "jsonl") {
+                            let name = entry
+                                .path()
+                                .file_stem()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            let lines = std::fs::read_to_string(entry.path())
+                                .map(|c| c.lines().count())
+                                .unwrap_or(0);
+                            println!("  {name}  ({lines} receipts)");
+                        }
+                    }
+                }
+            } else {
+                println!("No receipt chains found.");
+            }
+            println!("\nUsage: nucleus-claude-hook --receipts <session-id>");
         }
         return;
     }
