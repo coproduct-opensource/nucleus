@@ -942,6 +942,22 @@ const PROFILES: &[&str] = &[
     "permissive",
 ];
 
+const PROFILE_DESCRIPTIONS: &[(&str, &str)] = &[
+    ("read_only", "Read + search only, no writes or execution"),
+    ("code_review", "Read + search, no writes (PR review)"),
+    ("edit_only", "Read + write, no execution or web"),
+    ("fix_issue", "Read + write + bash + web, no push"),
+    (
+        "safe_pr_fixer",
+        "Full dev workflow, no git push/PR (DEFAULT)",
+    ),
+    ("release", "Full access including git push and PR creation"),
+    (
+        "permissive",
+        "All capabilities, audit-only (no enforcement)",
+    ),
+];
+
 // ---------------------------------------------------------------------------
 // --setup: auto-configure Claude Code settings.json
 // ---------------------------------------------------------------------------
@@ -1455,13 +1471,8 @@ fn run_help() {
     println!("  nucleus-claude-hook --version     Show version");
     println!();
     println!("PROFILES (set NUCLEUS_PROFILE env var):");
-    for p in PROFILES {
-        let marker = if *p == "safe_pr_fixer" {
-            " (default)"
-        } else {
-            ""
-        };
-        println!("  {p}{marker}");
+    for (name, desc) in PROFILE_DESCRIPTIONS {
+        println!("  {name:<16} {desc}");
     }
     println!();
     println!("ENVIRONMENT:");
