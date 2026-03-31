@@ -137,6 +137,10 @@ pub struct DelegationBlock {
     pub to_identity: String,
     /// Block expiration (must be ≤ parent block's not_after).
     pub not_after: DateTime<Utc>,
+    /// Sink scope — restricts WHERE delegated operations can target (#594).
+    /// Monotone: child scope ⊆ parent scope.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub sink_scope: SinkScope,
     /// SHA-256 hash of the previous block (tamper-evident ordering).
     pub prev_block_hash: Vec<u8>,
     /// Ed25519 signature by the previous holder's ephemeral key.
@@ -175,6 +179,8 @@ pub struct VerifiedPermissions {
     pub root_identity: String,
     /// Identity of the leaf holder.
     pub leaf_identity: String,
+    /// Effective sink scope at the end of the chain (#594).
+    pub sink_scope: SinkScope,
 }
 
 impl fmt::Debug for VerifiedPermissions {
@@ -219,6 +225,11 @@ pub enum CertificateError {
     },
     /// The final proof-of-possession signature is invalid.
     InvalidProofOfPossession,
+    /// A delegation block's sink scope exceeds its parent's scope (#594).
+    SinkScopeViolation {
+        /// Index of the violating block.
+        block_index: usize,
+    },
 }
 
 impl fmt::Display for CertificateError {
@@ -246,6 +257,13 @@ impl fmt::Display for CertificateError {
             Self::InvalidProofOfPossession => {
                 write!(f, "Invalid proof-of-possession signature")
             }
+            Self::SinkScopeViolation { block_index } => {
+                write!(
+                    f,
+                    "Sink scope violation (scope widening) at block {}",
+                    block_index
+                )
+            }
         }
     }
 }
@@ -268,6 +286,8 @@ pub enum CertificateDelegationError {
     },
     /// Ed25519 key generation failed.
     KeyGenerationFailed,
+    /// The requested sink scope exceeds the parent's scope (#594).
+    SinkScopeExceedsParent,
 }
 
 impl fmt::Display for CertificateDelegationError {
@@ -279,11 +299,77 @@ impl fmt::Display for CertificateDelegationError {
                 write!(f, "Chain depth {} would exceed maximum {}", depth, max)
             }
             Self::KeyGenerationFailed => write!(f, "Ed25519 key generation failed"),
+            Self::SinkScopeExceedsParent => {
+                write!(f, "Requested sink scope exceeds parent's scope")
+            }
         }
     }
 }
 
 impl std::error::Error for CertificateDelegationError {}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SINK SCOPE — restricts WHERE delegated operations can target (#594)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Restricts which sinks a delegated agent can target.
+///
+/// An empty `Vec` means "unrestricted" (all sinks allowed for that dimension).
+/// When non-empty, only matching targets are permitted. Delegation must be
+/// monotone: child scope ⊆ parent scope (a child cannot widen access).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct SinkScope {
+    /// Allowed file path prefixes (e.g., "/workspace/output/").
+    /// Empty = all paths allowed by the capability lattice.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub allowed_paths: Vec<String>,
+    /// Allowed network hosts (e.g., "api.example.com").
+    /// Empty = all hosts allowed.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub allowed_hosts: Vec<String>,
+    /// Allowed git ref patterns (e.g., "origin/feature-*").
+    /// Empty = all refs allowed.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub allowed_git_refs: Vec<String>,
+}
+
+impl SinkScope {
+    /// Unrestricted scope — allows all targets.
+    pub fn unrestricted() -> Self {
+        Self::default()
+    }
+
+    /// Check if `child` is a subset of `self` (monotone attenuation).
+    ///
+    /// Rules:
+    /// - If parent is unrestricted (empty), child can be anything (including restricted)
+    /// - If parent is restricted, child must be a subset (every child entry must match a parent entry)
+    /// - An empty child vec inherits the parent's restrictions
+    pub fn contains(&self, child: &SinkScope) -> bool {
+        subset_check(&self.allowed_paths, &child.allowed_paths)
+            && subset_check(&self.allowed_hosts, &child.allowed_hosts)
+            && subset_check(&self.allowed_git_refs, &child.allowed_git_refs)
+    }
+}
+
+/// Check if `child_list` ⊆ `parent_list`.
+/// An empty parent means unrestricted (any child is allowed).
+/// A non-empty parent requires every child entry to be present in the parent.
+/// An empty child inherits (is considered within) the parent scope.
+fn subset_check(parent: &[String], child: &[String]) -> bool {
+    if parent.is_empty() {
+        // Parent unrestricted — any child restriction is fine
+        return true;
+    }
+    if child.is_empty() {
+        // Child unrestricted but parent is restricted — NOT a subset
+        // A child with no restrictions would be wider than the parent
+        return false;
+    }
+    // Every child entry must exist in parent
+    child.iter().all(|c| parent.iter().any(|p| p == c))
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CANONICAL HASHING
@@ -400,13 +486,30 @@ impl DelegationBlock {
     /// Compute the canonical payload for signing.
     fn signing_payload(&self) -> Vec<u8> {
         let mut payload = Vec::new();
-        payload.extend_from_slice(b"lattice-cert-delegation-v1:");
+        payload.extend_from_slice(b"lattice-cert-delegation-v2:");
         payload.extend_from_slice(self.from_identity.as_bytes());
         payload.push(0);
         payload.extend_from_slice(self.to_identity.as_bytes());
         payload.push(0);
         payload.extend_from_slice(&self.not_after.timestamp().to_le_bytes());
         payload.extend_from_slice(&canonical_permissions_hash(&self.effective_permissions));
+        // Sink scope is included in the signed payload (#594)
+        // so tampering with scope invalidates the signature.
+        for p in &self.sink_scope.allowed_paths {
+            payload.extend_from_slice(b"path:");
+            payload.extend_from_slice(p.as_bytes());
+            payload.push(0);
+        }
+        for h in &self.sink_scope.allowed_hosts {
+            payload.extend_from_slice(b"host:");
+            payload.extend_from_slice(h.as_bytes());
+            payload.push(0);
+        }
+        for r in &self.sink_scope.allowed_git_refs {
+            payload.extend_from_slice(b"ref:");
+            payload.extend_from_slice(r.as_bytes());
+            payload.push(0);
+        }
         payload.extend_from_slice(&self.prev_block_hash);
         payload.extend_from_slice(&self.next_key);
         payload
@@ -504,6 +607,30 @@ impl LatticeCertificate {
         current_holder_key: &Ed25519KeyPair,
         rng: &dyn SecureRandom,
     ) -> Result<(Self, Ed25519KeyPair), CertificateDelegationError> {
+        self.delegate_with_scope(
+            requested,
+            to_identity,
+            not_after,
+            SinkScope::unrestricted(),
+            current_holder_key,
+            rng,
+        )
+    }
+
+    /// Delegate with explicit sink scope restrictions (#594).
+    ///
+    /// The `sink_scope` must be a subset of the parent's scope (monotone).
+    /// An unrestricted parent allows any child scope; a restricted parent
+    /// requires the child to be equally or more restricted.
+    pub fn delegate_with_scope(
+        &self,
+        requested: &PermissionLattice,
+        to_identity: String,
+        not_after: DateTime<Utc>,
+        sink_scope: SinkScope,
+        current_holder_key: &Ed25519KeyPair,
+        rng: &dyn SecureRandom,
+    ) -> Result<(Self, Ed25519KeyPair), CertificateDelegationError> {
         // Check chain depth
         if self.blocks.len() >= DEFAULT_MAX_CHAIN_DEPTH {
             return Err(CertificateDelegationError::ChainTooDeep {
@@ -541,6 +668,16 @@ impl LatticeCertificate {
             return Err(CertificateDelegationError::ExpiryExceedsParent);
         }
 
+        // Check sink scope monotonicity (#594)
+        let parent_scope = if self.blocks.is_empty() {
+            SinkScope::unrestricted() // Root has unrestricted scope
+        } else {
+            self.blocks.last().unwrap().sink_scope.clone()
+        };
+        if !parent_scope.contains(&sink_scope) {
+            return Err(CertificateDelegationError::SinkScopeExceedsParent);
+        }
+
         // Compute the meet with justification (the constructive witness)
         let (effective_permissions, justification) =
             meet_with_justification(parent_permissions, requested);
@@ -567,6 +704,7 @@ impl LatticeCertificate {
             from_identity,
             to_identity,
             not_after,
+            sink_scope,
             prev_block_hash: prev_hash,
             signature: Vec::new(),
             next_key,
@@ -781,6 +919,16 @@ pub fn verify_certificate(
             return Err(CertificateError::MonotoneViolation { block_index });
         }
 
+        // 4c2. Verify sink scope monotonicity (#594)
+        let parent_scope = if i == 0 {
+            SinkScope::unrestricted()
+        } else {
+            cert.blocks[i - 1].sink_scope.clone()
+        };
+        if !parent_scope.contains(&block.sink_scope) {
+            return Err(CertificateError::SinkScopeViolation { block_index });
+        }
+
         // 4d. Check expiry
         if now > block.not_after {
             return Err(CertificateError::Expired { block_index });
@@ -807,11 +955,18 @@ pub fn verify_certificate(
         .map(|b| b.to_identity.clone())
         .unwrap_or_else(|| cert.authority.root_identity.clone());
 
+    let effective_sink_scope = cert
+        .blocks
+        .last()
+        .map(|b| b.sink_scope.clone())
+        .unwrap_or_default();
+
     Ok(VerifiedPermissions {
         effective: prev_permissions.clone(),
         chain_depth: cert.blocks.len(),
         root_identity: cert.authority.root_identity.clone(),
         leaf_identity,
+        sink_scope: effective_sink_scope,
     })
 }
 
@@ -1391,5 +1546,144 @@ mod tests {
             fp_before, fp_after,
             "delegation must change the fingerprint"
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Sink scope tests (#594)
+    // ─────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_sink_scope_subset_check() {
+        let parent = SinkScope {
+            allowed_paths: vec!["/workspace/".into(), "/tmp/".into()],
+            allowed_hosts: vec!["api.example.com".into()],
+            allowed_git_refs: vec![],
+        };
+        // Child is a subset
+        let child = SinkScope {
+            allowed_paths: vec!["/workspace/".into()],
+            allowed_hosts: vec!["api.example.com".into()],
+            allowed_git_refs: vec![],
+        };
+        assert!(parent.contains(&child));
+
+        // Child tries to widen — NOT a subset
+        let wider = SinkScope {
+            allowed_paths: vec!["/workspace/".into(), "/etc/".into()],
+            allowed_hosts: vec!["api.example.com".into()],
+            allowed_git_refs: vec![],
+        };
+        assert!(!parent.contains(&wider));
+    }
+
+    #[test]
+    fn test_sink_scope_unrestricted_parent() {
+        let unrestricted = SinkScope::unrestricted();
+        let restricted = SinkScope {
+            allowed_paths: vec!["/workspace/".into()],
+            ..Default::default()
+        };
+        // Unrestricted parent allows any child
+        assert!(unrestricted.contains(&restricted));
+        assert!(unrestricted.contains(&unrestricted));
+    }
+
+    #[test]
+    fn test_sink_scope_restricted_parent_rejects_unrestricted_child() {
+        let restricted = SinkScope {
+            allowed_paths: vec!["/workspace/".into()],
+            ..Default::default()
+        };
+        let unrestricted = SinkScope::unrestricted();
+        // Restricted parent REJECTS unrestricted child (widening)
+        assert!(!restricted.contains(&unrestricted));
+    }
+
+    #[test]
+    fn test_delegate_with_sink_scope() {
+        let rng = test_rng();
+        let root_key = generate_key(&rng);
+        let not_after = Utc::now() + Duration::hours(8);
+
+        let (cert, holder_key) = LatticeCertificate::mint(
+            PermissionLattice::permissive(),
+            "root".into(),
+            not_after,
+            &root_key,
+            &rng,
+        );
+
+        // Delegate with path restrictions
+        let scope = SinkScope {
+            allowed_paths: vec!["/workspace/output/".into()],
+            allowed_hosts: vec!["api.example.com".into()],
+            ..Default::default()
+        };
+
+        let (cert, _delegatee_key) = cert
+            .delegate_with_scope(
+                &PermissionLattice::restrictive(),
+                "agent-1".into(),
+                not_after,
+                scope.clone(),
+                &holder_key,
+                &rng,
+            )
+            .unwrap();
+
+        // Verify — should see the sink scope
+        let root_pub = root_key.public_key().as_ref();
+        let verified = verify_certificate(&cert, root_pub, Utc::now(), 10).unwrap();
+        assert_eq!(verified.sink_scope, scope);
+    }
+
+    #[test]
+    fn test_delegate_rejects_scope_widening() {
+        let rng = test_rng();
+        let root_key = generate_key(&rng);
+        let not_after = Utc::now() + Duration::hours(8);
+
+        let (cert, holder_key) = LatticeCertificate::mint(
+            PermissionLattice::permissive(),
+            "root".into(),
+            not_after,
+            &root_key,
+            &rng,
+        );
+
+        // First delegation: restrict to /workspace/
+        let narrow_scope = SinkScope {
+            allowed_paths: vec!["/workspace/".into()],
+            ..Default::default()
+        };
+        let (cert, delegatee_key) = cert
+            .delegate_with_scope(
+                &PermissionLattice::permissive(),
+                "agent-1".into(),
+                not_after,
+                narrow_scope,
+                &holder_key,
+                &rng,
+            )
+            .unwrap();
+
+        // Second delegation: try to WIDEN to /workspace/ + /etc/
+        let wider_scope = SinkScope {
+            allowed_paths: vec!["/workspace/".into(), "/etc/".into()],
+            ..Default::default()
+        };
+        let result = cert.delegate_with_scope(
+            &PermissionLattice::permissive(),
+            "agent-2".into(),
+            not_after,
+            wider_scope,
+            &delegatee_key,
+            &rng,
+        );
+
+        assert!(matches!(
+            result,
+            Err(CertificateDelegationError::SinkScopeExceedsParent)
+        ));
     }
 }
