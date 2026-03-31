@@ -230,6 +230,90 @@ fn save_session(session_id: &str, state: &SessionState) {
 }
 
 // ---------------------------------------------------------------------------
+// Receipt persistence — append-only JSONL audit trail
+// ---------------------------------------------------------------------------
+
+/// Serializable receipt entry for the JSONL audit file.
+#[derive(Serialize)]
+struct ReceiptEntry {
+    /// Unix timestamp
+    timestamp: u64,
+    /// Operation name
+    operation: String,
+    /// Subject (file path, URL, command, etc.)
+    subject: String,
+    /// "allow", "deny", or "ask"
+    verdict: String,
+    /// Flow rule that fired (for denials)
+    rule: String,
+    /// Action node label
+    action_label: String,
+    /// Causal ancestors (node kind + label summary)
+    ancestors: Vec<String>,
+    /// Ed25519 signature (hex)
+    signature: String,
+    /// Previous receipt hash (hex) — chain link
+    prev_hash: String,
+    /// This receipt's hash (hex) — for the next receipt's prev_hash
+    receipt_hash: String,
+}
+
+/// Persist a signed receipt to `.nucleus/receipts/<session-id>.jsonl`.
+///
+/// Append-only JSONL — one receipt per line. Creates the directory
+/// and file if they don't exist. Failures are silent (audit is
+/// best-effort, not on the critical path).
+fn persist_receipt(
+    session_id: &str,
+    receipt: &portcullis_core::receipt::FlowReceipt,
+    operation: Operation,
+    subject: &str,
+) {
+    let safe_id = sanitize_session_id(session_id);
+    let receipts_dir = session_dir().join("receipts");
+    std::fs::create_dir_all(&receipts_dir).ok();
+    let path = receipts_dir.join(format!("{safe_id}.jsonl"));
+
+    let entry = ReceiptEntry {
+        timestamp: receipt.created_at(),
+        operation: operation.to_string(),
+        subject: subject.to_string(),
+        verdict: format!("{:?}", receipt.verdict()),
+        rule: receipt.rule_name().to_string(),
+        action_label: format!(
+            "conf={:?} integ={:?} auth={:?}",
+            receipt.action().label.confidentiality,
+            receipt.action().label.integrity,
+            receipt.action().label.authority,
+        ),
+        ancestors: receipt
+            .ancestors()
+            .iter()
+            .map(|a| {
+                format!(
+                    "{:?} conf={:?} integ={:?} auth={:?}",
+                    a.kind, a.label.confidentiality, a.label.integrity, a.label.authority,
+                )
+            })
+            .collect(),
+        signature: hex::encode(receipt.signature_bytes()),
+        prev_hash: hex::encode(receipt.prev_hash()),
+        receipt_hash: hex::encode(receipt_hash(receipt)),
+    };
+
+    if let Ok(json) = serde_json::to_string(&entry) {
+        use std::io::Write;
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            writeln!(file, "{json}").ok();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tool name -> Operation mapping
 // ---------------------------------------------------------------------------
 
@@ -950,9 +1034,10 @@ fn main() {
         })
     });
 
-    // Update chain head hash if a receipt was produced.
+    // Update chain head hash and persist receipt if produced.
     if let Some(ref receipt) = flow_receipt {
         session.chain_head_hash = receipt_hash(receipt);
+        persist_receipt(&input.session_id, receipt, operation, &subject);
     }
 
     let output = match decision.verdict {
