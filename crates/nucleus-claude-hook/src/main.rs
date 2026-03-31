@@ -1091,6 +1091,25 @@ fn main() {
         return;
     }
 
+    // Reset a tainted session (#567)
+    if let Some(pos) = args.iter().position(|a| a == "--reset-session") {
+        if let Some(session_id) = args.get(pos + 1) {
+            let state_path = session_state_path(session_id);
+            let hwm_path = session_hwm_path(session_id);
+            if state_path.exists() {
+                std::fs::remove_file(&state_path).ok();
+                std::fs::remove_file(&hwm_path).ok();
+                println!("nucleus: session '{session_id}' reset — taint cleared");
+                println!("nucleus: Note: receipt chain preserved for audit");
+            } else {
+                println!("nucleus: no session found for '{session_id}'");
+            }
+        } else {
+            println!("usage: nucleus-claude-hook --reset-session <session-id>");
+        }
+        return;
+    }
+
     // Read hook input from stdin.
     //
     // ERROR MODEL: Infrastructure errors (no stdin, bad JSON) are NON-BLOCKING.
@@ -1671,6 +1690,22 @@ fn main() {
                 operation.to_string(),
                 subject.clone(),
             ));
+
+            // DX (#567): When web content taints the session, print recovery path
+            if matches!(operation, Operation::WebFetch | Operation::WebSearch) {
+                eprintln!(
+                    "nucleus: \u{26a0} Session tainted by web content — writes will be blocked."
+                );
+                if compartment.is_some() {
+                    eprintln!(
+                        "nucleus: Tip: switch to 'draft' compartment to write (flow graph resets on transition)"
+                    );
+                } else {
+                    eprintln!(
+                        "nucleus: Tip: set NUCLEUS_COMPARTMENT=draft or restart to clear taint"
+                    );
+                }
+            }
 
             // PHASE 4: When SpawnAgent is allowed, export the current flow
             // label AND chain reference so the child inherits taint and
