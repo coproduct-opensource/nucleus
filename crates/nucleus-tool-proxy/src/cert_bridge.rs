@@ -129,6 +129,7 @@ fn all_never_capabilities() -> CapabilityLattice {
         git_push: CapabilityLevel::Never,
         create_pr: CapabilityLevel::Never,
         manage_pods: CapabilityLevel::Never,
+        spawn_agent: CapabilityLevel::Never,
         extensions: std::collections::BTreeMap::new(),
     }
 }

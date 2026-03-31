@@ -405,6 +405,11 @@ impl PermissiveExecutor {
                 self.floor.capabilities.manage_pods,
                 self.ceiling.capabilities.manage_pods,
             ),
+            (
+                Operation::SpawnAgent,
+                self.floor.capabilities.spawn_agent,
+                self.ceiling.capabilities.spawn_agent,
+            ),
         ];
 
         for (op, floor_level, ceiling_level) in ops {
@@ -452,6 +457,7 @@ impl PermissiveExecutor {
             Operation::GitPush => test_caps.git_push = to,
             Operation::CreatePr => test_caps.create_pr = to,
             Operation::ManagePods => test_caps.manage_pods = to,
+            Operation::SpawnAgent => test_caps.spawn_agent = to,
         }
 
         let before = constraint.state_risk(&self.floor.capabilities);

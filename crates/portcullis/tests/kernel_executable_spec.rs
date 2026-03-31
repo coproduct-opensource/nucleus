@@ -49,7 +49,8 @@ fn spec_classify(op: Operation) -> Option<ExposureLabel> {
         Operation::WriteFiles
         | Operation::EditFiles
         | Operation::GitCommit
-        | Operation::ManagePods => None,
+        | Operation::ManagePods
+        | Operation::SpawnAgent => None,
     }
 }
 
@@ -109,26 +110,30 @@ fn arb_operation() -> impl Strategy<Value = Operation> {
         Just(Operation::GitPush),
         Just(Operation::CreatePr),
         Just(Operation::ManagePods),
+        Just(Operation::SpawnAgent),
     ]
 }
 
 fn arb_capability_lattice() -> impl Strategy<Value = CapabilityLattice> {
     (
-        arb_capability_level(),
-        arb_capability_level(),
-        arb_capability_level(),
-        arb_capability_level(),
-        arb_capability_level(),
-        arb_capability_level(),
-        arb_capability_level(),
-        arb_capability_level(),
-        arb_capability_level(),
-        arb_capability_level(),
-        arb_capability_level(),
+        (
+            arb_capability_level(),
+            arb_capability_level(),
+            arb_capability_level(),
+            arb_capability_level(),
+            arb_capability_level(),
+            arb_capability_level(),
+            arb_capability_level(),
+            arb_capability_level(),
+            arb_capability_level(),
+            arb_capability_level(),
+            arb_capability_level(),
+            arb_capability_level(),
+        ),
         arb_capability_level(),
     )
-        .prop_map(
-            |(rf, wf, ef, rb, gs, grs, ws, wfe, gc, gp, cp, mp)| CapabilityLattice {
+        .prop_map(|((rf, wf, ef, rb, gs, grs, ws, wfe, gc, gp, cp, mp), sa)| {
+            CapabilityLattice {
                 read_files: rf,
                 write_files: wf,
                 edit_files: ef,
@@ -141,9 +146,10 @@ fn arb_capability_lattice() -> impl Strategy<Value = CapabilityLattice> {
                 git_push: gp,
                 create_pr: cp,
                 manage_pods: mp,
+                spawn_agent: sa,
                 extensions: std::collections::BTreeMap::new(),
-            },
-        )
+            }
+        })
 }
 
 /// Generate a sequence of operations (3..12 operations per session).
@@ -517,6 +523,7 @@ fn spec_clinejection_blocked() {
             git_push: CapabilityLevel::Never,
             create_pr: CapabilityLevel::Never,
             manage_pods: CapabilityLevel::Never,
+            spawn_agent: CapabilityLevel::Never,
             extensions: std::collections::BTreeMap::new(),
         })
         .commands(CommandLattice::permissive())
@@ -560,6 +567,7 @@ fn spec_toxic_agent_flow_blocked() {
             git_push: CapabilityLevel::Always,
             create_pr: CapabilityLevel::Never,
             manage_pods: CapabilityLevel::Never,
+            spawn_agent: CapabilityLevel::Never,
             extensions: std::collections::BTreeMap::new(),
         })
         .commands(CommandLattice::permissive())
@@ -604,6 +612,7 @@ fn spec_pre_approval_consumed_exactly() {
             git_push: CapabilityLevel::Always,
             create_pr: CapabilityLevel::Never,
             manage_pods: CapabilityLevel::Never,
+            spawn_agent: CapabilityLevel::Never,
             extensions: std::collections::BTreeMap::new(),
         })
         .commands(CommandLattice::permissive())
@@ -654,6 +663,7 @@ fn spec_neutral_ops_unaffected_by_exposure() {
             git_push: CapabilityLevel::Never,
             create_pr: CapabilityLevel::Never,
             manage_pods: CapabilityLevel::Always,
+            spawn_agent: CapabilityLevel::Never,
             extensions: std::collections::BTreeMap::new(),
         })
         .commands(CommandLattice::permissive())

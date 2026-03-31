@@ -211,7 +211,8 @@ pub fn required_authority(op: Operation) -> AuthorityLevel {
         | Operation::GitCommit
         | Operation::GitPush
         | Operation::CreatePr
-        | Operation::ManagePods => AuthorityLevel::Suggestive,
+        | Operation::ManagePods
+        | Operation::SpawnAgent => AuthorityLevel::Suggestive,
         // Read operations require no authority — pure observation
         Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch => {
             AuthorityLevel::NoAuthority

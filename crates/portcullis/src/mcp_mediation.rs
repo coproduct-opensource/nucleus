@@ -713,6 +713,7 @@ impl McpMediator {
             Operation::GitPush => self.policy.capabilities.git_push,
             Operation::CreatePr => self.policy.capabilities.create_pr,
             Operation::ManagePods => self.policy.capabilities.manage_pods,
+            Operation::SpawnAgent => self.policy.capabilities.spawn_agent,
         }
     }
 }

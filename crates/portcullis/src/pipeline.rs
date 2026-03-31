@@ -153,6 +153,12 @@ pub fn algebraic_gap(
             floor.capabilities.manage_pods,
             actual.capabilities.manage_pods,
         ),
+        (
+            Operation::SpawnAgent,
+            delta.spawn_agent,
+            floor.capabilities.spawn_agent,
+            actual.capabilities.spawn_agent,
+        ),
     ];
 
     for &(op, delta_level, floor_level, actual_level) in checks {
@@ -354,6 +360,7 @@ pub fn justify_necessity(perms: &PermissionLattice) -> (PermissionLattice, Modal
         (Operation::GitPush, perms.capabilities.git_push),
         (Operation::CreatePr, perms.capabilities.create_pr),
         (Operation::ManagePods, perms.capabilities.manage_pods),
+        (Operation::SpawnAgent, perms.capabilities.spawn_agent),
     ];
 
     for op in &perms.obligations.approvals {

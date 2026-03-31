@@ -560,6 +560,7 @@ fn operation_cost(op: Operation) -> Decimal {
         Operation::CreatePr => Decimal::new(25, 2), // $0.25
         // Pod management: high cost
         Operation::ManagePods => Decimal::new(50, 2), // $0.50
+        Operation::SpawnAgent => Decimal::new(50, 2), // $0.50
     }
 }
 

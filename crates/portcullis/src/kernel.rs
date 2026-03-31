@@ -970,7 +970,8 @@ impl Kernel {
             | Operation::GitCommit
             | Operation::GitPush
             | Operation::CreatePr
-            | Operation::ManagePods => NodeKind::OutboundAction,
+            | Operation::ManagePods
+            | Operation::SpawnAgent => NodeKind::OutboundAction,
         }
     }
 
@@ -1504,6 +1505,7 @@ mod tests {
                 git_push: CapabilityLevel::Never,
                 create_pr: CapabilityLevel::Never,
                 manage_pods: CapabilityLevel::Never,
+                spawn_agent: CapabilityLevel::Never,
                 extensions: std::collections::BTreeMap::new(),
             })
             .build();
@@ -1602,6 +1604,7 @@ mod tests {
                 git_push: CapabilityLevel::Never,
                 create_pr: CapabilityLevel::Never,
                 manage_pods: CapabilityLevel::Never,
+                spawn_agent: CapabilityLevel::Never,
                 extensions: std::collections::BTreeMap::new(),
             })
             .build();
@@ -1659,6 +1662,7 @@ mod tests {
                 git_push: CapabilityLevel::Never,
                 create_pr: CapabilityLevel::Never,
                 manage_pods: CapabilityLevel::Never,
+                spawn_agent: CapabilityLevel::Never,
                 extensions: std::collections::BTreeMap::new(),
             })
             .build();
@@ -1699,6 +1703,7 @@ mod tests {
                 git_push: CapabilityLevel::Always,
                 create_pr: CapabilityLevel::Always,
                 manage_pods: CapabilityLevel::Always,
+                spawn_agent: CapabilityLevel::Always,
                 extensions: std::collections::BTreeMap::new(),
             })
             .build();
@@ -1748,6 +1753,7 @@ mod tests {
                 git_push: CapabilityLevel::Always,
                 create_pr: CapabilityLevel::Always,
                 manage_pods: CapabilityLevel::Always,
+                spawn_agent: CapabilityLevel::Always,
                 extensions: std::collections::BTreeMap::new(),
             })
             .build();
@@ -1793,6 +1799,7 @@ mod tests {
                 git_push: CapabilityLevel::Always,
                 create_pr: CapabilityLevel::Always,
                 manage_pods: CapabilityLevel::Always,
+                spawn_agent: CapabilityLevel::Always,
                 extensions: std::collections::BTreeMap::new(),
             })
             .build();
@@ -1834,6 +1841,7 @@ mod tests {
                 git_push: CapabilityLevel::Never,
                 create_pr: CapabilityLevel::Never,
                 manage_pods: CapabilityLevel::Never,
+                spawn_agent: CapabilityLevel::Never,
                 extensions: std::collections::BTreeMap::new(),
             })
             .build();
@@ -1886,6 +1894,7 @@ mod tests {
                 git_push: CapabilityLevel::Never,
                 create_pr: CapabilityLevel::Never,
                 manage_pods: CapabilityLevel::Never,
+                spawn_agent: CapabilityLevel::Never,
                 extensions: std::collections::BTreeMap::new(),
             })
             .commands(CommandLattice::permissive())

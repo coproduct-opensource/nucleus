@@ -173,6 +173,7 @@ fn test_state_risk_grading_is_monotone() {
         git_push: CapabilityLevel::Never,
         create_pr: CapabilityLevel::Never,
         manage_pods: CapabilityLevel::Never,
+        spawn_agent: CapabilityLevel::Never,
         extensions: std::collections::BTreeMap::new(),
     };
     assert_eq!(constraint.state_risk(&zero), StateRisk::Safe);

@@ -39,7 +39,7 @@ pub fn classify_operation(op: Operation) -> Option<ExposureLabel> {
         // Leg 2: Untrusted content ingestion
         Operation::WebFetch | Operation::WebSearch => Some(ExposureLabel::UntrustedContent),
         // Leg 3: Exfiltration vectors
-        Operation::RunBash | Operation::GitPush | Operation::CreatePr => {
+        Operation::RunBash | Operation::GitPush | Operation::CreatePr | Operation::SpawnAgent => {
             Some(ExposureLabel::ExfilVector)
         }
         // Neutral operations (no exposure contribution)
@@ -154,6 +154,7 @@ mod tests {
             (Operation::GitPush, Some(ExposureLabel::ExfilVector)),
             (Operation::CreatePr, Some(ExposureLabel::ExfilVector)),
             (Operation::ManagePods, None),
+            (Operation::SpawnAgent, Some(ExposureLabel::ExfilVector)),
         ];
         for (op, expected) in ops {
             assert_eq!(classify_operation(op), expected, "mismatch for {:?}", op);

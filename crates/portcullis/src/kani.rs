@@ -47,6 +47,7 @@ fn obligations_from_masks(mask_base: u16, mask_extra: u16) -> (Obligations, Obli
         Operation::GitPush,
         Operation::CreatePr,
         Operation::ManagePods,
+        Operation::SpawnAgent,
     ];
 
     for (idx, op) in ops.iter().enumerate() {
@@ -98,6 +99,7 @@ fn build_ordered_permissions() -> (PermissionLattice, PermissionLattice) {
     let (push_lo, push_hi) = ordered_level_pair(kani::any::<u8>(), kani::any::<u8>());
     let (pr_lo, pr_hi) = ordered_level_pair(kani::any::<u8>(), kani::any::<u8>());
     let (pods_lo, pods_hi) = ordered_level_pair(kani::any::<u8>(), kani::any::<u8>());
+    let (spawn_lo, spawn_hi) = ordered_level_pair(kani::any::<u8>(), kani::any::<u8>());
 
     let (superset_obligations, base_obligations) =
         obligations_from_masks(kani::any::<u16>(), kani::any::<u16>());
@@ -118,6 +120,7 @@ fn build_ordered_permissions() -> (PermissionLattice, PermissionLattice) {
         git_push: push_lo,
         create_pr: pr_lo,
         manage_pods: pods_lo,
+        spawn_agent: spawn_lo,
         // extensions field excluded via #[cfg(not(kani))]
     };
     lhs.obligations = superset_obligations;
@@ -137,6 +140,7 @@ fn build_ordered_permissions() -> (PermissionLattice, PermissionLattice) {
         git_push: push_hi,
         create_pr: pr_hi,
         manage_pods: pods_hi,
+        spawn_agent: spawn_hi,
         // extensions field excluded via #[cfg(not(kani))]
     };
     rhs.obligations = base_obligations;
@@ -190,6 +194,7 @@ fn arbitrary_caps() -> CapabilityLattice {
         git_push: level_from_u8(kani::any::<u8>()),
         create_pr: level_from_u8(kani::any::<u8>()),
         manage_pods: level_from_u8(kani::any::<u8>()),
+        spawn_agent: level_from_u8(kani::any::<u8>()),
         // extensions field excluded via #[cfg(not(kani))]
     }
 }
@@ -307,7 +312,7 @@ fn arbitrary_exposure_set() -> ExposureSet {
 
 /// Build a symbolic Operation from the 12-variant enum.
 fn arbitrary_operation() -> Operation {
-    let idx = kani::any::<u8>() % 12;
+    let idx = kani::any::<u8>() % 13;
     match idx {
         0 => Operation::ReadFiles,
         1 => Operation::WriteFiles,
@@ -320,7 +325,8 @@ fn arbitrary_operation() -> Operation {
         8 => Operation::GitCommit,
         9 => Operation::GitPush,
         10 => Operation::CreatePr,
-        _ => Operation::ManagePods,
+        11 => Operation::ManagePods,
+        _ => Operation::SpawnAgent,
     }
 }
 
@@ -454,7 +460,10 @@ fn proof_operation_exposure_completeness() {
         Some(ExposureLabel::ExfilVector) => {
             assert!(matches!(
                 op,
-                Operation::RunBash | Operation::GitPush | Operation::CreatePr
+                Operation::RunBash
+                    | Operation::GitPush
+                    | Operation::CreatePr
+                    | Operation::SpawnAgent
             ));
         }
         None => {
@@ -1454,7 +1463,7 @@ fn proof_minimum_isolation_tightens_under_meet() {
 #[kani::solver(cadical)]
 fn proof_airgapped_blocks_network_ops() {
     let op: u8 = kani::any();
-    kani::assume(op < 12);
+    kani::assume(op < 13);
 
     let operation = match op {
         0 => Operation::ReadFiles,
@@ -1468,7 +1477,8 @@ fn proof_airgapped_blocks_network_ops() {
         8 => Operation::GitCommit,
         9 => Operation::GitPush,
         10 => Operation::CreatePr,
-        _ => Operation::ManagePods,
+        11 => Operation::ManagePods,
+        _ => Operation::SpawnAgent,
     };
 
     let is_network = matches!(operation, Operation::WebFetch | Operation::WebSearch);
@@ -1583,6 +1593,7 @@ fn proof_nucleus_counterexample_witness() {
         git_push: CapabilityLevel::Always,
         create_pr: CapabilityLevel::Always,
         manage_pods: CapabilityLevel::Always,
+        spawn_agent: CapabilityLevel::Always,
         // extensions excluded via #[cfg(not(kani))]
     };
     a.obligations = Obligations::default(); // empty

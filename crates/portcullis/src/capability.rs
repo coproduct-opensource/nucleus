@@ -137,6 +137,9 @@ pub struct CapabilityLattice {
     /// Manage sub-pods permission level
     #[cfg_attr(feature = "serde", serde(default))]
     pub manage_pods: CapabilityLevel,
+    /// Spawn sub-agent permission level
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub spawn_agent: CapabilityLevel,
 
     /// Extension capability dimensions (not covered by Verus proofs).
     ///
@@ -168,6 +171,7 @@ impl Default for CapabilityLattice {
             git_push: CapabilityLevel::Never,
             create_pr: CapabilityLevel::LowRisk,
             manage_pods: CapabilityLevel::Never,
+            spawn_agent: CapabilityLevel::Never,
             #[cfg(not(kani))]
             extensions: BTreeMap::new(),
         }
@@ -340,6 +344,7 @@ impl CapabilityLattice {
             Operation::GitPush => self.git_push,
             Operation::CreatePr => self.create_pr,
             Operation::ManagePods => self.manage_pods,
+            Operation::SpawnAgent => self.spawn_agent,
         }
     }
 
@@ -387,6 +392,7 @@ impl CapabilityLattice {
             git_push: std::cmp::min(self.git_push, other.git_push),
             create_pr: std::cmp::min(self.create_pr, other.create_pr),
             manage_pods: std::cmp::min(self.manage_pods, other.manage_pods),
+            spawn_agent: std::cmp::min(self.spawn_agent, other.spawn_agent),
             #[cfg(not(kani))]
             extensions: ext,
         }
@@ -426,6 +432,7 @@ impl CapabilityLattice {
             git_push: std::cmp::max(self.git_push, other.git_push),
             create_pr: std::cmp::max(self.create_pr, other.create_pr),
             manage_pods: std::cmp::max(self.manage_pods, other.manage_pods),
+            spawn_agent: std::cmp::max(self.spawn_agent, other.spawn_agent),
             #[cfg(not(kani))]
             extensions: ext,
         }
@@ -447,7 +454,8 @@ impl CapabilityLattice {
             && self.git_commit <= other.git_commit
             && self.git_push <= other.git_push
             && self.create_pr <= other.create_pr
-            && self.manage_pods <= other.manage_pods;
+            && self.manage_pods <= other.manage_pods
+            && self.spawn_agent <= other.spawn_agent;
 
         if !core_leq {
             return false;
@@ -486,6 +494,7 @@ impl CapabilityLattice {
             git_push: CapabilityLevel::Always,
             create_pr: CapabilityLevel::Always,
             manage_pods: CapabilityLevel::Always,
+            spawn_agent: CapabilityLevel::Always,
             #[cfg(not(kani))]
             extensions: BTreeMap::new(),
         }
@@ -506,6 +515,7 @@ impl CapabilityLattice {
             git_push: CapabilityLevel::Never,
             create_pr: CapabilityLevel::Never,
             manage_pods: CapabilityLevel::Never,
+            spawn_agent: CapabilityLevel::Never,
             #[cfg(not(kani))]
             extensions: BTreeMap::new(),
         }
@@ -754,6 +764,7 @@ mod tests {
             git_push: CapabilityLevel::Never,
             create_pr: CapabilityLevel::Never,
             manage_pods: CapabilityLevel::Never,
+            spawn_agent: CapabilityLevel::Never,
             extensions: BTreeMap::new(),
         };
 
@@ -912,8 +923,8 @@ mod tests {
     }
 
     #[test]
-    fn test_operation_all_has_12_variants() {
-        assert_eq!(Operation::ALL.len(), 12);
+    fn test_operation_all_has_13_variants() {
+        assert_eq!(Operation::ALL.len(), 13);
         // Verify uniqueness
         let mut set = std::collections::BTreeSet::new();
         for op in Operation::ALL {

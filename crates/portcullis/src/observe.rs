@@ -292,6 +292,7 @@ impl ObserveSession {
             git_push: CapabilityLevel::Never,
             create_pr: CapabilityLevel::Never,
             manage_pods: CapabilityLevel::Never,
+            spawn_agent: CapabilityLevel::Never,
         };
 
         // For each observed operation, set to LowRisk (minimum to permit)
@@ -310,6 +311,7 @@ impl ObserveSession {
                 Operation::GitPush => caps.git_push = level,
                 Operation::CreatePr => caps.create_pr = level,
                 Operation::ManagePods => caps.manage_pods = level,
+                Operation::SpawnAgent => caps.spawn_agent = level,
             }
         }
 
@@ -498,6 +500,7 @@ fn parse_operation(s: &str) -> Option<Operation> {
         "git_push" => Some(Operation::GitPush),
         "create_pr" => Some(Operation::CreatePr),
         "manage_pods" => Some(Operation::ManagePods),
+        "spawn_agent" => Some(Operation::SpawnAgent),
         // Python SDK names (dotted format from trace.export_jsonl())
         "fs.read" => Some(Operation::ReadFiles),
         "fs.write" => Some(Operation::WriteFiles),

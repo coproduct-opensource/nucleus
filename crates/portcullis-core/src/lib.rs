@@ -156,6 +156,7 @@ pub struct CapabilityLattice {
     pub git_push: CapabilityLevel,
     pub create_pr: CapabilityLevel,
     pub manage_pods: CapabilityLevel,
+    pub spawn_agent: CapabilityLevel,
 }
 
 impl Default for CapabilityLattice {
@@ -173,6 +174,7 @@ impl Default for CapabilityLattice {
             git_push: CapabilityLevel::Never,
             create_pr: CapabilityLevel::LowRisk,
             manage_pods: CapabilityLevel::Never,
+            spawn_agent: CapabilityLevel::LowRisk,
         }
     }
 }
@@ -193,6 +195,7 @@ impl CapabilityLattice {
             git_push: CapabilityLevel::Never,
             create_pr: CapabilityLevel::Never,
             manage_pods: CapabilityLevel::Never,
+            spawn_agent: CapabilityLevel::Never,
         }
     }
 
@@ -211,6 +214,7 @@ impl CapabilityLattice {
             git_push: CapabilityLevel::Always,
             create_pr: CapabilityLevel::Always,
             manage_pods: CapabilityLevel::Always,
+            spawn_agent: CapabilityLevel::Always,
         }
     }
 
@@ -229,6 +233,7 @@ impl CapabilityLattice {
             git_push: self.git_push.meet(other.git_push),
             create_pr: self.create_pr.meet(other.create_pr),
             manage_pods: self.manage_pods.meet(other.manage_pods),
+            spawn_agent: self.spawn_agent.meet(other.spawn_agent),
         }
     }
 
@@ -247,6 +252,7 @@ impl CapabilityLattice {
             git_push: self.git_push.join(other.git_push),
             create_pr: self.create_pr.join(other.create_pr),
             manage_pods: self.manage_pods.join(other.manage_pods),
+            spawn_agent: self.spawn_agent.join(other.spawn_agent),
         }
     }
 
@@ -264,6 +270,7 @@ impl CapabilityLattice {
             && self.git_push.leq(other.git_push)
             && self.create_pr.leq(other.create_pr)
             && self.manage_pods.leq(other.manage_pods)
+            && self.spawn_agent.leq(other.spawn_agent)
     }
 
     /// Read-only projection: meet with the read-only ceiling.
@@ -288,6 +295,7 @@ impl CapabilityLattice {
             git_push: CapabilityLevel::Never,
             create_pr: CapabilityLevel::Never,
             manage_pods: CapabilityLevel::Never,
+            spawn_agent: CapabilityLevel::Never,
         })
     }
 
@@ -306,6 +314,7 @@ impl CapabilityLattice {
             git_push: self.git_push.implies(other.git_push),
             create_pr: self.create_pr.implies(other.create_pr),
             manage_pods: self.manage_pods.implies(other.manage_pods),
+            spawn_agent: self.spawn_agent.implies(other.spawn_agent),
         }
     }
 }
@@ -350,6 +359,10 @@ pub enum Operation {
     CreatePr = 10,
     /// Manage sub-pods (create, list, monitor, cancel)
     ManagePods = 11,
+    /// Spawn a subprocess/agent with its own session.
+    /// Classified as ExfilVector because child processes can bypass
+    /// the parent session's flow restrictions.
+    SpawnAgent = 12,
 }
 
 // Compile-time invariant: discriminants match declaration order for Aeneas.
@@ -366,11 +379,12 @@ const _: () = {
     assert!(Operation::GitPush as u8 == 9);
     assert!(Operation::CreatePr as u8 == 10);
     assert!(Operation::ManagePods as u8 == 11);
+    assert!(Operation::SpawnAgent as u8 == 12);
 };
 
 impl Operation {
-    /// All 12 core operations.
-    pub const ALL: [Operation; 12] = [
+    /// All 13 core operations.
+    pub const ALL: [Operation; 13] = [
         Operation::ReadFiles,
         Operation::WriteFiles,
         Operation::EditFiles,
@@ -383,6 +397,7 @@ impl Operation {
         Operation::GitPush,
         Operation::CreatePr,
         Operation::ManagePods,
+        Operation::SpawnAgent,
     ];
 }
 
@@ -401,6 +416,7 @@ impl std::fmt::Display for Operation {
             Operation::GitPush => "git_push",
             Operation::CreatePr => "create_pr",
             Operation::ManagePods => "manage_pods",
+            Operation::SpawnAgent => "spawn_agent",
         };
         write!(f, "{s}")
     }
@@ -423,6 +439,7 @@ impl TryFrom<&str> for Operation {
             "git_push" => Ok(Operation::GitPush),
             "create_pr" => Ok(Operation::CreatePr),
             "manage_pods" => Ok(Operation::ManagePods),
+            "spawn_agent" => Ok(Operation::SpawnAgent),
             _ => Err(OperationParseError),
         }
     }
@@ -542,7 +559,7 @@ pub fn classify_operation(op: Operation) -> Option<ExposureLabel> {
             Some(ExposureLabel::PrivateData)
         }
         Operation::WebFetch | Operation::WebSearch => Some(ExposureLabel::UntrustedContent),
-        Operation::RunBash | Operation::GitPush | Operation::CreatePr => {
+        Operation::RunBash | Operation::GitPush | Operation::CreatePr | Operation::SpawnAgent => {
             Some(ExposureLabel::ExfilVector)
         }
         Operation::WriteFiles
@@ -1108,8 +1125,8 @@ mod tests {
     // ════════════════════════════════════════════════════════════════════
 
     #[test]
-    fn operation_all_has_12_variants() {
-        assert_eq!(Operation::ALL.len(), 12);
+    fn operation_all_has_13_variants() {
+        assert_eq!(Operation::ALL.len(), 13);
     }
 
     #[test]
