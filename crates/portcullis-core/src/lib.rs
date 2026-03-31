@@ -53,6 +53,7 @@
 //!   proof verifies algebraic structure of the type. Together they provide
 //!   complementary assurance.
 
+pub mod autonomy;
 pub mod compartment;
 pub mod declassify;
 pub mod flow;
