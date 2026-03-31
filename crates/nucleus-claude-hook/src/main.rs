@@ -119,6 +119,9 @@ struct SessionState {
     /// Stored so receipts across hook invocations use the same key.
     #[serde(default)]
     signing_key_pkcs8: Vec<u8>,
+    /// Active compartment name (if any). Used to detect transitions.
+    #[serde(default)]
+    active_compartment: Option<String>,
 }
 
 /// Result of loading session state — distinguishes clean start from tampered.
@@ -657,9 +660,28 @@ fn default_profile_name() -> String {
     std::env::var("NUCLEUS_PROFILE").unwrap_or_else(|_| "safe_pr_fixer".to_string())
 }
 
-/// Resolve the active compartment from NUCLEUS_COMPARTMENT env var.
-/// Returns None if not set (no compartment restriction).
-fn resolve_compartment() -> Option<portcullis_core::compartment::Compartment> {
+/// Resolve the active compartment.
+///
+/// Priority order:
+/// 1. Side-channel file: `<session-dir>/compartment` — write "research",
+///    "draft", "execute", or "breakglass" to switch at runtime without
+///    restarting the session.
+/// 2. Environment variable: `NUCLEUS_COMPARTMENT`
+/// 3. None (no compartment restriction)
+///
+/// The side-channel file is the runtime transition mechanism. Users or
+/// scripts write to it to switch compartments between tool calls.
+fn resolve_compartment(session_id: &str) -> Option<portcullis_core::compartment::Compartment> {
+    // 1. Check side-channel file
+    let safe_id = sanitize_session_id(session_id);
+    let compartment_file = session_dir().join(format!("{safe_id}.compartment"));
+    if let Ok(content) = std::fs::read_to_string(&compartment_file) {
+        if let Some(c) = portcullis_core::compartment::Compartment::from_str_opt(content.trim()) {
+            return Some(c);
+        }
+    }
+
+    // 2. Fall back to env var
     std::env::var("NUCLEUS_COMPARTMENT")
         .ok()
         .and_then(|s| portcullis_core::compartment::Compartment::from_str_opt(&s))
@@ -933,12 +955,35 @@ fn main() {
         session.profile = profile_name.clone();
     }
 
-    // Apply compartment ceiling if NUCLEUS_COMPARTMENT is set.
-    // The effective permissions are profile.meet(compartment_ceiling).
-    let compartment = resolve_compartment();
+    // Apply compartment ceiling. Checks side-channel file first, then env var.
+    // Detects transitions and logs them to stderr + receipt chain.
+    let compartment = resolve_compartment(&input.session_id);
+    let prev_compartment = session
+        .active_compartment
+        .as_deref()
+        .and_then(portcullis_core::compartment::Compartment::from_str_opt);
+
+    // Detect compartment transition
+    if compartment != prev_compartment {
+        if let Some(ref new_comp) = compartment {
+            let direction = match prev_compartment {
+                Some(prev) if *new_comp > prev => "ESCALATION",
+                Some(_) => "de-escalation",
+                None => "activated",
+            };
+            eprintln!(
+                "nucleus: compartment transition: {} -> {} ({direction})",
+                prev_compartment
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                new_comp,
+            );
+        }
+        session.active_compartment = compartment.map(|c| c.to_string());
+    }
+
     let effective_perms = if let Some(ref comp) = compartment {
         let core_ceiling = comp.ceiling();
-        // Convert core CapabilityLattice to portcullis CapabilityLattice
         let ceiling = portcullis::CapabilityLattice {
             read_files: core_ceiling.read_files,
             write_files: core_ceiling.write_files,
@@ -957,7 +1002,6 @@ fn main() {
         };
         let mut narrowed = perms.clone();
         narrowed.capabilities = narrowed.capabilities.meet(&ceiling);
-        eprintln!("nucleus: compartment={comp}, capabilities narrowed");
         narrowed
     } else {
         perms
