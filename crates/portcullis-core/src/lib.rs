@@ -57,6 +57,8 @@ pub mod compartment;
 pub mod declassify;
 pub mod flow;
 pub mod manifest;
+#[cfg(feature = "serde")]
+pub mod memory;
 pub mod receipt;
 pub mod wire;
 

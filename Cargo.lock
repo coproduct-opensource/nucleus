@@ -3942,6 +3942,7 @@ name = "portcullis-core"
 version = "1.0.0"
 dependencies = [
  "serde",
+ "toml",
 ]
 
 [[package]]
