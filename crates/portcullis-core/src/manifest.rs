@@ -284,6 +284,9 @@ mod kani_proofs {
             output_integrity: any_integ(),
             output_authority: any_auth(),
             schema_hash: [0; 32],
+            allowed_hosts: vec![],
+            authority_to_instruct: false,
+            memory_behavior: MemoryBehavior::None,
         };
         assert!(matches!(
             check_admission(&manifest),
@@ -304,6 +307,9 @@ mod kani_proofs {
             output_integrity: any_integ(),
             output_authority: any_auth(),
             schema_hash: [0; 32],
+            allowed_hosts: vec![],
+            authority_to_instruct: false,
+            memory_behavior: MemoryBehavior::None,
         };
         assert!(!matches!(
             check_admission(&manifest),
@@ -324,6 +330,9 @@ mod kani_proofs {
             output_integrity: IntegLevel::Trusted,
             output_authority: any_auth(),
             schema_hash: [0; 32],
+            allowed_hosts: vec![],
+            authority_to_instruct: false,
+            memory_behavior: MemoryBehavior::None,
         };
         assert!(matches!(
             check_admission(&manifest),
@@ -344,6 +353,9 @@ mod kani_proofs {
             output_integrity: any_integ(),
             output_authority: AuthorityLevel::Directive,
             schema_hash: [0; 32],
+            allowed_hosts: vec![],
+            authority_to_instruct: false,
+            memory_behavior: MemoryBehavior::None,
         };
         assert!(!matches!(
             check_admission(&manifest),
@@ -367,6 +379,9 @@ mod kani_proofs {
             output_integrity: integ,
             output_authority: auth,
             schema_hash: [0; 32],
+            allowed_hosts: vec![],
+            authority_to_instruct: false,
+            memory_behavior: MemoryBehavior::None,
         };
         // Should always be admitted — no rule triggers
         kani::assume(
