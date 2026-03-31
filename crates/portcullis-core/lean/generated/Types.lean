@@ -21,8 +21,9 @@ inductive CapabilityLevel where
 | Always : CapabilityLevel
 
 /-- [portcullis_core::CapabilityLattice]
-    Source: 'crates/portcullis-core/src/lib.rs', lines 98:0-111:1
-    Visibility: public -/
+    Source: 'crates/portcullis-core/src/lib.rs', lines 98:0-114:1
+    Visibility: public
+    Note: spawn_agent added manually (Aeneas re-extraction pending) -/
 structure CapabilityLattice where
   read_files : CapabilityLevel
   write_files : CapabilityLevel
@@ -36,5 +37,6 @@ structure CapabilityLattice where
   git_push : CapabilityLevel
   create_pr : CapabilityLevel
   manage_pods : CapabilityLevel
+  spawn_agent : CapabilityLevel
 
 end portcullis_core
