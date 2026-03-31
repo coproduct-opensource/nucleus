@@ -56,6 +56,14 @@ repos:
         stages: [pre-push]
         priority: 30
 
+      # Pre-commit: line ratchet check (instant, no compilation)
+      - id: line-ratchet
+        name: line ratchet
+        entry: scripts/check-line-ratchet.sh --strict
+        language: script
+        pass_filenames: false
+        priority: 5
+
       # Pre-commit: dependency audit (no compilation, fast)
       - id: cargo-deny
         name: cargo deny
