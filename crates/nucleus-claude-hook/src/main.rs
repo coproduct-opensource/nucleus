@@ -1206,7 +1206,79 @@ fn main() {
             }
         }
 
-        // Other events (SubagentStart, etc.) — pass through for now
+        // SubagentStart: export parent's taint label + compartment (#498)
+        if input.hook_event_name == "SubagentStart" {
+            if let SessionLoad::Loaded(session) | SessionLoad::Fresh(session) =
+                load_session(&input.session_id)
+            {
+                let agent_name = input.tool_name.as_str();
+                eprintln!(
+                    "nucleus: subagent started: {} (parent compartment: {})",
+                    if agent_name.is_empty() {
+                        "unnamed"
+                    } else {
+                        agent_name
+                    },
+                    session.active_compartment.as_deref().unwrap_or("none"),
+                );
+
+                // Export parent label for the child agent
+                let safe_id = sanitize_session_id(&input.session_id);
+                let label_path = session_dir().join(format!("{safe_id}.parent-label"));
+                if label_path.exists() {
+                    eprintln!("nucleus: parent label exported at {}", label_path.display());
+                }
+
+                // Record in receipt chain
+                persist_transition_receipt(
+                    &input.session_id,
+                    session.active_compartment.as_deref(),
+                    &format!(
+                        "subagent_start:{}",
+                        if agent_name.is_empty() {
+                            "unnamed"
+                        } else {
+                            agent_name
+                        }
+                    ),
+                    "spawned",
+                );
+            }
+        }
+
+        // SubagentStop: log child completion (#498)
+        if input.hook_event_name == "SubagentStop" {
+            let agent_name = input.tool_name.as_str();
+            eprintln!(
+                "nucleus: subagent stopped: {}",
+                if agent_name.is_empty() {
+                    "unnamed"
+                } else {
+                    agent_name
+                },
+            );
+
+            // Record in receipt chain
+            if let SessionLoad::Loaded(session) | SessionLoad::Fresh(session) =
+                load_session(&input.session_id)
+            {
+                persist_transition_receipt(
+                    &input.session_id,
+                    session.active_compartment.as_deref(),
+                    &format!(
+                        "subagent_stop:{}",
+                        if agent_name.is_empty() {
+                            "unnamed"
+                        } else {
+                            agent_name
+                        }
+                    ),
+                    "completed",
+                );
+            }
+        }
+
+        // Other events — pass through
         return;
     }
 
