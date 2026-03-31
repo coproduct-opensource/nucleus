@@ -1010,6 +1010,36 @@ fn main() {
     let mut kernel = Kernel::new(effective_perms);
     kernel.enable_flow_graph();
 
+    // PHASE 4: Import parent agent's flow label if present.
+    // When a parent agent spawns this session, it sets NUCLEUS_PARENT_LABEL
+    // with the encoded IFC label. We observe it as the initial context,
+    // ensuring taint propagates across agent boundaries.
+    if session.allowed_ops.is_empty() {
+        // Only on first invocation — don't re-import on replay
+        if let Ok(parent_label_str) = std::env::var("NUCLEUS_PARENT_LABEL") {
+            if let Some(parent_label) = portcullis_core::wire::decode_label(&parent_label_str) {
+                // Determine the NodeKind based on the parent's integrity
+                let kind = if parent_label.integrity == portcullis_core::IntegLevel::Adversarial {
+                    NodeKind::WebContent // Adversarial parent → adversarial child
+                } else {
+                    NodeKind::ToolResponse // Trusted parent → tool response
+                };
+                if let Ok(id) = kernel.observe(kind, &[]) {
+                    eprintln!(
+                        "nucleus: inherited parent label: integ={:?} auth={:?} (flow_node: {id})",
+                        parent_label.integrity, parent_label.authority,
+                    );
+                    // Persist the parent observation so it replays correctly
+                    session.flow_observations.push((
+                        node_kind_to_u8(kind),
+                        "parent_agent".to_string(),
+                        portcullis_core::wire::encode_label(&parent_label),
+                    ));
+                }
+            }
+        }
+    }
+
     // Replay previous operations to rebuild exposure state AND flow graph.
     // Each allowed op is: 1) replayed in the flat kernel for exposure,
     // 2) observed in the flow graph as a DAG node with category-based parents.
@@ -1096,6 +1126,28 @@ fn main() {
                 operation.to_string(),
                 subject.clone(),
             ));
+
+            // PHASE 4: When SpawnAgent is allowed, export the current flow
+            // label so the child agent inherits the parent's taint state.
+            if operation == Operation::SpawnAgent {
+                if let Some(graph) = kernel.flow_graph() {
+                    if let Some(node_id) = decision.flow_node_id {
+                        if let Some(node) = graph.get(node_id) {
+                            let label_str = portcullis_core::wire::encode_label(&node.label);
+                            // Write to a file the child can read via NUCLEUS_PARENT_LABEL
+                            let label_path = session_dir().join(format!(
+                                "{}.parent-label",
+                                sanitize_session_id(&input.session_id)
+                            ));
+                            std::fs::write(&label_path, &label_str).ok();
+                            eprintln!(
+                                "nucleus: exported parent label for child agent: {label_str}"
+                            );
+                        }
+                    }
+                }
+            }
+
             session.high_water_mark += 1;
             save_session(&input.session_id, &session);
             HookOutput::allow()
