@@ -120,9 +120,20 @@ impl HookOutput {
 // Session state persistence
 // ---------------------------------------------------------------------------
 
+/// Current schema version for SessionState.
+/// Increment when adding fields that require migration logic beyond `#[serde(default)]`.
+/// Version history:
+///   1 — initial schema (implicit in pre-versioned files)
+///   2 — added schema_version, last_pre_tool_obs_index (#523, #593)
+const SESSION_SCHEMA_VERSION: u32 = 2;
+
 /// Persisted session state for cross-invocation exposure tracking.
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct SessionState {
+    /// Schema version — enables forward/backward compatibility (#523).
+    /// Missing (0) means pre-versioned file (treated as version 1).
+    #[serde(default)]
+    schema_version: u32,
     /// Profile name used for this session.
     profile: String,
     /// Monotonic operation counter — must never decrease.
@@ -167,7 +178,18 @@ struct SessionState {
     last_pre_tool_obs_index: Option<usize>,
 }
 
+impl SessionState {
+    /// Create a fresh session state with the current schema version.
+    fn new_versioned() -> Self {
+        Self {
+            schema_version: SESSION_SCHEMA_VERSION,
+            ..Default::default()
+        }
+    }
+}
+
 /// Result of loading session state — distinguishes clean start from tampered.
+#[derive(Debug)]
 enum SessionLoad {
     /// Fresh session, no prior state.
     Fresh(SessionState),
@@ -237,15 +259,35 @@ fn load_session(session_id: &str) -> SessionLoad {
 
     match std::fs::read_to_string(&path) {
         Ok(content) => match serde_json::from_str::<SessionState>(&content) {
-            Ok(state) => {
+            Ok(mut state) => {
                 // Verify monotonicity: state HWM must match or exceed persisted HWM
                 if state.high_water_mark < persisted_hwm {
-                    SessionLoad::Tampered {
+                    return SessionLoad::Tampered {
                         expected_hwm: persisted_hwm,
-                    }
-                } else {
-                    SessionLoad::Loaded(state)
+                    };
                 }
+
+                // Schema version migration (#523)
+                let file_version = if state.schema_version == 0 {
+                    1
+                } else {
+                    state.schema_version
+                };
+                if file_version > SESSION_SCHEMA_VERSION {
+                    // Future version — warn but proceed (forward compat via serde defaults)
+                    eprintln!(
+                        "nucleus: WARNING — session state has schema version {file_version} \
+                         but this hook supports version {SESSION_SCHEMA_VERSION}. \
+                         Some fields may be ignored. Consider upgrading nucleus-claude-hook."
+                    );
+                } else if file_version < SESSION_SCHEMA_VERSION {
+                    eprintln!(
+                        "nucleus: migrating session state v{file_version} → v{SESSION_SCHEMA_VERSION}"
+                    );
+                }
+                // Stamp with current version for next save
+                state.schema_version = SESSION_SCHEMA_VERSION;
+                SessionLoad::Loaded(state)
             }
             // Corrupted JSON — tampered
             Err(_) => {
@@ -254,7 +296,7 @@ fn load_session(session_id: &str) -> SessionLoad {
                         expected_hwm: persisted_hwm,
                     }
                 } else {
-                    SessionLoad::Fresh(SessionState::default())
+                    SessionLoad::Fresh(SessionState::new_versioned())
                 }
             }
         },
@@ -267,7 +309,7 @@ fn load_session(session_id: &str) -> SessionLoad {
                     expected_hwm: persisted_hwm,
                 }
             } else {
-                SessionLoad::Fresh(SessionState::default())
+                SessionLoad::Fresh(SessionState::new_versioned())
             }
         }
     }
@@ -2656,6 +2698,59 @@ mod tests {
         let test_id = format!("fresh-test-{}", std::process::id());
         // No prior state, no HWM file → fresh session
         assert!(matches!(load_session(&test_id), SessionLoad::Fresh(_)));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Schema versioning tests (#523)
+    // ─────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_fresh_session_has_current_schema_version() {
+        let state = SessionState::new_versioned();
+        assert_eq!(state.schema_version, SESSION_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn test_pre_versioned_state_deserializes() {
+        // Simulate a pre-versioned session file (no schema_version field)
+        let json = r#"{"profile":"test","high_water_mark":3,"allowed_ops":[]}"#;
+        let state: SessionState = serde_json::from_str(json).unwrap();
+        // schema_version defaults to 0, which load_session treats as version 1
+        assert_eq!(state.schema_version, 0);
+        assert_eq!(state.profile, "test");
+        assert_eq!(state.high_water_mark, 3);
+    }
+
+    #[test]
+    fn test_future_version_state_deserializes() {
+        // A future version with unknown fields — serde ignores them gracefully
+        let json = r#"{"schema_version":99,"profile":"future","high_water_mark":1,
+                        "allowed_ops":[],"future_field":"should_be_ignored"}"#;
+        let state: SessionState = serde_json::from_str(json).unwrap();
+        assert_eq!(state.schema_version, 99);
+        assert_eq!(state.profile, "future");
+    }
+
+    #[test]
+    fn test_save_roundtrip_preserves_version() {
+        let test_id = format!("version-roundtrip-{}", std::process::id());
+        let mut state = SessionState::new_versioned();
+        state.profile = "test-profile".to_string();
+        state.high_water_mark = 1;
+
+        save_session(&test_id, &state);
+
+        match load_session(&test_id) {
+            SessionLoad::Loaded(loaded) => {
+                assert_eq!(loaded.schema_version, SESSION_SCHEMA_VERSION);
+                assert_eq!(loaded.profile, "test-profile");
+            }
+            other => panic!("expected Loaded, got {other:?}"),
+        }
+
+        // Cleanup
+        std::fs::remove_file(session_state_path(&test_id)).ok();
+        std::fs::remove_file(session_hwm_path(&test_id)).ok();
     }
 
     #[test]
