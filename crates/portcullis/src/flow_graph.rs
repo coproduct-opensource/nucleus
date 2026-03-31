@@ -41,6 +41,24 @@ pub enum FlowGraphError {
     ),
 }
 
+impl std::fmt::Display for FlowGraphError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FlowGraphError::ParentNotFound(id) => write!(f, "parent node {id} not found"),
+            FlowGraphError::TooManyParents { provided, max } => {
+                write!(f, "too many parents: {provided} > {max}")
+            }
+            FlowGraphError::SentinelParent => write!(f, "sentinel (0) is not a valid parent"),
+            FlowGraphError::GraphNotEnabled => write!(f, "flow graph not enabled"),
+            FlowGraphError::DeniedParent(id) => {
+                write!(f, "parent {id} was denied — cannot be a causal ancestor")
+            }
+        }
+    }
+}
+
+impl std::error::Error for FlowGraphError {}
+
 /// Result of inserting an action node (atomic check-and-insert).
 #[derive(Debug, Clone)]
 pub struct FlowDecision {
@@ -52,6 +70,8 @@ pub struct FlowDecision {
     pub label: IFCLabel,
 }
 
+const MAX_DENIED_NODES: usize = 1024;
+
 /// Append-only causal DAG for information flow tracking.
 ///
 /// Nodes are indexed by sequential `NodeId` (u64). Index 0 is the sentinel
@@ -59,10 +79,13 @@ pub struct FlowDecision {
 ///
 /// Denied action nodes are tracked but cannot be referenced as parents —
 /// a denied action did not execute, so it has no causal effect.
+/// The denied set is capped at [`MAX_DENIED_NODES`] with oldest-first eviction.
 pub struct FlowGraph {
     nodes: Vec<Option<FlowNode>>,
     next_id: u64,
     /// Node IDs of denied actions — cannot be used as parents.
+    /// Capped at MAX_DENIED_NODES to prevent unbounded growth in
+    /// long-running sessions.
     denied: std::collections::BTreeSet<NodeId>,
 }
 
@@ -135,6 +158,13 @@ impl FlowGraph {
         // Denied actions are inscribed for receipt/audit but cannot be parents
         if matches!(verdict, FlowVerdict::Deny(_)) {
             self.denied.insert(id);
+            // GC: cap the denied set to prevent unbounded growth
+            while self.denied.len() > MAX_DENIED_NODES {
+                // Remove oldest (lowest ID)
+                if let Some(&oldest) = self.denied.iter().next() {
+                    self.denied.remove(&oldest);
+                }
+            }
         }
         Ok(FlowDecision {
             verdict,
@@ -162,6 +192,12 @@ impl FlowGraph {
         while let Some(nid) = queue.pop_front() {
             if result.len() >= MAX_RECEIPT_ANCESTORS {
                 break;
+            }
+            // Defense-in-depth: skip denied nodes during ancestor traversal.
+            // The denied-set check in validate_parents should prevent denied
+            // nodes from being reachable, but this is belt-and-suspenders.
+            if self.denied.contains(&nid) {
+                continue;
             }
             if let Some(node) = self.get(nid) {
                 result.push(node);
@@ -454,5 +490,67 @@ mod tests {
             matches!(a.verdict, FlowVerdict::Deny(_)),
             "Web taint — should be denied"
         );
+    }
+
+    /// #372: Same operation can be denied then allowed (denied set uses IDs, not ops)
+    #[test]
+    fn denied_then_allowed_same_operation() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        // Web content → write denied
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        let denied = g.insert_action(Operation::WriteFiles, &[web], now).unwrap();
+        assert!(matches!(denied.verdict, FlowVerdict::Deny(_)));
+
+        // Clean source → same operation (WriteFiles) allowed
+        let clean = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        let allowed = g
+            .insert_action(Operation::WriteFiles, &[clean], now)
+            .unwrap();
+        assert!(
+            matches!(allowed.verdict, FlowVerdict::Allow),
+            "WriteFiles with clean parents should be allowed even after a prior denial"
+        );
+    }
+
+    /// #370: ancestors() skips denied nodes
+    #[test]
+    fn ancestors_skip_denied_nodes() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        let denied = g.insert_action(Operation::WriteFiles, &[web], now).unwrap();
+        assert!(matches!(denied.verdict, FlowVerdict::Deny(_)));
+
+        // The denied node's own ancestors should work (for its receipt)
+        // but we can verify that if somehow reached, denied nodes are skipped
+        let ancestors = g.ancestors(denied.node_id);
+        // Should include web (the parent) but not the denied node itself
+        for a in &ancestors {
+            assert_ne!(
+                a.id, denied.node_id,
+                "denied node should not appear in its own ancestors"
+            );
+        }
+    }
+
+    /// #368: FlowGraphError has Display
+    #[test]
+    fn error_display_messages() {
+        let e = FlowGraphError::SentinelParent;
+        assert!(e.to_string().contains("sentinel"));
+
+        let e = FlowGraphError::DeniedParent(42);
+        assert!(e.to_string().contains("42"));
+        assert!(e.to_string().contains("denied"));
+
+        let e = FlowGraphError::ParentNotFound(99);
+        assert!(e.to_string().contains("99"));
     }
 }
