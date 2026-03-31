@@ -98,6 +98,10 @@ mod command;
 pub mod constraint;
 pub mod uninhabitable_state;
 
+/// Kernel decision engine — complete mediation with monotone session state.
+#[cfg(all(feature = "serde", feature = "crypto"))]
+/// Platform adapters — I/O abstraction for cross-platform deployment.
+pub mod adapter;
 pub mod delegation;
 pub mod dropout;
 pub mod escalation;
@@ -108,8 +112,6 @@ pub mod galois;
 pub mod graded;
 pub mod guard;
 pub mod heyting;
-/// Kernel decision engine — complete mediation with monotone session state.
-#[cfg(all(feature = "serde", feature = "crypto"))]
 /// Verified hook adapter — pure decision pipeline for Claude Code hooks.
 pub mod hook_adapter;
 pub mod kernel;
