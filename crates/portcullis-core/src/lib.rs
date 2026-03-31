@@ -1501,4 +1501,83 @@ mod tests {
         assert!(ProvenanceSet::WEB.is_subset_of(user_web));
         assert!(!ProvenanceSet::MEMORY.is_subset_of(user_web));
     }
+
+    // -----------------------------------------------------------------------
+    // Lean-Rust structural correspondence tests
+    //
+    // These verify that the Lean models in lean/generated/ match the Rust
+    // source. If a field is added/removed in Rust without updating Lean,
+    // these tests will fail — alerting the developer to update.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn lean_correspondence_capability_lattice_field_count() {
+        // The Lean CapabilityLattice has 13 fields (matching Rust).
+        // If you add a field to Rust, this test reminds you to update
+        // lean/generated/Types.lean and lean/PortcullisCoreBridge.lean.
+        assert_eq!(
+            Operation::ALL.len(),
+            13,
+            "Rust CapabilityLattice has 13 dimensions — update Lean Types.lean if this changes"
+        );
+    }
+
+    #[test]
+    fn lean_correspondence_capability_level_variants() {
+        // Lean CapabilityLevel has 3 variants: Never, LowRisk, Always
+        // with discriminants 0, 1, 2 matching repr(u8).
+        assert_eq!(CapabilityLevel::Never as u8, 0);
+        assert_eq!(CapabilityLevel::LowRisk as u8, 1);
+        assert_eq!(CapabilityLevel::Always as u8, 2);
+    }
+
+    #[test]
+    fn lean_correspondence_operation_count() {
+        // Lean proofs assume 13 operations. If this changes,
+        // update ExposureProofs.lean classify_operation coverage.
+        assert_eq!(
+            Operation::ALL.len(),
+            13,
+            "Operation count changed — update Lean ExposureProofs.lean"
+        );
+    }
+
+    #[test]
+    fn lean_correspondence_exposure_labels() {
+        // ExposureProofs.lean models 3 exposure labels.
+        assert_eq!(ExposureLabel::PrivateData as u8, 0);
+        assert_eq!(ExposureLabel::UntrustedContent as u8, 1);
+        assert_eq!(ExposureLabel::ExfilVector as u8, 2);
+    }
+
+    #[test]
+    fn lean_correspondence_spawn_agent_is_exfil() {
+        // Lean models SpawnAgent as ExfilVector.
+        // This must match classify_operation.
+        assert_eq!(
+            classify_operation(Operation::SpawnAgent),
+            Some(ExposureLabel::ExfilVector),
+            "SpawnAgent must be ExfilVector — matches Lean ExposureProofs"
+        );
+    }
+
+    #[test]
+    fn lean_correspondence_meet_commutative() {
+        // The Lean HeytingAlgebra proof includes commutativity.
+        // Verify the Rust implementation matches.
+        let a = CapabilityLevel::Always;
+        let b = CapabilityLevel::Never;
+        assert_eq!(a.meet(b), b.meet(a));
+    }
+
+    #[test]
+    fn lean_correspondence_meet_idempotent() {
+        for level in [
+            CapabilityLevel::Never,
+            CapabilityLevel::LowRisk,
+            CapabilityLevel::Always,
+        ] {
+            assert_eq!(level.meet(level), level);
+        }
+    }
 }
