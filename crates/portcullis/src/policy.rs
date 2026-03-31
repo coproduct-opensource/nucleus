@@ -41,6 +41,7 @@ use sha2::{Digest, Sha256};
 
 use crate::profile::ProfileSpec;
 use portcullis_core::compartment::Compartment;
+use portcullis_core::manifest::ManifestPolicy;
 use portcullis_core::CapabilityLevel;
 
 /// A compiled policy — the output of the policy compiler.
@@ -54,6 +55,8 @@ pub struct CompiledPolicy {
     pub compartment_overrides: BTreeMap<Compartment, CapabilityOverrides>,
     /// SHA-256 hash of the canonical TOML input (for reproducibility).
     pub source_hash: [u8; 32],
+    /// Policy for tools without manifests (#588).
+    pub manifest_policy: ManifestPolicy,
 }
 
 /// Capability overrides for a specific compartment.
@@ -99,6 +102,30 @@ struct PolicyFile {
     /// Compartment configuration.
     #[serde(default)]
     compartments: Option<CompartmentsConfig>,
+    /// Manifest policy: "default_deny" or "default_allow" (default).
+    /// Controls whether tools without manifests are rejected (#588).
+    #[serde(default)]
+    manifest_policy: ManifestPolicyStr,
+}
+
+/// String representation for TOML deserialization.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ManifestPolicyStr {
+    /// Tools without manifests are rejected.
+    DefaultDeny,
+    /// Tools without manifests are allowed (default for backward compat).
+    #[default]
+    DefaultAllow,
+}
+
+impl From<ManifestPolicyStr> for ManifestPolicy {
+    fn from(s: ManifestPolicyStr) -> Self {
+        match s {
+            ManifestPolicyStr::DefaultDeny => ManifestPolicy::DefaultDeny,
+            ManifestPolicyStr::DefaultAllow => ManifestPolicy::DefaultAllow,
+        }
+    }
 }
 
 /// Compartment configuration section.
@@ -187,6 +214,7 @@ pub fn compile_policy_str(toml_content: &str) -> Result<CompiledPolicy, PolicyEr
         default_compartment,
         compartment_overrides,
         source_hash,
+        manifest_policy: policy_file.manifest_policy.into(),
     })
 }
 
@@ -296,6 +324,27 @@ default = "nonexistent"
 "#;
         let result = compile_policy_str(bad);
         assert!(matches!(result, Err(PolicyError::UnknownCompartment(_))));
+    }
+
+    #[test]
+    fn default_manifest_policy_is_allow() {
+        let policy = compile_policy_str(MINIMAL_POLICY).unwrap();
+        assert_eq!(policy.manifest_policy, ManifestPolicy::DefaultAllow);
+    }
+
+    #[test]
+    fn manifest_policy_default_deny() {
+        let toml = r#"
+manifest_policy = "default_deny"
+
+[profile]
+name = "strict"
+
+[profile.capabilities]
+read_files = "always"
+"#;
+        let policy = compile_policy_str(toml).unwrap();
+        assert_eq!(policy.manifest_policy, ManifestPolicy::DefaultDeny);
     }
 
     #[test]
