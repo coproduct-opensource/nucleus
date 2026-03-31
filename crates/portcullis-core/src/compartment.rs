@@ -119,14 +119,48 @@ impl Compartment {
     }
 
     /// Parse from string (for env var / CLI).
+    ///
+    /// For breakglass, accepts `breakglass:reason text` format.
+    /// Plain `breakglass` without a reason is also accepted (reason
+    /// enforcement happens at the hook level).
     pub fn from_str_opt(s: &str) -> Option<Self> {
         match s {
             "research" => Some(Compartment::Research),
             "draft" => Some(Compartment::Draft),
             "execute" => Some(Compartment::Execute),
             "breakglass" => Some(Compartment::Breakglass),
+            s if s.starts_with("breakglass:") => Some(Compartment::Breakglass),
             _ => None,
         }
+    }
+}
+
+/// A breakglass entry with mandatory reason string.
+#[derive(Debug, Clone)]
+pub struct BreakglassEntry {
+    /// Operator-provided reason for entering breakglass.
+    pub reason: String,
+    /// Unix timestamp when breakglass was entered.
+    pub entered_at: u64,
+}
+
+impl BreakglassEntry {
+    /// Parse from the compartment file content.
+    ///
+    /// Format: `breakglass:reason text here`
+    /// Returns None if the reason is missing or empty.
+    pub fn parse(s: &str) -> Option<Self> {
+        let reason = s.strip_prefix("breakglass:")?.trim();
+        if reason.is_empty() {
+            return None;
+        }
+        Some(Self {
+            reason: reason.to_string(),
+            entered_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        })
     }
 }
 
@@ -239,5 +273,27 @@ mod tests {
         ] {
             assert_eq!(Compartment::from_str_opt(&c.to_string()), Some(c));
         }
+    }
+
+    #[test]
+    fn breakglass_with_reason_parses() {
+        assert_eq!(
+            Compartment::from_str_opt("breakglass:emergency fix"),
+            Some(Compartment::Breakglass)
+        );
+    }
+
+    #[test]
+    fn breakglass_entry_requires_reason() {
+        assert!(BreakglassEntry::parse("breakglass:emergency fix").is_some());
+        assert!(BreakglassEntry::parse("breakglass:").is_none());
+        assert!(BreakglassEntry::parse("breakglass").is_none());
+        assert!(BreakglassEntry::parse("draft").is_none());
+    }
+
+    #[test]
+    fn breakglass_entry_extracts_reason() {
+        let entry = BreakglassEntry::parse("breakglass:production outage P1").unwrap();
+        assert_eq!(entry.reason, "production outage P1");
     }
 }

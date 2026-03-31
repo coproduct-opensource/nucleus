@@ -1129,9 +1129,44 @@ fn main() {
                 "activated"
             };
 
+            // SECURITY (#507): Breakglass requires a reason string.
+            // Format: "breakglass:emergency fix for production outage"
+            if new_comp.is_breakglass() {
+                // Read the raw compartment file content to extract the reason
+                let reason = if !session.compartment_token.is_empty() {
+                    let keyed_name =
+                        keyed_compartment_name(&input.session_id, &session.compartment_token);
+                    let compartment_file = session_dir().join(format!("{keyed_name}.compartment"));
+                    std::fs::read_to_string(&compartment_file)
+                        .ok()
+                        .and_then(|content| {
+                            portcullis_core::compartment::BreakglassEntry::parse(content.trim())
+                        })
+                } else {
+                    None
+                };
+
+                match reason {
+                    Some(entry) => {
+                        eprintln!(
+                            "nucleus: BREAKGLASS entered — reason: '{}' (enhanced audit active)",
+                            entry.reason
+                        );
+                    }
+                    None => {
+                        let msg = "Blocked: breakglass requires a reason. \
+                                   Write 'breakglass:your reason here' to the compartment file.";
+                        eprintln!("nucleus: {msg}");
+                        let out = HookOutput::deny(msg);
+                        println!("{}", serde_json::to_string(&out).unwrap());
+                        session.high_water_mark += 1;
+                        save_session(&input.session_id, &session);
+                        std::process::exit(2);
+                    }
+                }
+            }
+
             // SECURITY (#457): Upward transitions (escalation) require human approval.
-            // The hook returns "ask" so Claude Code prompts the user.
-            // This prevents a compromised model from silently escalating.
             if is_escalation {
                 let msg = format!(
                     "nucleus: compartment escalation {} -> {} requires human approval",
