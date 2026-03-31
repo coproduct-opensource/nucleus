@@ -174,7 +174,17 @@ enum SessionLoad {
 }
 
 fn session_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join("nucleus-hook");
+    // Use XDG-compliant path: ~/.local/share/nucleus/sessions/ (#552)
+    // Falls back to /tmp/nucleus-hook if home dir unavailable.
+    // This survives reboots (unlike /tmp on some systems).
+    let dir = if let Some(home) = dirs_next::home_dir() {
+        home.join(".local")
+            .join("share")
+            .join("nucleus")
+            .join("sessions")
+    } else {
+        std::env::temp_dir().join("nucleus-hook")
+    };
     std::fs::create_dir_all(&dir).ok();
     // Restrict directory permissions: owner-only (0700)
     #[cfg(unix)]
