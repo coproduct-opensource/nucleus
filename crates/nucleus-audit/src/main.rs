@@ -65,6 +65,18 @@ enum Command {
         #[arg(long)]
         log: PathBuf,
     },
+    /// Trace multi-agent provenance — follow cross-agent receipt references
+    /// and produce a Graphviz DOT file showing the full provenance DAG.
+    Trace {
+        /// Directory containing receipt chain files (JSONL).
+        /// Scans all *.jsonl files in the directory.
+        #[arg(long)]
+        receipts_dir: PathBuf,
+
+        /// Output DOT file (default: stdout).
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     /// Print a summary of audit events grouped by identity.
     Summary {
         /// Audit log path (tool-proxy JSONL format).
@@ -187,6 +199,12 @@ fn main() -> Result<(), AuditError> {
         }
         Command::VerifyReceipts { log } => {
             verify_receipt_chain(&log)?;
+        }
+        Command::Trace {
+            receipts_dir,
+            output,
+        } => {
+            trace_provenance(&receipts_dir, output.as_deref())?;
         }
         Command::Summary { log } => {
             print_summary(&log)?;
@@ -910,6 +928,126 @@ fn verify_receipt_chain(path: &Path) -> Result<(), AuditError> {
         }
         println!("FAIL: {total} receipts, {} chain errors", errors.len());
         std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Multi-agent provenance trace (Graphviz DOT output)
+// ---------------------------------------------------------------------------
+
+fn trace_provenance(receipts_dir: &Path, output: Option<&Path>) -> Result<(), AuditError> {
+    if !receipts_dir.is_dir() {
+        return Err(AuditError::Backend(format!(
+            "{} is not a directory",
+            receipts_dir.display()
+        )));
+    }
+
+    let mut dot = String::new();
+    dot.push_str("digraph provenance {\n");
+    dot.push_str("  rankdir=TB;\n");
+    dot.push_str("  node [shape=box, fontname=\"monospace\", fontsize=10];\n");
+    dot.push_str("  edge [fontname=\"monospace\", fontsize=8];\n\n");
+
+    let entries = std::fs::read_dir(receipts_dir)?;
+    let mut session_count = 0u32;
+    let mut total_receipts = 0u32;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "jsonl") {
+            continue;
+        }
+
+        let session_name = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        // Subgraph per session
+        dot.push_str(&format!("  subgraph cluster_{session_count} {{\n"));
+        dot.push_str(&format!("    label=\"session: {session_name}\";\n"));
+        dot.push_str("    style=dashed;\n");
+        dot.push_str("    color=gray;\n");
+
+        let file = File::open(&path)?;
+        let reader = BufReader::new(file);
+        let mut prev_node_id: Option<String> = None;
+
+        for (i, line) in reader.lines().enumerate() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            let entry: serde_json::Value =
+                serde_json::from_str(&line).map_err(|e| AuditError::Json {
+                    line: i + 1,
+                    source: e,
+                })?;
+
+            let node_id = format!("s{session_count}_r{i}");
+            let op = entry["operation"].as_str().unwrap_or("?");
+            let subject = entry["subject"].as_str().unwrap_or("?");
+            let verdict = entry["verdict"].as_str().unwrap_or("?");
+
+            // Truncate long subjects
+            let short_subject = if subject.len() > 40 {
+                format!("{}...", &subject[..37])
+            } else {
+                subject.to_string()
+            };
+
+            let color = if verdict.contains("Deny") {
+                "red"
+            } else {
+                "black"
+            };
+            let shape = if verdict.contains("Deny") {
+                "octagon"
+            } else {
+                "box"
+            };
+
+            dot.push_str(&format!(
+                "    {node_id} [label=\"{op}\\n{short_subject}\\n{verdict}\", color={color}, shape={shape}];\n"
+            ));
+
+            // Chain link within session
+            if let Some(ref prev) = prev_node_id {
+                dot.push_str(&format!("    {prev} -> {node_id};\n"));
+            }
+            prev_node_id = Some(node_id.clone());
+
+            // Cross-agent link
+            if let Some(parent_sid) = entry["parent_session_id"].as_str() {
+                dot.push_str(&format!(
+                    "    parent_{parent_sid} -> {node_id} [style=bold, color=blue, label=\"spawned\"];\n"
+                ));
+            }
+
+            total_receipts += 1;
+        }
+
+        dot.push_str("  }\n\n");
+        session_count += 1;
+    }
+
+    dot.push_str("}\n");
+
+    // Write output
+    if let Some(output_path) = output {
+        std::fs::write(output_path, &dot)?;
+        eprintln!(
+            "Wrote provenance DAG: {} sessions, {} receipts -> {}",
+            session_count,
+            total_receipts,
+            output_path.display()
+        );
+    } else {
+        print!("{dot}");
     }
 
     Ok(())
