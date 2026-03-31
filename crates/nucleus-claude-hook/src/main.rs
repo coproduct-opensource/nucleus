@@ -1657,6 +1657,7 @@ fn run_help() {
 // ---------------------------------------------------------------------------
 
 fn main() {
+    let start_time = std::time::Instant::now();
     let args: Vec<String> = std::env::args().collect();
 
     if args.iter().any(|a| a == "--setup") {
@@ -2427,19 +2428,23 @@ fn main() {
     } else {
         ""
     };
-    // DX: Cleaner stderr — short for allows, detailed for denials
+    // DX (#545): Show latency + clean verdict
+    let elapsed_ms = start_time.elapsed().as_millis();
+    let timing = if elapsed_ms > 100 {
+        format!(" \x1b[33m({elapsed_ms}ms)\x1b[0m") // yellow if slow
+    } else {
+        format!(" ({elapsed_ms}ms)")
+    };
     if verdict_str == "allow" {
-        // Short form for allows — reduce noise
         let short_subject = if subject.len() > 40 {
             format!("{}...", &subject[..37])
         } else {
             subject.clone()
         };
-        eprintln!("nucleus: \u{2713} {operation} {short_subject}");
+        eprintln!("nucleus: \u{2713} {operation} {short_subject}{timing}");
     } else {
-        // Detailed form for denials/asks — user needs context
         eprintln!(
-            "nucleus: \u{2717} {operation} {subject} -> {verdict_str} [exposure: {exposure_count}/3{flow_node}]"
+            "nucleus: \u{2717} {operation} {subject} -> {verdict_str} [exposure: {exposure_count}/3{flow_node}]{timing}"
         );
     }
 
