@@ -221,7 +221,8 @@ private def latticeLE (a b : CapabilityLattice) : Prop :=
   a.glob_search ≤ b.glob_search ∧ a.grep_search ≤ b.grep_search ∧
   a.web_search ≤ b.web_search ∧ a.web_fetch ≤ b.web_fetch ∧
   a.git_commit ≤ b.git_commit ∧ a.git_push ≤ b.git_push ∧
-  a.create_pr ≤ b.create_pr ∧ a.manage_pods ≤ b.manage_pods
+  a.create_pr ≤ b.create_pr ∧ a.manage_pods ≤ b.manage_pods ∧
+  a.spawn_agent ≤ b.spawn_agent
 
 private def latticeInf (a b : CapabilityLattice) : CapabilityLattice := {
   read_files := a.read_files ⊓ b.read_files
@@ -236,6 +237,7 @@ private def latticeInf (a b : CapabilityLattice) : CapabilityLattice := {
   git_push := a.git_push ⊓ b.git_push
   create_pr := a.create_pr ⊓ b.create_pr
   manage_pods := a.manage_pods ⊓ b.manage_pods
+  spawn_agent := a.spawn_agent ⊓ b.spawn_agent
 }
 
 private def latticeSup (a b : CapabilityLattice) : CapabilityLattice := {
@@ -251,20 +253,23 @@ private def latticeSup (a b : CapabilityLattice) : CapabilityLattice := {
   git_push := a.git_push ⊔ b.git_push
   create_pr := a.create_pr ⊔ b.create_pr
   manage_pods := a.manage_pods ⊔ b.manage_pods
+  spawn_agent := a.spawn_agent ⊔ b.spawn_agent
 }
 
 private def latticeBot : CapabilityLattice := {
   read_files := ⊥, write_files := ⊥, edit_files := ⊥,
   run_bash := ⊥, glob_search := ⊥, grep_search := ⊥,
   web_search := ⊥, web_fetch := ⊥, git_commit := ⊥,
-  git_push := ⊥, create_pr := ⊥, manage_pods := ⊥
+  git_push := ⊥, create_pr := ⊥, manage_pods := ⊥,
+  spawn_agent := ⊥
 }
 
 private def latticeTop : CapabilityLattice := {
   read_files := ⊤, write_files := ⊤, edit_files := ⊤,
   run_bash := ⊤, glob_search := ⊤, grep_search := ⊤,
   web_search := ⊤, web_fetch := ⊤, git_commit := ⊤,
-  git_push := ⊤, create_pr := ⊤, manage_pods := ⊤
+  git_push := ⊤, create_pr := ⊤, manage_pods := ⊤,
+  spawn_agent := ⊤
 }
 
 private def latticeHImp (a b : CapabilityLattice) : CapabilityLattice := {
@@ -280,6 +285,7 @@ private def latticeHImp (a b : CapabilityLattice) : CapabilityLattice := {
   git_push := a.git_push ⇨ b.git_push
   create_pr := a.create_pr ⇨ b.create_pr
   manage_pods := a.manage_pods ⇨ b.manage_pods
+  spawn_agent := a.spawn_agent ⇨ b.spawn_agent
 }
 
 private def latticeCompl (a : CapabilityLattice) : CapabilityLattice := {
@@ -288,7 +294,8 @@ private def latticeCompl (a : CapabilityLattice) : CapabilityLattice := {
   glob_search := a.glob_searchᶜ, grep_search := a.grep_searchᶜ,
   web_search := a.web_searchᶜ, web_fetch := a.web_fetchᶜ,
   git_commit := a.git_commitᶜ, git_push := a.git_pushᶜ,
-  create_pr := a.create_prᶜ, manage_pods := a.manage_podsᶜ
+  create_pr := a.create_prᶜ, manage_pods := a.manage_podsᶜ,
+  spawn_agent := a.spawn_agentᶜ
 }
 
 -- ─── Full HeytingAlgebra instance (single definition) ────────────────
