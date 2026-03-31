@@ -16,21 +16,20 @@ Nucleus hooks into Claude Code's PreToolUse event to track how data flows throug
 
 The key difference: other tools answer "is this tool allowed?" Nucleus answers "is this tool allowed **given what data has entered the session?**"
 
-## Install (< 30 seconds)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/coproduct-opensource/nucleus/main/scripts/install-hook.sh | bash
-```
-
-This downloads a pre-built binary for your platform (macOS arm64/x86, Linux x86/arm64), installs it to `~/.local/bin/`, and configures `~/.claude/settings.json`.
-
-Restart Claude Code. The hook is now active.
-
-### From source (if you prefer)
+## Install
 
 ```bash
 cargo install --git https://github.com/coproduct-opensource/nucleus nucleus-claude-hook
 nucleus-claude-hook --setup
+```
+
+That's it. Restart Claude Code. The hook is now active.
+
+`--setup` writes the correct hook configuration to `~/.claude/settings.json`. If you want a specific profile:
+
+```bash
+# Edit ~/.claude/settings.json and change the hook command to:
+"command": "NUCLEUS_PROFILE=fix_issue /path/to/nucleus-claude-hook"
 ```
 
 ## What happens next
