@@ -88,6 +88,33 @@ pub struct ToolManifest {
     /// Bridges to the existing `ToolSchemaRegistry` in portcullis.
     /// Zero means "not yet computed" — the registry fills this in.
     pub schema_hash: [u8; 32],
+
+    /// Allowed hosts for remote fetch (empty = any host allowed).
+    /// When non-empty, the tool can only fetch from these domains.
+    pub allowed_hosts: Vec<String>,
+
+    /// Whether this tool's output carries authority_to_instruct.
+    /// If true, the tool's output is treated as instructions that can
+    /// steer future agent actions. If false, output is informational only.
+    /// Critical for defending against prompt injection via tool output.
+    pub authority_to_instruct: bool,
+
+    /// Memory behavior: does this tool read, write, or persist memory?
+    pub memory_behavior: MemoryBehavior,
+}
+
+/// Describes a tool's memory interaction pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MemoryBehavior {
+    /// Tool does not interact with memory.
+    #[default]
+    None,
+    /// Tool reads from memory but does not write.
+    ReadOnly,
+    /// Tool reads and writes memory (ephemeral, within session).
+    ReadWrite,
+    /// Tool persists memory across sessions.
+    Persist,
 }
 
 /// Bounded tool name (up to 128 bytes, valid UTF-8).
@@ -130,6 +157,11 @@ pub enum AdmissionDenyReason {
     DirectiveFromTransitive,
     /// Tool has no declared capabilities.
     EmptyCapabilities,
+    /// Tool claims authority_to_instruct but output_authority is too low.
+    InstructionWithoutAuthority,
+    /// Tool claims authority_to_instruct AND remote_fetch from untrusted sources.
+    /// This is the core prompt injection attack vector.
+    InstructionFromUntrustedRemote,
 }
 
 /// Result of admission control check.
@@ -186,6 +218,25 @@ pub fn check_admission(manifest: &ToolManifest) -> AdmissionVerdict {
         .any(|s| matches!(s, InstructionSource::TransitiveTool));
     if has_transitive && manifest.output_authority == AuthorityLevel::Directive {
         return AdmissionVerdict::Reject(AdmissionDenyReason::DirectiveFromTransitive);
+    }
+
+    // Rule 6: authority_to_instruct requires Directive output_authority
+    // A tool that claims its output can steer agent behavior must also
+    // declare Directive authority. Otherwise it's a covert instruction channel.
+    if manifest.authority_to_instruct && manifest.output_authority < AuthorityLevel::Suggestive {
+        return AdmissionVerdict::Reject(AdmissionDenyReason::InstructionWithoutAuthority);
+    }
+
+    // Rule 7: Remote fetch with authority_to_instruct from untrusted sources
+    // is the core prompt injection attack vector — reject
+    if manifest.authority_to_instruct && manifest.remote_fetch {
+        let has_untrusted_source = manifest
+            .instruction_sources
+            .iter()
+            .any(|s| !matches!(s, InstructionSource::UserPrompt | InstructionSource::Static));
+        if has_untrusted_source {
+            return AdmissionVerdict::Reject(AdmissionDenyReason::InstructionFromUntrustedRemote);
+        }
     }
 
     AdmissionVerdict::Admit
@@ -350,7 +401,10 @@ mod tests {
             max_confidentiality: ConfLevel::Internal,
             output_integrity: IntegLevel::Untrusted,
             output_authority: AuthorityLevel::Informational,
-            schema_hash: [0; 32], // Filled in by ToolSchemaRegistry
+            schema_hash: [0; 32],
+            allowed_hosts: vec![],
+            authority_to_instruct: false,
+            memory_behavior: MemoryBehavior::None,
         }
     }
 

@@ -133,9 +133,14 @@ struct ToolEntry {
     #[serde(default = "default_auth")]
     output_authority: String,
     /// Ed25519 signature of the manifest content (hex-encoded, optional).
-    /// When a trust store is configured, unsigned manifests are rejected.
     #[serde(default)]
     signature: Option<String>,
+    /// Allowed hosts for remote fetch (optional).
+    #[serde(default)]
+    allowed_hosts: Option<Vec<String>>,
+    /// Whether output carries authority_to_instruct (optional, default false).
+    #[serde(default)]
+    authority_to_instruct: Option<bool>,
 }
 
 fn default_conf() -> String {
@@ -354,7 +359,10 @@ fn convert_entry(entry: &ToolEntry) -> Option<ToolManifest> {
         max_confidentiality,
         output_integrity,
         output_authority,
-        schema_hash: [0; 32], // filled by ToolSchemaRegistry at runtime
+        schema_hash: [0; 32],
+        allowed_hosts: entry.allowed_hosts.clone().unwrap_or_default(),
+        authority_to_instruct: entry.authority_to_instruct.unwrap_or(false),
+        memory_behavior: portcullis_core::manifest::MemoryBehavior::None,
     })
 }
 
