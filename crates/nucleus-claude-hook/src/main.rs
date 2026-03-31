@@ -39,6 +39,9 @@ struct HookInput {
     /// Tool-specific parameters (JSON object).
     #[serde(default)]
     tool_input: serde_json::Value,
+    /// Tool result (PostToolUse only — the tool's output).
+    #[serde(default)]
+    tool_result: Option<String>,
 }
 
 fn default_hook_event() -> String {
@@ -1160,7 +1163,50 @@ fn main() {
                 eprintln!("nucleus: session state cleaned up (receipts preserved)");
             }
         }
-        // Other events (PostToolUse, SubagentStart, etc.) — pass through for now
+        // PostToolUse: observe the tool result for manifest enforcement (#497)
+        if input.hook_event_name == "PostToolUse" && !input.tool_name.is_empty() {
+            if let Some(ref result_text) = input.tool_result {
+                // Check MCP tool output against manifest
+                if input.tool_name.starts_with("mcp__") {
+                    let cwd = std::env::current_dir().unwrap_or_default();
+                    let registry =
+                        portcullis::manifest_registry::ManifestRegistry::load_from_dir(&cwd);
+                    let mcp_tool_name = input
+                        .tool_name
+                        .strip_prefix("mcp__")
+                        .unwrap_or(&input.tool_name);
+                    if let Some(manifest) = registry.get(mcp_tool_name) {
+                        let violations = portcullis::manifest_enforcement::check_output(
+                            mcp_tool_name,
+                            manifest,
+                            result_text,
+                        );
+                        if !violations.is_empty() {
+                            for v in &violations {
+                                eprintln!(
+                                    "nucleus: MANIFEST VIOLATION — {}: {:?} — {}",
+                                    v.tool_name, v.kind, v.description
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // Log the post-tool observation
+                let op = map_tool(&input.tool_name);
+                let truncated = if result_text.len() > 100 {
+                    format!("{}...", &result_text[..97])
+                } else {
+                    result_text.clone()
+                };
+                eprintln!(
+                    "nucleus: post-tool {op} {} — result: {truncated}",
+                    input.tool_name
+                );
+            }
+        }
+
+        // Other events (SubagentStart, etc.) — pass through for now
         return;
     }
 
