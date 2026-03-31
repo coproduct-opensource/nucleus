@@ -104,6 +104,8 @@ pub mod uninhabitable_state;
 pub mod adapter;
 pub mod delegation;
 pub mod dropout;
+/// Bash command egress analysis — detect network exfiltration.
+pub mod egress;
 pub mod escalation;
 pub mod exposure_core;
 pub mod flow_graph;
