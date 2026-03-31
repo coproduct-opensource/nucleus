@@ -1225,7 +1225,7 @@ fn is_network_operation(op: Operation) -> bool {
 fn is_exfil_operation(op: Operation) -> bool {
     matches!(
         op,
-        Operation::RunBash | Operation::GitPush | Operation::CreatePr
+        Operation::RunBash | Operation::GitPush | Operation::CreatePr | Operation::SpawnAgent
     )
 }
 
