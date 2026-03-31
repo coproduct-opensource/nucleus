@@ -20,8 +20,9 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Input from Claude Code (PreToolUse hook).
+///
+/// Claude Code sends snake_case fields: session_id, tool_name, tool_input, etc.
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct HookInput {
     /// Session identifier (stable across invocations).
     session_id: String,
@@ -31,15 +32,58 @@ struct HookInput {
     tool_input: serde_json::Value,
 }
 
-/// Output to Claude Code.
+/// Output to Claude Code (PreToolUse hook protocol).
+///
+/// Claude Code expects: `{ "hookSpecificOutput": { "permissionDecision": "allow"|"deny"|"ask", ... } }`
+/// See: <https://code.claude.com/docs/en/hooks>
+#[derive(Debug, Serialize)]
+struct HookOutput {
+    #[serde(rename = "hookSpecificOutput")]
+    hook_specific_output: HookSpecificOutput,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct HookOutput {
-    /// "approve", "deny", or "ask_user".
-    decision: String,
-    /// Human-readable reason (shown in Claude Code UI on deny).
+struct HookSpecificOutput {
+    /// Always "PreToolUse".
+    hook_event_name: String,
+    /// "allow", "deny", or "ask".
+    permission_decision: String,
+    /// Human-readable reason (shown to user on deny/ask, to Claude on deny).
     #[serde(skip_serializing_if = "Option::is_none")]
-    reason: Option<String>,
+    permission_decision_reason: Option<String>,
+}
+
+impl HookOutput {
+    fn allow() -> Self {
+        Self {
+            hook_specific_output: HookSpecificOutput {
+                hook_event_name: "PreToolUse".to_string(),
+                permission_decision: "allow".to_string(),
+                permission_decision_reason: None,
+            },
+        }
+    }
+
+    fn deny(reason: impl Into<String>) -> Self {
+        Self {
+            hook_specific_output: HookSpecificOutput {
+                hook_event_name: "PreToolUse".to_string(),
+                permission_decision: "deny".to_string(),
+                permission_decision_reason: Some(reason.into()),
+            },
+        }
+    }
+
+    fn ask(reason: impl Into<String>) -> Self {
+        Self {
+            hook_specific_output: HookSpecificOutput {
+                hook_event_name: "PreToolUse".to_string(),
+                permission_decision: "ask".to_string(),
+                permission_decision_reason: Some(reason.into()),
+            },
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -51,6 +95,11 @@ struct HookOutput {
 struct SessionState {
     /// Profile name used for this session.
     profile: String,
+    /// Monotonic operation counter — must never decrease.
+    /// If state is loaded with hwm=0 but the watermark file says otherwise,
+    /// someone deleted the state file (social engineering attack).
+    #[serde(default)]
+    high_water_mark: u64,
     /// Operations that were allowed (replayed to rebuild kernel exposure).
     allowed_ops: Vec<(String, String)>, // (operation, subject)
     /// Flow graph observations: (NodeKind discriminant, operation, subject).
@@ -59,24 +108,97 @@ struct SessionState {
     flow_observations: Vec<(u8, String, String)>,
 }
 
-fn session_state_path(session_id: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("nucleus-hook");
-    std::fs::create_dir_all(&dir).ok();
-    dir.join(format!("{session_id}.json"))
+/// Result of loading session state — distinguishes clean start from tampered.
+enum SessionLoad {
+    /// Fresh session, no prior state.
+    Fresh(SessionState),
+    /// Loaded existing state successfully.
+    Loaded(SessionState),
+    /// State file was deleted after at least one operation was recorded.
+    /// This is a tamper signal — fail closed.
+    Tampered { expected_hwm: u64 },
 }
 
-fn load_session(session_id: &str) -> SessionState {
+fn session_dir() -> PathBuf {
+    let dir = std::env::temp_dir().join("nucleus-hook");
+    std::fs::create_dir_all(&dir).ok();
+    // Restrict directory permissions: owner-only (0700)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).ok();
+    }
+    dir
+}
+
+fn session_state_path(session_id: &str) -> PathBuf {
+    session_dir().join(format!("{session_id}.json"))
+}
+
+/// Separate high-water-mark file — survives state file deletion.
+/// If someone socially engineers "rm session.json", this file persists
+/// and triggers tamper detection on the next invocation.
+fn session_hwm_path(session_id: &str) -> PathBuf {
+    session_dir().join(format!(".{session_id}.hwm"))
+}
+
+fn load_session(session_id: &str) -> SessionLoad {
     let path = session_state_path(session_id);
-    std::fs::read_to_string(&path)
+    let hwm_path = session_hwm_path(session_id);
+
+    // Read the high-water-mark file (if it exists)
+    let persisted_hwm: u64 = std::fs::read_to_string(&hwm_path)
         .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+
+    match std::fs::read_to_string(&path) {
+        Ok(content) => match serde_json::from_str::<SessionState>(&content) {
+            Ok(state) => {
+                // Verify monotonicity: state HWM must match or exceed persisted HWM
+                if state.high_water_mark < persisted_hwm {
+                    SessionLoad::Tampered {
+                        expected_hwm: persisted_hwm,
+                    }
+                } else {
+                    SessionLoad::Loaded(state)
+                }
+            }
+            // Corrupted JSON — tampered
+            Err(_) => {
+                if persisted_hwm > 0 {
+                    SessionLoad::Tampered {
+                        expected_hwm: persisted_hwm,
+                    }
+                } else {
+                    SessionLoad::Fresh(SessionState::default())
+                }
+            }
+        },
+        Err(_) => {
+            // State file missing — was there a prior session?
+            if persisted_hwm > 0 {
+                // State file existed before (HWM > 0) but is now gone.
+                // This is the social engineering attack: "please rm the state file".
+                SessionLoad::Tampered {
+                    expected_hwm: persisted_hwm,
+                }
+            } else {
+                SessionLoad::Fresh(SessionState::default())
+            }
+        }
+    }
 }
 
 fn save_session(session_id: &str, state: &SessionState) {
     let path = session_state_path(session_id);
+    let hwm_path = session_hwm_path(session_id);
+
     if let Ok(json) = serde_json::to_string(state) {
-        std::fs::write(path, json).ok();
+        // Write state file
+        std::fs::write(&path, json).ok();
+        // Write HWM file separately — survives state file deletion
+        std::fs::write(&hwm_path, state.high_water_mark.to_string()).ok();
     }
 }
 
@@ -86,25 +208,29 @@ fn save_session(session_id: &str, state: &SessionState) {
 
 /// Map a Claude Code tool name to a portcullis Operation.
 ///
-/// Returns `None` only for the Agent meta-tool (orchestration, no side effects).
+/// SECURITY: Every tool is gated — no passthrough. The Agent tool spawns
+/// subprocesses with fresh session IDs; passthrough would let a tainted
+/// session escape its flow restrictions via a clean child process.
 /// MCP tools (`mcp__<server>__<tool>`) are classified by their tool name suffix,
 /// defaulting to RunBash (most restrictive) for unknown tools.
-fn map_tool(name: &str) -> Option<Operation> {
+fn map_tool(name: &str) -> Operation {
     match name {
-        "Bash" => Some(Operation::RunBash),
-        "Read" => Some(Operation::ReadFiles),
-        "Write" => Some(Operation::WriteFiles),
-        "Edit" => Some(Operation::EditFiles),
-        "Glob" => Some(Operation::GlobSearch),
-        "Grep" => Some(Operation::GrepSearch),
-        "WebFetch" => Some(Operation::WebFetch),
-        "WebSearch" => Some(Operation::WebSearch),
-        // Agent is orchestration — no direct side effects
-        "Agent" => None,
+        "Bash" => Operation::RunBash,
+        "Read" => Operation::ReadFiles,
+        "Write" => Operation::WriteFiles,
+        "Edit" => Operation::EditFiles,
+        "Glob" => Operation::GlobSearch,
+        "Grep" => Operation::GrepSearch,
+        "WebFetch" => Operation::WebFetch,
+        "WebSearch" => Operation::WebSearch,
+        // SECURITY: Agent spawns a subprocess with its own session_id.
+        // Passthrough here lets a tainted session launder writes through
+        // a clean child. Gate as RunBash (most restrictive).
+        "Agent" => Operation::RunBash,
         // MCP tools: classify by tool name, fail-closed for unknown
-        _ if name.starts_with("mcp__") => Some(classify_mcp_tool(name)),
+        _ if name.starts_with("mcp__") => classify_mcp_tool(name),
         // Unknown tools: fail-closed (RunBash = most restrictive)
-        _ => Some(Operation::RunBash),
+        _ => Operation::RunBash,
     }
 }
 
@@ -367,8 +493,13 @@ fn run_setup() {
         "PreToolUse".to_string(),
         serde_json::json!([
             {
-                "matcher": ".*",
-                "hooks": [binary]
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": binary
+                    }
+                ]
             }
         ]),
     );
@@ -450,7 +581,14 @@ fn run_help() {
     }
     eprintln!();
     eprintln!("ENVIRONMENT:");
-    eprintln!("  NUCLEUS_PROFILE   Permission profile name (default: safe_pr_fixer)");
+    eprintln!("  NUCLEUS_PROFILE       Permission profile name (default: safe_pr_fixer)");
+    eprintln!(
+        "  NUCLEUS_FAIL_CLOSED   Set to 1 for CISO mode: infrastructure errors block (default: 0)"
+    );
+    eprintln!();
+    eprintln!("ERROR MODEL:");
+    eprintln!("  Default: hook errors fall through to Claude Code defaults (asks user)");
+    eprintln!("  NUCLEUS_FAIL_CLOSED=1: hook errors block all tool calls (paranoid mode)");
 }
 
 // ---------------------------------------------------------------------------
@@ -473,49 +611,53 @@ fn main() {
         return;
     }
 
-    // Read hook input from stdin — FAIL CLOSED on any error.
-    // A security hook that approves on error is worse than no hook at all.
+    // Read hook input from stdin.
+    //
+    // ERROR MODEL: Infrastructure errors (no stdin, bad JSON) are NON-BLOCKING.
+    // Exit 0 with no JSON → Claude Code falls through to normal behavior (asks user).
+    // Only INTENTIONAL denials (flow violations, capability checks, tamper) use exit 2.
+    // This means a broken/crashing hook doesn't brick the session — it gracefully
+    // degrades to standard Claude Code permission prompts.
+    //
+    // For production/CISO mode: set NUCLEUS_FAIL_CLOSED=1 to make infrastructure
+    // errors blocking (exit 2). This is the paranoid setting.
+    let fail_closed = std::env::var("NUCLEUS_FAIL_CLOSED")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+
     let stdin = io::stdin();
     let line = match stdin.lock().lines().next() {
         Some(Ok(line)) => line,
         _ => {
-            eprintln!("nucleus: no input on stdin — failing closed");
-            let out = HookOutput {
-                decision: "deny".to_string(),
-                reason: Some("nucleus: no hook input — failing closed".to_string()),
-            };
-            println!("{}", serde_json::to_string(&out).unwrap());
-            std::process::exit(2);
+            eprintln!("nucleus: no input on stdin — falling through to Claude Code defaults");
+            if fail_closed {
+                let out = HookOutput::deny(
+                    "nucleus: no hook input — failing closed (NUCLEUS_FAIL_CLOSED=1)",
+                );
+                println!("{}", serde_json::to_string(&out).unwrap());
+                std::process::exit(2);
+            }
+            // Non-blocking: exit 0 with no JSON → Claude Code asks user normally
+            return;
         }
     };
 
     let input: HookInput = match serde_json::from_str(&line) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("nucleus: failed to parse hook input: {e} — failing closed");
-            let out = HookOutput {
-                decision: "deny".to_string(),
-                reason: Some(format!("nucleus: parse error — failing closed: {e}")),
-            };
-            println!("{}", serde_json::to_string(&out).unwrap());
-            std::process::exit(2);
-        }
-    };
-
-    // Map tool to operation
-    let operation = match map_tool(&input.tool_name) {
-        Some(op) => op,
-        None => {
-            // Passthrough for unmapped tools
-            let out = HookOutput {
-                decision: "approve".to_string(),
-                reason: None,
-            };
-            eprintln!("nucleus: {} (passthrough) -> approve", input.tool_name);
-            println!("{}", serde_json::to_string(&out).unwrap());
+            eprintln!("nucleus: parse error: {e} — falling through to Claude Code defaults");
+            if fail_closed {
+                let out = HookOutput::deny(format!("nucleus: parse error — failing closed: {e}"));
+                println!("{}", serde_json::to_string(&out).unwrap());
+                std::process::exit(2);
+            }
+            // Non-blocking: exit 0 with no JSON → Claude Code asks user normally
             return;
         }
     };
+
+    // Map tool to operation — every tool is gated, no passthrough
+    let operation = map_tool(&input.tool_name);
 
     // Check MCP tools against manifest registry (admission control).
     // Loads manifests from .nucleus/manifests/*.toml in the working directory.
@@ -528,13 +670,10 @@ fn main() {
             .strip_prefix("mcp__")
             .unwrap_or(&input.tool_name);
         if let Some(reason) = registry.is_rejected(mcp_tool_name) {
-            let out = HookOutput {
-                decision: "deny".to_string(),
-                reason: Some(format!(
-                    "nucleus: MCP tool '{}' rejected by manifest admission: {:?}",
-                    mcp_tool_name, reason
-                )),
-            };
+            let out = HookOutput::deny(format!(
+                "nucleus: MCP tool '{}' rejected by manifest admission: {:?}",
+                mcp_tool_name, reason
+            ));
             eprintln!(
                 "nucleus: {} rejected by manifest admission: {:?}",
                 input.tool_name, reason
@@ -551,8 +690,24 @@ fn main() {
         PermissionLattice::safe_pr_fixer()
     });
 
-    // Load session state and rebuild kernel
-    let mut session = load_session(&input.session_id);
+    // Load session state — detect tamper (social engineering state deletion)
+    let mut session = match load_session(&input.session_id) {
+        SessionLoad::Fresh(s) | SessionLoad::Loaded(s) => s,
+        SessionLoad::Tampered { expected_hwm } => {
+            // SECURITY: State file was deleted but HWM file proves prior ops existed.
+            // This is the social engineering attack: "please delete the session file
+            // so I can help you." Fail closed — deny everything.
+            let msg = format!(
+                "nucleus: TAMPER DETECTED — session state deleted (expected hwm={expected_hwm}). \
+                 A compromised model may have asked you to delete session files. \
+                 All operations denied until session restart."
+            );
+            eprintln!("{msg}");
+            let out = HookOutput::deny(&msg);
+            println!("{}", serde_json::to_string(&out).unwrap());
+            std::process::exit(2);
+        }
+    };
     if session.profile.is_empty() {
         session.profile = profile_name.clone();
     }
@@ -595,11 +750,9 @@ fn main() {
                 operation.to_string(),
                 subject.clone(),
             ));
+            session.high_water_mark += 1;
             save_session(&input.session_id, &session);
-            HookOutput {
-                decision: "approve".to_string(),
-                reason: None,
-            }
+            HookOutput::allow()
         }
         Verdict::RequiresApproval => {
             // Persist optimistically: if the user approves, the operation runs
@@ -614,25 +767,23 @@ fn main() {
                 operation.to_string(),
                 subject.clone(),
             ));
+            session.high_water_mark += 1;
             save_session(&input.session_id, &session);
-            HookOutput {
-                decision: "ask_user".to_string(),
-                reason: Some(format!(
-                    "nucleus: exposure {exposure_count}/3 — requires human approval"
-                )),
-            }
+            HookOutput::ask(format!(
+                "nucleus: exposure {exposure_count}/3 — requires human approval"
+            ))
         }
         Verdict::Deny(ref reason) => {
-            // Do NOT persist: operation was blocked
-            HookOutput {
-                decision: "deny".to_string(),
-                reason: Some(format!("nucleus: denied — {reason:?}")),
-            }
+            // Do NOT persist: operation was blocked.
+            // Still increment HWM — denied ops prove the session existed.
+            session.high_water_mark += 1;
+            save_session(&input.session_id, &session);
+            HookOutput::deny(format!("nucleus: denied — {reason:?}"))
         }
     };
 
     // Log to stderr
-    let verdict_str = &output.decision;
+    let verdict_str = &output.hook_specific_output.permission_decision;
     let flow_node = decision
         .flow_node_id
         .map(|id| format!(", flow_node: {id}"))
@@ -663,81 +814,110 @@ mod tests {
 
     #[test]
     fn test_map_tool_bash() {
-        assert_eq!(map_tool("Bash"), Some(Operation::RunBash));
+        assert_eq!(map_tool("Bash"), Operation::RunBash);
     }
 
     #[test]
     fn test_map_tool_read() {
-        assert_eq!(map_tool("Read"), Some(Operation::ReadFiles));
+        assert_eq!(map_tool("Read"), Operation::ReadFiles);
     }
 
     #[test]
     fn test_map_tool_write_edit() {
-        assert_eq!(map_tool("Write"), Some(Operation::WriteFiles));
-        assert_eq!(map_tool("Edit"), Some(Operation::EditFiles));
+        assert_eq!(map_tool("Write"), Operation::WriteFiles);
+        assert_eq!(map_tool("Edit"), Operation::EditFiles);
     }
 
     #[test]
     fn test_map_tool_search() {
-        assert_eq!(map_tool("Glob"), Some(Operation::GlobSearch));
-        assert_eq!(map_tool("Grep"), Some(Operation::GrepSearch));
+        assert_eq!(map_tool("Glob"), Operation::GlobSearch);
+        assert_eq!(map_tool("Grep"), Operation::GrepSearch);
     }
 
     #[test]
     fn test_map_tool_web() {
-        assert_eq!(map_tool("WebFetch"), Some(Operation::WebFetch));
-        assert_eq!(map_tool("WebSearch"), Some(Operation::WebSearch));
+        assert_eq!(map_tool("WebFetch"), Operation::WebFetch);
+        assert_eq!(map_tool("WebSearch"), Operation::WebSearch);
     }
 
     #[test]
-    fn test_map_tool_passthrough() {
-        // Only Agent is passthrough — no side effects, just orchestration
-        assert_eq!(map_tool("Agent"), None);
+    fn test_agent_is_gated_not_passthrough() {
+        // SECURITY: Agent spawns subprocesses with fresh session IDs.
+        // Passthrough would let tainted sessions escape via clean child.
+        // Must be gated as RunBash (most restrictive).
+        assert_eq!(map_tool("Agent"), Operation::RunBash);
     }
 
     #[test]
     fn test_mcp_tools_are_gated() {
-        // MCP tools must NOT be passthrough — they go through kernel
-        assert!(map_tool("mcp__server__read_file").is_some());
-        assert!(map_tool("mcp__github__create_issue").is_some());
-        assert!(map_tool("mcp__unknown__unknown_tool").is_some());
+        // All tools return an Operation — no passthrough
+        assert_eq!(map_tool("mcp__server__read_file"), Operation::ReadFiles);
+        assert_eq!(map_tool("mcp__github__create_issue"), Operation::WriteFiles);
+        assert_eq!(map_tool("mcp__unknown__unknown_tool"), Operation::RunBash);
     }
 
     #[test]
     fn test_mcp_tool_classification() {
         // Read-like
-        assert_eq!(map_tool("mcp__fs__read_file"), Some(Operation::ReadFiles));
-        assert_eq!(map_tool("mcp__db__get_record"), Some(Operation::ReadFiles));
-        assert_eq!(map_tool("mcp__api__list_items"), Some(Operation::ReadFiles));
+        assert_eq!(map_tool("mcp__fs__read_file"), Operation::ReadFiles);
+        assert_eq!(map_tool("mcp__db__get_record"), Operation::ReadFiles);
+        assert_eq!(map_tool("mcp__api__list_items"), Operation::ReadFiles);
         // Write-like
-        assert_eq!(map_tool("mcp__fs__write_file"), Some(Operation::WriteFiles));
-        assert_eq!(
-            map_tool("mcp__db__create_record"),
-            Some(Operation::WriteFiles)
-        );
-        assert_eq!(
-            map_tool("mcp__db__delete_item"),
-            Some(Operation::WriteFiles)
-        );
+        assert_eq!(map_tool("mcp__fs__write_file"), Operation::WriteFiles);
+        assert_eq!(map_tool("mcp__db__create_record"), Operation::WriteFiles);
+        assert_eq!(map_tool("mcp__db__delete_item"), Operation::WriteFiles);
         // Web/fetch
-        assert_eq!(map_tool("mcp__http__fetch_url"), Some(Operation::WebFetch));
+        assert_eq!(map_tool("mcp__http__fetch_url"), Operation::WebFetch);
         // Exec
-        assert_eq!(
-            map_tool("mcp__shell__run_command"),
-            Some(Operation::RunBash)
-        );
-        assert_eq!(map_tool("mcp__term__exec_script"), Some(Operation::RunBash));
+        assert_eq!(map_tool("mcp__shell__run_command"), Operation::RunBash);
+        assert_eq!(map_tool("mcp__term__exec_script"), Operation::RunBash);
         // Git
-        assert_eq!(map_tool("mcp__git__push_branch"), Some(Operation::GitPush));
-        assert_eq!(map_tool("mcp__gh__pull_request"), Some(Operation::CreatePr));
+        assert_eq!(map_tool("mcp__git__push_branch"), Operation::GitPush);
+        assert_eq!(map_tool("mcp__gh__pull_request"), Operation::CreatePr);
         // Unknown → fail-closed as RunBash
-        assert_eq!(map_tool("mcp__evil__pwn"), Some(Operation::RunBash));
+        assert_eq!(map_tool("mcp__evil__pwn"), Operation::RunBash);
     }
 
     #[test]
     fn test_unknown_tools_fail_closed() {
         // Unknown non-MCP tools also fail-closed
-        assert_eq!(map_tool("UnknownTool"), Some(Operation::RunBash));
+        assert_eq!(map_tool("UnknownTool"), Operation::RunBash);
+    }
+
+    #[test]
+    fn test_session_tamper_detection() {
+        // Simulate: create a session, save it, delete state file, verify tamper detected
+        let test_id = format!("tamper-test-{}", std::process::id());
+        let state = SessionState {
+            high_water_mark: 5,
+            profile: "test".to_string(),
+            ..Default::default()
+        };
+        save_session(&test_id, &state);
+
+        // Verify loads correctly
+        assert!(matches!(load_session(&test_id), SessionLoad::Loaded(_)));
+
+        // Delete state file (simulating social engineering attack)
+        let state_path = session_state_path(&test_id);
+        std::fs::remove_file(&state_path).unwrap();
+
+        // HWM file still exists → tamper detected
+        assert!(matches!(
+            load_session(&test_id),
+            SessionLoad::Tampered { expected_hwm: 5 }
+        ));
+
+        // Cleanup
+        let hwm_path = session_hwm_path(&test_id);
+        std::fs::remove_file(&hwm_path).ok();
+    }
+
+    #[test]
+    fn test_fresh_session_is_not_tampered() {
+        let test_id = format!("fresh-test-{}", std::process::id());
+        // No prior state, no HWM file → fresh session
+        assert!(matches!(load_session(&test_id), SessionLoad::Fresh(_)));
     }
 
     #[test]
@@ -785,13 +965,17 @@ mod tests {
 
     #[test]
     fn test_hook_output_format() {
-        let out = HookOutput {
-            decision: "approve".to_string(),
-            reason: None,
-        };
+        let out = HookOutput::allow();
         let json = serde_json::to_string(&out).unwrap();
-        assert!(json.contains("\"decision\":\"approve\""));
-        assert!(!json.contains("reason")); // skip_serializing_if
+        assert!(json.contains("\"permissionDecision\":\"allow\""));
+        assert!(json.contains("\"hookSpecificOutput\""));
+        assert!(json.contains("\"hookEventName\":\"PreToolUse\""));
+        assert!(!json.contains("permissionDecisionReason")); // skip_serializing_if
+
+        let deny = HookOutput::deny("test reason");
+        let json = serde_json::to_string(&deny).unwrap();
+        assert!(json.contains("\"permissionDecision\":\"deny\""));
+        assert!(json.contains("\"permissionDecisionReason\":\"test reason\""));
     }
 
     #[test]
