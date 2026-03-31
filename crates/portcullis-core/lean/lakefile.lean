@@ -37,6 +37,10 @@ lean_lib «FlowProofs» where
 lean_lib «DecidePureProofs» where
   roots := #[`DecidePureProofs]
 
+-- Declassification rule safety proofs
+lean_lib «DeclassifyProofs» where
+  roots := #[`DeclassifyProofs]
+
 -- FlowGraph causal DAG proofs (label monotonicity, taint preservation)
 lean_lib «FlowGraphProofs» where
   roots := #[`FlowGraphProofs]
