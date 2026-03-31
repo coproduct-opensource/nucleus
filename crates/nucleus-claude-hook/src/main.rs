@@ -30,10 +30,19 @@ use serde::{Deserialize, Serialize};
 struct HookInput {
     /// Session identifier (stable across invocations).
     session_id: String,
-    /// Tool name as Claude Code reports it.
+    /// Hook event name (e.g., "PreToolUse", "PostToolUse", "SessionEnd").
+    #[serde(default = "default_hook_event")]
+    hook_event_name: String,
+    /// Tool name as Claude Code reports it (empty for non-tool events).
+    #[serde(default)]
     tool_name: String,
     /// Tool-specific parameters (JSON object).
+    #[serde(default)]
     tool_input: serde_json::Value,
+}
+
+fn default_hook_event() -> String {
+    "PreToolUse".to_string()
 }
 
 /// Output to Claude Code (PreToolUse hook protocol).
@@ -1118,6 +1127,42 @@ fn main() {
             return;
         }
     };
+
+    // Handle non-PreToolUse events
+    if input.hook_event_name != "PreToolUse" {
+        // SessionEnd: seal receipt chain and clean up (#499)
+        if input.hook_event_name == "SessionEnd" {
+            if let SessionLoad::Loaded(session) = load_session(&input.session_id) {
+                let chain_hash = hex::encode(session.chain_head_hash);
+                let op_count = session.allowed_ops.len();
+                eprintln!(
+                    "nucleus: session ended — {op_count} operations, chain hash: {chain_hash}"
+                );
+
+                persist_transition_receipt(
+                    &input.session_id,
+                    session.active_compartment.as_deref(),
+                    "session_end",
+                    "finalized",
+                );
+
+                // Clean up session state (keep receipts for audit)
+                let state_path = session_state_path(&input.session_id);
+                let hwm_path = session_hwm_path(&input.session_id);
+                std::fs::remove_file(&state_path).ok();
+                std::fs::remove_file(&hwm_path).ok();
+                if !session.compartment_token.is_empty() {
+                    let keyed =
+                        keyed_compartment_name(&input.session_id, &session.compartment_token);
+                    let comp_path = session_dir().join(format!("{keyed}.compartment"));
+                    std::fs::remove_file(&comp_path).ok();
+                }
+                eprintln!("nucleus: session state cleaned up (receipts preserved)");
+            }
+        }
+        // Other events (PostToolUse, SubagentStart, etc.) — pass through for now
+        return;
+    }
 
     // Map tool to operation — every tool is gated, no passthrough
     let operation = map_tool(&input.tool_name);
