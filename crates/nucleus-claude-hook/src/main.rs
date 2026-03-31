@@ -1034,6 +1034,43 @@ fn run_status() {
 // --help
 // ---------------------------------------------------------------------------
 
+fn show_profile(name: &str) {
+    let perms = match resolve_profile(name) {
+        Some(p) => p,
+        None => {
+            println!("Unknown profile: '{name}'");
+            println!("Available: {}", PROFILES.join(", "));
+            return;
+        }
+    };
+
+    println!("Profile: {name}");
+    println!("{}", perms.description);
+    println!();
+    println!("Capabilities:");
+
+    let caps = &perms.capabilities;
+    let fmt = |level: portcullis_core::CapabilityLevel| match level {
+        portcullis_core::CapabilityLevel::Never => "\x1b[31mNever\x1b[0m",
+        portcullis_core::CapabilityLevel::LowRisk => "\x1b[33mLowRisk\x1b[0m",
+        portcullis_core::CapabilityLevel::Always => "\x1b[32mAlways\x1b[0m",
+    };
+
+    println!("  read_files:   {}", fmt(caps.read_files));
+    println!("  write_files:  {}", fmt(caps.write_files));
+    println!("  edit_files:   {}", fmt(caps.edit_files));
+    println!("  run_bash:     {}", fmt(caps.run_bash));
+    println!("  glob_search:  {}", fmt(caps.glob_search));
+    println!("  grep_search:  {}", fmt(caps.grep_search));
+    println!("  web_search:   {}", fmt(caps.web_search));
+    println!("  web_fetch:    {}", fmt(caps.web_fetch));
+    println!("  git_commit:   {}", fmt(caps.git_commit));
+    println!("  git_push:     {}", fmt(caps.git_push));
+    println!("  create_pr:    {}", fmt(caps.create_pr));
+    println!("  manage_pods:  {}", fmt(caps.manage_pods));
+    println!("  spawn_agent:  {}", fmt(caps.spawn_agent));
+}
+
 fn run_help() {
     println!("nucleus-claude-hook — Nucleus verified permission kernel for Claude Code");
     println!();
@@ -1118,6 +1155,19 @@ fn main() {
             }
         } else {
             println!("usage: nucleus-claude-hook --reset-session <session-id>");
+        }
+        return;
+    }
+    // Show what a profile allows (#556)
+    if let Some(pos) = args.iter().position(|a| a == "--show-profile") {
+        if let Some(name) = args.get(pos + 1) {
+            show_profile(name);
+        } else {
+            println!("Available profiles:");
+            for p in PROFILES {
+                println!("  {p}");
+            }
+            println!("\nUsage: nucleus-claude-hook --show-profile <name>");
         }
         return;
     }
