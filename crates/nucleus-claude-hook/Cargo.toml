@@ -21,6 +21,7 @@ serde_json = { workspace = true }
 ring = { workspace = true }
 hex = { workspace = true }
 sha2 = { workspace = true }
+toml = { workspace = true }
 dirs-next = "2"
 
 [lints]
