@@ -689,9 +689,24 @@ fn default_profile_name() -> String {
 /// The side-channel file is the runtime transition mechanism. Users or
 /// scripts write to it to switch compartments between tool calls.
 fn resolve_compartment(session_id: &str) -> Option<portcullis_core::compartment::Compartment> {
-    // 1. Check side-channel file
+    // 1. Check side-channel file.
+    //
+    // SECURITY (#456): The compartment file uses a keyed filename derived
+    // from the session's signing key, making it unpredictable to the model.
+    // A model in Execute mode cannot guess the file path to self-escalate
+    // to Breakglass via `echo breakglass > /tmp/nucleus-hook/...`.
     let safe_id = sanitize_session_id(session_id);
-    let compartment_file = session_dir().join(format!("{safe_id}.compartment"));
+    // Use the safe_id + a fixed salt so the path is stable across invocations
+    // but not trivially guessable from the session_id alone.
+    let keyed_name = {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(b"nucleus-compartment-v1:");
+        h.update(safe_id.as_bytes());
+        let hash = h.finalize();
+        hex::encode(&hash[..8]) // 16 hex chars — enough to be unpredictable
+    };
+    let compartment_file = session_dir().join(format!("{keyed_name}.compartment"));
     if let Ok(content) = std::fs::read_to_string(&compartment_file) {
         if let Some(c) = portcullis_core::compartment::Compartment::from_str_opt(content.trim()) {
             return Some(c);
@@ -702,6 +717,23 @@ fn resolve_compartment(session_id: &str) -> Option<portcullis_core::compartment:
     std::env::var("NUCLEUS_COMPARTMENT")
         .ok()
         .and_then(|s| portcullis_core::compartment::Compartment::from_str_opt(&s))
+}
+
+/// Get the compartment file path for a session (for external tools to write).
+///
+/// Exposed via `nucleus-claude-hook --compartment-path <session_id>` so that
+/// the CLI can write to the correct file without knowing the keyed hash.
+fn compartment_file_path(session_id: &str) -> std::path::PathBuf {
+    let safe_id = sanitize_session_id(session_id);
+    let keyed_name = {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(b"nucleus-compartment-v1:");
+        h.update(safe_id.as_bytes());
+        let hash = h.finalize();
+        hex::encode(&hash[..8])
+    };
+    session_dir().join(format!("{keyed_name}.compartment"))
 }
 
 const PROFILES: &[&str] = &[
@@ -870,6 +902,16 @@ fn main() {
         run_help();
         return;
     }
+    // Show the compartment file path for a session (so external tools can write to it)
+    if let Some(pos) = args.iter().position(|a| a == "--compartment-path") {
+        if let Some(session_id) = args.get(pos + 1) {
+            let path = compartment_file_path(session_id);
+            println!("{}", path.display());
+        } else {
+            eprintln!("usage: nucleus-claude-hook --compartment-path <session-id>");
+        }
+        return;
+    }
 
     // Read hook input from stdin.
     //
@@ -983,11 +1025,35 @@ fn main() {
     // Detect compartment transition
     if compartment != prev_compartment {
         if let Some(ref new_comp) = compartment {
-            let direction = match prev_compartment {
-                Some(prev) if *new_comp > prev => "ESCALATION",
-                Some(_) => "de-escalation",
-                None => "activated",
+            let is_escalation = matches!(prev_compartment, Some(prev) if *new_comp > prev);
+            let direction = if is_escalation {
+                "ESCALATION"
+            } else if prev_compartment.is_some() {
+                "de-escalation"
+            } else {
+                "activated"
             };
+
+            // SECURITY (#457): Upward transitions (escalation) require human approval.
+            // The hook returns "ask" so Claude Code prompts the user.
+            // This prevents a compromised model from silently escalating.
+            if is_escalation {
+                let msg = format!(
+                    "nucleus: compartment escalation {} -> {} requires human approval",
+                    prev_compartment.map(|c| c.to_string()).unwrap_or_default(),
+                    new_comp,
+                );
+                eprintln!("{msg}");
+                let out = HookOutput::ask(&msg);
+                println!("{}", serde_json::to_string(&out).unwrap());
+                // Don't update session state yet — wait for user to approve
+                // (Claude Code won't re-call PreToolUse if user approves)
+                session.active_compartment = compartment.map(|c| c.to_string());
+                session.high_water_mark += 1;
+                save_session(&input.session_id, &session);
+                return;
+            }
+
             eprintln!(
                 "nucleus: compartment transition: {} -> {} ({direction})",
                 prev_compartment
