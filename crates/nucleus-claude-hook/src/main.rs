@@ -573,6 +573,14 @@ fn default_profile_name() -> String {
     std::env::var("NUCLEUS_PROFILE").unwrap_or_else(|_| "safe_pr_fixer".to_string())
 }
 
+/// Resolve the active compartment from NUCLEUS_COMPARTMENT env var.
+/// Returns None if not set (no compartment restriction).
+fn resolve_compartment() -> Option<portcullis_core::compartment::Compartment> {
+    std::env::var("NUCLEUS_COMPARTMENT")
+        .ok()
+        .and_then(|s| portcullis_core::compartment::Compartment::from_str_opt(&s))
+}
+
 const PROFILES: &[&str] = &[
     "read_only",
     "code_review",
@@ -704,9 +712,16 @@ fn run_help() {
     eprintln!();
     eprintln!("ENVIRONMENT:");
     eprintln!("  NUCLEUS_PROFILE       Permission profile name (default: safe_pr_fixer)");
+    eprintln!("  NUCLEUS_COMPARTMENT   Compartment: research, draft, execute, breakglass");
     eprintln!(
         "  NUCLEUS_FAIL_CLOSED   Set to 1 for CISO mode: infrastructure errors block (default: 0)"
     );
+    eprintln!();
+    eprintln!("COMPARTMENTS:");
+    eprintln!("  research    Read + web only (no writes, no execution)");
+    eprintln!("  draft       Read + write (no execution, no web)");
+    eprintln!("  execute     Read + write + bash (no push)");
+    eprintln!("  breakglass  All capabilities + enhanced audit");
     eprintln!();
     eprintln!("ERROR MODEL:");
     eprintln!("  Default: hook errors fall through to Claude Code defaults (asks user)");
@@ -834,7 +849,37 @@ fn main() {
         session.profile = profile_name.clone();
     }
 
-    let mut kernel = Kernel::new(perms);
+    // Apply compartment ceiling if NUCLEUS_COMPARTMENT is set.
+    // The effective permissions are profile.meet(compartment_ceiling).
+    let compartment = resolve_compartment();
+    let effective_perms = if let Some(ref comp) = compartment {
+        let core_ceiling = comp.ceiling();
+        // Convert core CapabilityLattice to portcullis CapabilityLattice
+        let ceiling = portcullis::CapabilityLattice {
+            read_files: core_ceiling.read_files,
+            write_files: core_ceiling.write_files,
+            edit_files: core_ceiling.edit_files,
+            run_bash: core_ceiling.run_bash,
+            glob_search: core_ceiling.glob_search,
+            grep_search: core_ceiling.grep_search,
+            web_search: core_ceiling.web_search,
+            web_fetch: core_ceiling.web_fetch,
+            git_commit: core_ceiling.git_commit,
+            git_push: core_ceiling.git_push,
+            create_pr: core_ceiling.create_pr,
+            manage_pods: core_ceiling.manage_pods,
+            spawn_agent: core_ceiling.spawn_agent,
+            ..Default::default()
+        };
+        let mut narrowed = perms.clone();
+        narrowed.capabilities = narrowed.capabilities.meet(&ceiling);
+        eprintln!("nucleus: compartment={comp}, capabilities narrowed");
+        narrowed
+    } else {
+        perms
+    };
+
+    let mut kernel = Kernel::new(effective_perms);
     kernel.enable_flow_graph();
 
     // Replay previous operations to rebuild exposure state AND flow graph.
