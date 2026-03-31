@@ -158,11 +158,18 @@ impl FlowGraph {
         // Denied actions are inscribed for receipt/audit but cannot be parents
         if matches!(verdict, FlowVerdict::Deny(_)) {
             self.denied.insert(id);
-            // GC: cap the denied set to prevent unbounded growth
+            // GC: cap the denied set to prevent unbounded growth.
+            // SECURITY (#480): When evicting, tombstone the node in the nodes
+            // Vec so it can't be referenced as a parent. Without this, evicted
+            // denied nodes become referenceable, bypassing the denied-parent check.
             while self.denied.len() > MAX_DENIED_NODES {
-                // Remove oldest (lowest ID)
                 if let Some(&oldest) = self.denied.iter().next() {
                     self.denied.remove(&oldest);
+                    // Tombstone: remove the node so get(oldest) returns None,
+                    // which causes validate_parents to return ParentNotFound.
+                    if let Some(slot) = self.nodes.get_mut(oldest as usize) {
+                        *slot = None;
+                    }
                 }
             }
         }
