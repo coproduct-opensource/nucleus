@@ -2070,3 +2070,87 @@ fn proof_chain_depth_rejects_deep() {
         assert!(n > max, "deep chain must exceed limit");
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// I/O Confinement invariant — no operation can escalate beyond policy
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// **IO-1 — I/O confinement: decide() never grants more than the profile allows.**
+///
+/// For any symbolic Operation and PermissionLattice, the kernel's decision
+/// can only Allow if the profile's capability for that operation is ≥ LowRisk.
+/// A capability of Never always produces Deny.
+///
+/// This proves the I/O confinement invariant: the kernel cannot widen
+/// the I/O surface beyond what the policy permits.
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_io_confinement_never_capability_blocks() {
+    let op_idx: u8 = kani::any();
+    kani::assume(op_idx < 13);
+    let operation = Operation::ALL[op_idx as usize];
+
+    // Create a permission lattice where THIS operation is Never
+    let mut caps = arbitrary_caps();
+
+    // Set the specific operation to Never
+    match operation {
+        Operation::ReadFiles => caps.read_files = CapabilityLevel::Never,
+        Operation::WriteFiles => caps.write_files = CapabilityLevel::Never,
+        Operation::EditFiles => caps.edit_files = CapabilityLevel::Never,
+        Operation::RunBash => caps.run_bash = CapabilityLevel::Never,
+        Operation::GlobSearch => caps.glob_search = CapabilityLevel::Never,
+        Operation::GrepSearch => caps.grep_search = CapabilityLevel::Never,
+        Operation::WebSearch => caps.web_search = CapabilityLevel::Never,
+        Operation::WebFetch => caps.web_fetch = CapabilityLevel::Never,
+        Operation::GitCommit => caps.git_commit = CapabilityLevel::Never,
+        Operation::GitPush => caps.git_push = CapabilityLevel::Never,
+        Operation::CreatePr => caps.create_pr = CapabilityLevel::Never,
+        Operation::ManagePods => caps.manage_pods = CapabilityLevel::Never,
+        Operation::SpawnAgent => caps.spawn_agent = CapabilityLevel::Never,
+    }
+
+    let perms = PermissionLattice::builder()
+        .description("io-confinement-test")
+        .capabilities(caps)
+        .commands(CommandLattice::permissive())
+        .build();
+
+    let mut kernel = Kernel::new(perms);
+    let (decision, _token) = kernel.decide(operation, "test-subject");
+
+    // A Never capability must ALWAYS produce Deny — the kernel cannot
+    // escalate beyond the policy's I/O surface.
+    assert!(
+        decision.verdict.is_denied(),
+        "Never capability must produce Deny — I/O confinement violated"
+    );
+}
+
+/// **IO-2 — I/O surface cannot widen through delegation.**
+///
+/// For any two PermissionLattice values, meet(parent, child) never
+/// has a capability level higher than the parent. This ensures
+/// delegation cannot widen the I/O surface.
+#[kani::proof]
+#[kani::solver(cadical)]
+fn proof_io_surface_delegation_narrowing() {
+    let parent = arbitrary_caps();
+    let child = arbitrary_caps();
+    let delegated = parent.meet(&child);
+
+    // For every operation, the delegated level must be ≤ the parent's level
+    assert!(delegated.read_files <= parent.read_files);
+    assert!(delegated.write_files <= parent.write_files);
+    assert!(delegated.edit_files <= parent.edit_files);
+    assert!(delegated.run_bash <= parent.run_bash);
+    assert!(delegated.glob_search <= parent.glob_search);
+    assert!(delegated.grep_search <= parent.grep_search);
+    assert!(delegated.web_search <= parent.web_search);
+    assert!(delegated.web_fetch <= parent.web_fetch);
+    assert!(delegated.git_commit <= parent.git_commit);
+    assert!(delegated.git_push <= parent.git_push);
+    assert!(delegated.create_pr <= parent.create_pr);
+    assert!(delegated.manage_pods <= parent.manage_pods);
+    assert!(delegated.spawn_agent <= parent.spawn_agent);
+}
