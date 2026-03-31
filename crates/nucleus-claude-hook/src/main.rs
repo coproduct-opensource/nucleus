@@ -426,6 +426,100 @@ fn node_kind_to_u8(kind: NodeKind) -> u8 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// DAG parent assignment — category-based leaf tracking
+// ---------------------------------------------------------------------------
+
+/// Tracks the most recent flow graph node ID for each source category.
+///
+/// Instead of a linear chain (where every node depends on the previous one),
+/// we maintain leaf nodes by category. This means independent branches
+/// (e.g., file reads vs web fetches) don't cross-contaminate — only nodes
+/// that actually depend on a source category inherit its taint.
+///
+/// Categories:
+/// - `trusted`: FileRead, UserPrompt, EnvVar, MemoryRead — internal, trusted data
+/// - `adversarial`: WebContent — untrusted, potentially attacker-controlled
+/// - `action`: OutboundAction, MemoryWrite — side effects (writes, bash, git)
+/// - `model`: ModelPlan, ToolResponse — model-generated content
+#[derive(Debug, Default)]
+struct LeafTracker {
+    trusted: Vec<u64>,
+    adversarial: Vec<u64>,
+    action: Vec<u64>,
+    model: Vec<u64>,
+}
+
+impl LeafTracker {
+    /// Record a new node, replacing the leaf for its category.
+    fn record(&mut self, kind: NodeKind, node_id: u64) {
+        let leaves = match kind {
+            NodeKind::FileRead | NodeKind::UserPrompt | NodeKind::EnvVar | NodeKind::MemoryRead => {
+                &mut self.trusted
+            }
+            NodeKind::WebContent => &mut self.adversarial,
+            NodeKind::OutboundAction | NodeKind::MemoryWrite => &mut self.action,
+            NodeKind::ModelPlan
+            | NodeKind::ToolResponse
+            | NodeKind::Secret
+            | NodeKind::Summarization
+            | NodeKind::Retry => &mut self.model,
+        };
+        // Keep only the most recent leaf per category
+        *leaves = vec![node_id];
+    }
+
+    /// Get parents for a new observation based on its NodeKind.
+    ///
+    /// Source observations (FileRead, WebContent) have no parents from other
+    /// categories — they're independent input branches entering the session.
+    ///
+    /// Action observations (OutboundAction) depend on ALL current source
+    /// leaves — the action may have been influenced by any data in the session.
+    /// This is the conservative choice: if web content exists anywhere in the
+    /// session, actions inherit its taint. But if no web content has been
+    /// fetched, actions only depend on trusted sources.
+    fn parents_for(&self, kind: NodeKind) -> Vec<u64> {
+        match kind {
+            // Source nodes: independent entry points, no cross-category parents.
+            // A file read doesn't depend on web content.
+            // A web fetch doesn't depend on prior file reads.
+            NodeKind::FileRead | NodeKind::UserPrompt | NodeKind::EnvVar | NodeKind::MemoryRead => {
+                // Source-only: previous trusted node (for ordering) but no adversarial parent
+                self.trusted.clone()
+            }
+            NodeKind::WebContent => {
+                // Web content enters independently
+                self.adversarial.clone()
+            }
+            // Actions depend on ALL sources — the model may have used any of them.
+            // This is where taint propagation happens: if adversarial leaves exist,
+            // the action inherits adversarial labels.
+            NodeKind::OutboundAction | NodeKind::MemoryWrite => {
+                let mut parents = Vec::new();
+                parents.extend_from_slice(&self.trusted);
+                parents.extend_from_slice(&self.adversarial);
+                parents.extend_from_slice(&self.model);
+                // Include prior action for ordering
+                parents.extend_from_slice(&self.action);
+                parents
+            }
+            // Model/tool responses depend on all sources (model synthesizes from inputs)
+            NodeKind::ModelPlan
+            | NodeKind::ToolResponse
+            | NodeKind::Secret
+            | NodeKind::Summarization
+            | NodeKind::Retry => {
+                let mut parents = Vec::new();
+                parents.extend_from_slice(&self.trusted);
+                parents.extend_from_slice(&self.adversarial);
+                parents.extend_from_slice(&self.model);
+                parents
+            }
+        }
+    }
+}
+
 /// Convert a u8 discriminant back to NodeKind.
 fn u8_to_node_kind(v: u8) -> NodeKind {
     match v {
@@ -732,8 +826,15 @@ fn main() {
 
     // Replay previous operations to rebuild exposure state AND flow graph.
     // Each allowed op is: 1) replayed in the flat kernel for exposure,
-    // 2) observed in the flow graph as a data node.
-    let mut last_node_id: Option<u64> = None;
+    // 2) observed in the flow graph as a DAG node with category-based parents.
+    //
+    // PHASE 1 UPGRADE: Instead of a linear chain (where every node depends
+    // on the previous one, causing total session taint after any web fetch),
+    // we use a LeafTracker that maintains leaf nodes by source category.
+    // This means file reads and web fetches are independent branches —
+    // a write only inherits adversarial taint if web content actually exists
+    // in the session. If you never fetch a URL, writes remain untainted.
+    let mut leaves = LeafTracker::default();
     for (op_str, subj) in &session.allowed_ops {
         if let Ok(op) = Operation::try_from(op_str.as_str()) {
             kernel.decide(op, subj);
@@ -741,15 +842,17 @@ fn main() {
     }
     for &(kind_u8, ref _op_str, ref _subj) in &session.flow_observations {
         let kind = u8_to_node_kind(kind_u8);
-        let parents: Vec<u64> = last_node_id.into_iter().collect();
+        let parents = leaves.parents_for(kind);
         if let Ok(id) = kernel.observe(kind, &parents) {
-            last_node_id = Some(id);
+            leaves.record(kind, id);
         }
     }
 
     // Make the actual decision using the causal DAG.
-    // The current operation's parents are the last observation in the chain.
-    let parents: Vec<u64> = last_node_id.into_iter().collect();
+    // The current operation's parents come from the leaf tracker —
+    // actions depend on all source categories, sources are independent.
+    let obs_kind = operation_to_node_kind(operation);
+    let parents = leaves.parents_for(obs_kind);
     let (decision, _token) = kernel.decide_with_parents(operation, &subject, &parents);
     let exposure_count = decision.exposure_transition.post_count;
 
@@ -1092,5 +1195,135 @@ mod tests {
             let kind = u8_to_node_kind(i);
             assert_eq!(node_kind_to_u8(kind), i);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // DAG-backed flow tests (Phase 1)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dag_file_read_after_web_fetch_not_tainted() {
+        // KEY IMPROVEMENT: In the linear chain model, a file read AFTER a web
+        // fetch inherits adversarial taint (because last_node_id points to the
+        // web content). In the DAG model, file reads are independent branches
+        // — they don't depend on web content.
+        let perms = PermissionLattice::safe_pr_fixer();
+        let mut kernel = Kernel::new(perms);
+        kernel.enable_flow_graph();
+
+        let mut leaves = LeafTracker::default();
+
+        // 1. Read a file (trusted source)
+        let file_id = kernel.observe(NodeKind::FileRead, &[]).unwrap();
+        leaves.record(NodeKind::FileRead, file_id);
+
+        // 2. Fetch web content (adversarial source — independent branch)
+        let web_id = kernel
+            .observe(
+                NodeKind::WebContent,
+                &leaves.parents_for(NodeKind::WebContent),
+            )
+            .unwrap();
+        leaves.record(NodeKind::WebContent, web_id);
+
+        // 3. Read another file — should NOT inherit web taint
+        let file2_parents = leaves.parents_for(NodeKind::FileRead);
+        // Parents should be [file_id], NOT [web_id]
+        assert!(
+            !file2_parents.contains(&web_id),
+            "File read parents should not include web content node"
+        );
+        assert!(
+            file2_parents.contains(&file_id),
+            "File read parents should include prior file read"
+        );
+
+        let file2_id = kernel.observe(NodeKind::FileRead, &file2_parents).unwrap();
+        leaves.record(NodeKind::FileRead, file2_id);
+
+        // 4. Write depending only on file reads — should be ALLOWED
+        //    (because the write's parents only include the trusted branch)
+        let write_parents = leaves.parents_for(NodeKind::OutboundAction);
+        let (d, _) = kernel.decide_with_parents(
+            Operation::WriteFiles,
+            "/workspace/clean.rs",
+            &write_parents,
+        );
+        // This WILL be denied because OutboundAction parents include ALL
+        // source categories (including adversarial). This is the conservative
+        // choice — an action may have been influenced by any session data.
+        // The improvement over linear chain: SOURCE nodes don't cross-contaminate.
+        // Actions still inherit from all sources (conservative).
+        assert!(
+            d.verdict.is_denied(),
+            "Write should still be denied when web content exists in session"
+        );
+    }
+
+    #[test]
+    fn test_dag_write_allowed_without_web_content() {
+        // Without any web content in the session, writes should be allowed.
+        // This was also true in the linear chain, but confirms the DAG
+        // model doesn't break this fundamental property.
+        let perms = PermissionLattice::safe_pr_fixer();
+        let mut kernel = Kernel::new(perms);
+        kernel.enable_flow_graph();
+
+        let mut leaves = LeafTracker::default();
+
+        // Read files only — no web content
+        let f1 = kernel.observe(NodeKind::FileRead, &[]).unwrap();
+        leaves.record(NodeKind::FileRead, f1);
+        let f2 = kernel
+            .observe(NodeKind::FileRead, &leaves.parents_for(NodeKind::FileRead))
+            .unwrap();
+        leaves.record(NodeKind::FileRead, f2);
+
+        // Write — parents are only trusted leaves, no adversarial
+        let write_parents = leaves.parents_for(NodeKind::OutboundAction);
+        assert!(
+            leaves.adversarial.is_empty(),
+            "No adversarial content should exist"
+        );
+
+        let (d, _) = kernel.decide_with_parents(
+            Operation::WriteFiles,
+            "/workspace/clean.rs",
+            &write_parents,
+        );
+        assert!(
+            d.verdict.is_allowed(),
+            "Write with only trusted parents should be allowed, got {:?}",
+            d.verdict
+        );
+    }
+
+    #[test]
+    fn test_leaf_tracker_categories() {
+        let mut leaves = LeafTracker::default();
+
+        // Record trusted source
+        leaves.record(NodeKind::FileRead, 1);
+        assert_eq!(leaves.trusted, vec![1]);
+        assert!(leaves.adversarial.is_empty());
+
+        // Record adversarial source (independent)
+        leaves.record(NodeKind::WebContent, 2);
+        assert_eq!(leaves.adversarial, vec![2]);
+        assert_eq!(leaves.trusted, vec![1]); // unchanged
+
+        // New trusted source replaces old leaf
+        leaves.record(NodeKind::FileRead, 3);
+        assert_eq!(leaves.trusted, vec![3]); // replaced
+
+        // OutboundAction parents include both categories
+        let action_parents = leaves.parents_for(NodeKind::OutboundAction);
+        assert!(action_parents.contains(&3)); // trusted
+        assert!(action_parents.contains(&2)); // adversarial
+
+        // FileRead parents only include trusted
+        let read_parents = leaves.parents_for(NodeKind::FileRead);
+        assert!(read_parents.contains(&3)); // trusted
+        assert!(!read_parents.contains(&2)); // NOT adversarial
     }
 }
