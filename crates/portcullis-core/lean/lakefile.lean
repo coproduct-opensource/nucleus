@@ -44,3 +44,7 @@ lean_lib «DeclassifyProofs» where
 -- FlowGraph causal DAG proofs (label monotonicity, taint preservation)
 lean_lib «FlowGraphProofs» where
   roots := #[`FlowGraphProofs]
+
+-- Compartment ceiling proofs (research/draft/execute/breakglass ordering)
+lean_lib «CompartmentProofs» where
+  roots := #[`CompartmentProofs]
