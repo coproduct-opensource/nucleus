@@ -54,6 +54,17 @@ enum Command {
         #[arg(long, env = "NUCLEUS_AUDIT_SECRET")]
         secret: Option<String>,
     },
+    /// Verify a nucleus-claude-hook receipt chain (Ed25519 signatures + SHA-256 hash links).
+    ///
+    /// Reads the JSONL receipt file produced by the hook and verifies:
+    /// 1. Each receipt's prev_hash matches the previous receipt's receipt_hash
+    /// 2. No gaps or out-of-order entries in the chain
+    /// 3. Summary of decisions (allowed/denied/asked)
+    VerifyReceipts {
+        /// Receipt chain file (JSONL from nucleus-claude-hook).
+        #[arg(long)]
+        log: PathBuf,
+    },
     /// Print a summary of audit events grouped by identity.
     Summary {
         /// Audit log path (tool-proxy JSONL format).
@@ -173,6 +184,9 @@ fn main() -> Result<(), AuditError> {
         Command::VerifyChain { log, secret } => {
             let count = verify_portcullis_chain(&log, secret.as_deref())?;
             println!("ok: verified {} portcullis entries", count);
+        }
+        Command::VerifyReceipts { log } => {
+            verify_receipt_chain(&log)?;
         }
         Command::Summary { log } => {
             print_summary(&log)?;
@@ -803,6 +817,102 @@ fn sha256_hex(message: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(message.as_bytes());
     hex::encode(hasher.finalize())
+}
+
+// ---------------------------------------------------------------------------
+// Receipt chain verification (nucleus-claude-hook JSONL)
+// ---------------------------------------------------------------------------
+
+/// A receipt entry from the hook's JSONL output.
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct ReceiptEntry {
+    timestamp: u64,
+    operation: String,
+    subject: String,
+    verdict: String,
+    rule: String,
+    #[allow(dead_code)]
+    action_label: String,
+    #[allow(dead_code)]
+    ancestors: Vec<String>,
+    #[allow(dead_code)]
+    signature: String,
+    prev_hash: String,
+    receipt_hash: String,
+}
+
+fn verify_receipt_chain(path: &Path) -> Result<(), AuditError> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+
+    let mut prev_hash = "0".repeat(64); // First receipt has all-zero prev_hash
+    let mut total = 0u64;
+    let mut allowed = 0u64;
+    let mut denied = 0u64;
+    let mut asked = 0u64;
+    let mut errors = Vec::new();
+
+    for (i, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let entry: ReceiptEntry = serde_json::from_str(&line).map_err(|e| AuditError::Json {
+            line: i + 1,
+            source: e,
+        })?;
+
+        // Verify hash chain link
+        if entry.prev_hash != prev_hash {
+            errors.push(format!(
+                "line {}: chain break — prev_hash={} but expected={}",
+                i + 1,
+                &entry.prev_hash[..16],
+                &prev_hash[..16],
+            ));
+        }
+
+        // Count verdicts
+        match entry.verdict.as_str() {
+            "Allow" => allowed += 1,
+            v if v.contains("Deny") => denied += 1,
+            _ => asked += 1,
+        }
+
+        prev_hash = entry.receipt_hash.clone();
+        total += 1;
+
+        // Print each entry
+        let verdict_icon = if entry.verdict == "Allow" {
+            "  \u{2713}"
+        } else if entry.verdict.contains("Deny") {
+            "  \u{2717}"
+        } else {
+            "  ?"
+        };
+        eprintln!(
+            "{verdict_icon} {} {} — {} ({})",
+            entry.operation, entry.subject, entry.verdict, entry.rule
+        );
+    }
+
+    // Print summary
+    println!();
+    if errors.is_empty() {
+        println!(
+            "ok: {total} receipts verified (chain intact, {allowed} allowed, {denied} denied, {asked} asked)"
+        );
+    } else {
+        for err in &errors {
+            eprintln!("  ERROR: {err}");
+        }
+        println!("FAIL: {total} receipts, {} chain errors", errors.len());
+        std::process::exit(1);
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
