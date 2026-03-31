@@ -149,17 +149,17 @@ impl BreakglassEntry {
     ///
     /// Format: `breakglass:reason text here`
     /// Returns None if the reason is missing or empty.
-    pub fn parse(s: &str) -> Option<Self> {
+    ///
+    /// `now` is the Unix timestamp — callers at the I/O boundary pass
+    /// the real clock; tests pass deterministic values (#590).
+    pub fn parse(s: &str, now: u64) -> Option<Self> {
         let reason = s.strip_prefix("breakglass:")?.trim();
         if reason.is_empty() {
             return None;
         }
         Some(Self {
             reason: reason.to_string(),
-            entered_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
+            entered_at: now,
         })
     }
 }
@@ -285,15 +285,25 @@ mod tests {
 
     #[test]
     fn breakglass_entry_requires_reason() {
-        assert!(BreakglassEntry::parse("breakglass:emergency fix").is_some());
-        assert!(BreakglassEntry::parse("breakglass:").is_none());
-        assert!(BreakglassEntry::parse("breakglass").is_none());
-        assert!(BreakglassEntry::parse("draft").is_none());
+        assert!(BreakglassEntry::parse("breakglass:emergency fix", 1000).is_some());
+        assert!(BreakglassEntry::parse("breakglass:", 1000).is_none());
+        assert!(BreakglassEntry::parse("breakglass", 1000).is_none());
+        assert!(BreakglassEntry::parse("draft", 1000).is_none());
     }
 
     #[test]
     fn breakglass_entry_extracts_reason() {
-        let entry = BreakglassEntry::parse("breakglass:production outage P1").unwrap();
+        let entry = BreakglassEntry::parse("breakglass:production outage P1", 1000).unwrap();
         assert_eq!(entry.reason, "production outage P1");
+    }
+
+    #[test]
+    fn breakglass_entry_deterministic_timestamp() {
+        // Timestamp is now caller-provided, making entries deterministic (#590)
+        let e1 = BreakglassEntry::parse("breakglass:same reason", 42).unwrap();
+        let e2 = BreakglassEntry::parse("breakglass:same reason", 42).unwrap();
+        assert_eq!(e1.entered_at, 42);
+        assert_eq!(e2.entered_at, 42);
+        assert_eq!(e1.entered_at, e2.entered_at);
     }
 }

@@ -2155,7 +2155,14 @@ fn main() {
                     std::fs::read_to_string(&compartment_file)
                         .ok()
                         .and_then(|content| {
-                            portcullis_core::compartment::BreakglassEntry::parse(content.trim())
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs();
+                            portcullis_core::compartment::BreakglassEntry::parse(
+                                content.trim(),
+                                now,
+                            )
                         })
                 } else {
                     None

@@ -1,0 +1,72 @@
+name: Line Ratchet
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    name: Check line ceiling
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Check line ratchet
+        run: scripts/check-line-ratchet.sh --strict
+
+  ratchet-down:
+    name: Ratchet ceiling down
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Ratchet down
+        run: |
+          set -euo pipefail
+
+          RATCHET_FILE=".line-ratchet.toml"
+          if [[ ! -f "$RATCHET_FILE" ]]; then
+            echo "No ratchet file — nothing to do"
+            exit 0
+          fi
+
+          CEILING=$(grep '^ceiling' "$RATCHET_FILE" | head -1 | sed 's/.*= *//')
+          TARGET=$(grep '^target' "$RATCHET_FILE" | head -1 | sed 's/.*= *//')
+          STEP=$(grep '^step' "$RATCHET_FILE" | head -1 | sed 's/.*= *//')
+          FILE_PATH=$(grep '^path' "$RATCHET_FILE" | head -1 | sed 's/.*= *"//' | sed 's/"//')
+
+          ACTUAL=$(wc -l < "$FILE_PATH" | tr -d ' ')
+
+          # New ceiling: max(actual, ceiling - step, target)
+          NEW_CEILING=$((CEILING - STEP))
+          if [[ "$ACTUAL" -lt "$NEW_CEILING" ]]; then
+            # File is already smaller than the ratcheted ceiling — snap to actual
+            NEW_CEILING=$ACTUAL
+          fi
+          if [[ "$NEW_CEILING" -lt "$TARGET" ]]; then
+            NEW_CEILING=$TARGET
+          fi
+
+          if [[ "$NEW_CEILING" -eq "$CEILING" ]]; then
+            echo "Ceiling unchanged at $CEILING (file: $ACTUAL lines)"
+            exit 0
+          fi
+
+          echo "Ratcheting: $CEILING -> $NEW_CEILING (file: $ACTUAL lines, target: $TARGET)"
+          sed -i "s/^ceiling = $CEILING/ceiling = $NEW_CEILING/" "$RATCHET_FILE"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$RATCHET_FILE"
+          git commit -m "chore: ratchet line ceiling $CEILING -> $NEW_CEILING [skip ci]"
+          git push
