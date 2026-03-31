@@ -131,15 +131,29 @@ fn session_dir() -> PathBuf {
     dir
 }
 
+/// Sanitize session_id to prevent path traversal attacks.
+/// A malicious session_id like "../../etc/cron.d/evil" could write
+/// outside the session directory. Strip everything except alphanumerics,
+/// hyphens, and underscores.
+fn sanitize_session_id(session_id: &str) -> String {
+    session_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(128) // Reasonable length limit
+        .collect()
+}
+
 fn session_state_path(session_id: &str) -> PathBuf {
-    session_dir().join(format!("{session_id}.json"))
+    let safe_id = sanitize_session_id(session_id);
+    session_dir().join(format!("{safe_id}.json"))
 }
 
 /// Separate high-water-mark file — survives state file deletion.
 /// If someone socially engineers "rm session.json", this file persists
 /// and triggers tamper detection on the next invocation.
 fn session_hwm_path(session_id: &str) -> PathBuf {
-    session_dir().join(format!(".{session_id}.hwm"))
+    let safe_id = sanitize_session_id(session_id);
+    session_dir().join(format!(".{safe_id}.hwm"))
 }
 
 fn load_session(session_id: &str) -> SessionLoad {
@@ -755,18 +769,17 @@ fn main() {
             HookOutput::allow()
         }
         Verdict::RequiresApproval => {
-            // Persist optimistically: if the user approves, the operation runs
-            // without re-calling PreToolUse. Without this, the next invocation's
-            // exposure replay would miss this operation — a session tracking gap.
-            session
-                .allowed_ops
-                .push((operation.to_string(), subject.clone()));
-            let obs_kind = operation_to_node_kind(operation);
-            session.flow_observations.push((
-                node_kind_to_u8(obs_kind),
-                operation.to_string(),
-                subject.clone(),
-            ));
+            // Do NOT persist optimistically. If the user approves, Claude Code
+            // does not re-call PreToolUse — so the next invocation may miss this
+            // operation in its replay. This is a known tracking gap, but it's
+            // safer than phantom operations: persisting before user decision
+            // means a denied operation still appears in the session state,
+            // causing exposure drift and flow graph corruption.
+            //
+            // The tracking gap is conservative: the next invocation underestimates
+            // exposure (fewer ops in replay), which may allow an operation that
+            // should have been gated. But the flow graph's taint propagation
+            // catches the important case (web taint → write).
             session.high_water_mark += 1;
             save_session(&input.session_id, &session);
             HookOutput::ask(format!(
