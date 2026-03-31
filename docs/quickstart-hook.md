@@ -99,12 +99,42 @@ After a `WebFetch` or `WebSearch`, the session is tainted for the rest of its li
 - If any tool call fetches a URL, everything after is read-only.
 - The Agent tool is also blocked — a subprocess could bypass the parent's taint restrictions.
 
-This is aggressive. It's the right default for security, but it changes your workflow. For research-then-code sessions, use the `permissive` profile (audit-only, no enforcement):
+This is aggressive. The solution is **compartments**.
+
+## Compartments: research, then code, then test
+
+Instead of one session locked forever, use compartments to separate phases:
 
 ```bash
-# In ~/.claude/settings.json, change the hook command to:
-"command": "NUCLEUS_PROFILE=permissive /path/to/nucleus-claude-hook"
+# Start in research mode
+COMPARTMENT_PATH=$(nucleus-claude-hook --compartment-path <session-id>)
+echo "research" > "$COMPARTMENT_PATH"
 ```
+
+| Compartment | Read | Write | Bash | Web | Use case |
+|-------------|------|-------|------|-----|----------|
+| `research` | yes | no | no | yes | Browse docs, search, read code |
+| `draft` | yes | yes | no | no | Write code (no web taint!) |
+| `execute` | yes | yes | yes | no | Run tests, build |
+| `breakglass` | yes | yes | yes | yes | Emergency (time-limited, enhanced audit) |
+
+**The key insight**: when you switch from `research` to `draft`, the flow graph resets. The web taint from research doesn't carry into draft. But draft blocks web entirely — so no new adversarial content can enter while you're writing code.
+
+```
+RESEARCH MODE
+  ✓ Read file       → allowed
+  ✓ WebFetch        → allowed (session tainted)
+  ✗ Write file      → BLOCKED (web taint)
+
+research → draft (requires human approval)
+  Flow graph reset: web taint cleared
+
+DRAFT MODE
+  ✓ Write file      → ALLOWED (clean flow graph!)
+  ✗ WebFetch        → BLOCKED (draft ceiling)
+```
+
+Upward transitions (research → execute) require human approval — the hook returns `ask` so Claude Code prompts you. The model cannot self-escalate because the compartment file uses a keyed hash filename that's unpredictable.
 
 ## Profiles
 
