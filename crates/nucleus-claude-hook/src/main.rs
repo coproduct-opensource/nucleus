@@ -56,15 +56,27 @@ struct HookSpecificOutput {
     /// Human-readable reason (shown to user on deny/ask, to Claude on deny).
     #[serde(skip_serializing_if = "Option::is_none")]
     permission_decision_reason: Option<String>,
+    /// Context added to Claude's prompt before the tool executes.
+    /// Used to inform the model about its current security context.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    additional_context: Option<String>,
 }
 
 impl HookOutput {
-    fn allow() -> Self {
+    /// Allow with optional compartment context injected into Claude's prompt.
+    fn allow_with_context(compartment: Option<&str>) -> Self {
         Self {
             hook_specific_output: HookSpecificOutput {
                 hook_event_name: "PreToolUse".to_string(),
                 permission_decision: "allow".to_string(),
                 permission_decision_reason: None,
+                additional_context: compartment.map(|c| {
+                    format!(
+                        "[nucleus security context: compartment={c}] \
+                         You are operating in {c} mode. Your capabilities \
+                         are restricted to this compartment's permissions."
+                    )
+                }),
             },
         }
     }
@@ -75,6 +87,7 @@ impl HookOutput {
                 hook_event_name: "PreToolUse".to_string(),
                 permission_decision: "deny".to_string(),
                 permission_decision_reason: Some(reason.into()),
+                additional_context: None,
             },
         }
     }
@@ -85,6 +98,7 @@ impl HookOutput {
                 hook_event_name: "PreToolUse".to_string(),
                 permission_decision: "ask".to_string(),
                 permission_decision_reason: Some(reason.into()),
+                additional_context: None,
             },
         }
     }
@@ -1272,7 +1286,8 @@ fn main() {
 
             session.high_water_mark += 1;
             save_session(&input.session_id, &session);
-            HookOutput::allow()
+            // Inject compartment context into Claude's prompt (#459)
+            HookOutput::allow_with_context(compartment.as_ref().map(|c| c.to_string()).as_deref())
         }
         Verdict::RequiresApproval => {
             session.high_water_mark += 1;
@@ -1482,7 +1497,7 @@ mod tests {
 
     #[test]
     fn test_hook_output_format() {
-        let out = HookOutput::allow();
+        let out = HookOutput::allow_with_context(None);
         let json = serde_json::to_string(&out).unwrap();
         assert!(json.contains("\"permissionDecision\":\"allow\""));
         assert!(json.contains("\"hookSpecificOutput\""));
