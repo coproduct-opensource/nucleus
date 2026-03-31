@@ -3261,6 +3261,7 @@ dependencies = [
  "dirs-next",
  "portcullis",
  "portcullis-core",
+ "ring",
  "serde",
  "serde_json",
 ]

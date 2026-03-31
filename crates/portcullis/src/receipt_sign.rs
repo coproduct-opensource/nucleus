@@ -20,7 +20,11 @@ fn receipt_content_bytes(receipt: &FlowReceipt) -> Vec<u8> {
     let mut buf = Vec::with_capacity(256);
 
     // Version tag
-    buf.extend_from_slice(b"nucleus-receipt-v1\n");
+    buf.extend_from_slice(b"nucleus-receipt-v2\n");
+
+    // Chain link — hash of the previous receipt.
+    // Included in signed content so chain order is tamper-evident.
+    buf.extend_from_slice(receipt.prev_hash());
 
     // Action node
     append_receipt_node(&mut buf, receipt.action());
@@ -50,6 +54,24 @@ fn append_receipt_node(buf: &mut Vec<u8>, node: &ReceiptNode) {
     buf.extend_from_slice(&node.label.provenance.bits().to_le_bytes());
     buf.extend_from_slice(&node.label.freshness.observed_at.to_le_bytes());
     buf.extend_from_slice(&node.label.freshness.ttl_secs.to_le_bytes());
+}
+
+/// Compute the SHA-256 hash of a receipt's canonical content + signature.
+///
+/// This hash is the chain link — the next receipt includes it as `prev_hash`,
+/// creating an append-only chain where deletion or reordering is detectable.
+///
+/// The hash covers the signed content AND the signature, so the chain
+/// commits to the specific signed version of each receipt.
+pub fn receipt_hash(receipt: &FlowReceipt) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(receipt_content_bytes(receipt));
+    hasher.update(receipt.signature_bytes());
+    let result = hasher.finalize();
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&result);
+    hash
 }
 
 /// Sign a flow receipt with an Ed25519 key.
@@ -234,5 +256,98 @@ mod tests {
 
         let public_key = key.public_key().as_ref();
         assert!(verify_receipt(&receipt, public_key).is_ok());
+    }
+
+    #[test]
+    fn hash_chain_integrity() {
+        let key = test_key();
+        let now = 1000;
+
+        // Receipt 1: first in chain (prev_hash = zeros)
+        let action1 = make_node(
+            1,
+            NodeKind::FileRead,
+            IFCLabel::user_prompt(now),
+            Some(Operation::ReadFiles),
+        );
+        let mut r1 = build_receipt(&action1, &[], FlowVerdict::Allow, now);
+        sign_receipt(&mut r1, &key);
+        let h1 = receipt_hash(&r1);
+
+        // Receipt 2: chained to receipt 1
+        let action2 = make_node(
+            2,
+            NodeKind::WebContent,
+            IFCLabel::web_content(now + 1),
+            Some(Operation::WebFetch),
+        );
+        let mut r2 = build_receipt(&action2, &[], FlowVerdict::Allow, now + 1);
+        r2.set_prev_hash(h1);
+        sign_receipt(&mut r2, &key);
+        let h2 = receipt_hash(&r2);
+
+        // Receipt 3: chained to receipt 2
+        let action3 = make_node(
+            3,
+            NodeKind::OutboundAction,
+            IFCLabel::web_content(now + 2),
+            Some(Operation::WriteFiles),
+        );
+        let mut r3 = build_receipt(
+            &action3,
+            &[&action1, &action2],
+            FlowVerdict::Deny(FlowDenyReason::AuthorityEscalation),
+            now + 2,
+        );
+        r3.set_prev_hash(h2);
+        sign_receipt(&mut r3, &key);
+
+        // All receipts verify
+        let pk = key.public_key().as_ref();
+        assert!(verify_receipt(&r1, pk).is_ok());
+        assert!(verify_receipt(&r2, pk).is_ok());
+        assert!(verify_receipt(&r3, pk).is_ok());
+
+        // Chain links are correct
+        assert_eq!(r1.prev_hash(), &[0; 32]); // first in chain
+        assert_eq!(r2.prev_hash(), &h1);
+        assert_eq!(r3.prev_hash(), &h2);
+
+        // Hashes are unique
+        assert_ne!(h1, h2);
+        assert_ne!(h2, receipt_hash(&r3));
+    }
+
+    #[test]
+    fn tampered_chain_detected() {
+        let key = test_key();
+        let now = 1000;
+
+        let action1 = make_node(1, NodeKind::FileRead, IFCLabel::user_prompt(now), None);
+        let mut r1 = build_receipt(&action1, &[], FlowVerdict::Allow, now);
+        sign_receipt(&mut r1, &key);
+        let h1 = receipt_hash(&r1);
+
+        // Receipt 2 links to receipt 1
+        let action2 = make_node(
+            2,
+            NodeKind::OutboundAction,
+            IFCLabel::user_prompt(now),
+            None,
+        );
+        let mut r2 = build_receipt(&action2, &[], FlowVerdict::Allow, now + 1);
+        r2.set_prev_hash(h1);
+        sign_receipt(&mut r2, &key);
+
+        // Tamper: change prev_hash to skip receipt 1
+        // This invalidates the signature
+        let mut tampered = r2.clone();
+        tampered.set_prev_hash([0; 32]);
+        let pk = key.public_key().as_ref();
+        assert_eq!(
+            verify_receipt(&tampered, pk),
+            Err(SignatureError::InvalidSignature),
+            "Tampering with prev_hash must invalidate signature"
+        );
     }
 }

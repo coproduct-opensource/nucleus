@@ -18,6 +18,7 @@ portcullis = { path = "../portcullis", features = ["serde", "crypto", "spec"] }
 portcullis-core = { path = "../portcullis-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+ring = { workspace = true }
 dirs-next = "2"
 
 [lints]
