@@ -28,6 +28,7 @@ mod doctor;
 mod guard;
 mod keychain;
 mod lockdown;
+mod manifest;
 mod node;
 mod observe;
 mod profiles;
@@ -64,6 +65,9 @@ enum Commands {
 
     /// Secure your MCP servers — audit, policy, enforce
     Guard(guard::GuardArgs),
+
+    /// Manage MCP tool manifests — generate, sign, verify
+    Manifest(manifest::ManifestArgs),
 
     /// Execute a task with enforced permissions
     Run(Box<run::RunArgs>),
@@ -132,6 +136,10 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Audit(args) => audit::execute(args),
         Commands::Guard(args) => guard::execute(args),
+        Commands::Manifest(args) => {
+            manifest::execute(args);
+            Ok(())
+        }
         Commands::Run(args) => run::execute(*args, &config_path).await,
         Commands::Shell(args) => shell::execute(args).await,
         Commands::Setup(args) => setup::execute(args).await,
