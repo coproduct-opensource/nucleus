@@ -57,6 +57,7 @@ pub mod declassify;
 pub mod flow;
 pub mod manifest;
 pub mod receipt;
+pub mod wire;
 
 /// Tool permission levels in lattice ordering.
 ///
@@ -683,6 +684,12 @@ impl ProvenanceSet {
     /// Raw bitmask value (for serialization/signing).
     pub fn bits(self) -> u8 {
         self.0
+    }
+
+    /// Construct from raw bitmask (for deserialization/wire protocol).
+    /// Only the lower 6 bits are used.
+    pub fn from_bits(bits: u8) -> Self {
+        Self(bits & 0x3F)
     }
 }
 

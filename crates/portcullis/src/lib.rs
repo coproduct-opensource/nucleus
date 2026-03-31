@@ -90,6 +90,8 @@ pub mod audit;
 pub mod audit_backend;
 mod budget;
 mod capability;
+#[cfg(feature = "cedar")]
+pub mod cedar_bridge;
 #[cfg(feature = "crypto")]
 pub mod certificate;
 mod command;
