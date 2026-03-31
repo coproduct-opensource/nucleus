@@ -122,6 +122,13 @@ struct SessionState {
     /// Active compartment name (if any). Used to detect transitions.
     #[serde(default)]
     active_compartment: Option<String>,
+    /// Parent agent's session ID (for cross-agent receipt chaining).
+    #[serde(default)]
+    parent_session_id: Option<String>,
+    /// Parent agent's chain head hash at spawn time (hex).
+    /// Links this child's receipt chain to the parent's chain.
+    #[serde(default)]
+    parent_chain_hash: Option<String>,
 }
 
 /// Result of loading session state — distinguishes clean start from tampered.
@@ -259,6 +266,12 @@ struct ReceiptEntry {
     prev_hash: String,
     /// This receipt's hash (hex) — for the next receipt's prev_hash
     receipt_hash: String,
+    /// Parent agent's session ID (if this is a child session)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_session_id: Option<String>,
+    /// Parent agent's chain hash at spawn time (if child session)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_chain_hash: Option<String>,
 }
 
 /// Persist a signed receipt to `.nucleus/receipts/<session-id>.jsonl`.
@@ -271,6 +284,8 @@ fn persist_receipt(
     receipt: &portcullis_core::receipt::FlowReceipt,
     operation: Operation,
     subject: &str,
+    parent_session_id: &Option<String>,
+    parent_chain_hash: &Option<String>,
 ) {
     let safe_id = sanitize_session_id(session_id);
     let receipts_dir = session_dir().join("receipts");
@@ -302,6 +317,8 @@ fn persist_receipt(
         signature: hex::encode(receipt.signature_bytes()),
         prev_hash: hex::encode(receipt.prev_hash()),
         receipt_hash: hex::encode(receipt_hash(receipt)),
+        parent_session_id: parent_session_id.clone(),
+        parent_chain_hash: parent_chain_hash.clone(),
     };
 
     if let Ok(json) = serde_json::to_string(&entry) {
@@ -1010,32 +1027,42 @@ fn main() {
     let mut kernel = Kernel::new(effective_perms);
     kernel.enable_flow_graph();
 
-    // PHASE 4: Import parent agent's flow label if present.
-    // When a parent agent spawns this session, it sets NUCLEUS_PARENT_LABEL
-    // with the encoded IFC label. We observe it as the initial context,
-    // ensuring taint propagates across agent boundaries.
+    // PHASE 4: Import parent agent's flow label and chain reference.
+    // When a parent agent spawns this session, it sets:
+    //   NUCLEUS_PARENT_LABEL  — encoded IFC label (taint propagation)
+    //   NUCLEUS_PARENT_SESSION — parent's session ID (receipt chain link)
+    //   NUCLEUS_PARENT_CHAIN_HASH — parent's chain head hash at spawn time
     if session.allowed_ops.is_empty() {
         // Only on first invocation — don't re-import on replay
         if let Ok(parent_label_str) = std::env::var("NUCLEUS_PARENT_LABEL") {
             if let Some(parent_label) = portcullis_core::wire::decode_label(&parent_label_str) {
-                // Determine the NodeKind based on the parent's integrity
                 let kind = if parent_label.integrity == portcullis_core::IntegLevel::Adversarial {
-                    NodeKind::WebContent // Adversarial parent → adversarial child
+                    NodeKind::WebContent
                 } else {
-                    NodeKind::ToolResponse // Trusted parent → tool response
+                    NodeKind::ToolResponse
                 };
                 if let Ok(id) = kernel.observe(kind, &[]) {
                     eprintln!(
                         "nucleus: inherited parent label: integ={:?} auth={:?} (flow_node: {id})",
                         parent_label.integrity, parent_label.authority,
                     );
-                    // Persist the parent observation so it replays correctly
                     session.flow_observations.push((
                         node_kind_to_u8(kind),
                         "parent_agent".to_string(),
                         portcullis_core::wire::encode_label(&parent_label),
                     ));
                 }
+            }
+        }
+        // Record parent chain reference for cross-agent receipt linking
+        if let Ok(parent_sid) = std::env::var("NUCLEUS_PARENT_SESSION") {
+            session.parent_session_id = Some(parent_sid.clone());
+            if let Ok(parent_hash) = std::env::var("NUCLEUS_PARENT_CHAIN_HASH") {
+                session.parent_chain_hash = Some(parent_hash.clone());
+                eprintln!(
+                    "nucleus: linked to parent chain: session={parent_sid} hash={}...",
+                    &parent_hash[..16.min(parent_hash.len())]
+                );
             }
         }
     }
@@ -1111,7 +1138,14 @@ fn main() {
     // Update chain head hash and persist receipt if produced.
     if let Some(ref receipt) = flow_receipt {
         session.chain_head_hash = receipt_hash(receipt);
-        persist_receipt(&input.session_id, receipt, operation, &subject);
+        persist_receipt(
+            &input.session_id,
+            receipt,
+            operation,
+            &subject,
+            &session.parent_session_id,
+            &session.parent_chain_hash,
+        );
     }
 
     let output = match decision.verdict {
@@ -1128,17 +1162,15 @@ fn main() {
             ));
 
             // PHASE 4: When SpawnAgent is allowed, export the current flow
-            // label so the child agent inherits the parent's taint state.
+            // label AND chain reference so the child inherits taint and
+            // its receipt chain links back to the parent's.
             if operation == Operation::SpawnAgent {
+                let safe_id = sanitize_session_id(&input.session_id);
                 if let Some(graph) = kernel.flow_graph() {
                     if let Some(node_id) = decision.flow_node_id {
                         if let Some(node) = graph.get(node_id) {
                             let label_str = portcullis_core::wire::encode_label(&node.label);
-                            // Write to a file the child can read via NUCLEUS_PARENT_LABEL
-                            let label_path = session_dir().join(format!(
-                                "{}.parent-label",
-                                sanitize_session_id(&input.session_id)
-                            ));
+                            let label_path = session_dir().join(format!("{safe_id}.parent-label"));
                             std::fs::write(&label_path, &label_str).ok();
                             eprintln!(
                                 "nucleus: exported parent label for child agent: {label_str}"
@@ -1146,6 +1178,11 @@ fn main() {
                         }
                     }
                 }
+                // Export chain reference so child can link back
+                let chain_hash_hex = hex::encode(session.chain_head_hash);
+                let chain_path = session_dir().join(format!("{safe_id}.parent-chain"));
+                let chain_ref = format!("session={}\nhash={}\n", &input.session_id, chain_hash_hex);
+                std::fs::write(&chain_path, &chain_ref).ok();
             }
 
             session.high_water_mark += 1;
