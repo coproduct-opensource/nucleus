@@ -848,8 +848,55 @@ fn resolve_profile(name: &str) -> Option<PermissionLattice> {
     }
 }
 
+/// Load config from `.nucleus/config.toml` (#550).
+///
+/// Example config.toml:
+/// ```toml
+/// profile = "safe_pr_fixer"
+/// compartment = "research"
+/// fail_closed = false
+/// require_manifests = true
+/// ```
+///
+/// Priority: env var > config file > default.
+fn load_config_file() -> std::collections::HashMap<String, String> {
+    let mut config = std::collections::HashMap::new();
+
+    let config_paths = [
+        std::env::current_dir()
+            .ok()
+            .map(|d| d.join(".nucleus").join("config.toml")),
+        dirs_next::home_dir().map(|d| d.join(".nucleus").join("config.toml")),
+    ];
+
+    for path in config_paths.iter().flatten() {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if let Ok(table) = content.parse::<toml::Table>() {
+                for (key, value) in &table {
+                    if let Some(s) = value.as_str() {
+                        config.insert(key.clone(), s.to_string());
+                    } else if let Some(b) = value.as_bool() {
+                        config.insert(key.clone(), if b { "1" } else { "0" }.to_string());
+                    }
+                }
+            }
+            break;
+        }
+    }
+
+    config
+}
+
 fn default_profile_name() -> String {
-    std::env::var("NUCLEUS_PROFILE").unwrap_or_else(|_| "safe_pr_fixer".to_string())
+    // Check env var first, then config file, then default
+    if let Ok(p) = std::env::var("NUCLEUS_PROFILE") {
+        return p;
+    }
+    let config = load_config_file();
+    if let Some(p) = config.get("profile") {
+        return p.clone();
+    }
+    "safe_pr_fixer".to_string()
 }
 
 /// Resolve the active compartment.
