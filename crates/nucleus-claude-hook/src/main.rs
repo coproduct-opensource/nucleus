@@ -953,27 +953,77 @@ fn run_setup() {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "nucleus-claude-hook".to_string());
 
-    // Set up PreToolUse hook
+    // Set up PreToolUse hook — PRESERVE existing hooks (#546)
     let hooks = settings
         .as_object_mut()
         .unwrap()
         .entry("hooks")
         .or_insert_with(|| serde_json::json!({}));
     let hooks_obj = hooks.as_object_mut().unwrap();
-    hooks_obj.insert(
-        "PreToolUse".to_string(),
-        serde_json::json!([
+
+    let nucleus_entry = serde_json::json!({
+        "matcher": "",
+        "hooks": [
             {
-                "matcher": "",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": binary
-                    }
-                ]
+                "type": "command",
+                "command": binary
             }
-        ]),
-    );
+        ]
+    });
+
+    if let Some(existing) = hooks_obj.get_mut("PreToolUse") {
+        if let Some(arr) = existing.as_array_mut() {
+            // Check if nucleus is already configured
+            let already_present = arr.iter().any(|entry| {
+                entry
+                    .get("hooks")
+                    .and_then(|h| h.as_array())
+                    .map(|hooks| {
+                        hooks.iter().any(|h| {
+                            h.get("command")
+                                .and_then(|c| c.as_str())
+                                .map(|s| s.contains("nucleus-claude-hook"))
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false)
+            });
+
+            if already_present {
+                // Update the existing nucleus entry's command path
+                for entry in arr.iter_mut() {
+                    if let Some(hooks) = entry.get_mut("hooks").and_then(|h| h.as_array_mut()) {
+                        for hook in hooks.iter_mut() {
+                            if hook
+                                .get("command")
+                                .and_then(|c| c.as_str())
+                                .map(|s| s.contains("nucleus-claude-hook"))
+                                .unwrap_or(false)
+                            {
+                                hook.as_object_mut()
+                                    .unwrap()
+                                    .insert("command".to_string(), serde_json::json!(binary));
+                            }
+                        }
+                    }
+                }
+                eprintln!("nucleus: updated existing hook path");
+            } else {
+                // Append — preserve existing hooks
+                arr.push(nucleus_entry);
+                eprintln!(
+                    "nucleus: added nucleus hook (preserved {} existing hook(s))",
+                    arr.len() - 1
+                );
+            }
+        } else {
+            // PreToolUse exists but isn't an array — replace
+            hooks_obj.insert("PreToolUse".to_string(), serde_json::json!([nucleus_entry]));
+        }
+    } else {
+        // No existing PreToolUse — create fresh
+        hooks_obj.insert("PreToolUse".to_string(), serde_json::json!([nucleus_entry]));
+    }
 
     let json = serde_json::to_string_pretty(&settings).expect("failed to serialize settings");
     std::fs::write(&settings_path, json).expect("failed to write settings.json");
