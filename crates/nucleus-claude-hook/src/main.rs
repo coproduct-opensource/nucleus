@@ -136,6 +136,11 @@ struct SessionState {
     /// Active compartment name (if any). Used to detect transitions.
     #[serde(default)]
     active_compartment: Option<String>,
+    /// Random token for keying the compartment filename (hex string).
+    /// Generated once per session. The model cannot predict this because
+    /// it's stored in session state (which the model can't read).
+    #[serde(default)]
+    compartment_token: String,
     /// Parent agent's session ID (for cross-agent receipt chaining).
     #[serde(default)]
     parent_session_id: Option<String>,
@@ -702,28 +707,47 @@ fn default_profile_name() -> String {
 ///
 /// The side-channel file is the runtime transition mechanism. Users or
 /// scripts write to it to switch compartments between tool calls.
-fn resolve_compartment(session_id: &str) -> Option<portcullis_core::compartment::Compartment> {
-    // 1. Check side-channel file.
-    //
-    // SECURITY (#456): The compartment file uses a keyed filename derived
-    // from the session's signing key, making it unpredictable to the model.
-    // A model in Execute mode cannot guess the file path to self-escalate
-    // to Breakglass via `echo breakglass > /tmp/nucleus-hook/...`.
-    let safe_id = sanitize_session_id(session_id);
-    // Use the safe_id + a fixed salt so the path is stable across invocations
-    // but not trivially guessable from the session_id alone.
-    let keyed_name = {
-        use sha2::{Digest, Sha256};
-        let mut h = Sha256::new();
-        h.update(b"nucleus-compartment-v1:");
-        h.update(safe_id.as_bytes());
-        let hash = h.finalize();
-        hex::encode(&hash[..8]) // 16 hex chars — enough to be unpredictable
-    };
-    let compartment_file = session_dir().join(format!("{keyed_name}.compartment"));
-    if let Ok(content) = std::fs::read_to_string(&compartment_file) {
-        if let Some(c) = portcullis_core::compartment::Compartment::from_str_opt(content.trim()) {
-            return Some(c);
+/// Compute the keyed compartment filename from session token.
+///
+/// SECURITY (#477): Uses HMAC(token, session_id) where the token is a
+/// random secret stored in session state. The model cannot predict this
+/// because:
+/// 1. The token is generated randomly (ring SystemRandom)
+/// 2. It's stored in the session state file (which the model can't read —
+///    it's in /tmp with 0700 permissions on the directory)
+/// 3. The HMAC output is unpredictable without the token
+fn keyed_compartment_name(session_id: &str, token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(token.as_bytes());
+    h.update(b":");
+    h.update(sanitize_session_id(session_id).as_bytes());
+    let hash = h.finalize();
+    hex::encode(&hash[..8])
+}
+
+/// Generate a random compartment token (hex string).
+fn generate_compartment_token() -> String {
+    use ring::rand::SecureRandom;
+    let rng = ring::rand::SystemRandom::new();
+    let mut bytes = [0u8; 16];
+    rng.fill(&mut bytes).expect("SystemRandom failed");
+    hex::encode(bytes)
+}
+
+fn resolve_compartment(
+    session_id: &str,
+    token: &str,
+) -> Option<portcullis_core::compartment::Compartment> {
+    // 1. Check side-channel file with keyed filename
+    if !token.is_empty() {
+        let keyed_name = keyed_compartment_name(session_id, token);
+        let compartment_file = session_dir().join(format!("{keyed_name}.compartment"));
+        if let Ok(content) = std::fs::read_to_string(&compartment_file) {
+            if let Some(c) = portcullis_core::compartment::Compartment::from_str_opt(content.trim())
+            {
+                return Some(c);
+            }
         }
     }
 
@@ -737,16 +761,18 @@ fn resolve_compartment(session_id: &str) -> Option<portcullis_core::compartment:
 ///
 /// Exposed via `nucleus-claude-hook --compartment-path <session_id>` so that
 /// the CLI can write to the correct file without knowing the keyed hash.
+/// Reads the session state to get the token.
 fn compartment_file_path(session_id: &str) -> std::path::PathBuf {
-    let safe_id = sanitize_session_id(session_id);
-    let keyed_name = {
-        use sha2::{Digest, Sha256};
-        let mut h = Sha256::new();
-        h.update(b"nucleus-compartment-v1:");
-        h.update(safe_id.as_bytes());
-        let hash = h.finalize();
-        hex::encode(&hash[..8])
+    // Load session to get token
+    let token = match load_session(session_id) {
+        SessionLoad::Loaded(s) | SessionLoad::Fresh(s) => s.compartment_token,
+        SessionLoad::Tampered { .. } => String::new(),
     };
+    if token.is_empty() {
+        // No session yet — return a placeholder (will be wrong until session exists)
+        return session_dir().join("no-session.compartment");
+    }
+    let keyed_name = keyed_compartment_name(session_id, &token);
     session_dir().join(format!("{keyed_name}.compartment"))
 }
 
@@ -1028,9 +1054,14 @@ fn main() {
         session.profile = profile_name.clone();
     }
 
+    // Generate compartment token on first session invocation
+    if session.compartment_token.is_empty() {
+        session.compartment_token = generate_compartment_token();
+    }
+
     // Apply compartment ceiling. Checks side-channel file first, then env var.
     // Detects transitions and logs them to stderr + receipt chain.
-    let compartment = resolve_compartment(&input.session_id);
+    let compartment = resolve_compartment(&input.session_id, &session.compartment_token);
     let prev_compartment = session
         .active_compartment
         .as_deref()
@@ -1060,9 +1091,9 @@ fn main() {
                 eprintln!("{msg}");
                 let out = HookOutput::ask(&msg);
                 println!("{}", serde_json::to_string(&out).unwrap());
-                // Don't update session state yet — wait for user to approve
-                // (Claude Code won't re-call PreToolUse if user approves)
-                session.active_compartment = compartment.map(|c| c.to_string());
+                // FIX #483: Do NOT save the escalated compartment before approval.
+                // If user denies, the next invocation should still see the old
+                // compartment. Only increment HWM (to prevent tampering).
                 session.high_water_mark += 1;
                 save_session(&input.session_id, &session);
                 return;
