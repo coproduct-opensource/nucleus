@@ -13,7 +13,7 @@ These types mirror the Rust source in `portcullis-core/src/lib.rs`.
 Correspondence is enforced by compile-time `include_str!` assertions in
 `portcullis/src/capability.rs`. Unlike the lattice types (which are
 Aeneas-generated), these are hand-written models — Aeneas does not yet
-translate `bool`-field structs or 12-variant enums.
+translate `bool`-field structs or 13-variant enums.
 
 ## Properties proved (all kernel-checked, no sorry)
 
@@ -46,11 +46,12 @@ structure ExposureSet where
   exfil_vector : Bool
 deriving DecidableEq
 
-/-- The 12 core operations. -/
+/-- The 13 core operations (matching Rust Operation enum). -/
 inductive Operation where
   | ReadFiles | WriteFiles | EditFiles | RunBash
   | GlobSearch | GrepSearch | WebSearch | WebFetch
   | GitCommit | GitPush | CreatePr | ManagePods
+  | SpawnAgent
 deriving DecidableEq
 
 -- ═══════════════════════════════════════════════════════════════════════
@@ -80,7 +81,7 @@ def classify_operation (op : Operation) : Option ExposureLabel :=
   match op with
   | .ReadFiles | .GlobSearch | .GrepSearch => some .PrivateData
   | .WebFetch | .WebSearch => some .UntrustedContent
-  | .RunBash | .GitPush | .CreatePr => some .ExfilVector
+  | .RunBash | .GitPush | .CreatePr | .SpawnAgent => some .ExfilVector
   | .WriteFiles | .EditFiles | .GitCommit | .ManagePods => none
 
 def project_exposure (current : ExposureSet) (op : Operation) : ExposureSet :=
@@ -159,7 +160,8 @@ theorem classify_untrusted_content :
 theorem classify_exfil_vector :
     classify_operation .RunBash = some .ExfilVector ∧
     classify_operation .GitPush = some .ExfilVector ∧
-    classify_operation .CreatePr = some .ExfilVector := by decide
+    classify_operation .CreatePr = some .ExfilVector ∧
+    classify_operation .SpawnAgent = some .ExfilVector := by decide
 
 theorem classify_neutral :
     classify_operation .WriteFiles = none ∧

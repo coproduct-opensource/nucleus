@@ -48,6 +48,7 @@ inductive Operation where
   | ReadFiles | WriteFiles | EditFiles | RunBash
   | GlobSearch | GrepSearch | WebSearch | WebFetch
   | GitCommit | GitPush | CreatePr | ManagePods
+  | SpawnAgent
 deriving DecidableEq
 
 -- ═══════════════════════════════════════════════════════════════════════
@@ -59,7 +60,7 @@ def ExposureSet.is_uninhabitable (s : ExposureSet) : Bool :=
 
 def classify_exfil (op : Operation) : Bool :=
   match op with
-  | .RunBash | .GitPush | .CreatePr => true
+  | .RunBash | .GitPush | .CreatePr | .SpawnAgent => true
   | _ => false
 
 def project_exposure (current : ExposureSet) (op : Operation) : ExposureSet :=
@@ -68,7 +69,7 @@ def project_exposure (current : ExposureSet) (op : Operation) : ExposureSet :=
     { current with private_data := true }
   | .WebFetch | .WebSearch =>
     { current with untrusted_content := true }
-  | .RunBash | .GitPush | .CreatePr =>
+  | .RunBash | .GitPush | .CreatePr | .SpawnAgent =>
     { current with exfil_vector := true }
   | _ => current
 
