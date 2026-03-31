@@ -995,6 +995,25 @@ fn main() {
                     .unwrap_or_else(|| "none".to_string()),
                 new_comp,
             );
+
+            // COMPARTMENT FLOW RESET: On transition, clear flow observations
+            // so the new compartment starts with a clean flow graph.
+            //
+            // This is the key insight: research mode can read web content,
+            // but when you switch to draft mode, the web taint doesn't carry
+            // over — draft blocks web entirely, so the new compartment's
+            // flow graph has no adversarial nodes. You can write freely.
+            //
+            // The exposure accumulator (allowed_ops) is NOT cleared — it
+            // tracks what happened across the entire session for audit.
+            // Only the flow graph observations are reset.
+            if prev_compartment.is_some() {
+                eprintln!(
+                    "nucleus: flow graph reset for compartment transition ({} observations cleared)",
+                    session.flow_observations.len()
+                );
+                session.flow_observations.clear();
+            }
         }
         session.active_compartment = compartment.map(|c| c.to_string());
     }
