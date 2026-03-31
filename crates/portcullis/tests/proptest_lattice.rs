@@ -472,6 +472,7 @@ mod command_tests {
             blocked,
             allowed_rules: Vec::new(),
             blocked_rules: Vec::new(),
+            allow_metacharacters: false,
         })
     }
 
