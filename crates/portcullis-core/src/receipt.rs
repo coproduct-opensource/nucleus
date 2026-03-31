@@ -54,6 +54,10 @@ pub struct FlowReceipt {
     /// Included in the signed content — tampering with chain order
     /// invalidates the signature.
     pub(crate) prev_hash: [u8; 32],
+    /// Chain ID — binds the receipt to a specific session.
+    /// Prevents cross-session receipt injection (#492).
+    /// SHA-256 of the session identifier.
+    pub(crate) chain_id: [u8; 32],
 }
 
 /// Read-only accessors.
@@ -91,6 +95,14 @@ impl FlowReceipt {
     /// Set the previous receipt hash (called before signing).
     pub fn set_prev_hash(&mut self, hash: [u8; 32]) {
         self.prev_hash = hash;
+    }
+    /// Chain ID (session binding).
+    pub fn chain_id(&self) -> &[u8; 32] {
+        &self.chain_id
+    }
+    /// Set the chain ID (called before signing).
+    pub fn set_chain_id(&mut self, id: [u8; 32]) {
+        self.chain_id = id;
     }
 }
 
@@ -151,6 +163,7 @@ pub fn build_receipt(
         created_at: now,
         signature: [0; 64], // Unsigned
         prev_hash: [0; 32], // No chain link yet — set via set_prev_hash()
+        chain_id: [0; 32],  // No chain ID yet — set via set_chain_id()
     }
 }
 

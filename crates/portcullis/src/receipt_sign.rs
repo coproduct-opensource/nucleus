@@ -20,10 +20,13 @@ fn receipt_content_bytes(receipt: &FlowReceipt) -> Vec<u8> {
     let mut buf = Vec::with_capacity(256);
 
     // Version tag
-    buf.extend_from_slice(b"nucleus-receipt-v2\n");
+    buf.extend_from_slice(b"nucleus-receipt-v3\n");
+
+    // Chain ID — binds this receipt to a specific session (#492).
+    // Prevents cross-session receipt injection.
+    buf.extend_from_slice(receipt.chain_id());
 
     // Chain link — hash of the previous receipt.
-    // Included in signed content so chain order is tamper-evident.
     buf.extend_from_slice(receipt.prev_hash());
 
     // Action node
