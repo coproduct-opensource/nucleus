@@ -3240,6 +3240,7 @@ dependencies = [
 name = "nucleus-audit"
 version = "1.0.0"
 dependencies = [
+ "chrono",
  "clap",
  "hex",
  "hmac 0.13.0",
@@ -3251,6 +3252,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.18",
+ "toml",
  "url",
 ]
 
