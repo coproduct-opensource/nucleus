@@ -582,9 +582,23 @@ impl Kernel {
         // Temporarily disable the flat flow_label so decide() doesn't re-check
         // flow with the session-level accumulator. The DAG's per-action verdict
         // supersedes the flat label — that's the whole point of the DAG.
+        //
+        // FIX #369: After decide(), monotonically join the saved label with
+        // any label that decide() computed (labels only grow).
+        // FIX #373: Explicit restoration in all code paths. If decide()
+        // panics (unlikely but possible), flow_label stays None — this is
+        // fail-closed (flow checks fail on None, blocking all operations).
         let saved_flow_label = self.flow_label.take();
         let mut result = self.decide(operation, subject);
-        self.flow_label = saved_flow_label;
+
+        // Monotonic restore: join saved label with post-decide label (#369)
+        let post_label = self.flow_label.take();
+        self.flow_label = match (saved_flow_label, post_label) {
+            (Some(saved), Some(decided)) => Some(saved.join(decided)),
+            (Some(saved), None) => Some(saved),
+            (None, decided) => decided,
+        };
+
         result.0.flow_node_id = Some(flow_decision.node_id);
         result
     }
