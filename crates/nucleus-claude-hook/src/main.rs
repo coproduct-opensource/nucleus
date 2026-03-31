@@ -262,11 +262,23 @@ fn save_session(session_id: &str, state: &SessionState) {
     let path = session_state_path(session_id);
     let hwm_path = session_hwm_path(session_id);
 
-    if let Ok(json) = serde_json::to_string(state) {
-        // Write state file
-        std::fs::write(&path, json).ok();
-        // Write HWM file separately — survives state file deletion
-        std::fs::write(&hwm_path, state.high_water_mark.to_string()).ok();
+    match serde_json::to_string(state) {
+        Ok(json) => {
+            // Write state file — warn on failure (taint tracking could be lost)
+            if let Err(e) = std::fs::write(&path, &json) {
+                eprintln!(
+                    "nucleus: WARNING — failed to save session state: {e}. \
+                     Taint tracking may be incomplete."
+                );
+            }
+            // Write HWM file separately — survives state file deletion
+            if let Err(e) = std::fs::write(&hwm_path, state.high_water_mark.to_string()) {
+                eprintln!("nucleus: WARNING — failed to save HWM file: {e}");
+            }
+        }
+        Err(e) => {
+            eprintln!("nucleus: WARNING — failed to serialize session state: {e}");
+        }
     }
 }
 
