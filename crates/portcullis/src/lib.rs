@@ -128,6 +128,8 @@ pub mod observe;
 ///
 /// Requires the `spec` feature (includes `serde`, `cel`, `serde_yaml`, `toml`).
 #[cfg(feature = "spec")]
+pub mod policy;
+#[cfg(feature = "spec")]
 pub mod profile;
 /// Attenuation tokens — compact delegation credentials for wire transport.
 ///
