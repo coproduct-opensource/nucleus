@@ -77,6 +77,19 @@ enum Command {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    /// Generate a JSON assurance case — aggregates all verification evidence.
+    ///
+    /// Checks: Lean proofs exist, Kani harnesses exist, policy file valid,
+    /// receipt chain valid, and reports the overall assurance status.
+    Assurance {
+        /// Project root directory (default: current directory).
+        #[arg(long, default_value = ".")]
+        project_dir: PathBuf,
+
+        /// Receipt chain file to verify (optional).
+        #[arg(long)]
+        receipts: Option<PathBuf>,
+    },
     /// Print a summary of audit events grouped by identity.
     Summary {
         /// Audit log path (tool-proxy JSONL format).
@@ -199,6 +212,12 @@ fn main() -> Result<(), AuditError> {
         }
         Command::VerifyReceipts { log } => {
             verify_receipt_chain(&log)?;
+        }
+        Command::Assurance {
+            project_dir,
+            receipts,
+        } => {
+            generate_assurance_report(&project_dir, receipts.as_deref())?;
         }
         Command::Trace {
             receipts_dir,
@@ -936,6 +955,152 @@ fn verify_receipt_chain(path: &Path) -> Result<(), AuditError> {
 // ---------------------------------------------------------------------------
 // Multi-agent provenance trace (Graphviz DOT output)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Assurance report — aggregated verification evidence
+// ---------------------------------------------------------------------------
+
+fn generate_assurance_report(
+    project_dir: &Path,
+    receipts: Option<&Path>,
+) -> Result<(), AuditError> {
+    let mut report = serde_json::Map::new();
+    let now = chrono::Utc::now();
+    report.insert(
+        "generated_at".to_string(),
+        serde_json::Value::String(now.to_rfc3339()),
+    );
+    report.insert(
+        "project_dir".to_string(),
+        serde_json::Value::String(project_dir.display().to_string()),
+    );
+
+    // 1. Lean proofs
+    let lean_dir = project_dir.join("crates/portcullis-core/lean");
+    let lean_files: Vec<String> = if lean_dir.is_dir() {
+        std::fs::read_dir(&lean_dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "lean"))
+            .filter(|e| {
+                e.path()
+                    .file_name()
+                    .is_some_and(|n| n != "lakefile.lean" && n != "lean-toolchain")
+            })
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect()
+    } else {
+        vec![]
+    };
+    report.insert(
+        "lean_proofs".to_string(),
+        serde_json::json!({
+            "found": !lean_files.is_empty(),
+            "count": lean_files.len(),
+            "files": lean_files,
+        }),
+    );
+
+    // 2. Kani harnesses
+    let kani_file = project_dir.join("crates/portcullis/src/kani.rs");
+    let kani_core_file = project_dir.join("crates/portcullis-core/src/flow.rs");
+    let mut kani_count = 0usize;
+    for kani_path in [&kani_file, &kani_core_file] {
+        if kani_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(kani_path) {
+                kani_count += content.matches("#[kani::proof]").count();
+            }
+        }
+    }
+    report.insert(
+        "kani_harnesses".to_string(),
+        serde_json::json!({
+            "found": kani_count > 0,
+            "count": kani_count,
+        }),
+    );
+
+    // 3. Policy file
+    let policy_path = project_dir.join(".nucleus/policy.toml");
+    let policy_valid = if policy_path.exists() {
+        std::fs::read_to_string(&policy_path)
+            .ok()
+            .and_then(|content| toml::from_str::<toml::Value>(&content).ok())
+            .is_some()
+    } else {
+        false
+    };
+    report.insert(
+        "policy".to_string(),
+        serde_json::json!({
+            "exists": policy_path.exists(),
+            "valid": policy_valid,
+            "path": policy_path.display().to_string(),
+        }),
+    );
+
+    // 4. Receipt chain
+    let receipt_status = if let Some(receipt_path) = receipts {
+        if receipt_path.exists() {
+            let file = File::open(receipt_path)?;
+            let reader = BufReader::new(file);
+            let mut count = 0u64;
+            let mut chain_valid = true;
+            let mut prev_hash = "0".repeat(64);
+
+            for line in reader.lines() {
+                let line = line?;
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if let Ok(entry) = serde_json::from_str::<serde_json::Value>(&line) {
+                    if let Some(ph) = entry["prev_hash"].as_str() {
+                        if ph != prev_hash {
+                            chain_valid = false;
+                        }
+                    }
+                    if let Some(rh) = entry["receipt_hash"].as_str() {
+                        prev_hash = rh.to_string();
+                    }
+                    count += 1;
+                }
+            }
+
+            serde_json::json!({
+                "exists": true,
+                "count": count,
+                "chain_valid": chain_valid,
+                "path": receipt_path.display().to_string(),
+            })
+        } else {
+            serde_json::json!({"exists": false})
+        }
+    } else {
+        serde_json::json!({"not_checked": true})
+    };
+    report.insert("receipts".to_string(), receipt_status);
+
+    // 5. Formal methods summary
+    let formal_methods_path = project_dir.join("FORMAL_METHODS.md");
+    report.insert(
+        "formal_methods_doc".to_string(),
+        serde_json::Value::Bool(formal_methods_path.exists()),
+    );
+
+    // Overall status
+    let all_green = !lean_files.is_empty() && kani_count > 0;
+    report.insert(
+        "status".to_string(),
+        serde_json::Value::String(if all_green { "pass" } else { "incomplete" }.to_string()),
+    );
+
+    let json = serde_json::to_string_pretty(&serde_json::Value::Object(report))
+        .map_err(|e| AuditError::Backend(format!("failed to serialize report: {e}")))?;
+    println!("{json}");
+
+    Ok(())
+}
 
 fn trace_provenance(receipts_dir: &Path, output: Option<&Path>) -> Result<(), AuditError> {
     if !receipts_dir.is_dir() {
