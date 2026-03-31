@@ -192,6 +192,147 @@ pub fn check_admission(manifest: &ToolManifest) -> AdmissionVerdict {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Kani BMC harnesses — bounded model checking of admission rules
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    fn any_integ() -> IntegLevel {
+        let v: u8 = kani::any();
+        kani::assume(v <= 2);
+        match v {
+            0 => IntegLevel::Adversarial,
+            1 => IntegLevel::Untrusted,
+            _ => IntegLevel::Trusted,
+        }
+    }
+
+    fn any_auth() -> AuthorityLevel {
+        let v: u8 = kani::any();
+        kani::assume(v <= 3);
+        match v {
+            0 => AuthorityLevel::NoAuthority,
+            1 => AuthorityLevel::Informational,
+            2 => AuthorityLevel::Suggestive,
+            _ => AuthorityLevel::Directive,
+        }
+    }
+
+    /// **M1 — Empty capabilities always rejected.**
+    #[kani::proof]
+    fn proof_empty_capabilities_rejected() {
+        let manifest = ToolManifest {
+            name: ToolName::new("test"),
+            capabilities: vec![],
+            remote_fetch: kani::any(),
+            instruction_sources: vec![],
+            admissible_sinks: vec![],
+            max_confidentiality: ConfLevel::Public,
+            output_integrity: any_integ(),
+            output_authority: any_auth(),
+            schema_hash: [0; 32],
+        };
+        assert!(matches!(
+            check_admission(&manifest),
+            AdmissionVerdict::Reject(AdmissionDenyReason::EmptyCapabilities)
+        ));
+    }
+
+    /// **M2 — Remote fetch + unlabeled instructions always rejected.**
+    #[kani::proof]
+    fn proof_remote_unlabeled_rejected() {
+        let manifest = ToolManifest {
+            name: ToolName::new("test"),
+            capabilities: vec![Operation::WebFetch],
+            remote_fetch: true,
+            instruction_sources: vec![InstructionSource::Unlabeled],
+            admissible_sinks: vec![],
+            max_confidentiality: ConfLevel::Public,
+            output_integrity: any_integ(),
+            output_authority: any_auth(),
+            schema_hash: [0; 32],
+        };
+        assert!(!matches!(
+            check_admission(&manifest),
+            AdmissionVerdict::Admit
+        ));
+    }
+
+    /// **M3 — Trusted output from remote always rejected.**
+    #[kani::proof]
+    fn proof_trusted_from_remote_rejected() {
+        let manifest = ToolManifest {
+            name: ToolName::new("test"),
+            capabilities: vec![Operation::WebFetch],
+            remote_fetch: true,
+            instruction_sources: vec![InstructionSource::Static],
+            admissible_sinks: vec![],
+            max_confidentiality: ConfLevel::Public,
+            output_integrity: IntegLevel::Trusted,
+            output_authority: any_auth(),
+            schema_hash: [0; 32],
+        };
+        assert!(matches!(
+            check_admission(&manifest),
+            AdmissionVerdict::Reject(AdmissionDenyReason::TrustedOutputFromRemote)
+        ));
+    }
+
+    /// **M4 — Directive from transitive always rejected.**
+    #[kani::proof]
+    fn proof_directive_from_transitive_rejected() {
+        let manifest = ToolManifest {
+            name: ToolName::new("test"),
+            capabilities: vec![Operation::ReadFiles],
+            remote_fetch: false,
+            instruction_sources: vec![InstructionSource::TransitiveTool],
+            admissible_sinks: vec![SinkClass::LocalMemory],
+            max_confidentiality: ConfLevel::Public,
+            output_integrity: any_integ(),
+            output_authority: AuthorityLevel::Directive,
+            schema_hash: [0; 32],
+        };
+        assert!(!matches!(
+            check_admission(&manifest),
+            AdmissionVerdict::Admit
+        ));
+    }
+
+    /// **M5 — Safe local tool always admitted.**
+    #[kani::proof]
+    fn proof_safe_local_admitted() {
+        let integ = any_integ();
+        let auth = any_auth();
+        // Not remote, not transitive, has capabilities, no external sinks
+        let manifest = ToolManifest {
+            name: ToolName::new("safe"),
+            capabilities: vec![Operation::ReadFiles],
+            remote_fetch: false,
+            instruction_sources: vec![InstructionSource::Static],
+            admissible_sinks: vec![SinkClass::HumanVisible],
+            max_confidentiality: ConfLevel::Public,
+            output_integrity: integ,
+            output_authority: auth,
+            schema_hash: [0; 32],
+        };
+        // Should always be admitted — no rule triggers
+        kani::assume(
+            !matches!(auth, AuthorityLevel::Directive)
+                || !manifest
+                    .instruction_sources
+                    .iter()
+                    .any(|s| matches!(s, InstructionSource::TransitiveTool)),
+        );
+        assert!(matches!(
+            check_admission(&manifest),
+            AdmissionVerdict::Admit
+        ));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 

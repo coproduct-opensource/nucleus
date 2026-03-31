@@ -345,7 +345,7 @@ mod kani_proofs {
     /// Generate a symbolic Operation.
     fn any_operation() -> Operation {
         let v: u8 = kani::any();
-        kani::assume(v < 12);
+        kani::assume(v < 13);
         Operation::ALL[v as usize]
     }
 
