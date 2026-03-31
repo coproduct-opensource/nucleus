@@ -513,6 +513,78 @@ fn classify_mcp_tool(name: &str) -> Operation {
 // ---------------------------------------------------------------------------
 
 /// Extract a human-readable subject from the tool_input JSON.
+/// Format a denial reason as a human-readable message for Claude Code users.
+///
+/// Instead of raw Rust Debug output like `FlowViolation { rule: "AuthorityEscalation" }`,
+/// produce actionable messages like "Blocked: this write depends on web content."
+fn format_denial_for_user(
+    reason: &portcullis::kernel::DenyReason,
+    operation: Operation,
+    compartment: Option<&str>,
+) -> String {
+    use portcullis::kernel::DenyReason;
+
+    let comp_hint = compartment
+        .map(|c| format!(" (compartment: {c})"))
+        .unwrap_or_default();
+
+    match reason {
+        DenyReason::InsufficientCapability => {
+            let suggestion = match compartment {
+                Some("research") => " Switch to 'draft' or 'execute' compartment.",
+                Some("draft") if operation == Operation::RunBash => {
+                    " Switch to 'execute' compartment to run commands."
+                }
+                Some("draft") if operation == Operation::WebFetch => {
+                    " Switch to 'research' compartment to browse the web."
+                }
+                _ => "",
+            };
+            format!(
+                "Blocked: {operation} is not allowed in the current profile{comp_hint}.{suggestion}"
+            )
+        }
+        DenyReason::FlowViolation { rule, .. } => {
+            let explanation = if rule.contains("AuthorityEscalation") {
+                "This operation depends on web content (adversarial/untrusted). \
+                 Web-influenced data cannot steer writes, execution, or git operations."
+            } else if rule.contains("Exfiltration") {
+                "This operation would exfiltrate secret data to an external sink."
+            } else if rule.contains("IntegrityViolation") {
+                "This operation would use untrusted data in a trusted-only context."
+            } else {
+                "Information flow policy prevents this operation."
+            };
+            format!("Blocked: {explanation}{comp_hint}")
+        }
+        DenyReason::CommandBlocked { command } => {
+            let short_cmd = if command.len() > 60 {
+                format!("{}...", &command[..57])
+            } else {
+                command.clone()
+            };
+            format!(
+                "Blocked: command '{short_cmd}' is not allowed by the command policy{comp_hint}."
+            )
+        }
+        DenyReason::PathBlocked { path } => {
+            format!("Blocked: access to '{path}' is restricted by path policy{comp_hint}.")
+        }
+        DenyReason::BudgetExhausted { remaining_usd } => {
+            format!("Blocked: budget exhausted (remaining: ${remaining_usd}).")
+        }
+        DenyReason::TimeExpired { expired_at } => {
+            format!("Blocked: session expired at {expired_at}.")
+        }
+        DenyReason::IsolationInsufficient { required, actual } => {
+            format!("Blocked: requires {required} isolation but running in {actual}.")
+        }
+        DenyReason::IsolationGated { dimension } => {
+            format!("Blocked: {dimension} is not available in the current isolation level.")
+        }
+    }
+}
+
 fn extract_subject(tool_name: &str, input: &serde_json::Value) -> String {
     match tool_name {
         "Bash" => input
@@ -1399,7 +1471,11 @@ fn main() {
             // Still increment HWM — denied ops prove the session existed.
             session.high_water_mark += 1;
             save_session(&input.session_id, &session);
-            HookOutput::deny(format!("nucleus: denied — {reason:?}"))
+            HookOutput::deny(format_denial_for_user(
+                reason,
+                operation,
+                compartment.as_ref().map(|c| c.to_string()).as_deref(),
+            ))
         }
     };
 
