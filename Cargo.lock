@@ -3259,6 +3259,7 @@ name = "nucleus-claude-hook"
 version = "1.0.0"
 dependencies = [
  "dirs-next",
+ "hex",
  "portcullis",
  "portcullis-core",
  "ring",
