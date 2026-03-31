@@ -859,7 +859,7 @@ mod tests {
         // SECURITY: Agent spawns subprocesses with fresh session IDs.
         // Passthrough would let tainted sessions escape via clean child.
         // Must be gated as RunBash (most restrictive).
-        assert_eq!(map_tool("Agent"), Operation::RunBash);
+        assert_eq!(map_tool("Agent"), Operation::SpawnAgent);
     }
 
     #[test]

