@@ -1616,6 +1616,18 @@ fn main() {
                 .as_secs();
             let mut receipt = build_receipt(action_node, &ancestor_refs, flow_verdict, now);
             receipt.set_prev_hash(session.chain_head_hash);
+            // Bind receipt to this session (#492)
+            let chain_id = {
+                use sha2::{Digest, Sha256};
+                let mut h = Sha256::new();
+                h.update(b"nucleus-chain:");
+                h.update(input.session_id.as_bytes());
+                let hash = h.finalize();
+                let mut id = [0u8; 32];
+                id.copy_from_slice(&hash);
+                id
+            };
+            receipt.set_chain_id(chain_id);
             sign_receipt(&mut receipt, &signing_key);
             Some(receipt)
         })
