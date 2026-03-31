@@ -286,6 +286,12 @@ struct ReceiptEntry {
     /// Parent agent's chain hash at spawn time (if child session)
     #[serde(skip_serializing_if = "Option::is_none")]
     parent_chain_hash: Option<String>,
+    /// Active compartment when this decision was made
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compartment: Option<String>,
+    /// Previous compartment (if this entry records a transition)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compartment_transition_from: Option<String>,
 }
 
 /// Persist a signed receipt to `.nucleus/receipts/<session-id>.jsonl`.
@@ -300,6 +306,7 @@ fn persist_receipt(
     subject: &str,
     parent_session_id: &Option<String>,
     parent_chain_hash: &Option<String>,
+    compartment: Option<&str>,
 ) {
     let safe_id = sanitize_session_id(session_id);
     let receipts_dir = session_dir().join("receipts");
@@ -333,6 +340,49 @@ fn persist_receipt(
         receipt_hash: hex::encode(receipt_hash(receipt)),
         parent_session_id: parent_session_id.clone(),
         parent_chain_hash: parent_chain_hash.clone(),
+        compartment: compartment.map(|s| s.to_string()),
+        compartment_transition_from: None,
+    };
+
+    if let Ok(json) = serde_json::to_string(&entry) {
+        use std::io::Write;
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            writeln!(file, "{json}").ok();
+        }
+    }
+}
+
+/// Emit a synthetic receipt for a compartment transition.
+fn persist_transition_receipt(session_id: &str, from: Option<&str>, to: &str, direction: &str) {
+    let safe_id = sanitize_session_id(session_id);
+    let receipts_dir = session_dir().join("receipts");
+    std::fs::create_dir_all(&receipts_dir).ok();
+    let path = receipts_dir.join(format!("{safe_id}.jsonl"));
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let entry = ReceiptEntry {
+        timestamp: now,
+        operation: "compartment_transition".to_string(),
+        subject: format!("{} -> {} ({direction})", from.unwrap_or("none"), to),
+        verdict: "Allow".to_string(),
+        rule: "compartment_transition".to_string(),
+        action_label: String::new(),
+        ancestors: vec![],
+        signature: String::new(),
+        prev_hash: String::new(),
+        receipt_hash: String::new(),
+        parent_session_id: None,
+        parent_chain_hash: None,
+        compartment: Some(to.to_string()),
+        compartment_transition_from: from.map(|s| s.to_string()),
     };
 
     if let Ok(json) = serde_json::to_string(&entry) {
@@ -1068,12 +1118,28 @@ fn main() {
                 return;
             }
 
+            let from_str = prev_compartment
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "none".to_string());
             eprintln!(
-                "nucleus: compartment transition: {} -> {} ({direction})",
-                prev_compartment
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| "none".to_string()),
+                "nucleus: compartment transition: {from_str} -> {} ({direction})",
                 new_comp,
+            );
+
+            // Record transition in receipt chain (#460)
+            persist_transition_receipt(
+                &input.session_id,
+                prev_compartment.map(|c| {
+                    // Need a string that lives long enough
+                    match c {
+                        portcullis_core::compartment::Compartment::Research => "research",
+                        portcullis_core::compartment::Compartment::Draft => "draft",
+                        portcullis_core::compartment::Compartment::Execute => "execute",
+                        portcullis_core::compartment::Compartment::Breakglass => "breakglass",
+                    }
+                }),
+                &new_comp.to_string(),
+                direction,
             );
 
             // COMPARTMENT FLOW RESET: On transition, clear flow observations
@@ -1244,6 +1310,7 @@ fn main() {
             &subject,
             &session.parent_session_id,
             &session.parent_chain_hash,
+            compartment.as_ref().map(|c| c.to_string()).as_deref(),
         );
     }
 
