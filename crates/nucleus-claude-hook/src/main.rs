@@ -958,9 +958,8 @@ fn run_help() {
     eprintln!("ENVIRONMENT:");
     eprintln!("  NUCLEUS_PROFILE       Permission profile name (default: safe_pr_fixer)");
     eprintln!("  NUCLEUS_COMPARTMENT   Compartment: research, draft, execute, breakglass");
-    eprintln!(
-        "  NUCLEUS_FAIL_CLOSED   Set to 1 for CISO mode: infrastructure errors block (default: 0)"
-    );
+    eprintln!("  NUCLEUS_FAIL_CLOSED        Set to 1 for CISO mode: infrastructure errors block");
+    eprintln!("  NUCLEUS_REQUIRE_MANIFESTS  Set to 1 to deny MCP tools without manifests");
     eprintln!();
     eprintln!("COMPARTMENTS:");
     eprintln!("  research    Read + web only (no writes, no execution)");
@@ -1063,12 +1062,33 @@ fn main() {
             .unwrap_or(&input.tool_name);
         if let Some(reason) = registry.is_rejected(mcp_tool_name) {
             let out = HookOutput::deny(format!(
-                "nucleus: MCP tool '{}' rejected by manifest admission: {:?}",
-                mcp_tool_name, reason
+                "Blocked: MCP tool '{mcp_tool_name}' rejected by manifest admission: {reason:?}"
             ));
             eprintln!(
                 "nucleus: {} rejected by manifest admission: {:?}",
                 input.tool_name, reason
+            );
+            println!("{}", serde_json::to_string(&out).unwrap());
+            std::process::exit(2);
+        }
+
+        // SECURITY (#512): Default-deny unmanifested MCP tools.
+        // When NUCLEUS_REQUIRE_MANIFESTS=1, any MCP tool without a manifest
+        // in .nucleus/manifests/ is denied. This prevents tools that fetch
+        // instructions or executable content from unlabeled origins.
+        let require_manifests = std::env::var("NUCLEUS_REQUIRE_MANIFESTS")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        if require_manifests && registry.get(mcp_tool_name).is_none() {
+            let out = HookOutput::deny(format!(
+                "Blocked: MCP tool '{mcp_tool_name}' has no manifest. \
+                 Add a manifest to .nucleus/manifests/ or run \
+                 'nucleus manifest init --server {}'.",
+                mcp_tool_name.split("__").next().unwrap_or(mcp_tool_name)
+            ));
+            eprintln!(
+                "nucleus: {} denied — no manifest (NUCLEUS_REQUIRE_MANIFESTS=1)",
+                input.tool_name
             );
             println!("{}", serde_json::to_string(&out).unwrap());
             std::process::exit(2);
