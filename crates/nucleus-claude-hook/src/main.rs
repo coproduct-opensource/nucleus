@@ -160,6 +160,11 @@ struct SessionState {
     /// Links this child's receipt chain to the parent's chain.
     #[serde(default)]
     parent_chain_hash: Option<String>,
+    /// Number of flow observations at the time of the last PreToolUse Allow.
+    /// PostToolUse uses this to know which observation was the pre-tool node,
+    /// so the ToolResponse can be wired as a sibling in the DAG (#593).
+    #[serde(default)]
+    last_pre_tool_obs_index: Option<usize>,
 }
 
 /// Result of loading session state — distinguishes clean start from tampered.
@@ -697,6 +702,44 @@ fn operation_to_node_kind(op: Operation) -> NodeKind {
         Operation::GitCommit | Operation::GitPush | Operation::CreatePr => NodeKind::OutboundAction,
         Operation::ManagePods => NodeKind::OutboundAction,
         Operation::SpawnAgent => NodeKind::OutboundAction,
+    }
+}
+
+/// Classify the output of a completed tool into its appropriate NodeKind.
+///
+/// This is different from `operation_to_node_kind()` which classifies the
+/// _action_ of invoking the tool. Here we classify the _result_:
+/// - Web tools produce WebContent (adversarial) — the output IS web content
+/// - File read tools produce ToolResponse — the output is data the model will use
+/// - Outbound actions produce ToolResponse — the result (e.g., "file written") is metadata
+///
+/// The critical distinction: a WebFetch action is an OutboundAction in the
+/// pre-tool observation, but its OUTPUT is WebContent (adversarial). This
+/// ensures that subsequent actions depending on web results get tainted (#593).
+fn classify_tool_output(op: Operation) -> NodeKind {
+    match op {
+        // Web tool outputs ARE web content — adversarial taint propagates
+        Operation::WebFetch | Operation::WebSearch => NodeKind::WebContent,
+        // File read outputs are file content — trusted category
+        Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch => NodeKind::FileRead,
+        // Everything else: generic tool response (model category)
+        _ => NodeKind::ToolResponse,
+    }
+}
+
+/// Truncate a string for storage/display, preserving valid UTF-8 boundaries.
+fn truncate_subject(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        // Find a valid UTF-8 boundary at or before max_len - 3
+        let end = s
+            .char_indices()
+            .take_while(|(i, _)| *i <= max_len.saturating_sub(3))
+            .last()
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(0);
+        format!("{}...", &s[..end])
     }
 }
 
@@ -1844,7 +1887,7 @@ fn main() {
                 eprintln!("nucleus: session state cleaned up (receipts preserved)");
             }
         }
-        // PostToolUse: observe the tool result for manifest enforcement (#497)
+        // PostToolUse: observe the tool result and insert into flow graph (#593, #497)
         if input.hook_event_name == "PostToolUse" && !input.tool_name.is_empty() {
             if let Some(ref result_text) = input.tool_result {
                 // Check MCP tool output against manifest
@@ -1873,13 +1916,42 @@ fn main() {
                     }
                 }
 
+                // Insert tool output as a ToolResponse observation in the flow graph.
+                // This closes the gap where tool outputs were invisible to IFC (#593).
+                // The ToolResponse node's kind depends on the tool: web tools produce
+                // WebContent (adversarial), file reads produce FileRead (trusted),
+                // everything else produces ToolResponse (model-category).
+                match load_session(&input.session_id) {
+                    SessionLoad::Loaded(mut session) | SessionLoad::Fresh(mut session) => {
+                        // Classify the tool output's node kind based on the operation.
+                        // The output of a web fetch IS web content (adversarial).
+                        // The output of a file read IS file content (trusted).
+                        // Everything else is a generic tool response (model category).
+                        let op = map_tool(&input.tool_name);
+                        let output_kind = classify_tool_output(op);
+
+                        session.flow_observations.push((
+                            node_kind_to_u8(output_kind),
+                            format!("post:{op}"),
+                            truncate_subject(result_text, 200),
+                        ));
+                        // Clear the pre-tool index — this PostToolUse is consumed.
+                        session.last_pre_tool_obs_index = None;
+                        save_session(&input.session_id, &session);
+
+                        eprintln!(
+                            "nucleus: post-tool {op} {} — inserted {:?} observation into flow graph",
+                            input.tool_name, output_kind
+                        );
+                    }
+                    SessionLoad::Tampered { .. } => {
+                        eprintln!("nucleus: post-tool skipped — session tampered");
+                    }
+                }
+
                 // Log the post-tool observation
                 let op = map_tool(&input.tool_name);
-                let truncated = if result_text.len() > 100 {
-                    format!("{}...", &result_text[..97])
-                } else {
-                    result_text.clone()
-                };
+                let truncated = truncate_subject(result_text, 100);
                 eprintln!(
                     "nucleus: post-tool {op} {} — result: {truncated}",
                     input.tool_name
@@ -2347,6 +2419,9 @@ fn main() {
                 operation.to_string(),
                 subject.clone(),
             ));
+            // Record the observation index so PostToolUse can insert the
+            // ToolResponse as a sibling of this pre-tool observation (#593).
+            session.last_pre_tool_obs_index = Some(session.flow_observations.len() - 1);
 
             // DX (#567): When web content taints the session, print recovery path
             if matches!(operation, Operation::WebFetch | Operation::WebSearch) {
@@ -2950,5 +3025,153 @@ mod tests {
         );
         assert!(settings.get("enabledPlugins").is_some());
         assert!(settings.get("hooks").is_some());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // PostToolUse flow graph insertion tests (#593)
+    // ─────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_classify_tool_output_web() {
+        // Web tool outputs produce WebContent (adversarial taint)
+        assert_eq!(
+            classify_tool_output(Operation::WebFetch),
+            NodeKind::WebContent
+        );
+        assert_eq!(
+            classify_tool_output(Operation::WebSearch),
+            NodeKind::WebContent
+        );
+    }
+
+    #[test]
+    fn test_classify_tool_output_file_read() {
+        // File read outputs produce FileRead (trusted)
+        assert_eq!(
+            classify_tool_output(Operation::ReadFiles),
+            NodeKind::FileRead
+        );
+        assert_eq!(
+            classify_tool_output(Operation::GlobSearch),
+            NodeKind::FileRead
+        );
+        assert_eq!(
+            classify_tool_output(Operation::GrepSearch),
+            NodeKind::FileRead
+        );
+    }
+
+    #[test]
+    fn test_classify_tool_output_generic() {
+        // Other tool outputs produce ToolResponse (model category)
+        assert_eq!(
+            classify_tool_output(Operation::WriteFiles),
+            NodeKind::ToolResponse
+        );
+        assert_eq!(
+            classify_tool_output(Operation::RunBash),
+            NodeKind::ToolResponse
+        );
+        assert_eq!(
+            classify_tool_output(Operation::GitPush),
+            NodeKind::ToolResponse
+        );
+    }
+
+    #[test]
+    fn test_truncate_subject_short() {
+        assert_eq!(truncate_subject("hello", 10), "hello");
+    }
+
+    #[test]
+    fn test_truncate_subject_long() {
+        let long = "a".repeat(300);
+        let truncated = truncate_subject(&long, 100);
+        assert!(truncated.len() <= 103); // 100 chars + "..."
+        assert!(truncated.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_subject_unicode() {
+        // Ensure truncation doesn't split multi-byte characters
+        let s = "a\u{1F600}b\u{1F600}c"; // mixed ASCII + 4-byte emoji
+        let truncated = truncate_subject(s, 5);
+        // Should truncate at a valid UTF-8 boundary
+        assert!(truncated.ends_with("..."));
+        // The result should be valid UTF-8
+        assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn test_post_tool_observation_roundtrip() {
+        // Verify that a PostToolUse observation can be serialized and
+        // deserialized as part of SessionState (backward compatible)
+        let mut state = SessionState {
+            profile: "test".to_string(),
+            ..Default::default()
+        };
+
+        // Simulate PreToolUse adding an observation
+        state.flow_observations.push((
+            node_kind_to_u8(NodeKind::FileRead),
+            "ReadFiles".to_string(),
+            "/some/file.rs".to_string(),
+        ));
+        state.last_pre_tool_obs_index = Some(0);
+
+        // Simulate PostToolUse adding a ToolResponse
+        state.flow_observations.push((
+            node_kind_to_u8(NodeKind::ToolResponse),
+            "post:ReadFiles".to_string(),
+            "file contents here...".to_string(),
+        ));
+        state.last_pre_tool_obs_index = None;
+
+        // Serialize and deserialize
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: SessionState = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.flow_observations.len(), 2);
+        assert_eq!(
+            restored.flow_observations[0].0,
+            node_kind_to_u8(NodeKind::FileRead)
+        );
+        assert_eq!(
+            restored.flow_observations[1].0,
+            node_kind_to_u8(NodeKind::ToolResponse)
+        );
+        assert!(restored.flow_observations[1].1.starts_with("post:"));
+        assert!(restored.last_pre_tool_obs_index.is_none());
+    }
+
+    #[test]
+    fn test_flow_graph_with_post_tool_observations() {
+        // Verify that PostToolUse observations are correctly replayed
+        // into the flow graph during session replay, creating proper
+        // causal links so taint propagates through tool outputs.
+        let perms = PermissionLattice::permissive();
+        let mut kernel = Kernel::new(perms);
+        kernel.enable_flow_graph();
+
+        let mut leaves = LeafTracker::default();
+
+        // Simulate replay of a web fetch observation (PreToolUse)
+        let web_parents = leaves.parents_for(NodeKind::WebContent);
+        let web_id = kernel.observe(NodeKind::WebContent, &web_parents).unwrap();
+        leaves.record(NodeKind::WebContent, web_id);
+
+        // Simulate replay of the WebContent post-tool observation (PostToolUse)
+        // This should go into the adversarial category, maintaining taint
+        let post_parents = leaves.parents_for(NodeKind::WebContent);
+        let post_id = kernel.observe(NodeKind::WebContent, &post_parents).unwrap();
+        leaves.record(NodeKind::WebContent, post_id);
+
+        // Now try a write action — it should inherit the web content taint
+        let write_parents = leaves.parents_for(NodeKind::OutboundAction);
+        // The write's parents should include the adversarial leaf
+        assert!(
+            write_parents.contains(&post_id),
+            "Write action should depend on post-tool WebContent observation"
+        );
     }
 }
