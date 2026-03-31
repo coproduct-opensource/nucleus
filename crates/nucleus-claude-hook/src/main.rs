@@ -1374,6 +1374,73 @@ fn run_smoke_test() {
     }
 }
 
+fn run_uninstall() {
+    println!("Removing nucleus-claude-hook from Claude Code...\n");
+
+    // 1. Remove hook from settings.json
+    if let Some(home) = dirs_next::home_dir() {
+        let settings_path = home.join(".claude").join("settings.json");
+        if settings_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&settings_path) {
+                if let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
+                        if let Some(pre_tool) = hooks.get_mut("PreToolUse") {
+                            if let Some(arr) = pre_tool.as_array_mut() {
+                                let before = arr.len();
+                                arr.retain(|entry| {
+                                    !entry
+                                        .get("hooks")
+                                        .and_then(|h| h.as_array())
+                                        .map(|hooks| {
+                                            hooks.iter().any(|h| {
+                                                h.get("command")
+                                                    .and_then(|c| c.as_str())
+                                                    .map(|s| s.contains("nucleus-claude-hook"))
+                                                    .unwrap_or(false)
+                                            })
+                                        })
+                                        .unwrap_or(false)
+                                });
+                                if arr.len() < before {
+                                    if arr.is_empty() {
+                                        hooks.remove("PreToolUse");
+                                    }
+                                    if let Ok(json) = serde_json::to_string_pretty(&settings) {
+                                        std::fs::write(&settings_path, json).ok();
+                                    }
+                                    println!(
+                                        "  \x1b[32m\u{2713}\x1b[0m Removed hook from {}",
+                                        settings_path.display()
+                                    );
+                                } else {
+                                    println!("  - Hook not found in {}", settings_path.display());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Clean up session state
+    let sess_dir = session_dir();
+    if sess_dir.exists() {
+        let count = std::fs::read_dir(&sess_dir).map(|e| e.count()).unwrap_or(0);
+        if count > 0 {
+            println!(
+                "  \x1b[33m!\x1b[0m Session data at {} ({count} files)",
+                sess_dir.display()
+            );
+            println!("    Remove with: rm -rf {}", sess_dir.display());
+        }
+    }
+
+    println!("\n  To remove the binary:");
+    println!("    cargo uninstall nucleus-claude-hook");
+    println!("\n  Restart Claude Code to deactivate.");
+}
+
 fn run_doctor() {
     let mut ok = true;
 
@@ -1590,6 +1657,10 @@ fn main() {
         return;
     }
     // Doctor: diagnostic check (#555)
+    if args.iter().any(|a| a == "--uninstall") {
+        run_uninstall();
+        return;
+    }
     if args.iter().any(|a| a == "--doctor") {
         run_doctor();
         return;
