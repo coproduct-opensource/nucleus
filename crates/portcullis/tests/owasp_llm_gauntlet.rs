@@ -708,10 +708,11 @@ mod llm05_output_handling {
     use super::*;
 
     #[test]
-    fn shell_metacharacters_blocked() {
-        let lattice = CommandLattice::permissive();
+    fn shell_metacharacters_blocked_in_restrictive() {
+        // Restrictive (default) profiles block metacharacters.
+        // Permissive allows them for Claude Code compatibility.
+        let lattice = CommandLattice::default();
 
-        // Command separators and chains
         let metachar_commands = [
             "echo hi | cat",
             "echo hi ; whoami",
@@ -722,15 +723,15 @@ mod llm05_output_handling {
         for cmd in metachar_commands {
             assert!(
                 !lattice.can_execute(cmd),
-                "Metacharacter command '{}' should be blocked",
+                "Metacharacter command '{}' should be blocked in restrictive mode",
                 cmd
             );
         }
     }
 
     #[test]
-    fn redirect_operators_blocked() {
-        let lattice = CommandLattice::permissive();
+    fn redirect_operators_blocked_in_restrictive() {
+        let lattice = CommandLattice::default();
 
         let redirect_commands = [
             "echo secret > /etc/passwd",
@@ -741,17 +742,16 @@ mod llm05_output_handling {
         for cmd in redirect_commands {
             assert!(
                 !lattice.can_execute(cmd),
-                "Redirect command '{}' should be blocked",
+                "Redirect command '{}' should be blocked in restrictive mode",
                 cmd
             );
         }
     }
 
     #[test]
-    fn subshell_execution_blocked() {
-        let lattice = CommandLattice::permissive();
+    fn subshell_execution_blocked_in_restrictive() {
+        let lattice = CommandLattice::default();
 
-        // These contain shell metacharacters that would be blocked
         let subshell_patterns = [
             "echo $(whoami)",  // Contains shell metachar
             "echo `id`",       // Backticks
@@ -759,15 +759,11 @@ mod llm05_output_handling {
         ];
 
         for cmd in subshell_patterns {
-            // These should be blocked because they contain metacharacters
-            // or command chaining operators
             let result = lattice.can_execute(cmd);
-            // The permissive lattice blocks metacharacters when no allowlist
-            // is configured, so most of these should be blocked
             if cmd.contains("&&") || cmd.contains('|') {
                 assert!(
                     !result,
-                    "Subshell/chain pattern '{}' should be blocked",
+                    "Subshell/chain pattern '{}' should be blocked in restrictive mode",
                     cmd
                 );
             }
@@ -795,13 +791,13 @@ mod llm05_output_handling {
     }
 
     #[test]
-    fn all_shell_metacharacters_blocked() {
-        let lattice = CommandLattice::permissive();
+    fn all_shell_metacharacters_blocked_in_restrictive() {
+        let lattice = CommandLattice::default();
 
         for cmd in SHELL_METACHARACTERS {
             assert!(
                 !lattice.can_execute(cmd),
-                "Metacharacter command '{}' should be blocked",
+                "Metacharacter command '{}' should be blocked in restrictive mode",
                 cmd
             );
         }
