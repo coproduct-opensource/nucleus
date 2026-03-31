@@ -465,6 +465,7 @@ impl<'a> CtfEngine<'a> {
             Operation::GitPush => caps.git_push,
             Operation::CreatePr => caps.create_pr,
             Operation::ManagePods => caps.manage_pods,
+            Operation::SpawnAgent => caps.spawn_agent,
         }
     }
 

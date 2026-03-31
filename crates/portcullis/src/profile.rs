@@ -117,6 +117,9 @@ pub struct CapabilitiesSpec {
     /// Manage sub-pods permission level.
     #[serde(default)]
     pub manage_pods: CapabilityLevel,
+    /// Spawn sub-agent permission level.
+    #[serde(default)]
+    pub spawn_agent: CapabilityLevel,
 }
 
 fn default_always() -> CapabilityLevel {
@@ -142,6 +145,7 @@ impl Default for CapabilitiesSpec {
             git_push: CapabilityLevel::Never,
             create_pr: CapabilityLevel::LowRisk,
             manage_pods: CapabilityLevel::Never,
+            spawn_agent: CapabilityLevel::Never,
         }
     }
 }
@@ -174,6 +178,8 @@ pub enum ObligationSpec {
     CreatePr,
     /// Manage pods requires approval.
     ManagePods,
+    /// Spawn agent requires approval.
+    SpawnAgent,
 }
 
 impl From<&ObligationSpec> for Operation {
@@ -191,6 +197,7 @@ impl From<&ObligationSpec> for Operation {
             ObligationSpec::GitPush => Operation::GitPush,
             ObligationSpec::CreatePr => Operation::CreatePr,
             ObligationSpec::ManagePods => Operation::ManagePods,
+            ObligationSpec::SpawnAgent => Operation::SpawnAgent,
         }
     }
 }
@@ -340,6 +347,7 @@ impl ProfileSpec {
             git_push: self.capabilities.git_push,
             create_pr: self.capabilities.create_pr,
             manage_pods: self.capabilities.manage_pods,
+            spawn_agent: self.capabilities.spawn_agent,
             #[cfg(not(kani))]
             extensions: std::collections::BTreeMap::new(),
         };

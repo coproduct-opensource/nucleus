@@ -129,6 +129,7 @@ fn all_never_capabilities() -> CapabilityLattice {
         git_push: CapabilityLevel::Never,
         create_pr: CapabilityLevel::Never,
         manage_pods: CapabilityLevel::Never,
+        spawn_agent: CapabilityLevel::Never,
         extensions: std::collections::BTreeMap::new(),
     }
 }
@@ -163,10 +164,11 @@ pub fn dimensions_to_ceiling(dimensions: &[PermissionDimension]) -> PermissionLa
         caps.create_pr = CapabilityLevel::Always;
     }
 
-    // Pass-through: git_commit and manage_pods are not market-gated.
+    // Pass-through: git_commit, manage_pods, spawn_agent are not market-gated.
     // Set to Always so they survive the meet with the certificate.
     caps.git_commit = CapabilityLevel::Always;
     caps.manage_pods = CapabilityLevel::Always;
+    caps.spawn_agent = CapabilityLevel::Always;
 
     // Build a true top element for non-capability dimensions.
     // We construct this explicitly (NOT from default() or permissive()) because:

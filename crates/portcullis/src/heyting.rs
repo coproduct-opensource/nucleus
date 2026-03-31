@@ -171,6 +171,7 @@ impl BoundedLattice for CapabilityLattice {
             git_push: CapabilityLevel::Never,
             create_pr: CapabilityLevel::Never,
             manage_pods: CapabilityLevel::Never,
+            spawn_agent: CapabilityLevel::Never,
             #[cfg(not(kani))]
             extensions: std::collections::BTreeMap::new(),
         }
@@ -223,6 +224,7 @@ impl HeytingAlgebra for CapabilityLattice {
             git_push: level_implies(self.git_push, other.git_push),
             create_pr: level_implies(self.create_pr, other.create_pr),
             manage_pods: level_implies(self.manage_pods, other.manage_pods),
+            spawn_agent: level_implies(self.spawn_agent, other.spawn_agent),
             #[cfg(not(kani))]
             extensions: ext,
         }

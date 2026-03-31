@@ -709,9 +709,8 @@ mod llm05_output_handling {
 
     #[test]
     fn shell_metacharacters_blocked_in_restrictive() {
-        // Restrictive profiles (default) block metacharacters.
-        // Permissive profiles allow them because Claude Code routinely
-        // pipes output: `cmd 2>&1 | tail -5`.
+        // Restrictive (default) profiles block metacharacters.
+        // Permissive allows them for Claude Code compatibility.
         let lattice = CommandLattice::default();
 
         let metachar_commands = [
@@ -793,7 +792,6 @@ mod llm05_output_handling {
 
     #[test]
     fn all_shell_metacharacters_blocked_in_restrictive() {
-        // Restrictive (default) profiles block all metacharacters.
         let lattice = CommandLattice::default();
 
         for cmd in SHELL_METACHARACTERS {

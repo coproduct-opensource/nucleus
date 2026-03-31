@@ -124,6 +124,8 @@ pub enum OperationName {
     CreatePr,
     /// Manage sub-pods
     ManagePods,
+    /// Spawn sub-agent
+    SpawnAgent,
 }
 
 impl From<OperationName> for Operation {
@@ -141,6 +143,7 @@ impl From<OperationName> for Operation {
             OperationName::GitPush => Operation::GitPush,
             OperationName::CreatePr => Operation::CreatePr,
             OperationName::ManagePods => Operation::ManagePods,
+            OperationName::SpawnAgent => Operation::SpawnAgent,
         }
     }
 }
@@ -160,6 +163,7 @@ impl From<Operation> for OperationName {
             Operation::GitPush => OperationName::GitPush,
             Operation::CreatePr => OperationName::CreatePr,
             Operation::ManagePods => OperationName::ManagePods,
+            Operation::SpawnAgent => OperationName::SpawnAgent,
         }
     }
 }

@@ -238,9 +238,9 @@ fn map_tool(name: &str) -> Operation {
         "WebFetch" => Operation::WebFetch,
         "WebSearch" => Operation::WebSearch,
         // SECURITY: Agent spawns a subprocess with its own session_id.
-        // Passthrough here lets a tainted session launder writes through
-        // a clean child. Gate as RunBash (most restrictive).
-        "Agent" => Operation::RunBash,
+        // Classified as SpawnAgent so the kernel can gate agent spawning
+        // independently from bash execution.
+        "Agent" => Operation::SpawnAgent,
         // MCP tools: classify by tool name, fail-closed for unknown
         _ if name.starts_with("mcp__") => classify_mcp_tool(name),
         // Unknown tools: fail-closed (RunBash = most restrictive)
@@ -404,6 +404,7 @@ fn operation_to_node_kind(op: Operation) -> NodeKind {
         Operation::RunBash => NodeKind::OutboundAction,
         Operation::GitCommit | Operation::GitPush | Operation::CreatePr => NodeKind::OutboundAction,
         Operation::ManagePods => NodeKind::OutboundAction,
+        Operation::SpawnAgent => NodeKind::OutboundAction,
     }
 }
 
@@ -858,7 +859,7 @@ mod tests {
         // SECURITY: Agent spawns subprocesses with fresh session IDs.
         // Passthrough would let tainted sessions escape via clean child.
         // Must be gated as RunBash (most restrictive).
-        assert_eq!(map_tool("Agent"), Operation::RunBash);
+        assert_eq!(map_tool("Agent"), Operation::SpawnAgent);
     }
 
     #[test]

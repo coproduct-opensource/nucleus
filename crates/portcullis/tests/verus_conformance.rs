@@ -143,21 +143,24 @@ fn arb_capability_level() -> impl Strategy<Value = CapabilityLevel> {
 
 fn arb_capability_lattice() -> impl Strategy<Value = CapabilityLattice> {
     (
-        arb_capability_level(),
-        arb_capability_level(),
-        arb_capability_level(),
-        arb_capability_level(),
-        arb_capability_level(),
-        arb_capability_level(),
-        arb_capability_level(),
-        arb_capability_level(),
-        arb_capability_level(),
-        arb_capability_level(),
-        arb_capability_level(),
+        (
+            arb_capability_level(),
+            arb_capability_level(),
+            arb_capability_level(),
+            arb_capability_level(),
+            arb_capability_level(),
+            arb_capability_level(),
+            arb_capability_level(),
+            arb_capability_level(),
+            arb_capability_level(),
+            arb_capability_level(),
+            arb_capability_level(),
+            arb_capability_level(),
+        ),
         arb_capability_level(),
     )
-        .prop_map(
-            |(rf, wf, ef, rb, gs, grs, ws, wfe, gc, gp, cp, mp)| CapabilityLattice {
+        .prop_map(|((rf, wf, ef, rb, gs, grs, ws, wfe, gc, gp, cp, mp), sa)| {
+            CapabilityLattice {
                 read_files: rf,
                 write_files: wf,
                 edit_files: ef,
@@ -170,9 +173,10 @@ fn arb_capability_lattice() -> impl Strategy<Value = CapabilityLattice> {
                 git_push: gp,
                 create_pr: cp,
                 manage_pods: mp,
+                spawn_agent: sa,
                 extensions: std::collections::BTreeMap::new(),
-            },
-        )
+            }
+        })
 }
 
 fn arb_exfil_operation() -> impl Strategy<Value = Operation> {
@@ -1067,6 +1071,7 @@ fn conformance_untrusted_profile_prevents_uninhabitable() {
         git_push: CapabilityLevel::Never,
         create_pr: CapabilityLevel::Never,
         manage_pods: CapabilityLevel::Never,
+        spawn_agent: CapabilityLevel::Never,
         extensions: std::collections::BTreeMap::new(),
     };
 
@@ -1802,6 +1807,7 @@ mod structural_bisimulation {
             Operation::GitPush => 9,
             Operation::CreatePr => 10,
             Operation::ManagePods => 11,
+            Operation::SpawnAgent => 12,
         }
     }
 
@@ -3117,6 +3123,7 @@ mod capability_coverage {
             git_push: CapabilityLevel::Never,
             create_pr: CapabilityLevel::Never,
             manage_pods: CapabilityLevel::Never,
+            spawn_agent: CapabilityLevel::Never,
             extensions: std::collections::BTreeMap::new(),
         }
     }
@@ -3136,6 +3143,7 @@ mod capability_coverage {
             git_push: CapabilityLevel::Always,
             create_pr: CapabilityLevel::Always,
             manage_pods: CapabilityLevel::Always,
+            spawn_agent: CapabilityLevel::Always,
             extensions: std::collections::BTreeMap::new(),
         }
     }
@@ -3237,6 +3245,7 @@ mod capability_coverage {
             git_push: CapabilityLevel::Always,     // 9: odd
             create_pr: CapabilityLevel::LowRisk,   // 10: even
             manage_pods: CapabilityLevel::Always,  // 11: odd
+            spawn_agent: CapabilityLevel::LowRisk, // 12: even
             extensions: std::collections::BTreeMap::new(),
         };
 
@@ -3360,6 +3369,7 @@ mod capability_coverage {
                 git_push: to_level(levels_a[9]),
                 create_pr: to_level(levels_a[10]),
                 manage_pods: to_level(levels_a[11]),
+                spawn_agent: CapabilityLevel::Never,
                 extensions: std::collections::BTreeMap::new(),
             };
 
@@ -3376,6 +3386,7 @@ mod capability_coverage {
                 git_push: to_level(levels_a[9].max(delta[9])),
                 create_pr: to_level(levels_a[10].max(delta[10])),
                 manage_pods: to_level(levels_a[11].max(delta[11])),
+                spawn_agent: CapabilityLevel::Never,
                 extensions: std::collections::BTreeMap::new(),
             };
 

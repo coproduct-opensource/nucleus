@@ -132,6 +132,7 @@ fn capabilities_from_surface(surface: &crate::finding::PermissionSurface) -> Cap
         git_push: CapabilityLevel::Never,
         create_pr: CapabilityLevel::Never,
         manage_pods: CapabilityLevel::Never,
+        spawn_agent: CapabilityLevel::Never,
     };
 
     // Raise capabilities based on what's observed in the permission surface

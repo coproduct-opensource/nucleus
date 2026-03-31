@@ -1850,7 +1850,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// All Operation variants for exhaustive testing.
-    const ALL_OPS: [Operation; 12] = [
+    const ALL_OPS: [Operation; 13] = [
         Operation::ReadFiles,
         Operation::WriteFiles,
         Operation::EditFiles,
@@ -1863,6 +1863,7 @@ mod tests {
         Operation::GitPush,
         Operation::CreatePr,
         Operation::ManagePods,
+        Operation::SpawnAgent,
     ];
 
     /// Exhaustive equivalence test: for every possible operation sequence

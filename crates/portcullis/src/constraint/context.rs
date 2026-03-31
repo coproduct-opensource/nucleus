@@ -193,6 +193,7 @@ impl PolicyContext {
             Operation::GitPush => "git_push",
             Operation::CreatePr => "create_pr",
             Operation::ManagePods => "manage_pods",
+            Operation::SpawnAgent => "spawn_agent",
         }
     }
 

