@@ -36,6 +36,77 @@ pub struct ManifestRegistry {
     tools: BTreeMap<String, ToolManifest>,
     /// Rejected tools: MCP tool name → reason.
     rejected: BTreeMap<String, AdmissionDenyReason>,
+    /// Tools with invalid or missing signatures (when trust store is present).
+    unsigned: Vec<String>,
+}
+
+/// Trust store — Ed25519 public keys for manifest signature verification.
+///
+/// Load keys from `.nucleus/trust/*.pub` (raw 32-byte Ed25519 public keys, hex-encoded).
+#[derive(Debug, Default)]
+pub struct TrustStore {
+    /// Known public keys (raw 32-byte Ed25519 public keys).
+    keys: Vec<Vec<u8>>,
+}
+
+impl TrustStore {
+    /// Load public keys from a trust directory.
+    ///
+    /// Each `.pub` file should contain a hex-encoded 32-byte Ed25519 public key.
+    pub fn load_from_dir(dir: &Path) -> Self {
+        let trust_dir = dir.join(".nucleus").join("trust");
+        let mut store = Self::default();
+
+        if !trust_dir.is_dir() {
+            return store;
+        }
+
+        let entries = match std::fs::read_dir(&trust_dir) {
+            Ok(e) => e,
+            Err(_) => return store,
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "pub") {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if let Ok(key_bytes) = hex::decode(content.trim()) {
+                        if key_bytes.len() == 32 {
+                            store.keys.push(key_bytes);
+                        }
+                    }
+                }
+            }
+        }
+
+        store
+    }
+
+    /// Check if the trust store has any keys.
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+
+    /// Verify a signature against any trusted key.
+    ///
+    /// Returns true if the signature is valid for at least one trusted key.
+    #[cfg(feature = "crypto")]
+    pub fn verify(&self, message: &[u8], signature: &[u8]) -> bool {
+        use ring::signature::{self, UnparsedPublicKey};
+
+        for key_bytes in &self.keys {
+            let public_key = UnparsedPublicKey::new(&signature::ED25519, key_bytes);
+            if public_key.verify(message, signature).is_ok() {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Number of trusted keys.
+    pub fn key_count(&self) -> usize {
+        self.keys.len()
+    }
 }
 
 /// TOML-deserializable manifest format.
@@ -61,6 +132,10 @@ struct ToolEntry {
     output_integrity: String,
     #[serde(default = "default_auth")]
     output_authority: String,
+    /// Ed25519 signature of the manifest content (hex-encoded, optional).
+    /// When a trust store is configured, unsigned manifests are rejected.
+    #[serde(default)]
+    signature: Option<String>,
 }
 
 fn default_conf() -> String {
@@ -83,9 +158,13 @@ impl ManifestRegistry {
     ///
     /// Each `.toml` file is parsed, converted, and run through admission
     /// control. Admitted tools are stored; rejected tools are logged.
+    ///
+    /// If a trust store is present (`.nucleus/trust/` has keys), manifests
+    /// must be signed. Unsigned or invalidly signed manifests are rejected.
     pub fn load_from_dir(dir: &Path) -> Self {
         let mut registry = Self::new();
         let manifest_dir = dir.join(".nucleus").join("manifests");
+        let trust_store = TrustStore::load_from_dir(dir);
 
         if !manifest_dir.is_dir() {
             return registry;
@@ -100,7 +179,7 @@ impl ManifestRegistry {
             let path = entry.path();
             if path.extension().is_some_and(|ext| ext == "toml") {
                 if let Ok(content) = std::fs::read_to_string(&path) {
-                    registry.load_toml(&content);
+                    registry.load_toml_with_trust(&content, &trust_store);
                 }
             }
         }
@@ -108,19 +187,52 @@ impl ManifestRegistry {
         registry
     }
 
-    /// Parse and register a single manifest from TOML content.
+    /// Parse and register a single manifest from TOML content (no trust store).
     pub fn load_toml(&mut self, content: &str) {
+        self.load_toml_with_trust(content, &TrustStore::default());
+    }
+
+    /// Parse and register a single manifest from TOML content with trust verification.
+    #[cfg_attr(not(feature = "crypto"), allow(unused_variables))]
+    pub fn load_toml_with_trust(&mut self, content: &str, trust_store: &TrustStore) {
         let file: ManifestFile = match toml::from_str(content) {
             Ok(f) => f,
             Err(_) => return,
         };
 
+        let name = file.tool.name.clone();
+
+        // Signature verification (when trust store has keys)
+        #[cfg(feature = "crypto")]
+        if !trust_store.is_empty() {
+            match &file.tool.signature {
+                Some(sig_hex) => {
+                    let sig_bytes = match hex::decode(sig_hex) {
+                        Ok(b) if b.len() == 64 => b,
+                        _ => {
+                            self.unsigned.push(name);
+                            return;
+                        }
+                    };
+                    // Verify signature over the TOML content (excluding the signature line)
+                    let signable = manifest_signable_content(content);
+                    if !trust_store.verify(signable.as_bytes(), &sig_bytes) {
+                        self.unsigned.push(name);
+                        return;
+                    }
+                }
+                None => {
+                    // Trust store has keys but manifest is unsigned — reject
+                    self.unsigned.push(name);
+                    return;
+                }
+            }
+        }
+
         let manifest = match convert_entry(&file.tool) {
             Some(m) => m,
             None => return,
         };
-
-        let name = file.tool.name.clone();
 
         match check_admission(&manifest) {
             AdmissionVerdict::Admit => {
@@ -130,6 +242,11 @@ impl ManifestRegistry {
                 self.rejected.insert(name, reason);
             }
         }
+    }
+
+    /// Number of unsigned/invalidly signed tools (when trust store is present).
+    pub fn unsigned_count(&self) -> usize {
+        self.unsigned.len()
     }
 
     /// Look up a manifest for an MCP tool.
@@ -159,6 +276,19 @@ impl ManifestRegistry {
     pub fn admitted(&self) -> impl Iterator<Item = (&str, &ToolManifest)> {
         self.tools.iter().map(|(k, v)| (k.as_str(), v))
     }
+}
+
+/// Extract the signable content from a manifest TOML.
+///
+/// Strips the `signature = "..."` line so the signature covers
+/// everything except itself. This allows the signature to be
+/// added to the TOML after signing.
+fn manifest_signable_content(toml_content: &str) -> String {
+    toml_content
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("signature"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn convert_entry(entry: &ToolEntry) -> Option<ToolManifest> {
