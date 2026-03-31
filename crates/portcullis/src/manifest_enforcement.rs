@@ -179,6 +179,9 @@ mod tests {
             output_integrity: integ,
             output_authority: auth,
             schema_hash: [0; 32],
+            allowed_hosts: vec![],
+            authority_to_instruct: false,
+            memory_behavior: portcullis_core::manifest::MemoryBehavior::None,
         }
     }
 
