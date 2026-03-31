@@ -983,7 +983,7 @@ fn run_setup() {
 fn run_status() {
     let dir = std::env::temp_dir().join("nucleus-hook");
     if !dir.exists() {
-        eprintln!("nucleus: no active sessions");
+        println!("nucleus: no active sessions");
         return;
     }
     let entries: Vec<_> = std::fs::read_dir(&dir)
@@ -994,7 +994,7 @@ fn run_status() {
         .collect();
 
     if entries.is_empty() {
-        eprintln!("nucleus: no active sessions");
+        println!("nucleus: no active sessions");
         return;
     }
 
@@ -1006,9 +1006,11 @@ fn run_status() {
                     .file_stem()
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_default();
-                eprintln!(
-                    "  session={name} profile={} ops={}",
+                let comp = state.active_compartment.as_deref().unwrap_or("none");
+                println!(
+                    "  {name}  profile={:<16} compartment={:<12} ops={}",
                     state.profile,
+                    comp,
                     state.allowed_ops.len()
                 );
             }
@@ -1021,39 +1023,38 @@ fn run_status() {
 // ---------------------------------------------------------------------------
 
 fn run_help() {
-    eprintln!("nucleus-claude-hook — Nucleus verified permission kernel for Claude Code");
-    eprintln!();
-    eprintln!("USAGE:");
-    eprintln!("  nucleus-claude-hook              Read hook JSON from stdin (normal mode)");
-    eprintln!("  nucleus-claude-hook --setup       Configure ~/.claude/settings.json");
-    eprintln!("  nucleus-claude-hook --status      Show active sessions");
-    eprintln!("  nucleus-claude-hook --help        This message");
-    eprintln!();
-    eprintln!("PROFILES (set NUCLEUS_PROFILE env var):");
+    println!("nucleus-claude-hook — Nucleus verified permission kernel for Claude Code");
+    println!();
+    println!("USAGE:");
+    println!("  nucleus-claude-hook              Read hook JSON from stdin (normal mode)");
+    println!("  nucleus-claude-hook --setup       Configure ~/.claude/settings.json");
+    println!("  nucleus-claude-hook --status      Show active sessions");
+    println!("  nucleus-claude-hook --help        This message");
+    println!("  nucleus-claude-hook --version     Show version");
+    println!();
+    println!("PROFILES (set NUCLEUS_PROFILE env var):");
     for p in PROFILES {
         let marker = if *p == "safe_pr_fixer" {
             " (default)"
         } else {
             ""
         };
-        eprintln!("  {p}{marker}");
+        println!("  {p}{marker}");
     }
-    eprintln!();
-    eprintln!("ENVIRONMENT:");
-    eprintln!("  NUCLEUS_PROFILE       Permission profile name (default: safe_pr_fixer)");
-    eprintln!("  NUCLEUS_COMPARTMENT   Compartment: research, draft, execute, breakglass");
-    eprintln!("  NUCLEUS_FAIL_CLOSED        Set to 1 for CISO mode: infrastructure errors block");
-    eprintln!("  NUCLEUS_REQUIRE_MANIFESTS  Set to 1 to deny MCP tools without manifests");
-    eprintln!();
-    eprintln!("COMPARTMENTS:");
-    eprintln!("  research    Read + web only (no writes, no execution)");
-    eprintln!("  draft       Read + write (no execution, no web)");
-    eprintln!("  execute     Read + write + bash (no push)");
-    eprintln!("  breakglass  All capabilities + enhanced audit");
-    eprintln!();
-    eprintln!("ERROR MODEL:");
-    eprintln!("  Default: hook errors fall through to Claude Code defaults (asks user)");
-    eprintln!("  NUCLEUS_FAIL_CLOSED=1: hook errors block all tool calls (paranoid mode)");
+    println!();
+    println!("ENVIRONMENT:");
+    println!("  NUCLEUS_PROFILE            Permission profile (default: safe_pr_fixer)");
+    println!("  NUCLEUS_COMPARTMENT        Compartment: research, draft, execute, breakglass");
+    println!("  NUCLEUS_FAIL_CLOSED        Set to 1: infrastructure errors block (CISO mode)");
+    println!("  NUCLEUS_REQUIRE_MANIFESTS  Set to 1: deny MCP tools without manifests");
+    println!();
+    println!("COMPARTMENTS:");
+    println!("  research    Read + web only (no writes, no execution)");
+    println!("  draft       Read + write (no execution, no web)");
+    println!("  execute     Read + write + bash (no push)");
+    println!("  breakglass  All capabilities + enhanced audit (reason required)");
+    println!();
+    println!("Learn more: https://github.com/coproduct-opensource/nucleus/blob/main/docs/quickstart-hook.md");
 }
 
 // ---------------------------------------------------------------------------
@@ -1073,6 +1074,10 @@ fn main() {
     }
     if args.iter().any(|a| a == "--help" || a == "-h") {
         run_help();
+        return;
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("nucleus-claude-hook {}", env!("CARGO_PKG_VERSION"));
         return;
     }
     // Show the compartment file path for a session (so external tools can write to it)
