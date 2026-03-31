@@ -162,6 +162,27 @@ pub enum AdmissionDenyReason {
     /// Tool claims authority_to_instruct AND remote_fetch from untrusted sources.
     /// This is the core prompt injection attack vector.
     InstructionFromUntrustedRemote,
+    /// Tool has no manifest and the policy requires manifests (default-deny).
+    /// Without a manifest, the tool's security properties are unknown — the
+    /// capability lattice alone cannot defend against classification gaming (#588).
+    NoManifest,
+}
+
+/// Policy for tools without manifests.
+///
+/// Controls whether unmanifested tools are allowed through the capability
+/// lattice alone (`DefaultAllow`) or rejected at admission (`DefaultDeny`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ManifestPolicy {
+    /// Tools without manifests are allowed — only the capability lattice
+    /// and heuristic classification gate them. This is the current behavior
+    /// and is suitable for development/exploration.
+    #[default]
+    DefaultAllow,
+    /// Tools without manifests are REJECTED. Every tool must have a manifest
+    /// entry in `.nucleus/manifests/`. This is the recommended production
+    /// setting — it prevents classification gaming via tool name manipulation.
+    DefaultDeny,
 }
 
 /// Result of admission control check.
@@ -240,6 +261,29 @@ pub fn check_admission(manifest: &ToolManifest) -> AdmissionVerdict {
     }
 
     AdmissionVerdict::Admit
+}
+
+/// Check admission for a tool, applying the manifest policy for tools
+/// without manifests.
+///
+/// - If `manifest` is `Some`, runs `check_admission()` as normal.
+/// - If `manifest` is `None` and policy is `DefaultDeny`, rejects with `NoManifest`.
+/// - If `manifest` is `None` and policy is `DefaultAllow`, admits (current behavior).
+///
+/// `tool_name` is included for error messages and audit trails.
+pub fn check_admission_with_policy(
+    manifest: Option<&ToolManifest>,
+    policy: ManifestPolicy,
+) -> AdmissionVerdict {
+    match manifest {
+        Some(m) => check_admission(m),
+        None => match policy {
+            ManifestPolicy::DefaultDeny => {
+                AdmissionVerdict::Reject(AdmissionDenyReason::NoManifest)
+            }
+            ManifestPolicy::DefaultAllow => AdmissionVerdict::Admit,
+        },
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -515,5 +559,46 @@ mod tests {
     fn tool_name_roundtrips() {
         let name = ToolName::new("read_file");
         assert_eq!(name.as_str(), "read_file");
+    }
+
+    // ── Default-deny tests (#588) ──────────────────────────────────────
+
+    #[test]
+    fn default_deny_rejects_no_manifest() {
+        let verdict = check_admission_with_policy(None, ManifestPolicy::DefaultDeny);
+        assert_eq!(
+            verdict,
+            AdmissionVerdict::Reject(AdmissionDenyReason::NoManifest)
+        );
+    }
+
+    #[test]
+    fn default_allow_admits_no_manifest() {
+        let verdict = check_admission_with_policy(None, ManifestPolicy::DefaultAllow);
+        assert_eq!(verdict, AdmissionVerdict::Admit);
+    }
+
+    #[test]
+    fn default_deny_admits_valid_manifest() {
+        let m = base_manifest();
+        let verdict = check_admission_with_policy(Some(&m), ManifestPolicy::DefaultDeny);
+        assert_eq!(verdict, AdmissionVerdict::Admit);
+    }
+
+    #[test]
+    fn default_deny_rejects_invalid_manifest() {
+        let mut m = base_manifest();
+        m.capabilities.clear();
+        let verdict = check_admission_with_policy(Some(&m), ManifestPolicy::DefaultDeny);
+        assert_eq!(
+            verdict,
+            AdmissionVerdict::Reject(AdmissionDenyReason::EmptyCapabilities)
+        );
+    }
+
+    #[test]
+    fn manifest_policy_default_is_allow() {
+        // Backward compatible: default policy allows unmanifested tools
+        assert_eq!(ManifestPolicy::default(), ManifestPolicy::DefaultAllow);
     }
 }
