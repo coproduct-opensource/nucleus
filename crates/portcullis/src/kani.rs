@@ -1904,3 +1904,90 @@ fn proof_node_ids_monotone() {
     assert!(id2 < id3);
     assert!(id1 >= 1); // real nodes start at 1, not 0
 }
+
+/// **G7 — Denied nodes cannot become parents.**
+///
+/// When an action is denied (flow violation), any subsequent attempt
+/// to use that node as a parent must fail with DeniedParent error.
+/// This ensures denied operations have no causal influence on future
+/// decisions — the DAG does not include denied actions in the causal chain.
+#[kani::proof]
+#[kani::solver(cadical)]
+#[kani::unwind(4)]
+fn proof_denied_node_cannot_be_parent() {
+    let mut g = FlowGraph::new();
+    let now: u64 = 1000;
+
+    // Create web content (adversarial) — this will cause any action to be denied
+    let web_id = g
+        .insert_observation(NodeKind::WebContent, &[], now)
+        .unwrap();
+
+    // Insert an action that depends on web content — should be denied
+    let decision = g
+        .insert_action(Operation::WriteFiles, &[web_id], now)
+        .unwrap();
+
+    // The action should be denied due to authority escalation
+    let denied_id = decision.node_id;
+    let is_denied = matches!(decision.verdict, FlowVerdict::Deny(_));
+
+    if is_denied {
+        // Now try to use the denied node as a parent — must fail
+        let result = g.insert_observation(NodeKind::FileRead, &[denied_id], now);
+        assert!(
+            matches!(result, Err(FlowGraphError::DeniedParent(id)) if id == denied_id),
+            "Denied node must not be usable as a parent"
+        );
+
+        // Also verify it fails for insert_action
+        let result2 = g.insert_action(Operation::ReadFiles, &[denied_id], now);
+        assert!(
+            matches!(result2, Err(FlowGraphError::DeniedParent(id)) if id == denied_id),
+            "Denied node must not be usable as action parent"
+        );
+    }
+}
+
+/// **G8 — Denied nodes accumulate and persist.**
+///
+/// Multiple denied actions all remain in the denied set — none can
+/// be used as parents, even after subsequent allowed operations.
+#[kani::proof]
+#[kani::solver(cadical)]
+#[kani::unwind(5)]
+fn proof_denied_set_persists() {
+    let mut g = FlowGraph::new();
+    let now: u64 = 1000;
+
+    // Setup: web content → denied write
+    let web_id = g
+        .insert_observation(NodeKind::WebContent, &[], now)
+        .unwrap();
+    let d1 = g
+        .insert_action(Operation::WriteFiles, &[web_id], now)
+        .unwrap();
+
+    // Setup: another denied action
+    let d2 = g.insert_action(Operation::GitPush, &[web_id], now).unwrap();
+
+    // Insert a valid observation (should work)
+    let ok_id = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+
+    // Neither denied node can be used as parent, even after ok_id
+    if matches!(d1.verdict, FlowVerdict::Deny(_)) {
+        assert!(g
+            .insert_observation(NodeKind::FileRead, &[d1.node_id], now)
+            .is_err());
+    }
+    if matches!(d2.verdict, FlowVerdict::Deny(_)) {
+        assert!(g
+            .insert_observation(NodeKind::FileRead, &[d2.node_id], now)
+            .is_err());
+    }
+
+    // The valid node can still be used as parent
+    assert!(g
+        .insert_observation(NodeKind::FileRead, &[ok_id], now)
+        .is_ok());
+}
