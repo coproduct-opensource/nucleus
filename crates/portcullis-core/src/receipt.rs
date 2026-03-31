@@ -49,6 +49,11 @@ pub struct FlowReceipt {
     pub(crate) rule_name: &'static str,
     pub(crate) created_at: u64,
     pub(crate) signature: [u8; 64],
+    /// SHA-256 hash of the previous receipt in the chain.
+    /// All zeros for the first receipt in a session.
+    /// Included in the signed content — tampering with chain order
+    /// invalidates the signature.
+    pub(crate) prev_hash: [u8; 32],
 }
 
 /// Read-only accessors.
@@ -78,6 +83,14 @@ impl FlowReceipt {
     /// Set the signature (called by signing code in `portcullis` crate).
     pub fn set_signature(&mut self, sig: [u8; 64]) {
         self.signature = sig;
+    }
+    /// Previous receipt hash (chain link).
+    pub fn prev_hash(&self) -> &[u8; 32] {
+        &self.prev_hash
+    }
+    /// Set the previous receipt hash (called before signing).
+    pub fn set_prev_hash(&mut self, hash: [u8; 32]) {
+        self.prev_hash = hash;
     }
 }
 
@@ -137,6 +150,7 @@ pub fn build_receipt(
         rule_name,
         created_at: now,
         signature: [0; 64], // Unsigned
+        prev_hash: [0; 32], // No chain link yet — set via set_prev_hash()
     }
 }
 

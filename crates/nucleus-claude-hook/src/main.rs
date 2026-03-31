@@ -11,8 +11,12 @@ use std::path::PathBuf;
 
 use portcullis::kernel::{Kernel, Verdict};
 use portcullis::manifest_registry::ManifestRegistry;
+use portcullis::receipt_sign::{receipt_hash, sign_receipt};
 use portcullis::{Operation, PermissionLattice};
 use portcullis_core::flow::NodeKind;
+use portcullis_core::receipt::build_receipt;
+use ring::rand::SystemRandom;
+use ring::signature::Ed25519KeyPair;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -106,6 +110,15 @@ struct SessionState {
     /// Replayed to rebuild the causal DAG across hook invocations.
     #[serde(default)]
     flow_observations: Vec<(u8, String, String)>,
+    /// SHA-256 hash of the most recent receipt in the chain.
+    /// Each new receipt includes this as `prev_hash`, creating an
+    /// append-only chain that is tamper-evident when signed.
+    #[serde(default)]
+    chain_head_hash: [u8; 32],
+    /// Ephemeral Ed25519 signing key (PKCS#8 DER, generated per session).
+    /// Stored so receipts across hook invocations use the same key.
+    #[serde(default)]
+    signing_key_pkcs8: Vec<u8>,
 }
 
 /// Result of loading session state — distinguishes clean start from tampered.
@@ -856,6 +869,47 @@ fn main() {
     let (decision, _token) = kernel.decide_with_parents(operation, &subject, &parents);
     let exposure_count = decision.exposure_transition.post_count;
 
+    // Get or create the session's signing key.
+    // Ephemeral per session — generated once, persisted in session state.
+    let signing_key = if session.signing_key_pkcs8.is_empty() {
+        let rng = SystemRandom::new();
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).expect("Ed25519 key generation failed");
+        session.signing_key_pkcs8 = pkcs8.as_ref().to_vec();
+        Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("Ed25519 key from PKCS#8 failed")
+    } else {
+        Ed25519KeyPair::from_pkcs8(&session.signing_key_pkcs8)
+            .expect("Ed25519 key from stored PKCS#8 failed")
+    };
+
+    // Build a receipt from the flow graph's action node (if available).
+    // The receipt captures the causal chain and verdict.
+    let flow_receipt = decision.flow_node_id.and_then(|node_id| {
+        kernel.flow_graph().and_then(|graph| {
+            let action_node = graph.get(node_id)?;
+            let ancestor_refs: Vec<&_> = parents.iter().filter_map(|&pid| graph.get(pid)).collect();
+            let flow_verdict = if decision.verdict.is_denied() {
+                portcullis_core::flow::FlowVerdict::Deny(
+                    portcullis_core::flow::FlowDenyReason::AuthorityEscalation,
+                )
+            } else {
+                portcullis_core::flow::FlowVerdict::Allow
+            };
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let mut receipt = build_receipt(action_node, &ancestor_refs, flow_verdict, now);
+            receipt.set_prev_hash(session.chain_head_hash);
+            sign_receipt(&mut receipt, &signing_key);
+            Some(receipt)
+        })
+    });
+
+    // Update chain head hash if a receipt was produced.
+    if let Some(ref receipt) = flow_receipt {
+        session.chain_head_hash = receipt_hash(receipt);
+    }
+
     let output = match decision.verdict {
         Verdict::Allow => {
             // Persist: operation will execute — track in both exposure and flow graph
@@ -873,17 +927,6 @@ fn main() {
             HookOutput::allow()
         }
         Verdict::RequiresApproval => {
-            // Do NOT persist optimistically. If the user approves, Claude Code
-            // does not re-call PreToolUse — so the next invocation may miss this
-            // operation in its replay. This is a known tracking gap, but it's
-            // safer than phantom operations: persisting before user decision
-            // means a denied operation still appears in the session state,
-            // causing exposure drift and flow graph corruption.
-            //
-            // The tracking gap is conservative: the next invocation underestimates
-            // exposure (fewer ops in replay), which may allow an operation that
-            // should have been gated. But the flow graph's taint propagation
-            // catches the important case (web taint → write).
             session.high_water_mark += 1;
             save_session(&input.session_id, &session);
             HookOutput::ask(format!(
@@ -891,7 +934,7 @@ fn main() {
             ))
         }
         Verdict::Deny(ref reason) => {
-            // Do NOT persist: operation was blocked.
+            // Do NOT persist op: operation was blocked.
             // Still increment HWM — denied ops prove the session existed.
             session.high_water_mark += 1;
             save_session(&input.session_id, &session);
@@ -905,8 +948,17 @@ fn main() {
         .flow_node_id
         .map(|id| format!(", flow_node: {id}"))
         .unwrap_or_default();
+    let receipt_status = if flow_receipt
+        .as_ref()
+        .map(|r| r.is_signed())
+        .unwrap_or(false)
+    {
+        ", receipt: signed"
+    } else {
+        ""
+    };
     eprintln!(
-        "nucleus: {operation} {subject} -> {verdict_str} [exposure: {exposure_count}/3, profile: {profile_name}{flow_node}]"
+        "nucleus: {operation} {subject} -> {verdict_str} [exposure: {exposure_count}/3, profile: {profile_name}{flow_node}{receipt_status}]"
     );
 
     // Write output to stdout

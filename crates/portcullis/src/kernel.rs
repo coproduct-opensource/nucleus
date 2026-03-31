@@ -457,6 +457,11 @@ impl Kernel {
     /// Record a data-source observation in the causal DAG.
     ///
     /// Returns the `NodeId` for use as a parent in subsequent `observe()`
+    /// Read-only access to the flow graph (for receipt construction).
+    pub fn flow_graph(&self) -> Option<&crate::flow_graph::FlowGraph> {
+        self.flow_graph.as_ref()
+    }
+
     /// or `decide_with_parents()` calls. Observations are not flow-checked —
     /// they just record what data entered the session.
     ///
