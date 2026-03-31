@@ -12,7 +12,7 @@
 #
 # Environment variables:
 #   NUCLEUS_VERSION   - Version to install (default: latest)
-#   NUCLEUS_PROFILE   - Permission profile (default: develop)
+#   NUCLEUS_PROFILE   - Permission profile (default: safe_pr_fixer)
 #   INSTALL_DIR       - Binary install location (default: ~/.local/bin)
 #
 set -euo pipefail
@@ -131,7 +131,7 @@ configure_claude_code() {
     fi
     settings_file="${settings_dir}/settings.json"
     binary_path="${INSTALL_DIR}/${BINARY_NAME}"
-    profile="${NUCLEUS_PROFILE:-develop}"
+    profile="${NUCLEUS_PROFILE:-safe_pr_fixer}"
 
     step "Configuring Claude Code..."
 
@@ -161,7 +161,7 @@ else:
     settings = {}
 
 # Set up hook command
-if profile != "develop":
+if profile != "safe_pr_fixer":
     command = f"NUCLEUS_PROFILE={profile} {binary_path}"
 else:
     command = binary_path
@@ -205,7 +205,7 @@ print_success() {
     echo "    - Block writes after web content taints the session"
     echo "    - Produce signed receipts for every security decision"
     echo ""
-    echo -e "  ${DIM}Profile: ${NUCLEUS_PROFILE:-develop}${NC}"
+    echo -e "  ${DIM}Profile: ${NUCLEUS_PROFILE:-safe_pr_fixer}${NC}"
     echo -e "  ${DIM}Binary:  ${INSTALL_DIR}/${BINARY_NAME}${NC}"
     echo -e "  ${DIM}Config:  ~/.claude/settings.json${NC}"
     echo ""
