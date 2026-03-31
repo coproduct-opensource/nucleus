@@ -110,6 +110,8 @@ pub mod guard;
 pub mod heyting;
 /// Kernel decision engine — complete mediation with monotone session state.
 #[cfg(all(feature = "serde", feature = "crypto"))]
+/// Verified hook adapter — pure decision pipeline for Claude Code hooks.
+pub mod hook_adapter;
 pub mod kernel;
 /// Manifest behavioral enforcement — detect lying manifests post-execution.
 pub mod manifest_enforcement;
