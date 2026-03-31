@@ -1338,8 +1338,9 @@ fn main() {
     });
 
     // Load session state — detect tamper (social engineering state deletion)
-    let mut session = match load_session(&input.session_id) {
-        SessionLoad::Fresh(s) | SessionLoad::Loaded(s) => s,
+    let (mut session, is_first_invocation) = match load_session(&input.session_id) {
+        SessionLoad::Fresh(s) => (s, true),
+        SessionLoad::Loaded(s) => (s, false),
         SessionLoad::Tampered { expected_hwm } => {
             // SECURITY: State file was deleted but HWM file proves prior ops existed.
             // This is the social engineering attack: "please delete the session file
@@ -1357,6 +1358,12 @@ fn main() {
     };
     if session.profile.is_empty() {
         session.profile = profile_name.clone();
+    }
+
+    // DX (#549): Welcome banner on first invocation
+    if is_first_invocation {
+        eprintln!("nucleus: \u{2713} Active (profile: {profile_name})");
+        eprintln!("nucleus: Info: 'nucleus-claude-hook --help' for options");
     }
 
     // Generate compartment token on first session invocation
@@ -1715,7 +1722,7 @@ fn main() {
         .flow_node_id
         .map(|id| format!(", flow_node: {id}"))
         .unwrap_or_default();
-    let receipt_status = if flow_receipt
+    let _receipt_status = if flow_receipt
         .as_ref()
         .map(|r| r.is_signed())
         .unwrap_or(false)
@@ -1724,9 +1731,21 @@ fn main() {
     } else {
         ""
     };
-    eprintln!(
-        "nucleus: {operation} {subject} -> {verdict_str} [exposure: {exposure_count}/3, profile: {profile_name}{flow_node}{receipt_status}]"
-    );
+    // DX: Cleaner stderr — short for allows, detailed for denials
+    if verdict_str == "allow" {
+        // Short form for allows — reduce noise
+        let short_subject = if subject.len() > 40 {
+            format!("{}...", &subject[..37])
+        } else {
+            subject.clone()
+        };
+        eprintln!("nucleus: \u{2713} {operation} {short_subject}");
+    } else {
+        // Detailed form for denials/asks — user needs context
+        eprintln!(
+            "nucleus: \u{2717} {operation} {subject} -> {verdict_str} [exposure: {exposure_count}/3{flow_node}]"
+        );
+    }
 
     // Write output to stdout
     let json = serde_json::to_string(&output).unwrap();
