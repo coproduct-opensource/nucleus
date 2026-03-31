@@ -107,6 +107,8 @@ impl GovernedMemory {
     }
 
     /// Write a memory entry with the given label.
+    ///
+    /// Returns false if max_entries would be exceeded (entry not written).
     pub fn write(
         &mut self,
         key: String,
@@ -115,7 +117,26 @@ impl GovernedMemory {
         label: MemoryLabel,
         now: u64,
         ttl_secs: u64,
-    ) {
+    ) -> bool {
+        self.write_with_limit(key, value, schema, label, now, ttl_secs, 1000)
+    }
+
+    /// Write with explicit max_entries limit (#587).
+    #[allow(clippy::too_many_arguments)]
+    pub fn write_with_limit(
+        &mut self,
+        key: String,
+        value: String,
+        schema: SchemaType,
+        label: MemoryLabel,
+        now: u64,
+        ttl_secs: u64,
+        max_entries: usize,
+    ) -> bool {
+        // If key already exists, allow overwrite (doesn't increase count)
+        if !self.entries.contains_key(&key) && self.entries.len() >= max_entries {
+            return false; // Reject: would exceed limit
+        }
         self.entries.insert(
             key,
             MemoryEntry {
@@ -126,6 +147,7 @@ impl GovernedMemory {
                 ttl_secs,
             },
         );
+        true
     }
 
     /// Read a memory entry (returns None if not found or expired).
@@ -311,5 +333,49 @@ max_entries = 500
         let config: MemoryConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.default_ttl_secs, 3600);
         assert_eq!(config.max_entries, 500);
+    }
+
+    #[test]
+    fn max_entries_enforced() {
+        let mut mem = GovernedMemory::new();
+        let label = MemoryLabel::from_levels(ConfLevel::Public, IntegLevel::Trusted);
+
+        // Fill to limit (3 entries)
+        for i in 0..3 {
+            assert!(mem.write_with_limit(
+                format!("key{i}"),
+                "value".to_string(),
+                SchemaType::String,
+                label.clone(),
+                1000,
+                0,
+                3,
+            ));
+        }
+        assert_eq!(mem.len(), 3);
+
+        // 4th entry rejected
+        assert!(!mem.write_with_limit(
+            "key3".to_string(),
+            "value".to_string(),
+            SchemaType::String,
+            label.clone(),
+            1000,
+            0,
+            3,
+        ));
+        assert_eq!(mem.len(), 3); // unchanged
+
+        // Overwrite existing key still works
+        assert!(mem.write_with_limit(
+            "key0".to_string(),
+            "updated".to_string(),
+            SchemaType::String,
+            label,
+            1000,
+            0,
+            3,
+        ));
+        assert_eq!(mem.read("key0", 1000).unwrap().value, "updated");
     }
 }
