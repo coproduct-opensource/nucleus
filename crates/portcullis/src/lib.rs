@@ -111,6 +111,8 @@ pub mod heyting;
 /// Kernel decision engine — complete mediation with monotone session state.
 #[cfg(all(feature = "serde", feature = "crypto"))]
 pub mod kernel;
+/// Manifest behavioral enforcement — detect lying manifests post-execution.
+pub mod manifest_enforcement;
 /// MCP mediation: classify and gate arbitrary MCP tool calls against the
 /// permission lattice with exposure tracking.
 ///
