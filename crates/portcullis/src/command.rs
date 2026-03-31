@@ -36,6 +36,12 @@ pub struct CommandLattice {
     /// Structured blocklist rules (program + args).
     #[cfg_attr(feature = "serde", serde(default))]
     pub blocked_rules: Vec<CommandPattern>,
+    /// Allow shell metacharacters (|, &&, >, etc.) in commands.
+    /// Default false — metacharacters are blocked unless allowlisted.
+    /// Set true for permissive profiles where pipes are expected
+    /// (e.g. Claude Code routinely uses `cmd 2>&1 | tail`).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub allow_metacharacters: bool,
 }
 
 impl Default for CommandLattice {
@@ -71,6 +77,7 @@ impl Default for CommandLattice {
             .collect(),
             allowed_rules: Vec::new(),
             blocked_rules: default_blocked_rules(),
+            allow_metacharacters: false,
         }
     }
 }
@@ -83,16 +90,21 @@ impl CommandLattice {
             blocked: HashSet::new(),
             allowed_rules: Vec::new(),
             blocked_rules: Vec::new(),
+            allow_metacharacters: false,
         }
     }
 
     /// Create a permissive command lattice (blocks dangerous commands only).
+    ///
+    /// Allows shell metacharacters (`|`, `&&`, `>`, etc.) because tools
+    /// like Claude Code routinely pipe output: `cmd 2>&1 | tail -5`.
     pub fn permissive() -> Self {
         Self {
             allowed: HashSet::new(), // Empty = all allowed (unless blocked)
             blocked: Self::default().blocked,
             allowed_rules: Vec::new(),
             blocked_rules: default_blocked_rules(),
+            allow_metacharacters: true,
         }
     }
 
@@ -114,6 +126,7 @@ impl CommandLattice {
             blocked: Self::default().blocked,
             allowed_rules: Vec::new(),
             blocked_rules: default_blocked_rules(),
+            allow_metacharacters: false,
         }
     }
 
@@ -137,6 +150,8 @@ impl CommandLattice {
             blocked,
             allowed_rules,
             blocked_rules,
+            // Meet = more restrictive: only allow metacharacters if both allow them
+            allow_metacharacters: self.allow_metacharacters && other.allow_metacharacters,
         }
     }
 
@@ -157,6 +172,8 @@ impl CommandLattice {
             blocked,
             allowed_rules,
             blocked_rules,
+            // Join = more permissive: allow metacharacters if either allows them
+            allow_metacharacters: self.allow_metacharacters || other.allow_metacharacters,
         }
     }
 
@@ -187,8 +204,10 @@ impl CommandLattice {
             return false;
         }
 
-        // Block shell metacharacters unless explicitly allowlisted
-        if self.allowed.is_empty()
+        // Block shell metacharacters unless explicitly allowlisted or
+        // allow_metacharacters is set (permissive profiles).
+        if !self.allow_metacharacters
+            && self.allowed.is_empty()
             && self.allowed_rules.is_empty()
             && contains_shell_metacharacters(&words)
         {
@@ -673,12 +692,14 @@ mod tests {
             blocked: ["rm -rf"].iter().map(|s| s.to_string()).collect(),
             allowed_rules: Vec::new(),
             blocked_rules: Vec::new(),
+            allow_metacharacters: false,
         };
         let b = CommandLattice {
             allowed: HashSet::new(),
             blocked: ["sudo"].iter().map(|s| s.to_string()).collect(),
             allowed_rules: Vec::new(),
             blocked_rules: Vec::new(),
+            allow_metacharacters: false,
         };
 
         let result = a.meet(&b);
@@ -696,6 +717,7 @@ mod tests {
             blocked: HashSet::new(),
             allowed_rules: Vec::new(),
             blocked_rules: Vec::new(),
+            allow_metacharacters: false,
         };
         let b = CommandLattice {
             allowed: ["cargo test", "cargo build"]
@@ -705,6 +727,7 @@ mod tests {
             blocked: HashSet::new(),
             allowed_rules: Vec::new(),
             blocked_rules: Vec::new(),
+            allow_metacharacters: false,
         };
 
         let result = a.meet(&b);
@@ -722,8 +745,20 @@ mod tests {
     }
 
     #[test]
-    fn test_permissive_blocks_shell_metacharacters() {
+    fn test_permissive_allows_shell_metacharacters() {
+        // Permissive profiles allow pipes, redirects, etc.
+        // Claude Code routinely uses `cmd 2>&1 | tail -5`.
         let lattice = CommandLattice::permissive();
+        assert!(lattice.can_execute("echo hi | cat"));
+        assert!(lattice.can_execute("echo hi > out.txt"));
+        assert!(lattice.can_execute("echo hi && whoami"));
+        assert!(lattice.can_execute("cargo test 2>&1 | tail -5"));
+    }
+
+    #[test]
+    fn test_default_blocks_shell_metacharacters() {
+        // Default (restrictive) profiles block metacharacters.
+        let lattice = CommandLattice::default();
         assert!(!lattice.can_execute("echo hi | cat"));
         assert!(!lattice.can_execute("echo hi > out.txt"));
         assert!(!lattice.can_execute("echo hi && whoami"));
@@ -782,12 +817,14 @@ mod tests {
             blocked: ["rm -rf", "sudo"].iter().map(|s| s.to_string()).collect(),
             allowed_rules: Vec::new(),
             blocked_rules: Vec::new(),
+            allow_metacharacters: false,
         };
         let b = CommandLattice {
             allowed: ["cargo build"].iter().map(|s| s.to_string()).collect(),
             blocked: ["sudo", "chmod"].iter().map(|s| s.to_string()).collect(),
             allowed_rules: Vec::new(),
             blocked_rules: Vec::new(),
+            allow_metacharacters: false,
         };
 
         let result = a.join(&b);
