@@ -206,6 +206,8 @@ mod tests {
             authority_to_instruct: false,
             memory_behavior: portcullis_core::manifest::MemoryBehavior::None,
             allowed_compartments: vec![],
+            signature: None,
+            signing_key: None,
         }
     }
 
