@@ -315,27 +315,119 @@ fn load_session(session_id: &str) -> SessionLoad {
     }
 }
 
+/// Atomically save session state with advisory file locking (#478).
+///
+/// Uses write-to-temp-then-rename for atomic writes (POSIX guarantees
+/// rename is atomic within the same filesystem). Advisory flock prevents
+/// concurrent hook invocations from racing on the same session.
 fn save_session(session_id: &str, state: &SessionState) {
     let path = session_state_path(session_id);
     let hwm_path = session_hwm_path(session_id);
+    let lock_path = session_lock_path(session_id);
+
+    // Acquire advisory lock (non-blocking — if locked, warn and proceed)
+    let _lock_guard = acquire_session_lock(&lock_path);
 
     match serde_json::to_string(state) {
         Ok(json) => {
-            // Write state file — warn on failure (taint tracking could be lost)
-            if let Err(e) = std::fs::write(&path, &json) {
+            // Atomic write: write to temp file, then rename (#478)
+            let tmp_path = path.with_extension("json.tmp");
+            if let Err(e) = std::fs::write(&tmp_path, &json) {
                 eprintln!(
-                    "nucleus: WARNING — failed to save session state: {e}. \
+                    "nucleus: WARNING — failed to write temp state file: {e}. \
                      Taint tracking may be incomplete."
                 );
+                return;
             }
-            // Write HWM file separately — survives state file deletion
-            if let Err(e) = std::fs::write(&hwm_path, state.high_water_mark.to_string()) {
-                eprintln!("nucleus: WARNING — failed to save HWM file: {e}");
+            if let Err(e) = std::fs::rename(&tmp_path, &path) {
+                eprintln!(
+                    "nucleus: WARNING — atomic rename failed: {e}. \
+                     Falling back to non-atomic write."
+                );
+                // Fallback: direct write (better than losing state entirely)
+                std::fs::write(&path, &json).ok();
+            }
+
+            // Write HWM file separately — survives state file deletion.
+            // Also atomic: temp + rename.
+            let hwm_tmp = hwm_path.with_extension("hwm.tmp");
+            let hwm_content = state.high_water_mark.to_string();
+            if std::fs::write(&hwm_tmp, &hwm_content).is_ok() {
+                if let Err(e) = std::fs::rename(&hwm_tmp, &hwm_path) {
+                    eprintln!("nucleus: WARNING — HWM atomic rename failed: {e}");
+                    std::fs::write(&hwm_path, &hwm_content).ok();
+                }
+            } else {
+                // Direct write fallback
+                if let Err(e) = std::fs::write(&hwm_path, &hwm_content) {
+                    eprintln!("nucleus: WARNING — failed to save HWM file: {e}");
+                }
             }
         }
         Err(e) => {
             eprintln!("nucleus: WARNING — failed to serialize session state: {e}");
         }
+    }
+}
+
+/// Lock file path for a session (advisory flock).
+fn session_lock_path(session_id: &str) -> PathBuf {
+    let safe_id = sanitize_session_id(session_id);
+    session_dir().join(format!(".{safe_id}.lock"))
+}
+
+/// RAII guard for advisory file lock.
+struct SessionLockGuard {
+    #[cfg(unix)]
+    _file: std::fs::File,
+}
+
+/// Acquire an advisory file lock (non-blocking).
+///
+/// Returns a guard that releases the lock on drop. If locking fails
+/// (e.g., another invocation holds it), logs a warning and returns
+/// a no-op guard — we proceed without the lock rather than blocking
+/// the hook response (which would stall Claude Code).
+fn acquire_session_lock(lock_path: &std::path::Path) -> SessionLockGuard {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(lock_path)
+        {
+            Ok(file) => {
+                // Non-blocking exclusive lock
+                let fd = file.as_raw_fd();
+                // SAFETY: fd is valid, LOCK_EX | LOCK_NB is a valid flock operation
+                let ret = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+                if ret != 0 {
+                    eprintln!(
+                        "nucleus: WARNING — session lock contention (concurrent hook invocation). \
+                         Proceeding without lock."
+                    );
+                }
+                SessionLockGuard { _file: file }
+            }
+            Err(e) => {
+                eprintln!("nucleus: WARNING — failed to create lock file: {e}");
+                // Create a dummy guard with /dev/null as fallback
+                let file = std::fs::File::open("/dev/null").unwrap_or_else(|_| {
+                    std::fs::OpenOptions::new()
+                        .read(true)
+                        .open(lock_path)
+                        .unwrap_or_else(|_| panic!("cannot open /dev/null or lock file"))
+                });
+                SessionLockGuard { _file: file }
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = lock_path;
+        SessionLockGuard {}
     }
 }
 
@@ -1663,6 +1755,8 @@ fn gc_stale_sessions(ttl_secs: u64) -> usize {
         let is_session_file = ext == "json"
             || ext == "hwm"
             || ext == "compartment"
+            || ext == "lock"
+            || ext == "tmp"
             || name.ends_with(".parent-label")
             || name.ends_with(".parent-chain");
 
