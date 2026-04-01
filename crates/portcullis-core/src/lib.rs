@@ -78,6 +78,7 @@ pub mod managed_settings;
 pub mod manifest;
 #[cfg(feature = "serde")]
 pub mod memory;
+pub mod parser_registry;
 pub mod policy_rules;
 #[cfg(feature = "envelope")]
 pub mod promotion;
