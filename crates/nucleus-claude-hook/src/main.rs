@@ -19,102 +19,8 @@ use ring::rand::SystemRandom;
 use ring::signature::Ed25519KeyPair;
 use serde::{Deserialize, Serialize};
 
-// ---------------------------------------------------------------------------
-// Claude Code hook protocol types
-// ---------------------------------------------------------------------------
-
-/// Input from Claude Code (PreToolUse hook).
-///
-/// Claude Code sends snake_case fields: session_id, tool_name, tool_input, etc.
-#[derive(Debug, Deserialize)]
-struct HookInput {
-    /// Session identifier (stable across invocations).
-    session_id: String,
-    /// Hook event name (e.g., "PreToolUse", "PostToolUse", "SessionEnd").
-    #[serde(default = "default_hook_event")]
-    hook_event_name: String,
-    /// Tool name as Claude Code reports it (empty for non-tool events).
-    #[serde(default)]
-    tool_name: String,
-    /// Tool-specific parameters (JSON object).
-    #[serde(default)]
-    tool_input: serde_json::Value,
-    /// Tool result (PostToolUse only — the tool's output).
-    #[serde(default)]
-    tool_result: Option<String>,
-}
-
-fn default_hook_event() -> String {
-    "PreToolUse".to_string()
-}
-
-/// Output to Claude Code (PreToolUse hook protocol).
-///
-/// Claude Code expects: `{ "hookSpecificOutput": { "permissionDecision": "allow"|"deny"|"ask", ... } }`
-/// See: <https://code.claude.com/docs/en/hooks>
-#[derive(Debug, Serialize)]
-struct HookOutput {
-    #[serde(rename = "hookSpecificOutput")]
-    hook_specific_output: HookSpecificOutput,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HookSpecificOutput {
-    /// Always "PreToolUse".
-    hook_event_name: String,
-    /// "allow", "deny", or "ask".
-    permission_decision: String,
-    /// Human-readable reason (shown to user on deny/ask, to Claude on deny).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    permission_decision_reason: Option<String>,
-    /// Context added to Claude's prompt before the tool executes.
-    /// Used to inform the model about its current security context.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    additional_context: Option<String>,
-}
-
-impl HookOutput {
-    /// Allow with optional compartment context injected into Claude's prompt.
-    fn allow_with_context(compartment: Option<&str>) -> Self {
-        Self {
-            hook_specific_output: HookSpecificOutput {
-                hook_event_name: "PreToolUse".to_string(),
-                permission_decision: "allow".to_string(),
-                permission_decision_reason: None,
-                additional_context: compartment.map(|c| {
-                    format!(
-                        "[nucleus security context: compartment={c}] \
-                         You are operating in {c} mode. Your capabilities \
-                         are restricted to this compartment's permissions."
-                    )
-                }),
-            },
-        }
-    }
-
-    fn deny(reason: impl Into<String>) -> Self {
-        Self {
-            hook_specific_output: HookSpecificOutput {
-                hook_event_name: "PreToolUse".to_string(),
-                permission_decision: "deny".to_string(),
-                permission_decision_reason: Some(reason.into()),
-                additional_context: None,
-            },
-        }
-    }
-
-    fn ask(reason: impl Into<String>) -> Self {
-        Self {
-            hook_specific_output: HookSpecificOutput {
-                hook_event_name: "PreToolUse".to_string(),
-                permission_decision: "ask".to_string(),
-                permission_decision_reason: Some(reason.into()),
-                additional_context: None,
-            },
-        }
-    }
-}
+mod protocol;
+use protocol::{HookInput, HookOutput};
 
 // ---------------------------------------------------------------------------
 // Session state persistence
@@ -3036,7 +2942,7 @@ fn main() {
     };
 
     // Log to stderr
-    let verdict_str = &output.hook_specific_output.permission_decision;
+    let verdict_str = output.permission_decision();
     let flow_node = decision
         .flow_node_id
         .map(|id| format!(", flow_node: {id}"))
