@@ -337,6 +337,15 @@ fn format_denial_for_user(
                 - Add the sink class to allowed_sinks or remove it from denied_sinks"
             )
         }
+        DenyReason::DelegationDenied { detail } => {
+            format!(
+                "Blocked: delegation constraint violated: {detail}{comp_hint}.\n  \
+                How to fix:\n  \
+                - Check that the delegation has not expired\n  \
+                - Ensure the delegation depth has not been exhausted\n  \
+                - Verify AgentSpawn is in the delegation scope's allowed_sinks"
+            )
+        }
         DenyReason::InvalidDeclassification { detail } => {
             format!(
                 "Blocked: declassification token rejected: {detail}{comp_hint}.\n  \

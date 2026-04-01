@@ -235,6 +235,15 @@ pub enum DenyReason {
         /// Human-readable detail about why the enterprise policy blocked this.
         detail: String,
     },
+    /// Delegation constraint violation.
+    ///
+    /// The operation (typically `SpawnAgent`) is denied because the session's
+    /// delegation constraints forbid it — expired, depth exhausted, or sink
+    /// class not in scope.
+    DelegationDenied {
+        /// Human-readable detail about which constraint was violated.
+        detail: String,
+    },
     /// Information flow control violation.
     ///
     /// The session's accumulated IFC label violates a flow enforcement rule.
@@ -427,6 +436,14 @@ pub struct Kernel {
     /// trusted keys are configured.
     #[cfg(feature = "crypto")]
     trusted_public_keys: Vec<[u8; 32]>,
+    /// Optional delegation constraints for this session.
+    ///
+    /// When present, `SpawnAgent` operations are checked against scope,
+    /// depth, and expiry before being allowed. Set via [`Kernel::set_delegation`].
+    delegation: Option<portcullis_core::delegation::DelegationConstraints>,
+    /// Current delegation depth — incremented each time a `SpawnAgent`
+    /// operation is allowed. Used with `delegation.can_delegate_further()`.
+    delegation_depth: u32,
     /// Optional Ed25519 signing key for receipt signing.
     ///
     /// When present, `decide_with_parents()` produces signed receipts
@@ -496,6 +513,8 @@ impl Kernel {
             egress_policy: None,
             policy_rules: None,
             enterprise: None,
+            delegation: None,
+            delegation_depth: 0,
             #[cfg(feature = "crypto")]
             trusted_public_keys: Vec::new(),
             #[cfg(feature = "crypto")]
@@ -542,6 +561,8 @@ impl Kernel {
             egress_policy: None,
             policy_rules: None,
             enterprise: None,
+            delegation: None,
+            delegation_depth: 0,
             #[cfg(feature = "crypto")]
             trusted_public_keys: Vec::new(),
             #[cfg(feature = "crypto")]
@@ -909,6 +930,8 @@ impl Kernel {
             egress_policy: None,
             policy_rules: None,
             enterprise: None,
+            delegation: None,
+            delegation_depth: 0,
             #[cfg(feature = "crypto")]
             trusted_public_keys: Vec::new(),
             #[cfg(feature = "crypto")]
@@ -952,6 +975,8 @@ impl Kernel {
             egress_policy: None,
             policy_rules: None,
             enterprise: None,
+            delegation: None,
+            delegation_depth: 0,
             #[cfg(feature = "crypto")]
             trusted_public_keys: Vec::new(),
             #[cfg(feature = "crypto")]
@@ -1043,6 +1068,79 @@ impl Kernel {
                 false,
                 false,
             );
+        }
+
+        // 2b. Delegation constraint check (for SpawnAgent operations).
+        //
+        // When delegation constraints are set, SpawnAgent is gated on:
+        //   a) Expiry — is the delegation still valid?
+        //   b) Depth — can this session delegate further?
+        //   c) Scope — is AgentSpawn in the allowed sink classes?
+        if operation == Operation::SpawnAgent {
+            if let Some(ref delegation) = self.delegation {
+                let now_unix = now.timestamp() as u64;
+
+                // a) Expiry check
+                if !delegation.is_valid(now_unix) {
+                    return self.record_with_exposure(
+                        operation,
+                        subject,
+                        Verdict::Deny(DenyReason::DelegationDenied {
+                            detail: format!(
+                                "delegation expired at {} (now={})",
+                                delegation.expires_at, now_unix,
+                            ),
+                        }),
+                        &pre_hash,
+                        pre_exposure_count,
+                        contributed_label,
+                        false,
+                        false,
+                    );
+                }
+
+                // b) Depth check
+                if !delegation.can_delegate_further(self.delegation_depth) {
+                    return self.record_with_exposure(
+                        operation,
+                        subject,
+                        Verdict::Deny(DenyReason::DelegationDenied {
+                            detail: format!(
+                                "delegation depth exhausted: current_depth={}, max={}",
+                                self.delegation_depth, delegation.max_delegation_depth,
+                            ),
+                        }),
+                        &pre_hash,
+                        pre_exposure_count,
+                        contributed_label,
+                        false,
+                        false,
+                    );
+                }
+
+                // c) Scope check — AgentSpawn must be in allowed_sinks
+                if !delegation
+                    .scope
+                    .allowed_sinks
+                    .contains(&portcullis_core::SinkClass::AgentSpawn)
+                {
+                    return self.record_with_exposure(
+                        operation,
+                        subject,
+                        Verdict::Deny(DenyReason::DelegationDenied {
+                            detail: format!(
+                                "AgentSpawn not in delegation scope (allowed: {:?})",
+                                delegation.scope.allowed_sinks,
+                            ),
+                        }),
+                        &pre_hash,
+                        pre_exposure_count,
+                        contributed_label,
+                        false,
+                        false,
+                    );
+                }
+            }
         }
 
         // 3. Capability level check
@@ -1296,6 +1394,9 @@ impl Kernel {
                 self.exposure = exposure_core::apply_record(&self.exposure, operation);
                 let state_uninhabitable =
                     !ExposureSet::empty().is_uninhabitable() && self.exposure.is_uninhabitable();
+                if operation == Operation::SpawnAgent && self.delegation.is_some() {
+                    self.delegation_depth += 1;
+                }
                 return self.record_with_exposure(
                     operation,
                     subject,
@@ -1336,6 +1437,9 @@ impl Kernel {
                 let pre_complete = self.exposure.is_uninhabitable();
                 self.exposure = exposure_core::apply_record(&self.exposure, operation);
                 let newly_completed = !pre_complete && self.exposure.is_uninhabitable();
+                if operation == Operation::SpawnAgent && self.delegation.is_some() {
+                    self.delegation_depth += 1;
+                }
                 return self.record_with_exposure(
                     operation,
                     subject,
@@ -1363,6 +1467,11 @@ impl Kernel {
         let pre_complete = self.exposure.is_uninhabitable();
         self.exposure = exposure_core::apply_record(&self.exposure, operation);
         let state_uninhabitable = !pre_complete && self.exposure.is_uninhabitable();
+
+        // Increment delegation depth when a SpawnAgent is allowed.
+        if operation == Operation::SpawnAgent && self.delegation.is_some() {
+            self.delegation_depth += 1;
+        }
 
         self.record_with_exposure(
             operation,
@@ -1530,6 +1639,34 @@ impl Kernel {
     /// Get the enterprise allowlist, if set.
     pub fn enterprise(&self) -> Option<&portcullis_core::enterprise::EnterpriseAllowlist> {
         self.enterprise.as_ref()
+    }
+
+    /// Set delegation constraints for this session.
+    ///
+    /// When set, `SpawnAgent` operations are checked against:
+    /// 1. **Expiry** — `is_valid(now)` rejects expired delegations
+    /// 2. **Depth** — `can_delegate_further(depth)` rejects exhausted chains
+    /// 3. **Scope** — `allowed_sinks` must contain `AgentSpawn`
+    ///
+    /// Must be called before the first `decide()` — delegation constraints
+    /// are immutable for the session lifetime.
+    pub fn set_delegation(
+        &mut self,
+        constraints: portcullis_core::delegation::DelegationConstraints,
+    ) {
+        self.delegation = Some(constraints);
+    }
+
+    /// Get the delegation constraints, if set.
+    pub fn delegation(&self) -> Option<&portcullis_core::delegation::DelegationConstraints> {
+        self.delegation.as_ref()
+    }
+
+    /// Get the current delegation depth.
+    ///
+    /// Starts at 0 and increments each time a `SpawnAgent` operation is allowed.
+    pub fn delegation_depth(&self) -> u32 {
+        self.delegation_depth
     }
 
     /// Get the append-only session trace.
@@ -4244,6 +4381,228 @@ denied_hosts = ["evil.github.com"]
                     other
                 ),
             }
+        }
+    }
+
+    // ── Delegation constraint enforcement (#779) ───────────────
+
+    mod delegation_enforcement {
+        use super::*;
+        use portcullis_core::delegation::{DelegationConstraints, DelegationScope};
+        use portcullis_core::SinkClass;
+
+        /// Helper: a permissive PermissionLattice that allows SpawnAgent.
+        fn spawn_allowed_perms() -> PermissionLattice {
+            use crate::capability::CapabilityLattice;
+            let caps = CapabilityLattice::permissive();
+            PermissionLattice {
+                capabilities: caps,
+                ..PermissionLattice::default()
+            }
+        }
+
+        fn future_expiry() -> u64 {
+            (chrono::Utc::now().timestamp() as u64) + 3600
+        }
+
+        fn past_expiry() -> u64 {
+            // Well in the past
+            1_000_000
+        }
+
+        #[test]
+        fn spawn_allowed_when_delegation_permits() {
+            let mut kernel = Kernel::capability_only(spawn_allowed_perms());
+            kernel.set_delegation(DelegationConstraints {
+                scope: DelegationScope {
+                    allowed_paths: vec!["**".to_string()],
+                    allowed_sinks: vec![SinkClass::AgentSpawn],
+                    allowed_repos: vec!["*".to_string()],
+                },
+                max_delegation_depth: 2,
+                expires_at: future_expiry(),
+            });
+
+            let (d, token) = kernel.decide(Operation::SpawnAgent, "child-agent");
+            assert!(d.verdict.is_allowed(), "SpawnAgent should be allowed");
+            assert!(token.is_some());
+            assert_eq!(kernel.delegation_depth(), 1);
+        }
+
+        #[test]
+        fn spawn_denied_when_delegation_expired() {
+            let mut kernel = Kernel::capability_only(spawn_allowed_perms());
+            kernel.set_delegation(DelegationConstraints {
+                scope: DelegationScope::unrestricted(),
+                max_delegation_depth: 5,
+                expires_at: past_expiry(),
+            });
+
+            let (d, _token) = kernel.decide(Operation::SpawnAgent, "child-agent");
+            assert!(
+                d.verdict.is_denied(),
+                "expired delegation must deny SpawnAgent"
+            );
+            match &d.verdict {
+                Verdict::Deny(DenyReason::DelegationDenied { detail }) => {
+                    assert!(
+                        detail.contains("expired"),
+                        "detail should mention expiry: {detail}"
+                    );
+                }
+                other => panic!("expected DelegationDenied, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn spawn_denied_when_depth_exhausted() {
+            let mut kernel = Kernel::capability_only(spawn_allowed_perms());
+            kernel.set_delegation(DelegationConstraints {
+                scope: DelegationScope {
+                    allowed_paths: vec!["**".to_string()],
+                    allowed_sinks: vec![SinkClass::AgentSpawn],
+                    allowed_repos: vec!["*".to_string()],
+                },
+                max_delegation_depth: 1,
+                expires_at: future_expiry(),
+            });
+
+            // First spawn succeeds — depth goes from 0 to 1
+            let (d1, token1) = kernel.decide(Operation::SpawnAgent, "child-1");
+            assert!(d1.verdict.is_allowed(), "first spawn should succeed");
+            assert!(token1.is_some());
+            assert_eq!(kernel.delegation_depth(), 1);
+
+            // Second spawn denied — depth 1 >= max 1
+            let (d2, token2) = kernel.decide(Operation::SpawnAgent, "child-2");
+            assert!(
+                d2.verdict.is_denied(),
+                "second spawn should be denied (depth exhausted)"
+            );
+            assert!(token2.is_none());
+            match &d2.verdict {
+                Verdict::Deny(DenyReason::DelegationDenied { detail }) => {
+                    assert!(detail.contains("depth exhausted"), "detail: {detail}");
+                }
+                other => panic!("expected DelegationDenied, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn spawn_denied_when_sink_not_in_scope() {
+            let mut kernel = Kernel::capability_only(spawn_allowed_perms());
+            // Scope allows writes but NOT AgentSpawn
+            kernel.set_delegation(DelegationConstraints {
+                scope: DelegationScope {
+                    allowed_paths: vec!["**".to_string()],
+                    allowed_sinks: vec![SinkClass::WorkspaceWrite, SinkClass::GitCommit],
+                    allowed_repos: vec!["*".to_string()],
+                },
+                max_delegation_depth: 5,
+                expires_at: future_expiry(),
+            });
+
+            let (d, token) = kernel.decide(Operation::SpawnAgent, "child-agent");
+            assert!(
+                d.verdict.is_denied(),
+                "SpawnAgent should be denied (sink not in scope)"
+            );
+            assert!(token.is_none());
+            match &d.verdict {
+                Verdict::Deny(DenyReason::DelegationDenied { detail }) => {
+                    assert!(
+                        detail.contains("AgentSpawn not in delegation scope"),
+                        "detail: {detail}"
+                    );
+                }
+                other => panic!("expected DelegationDenied, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn non_spawn_ops_unaffected_by_delegation() {
+            let mut kernel = Kernel::capability_only(spawn_allowed_perms());
+            // Set a delegation with empty sinks — should NOT block ReadFiles
+            kernel.set_delegation(DelegationConstraints {
+                scope: DelegationScope::empty(),
+                max_delegation_depth: 0,
+                expires_at: past_expiry(),
+            });
+
+            let (d, token) = kernel.decide(Operation::ReadFiles, "/workspace/foo.rs");
+            assert!(
+                d.verdict.is_allowed(),
+                "ReadFiles should be unaffected by delegation constraints"
+            );
+            assert!(token.is_some());
+        }
+
+        #[test]
+        fn no_delegation_means_no_constraint() {
+            let mut kernel = Kernel::capability_only(spawn_allowed_perms());
+            // No set_delegation() call — SpawnAgent should pass through to
+            // normal capability checks
+            let (d, token) = kernel.decide(Operation::SpawnAgent, "child-agent");
+            assert!(
+                d.verdict.is_allowed(),
+                "without delegation constraints, SpawnAgent is governed by capabilities alone"
+            );
+            assert!(token.is_some());
+            // Depth should NOT increment when no delegation is set
+            assert_eq!(kernel.delegation_depth(), 0);
+        }
+
+        #[test]
+        fn depth_increments_only_on_allowed_spawn() {
+            let mut kernel = Kernel::capability_only(spawn_allowed_perms());
+            kernel.set_delegation(DelegationConstraints {
+                scope: DelegationScope {
+                    allowed_paths: vec!["**".to_string()],
+                    allowed_sinks: vec![SinkClass::AgentSpawn],
+                    allowed_repos: vec!["*".to_string()],
+                },
+                max_delegation_depth: 3,
+                expires_at: future_expiry(),
+            });
+
+            assert_eq!(kernel.delegation_depth(), 0);
+
+            // Allow first
+            let (d1, _) = kernel.decide(Operation::SpawnAgent, "a");
+            assert!(d1.verdict.is_allowed());
+            assert_eq!(kernel.delegation_depth(), 1);
+
+            // Allow second
+            let (d2, _) = kernel.decide(Operation::SpawnAgent, "b");
+            assert!(d2.verdict.is_allowed());
+            assert_eq!(kernel.delegation_depth(), 2);
+
+            // Allow third
+            let (d3, _) = kernel.decide(Operation::SpawnAgent, "c");
+            assert!(d3.verdict.is_allowed());
+            assert_eq!(kernel.delegation_depth(), 3);
+
+            // Deny fourth — depth 3 >= max 3
+            let (d4, _) = kernel.decide(Operation::SpawnAgent, "d");
+            assert!(d4.verdict.is_denied());
+            // Depth stays at 3 since the spawn was denied
+            assert_eq!(kernel.delegation_depth(), 3);
+        }
+
+        #[test]
+        fn delegation_accessors() {
+            let mut kernel = Kernel::capability_only(spawn_allowed_perms());
+            assert!(kernel.delegation().is_none());
+            assert_eq!(kernel.delegation_depth(), 0);
+
+            let constraints = DelegationConstraints {
+                scope: DelegationScope::unrestricted(),
+                max_delegation_depth: 5,
+                expires_at: future_expiry(),
+            };
+            kernel.set_delegation(constraints.clone());
+            assert!(kernel.delegation().is_some());
+            assert_eq!(kernel.delegation().unwrap().max_delegation_depth, 5);
         }
     }
 }
