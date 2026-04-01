@@ -18,6 +18,134 @@
 
 use crate::SinkClass;
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Glob matching — dependency-free, recursive byte-level matcher
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Returns `true` if `parent_pattern` glob-covers `child`.
+///
+/// Coverage means every concrete path matched by `child` is also matched by
+/// `parent_pattern`. When `child` is a literal path (no glob characters),
+/// this reduces to `path_glob_match(parent_pattern, child)`. When `child`
+/// is itself a glob, we check structural subsumption: the parent must be
+/// at least as broad as the child.
+fn glob_covers(parent: &str, child: &str) -> bool {
+    // Fast path: exact string equality.
+    if parent == child {
+        return true;
+    }
+    // If child has no glob characters, it's a literal — just match it.
+    if !has_glob_chars(child) {
+        return path_glob_match(parent, child);
+    }
+    // Child is also a glob. Check if parent structurally subsumes it.
+    // A parent `**` or `**/X` always covers any child.
+    if parent == "**" || parent == "**/*" {
+        return true;
+    }
+    // If both share the same prefix before globs diverge, and the parent's
+    // glob is at least as broad, the parent covers the child.
+    // Strategy: split on `/` segments and compare pairwise.
+    glob_subsumes_segments(parent, child)
+}
+
+/// Segment-by-segment glob subsumption check.
+///
+/// A parent segment covers a child segment if:
+/// - parent segment is `**` (covers any number of child segments)
+/// - parent segment is `*` and child segment is `*` or a literal
+/// - parent segment equals child segment exactly
+fn glob_subsumes_segments(parent: &str, child: &str) -> bool {
+    let p_segs: Vec<&str> = parent.split('/').collect();
+    let c_segs: Vec<&str> = child.split('/').collect();
+    subsumes_inner(&p_segs, &c_segs)
+}
+
+fn subsumes_inner(parent: &[&str], child: &[&str]) -> bool {
+    if parent.is_empty() {
+        return child.is_empty();
+    }
+    if parent[0] == "**" {
+        // `**` can consume zero or more child segments
+        let rest = &parent[1..];
+        for i in 0..=child.len() {
+            if subsumes_inner(rest, &child[i..]) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if child.is_empty() {
+        return false;
+    }
+    // A parent `*` covers any single child segment (literal or `*`)
+    if parent[0] == "*" && child[0] != "**" {
+        return subsumes_inner(&parent[1..], &child[1..]);
+    }
+    // Exact segment match (handles literal = literal, `**` = `**`, etc.)
+    if parent[0] == child[0] {
+        return subsumes_inner(&parent[1..], &child[1..]);
+    }
+    false
+}
+
+/// Match a concrete path against a glob pattern.
+///
+/// Glob syntax:
+/// - `*` matches any characters except `/`
+/// - `**` matches any characters including `/` (zero or more path segments)
+/// - All other characters match literally
+///
+/// This is a dependency-free recursive matcher operating on bytes.
+pub fn path_glob_match(pattern: &str, path: &str) -> bool {
+    match_inner(pattern.as_bytes(), path.as_bytes())
+}
+
+fn match_inner(pattern: &[u8], text: &[u8]) -> bool {
+    if pattern.is_empty() {
+        return text.is_empty();
+    }
+    if pattern.len() >= 2 && pattern[0] == b'*' && pattern[1] == b'*' {
+        let rest = if pattern.len() > 2 && pattern[2] == b'/' {
+            &pattern[3..] // skip `**/`
+        } else {
+            &pattern[2..] // bare `**` at end
+        };
+        // `**` matches zero or more characters including `/`
+        for i in 0..=text.len() {
+            if match_inner(rest, &text[i..]) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if pattern[0] == b'*' {
+        // `*` matches zero or more non-`/` characters
+        let rest = &pattern[1..];
+        for i in 0..=text.len() {
+            if i > 0 && text[i - 1] == b'/' {
+                break;
+            }
+            if match_inner(rest, &text[i..]) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if text.is_empty() {
+        return false;
+    }
+    if pattern[0] == text[0] {
+        return match_inner(&pattern[1..], &text[1..]);
+    }
+    false
+}
+
+/// Returns true if the string contains glob metacharacters (`*`).
+fn has_glob_chars(s: &str) -> bool {
+    s.contains('*')
+}
+
 /// Scope restrictions for a delegation — which resources the delegate may touch.
 ///
 /// All fields use allowlist semantics: an empty list means nothing is allowed
@@ -52,30 +180,38 @@ impl DelegationScope {
         Self {
             allowed_paths: vec!["**".to_string()],
             allowed_sinks: SinkClass::ALL.to_vec(),
-            allowed_repos: vec!["*".to_string()],
+            allowed_repos: vec!["**".to_string()],
         }
     }
 
     /// Returns true if `self` is a subset of `parent` on every dimension.
     ///
-    /// Subset means: every element in `self.allowed_X` must appear in
-    /// `parent.allowed_X`. This is a simple containment check — glob
-    /// pattern subsumption (e.g., `"src/lib.rs"` ⊆ `"src/**"`) is NOT
-    /// evaluated here; the caller must expand globs before comparison
-    /// or use literal paths.
+    /// For paths and repos, each element in `self` must be *covered* by at
+    /// least one element in `parent`. Coverage is determined by glob matching:
+    /// a parent pattern like `"src/**"` covers child paths `"src/lib.rs"`,
+    /// `"src/*"`, and `"src/foo/bar.rs"`.
+    ///
+    /// Glob syntax:
+    /// - `*` matches any characters except `/` (single path segment)
+    /// - `**` matches any characters including `/` (zero or more segments)
+    /// - Literal characters match exactly
     pub fn is_subset_of(&self, parent: &DelegationScope) -> bool {
-        let paths_ok = self
-            .allowed_paths
-            .iter()
-            .all(|p| parent.allowed_paths.contains(p));
+        let paths_ok = self.allowed_paths.iter().all(|child| {
+            parent
+                .allowed_paths
+                .iter()
+                .any(|parent_pat| glob_covers(parent_pat, child))
+        });
         let sinks_ok = self
             .allowed_sinks
             .iter()
             .all(|s| parent.allowed_sinks.contains(s));
-        let repos_ok = self
-            .allowed_repos
-            .iter()
-            .all(|r| parent.allowed_repos.contains(r));
+        let repos_ok = self.allowed_repos.iter().all(|child| {
+            parent
+                .allowed_repos
+                .iter()
+                .any(|parent_pat| glob_covers(parent_pat, child))
+        });
         paths_ok && sinks_ok && repos_ok
     }
 
@@ -572,5 +708,128 @@ mod tests {
         assert_eq!(narrowed2.expires_at, 3_000);
         assert!(narrowed2.scope.is_subset_of(&narrowed1.scope));
         assert!(narrowed1.scope.is_subset_of(&root.scope));
+    }
+
+    // ── path_glob_match ────────────────────────────────────────────
+
+    #[test]
+    fn glob_exact_match() {
+        assert!(path_glob_match("src/lib.rs", "src/lib.rs"));
+        assert!(!path_glob_match("src/lib.rs", "src/main.rs"));
+    }
+
+    #[test]
+    fn glob_star_matches_single_segment() {
+        assert!(path_glob_match("src/*", "src/lib.rs"));
+        assert!(path_glob_match("src/*", "src/main.rs"));
+        assert!(!path_glob_match("src/*", "src/foo/bar.rs"));
+    }
+
+    #[test]
+    fn glob_double_star_matches_multiple_segments() {
+        assert!(path_glob_match("src/**", "src/lib.rs"));
+        assert!(path_glob_match("src/**", "src/foo/bar/baz.rs"));
+        assert!(!path_glob_match("src/**", "tests/foo.rs"));
+    }
+
+    #[test]
+    fn glob_double_star_slash_prefix() {
+        assert!(path_glob_match("**/lib.rs", "src/lib.rs"));
+        assert!(path_glob_match("**/lib.rs", "a/b/c/lib.rs"));
+        assert!(path_glob_match("**/lib.rs", "lib.rs"));
+    }
+
+    #[test]
+    fn glob_universal_patterns() {
+        assert!(path_glob_match("**", "anything/at/all"));
+        assert!(path_glob_match("**/*", "foo/bar"));
+        assert!(path_glob_match("**", ""));
+    }
+
+    #[test]
+    fn glob_no_match() {
+        assert!(!path_glob_match("src/*", "tests/foo.rs"));
+        assert!(!path_glob_match("src/**", "tests/foo.rs"));
+    }
+
+    // ── is_subset_of with globs ────────────────────────────────────
+
+    #[test]
+    fn literal_child_subset_of_glob_parent() {
+        let parent = DelegationScope {
+            allowed_paths: vec!["src/**".to_string()],
+            allowed_sinks: SinkClass::ALL.to_vec(),
+            allowed_repos: vec!["**".to_string()],
+        };
+        let child = DelegationScope {
+            allowed_paths: vec!["src/lib.rs".to_string()],
+            allowed_sinks: vec![SinkClass::WorkspaceWrite],
+            allowed_repos: vec!["org/repo".to_string()],
+        };
+        assert!(child.is_subset_of(&parent));
+    }
+
+    #[test]
+    fn star_child_subset_of_doublestar_parent() {
+        let parent = DelegationScope {
+            allowed_paths: vec!["src/**".to_string()],
+            allowed_sinks: vec![SinkClass::WorkspaceWrite],
+            allowed_repos: vec!["**".to_string()],
+        };
+        let child = DelegationScope {
+            allowed_paths: vec!["src/*".to_string()],
+            allowed_sinks: vec![SinkClass::WorkspaceWrite],
+            allowed_repos: vec!["org/repo".to_string()],
+        };
+        assert!(child.is_subset_of(&parent));
+    }
+
+    #[test]
+    fn doublestar_child_not_subset_of_star_parent() {
+        let parent = DelegationScope {
+            allowed_paths: vec!["src/*".to_string()],
+            allowed_sinks: vec![SinkClass::WorkspaceWrite],
+            allowed_repos: vec!["*".to_string()],
+        };
+        let child = DelegationScope {
+            allowed_paths: vec!["src/**".to_string()],
+            allowed_sinks: vec![SinkClass::WorkspaceWrite],
+            allowed_repos: vec!["org/repo".to_string()],
+        };
+        assert!(!child.is_subset_of(&parent));
+    }
+
+    #[test]
+    fn narrow_succeeds_with_glob_parent_literal_child() {
+        let parent = DelegationConstraints {
+            scope: DelegationScope {
+                allowed_paths: vec!["workspace/**".to_string()],
+                allowed_sinks: vec![SinkClass::WorkspaceWrite],
+                allowed_repos: vec!["org/*".to_string()],
+            },
+            max_delegation_depth: 3,
+            expires_at: 2000,
+        };
+        let child = DelegationConstraints {
+            scope: DelegationScope {
+                allowed_paths: vec!["workspace/src/lib.rs".to_string()],
+                allowed_sinks: vec![SinkClass::WorkspaceWrite],
+                allowed_repos: vec!["org/repo".to_string()],
+            },
+            max_delegation_depth: 1,
+            expires_at: 1500,
+        };
+        assert!(parent.narrow(&child).is_some());
+    }
+
+    #[test]
+    fn unrestricted_parent_covers_any_child() {
+        let parent = DelegationScope::unrestricted();
+        let child = DelegationScope {
+            allowed_paths: vec!["some/deep/path/file.rs".to_string()],
+            allowed_sinks: vec![SinkClass::WorkspaceWrite],
+            allowed_repos: vec!["any/repo".to_string()],
+        };
+        assert!(child.is_subset_of(&parent));
     }
 }
