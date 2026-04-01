@@ -228,7 +228,7 @@ pub fn receipt_canonical_bytes(receipt: &FlowReceipt) -> Vec<u8> {
     let mut buf = Vec::with_capacity(256);
 
     // Version tag
-    buf.extend_from_slice(b"nucleus-receipt-v3\n");
+    buf.extend_from_slice(b"nucleus-receipt-v4\n");
 
     // Chain ID — binds this receipt to a specific session (#492).
     buf.extend_from_slice(receipt.chain_id());
@@ -262,6 +262,7 @@ pub fn receipt_canonical_bytes(receipt: &FlowReceipt) -> Vec<u8> {
         buf.extend_from_slice(&(ta.preserved_label.integrity as u8).to_le_bytes());
         buf.extend_from_slice(&(ta.preserved_label.authority as u8).to_le_bytes());
         buf.extend_from_slice(&ta.preserved_label.provenance.bits().to_le_bytes());
+        buf.extend_from_slice(&(ta.preserved_label.derivation as u8).to_le_bytes());
         buf.extend_from_slice(&ta.preserved_label.freshness.observed_at.to_le_bytes());
         buf.extend_from_slice(&ta.preserved_label.freshness.ttl_secs.to_le_bytes());
     }
@@ -277,6 +278,7 @@ fn append_receipt_node_bytes(buf: &mut Vec<u8>, node: &ReceiptNode) {
     buf.extend_from_slice(&(node.label.integrity as u8).to_le_bytes());
     buf.extend_from_slice(&(node.label.authority as u8).to_le_bytes());
     buf.extend_from_slice(&node.label.provenance.bits().to_le_bytes());
+    buf.extend_from_slice(&(node.label.derivation as u8).to_le_bytes());
     buf.extend_from_slice(&node.label.freshness.observed_at.to_le_bytes());
     buf.extend_from_slice(&node.label.freshness.ttl_secs.to_le_bytes());
 }
@@ -571,6 +573,38 @@ mod tests {
             receipt_canonical_bytes(&allow),
             receipt_canonical_bytes(&deny),
             "different verdicts must produce different canonical bytes"
+        );
+    }
+
+    /// Verify that different derivation classes produce different canonical bytes.
+    /// Regression test for #810 — derivation was omitted from signed content.
+    #[test]
+    fn canonical_bytes_differ_by_derivation() {
+        let mut label_det = IFCLabel::user_prompt(1000);
+        label_det.derivation = crate::DerivationClass::Deterministic;
+        let mut label_ai = IFCLabel::user_prompt(1000);
+        label_ai.derivation = crate::DerivationClass::AIDerived;
+
+        let action_det = make_node(
+            1,
+            NodeKind::OutboundAction,
+            label_det,
+            Some(Operation::WriteFiles),
+        );
+        let action_ai = make_node(
+            1,
+            NodeKind::OutboundAction,
+            label_ai,
+            Some(Operation::WriteFiles),
+        );
+
+        let receipt_det = build_receipt(&action_det, &[], FlowVerdict::Allow, 2000);
+        let receipt_ai = build_receipt(&action_ai, &[], FlowVerdict::Allow, 2000);
+
+        assert_ne!(
+            receipt_canonical_bytes(&receipt_det),
+            receipt_canonical_bytes(&receipt_ai),
+            "different derivation classes must produce different canonical bytes"
         );
     }
 
