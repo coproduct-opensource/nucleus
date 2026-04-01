@@ -379,7 +379,113 @@ impl RowEnvelope {
     pub fn is_verified_ready(&self) -> bool {
         self.verify_derivation_requirements().is_ok()
     }
+
+    /// Promote a single field's derivation class to `HumanPromoted`.
+    ///
+    /// Delegates to [`crate::promotion::promote`] for the named field,
+    /// then re-derives `row_derivation_class` from all fields to maintain
+    /// the row-level LUB invariant.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::promotion::PromotionError`] if the field does not
+    /// exist or if the underlying promotion validation fails.
+    pub fn promote_field(
+        &mut self,
+        field_name: &str,
+        request: &crate::promotion::PromotionRequest,
+        now: u64,
+    ) -> Result<crate::promotion::PromotionResult, PromotionApiError> {
+        let field = self
+            .fields
+            .get_mut(field_name)
+            .ok_or_else(|| PromotionApiError::FieldNotFound(field_name.to_string()))?;
+
+        let result =
+            crate::promotion::promote(field, request, now).map_err(PromotionApiError::Promotion)?;
+
+        // Re-derive row-level derivation class after mutation.
+        self.row_derivation_class = self.compute_derivation_class();
+
+        Ok(result)
+    }
+
+    /// Promote all non-`Deterministic` fields in the row.
+    ///
+    /// Iterates over every field whose derivation class is not
+    /// `Deterministic` and applies the promotion. The `request.target_field`
+    /// is updated per-field, and `request.from_derivation` is set to match
+    /// each field's current derivation class.
+    ///
+    /// Fields that are already `HumanPromoted` or `Deterministic` are
+    /// skipped (they do not need promotion).
+    ///
+    /// After all promotions, `row_derivation_class` is re-derived.
+    ///
+    /// # Errors
+    ///
+    /// Returns on the first promotion failure. Fields promoted before the
+    /// failure remain promoted (partial application).
+    pub fn promote_all(
+        &mut self,
+        request: &crate::promotion::PromotionRequest,
+        now: u64,
+    ) -> Result<Vec<(String, crate::promotion::PromotionResult)>, PromotionApiError> {
+        // Collect field names and their current derivation classes to avoid
+        // borrow conflicts with the mutable iteration.
+        let candidates: Vec<(String, DerivationClass)> = self
+            .fields
+            .iter()
+            .filter(|(_, f)| {
+                !matches!(
+                    f.derivation_class,
+                    DerivationClass::Deterministic | DerivationClass::HumanPromoted
+                )
+            })
+            .map(|(name, f)| (name.clone(), f.derivation_class))
+            .collect();
+
+        let mut results = Vec::with_capacity(candidates.len());
+
+        for (name, current_derivation) in candidates {
+            let field = self.fields.get_mut(&name).expect("field exists");
+            let mut per_field_request = request.clone();
+            per_field_request.target_field = name.clone();
+            per_field_request.from_derivation = current_derivation;
+
+            let result = crate::promotion::promote(field, &per_field_request, now)
+                .map_err(PromotionApiError::Promotion)?;
+            results.push((name, result));
+        }
+
+        // Re-derive row-level derivation class after all mutations.
+        self.row_derivation_class = self.compute_derivation_class();
+
+        Ok(results)
+    }
 }
+
+/// Errors from the row-level promotion API.
+///
+/// Wraps [`crate::promotion::PromotionError`] with row-specific context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromotionApiError {
+    /// The named field does not exist in the row.
+    FieldNotFound(String),
+    /// The underlying promotion validation failed.
+    Promotion(crate::promotion::PromotionError),
+}
+
+impl fmt::Display for PromotionApiError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::FieldNotFound(name) => write!(f, "field '{name}' not found in row"),
+            Self::Promotion(e) => write!(f, "promotion failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for PromotionApiError {}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Tests
@@ -886,6 +992,200 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Promotion API tests (issue #718)
+    // ═══════════════════════════════════════════════════════════════════
+
+    use crate::promotion::{PromotionRequest, PromotionScope};
+
+    fn base_promotion_request(field: &str, from: DerivationClass) -> PromotionRequest {
+        PromotionRequest {
+            target_field: field.into(),
+            from_derivation: from,
+            principal: "alice@example.com".into(),
+            reason: "Reviewed and confirmed accuracy".into(),
+            scope: PromotionScope::AllVerifiedSinks,
+            expires_at: None,
+        }
+    }
+
+    #[test]
+    fn promote_single_field() {
+        let f1 = make_field(b"pure", DerivationClass::Deterministic, IFCLabel::default());
+        let mut f2 = make_field(
+            b"generated",
+            DerivationClass::AIDerived,
+            IFCLabel::default(),
+        );
+        f2.witness_bundle_id = Some("wb-001".into());
+
+        let mut fields = BTreeMap::new();
+        fields.insert("det".into(), f1);
+        fields.insert("gen".into(), f2);
+        let mut row = RowEnvelope::new("r1".into(), "t".into(), fields, None, "v1".into(), 1000);
+
+        // Before promotion: row derivation is AIDerived (LUB of Deterministic and AIDerived).
+        assert_eq!(row.row_derivation_class, DerivationClass::AIDerived);
+
+        let req = base_promotion_request("gen", DerivationClass::AIDerived);
+        let result = row
+            .promote_field("gen", &req, 2000)
+            .expect("should succeed");
+
+        assert!(result.promoted);
+        assert_eq!(result.original_derivation, DerivationClass::AIDerived);
+        assert_eq!(result.new_derivation, DerivationClass::HumanPromoted);
+        assert_eq!(result.promoted_at, 2000);
+
+        // After promotion: field is HumanPromoted.
+        assert_eq!(
+            row.fields["gen"].derivation_class,
+            DerivationClass::HumanPromoted,
+        );
+        assert_eq!(
+            row.fields["gen"].promoted_by.as_deref(),
+            Some("alice@example.com"),
+        );
+
+        // Row derivation re-derived: LUB(Deterministic, HumanPromoted) = HumanPromoted.
+        assert_eq!(row.row_derivation_class, DerivationClass::HumanPromoted);
+        assert!(row.verify_invariant());
+    }
+
+    #[test]
+    fn promote_field_not_found() {
+        let f1 = make_field(b"a", DerivationClass::Deterministic, IFCLabel::default());
+        let mut fields = BTreeMap::new();
+        fields.insert("det".into(), f1);
+        let mut row = RowEnvelope::new("r1".into(), "t".into(), fields, None, "v1".into(), 1000);
+
+        let req = base_promotion_request("nonexistent", DerivationClass::AIDerived);
+        let err = row.promote_field("nonexistent", &req, 2000).unwrap_err();
+        assert_eq!(err, PromotionApiError::FieldNotFound("nonexistent".into()),);
+    }
+
+    #[test]
+    fn promote_all_non_deterministic() {
+        let f_det = make_field(b"pure", DerivationClass::Deterministic, IFCLabel::default());
+        let mut f_ai = make_field(b"ai", DerivationClass::AIDerived, IFCLabel::default());
+        f_ai.witness_bundle_id = Some("wb-ai".into());
+        let mut f_mixed = make_field(b"mix", DerivationClass::Mixed, IFCLabel::default());
+        f_mixed.witness_bundle_id = Some("wb-mix".into());
+
+        let mut fields = BTreeMap::new();
+        fields.insert("det".into(), f_det);
+        fields.insert("ai_field".into(), f_ai);
+        fields.insert("mixed_field".into(), f_mixed);
+        let mut row = RowEnvelope::new("r2".into(), "t".into(), fields, None, "v1".into(), 1000);
+
+        // Row derivation is Mixed (LUB of Deterministic, AIDerived, Mixed).
+        assert_eq!(row.row_derivation_class, DerivationClass::Mixed);
+
+        let req = base_promotion_request("ignored", DerivationClass::AIDerived);
+        let results = row.promote_all(&req, 3000).expect("should succeed");
+
+        // Two fields promoted (AIDerived and Mixed); Deterministic skipped.
+        assert_eq!(results.len(), 2);
+        for (name, result) in &results {
+            assert!(result.promoted);
+            assert_eq!(result.new_derivation, DerivationClass::HumanPromoted);
+            assert_eq!(result.promoted_at, 3000);
+            assert!(
+                name == "ai_field" || name == "mixed_field",
+                "unexpected field promoted: {name}",
+            );
+        }
+
+        // All non-Deterministic fields are now HumanPromoted.
+        assert_eq!(
+            row.fields["ai_field"].derivation_class,
+            DerivationClass::HumanPromoted,
+        );
+        assert_eq!(
+            row.fields["mixed_field"].derivation_class,
+            DerivationClass::HumanPromoted,
+        );
+        // Deterministic field unchanged.
+        assert_eq!(
+            row.fields["det"].derivation_class,
+            DerivationClass::Deterministic,
+        );
+
+        // Row derivation re-derived: LUB(Deterministic, HumanPromoted, HumanPromoted) = HumanPromoted.
+        assert_eq!(row.row_derivation_class, DerivationClass::HumanPromoted);
+        assert!(row.verify_invariant());
+    }
+
+    #[test]
+    fn row_verified_ready_after_promotion() {
+        // Start with a row that is NOT verified-ready (AIDerived field without witness).
+        let f_det = make_field(b"pure", DerivationClass::Deterministic, IFCLabel::default());
+        let mut f_ai = make_field(b"ai", DerivationClass::AIDerived, IFCLabel::default());
+        f_ai.witness_bundle_id = Some("wb-001".into());
+
+        let mut fields = BTreeMap::new();
+        fields.insert("det".into(), f_det);
+        fields.insert("gen".into(), f_ai);
+        let mut row = RowEnvelope::new("r3".into(), "t".into(), fields, None, "v1".into(), 1000);
+
+        // Before promotion: the AIDerived field has a witness so it IS verified-ready,
+        // but after promotion it should also be verified-ready (HumanPromoted with witness + promoter).
+        assert!(row.is_verified_ready());
+
+        let req = base_promotion_request("gen", DerivationClass::AIDerived);
+        row.promote_field("gen", &req, 2000)
+            .expect("should succeed");
+
+        // After promotion: HumanPromoted with witness_bundle_id + promoted_by => verified-ready.
+        assert!(row.is_verified_ready());
+        assert!(row.verify_invariant());
+    }
+
+    #[test]
+    fn row_becomes_verified_ready_after_promote_all() {
+        // Row with an AIDerived field that has a witness => already verified-ready.
+        // After promote_all, all fields become HumanPromoted => still verified-ready.
+        let f_det = make_field(b"a", DerivationClass::Deterministic, IFCLabel::default());
+        let mut f_ai = make_field(b"b", DerivationClass::AIDerived, IFCLabel::default());
+        f_ai.witness_bundle_id = Some("wb-100".into());
+        let mut f_opaque = make_field(b"c", DerivationClass::OpaqueExternal, IFCLabel::default());
+        f_opaque.witness_bundle_id = Some("wb-200".into());
+
+        let mut fields = BTreeMap::new();
+        fields.insert("det".into(), f_det);
+        fields.insert("ai".into(), f_ai);
+        fields.insert("ext".into(), f_opaque);
+        let mut row = RowEnvelope::new("r4".into(), "t".into(), fields, None, "v1".into(), 1000);
+
+        let req = base_promotion_request("ignored", DerivationClass::AIDerived);
+        row.promote_all(&req, 4000).expect("should succeed");
+
+        // All promoted fields now have witness_bundle_id + promoted_by.
+        assert!(row.is_verified_ready());
+        assert!(row.verify_invariant());
+    }
+
+    #[test]
+    fn promote_all_skips_already_promoted() {
+        let mut f_hp = make_field(
+            b"already",
+            DerivationClass::HumanPromoted,
+            IFCLabel::default(),
+        );
+        f_hp.witness_bundle_id = Some("wb-old".into());
+        f_hp.promoted_by = Some("bob@example.com".into());
+
+        let mut fields = BTreeMap::new();
+        fields.insert("hp".into(), f_hp);
+        let mut row = RowEnvelope::new("r5".into(), "t".into(), fields, None, "v1".into(), 1000);
+
+        let req = base_promotion_request("ignored", DerivationClass::HumanPromoted);
+        let results = row.promote_all(&req, 5000).expect("should succeed");
+
+        // No fields to promote.
+        assert!(results.is_empty());
     }
 }
 
