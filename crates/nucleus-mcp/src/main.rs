@@ -545,6 +545,9 @@ fn format_deny_reason(reason: &DenyReason) -> String {
         DenyReason::EnterpriseBlocked { detail } => {
             format!("enterprise policy blocked: {detail}")
         }
+        DenyReason::InvalidDeclassification { detail } => {
+            format!("declassification rejected: {detail}")
+        }
     }
 }
 
