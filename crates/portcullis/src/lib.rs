@@ -110,6 +110,8 @@ pub mod egress;
 ///
 /// Requires the `spec` feature (includes `serde`, `toml`).
 #[cfg(feature = "spec")]
+pub mod egress_extract;
+#[cfg(feature = "spec")]
 pub mod egress_policy;
 pub mod escalation;
 pub mod exposure_core;
@@ -245,6 +247,8 @@ pub use delegation::{
     meet_with_justification, DelegationChain, DelegationLink, MeetJustification, RestrictionDetail,
     RestrictionReason,
 };
+#[cfg(feature = "spec")]
+pub use egress_extract::{extract_egress_destinations, EgressDestination};
 #[cfg(feature = "spec")]
 pub use egress_policy::{EgressPolicy, EgressPolicyError, EgressVerdict, HostPattern};
 pub use metrics::{
