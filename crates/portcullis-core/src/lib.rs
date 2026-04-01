@@ -63,6 +63,8 @@ pub mod compartment;
 pub mod compartmentfile;
 #[cfg(feature = "serde")]
 pub mod compose;
+#[cfg(feature = "serde")]
+pub mod compose_runner;
 pub mod declassify;
 pub mod delegation;
 #[cfg(feature = "serde")]
