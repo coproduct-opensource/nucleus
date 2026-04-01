@@ -204,11 +204,40 @@ impl DeclassificationToken {
         self.allowed_sinks.contains(&op)
     }
 
-    /// The canonical bytes for signing: target_node_id ++ valid_until ++ rule fields ++ sinks ++ justification.
+    /// The canonical bytes for signing.
+    ///
+    /// **Encoding (v2)**: All variable-length fields are length-prefixed with
+    /// a 4-byte little-endian u32 count, eliminating the ambiguous
+    /// concatenation from v1. The format is:
+    ///
+    /// ```text
+    /// b"nucleus-declass-v2\n"      // 19-byte version tag
+    /// target_node_id: u64 LE       // 8 bytes
+    /// valid_until: u64 LE          // 8 bytes
+    /// action_discriminant: u8      // 1 byte (0=LowerConf, 1=RaiseInteg, 2=RaiseAuth)
+    /// action_from: u8              // 1 byte
+    /// action_to: u8                // 1 byte
+    /// rule_justification_len: u32 LE
+    /// rule_justification: [u8]
+    /// allowed_sinks_count: u32 LE  // number of sink entries
+    /// allowed_sinks: [u8]          // one byte per Operation variant
+    /// justification_len: u32 LE
+    /// justification: [u8]
+    /// ```
+    ///
+    /// **Breaking change**: This replaces the v1 encoding which used a bare
+    /// 0xFF separator between sinks and justification. Existing signatures
+    /// produced under v1 will not verify against v2 canonical bytes.
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::new();
+
+        // Version tag — domain separation for this encoding format
+        buf.extend_from_slice(b"nucleus-declass-v2\n");
+
+        // Fixed-size fields
         buf.extend_from_slice(&self.target_node_id.to_le_bytes());
         buf.extend_from_slice(&self.valid_until.to_le_bytes());
+
         // Encode rule action discriminant + fields
         match &self.rule.action {
             DeclassifyAction::LowerConfidentiality { from, to } => {
@@ -227,12 +256,23 @@ impl DeclassificationToken {
                 buf.push(*to as u8);
             }
         }
-        // Encode allowed sinks
+
+        // Rule justification (length-prefixed)
+        let rule_just = self.rule.justification.as_bytes();
+        buf.extend_from_slice(&(rule_just.len() as u32).to_le_bytes());
+        buf.extend_from_slice(rule_just);
+
+        // Allowed sinks (count-prefixed)
+        buf.extend_from_slice(&(self.allowed_sinks.len() as u32).to_le_bytes());
         for op in &self.allowed_sinks {
             buf.push(*op as u8);
         }
-        buf.push(0xFF); // separator
-        buf.extend_from_slice(self.justification.as_bytes());
+
+        // Token justification (length-prefixed)
+        let just = self.justification.as_bytes();
+        buf.extend_from_slice(&(just.len() as u32).to_le_bytes());
+        buf.extend_from_slice(just);
+
         buf
     }
 }
@@ -632,6 +672,111 @@ mod tests {
             "same".to_string(),
         );
         assert_ne!(token1.canonical_bytes(), token2.canonical_bytes());
+    }
+
+    #[test]
+    fn token_canonical_bytes_v2_has_version_tag() {
+        let token = DeclassificationToken::new(
+            1,
+            DeclassificationRule {
+                action: DeclassifyAction::RaiseIntegrity {
+                    from: IntegLevel::Adversarial,
+                    to: IntegLevel::Untrusted,
+                },
+                justification: "test",
+            },
+            vec![Operation::WriteFiles],
+            1000,
+            "j".to_string(),
+        );
+        let bytes = token.canonical_bytes();
+        assert!(
+            bytes.starts_with(b"nucleus-declass-v2\n"),
+            "canonical bytes must start with v2 version tag"
+        );
+    }
+
+    #[test]
+    fn token_canonical_bytes_field_boundary_collision() {
+        // Two tokens where v1 encoding would collide but v2 must not.
+        // Token A: justification="AB", one sink with value 0x43 ('C')
+        // Token B: justification="ABC", no sinks
+        // Under v1: both produce ...0x43 0xFF 0x41 0x42... (ambiguous)
+        // Under v2: length prefixes disambiguate
+        let rule = DeclassificationRule {
+            action: DeclassifyAction::RaiseIntegrity {
+                from: IntegLevel::Adversarial,
+                to: IntegLevel::Untrusted,
+            },
+            justification: "same",
+        };
+
+        let token_a = DeclassificationToken::new(
+            1,
+            rule.clone(),
+            vec![Operation::WriteFiles, Operation::EditFiles],
+            1000,
+            "AB".to_string(),
+        );
+        let token_b = DeclassificationToken::new(
+            1,
+            rule.clone(),
+            vec![Operation::WriteFiles],
+            1000,
+            "AB".to_string(),
+        );
+        // Different number of sinks, same justification
+        assert_ne!(
+            token_a.canonical_bytes(),
+            token_b.canonical_bytes(),
+            "tokens with different sink counts must have different canonical bytes"
+        );
+
+        // Same sinks, different justification that could collide without length prefix
+        let token_c =
+            DeclassificationToken::new(1, rule.clone(), vec![], 1000, "hello".to_string());
+        let token_d = DeclassificationToken::new(1, rule.clone(), vec![], 1000, "hell".to_string());
+        assert_ne!(
+            token_c.canonical_bytes(),
+            token_d.canonical_bytes(),
+            "tokens with different justifications must have different canonical bytes"
+        );
+    }
+
+    #[test]
+    fn token_canonical_bytes_rule_justification_included() {
+        // Two tokens identical except for the rule justification
+        let token_a = DeclassificationToken::new(
+            1,
+            DeclassificationRule {
+                action: DeclassifyAction::RaiseIntegrity {
+                    from: IntegLevel::Adversarial,
+                    to: IntegLevel::Untrusted,
+                },
+                justification: "reason A",
+            },
+            vec![],
+            1000,
+            "same".to_string(),
+        );
+        let token_b = DeclassificationToken::new(
+            1,
+            DeclassificationRule {
+                action: DeclassifyAction::RaiseIntegrity {
+                    from: IntegLevel::Adversarial,
+                    to: IntegLevel::Untrusted,
+                },
+                justification: "reason B",
+            },
+            vec![],
+            1000,
+            "same".to_string(),
+        );
+        assert_ne!(
+            token_a.canonical_bytes(),
+            token_b.canonical_bytes(),
+            "different rule justifications must produce different canonical bytes"
+        );
     }
 
     #[test]
