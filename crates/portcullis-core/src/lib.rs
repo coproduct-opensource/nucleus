@@ -62,6 +62,7 @@ pub mod flow;
 pub mod manifest;
 #[cfg(feature = "serde")]
 pub mod memory;
+pub mod policy_rules;
 pub mod receipt;
 pub mod wire;
 
