@@ -13,7 +13,9 @@ use portcullis_core::flow::{
     check_flow, intrinsic_label, propagate_label, FlowNode, FlowVerdict, NodeId, NodeKind,
     QuarantineVerdict, TrustAncestryResult, MAX_PARENTS,
 };
-use portcullis_core::receipt::{build_receipt, FlowReceipt, MAX_RECEIPT_ANCESTORS};
+use portcullis_core::receipt::{
+    build_receipt, FlowReceipt, TombstonedAncestor, MAX_RECEIPT_ANCESTORS,
+};
 use portcullis_core::{default_sink_class, IFCLabel, Operation, SinkClass};
 
 /// Errors during graph operations.
@@ -98,6 +100,57 @@ const MAX_GRAPH_NODES: usize = 10_000;
 /// Warn when the graph reaches this fraction of MAX_GRAPH_NODES.
 const GRAPH_WARN_THRESHOLD: usize = MAX_GRAPH_NODES * 8 / 10; // 80%
 
+/// Record of a node that was tombstoned during compaction.
+///
+/// When `maybe_compact()` removes old nodes to cap memory, it preserves
+/// the node's IFC label as a compaction record. The label captures the
+/// join of all ancestry — so even though individual ancestor nodes are
+/// gone, the taint information is preserved. This prevents "compaction
+/// laundering" where an attacker could exploit memory management to
+/// silently erase tainted ancestry from audit trails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactionRecord {
+    /// The ID of the node that was compacted (tombstoned).
+    pub compacted_node_id: NodeId,
+    /// The IFC label of the node at the time of compaction.
+    /// This label is the join of all the node's causal ancestors,
+    /// preserving taint even though ancestors are gone.
+    pub preserved_label: IFCLabel,
+    /// Number of direct parents the node had before compaction.
+    pub original_parent_count: u8,
+    /// Timestamp (logical) when compaction occurred.
+    pub compacted_at: u64,
+}
+
+/// Result of an ancestor traversal, including information about
+/// tombstoned nodes encountered during the walk.
+///
+/// When compaction has occurred, some ancestor slots will be `None`.
+/// Instead of silently skipping them (which erases the audit trail),
+/// we report the compaction records so callers know the chain is
+/// incomplete and can see the preserved labels.
+#[derive(Debug, Clone)]
+pub struct AncestryResult<'a> {
+    /// Live ancestor nodes found during BFS traversal.
+    pub ancestors: Vec<&'a FlowNode>,
+    /// Compaction records for tombstoned nodes encountered during traversal.
+    /// Non-empty means the causal chain is incomplete — some ancestors
+    /// were compacted. The preserved labels still carry their taint.
+    pub tombstoned: Vec<CompactionRecord>,
+}
+
+impl<'a> AncestryResult<'a> {
+    /// Whether the ancestry chain is complete (no tombstoned nodes).
+    pub fn is_complete(&self) -> bool {
+        self.tombstoned.is_empty()
+    }
+
+    /// Total number of tombstoned ancestors encountered.
+    pub fn tombstoned_count(&self) -> usize {
+        self.tombstoned.len()
+    }
+}
+
 /// Append-only causal DAG for information flow tracking.
 ///
 /// Nodes are indexed by sequential `NodeId` (u64). Index 0 is the sentinel
@@ -123,6 +176,10 @@ pub struct FlowGraph {
     /// Descendants inherit quarantine status via causal ancestry traversal.
     /// Capped at [`MAX_QUARANTINED_NODES`] with oldest-first eviction.
     quarantined: BTreeSet<NodeId>,
+    /// Audit log of compacted nodes, preserving their labels.
+    /// Prevents "compaction laundering" — the taint information survives
+    /// even when the node itself is tombstoned for memory management.
+    compaction_log: Vec<CompactionRecord>,
 }
 
 impl FlowGraph {
@@ -133,6 +190,7 @@ impl FlowGraph {
             next_id: 1,
             denied: BTreeSet::new(),
             quarantined: BTreeSet::new(),
+            compaction_log: Vec::new(),
         }
     }
 
@@ -277,8 +335,15 @@ impl FlowGraph {
     }
 
     /// Transitive ancestors via BFS, capped at MAX_RECEIPT_ANCESTORS.
-    pub fn ancestors(&self, id: NodeId) -> Vec<&FlowNode> {
+    ///
+    /// Returns an [`AncestryResult`] containing both the live ancestor nodes
+    /// and any compaction records for tombstoned nodes encountered during
+    /// traversal. If `tombstoned` is non-empty, the causal chain is
+    /// incomplete — callers should treat the ancestry as truncated and
+    /// include the compaction records in audit output.
+    pub fn ancestors(&self, id: NodeId) -> AncestryResult<'_> {
         let mut result = Vec::new();
+        let mut tombstoned = Vec::new();
         let mut queue = VecDeque::new();
         let mut visited = vec![false; self.nodes.len()];
 
@@ -311,19 +376,63 @@ impl FlowGraph {
                         visited[pid as usize] = true;
                     }
                 }
+            } else {
+                // Node was tombstoned — look up its compaction record.
+                // This is the key fix for #782: instead of silently dropping
+                // the ancestor, we include the compaction record so the
+                // audit trail shows that compaction occurred and what label
+                // (taint) the compacted node carried.
+                if let Some(record) = self
+                    .compaction_log
+                    .iter()
+                    .find(|r| r.compacted_node_id == nid)
+                {
+                    tombstoned.push(record.clone());
+                }
             }
         }
 
-        result
+        AncestryResult {
+            ancestors: result,
+            tombstoned,
+        }
+    }
+
+    /// Transitive ancestors via BFS (flat list, without compaction info).
+    ///
+    /// This is a convenience wrapper that returns only the live nodes,
+    /// matching the pre-#782 API shape. Prefer [`ancestors()`] for
+    /// audit-sensitive paths.
+    pub fn ancestors_flat(&self, id: NodeId) -> Vec<&FlowNode> {
+        self.ancestors(id).ancestors
     }
 
     /// Build a receipt from the causal chain of a node.
+    ///
+    /// If compaction has occurred and some ancestors are tombstoned,
+    /// the receipt's `tombstoned_ancestors` field will be populated
+    /// with the count and preserved labels, ensuring the audit trail
+    /// records that the chain is incomplete.
     pub fn build_receipt_for(&self, id: NodeId, now: u64) -> Option<FlowReceipt> {
         let node = self.get(id)?;
-        let ancestors = self.ancestors(id);
-        let ancestor_refs: Vec<&FlowNode> = ancestors.to_vec();
+        let ancestry = self.ancestors(id);
+        let ancestor_refs: Vec<&FlowNode> = ancestry.ancestors.to_vec();
         let verdict = check_flow(node, now);
-        Some(build_receipt(node, &ancestor_refs, verdict, now))
+        let mut receipt = build_receipt(node, &ancestor_refs, verdict, now);
+
+        if !ancestry.tombstoned.is_empty() {
+            let tombstoned_labels: Vec<_> = ancestry
+                .tombstoned
+                .iter()
+                .map(|r| TombstonedAncestor {
+                    compacted_node_id: r.compacted_node_id,
+                    preserved_label: r.preserved_label,
+                })
+                .collect();
+            receipt.set_tombstoned_ancestors(tombstoned_labels);
+        }
+
+        Some(receipt)
     }
 
     fn validate_parents(&self, parents: &[NodeId]) -> Result<(), FlowGraphError> {
@@ -436,10 +545,29 @@ impl FlowGraph {
             if self.denied.contains(&id) || self.quarantined.contains(&id) {
                 continue;
             }
-            if self.nodes[i].is_some() {
+            if let Some(node) = &self.nodes[i] {
+                // Record the compaction BEFORE tombstoning (#782).
+                // The node's label captures the join of all its ancestry,
+                // so even though individual ancestor nodes may also be
+                // tombstoned, the taint is preserved in the label.
+                self.compaction_log.push(CompactionRecord {
+                    compacted_node_id: node.id,
+                    preserved_label: node.label,
+                    original_parent_count: node.parent_count,
+                    compacted_at: self.next_id, // logical timestamp
+                });
                 self.nodes[i] = None;
             }
         }
+    }
+
+    /// Read-only access to the compaction audit log.
+    ///
+    /// Each entry records a node that was tombstoned during compaction,
+    /// preserving its IFC label (which captures the join of all ancestry).
+    /// Auditors can use this to verify that no taint was silently erased.
+    pub fn compaction_log(&self) -> &[CompactionRecord] {
+        &self.compaction_log
     }
 
     /// Apply a scoped declassification token to a specific node **without
@@ -845,7 +973,7 @@ mod tests {
             .insert_observation(NodeKind::ModelPlan, &[b], now)
             .unwrap();
         let d = g.insert_action(Operation::WriteFiles, &[c], now).unwrap();
-        assert_eq!(g.ancestors(d.node_id).len(), 3);
+        assert_eq!(g.ancestors(d.node_id).ancestors.len(), 3);
     }
 
     #[test]
@@ -965,9 +1093,9 @@ mod tests {
 
         // The denied node's own ancestors should work (for its receipt)
         // but we can verify that if somehow reached, denied nodes are skipped
-        let ancestors = g.ancestors(denied.node_id);
+        let ancestry = g.ancestors(denied.node_id);
         // Should include web (the parent) but not the denied node itself
-        for a in &ancestors {
+        for a in &ancestry.ancestors {
             assert_ne!(
                 a.id, denied.node_id,
                 "denied node should not appear in its own ancestors"
@@ -2069,6 +2197,233 @@ mod tests {
         assert!(
             g.get(recent_id).is_some(),
             "recent node (id={recent_id}) should survive compaction"
+        );
+    }
+
+    // ── Compaction laundering prevention tests (#782) ────────────────
+
+    #[test]
+    fn compaction_records_preserved_labels() {
+        // Verify that when compaction tombstones a node, its label
+        // is recorded in the compaction log.
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        // Insert a tainted node early (web content has high conf, low integ).
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        let web_label = g.get(web).unwrap().label;
+
+        // Fill the graph past the compaction limit.
+        for _ in 0..(MAX_GRAPH_NODES + 100) {
+            g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        }
+
+        // The web node should be tombstoned.
+        assert!(
+            g.get(web).is_none(),
+            "web node should be tombstoned after compaction"
+        );
+
+        // But its label should be preserved in the compaction log.
+        let log = g.compaction_log();
+        assert!(!log.is_empty(), "compaction log should not be empty");
+
+        let web_record = log.iter().find(|r| r.compacted_node_id == web);
+        assert!(
+            web_record.is_some(),
+            "compaction log must contain a record for the tombstoned web node"
+        );
+        let record = web_record.unwrap();
+        assert_eq!(
+            record.preserved_label, web_label,
+            "compaction record must preserve the node's original label (taint)"
+        );
+    }
+
+    #[test]
+    fn ancestors_reports_tombstoned_nodes() {
+        // Verify that ancestors() reports tombstoned ancestors instead
+        // of silently skipping them.
+        //
+        // Strategy: insert a plan node early, fill to just before threshold,
+        // then insert a bridge referencing plan. Trigger compaction so plan
+        // is tombstoned but bridge survives. BFS from bridge hits plan
+        // (tombstoned) on the first hop.
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        // Plan node at index 1 — will be compacted.
+        let plan = g.insert_observation(NodeKind::ModelPlan, &[], now).unwrap();
+
+        // Fill to MAX_GRAPH_NODES - 3.
+        for _ in 0..(MAX_GRAPH_NODES - 3) {
+            g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        }
+
+        // Bridge at index MAX_GRAPH_NODES - 1, referencing plan.
+        let bridge = g
+            .insert_observation(NodeKind::FileRead, &[plan], now)
+            .unwrap();
+
+        // Trigger compaction.
+        g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+
+        assert!(g.get(plan).is_none(), "plan node should be tombstoned");
+        assert!(g.get(bridge).is_some(), "bridge node should survive");
+
+        // Ancestors of bridge should report plan as tombstoned.
+        let ancestry = g.ancestors(bridge);
+        assert!(
+            !ancestry.is_complete(),
+            "ancestry should be incomplete after compaction"
+        );
+        assert!(
+            ancestry.tombstoned_count() > 0,
+            "should report tombstoned ancestors"
+        );
+
+        // The tombstoned records should include plan.
+        let tombstoned_ids: Vec<_> = ancestry
+            .tombstoned
+            .iter()
+            .map(|r| r.compacted_node_id)
+            .collect();
+        assert!(
+            tombstoned_ids.contains(&plan),
+            "tombstoned list should contain the compacted plan node"
+        );
+    }
+
+    #[test]
+    fn receipt_marks_incomplete_chain_after_compaction() {
+        // Verify that receipts built after compaction include
+        // tombstoned ancestor info (#782).
+        //
+        // Strategy: insert a plan node early. Fill to just before the
+        // compaction threshold, then insert a bridge node that references
+        // the plan. Continue filling to trigger compaction. The plan node
+        // is in the old half (compacted), while the bridge node is recent
+        // enough to survive. When we build a receipt for an action
+        // referencing bridge, the BFS finds bridge (live) then tries
+        // bridge's parent (plan, tombstoned) and reports it.
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        // Insert a plan node early — this will be compacted.
+        let plan = g.insert_observation(NodeKind::ModelPlan, &[], now).unwrap();
+
+        // Fill to MAX_GRAPH_NODES - 3 (sentinel + plan + space for bridge).
+        // After this, the Vec has MAX_GRAPH_NODES - 1 slots.
+        for _ in 0..(MAX_GRAPH_NODES - 3) {
+            g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        }
+
+        // Insert bridge referencing plan. This is at index MAX_GRAPH_NODES - 1.
+        // The alloc_node call does maybe_compact first, but count is
+        // MAX_GRAPH_NODES - 1, which is < MAX_GRAPH_NODES, so no compaction yet.
+        let bridge = g
+            .insert_observation(NodeKind::FileRead, &[plan], now)
+            .unwrap();
+
+        // Now Vec has MAX_GRAPH_NODES slots. Next insert triggers compaction.
+        // keep_from = MAX_GRAPH_NODES + 1 - MAX_GRAPH_NODES/2
+        //           = 1 + MAX_GRAPH_NODES/2 = 5001
+        // So indices 1..5001 are compacted. plan (index 1) is compacted.
+        // bridge (index MAX_GRAPH_NODES - 1 = 9999) survives.
+
+        // Insert one more to trigger compaction.
+        g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+
+        // plan should be compacted, bridge should survive.
+        assert!(g.get(plan).is_none(), "plan node should be compacted");
+        assert!(g.get(bridge).is_some(), "bridge node should survive");
+
+        // Insert action referencing bridge.
+        let action = g
+            .insert_action(Operation::WriteFiles, &[bridge], now)
+            .unwrap();
+
+        // Build receipt — bridge's parent (plan) is tombstoned, so
+        // ancestry traversal should report it.
+        let receipt = g.build_receipt_for(action.node_id, now).unwrap();
+        assert!(
+            !receipt.chain_complete(),
+            "receipt should indicate chain is incomplete after compaction"
+        );
+        assert!(
+            !receipt.tombstoned_ancestors().is_empty(),
+            "receipt should contain tombstoned ancestor records"
+        );
+
+        // The display should mention compaction.
+        let display = receipt.display_chain();
+        assert!(
+            display.contains("compacted"),
+            "receipt display should mention compacted ancestors"
+        );
+    }
+
+    #[test]
+    fn compaction_log_accessible() {
+        // Verify the compaction_log() accessor works.
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        // Before compaction, log should be empty.
+        assert!(g.compaction_log().is_empty());
+
+        // Fill past the limit.
+        for _ in 0..(MAX_GRAPH_NODES + 100) {
+            g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        }
+
+        // After compaction, log should contain records.
+        let log = g.compaction_log();
+        assert!(
+            !log.is_empty(),
+            "compaction log should contain records after compaction"
+        );
+
+        // Each record should have a valid (non-zero) node ID.
+        for record in log {
+            assert!(
+                record.compacted_node_id > 0,
+                "compacted node ID should be non-zero"
+            );
+        }
+    }
+
+    #[test]
+    fn compaction_log_excludes_denied_and_quarantined() {
+        // Denied and quarantined nodes are preserved by compaction,
+        // so they should NOT appear in the compaction log.
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        g.quarantine(web);
+
+        // Fill past the limit.
+        for _ in 0..(MAX_GRAPH_NODES + 100) {
+            g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        }
+
+        // The quarantined node should NOT be in the compaction log.
+        let log = g.compaction_log();
+        let quarantined_in_log = log.iter().any(|r| r.compacted_node_id == web);
+        assert!(
+            !quarantined_in_log,
+            "quarantined nodes must not appear in compaction log (they are preserved)"
+        );
+
+        // But the quarantined node itself should still exist.
+        assert!(
+            g.get(web).is_some(),
+            "quarantined node should survive compaction"
         );
     }
 
