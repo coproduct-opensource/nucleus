@@ -315,27 +315,119 @@ fn load_session(session_id: &str) -> SessionLoad {
     }
 }
 
+/// Atomically save session state with advisory file locking (#478).
+///
+/// Uses write-to-temp-then-rename for atomic writes (POSIX guarantees
+/// rename is atomic within the same filesystem). Advisory flock prevents
+/// concurrent hook invocations from racing on the same session.
 fn save_session(session_id: &str, state: &SessionState) {
     let path = session_state_path(session_id);
     let hwm_path = session_hwm_path(session_id);
+    let lock_path = session_lock_path(session_id);
+
+    // Acquire advisory lock (non-blocking — if locked, warn and proceed)
+    let _lock_guard = acquire_session_lock(&lock_path);
 
     match serde_json::to_string(state) {
         Ok(json) => {
-            // Write state file — warn on failure (taint tracking could be lost)
-            if let Err(e) = std::fs::write(&path, &json) {
+            // Atomic write: write to temp file, then rename (#478)
+            let tmp_path = path.with_extension("json.tmp");
+            if let Err(e) = std::fs::write(&tmp_path, &json) {
                 eprintln!(
-                    "nucleus: WARNING — failed to save session state: {e}. \
+                    "nucleus: WARNING — failed to write temp state file: {e}. \
                      Taint tracking may be incomplete."
                 );
+                return;
             }
-            // Write HWM file separately — survives state file deletion
-            if let Err(e) = std::fs::write(&hwm_path, state.high_water_mark.to_string()) {
-                eprintln!("nucleus: WARNING — failed to save HWM file: {e}");
+            if let Err(e) = std::fs::rename(&tmp_path, &path) {
+                eprintln!(
+                    "nucleus: WARNING — atomic rename failed: {e}. \
+                     Falling back to non-atomic write."
+                );
+                // Fallback: direct write (better than losing state entirely)
+                std::fs::write(&path, &json).ok();
+            }
+
+            // Write HWM file separately — survives state file deletion.
+            // Also atomic: temp + rename.
+            let hwm_tmp = hwm_path.with_extension("hwm.tmp");
+            let hwm_content = state.high_water_mark.to_string();
+            if std::fs::write(&hwm_tmp, &hwm_content).is_ok() {
+                if let Err(e) = std::fs::rename(&hwm_tmp, &hwm_path) {
+                    eprintln!("nucleus: WARNING — HWM atomic rename failed: {e}");
+                    std::fs::write(&hwm_path, &hwm_content).ok();
+                }
+            } else {
+                // Direct write fallback
+                if let Err(e) = std::fs::write(&hwm_path, &hwm_content) {
+                    eprintln!("nucleus: WARNING — failed to save HWM file: {e}");
+                }
             }
         }
         Err(e) => {
             eprintln!("nucleus: WARNING — failed to serialize session state: {e}");
         }
+    }
+}
+
+/// Lock file path for a session (advisory flock).
+fn session_lock_path(session_id: &str) -> PathBuf {
+    let safe_id = sanitize_session_id(session_id);
+    session_dir().join(format!(".{safe_id}.lock"))
+}
+
+/// RAII guard for advisory file lock.
+struct SessionLockGuard {
+    #[cfg(unix)]
+    _file: std::fs::File,
+}
+
+/// Acquire an advisory file lock (non-blocking).
+///
+/// Returns a guard that releases the lock on drop. If locking fails
+/// (e.g., another invocation holds it), logs a warning and returns
+/// a no-op guard — we proceed without the lock rather than blocking
+/// the hook response (which would stall Claude Code).
+fn acquire_session_lock(lock_path: &std::path::Path) -> SessionLockGuard {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(lock_path)
+        {
+            Ok(file) => {
+                // Non-blocking exclusive lock
+                let fd = file.as_raw_fd();
+                // SAFETY: fd is valid, LOCK_EX | LOCK_NB is a valid flock operation
+                let ret = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+                if ret != 0 {
+                    eprintln!(
+                        "nucleus: WARNING — session lock contention (concurrent hook invocation). \
+                         Proceeding without lock."
+                    );
+                }
+                SessionLockGuard { _file: file }
+            }
+            Err(e) => {
+                eprintln!("nucleus: WARNING — failed to create lock file: {e}");
+                // Create a dummy guard with /dev/null as fallback
+                let file = std::fs::File::open("/dev/null").unwrap_or_else(|_| {
+                    std::fs::OpenOptions::new()
+                        .read(true)
+                        .open(lock_path)
+                        .unwrap_or_else(|_| panic!("cannot open /dev/null or lock file"))
+                });
+                SessionLockGuard { _file: file }
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = lock_path;
+        SessionLockGuard {}
     }
 }
 
@@ -611,32 +703,62 @@ fn format_denial_for_user(
 
     match reason {
         DenyReason::InsufficientCapability => {
-            let suggestion = match compartment {
-                Some("research") => " Switch to 'draft' or 'execute' compartment.",
-                Some("draft") if operation == Operation::RunBash => {
-                    " Switch to 'execute' compartment to run commands."
+            let fix = match compartment {
+                Some("research") => "\n  How to fix:\n  \
+                    - Switch to 'draft' compartment (enables writes) or 'execute' (enables bash)\n  \
+                    - Or change the profile to allow this operation in .nucleus/policy.toml",
+                Some("draft") if operation == Operation::RunBash => "\n  How to fix:\n  \
+                    - Switch to 'execute' compartment to run commands\n  \
+                    - Draft compartment only allows read + write (no execution)",
+                Some("draft") if matches!(operation, Operation::WebFetch | Operation::WebSearch) => {
+                    "\n  How to fix:\n  \
+                    - Switch to 'research' compartment for web access\n  \
+                    - Draft compartment blocks web to prevent taint"
                 }
-                Some("draft") if operation == Operation::WebFetch => {
-                    " Switch to 'research' compartment to browse the web."
-                }
-                _ => "",
+                _ => "\n  How to fix:\n  \
+                    - Change the profile's capability for this operation in .nucleus/policy.toml\n  \
+                    - Or use a more permissive profile: NUCLEUS_PROFILE=permissive",
             };
-            format!(
-                "Blocked: {operation} is not allowed in the current profile{comp_hint}.{suggestion}"
-            )
+            format!("Blocked: {operation} is not allowed in the current profile{comp_hint}.{fix}")
         }
         DenyReason::FlowViolation { rule, .. } => {
-            let explanation = if rule.contains("AuthorityEscalation") {
-                "This operation depends on web content (adversarial/untrusted). \
-                 Web-influenced data cannot steer writes, execution, or git operations."
+            let (explanation, fix) = if rule.contains("AuthorityEscalation") {
+                (
+                    "This operation depends on web content (adversarial/untrusted). \
+                     Web-influenced data cannot steer writes, execution, or git operations.",
+                    if compartment.is_some() {
+                        "\n  How to fix:\n  \
+                        - Switch to 'draft' compartment (resets the flow graph, clears taint)\n  \
+                        - Or use separate sessions: research in one, code in another"
+                    } else {
+                        "\n  How to fix:\n  \
+                        - Restart Claude Code to clear the taint and try again\n  \
+                        - Or use separate sessions: research in one, code in another\n  \
+                        - Or enable compartments: NUCLEUS_COMPARTMENT=research"
+                    },
+                )
             } else if rule.contains("Exfiltration") {
-                "This operation would exfiltrate secret data to an external sink."
+                (
+                    "This operation would exfiltrate secret data to an external sink.",
+                    "\n  How to fix:\n  \
+                    - Avoid mixing secret file reads with network operations in the same session\n  \
+                    - Or declassify the data if it's not actually secret",
+                )
             } else if rule.contains("IntegrityViolation") {
-                "This operation would use untrusted data in a trusted-only context."
+                (
+                    "This operation would use untrusted data in a trusted-only context.",
+                    "\n  How to fix:\n  \
+                    - Validate or re-derive the data from a trusted source\n  \
+                    - Or switch compartments to reset the flow graph",
+                )
             } else {
-                "Information flow policy prevents this operation."
+                (
+                    "Information flow policy prevents this operation.",
+                    "\n  How to fix:\n  \
+                    - Restart the session or switch compartments to clear taint",
+                )
             };
-            format!("Blocked: {explanation}{comp_hint}")
+            format!("Blocked: {explanation}{comp_hint}{fix}")
         }
         DenyReason::CommandBlocked { command } => {
             let short_cmd = if command.len() > 60 {
@@ -645,23 +767,50 @@ fn format_denial_for_user(
                 command.clone()
             };
             format!(
-                "Blocked: command '{short_cmd}' is not allowed by the command policy{comp_hint}."
+                "Blocked: command '{short_cmd}' is not allowed by the command policy{comp_hint}.\n  \
+                How to fix:\n  \
+                - Add the command to the allowlist in .nucleus/policy.toml under [profile.commands]\n  \
+                - Or use a more permissive profile"
             )
         }
         DenyReason::PathBlocked { path } => {
-            format!("Blocked: access to '{path}' is restricted by path policy{comp_hint}.")
+            format!(
+                "Blocked: access to '{path}' is restricted by path policy{comp_hint}.\n  \
+                How to fix:\n  \
+                - Add the path to [profile.paths.allowed] in .nucleus/policy.toml\n  \
+                - Or remove it from [profile.paths.blocked]"
+            )
         }
         DenyReason::BudgetExhausted { remaining_usd } => {
-            format!("Blocked: budget exhausted (remaining: ${remaining_usd}).")
+            format!(
+                "Blocked: budget exhausted (remaining: ${remaining_usd}).\n  \
+                How to fix:\n  \
+                - Increase max_cost_usd in .nucleus/policy.toml\n  \
+                - Or start a new session with a fresh budget"
+            )
         }
         DenyReason::TimeExpired { expired_at } => {
-            format!("Blocked: session expired at {expired_at}.")
+            format!(
+                "Blocked: session expired at {expired_at}.\n  \
+                How to fix:\n  \
+                - Start a new session (restart Claude Code)\n  \
+                - Or increase duration_hours in .nucleus/policy.toml"
+            )
         }
         DenyReason::IsolationInsufficient { required, actual } => {
-            format!("Blocked: requires {required} isolation but running in {actual}.")
+            format!(
+                "Blocked: requires {required} isolation but running in {actual}.\n  \
+                How to fix:\n  \
+                - Run in a container (Docker/Colima) or Firecracker microVM\n  \
+                - Or lower the minimum isolation in the policy"
+            )
         }
         DenyReason::IsolationGated { dimension } => {
-            format!("Blocked: {dimension} is not available in the current isolation level.")
+            format!(
+                "Blocked: {dimension} is not available in the current isolation level.\n  \
+                How to fix:\n  \
+                - Run in a higher isolation environment (container or microVM)"
+            )
         }
     }
 }
@@ -1019,7 +1168,20 @@ fn generate_compartment_token() -> String {
     use ring::rand::SecureRandom;
     let rng = ring::rand::SystemRandom::new();
     let mut bytes = [0u8; 16];
-    rng.fill(&mut bytes).expect("SystemRandom failed");
+    if let Err(e) = rng.fill(&mut bytes) {
+        eprintln!("nucleus: WARNING — SystemRandom failed: {e}. Using fallback token.");
+        // Fallback: use process ID + timestamp as low-entropy token.
+        // Not cryptographically secure, but prevents a panic in the hot path (#481).
+        let fallback = format!(
+            "{:016x}{:016x}",
+            std::process::id() as u64,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64
+        );
+        return fallback;
+    }
     hex::encode(bytes)
 }
 
@@ -1574,6 +1736,76 @@ fn run_uninstall() {
     println!("\n  Restart Claude Code to deactivate.");
 }
 
+/// Default TTL for stale session files (24 hours).
+const SESSION_GC_TTL_SECS: u64 = 24 * 60 * 60;
+
+/// Garbage-collect stale session files older than `ttl_secs` (#520).
+///
+/// Removes .json (state), .hwm (watermark), and .compartment files.
+/// Receipt directories are preserved for audit.
+/// Returns the number of files removed.
+fn gc_stale_sessions(ttl_secs: u64) -> usize {
+    let dir = session_dir();
+    let now = std::time::SystemTime::now();
+    let mut removed = 0;
+
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+
+        // Only GC session files, not the receipts directory
+        if path.is_dir() {
+            continue;
+        }
+
+        // Only GC known session file extensions
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let is_session_file = ext == "json"
+            || ext == "hwm"
+            || ext == "compartment"
+            || ext == "lock"
+            || ext == "tmp"
+            || name.ends_with(".parent-label")
+            || name.ends_with(".parent-chain")
+            || name.ends_with(".parent-compartment");
+
+        if !is_session_file {
+            continue;
+        }
+
+        // Check file age
+        let age = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|modified| now.duration_since(modified).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        if age > ttl_secs && std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+
+    removed
+}
+
+/// Run the `--gc` command: remove stale session files.
+fn run_gc() {
+    let removed = gc_stale_sessions(SESSION_GC_TTL_SECS);
+    if removed > 0 {
+        println!("nucleus: garbage collected {removed} stale session file(s) (older than 24h)");
+    } else {
+        println!("nucleus: no stale session files to clean up");
+    }
+    println!("nucleus: session directory: {}", session_dir().display());
+}
+
 fn run_doctor() {
     let mut ok = true;
 
@@ -1714,6 +1946,7 @@ fn run_help() {
     println!("  nucleus-claude-hook              Read hook JSON from stdin (normal mode)");
     println!("  nucleus-claude-hook --setup       Configure ~/.claude/settings.json");
     println!("  nucleus-claude-hook --status      Show active sessions");
+    println!("  nucleus-claude-hook --gc          Remove stale session files (>24h)");
     println!("  nucleus-claude-hook --help        This message");
     println!("  nucleus-claude-hook --version     Show version");
     println!();
@@ -1727,6 +1960,7 @@ fn run_help() {
     println!("  NUCLEUS_COMPARTMENT        Compartment: research, draft, execute, breakglass");
     println!("  NUCLEUS_FAIL_CLOSED        Set to 1: infrastructure errors block (CISO mode)");
     println!("  NUCLEUS_REQUIRE_MANIFESTS  Set to 1: deny MCP tools without manifests");
+    println!("  NUCLEUS_AUTONOMY_CEILING   Org cap: production, sandbox (default: unrestricted)");
     println!();
     println!("COMPARTMENTS:");
     println!("  research    Read + web only (no writes, no execution)");
@@ -1804,6 +2038,10 @@ fn main() {
     }
     if args.iter().any(|a| a == "--smoke-test") {
         run_smoke_test();
+        return;
+    }
+    if args.iter().any(|a| a == "--gc") {
+        run_gc();
         return;
     }
     // Show what a profile allows (#556)
@@ -1927,6 +2165,20 @@ fn main() {
                     std::fs::remove_file(&comp_path).ok();
                 }
                 eprintln!("nucleus: session state cleaned up (receipts preserved)");
+
+                // Opportunistic GC: clean up stale sessions from other
+                // sessions that didn't get a SessionEnd event (#520).
+                // Use a simple hash of session_id to get ~10% probability.
+                let gc_trigger: u8 = input
+                    .session_id
+                    .bytes()
+                    .fold(0u8, |acc, b| acc.wrapping_add(b));
+                if gc_trigger % 10 == 0 {
+                    let removed = gc_stale_sessions(SESSION_GC_TTL_SECS);
+                    if removed > 0 {
+                        eprintln!("nucleus: gc — removed {removed} stale session file(s)");
+                    }
+                }
             }
         }
         // PostToolUse: observe the tool result and insert into flow graph (#593, #497)
@@ -2319,6 +2571,47 @@ fn main() {
         perms
     };
 
+    // Apply organizational autonomy ceiling (#482).
+    // NUCLEUS_AUTONOMY_CEILING controls the org-wide cap:
+    //   "production" — no git push/PR, writes at LowRisk
+    //   "sandbox"    — read-only, no execution
+    //   (unset)      — unrestricted (no organizational cap)
+    let effective_perms = match std::env::var("NUCLEUS_AUTONOMY_CEILING").ok().as_deref() {
+        Some("production") | Some("sandbox") => {
+            let core_ceiling =
+                if std::env::var("NUCLEUS_AUTONOMY_CEILING").as_deref() == Ok("sandbox") {
+                    let c = portcullis_core::autonomy::AutonomyCeiling::sandbox();
+                    eprintln!("nucleus: autonomy ceiling: sandbox (read-only)");
+                    c.capabilities
+                } else {
+                    let c = portcullis_core::autonomy::AutonomyCeiling::production();
+                    eprintln!("nucleus: autonomy ceiling: production (no push/PR)");
+                    c.capabilities
+                };
+            // Convert portcullis_core::CapabilityLattice to portcullis::CapabilityLattice
+            let ceiling = portcullis::CapabilityLattice {
+                read_files: core_ceiling.read_files,
+                write_files: core_ceiling.write_files,
+                edit_files: core_ceiling.edit_files,
+                run_bash: core_ceiling.run_bash,
+                glob_search: core_ceiling.glob_search,
+                grep_search: core_ceiling.grep_search,
+                web_search: core_ceiling.web_search,
+                web_fetch: core_ceiling.web_fetch,
+                git_commit: core_ceiling.git_commit,
+                git_push: core_ceiling.git_push,
+                create_pr: core_ceiling.create_pr,
+                manage_pods: core_ceiling.manage_pods,
+                spawn_agent: core_ceiling.spawn_agent,
+                ..Default::default()
+            };
+            let mut capped = effective_perms;
+            capped.capabilities = capped.capabilities.meet(&ceiling);
+            capped
+        }
+        _ => effective_perms,
+    };
+
     let mut kernel = Kernel::new(effective_perms);
     kernel.enable_flow_graph();
 
@@ -2360,6 +2653,55 @@ fn main() {
                 );
             }
         }
+
+        // Inherit parent compartment (#461).
+        // The child's compartment is capped at the parent's level:
+        // child ≤ parent (can only narrow, never escalate).
+        if let Ok(parent_sid) = std::env::var("NUCLEUS_PARENT_SESSION") {
+            let safe_parent = sanitize_session_id(&parent_sid);
+            let comp_path = session_dir().join(format!("{safe_parent}.parent-compartment"));
+            if let Ok(parent_comp_str) = std::fs::read_to_string(&comp_path) {
+                if let Some(parent_comp) =
+                    portcullis_core::compartment::Compartment::from_str_opt(parent_comp_str.trim())
+                {
+                    // If child has no compartment, inherit parent's.
+                    // If child has a compartment, cap it at parent's level.
+                    match &compartment {
+                        None => {
+                            eprintln!("nucleus: inherited parent compartment: {parent_comp}");
+                            // Write compartment file so resolve_compartment picks it up
+                            if !session.compartment_token.is_empty() {
+                                let keyed = keyed_compartment_name(
+                                    &input.session_id,
+                                    &session.compartment_token,
+                                );
+                                let file = session_dir().join(format!("{keyed}.compartment"));
+                                std::fs::write(&file, parent_comp.to_string()).ok();
+                            }
+                            session.active_compartment = Some(parent_comp.to_string());
+                        }
+                        Some(child_comp) if *child_comp > parent_comp => {
+                            eprintln!(
+                                "nucleus: child compartment {} exceeds parent {} — capping to parent",
+                                child_comp, parent_comp
+                            );
+                            if !session.compartment_token.is_empty() {
+                                let keyed = keyed_compartment_name(
+                                    &input.session_id,
+                                    &session.compartment_token,
+                                );
+                                let file = session_dir().join(format!("{keyed}.compartment"));
+                                std::fs::write(&file, parent_comp.to_string()).ok();
+                            }
+                            session.active_compartment = Some(parent_comp.to_string());
+                        }
+                        _ => {
+                            // Child is at or below parent level — OK
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Replay previous operations to rebuild exposure state AND flow graph.
@@ -2396,14 +2738,29 @@ fn main() {
 
     // Get or create the session's signing key.
     // Ephemeral per session — generated once, persisted in session state.
-    let signing_key = if session.signing_key_pkcs8.is_empty() {
+    // If key generation fails (low entropy, sandboxed env), proceed without
+    // signing rather than panicking the security gate (#481).
+    let signing_key: Option<Ed25519KeyPair> = if session.signing_key_pkcs8.is_empty() {
         let rng = SystemRandom::new();
-        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).expect("Ed25519 key generation failed");
-        session.signing_key_pkcs8 = pkcs8.as_ref().to_vec();
-        Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("Ed25519 key from PKCS#8 failed")
+        match Ed25519KeyPair::generate_pkcs8(&rng) {
+            Ok(pkcs8) => {
+                session.signing_key_pkcs8 = pkcs8.as_ref().to_vec();
+                Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).ok()
+            }
+            Err(e) => {
+                eprintln!("nucleus: WARNING — Ed25519 key generation failed: {e}. Receipts will be unsigned.");
+                None
+            }
+        }
     } else {
-        Ed25519KeyPair::from_pkcs8(&session.signing_key_pkcs8)
-            .expect("Ed25519 key from stored PKCS#8 failed")
+        match Ed25519KeyPair::from_pkcs8(&session.signing_key_pkcs8) {
+            Ok(key) => Some(key),
+            Err(e) => {
+                eprintln!("nucleus: WARNING — stored signing key corrupted: {e}. Receipts will be unsigned.");
+                session.signing_key_pkcs8.clear(); // Don't reuse corrupted key
+                None
+            }
+        }
     };
 
     // Build a receipt from the flow graph's action node (if available).
@@ -2437,7 +2794,9 @@ fn main() {
                 id
             };
             receipt.set_chain_id(chain_id);
-            sign_receipt(&mut receipt, &signing_key);
+            if let Some(ref key) = signing_key {
+                sign_receipt(&mut receipt, key);
+            }
             Some(receipt)
         })
     });
@@ -2510,6 +2869,17 @@ fn main() {
                 let chain_path = session_dir().join(format!("{safe_id}.parent-chain"));
                 let chain_ref = format!("session={}\nhash={}\n", &input.session_id, chain_hash_hex);
                 std::fs::write(&chain_path, &chain_ref).ok();
+
+                // Export parent compartment so child inherits ceiling (#461).
+                // Child compartment ≤ parent compartment (can only narrow).
+                if let Some(ref comp) = compartment {
+                    let comp_path = session_dir().join(format!("{safe_id}.parent-compartment"));
+                    std::fs::write(&comp_path, comp.to_string()).ok();
+                    eprintln!(
+                        "nucleus: exported parent compartment '{}' for child agent",
+                        comp
+                    );
+                }
             }
 
             session.high_water_mark += 1;
@@ -2573,7 +2943,14 @@ fn main() {
     }
 
     // Write output to stdout
-    let json = serde_json::to_string(&output).unwrap();
+    let json = match serde_json::to_string(&output) {
+        Ok(j) => j,
+        Err(e) => {
+            // Defense-in-depth: if serialization fails, output a deny to fail-closed (#481)
+            eprintln!("nucleus: CRITICAL — failed to serialize output: {e}. Denying.");
+            r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"internal error: serialization failed"}}"#.to_string()
+        }
+    };
     println!("{json}");
     io::stdout().flush().ok();
 
@@ -3275,5 +3652,106 @@ mod tests {
             write_parents.contains(&post_id),
             "Write action should depend on post-tool WebContent observation"
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Actionable denial message tests (#544)
+    // ─────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_denial_messages_include_how_to_fix() {
+        use portcullis::kernel::DenyReason;
+
+        // Capability denial
+        let msg = format_denial_for_user(
+            &DenyReason::InsufficientCapability,
+            Operation::RunBash,
+            Some("draft"),
+        );
+        assert!(msg.contains("How to fix"), "capability denial: {msg}");
+        assert!(
+            msg.contains("execute"),
+            "should suggest execute compartment"
+        );
+
+        // Flow violation (web taint)
+        let msg = format_denial_for_user(
+            &DenyReason::FlowViolation {
+                rule: "AuthorityEscalation".to_string(),
+                receipt: None,
+            },
+            Operation::WriteFiles,
+            Some("research"),
+        );
+        assert!(msg.contains("How to fix"), "flow violation: {msg}");
+        assert!(msg.contains("draft"), "should suggest draft compartment");
+
+        // Budget exhausted
+        let msg = format_denial_for_user(
+            &DenyReason::BudgetExhausted {
+                remaining_usd: "0.00".to_string(),
+            },
+            Operation::ReadFiles,
+            None,
+        );
+        assert!(msg.contains("How to fix"), "budget: {msg}");
+        assert!(msg.contains("max_cost_usd"), "should mention config key");
+
+        // Path blocked
+        let msg = format_denial_for_user(
+            &DenyReason::PathBlocked {
+                path: "/etc/shadow".to_string(),
+            },
+            Operation::ReadFiles,
+            None,
+        );
+        assert!(msg.contains("How to fix"), "path blocked: {msg}");
+        assert!(msg.contains("policy.toml"), "should mention config file");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Session GC tests (#520)
+    // ─────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_gc_preserves_fresh_files() {
+        let dir = session_dir();
+        let fresh_file = dir.join("gc-test-fresh.json");
+
+        // Create a fresh file
+        std::fs::write(&fresh_file, "{}").unwrap();
+
+        // GC with 24h TTL should preserve it (it's < 1 second old)
+        gc_stale_sessions(SESSION_GC_TTL_SECS);
+        assert!(fresh_file.exists(), "fresh file should be preserved");
+
+        // Cleanup
+        std::fs::remove_file(&fresh_file).ok();
+    }
+
+    #[test]
+    fn test_gc_skips_non_session_files() {
+        let dir = session_dir();
+        let txt_file = dir.join("gc-test-notes.txt");
+        std::fs::write(&txt_file, "not a session file").unwrap();
+
+        // GC with TTL=0 should still skip .txt files (not a session extension)
+        gc_stale_sessions(0);
+        assert!(txt_file.exists(), ".txt file should not be GC'd");
+
+        // Cleanup
+        std::fs::remove_file(&txt_file).ok();
+    }
+
+    #[test]
+    fn test_gc_preserves_receipts_dir() {
+        let dir = session_dir();
+        let receipts = dir.join("receipts");
+        std::fs::create_dir_all(&receipts).ok();
+
+        gc_stale_sessions(0);
+
+        // Receipts directory should survive GC
+        assert!(receipts.is_dir(), "receipts directory should be preserved");
     }
 }

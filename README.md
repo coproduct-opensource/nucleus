@@ -14,34 +14,43 @@ Nucleus is a security framework for AI agents that combines a mathematically ver
 
 | Layer | Tool | Count | Scope |
 |-------|------|-------|-------|
-| **Proved** (unbounded) | Lean 4 + Mathlib | 55 theorems | HeytingAlgebra on production lattice ([Aeneas](https://github.com/AeneasVerif/aeneas)-generated types), exposure tracker monotonicity/soundness, IFC label authority confinement |
-| **Bounded-model-checked** | [Kani](https://github.com/model-checking/kani) BMC | 72 harnesses | DecisionToken linearity, lattice distributivity, exposure monoid laws, constitutional kernel invariants, flow enforcement rules |
+| **Proved** (unbounded) | Lean 4 + Mathlib | 113 theorems | HeytingAlgebra on 13-dim production lattice ([Aeneas](https://github.com/AeneasVerif/aeneas)-generated types), exposure tracker monotonicity/soundness, IFC flow rules, compartment proofs, declassification safety |
+| **Bounded-model-checked** | [Kani](https://github.com/model-checking/kani) BMC | 78 harnesses | DecisionToken linearity, lattice distributivity, exposure monoid laws, constitutional kernel invariants, flow enforcement rules, manifest admission |
 | **Tested** | Rust + CI | — | Sandbox isolation, path/command restrictions, network policy, end-to-end |
 
 This README tries to be honest about what's real and what isn't.
 
 > **Versioning note:** v1.0 means the **interface contract is stable** (see [`STABILITY.md`](STABILITY.md)), not that the system is "production-secure by default." The lattice is heavily verified; the runtime is tested but not yet battle-hardened in production traffic.
 
-## Start Here: Scan Your Agent Config
-
-This works today. No runtime required. Pre-built binaries ship with every [release](https://github.com/coproduct-opensource/nucleus/releases).
+## Start Here: Secure Claude Code in 60 Seconds
 
 ```bash
-# From source
+cargo install --git https://github.com/coproduct-opensource/nucleus nucleus-claude-hook
+nucleus-claude-hook --setup
+# restart Claude Code — the hook is now active
+```
+
+Every tool call now flows through the Nucleus permission kernel. The hook tracks what data has entered your session and blocks dangerous combinations — like writing code based on untrusted web content (the core prompt injection vector).
+
+```bash
+nucleus-claude-hook --smoke-test   # verify it works
+nucleus-claude-hook --doctor       # diagnose issues
+nucleus-claude-hook --version      # check installed version
+```
+
+See the [60-second quickstart](docs/quickstart-hook.md) for details on compartments, profiles, and configuration.
+
+## Static Analysis: Scan Agent Configs
+
+For pre-deployment analysis (no runtime required):
+
+```bash
 cargo install --git https://github.com/coproduct-opensource/nucleus nucleus-audit
 
-# Or download a pre-built binary from GitHub Releases
-
-# Auto-discover and scan all agent configs in the current repo
-nucleus-audit scan --auto
-
-# Or specify paths explicitly
-nucleus-audit scan --pod-spec your-agent.yaml
-nucleus-audit scan --claude-settings .claude/settings.json
-nucleus-audit scan --mcp-config .mcp.json
-
-# Scan everything at once — findings are merged, deduplicated, and source-attributed
-nucleus-audit scan --pod-spec agent.yaml --claude-settings settings.json --mcp-config .mcp.json
+nucleus-audit scan --auto                              # auto-discover configs
+nucleus-audit scan --claude-settings .claude/settings.json  # Claude Code
+nucleus-audit scan --mcp-config .mcp.json              # MCP servers
+nucleus-audit scan --pod-spec agent.yaml               # PodSpecs
 ```
 
 **Supported formats:**
@@ -207,7 +216,7 @@ Three layers, at different levels of maturity:
 
 | Component | Maturity | Evidence |
 |-----------|----------|----------|
-| **Permission lattice** (portcullis) | Verified | 58K LOC, 942 tests, 297 Verus VCs, 62 Kani BMC proofs, 3 fuzz targets |
+| **Permission lattice** (portcullis) | Verified | 58K LOC, 942 tests, 297 Verus VCs, 78 Kani BMC proofs, 3 fuzz targets |
 | ** Uninhabitable state detection** | Verified | Static scan + runtime guard, monotonicity proven (E1-E3, Kani B1-B9) |
 | **Attenuation tokens** | Verified | Compact delegation credentials with Kani-proven invariants (D1-D7) |
 | **Delegation chains** | Tested | Monotone attenuation with `meet_with_justification`, audit-reconstructable chains |
@@ -228,7 +237,7 @@ Three layers, at different levels of maturity:
 | **SPIFFE identity** | Implemented | mTLS + cert management code exists; no SPIRE deployment |
 | **Command exfiltration detection** | Partial | Program-name matching; `bash -c` bypasses documented |
 | **Lean 4 proof (Aeneas)** | Verified | Lean 4 HeytingAlgebra instance on `CapabilityLevel` — the same type used in production (re-exported from `portcullis-core`). Aeneas translates Rust MIR to Lean; function correspondence proven via `rfl` (`meet_eq_inf`, `join_eq_sup`, `implies_eq_himp`). CI type-checks proofs and rejects `sorry`. |
-| **OTLP permission telemetry** | Tested | Every tool call verdict emits an OTel span with all 12 capability dimensions, exposure state, lockdown status. VerdictSink trait ensures both HTTP and MCP paths produce telemetry. Supports gRPC and http/protobuf (Grafana Cloud). |
+| **OTLP permission telemetry** | Tested | Every tool call verdict emits an OTel span with all 13 capability dimensions, exposure state, lockdown status. VerdictSink trait ensures both HTTP and MCP paths produce telemetry. Supports gRPC and http/protobuf (Grafana Cloud). |
 | **Fleet lockdown** | Tested | `nucleus lockdown` drops agents to read-only via gRPC streaming (sub-second). Lattice meet semantics: reads allowed for forensics, writes blocked. OR-semantics between signal file and gRPC stream. Label-based pod scoping. |
 
 **Maturity key:** *Verified* = SMT proofs + tests. *Tested* = compiles, has passing tests, never deployed. *Partial* = works for some cases, known gaps. *Implemented* = code exists, minimal testing. *Not started* = in roadmap only.
@@ -254,13 +263,13 @@ For the theory: [docs/THEORY.md](docs/THEORY.md).
 
 Nucleus uses three complementary verification tools:
 - [Verus](https://verus-lang.github.io/verus/) (SMT-based, SOSP 2025 Best Paper) — 297 verification conditions checked by Z3
-- [Kani](https://model-checking.github.io/kani/) (bounded model checking) — 62 proofs checked by CaDiCaL SAT solver
-- [Lean 4](https://lean-lang.org/) + [Aeneas](https://github.com/AeneasVerif/aeneas) (kernel-checked) — HeytingAlgebra proof on Aeneas-generated code from production Rust
+- [Kani](https://model-checking.github.io/kani/) (bounded model checking) — 78 proofs checked by CaDiCaL SAT solver
+- [Lean 4](https://lean-lang.org/) + [Aeneas](https://github.com/AeneasVerif/aeneas) (kernel-checked) — 113 theorems: HeytingAlgebra on 13-dim lattice, exposure tracker, flow rules, compartment safety, declassification, decide_pure correctness
 
-**What's proven (297 Verus VCs + 62 Kani proofs + Lean 4 HeytingAlgebra):**
+**What's proven (297 Verus VCs + 78 Kani proofs + 113 Lean 4 theorems + Lean 4 HeytingAlgebra):**
 
 *Verus (SMT):*
-- Lattice laws: idempotent, commutative, associative, absorptive for all 12 capability dimensions
+- Lattice laws: idempotent, commutative, associative, absorptive for all 13 capability dimensions
 - Nucleus operator: idempotent, deflationary, monotone, meet-preserving
 - Heyting adjunction: a ∧ b ≤ c ⟺ a ≤ b → c
 - Galois connection: adjunction, closure/kernel properties, monotonicity
@@ -269,7 +278,7 @@ Nucleus uses three complementary verification tools:
 - Uninhabitable state: completeness detection, risk classification, session safety
 - Delegation: transitivity, ceiling theorem, chain composition
 
-*Kani (BMC, 62 proofs):*
+*Kani (BMC, 78 proofs):*
 - B-series (9 proofs): Exposure set monoid identity/associativity, monotonicity, uninhabitable state-iff-count-equals-3, isolation lattice meet/join properties
 - D-series (7 proofs): Attenuation token invariants — token ≤ parent, token ≤ requested cap, chained attenuation, delegation ceiling preservation
 - E-series (3 proofs): Guard denial soundness, Clinejection defense, apply_record monotonicity
@@ -372,7 +381,7 @@ The enforcement path: Agent → MCP → tool-proxy (inside VM) → portcullis ch
 | **nucleus-net-probe** | TCP probe for network policy tests | 2 |
 | **exposure-playground** | Interactive TUI for exploring the lattice | — |
 
-Total: ~1,700 test functions across the workspace (103K LOC Rust). Proptest invariants each generate 256 random cases. 32 Kani BMC proofs run in CI alongside 297 Verus VCs.
+Total: ~1,700 test functions across the workspace (103K LOC Rust). Proptest invariants each generate 256 random cases. 78 Kani BMC proofs run in CI alongside 297 Verus VCs and 113 Lean 4 theorems.
 
 ## Permission Profiles
 

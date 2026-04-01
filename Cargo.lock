@@ -3262,6 +3262,7 @@ version = "1.0.0"
 dependencies = [
  "dirs-next",
  "hex",
+ "libc",
  "portcullis",
  "portcullis-core",
  "ring",

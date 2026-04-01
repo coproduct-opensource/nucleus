@@ -195,7 +195,7 @@ theorem leq_eq_le (a b : CapabilityLevel) :
 -- ═══════════════════════════════════════════════════════════════════════
 -- Product lattice: CapabilityLattice is a HeytingAlgebra
 --
--- CapabilityLattice is a structure of 12 CapabilityLevel fields.
+-- CapabilityLattice is a structure of 13 CapabilityLevel fields.
 -- Since CapabilityLevel is a HeytingAlgebra, the product inherits the
 -- structure pointwise. We build up the full Mathlib typeclass chain:
 --
@@ -314,7 +314,8 @@ instance instHeytingAlgebra : HeytingAlgebra CapabilityLattice where
   compl := latticeCompl
   le_refl a :=
     ⟨le_refl _, le_refl _, le_refl _, le_refl _, le_refl _, le_refl _,
-     le_refl _, le_refl _, le_refl _, le_refl _, le_refl _, le_refl _⟩
+     le_refl _, le_refl _, le_refl _, le_refl _, le_refl _, le_refl _,
+     le_refl _⟩
   le_trans a b c hab hbc :=
     ⟨le_trans hab.1 hbc.1, le_trans hab.2.1 hbc.2.1,
      le_trans hab.2.2.1 hbc.2.2.1, le_trans hab.2.2.2.1 hbc.2.2.2.1,
@@ -325,7 +326,8 @@ instance instHeytingAlgebra : HeytingAlgebra CapabilityLattice where
      le_trans hab.2.2.2.2.2.2.2.2.1 hbc.2.2.2.2.2.2.2.2.1,
      le_trans hab.2.2.2.2.2.2.2.2.2.1 hbc.2.2.2.2.2.2.2.2.2.1,
      le_trans hab.2.2.2.2.2.2.2.2.2.2.1 hbc.2.2.2.2.2.2.2.2.2.2.1,
-     le_trans hab.2.2.2.2.2.2.2.2.2.2.2 hbc.2.2.2.2.2.2.2.2.2.2.2⟩
+     le_trans hab.2.2.2.2.2.2.2.2.2.2.2.1 hbc.2.2.2.2.2.2.2.2.2.2.2.1,
+     le_trans hab.2.2.2.2.2.2.2.2.2.2.2.2 hbc.2.2.2.2.2.2.2.2.2.2.2.2⟩
   lt_iff_le_not_ge _ _ := Iff.rfl
   le_antisymm a b hab hba := by
     have e1 := le_antisymm hab.1 hba.1
@@ -339,16 +341,19 @@ instance instHeytingAlgebra : HeytingAlgebra CapabilityLattice where
     have e9 := le_antisymm hab.2.2.2.2.2.2.2.2.1 hba.2.2.2.2.2.2.2.2.1
     have e10 := le_antisymm hab.2.2.2.2.2.2.2.2.2.1 hba.2.2.2.2.2.2.2.2.2.1
     have e11 := le_antisymm hab.2.2.2.2.2.2.2.2.2.2.1 hba.2.2.2.2.2.2.2.2.2.2.1
-    have e12 := le_antisymm hab.2.2.2.2.2.2.2.2.2.2.2 hba.2.2.2.2.2.2.2.2.2.2.2
+    have e12 := le_antisymm hab.2.2.2.2.2.2.2.2.2.2.2.1 hba.2.2.2.2.2.2.2.2.2.2.2.1
+    have e13 := le_antisymm hab.2.2.2.2.2.2.2.2.2.2.2.2 hba.2.2.2.2.2.2.2.2.2.2.2.2
     cases a; cases b; simp_all
   inf_le_left a b :=
     ⟨inf_le_left, inf_le_left, inf_le_left, inf_le_left,
      inf_le_left, inf_le_left, inf_le_left, inf_le_left,
-     inf_le_left, inf_le_left, inf_le_left, inf_le_left⟩
+     inf_le_left, inf_le_left, inf_le_left, inf_le_left,
+     inf_le_left⟩
   inf_le_right a b :=
     ⟨inf_le_right, inf_le_right, inf_le_right, inf_le_right,
      inf_le_right, inf_le_right, inf_le_right, inf_le_right,
-     inf_le_right, inf_le_right, inf_le_right, inf_le_right⟩
+     inf_le_right, inf_le_right, inf_le_right, inf_le_right,
+     inf_le_right⟩
   le_inf a b c hab hac :=
     ⟨le_inf hab.1 hac.1, le_inf hab.2.1 hac.2.1,
      le_inf hab.2.2.1 hac.2.2.1, le_inf hab.2.2.2.1 hac.2.2.2.1,
@@ -359,15 +364,18 @@ instance instHeytingAlgebra : HeytingAlgebra CapabilityLattice where
      le_inf hab.2.2.2.2.2.2.2.2.1 hac.2.2.2.2.2.2.2.2.1,
      le_inf hab.2.2.2.2.2.2.2.2.2.1 hac.2.2.2.2.2.2.2.2.2.1,
      le_inf hab.2.2.2.2.2.2.2.2.2.2.1 hac.2.2.2.2.2.2.2.2.2.2.1,
-     le_inf hab.2.2.2.2.2.2.2.2.2.2.2 hac.2.2.2.2.2.2.2.2.2.2.2⟩
+     le_inf hab.2.2.2.2.2.2.2.2.2.2.2.1 hac.2.2.2.2.2.2.2.2.2.2.2.1,
+     le_inf hab.2.2.2.2.2.2.2.2.2.2.2.2 hac.2.2.2.2.2.2.2.2.2.2.2.2⟩
   le_sup_left a b :=
     ⟨le_sup_left, le_sup_left, le_sup_left, le_sup_left,
      le_sup_left, le_sup_left, le_sup_left, le_sup_left,
-     le_sup_left, le_sup_left, le_sup_left, le_sup_left⟩
+     le_sup_left, le_sup_left, le_sup_left, le_sup_left,
+     le_sup_left⟩
   le_sup_right a b :=
     ⟨le_sup_right, le_sup_right, le_sup_right, le_sup_right,
      le_sup_right, le_sup_right, le_sup_right, le_sup_right,
-     le_sup_right, le_sup_right, le_sup_right, le_sup_right⟩
+     le_sup_right, le_sup_right, le_sup_right, le_sup_right,
+     le_sup_right⟩
   sup_le a b c hab hbc :=
     ⟨sup_le hab.1 hbc.1, sup_le hab.2.1 hbc.2.1,
      sup_le hab.2.2.1 hbc.2.2.1, sup_le hab.2.2.2.1 hbc.2.2.2.1,
@@ -378,18 +386,21 @@ instance instHeytingAlgebra : HeytingAlgebra CapabilityLattice where
      sup_le hab.2.2.2.2.2.2.2.2.1 hbc.2.2.2.2.2.2.2.2.1,
      sup_le hab.2.2.2.2.2.2.2.2.2.1 hbc.2.2.2.2.2.2.2.2.2.1,
      sup_le hab.2.2.2.2.2.2.2.2.2.2.1 hbc.2.2.2.2.2.2.2.2.2.2.1,
-     sup_le hab.2.2.2.2.2.2.2.2.2.2.2 hbc.2.2.2.2.2.2.2.2.2.2.2⟩
+     sup_le hab.2.2.2.2.2.2.2.2.2.2.2.1 hbc.2.2.2.2.2.2.2.2.2.2.2.1,
+     sup_le hab.2.2.2.2.2.2.2.2.2.2.2.2 hbc.2.2.2.2.2.2.2.2.2.2.2.2⟩
   bot_le a :=
     ⟨bot_le, bot_le, bot_le, bot_le, bot_le, bot_le,
-     bot_le, bot_le, bot_le, bot_le, bot_le, bot_le⟩
+     bot_le, bot_le, bot_le, bot_le, bot_le, bot_le,
+     bot_le⟩
   le_top a :=
     ⟨le_top, le_top, le_top, le_top, le_top, le_top,
-     le_top, le_top, le_top, le_top, le_top, le_top⟩
+     le_top, le_top, le_top, le_top, le_top, le_top,
+     le_top⟩
   le_himp_iff a b c := by
     show latticeLE a (latticeHImp b c) ↔ latticeLE (latticeInf a b) c
     simp only [latticeLE, latticeHImp, latticeInf]
     constructor
-    · intro ⟨h1,h2,h3,h4,h5,h6,h7,h8,h9,h10,h11,h12⟩
+    · intro ⟨h1,h2,h3,h4,h5,h6,h7,h8,h9,h10,h11,h12,h13⟩
       exact ⟨(PortcullisCoreBridge.le_himp_iff _ _ _).mp h1,
              (PortcullisCoreBridge.le_himp_iff _ _ _).mp h2,
              (PortcullisCoreBridge.le_himp_iff _ _ _).mp h3,
@@ -401,8 +412,9 @@ instance instHeytingAlgebra : HeytingAlgebra CapabilityLattice where
              (PortcullisCoreBridge.le_himp_iff _ _ _).mp h9,
              (PortcullisCoreBridge.le_himp_iff _ _ _).mp h10,
              (PortcullisCoreBridge.le_himp_iff _ _ _).mp h11,
-             (PortcullisCoreBridge.le_himp_iff _ _ _).mp h12⟩
-    · intro ⟨h1,h2,h3,h4,h5,h6,h7,h8,h9,h10,h11,h12⟩
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mp h12,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mp h13⟩
+    · intro ⟨h1,h2,h3,h4,h5,h6,h7,h8,h9,h10,h11,h12,h13⟩
       exact ⟨(PortcullisCoreBridge.le_himp_iff _ _ _).mpr h1,
              (PortcullisCoreBridge.le_himp_iff _ _ _).mpr h2,
              (PortcullisCoreBridge.le_himp_iff _ _ _).mpr h3,
@@ -414,11 +426,12 @@ instance instHeytingAlgebra : HeytingAlgebra CapabilityLattice where
              (PortcullisCoreBridge.le_himp_iff _ _ _).mpr h9,
              (PortcullisCoreBridge.le_himp_iff _ _ _).mpr h10,
              (PortcullisCoreBridge.le_himp_iff _ _ _).mpr h11,
-             (PortcullisCoreBridge.le_himp_iff _ _ _).mpr h12⟩
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mpr h12,
+             (PortcullisCoreBridge.le_himp_iff _ _ _).mpr h13⟩
   himp_bot a := by
     show latticeHImp a latticeBot = latticeCompl a
     simp only [latticeHImp, latticeBot, latticeCompl]
-    congr 1 <;> exact PortcullisCoreBridge.himp_bot _
+    ext <;> exact PortcullisCoreBridge.himp_bot _
 
 end ProductLattice
 
@@ -479,15 +492,16 @@ theorem lattice_top_eq_top :
 theorem meet_deflationary (a b : CapabilityLevel) : a ⊓ b ≤ a := inf_le_left
 
 open ProductLattice in
-/-- **The 12-dimensional proof that permissions never escalate.**
-    For all 12 capability dimensions: (policy ⊓ session).field ≤ policy.field. -/
+/-- **The 13-dimensional proof that permissions never escalate.**
+    For all 13 capability dimensions: (policy ⊓ session).field ≤ policy.field. -/
 theorem lattice_meet_deflationary_left (a b : CapabilityLattice) :
     (a ⊓ b) ≤ a := by
   show latticeLE (latticeInf a b) a
   simp only [latticeLE, latticeInf]
   exact ⟨inf_le_left, inf_le_left, inf_le_left, inf_le_left,
          inf_le_left, inf_le_left, inf_le_left, inf_le_left,
-         inf_le_left, inf_le_left, inf_le_left, inf_le_left⟩
+         inf_le_left, inf_le_left, inf_le_left, inf_le_left,
+         inf_le_left⟩
 
 open ProductLattice in
 /-- Meet is deflationary on the right. -/
@@ -497,7 +511,8 @@ theorem lattice_meet_deflationary_right (a b : CapabilityLattice) :
   simp only [latticeLE, latticeInf]
   exact ⟨inf_le_right, inf_le_right, inf_le_right, inf_le_right,
          inf_le_right, inf_le_right, inf_le_right, inf_le_right,
-         inf_le_right, inf_le_right, inf_le_right, inf_le_right⟩
+         inf_le_right, inf_le_right, inf_le_right, inf_le_right,
+         inf_le_right⟩
 
 open ProductLattice in
 /-- Meet is idempotent: a ⊓ a = a. Applying the same policy twice is a no-op. -/
@@ -506,7 +521,7 @@ theorem lattice_meet_idempotent (a : CapabilityLattice) : a ⊓ a = a := by
   have h2 : a ≤ (a ⊓ a) := by
     show latticeLE a (latticeInf a a)
     simp only [latticeLE, latticeInf]
-    refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> exact le_inf (le_refl _) (le_refl _)
+    refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> exact le_inf (le_refl _) (le_refl _)
   exact le_antisymm h1 h2
 
 end PortcullisCoreBridge

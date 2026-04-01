@@ -267,6 +267,11 @@ impl PathLattice {
                 "**/.nucleus/policy.toml",
                 "**/.nucleus/trust/**",
                 "**/.nucleus/manifests/**",
+                // Nucleus session state — contains ephemeral Ed25519 signing keys (#487).
+                // A tool call like `cat ~/.local/share/nucleus/sessions/*.json`
+                // could exfiltrate the signing key, enabling receipt forgery.
+                "**/.local/share/nucleus/**",
+                "**/nucleus-hook/**",
             ]
             .iter()
             .map(|s| s.to_string())
@@ -461,6 +466,16 @@ mod tests {
         assert!(
             !lattice.can_access(Path::new(".nucleus/trust/author.pub")),
             ".nucleus/trust/ must be blocked"
+        );
+
+        // Nucleus session state — signing key exfiltration (#487)
+        assert!(
+            !lattice.can_access(Path::new(".local/share/nucleus/sessions/abc123.json")),
+            "session state files must be blocked (signing key)"
+        );
+        assert!(
+            !lattice.can_access(Path::new("nucleus-hook/session.json")),
+            "legacy /tmp/nucleus-hook/ must be blocked"
         );
 
         // Normal files still allowed

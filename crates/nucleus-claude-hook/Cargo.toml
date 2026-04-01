@@ -23,6 +23,7 @@ hex = { workspace = true }
 sha2 = { workspace = true }
 toml = { workspace = true }
 dirs-next = "2"
+libc = "0.2"
 
 [lints]
 workspace = true
