@@ -13,14 +13,41 @@
 //! - Each entry has a `MemoryAuthority` — `MayInform` entries can
 //!   contribute to reasoning, while `MayNotAuthorize` entries MUST NOT
 //!   be used as causal ancestors of privileged actions.
+//! - Each entry carries a [`ProvenanceSet`] tracking where the data
+//!   originated (USER, WEB, TOOL, etc.). On read, this provenance
+//!   flows into the IFC label so the flow graph can track taint.
 //! - TTLs prevent stale data from persisting indefinitely.
 //! - Schema types enable validation (string, json, binary).
 //! - Rebuttal history tracks previous values when entries are
 //!   overwritten, capped at [`MAX_REBUTTAL_HISTORY`] per key.
+//!
+//! ## Poisoned memory detection
+//!
+//! Entries written from adversarial sources (web scrapes, untrusted
+//! delegated agents) should carry `MayNotAuthorize` authority and
+//! provenance containing `WEB` or similar tainted sources. The
+//! [`GovernedMemory::poisoned_entries`] method returns all entries
+//! that cannot authorize privileged actions, and [`GovernedMemory::audit_dump`]
+//! produces a full snapshot of every entry's metadata for inspection.
 
 use crate::{AuthorityLevel, ConfLevel, Freshness, IFCLabel, IntegLevel, ProvenanceSet};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+/// Serde support for [`ProvenanceSet`] (serialized as u8 bitmask).
+mod provenance_serde {
+    use crate::ProvenanceSet;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(val: &ProvenanceSet, ser: S) -> Result<S::Ok, S::Error> {
+        val.bits().serialize(ser)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<ProvenanceSet, D::Error> {
+        let bits = u8::deserialize(de)?;
+        Ok(ProvenanceSet::from_bits(bits))
+    }
+}
 
 /// Maximum number of rebuttal history entries retained per key.
 const MAX_REBUTTAL_HISTORY: usize = 10;
@@ -44,6 +71,13 @@ pub struct MemoryEntry {
     /// Authority class — whether this entry can authorize privileged actions.
     #[serde(default)]
     pub authority: MemoryAuthority,
+    /// Provenance — which sources contributed to this entry's data.
+    ///
+    /// Tracks the origin of the data (USER, WEB, TOOL, MODEL, SYSTEM, MEMORY).
+    /// On read, this provenance is unioned with `MEMORY` and flows into the
+    /// IFC label for downstream taint tracking.
+    #[serde(default, with = "provenance_serde")]
+    pub provenance: ProvenanceSet,
     /// Unix timestamp when the entry was created.
     pub created_at: u64,
     /// Time-to-live in seconds (0 = no expiry).
@@ -152,8 +186,9 @@ impl GovernedMemory {
     /// Write a memory entry with the given label.
     ///
     /// Returns false if max_entries would be exceeded (entry not written).
-    /// Uses [`MemoryAuthority::MayInform`] by default — use
-    /// [`write_governed`] or [`write_with_limit`] to specify authority.
+    /// Uses [`MemoryAuthority::MayInform`] and empty provenance by default —
+    /// use [`write_governed`] or [`write_with_provenance`] to specify authority
+    /// and provenance explicitly.
     pub fn write(
         &mut self,
         key: String,
@@ -169,6 +204,7 @@ impl GovernedMemory {
             schema,
             label,
             MemoryAuthority::MayInform,
+            ProvenanceSet::EMPTY,
             now,
             ttl_secs,
             1000,
@@ -191,10 +227,43 @@ impl GovernedMemory {
         now: u64,
         ttl_secs: u64,
     ) -> bool {
-        self.write_with_limit(key, value, schema, label, authority, now, ttl_secs, 1000)
+        self.write_with_limit(
+            key,
+            value,
+            schema,
+            label,
+            authority,
+            ProvenanceSet::EMPTY,
+            now,
+            ttl_secs,
+            1000,
+        )
     }
 
-    /// Write with explicit max_entries limit and authority class (#587, #508).
+    /// Write a memory entry with explicit authority class and provenance.
+    ///
+    /// This is the most precise write variant (short of `write_with_limit`) —
+    /// callers specify exactly where the data originated so downstream flow
+    /// analysis can track taint through the memory plane.
+    #[allow(clippy::too_many_arguments)]
+    pub fn write_with_provenance(
+        &mut self,
+        key: String,
+        value: String,
+        schema: SchemaType,
+        label: MemoryLabel,
+        authority: MemoryAuthority,
+        provenance: ProvenanceSet,
+        now: u64,
+        ttl_secs: u64,
+    ) -> bool {
+        self.write_with_limit(
+            key, value, schema, label, authority, provenance, now, ttl_secs, 1000,
+        )
+    }
+
+    /// Write with explicit max_entries limit, authority class, and provenance
+    /// (#587, #508, #640).
     ///
     /// When overwriting an existing key, the previous value is pushed
     /// onto the rebuttal history (capped at [`MAX_REBUTTAL_HISTORY`]).
@@ -206,6 +275,7 @@ impl GovernedMemory {
         schema: SchemaType,
         label: MemoryLabel,
         authority: MemoryAuthority,
+        provenance: ProvenanceSet,
         now: u64,
         ttl_secs: u64,
         max_entries: usize,
@@ -240,6 +310,7 @@ impl GovernedMemory {
                 schema,
                 label,
                 authority,
+                provenance,
                 created_at: now,
                 ttl_secs,
                 rebuttal_history,
@@ -255,6 +326,11 @@ impl GovernedMemory {
 
     /// Get the IFC label for a memory read (for flow graph observation).
     ///
+    /// The returned label's provenance is the union of the entry's stored
+    /// provenance and `MEMORY` (since the data is being read *from* memory).
+    /// This ensures downstream flow analysis sees both the original source
+    /// and the memory-channel taint.
+    ///
     /// `MayNotAuthorize` entries produce `AuthorityLevel::NoAuthority`
     /// so they cannot become causal ancestors of privileged operations.
     pub fn read_label(&self, key: &str, now: u64) -> Option<IFCLabel> {
@@ -267,7 +343,7 @@ impl GovernedMemory {
                 confidentiality: entry.label.conf_level(),
                 integrity: entry.label.integ_level(),
                 authority,
-                provenance: ProvenanceSet::MEMORY,
+                provenance: entry.provenance.union(ProvenanceSet::MEMORY),
                 freshness: Freshness {
                     observed_at: entry.created_at,
                     ttl_secs: entry.ttl_secs,
@@ -302,6 +378,62 @@ impl GovernedMemory {
     pub fn keys(&self) -> impl Iterator<Item = &str> {
         self.entries.keys().map(|s| s.as_str())
     }
+
+    /// Return all entries with `MayNotAuthorize` authority (poisoned memory).
+    ///
+    /// These entries were written from adversarial or web-tainted sources
+    /// and MUST NOT be used as causal ancestors of privileged actions.
+    /// Expired entries are excluded.
+    pub fn poisoned_entries(&self, now: u64) -> Vec<(&str, &MemoryEntry)> {
+        self.entries
+            .iter()
+            .filter(|(_, e)| !e.is_expired(now) && e.authority == MemoryAuthority::MayNotAuthorize)
+            .map(|(k, e)| (k.as_str(), e))
+            .collect()
+    }
+
+    /// Produce a full audit dump of every live entry's metadata.
+    ///
+    /// Returns key, provenance, authority, label, created_at, ttl, and
+    /// rebuttal count for each non-expired entry — suitable for security
+    /// inspection and compliance logging.
+    pub fn audit_dump(&self, now: u64) -> Vec<AuditEntry<'_>> {
+        self.entries
+            .iter()
+            .filter(|(_, e)| !e.is_expired(now))
+            .map(|(k, e)| AuditEntry {
+                key: k.as_str(),
+                provenance: e.provenance,
+                authority: e.authority,
+                confidentiality: e.label.conf_level(),
+                integrity: e.label.integ_level(),
+                created_at: e.created_at,
+                ttl_secs: e.ttl_secs,
+                rebuttal_count: e.rebuttal_history.len(),
+            })
+            .collect()
+    }
+}
+
+/// A single row in the memory audit dump.
+#[derive(Debug, Clone)]
+pub struct AuditEntry<'a> {
+    /// Memory key.
+    pub key: &'a str,
+    /// Provenance bitset tracking data origin.
+    pub provenance: ProvenanceSet,
+    /// Authority class.
+    pub authority: MemoryAuthority,
+    /// Confidentiality level.
+    pub confidentiality: ConfLevel,
+    /// Integrity level.
+    pub integrity: IntegLevel,
+    /// Unix timestamp of creation.
+    pub created_at: u64,
+    /// TTL in seconds (0 = no expiry).
+    pub ttl_secs: u64,
+    /// Number of rebuttal history entries.
+    pub rebuttal_count: usize,
 }
 
 impl MemoryEntry {
@@ -462,6 +594,7 @@ max_entries = 500
                 SchemaType::String,
                 label.clone(),
                 MemoryAuthority::MayInform,
+                ProvenanceSet::EMPTY,
                 1000,
                 0,
                 3,
@@ -476,6 +609,7 @@ max_entries = 500
             SchemaType::String,
             label.clone(),
             MemoryAuthority::MayInform,
+            ProvenanceSet::EMPTY,
             1000,
             0,
             3,
@@ -489,6 +623,7 @@ max_entries = 500
             SchemaType::String,
             label,
             MemoryAuthority::MayInform,
+            ProvenanceSet::EMPTY,
             1000,
             0,
             3,
@@ -660,5 +795,262 @@ max_entries = 500
         // IFC label reflects the new authority.
         let ifc = mem.read_label("key", 2000).unwrap();
         assert_eq!(ifc.authority, AuthorityLevel::NoAuthority);
+    }
+
+    // --- Provenance tracking tests (#640) ---
+
+    #[test]
+    fn write_with_provenance_stores_provenance() {
+        let mut mem = GovernedMemory::new();
+        let label = MemoryLabel::from_levels(ConfLevel::Internal, IntegLevel::Untrusted);
+
+        mem.write_with_provenance(
+            "web-data".into(),
+            "scraped".into(),
+            SchemaType::String,
+            label,
+            MemoryAuthority::MayNotAuthorize,
+            ProvenanceSet::WEB,
+            1000,
+            3600,
+        );
+
+        let entry = mem.read("web-data", 1000).unwrap();
+        assert!(entry.provenance.contains(ProvenanceSet::WEB));
+        assert!(!entry.provenance.contains(ProvenanceSet::USER));
+    }
+
+    #[test]
+    fn read_label_unions_provenance_with_memory() {
+        let mut mem = GovernedMemory::new();
+        let label = MemoryLabel::from_levels(ConfLevel::Internal, IntegLevel::Trusted);
+
+        // Write with USER provenance.
+        mem.write_with_provenance(
+            "user-note".into(),
+            "hello".into(),
+            SchemaType::String,
+            label,
+            MemoryAuthority::MayInform,
+            ProvenanceSet::USER,
+            1000,
+            0,
+        );
+
+        // read_label should produce USER | MEMORY.
+        let ifc = mem.read_label("user-note", 1000).unwrap();
+        assert!(ifc.provenance.contains(ProvenanceSet::USER));
+        assert!(ifc.provenance.contains(ProvenanceSet::MEMORY));
+    }
+
+    #[test]
+    fn default_write_has_empty_provenance() {
+        let mut mem = GovernedMemory::new();
+        let label = MemoryLabel::from_levels(ConfLevel::Public, IntegLevel::Trusted);
+
+        mem.write(
+            "key".into(),
+            "val".into(),
+            SchemaType::String,
+            label,
+            1000,
+            0,
+        );
+
+        let entry = mem.read("key", 1000).unwrap();
+        assert_eq!(entry.provenance, ProvenanceSet::EMPTY);
+
+        // read_label still has MEMORY even with empty stored provenance.
+        let ifc = mem.read_label("key", 1000).unwrap();
+        assert!(ifc.provenance.contains(ProvenanceSet::MEMORY));
+    }
+
+    #[test]
+    fn multi_source_provenance() {
+        let mut mem = GovernedMemory::new();
+        let label = MemoryLabel::from_levels(ConfLevel::Internal, IntegLevel::Untrusted);
+        let prov = ProvenanceSet::WEB.union(ProvenanceSet::TOOL);
+
+        mem.write_with_provenance(
+            "mixed".into(),
+            "data".into(),
+            SchemaType::String,
+            label,
+            MemoryAuthority::MayNotAuthorize,
+            prov,
+            1000,
+            0,
+        );
+
+        let entry = mem.read("mixed", 1000).unwrap();
+        assert!(entry.provenance.contains(ProvenanceSet::WEB));
+        assert!(entry.provenance.contains(ProvenanceSet::TOOL));
+        assert!(!entry.provenance.contains(ProvenanceSet::SYSTEM));
+    }
+
+    // --- Poisoned entries tests (#640) ---
+
+    #[test]
+    fn poisoned_entries_returns_may_not_authorize() {
+        let mut mem = GovernedMemory::new();
+        let trusted_label = MemoryLabel::from_levels(ConfLevel::Internal, IntegLevel::Trusted);
+        let tainted_label = MemoryLabel::from_levels(ConfLevel::Internal, IntegLevel::Adversarial);
+
+        // One trusted entry.
+        mem.write_with_provenance(
+            "safe".into(),
+            "ok".into(),
+            SchemaType::String,
+            trusted_label,
+            MemoryAuthority::MayInform,
+            ProvenanceSet::USER,
+            1000,
+            0,
+        );
+
+        // Two poisoned entries.
+        mem.write_with_provenance(
+            "poison1".into(),
+            "bad1".into(),
+            SchemaType::String,
+            tainted_label.clone(),
+            MemoryAuthority::MayNotAuthorize,
+            ProvenanceSet::WEB,
+            1000,
+            0,
+        );
+        mem.write_with_provenance(
+            "poison2".into(),
+            "bad2".into(),
+            SchemaType::String,
+            tainted_label,
+            MemoryAuthority::MayNotAuthorize,
+            ProvenanceSet::WEB.union(ProvenanceSet::MODEL),
+            1000,
+            0,
+        );
+
+        let poisoned = mem.poisoned_entries(1000);
+        assert_eq!(poisoned.len(), 2);
+        // All returned entries are MayNotAuthorize.
+        for (_, entry) in &poisoned {
+            assert_eq!(entry.authority, MemoryAuthority::MayNotAuthorize);
+        }
+    }
+
+    #[test]
+    fn poisoned_entries_excludes_expired() {
+        let mut mem = GovernedMemory::new();
+        let label = MemoryLabel::from_levels(ConfLevel::Public, IntegLevel::Adversarial);
+
+        mem.write_with_provenance(
+            "expired-poison".into(),
+            "old".into(),
+            SchemaType::String,
+            label,
+            MemoryAuthority::MayNotAuthorize,
+            ProvenanceSet::WEB,
+            1000,
+            10, // Expires at 1010
+        );
+
+        assert_eq!(mem.poisoned_entries(1005).len(), 1); // Still alive
+        assert_eq!(mem.poisoned_entries(1011).len(), 0); // Expired
+    }
+
+    // --- Audit dump tests (#640) ---
+
+    #[test]
+    fn audit_dump_captures_all_metadata() {
+        let mut mem = GovernedMemory::new();
+        let label = MemoryLabel::from_levels(ConfLevel::Secret, IntegLevel::Trusted);
+
+        mem.write_with_provenance(
+            "secret-key".into(),
+            "v1".into(),
+            SchemaType::String,
+            label.clone(),
+            MemoryAuthority::MayInform,
+            ProvenanceSet::SYSTEM,
+            1000,
+            3600,
+        );
+
+        // Overwrite to create rebuttal history.
+        mem.write_with_provenance(
+            "secret-key".into(),
+            "v2".into(),
+            SchemaType::String,
+            label,
+            MemoryAuthority::MayInform,
+            ProvenanceSet::SYSTEM,
+            2000,
+            3600,
+        );
+
+        let dump = mem.audit_dump(2000);
+        assert_eq!(dump.len(), 1);
+
+        let row = &dump[0];
+        assert_eq!(row.key, "secret-key");
+        assert!(row.provenance.contains(ProvenanceSet::SYSTEM));
+        assert_eq!(row.authority, MemoryAuthority::MayInform);
+        assert_eq!(row.confidentiality, ConfLevel::Secret);
+        assert_eq!(row.integrity, IntegLevel::Trusted);
+        assert_eq!(row.created_at, 2000);
+        assert_eq!(row.ttl_secs, 3600);
+        assert_eq!(row.rebuttal_count, 1);
+    }
+
+    #[test]
+    fn audit_dump_excludes_expired() {
+        let mut mem = GovernedMemory::new();
+        let label = MemoryLabel::from_levels(ConfLevel::Public, IntegLevel::Trusted);
+
+        mem.write(
+            "live".into(),
+            "a".into(),
+            SchemaType::String,
+            label.clone(),
+            1000,
+            0,
+        );
+        mem.write(
+            "dead".into(),
+            "b".into(),
+            SchemaType::String,
+            label,
+            1000,
+            10,
+        );
+
+        let dump = mem.audit_dump(1011);
+        assert_eq!(dump.len(), 1);
+        assert_eq!(dump[0].key, "live");
+    }
+
+    #[test]
+    fn audit_dump_shows_poisoned_provenance() {
+        let mut mem = GovernedMemory::new();
+        let label = MemoryLabel::from_levels(ConfLevel::Internal, IntegLevel::Adversarial);
+
+        mem.write_with_provenance(
+            "tainted".into(),
+            "injected".into(),
+            SchemaType::String,
+            label,
+            MemoryAuthority::MayNotAuthorize,
+            ProvenanceSet::WEB.union(ProvenanceSet::MODEL),
+            1000,
+            0,
+        );
+
+        let dump = mem.audit_dump(1000);
+        assert_eq!(dump.len(), 1);
+        let row = &dump[0];
+        assert_eq!(row.authority, MemoryAuthority::MayNotAuthorize);
+        assert!(row.provenance.contains(ProvenanceSet::WEB));
+        assert!(row.provenance.contains(ProvenanceSet::MODEL));
+        assert_eq!(row.integrity, IntegLevel::Adversarial);
     }
 }
