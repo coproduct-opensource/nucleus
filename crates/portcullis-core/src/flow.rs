@@ -227,6 +227,28 @@ pub enum QuarantineVerdict {
     },
 }
 
+/// Result of a trusted ancestry check for compartment transitions.
+///
+/// When transitioning to Execute or Breakglass, data flowing to privileged
+/// sinks must have "trusted ancestry" — every causal ancestor must have
+/// integrity >= `Untrusted` (i.e., not `Adversarial`). This prevents
+/// adversarial web content from reaching execution sinks even if the
+/// current session's flow graph was reset on compartment transition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrustAncestryResult {
+    /// All ancestors have integrity >= Untrusted. The node's data
+    /// provenance chain is clean for Execute/Breakglass compartments.
+    Trusted,
+    /// One or more ancestors have Adversarial integrity. The node
+    /// cannot flow to privileged sinks in Execute/Breakglass without
+    /// explicit declassification.
+    Untrusted {
+        /// The specific node IDs with Adversarial integrity in the
+        /// causal ancestry. Useful for audit trails and error messages.
+        tainted_ancestors: Vec<NodeId>,
+    },
+}
+
 /// Minimum authority required for an operation to proceed.
 pub fn required_authority(op: Operation) -> AuthorityLevel {
     match op {

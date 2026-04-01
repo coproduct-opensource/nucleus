@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, VecDeque};
 
 use portcullis_core::flow::{
     check_flow, intrinsic_label, propagate_label, FlowNode, FlowVerdict, NodeId, NodeKind,
-    QuarantineVerdict, MAX_PARENTS,
+    QuarantineVerdict, TrustAncestryResult, MAX_PARENTS,
 };
 use portcullis_core::receipt::{build_receipt, FlowReceipt, MAX_RECEIPT_ANCESTORS};
 use portcullis_core::{IFCLabel, Operation};
@@ -403,6 +403,83 @@ impl FlowGraph {
         TokenApplyResult::Applied {
             original_label: result.original,
             new_label: result.label,
+        }
+    }
+
+    // ── Trusted ancestry check (#515) ────────────────────────────────
+
+    /// Check whether a node has trusted ancestry — all causal ancestors
+    /// have integrity >= `Untrusted` (i.e., not `Adversarial`).
+    ///
+    /// This is the compartment-aware provenance check required when
+    /// transitioning to Execute or Breakglass. The spec mandates that
+    /// data "may reach privileged sinks in execute only from trusted
+    /// ancestry or explicit declassification."
+    ///
+    /// The check walks the full causal DAG (BFS), including the node
+    /// itself, and collects any nodes with `Adversarial` integrity.
+    /// Denied nodes are skipped (they did not execute). Declassified
+    /// nodes that have been raised to `Untrusted` or above pass the
+    /// check — this is how web content can legitimately reach Execute
+    /// after explicit operator review.
+    ///
+    /// Returns [`TrustAncestryResult::Trusted`] if the chain is clean,
+    /// or [`TrustAncestryResult::Untrusted`] with the tainted node IDs.
+    pub fn check_trusted_ancestry(&self, node_id: NodeId) -> Option<TrustAncestryResult> {
+        use portcullis_core::IntegLevel;
+
+        let node = self.get(node_id)?;
+
+        let mut tainted = Vec::new();
+
+        // Check the node itself
+        if node.label.integrity < IntegLevel::Untrusted {
+            tainted.push(node_id);
+        }
+
+        // BFS over ancestors
+        let mut queue = VecDeque::new();
+        let mut visited = vec![false; self.nodes.len()];
+        visited[node_id as usize] = true;
+
+        // Seed the queue with direct parents
+        for i in 0..node.parent_count as usize {
+            let pid = node.parents[i];
+            if pid > 0 && (pid as usize) < self.nodes.len() && !visited[pid as usize] {
+                queue.push_back(pid);
+                visited[pid as usize] = true;
+            }
+        }
+
+        while let Some(nid) = queue.pop_front() {
+            // Skip denied nodes — they did not execute and cannot
+            // contribute causal data.
+            if self.denied.contains(&nid) {
+                continue;
+            }
+
+            if let Some(ancestor) = self.get(nid) {
+                if ancestor.label.integrity < IntegLevel::Untrusted {
+                    tainted.push(nid);
+                }
+
+                // Continue BFS through this ancestor's parents
+                for i in 0..ancestor.parent_count as usize {
+                    let pid = ancestor.parents[i];
+                    if pid > 0 && (pid as usize) < self.nodes.len() && !visited[pid as usize] {
+                        queue.push_back(pid);
+                        visited[pid as usize] = true;
+                    }
+                }
+            }
+        }
+
+        if tainted.is_empty() {
+            Some(TrustAncestryResult::Trusted)
+        } else {
+            Some(TrustAncestryResult::Untrusted {
+                tainted_ancestors: tainted,
+            })
         }
     }
 
@@ -1392,5 +1469,185 @@ mod tests {
         let e = FlowGraphError::QuarantinedParent(7);
         assert!(e.to_string().contains("7"));
         assert!(e.to_string().contains("quarantined"));
+    }
+
+    // ── Trusted ancestry check tests (#515) ────────────────────────
+
+    #[test]
+    fn trusted_ancestry_file_reads_only() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        let user = g
+            .insert_observation(NodeKind::UserPrompt, &[], now)
+            .unwrap();
+        let file = g
+            .insert_observation(NodeKind::FileRead, &[user], now)
+            .unwrap();
+        let plan = g
+            .insert_observation(NodeKind::ModelPlan, &[file], now)
+            .unwrap();
+
+        assert_eq!(
+            g.check_trusted_ancestry(plan),
+            Some(TrustAncestryResult::Trusted),
+            "chain of user prompt → file read → model plan should be trusted"
+        );
+    }
+
+    #[test]
+    fn trusted_ancestry_web_ancestor_untrusted() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        let plan = g
+            .insert_observation(NodeKind::ModelPlan, &[web], now)
+            .unwrap();
+
+        match g.check_trusted_ancestry(plan) {
+            Some(TrustAncestryResult::Untrusted { tainted_ancestors }) => {
+                // The web node (Adversarial integrity) should be flagged.
+                // The plan node inherits Adversarial via propagation, so both are tainted.
+                assert!(
+                    tainted_ancestors.contains(&web),
+                    "web content node should be in tainted ancestors"
+                );
+                assert!(
+                    tainted_ancestors.contains(&plan),
+                    "plan node (inherits Adversarial from web) should be tainted"
+                );
+            }
+            other => panic!("Expected Untrusted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn trusted_ancestry_declassified_web_content_trusted() {
+        use portcullis_core::declassify::*;
+
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        // Web content starts as Adversarial
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        assert_eq!(
+            g.get(web).unwrap().label.integrity,
+            portcullis_core::IntegLevel::Adversarial
+        );
+
+        // Declassify: raise integrity from Adversarial to Untrusted
+        let token = DeclassificationToken::new(
+            web,
+            DeclassificationRule {
+                action: DeclassifyAction::RaiseIntegrity {
+                    from: portcullis_core::IntegLevel::Adversarial,
+                    to: portcullis_core::IntegLevel::Untrusted,
+                },
+                justification: "Operator reviewed search results",
+            },
+            vec![Operation::WriteFiles],
+            now + 3600,
+            "Curated search output".to_string(),
+        );
+        let result = g.apply_token(&token, now);
+        assert!(matches!(result, TokenApplyResult::Applied { .. }));
+
+        // Insert a plan node depending on the declassified web content
+        let plan = g
+            .insert_observation(NodeKind::ModelPlan, &[web], now)
+            .unwrap();
+
+        // The plan inherits Untrusted (from declassified web) — which is
+        // >= Untrusted, so the ancestry check should pass.
+        assert_eq!(
+            g.check_trusted_ancestry(plan),
+            Some(TrustAncestryResult::Trusted),
+            "declassified web content (Untrusted) should pass trusted ancestry check"
+        );
+    }
+
+    #[test]
+    fn trusted_ancestry_nonexistent_node_returns_none() {
+        let g = FlowGraph::new();
+        assert_eq!(g.check_trusted_ancestry(999), None);
+    }
+
+    #[test]
+    fn trusted_ancestry_root_node_no_parents() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        // A file read with no parents — Trusted integrity
+        let file = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        assert_eq!(
+            g.check_trusted_ancestry(file),
+            Some(TrustAncestryResult::Trusted),
+        );
+
+        // A web content with no parents — Adversarial integrity
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        match g.check_trusted_ancestry(web) {
+            Some(TrustAncestryResult::Untrusted { tainted_ancestors }) => {
+                assert_eq!(tainted_ancestors, vec![web]);
+            }
+            other => panic!("Expected Untrusted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn trusted_ancestry_independent_branch_not_affected() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        // Branch A: web content (adversarial)
+        let _web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+
+        // Branch B: clean file chain (independent)
+        let user = g
+            .insert_observation(NodeKind::UserPrompt, &[], now)
+            .unwrap();
+        let file = g
+            .insert_observation(NodeKind::FileRead, &[user], now)
+            .unwrap();
+
+        // Branch B should be trusted — web content in branch A is irrelevant
+        assert_eq!(
+            g.check_trusted_ancestry(file),
+            Some(TrustAncestryResult::Trusted),
+            "independent branch should not be tainted by unrelated web content"
+        );
+    }
+
+    #[test]
+    fn trusted_ancestry_mixed_parents_one_tainted() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        let file = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        let merged = g
+            .insert_observation(NodeKind::ModelPlan, &[file, web], now)
+            .unwrap();
+
+        match g.check_trusted_ancestry(merged) {
+            Some(TrustAncestryResult::Untrusted { tainted_ancestors }) => {
+                assert!(
+                    tainted_ancestors.contains(&web),
+                    "web ancestor should be in tainted list"
+                );
+            }
+            other => panic!("Expected Untrusted, got {other:?}"),
+        }
     }
 }
