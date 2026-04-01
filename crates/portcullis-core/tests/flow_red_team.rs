@@ -448,6 +448,294 @@ fn legitimate_user_creates_pr_from_own_work() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════
+// OWASP-AG05: Identity & privilege abuse — delegation constraint red team
+//
+// These tests exercise the DelegationConstraints / DelegationScope API
+// directly to prove that the delegation plane prevents privilege
+// escalation across agent hierarchies.
+// ═════════════════════════════════════════════════════════════════════════
+
+use portcullis_core::SinkClass;
+use portcullis_core::delegation::{DelegationConstraints, DelegationScope};
+
+// ── AG05-1: Delegation depth exhaustion ────────────────────────────────
+//
+// Attack: Parent has max_delegation_depth=1. Child (depth=1) attempts
+// to delegate further (spawn a grandchild). This should be blocked
+// because the child has already consumed the one allowed delegation hop.
+//
+// Defense: can_delegate_further(current_depth=1) returns false when
+// max_delegation_depth=1, preventing unbounded delegation chains.
+
+#[test]
+fn exploit_owasp_ag05_delegation_depth_exhaustion() {
+    let parent = DelegationConstraints {
+        scope: DelegationScope::unrestricted(),
+        max_delegation_depth: 1,
+        expires_at: u64::MAX,
+    };
+
+    // Parent can delegate (depth 0 → child at depth 1): allowed
+    assert!(
+        parent.can_delegate_further(0),
+        "parent at depth 0 should be able to delegate with max_depth=1"
+    );
+
+    // Child at depth 1 tries to delegate further: BLOCKED
+    assert!(
+        !parent.can_delegate_further(1),
+        "child at depth 1 must NOT delegate further when max_depth=1"
+    );
+
+    // Grandchild spawning at depth 2 would also be blocked
+    assert!(
+        !parent.can_delegate_further(2),
+        "any depth >= max_depth must be blocked"
+    );
+}
+
+// ── AG05-2: Scope escape — child requests sink not in parent ──────────
+//
+// Attack: Parent allows sinks [WorkspaceWrite, GitCommit]. Child
+// attempts to obtain GitPush permission, which the parent never had.
+//
+// Defense: narrow() returns None because the child's requested scope
+// is not a subset of the parent's scope.
+
+#[test]
+fn exploit_owasp_ag05_scope_escape() {
+    let parent = DelegationConstraints {
+        scope: DelegationScope {
+            allowed_paths: vec!["src/**".to_string()],
+            allowed_sinks: vec![SinkClass::WorkspaceWrite, SinkClass::GitCommit],
+            allowed_repos: vec!["org/repo".to_string()],
+        },
+        max_delegation_depth: 3,
+        expires_at: 5000,
+    };
+
+    // Child tries to claim GitPush — not in parent's allowed_sinks
+    let escalated_child = DelegationConstraints {
+        scope: DelegationScope {
+            allowed_paths: vec!["src/**".to_string()],
+            allowed_sinks: vec![SinkClass::GitPush], // NOT in parent
+            allowed_repos: vec!["org/repo".to_string()],
+        },
+        max_delegation_depth: 1,
+        expires_at: 3000,
+    };
+
+    assert!(
+        parent.narrow(&escalated_child).is_none(),
+        "narrow() must reject child requesting sink not in parent's allowed_sinks"
+    );
+
+    // Also test multi-sink escalation: one valid + one invalid
+    let mixed_child = DelegationConstraints {
+        scope: DelegationScope {
+            allowed_paths: vec!["src/**".to_string()],
+            allowed_sinks: vec![SinkClass::WorkspaceWrite, SinkClass::GitPush],
+            allowed_repos: vec!["org/repo".to_string()],
+        },
+        max_delegation_depth: 1,
+        expires_at: 3000,
+    };
+
+    assert!(
+        parent.narrow(&mixed_child).is_none(),
+        "narrow() must reject if ANY requested sink is outside parent's scope"
+    );
+
+    // Confirm a legitimate narrowing succeeds (control case)
+    let valid_child = DelegationConstraints {
+        scope: DelegationScope {
+            allowed_paths: vec!["src/**".to_string()],
+            allowed_sinks: vec![SinkClass::WorkspaceWrite],
+            allowed_repos: vec!["org/repo".to_string()],
+        },
+        max_delegation_depth: 1,
+        expires_at: 3000,
+    };
+
+    assert!(
+        parent.narrow(&valid_child).is_some(),
+        "narrow() should succeed when child is a proper subset of parent"
+    );
+}
+
+// ── AG05-3: Expiry bypass — child operates after delegation expires ───
+//
+// Attack: Parent delegation expires at timestamp 1000. At timestamp
+// 1001, child attempts an operation using the expired delegation.
+//
+// Defense: is_valid(1001) returns false, rejecting the operation.
+
+#[test]
+fn exploit_owasp_ag05_expiry_bypass() {
+    let delegation = DelegationConstraints {
+        scope: DelegationScope::unrestricted(),
+        max_delegation_depth: 5,
+        expires_at: 1000,
+    };
+
+    // Valid right up to the expiry timestamp
+    assert!(
+        delegation.is_valid(999),
+        "delegation should be valid before expiry"
+    );
+    assert!(
+        delegation.is_valid(1000),
+        "delegation should be valid at exactly the expiry timestamp"
+    );
+
+    // BLOCKED: one tick past expiry
+    assert!(
+        !delegation.is_valid(1001),
+        "delegation must be INVALID one second after expiry"
+    );
+
+    // BLOCKED: far-future timestamp
+    assert!(
+        !delegation.is_valid(u64::MAX),
+        "delegation must be INVALID at any time after expiry"
+    );
+
+    // Verify narrow() also respects parent expiry ceiling
+    let child_after_parent = DelegationConstraints {
+        scope: DelegationScope::unrestricted(),
+        max_delegation_depth: 1,
+        expires_at: 2000, // exceeds parent's 1000
+    };
+
+    assert!(
+        delegation.narrow(&child_after_parent).is_none(),
+        "narrow() must reject child whose expiry exceeds parent's expiry"
+    );
+}
+
+// ── AG05-4: Narrowing chain monotonicity — permissions can only shrink ─
+//
+// Attack: In a Parent → Child → Grandchild chain, an adversary tries
+// to regain permissions that were narrowed away at an intermediate step.
+//
+// Defense: Each narrow() step produces constraints that are ≤ the
+// parent on every dimension. The chain is provably monotone-attenuating.
+
+#[test]
+fn exploit_owasp_ag05_narrowing_chain_monotone() {
+    // Root: broad permissions
+    let root = DelegationConstraints {
+        scope: DelegationScope {
+            allowed_paths: vec![
+                "src/**".to_string(),
+                "tests/**".to_string(),
+                "docs/**".to_string(),
+            ],
+            allowed_sinks: vec![
+                SinkClass::WorkspaceWrite,
+                SinkClass::GitCommit,
+                SinkClass::GitPush,
+                SinkClass::BashExec,
+            ],
+            allowed_repos: vec!["org/alpha".to_string(), "org/beta".to_string()],
+        },
+        max_delegation_depth: 3,
+        expires_at: 10_000,
+    };
+
+    // Child: narrower scope
+    let child_request = DelegationConstraints {
+        scope: DelegationScope {
+            allowed_paths: vec!["src/**".to_string(), "tests/**".to_string()],
+            allowed_sinks: vec![SinkClass::WorkspaceWrite, SinkClass::GitCommit],
+            allowed_repos: vec!["org/alpha".to_string()],
+        },
+        max_delegation_depth: 2,
+        expires_at: 5_000,
+    };
+
+    let child = root
+        .narrow(&child_request)
+        .expect("child narrowing should succeed");
+
+    // Grandchild: even narrower
+    let grandchild_request = DelegationConstraints {
+        scope: DelegationScope {
+            allowed_paths: vec!["src/**".to_string()],
+            allowed_sinks: vec![SinkClass::WorkspaceWrite],
+            allowed_repos: vec!["org/alpha".to_string()],
+        },
+        max_delegation_depth: 1,
+        expires_at: 2_000,
+    };
+
+    let grandchild = child
+        .narrow(&grandchild_request)
+        .expect("grandchild narrowing should succeed");
+
+    // ── Monotonicity assertions: grandchild ≤ child ≤ root on every dimension ──
+
+    // Scope containment
+    assert!(
+        grandchild.scope.is_subset_of(&child.scope),
+        "grandchild scope must be subset of child scope"
+    );
+    assert!(
+        child.scope.is_subset_of(&root.scope),
+        "child scope must be subset of root scope"
+    );
+    assert!(
+        grandchild.scope.is_subset_of(&root.scope),
+        "grandchild scope must be subset of root scope (transitivity)"
+    );
+
+    // Depth monotonicity
+    assert!(
+        grandchild.max_delegation_depth <= child.max_delegation_depth,
+        "grandchild depth must be <= child depth"
+    );
+    assert!(
+        child.max_delegation_depth <= root.max_delegation_depth,
+        "child depth must be <= root depth"
+    );
+
+    // Expiry monotonicity
+    assert!(
+        grandchild.expires_at <= child.expires_at,
+        "grandchild expiry must be <= child expiry"
+    );
+    assert!(
+        child.expires_at <= root.expires_at,
+        "child expiry must be <= root expiry"
+    );
+
+    // ── Grandchild cannot re-escalate back to root's permissions ──
+
+    let escalation_attempt = DelegationConstraints {
+        scope: root.scope.clone(), // try to regain root's full scope
+        max_delegation_depth: root.max_delegation_depth,
+        expires_at: root.expires_at,
+    };
+
+    assert!(
+        grandchild.narrow(&escalation_attempt).is_none(),
+        "grandchild must NOT be able to re-escalate to root's permissions"
+    );
+
+    // Grandchild cannot even re-escalate to child's permissions
+    let child_escalation = DelegationConstraints {
+        scope: child.scope.clone(),
+        max_delegation_depth: child.max_delegation_depth,
+        expires_at: child.expires_at,
+    };
+
+    assert!(
+        grandchild.narrow(&child_escalation).is_none(),
+        "grandchild must NOT be able to re-escalate to child's permissions"
+    );
+}
+
+// ═════════════════════════════════════════════════════════════════════════
 // Exploit 6: WebFetch exfiltration via URL parameters
 //
 // Attack: Agent reads a secret (API key), then calls WebFetch with
