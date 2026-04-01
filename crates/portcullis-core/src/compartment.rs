@@ -102,15 +102,21 @@ impl Compartment {
 
     /// Can the session transition from `self` to `target`?
     ///
-    /// Upward transitions (expanding capabilities) require explicit action.
-    /// Downward transitions (narrowing) are always allowed.
+    /// - Same compartment: allowed (no-op).
+    /// - Downward (narrowing capabilities): always allowed.
+    /// - Single-step upward (e.g. Research → Draft): allowed.
+    /// - Skip-level upward (e.g. Research → Execute): **denied**.
+    ///
+    /// This forces operators to escalate one level at a time, producing
+    /// an audit trail at each step. Breakglass can only be reached from
+    /// Execute, never directly from Research or Draft.
     pub fn can_transition_to(&self, target: Compartment) -> bool {
-        // All transitions are allowed — the compartment system is
-        // policy-enforced, not lattice-enforced. The audit trail
-        // records every transition for compliance review.
-        // Future: require approval for upward transitions.
-        let _ = target;
-        true
+        if target <= *self {
+            // Same or downward — always allowed.
+            return true;
+        }
+        // Upward: only single-step allowed (target discriminant == self + 1).
+        (target as u8) == (*self as u8) + 1
     }
 
     /// Is this the breakglass compartment? (triggers enhanced audit)
@@ -399,6 +405,51 @@ mod tests {
         assert!(
             !Compartment::Draft.requires_trusted_ancestry(),
             "Draft does not require trusted ancestry"
+        );
+    }
+
+    // ── Transition enforcement (#733) ───────────────────────────────
+
+    #[test]
+    fn can_transition_to_same_compartment() {
+        for c in [
+            Compartment::Research,
+            Compartment::Draft,
+            Compartment::Execute,
+            Compartment::Breakglass,
+        ] {
+            assert!(c.can_transition_to(c), "{c} -> {c} should be allowed");
+        }
+    }
+
+    #[test]
+    fn can_transition_downward() {
+        assert!(Compartment::Breakglass.can_transition_to(Compartment::Research));
+        assert!(Compartment::Execute.can_transition_to(Compartment::Draft));
+        assert!(Compartment::Execute.can_transition_to(Compartment::Research));
+        assert!(Compartment::Draft.can_transition_to(Compartment::Research));
+    }
+
+    #[test]
+    fn can_transition_single_step_up() {
+        assert!(Compartment::Research.can_transition_to(Compartment::Draft));
+        assert!(Compartment::Draft.can_transition_to(Compartment::Execute));
+        assert!(Compartment::Execute.can_transition_to(Compartment::Breakglass));
+    }
+
+    #[test]
+    fn cannot_skip_level_upward() {
+        assert!(
+            !Compartment::Research.can_transition_to(Compartment::Execute),
+            "Research -> Execute skips Draft"
+        );
+        assert!(
+            !Compartment::Research.can_transition_to(Compartment::Breakglass),
+            "Research -> Breakglass skips two levels"
+        );
+        assert!(
+            !Compartment::Draft.can_transition_to(Compartment::Breakglass),
+            "Draft -> Breakglass skips Execute"
         );
     }
 }
