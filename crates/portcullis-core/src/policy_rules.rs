@@ -287,6 +287,7 @@ mod tests {
                 observed_at: 1000,
                 ttl_secs: 0,
             },
+            derivation: crate::DerivationClass::Deterministic,
         }
     }
 
@@ -300,6 +301,7 @@ mod tests {
                 observed_at: 1000,
                 ttl_secs: 0,
             },
+            derivation: crate::DerivationClass::OpaqueExternal,
         }
     }
 
@@ -313,6 +315,7 @@ mod tests {
                 observed_at: 1000,
                 ttl_secs: 0,
             },
+            derivation: crate::DerivationClass::Deterministic,
         }
     }
 

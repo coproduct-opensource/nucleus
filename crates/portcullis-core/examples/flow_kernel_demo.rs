@@ -60,6 +60,7 @@ fn main() {
                 ttl_secs: 0,
             },
             authority: AuthorityLevel::Directive,
+            derivation: portcullis_core::DerivationClass::Deterministic,
         },
     );
     print_node("Private file", &private_file);

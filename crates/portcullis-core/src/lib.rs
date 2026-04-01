@@ -856,7 +856,7 @@ pub fn should_gate(current: &ExposureSet, op: Operation) -> bool {
 // ═══════════════════════════════════════════════════════════════════════════
 // Information Flow Control labels — the Flow Kernel foundation
 //
-// A product lattice of 5 dimensions that tracks data provenance, trust,
+// A product lattice of 6 dimensions that tracks data provenance, trust,
 // and authority through agent execution. This is the formal substrate
 // for defending against trust-boundary exploits (indirect prompt injection,
 // memory poisoning, confused-deputy attacks).
@@ -1035,16 +1035,120 @@ impl Freshness {
     }
 }
 
-/// Information flow control label — 5-dimensional product lattice.
+/// Derivation class — determinism-aware integrity classification.
+///
+/// Tracks whether a datum was produced by a deterministic computation,
+/// AI generation, or some combination. This is the 6th dimension of
+/// the IFC product lattice and the core DPI primitive: it determines
+/// whether data can be auto-verified or requires human attestation.
+///
+/// Lattice order (bottom to top): `Deterministic < AIDerived < Mixed < OpaqueExternal`
+/// `HumanPromoted` sits beside `Mixed` — promotion does not cleanse.
+///
+/// Key invariant ("no silent cleansing"): `AIDerived.join(x) != Deterministic`
+/// for any `x` — AI-derived data cannot become deterministic without explicit
+/// human promotion, and even then the result is `Mixed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[repr(u8)]
+pub enum DerivationClass {
+    /// Reproducible: pure transform, deterministic fetch, parser output.
+    #[default]
+    Deterministic = 0,
+    /// LLM-generated, not reproducible (classification, extraction, generation).
+    AIDerived = 1,
+    /// Combination of deterministic and AI-derived inputs.
+    Mixed = 2,
+    /// AI-derived data explicitly approved by a human. Preserves ancestry
+    /// but signals attestation — joining with anything produces Mixed.
+    HumanPromoted = 3,
+    /// External system with unknown determinism profile. Top element.
+    OpaqueExternal = 4,
+}
+
+impl DerivationClass {
+    /// Join (least upper bound) of two derivation classes.
+    ///
+    /// Lattice structure (Hasse diagram):
+    /// ```text
+    ///       OpaqueExternal  (top)
+    ///            |
+    ///          Mixed
+    ///         /     \
+    ///   AIDerived  HumanPromoted
+    ///         \     /
+    ///       Deterministic  (bottom)
+    /// ```
+    ///
+    /// - Deterministic is bottom: `Deterministic ⊔ x = x`
+    /// - OpaqueExternal is top: `x ⊔ OpaqueExternal = OpaqueExternal`
+    /// - AIDerived ⊔ HumanPromoted = Mixed
+    /// - Mixed ⊔ {AIDerived, HumanPromoted} = Mixed
+    ///
+    /// Key invariant ("no silent cleansing"): `AIDerived.join(x) != Deterministic`
+    /// for any x — AI-derived data can never be laundered back to deterministic.
+    pub fn join(self, other: Self) -> Self {
+        use DerivationClass::*;
+        match (self, other) {
+            // Deterministic is bottom — identity for join
+            (Deterministic, x) | (x, Deterministic) => x,
+            // OpaqueExternal is top — absorbs everything
+            (OpaqueExternal, _) | (_, OpaqueExternal) => OpaqueExternal,
+            // Same class: idempotent
+            (AIDerived, AIDerived) => AIDerived,
+            (HumanPromoted, HumanPromoted) => HumanPromoted,
+            (Mixed, Mixed) => Mixed,
+            // Different non-bottom, non-top classes → Mixed
+            // AIDerived + HumanPromoted, AIDerived + Mixed, HumanPromoted + Mixed
+            _ => Mixed,
+        }
+    }
+
+    /// Meet (greatest lower bound) of two derivation classes.
+    ///
+    /// Dual of join:
+    /// - OpaqueExternal is top — identity for meet: `meet(x, OpaqueExternal) = x`
+    /// - Deterministic is bottom — absorber for meet: `meet(x, Deterministic) = Deterministic`
+    /// - `meet(AIDerived, HumanPromoted) = Deterministic` (greatest lower bound of incomparables)
+    /// - `meet(Mixed, x) = x` when x is AIDerived or HumanPromoted
+    pub fn meet(self, other: Self) -> Self {
+        use DerivationClass::*;
+        match (self, other) {
+            // OpaqueExternal is top — identity for meet
+            (OpaqueExternal, x) | (x, OpaqueExternal) => x,
+            // Deterministic is bottom — absorber for meet
+            (Deterministic, _) | (_, Deterministic) => Deterministic,
+            // Same class: idempotent
+            (AIDerived, AIDerived) => AIDerived,
+            (HumanPromoted, HumanPromoted) => HumanPromoted,
+            (Mixed, Mixed) => Mixed,
+            // Mixed meets AIDerived or HumanPromoted = the lower element
+            (Mixed, x) | (x, Mixed) => x,
+            // AIDerived meets HumanPromoted = Deterministic (their GLB)
+            (AIDerived, HumanPromoted) | (HumanPromoted, AIDerived) => Deterministic,
+        }
+    }
+
+    /// Lattice partial order: `self ≤ other`.
+    ///
+    /// `a.leq(b)` iff `a.join(b) == b` (standard lattice definition).
+    pub fn leq(self, other: Self) -> bool {
+        self.join(other) == other
+    }
+}
+
+/// Information flow control label — 6-dimensional product lattice.
 ///
 /// The lattice order follows BLP (confidentiality) + Biba (integrity)
-/// composition with authority confinement:
+/// composition with authority confinement and derivation tracking:
 ///
 /// - Confidentiality: covariant — join = max (most secret wins)
 /// - Integrity: CONTRAVARIANT — join = min (least trusted wins)
 /// - Provenance: covariant — join = union (all sources tracked)
 /// - Freshness: covariant — join = oldest, shortest TTL
 /// - Authority: CONTRAVARIANT — join = min (least authority wins)
+/// - Derivation: covariant — join per DerivationClass rules (Mixed absorbs)
 ///
 /// Key property: combining a trusted user prompt with web content produces
 /// `integrity = Adversarial, authority = NoAuthority`. This data cannot
@@ -1057,6 +1161,9 @@ pub struct IFCLabel {
     pub provenance: ProvenanceSet,
     pub freshness: Freshness,
     pub authority: AuthorityLevel,
+    /// Derivation class — tracks whether this datum was deterministically
+    /// computed, AI-generated, mixed, human-promoted, or from an opaque source.
+    pub derivation: DerivationClass,
 }
 
 impl Default for IFCLabel {
@@ -1072,6 +1179,7 @@ impl Default for IFCLabel {
             provenance: ProvenanceSet::EMPTY,
             freshness: Freshness::default(),
             authority: AuthorityLevel::NoAuthority,
+            derivation: DerivationClass::Deterministic,
         }
     }
 }
@@ -1102,6 +1210,7 @@ impl IFCLabel {
             } else {
                 other.authority
             },
+            derivation: self.derivation.join(other.derivation),
         }
     }
 
@@ -1120,6 +1229,7 @@ impl IFCLabel {
             && self.integrity >= target.integrity
             && self.authority >= target.authority
             && self.provenance.is_subset_of(target.provenance)
+            && self.derivation.leq(target.derivation)
     }
 
     /// Bottom label (least restrictive): public, trusted, no provenance, full authority.
@@ -1133,6 +1243,7 @@ impl IFCLabel {
             provenance: ProvenanceSet::EMPTY,
             freshness: Freshness::default(),
             authority: AuthorityLevel::Directive,
+            derivation: DerivationClass::Deterministic,
         }
     }
 
@@ -1150,6 +1261,7 @@ impl IFCLabel {
                 ttl_secs: 1, // expired immediately (observed_at=0, ttl=1 → expired at t=1)
             },
             authority: AuthorityLevel::NoAuthority,
+            derivation: DerivationClass::OpaqueExternal,
         }
     }
 
@@ -1164,6 +1276,7 @@ impl IFCLabel {
                 ttl_secs: 3600,
             },
             authority: AuthorityLevel::NoAuthority,
+            derivation: DerivationClass::OpaqueExternal,
         }
     }
 
@@ -1178,6 +1291,7 @@ impl IFCLabel {
                 ttl_secs: 0,
             },
             authority: AuthorityLevel::Directive,
+            derivation: DerivationClass::Deterministic,
         }
     }
 
@@ -1192,6 +1306,7 @@ impl IFCLabel {
                 ttl_secs: 0,
             },
             authority: AuthorityLevel::NoAuthority,
+            derivation: DerivationClass::Deterministic,
         }
     }
 
@@ -1206,6 +1321,7 @@ impl IFCLabel {
                 ttl_secs: 0,
             },
             authority: AuthorityLevel::Informational,
+            derivation: DerivationClass::Deterministic,
         }
     }
 
@@ -1220,6 +1336,7 @@ impl IFCLabel {
                 ttl_secs: 86400,
             },
             authority: AuthorityLevel::Informational,
+            derivation: DerivationClass::Deterministic,
         }
     }
 
@@ -1251,6 +1368,7 @@ impl IFCLabel {
             } else {
                 other.authority
             },
+            derivation: self.derivation.meet(other.derivation),
         }
     }
 
@@ -1267,6 +1385,7 @@ impl IFCLabel {
             && self.authority >= other.authority
             && self.provenance.is_subset_of(other.provenance)
             && self.freshness.leq(other.freshness)
+            && self.derivation.leq(other.derivation)
     }
 }
 
@@ -1385,6 +1504,19 @@ mod kani_ifc_label_proofs {
         }
     }
 
+    /// Generate a symbolic DerivationClass (5 variants — exhaustive).
+    fn any_derivation() -> DerivationClass {
+        let v: u8 = kani::any();
+        kani::assume(v <= 4);
+        match v {
+            0 => DerivationClass::Deterministic,
+            1 => DerivationClass::AIDerived,
+            2 => DerivationClass::Mixed,
+            3 => DerivationClass::HumanPromoted,
+            _ => DerivationClass::OpaqueExternal,
+        }
+    }
+
     /// Generate a symbolic IFCLabel with bounded provenance (6-bit) and
     /// bounded freshness for tractable verification.
     fn any_label() -> IFCLabel {
@@ -1397,6 +1529,7 @@ mod kani_ifc_label_proofs {
                 ttl_secs: kani::any(),
             },
             authority: any_auth(),
+            derivation: any_derivation(),
         }
     }
 
@@ -2304,11 +2437,362 @@ mod tests {
     }
 
     // ════════════════════════════════════════════════════════════════════
+    // DerivationClass lattice tests
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn derivation_join_exhaustive_table() {
+        use DerivationClass::*;
+        // Exhaustive 5x5 join table matching the diamond lattice:
+        //       OpaqueExternal
+        //            |
+        //          Mixed
+        //         /     \
+        //   AIDerived  HumanPromoted
+        //         \     /
+        //       Deterministic
+        let cases = [
+            // Deterministic is bottom — identity for join
+            (Deterministic, Deterministic, Deterministic),
+            (Deterministic, AIDerived, AIDerived),
+            (Deterministic, Mixed, Mixed),
+            (Deterministic, HumanPromoted, HumanPromoted),
+            (Deterministic, OpaqueExternal, OpaqueExternal),
+            // AIDerived joins
+            (AIDerived, Deterministic, AIDerived),
+            (AIDerived, AIDerived, AIDerived),
+            (AIDerived, Mixed, Mixed),
+            (AIDerived, HumanPromoted, Mixed),
+            (AIDerived, OpaqueExternal, OpaqueExternal),
+            // Mixed joins
+            (Mixed, Deterministic, Mixed),
+            (Mixed, AIDerived, Mixed),
+            (Mixed, Mixed, Mixed),
+            (Mixed, HumanPromoted, Mixed),
+            (Mixed, OpaqueExternal, OpaqueExternal),
+            // HumanPromoted joins
+            (HumanPromoted, Deterministic, HumanPromoted),
+            (HumanPromoted, AIDerived, Mixed),
+            (HumanPromoted, Mixed, Mixed),
+            (HumanPromoted, HumanPromoted, HumanPromoted),
+            (HumanPromoted, OpaqueExternal, OpaqueExternal),
+            // OpaqueExternal is top — absorbs everything
+            (OpaqueExternal, Deterministic, OpaqueExternal),
+            (OpaqueExternal, AIDerived, OpaqueExternal),
+            (OpaqueExternal, Mixed, OpaqueExternal),
+            (OpaqueExternal, HumanPromoted, OpaqueExternal),
+            (OpaqueExternal, OpaqueExternal, OpaqueExternal),
+        ];
+        for (a, b, expected) in cases {
+            assert_eq!(
+                a.join(b),
+                expected,
+                "{:?}.join({:?}) should be {:?}",
+                a,
+                b,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn derivation_join_commutative() {
+        use DerivationClass::*;
+        let all = [
+            Deterministic,
+            AIDerived,
+            Mixed,
+            HumanPromoted,
+            OpaqueExternal,
+        ];
+        for &a in &all {
+            for &b in &all {
+                assert_eq!(
+                    a.join(b),
+                    b.join(a),
+                    "{:?}.join({:?}) not commutative",
+                    a,
+                    b
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn derivation_join_associative() {
+        use DerivationClass::*;
+        let all = [
+            Deterministic,
+            AIDerived,
+            Mixed,
+            HumanPromoted,
+            OpaqueExternal,
+        ];
+        for &a in &all {
+            for &b in &all {
+                for &c in &all {
+                    assert_eq!(
+                        a.join(b).join(c),
+                        a.join(b.join(c)),
+                        "({:?} join {:?}) join {:?} != {:?} join ({:?} join {:?})",
+                        a,
+                        b,
+                        c,
+                        a,
+                        b,
+                        c
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn derivation_join_idempotent() {
+        use DerivationClass::*;
+        for &d in &[
+            Deterministic,
+            AIDerived,
+            Mixed,
+            HumanPromoted,
+            OpaqueExternal,
+        ] {
+            assert_eq!(d.join(d), d, "{:?}.join({:?}) should be idempotent", d, d);
+        }
+    }
+
+    #[test]
+    fn derivation_leq_reflexive() {
+        use DerivationClass::*;
+        for &d in &[
+            Deterministic,
+            AIDerived,
+            Mixed,
+            HumanPromoted,
+            OpaqueExternal,
+        ] {
+            assert!(d.leq(d), "{:?} should be leq itself", d);
+        }
+    }
+
+    #[test]
+    fn derivation_leq_antisymmetric() {
+        use DerivationClass::*;
+        let all = [
+            Deterministic,
+            AIDerived,
+            Mixed,
+            HumanPromoted,
+            OpaqueExternal,
+        ];
+        for &a in &all {
+            for &b in &all {
+                if a.leq(b) && b.leq(a) {
+                    assert_eq!(
+                        a, b,
+                        "{:?} leq {:?} and {:?} leq {:?} but not equal",
+                        a, b, b, a
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn derivation_lattice_ordering() {
+        use DerivationClass::*;
+        // Deterministic is bottom
+        assert!(Deterministic.leq(AIDerived));
+        assert!(Deterministic.leq(HumanPromoted));
+        assert!(Deterministic.leq(Mixed));
+        assert!(Deterministic.leq(OpaqueExternal));
+
+        // AIDerived and HumanPromoted are incomparable
+        assert!(!AIDerived.leq(HumanPromoted));
+        assert!(!HumanPromoted.leq(AIDerived));
+
+        // Both are below Mixed
+        assert!(AIDerived.leq(Mixed));
+        assert!(HumanPromoted.leq(Mixed));
+        assert!(!Mixed.leq(AIDerived));
+        assert!(!Mixed.leq(HumanPromoted));
+
+        // OpaqueExternal is top
+        for &d in &[
+            Deterministic,
+            AIDerived,
+            Mixed,
+            HumanPromoted,
+            OpaqueExternal,
+        ] {
+            assert!(d.leq(OpaqueExternal), "{:?} should be <= OpaqueExternal", d);
+        }
+    }
+
+    #[test]
+    fn derivation_no_silent_cleansing() {
+        use DerivationClass::*;
+        // AIDerived joined with anything that is not HumanPromoted
+        // must never produce Deterministic.
+        for &other in &[
+            Deterministic,
+            AIDerived,
+            Mixed,
+            HumanPromoted,
+            OpaqueExternal,
+        ] {
+            let result = AIDerived.join(other);
+            assert_ne!(
+                result, Deterministic,
+                "AIDerived.join({:?}) = Deterministic violates no-silent-cleansing",
+                other
+            );
+        }
+    }
+
+    #[test]
+    fn derivation_meet_exhaustive() {
+        use DerivationClass::*;
+        // Meet is dual of join — verify key properties
+        let all = [
+            Deterministic,
+            AIDerived,
+            Mixed,
+            HumanPromoted,
+            OpaqueExternal,
+        ];
+        for &a in &all {
+            for &b in &all {
+                let m = a.meet(b);
+                // meet(a,b) <= a and meet(a,b) <= b
+                assert!(
+                    m.leq(a),
+                    "meet({:?},{:?}) = {:?} should be <= {:?}",
+                    a,
+                    b,
+                    m,
+                    a
+                );
+                assert!(
+                    m.leq(b),
+                    "meet({:?},{:?}) = {:?} should be <= {:?}",
+                    a,
+                    b,
+                    m,
+                    b
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn derivation_propagation_through_flow() {
+        // Deterministic file + AIDerived model plan = AIDerived
+        // (Deterministic is bottom, so it's absorbed by AIDerived)
+        let file_label = IFCLabel {
+            derivation: DerivationClass::Deterministic,
+            ..IFCLabel::bottom()
+        };
+        let model_label = IFCLabel {
+            derivation: DerivationClass::AIDerived,
+            ..IFCLabel::bottom()
+        };
+        let result = file_label.join(model_label);
+        assert_eq!(result.derivation, DerivationClass::AIDerived);
+
+        // AIDerived + HumanPromoted = Mixed (incomparable elements)
+        let ai_label = IFCLabel {
+            derivation: DerivationClass::AIDerived,
+            ..IFCLabel::bottom()
+        };
+        let human_label = IFCLabel {
+            derivation: DerivationClass::HumanPromoted,
+            ..IFCLabel::bottom()
+        };
+        let result = ai_label.join(human_label);
+        assert_eq!(result.derivation, DerivationClass::Mixed);
+    }
+
+    #[test]
+    fn derivation_opaque_absorbs_in_join() {
+        // Any label joined with OpaqueExternal produces OpaqueExternal derivation
+        let opaque = IFCLabel {
+            derivation: DerivationClass::OpaqueExternal,
+            ..IFCLabel::bottom()
+        };
+        for &d in &[
+            DerivationClass::Deterministic,
+            DerivationClass::AIDerived,
+            DerivationClass::Mixed,
+            DerivationClass::HumanPromoted,
+        ] {
+            let other = IFCLabel {
+                derivation: d,
+                ..IFCLabel::bottom()
+            };
+            assert_eq!(
+                opaque.join(other).derivation,
+                DerivationClass::OpaqueExternal,
+                "OpaqueExternal should absorb {:?} in IFCLabel join",
+                d
+            );
+        }
+    }
+
+    #[test]
+    fn derivation_intrinsic_labels_correct() {
+        use crate::flow::{NodeKind, intrinsic_label};
+        let now = 1000;
+
+        // Deterministic sources
+        assert_eq!(
+            intrinsic_label(NodeKind::UserPrompt, now).derivation,
+            DerivationClass::Deterministic
+        );
+        assert_eq!(
+            intrinsic_label(NodeKind::FileRead, now).derivation,
+            DerivationClass::Deterministic
+        );
+        assert_eq!(
+            intrinsic_label(NodeKind::EnvVar, now).derivation,
+            DerivationClass::Deterministic
+        );
+        assert_eq!(
+            intrinsic_label(NodeKind::Secret, now).derivation,
+            DerivationClass::Deterministic
+        );
+        assert_eq!(
+            intrinsic_label(NodeKind::ToolResponse, now).derivation,
+            DerivationClass::Deterministic
+        );
+
+        // AI-derived sources
+        assert_eq!(
+            intrinsic_label(NodeKind::ModelPlan, now).derivation,
+            DerivationClass::AIDerived
+        );
+        assert_eq!(
+            intrinsic_label(NodeKind::MemoryWrite, now).derivation,
+            DerivationClass::AIDerived
+        );
+        assert_eq!(
+            intrinsic_label(NodeKind::Summarization, now).derivation,
+            DerivationClass::AIDerived
+        );
+
+        // OpaqueExternal
+        assert_eq!(
+            intrinsic_label(NodeKind::WebContent, now).derivation,
+            DerivationClass::OpaqueExternal
+        );
+    }
+
+    // ════════════════════════════════════════════════════════════════════
     // IFCLabel bounded lattice axiom tests (test-mode mirrors of Kani proofs)
     // ════════════════════════════════════════════════════════════════════
 
-    /// Helper: enumerate all ConfLevel * IntegLevel * AuthorityLevel * ProvenanceSet
-    /// combinations with fixed freshness. 3 * 3 * 4 * 64 = 2304 labels.
+    /// Helper: enumerate all ConfLevel x IntegLevel x AuthorityLevel x DerivationClass
+    /// x ProvenanceSet combinations with fixed freshness (11520 labels).
     fn all_labels() -> Vec<IFCLabel> {
         let confs = [ConfLevel::Public, ConfLevel::Internal, ConfLevel::Secret];
         let integs = [
@@ -2322,6 +2806,13 @@ mod tests {
             AuthorityLevel::Suggestive,
             AuthorityLevel::Directive,
         ];
+        let derivs = [
+            DerivationClass::Deterministic,
+            DerivationClass::AIDerived,
+            DerivationClass::Mixed,
+            DerivationClass::HumanPromoted,
+            DerivationClass::OpaqueExternal,
+        ];
         let fresh = Freshness {
             observed_at: 100,
             ttl_secs: 0,
@@ -2331,14 +2822,17 @@ mod tests {
         for &c in &confs {
             for &i in &integs {
                 for &a in &auths {
-                    for prov_bits in 0..64u8 {
-                        labels.push(IFCLabel {
-                            confidentiality: c,
-                            integrity: i,
-                            provenance: ProvenanceSet::from_bits(prov_bits),
-                            freshness: fresh,
-                            authority: a,
-                        });
+                    for &d in &derivs {
+                        for prov_bits in 0..64u8 {
+                            labels.push(IFCLabel {
+                                confidentiality: c,
+                                integrity: i,
+                                provenance: ProvenanceSet::from_bits(prov_bits),
+                                freshness: fresh,
+                                authority: a,
+                                derivation: d,
+                            });
+                        }
                     }
                 }
             }
@@ -2354,6 +2848,7 @@ mod tests {
             assert_eq!(r.integrity, a.integrity);
             assert_eq!(r.authority, a.authority);
             assert_eq!(r.provenance.bits(), a.provenance.bits());
+            assert_eq!(r.derivation, a.derivation);
         }
     }
 

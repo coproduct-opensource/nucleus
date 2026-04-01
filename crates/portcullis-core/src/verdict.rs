@@ -376,6 +376,7 @@ mod tests {
             provenance: ProvenanceSet::EMPTY,
             freshness: Freshness::default(),
             authority: AuthorityLevel::Directive,
+            derivation: crate::DerivationClass::Deterministic,
         };
 
         let evidence = Evidence {

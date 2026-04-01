@@ -10,7 +10,7 @@
 //! Labels are encoded as a compact header string:
 //!
 //! ```text
-//! X-Nucleus-Label: c=2;i=0;a=0;p=5;t=1711843200;ttl=3600
+//! X-Nucleus-Label: c=2;i=0;a=0;p=5;t=1711843200;ttl=3600;d=1
 //! ```
 //!
 //! Where:
@@ -20,11 +20,14 @@
 //! - `p` = provenance bitmask (6 bits: USER|TOOL|WEB|MEMORY|MODEL|SYSTEM)
 //! - `t` = observed_at (unix timestamp)
 //! - `ttl` = time-to-live seconds (0 = no expiry)
+//! - `d` = derivation (0=Deterministic, 1=AIDerived, 2=Mixed, 3=HumanPromoted, 4=OpaqueExternal)
 //!
 //! The receiving agent's kernel must `observe()` with this label as the
 //! intrinsic label of the incoming data, ensuring taint propagates.
 
-use crate::{AuthorityLevel, ConfLevel, Freshness, IFCLabel, IntegLevel, ProvenanceSet};
+use crate::{
+    AuthorityLevel, ConfLevel, DerivationClass, Freshness, IFCLabel, IntegLevel, ProvenanceSet,
+};
 
 /// HTTP header name for IFC label propagation.
 pub const LABEL_HEADER: &str = "x-nucleus-label";
@@ -32,13 +35,14 @@ pub const LABEL_HEADER: &str = "x-nucleus-label";
 /// Encode an IFC label to the wire format.
 pub fn encode_label(label: &IFCLabel) -> String {
     format!(
-        "c={};i={};a={};p={};t={};ttl={}",
+        "c={};i={};a={};p={};t={};ttl={};d={}",
         label.confidentiality as u8,
         label.integrity as u8,
         label.authority as u8,
         label.provenance.bits(),
         label.freshness.observed_at,
         label.freshness.ttl_secs,
+        label.derivation as u8,
     )
 }
 
@@ -53,6 +57,7 @@ pub fn decode_label(s: &str) -> Option<IFCLabel> {
     let mut prov: u8 = 0;
     let mut observed_at: u64 = 0;
     let mut ttl: u64 = 0;
+    let mut deriv: u8 = 4; // OpaqueExternal (most restrictive)
 
     for part in s.split(';') {
         let part = part.trim();
@@ -64,6 +69,7 @@ pub fn decode_label(s: &str) -> Option<IFCLabel> {
                 "p" => prov = val.parse().ok()?,
                 "t" => observed_at = val.parse().ok()?,
                 "ttl" => ttl = val.parse().ok()?,
+                "d" => deriv = val.parse().ok()?,
                 _ => {} // ignore unknown fields
             }
         }
@@ -90,6 +96,14 @@ pub fn decode_label(s: &str) -> Option<IFCLabel> {
         _ => AuthorityLevel::NoAuthority, // fail-closed
     };
 
+    let derivation = match deriv {
+        0 => DerivationClass::Deterministic,
+        1 => DerivationClass::AIDerived,
+        2 => DerivationClass::Mixed,
+        3 => DerivationClass::HumanPromoted,
+        _ => DerivationClass::OpaqueExternal, // fail-closed: unknown = most restrictive
+    };
+
     Some(IFCLabel {
         confidentiality,
         integrity,
@@ -99,6 +113,7 @@ pub fn decode_label(s: &str) -> Option<IFCLabel> {
             ttl_secs: ttl,
         },
         authority,
+        derivation,
     })
 }
 
@@ -117,6 +132,7 @@ mod tests {
                 ttl_secs: 3600,
             },
             authority: AuthorityLevel::Directive,
+            derivation: DerivationClass::Deterministic,
         };
         let encoded = encode_label(&label);
         let decoded = decode_label(&encoded).unwrap();
@@ -191,6 +207,7 @@ mod tests {
                 ttl_secs: 0,
             },
             authority: AuthorityLevel::Informational,
+            derivation: DerivationClass::OpaqueExternal,
         };
         let encoded = encode_label(&label);
         let decoded = decode_label(&encoded).unwrap();

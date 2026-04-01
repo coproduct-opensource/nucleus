@@ -67,6 +67,7 @@ fn exploit_01_invariant_github_issue_exfil_via_pr() {
                 ttl_secs: 0,
             },
             authority: AuthorityLevel::Directive,
+            derivation: portcullis_core::DerivationClass::Deterministic,
         },
         None,
     );
@@ -120,6 +121,7 @@ fn exploit_01b_invariant_exfil_via_git_push() {
                 ttl_secs: 0,
             },
             authority: AuthorityLevel::Directive,
+            derivation: portcullis_core::DerivationClass::Deterministic,
         },
         None,
     );
@@ -421,6 +423,7 @@ fn legitimate_user_creates_pr_from_own_work() {
                 ttl_secs: 0,
             },
             authority: AuthorityLevel::Directive,
+            derivation: portcullis_core::DerivationClass::Deterministic,
         },
         None,
     );
