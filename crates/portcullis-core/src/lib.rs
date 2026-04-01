@@ -67,6 +67,7 @@ pub mod compose;
 pub mod compose_runner;
 pub mod declassify;
 pub mod delegation;
+pub mod effect;
 #[cfg(feature = "serde")]
 pub mod enterprise;
 pub mod flow;
