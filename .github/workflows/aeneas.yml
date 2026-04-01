@@ -4,13 +4,20 @@ on:
   push:
     branches: ["main"]
     paths:
-      - "crates/portcullis-core/**"
+      - "crates/portcullis-core/lean/**"
+      - "crates/portcullis-core/src/lib.rs"
       - ".github/workflows/aeneas.yml"
   pull_request:
     paths:
-      - "crates/portcullis-core/**"
+      - "crates/portcullis-core/lean/**"
+      - "crates/portcullis-core/src/lib.rs"
       - ".github/workflows/aeneas.yml"
-  merge_group:
+  # Weekly canary to catch Mathlib/toolchain drift
+  schedule:
+    - cron: "0 8 * * 1"  # Every Monday at 8am UTC
+  # Release gate — always verify before publishing
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -27,7 +34,7 @@ jobs:
   aeneas-translate:
     name: Aeneas (Rust → Lean 4)
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
