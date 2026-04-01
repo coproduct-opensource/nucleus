@@ -1,0 +1,30 @@
+# Egress policy — controls which hosts an agent may contact.
+#
+# When this file is present (as egress.toml), all outbound connections are
+# default-deny: only hosts matching `allowed_hosts` are permitted, and
+# `denied_hosts` always takes precedence over `allowed_hosts`.
+#
+# Copy this file to `.nucleus/egress.toml` and customize for your workspace.
+
+# Maximum outbound payload size in bytes (optional, default: no limit).
+# Prevents large-scale data exfiltration even to allowed hosts.
+# max_payload_bytes = 1048576  # 1 MiB
+
+# Hosts the agent may contact. Supports three pattern types:
+#
+#   Exact:    "api.github.com"      — matches only that hostname
+#   Wildcard: "*.crates.io"         — matches any subdomain (and the bare domain)
+#   CIDR:     "10.0.0.0/8"          — matches any IP in the range
+#
+allowed_hosts = [
+    "api.github.com",
+    "*.crates.io",
+    "registry.npmjs.org",
+]
+
+# Hosts that are always denied, even if they match an allow pattern.
+# Use this for known-bad destinations or to carve out exceptions.
+denied_hosts = [
+    # "evil.example.com",
+    # "*.malware.test",
+]

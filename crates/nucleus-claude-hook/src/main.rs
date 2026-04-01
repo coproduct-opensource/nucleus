@@ -125,7 +125,12 @@ impl HookOutput {
 /// Version history:
 ///   1 — initial schema (implicit in pre-versioned files)
 ///   2 — added schema_version, last_pre_tool_obs_index (#523, #593)
-const SESSION_SCHEMA_VERSION: u32 = 2;
+///   3 — added flagged_tools for manifest violation tracking (#485)
+const SESSION_SCHEMA_VERSION: u32 = 3;
+
+/// Number of manifest violations before a tool is denied for the session (#485).
+/// First violation: logged + flagged. Second violation: tool denied.
+const MANIFEST_VIOLATION_REVOKE_THRESHOLD: u32 = 2;
 
 /// Persisted session state for cross-invocation exposure tracking.
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -176,6 +181,12 @@ struct SessionState {
     /// so the ToolResponse can be wired as a sibling in the DAG (#593).
     #[serde(default)]
     last_pre_tool_obs_index: Option<usize>,
+    /// Per-tool manifest violation counts (#485). Incremented on PostToolUse
+    /// when behavioral enforcement detects a violation. On PreToolUse, tools
+    /// with count >= MANIFEST_VIOLATION_REVOKE_THRESHOLD are denied.
+    /// Monotonic — trust can only decrease within a session.
+    #[serde(default)]
+    flagged_tools: std::collections::HashMap<String, u32>,
 }
 
 impl SessionState {
@@ -1806,7 +1817,8 @@ fn gc_stale_sessions(ttl_secs: u64) -> usize {
             || ext == "lock"
             || ext == "tmp"
             || name.ends_with(".parent-label")
-            || name.ends_with(".parent-chain");
+            || name.ends_with(".parent-chain")
+            || name.ends_with(".parent-compartment");
 
         if !is_session_file {
             continue;
@@ -2240,6 +2252,31 @@ fn main() {
                                     v.tool_name, v.kind, v.description
                                 );
                             }
+                            // Persist violation count in session state (#485).
+                            // Trust revocation is monotonic — count only increases.
+                            if let SessionLoad::Loaded(ref mut session)
+                            | SessionLoad::Fresh(ref mut session) =
+                                load_session(&input.session_id)
+                            {
+                                let count = session
+                                    .flagged_tools
+                                    .entry(input.tool_name.clone())
+                                    .or_insert(0);
+                                *count = count.saturating_add(violations.len() as u32);
+                                let current = *count;
+                                save_session(&input.session_id, session);
+                                if current >= MANIFEST_VIOLATION_REVOKE_THRESHOLD {
+                                    eprintln!(
+                                        "nucleus: tool '{}' has {} violations (threshold {}) — will be DENIED on next use",
+                                        input.tool_name, current, MANIFEST_VIOLATION_REVOKE_THRESHOLD
+                                    );
+                                } else {
+                                    eprintln!(
+                                        "nucleus: tool '{}' flagged ({}/{} violations before revocation)",
+                                        input.tool_name, current, MANIFEST_VIOLATION_REVOKE_THRESHOLD
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -2408,6 +2445,63 @@ fn main() {
             );
             println!("{}", serde_json::to_string(&out).unwrap());
             std::process::exit(2);
+        }
+
+        // SECURITY (#462): Check if the tool is allowed in the current compartment.
+        // A manifest with `allowed_compartments = ["research"]` blocks the tool
+        // in draft/execute/breakglass.
+        if let Some(manifest) = registry.get(mcp_tool_name) {
+            if let Ok(comp_str) = std::env::var("NUCLEUS_COMPARTMENT") {
+                let comp_name = comp_str.split(':').next().unwrap_or(&comp_str);
+                if !manifest.is_allowed_in_compartment(comp_name) {
+                    let out = HookOutput::deny(format!(
+                        "Blocked: MCP tool '{mcp_tool_name}' is not allowed in \
+                         compartment '{comp_name}'. Allowed in: {}.\n  \
+                         How to fix:\n  \
+                         - Switch to an allowed compartment\n  \
+                         - Or update allowed_compartments in the tool's manifest",
+                        if manifest.allowed_compartments.is_empty() {
+                            "all".to_string()
+                        } else {
+                            manifest.allowed_compartments.join(", ")
+                        }
+                    ));
+                    eprintln!(
+                        "nucleus: {} denied — not allowed in compartment '{comp_name}'",
+                        input.tool_name
+                    );
+                    println!("{}", serde_json::to_string(&out).unwrap());
+                    std::process::exit(2);
+                }
+            }
+        }
+    }
+
+    // SECURITY (#485): Check if tool has been flagged for manifest violations.
+    // Trust revocation is checked early — before kernel.decide() — because a
+    // tool that lied about its manifest should not be re-evaluated against the
+    // capability lattice (it already proved it cannot be trusted).
+    if let SessionLoad::Loaded(ref session) | SessionLoad::Fresh(ref session) =
+        load_session(&input.session_id)
+    {
+        if let Some(&count) = session.flagged_tools.get(&input.tool_name) {
+            if count >= MANIFEST_VIOLATION_REVOKE_THRESHOLD {
+                let out = HookOutput::deny(format!(
+                    "Blocked: tool '{}' has been revoked for this session — \
+                     {} manifest violation(s) detected in prior outputs. \
+                     A tool that lies about its manifest cannot be trusted.\n  \
+                     How to fix:\n  \
+                     - Start a new session to reset trust\n  \
+                     - Or update the tool's manifest to match its actual behavior",
+                    input.tool_name, count
+                ));
+                eprintln!(
+                    "nucleus: {} DENIED — trust revoked ({} manifest violations, threshold {})",
+                    input.tool_name, count, MANIFEST_VIOLATION_REVOKE_THRESHOLD
+                );
+                println!("{}", serde_json::to_string(&out).unwrap());
+                std::process::exit(2);
+            }
         }
     }
 
@@ -2687,6 +2781,55 @@ fn main() {
                 );
             }
         }
+
+        // Inherit parent compartment (#461).
+        // The child's compartment is capped at the parent's level:
+        // child ≤ parent (can only narrow, never escalate).
+        if let Ok(parent_sid) = std::env::var("NUCLEUS_PARENT_SESSION") {
+            let safe_parent = sanitize_session_id(&parent_sid);
+            let comp_path = session_dir().join(format!("{safe_parent}.parent-compartment"));
+            if let Ok(parent_comp_str) = std::fs::read_to_string(&comp_path) {
+                if let Some(parent_comp) =
+                    portcullis_core::compartment::Compartment::from_str_opt(parent_comp_str.trim())
+                {
+                    // If child has no compartment, inherit parent's.
+                    // If child has a compartment, cap it at parent's level.
+                    match &compartment {
+                        None => {
+                            eprintln!("nucleus: inherited parent compartment: {parent_comp}");
+                            // Write compartment file so resolve_compartment picks it up
+                            if !session.compartment_token.is_empty() {
+                                let keyed = keyed_compartment_name(
+                                    &input.session_id,
+                                    &session.compartment_token,
+                                );
+                                let file = session_dir().join(format!("{keyed}.compartment"));
+                                std::fs::write(&file, parent_comp.to_string()).ok();
+                            }
+                            session.active_compartment = Some(parent_comp.to_string());
+                        }
+                        Some(child_comp) if *child_comp > parent_comp => {
+                            eprintln!(
+                                "nucleus: child compartment {} exceeds parent {} — capping to parent",
+                                child_comp, parent_comp
+                            );
+                            if !session.compartment_token.is_empty() {
+                                let keyed = keyed_compartment_name(
+                                    &input.session_id,
+                                    &session.compartment_token,
+                                );
+                                let file = session_dir().join(format!("{keyed}.compartment"));
+                                std::fs::write(&file, parent_comp.to_string()).ok();
+                            }
+                            session.active_compartment = Some(parent_comp.to_string());
+                        }
+                        _ => {
+                            // Child is at or below parent level — OK
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Replay previous operations to rebuild exposure state AND flow graph.
@@ -2854,6 +2997,17 @@ fn main() {
                 let chain_path = session_dir().join(format!("{safe_id}.parent-chain"));
                 let chain_ref = format!("session={}\nhash={}\n", &input.session_id, chain_hash_hex);
                 std::fs::write(&chain_path, &chain_ref).ok();
+
+                // Export parent compartment so child inherits ceiling (#461).
+                // Child compartment ≤ parent compartment (can only narrow).
+                if let Some(ref comp) = compartment {
+                    let comp_path = session_dir().join(format!("{safe_id}.parent-compartment"));
+                    std::fs::write(&comp_path, comp.to_string()).ok();
+                    eprintln!(
+                        "nucleus: exported parent compartment '{}' for child agent",
+                        comp
+                    );
+                }
             }
 
             session.high_water_mark += 1;
@@ -3727,5 +3881,55 @@ mod tests {
 
         // Receipts directory should survive GC
         assert!(receipts.is_dir(), "receipts directory should be preserved");
+    }
+
+    // -----------------------------------------------------------------------
+    // Trust revocation via flagged_tools (#485)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn flagged_tools_persists_in_session_state() {
+        let mut session = SessionState::new_versioned();
+        assert!(session.flagged_tools.is_empty());
+
+        session
+            .flagged_tools
+            .insert("mcp__evil__tool".to_string(), 1);
+
+        let json = serde_json::to_string(&session).unwrap();
+        let loaded: SessionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.flagged_tools.get("mcp__evil__tool"), Some(&1));
+    }
+
+    #[test]
+    fn flagged_tools_defaults_empty_on_old_schema() {
+        // Simulate loading a schema v2 session (no flagged_tools field).
+        let json = r#"{"schema_version":2,"profile":"default","high_water_mark":5,
+                       "allowed_ops":[],"flow_observations":[],"chain_head_hash":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+                       "signing_key_pkcs8":[],"compartment_token":""}"#;
+        let session: SessionState = serde_json::from_str(json).unwrap();
+        assert!(
+            session.flagged_tools.is_empty(),
+            "old schema should deserialize with empty flagged_tools"
+        );
+    }
+
+    #[test]
+    fn violation_count_is_monotonic() {
+        let mut session = SessionState::new_versioned();
+        let tool = "mcp__shady__fetch".to_string();
+
+        // First violation
+        let count = session.flagged_tools.entry(tool.clone()).or_insert(0);
+        *count = count.saturating_add(1);
+        assert_eq!(session.flagged_tools[&tool], 1);
+
+        // Second violation
+        let count = session.flagged_tools.entry(tool.clone()).or_insert(0);
+        *count = count.saturating_add(2);
+        assert_eq!(session.flagged_tools[&tool], 3);
+
+        // Verify threshold check
+        assert!(session.flagged_tools[&tool] >= MANIFEST_VIOLATION_REVOKE_THRESHOLD);
     }
 }
