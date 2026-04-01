@@ -354,6 +354,16 @@ fn format_denial_for_user(
                 - Check that set_trusted_keys() includes the signing key's public key"
             )
         }
+        DenyReason::SinkScopeDenied {
+            dimension, detail, ..
+        } => {
+            format!(
+                "Blocked: certificate sink scope denied ({dimension}): {detail}{comp_hint}.\n  \
+                How to fix:\n  \
+                - Check the delegation certificate's sink_scope restrictions\n  \
+                - Ensure the target {dimension} is in the allowed list"
+            )
+        }
     }
 }
 
