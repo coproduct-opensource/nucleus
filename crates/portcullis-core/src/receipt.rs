@@ -5,18 +5,20 @@
 //! - The labeled observations that were causally sufficient
 //! - Which policy rule fired (for blocks)
 //!
-//! ## Honest status
+//! ## Signing and verification
 //!
-//! Types and construction only. **Unsigned** — real Ed25519 signing
-//! requires the `ed25519-dalek` crate (in `portcullis`, not here).
-//! Not yet wired into `Kernel::decide()` or `check_flow()`.
+//! Receipts are unsigned at construction time. The `portcullis` crate
+//! provides `sign_receipt()` and `verify_receipt()` using Ed25519 via
+//! `ring` (behind the `crypto` feature).
+//!
+//! This core crate provides `verify_signature()` which accepts a
+//! caller-provided verifier function, keeping `portcullis-core`
+//! dependency-free for Aeneas verification.
 //!
 //! ## Trust model
 //!
 //! Receipts are constructed by `build_receipt()` from trusted inputs
 //! (the flow graph). They are NOT tamper-proof without signing.
-//! The `verify_signature()` stub always returns `Err(Unsigned)` to
-//! force callers to handle the unsigned case explicitly.
 //!
 //! The causal ancestors are assembled by the caller from the flow
 //! graph — there is no binding between the receipt and the graph.
@@ -35,8 +37,9 @@ pub const MAX_RECEIPT_ANCESTORS: usize = 16;
 
 /// A flow receipt — evidence of a flow decision.
 ///
-/// **NOT signed.** The `signature` field is a placeholder. Use
-/// `verify_signature()` which currently always returns `Err(Unsigned)`.
+/// Unsigned at construction. Use `portcullis::receipt_sign::sign_receipt()`
+/// to sign, and `portcullis::receipt_sign::verify_receipt()` or
+/// `verify_signature()` with a custom verifier to verify.
 ///
 /// Fields are `pub(crate)` to prevent external forgery. Use
 /// `build_receipt()` to construct.
@@ -168,7 +171,61 @@ pub fn build_receipt(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Signature verification (stub)
+// Canonical content bytes (for signing/verification)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Serialize receipt content to canonical bytes for signing/verification.
+///
+/// The canonical form includes all security-relevant fields in a
+/// deterministic order. Changes to any field invalidate the signature.
+///
+/// This is the same byte sequence signed by `sign_receipt()` in the
+/// `portcullis` crate. Verifiers must reconstruct this to check signatures.
+pub fn receipt_canonical_bytes(receipt: &FlowReceipt) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(256);
+
+    // Version tag
+    buf.extend_from_slice(b"nucleus-receipt-v3\n");
+
+    // Chain ID — binds this receipt to a specific session (#492).
+    buf.extend_from_slice(receipt.chain_id());
+
+    // Chain link — hash of the previous receipt.
+    buf.extend_from_slice(receipt.prev_hash());
+
+    // Action node
+    append_receipt_node_bytes(&mut buf, receipt.action());
+
+    // Verdict + rule
+    buf.extend_from_slice(format!("verdict:{:?}\n", receipt.verdict()).as_bytes());
+    buf.extend_from_slice(format!("rule:{}\n", receipt.rule_name()).as_bytes());
+
+    // Timestamp
+    buf.extend_from_slice(&receipt.created_at().to_le_bytes());
+
+    // Ancestors (ordered — receipt construction preserves BFS order)
+    buf.extend_from_slice(&(receipt.ancestors().len() as u32).to_le_bytes());
+    for ancestor in receipt.ancestors() {
+        append_receipt_node_bytes(&mut buf, ancestor);
+    }
+
+    buf
+}
+
+/// Serialize a receipt node to canonical bytes.
+fn append_receipt_node_bytes(buf: &mut Vec<u8>, node: &ReceiptNode) {
+    buf.extend_from_slice(&node.id.to_le_bytes());
+    buf.extend_from_slice(&(node.kind as u8).to_le_bytes());
+    buf.extend_from_slice(&(node.label.confidentiality as u8).to_le_bytes());
+    buf.extend_from_slice(&(node.label.integrity as u8).to_le_bytes());
+    buf.extend_from_slice(&(node.label.authority as u8).to_le_bytes());
+    buf.extend_from_slice(&node.label.provenance.bits().to_le_bytes());
+    buf.extend_from_slice(&node.label.freshness.observed_at.to_le_bytes());
+    buf.extend_from_slice(&node.label.freshness.ttl_secs.to_le_bytes());
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Signature verification
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Signature verification errors.
@@ -176,22 +233,36 @@ pub fn build_receipt(
 pub enum SignatureError {
     /// Receipt has not been signed (signature is all zeros).
     Unsigned,
-    /// Signature verification not yet implemented.
-    VerificationNotImplemented,
     /// Ed25519 signature is invalid (wrong key or tampered content).
     InvalidSignature,
 }
 
-/// Verify the receipt's signature.
+/// Verify a receipt's signature using a caller-provided verification function.
 ///
-/// **Currently always returns `Err`.** This forces callers to handle
-/// the unsigned case explicitly rather than silently trusting receipts.
-/// Real Ed25519 verification will be added in the `portcullis` crate.
-pub fn verify_signature(_receipt: &FlowReceipt) -> Result<(), SignatureError> {
-    if _receipt.signature == [0; 64] {
+/// The `verifier` receives `(canonical_content_bytes, signature_bytes)` and
+/// returns `true` if the signature is valid.
+///
+/// This design allows `portcullis-core` to remain dependency-free (no `ring`)
+/// while still providing signature verification. The `portcullis` crate
+/// provides `verify_receipt()` which wraps this with Ed25519 via `ring`.
+///
+/// Returns `Ok(())` if the signature is valid, `Err(Unsigned)` if the
+/// receipt has no signature, or `Err(InvalidSignature)` if the verifier
+/// rejects the signature.
+pub fn verify_signature(
+    receipt: &FlowReceipt,
+    verifier: impl FnOnce(&[u8], &[u8; 64]) -> bool,
+) -> Result<(), SignatureError> {
+    if !receipt.is_signed() {
         return Err(SignatureError::Unsigned);
     }
-    Err(SignatureError::VerificationNotImplemented)
+
+    let content = receipt_canonical_bytes(receipt);
+    if verifier(&content, receipt.signature_bytes()) {
+        Ok(())
+    } else {
+        Err(SignatureError::InvalidSignature)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -360,8 +431,50 @@ mod tests {
         );
         let receipt = build_receipt(&action, &[], FlowVerdict::Allow, 2000);
 
-        assert_eq!(verify_signature(&receipt), Err(SignatureError::Unsigned));
+        // Any verifier should not be called — Unsigned is returned first
+        assert_eq!(
+            verify_signature(&receipt, |_, _| panic!("should not be called")),
+            Err(SignatureError::Unsigned)
+        );
         assert!(!receipt.is_signed());
+    }
+
+    #[test]
+    fn verify_signature_with_verifier_ok() {
+        let label = IFCLabel::user_prompt(1000);
+        let action = make_node(
+            1,
+            NodeKind::OutboundAction,
+            label,
+            Some(Operation::WriteFiles),
+        );
+        let mut receipt = build_receipt(&action, &[], FlowVerdict::Allow, 2000);
+        // Fake a non-zero signature so is_signed() returns true
+        receipt.set_signature([0xAA; 64]);
+
+        // Verifier that accepts
+        assert_eq!(verify_signature(&receipt, |_, _| true), Ok(()));
+        // Verifier that rejects
+        assert_eq!(
+            verify_signature(&receipt, |_, _| false),
+            Err(SignatureError::InvalidSignature)
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_deterministic() {
+        let label = IFCLabel::user_prompt(1000);
+        let action = make_node(
+            1,
+            NodeKind::OutboundAction,
+            label,
+            Some(Operation::WriteFiles),
+        );
+        let receipt = build_receipt(&action, &[], FlowVerdict::Allow, 2000);
+        let bytes1 = receipt_canonical_bytes(&receipt);
+        let bytes2 = receipt_canonical_bytes(&receipt);
+        assert_eq!(bytes1, bytes2);
+        assert!(!bytes1.is_empty());
     }
 
     #[test]

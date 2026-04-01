@@ -51,7 +51,7 @@ jobs:
       - name: Reject sorry (proof holes)
         working-directory: crates/portcullis-core/lean
         run: |
-          if grep -rn 'sorry' PortcullisCoreBridge.lean generated/PortcullisCore/ --include='*.lean'; then
+          if grep -rn 'sorry' PortcullisCoreBridge.lean DerivationProofs.lean generated/PortcullisCore/ --include='*.lean'; then
             echo "ERROR: Lean proofs contain 'sorry' — proof has holes."
             exit 1
           fi
