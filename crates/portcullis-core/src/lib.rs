@@ -68,6 +68,8 @@ pub mod delegation;
 #[cfg(feature = "serde")]
 pub mod enterprise;
 pub mod flow;
+#[cfg(feature = "serde")]
+pub mod managed_settings;
 pub mod manifest;
 #[cfg(feature = "serde")]
 pub mod memory;
