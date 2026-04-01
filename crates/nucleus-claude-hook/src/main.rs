@@ -20,6 +20,7 @@ use serde::Serialize;
 
 mod build;
 mod classify;
+mod cli;
 mod init;
 mod protocol;
 mod session;
@@ -1098,38 +1099,31 @@ fn main() {
     let start_time = std::time::Instant::now();
     let args: Vec<String> = std::env::args().collect();
 
-    if args.iter().any(|a| a == "--setup") {
-        run_setup();
-        return;
-    }
-    if args.iter().any(|a| a == "--status") {
-        run_status();
-        return;
-    }
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        run_help();
-        return;
-    }
-    if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("nucleus-claude-hook {}", env!("CARGO_PKG_VERSION"));
-        return;
-    }
-    // Show the compartment file path for a session (so external tools can write to it)
-    if let Some(pos) = args.iter().position(|a| a == "--compartment-path") {
-        if let Some(session_id) = args.get(pos + 1) {
-            let path = compartment_file_path(session_id);
-            println!("{}", path.display());
-        } else {
-            eprintln!("usage: nucleus-claude-hook --compartment-path <session-id>");
+    match cli::parse_args(&args) {
+        Ok(cli::CliCommand::Setup) => {
+            run_setup();
+            return;
         }
-        return;
-    }
-
-    // Reset a tainted session (#567)
-    if let Some(pos) = args.iter().position(|a| a == "--reset-session") {
-        if let Some(session_id) = args.get(pos + 1) {
-            let state_path = session_state_path(session_id);
-            let hwm_path = session_hwm_path(session_id);
+        Ok(cli::CliCommand::Status) => {
+            run_status();
+            return;
+        }
+        Ok(cli::CliCommand::Help) => {
+            run_help();
+            return;
+        }
+        Ok(cli::CliCommand::Version) => {
+            println!("nucleus-claude-hook {}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        Ok(cli::CliCommand::CompartmentPath { session_id }) => {
+            let path = compartment_file_path(&session_id);
+            println!("{}", path.display());
+            return;
+        }
+        Ok(cli::CliCommand::ResetSession { session_id }) => {
+            let state_path = session_state_path(&session_id);
+            let hwm_path = session_hwm_path(&session_id);
             if state_path.exists() {
                 std::fs::remove_file(&state_path).ok();
                 std::fs::remove_file(&hwm_path).ok();
@@ -1138,79 +1132,78 @@ fn main() {
             } else {
                 println!("nucleus: no session found for '{session_id}'");
             }
-        } else {
-            println!("usage: nucleus-claude-hook --reset-session <session-id>");
+            return;
         }
-        return;
-    }
-    if args.iter().any(|a| a == "--init") {
-        run_init();
-        return;
-    }
-    if args.iter().any(|a| a == "--build") {
-        build::run_build(&args);
-        return;
-    }
-    if args.iter().any(|a| a == "--uninstall") {
-        run_uninstall();
-        return;
-    }
-    if args.iter().any(|a| a == "--doctor") {
-        run_doctor();
-        return;
-    }
-    if args.iter().any(|a| a == "--smoke-test") {
-        run_smoke_test();
-        return;
-    }
-    if args.iter().any(|a| a == "--gc") {
-        run_gc();
-        return;
-    }
-    // Show what a profile allows (#556)
-    if let Some(pos) = args.iter().position(|a| a == "--show-profile") {
-        if let Some(name) = args.get(pos + 1) {
-            show_profile(name);
-        } else {
-            println!("Available profiles:");
-            for p in PROFILES {
-                println!("  {p}");
+        Ok(cli::CliCommand::Init) => {
+            run_init();
+            return;
+        }
+        Ok(cli::CliCommand::Build) => {
+            build::run_build(&args);
+            return;
+        }
+        Ok(cli::CliCommand::Uninstall) => {
+            run_uninstall();
+            return;
+        }
+        Ok(cli::CliCommand::Doctor) => {
+            run_doctor();
+            return;
+        }
+        Ok(cli::CliCommand::SmokeTest) => {
+            run_smoke_test();
+            return;
+        }
+        Ok(cli::CliCommand::Gc) => {
+            run_gc();
+            return;
+        }
+        Ok(cli::CliCommand::ShowProfile { name }) => {
+            if let Some(name) = name {
+                show_profile(&name);
+            } else {
+                println!("Available profiles:");
+                for p in PROFILES {
+                    println!("  {p}");
+                }
+                println!("\nUsage: nucleus-claude-hook --show-profile <name>");
             }
-            println!("\nUsage: nucleus-claude-hook --show-profile <name>");
+            return;
         }
-        return;
-    }
-
-    // View receipt chain for a session (#561)
-    if let Some(pos) = args.iter().position(|a| a == "--receipts") {
-        if let Some(session_id) = args.get(pos + 1) {
-            show_receipts(session_id);
-        } else {
-            // List all receipt files
-            let receipts_dir = session_dir().join("receipts");
-            if receipts_dir.exists() {
-                println!("Receipt chains:");
-                if let Ok(entries) = std::fs::read_dir(&receipts_dir) {
-                    for entry in entries.flatten() {
-                        if entry.path().extension().is_some_and(|e| e == "jsonl") {
-                            let name = entry
-                                .path()
-                                .file_stem()
-                                .map(|s| s.to_string_lossy().to_string())
-                                .unwrap_or_default();
-                            let lines = std::fs::read_to_string(entry.path())
-                                .map(|c| c.lines().count())
-                                .unwrap_or(0);
-                            println!("  {name}  ({lines} receipts)");
+        Ok(cli::CliCommand::Receipts { session_id }) => {
+            if let Some(session_id) = session_id {
+                show_receipts(&session_id);
+            } else {
+                let receipts_dir = session_dir().join("receipts");
+                if receipts_dir.exists() {
+                    println!("Receipt chains:");
+                    if let Ok(entries) = std::fs::read_dir(&receipts_dir) {
+                        for entry in entries.flatten() {
+                            if entry.path().extension().is_some_and(|e| e == "jsonl") {
+                                let name = entry
+                                    .path()
+                                    .file_stem()
+                                    .map(|s| s.to_string_lossy().to_string())
+                                    .unwrap_or_default();
+                                let lines = std::fs::read_to_string(entry.path())
+                                    .map(|c| c.lines().count())
+                                    .unwrap_or(0);
+                                println!("  {name}  ({lines} receipts)");
+                            }
                         }
                     }
+                } else {
+                    println!("No receipt chains found.");
                 }
-            } else {
-                println!("No receipt chains found.");
+                println!("\nUsage: nucleus-claude-hook --receipts <session-id>");
             }
-            println!("\nUsage: nucleus-claude-hook --receipts <session-id>");
+            return;
         }
-        return;
+        Err(e) => {
+            eprintln!("nucleus-claude-hook: {e}");
+            std::process::exit(1);
+        }
+        Ok(cli::CliCommand::Hook) => {} // fall through to stdin processing
     }
 
     // Read hook input from stdin.
