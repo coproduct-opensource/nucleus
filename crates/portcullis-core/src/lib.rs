@@ -84,6 +84,8 @@ pub mod receipt;
 pub mod registry;
 pub mod verdict;
 pub mod wire;
+#[cfg(feature = "envelope")]
+pub mod witness;
 
 /// Tool permission levels in lattice ordering.
 ///
