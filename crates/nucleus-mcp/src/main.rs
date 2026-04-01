@@ -551,6 +551,11 @@ fn format_deny_reason(reason: &DenyReason) -> String {
         DenyReason::InvalidDeclassification { detail } => {
             format!("declassification rejected: {detail}")
         }
+        DenyReason::SinkScopeDenied {
+            dimension, detail, ..
+        } => {
+            format!("sink scope denied ({dimension}): {detail}")
+        }
     }
 }
 

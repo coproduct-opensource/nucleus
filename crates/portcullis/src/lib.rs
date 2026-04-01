@@ -247,7 +247,7 @@ pub use audit::{
 #[cfg(feature = "crypto")]
 pub use certificate::{
     canonical_permissions_hash, verify_certificate, CertificateDelegationError, CertificateError,
-    LatticeCertificate, VerifiedPermissions,
+    LatticeCertificate, SinkScope, VerifiedPermissions,
 };
 pub use delegation::{
     meet_with_justification, DelegationChain, DelegationLink, MeetJustification, RestrictionDetail,

@@ -72,7 +72,7 @@ use uuid::Uuid;
 use serde::{Deserialize, Serialize};
 
 use crate::capability::{CapabilityLevel, Operation};
-use crate::certificate::VerifiedPermissions;
+use crate::certificate::{SinkScope, VerifiedPermissions};
 use crate::exposure_core;
 use crate::guard::{ExposureLabel, ExposureSet};
 use crate::isolation::{IsolationLattice, NetworkIsolation};
@@ -268,6 +268,17 @@ pub enum DenyReason {
         /// Human-readable detail about why the declassification was rejected.
         detail: String,
     },
+    /// Operation denied by certificate sink scope restrictions.
+    ///
+    /// The delegation certificate's `SinkScope` restricts which paths, hosts,
+    /// or git refs the agent can target. The operation's subject does not match
+    /// any entry in the relevant scope dimension.
+    SinkScopeDenied {
+        /// Which dimension blocked the operation ("path", "host", or "git_ref").
+        dimension: String,
+        /// Human-readable detail about what was denied and the allowed set.
+        detail: String,
+    },
 }
 
 /// The source of a RequiresApproval verdict.
@@ -444,6 +455,13 @@ pub struct Kernel {
     /// Current delegation depth — incremented each time a `SpawnAgent`
     /// operation is allowed. Used with `delegation.can_delegate_further()`.
     delegation_depth: u32,
+    /// Certificate sink scope — restricts which paths, hosts, and git refs
+    /// the delegated agent can target.
+    ///
+    /// Set from `VerifiedPermissions.sink_scope` in [`Kernel::from_certificate`].
+    /// When `Some` and non-empty, `decide()` checks the subject against the
+    /// scope's allowed lists for write, network, and git operations.
+    sink_scope: Option<SinkScope>,
     /// Optional Ed25519 signing key for receipt signing.
     ///
     /// When present, `decide_with_parents()` produces signed receipts
@@ -515,6 +533,7 @@ impl Kernel {
             enterprise: None,
             delegation: None,
             delegation_depth: 0,
+            sink_scope: None,
             #[cfg(feature = "crypto")]
             trusted_public_keys: Vec::new(),
             #[cfg(feature = "crypto")]
@@ -563,6 +582,7 @@ impl Kernel {
             enterprise: None,
             delegation: None,
             delegation_depth: 0,
+            sink_scope: None,
             #[cfg(feature = "crypto")]
             trusted_public_keys: Vec::new(),
             #[cfg(feature = "crypto")]
@@ -913,6 +933,17 @@ impl Kernel {
             chain_depth: verified.chain_depth,
         };
         let initial_hash = verified.effective.checksum();
+        // Capture sink scope before moving effective permissions.
+        // A fully-unrestricted scope (all vecs empty) is stored as None.
+        let scope = verified.sink_scope;
+        let sink_scope = if scope.allowed_paths.is_empty()
+            && scope.allowed_hosts.is_empty()
+            && scope.allowed_git_refs.is_empty()
+        {
+            None
+        } else {
+            Some(scope)
+        };
         Self {
             session_id: Uuid::new_v4(),
             effective: verified.effective,
@@ -932,6 +963,7 @@ impl Kernel {
             enterprise: None,
             delegation: None,
             delegation_depth: 0,
+            sink_scope,
             #[cfg(feature = "crypto")]
             trusted_public_keys: Vec::new(),
             #[cfg(feature = "crypto")]
@@ -958,6 +990,15 @@ impl Kernel {
             chain_depth: verified.chain_depth,
         };
         let initial_hash = verified.effective.checksum();
+        let scope = verified.sink_scope;
+        let sink_scope = if scope.allowed_paths.is_empty()
+            && scope.allowed_hosts.is_empty()
+            && scope.allowed_git_refs.is_empty()
+        {
+            None
+        } else {
+            Some(scope)
+        };
         Self {
             session_id: Uuid::new_v4(),
             effective: verified.effective,
@@ -977,6 +1018,7 @@ impl Kernel {
             enterprise: None,
             delegation: None,
             delegation_depth: 0,
+            sink_scope,
             #[cfg(feature = "crypto")]
             trusted_public_keys: Vec::new(),
             #[cfg(feature = "crypto")]
@@ -1321,6 +1363,27 @@ impl Kernel {
                 false,
                 false,
             );
+        }
+
+        // 5b. Certificate sink scope check (#809).
+        //
+        // When the kernel was created from a delegation certificate with a
+        // non-empty SinkScope, enforce that write operations target allowed
+        // paths, network operations target allowed hosts, and git operations
+        // target allowed refs. Empty dimension = unrestricted for that axis.
+        if let Some(ref scope) = self.sink_scope {
+            if let Some(denial) = check_sink_scope(operation, subject, scope) {
+                return self.record_with_exposure(
+                    operation,
+                    subject,
+                    Verdict::Deny(denial),
+                    &pre_hash,
+                    pre_exposure_count,
+                    contributed_label,
+                    false,
+                    false,
+                );
+            }
         }
 
         // 6. Flow control check (when enabled) — BEFORE approval paths.
@@ -1670,6 +1733,15 @@ impl Kernel {
         self.delegation_depth
     }
 
+    /// Get the certificate sink scope, if set.
+    ///
+    /// Present when the kernel was created from a delegation certificate
+    /// with a non-empty `SinkScope`. Used by `decide()` to restrict which
+    /// paths, hosts, and git refs the agent can target.
+    pub fn sink_scope(&self) -> Option<&SinkScope> {
+        self.sink_scope.as_ref()
+    }
+
     /// Get the append-only session trace.
     pub fn trace(&self) -> &[Decision] {
         &self.trace
@@ -1899,6 +1971,110 @@ fn is_exfil_operation(op: Operation) -> bool {
         op,
         Operation::RunBash | Operation::GitPush | Operation::CreatePr | Operation::SpawnAgent
     )
+}
+
+/// Check if an operation is a write-class file operation (sink scope: paths).
+fn is_write_operation(op: Operation) -> bool {
+    matches!(
+        op,
+        Operation::WriteFiles | Operation::EditFiles | Operation::GitCommit
+    )
+}
+
+/// Check if an operation is a git ref operation (sink scope: refs).
+fn is_git_ref_operation(op: Operation) -> bool {
+    matches!(op, Operation::GitPush | Operation::CreatePr)
+}
+
+/// Check a subject against the certificate's `SinkScope`.
+///
+/// Returns `Some(DenyReason)` if the operation is blocked by the scope,
+/// `None` if it passes (or the scope dimension is unrestricted for this op).
+///
+/// Enforcement rules:
+/// - **Write operations** (WriteFiles, EditFiles, GitCommit): subject checked
+///   against `allowed_paths` using prefix matching and glob patterns.
+/// - **Network operations** (WebFetch, WebSearch): subject (URL or host) checked
+///   against `allowed_hosts`.
+/// - **Git ref operations** (GitPush, CreatePr): subject checked against
+///   `allowed_git_refs` using glob patterns.
+/// - All other operations: not gated by sink scope.
+fn check_sink_scope(operation: Operation, subject: &str, scope: &SinkScope) -> Option<DenyReason> {
+    // Path dimension — write operations
+    if is_write_operation(operation) && !scope.allowed_paths.is_empty() {
+        let path_allowed = scope.allowed_paths.iter().any(|allowed| {
+            // Prefix match: "/workspace/output/" allows "/workspace/output/foo.txt"
+            subject.starts_with(allowed)
+                // Glob match for patterns like "/workspace/**/*.rs"
+                || crate::path::glob_match(allowed, subject)
+        });
+        if !path_allowed {
+            return Some(DenyReason::SinkScopeDenied {
+                dimension: "path".to_string(),
+                detail: format!(
+                    "subject '{}' not in allowed paths {:?}",
+                    subject, scope.allowed_paths,
+                ),
+            });
+        }
+    }
+
+    // Host dimension — network operations
+    if is_network_operation(operation) && !scope.allowed_hosts.is_empty() {
+        // Extract host from subject (may be a URL or bare host)
+        let host = extract_host(subject);
+        let host_allowed = scope
+            .allowed_hosts
+            .iter()
+            .any(|allowed| host == allowed || host.ends_with(&format!(".{}", allowed)));
+        if !host_allowed {
+            return Some(DenyReason::SinkScopeDenied {
+                dimension: "host".to_string(),
+                detail: format!(
+                    "host '{}' not in allowed hosts {:?}",
+                    host, scope.allowed_hosts,
+                ),
+            });
+        }
+    }
+
+    // Git ref dimension — git operations
+    if is_git_ref_operation(operation) && !scope.allowed_git_refs.is_empty() {
+        let ref_allowed = scope
+            .allowed_git_refs
+            .iter()
+            .any(|allowed| subject == allowed || crate::path::glob_match(allowed, subject));
+        if !ref_allowed {
+            return Some(DenyReason::SinkScopeDenied {
+                dimension: "git_ref".to_string(),
+                detail: format!(
+                    "ref '{}' not in allowed refs {:?}",
+                    subject, scope.allowed_git_refs,
+                ),
+            });
+        }
+    }
+
+    None
+}
+
+/// Extract host from a URL or bare host string.
+///
+/// Handles: "https://api.example.com/path" -> "api.example.com"
+///          "api.example.com" -> "api.example.com"
+///          "http://host:8080/path" -> "host"
+fn extract_host(subject: &str) -> &str {
+    let without_scheme = if let Some(rest) = subject.strip_prefix("https://") {
+        rest
+    } else if let Some(rest) = subject.strip_prefix("http://") {
+        rest
+    } else {
+        subject
+    };
+    // Strip path
+    let host_port = without_scheme.split('/').next().unwrap_or(without_scheme);
+    // Strip port
+    host_port.split(':').next().unwrap_or(host_port)
 }
 
 /// Map a kernel [`Verdict`] to a [`FlowVerdict`] for receipt construction.
@@ -4606,5 +4782,289 @@ denied_hosts = ["evil.github.com"]
             assert!(kernel.delegation().is_some());
             assert_eq!(kernel.delegation().unwrap().max_delegation_depth, 5);
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Sink scope enforcement tests (#809)
+    // ═══════════════════════════════════════════════════════════════════
+
+    mod sink_scope_tests {
+        use super::*;
+        use crate::certificate::{SinkScope, VerifiedPermissions};
+        use crate::{BudgetLattice, CapabilityLattice, Obligations};
+
+        /// Build a fully permissive lattice with NO obligations and NO
+        /// uninhabitable constraint — purely for testing sink scope checks
+        /// without RequiresApproval noise.
+        fn permissive_no_obligations() -> PermissionLattice {
+            PermissionLattice {
+                capabilities: CapabilityLattice::permissive(),
+                obligations: Obligations::default(),
+                budget: BudgetLattice {
+                    max_cost_usd: rust_decimal::Decimal::from(100),
+                    ..Default::default()
+                },
+                ..PermissionLattice::permissive().as_ceiling()
+            }
+        }
+
+        /// Helper: create a VerifiedPermissions with the given SinkScope.
+        fn verified_with_scope(scope: SinkScope) -> VerifiedPermissions {
+            VerifiedPermissions {
+                effective: permissive_no_obligations(),
+                chain_depth: 1,
+                root_identity: "root".to_string(),
+                leaf_identity: "leaf".to_string(),
+                sink_scope: scope,
+            }
+        }
+
+        #[test]
+        fn write_outside_allowed_paths_denied() {
+            let scope = SinkScope {
+                allowed_paths: vec!["/workspace/output/".to_string()],
+                allowed_hosts: vec![],
+                allowed_git_refs: vec![],
+            };
+            let verified = verified_with_scope(scope);
+            let mut kernel = Kernel::from_certificate(verified, [0u8; 32]);
+
+            // Write inside scope — allowed
+            let (d, token) = kernel.decide(Operation::WriteFiles, "/workspace/output/result.txt");
+            assert!(
+                d.verdict.is_allowed(),
+                "write inside scope should be allowed"
+            );
+            assert!(token.is_some());
+
+            // Write outside scope — denied
+            let (d, token) = kernel.decide(Operation::WriteFiles, "/etc/passwd");
+            assert!(
+                d.verdict.is_denied(),
+                "write outside scope should be denied"
+            );
+            assert!(token.is_none());
+            match &d.verdict {
+                Verdict::Deny(DenyReason::SinkScopeDenied { dimension, detail }) => {
+                    assert_eq!(dimension, "path");
+                    assert!(detail.contains("/etc/passwd"), "detail: {detail}");
+                }
+                other => panic!("expected SinkScopeDenied, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn edit_outside_allowed_paths_denied() {
+            let scope = SinkScope {
+                allowed_paths: vec!["/workspace/src/**/*.rs".to_string()],
+                allowed_hosts: vec![],
+                allowed_git_refs: vec![],
+            };
+            let verified = verified_with_scope(scope);
+            let mut kernel = Kernel::from_certificate(verified, [0u8; 32]);
+
+            // Edit matching glob — allowed
+            let (d, _) = kernel.decide(Operation::EditFiles, "/workspace/src/lib.rs");
+            assert!(
+                d.verdict.is_allowed(),
+                "edit matching glob should be allowed"
+            );
+
+            // Edit not matching glob — denied
+            let (d, _) = kernel.decide(Operation::EditFiles, "/workspace/Cargo.toml");
+            assert!(d.verdict.is_denied(), "edit outside glob should be denied");
+            match &d.verdict {
+                Verdict::Deny(DenyReason::SinkScopeDenied { dimension, .. }) => {
+                    assert_eq!(dimension, "path");
+                }
+                other => panic!("expected SinkScopeDenied, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn network_outside_allowed_hosts_denied() {
+            let scope = SinkScope {
+                allowed_paths: vec![],
+                allowed_hosts: vec!["api.example.com".to_string()],
+                allowed_git_refs: vec![],
+            };
+            let verified = verified_with_scope(scope);
+            let mut kernel = Kernel::from_certificate(verified, [0u8; 32]);
+
+            // Fetch allowed host — allowed
+            let (d, _) = kernel.decide(Operation::WebFetch, "https://api.example.com/data");
+            assert!(d.verdict.is_allowed(), "fetch to allowed host should pass");
+
+            // Fetch disallowed host — denied
+            let (d, token) = kernel.decide(Operation::WebFetch, "https://evil.com/exfil");
+            assert!(
+                d.verdict.is_denied(),
+                "fetch to disallowed host should be denied"
+            );
+            assert!(token.is_none());
+            match &d.verdict {
+                Verdict::Deny(DenyReason::SinkScopeDenied { dimension, detail }) => {
+                    assert_eq!(dimension, "host");
+                    assert!(detail.contains("evil.com"), "detail: {detail}");
+                }
+                other => panic!("expected SinkScopeDenied, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn subdomain_of_allowed_host_permitted() {
+            let scope = SinkScope {
+                allowed_paths: vec![],
+                allowed_hosts: vec!["example.com".to_string()],
+                allowed_git_refs: vec![],
+            };
+            let verified = verified_with_scope(scope);
+            let mut kernel = Kernel::from_certificate(verified, [0u8; 32]);
+
+            let (d, _) = kernel.decide(Operation::WebFetch, "https://api.example.com/data");
+            assert!(
+                d.verdict.is_allowed(),
+                "subdomain of allowed host should pass"
+            );
+        }
+
+        #[test]
+        fn git_ref_outside_allowed_refs_denied() {
+            let scope = SinkScope {
+                allowed_paths: vec![],
+                allowed_hosts: vec![],
+                allowed_git_refs: vec!["origin/feature-*".to_string()],
+            };
+            let verified = verified_with_scope(scope);
+            let mut kernel = Kernel::from_certificate(verified, [0u8; 32]);
+
+            // Push to allowed ref — allowed
+            let (d, _) = kernel.decide(Operation::GitPush, "origin/feature-xyz");
+            assert!(
+                d.verdict.is_allowed(),
+                "push to allowed ref should pass, got: {:?}",
+                d.verdict
+            );
+
+            // Push to disallowed ref — denied
+            let (d, token) = kernel.decide(Operation::GitPush, "origin/main");
+            assert!(
+                d.verdict.is_denied(),
+                "push to disallowed ref should be denied"
+            );
+            assert!(token.is_none());
+            match &d.verdict {
+                Verdict::Deny(DenyReason::SinkScopeDenied { dimension, detail }) => {
+                    assert_eq!(dimension, "git_ref");
+                    assert!(detail.contains("origin/main"), "detail: {detail}");
+                }
+                other => panic!("expected SinkScopeDenied, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn no_scope_means_unrestricted() {
+            // Unrestricted scope (all empty) = None stored on kernel
+            let scope = SinkScope::unrestricted();
+            let verified = verified_with_scope(scope);
+            let kernel = Kernel::from_certificate(verified, [0u8; 32]);
+
+            assert!(
+                kernel.sink_scope().is_none(),
+                "unrestricted scope should be None"
+            );
+
+            // Each operation tested in its own kernel to avoid IFC taint accumulation
+            let scope = SinkScope::unrestricted();
+            let mut k1 = Kernel::from_certificate(verified_with_scope(scope.clone()), [0u8; 32]);
+            let (d, _) = k1.decide(Operation::WriteFiles, "/anywhere/file.txt");
+            assert!(d.verdict.is_allowed(), "write should pass without scope");
+
+            let mut k2 =
+                Kernel::from_certificate(verified_with_scope(SinkScope::unrestricted()), [0u8; 32]);
+            let (d, _) = k2.decide(Operation::WebFetch, "https://any-host.com/");
+            assert!(d.verdict.is_allowed(), "fetch should pass without scope");
+
+            let mut k3 =
+                Kernel::from_certificate(verified_with_scope(SinkScope::unrestricted()), [0u8; 32]);
+            let (d, _) = k3.decide(Operation::GitPush, "origin/main");
+            assert!(d.verdict.is_allowed(), "push should pass without scope");
+        }
+
+        #[test]
+        fn read_operations_unaffected_by_path_scope() {
+            // Path scope should only gate write operations, not reads
+            let scope = SinkScope {
+                allowed_paths: vec!["/workspace/output/".to_string()],
+                allowed_hosts: vec![],
+                allowed_git_refs: vec![],
+            };
+            let verified = verified_with_scope(scope);
+            let mut kernel = Kernel::from_certificate(verified, [0u8; 32]);
+
+            // ReadFiles outside scope — should still be allowed
+            let (d, _) = kernel.decide(Operation::ReadFiles, "/etc/hosts");
+            assert!(
+                d.verdict.is_allowed(),
+                "read operations should not be gated by sink scope"
+            );
+        }
+
+        #[test]
+        fn sink_scope_accessor_returns_scope() {
+            let scope = SinkScope {
+                allowed_paths: vec!["/out/".to_string()],
+                allowed_hosts: vec!["host.com".to_string()],
+                allowed_git_refs: vec![],
+            };
+            let verified = verified_with_scope(scope);
+            let kernel = Kernel::from_certificate(verified, [0u8; 32]);
+
+            let s = kernel.sink_scope().expect("scope should be Some");
+            assert_eq!(s.allowed_paths, vec!["/out/"]);
+            assert_eq!(s.allowed_hosts, vec!["host.com"]);
+            assert!(s.allowed_git_refs.is_empty());
+        }
+
+        #[test]
+        fn from_certificate_with_isolation_also_stores_scope() {
+            let scope = SinkScope {
+                allowed_paths: vec!["/restricted/".to_string()],
+                allowed_hosts: vec![],
+                allowed_git_refs: vec![],
+            };
+            let verified = verified_with_scope(scope);
+            let mut kernel = Kernel::from_certificate_with_isolation(
+                verified,
+                [0u8; 32],
+                IsolationLattice::localhost(),
+            );
+
+            assert!(kernel.sink_scope().is_some());
+
+            let (d, _) = kernel.decide(Operation::WriteFiles, "/other/file.txt");
+            assert!(d.verdict.is_denied());
+            match &d.verdict {
+                Verdict::Deny(DenyReason::SinkScopeDenied { dimension, .. }) => {
+                    assert_eq!(dimension, "path");
+                }
+                other => panic!("expected SinkScopeDenied, got {other:?}"),
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // extract_host unit tests
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_extract_host() {
+        assert_eq!(
+            extract_host("https://api.example.com/path"),
+            "api.example.com"
+        );
+        assert_eq!(extract_host("http://host:8080/path"), "host");
+        assert_eq!(extract_host("api.example.com"), "api.example.com");
+        assert_eq!(extract_host("https://host.com"), "host.com");
     }
 }
