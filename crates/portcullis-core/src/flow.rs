@@ -10,6 +10,7 @@
 //! **Current status**: types + pure functions + tests. Not yet wired into
 //! `Kernel::decide()` — integration is Phase 3 of the Flow Kernel plan.
 
+use crate::effect::EffectKind;
 use crate::storage_lane::StorageLane;
 use crate::{
     AuthorityLevel, ConfLevel, DerivationClass, IFCLabel, IntegLevel, Operation, ProvenanceSet,
@@ -172,6 +173,8 @@ pub struct FlowNode {
     /// When set, `check_flow` uses sink-class-based authority/integrity
     /// requirements instead of the legacy per-Operation thresholds.
     pub sink_class: Option<SinkClass>,
+    /// Computation-step effect classification (#775).
+    pub effect_kind: Option<EffectKind>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -521,6 +524,7 @@ mod kani_proofs {
             parents: [0; MAX_PARENTS],
             operation: op,
             sink_class: None,
+            effect_kind: None,
         }
     }
 
@@ -547,6 +551,7 @@ mod kani_proofs {
             parents: [0; MAX_PARENTS],
             operation: Some(op),
             sink_class: None,
+            effect_kind: None,
         };
 
         let now: u64 = kani::any();
@@ -581,6 +586,7 @@ mod kani_proofs {
             parents: [0; MAX_PARENTS],
             operation: Some(op),
             sink_class: None,
+            effect_kind: None,
         };
 
         let now: u64 = kani::any();
@@ -615,6 +621,7 @@ mod kani_proofs {
             parents: [0; MAX_PARENTS],
             operation: Some(op),
             sink_class: None,
+            effect_kind: None,
         };
 
         let now: u64 = kani::any();
@@ -714,6 +721,7 @@ mod kani_proofs {
             parents: [0; MAX_PARENTS],
             operation: Some(op),
             sink_class: None,
+            effect_kind: None,
         };
 
         assert_eq!(check_flow(&node, 2000), FlowVerdict::Allow);
@@ -738,6 +746,7 @@ mod tests {
             parents: [0; MAX_PARENTS],
             operation: op,
             sink_class: None,
+            effect_kind: None,
         }
     }
 
@@ -755,6 +764,7 @@ mod tests {
             parents: [0; MAX_PARENTS],
             operation: op,
             sink_class: Some(sink),
+            effect_kind: None,
         }
     }
 

@@ -32,6 +32,7 @@ fn node(id: NodeId, kind: NodeKind, label: IFCLabel, op: Option<Operation>) -> F
         parents: [0; MAX_PARENTS],
         operation: op,
         sink_class: None,
+        effect_kind: None,
     }
 }
 
@@ -1719,6 +1720,7 @@ fn exploit_owasp_ag03_tool_misuse_over_permitted() {
         parents: [0; MAX_PARENTS],
         operation: Some(Operation::GitPush),
         sink_class: Some(SinkClass::GitPush),
+        effect_kind: None,
     };
 
     assert_eq!(
@@ -2044,6 +2046,7 @@ fn derivation_ai_derived_blocked_at_git_push() {
         parents: [0; MAX_PARENTS],
         operation: Some(Operation::GitPush),
         sink_class: Some(SinkClass::GitPush),
+        effect_kind: None,
     };
 
     // Confirm StorageLane::Verified rejects AIDerived
@@ -2082,6 +2085,7 @@ fn derivation_mixed_blocked_at_git_commit() {
         parents: [0; MAX_PARENTS],
         operation: Some(Operation::GitCommit),
         sink_class: Some(SinkClass::GitCommit),
+        effect_kind: None,
     };
 
     // BLOCKED: Mixed derivation also rejected by Verified lane
@@ -2117,6 +2121,7 @@ fn derivation_ai_derived_blocked_at_pr_comment() {
         parents: [0; MAX_PARENTS],
         operation: Some(Operation::CreatePr),
         sink_class: Some(SinkClass::PRCommentWrite),
+        effect_kind: None,
     };
 
     assert_eq!(
@@ -2156,6 +2161,7 @@ fn derivation_deterministic_allowed_at_git_push() {
         parents: [0; MAX_PARENTS],
         operation: Some(Operation::GitPush),
         sink_class: Some(SinkClass::GitPush),
+        effect_kind: None,
     };
 
     // Confirm StorageLane::Verified accepts Deterministic
@@ -2193,6 +2199,7 @@ fn derivation_human_promoted_allowed_at_git_push() {
         parents: [0; MAX_PARENTS],
         operation: Some(Operation::GitPush),
         sink_class: Some(SinkClass::GitPush),
+        effect_kind: None,
     };
 
     // Confirm StorageLane::Verified accepts HumanPromoted
@@ -2235,6 +2242,7 @@ fn derivation_ai_derived_allowed_at_workspace_write() {
         parents: [0; MAX_PARENTS],
         operation: Some(Operation::WriteFiles),
         sink_class: Some(SinkClass::WorkspaceWrite),
+        effect_kind: None,
     };
 
     // WorkspaceWrite does NOT require verified derivation

@@ -93,6 +93,26 @@ impl EffectKind {
         )
     }
 
+    /// Returns the canonical snake_case string representation.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::LLMGenerate => "llm_generate",
+            Self::LLMClassify => "llm_classify",
+            Self::LLMExtract => "llm_extract",
+            Self::DeterministicFetch => "deterministic_fetch",
+            Self::DeterministicParse => "deterministic_parse",
+            Self::DeterministicValidate => "deterministic_validate",
+            Self::PureTransform => "pure_transform",
+            Self::Query => "query",
+            Self::HumanApprove => "human_approve",
+            Self::HumanEdit => "human_edit",
+            Self::VerifiedWrite => "verified_write",
+            Self::ProposedWrite => "proposed_write",
+            Self::ExternalImport => "external_import",
+            Self::Replay => "replay",
+        }
+    }
+
     /// Returns the [`DerivationClass`] that this effect kind implies.
     ///
     /// This mapping is the bridge between fine-grained effect classification
@@ -220,6 +240,17 @@ mod tests {
         assert!(!kind.is_deterministic());
         assert!(!kind.is_ai_generative());
         assert_eq!(kind.implied_derivation(), DerivationClass::Deterministic);
+    }
+
+    #[test]
+    fn as_str_returns_snake_case() {
+        assert_eq!(EffectKind::LLMGenerate.as_str(), "llm_generate");
+        assert_eq!(
+            EffectKind::DeterministicFetch.as_str(),
+            "deterministic_fetch"
+        );
+        assert_eq!(EffectKind::PureTransform.as_str(), "pure_transform");
+        assert_eq!(EffectKind::ExternalImport.as_str(), "external_import");
     }
 
     /// Exhaustiveness check — every variant is covered by exactly one
