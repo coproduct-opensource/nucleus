@@ -52,3 +52,7 @@ lean_lib «CompartmentProofs» where
 -- Delegation narrowing proofs (monotone attenuation, scope subset)
 lean_lib «DelegationProofs» where
   roots := #[`DelegationProofs]
+
+-- DerivationClass DPI invariant proofs (no silent cleansing, monotone join)
+lean_lib «DerivationProofs» where
+  roots := #[`DerivationProofs]
