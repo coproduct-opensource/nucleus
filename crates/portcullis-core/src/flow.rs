@@ -215,6 +215,30 @@ pub enum FlowDenyReason {
     DerivationViolation,
 }
 
+impl FlowDenyReason {
+    /// Stable byte tag for deterministic hashing.
+    ///
+    /// These values are part of the receipt chain's hash commitment and
+    /// MUST NOT change once assigned. New variants get the next unused tag.
+    ///
+    /// | Tag  | Variant              |
+    /// |------|----------------------|
+    /// | 0x01 | Exfiltration         |
+    /// | 0x02 | AuthorityEscalation  |
+    /// | 0x03 | IntegrityViolation   |
+    /// | 0x04 | FreshnessExpired     |
+    /// | 0x05 | DerivationViolation  |
+    pub const fn canonical_tag(self) -> u8 {
+        match self {
+            Self::Exfiltration => 0x01,
+            Self::AuthorityEscalation => 0x02,
+            Self::IntegrityViolation => 0x03,
+            Self::FreshnessExpired => 0x04,
+            Self::DerivationViolation => 0x05,
+        }
+    }
+}
+
 /// Result of checking a flow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlowVerdict {
@@ -222,6 +246,24 @@ pub enum FlowVerdict {
     Allow,
     /// Flow is blocked with a reason.
     Deny(FlowDenyReason),
+}
+
+impl FlowVerdict {
+    /// Stable byte encoding for deterministic hashing.
+    ///
+    /// Returns a fixed-length 2-byte tag: `[discriminant, deny_reason]`.
+    /// - `Allow`       → `[0x00, 0x00]`
+    /// - `Deny(reason)` → `[0x01, reason.canonical_tag()]`
+    ///
+    /// These values are part of the receipt chain's hash commitment and
+    /// MUST NOT change once assigned. See [`FlowDenyReason::canonical_tag`]
+    /// for the deny-reason tags.
+    pub const fn canonical_bytes(self) -> [u8; 2] {
+        match self {
+            Self::Allow => [0x00, 0x00],
+            Self::Deny(reason) => [0x01, reason.canonical_tag()],
+        }
+    }
 }
 
 /// Verdict from quarantine-aware flow checking.
@@ -1036,5 +1078,90 @@ mod tests {
             check_flow(&node, 2000),
             FlowVerdict::Deny(FlowDenyReason::Exfiltration)
         );
+    }
+
+    // ── canonical_bytes / canonical_tag stability tests (#747) ──────
+
+    #[test]
+    fn deny_reason_tags_are_unique() {
+        let reasons = [
+            FlowDenyReason::Exfiltration,
+            FlowDenyReason::AuthorityEscalation,
+            FlowDenyReason::IntegrityViolation,
+            FlowDenyReason::FreshnessExpired,
+            FlowDenyReason::DerivationViolation,
+        ];
+        let tags: Vec<u8> = reasons.iter().map(|r| r.canonical_tag()).collect();
+        for (i, t) in tags.iter().enumerate() {
+            for (j, u) in tags.iter().enumerate() {
+                if i != j {
+                    assert_ne!(t, u, "tags for variants {i} and {j} must differ");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn deny_reason_tags_are_nonzero() {
+        // 0x00 is reserved for Allow's padding byte
+        let reasons = [
+            FlowDenyReason::Exfiltration,
+            FlowDenyReason::AuthorityEscalation,
+            FlowDenyReason::IntegrityViolation,
+            FlowDenyReason::FreshnessExpired,
+            FlowDenyReason::DerivationViolation,
+        ];
+        for r in &reasons {
+            assert_ne!(r.canonical_tag(), 0x00, "{r:?} tag must be nonzero");
+        }
+    }
+
+    #[test]
+    fn verdict_canonical_bytes_pinned() {
+        // Pin the exact byte values so changes are caught at compile time.
+        assert_eq!(FlowVerdict::Allow.canonical_bytes(), [0x00, 0x00]);
+        assert_eq!(
+            FlowVerdict::Deny(FlowDenyReason::Exfiltration).canonical_bytes(),
+            [0x01, 0x01]
+        );
+        assert_eq!(
+            FlowVerdict::Deny(FlowDenyReason::AuthorityEscalation).canonical_bytes(),
+            [0x01, 0x02]
+        );
+        assert_eq!(
+            FlowVerdict::Deny(FlowDenyReason::IntegrityViolation).canonical_bytes(),
+            [0x01, 0x03]
+        );
+        assert_eq!(
+            FlowVerdict::Deny(FlowDenyReason::FreshnessExpired).canonical_bytes(),
+            [0x01, 0x04]
+        );
+        assert_eq!(
+            FlowVerdict::Deny(FlowDenyReason::DerivationViolation).canonical_bytes(),
+            [0x01, 0x05]
+        );
+    }
+
+    #[test]
+    fn all_verdicts_produce_distinct_canonical_bytes() {
+        let verdicts = [
+            FlowVerdict::Allow,
+            FlowVerdict::Deny(FlowDenyReason::Exfiltration),
+            FlowVerdict::Deny(FlowDenyReason::AuthorityEscalation),
+            FlowVerdict::Deny(FlowDenyReason::IntegrityViolation),
+            FlowVerdict::Deny(FlowDenyReason::FreshnessExpired),
+            FlowVerdict::Deny(FlowDenyReason::DerivationViolation),
+        ];
+        for (i, v) in verdicts.iter().enumerate() {
+            for (j, u) in verdicts.iter().enumerate() {
+                if i != j {
+                    assert_ne!(
+                        v.canonical_bytes(),
+                        u.canonical_bytes(),
+                        "verdicts {i} and {j} must produce distinct bytes"
+                    );
+                }
+            }
+        }
     }
 }

@@ -239,8 +239,9 @@ pub fn receipt_canonical_bytes(receipt: &FlowReceipt) -> Vec<u8> {
     // Action node
     append_receipt_node_bytes(&mut buf, receipt.action());
 
-    // Verdict + rule
-    buf.extend_from_slice(format!("verdict:{:?}\n", receipt.verdict()).as_bytes());
+    // Verdict — stable 2-byte tag encoding (not Debug format).
+    // See FlowVerdict::canonical_bytes() for the tag table.
+    buf.extend_from_slice(&receipt.verdict().canonical_bytes());
     buf.extend_from_slice(format!("rule:{}\n", receipt.rule_name()).as_bytes());
 
     // Timestamp
@@ -547,6 +548,60 @@ mod tests {
         let bytes2 = receipt_canonical_bytes(&receipt);
         assert_eq!(bytes1, bytes2);
         assert!(!bytes1.is_empty());
+    }
+
+    #[test]
+    fn canonical_bytes_differ_by_verdict() {
+        let label = IFCLabel::user_prompt(1000);
+        let action = make_node(
+            1,
+            NodeKind::OutboundAction,
+            label,
+            Some(Operation::WriteFiles),
+        );
+        let allow = build_receipt(&action, &[], FlowVerdict::Allow, 2000);
+        let deny = build_receipt(
+            &action,
+            &[],
+            FlowVerdict::Deny(FlowDenyReason::Exfiltration),
+            2000,
+        );
+        assert_ne!(
+            receipt_canonical_bytes(&allow),
+            receipt_canonical_bytes(&deny),
+            "different verdicts must produce different canonical bytes"
+        );
+    }
+
+    /// Verify that canonical bytes do not contain Debug-formatted verdict strings.
+    /// This guards against regression to format!("{:?}", verdict).
+    #[test]
+    fn canonical_bytes_no_debug_format() {
+        let label = IFCLabel::user_prompt(1000);
+        let action = make_node(
+            1,
+            NodeKind::OutboundAction,
+            label,
+            Some(Operation::WriteFiles),
+        );
+        let receipt = build_receipt(
+            &action,
+            &[],
+            FlowVerdict::Deny(FlowDenyReason::Exfiltration),
+            2000,
+        );
+        let bytes = receipt_canonical_bytes(&receipt);
+        let as_str = String::from_utf8_lossy(&bytes);
+        // The old format would contain "Deny(Exfiltration)" — the new
+        // encoding uses raw bytes so this substring must not appear.
+        assert!(
+            !as_str.contains("Deny("),
+            "canonical bytes must not contain Debug-formatted verdict"
+        );
+        assert!(
+            !as_str.contains("verdict:"),
+            "canonical bytes must not contain 'verdict:' prefix from old format"
+        );
     }
 
     #[test]
