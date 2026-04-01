@@ -38,6 +38,15 @@ impl LabelPredicate {
         }
     }
 
+    /// Returns `true` if this predicate is trivial (matches any label).
+    ///
+    /// A predicate is trivial when all dimension bounds are `None`.
+    pub fn is_any(&self) -> bool {
+        self.min_integrity.is_none()
+            && self.max_confidentiality.is_none()
+            && self.min_authority.is_none()
+    }
+
     /// Check whether a label satisfies this predicate.
     pub fn matches(&self, label: &IFCLabel) -> bool {
         if let Some(min_integ) = self.min_integrity
@@ -152,10 +161,16 @@ impl PolicyRuleSet {
                 continue;
             }
             // Source predicate: ALL source labels must match.
-            let sources_match = source_labels.is_empty()
-                || source_labels
+            // When no source labels are provided, only match if the predicate
+            // is trivial (any()). A non-trivial predicate with empty sources
+            // is fail-closed — we cannot verify the required invariants.
+            let sources_match = if source_labels.is_empty() {
+                rule.source_predicate.is_any()
+            } else {
+                source_labels
                     .iter()
-                    .all(|sl| rule.source_predicate.matches(sl));
+                    .all(|sl| rule.source_predicate.matches(sl))
+            };
             if !sources_match {
                 continue;
             }
@@ -327,6 +342,37 @@ mod tests {
         assert!(pred.matches(&trusted_label()));
         assert!(pred.matches(&adversarial_label()));
         assert!(pred.matches(&secret_label()));
+    }
+
+    #[test]
+    fn is_any_true_when_all_none() {
+        assert!(LabelPredicate::any().is_any());
+        assert!(LabelPredicate::default().is_any());
+    }
+
+    #[test]
+    fn is_any_false_when_any_bound_set() {
+        assert!(
+            !LabelPredicate {
+                min_integrity: Some(IntegLevel::Untrusted),
+                ..LabelPredicate::any()
+            }
+            .is_any()
+        );
+        assert!(
+            !LabelPredicate {
+                max_confidentiality: Some(ConfLevel::Internal),
+                ..LabelPredicate::any()
+            }
+            .is_any()
+        );
+        assert!(
+            !LabelPredicate {
+                min_authority: Some(AuthorityLevel::Informational),
+                ..LabelPredicate::any()
+            }
+            .is_any()
+        );
     }
 
     #[test]
@@ -528,10 +574,26 @@ mod tests {
     }
 
     #[test]
-    fn no_sources_matches_any_source_predicate() {
+    fn no_sources_with_any_predicate_matches() {
         let mut rules = PolicyRuleSet::new();
         rules.push(AdmissibilityRule {
             name: "allow no-source workspace write".to_string(),
+            source_predicate: LabelPredicate::any(),
+            artifact_predicate: LabelPredicate::any(),
+            sink_class: SinkClass::WorkspaceWrite,
+            verdict: RuleVerdict::Allow,
+        });
+
+        // No sources + trivial (any) source predicate → matches
+        let result = rules.evaluate(&[], &trusted_label(), SinkClass::WorkspaceWrite);
+        assert_eq!(result.verdict, RuleVerdict::Allow);
+    }
+
+    #[test]
+    fn no_sources_with_nontrivial_predicate_denies() {
+        let mut rules = PolicyRuleSet::new();
+        rules.push(AdmissibilityRule {
+            name: "require trusted sources for push".to_string(),
             source_predicate: LabelPredicate {
                 min_integrity: Some(IntegLevel::Trusted),
                 ..LabelPredicate::any()
@@ -541,9 +603,10 @@ mod tests {
             verdict: RuleVerdict::Allow,
         });
 
-        // No sources → vacuously true
+        // No sources + non-trivial source predicate → fail-closed (deny)
         let result = rules.evaluate(&[], &trusted_label(), SinkClass::WorkspaceWrite);
-        assert_eq!(result.verdict, RuleVerdict::Allow);
+        assert_eq!(result.verdict, RuleVerdict::Deny);
+        assert!(result.matched_rule.is_none());
     }
 
     // ── TOML loading tests (#656) ────────────────────────────────────
