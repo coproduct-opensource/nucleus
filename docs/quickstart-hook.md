@@ -39,9 +39,12 @@ Instead of "one web fetch = locked forever," use compartments:
 NUCLEUS_COMPARTMENT=research   # read + web (no writes)
 NUCLEUS_COMPARTMENT=draft      # read + write (no web — taint clears!)
 NUCLEUS_COMPARTMENT=execute    # read + write + bash (no push)
+NUCLEUS_COMPARTMENT=breakglass:reason  # all capabilities + enhanced audit (reason required)
 ```
 
 Flow graph resets when switching compartments — research taint doesn't carry into draft.
+
+Escalating compartments (e.g., draft to execute) emits a warning. Breakglass requires a reason string after a colon (e.g., `breakglass:emergency fix for production outage`).
 
 ## Useful commands
 
@@ -51,6 +54,9 @@ nucleus-claude-hook --show-profile safe_pr_fixer  # See what's allowed
 nucleus-claude-hook --receipts       # View audit trail
 nucleus-claude-hook --status         # Show active sessions
 nucleus-claude-hook --gc             # Clean up stale session files (>24h)
+nucleus-claude-hook --reset-session <id>  # Clear taint on a session (receipt chain preserved)
+nucleus-claude-hook --compartment-path <id>  # Print the side-channel file path for a session
+nucleus-claude-hook --uninstall      # Remove hook from settings.json
 nucleus-claude-hook --version        # Show installed version
 nucleus-claude-hook --init           # Create .nucleus/config.toml
 nucleus-claude-hook --help           # All options
@@ -101,7 +107,7 @@ Nucleus uses **information flow control** (IFC) — every piece of data gets a s
 
 Labels propagate. When web content enters, subsequent writes inherit adversarial integrity. The kernel blocks the escalation — adversarial data can't steer privileged actions.
 
-The kernel is backed by **205 formal verification artifacts** (90 Kani bounded model checks + 115 Lean 4 theorems) proving the lattice algebra, flow rules, compartment properties, and admission control are correct.
+The kernel is backed by **218 formal verification artifacts** (90 Kani bounded model checks + 128 Lean 4 theorems) proving the lattice algebra, flow rules, compartment properties, admission control, and delegation narrowing are correct.
 
 ## Tamper detection
 
