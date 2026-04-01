@@ -20,48 +20,10 @@
 
 use std::collections::BTreeMap;
 
+use crate::DerivationClass;
 use crate::IFCLabel;
-use crate::effect::{DerivationClass, EffectKind};
+use crate::effect::EffectKind;
 use crate::flow::NodeId;
-
-// ═══════════════════════════════════════════════════════════════════════════
-// DerivationClass lattice ordering
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Lattice rank for [`DerivationClass`].
-///
-/// Higher rank = higher verification burden. The ordering reflects how much
-/// trust infrastructure is needed to verify data of that class:
-///
-/// ```text
-/// Deterministic(0) ≤ Replayed(1) ≤ External(2) ≤ Human(3) ≤ Generative(4)
-/// ```
-///
-/// - **Deterministic**: re-execute to verify (cheapest).
-/// - **Replayed**: replay log exists, but must be trusted.
-/// - **External**: foreign provenance chain, requires cross-system trust.
-/// - **Human**: attestation required — a human claimed this.
-/// - **Generative**: witness bundle required — non-reproducible model output.
-const fn derivation_rank(d: DerivationClass) -> u8 {
-    match d {
-        DerivationClass::Deterministic => 0,
-        DerivationClass::Replayed => 1,
-        DerivationClass::External => 2,
-        DerivationClass::Human => 3,
-        DerivationClass::Generative => 4,
-    }
-}
-
-/// Least upper bound of two derivation classes.
-///
-/// Returns the class with the higher verification burden.
-pub const fn derivation_join(a: DerivationClass, b: DerivationClass) -> DerivationClass {
-    if derivation_rank(a) >= derivation_rank(b) {
-        a
-    } else {
-        b
-    }
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SourceRef — provenance pointer to an upstream data source
@@ -126,7 +88,7 @@ pub struct FieldEnvelope {
     /// IFC label — confidentiality, integrity, provenance, freshness, authority.
     pub label: IFCLabel,
 
-    /// Coarse derivation class (Deterministic, Generative, Human, etc.).
+    /// Coarse derivation class (Deterministic, AIDerived, HumanPromoted, etc.).
     pub derivation_class: DerivationClass,
 
     /// Fine-grained effect classification of the computation step that
@@ -145,8 +107,8 @@ pub struct FieldEnvelope {
     /// References to transforms applied to produce this value.
     pub transform_refs: Vec<TransformRef>,
 
-    /// Optional witness bundle ID for generative derivations.
-    /// When `derivation_class == Generative`, this should be `Some(...)`.
+    /// Optional witness bundle ID for AI-derived data.
+    /// When `derivation_class == AIDerived`, this should be `Some(...)`.
     pub witness_bundle_id: Option<String>,
 
     /// Principal who promoted this field (e.g. from proposed to verified).
@@ -267,7 +229,7 @@ impl RowEnvelope {
 
         for field in fields.values() {
             label = label.join(field.label);
-            derivation = derivation_join(derivation, field.derivation_class);
+            derivation = derivation.join(field.derivation_class);
         }
 
         (label, derivation)
@@ -279,7 +241,7 @@ impl RowEnvelope {
     pub fn compute_derivation_class(&self) -> DerivationClass {
         let mut derivation = DerivationClass::Deterministic;
         for field in self.fields.values() {
-            derivation = derivation_join(derivation, field.derivation_class);
+            derivation = derivation.join(field.derivation_class);
         }
         derivation
     }
@@ -374,13 +336,13 @@ mod tests {
             integrity: IntegLevel::Trusted,
             ..Default::default()
         };
-        let field = make_field(b"data", DerivationClass::Generative, label);
+        let field = make_field(b"data", DerivationClass::AIDerived, label);
 
         let mut fields = BTreeMap::new();
         fields.insert("f1".into(), field);
 
         let row = RowEnvelope::new("row-1".into(), "t".into(), fields, None, "v1".into(), 1000);
-        assert_eq!(row.row_derivation_class, DerivationClass::Generative);
+        assert_eq!(row.row_derivation_class, DerivationClass::AIDerived);
         assert_eq!(row.row_label.confidentiality, ConfLevel::Internal);
         assert!(row.verify_invariant());
     }
@@ -396,7 +358,7 @@ mod tests {
         };
 
         let f1 = make_field(b"public", DerivationClass::Deterministic, label_public);
-        let f2 = make_field(b"internal", DerivationClass::Human, label_internal);
+        let f2 = make_field(b"internal", DerivationClass::HumanPromoted, label_internal);
 
         let mut fields = BTreeMap::new();
         fields.insert("public_field".into(), f1);
@@ -404,8 +366,8 @@ mod tests {
 
         let row = RowEnvelope::new("row-2".into(), "t".into(), fields, None, "v1".into(), 2000);
 
-        // Derivation LUB: Human > Deterministic → Human
-        assert_eq!(row.row_derivation_class, DerivationClass::Human);
+        // Derivation LUB: HumanPromoted > Deterministic → HumanPromoted
+        assert_eq!(row.row_derivation_class, DerivationClass::HumanPromoted);
 
         // Confidentiality is covariant: max(Public, Internal) = Internal
         assert_eq!(row.row_label.confidentiality, ConfLevel::Internal);
@@ -423,35 +385,36 @@ mod tests {
     fn derivation_join_ordering() {
         // Deterministic is bottom
         assert_eq!(
-            derivation_join(
-                DerivationClass::Deterministic,
-                DerivationClass::Deterministic
-            ),
+            DerivationClass::Deterministic.join(DerivationClass::Deterministic),
             DerivationClass::Deterministic
         );
 
-        // Generative dominates everything
+        // OpaqueExternal is top — absorbs everything
         assert_eq!(
-            derivation_join(DerivationClass::Deterministic, DerivationClass::Generative),
-            DerivationClass::Generative
+            DerivationClass::Deterministic.join(DerivationClass::OpaqueExternal),
+            DerivationClass::OpaqueExternal
         );
         assert_eq!(
-            derivation_join(DerivationClass::Human, DerivationClass::Generative),
-            DerivationClass::Generative
+            DerivationClass::AIDerived.join(DerivationClass::OpaqueExternal),
+            DerivationClass::OpaqueExternal
         );
 
-        // Human > External > Replayed > Deterministic
+        // AIDerived ⊔ HumanPromoted = Mixed (diamond lattice)
         assert_eq!(
-            derivation_join(DerivationClass::External, DerivationClass::Human),
-            DerivationClass::Human
+            DerivationClass::AIDerived.join(DerivationClass::HumanPromoted),
+            DerivationClass::Mixed
         );
+
+        // Mixed ⊔ AIDerived = Mixed
         assert_eq!(
-            derivation_join(DerivationClass::Replayed, DerivationClass::External),
-            DerivationClass::External
+            DerivationClass::Mixed.join(DerivationClass::AIDerived),
+            DerivationClass::Mixed
         );
+
+        // Deterministic ⊔ AIDerived = AIDerived
         assert_eq!(
-            derivation_join(DerivationClass::Deterministic, DerivationClass::Replayed),
-            DerivationClass::Replayed
+            DerivationClass::Deterministic.join(DerivationClass::AIDerived),
+            DerivationClass::AIDerived
         );
     }
 
@@ -459,16 +422,16 @@ mod tests {
     fn derivation_join_is_commutative() {
         let classes = [
             DerivationClass::Deterministic,
-            DerivationClass::Replayed,
-            DerivationClass::External,
-            DerivationClass::Human,
-            DerivationClass::Generative,
+            DerivationClass::AIDerived,
+            DerivationClass::Mixed,
+            DerivationClass::HumanPromoted,
+            DerivationClass::OpaqueExternal,
         ];
         for &a in &classes {
             for &b in &classes {
                 assert_eq!(
-                    derivation_join(a, b),
-                    derivation_join(b, a),
+                    a.join(b),
+                    b.join(a),
                     "join({a:?}, {b:?}) should be commutative"
                 );
             }
@@ -479,17 +442,17 @@ mod tests {
     fn derivation_join_is_associative() {
         let classes = [
             DerivationClass::Deterministic,
-            DerivationClass::Replayed,
-            DerivationClass::External,
-            DerivationClass::Human,
-            DerivationClass::Generative,
+            DerivationClass::AIDerived,
+            DerivationClass::Mixed,
+            DerivationClass::HumanPromoted,
+            DerivationClass::OpaqueExternal,
         ];
         for &a in &classes {
             for &b in &classes {
                 for &c in &classes {
                     assert_eq!(
-                        derivation_join(derivation_join(a, b), c),
-                        derivation_join(a, derivation_join(b, c)),
+                        a.join(b).join(c),
+                        a.join(b.join(c)),
                         "join is not associative for ({a:?}, {b:?}, {c:?})"
                     );
                 }
@@ -501,17 +464,13 @@ mod tests {
     fn derivation_join_is_idempotent() {
         let classes = [
             DerivationClass::Deterministic,
-            DerivationClass::Replayed,
-            DerivationClass::External,
-            DerivationClass::Human,
-            DerivationClass::Generative,
+            DerivationClass::AIDerived,
+            DerivationClass::Mixed,
+            DerivationClass::HumanPromoted,
+            DerivationClass::OpaqueExternal,
         ];
         for &a in &classes {
-            assert_eq!(
-                derivation_join(a, a),
-                a,
-                "join({a:?}, {a:?}) should be idempotent"
-            );
+            assert_eq!(a.join(a), a, "join({a:?}, {a:?}) should be idempotent");
         }
     }
 
@@ -546,11 +505,11 @@ mod tests {
             integrity: IntegLevel::Untrusted,
             ..Default::default()
         };
-        let mut field = make_field(b"model output", DerivationClass::Generative, label);
+        let mut field = make_field(b"model output", DerivationClass::AIDerived, label);
         field.effect_kind = EffectKind::LLMGenerate;
         field.witness_bundle_id = Some("wb-abc123".to_string());
 
-        assert_eq!(field.derivation_class, DerivationClass::Generative);
+        assert_eq!(field.derivation_class, DerivationClass::AIDerived);
         assert_eq!(field.witness_bundle_id.as_deref(), Some("wb-abc123"));
         assert!(field.verify_content_hash());
     }

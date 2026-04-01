@@ -10,31 +10,7 @@
 //! deterministic effects can be auto-verified; generative effects require
 //! witness bundles.
 
-// ═══════════════════════════════════════════════════════════════════════════
-// DerivationClass — the coarse derivation bucket an effect implies
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Coarse derivation class that an [`EffectKind`] implies.
-///
-/// Every computation step produces data that falls into one of these
-/// verification categories. Deterministic derivations can be replayed
-/// for bit-exact verification; generative derivations require witness
-/// bundles; human derivations require attestation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
-pub enum DerivationClass {
-    /// Output is reproducible given the same inputs.
-    Deterministic,
-    /// Output depends on a generative model and is not reproducible.
-    Generative,
-    /// Output was provided directly by a human.
-    Human,
-    /// Output was imported from an external system with its own provenance.
-    External,
-    /// Output was replayed from a prior recorded computation.
-    Replayed,
-}
+use crate::DerivationClass;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EffectKind — computation-step-level effect classification
@@ -123,29 +99,29 @@ impl EffectKind {
     /// and the coarse verification lanes in the DPI storage model.
     pub const fn implied_derivation(&self) -> DerivationClass {
         match self {
-            // Generative
-            Self::LLMGenerate | Self::LLMClassify | Self::LLMExtract => DerivationClass::Generative,
+            // AI-derived (non-deterministic model output)
+            Self::LLMGenerate | Self::LLMClassify | Self::LLMExtract => DerivationClass::AIDerived,
 
-            // Deterministic
+            // Deterministic (reproducible given same inputs)
             Self::DeterministicFetch
             | Self::DeterministicParse
             | Self::DeterministicValidate
             | Self::PureTransform
             | Self::Query => DerivationClass::Deterministic,
 
-            // Human
-            Self::HumanApprove | Self::HumanEdit => DerivationClass::Human,
+            // Human-promoted (explicitly attested by a human)
+            Self::HumanApprove | Self::HumanEdit => DerivationClass::HumanPromoted,
 
             // Writes inherit from the verification lane of their content,
             // but structurally they are deterministic operations (the write
             // itself is a side-effect, not a derivation).
             Self::VerifiedWrite | Self::ProposedWrite => DerivationClass::Deterministic,
 
-            // External
-            Self::ExternalImport => DerivationClass::External,
+            // Opaque external (unknown determinism profile)
+            Self::ExternalImport => DerivationClass::OpaqueExternal,
 
-            // Replay
-            Self::Replay => DerivationClass::Replayed,
+            // Replay is deterministic (reproducible from recorded computation)
+            Self::Replay => DerivationClass::Deterministic,
         }
     }
 }
@@ -184,9 +160,9 @@ mod tests {
     }
 
     /// Every variant that claims to be AI generative must also imply
-    /// `DerivationClass::Generative`.
+    /// `DerivationClass::AIDerived`.
     #[test]
-    fn ai_generative_variants_imply_generative_derivation() {
+    fn ai_generative_variants_imply_ai_derived_derivation() {
         let generative = [
             EffectKind::LLMGenerate,
             EffectKind::LLMClassify,
@@ -200,8 +176,8 @@ mod tests {
             );
             assert_eq!(
                 kind.implied_derivation(),
-                DerivationClass::Generative,
-                "{kind:?} should imply Generative derivation"
+                DerivationClass::AIDerived,
+                "{kind:?} should imply AIDerived derivation"
             );
         }
     }
@@ -213,7 +189,7 @@ mod tests {
         for kind in human {
             assert!(!kind.is_deterministic(), "{kind:?}");
             assert!(!kind.is_ai_generative(), "{kind:?}");
-            assert_eq!(kind.implied_derivation(), DerivationClass::Human);
+            assert_eq!(kind.implied_derivation(), DerivationClass::HumanPromoted);
         }
     }
 
@@ -228,22 +204,22 @@ mod tests {
         }
     }
 
-    /// External import implies External derivation class.
+    /// External import implies OpaqueExternal derivation class.
     #[test]
     fn external_import_variant() {
         let kind = EffectKind::ExternalImport;
         assert!(!kind.is_deterministic());
         assert!(!kind.is_ai_generative());
-        assert_eq!(kind.implied_derivation(), DerivationClass::External);
+        assert_eq!(kind.implied_derivation(), DerivationClass::OpaqueExternal);
     }
 
-    /// Replay implies Replayed derivation class.
+    /// Replay implies Deterministic derivation class (reproducible from log).
     #[test]
     fn replay_variant() {
         let kind = EffectKind::Replay;
         assert!(!kind.is_deterministic());
         assert!(!kind.is_ai_generative());
-        assert_eq!(kind.implied_derivation(), DerivationClass::Replayed);
+        assert_eq!(kind.implied_derivation(), DerivationClass::Deterministic);
     }
 
     /// Exhaustiveness check — every variant is covered by exactly one
