@@ -7,6 +7,8 @@
 
 use std::collections::{BTreeSet, VecDeque};
 
+use tracing::warn;
+
 use portcullis_core::flow::{
     check_flow, intrinsic_label, propagate_label, FlowNode, FlowVerdict, NodeId, NodeKind,
     QuarantineVerdict, TrustAncestryResult, MAX_PARENTS,
@@ -85,6 +87,17 @@ pub struct FlowDecision {
 const MAX_DENIED_NODES: usize = 1024;
 const MAX_QUARANTINED_NODES: usize = 4096;
 
+/// Maximum number of slots in the nodes Vec before compaction.
+///
+/// When this limit is reached, old non-essential nodes are tombstoned
+/// (set to `None`) to cap memory. The sentinel (index 0), denied nodes,
+/// quarantined nodes, and the most recent `MAX_GRAPH_NODES / 2` nodes
+/// are preserved.
+const MAX_GRAPH_NODES: usize = 10_000;
+
+/// Warn when the graph reaches this fraction of MAX_GRAPH_NODES.
+const GRAPH_WARN_THRESHOLD: usize = MAX_GRAPH_NODES * 8 / 10; // 80%
+
 /// Append-only causal DAG for information flow tracking.
 ///
 /// Nodes are indexed by sequential `NodeId` (u64). Index 0 is the sentinel
@@ -131,6 +144,13 @@ impl FlowGraph {
     /// Whether the graph has no real nodes.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Total number of slots in the backing Vec (including tombstones
+    /// and the sentinel). This reflects actual memory usage, unlike
+    /// `len()` which counts only live nodes.
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
     }
 
     /// Look up a node by ID. O(1).
@@ -214,6 +234,7 @@ impl FlowGraph {
         );
         let node = self.build_node(NodeKind::OutboundAction, label, parents, Some(operation));
         let verdict = check_flow(&node, now);
+        self.maybe_compact();
         let id = self.next_id;
         self.nodes.push(Some(node));
         self.next_id += 1;
@@ -355,11 +376,62 @@ impl FlowGraph {
         parents: &[NodeId],
         operation: Option<Operation>,
     ) -> NodeId {
+        self.maybe_compact();
         let node = self.build_node(kind, label, parents, operation);
         let id = self.next_id;
         self.nodes.push(Some(node));
         self.next_id += 1;
         id
+    }
+
+    /// Compact the nodes Vec when it reaches `MAX_GRAPH_NODES`.
+    ///
+    /// Preserves:
+    /// - Index 0 (sentinel)
+    /// - All denied nodes (in `self.denied`)
+    /// - All quarantined nodes (in `self.quarantined`)
+    /// - The most recent `MAX_GRAPH_NODES / 2` nodes
+    ///
+    /// Everything else is tombstoned (`None`). The Vec is not
+    /// reallocated — node IDs remain stable — but memory for the
+    /// `FlowNode` payloads is freed.
+    fn maybe_compact(&mut self) {
+        let count = self.nodes.len();
+
+        if count == GRAPH_WARN_THRESHOLD {
+            warn!(
+                nodes = count,
+                max = MAX_GRAPH_NODES,
+                "FlowGraph approaching node limit ({}/{})",
+                count,
+                MAX_GRAPH_NODES,
+            );
+        }
+
+        if count < MAX_GRAPH_NODES {
+            return;
+        }
+
+        warn!(
+            nodes = count,
+            max = MAX_GRAPH_NODES,
+            "FlowGraph reached node limit, compacting"
+        );
+
+        // Keep the most recent half of slots (by index).
+        let keep_from = count - MAX_GRAPH_NODES / 2;
+
+        for i in 1..keep_from {
+            let id = i as u64;
+            // Preserve denied and quarantined nodes — they carry
+            // security-critical state.
+            if self.denied.contains(&id) || self.quarantined.contains(&id) {
+                continue;
+            }
+            if self.nodes[i].is_some() {
+                self.nodes[i] = None;
+            }
+        }
     }
 
     /// Apply a scoped declassification token to a specific node **without
@@ -1869,5 +1941,126 @@ mod tests {
                 "Expected Expired after valid signature, got {result:?}"
             );
         }
+    }
+
+    // ── Node compaction tests (#746) ───────────────────────────────
+
+    #[test]
+    fn node_count_tracks_vec_size() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+        assert_eq!(g.node_count(), 1); // sentinel only
+        g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        assert_eq!(g.node_count(), 2); // sentinel + 1 node
+        g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        assert_eq!(g.node_count(), 3);
+    }
+
+    #[test]
+    fn compaction_caps_graph_at_max_nodes() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        // Fill the graph to MAX_GRAPH_NODES + some extra.
+        // Each insert_observation adds one node.
+        for _ in 0..(MAX_GRAPH_NODES + 100) {
+            g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        }
+
+        // After compaction, the Vec size is MAX_GRAPH_NODES + 100 + 1 (sentinel),
+        // but many old slots should be tombstoned.
+        let live = g.len();
+        // The most recent MAX_GRAPH_NODES/2 nodes are kept, plus any
+        // that survived. Live count should be roughly MAX_GRAPH_NODES/2.
+        assert!(
+            live <= MAX_GRAPH_NODES / 2 + 200,
+            "live nodes ({live}) should be bounded after compaction"
+        );
+
+        // Old nodes in the evicted range should be None.
+        // The first non-sentinel node (index 1) should have been tombstoned.
+        assert!(
+            g.get(1).is_none(),
+            "oldest node should be tombstoned after compaction"
+        );
+    }
+
+    #[test]
+    fn compaction_preserves_denied_nodes() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        // Insert web content early so its ID is low (will be in eviction range).
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+
+        // Denied action — this node should survive compaction.
+        let denied = g.insert_action(Operation::WriteFiles, &[web], now).unwrap();
+        assert!(matches!(denied.verdict, FlowVerdict::Deny(_)));
+        let denied_id = denied.node_id;
+
+        // Fill the graph past the limit.
+        for _ in 0..(MAX_GRAPH_NODES + 100) {
+            g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        }
+
+        // The denied node should still be present.
+        assert!(
+            g.get(denied_id).is_some(),
+            "denied node (id={denied_id}) must survive compaction"
+        );
+    }
+
+    #[test]
+    fn compaction_preserves_quarantined_nodes() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        // Insert and quarantine a node early.
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        g.quarantine(web);
+
+        // Fill the graph past the limit.
+        for _ in 0..(MAX_GRAPH_NODES + 100) {
+            g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        }
+
+        // The quarantined node should still be present.
+        assert!(
+            g.get(web).is_some(),
+            "quarantined node (id={web}) must survive compaction"
+        );
+        assert!(
+            g.is_quarantined(web),
+            "quarantined status must survive compaction"
+        );
+    }
+
+    #[test]
+    fn compaction_preserves_recent_nodes() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        // Fill past the limit.
+        let mut last_id = 0;
+        for _ in 0..(MAX_GRAPH_NODES + 50) {
+            last_id = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        }
+
+        // The most recently inserted node should be accessible.
+        assert!(
+            g.get(last_id).is_some(),
+            "most recent node must survive compaction"
+        );
+
+        // A node near the end (within the recent half) should also survive.
+        let recent_id = last_id - 10;
+        assert!(
+            g.get(recent_id).is_some(),
+            "recent node (id={recent_id}) should survive compaction"
+        );
     }
 }
