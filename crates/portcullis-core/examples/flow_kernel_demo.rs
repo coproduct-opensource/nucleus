@@ -94,6 +94,7 @@ fn main() {
         parents: [0; MAX_PARENTS],
         operation: Some(Operation::CreatePr),
         sink_class: None,
+        effect_kind: None,
     };
 
     // ── Step 6: Flow check → BLOCKED ──────────────────────────────────
@@ -164,6 +165,7 @@ fn labeled_node(id: NodeId, kind: NodeKind, label: IFCLabel) -> FlowNode {
         parents: [0; MAX_PARENTS],
         operation: None,
         sink_class: None,
+        effect_kind: None,
     }
 }
 
