@@ -165,6 +165,148 @@ impl DelegationConstraints {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Kani BMC harnesses — delegation chain monotonicity
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(kani)]
+mod kani_delegation_proofs {
+    use super::*;
+
+    /// Generate a symbolic SinkClass.
+    fn any_sink_class() -> SinkClass {
+        let v: u8 = kani::any();
+        kani::assume((v as usize) < SinkClass::ALL.len());
+        SinkClass::ALL[v as usize]
+    }
+
+    /// Generate a symbolic DelegationScope with bounded element counts
+    /// for tractable verification (0-2 elements per dimension).
+    fn any_scope() -> DelegationScope {
+        let path_count: u8 = kani::any();
+        kani::assume(path_count <= 2);
+        let sink_count: u8 = kani::any();
+        kani::assume(sink_count <= 2);
+
+        // Use fixed path/repo strings for subset checking tractability
+        let all_paths = ["src/**", "tests/**"];
+        let all_repos = ["org/a", "org/b"];
+
+        let mut paths = Vec::new();
+        let mut repos = Vec::new();
+        let mut sinks = Vec::new();
+
+        // Bitmask selection for paths (2 bits)
+        let path_mask: u8 = kani::any();
+        kani::assume(path_mask <= 3);
+        for i in 0..2u8 {
+            if path_mask & (1 << i) != 0 {
+                paths.push(all_paths[i as usize].to_string());
+            }
+        }
+
+        // Bitmask selection for repos (2 bits)
+        let repo_mask: u8 = kani::any();
+        kani::assume(repo_mask <= 3);
+        for i in 0..2u8 {
+            if repo_mask & (1 << i) != 0 {
+                repos.push(all_repos[i as usize].to_string());
+            }
+        }
+
+        // Bitmask selection for sinks (use first 4 sink classes for tractability)
+        let sink_mask: u8 = kani::any();
+        kani::assume(sink_mask <= 15);
+        let available_sinks = [
+            SinkClass::WorkspaceWrite,
+            SinkClass::GitCommit,
+            SinkClass::BashExec,
+            SinkClass::GitPush,
+        ];
+        for i in 0..4u8 {
+            if sink_mask & (1 << i) != 0 {
+                sinks.push(available_sinks[i as usize]);
+            }
+        }
+
+        DelegationScope {
+            allowed_paths: paths,
+            allowed_sinks: sinks,
+            allowed_repos: repos,
+        }
+    }
+
+    /// Generate symbolic DelegationConstraints.
+    fn any_constraints() -> DelegationConstraints {
+        DelegationConstraints {
+            scope: any_scope(),
+            max_delegation_depth: kani::any::<u32>() % 8,
+            expires_at: kani::any::<u64>(),
+        }
+    }
+
+    /// **DEL1 — Single-step narrowing is monotone: child ≤ parent.**
+    ///
+    /// If `narrow()` succeeds, the result has:
+    /// - scope that is a subset of the parent's scope
+    /// - max_delegation_depth ≤ parent's depth
+    /// - expires_at ≤ parent's expiry
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    #[kani::unwind(5)]
+    fn proof_narrow_monotone() {
+        let parent = any_constraints();
+        let child = any_constraints();
+
+        if let Some(result) = parent.narrow(&child) {
+            assert!(result.scope.is_subset_of(&parent.scope));
+            assert!(result.max_delegation_depth <= parent.max_delegation_depth);
+            assert!(result.expires_at <= parent.expires_at);
+        }
+    }
+
+    /// **DEL2 — Two-step delegation chain: terminal ≤ initial.**
+    ///
+    /// For any root and two levels of delegation: if both narrowing steps
+    /// succeed, the final constraints are at most as permissive as the root.
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    #[kani::unwind(5)]
+    fn proof_delegation_chain_monotone() {
+        let root = any_constraints();
+        let level1 = any_constraints();
+        let level2 = any_constraints();
+
+        if let Some(narrowed1) = root.narrow(&level1) {
+            if let Some(narrowed2) = narrowed1.narrow(&level2) {
+                // Terminal constraints must be ≤ root on every dimension
+                assert!(narrowed2.scope.is_subset_of(&root.scope));
+                assert!(narrowed2.max_delegation_depth <= root.max_delegation_depth);
+                assert!(narrowed2.expires_at <= root.expires_at);
+            }
+        }
+    }
+
+    /// **DEL3 — Narrowing is idempotent: narrow(self) = self.**
+    ///
+    /// Narrowing a constraint set by itself always succeeds and returns
+    /// an equivalent constraint set.
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    #[kani::unwind(5)]
+    fn proof_narrow_idempotent() {
+        let c = any_constraints();
+        let result = c.narrow(&c);
+        assert!(result.is_some(), "narrowing by self must succeed");
+        let result = result.unwrap();
+        assert_eq!(result.max_delegation_depth, c.max_delegation_depth);
+        assert_eq!(result.expires_at, c.expires_at);
+        // Scope intersection with itself should preserve all elements
+        assert!(result.scope.is_subset_of(&c.scope));
+        assert!(c.scope.is_subset_of(&result.scope));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

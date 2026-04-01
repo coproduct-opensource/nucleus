@@ -943,6 +943,11 @@ impl ProvenanceSet {
         (self.0 & other.0) == other.0
     }
 
+    /// Intersection of two provenance sets (for meet operation).
+    pub fn intersection(self, other: Self) -> Self {
+        ProvenanceSet(self.0 & other.0)
+    }
+
     /// Subset check (for lattice ordering).
     pub fn is_subset_of(self, other: Self) -> bool {
         (self.0 & other.0) == self.0
@@ -987,6 +992,31 @@ impl Freshness {
                 self.ttl_secs.min(other.ttl_secs)
             },
         }
+    }
+
+    /// Meet: newest observation, longest TTL (greatest lower bound).
+    ///
+    /// Dual of `join`. The meet is the least restrictive freshness that
+    /// is at most as restrictive as both inputs.
+    pub fn meet(self, other: Self) -> Self {
+        Self {
+            observed_at: self.observed_at.max(other.observed_at),
+            ttl_secs: if self.ttl_secs == 0 || other.ttl_secs == 0 {
+                0 // either has no expiry → meet has no expiry
+            } else {
+                self.ttl_secs.max(other.ttl_secs)
+            },
+        }
+    }
+
+    /// Lattice partial order for freshness.
+    ///
+    /// `self ≤ other` means self is less restrictive (newer, longer TTL).
+    /// In the join semilattice, join takes oldest/shortest, so the ordering
+    /// goes: newer/longer-TTL ≤ older/shorter-TTL.
+    pub fn leq(self, other: Self) -> bool {
+        self.observed_at >= other.observed_at
+            && (other.ttl_secs == 0 || (self.ttl_secs != 0 && self.ttl_secs >= other.ttl_secs))
     }
 
     /// Check if data has expired at a given time.
@@ -1182,6 +1212,52 @@ impl IFCLabel {
             authority: AuthorityLevel::Informational,
         }
     }
+
+    /// Meet two labels (greatest lower bound in the product lattice).
+    ///
+    /// Dual of `join`: the meet is the least restrictive label that is
+    /// at most as restrictive as both inputs.
+    ///
+    /// Confidentiality and provenance are covariant (meet = min / intersection).
+    /// Integrity and authority are CONTRAVARIANT (meet = max).
+    pub fn meet(self, other: Self) -> Self {
+        Self {
+            confidentiality: if self.confidentiality <= other.confidentiality {
+                self.confidentiality
+            } else {
+                other.confidentiality
+            },
+            // Contravariant: most trusted wins (max = greatest lower bound)
+            integrity: if self.integrity >= other.integrity {
+                self.integrity
+            } else {
+                other.integrity
+            },
+            provenance: self.provenance.intersection(other.provenance),
+            freshness: self.freshness.meet(other.freshness),
+            // Contravariant: most authority wins (max = greatest lower bound)
+            authority: if self.authority >= other.authority {
+                self.authority
+            } else {
+                other.authority
+            },
+        }
+    }
+
+    /// Lattice partial order: `self ≤ other` in the product lattice.
+    ///
+    /// This is the lattice ordering (not the flow relation). A label `a` is
+    /// less than `b` when `a` is less restrictive: lower confidentiality,
+    /// higher integrity, higher authority, subset provenance.
+    ///
+    /// Note: This is equivalent to `self.join(other) == other`.
+    pub fn leq(self, other: Self) -> bool {
+        self.confidentiality <= other.confidentiality
+            && self.integrity >= other.integrity
+            && self.authority >= other.authority
+            && self.provenance.is_subset_of(other.provenance)
+            && self.freshness.leq(other.freshness)
+    }
 }
 
 /// Map an IFCLabel to the legacy ExposureSet (monotone homomorphism).
@@ -1255,6 +1331,269 @@ pub fn decide_pure(level: CapabilityLevel, exposure: &ExposureSet, op: Operation
     }
 
     PureVerdict::Allow
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Kani BMC harnesses — IFCLabel bounded lattice axioms
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(kani)]
+mod kani_ifc_label_proofs {
+    use super::*;
+
+    /// Generate a symbolic ConfLevel (3 variants — exhaustive).
+    fn any_conf() -> ConfLevel {
+        let v: u8 = kani::any();
+        kani::assume(v <= 2);
+        match v {
+            0 => ConfLevel::Public,
+            1 => ConfLevel::Internal,
+            _ => ConfLevel::Secret,
+        }
+    }
+
+    /// Generate a symbolic IntegLevel (3 variants — exhaustive).
+    fn any_integ() -> IntegLevel {
+        let v: u8 = kani::any();
+        kani::assume(v <= 2);
+        match v {
+            0 => IntegLevel::Adversarial,
+            1 => IntegLevel::Untrusted,
+            _ => IntegLevel::Trusted,
+        }
+    }
+
+    /// Generate a symbolic AuthorityLevel (4 variants — exhaustive).
+    fn any_auth() -> AuthorityLevel {
+        let v: u8 = kani::any();
+        kani::assume(v <= 3);
+        match v {
+            0 => AuthorityLevel::NoAuthority,
+            1 => AuthorityLevel::Informational,
+            2 => AuthorityLevel::Suggestive,
+            _ => AuthorityLevel::Directive,
+        }
+    }
+
+    /// Generate a symbolic IFCLabel with bounded provenance (6-bit) and
+    /// bounded freshness for tractable verification.
+    fn any_label() -> IFCLabel {
+        IFCLabel {
+            confidentiality: any_conf(),
+            integrity: any_integ(),
+            provenance: ProvenanceSet::from_bits(kani::any::<u8>()),
+            freshness: Freshness {
+                observed_at: kani::any(),
+                ttl_secs: kani::any(),
+            },
+            authority: any_auth(),
+        }
+    }
+
+    // ── L1: Join idempotence — a ⊔ a = a ──────────────────────────────
+
+    /// **L1 — IFCLabel join is idempotent.**
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn proof_ifc_join_idempotent() {
+        let a = any_label();
+        let result = a.join(a);
+        assert_eq!(result.confidentiality, a.confidentiality);
+        assert_eq!(result.integrity, a.integrity);
+        assert_eq!(result.authority, a.authority);
+        assert_eq!(result.provenance.bits(), a.provenance.bits());
+    }
+
+    // ── L2: Join commutativity — a ⊔ b = b ⊔ a ───────────────────────
+
+    /// **L2 — IFCLabel join is commutative.**
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn proof_ifc_join_commutative() {
+        let a = any_label();
+        let b = any_label();
+        let ab = a.join(b);
+        let ba = b.join(a);
+        assert_eq!(ab.confidentiality, ba.confidentiality);
+        assert_eq!(ab.integrity, ba.integrity);
+        assert_eq!(ab.authority, ba.authority);
+        assert_eq!(ab.provenance.bits(), ba.provenance.bits());
+    }
+
+    // ── L3: Join associativity — (a ⊔ b) ⊔ c = a ⊔ (b ⊔ c) ─────────
+
+    /// **L3 — IFCLabel join is associative.**
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn proof_ifc_join_associative() {
+        let a = any_label();
+        let b = any_label();
+        let c = any_label();
+        let lhs = a.join(b).join(c);
+        let rhs = a.join(b.join(c));
+        assert_eq!(lhs.confidentiality, rhs.confidentiality);
+        assert_eq!(lhs.integrity, rhs.integrity);
+        assert_eq!(lhs.authority, rhs.authority);
+        assert_eq!(lhs.provenance.bits(), rhs.provenance.bits());
+    }
+
+    // ── L4: Meet idempotence — a ⊓ a = a ──────────────────────────────
+
+    /// **L4 — IFCLabel meet is idempotent.**
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn proof_ifc_meet_idempotent() {
+        let a = any_label();
+        let result = a.meet(a);
+        assert_eq!(result.confidentiality, a.confidentiality);
+        assert_eq!(result.integrity, a.integrity);
+        assert_eq!(result.authority, a.authority);
+        assert_eq!(result.provenance.bits(), a.provenance.bits());
+    }
+
+    // ── L5: Meet commutativity — a ⊓ b = b ⊓ a ───────────────────────
+
+    /// **L5 — IFCLabel meet is commutative.**
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn proof_ifc_meet_commutative() {
+        let a = any_label();
+        let b = any_label();
+        let ab = a.meet(b);
+        let ba = b.meet(a);
+        assert_eq!(ab.confidentiality, ba.confidentiality);
+        assert_eq!(ab.integrity, ba.integrity);
+        assert_eq!(ab.authority, ba.authority);
+        assert_eq!(ab.provenance.bits(), ba.provenance.bits());
+    }
+
+    // ── L6: Meet associativity — (a ⊓ b) ⊓ c = a ⊓ (b ⊓ c) ─────────
+
+    /// **L6 — IFCLabel meet is associative.**
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn proof_ifc_meet_associative() {
+        let a = any_label();
+        let b = any_label();
+        let c = any_label();
+        let lhs = a.meet(b).meet(c);
+        let rhs = a.meet(b.meet(c));
+        assert_eq!(lhs.confidentiality, rhs.confidentiality);
+        assert_eq!(lhs.integrity, rhs.integrity);
+        assert_eq!(lhs.authority, rhs.authority);
+        assert_eq!(lhs.provenance.bits(), rhs.provenance.bits());
+    }
+
+    // ── L7: Absorption — a ⊔ (a ⊓ b) = a ─────────────────────────────
+
+    /// **L7 — IFCLabel absorption law (join over meet).**
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn proof_ifc_absorption_join_meet() {
+        let a = any_label();
+        let b = any_label();
+        let result = a.join(a.meet(b));
+        assert_eq!(result.confidentiality, a.confidentiality);
+        assert_eq!(result.integrity, a.integrity);
+        assert_eq!(result.authority, a.authority);
+        assert_eq!(result.provenance.bits(), a.provenance.bits());
+    }
+
+    // ── L8: Absorption — a ⊓ (a ⊔ b) = a ─────────────────────────────
+
+    /// **L8 — IFCLabel absorption law (meet over join).**
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn proof_ifc_absorption_meet_join() {
+        let a = any_label();
+        let b = any_label();
+        let result = a.meet(a.join(b));
+        assert_eq!(result.confidentiality, a.confidentiality);
+        assert_eq!(result.integrity, a.integrity);
+        assert_eq!(result.authority, a.authority);
+        assert_eq!(result.provenance.bits(), a.provenance.bits());
+    }
+
+    // ── L9: Bottom identity — a ⊔ ⊥ = a ──────────────────────────────
+
+    /// **L9 — Bottom is the identity for join.**
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn proof_ifc_bottom_join_identity() {
+        let a = any_label();
+        let result = a.join(IFCLabel::bottom());
+        assert_eq!(result.confidentiality, a.confidentiality);
+        assert_eq!(result.integrity, a.integrity);
+        assert_eq!(result.authority, a.authority);
+        assert_eq!(result.provenance.bits(), a.provenance.bits());
+    }
+
+    // ── L10: Top identity — a ⊓ ⊤ = a ─────────────────────────────────
+
+    /// **L10 — Top is the identity for meet.**
+    ///
+    /// Note: Freshness dimension uses observed_at=0,ttl_secs=1 for top,
+    /// which makes this hold for the non-freshness dimensions. Freshness
+    /// is checked separately in check_flow (Rule 4), not in the lattice order.
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn proof_ifc_top_meet_identity() {
+        let a = any_label();
+        let result = a.meet(IFCLabel::top());
+        assert_eq!(result.confidentiality, a.confidentiality);
+        assert_eq!(result.integrity, a.integrity);
+        assert_eq!(result.authority, a.authority);
+        assert_eq!(result.provenance.bits(), a.provenance.bits());
+    }
+
+    // ── L11: leq consistent with join — a ≤ b iff a ⊔ b = b ──────────
+
+    /// **L11 — Lattice order is consistent with join.**
+    ///
+    /// Verifies the core lattice identity: a ≤ b ⟺ a ⊔ b = b,
+    /// restricted to the non-freshness dimensions (conf, integ, auth, prov).
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn proof_ifc_leq_consistent_with_join() {
+        let a = any_label();
+        let b = any_label();
+
+        // Fix freshness to be equal so leq is determined by other dims
+        let a = IFCLabel {
+            freshness: Freshness {
+                observed_at: 100,
+                ttl_secs: 0,
+            },
+            ..a
+        };
+        let b = IFCLabel {
+            freshness: Freshness {
+                observed_at: 100,
+                ttl_secs: 0,
+            },
+            ..b
+        };
+
+        let join_ab = a.join(b);
+        let leq = a.leq(b);
+
+        // a ≤ b → a ⊔ b = b (on all non-freshness dims)
+        if leq {
+            assert_eq!(join_ab.confidentiality, b.confidentiality);
+            assert_eq!(join_ab.integrity, b.integrity);
+            assert_eq!(join_ab.authority, b.authority);
+            assert_eq!(join_ab.provenance.bits(), b.provenance.bits());
+        }
+
+        // a ⊔ b = b → a ≤ b
+        if join_ab.confidentiality == b.confidentiality
+            && join_ab.integrity == b.integrity
+            && join_ab.authority == b.authority
+            && join_ab.provenance.bits() == b.provenance.bits()
+        {
+            assert!(a.leq(b));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1951,6 +2290,157 @@ mod tests {
             CapabilityLevel::Always,
         ] {
             assert_eq!(level.meet(level), level);
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // IFCLabel bounded lattice axiom tests (test-mode mirrors of Kani proofs)
+    // ════════════════════════════════════════════════════════════════════
+
+    /// Helper: enumerate all ConfLevel * IntegLevel * AuthorityLevel * ProvenanceSet
+    /// combinations with fixed freshness. 3 * 3 * 4 * 64 = 2304 labels.
+    fn all_labels() -> Vec<IFCLabel> {
+        let confs = [ConfLevel::Public, ConfLevel::Internal, ConfLevel::Secret];
+        let integs = [
+            IntegLevel::Adversarial,
+            IntegLevel::Untrusted,
+            IntegLevel::Trusted,
+        ];
+        let auths = [
+            AuthorityLevel::NoAuthority,
+            AuthorityLevel::Informational,
+            AuthorityLevel::Suggestive,
+            AuthorityLevel::Directive,
+        ];
+        let fresh = Freshness {
+            observed_at: 100,
+            ttl_secs: 0,
+        };
+
+        let mut labels = Vec::new();
+        for &c in &confs {
+            for &i in &integs {
+                for &a in &auths {
+                    for prov_bits in 0..64u8 {
+                        labels.push(IFCLabel {
+                            confidentiality: c,
+                            integrity: i,
+                            provenance: ProvenanceSet::from_bits(prov_bits),
+                            freshness: fresh,
+                            authority: a,
+                        });
+                    }
+                }
+            }
+        }
+        labels
+    }
+
+    #[test]
+    fn ifc_join_idempotent_exhaustive() {
+        for a in all_labels() {
+            let r = a.join(a);
+            assert_eq!(r.confidentiality, a.confidentiality);
+            assert_eq!(r.integrity, a.integrity);
+            assert_eq!(r.authority, a.authority);
+            assert_eq!(r.provenance.bits(), a.provenance.bits());
+        }
+    }
+
+    #[test]
+    fn ifc_join_commutative_exhaustive() {
+        // Sample pairs (full cross-product is 2304^2 ≈ 5M — too many)
+        let labels = all_labels();
+        // Test every label against a representative set
+        let reps = [
+            IFCLabel::bottom(),
+            IFCLabel::top(),
+            IFCLabel::web_content(100),
+            IFCLabel::user_prompt(100),
+            IFCLabel::secret(100),
+        ];
+        for a in &labels {
+            for b in &reps {
+                let ab = a.join(*b);
+                let ba = b.join(*a);
+                assert_eq!(ab.confidentiality, ba.confidentiality);
+                assert_eq!(ab.integrity, ba.integrity);
+                assert_eq!(ab.authority, ba.authority);
+                assert_eq!(ab.provenance.bits(), ba.provenance.bits());
+            }
+        }
+    }
+
+    #[test]
+    fn ifc_meet_idempotent_exhaustive() {
+        for a in all_labels() {
+            let r = a.meet(a);
+            assert_eq!(r.confidentiality, a.confidentiality);
+            assert_eq!(r.integrity, a.integrity);
+            assert_eq!(r.authority, a.authority);
+            assert_eq!(r.provenance.bits(), a.provenance.bits());
+        }
+    }
+
+    #[test]
+    fn ifc_absorption_join_meet() {
+        let labels = all_labels();
+        let reps = [
+            IFCLabel::bottom(),
+            IFCLabel::top(),
+            IFCLabel::web_content(100),
+            IFCLabel::user_prompt(100),
+        ];
+        for a in &labels {
+            for b in &reps {
+                let r = a.join(a.meet(*b));
+                assert_eq!(r.confidentiality, a.confidentiality);
+                assert_eq!(r.integrity, a.integrity);
+                assert_eq!(r.authority, a.authority);
+                assert_eq!(r.provenance.bits(), a.provenance.bits());
+            }
+        }
+    }
+
+    #[test]
+    fn ifc_absorption_meet_join() {
+        let labels = all_labels();
+        let reps = [
+            IFCLabel::bottom(),
+            IFCLabel::top(),
+            IFCLabel::web_content(100),
+            IFCLabel::user_prompt(100),
+        ];
+        for a in &labels {
+            for b in &reps {
+                let r = a.meet(a.join(*b));
+                assert_eq!(r.confidentiality, a.confidentiality);
+                assert_eq!(r.integrity, a.integrity);
+                assert_eq!(r.authority, a.authority);
+                assert_eq!(r.provenance.bits(), a.provenance.bits());
+            }
+        }
+    }
+
+    #[test]
+    fn ifc_bottom_is_join_identity() {
+        for a in all_labels() {
+            let r = a.join(IFCLabel::bottom());
+            assert_eq!(r.confidentiality, a.confidentiality);
+            assert_eq!(r.integrity, a.integrity);
+            assert_eq!(r.authority, a.authority);
+            assert_eq!(r.provenance.bits(), a.provenance.bits());
+        }
+    }
+
+    #[test]
+    fn ifc_top_is_meet_identity() {
+        for a in all_labels() {
+            let r = a.meet(IFCLabel::top());
+            assert_eq!(r.confidentiality, a.confidentiality);
+            assert_eq!(r.integrity, a.integrity);
+            assert_eq!(r.authority, a.authority);
+            assert_eq!(r.provenance.bits(), a.provenance.bits());
         }
     }
 }

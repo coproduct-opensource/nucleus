@@ -225,6 +225,130 @@ impl DeclassificationToken {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Kani BMC harnesses — declassification safety properties
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(kani)]
+mod kani_declassify_proofs {
+    use super::*;
+    use crate::{Freshness, ProvenanceSet};
+
+    /// Generate a symbolic ConfLevel.
+    fn any_conf() -> ConfLevel {
+        let v: u8 = kani::any();
+        kani::assume(v <= 2);
+        match v {
+            0 => ConfLevel::Public,
+            1 => ConfLevel::Internal,
+            _ => ConfLevel::Secret,
+        }
+    }
+
+    /// Generate a symbolic IntegLevel.
+    fn any_integ() -> IntegLevel {
+        let v: u8 = kani::any();
+        kani::assume(v <= 2);
+        match v {
+            0 => IntegLevel::Adversarial,
+            1 => IntegLevel::Untrusted,
+            _ => IntegLevel::Trusted,
+        }
+    }
+
+    /// Generate a symbolic AuthorityLevel.
+    fn any_auth() -> AuthorityLevel {
+        let v: u8 = kani::any();
+        kani::assume(v <= 3);
+        match v {
+            0 => AuthorityLevel::NoAuthority,
+            1 => AuthorityLevel::Informational,
+            2 => AuthorityLevel::Suggestive,
+            _ => AuthorityLevel::Directive,
+        }
+    }
+
+    /// Generate a symbolic IFCLabel.
+    fn any_label() -> IFCLabel {
+        IFCLabel {
+            confidentiality: any_conf(),
+            integrity: any_integ(),
+            provenance: ProvenanceSet::from_bits(kani::any::<u8>()),
+            freshness: Freshness {
+                observed_at: kani::any(),
+                ttl_secs: kani::any(),
+            },
+            authority: any_auth(),
+        }
+    }
+
+    /// **D1 — Declassification can only lower confidentiality or raise integrity/authority.**
+    ///
+    /// For any symbolic label and any declassification rule: the resulting label
+    /// never has HIGHER confidentiality, LOWER integrity, or LOWER authority
+    /// than the original. Provenance and freshness are never modified.
+    ///
+    /// This is the core safety property: declassification can only weaken
+    /// restrictions (lower conf) or strengthen guarantees (raise integ/auth),
+    /// never the reverse.
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn proof_declassification_only_weakens_restrictions() {
+        let label = any_label();
+        let from_conf = any_conf();
+        let to_conf = any_conf();
+        let from_integ = any_integ();
+        let to_integ = any_integ();
+        let from_auth = any_auth();
+        let to_auth = any_auth();
+
+        // Test all three action kinds via symbolic choice
+        let action_kind: u8 = kani::any();
+        kani::assume(action_kind <= 2);
+
+        let rule = match action_kind {
+            0 => DeclassificationRule {
+                action: DeclassifyAction::LowerConfidentiality {
+                    from: from_conf,
+                    to: to_conf,
+                },
+                justification: "kani",
+            },
+            1 => DeclassificationRule {
+                action: DeclassifyAction::RaiseIntegrity {
+                    from: from_integ,
+                    to: to_integ,
+                },
+                justification: "kani",
+            },
+            _ => DeclassificationRule {
+                action: DeclassifyAction::RaiseAuthority {
+                    from: from_auth,
+                    to: to_auth,
+                },
+                justification: "kani",
+            },
+        };
+
+        let result = rule.apply(label);
+
+        // Confidentiality can only decrease or stay the same
+        assert!(result.label.confidentiality <= label.confidentiality);
+        // Integrity can only increase or stay the same
+        assert!(result.label.integrity >= label.integrity);
+        // Authority can only increase or stay the same
+        assert!(result.label.authority >= label.authority);
+        // Provenance is never modified
+        assert_eq!(result.label.provenance.bits(), label.provenance.bits());
+        // Freshness is never modified
+        assert_eq!(
+            result.label.freshness.observed_at,
+            label.freshness.observed_at
+        );
+        assert_eq!(result.label.freshness.ttl_secs, label.freshness.ttl_secs);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
