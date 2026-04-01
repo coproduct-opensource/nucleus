@@ -13,8 +13,9 @@ pub enum CliCommand {
     Hook,
     /// `--setup` — configure Claude Code settings.json.
     Setup,
-    /// `--status` — show active sessions.
-    Status,
+    /// `--status` — show active sessions and configuration.
+    /// When `json` is true, output machine-parseable JSON to stdout.
+    Status { json: bool },
     /// `--help` / `-h` — print usage information.
     Help,
     /// `--version` / `-V` — print version string.
@@ -87,7 +88,10 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
 
     match first.as_str() {
         "--setup" => Ok(CliCommand::Setup),
-        "--status" => Ok(CliCommand::Status),
+        "--status" => {
+            let json = args.get(1).map(|a| a == "--json").unwrap_or(false);
+            Ok(CliCommand::Status { json })
+        }
         "--help" | "-h" => Ok(CliCommand::Help),
         "--version" | "-V" => Ok(CliCommand::Version),
         "--init" => Ok(CliCommand::Init),
@@ -153,7 +157,7 @@ mod tests {
         assert_eq!(parse_args(&args(&["--setup"])).unwrap(), CliCommand::Setup);
         assert_eq!(
             parse_args(&args(&["--status"])).unwrap(),
-            CliCommand::Status
+            CliCommand::Status { json: false }
         );
         assert_eq!(parse_args(&args(&["--help"])).unwrap(), CliCommand::Help);
         assert_eq!(parse_args(&args(&["-h"])).unwrap(), CliCommand::Help);
@@ -177,6 +181,14 @@ mod tests {
             CliCommand::SmokeTest
         );
         assert_eq!(parse_args(&args(&["--gc"])).unwrap(), CliCommand::Gc);
+    }
+
+    #[test]
+    fn status_json_flag() {
+        assert_eq!(
+            parse_args(&args(&["--status", "--json"])).unwrap(),
+            CliCommand::Status { json: true }
+        );
     }
 
     #[test]

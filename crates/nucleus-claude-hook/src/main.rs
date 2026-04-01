@@ -24,14 +24,15 @@ mod cli;
 mod init;
 mod protocol;
 mod session;
+mod status;
 
 use classify::*;
 use protocol::{HookInput, HookOutput};
 use session::{
     compartment_file_path, gc_stale_sessions, generate_compartment_token, keyed_compartment_name,
     load_session, resolve_compartment, run_gc, sanitize_session_id, save_session, session_dir,
-    session_hwm_path, session_state_path, SessionLoad, SessionState,
-    MANIFEST_VIOLATION_REVOKE_THRESHOLD, SESSION_GC_TTL_SECS,
+    session_hwm_path, session_state_path, SessionLoad, MANIFEST_VIOLATION_REVOKE_THRESHOLD,
+    SESSION_GC_TTL_SECS,
 };
 
 // ---------------------------------------------------------------------------
@@ -417,7 +418,7 @@ fn resolve_profile(name: &str) -> Option<PermissionLattice> {
 /// ```
 ///
 /// Priority: env var > config file > default.
-fn load_config_file() -> std::collections::HashMap<String, String> {
+pub(crate) fn load_config_file() -> std::collections::HashMap<String, String> {
     let mut config = std::collections::HashMap::new();
 
     let config_paths = [
@@ -589,47 +590,7 @@ fn run_setup() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// --status: show active sessions
-// ---------------------------------------------------------------------------
-
-fn run_status() {
-    let dir = std::env::temp_dir().join("nucleus-hook");
-    if !dir.exists() {
-        println!("nucleus: no active sessions");
-        return;
-    }
-    let entries: Vec<_> = std::fs::read_dir(&dir)
-        .into_iter()
-        .flatten()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
-        .collect();
-
-    if entries.is_empty() {
-        println!("nucleus: no active sessions");
-        return;
-    }
-
-    for entry in &entries {
-        if let Ok(content) = std::fs::read_to_string(entry.path()) {
-            if let Ok(state) = serde_json::from_str::<SessionState>(&content) {
-                let name = entry
-                    .path()
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                let comp = state.active_compartment.as_deref().unwrap_or("none");
-                println!(
-                    "  {name}  profile={:<16} compartment={:<12} ops={}",
-                    state.profile,
-                    comp,
-                    state.allowed_ops.len()
-                );
-            }
-        }
-    }
-}
+// (--status handler moved to status.rs)
 
 // ---------------------------------------------------------------------------
 // --help
@@ -1065,7 +1026,8 @@ fn run_help() {
     println!("  nucleus-claude-hook --build [DIR] Build artifact from .nucleus/ directory");
     println!("    -o, --output FILE               Write artifact JSON to file instead of stdout");
     println!("  nucleus-claude-hook --setup       Configure ~/.claude/settings.json");
-    println!("  nucleus-claude-hook --status      Show active sessions");
+    println!("  nucleus-claude-hook --status       Show active sessions and configuration");
+    println!("  nucleus-claude-hook --status --json  Machine-parseable JSON output");
     println!("  nucleus-claude-hook --gc          Remove stale session files (>24h)");
     println!("  nucleus-claude-hook --help        This message");
     println!("  nucleus-claude-hook --version     Show version");
@@ -1104,8 +1066,8 @@ fn main() {
             run_setup();
             return;
         }
-        Ok(cli::CliCommand::Status) => {
-            run_status();
+        Ok(cli::CliCommand::Status { json }) => {
+            status::run_status(json);
             return;
         }
         Ok(cli::CliCommand::Help) => {
