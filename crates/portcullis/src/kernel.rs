@@ -899,24 +899,39 @@ impl Kernel {
         // This means: reading web content is allowed (low authority requirement),
         // but the session is TAINTED afterward. The NEXT write/push/PR will be
         // checked against the tainted label and blocked if authority is insufficient.
+        //
+        // IMPORTANT (#654): When the FlowGraph is enabled, the flat session-level
+        // label is NO LONGER used as a decision gate. The FlowGraph provides
+        // precise per-action causal labels via `decide_with_parents()`, which
+        // eliminates the over-tainting problem. The flat label is still updated
+        // for audit/reporting purposes, but only `decide_with_parents()` enforces
+        // flow policy when the graph is active.
+        //
+        // Without a FlowGraph, the flat label remains the enforcement mechanism
+        // (backward-compatible for callers that don't use the DAG).
         if let Some(ref mut flow_label) = self.flow_label {
             use portcullis_core::flow;
 
             let now_unix = now.timestamp() as u64;
 
-            // Phase A: check the action against the current (pre-taint) label
-            let node = flow::FlowNode {
-                id: self.next_seq,
-                kind: flow::NodeKind::OutboundAction,
-                label: *flow_label,
-                parent_count: 0,
-                parents: [0; flow::MAX_PARENTS],
-                operation: Some(operation),
-                sink_class: None,
-            };
+            // When the flow graph is enabled, skip the flat label gate.
+            // Callers must use decide_with_parents() for flow-checked decisions.
+            // The flat label is still updated below for audit purposes.
+            let flow_graph_active = self.flow_graph.is_some();
 
-            match flow::check_flow(&node, now_unix) {
-                flow::FlowVerdict::Deny(reason) => {
+            if !flow_graph_active {
+                // Phase A: check the action against the current (pre-taint) label
+                let node = flow::FlowNode {
+                    id: self.next_seq,
+                    kind: flow::NodeKind::OutboundAction,
+                    label: *flow_label,
+                    parent_count: 0,
+                    parents: [0; flow::MAX_PARENTS],
+                    operation: Some(operation),
+                    sink_class: None,
+                };
+
+                if let flow::FlowVerdict::Deny(reason) = flow::check_flow(&node, now_unix) {
                     return self.record_with_exposure(
                         operation,
                         subject,
@@ -931,12 +946,12 @@ impl Kernel {
                         false,
                     );
                 }
-                flow::FlowVerdict::Allow => {
-                    // Phase B: taint the session label with the operation's intrinsic
-                    let intrinsic = flow::intrinsic_label(Self::node_kind_for(operation), now_unix);
-                    *flow_label = flow_label.join(intrinsic);
-                }
             }
+
+            // Phase B: taint the session label with the operation's intrinsic
+            // (always, regardless of flow_graph — for audit/reporting)
+            let intrinsic = flow::intrinsic_label(Self::node_kind_for(operation), now_unix);
+            *flow_label = flow_label.join(intrinsic);
         }
 
         // 7. Static approval check (obligations from lattice structure)
@@ -3006,5 +3021,175 @@ denied_hosts = ["evil.github.com"]
             let entry = kernel.trace().last().unwrap();
             assert!(entry.verdict.is_denied());
         }
+    }
+
+    // ── #654: Causal decide — flow graph supersedes flat label in decide() ──
+
+    #[test]
+    fn causal_decide_flat_decide_skips_flow_gate_when_graph_enabled() {
+        // #654: When the flow graph is enabled, flat decide() should NOT
+        // use the session-level flow_label as a gate. The over-tainting
+        // problem is solved by the DAG — callers use decide_with_parents()
+        // for flow-checked decisions.
+        let perms = PermissionLattice::permissive();
+        let mut kernel = Kernel::new(perms);
+        kernel.enable_flow_control();
+        kernel.enable_flow_graph();
+
+        // WebFetch taints the flat session label
+        let (d, _) = kernel.decide(Operation::WebFetch, "https://example.com");
+        assert!(d.verdict.is_allowed());
+
+        // Without #654, this would be DENIED by the flat flow_label gate.
+        // With #654, decide() skips the flat gate when the graph is active.
+        let (d, _) = kernel.decide(Operation::WriteFiles, "/tmp/clean.txt");
+        assert!(
+            d.verdict.is_allowed(),
+            "With flow graph enabled, flat decide() should NOT gate on session label. Got {:?}",
+            d.verdict
+        );
+    }
+
+    #[test]
+    fn causal_decide_flat_label_still_gates_without_graph() {
+        // Backward compat: without enable_flow_graph(), the flat label
+        // still gates operations (pre-#654 behavior preserved).
+        let perms = PermissionLattice::permissive();
+        let mut kernel = Kernel::new(perms);
+        kernel.enable_flow_control();
+        // NOTE: no enable_flow_graph()
+
+        let (d, _) = kernel.decide(Operation::WebFetch, "https://example.com");
+        assert!(d.verdict.is_allowed());
+
+        let (d, _) = kernel.decide(Operation::WriteFiles, "/tmp/test.txt");
+        assert!(
+            matches!(d.verdict, Verdict::Deny(DenyReason::FlowViolation { .. })),
+            "Without flow graph, flat label should still gate. Got {:?}",
+            d.verdict
+        );
+    }
+
+    #[test]
+    fn causal_decide_flat_label_still_updated_for_audit() {
+        // #654: Even when the graph is active and decide() skips the gate,
+        // the flat flow_label is still updated for audit/reporting.
+        let perms = PermissionLattice::permissive();
+        let mut kernel = Kernel::new(perms);
+        kernel.enable_flow_control();
+        kernel.enable_flow_graph();
+
+        // Fetch web content
+        let (d, _) = kernel.decide(Operation::WebFetch, "https://example.com");
+        assert!(d.verdict.is_allowed());
+
+        // The flat label should be tainted (for audit) even though
+        // it didn't gate the operation.
+        // Verify by disabling the flow graph and checking that the
+        // flat label would now gate.
+        // We can't disable the graph, but we can verify the label
+        // is tainted by checking the exposure transition covers web fetch.
+        assert_eq!(
+            d.exposure_transition.contributed_label,
+            Some(ExposureLabel::UntrustedContent)
+        );
+    }
+
+    #[test]
+    fn causal_decide_key_test_adversarial_read_clean_write_allowed() {
+        // Issue #654 acceptance criteria:
+        // "adversarial read + independent clean write → clean write ALLOWED"
+        let perms = PermissionLattice::safe_pr_fixer();
+        let mut kernel = Kernel::new(perms);
+        kernel.enable_flow_graph();
+
+        // Adversarial content observed
+        let _web = kernel
+            .observe(portcullis_core::flow::NodeKind::WebContent, &[])
+            .unwrap();
+
+        // Independent clean file read
+        let file = kernel
+            .observe(portcullis_core::flow::NodeKind::FileRead, &[])
+            .unwrap();
+
+        // Clean write depending only on the file — ALLOWED
+        let (d, token) = kernel.decide_with_parents(Operation::WriteFiles, "/clean.txt", &[file]);
+        assert!(
+            d.verdict.is_allowed(),
+            "#654 key test: independent clean write must be ALLOWED. Got {:?}",
+            d.verdict
+        );
+        assert!(token.is_some());
+    }
+
+    #[test]
+    fn causal_decide_key_test_write_depending_on_adversarial_denied() {
+        // Issue #654 acceptance criteria:
+        // "write that depends on adversarial content → still DENIED"
+        let perms = PermissionLattice::safe_pr_fixer();
+        let mut kernel = Kernel::new(perms);
+        kernel.enable_flow_graph();
+
+        // Adversarial content observed
+        let web = kernel
+            .observe(portcullis_core::flow::NodeKind::WebContent, &[])
+            .unwrap();
+
+        // Write depending on adversarial content — DENIED
+        let (d, token) = kernel.decide_with_parents(Operation::WriteFiles, "/tainted.txt", &[web]);
+        assert!(
+            d.verdict.is_denied(),
+            "#654 key test: write depending on adversarial content must be DENIED. Got {:?}",
+            d.verdict
+        );
+        assert!(token.is_none());
+        assert!(matches!(
+            d.verdict,
+            Verdict::Deny(DenyReason::FlowViolation { .. })
+        ));
+    }
+
+    #[test]
+    fn causal_decide_exposure_still_tracked_for_audit() {
+        // #654: ExposureTracker is still updated for audit/reporting.
+        use crate::capability::CapabilityLattice;
+        let mut perms = PermissionLattice::builder()
+            .description("everything-allowed")
+            .capabilities(CapabilityLattice {
+                read_files: CapabilityLevel::Always,
+                write_files: CapabilityLevel::Always,
+                edit_files: CapabilityLevel::Always,
+                run_bash: CapabilityLevel::Always,
+                glob_search: CapabilityLevel::Always,
+                grep_search: CapabilityLevel::Always,
+                web_search: CapabilityLevel::Always,
+                web_fetch: CapabilityLevel::Always,
+                git_commit: CapabilityLevel::Always,
+                git_push: CapabilityLevel::Always,
+                create_pr: CapabilityLevel::Always,
+                manage_pods: CapabilityLevel::Always,
+                spawn_agent: CapabilityLevel::Always,
+                extensions: std::collections::BTreeMap::new(),
+            })
+            .build();
+        perms.obligations.approvals.clear();
+
+        let mut kernel = Kernel::new(perms);
+        kernel.enable_flow_control();
+        kernel.enable_flow_graph();
+
+        // Read private data
+        let (d, _) = kernel.decide(Operation::ReadFiles, "/etc/passwd");
+        assert!(d.verdict.is_allowed());
+        assert!(kernel.exposure().contains(ExposureLabel::PrivateData));
+
+        // Fetch untrusted content
+        let (d, _) = kernel.decide(Operation::WebFetch, "https://example.com");
+        assert!(d.verdict.is_allowed());
+        assert!(kernel.exposure().contains(ExposureLabel::UntrustedContent));
+
+        // Exposure is tracked for audit even though flow graph is active
+        assert_eq!(kernel.exposure().count(), 2);
     }
 }
