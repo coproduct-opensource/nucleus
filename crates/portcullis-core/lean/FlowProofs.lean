@@ -185,4 +185,101 @@ theorem invariant_exploit_blocked :
     combined.1 = .Internal := by
   decide
 
+-- ═══════════════════════════════════════════════════════════════════════
+-- Meet operations (dual of join) — matching Kani proofs L1-L11 (#644)
+-- ═══════════════════════════════════════════════════════════════════════
+
+-- Covariant meet (min) for confidentiality
+def ConfLevel.meet (a b : ConfLevel) : ConfLevel :=
+  if a.toNat ≤ b.toNat then a else b
+
+-- Contravariant meet (max) for integrity — most trusted wins
+def IntegLevel.meet (a b : IntegLevel) : IntegLevel :=
+  if a.toNat ≥ b.toNat then a else b
+
+-- Contravariant meet (max) for authority
+def AuthorityLevel.meet (a b : AuthorityLevel) : AuthorityLevel :=
+  if a.toNat ≥ b.toNat then a else b
+
+-- Meet commutativity
+theorem conf_meet_comm (a b : ConfLevel) :
+    ConfLevel.meet a b = ConfLevel.meet b a := by
+  cases a <;> cases b <;> decide
+
+theorem integ_meet_comm (a b : IntegLevel) :
+    IntegLevel.meet a b = IntegLevel.meet b a := by
+  cases a <;> cases b <;> decide
+
+theorem auth_meet_comm (a b : AuthorityLevel) :
+    AuthorityLevel.meet a b = AuthorityLevel.meet b a := by
+  cases a <;> cases b <;> decide
+
+-- Meet associativity
+theorem conf_meet_assoc (a b c : ConfLevel) :
+    ConfLevel.meet (ConfLevel.meet a b) c = ConfLevel.meet a (ConfLevel.meet b c) := by
+  cases a <;> cases b <;> cases c <;> decide
+
+theorem integ_meet_assoc (a b c : IntegLevel) :
+    IntegLevel.meet (IntegLevel.meet a b) c = IntegLevel.meet a (IntegLevel.meet b c) := by
+  cases a <;> cases b <;> cases c <;> decide
+
+theorem auth_meet_assoc (a b c : AuthorityLevel) :
+    AuthorityLevel.meet (AuthorityLevel.meet a b) c =
+    AuthorityLevel.meet a (AuthorityLevel.meet b c) := by
+  cases a <;> cases b <;> cases c <;> decide
+
+-- Meet idempotency
+theorem conf_meet_idempotent (a : ConfLevel) :
+    ConfLevel.meet a a = a := by cases a <;> decide
+
+theorem integ_meet_idempotent (a : IntegLevel) :
+    IntegLevel.meet a a = a := by cases a <;> decide
+
+theorem auth_meet_idempotent (a : AuthorityLevel) :
+    AuthorityLevel.meet a a = a := by cases a <;> decide
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- Absorption laws (join/meet interaction) — bounded lattice requirement
+-- ═══════════════════════════════════════════════════════════════════════
+
+theorem conf_absorption_join_meet (a b : ConfLevel) :
+    ConfLevel.join a (ConfLevel.meet a b) = a := by
+  cases a <;> cases b <;> decide
+
+theorem conf_absorption_meet_join (a b : ConfLevel) :
+    ConfLevel.meet a (ConfLevel.join a b) = a := by
+  cases a <;> cases b <;> decide
+
+theorem integ_absorption_join_meet (a b : IntegLevel) :
+    IntegLevel.join a (IntegLevel.meet a b) = a := by
+  cases a <;> cases b <;> decide
+
+theorem integ_absorption_meet_join (a b : IntegLevel) :
+    IntegLevel.meet a (IntegLevel.join a b) = a := by
+  cases a <;> cases b <;> decide
+
+theorem auth_absorption_join_meet (a b : AuthorityLevel) :
+    AuthorityLevel.join a (AuthorityLevel.meet a b) = a := by
+  cases a <;> cases b <;> decide
+
+theorem auth_absorption_meet_join (a b : AuthorityLevel) :
+    AuthorityLevel.meet a (AuthorityLevel.join a b) = a := by
+  cases a <;> cases b <;> decide
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- Bounded lattice: identity elements
+-- ═══════════════════════════════════════════════════════════════════════
+
+-- Conf: bot = Public, top = Secret
+theorem conf_join_bot (a : ConfLevel) : ConfLevel.join a .Public = a := by cases a <;> decide
+theorem conf_meet_top (a : ConfLevel) : ConfLevel.meet a .Secret = a := by cases a <;> decide
+
+-- Integ: bot = Adversarial (contravariant), top = Trusted
+theorem integ_join_bot (a : IntegLevel) : IntegLevel.join a .Trusted = a := by cases a <;> decide
+theorem integ_meet_top (a : IntegLevel) : IntegLevel.meet a .Adversarial = a := by cases a <;> decide
+
+-- Auth: bot = NoAuthority (contravariant), top = Directive
+theorem auth_join_bot (a : AuthorityLevel) : AuthorityLevel.join a .Directive = a := by cases a <;> decide
+theorem auth_meet_top (a : AuthorityLevel) : AuthorityLevel.meet a .NoAuthority = a := by cases a <;> decide
+
 end FlowProofs
