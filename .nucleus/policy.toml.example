@@ -1,0 +1,74 @@
+# Nucleus Admissibility Policy
+#
+# Rules are evaluated in order (first match wins). If no rule matches,
+# the default verdict is "deny" (fail-closed).
+#
+# Each rule specifies:
+# - source_predicate: bounds on the data source's IFC label
+# - artifact_predicate: bounds on the artifact's propagated label
+# - sink_class: which sink the rule applies to
+# - verdict: "allow", "deny", or "requires_approval"
+#
+# Label predicate fields (all optional, omit = any value):
+# - min_integrity: "adversarial", "untrusted", "trusted"
+# - max_confidentiality: "public", "internal", "secret"
+# - min_authority: "no_authority", "informational", "suggestive", "directive"
+
+# ── Trusted code may be committed and pushed ─────────────────────────
+
+[[admissibility]]
+name = "trusted code may commit"
+sink_class = "git_commit"
+verdict = "allow"
+
+[admissibility.source_predicate]
+min_integrity = "trusted"
+
+[admissibility.artifact_predicate]
+min_integrity = "trusted"
+
+[[admissibility]]
+name = "trusted code may push"
+sink_class = "git_push"
+verdict = "allow"
+
+[admissibility.source_predicate]
+min_integrity = "trusted"
+
+[admissibility.artifact_predicate]
+min_integrity = "trusted"
+max_confidentiality = "internal"
+
+# ── Web content cannot reach privileged sinks without declassification ─
+
+[[admissibility]]
+name = "block web content to git push"
+sink_class = "git_push"
+verdict = "deny"
+
+[admissibility.source_predicate]
+
+[admissibility.artifact_predicate]
+
+# ── Workspace writes allowed for untrusted+ artifacts ────────────────
+
+[[admissibility]]
+name = "allow workspace writes"
+sink_class = "workspace_write"
+verdict = "allow"
+
+[admissibility.source_predicate]
+
+[admissibility.artifact_predicate]
+min_integrity = "untrusted"
+
+# ── HTTP egress requires approval ────────────────────────────────────
+
+[[admissibility]]
+name = "http egress requires approval"
+sink_class = "http_egress"
+verdict = "requires_approval"
+
+[admissibility.source_predicate]
+
+[admissibility.artifact_predicate]
