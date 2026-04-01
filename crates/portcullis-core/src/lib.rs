@@ -61,6 +61,8 @@ pub mod autonomy;
 pub mod compartment;
 #[cfg(feature = "serde")]
 pub mod compartmentfile;
+#[cfg(feature = "serde")]
+pub mod compose;
 pub mod declassify;
 pub mod delegation;
 #[cfg(feature = "serde")]
