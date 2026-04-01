@@ -1076,7 +1076,20 @@ fn generate_compartment_token() -> String {
     use ring::rand::SecureRandom;
     let rng = ring::rand::SystemRandom::new();
     let mut bytes = [0u8; 16];
-    rng.fill(&mut bytes).expect("SystemRandom failed");
+    if let Err(e) = rng.fill(&mut bytes) {
+        eprintln!("nucleus: WARNING — SystemRandom failed: {e}. Using fallback token.");
+        // Fallback: use process ID + timestamp as low-entropy token.
+        // Not cryptographically secure, but prevents a panic in the hot path (#481).
+        let fallback = format!(
+            "{:016x}{:016x}",
+            std::process::id() as u64,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64
+        );
+        return fallback;
+    }
     hex::encode(bytes)
 }
 
@@ -2539,14 +2552,29 @@ fn main() {
 
     // Get or create the session's signing key.
     // Ephemeral per session — generated once, persisted in session state.
-    let signing_key = if session.signing_key_pkcs8.is_empty() {
+    // If key generation fails (low entropy, sandboxed env), proceed without
+    // signing rather than panicking the security gate (#481).
+    let signing_key: Option<Ed25519KeyPair> = if session.signing_key_pkcs8.is_empty() {
         let rng = SystemRandom::new();
-        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).expect("Ed25519 key generation failed");
-        session.signing_key_pkcs8 = pkcs8.as_ref().to_vec();
-        Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("Ed25519 key from PKCS#8 failed")
+        match Ed25519KeyPair::generate_pkcs8(&rng) {
+            Ok(pkcs8) => {
+                session.signing_key_pkcs8 = pkcs8.as_ref().to_vec();
+                Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).ok()
+            }
+            Err(e) => {
+                eprintln!("nucleus: WARNING — Ed25519 key generation failed: {e}. Receipts will be unsigned.");
+                None
+            }
+        }
     } else {
-        Ed25519KeyPair::from_pkcs8(&session.signing_key_pkcs8)
-            .expect("Ed25519 key from stored PKCS#8 failed")
+        match Ed25519KeyPair::from_pkcs8(&session.signing_key_pkcs8) {
+            Ok(key) => Some(key),
+            Err(e) => {
+                eprintln!("nucleus: WARNING — stored signing key corrupted: {e}. Receipts will be unsigned.");
+                session.signing_key_pkcs8.clear(); // Don't reuse corrupted key
+                None
+            }
+        }
     };
 
     // Build a receipt from the flow graph's action node (if available).
@@ -2580,7 +2608,9 @@ fn main() {
                 id
             };
             receipt.set_chain_id(chain_id);
-            sign_receipt(&mut receipt, &signing_key);
+            if let Some(ref key) = signing_key {
+                sign_receipt(&mut receipt, key);
+            }
             Some(receipt)
         })
     });
@@ -2716,7 +2746,14 @@ fn main() {
     }
 
     // Write output to stdout
-    let json = serde_json::to_string(&output).unwrap();
+    let json = match serde_json::to_string(&output) {
+        Ok(j) => j,
+        Err(e) => {
+            // Defense-in-depth: if serialization fails, output a deny to fail-closed (#481)
+            eprintln!("nucleus: CRITICAL — failed to serialize output: {e}. Denying.");
+            r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"internal error: serialization failed"}}"#.to_string()
+        }
+    };
     println!("{json}");
     io::stdout().flush().ok();
 
