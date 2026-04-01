@@ -29,6 +29,25 @@ use crate::IFCLabel;
 use crate::flow::{FlowDenyReason, FlowNode, FlowVerdict, NodeId, NodeKind};
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Tombstoned ancestor tracking (#782)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Summary of a compacted ancestor node included in a receipt.
+///
+/// When compaction tombstones a node, its IFC label is preserved here
+/// so the receipt chain records that ancestry was truncated and what
+/// taint the missing node carried. This prevents "compaction laundering"
+/// where memory management silently erases tainted ancestry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TombstonedAncestor {
+    /// The ID of the compacted node.
+    pub compacted_node_id: NodeId,
+    /// The IFC label preserved at compaction time.
+    /// This is the join of all the node's causal ancestors.
+    pub preserved_label: IFCLabel,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Receipt types
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -61,6 +80,10 @@ pub struct FlowReceipt {
     /// Prevents cross-session receipt injection (#492).
     /// SHA-256 of the session identifier.
     pub(crate) chain_id: [u8; 32],
+    /// Tombstoned ancestors encountered during ancestry traversal (#782).
+    /// Non-empty means compaction has truncated the causal chain.
+    /// Each entry preserves the label (taint) of the compacted node.
+    pub(crate) tombstoned_ancestors: Vec<TombstonedAncestor>,
 }
 
 /// Read-only accessors.
@@ -106,6 +129,22 @@ impl FlowReceipt {
     /// Set the chain ID (called before signing).
     pub fn set_chain_id(&mut self, id: [u8; 32]) {
         self.chain_id = id;
+    }
+    /// Tombstoned ancestors in the causal chain (#782).
+    ///
+    /// Non-empty means compaction has occurred and some ancestors
+    /// were tombstoned. The preserved labels carry the taint information
+    /// that would otherwise be silently lost.
+    pub fn tombstoned_ancestors(&self) -> &[TombstonedAncestor] {
+        &self.tombstoned_ancestors
+    }
+    /// Whether the causal chain is complete (no tombstoned ancestors).
+    pub fn chain_complete(&self) -> bool {
+        self.tombstoned_ancestors.is_empty()
+    }
+    /// Set tombstoned ancestors (called by `FlowGraph::build_receipt_for`).
+    pub fn set_tombstoned_ancestors(&mut self, tombstoned: Vec<TombstonedAncestor>) {
+        self.tombstoned_ancestors = tombstoned;
     }
 }
 
@@ -167,9 +206,10 @@ pub fn build_receipt(
         verdict,
         rule_name,
         created_at: now,
-        signature: [0; 64], // Unsigned
-        prev_hash: [0; 32], // No chain link yet — set via set_prev_hash()
-        chain_id: [0; 32],  // No chain ID yet — set via set_chain_id()
+        signature: [0; 64],               // Unsigned
+        prev_hash: [0; 32],               // No chain link yet — set via set_prev_hash()
+        chain_id: [0; 32],                // No chain ID yet — set via set_chain_id()
+        tombstoned_ancestors: Vec::new(), // Set by FlowGraph::build_receipt_for if needed
     }
 }
 
@@ -210,6 +250,19 @@ pub fn receipt_canonical_bytes(receipt: &FlowReceipt) -> Vec<u8> {
     buf.extend_from_slice(&(receipt.ancestors().len() as u32).to_le_bytes());
     for ancestor in receipt.ancestors() {
         append_receipt_node_bytes(&mut buf, ancestor);
+    }
+
+    // Tombstoned ancestors (#782) — included in signed content so
+    // tampering with the compaction record invalidates the signature.
+    buf.extend_from_slice(&(receipt.tombstoned_ancestors().len() as u32).to_le_bytes());
+    for ta in receipt.tombstoned_ancestors() {
+        buf.extend_from_slice(&ta.compacted_node_id.to_le_bytes());
+        buf.extend_from_slice(&(ta.preserved_label.confidentiality as u8).to_le_bytes());
+        buf.extend_from_slice(&(ta.preserved_label.integrity as u8).to_le_bytes());
+        buf.extend_from_slice(&(ta.preserved_label.authority as u8).to_le_bytes());
+        buf.extend_from_slice(&ta.preserved_label.provenance.bits().to_le_bytes());
+        buf.extend_from_slice(&ta.preserved_label.freshness.observed_at.to_le_bytes());
+        buf.extend_from_slice(&ta.preserved_label.freshness.ttl_secs.to_le_bytes());
     }
 
     buf
@@ -312,8 +365,24 @@ impl FlowReceipt {
             }
         }
 
+        if !self.tombstoned_ancestors.is_empty() {
+            out.push_str(&format!(
+                "WARNING: {} ancestor(s) were compacted — causal chain is incomplete\n",
+                self.tombstoned_ancestors.len()
+            ));
+            for ta in &self.tombstoned_ancestors {
+                out.push_str(&format!(
+                    "  [compacted] id={} label={{conf={:?}, integ={:?}, auth={:?}}}\n",
+                    ta.compacted_node_id,
+                    ta.preserved_label.confidentiality,
+                    ta.preserved_label.integrity,
+                    ta.preserved_label.authority,
+                ));
+            }
+        }
+
         if !self.is_signed() {
-            out.push_str("⚠ UNSIGNED — not cryptographically verified\n");
+            out.push_str("WARNING: UNSIGNED — not cryptographically verified\n");
         }
 
         out
