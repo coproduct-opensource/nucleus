@@ -443,8 +443,16 @@ pub(crate) fn resolve_compartment(
         }
     }
 
-    // Detect escalation (#464)
+    // Enforce single-step escalation (#733) and detect escalation (#464)
     if let Some(from) = current {
+        if !from.can_transition_to(target) {
+            eprintln!(
+                "nucleus: DENIED — skip-level compartment escalation {from} -> {target}. \
+                 Escalation must be single-step (e.g. research -> draft -> execute -> breakglass). \
+                 Transition one level at a time to maintain an audit trail (#733)."
+            );
+            return None;
+        }
         if portcullis_core::compartment::is_escalation(from, target) {
             eprintln!(
                 "nucleus: WARNING — compartment escalation detected: {from} -> {target}. \
@@ -851,7 +859,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_compartment_escalation_research_to_execute() {
+    fn resolve_compartment_skip_level_research_to_execute_denied() {
         let sid = format!("esc-r2e-{}", std::process::id());
         let token = "test-token-esc-r2e";
         let result = write_and_resolve(
@@ -860,10 +868,61 @@ mod tests {
             "execute",
             Some(portcullis_core::compartment::Compartment::Research),
         );
-        // Should still resolve (warning goes to stderr)
+        // Research -> Execute skips Draft — must be denied (#733)
+        assert_eq!(
+            result, None,
+            "skip-level escalation research -> execute must be denied"
+        );
+    }
+
+    #[test]
+    fn resolve_compartment_single_step_research_to_draft_allowed() {
+        let sid = format!("esc-r2d-{}", std::process::id());
+        let token = "test-token-esc-r2d";
+        let result = write_and_resolve(
+            &sid,
+            token,
+            "draft",
+            Some(portcullis_core::compartment::Compartment::Research),
+        );
         assert_eq!(
             result,
-            Some(portcullis_core::compartment::Compartment::Execute)
+            Some(portcullis_core::compartment::Compartment::Draft),
+            "single-step research -> draft should be allowed"
+        );
+    }
+
+    #[test]
+    fn resolve_compartment_single_step_draft_to_execute_allowed() {
+        let sid = format!("esc-d2e-{}", std::process::id());
+        let token = "test-token-esc-d2e";
+        let result = write_and_resolve(
+            &sid,
+            token,
+            "execute",
+            Some(portcullis_core::compartment::Compartment::Draft),
+        );
+        assert_eq!(
+            result,
+            Some(portcullis_core::compartment::Compartment::Execute),
+            "single-step draft -> execute should be allowed"
+        );
+    }
+
+    #[test]
+    fn resolve_compartment_skip_level_research_to_breakglass_denied() {
+        let sid = format!("esc-r2bg-{}", std::process::id());
+        let token = "test-token-esc-r2bg";
+        let result = write_and_resolve(
+            &sid,
+            token,
+            "breakglass:emergency",
+            Some(portcullis_core::compartment::Compartment::Research),
+        );
+        // Research -> Breakglass skips two levels — must be denied (#733)
+        assert_eq!(
+            result, None,
+            "skip-level escalation research -> breakglass must be denied"
         );
     }
 
