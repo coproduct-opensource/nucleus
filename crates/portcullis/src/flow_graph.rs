@@ -125,6 +125,24 @@ impl FlowGraph {
         Some(old)
     }
 
+    /// Compute the propagated label for a set of causal parents.
+    ///
+    /// This is the label that an action node WOULD have if it were inserted
+    /// with these parents — without actually inserting anything into the graph.
+    /// Use this for querying what the kernel's decision would be based on
+    /// exact causal ancestry, rather than a session-wide taint accumulator.
+    ///
+    /// Returns the intrinsic `OutboundAction` label joined with parent labels.
+    /// With no parents, returns the base OutboundAction label (no taint).
+    pub fn causal_label(&self, parents: &[NodeId], now: u64) -> Result<IFCLabel, FlowGraphError> {
+        self.validate_parents(parents)?;
+        let parent_labels = self.gather_labels(parents);
+        Ok(propagate_label(
+            &parent_labels,
+            intrinsic_label(NodeKind::OutboundAction, now),
+        ))
+    }
+
     /// Insert a data-source observation. NOT flow-checked.
     pub fn insert_observation(
         &mut self,
@@ -604,6 +622,102 @@ mod tests {
 
         let e = FlowGraphError::ParentNotFound(99);
         assert!(e.to_string().contains("99"));
+    }
+
+    // ── causal_label() tests (#653) ────────────────────────────────────
+
+    #[test]
+    fn causal_label_no_parents_is_clean() {
+        let g = FlowGraph::new();
+        let now = 1000;
+        // No parents → base OutboundAction label (trusted, no taint)
+        let label = g.causal_label(&[], now).unwrap();
+        assert_eq!(label.integrity, portcullis_core::IntegLevel::Trusted);
+    }
+
+    #[test]
+    fn causal_label_from_web_is_tainted() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        let label = g.causal_label(&[web], now).unwrap();
+        assert_eq!(
+            label.integrity,
+            portcullis_core::IntegLevel::Adversarial,
+            "causal label from web content should be adversarial"
+        );
+    }
+
+    #[test]
+    fn causal_label_independent_branches_not_tainted() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        // Branch A: web content (adversarial)
+        let _web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+
+        // Branch B: local file read (trusted) — independent of web
+        let file = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+
+        // causal_label for an action depending ONLY on the file read
+        let label = g.causal_label(&[file], now).unwrap();
+        assert_eq!(
+            label.integrity,
+            portcullis_core::IntegLevel::Trusted,
+            "action depending only on file read should NOT be tainted by unrelated web content"
+        );
+    }
+
+    #[test]
+    fn causal_label_mixed_parents_takes_worst() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        let file = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+
+        // Action depending on BOTH web and file → takes the worst (adversarial)
+        let label = g.causal_label(&[web, file], now).unwrap();
+        assert_eq!(
+            label.integrity,
+            portcullis_core::IntegLevel::Adversarial,
+            "mixed parents should propagate the worst label"
+        );
+    }
+
+    #[test]
+    fn causal_label_matches_insert_action_label() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+
+        // Query the causal label
+        let queried = g.causal_label(&[web], now).unwrap();
+
+        // Actually insert the action
+        let decision = g.insert_action(Operation::WriteFiles, &[web], now).unwrap();
+        let inserted = g.get(decision.node_id).unwrap().label;
+
+        assert_eq!(
+            queried, inserted,
+            "causal_label query must match the label of an actually inserted action"
+        );
+    }
+
+    #[test]
+    fn causal_label_invalid_parent_returns_error() {
+        let g = FlowGraph::new();
+        let result = g.causal_label(&[999], 1000);
+        assert!(result.is_err());
     }
 
     // ── DeclassificationToken integration tests ──────────────────────
