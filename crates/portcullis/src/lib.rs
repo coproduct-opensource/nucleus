@@ -262,7 +262,11 @@ pub use portcullis_core::policy_rules::PolicyLoadError;
 pub use portcullis_core::policy_rules::{
     AdmissibilityRule, LabelPredicate, PolicyEvaluation, PolicyRuleSet, RuleVerdict,
 };
-pub use receipt_chain::{ChainAppendError, ChainVerifyError, ReceiptChain, VerdictReceipt};
+#[cfg(feature = "serde")]
+pub use receipt_chain::verify_exported_chain;
+pub use receipt_chain::{
+    ChainAppendError, ChainVerifyError, ReceiptChain, VerdictReceipt, VerifyReport,
+};
 #[cfg(feature = "crypto")]
 pub use token::{AttenuationToken, SessionProvenance, TokenError};
 pub use tool_schema::{ApprovedToolSchema, SchemaError, ToolSchemaRegistry};

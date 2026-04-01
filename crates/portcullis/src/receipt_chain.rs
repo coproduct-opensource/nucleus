@@ -345,6 +345,104 @@ impl ReceiptChain {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Exported chain verification (#680)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of verifying an exported receipt chain.
+#[derive(Debug, Clone)]
+pub struct VerifyReport {
+    /// Total number of receipts in the chain.
+    pub total_receipts: usize,
+    /// Whether the chain's hash linkage is intact.
+    pub chain_valid: bool,
+    /// Index of the first broken link (None if valid).
+    pub first_broken_link: Option<usize>,
+    /// Description of the error (empty if valid).
+    pub error_description: String,
+}
+
+impl VerifyReport {
+    /// A report for a valid chain.
+    pub fn valid(total: usize) -> Self {
+        Self {
+            total_receipts: total,
+            chain_valid: true,
+            first_broken_link: None,
+            error_description: String::new(),
+        }
+    }
+
+    /// A report for a broken chain.
+    pub fn broken(total: usize, index: usize, description: String) -> Self {
+        Self {
+            total_receipts: total,
+            chain_valid: false,
+            first_broken_link: Some(index),
+            error_description: description,
+        }
+    }
+}
+
+/// Verify an exported receipt chain JSON string.
+///
+/// Parses the JSON, extracts `prev_hash` and `receipt_hash` from each
+/// receipt, and verifies hash linkage (prev_hash[i] == receipt_hash[i-1]).
+///
+/// This does NOT recompute hashes from receipt content (the exported JSON
+/// may not contain all canonical fields). It only verifies the chain
+/// linkage stored in the export.
+#[cfg(feature = "serde")]
+pub fn verify_exported_chain(json: &str) -> Result<VerifyReport, String> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("invalid JSON: {e}"))?;
+
+    let receipts = parsed["receipts"]
+        .as_array()
+        .ok_or("missing 'receipts' array")?;
+
+    if receipts.is_empty() {
+        return Ok(VerifyReport::valid(0));
+    }
+
+    let mut prev_hash =
+        "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+
+    for (i, receipt) in receipts.iter().enumerate() {
+        let receipt_prev = receipt["prev_hash"]
+            .as_str()
+            .ok_or(format!("receipt {i}: missing prev_hash"))?;
+        let receipt_hash = receipt["receipt_hash"]
+            .as_str()
+            .ok_or(format!("receipt {i}: missing receipt_hash"))?;
+
+        if receipt_prev != prev_hash {
+            return Ok(VerifyReport::broken(
+                receipts.len(),
+                i,
+                format!(
+                    "receipt {i}: prev_hash mismatch (expected {prev_hash}, got {receipt_prev})"
+                ),
+            ));
+        }
+
+        prev_hash = receipt_hash.to_string();
+    }
+
+    // Verify head_hash matches last receipt
+    if let Some(head) = parsed["head_hash"].as_str() {
+        if head != prev_hash {
+            return Ok(VerifyReport::broken(
+                receipts.len(),
+                receipts.len() - 1,
+                format!("head_hash mismatch (expected {prev_hash}, got {head})"),
+            ));
+        }
+    }
+
+    Ok(VerifyReport::valid(receipts.len()))
+}
+
 /// Convert an IFCLabel to a serde_json::Value for JSON export.
 #[cfg(feature = "serde")]
 fn label_to_json(label: &IFCLabel) -> serde_json::Value {
@@ -559,5 +657,60 @@ mod tests {
             [0u8; 32],
         );
         assert_ne!(r1.receipt_hash, r2.receipt_hash);
+    }
+
+    // ── verify_exported_chain tests (#680) ────────────────────────────
+
+    #[cfg(feature = "serde")]
+    mod verify_export_tests {
+        use super::*;
+
+        #[test]
+        fn verify_valid_exported_chain() {
+            let mut chain = ReceiptChain::new();
+            for i in 0..3 {
+                let r = make_receipt(&chain, FlowVerdict::Allow, "read_files", 1000 + i);
+                chain.append(r).unwrap();
+            }
+            let json = chain.export_json().unwrap();
+            let report = verify_exported_chain(&json).unwrap();
+            assert!(report.chain_valid);
+            assert_eq!(report.total_receipts, 3);
+            assert!(report.first_broken_link.is_none());
+        }
+
+        #[test]
+        fn verify_empty_chain() {
+            let chain = ReceiptChain::new();
+            let json = chain.export_json().unwrap();
+            let report = verify_exported_chain(&json).unwrap();
+            assert!(report.chain_valid);
+            assert_eq!(report.total_receipts, 0);
+        }
+
+        #[test]
+        fn verify_tampered_chain_detected() {
+            let mut chain = ReceiptChain::new();
+            for i in 0..3 {
+                let r = make_receipt(&chain, FlowVerdict::Allow, "read_files", 1000 + i);
+                chain.append(r).unwrap();
+            }
+            let mut json = chain.export_json().unwrap();
+            // Tamper: change a prev_hash in the middle
+            json = json.replacen(
+                &hex::encode(chain.receipts()[1].prev_hash),
+                "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+                1,
+            );
+            let report = verify_exported_chain(&json).unwrap();
+            assert!(!report.chain_valid);
+            assert_eq!(report.first_broken_link, Some(1));
+        }
+
+        #[test]
+        fn verify_invalid_json_returns_error() {
+            let result = verify_exported_chain("not json");
+            assert!(result.is_err());
+        }
     }
 }
