@@ -53,6 +53,8 @@
 //!   proof verifies algebraic structure of the type. Together they provide
 //!   complementary assurance.
 
+#[cfg(feature = "artifact")]
+pub mod artifact;
 #[cfg(feature = "attestation")]
 pub mod attestation;
 pub mod autonomy;
