@@ -1136,7 +1136,7 @@ impl Kernel {
                     parent_count: 0,
                     parents: [0; flow::MAX_PARENTS],
                     operation: Some(operation),
-                    sink_class: None,
+                    sink_class: Some(portcullis_core::default_sink_class(operation)),
                 };
 
                 if let flow::FlowVerdict::Deny(reason) = flow::check_flow(&node, now_unix) {
