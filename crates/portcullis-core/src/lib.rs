@@ -73,6 +73,8 @@ pub mod manifest;
 pub mod memory;
 pub mod policy_rules;
 pub mod receipt;
+#[cfg(feature = "artifact")]
+pub mod registry;
 pub mod verdict;
 pub mod wire;
 
