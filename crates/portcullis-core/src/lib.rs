@@ -79,6 +79,8 @@ pub mod manifest;
 #[cfg(feature = "serde")]
 pub mod memory;
 pub mod policy_rules;
+#[cfg(feature = "envelope")]
+pub mod promotion;
 pub mod receipt;
 #[cfg(feature = "artifact")]
 pub mod registry;
