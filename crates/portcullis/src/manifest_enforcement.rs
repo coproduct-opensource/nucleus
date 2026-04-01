@@ -182,6 +182,7 @@ mod tests {
             allowed_hosts: vec![],
             authority_to_instruct: false,
             memory_behavior: portcullis_core::manifest::MemoryBehavior::None,
+            allowed_compartments: vec![],
         }
     }
 

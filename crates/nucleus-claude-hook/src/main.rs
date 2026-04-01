@@ -2375,6 +2375,35 @@ fn main() {
             println!("{}", serde_json::to_string(&out).unwrap());
             std::process::exit(2);
         }
+
+        // SECURITY (#462): Check if the tool is allowed in the current compartment.
+        // A manifest with `allowed_compartments = ["research"]` blocks the tool
+        // in draft/execute/breakglass.
+        if let Some(manifest) = registry.get(mcp_tool_name) {
+            if let Ok(comp_str) = std::env::var("NUCLEUS_COMPARTMENT") {
+                let comp_name = comp_str.split(':').next().unwrap_or(&comp_str);
+                if !manifest.is_allowed_in_compartment(comp_name) {
+                    let out = HookOutput::deny(format!(
+                        "Blocked: MCP tool '{mcp_tool_name}' is not allowed in \
+                         compartment '{comp_name}'. Allowed in: {}.\n  \
+                         How to fix:\n  \
+                         - Switch to an allowed compartment\n  \
+                         - Or update allowed_compartments in the tool's manifest",
+                        if manifest.allowed_compartments.is_empty() {
+                            "all".to_string()
+                        } else {
+                            manifest.allowed_compartments.join(", ")
+                        }
+                    ));
+                    eprintln!(
+                        "nucleus: {} denied — not allowed in compartment '{comp_name}'",
+                        input.tool_name
+                    );
+                    println!("{}", serde_json::to_string(&out).unwrap());
+                    std::process::exit(2);
+                }
+            }
+        }
     }
 
     let subject = extract_subject(&input.tool_name, &input.tool_input);

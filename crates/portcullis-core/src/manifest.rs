@@ -101,6 +101,24 @@ pub struct ToolManifest {
 
     /// Memory behavior: does this tool read, write, or persist memory?
     pub memory_behavior: MemoryBehavior,
+
+    /// Compartments where this tool is allowed (#462).
+    /// Empty = allowed in all compartments (default for backward compat).
+    /// When non-empty, the tool is only available in the listed compartments.
+    /// A web_fetch tool with `allowed_compartments: ["research"]` is blocked
+    /// in draft/execute/breakglass.
+    pub allowed_compartments: Vec<String>,
+}
+
+impl ToolManifest {
+    /// Check if this tool is allowed in the given compartment (#462).
+    ///
+    /// Empty `allowed_compartments` means allowed everywhere (default).
+    /// When non-empty, only the listed compartment names are permitted.
+    pub fn is_allowed_in_compartment(&self, compartment: &str) -> bool {
+        self.allowed_compartments.is_empty()
+            || self.allowed_compartments.iter().any(|c| c == compartment)
+    }
 }
 
 /// Describes a tool's memory interaction pattern.
@@ -331,6 +349,7 @@ mod kani_proofs {
             allowed_hosts: vec![],
             authority_to_instruct: false,
             memory_behavior: MemoryBehavior::None,
+            allowed_compartments: vec![],
         };
         assert!(matches!(
             check_admission(&manifest),
@@ -354,6 +373,7 @@ mod kani_proofs {
             allowed_hosts: vec![],
             authority_to_instruct: false,
             memory_behavior: MemoryBehavior::None,
+            allowed_compartments: vec![],
         };
         assert!(!matches!(
             check_admission(&manifest),
@@ -377,6 +397,7 @@ mod kani_proofs {
             allowed_hosts: vec![],
             authority_to_instruct: false,
             memory_behavior: MemoryBehavior::None,
+            allowed_compartments: vec![],
         };
         assert!(matches!(
             check_admission(&manifest),
@@ -400,6 +421,7 @@ mod kani_proofs {
             allowed_hosts: vec![],
             authority_to_instruct: false,
             memory_behavior: MemoryBehavior::None,
+            allowed_compartments: vec![],
         };
         assert!(!matches!(
             check_admission(&manifest),
@@ -426,6 +448,7 @@ mod kani_proofs {
             allowed_hosts: vec![],
             authority_to_instruct: false,
             memory_behavior: MemoryBehavior::None,
+            allowed_compartments: vec![],
         };
         // Should always be admitted — no rule triggers
         kani::assume(
@@ -464,6 +487,7 @@ mod tests {
             allowed_hosts: vec![],
             authority_to_instruct: false,
             memory_behavior: MemoryBehavior::None,
+            allowed_compartments: vec![],
         }
     }
 
