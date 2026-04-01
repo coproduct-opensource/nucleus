@@ -226,6 +226,17 @@ pub enum DenyReason {
         /// The sink class that was denied.
         sink_class: String,
     },
+    /// Operation denied by enterprise allowlist policy.
+    ///
+    /// The enterprise allowlist (loaded from `.nucleus/enterprise.toml`)
+    /// acts as an organizational ceiling: even if local config would allow
+    /// the operation, the enterprise policy denies it.
+    EnterpriseBlocked {
+        /// The sink class that was blocked.
+        sink_class: String,
+        /// Human-readable detail for the denial.
+        detail: String,
+    },
     /// Information flow control violation.
     ///
     /// The session's accumulated IFC label violates a flow enforcement rule.
@@ -395,6 +406,12 @@ pub struct Kernel {
     /// filtering is applied (all operations pass through to capability checks).
     #[cfg(feature = "spec")]
     policy_rules: Option<portcullis_core::policy_rules::PolicyRuleSet>,
+    /// Optional enterprise allowlist — organizational ceiling on all decisions.
+    ///
+    /// When present, `decide()` checks each operation's sink class against
+    /// the enterprise policy. Denied sinks are blocked regardless of local
+    /// config. Loaded from `.nucleus/enterprise.toml`.
+    enterprise: Option<portcullis_core::enterprise::EnterpriseAllowlist>,
     /// Optional Ed25519 signing key for receipt signing.
     ///
     /// When present, `decide_with_parents()` produces signed receipts
@@ -448,6 +465,7 @@ impl Kernel {
             egress_policy: None,
             #[cfg(feature = "spec")]
             policy_rules: None,
+            enterprise: None,
             #[cfg(feature = "crypto")]
             signing_key: None,
             receipt_chain: None,
@@ -712,6 +730,7 @@ impl Kernel {
             egress_policy: None,
             #[cfg(feature = "spec")]
             policy_rules: None,
+            enterprise: None,
             #[cfg(feature = "crypto")]
             signing_key: None,
             receipt_chain: None,
@@ -753,6 +772,7 @@ impl Kernel {
             egress_policy: None,
             #[cfg(feature = "spec")]
             policy_rules: None,
+            enterprise: None,
             #[cfg(feature = "crypto")]
             signing_key: None,
             receipt_chain: None,
@@ -770,6 +790,7 @@ impl Kernel {
     /// 3. **Capability**: Is the operation allowed at the current level?
     ///    - **Isolation gate**: Defense-in-depth — is the operation physically
     ///      possible given the isolation level? (e.g., no network in airgap)
+    ///    - **Enterprise**: Is the sink class allowed by the enterprise ceiling?
     /// 4. **Path**: Is the subject path accessible?
     /// 5. **Command**: Is the command allowed?
     /// 6. **Static approval**: Does the lattice mandate approval?
@@ -961,6 +982,31 @@ impl Kernel {
                     }
                     // Approved — fall through to remaining checks
                 }
+            }
+        }
+
+        // 3e. Enterprise allowlist check — organizational ceiling on sink classes.
+        //
+        // When an enterprise allowlist is loaded, the operation's sink class
+        // is checked against the enterprise policy. Deny-takes-precedence:
+        // if the sink is in `denied_sinks`, it is blocked regardless of local
+        // config. This is the enforcement half of enterprise.rs (schema + check).
+        if let Some(ref enterprise) = self.enterprise {
+            let sink = crate::hook_adapter::classify_sink(operation, subject);
+            if !enterprise.check_sink(sink) {
+                return self.record_with_exposure(
+                    operation,
+                    subject,
+                    Verdict::Deny(DenyReason::EnterpriseBlocked {
+                        sink_class: format!("{sink:?}"),
+                        detail: format!("enterprise policy denies sink class {:?}", sink,),
+                    }),
+                    &pre_hash,
+                    pre_exposure_count,
+                    contributed_label,
+                    false,
+                    false,
+                );
             }
         }
 
@@ -1293,6 +1339,23 @@ impl Kernel {
     #[cfg(feature = "spec")]
     pub fn policy_rules(&self) -> Option<&portcullis_core::policy_rules::PolicyRuleSet> {
         self.policy_rules.as_ref()
+    }
+
+    /// Set the enterprise allowlist for this session.
+    ///
+    /// When set, `decide()` checks each operation's sink class against the
+    /// enterprise policy. Denied sinks are blocked regardless of local config.
+    /// This acts as an organizational ceiling on all decisions.
+    ///
+    /// Must be called before the first `decide()` — the enterprise policy is
+    /// immutable for the session lifetime.
+    pub fn set_enterprise(&mut self, allowlist: portcullis_core::enterprise::EnterpriseAllowlist) {
+        self.enterprise = Some(allowlist);
+    }
+
+    /// Get the enterprise allowlist, if set.
+    pub fn enterprise(&self) -> Option<&portcullis_core::enterprise::EnterpriseAllowlist> {
+        self.enterprise.as_ref()
     }
 
     /// Get the append-only session trace.
@@ -3716,5 +3779,118 @@ denied_hosts = ["evil.github.com"]
                 );
             }
         }
+    }
+
+    // ── Enterprise allowlist enforcement ─────────────────────────────
+
+    #[test]
+    fn enterprise_blocks_denied_sink() {
+        use portcullis_core::enterprise::EnterpriseAllowlist;
+        use portcullis_core::SinkClass;
+
+        let perms = PermissionLattice::permissive();
+        let mut kernel = Kernel::new(perms);
+
+        let enterprise = EnterpriseAllowlist {
+            denied_sinks: vec![SinkClass::HTTPEgress],
+            ..Default::default()
+        };
+        kernel.set_enterprise(enterprise);
+
+        // WebFetch maps to HTTPEgress — should be denied.
+        let (d, token) = kernel.decide(Operation::WebFetch, "https://example.com");
+        assert!(
+            token.is_none(),
+            "enterprise-blocked operation should not get a token"
+        );
+        assert!(
+            matches!(
+                d.verdict,
+                Verdict::Deny(DenyReason::EnterpriseBlocked { .. })
+            ),
+            "expected EnterpriseBlocked, got {:?}",
+            d.verdict,
+        );
+    }
+
+    #[test]
+    fn enterprise_allows_permitted_sink() {
+        use portcullis_core::enterprise::EnterpriseAllowlist;
+        use portcullis_core::SinkClass;
+
+        let perms = PermissionLattice::permissive();
+        let mut kernel = Kernel::new(perms);
+
+        // Deny only EmailSend — workspace writes should still be allowed.
+        let enterprise = EnterpriseAllowlist {
+            denied_sinks: vec![SinkClass::EmailSend],
+            ..Default::default()
+        };
+        kernel.set_enterprise(enterprise);
+
+        let (d, token) = kernel.decide(Operation::WriteFiles, "/workspace/test.rs");
+        assert!(token.is_some(), "permitted sink should get a token");
+        assert!(
+            matches!(d.verdict, Verdict::Allow),
+            "expected Allow, got {:?}",
+            d.verdict,
+        );
+    }
+
+    #[test]
+    fn no_enterprise_no_check() {
+        let perms = PermissionLattice::permissive();
+        let mut kernel = Kernel::new(perms);
+        // No enterprise set — all sinks should pass.
+
+        let (d, token) = kernel.decide(Operation::WebFetch, "https://example.com");
+        assert!(
+            token.is_some(),
+            "without enterprise, web fetch should be allowed"
+        );
+        assert!(
+            matches!(d.verdict, Verdict::Allow),
+            "expected Allow, got {:?}",
+            d.verdict,
+        );
+    }
+
+    #[test]
+    fn enterprise_allowlist_only_permits_listed_sinks() {
+        use portcullis_core::enterprise::EnterpriseAllowlist;
+        use portcullis_core::SinkClass;
+
+        let perms = PermissionLattice::permissive();
+        let mut kernel = Kernel::new(perms);
+
+        // Explicit allowlist: only WorkspaceWrite is permitted.
+        let enterprise = EnterpriseAllowlist {
+            allowed_sinks: Some(vec![SinkClass::WorkspaceWrite]),
+            ..Default::default()
+        };
+        kernel.set_enterprise(enterprise);
+
+        // WorkspaceWrite should be allowed.
+        let (d, _) = kernel.decide(Operation::WriteFiles, "/workspace/test.rs");
+        assert!(
+            matches!(d.verdict, Verdict::Allow),
+            "WorkspaceWrite should be allowed, got {:?}",
+            d.verdict,
+        );
+
+        // HTTPEgress (via WebFetch) should be denied — not in allowlist.
+        let (d2, token2) = kernel.decide(Operation::WebFetch, "https://example.com");
+        assert!(
+            token2.is_none(),
+            "enterprise-blocked operation should not get a token"
+        );
+        assert!(
+            matches!(
+                d2.verdict,
+                Verdict::Deny(DenyReason::EnterpriseBlocked { .. })
+            ),
+            "HTTPEgress should be enterprise-blocked, got {:?}",
+            d2.verdict,
+        );
     }
 }

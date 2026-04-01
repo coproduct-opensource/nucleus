@@ -1,12 +1,12 @@
-//! Enterprise managed allowlists — schema for organizational policy controls.
+//! Enterprise managed allowlists — organizational policy controls.
 //!
 //! Enterprises need explicit allowlists for what can run in an organization:
 //! which MCP servers (by manifest hash), which hook binaries (by signing key),
 //! which sink classes are permitted, and how deep delegation chains can go.
 //!
-//! This module defines the **schema only** — types, validation logic, and
-//! TOML loading. Kernel integration (applying these as a ceiling on all
-//! decisions) is separate work.
+//! This module defines the types, validation logic, and TOML loading.
+//! Kernel enforcement is in `portcullis::kernel::Kernel::decide()` via
+//! `Kernel::set_enterprise()`.
 //!
 //! ## Loading
 //!

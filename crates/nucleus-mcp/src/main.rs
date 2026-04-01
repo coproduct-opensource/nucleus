@@ -542,6 +542,9 @@ fn format_deny_reason(reason: &DenyReason) -> String {
         } => {
             format!("policy denied: rule '{rule_name}' blocked sink {sink_class}")
         }
+        DenyReason::EnterpriseBlocked { sink_class, detail } => {
+            format!("enterprise blocked: {detail} (sink: {sink_class})")
+        }
     }
 }
 

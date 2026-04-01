@@ -329,6 +329,14 @@ fn format_denial_for_user(
                 - Or change the rule's verdict to 'allow' or 'requires_approval'"
             )
         }
+        DenyReason::EnterpriseBlocked { sink_class, detail } => {
+            format!(
+                "Blocked: {detail} (sink: {sink_class}){comp_hint}.\n  \
+                How to fix:\n  \
+                - Contact your enterprise administrator to update .nucleus/enterprise.toml\n  \
+                - Or remove the sink from denied_sinks / add it to allowed_sinks"
+            )
+        }
     }
 }
 
@@ -1840,6 +1848,35 @@ fn main() {
             eprintln!("nucleus: fail-closed — all operations denied until policy.toml is fixed");
             // Empty rule set = default deny everything
             kernel.set_policy_rules(portcullis::PolicyRuleSet::new());
+        }
+    }
+
+    // Load enterprise allowlist from .nucleus/enterprise.toml (if present).
+    // SECURITY: Fail-closed — malformed enterprise.toml denies all sink classes.
+    let enterprise_dir = std::env::current_dir().unwrap_or_default().join(".nucleus");
+    match portcullis_core::enterprise::EnterpriseAllowlist::load_from_dir(&enterprise_dir) {
+        Ok(Some(allowlist)) => {
+            if is_first_invocation {
+                eprintln!(
+                    "nucleus: enterprise policy loaded ({} denied sinks, max_depth={:?})",
+                    allowlist.denied_sinks.len(),
+                    allowlist.max_delegation_depth,
+                );
+            }
+            kernel.set_enterprise(allowlist);
+        }
+        Ok(None) => {} // No enterprise.toml — no enterprise restrictions
+        Err(e) => {
+            eprintln!("nucleus: WARNING — failed to load enterprise policy: {e}");
+            eprintln!("nucleus: fail-closed — enterprise policy active with empty allowlists");
+            // Default EnterpriseAllowlist with allowed_sinks = Some(vec![]) would
+            // deny everything, but default() uses None (all allowed). For fail-closed,
+            // set an explicit empty allowlist.
+            let fail_closed = portcullis_core::enterprise::EnterpriseAllowlist {
+                allowed_sinks: Some(vec![]),
+                ..Default::default()
+            };
+            kernel.set_enterprise(fail_closed);
         }
     }
 
