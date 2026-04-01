@@ -37,9 +37,8 @@
 
 use std::fmt;
 use std::net::IpAddr;
+#[cfg(feature = "spec")]
 use std::path::Path;
-
-use serde::{Deserialize, Serialize};
 
 /// Result of checking a host against the egress policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,8 +65,12 @@ impl EgressVerdict {
 }
 
 /// A host pattern that can match exact hostnames, wildcards, or CIDR ranges.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(try_from = "String", into = "String")
+)]
 pub enum HostPattern {
     /// Exact hostname match (e.g., `api.github.com`).
     Exact(String),
@@ -215,7 +218,8 @@ fn ip_in_cidr(ip: IpAddr, network: IpAddr, prefix_len: u8) -> bool {
 }
 
 /// Raw TOML config file structure.
-#[derive(Debug, Deserialize)]
+#[cfg(feature = "spec")]
+#[derive(Debug, serde::Deserialize)]
 struct EgressConfigFile {
     /// Hosts that are allowed for egress.
     #[serde(default)]
@@ -240,44 +244,6 @@ pub struct EgressPolicy {
 }
 
 impl EgressPolicy {
-    /// Load an egress policy from a directory containing `egress.toml`.
-    ///
-    /// Looks for `<dir>/egress.toml` and parses it.
-    /// Returns `Ok(None)` if the file does not exist (no egress restrictions).
-    /// Returns `Err` if the file exists but is malformed.
-    pub fn load_from_dir(dir: &Path) -> Result<Option<Self>, EgressPolicyError> {
-        let path = dir.join("egress.toml");
-        if !path.exists() {
-            return Ok(None);
-        }
-        let content = std::fs::read_to_string(&path).map_err(EgressPolicyError::Io)?;
-        Self::from_toml(&content).map(Some)
-    }
-
-    /// Parse an egress policy from a TOML string.
-    pub fn from_toml(toml_content: &str) -> Result<Self, EgressPolicyError> {
-        let config: EgressConfigFile =
-            toml::from_str(toml_content).map_err(EgressPolicyError::Toml)?;
-
-        let allowed_hosts = config
-            .allowed_hosts
-            .into_iter()
-            .map(|s| HostPattern::parse(&s))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let denied_hosts = config
-            .denied_hosts
-            .into_iter()
-            .map(|s| HostPattern::parse(&s))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(EgressPolicy {
-            allowed_hosts,
-            denied_hosts,
-            max_payload_bytes: config.max_payload_bytes,
-        })
-    }
-
     /// Check whether a host is allowed by this policy.
     ///
     /// Evaluation order:
@@ -320,12 +286,56 @@ impl EgressPolicy {
     }
 }
 
+/// TOML loading methods — requires the `spec` feature (serde + toml).
+#[cfg(feature = "spec")]
+impl EgressPolicy {
+    /// Load an egress policy from a directory containing `egress.toml`.
+    ///
+    /// Looks for `<dir>/egress.toml` and parses it.
+    /// Returns `Ok(None)` if the file does not exist (no egress restrictions).
+    /// Returns `Err` if the file exists but is malformed.
+    pub fn load_from_dir(dir: &Path) -> Result<Option<Self>, EgressPolicyError> {
+        let path = dir.join("egress.toml");
+        if !path.exists() {
+            return Ok(None);
+        }
+        let content = std::fs::read_to_string(&path).map_err(EgressPolicyError::Io)?;
+        Self::from_toml(&content).map(Some)
+    }
+
+    /// Parse an egress policy from a TOML string.
+    pub fn from_toml(toml_content: &str) -> Result<Self, EgressPolicyError> {
+        let config: EgressConfigFile =
+            toml::from_str(toml_content).map_err(EgressPolicyError::Toml)?;
+
+        let allowed_hosts = config
+            .allowed_hosts
+            .into_iter()
+            .map(|s| HostPattern::parse(&s))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let denied_hosts = config
+            .denied_hosts
+            .into_iter()
+            .map(|s| HostPattern::parse(&s))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(EgressPolicy {
+            allowed_hosts,
+            denied_hosts,
+            max_payload_bytes: config.max_payload_bytes,
+        })
+    }
+}
+
 /// Errors from egress policy loading and validation.
 #[derive(Debug)]
 pub enum EgressPolicyError {
     /// Failed to read the policy file.
+    #[cfg(feature = "spec")]
     Io(std::io::Error),
     /// Failed to parse the TOML content.
+    #[cfg(feature = "spec")]
     Toml(toml::de::Error),
     /// A host pattern is empty.
     EmptyPattern,
@@ -338,7 +348,9 @@ pub enum EgressPolicyError {
 impl fmt::Display for EgressPolicyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            #[cfg(feature = "spec")]
             EgressPolicyError::Io(e) => write!(f, "failed to read egress policy: {e}"),
+            #[cfg(feature = "spec")]
             EgressPolicyError::Toml(e) => write!(f, "failed to parse egress TOML: {e}"),
             EgressPolicyError::EmptyPattern => write!(f, "empty host pattern"),
             EgressPolicyError::InvalidPattern(s) => write!(f, "invalid host pattern: {s}"),
@@ -350,7 +362,9 @@ impl fmt::Display for EgressPolicyError {
 impl std::error::Error for EgressPolicyError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            #[cfg(feature = "spec")]
             EgressPolicyError::Io(e) => Some(e),
+            #[cfg(feature = "spec")]
             EgressPolicyError::Toml(e) => Some(e),
             _ => None,
         }
@@ -500,22 +514,121 @@ mod tests {
         assert!(!p.matches("fd00::1")); // IPv6 vs IPv4 pattern
     }
 
-    // ── EgressPolicy from TOML ──────────────────────────────────────
+    // ── EgressPolicy::check_host (no TOML needed) ───────────────────
 
-    #[test]
-    fn load_minimal_policy() {
-        let toml = r#"
-allowed_hosts = ["api.github.com"]
-"#;
-        let policy = EgressPolicy::from_toml(toml).unwrap();
-        assert_eq!(policy.allowed_hosts.len(), 1);
-        assert!(policy.denied_hosts.is_empty());
-        assert!(policy.max_payload_bytes.is_none());
+    /// Helper to build a policy directly without TOML parsing.
+    fn make_policy(allowed: &[&str], denied: &[&str], max_payload: Option<u64>) -> EgressPolicy {
+        EgressPolicy {
+            allowed_hosts: allowed
+                .iter()
+                .map(|s| HostPattern::parse(s).unwrap())
+                .collect(),
+            denied_hosts: denied
+                .iter()
+                .map(|s| HostPattern::parse(s).unwrap())
+                .collect(),
+            max_payload_bytes: max_payload,
+        }
     }
 
     #[test]
-    fn load_full_policy() {
-        let toml = r#"
+    fn allowed_host_passes() {
+        let policy = make_policy(&["api.github.com", "*.crates.io"], &[], None);
+        assert!(policy.check_host("api.github.com").is_allowed());
+        assert!(policy.check_host("static.crates.io").is_allowed());
+    }
+
+    #[test]
+    fn unlisted_host_denied_by_default() {
+        let policy = make_policy(&["api.github.com"], &[], None);
+        let verdict = policy.check_host("evil.com");
+        assert!(verdict.is_denied());
+        match verdict {
+            EgressVerdict::Deny { reason } => {
+                assert!(reason.contains("not in allowlist"));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn denied_host_overrides_allowed() {
+        let policy = make_policy(&["*.github.com"], &["evil.github.com"], None);
+        // evil.github.com matches both allow and deny — deny wins
+        assert!(policy.check_host("evil.github.com").is_denied());
+        // good.github.com only matches allow — allowed
+        assert!(policy.check_host("good.github.com").is_allowed());
+    }
+
+    #[test]
+    fn cidr_allow_works() {
+        let policy = make_policy(&["10.0.0.0/8"], &[], None);
+        assert!(policy.check_host("10.1.2.3").is_allowed());
+        assert!(policy.check_host("192.168.1.1").is_denied());
+    }
+
+    #[test]
+    fn cidr_deny_overrides_allow() {
+        let policy = make_policy(&["10.0.0.0/8"], &["10.0.0.1/32"], None);
+        assert!(policy.check_host("10.0.0.1").is_denied());
+        assert!(policy.check_host("10.0.0.2").is_allowed());
+    }
+
+    // ── Payload size check ──────────────────────────────────────────
+
+    #[test]
+    fn no_payload_limit_allows_all() {
+        let policy = make_policy(&["example.com"], &[], None);
+        assert!(policy.check_payload_size(u64::MAX).is_allowed());
+    }
+
+    #[test]
+    fn payload_within_limit_allowed() {
+        let policy = make_policy(&[], &[], Some(1024));
+        assert!(policy.check_payload_size(1024).is_allowed());
+        assert!(policy.check_payload_size(0).is_allowed());
+    }
+
+    #[test]
+    fn payload_exceeds_limit_denied() {
+        let policy = make_policy(&[], &[], Some(1024));
+        let verdict = policy.check_payload_size(1025);
+        assert!(verdict.is_denied());
+        match verdict {
+            EgressVerdict::Deny { reason } => {
+                assert!(reason.contains("1025"));
+                assert!(reason.contains("1024"));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn empty_policy_denies_all() {
+        let policy = make_policy(&[], &[], None);
+        assert!(policy.check_host("anything.com").is_denied());
+    }
+
+    // ── TOML loading tests (require `spec` feature) ────────────────
+
+    #[cfg(feature = "spec")]
+    mod toml_tests {
+        use super::*;
+
+        #[test]
+        fn load_minimal_policy() {
+            let toml = r#"
+allowed_hosts = ["api.github.com"]
+"#;
+            let policy = EgressPolicy::from_toml(toml).unwrap();
+            assert_eq!(policy.allowed_hosts.len(), 1);
+            assert!(policy.denied_hosts.is_empty());
+            assert!(policy.max_payload_bytes.is_none());
+        }
+
+        #[test]
+        fn load_full_policy() {
+            let toml = r#"
 max_payload_bytes = 1048576
 
 allowed_hosts = [
@@ -529,148 +642,65 @@ denied_hosts = [
     "*.malware.test",
 ]
 "#;
-        let policy = EgressPolicy::from_toml(toml).unwrap();
-        assert_eq!(policy.allowed_hosts.len(), 3);
-        assert_eq!(policy.denied_hosts.len(), 2);
-        assert_eq!(policy.max_payload_bytes, Some(1_048_576));
-    }
+            let policy = EgressPolicy::from_toml(toml).unwrap();
+            assert_eq!(policy.allowed_hosts.len(), 3);
+            assert_eq!(policy.denied_hosts.len(), 2);
+            assert_eq!(policy.max_payload_bytes, Some(1_048_576));
+        }
 
-    #[test]
-    fn empty_config_denies_all() {
-        let toml = "";
-        let policy = EgressPolicy::from_toml(toml).unwrap();
-        assert!(policy.allowed_hosts.is_empty());
-        assert!(policy.denied_hosts.is_empty());
-        assert!(policy.check_host("anything.com").is_denied());
-    }
+        #[test]
+        fn empty_config_denies_all() {
+            let toml = "";
+            let policy = EgressPolicy::from_toml(toml).unwrap();
+            assert!(policy.allowed_hosts.is_empty());
+            assert!(policy.denied_hosts.is_empty());
+            assert!(policy.check_host("anything.com").is_denied());
+        }
 
-    #[test]
-    fn malformed_toml_is_error() {
-        let toml = "this is not valid toml [[[";
-        assert!(EgressPolicy::from_toml(toml).is_err());
-    }
+        #[test]
+        fn malformed_toml_is_error() {
+            let toml = "this is not valid toml [[[";
+            assert!(EgressPolicy::from_toml(toml).is_err());
+        }
 
-    #[test]
-    fn invalid_pattern_in_config_is_error() {
-        let toml = r#"
+        #[test]
+        fn invalid_pattern_in_config_is_error() {
+            let toml = r#"
 allowed_hosts = ["*."]
 "#;
-        assert!(EgressPolicy::from_toml(toml).is_err());
-    }
-
-    // ── EgressPolicy::check_host ────────────────────────────────────
-
-    #[test]
-    fn allowed_host_passes() {
-        let policy =
-            EgressPolicy::from_toml(r#"allowed_hosts = ["api.github.com", "*.crates.io"]"#)
-                .unwrap();
-        assert!(policy.check_host("api.github.com").is_allowed());
-        assert!(policy.check_host("static.crates.io").is_allowed());
-    }
-
-    #[test]
-    fn unlisted_host_denied_by_default() {
-        let policy = EgressPolicy::from_toml(r#"allowed_hosts = ["api.github.com"]"#).unwrap();
-        let verdict = policy.check_host("evil.com");
-        assert!(verdict.is_denied());
-        match verdict {
-            EgressVerdict::Deny { reason } => {
-                assert!(reason.contains("not in allowlist"));
-            }
-            _ => unreachable!(),
+            assert!(EgressPolicy::from_toml(toml).is_err());
         }
-    }
 
-    #[test]
-    fn denied_host_overrides_allowed() {
-        let toml = r#"
-allowed_hosts = ["*.github.com"]
-denied_hosts = ["evil.github.com"]
-"#;
-        let policy = EgressPolicy::from_toml(toml).unwrap();
-        // evil.github.com matches both allow and deny — deny wins
-        assert!(policy.check_host("evil.github.com").is_denied());
-        // good.github.com only matches allow — allowed
-        assert!(policy.check_host("good.github.com").is_allowed());
-    }
+        // ── load_from_dir ───────────────────────────────────────────────
 
-    #[test]
-    fn cidr_allow_works() {
-        let policy = EgressPolicy::from_toml(r#"allowed_hosts = ["10.0.0.0/8"]"#).unwrap();
-        assert!(policy.check_host("10.1.2.3").is_allowed());
-        assert!(policy.check_host("192.168.1.1").is_denied());
-    }
-
-    #[test]
-    fn cidr_deny_overrides_allow() {
-        let toml = r#"
-allowed_hosts = ["10.0.0.0/8"]
-denied_hosts = ["10.0.0.1/32"]
-"#;
-        let policy = EgressPolicy::from_toml(toml).unwrap();
-        assert!(policy.check_host("10.0.0.1").is_denied());
-        assert!(policy.check_host("10.0.0.2").is_allowed());
-    }
-
-    // ── Payload size check ──────────────────────────────────────────
-
-    #[test]
-    fn no_payload_limit_allows_all() {
-        let policy = EgressPolicy::from_toml(r#"allowed_hosts = ["example.com"]"#).unwrap();
-        assert!(policy.check_payload_size(u64::MAX).is_allowed());
-    }
-
-    #[test]
-    fn payload_within_limit_allowed() {
-        let policy = EgressPolicy::from_toml("max_payload_bytes = 1024").unwrap();
-        assert!(policy.check_payload_size(1024).is_allowed());
-        assert!(policy.check_payload_size(0).is_allowed());
-    }
-
-    #[test]
-    fn payload_exceeds_limit_denied() {
-        let policy = EgressPolicy::from_toml("max_payload_bytes = 1024").unwrap();
-        let verdict = policy.check_payload_size(1025);
-        assert!(verdict.is_denied());
-        match verdict {
-            EgressVerdict::Deny { reason } => {
-                assert!(reason.contains("1025"));
-                assert!(reason.contains("1024"));
-            }
-            _ => unreachable!(),
+        #[test]
+        fn load_from_dir_missing_file_returns_none() {
+            let dir = tempfile::tempdir().unwrap();
+            let result = EgressPolicy::load_from_dir(dir.path()).unwrap();
+            assert!(result.is_none());
         }
-    }
 
-    // ── load_from_dir ───────────────────────────────────────────────
+        #[test]
+        fn load_from_dir_with_valid_file() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(
+                dir.path().join("egress.toml"),
+                r#"allowed_hosts = ["example.com"]"#,
+            )
+            .unwrap();
+            let policy = EgressPolicy::load_from_dir(dir.path())
+                .unwrap()
+                .expect("policy should exist");
+            assert_eq!(policy.allowed_hosts.len(), 1);
+            assert!(policy.check_host("example.com").is_allowed());
+        }
 
-    #[test]
-    fn load_from_dir_missing_file_returns_none() {
-        let dir = tempfile::tempdir().unwrap();
-        let result = EgressPolicy::load_from_dir(dir.path()).unwrap();
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn load_from_dir_with_valid_file() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("egress.toml"),
-            r#"allowed_hosts = ["example.com"]"#,
-        )
-        .unwrap();
-        let policy = EgressPolicy::load_from_dir(dir.path())
-            .unwrap()
-            .expect("policy should exist");
-        assert_eq!(policy.allowed_hosts.len(), 1);
-        assert!(policy.check_host("example.com").is_allowed());
-    }
-
-    #[test]
-    fn load_from_dir_with_malformed_file_is_error() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("egress.toml"), "not valid [[[").unwrap();
-        assert!(EgressPolicy::load_from_dir(dir.path()).is_err());
+        #[test]
+        fn load_from_dir_with_malformed_file_is_error() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("egress.toml"), "not valid [[[").unwrap();
+            assert!(EgressPolicy::load_from_dir(dir.path()).is_err());
+        }
     }
 
     // ── Display ─────────────────────────────────────────────────────
