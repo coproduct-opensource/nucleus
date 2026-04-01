@@ -30,6 +30,7 @@ fn node(id: NodeId, kind: NodeKind, label: IFCLabel, op: Option<Operation>) -> F
         parent_count: 0,
         parents: [0; MAX_PARENTS],
         operation: op,
+        sink_class: None,
     }
 }
 

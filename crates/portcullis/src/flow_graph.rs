@@ -276,6 +276,7 @@ impl FlowGraph {
             parent_count: parents.len().min(MAX_PARENTS) as u8,
             parents: parent_array,
             operation,
+            sink_class: None,
         }
     }
 

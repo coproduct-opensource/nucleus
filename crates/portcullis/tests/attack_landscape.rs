@@ -738,6 +738,7 @@ fn scenario_8_replay_attack_detected_by_hash_chain() {
         parent_count: 0,
         parents: [0; MAX_PARENTS],
         operation: Some(Operation::WriteFiles),
+        sink_class: None,
     };
 
     // Build two receipts in sequence

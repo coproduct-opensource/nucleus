@@ -183,8 +183,8 @@ mod kani;
 
 pub use budget::BudgetLattice;
 pub use capability::{
-    CapabilityLattice, CapabilityLevel, ExtensionOperation, IncompatibilityConstraint, Obligations,
-    Operation, OperationParseError, StateRisk,
+    default_sink_class, CapabilityLattice, CapabilityLevel, ExtensionOperation,
+    IncompatibilityConstraint, Obligations, Operation, OperationParseError, SinkClass, StateRisk,
 };
 pub use command::{ArgPattern, CommandLattice, CommandPattern};
 pub use exposure_core::{apply_record, classify_operation, project_exposure, should_deny};

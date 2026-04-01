@@ -15,7 +15,7 @@ pub use portcullis_core::CapabilityLevel;
 ///
 /// Single source of truth: re-exported from `portcullis-core`.
 /// The verified type IS the production type — one type, zero translation layers.
-pub use portcullis_core::{Operation, OperationParseError};
+pub use portcullis_core::{default_sink_class, Operation, OperationParseError, SinkClass};
 
 /// Extension operation not covered by Verus proofs.
 ///
