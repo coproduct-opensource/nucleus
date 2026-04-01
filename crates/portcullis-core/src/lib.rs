@@ -500,12 +500,14 @@ pub enum SinkClass {
     /// Execute a shell command (no detected network access).
     BashExec = 2,
     /// Outbound HTTP/HTTPS request (data exfiltration vector).
+    #[cfg_attr(feature = "serde", serde(rename = "http_egress"))]
     HTTPEgress = 3,
     /// Create a git commit (local mutation).
     GitCommit = 4,
     /// Push to a remote git repository (publish vector).
     GitPush = 5,
     /// Write a PR comment, review, or create a PR (publish vector).
+    #[cfg_attr(feature = "serde", serde(rename = "pr_comment_write"))]
     PRCommentWrite = 6,
     /// Send an email (publish vector).
     EmailSend = 7,
@@ -514,6 +516,7 @@ pub enum SinkClass {
     /// Spawn a child agent or subprocess (delegation vector).
     AgentSpawn = 9,
     /// Write via an MCP tool (external system mutation).
+    #[cfg_attr(feature = "serde", serde(rename = "mcp_write"))]
     MCPWrite = 10,
     /// Read a secret (API key, credential, env var).
     SecretRead = 11,
@@ -836,6 +839,8 @@ pub fn should_gate(current: &ExposureSet, op: Operation) -> bool {
 /// Combining data from different confidentiality levels produces
 /// a label at the HIGHEST level. Secret data stays secret.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[repr(u8)]
 pub enum ConfLevel {
     /// Publicly available data (web content, public repos, docs).
@@ -852,6 +857,8 @@ pub enum ConfLevel {
 /// Combining trusted data with untrusted data produces UNTRUSTED output.
 /// This is the Biba integrity model, inverted from BLP.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[repr(u8)]
 pub enum IntegLevel {
     /// Adversarially controlled (public issue bodies, web scraping results).
@@ -871,9 +878,12 @@ pub enum IntegLevel {
 /// prompt injection — web content cannot acquire instruction authority
 /// regardless of what the LLM decides to do with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[repr(u8)]
 pub enum AuthorityLevel {
     /// Cannot instruct the agent in any way (web content, public issues).
+    #[cfg_attr(feature = "serde", serde(rename = "no_authority"))]
     NoAuthority = 0,
     /// Informational only — can provide context but not direct actions.
     Informational = 1,

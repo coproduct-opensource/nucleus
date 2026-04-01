@@ -17,6 +17,8 @@ use crate::{AuthorityLevel, ConfLevel, IFCLabel, IntegLevel, SinkClass};
 /// Each field is an optional bound. `None` means "any value matches."
 /// All specified bounds must be satisfied for the predicate to match.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct LabelPredicate {
     /// Minimum integrity required (label.integrity >= this).
     pub min_integrity: Option<IntegLevel>,
@@ -65,6 +67,8 @@ impl Default for LabelPredicate {
 
 /// The verdict of an admissibility rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub enum RuleVerdict {
     /// The flow is allowed.
     Allow,
@@ -76,6 +80,7 @@ pub enum RuleVerdict {
 
 /// A single admissibility rule: source predicate × artifact predicate × sink → verdict.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AdmissibilityRule {
     /// Human-readable name for this rule (for audit/diagnostics).
     pub name: String,
@@ -175,6 +180,95 @@ impl PolicyRuleSet {
     /// Get a reference to the rules (for inspection/serialization).
     pub fn rules(&self) -> &[AdmissibilityRule] {
         &self.rules
+    }
+}
+
+/// TOML file format for `.nucleus/policy.toml`.
+#[cfg(feature = "serde")]
+#[derive(Debug, serde::Deserialize)]
+struct PolicyToml {
+    #[serde(default)]
+    admissibility: Vec<AdmissibilityRule>,
+}
+
+#[cfg(feature = "serde")]
+impl PolicyRuleSet {
+    /// Load admissibility rules from `.nucleus/policy.toml` in the given directory.
+    ///
+    /// Returns `Ok(None)` if no `policy.toml` exists (no policy = no rules).
+    /// Returns `Err` if the file exists but is malformed or has contradictory rules.
+    pub fn load_from_dir(dir: &std::path::Path) -> Result<Option<Self>, PolicyLoadError> {
+        let policy_file = dir.join(".nucleus").join("policy.toml");
+        if !policy_file.exists() {
+            return Ok(None);
+        }
+        let content = std::fs::read_to_string(&policy_file)
+            .map_err(|e| PolicyLoadError::Io(policy_file.display().to_string(), e.to_string()))?;
+        Self::from_toml(&content).map(Some)
+    }
+
+    /// Parse admissibility rules from a TOML string.
+    pub fn from_toml(content: &str) -> Result<Self, PolicyLoadError> {
+        let parsed: PolicyToml =
+            toml::from_str(content).map_err(|e| PolicyLoadError::Parse(e.to_string()))?;
+        let mut rule_set = Self::new();
+        for rule in parsed.admissibility {
+            rule_set.push(rule);
+        }
+        rule_set.validate()?;
+        Ok(rule_set)
+    }
+
+    fn validate(&self) -> Result<(), PolicyLoadError> {
+        for i in 0..self.rules.len() {
+            for j in (i + 1)..self.rules.len() {
+                let a = &self.rules[i];
+                let b = &self.rules[j];
+                if a.sink_class == b.sink_class
+                    && a.source_predicate == b.source_predicate
+                    && a.artifact_predicate == b.artifact_predicate
+                    && a.verdict != b.verdict
+                {
+                    return Err(PolicyLoadError::Contradiction {
+                        rule_a: a.name.clone(),
+                        rule_b: b.name.clone(),
+                        sink: a.sink_class,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Errors from loading policy rules.
+#[cfg(feature = "serde")]
+#[derive(Debug)]
+pub enum PolicyLoadError {
+    Io(String, String),
+    Parse(String),
+    Contradiction {
+        rule_a: String,
+        rule_b: String,
+        sink: SinkClass,
+    },
+}
+
+#[cfg(feature = "serde")]
+impl std::fmt::Display for PolicyLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(path, err) => write!(f, "failed to read {path}: {err}"),
+            Self::Parse(err) => write!(f, "TOML parse error: {err}"),
+            Self::Contradiction {
+                rule_a,
+                rule_b,
+                sink,
+            } => write!(
+                f,
+                "contradictory rules for {sink:?}: '{rule_a}' and '{rule_b}'"
+            ),
+        }
     }
 }
 
@@ -447,5 +541,143 @@ mod tests {
         // No sources → vacuously true
         let result = rules.evaluate(&[], &trusted_label(), SinkClass::WorkspaceWrite);
         assert_eq!(result.verdict, RuleVerdict::Allow);
+    }
+
+    // ── TOML loading tests (#656) ────────────────────────────────────
+
+    #[cfg(feature = "serde")]
+    mod toml_tests {
+        use super::*;
+
+        #[test]
+        fn parse_toml_basic() {
+            let toml = r#"
+[[admissibility]]
+name = "trusted code may push"
+sink_class = "git_push"
+verdict = "allow"
+
+[admissibility.source_predicate]
+min_integrity = "trusted"
+
+[admissibility.artifact_predicate]
+min_integrity = "trusted"
+"#;
+            let rules = PolicyRuleSet::from_toml(toml).unwrap();
+            assert_eq!(rules.len(), 1);
+            assert_eq!(rules.rules()[0].name, "trusted code may push");
+            assert_eq!(rules.rules()[0].sink_class, SinkClass::GitPush);
+            assert_eq!(rules.rules()[0].verdict, RuleVerdict::Allow);
+        }
+
+        #[test]
+        fn parse_toml_multiple_rules() {
+            let toml = r#"
+[[admissibility]]
+name = "deny push"
+sink_class = "git_push"
+verdict = "deny"
+[admissibility.source_predicate]
+[admissibility.artifact_predicate]
+
+[[admissibility]]
+name = "allow writes"
+sink_class = "workspace_write"
+verdict = "allow"
+[admissibility.source_predicate]
+[admissibility.artifact_predicate]
+"#;
+            let rules = PolicyRuleSet::from_toml(toml).unwrap();
+            assert_eq!(rules.len(), 2);
+        }
+
+        #[test]
+        fn parse_toml_requires_approval() {
+            let toml = r#"
+[[admissibility]]
+name = "egress needs approval"
+sink_class = "http_egress"
+verdict = "requires_approval"
+[admissibility.source_predicate]
+[admissibility.artifact_predicate]
+"#;
+            let rules = PolicyRuleSet::from_toml(toml).unwrap();
+            assert_eq!(rules.rules()[0].verdict, RuleVerdict::RequiresApproval);
+        }
+
+        #[test]
+        fn parse_toml_empty() {
+            let rules = PolicyRuleSet::from_toml("").unwrap();
+            assert!(rules.is_empty());
+        }
+
+        #[test]
+        fn parse_toml_invalid_rejects() {
+            assert!(PolicyRuleSet::from_toml("not valid [[[ toml").is_err());
+        }
+
+        #[test]
+        fn parse_toml_contradiction_detected() {
+            let toml = r#"
+[[admissibility]]
+name = "allow push"
+sink_class = "git_push"
+verdict = "allow"
+[admissibility.source_predicate]
+[admissibility.artifact_predicate]
+
+[[admissibility]]
+name = "deny push"
+sink_class = "git_push"
+verdict = "deny"
+[admissibility.source_predicate]
+[admissibility.artifact_predicate]
+"#;
+            let err = PolicyRuleSet::from_toml(toml).unwrap_err();
+            assert!(err.to_string().contains("contradictory"));
+        }
+
+        #[test]
+        fn load_missing_dir_returns_none() {
+            let dir = std::env::temp_dir().join("nucleus-test-no-policy");
+            std::fs::create_dir_all(&dir).ok();
+            assert!(PolicyRuleSet::load_from_dir(&dir).unwrap().is_none());
+        }
+
+        #[test]
+        fn toml_predicate_fields() {
+            let toml = r#"
+[[admissibility]]
+name = "full predicate"
+sink_class = "bash_exec"
+verdict = "deny"
+
+[admissibility.source_predicate]
+min_integrity = "untrusted"
+max_confidentiality = "internal"
+min_authority = "informational"
+
+[admissibility.artifact_predicate]
+min_integrity = "trusted"
+"#;
+            let rules = PolicyRuleSet::from_toml(toml).unwrap();
+            let rule = &rules.rules()[0];
+            assert_eq!(
+                rule.source_predicate.min_integrity,
+                Some(IntegLevel::Untrusted)
+            );
+            assert_eq!(
+                rule.source_predicate.max_confidentiality,
+                Some(ConfLevel::Internal)
+            );
+            assert_eq!(
+                rule.source_predicate.min_authority,
+                Some(AuthorityLevel::Informational)
+            );
+            assert_eq!(
+                rule.artifact_predicate.min_integrity,
+                Some(IntegLevel::Trusted)
+            );
+        }
     }
 }
