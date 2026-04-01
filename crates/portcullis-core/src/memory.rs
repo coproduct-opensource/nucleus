@@ -88,51 +88,35 @@ pub struct MemoryEntry {
     pub rebuttal_history: Vec<RebuttalEntry>,
 }
 
-/// Simplified IFC label for memory entries (serializable as strings).
+/// Typed IFC label for memory entries.
+///
+/// Uses [`ConfLevel`] and [`IntegLevel`] enums directly, eliminating the
+/// string-parsing attack surface where unexpected values silently mapped
+/// to the most restrictive level (see issue #749).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryLabel {
-    /// Confidentiality: "public", "internal", "secret"
-    pub confidentiality: String,
-    /// Integrity: "adversarial", "untrusted", "trusted"
-    pub integrity: String,
+    /// Confidentiality level (public, internal, secret).
+    pub confidentiality: ConfLevel,
+    /// Integrity level (adversarial, untrusted, trusted).
+    pub integrity: IntegLevel,
 }
 
 impl MemoryLabel {
-    /// Parse confidentiality level.
+    /// Return the confidentiality level.
     pub fn conf_level(&self) -> ConfLevel {
-        match self.confidentiality.as_str() {
-            "public" => ConfLevel::Public,
-            "internal" => ConfLevel::Internal,
-            "secret" => ConfLevel::Secret,
-            _ => ConfLevel::Secret, // fail-closed
-        }
+        self.confidentiality
     }
 
-    /// Parse integrity level.
+    /// Return the integrity level.
     pub fn integ_level(&self) -> IntegLevel {
-        match self.integrity.as_str() {
-            "adversarial" => IntegLevel::Adversarial,
-            "untrusted" => IntegLevel::Untrusted,
-            "trusted" => IntegLevel::Trusted,
-            _ => IntegLevel::Adversarial, // fail-closed
-        }
+        self.integrity
     }
 
     /// Create from typed levels.
     pub fn from_levels(conf: ConfLevel, integ: IntegLevel) -> Self {
         Self {
-            confidentiality: match conf {
-                ConfLevel::Public => "public",
-                ConfLevel::Internal => "internal",
-                ConfLevel::Secret => "secret",
-            }
-            .to_string(),
-            integrity: match integ {
-                IntegLevel::Adversarial => "adversarial",
-                IntegLevel::Untrusted => "untrusted",
-                IntegLevel::Trusted => "trusted",
-            }
-            .to_string(),
+            confidentiality: conf,
+            integrity: integ,
         }
     }
 }
@@ -450,17 +434,18 @@ pub struct MemoryConfig {
     /// Default TTL for new entries (seconds). 0 = no expiry.
     #[serde(default)]
     pub default_ttl_secs: u64,
-    /// Default confidentiality for new entries: "public", "internal", "secret".
-    #[serde(default = "default_conf_str")]
-    pub default_confidentiality: String,
+    /// Default confidentiality for new entries.
+    #[serde(default = "default_conf_level")]
+    pub default_confidentiality: ConfLevel,
     /// Maximum number of entries before oldest are evicted.
     #[serde(default = "default_max_entries")]
     pub max_entries: usize,
 }
 
-fn default_conf_str() -> String {
-    "internal".to_string()
+fn default_conf_level() -> ConfLevel {
+    ConfLevel::Internal
 }
+
 fn default_max_entries() -> usize {
     1000
 }
@@ -469,7 +454,7 @@ impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
             default_ttl_secs: 0,
-            default_confidentiality: default_conf_str(),
+            default_confidentiality: default_conf_level(),
             max_entries: default_max_entries(),
         }
     }
