@@ -810,4 +810,194 @@ mod tests {
         assert_eq!(row.created_at, 5000);
         assert!(row.verify_invariant());
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // DPI-3 witness requirement — test mirrors (non-Kani)
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Mirror of Kani proof `proof_verified_write_requires_witness`:
+    /// For every non-Deterministic derivation class, `is_verified_ready()`
+    /// is false when `witness_bundle_id` is None.
+    #[test]
+    fn mirror_verified_write_requires_witness_exhaustive() {
+        use crate::DerivationClass::*;
+        let needs_witness = [AIDerived, Mixed, OpaqueExternal, HumanPromoted];
+        for &d in &needs_witness {
+            let field = make_field(b"data", d, IFCLabel::default());
+            assert!(
+                field.witness_bundle_id.is_none(),
+                "precondition: make_field should produce None witness"
+            );
+            assert!(
+                !field.is_verified_ready(),
+                "DPI-3 violated: {:?} with no witness must not be verified-ready",
+                d
+            );
+        }
+    }
+
+    /// Mirror of Kani proof `proof_ai_derived_never_verified_ready_without_witness`:
+    /// AIDerived, Mixed, and OpaqueExternal specifically must fail without witness.
+    #[test]
+    fn mirror_ai_derived_never_verified_ready_without_witness() {
+        use crate::DerivationClass::*;
+        let ai_classes = [AIDerived, Mixed, OpaqueExternal];
+        for &d in &ai_classes {
+            let field = make_field(b"data", d, IFCLabel::default());
+            assert!(!field.is_verified_ready());
+            match field.verify_derivation_requirements() {
+                Err(EnvelopeError::MissingWitness { derivation }) => {
+                    assert_eq!(derivation, d);
+                }
+                other => panic!("expected MissingWitness for {:?}, got {:?}", d, other),
+            }
+        }
+    }
+
+    /// Mirror of Kani proof `proof_verified_lane_implies_witness_or_deterministic`:
+    /// For every derivation class accepted by StorageLane::Verified, if a field
+    /// passes is_verified_ready(), then either it is Deterministic or it has a
+    /// witness_bundle_id.
+    #[test]
+    fn mirror_verified_lane_implies_witness_or_deterministic() {
+        use crate::DerivationClass::*;
+        use crate::storage_lane::StorageLane;
+
+        let all = [
+            Deterministic,
+            AIDerived,
+            Mixed,
+            HumanPromoted,
+            OpaqueExternal,
+        ];
+        for &d in &all {
+            // Only test derivation classes that the Verified lane accepts
+            if !StorageLane::Verified.accepts(d) {
+                continue;
+            }
+            // Without witness
+            let field_no_witness = make_field(b"data", d, IFCLabel::default());
+            if field_no_witness.is_verified_ready() {
+                // Must be Deterministic — the only class that doesn't need a witness
+                assert_eq!(
+                    d, Deterministic,
+                    "DPI-3 violated: {:?} is verified-ready without witness but is not Deterministic",
+                    d
+                );
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Kani BMC harnesses — DPI-3: witness requirement for verified writes
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(kani)]
+mod kani_witness_requirement_proofs {
+    use super::*;
+    use crate::DerivationClass;
+    use crate::IFCLabel;
+    use crate::effect::EffectKind;
+    use crate::storage_lane::StorageLane;
+
+    /// Generate a symbolic DerivationClass (5 variants — exhaustive).
+    fn any_derivation() -> DerivationClass {
+        let v: u8 = kani::any();
+        kani::assume(v <= 4);
+        match v {
+            0 => DerivationClass::Deterministic,
+            1 => DerivationClass::AIDerived,
+            2 => DerivationClass::Mixed,
+            3 => DerivationClass::HumanPromoted,
+            _ => DerivationClass::OpaqueExternal,
+        }
+    }
+
+    /// Build a minimal FieldEnvelope with symbolic derivation and no witness.
+    /// Content hash is zeroed (not relevant to derivation checks).
+    fn envelope_no_witness(derivation: DerivationClass) -> FieldEnvelope {
+        FieldEnvelope {
+            value_bytes: vec![],
+            schema_type: String::new(),
+            label: IFCLabel::default(),
+            derivation_class: derivation,
+            effect_kind: EffectKind::PureTransform,
+            source_node_id: 0,
+            causal_parents: vec![],
+            source_refs: vec![],
+            transform_refs: vec![],
+            witness_bundle_id: None,
+            promoted_by: None,
+            promoted_reason: None,
+            created_at: 0,
+            content_hash: [0u8; 32],
+        }
+    }
+
+    /// **DPI-3a — Verified write requires witness.**
+    ///
+    /// For all DerivationClass values: if the derivation class is NOT
+    /// Deterministic, then a FieldEnvelope with `witness_bundle_id = None`
+    /// must NOT be verified-ready. Equivalently: the only derivation class
+    /// that can pass `is_verified_ready()` without a witness is Deterministic.
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn proof_verified_write_requires_witness() {
+        let d = any_derivation();
+        let envelope = envelope_no_witness(d);
+
+        // If the envelope is verified-ready without a witness, it must be Deterministic.
+        if envelope.is_verified_ready() {
+            assert!(
+                d == DerivationClass::Deterministic,
+                "non-Deterministic envelope is verified-ready without witness"
+            );
+        }
+    }
+
+    /// **DPI-3b — AI-derived classes never verified-ready without witness.**
+    ///
+    /// For AIDerived, Mixed, and OpaqueExternal: `is_verified_ready()` is
+    /// always false when `witness_bundle_id` is None. This is a stronger
+    /// statement than DPI-3a for the AI-tainted subset.
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn proof_ai_derived_never_verified_ready_without_witness() {
+        let v: u8 = kani::any();
+        kani::assume(v <= 2);
+        let d = match v {
+            0 => DerivationClass::AIDerived,
+            1 => DerivationClass::Mixed,
+            _ => DerivationClass::OpaqueExternal,
+        };
+
+        let envelope = envelope_no_witness(d);
+        assert!(
+            !envelope.is_verified_ready(),
+            "AI-tainted derivation class must not be verified-ready without witness"
+        );
+    }
+
+    /// **DPI-3c — Verified lane acceptance implies witness-or-deterministic.**
+    ///
+    /// For all derivation classes accepted by `StorageLane::Verified`: if
+    /// `is_verified_ready()` returns true with no witness, the derivation
+    /// class must be Deterministic. This ties the storage lane gate to the
+    /// envelope verification gate.
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn proof_verified_lane_implies_witness_or_deterministic() {
+        let d = any_derivation();
+        kani::assume(StorageLane::Verified.accepts(d));
+
+        let envelope = envelope_no_witness(d);
+        if envelope.is_verified_ready() {
+            assert!(
+                d == DerivationClass::Deterministic,
+                "Verified-lane-accepted envelope is verified-ready without witness \
+                 but is not Deterministic"
+            );
+        }
+    }
 }
