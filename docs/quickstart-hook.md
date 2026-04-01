@@ -1,4 +1,4 @@
-# Nucleus — Security for Claude Code in 60 seconds
+# Nucleus — AI Agent Security in 60 Seconds
 
 ## Install
 
@@ -61,9 +61,24 @@ nucleus-claude-hook --help           # All options
 | Profile | Write | Bash | Web | Git Push | Default |
 |---------|-------|------|-----|----------|---------|
 | `read_only` | no | no | no | no | |
+| `code_review` | no | no | no | no | PR review |
+| `edit_only` | yes | no | no | no | |
+| `fix_issue` | yes | yes | yes | **no** | |
 | `safe_pr_fixer` | yes | yes | yes | **no** | **yes** |
 | `release` | yes | yes | yes | yes | |
 | `permissive` | yes | yes | yes | yes | audit-only |
+
+Set via `NUCLEUS_PROFILE` environment variable.
+
+## Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `NUCLEUS_PROFILE` | Permission profile | `safe_pr_fixer` |
+| `NUCLEUS_COMPARTMENT` | Active compartment: `research`, `draft`, `execute`, `breakglass` | — |
+| `NUCLEUS_FAIL_CLOSED` | Set to `1` for CISO mode (infrastructure errors block) | `0` |
+| `NUCLEUS_REQUIRE_MANIFESTS` | Set to `1` to deny MCP tools without manifests | `0` |
+| `NUCLEUS_AUTONOMY_CEILING` | Org cap: `production`, `sandbox` | unrestricted |
 
 ## Uninstall
 
@@ -86,7 +101,7 @@ Nucleus uses **information flow control** (IFC) — every piece of data gets a s
 
 Labels propagate. When web content enters, subsequent writes inherit adversarial integrity. The kernel blocks the escalation — adversarial data can't steer privileged actions.
 
-The kernel is backed by **191 formal verification artifacts** (78 Kani bounded model checks + 113 Lean 4 theorems) proving the lattice algebra, flow rules, compartment properties, and admission control are correct.
+The kernel is backed by **205 formal verification artifacts** (90 Kani bounded model checks + 115 Lean 4 theorems) proving the lattice algebra, flow rules, compartment properties, and admission control are correct.
 
 ## Tamper detection
 

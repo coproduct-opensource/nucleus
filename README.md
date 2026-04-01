@@ -14,8 +14,8 @@ Nucleus is a security framework for AI agents that combines a mathematically ver
 
 | Layer | Tool | Count | Scope |
 |-------|------|-------|-------|
-| **Proved** (unbounded) | Lean 4 + Mathlib | 113 theorems | HeytingAlgebra on 13-dim production lattice ([Aeneas](https://github.com/AeneasVerif/aeneas)-generated types), exposure tracker monotonicity/soundness, IFC flow rules, compartment proofs, declassification safety |
-| **Bounded-model-checked** | [Kani](https://github.com/model-checking/kani) BMC | 78 harnesses | DecisionToken linearity, lattice distributivity, exposure monoid laws, constitutional kernel invariants, flow enforcement rules, manifest admission |
+| **Proved** (unbounded) | Lean 4 + Mathlib | 115 theorems | HeytingAlgebra on 13-dim production lattice ([Aeneas](https://github.com/AeneasVerif/aeneas)-generated types), exposure tracker monotonicity/soundness, IFC flow rules, compartment proofs, declassification safety |
+| **Bounded-model-checked** | [Kani](https://github.com/model-checking/kani) BMC | 90 harnesses | DecisionToken linearity, lattice distributivity, exposure monoid laws, constitutional kernel invariants, flow enforcement rules, manifest admission |
 | **Tested** | Rust + CI | — | Sandbox isolation, path/command restrictions, network policy, end-to-end |
 
 This README tries to be honest about what's real and what isn't.
@@ -216,7 +216,7 @@ Three layers, at different levels of maturity:
 
 | Component | Maturity | Evidence |
 |-----------|----------|----------|
-| **Permission lattice** (portcullis) | Verified | 58K LOC, 942 tests, 297 Verus VCs, 78 Kani BMC proofs, 3 fuzz targets |
+| **Permission lattice** (portcullis) | Verified | 58K LOC, 1,247 tests, 297 Verus VCs, 90 Kani BMC proofs, 3 fuzz targets |
 | ** Uninhabitable state detection** | Verified | Static scan + runtime guard, monotonicity proven (E1-E3, Kani B1-B9) |
 | **Attenuation tokens** | Verified | Compact delegation credentials with Kani-proven invariants (D1-D7) |
 | **Delegation chains** | Tested | Monotone attenuation with `meet_with_justification`, audit-reconstructable chains |
@@ -228,15 +228,21 @@ Three layers, at different levels of maturity:
 | **PodSpec scanner** | Tested | Uninhabitable state, credentials, network, isolation, timeout checks |
 | **Claude Code scanner** | Tested |  Uninhabitable state via allow/deny projection, Bash capability propagation, exfil patterns, safety bypasses, credentials |
 | **MCP config scanner** | Tested | Well-known server classification (15 packages), `npx -y` supply chain detection, HTTP servers, credentials |
-| **Permission profiles** | Tested | 14 named profiles backed by lattice constructors |
-| **Tool proxy** (MCP enforcement) | Tested | 149 tests; enforces agent sessions in GitHub Actions |
+| **Permission profiles** | Tested | 18 named profiles (10 canonical + 8 legacy) backed by lattice constructors |
+| **Tool proxy** (MCP enforcement) | Tested | 154 tests; enforces agent sessions in GitHub Actions |
 | **Firecracker isolation** | Tested | Real jailer invocation + iptables; Linux+KVM only |
 | **Network enforcement** | Tested | Default-deny egress, DNS allowlisting, drift detection |
 | **CI hardening** | Tested | 16 required status checks; mutation testing blocks surviving mutants |
 | **Budget tracking** | Partial | AtomicBudget exists; pre-exec reservation works, post-exec accounting incomplete |
 | **SPIFFE identity** | Implemented | mTLS + cert management code exists; no SPIRE deployment |
 | **Command exfiltration detection** | Partial | Program-name matching; `bash -c` bypasses documented |
-| **Lean 4 proof (Aeneas)** | Verified | Lean 4 HeytingAlgebra instance on `CapabilityLevel` — the same type used in production (re-exported from `portcullis-core`). Aeneas translates Rust MIR to Lean; function correspondence proven via `rfl` (`meet_eq_inf`, `join_eq_sup`, `implies_eq_himp`). CI type-checks proofs and rejects `sorry`. |
+| **Sink classification** | Tested | First-class `SinkClass` enum for typed sink classification (filesystem, network, process, git, display) |
+| **Declassification tokens** | Tested | Artifact-scoped, time-bounded, HMAC-signed tokens for controlled information release with Lean proofs |
+| **Egress policy** | Tested | Config-driven `EgressPolicy` with `HostPattern` matcher for bash command egress destination extraction |
+| **Governed memory** | Tested | `GovernedMemory` with rebuttal history and `MemoryAuthority` for auditable agent memory |
+| **Autonomy ceiling** | Tested | Org-level `AutonomyCeiling` cap wired via `NUCLEUS_AUTONOMY_CEILING` env var |
+| **Constitutional kernel** | Tested | `ck-kernel` admission engine with `AdmissionVerdict` that collects all deny reasons, 17 Kani proofs |
+| **Lean 4 proof (Aeneas)** | Verified | Lean 4 HeytingAlgebra instance on `CapabilityLevel` — the same type used in production (re-exported from `portcullis-core`). Aeneas translates Rust MIR to Lean; function correspondence proven via `rfl` (`meet_eq_inf`, `join_eq_sup`, `implies_eq_himp`). CI type-checks proofs and rejects `sorry`. 115 theorems across 7 proof files. |
 | **OTLP permission telemetry** | Tested | Every tool call verdict emits an OTel span with all 13 capability dimensions, exposure state, lockdown status. VerdictSink trait ensures both HTTP and MCP paths produce telemetry. Supports gRPC and http/protobuf (Grafana Cloud). |
 | **Fleet lockdown** | Tested | `nucleus lockdown` drops agents to read-only via gRPC streaming (sub-second). Lattice meet semantics: reads allowed for forensics, writes blocked. OR-semantics between signal file and gRPC stream. Label-based pod scoping. |
 
@@ -244,7 +250,7 @@ Three layers, at different levels of maturity:
 
 ## Permission Lattice
 
-Permissions compose predictably via a mathematical lattice. This is the most mature part of Nucleus — 58K lines of Rust with 297 SMT verification conditions (Verus/Z3) and 62 bounded model checking proofs (Kani/CaDiCaL).
+Permissions compose predictably via a mathematical lattice. This is the most mature part of Nucleus — 58K lines of Rust with 297 SMT verification conditions (Verus/Z3) and 90 bounded model checking proofs (Kani/CaDiCaL).
 
 | Structure | What It Gives You | Status |
 |-----------|-------------------|--------|
@@ -263,10 +269,10 @@ For the theory: [docs/THEORY.md](docs/THEORY.md).
 
 Nucleus uses three complementary verification tools:
 - [Verus](https://verus-lang.github.io/verus/) (SMT-based, SOSP 2025 Best Paper) — 297 verification conditions checked by Z3
-- [Kani](https://model-checking.github.io/kani/) (bounded model checking) — 78 proofs checked by CaDiCaL SAT solver
-- [Lean 4](https://lean-lang.org/) + [Aeneas](https://github.com/AeneasVerif/aeneas) (kernel-checked) — 113 theorems: HeytingAlgebra on 13-dim lattice, exposure tracker, flow rules, compartment safety, declassification, decide_pure correctness
+- [Kani](https://model-checking.github.io/kani/) (bounded model checking) — 90 proofs checked by CaDiCaL SAT solver
+- [Lean 4](https://lean-lang.org/) + [Aeneas](https://github.com/AeneasVerif/aeneas) (kernel-checked) — 115 theorems: HeytingAlgebra on 13-dim lattice, exposure tracker, flow rules, compartment safety, declassification, decide_pure correctness
 
-**What's proven (297 Verus VCs + 78 Kani proofs + 113 Lean 4 theorems + Lean 4 HeytingAlgebra):**
+**What's proven (297 Verus VCs + 90 Kani proofs + 115 Lean 4 theorems + Lean 4 HeytingAlgebra):**
 
 *Verus (SMT):*
 - Lattice laws: idempotent, commutative, associative, absorptive for all 13 capability dimensions
@@ -278,15 +284,18 @@ Nucleus uses three complementary verification tools:
 - Uninhabitable state: completeness detection, risk classification, session safety
 - Delegation: transitivity, ceiling theorem, chain composition
 
-*Kani (BMC, 78 proofs):*
+*Kani (BMC, 90 proofs):*
 - B-series (9 proofs): Exposure set monoid identity/associativity, monotonicity, uninhabitable state-iff-count-equals-3, isolation lattice meet/join properties
 - D-series (7 proofs): Attenuation token invariants — token ≤ parent, token ≤ requested cap, chained attenuation, delegation ceiling preservation
 - E-series (3 proofs): Guard denial soundness, Clinejection defense, apply_record monotonicity
 - R-series (3 proofs): R1 Heyting adjunction, R2 pseudo-complement, R3 entailment — bridge proofs mirroring the Lean 4 HeytingAlgebra axioms
 - Structural (13 proofs): Lattice distributivity, frame law, budget monotonicity, capability level ordering
-- Additional (27 proofs): Normalize idempotent, conservation laws, Noetherian symmetry, refinement bridges
+- Additional (28 proofs): Normalize idempotent, conservation laws, Noetherian symmetry, refinement bridges
+- CK-series (17 proofs): Constitutional kernel admission invariants in `ck-kernel`
+- Manifest admission (5 proofs): `AdmissionVerdict` construction, manifest-based tool admission in `portcullis-core`
+- Flow enforcement (5 proofs): Flow graph enforcement rules, taint propagation correctness in `portcullis-core`
 
-*Lean 4 (kernel-checked, zero sorry):*
+*Lean 4 (kernel-checked, 115 theorems, zero sorry):*
 - HeytingAlgebra instance on `CapabilityLevel` (the production type, re-exported from `portcullis-core`)
 - Function correspondence via `rfl`: `meet_eq_inf`, `join_eq_sup`, `implies_eq_himp` — the Lean kernel reduces both sides to identical terms
 - Aeneas pipeline: Charon extracts Rust MIR, Aeneas translates to Lean, CI diffs against committed output and type-checks proofs
@@ -308,7 +317,7 @@ Nucleus uses three complementary verification tools:
 
 See the full roadmap: [docs/north-star.md](docs/north-star.md).
 
-Both proof counts are ratcheted in CI — they can only go up, never down (`.verus-minimum-proofs`, `.kani-minimum-proofs`). Merging to `main` requires 16 status checks to pass, including security audit, cargo deny, clippy, fmt, fuzz, mutation testing, and per-crate test suites.
+All proof counts are ratcheted in CI — they can only go up, never down (`.verus-minimum-proofs`, `.kani-minimum-proofs`). Merging to `main` requires 16 status checks to pass, including security audit, cargo deny, clippy, fmt, fuzz, mutation testing, and per-crate test suites.
 
 ## v1.0 Contract Surface
 
@@ -363,44 +372,54 @@ The enforcement path: Agent → MCP → tool-proxy (inside VM) → portcullis ch
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
-| **portcullis** | Permission lattice: 12 algebraic modules + attenuation tokens | 942 |
+| **portcullis** | Permission lattice: 12 algebraic modules + attenuation tokens | 1,247 |
+| **portcullis-core** | Core types: `CapabilityLevel`, `SinkClass`, `DeclassificationToken`, flow graph, manifests | 169 |
 | **portcullis-verified** | Verus SMT proofs for portcullis | 297 VCs |
-| **nucleus-audit** | `scan` PodSpecs, Claude Code settings, MCP configs; `verify` audit logs | 45 |
+| **ck-kernel** | Constitutional kernel: admission engine, lineage store, 17 Kani proofs | 40 |
+| **ck-types** | Constitutional kernel core types: manifests, digests, policy lattice | 32 |
+| **ck-policy** | Constitutional kernel policy subset and monotonicity checks | — |
+| **nucleus-claude-hook** | Hook binary for AI coding assistants (IFC kernel, compartments, profiles) | 47 |
+| **nucleus-audit** | `scan` PodSpecs, AI assistant settings, MCP configs; `verify` audit logs | 66 |
 | **nucleus** | Enforcement: sandbox, executor, budget | 39 |
-| **nucleus-node** | Node daemon managing Firecracker microVMs + containers | 39 |
-| **nucleus-tool-proxy** | MCP tool proxy running inside pods (+ unicode audit, exit reports) | 149 |
-| **nucleus-mcp** | MCP server bridging to tool-proxy | 4 |
-| **nucleus-identity** | SPIFFE workload identity, mTLS, certs | 296 |
+| **nucleus-node** | Node daemon managing Firecracker microVMs + containers | 52 |
+| **nucleus-tool-proxy** | MCP tool proxy running inside pods (+ unicode audit, exit reports) | 154 |
+| **nucleus-mcp** | MCP server bridging to tool-proxy | 53 |
+| **nucleus-identity** | SPIFFE workload identity, mTLS, certs | 191 |
 | **nucleus-spec** | PodSpec definitions (policy, network, creds, execution receipts) | 21 |
 | **nucleus-proto** | Generated gRPC/Protobuf types for nucleus-node | — |
-| **nucleus-permission-market** | Lagrangian pricing oracle for capability constraints | 28 |
-| **nucleus-cli** | CLI for running tasks with enforced permissions | 12 |
-| **nucleus-sdk** | Rust SDK for building sandboxed AI agents | 3 |
-| **nucleus-client** | Client signing utilities + drand anchoring | 8 |
-| **nucleus-guest-init** | Guest init for Firecracker rootfs | 2 |
-| **nucleus-net-probe** | TCP probe for network policy tests | 2 |
+| **nucleus-permission-market** | Lagrangian pricing oracle for capability constraints | 27 |
+| **nucleus-cli** | CLI for running tasks with enforced permissions | 57 |
+| **nucleus-sdk** | Rust SDK for building sandboxed AI agents | 28 |
+| **nucleus-client** | Client signing utilities + drand anchoring | 22 |
+| **nucleus-guest-init** | Guest init for Firecracker rootfs | 3 |
+| **nucleus-net-probe** | TCP probe for network policy tests | — |
+| **ctf-engine** | Capture-the-flag engine for security testing | — |
+| **ctf-mcp** | CTF MCP server | — |
+| **ctf-server** | CTF web server | — |
 | **exposure-playground** | Interactive TUI for exploring the lattice | — |
 
-Total: ~1,700 test functions across the workspace (103K LOC Rust). Proptest invariants each generate 256 random cases. 78 Kani BMC proofs run in CI alongside 297 Verus VCs and 113 Lean 4 theorems.
+Total: ~1,860 test functions across the workspace (146K LOC Rust). Proptest invariants each generate 256 random cases. 90 Kani BMC proofs run in CI alongside 297 Verus VCs and 115 Lean 4 theorems.
 
 ## Permission Profiles
 
 ```bash
 nucleus profiles
 
-# Available profiles:
-#   restrictive        Minimal permissions (default)
-#   read_only          File reading and search only
-#   code_review        Read + limited search
-#   edit_only          Write + edit, no execution
-#   fix_issue          Write + bash + git commit (no push/PR)
-#   safe_pr_fixer      Write + bash + commit + web fetch (no push/PR/search)
-#   local_dev          Full local development, no network
-#   web_research       Read + web access, no writes
-#   network_only       Network access, no filesystem
-#   release            Full pipeline including push + PR
-#   full               Everything (uninhabitable state gates still enforced!)
-#   + 3 more domain-specific profiles
+# Canonical profiles (declarative YAML with uninhabitable_state analysis):
+#   safe-pr-fixer      Safe PR fixer — no push, no PR creation
+#   doc-editor         Documentation editor — read all, write docs only, no network
+#   test-runner        Test runner — read source, execute tests, no source writes
+#   triage-bot         Triage bot — read, search, fetch context. No code changes
+#   code-review        Code review — read source, search web, no modifications
+#   codegen            Code generation — read/write/edit/run, network-isolated, no push
+#   release            Release — full capabilities, approval required for push and PR
+#   research-web       Web research — read files, search/fetch web, no writes
+#   read-only          Read only — read files and search, no writes or network
+#   local-dev          Local dev — read/write/edit/run/commit, no network, no push
+#
+# Legacy profiles:
+#   filesystem-readonly, network-only, edit-only, fix-issue,
+#   database-client, demo, full, restrictive
 ```
 
 ## Custom Permissions
