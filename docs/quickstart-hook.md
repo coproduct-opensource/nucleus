@@ -107,7 +107,9 @@ Nucleus uses **information flow control** (IFC) — every piece of data gets a s
 
 Labels propagate. When web content enters, subsequent writes inherit adversarial integrity. The kernel blocks the escalation — adversarial data can't steer privileged actions.
 
-The kernel is backed by **218 formal verification artifacts** (90 Kani bounded model checks + 128 Lean 4 theorems) proving the lattice algebra, flow rules, compartment properties, admission control, and delegation narrowing are correct.
+The kernel is backed by **277 formal verification artifacts** (112 Kani bounded model checks + 165 Lean 4 theorems) proving the lattice algebra, flow rules, compartment properties, admission control, delegation narrowing, and DPI data flow invariants are correct.
+
+The enforcement pipeline runs 17 steps in `Kernel::decide()`: isolation, time, budget, delegation constraints, capability, egress, admissibility, enterprise allowlists, paths, commands, SinkScope, flow control, approvals, and dynamic exposure gating.
 
 ## Tamper detection
 
