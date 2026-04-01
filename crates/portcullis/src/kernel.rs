@@ -863,6 +863,7 @@ impl Kernel {
                 parent_count: 0,
                 parents: [0; flow::MAX_PARENTS],
                 operation: Some(operation),
+                sink_class: None,
             };
 
             match flow::check_flow(&node, now_unix) {

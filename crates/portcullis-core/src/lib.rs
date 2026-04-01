@@ -462,6 +462,217 @@ impl std::fmt::Display for OperationParseError {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Sink classes — the security-relevant destination taxonomy
+//
+// A SinkClass represents WHAT kind of side effect occurs, independent of
+// WHICH tool produces it. The Operation enum tracks tool identity; the
+// SinkClass tracks the security-relevant destination. This separation
+// enables context-dependent classification: RunBash with `curl` → HTTPEgress,
+// RunBash without network access → BashExec.
+//
+// The 13 sink classes cover every externally-observable side effect an agent
+// can produce. Each has distinct confidentiality/integrity/authority
+// requirements encoded as methods on the enum.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Security-relevant destination class for agent side effects.
+///
+/// While [`Operation`] identifies the tool being used, `SinkClass` identifies
+/// the type of externally-observable effect. Multiple operations can map to
+/// the same sink class (e.g., both `RunBash` with `curl` and `WebFetch` map
+/// to `HTTPEgress`), and a single operation can map to different sink classes
+/// depending on context (e.g., `RunBash` with `git push` → `GitPush`,
+/// `RunBash` with `ls` → `BashExec`).
+///
+/// Every agent action that passes through the kernel is classified into
+/// exactly one sink class. The flow policy enforcement rules use sink
+/// classes (not operations) for authority and integrity requirements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[repr(u8)]
+pub enum SinkClass {
+    /// Write to the workspace (project files, edits).
+    WorkspaceWrite = 0,
+    /// Write to system files outside the workspace.
+    SystemWrite = 1,
+    /// Execute a shell command (no detected network access).
+    BashExec = 2,
+    /// Outbound HTTP/HTTPS request (data exfiltration vector).
+    HTTPEgress = 3,
+    /// Create a git commit (local mutation).
+    GitCommit = 4,
+    /// Push to a remote git repository (publish vector).
+    GitPush = 5,
+    /// Write a PR comment, review, or create a PR (publish vector).
+    PRCommentWrite = 6,
+    /// Send an email (publish vector).
+    EmailSend = 7,
+    /// Persist data to agent memory (cross-session taint vector).
+    MemoryPersist = 8,
+    /// Spawn a child agent or subprocess (delegation vector).
+    AgentSpawn = 9,
+    /// Write via an MCP tool (external system mutation).
+    MCPWrite = 10,
+    /// Read a secret (API key, credential, env var).
+    SecretRead = 11,
+    /// Mutate cloud infrastructure (deploy, scale, delete).
+    CloudMutation = 12,
+}
+
+// Compile-time invariant: discriminants match declaration order for Aeneas.
+const _: () = {
+    assert!(SinkClass::WorkspaceWrite as u8 == 0);
+    assert!(SinkClass::SystemWrite as u8 == 1);
+    assert!(SinkClass::BashExec as u8 == 2);
+    assert!(SinkClass::HTTPEgress as u8 == 3);
+    assert!(SinkClass::GitCommit as u8 == 4);
+    assert!(SinkClass::GitPush as u8 == 5);
+    assert!(SinkClass::PRCommentWrite as u8 == 6);
+    assert!(SinkClass::EmailSend as u8 == 7);
+    assert!(SinkClass::MemoryPersist as u8 == 8);
+    assert!(SinkClass::AgentSpawn as u8 == 9);
+    assert!(SinkClass::MCPWrite as u8 == 10);
+    assert!(SinkClass::SecretRead as u8 == 11);
+    assert!(SinkClass::CloudMutation as u8 == 12);
+};
+
+impl SinkClass {
+    /// All 13 sink classes.
+    pub const ALL: [SinkClass; 13] = [
+        SinkClass::WorkspaceWrite,
+        SinkClass::SystemWrite,
+        SinkClass::BashExec,
+        SinkClass::HTTPEgress,
+        SinkClass::GitCommit,
+        SinkClass::GitPush,
+        SinkClass::PRCommentWrite,
+        SinkClass::EmailSend,
+        SinkClass::MemoryPersist,
+        SinkClass::AgentSpawn,
+        SinkClass::MCPWrite,
+        SinkClass::SecretRead,
+        SinkClass::CloudMutation,
+    ];
+
+    /// Minimum authority required for this sink class.
+    ///
+    /// Sinks that can exfiltrate or mutate require at least Suggestive
+    /// authority. Read-only sinks require no authority.
+    pub fn required_authority(self) -> AuthorityLevel {
+        match self {
+            // Read-only — no authority needed
+            SinkClass::SecretRead => AuthorityLevel::NoAuthority,
+            // Write/exec/publish — require Suggestive
+            SinkClass::WorkspaceWrite
+            | SinkClass::SystemWrite
+            | SinkClass::BashExec
+            | SinkClass::HTTPEgress
+            | SinkClass::GitCommit
+            | SinkClass::GitPush
+            | SinkClass::PRCommentWrite
+            | SinkClass::EmailSend
+            | SinkClass::MemoryPersist
+            | SinkClass::AgentSpawn
+            | SinkClass::MCPWrite
+            | SinkClass::CloudMutation => AuthorityLevel::Suggestive,
+        }
+    }
+
+    /// Minimum integrity required for this sink class.
+    ///
+    /// Publish vectors (git push, PR, email) require trusted integrity —
+    /// adversarial data must not reach external audiences. Local mutations
+    /// require at least untrusted. Read sinks have no requirement.
+    pub fn required_integrity(self) -> IntegLevel {
+        match self {
+            // Publish vectors — require Trusted
+            SinkClass::GitPush | SinkClass::PRCommentWrite | SinkClass::EmailSend => {
+                IntegLevel::Trusted
+            }
+            // Local mutations — require at least Untrusted
+            SinkClass::WorkspaceWrite
+            | SinkClass::SystemWrite
+            | SinkClass::BashExec
+            | SinkClass::GitCommit
+            | SinkClass::CloudMutation
+            | SinkClass::MCPWrite => IntegLevel::Untrusted,
+            // Delegation — require Untrusted (child inherits taint)
+            SinkClass::AgentSpawn => IntegLevel::Untrusted,
+            // HTTP egress — require Untrusted (URL can encode data)
+            SinkClass::HTTPEgress => IntegLevel::Untrusted,
+            // Memory persist — require Untrusted (cross-session taint)
+            SinkClass::MemoryPersist => IntegLevel::Untrusted,
+            // Read-only — no integrity requirement
+            SinkClass::SecretRead => IntegLevel::Adversarial,
+        }
+    }
+
+    /// Whether this sink class is an exfiltration vector.
+    ///
+    /// Exfiltration vectors can transmit data outside the agent's trust
+    /// boundary: to remote servers, external audiences, or child processes.
+    pub fn is_exfil_vector(self) -> bool {
+        matches!(
+            self,
+            SinkClass::HTTPEgress
+                | SinkClass::GitPush
+                | SinkClass::PRCommentWrite
+                | SinkClass::EmailSend
+                | SinkClass::AgentSpawn
+                | SinkClass::CloudMutation
+        )
+    }
+}
+
+impl std::fmt::Display for SinkClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            SinkClass::WorkspaceWrite => "workspace_write",
+            SinkClass::SystemWrite => "system_write",
+            SinkClass::BashExec => "bash_exec",
+            SinkClass::HTTPEgress => "http_egress",
+            SinkClass::GitCommit => "git_commit",
+            SinkClass::GitPush => "git_push",
+            SinkClass::PRCommentWrite => "pr_comment_write",
+            SinkClass::EmailSend => "email_send",
+            SinkClass::MemoryPersist => "memory_persist",
+            SinkClass::AgentSpawn => "agent_spawn",
+            SinkClass::MCPWrite => "mcp_write",
+            SinkClass::SecretRead => "secret_read",
+            SinkClass::CloudMutation => "cloud_mutation",
+        };
+        write!(f, "{s}")
+    }
+}
+
+/// Default sink classification from an Operation (without context).
+///
+/// This is the conservative (fail-closed) mapping. Context-dependent
+/// classification (e.g., `RunBash` + command string → `HTTPEgress`)
+/// is provided by `classify_sink()` in the `portcullis` crate's
+/// `hook_adapter` module.
+pub fn default_sink_class(op: Operation) -> SinkClass {
+    match op {
+        Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch => {
+            SinkClass::SecretRead
+        }
+        Operation::WriteFiles | Operation::EditFiles => SinkClass::WorkspaceWrite,
+        // RunBash is conservatively classified as BashExec.
+        // Context-dependent reclassification to HTTPEgress happens
+        // in the hook adapter when URL patterns are detected.
+        Operation::RunBash => SinkClass::BashExec,
+        Operation::WebSearch => SinkClass::HTTPEgress,
+        Operation::WebFetch => SinkClass::HTTPEgress,
+        Operation::GitCommit => SinkClass::GitCommit,
+        Operation::GitPush => SinkClass::GitPush,
+        Operation::CreatePr => SinkClass::PRCommentWrite,
+        Operation::ManagePods => SinkClass::CloudMutation,
+        Operation::SpawnAgent => SinkClass::AgentSpawn,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Exposure types — the uninhabitable state detector (Aeneas-translatable)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1141,6 +1352,133 @@ mod tests {
             let s = op.to_string();
             assert!(!s.is_empty(), "Display for {:?} should not be empty", op);
         }
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // SinkClass tests
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn sink_class_all_has_13_variants() {
+        assert_eq!(SinkClass::ALL.len(), 13);
+    }
+
+    #[test]
+    fn sink_class_display_roundtrip() {
+        for sink in SinkClass::ALL {
+            let s = sink.to_string();
+            assert!(!s.is_empty(), "Display for {:?} should not be empty", sink);
+        }
+    }
+
+    #[test]
+    fn sink_class_exfil_vectors() {
+        // Exfil vectors: HTTPEgress, GitPush, PRCommentWrite, EmailSend, AgentSpawn, CloudMutation
+        assert!(SinkClass::HTTPEgress.is_exfil_vector());
+        assert!(SinkClass::GitPush.is_exfil_vector());
+        assert!(SinkClass::PRCommentWrite.is_exfil_vector());
+        assert!(SinkClass::EmailSend.is_exfil_vector());
+        assert!(SinkClass::AgentSpawn.is_exfil_vector());
+        assert!(SinkClass::CloudMutation.is_exfil_vector());
+
+        // Non-exfil: workspace writes, bash exec, git commit, memory persist, MCP write, secret read
+        assert!(!SinkClass::WorkspaceWrite.is_exfil_vector());
+        assert!(!SinkClass::SystemWrite.is_exfil_vector());
+        assert!(!SinkClass::BashExec.is_exfil_vector());
+        assert!(!SinkClass::GitCommit.is_exfil_vector());
+        assert!(!SinkClass::MemoryPersist.is_exfil_vector());
+        assert!(!SinkClass::MCPWrite.is_exfil_vector());
+        assert!(!SinkClass::SecretRead.is_exfil_vector());
+    }
+
+    #[test]
+    fn sink_class_authority_requirements() {
+        // SecretRead requires no authority
+        assert_eq!(
+            SinkClass::SecretRead.required_authority(),
+            AuthorityLevel::NoAuthority
+        );
+        // All write/exec sinks require Suggestive
+        for sink in SinkClass::ALL {
+            if sink != SinkClass::SecretRead {
+                assert_eq!(
+                    sink.required_authority(),
+                    AuthorityLevel::Suggestive,
+                    "Expected Suggestive authority for {:?}",
+                    sink
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sink_class_integrity_requirements() {
+        // Publish vectors require Trusted
+        assert_eq!(SinkClass::GitPush.required_integrity(), IntegLevel::Trusted);
+        assert_eq!(
+            SinkClass::PRCommentWrite.required_integrity(),
+            IntegLevel::Trusted
+        );
+        assert_eq!(
+            SinkClass::EmailSend.required_integrity(),
+            IntegLevel::Trusted
+        );
+        // SecretRead has no integrity requirement
+        assert_eq!(
+            SinkClass::SecretRead.required_integrity(),
+            IntegLevel::Adversarial
+        );
+        // Most write sinks require Untrusted
+        assert_eq!(
+            SinkClass::WorkspaceWrite.required_integrity(),
+            IntegLevel::Untrusted
+        );
+        assert_eq!(
+            SinkClass::BashExec.required_integrity(),
+            IntegLevel::Untrusted
+        );
+    }
+
+    #[test]
+    fn default_sink_class_for_all_operations() {
+        // Every operation maps to a valid sink class
+        for op in Operation::ALL {
+            let _ = default_sink_class(op);
+        }
+    }
+
+    #[test]
+    fn default_sink_class_specific_mappings() {
+        assert_eq!(
+            default_sink_class(Operation::ReadFiles),
+            SinkClass::SecretRead
+        );
+        assert_eq!(
+            default_sink_class(Operation::WriteFiles),
+            SinkClass::WorkspaceWrite
+        );
+        assert_eq!(default_sink_class(Operation::RunBash), SinkClass::BashExec);
+        assert_eq!(
+            default_sink_class(Operation::WebFetch),
+            SinkClass::HTTPEgress
+        );
+        assert_eq!(
+            default_sink_class(Operation::GitCommit),
+            SinkClass::GitCommit
+        );
+        assert_eq!(default_sink_class(Operation::GitPush), SinkClass::GitPush);
+        assert_eq!(
+            default_sink_class(Operation::CreatePr),
+            SinkClass::PRCommentWrite
+        );
+        assert_eq!(
+            default_sink_class(Operation::ManagePods),
+            SinkClass::CloudMutation
+        );
+        assert_eq!(
+            default_sink_class(Operation::SpawnAgent),
+            SinkClass::AgentSpawn
+        );
     }
 
     // ════════════════════════════════════════════════════════════════════

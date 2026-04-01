@@ -264,6 +264,7 @@ mod tests {
             parent_count: 0,
             parents: [0; MAX_PARENTS],
             operation: op,
+            sink_class: None,
         }
     }
 

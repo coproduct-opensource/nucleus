@@ -10,7 +10,7 @@
 //! **Current status**: types + pure functions + tests. Not yet wired into
 //! `Kernel::decide()` — integration is Phase 3 of the Flow Kernel plan.
 
-use crate::{AuthorityLevel, ConfLevel, IFCLabel, IntegLevel, Operation, ProvenanceSet};
+use crate::{AuthorityLevel, ConfLevel, IFCLabel, IntegLevel, Operation, ProvenanceSet, SinkClass};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Node types
@@ -157,6 +157,10 @@ pub struct FlowNode {
     pub parent_count: u8,
     pub parents: [NodeId; MAX_PARENTS],
     pub operation: Option<Operation>,
+    /// The sink class for this node, if it's an outbound action.
+    /// When set, `check_flow` uses sink-class-based authority/integrity
+    /// requirements instead of the legacy per-Operation thresholds.
+    pub sink_class: Option<SinkClass>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -249,6 +253,10 @@ pub fn required_integrity(op: Operation) -> IntegLevel {
 /// 4. No-web-exfil: web-provenance data cannot reach exfil sinks
 /// 5. Freshness: expired data cannot be used in decisions
 /// 6. Monotonicity: implicit (enforced by propagate_label's join)
+///
+/// When a [`SinkClass`] is present on the node, authority and integrity
+/// requirements come from the sink class. Otherwise, the legacy per-Operation
+/// thresholds are used for backward compatibility.
 pub fn check_flow(node: &FlowNode, now: u64) -> FlowVerdict {
     let label = node.label;
 
@@ -267,23 +275,32 @@ pub fn check_flow(node: &FlowNode, now: u64) -> FlowVerdict {
         }
     };
 
+    // Resolve authority/integrity/exfil requirements from SinkClass when
+    // available, otherwise fall back to legacy per-Operation thresholds.
+    let (is_exfil, req_auth, req_integ) = match node.sink_class {
+        Some(sink) => (
+            sink.is_exfil_vector(),
+            sink.required_authority(),
+            sink.required_integrity(),
+        ),
+        None => {
+            let is_exfil = crate::is_exfil_operation(op) || op == Operation::WebFetch;
+            (is_exfil, required_authority(op), required_integrity(op))
+        }
+    };
+
     // Rule 1: No-exfil — secret data to external sinks.
-    // WebFetch is an exfil vector (URL params can encode secrets) even though
-    // the legacy ExposureSet doesn't classify it as such.
-    let is_exfil = crate::is_exfil_operation(op) || op == Operation::WebFetch;
     if label.confidentiality >= ConfLevel::Secret && is_exfil {
         return FlowVerdict::Deny(FlowDenyReason::Exfiltration);
     }
 
     // Rule 2: No-authority-escalation
-    let required_auth = required_authority(op);
-    if label.authority < required_auth {
+    if label.authority < req_auth {
         return FlowVerdict::Deny(FlowDenyReason::AuthorityEscalation);
     }
 
     // Rule 3: No-integrity-laundering
-    let required_integ = required_integrity(op);
-    if label.integrity < required_integ {
+    if label.integrity < req_integ {
         return FlowVerdict::Deny(FlowDenyReason::IntegrityViolation);
     }
 
@@ -372,6 +389,7 @@ mod kani_proofs {
             parent_count: 0,
             parents: [0; MAX_PARENTS],
             operation: op,
+            sink_class: None,
         }
     }
 
@@ -397,6 +415,7 @@ mod kani_proofs {
             parent_count: 0,
             parents: [0; MAX_PARENTS],
             operation: Some(op),
+            sink_class: None,
         };
 
         let now: u64 = kani::any();
@@ -430,6 +449,7 @@ mod kani_proofs {
             parent_count: 0,
             parents: [0; MAX_PARENTS],
             operation: Some(op),
+            sink_class: None,
         };
 
         let now: u64 = kani::any();
@@ -463,6 +483,7 @@ mod kani_proofs {
             parent_count: 0,
             parents: [0; MAX_PARENTS],
             operation: Some(op),
+            sink_class: None,
         };
 
         let now: u64 = kani::any();
@@ -524,6 +545,7 @@ mod kani_proofs {
             parent_count: 0,
             parents: [0; MAX_PARENTS],
             operation: Some(op),
+            sink_class: None,
         };
 
         assert_eq!(check_flow(&node, 2000), FlowVerdict::Allow);
@@ -537,6 +559,7 @@ mod kani_proofs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Freshness;
 
     fn make_node(kind: NodeKind, label: IFCLabel, op: Option<Operation>) -> FlowNode {
         FlowNode {
@@ -546,6 +569,24 @@ mod tests {
             parent_count: 0,
             parents: [0; MAX_PARENTS],
             operation: op,
+            sink_class: None,
+        }
+    }
+
+    fn make_node_with_sink(
+        kind: NodeKind,
+        label: IFCLabel,
+        op: Option<Operation>,
+        sink: SinkClass,
+    ) -> FlowNode {
+        FlowNode {
+            id: 0,
+            kind,
+            label,
+            parent_count: 0,
+            parents: [0; MAX_PARENTS],
+            operation: op,
+            sink_class: Some(sink),
         }
     }
 
@@ -728,5 +769,142 @@ mod tests {
             check_flow(&exfil, now + 86400),
             FlowVerdict::Deny(_)
         ));
+    }
+
+    // ── SinkClass-based flow policy tests ───────────────────────────
+
+    #[test]
+    fn sink_class_allows_trusted_workspace_write() {
+        let label = IFCLabel::user_prompt(1000);
+        let node = make_node_with_sink(
+            NodeKind::OutboundAction,
+            label,
+            Some(Operation::WriteFiles),
+            SinkClass::WorkspaceWrite,
+        );
+        assert_eq!(check_flow(&node, 2000), FlowVerdict::Allow);
+    }
+
+    #[test]
+    fn sink_class_blocks_secret_http_egress() {
+        let label = IFCLabel::secret(1000);
+        let node = make_node_with_sink(
+            NodeKind::OutboundAction,
+            label,
+            Some(Operation::RunBash),
+            SinkClass::HTTPEgress,
+        );
+        assert_eq!(
+            check_flow(&node, 2000),
+            FlowVerdict::Deny(FlowDenyReason::Exfiltration)
+        );
+    }
+
+    #[test]
+    fn sink_class_blocks_adversarial_git_push() {
+        // Adversarial integrity data trying to git push (requires Trusted)
+        let label = IFCLabel {
+            integrity: IntegLevel::Adversarial,
+            authority: AuthorityLevel::Directive,
+            ..IFCLabel::default()
+        };
+        let node = make_node_with_sink(
+            NodeKind::OutboundAction,
+            label,
+            Some(Operation::GitPush),
+            SinkClass::GitPush,
+        );
+        assert_eq!(
+            check_flow(&node, 2000),
+            FlowVerdict::Deny(FlowDenyReason::IntegrityViolation)
+        );
+    }
+
+    #[test]
+    fn sink_class_secret_read_allows_no_authority() {
+        // SecretRead requires NoAuthority — even data with no authority can read secrets
+        let label = IFCLabel {
+            confidentiality: ConfLevel::Internal,
+            integrity: IntegLevel::Trusted,
+            provenance: ProvenanceSet::USER,
+            freshness: Freshness {
+                observed_at: 1000,
+                ttl_secs: 0,
+            },
+            authority: AuthorityLevel::NoAuthority,
+        };
+        let node = make_node_with_sink(
+            NodeKind::OutboundAction,
+            label,
+            Some(Operation::ReadFiles),
+            SinkClass::SecretRead,
+        );
+        // SecretRead is not an exfil vector and needs no authority
+        assert_eq!(check_flow(&node, 2000), FlowVerdict::Allow);
+    }
+
+    #[test]
+    fn sink_class_bash_with_url_reclassified_as_egress() {
+        // RunBash operation but classified as HTTPEgress (detected curl)
+        let label = IFCLabel {
+            confidentiality: ConfLevel::Secret,
+            integrity: IntegLevel::Trusted,
+            provenance: ProvenanceSet::SYSTEM,
+            freshness: Freshness {
+                observed_at: 1000,
+                ttl_secs: 0,
+            },
+            authority: AuthorityLevel::Directive,
+        };
+        let node = make_node_with_sink(
+            NodeKind::OutboundAction,
+            label,
+            Some(Operation::RunBash),
+            SinkClass::HTTPEgress,
+        );
+        // HTTPEgress is exfil vector + secret data → blocked
+        assert_eq!(
+            check_flow(&node, 2000),
+            FlowVerdict::Deny(FlowDenyReason::Exfiltration)
+        );
+    }
+
+    #[test]
+    fn sink_class_bash_without_url_allows_trusted() {
+        // RunBash classified as BashExec (no network detected)
+        let label = IFCLabel::user_prompt(1000);
+        let node = make_node_with_sink(
+            NodeKind::OutboundAction,
+            label,
+            Some(Operation::RunBash),
+            SinkClass::BashExec,
+        );
+        // BashExec is NOT an exfil vector, user has authority → allowed
+        assert_eq!(check_flow(&node, 2000), FlowVerdict::Allow);
+    }
+
+    #[test]
+    fn sink_class_web_provenance_blocked_at_pr() {
+        // Web-sourced data trying to create a PR (PRCommentWrite is exfil)
+        let label = IFCLabel {
+            confidentiality: ConfLevel::Internal,
+            integrity: IntegLevel::Trusted,
+            provenance: ProvenanceSet::WEB,
+            freshness: Freshness {
+                observed_at: 1000,
+                ttl_secs: 0,
+            },
+            authority: AuthorityLevel::Directive,
+        };
+        let node = make_node_with_sink(
+            NodeKind::OutboundAction,
+            label,
+            Some(Operation::CreatePr),
+            SinkClass::PRCommentWrite,
+        );
+        assert_eq!(
+            check_flow(&node, 2000),
+            FlowVerdict::Deny(FlowDenyReason::Exfiltration)
+        );
     }
 }
