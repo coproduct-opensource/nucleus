@@ -205,6 +205,28 @@ pub enum FlowVerdict {
     Deny(FlowDenyReason),
 }
 
+/// Verdict from quarantine-aware flow checking.
+///
+/// Extends `FlowVerdict` with artifact-granular quarantine information.
+/// When a node or any of its causal ancestors is quarantined, the action
+/// is blocked regardless of its IFC label — the quarantine must be
+/// explicitly released before the artifact can flow to sinks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuarantineVerdict {
+    /// Flow is permitted and no ancestors are quarantined.
+    Clean(FlowVerdict),
+    /// Flow is blocked because a causal ancestor is quarantined.
+    /// Contains the node IDs of the quarantined ancestors in the causal chain.
+    Quarantined {
+        /// The quarantined ancestor node IDs that caused the block.
+        quarantined_ancestors: Vec<NodeId>,
+        /// The underlying flow verdict (what check_flow would have returned
+        /// ignoring quarantine). Useful for audit — shows whether the action
+        /// would also have been blocked by IFC rules.
+        underlying_verdict: FlowVerdict,
+    },
+}
+
 /// Minimum authority required for an operation to proceed.
 pub fn required_authority(op: Operation) -> AuthorityLevel {
     match op {
