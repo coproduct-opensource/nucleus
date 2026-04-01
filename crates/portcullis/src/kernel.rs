@@ -1910,9 +1910,10 @@ impl Kernel {
             let effect_kind_str = flow_node
                 .and_then(|node| node.effect_kind)
                 .map(|ek| ek.as_str().to_string());
+            let derivation_class = flow_node.map(|node| node.label.derivation);
 
             let prev_hash = *chain.head_hash();
-            let receipt = VerdictReceipt::from_verdict_with_effect(
+            let receipt = VerdictReceipt::from_verdict_full(
                 flow_verdict,
                 format!("{:?}", decision.operation),
                 &decision.subject,
@@ -1922,6 +1923,7 @@ impl Kernel {
                 now_unix,
                 prev_hash,
                 effect_kind_str,
+                derivation_class,
             );
 
             // Append should never fail — we computed prev_hash from chain head.

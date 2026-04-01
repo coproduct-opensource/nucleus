@@ -15,7 +15,7 @@
 use sha2::{Digest, Sha256};
 
 use portcullis_core::flow::{FlowVerdict, NodeId};
-use portcullis_core::IFCLabel;
+use portcullis_core::{DerivationClass, IFCLabel};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // VerdictReceipt — a single chain entry
@@ -51,6 +51,11 @@ pub struct VerdictReceipt {
     pub receipt_hash: [u8; 32],
     /// Computation-step effect classification (#775).
     pub effect_kind: Option<String>,
+    /// Derivation provenance of the data flowing through this verdict (#776).
+    ///
+    /// Captures whether the data is deterministic, AI-derived, mixed,
+    /// human-promoted, or from an opaque external source.
+    pub derivation_class: Option<DerivationClass>,
 }
 
 impl VerdictReceipt {
@@ -111,6 +116,12 @@ impl VerdictReceipt {
             buf.extend_from_slice(ek.as_bytes());
         }
 
+        // Derivation class (#776)
+        if let Some(dc) = self.derivation_class {
+            buf.extend_from_slice(b"derivation:");
+            buf.push(dc as u8);
+        }
+
         buf
     }
 
@@ -166,6 +177,39 @@ impl VerdictReceipt {
             prev_hash,
             receipt_hash: [0u8; 32],
             effect_kind,
+            derivation_class: None,
+        };
+        receipt.receipt_hash = receipt.compute_hash();
+        receipt
+    }
+
+    /// Like [`from_verdict_with_effect`](Self::from_verdict_with_effect) but with
+    /// an explicit derivation class (#776).
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_verdict_full(
+        verdict: FlowVerdict,
+        operation: impl Into<String>,
+        subject: impl Into<String>,
+        pre_label: IFCLabel,
+        post_label: IFCLabel,
+        causal_parents: Vec<NodeId>,
+        timestamp: u64,
+        prev_hash: [u8; 32],
+        effect_kind: Option<String>,
+        derivation_class: Option<DerivationClass>,
+    ) -> Self {
+        let mut receipt = Self {
+            verdict,
+            operation: operation.into(),
+            subject: subject.into(),
+            pre_label,
+            post_label,
+            causal_parents,
+            timestamp,
+            prev_hash,
+            receipt_hash: [0u8; 32],
+            effect_kind,
+            derivation_class,
         };
         receipt.receipt_hash = receipt.compute_hash();
         receipt
@@ -178,6 +222,7 @@ fn label_bytes(buf: &mut Vec<u8>, label: &IFCLabel) {
     buf.push(label.integrity as u8);
     buf.push(label.authority as u8);
     buf.extend_from_slice(&label.provenance.bits().to_le_bytes());
+    buf.push(label.derivation as u8);
     buf.extend_from_slice(&label.freshness.observed_at.to_le_bytes());
     buf.extend_from_slice(&label.freshness.ttl_secs.to_le_bytes());
 }
@@ -363,6 +408,9 @@ impl ReceiptChain {
                 if let Some(ref ek) = r.effect_kind {
                     obj["effect_kind"] = json!(ek);
                 }
+                if let Some(dc) = r.derivation_class {
+                    obj["derivation_class"] = json!(format!("{:?}", dc));
+                }
                 obj
             })
             .collect();
@@ -539,6 +587,7 @@ fn label_to_json(label: &IFCLabel) -> serde_json::Value {
         "confidentiality": format!("{:?}", label.confidentiality),
         "integrity": format!("{:?}", label.integrity),
         "authority": format!("{:?}", label.authority),
+        "derivation": format!("{:?}", label.derivation),
         "provenance_bits": label.provenance.bits(),
         "freshness": {
             "observed_at": label.freshness.observed_at,
@@ -1105,5 +1154,183 @@ mod tests {
             Some("deterministic_fetch".to_string()),
         );
         assert_eq!(r.effect_kind.as_deref(), Some("deterministic_fetch"));
+    }
+
+    // ── Derivation class tests (#776) ────────────────────────────
+
+    #[test]
+    fn receipt_captures_derivation_class() {
+        let label = test_label(1000);
+        let r = VerdictReceipt::from_verdict_full(
+            FlowVerdict::Allow,
+            "web_fetch",
+            "agent-1",
+            label,
+            label,
+            vec![1],
+            1000,
+            [0u8; 32],
+            Some("deterministic_fetch".to_string()),
+            Some(DerivationClass::AIDerived),
+        );
+        assert_eq!(r.derivation_class, Some(DerivationClass::AIDerived));
+    }
+
+    #[test]
+    fn receipt_derivation_class_affects_hash() {
+        let label = test_label(1000);
+        let without = VerdictReceipt::from_verdict_full(
+            FlowVerdict::Allow,
+            "read_files",
+            "a",
+            label,
+            label,
+            vec![1],
+            1000,
+            [0u8; 32],
+            None,
+            None,
+        );
+        let with_ai = VerdictReceipt::from_verdict_full(
+            FlowVerdict::Allow,
+            "read_files",
+            "a",
+            label,
+            label,
+            vec![1],
+            1000,
+            [0u8; 32],
+            None,
+            Some(DerivationClass::AIDerived),
+        );
+        let with_det = VerdictReceipt::from_verdict_full(
+            FlowVerdict::Allow,
+            "read_files",
+            "a",
+            label,
+            label,
+            vec![1],
+            1000,
+            [0u8; 32],
+            None,
+            Some(DerivationClass::Deterministic),
+        );
+        // All three must produce different hashes
+        assert_ne!(without.receipt_hash, with_ai.receipt_hash);
+        assert_ne!(without.receipt_hash, with_det.receipt_hash);
+        assert_ne!(with_ai.receipt_hash, with_det.receipt_hash);
+    }
+
+    #[test]
+    fn receipt_without_derivation_backward_compatible() {
+        let label = test_label(1000);
+        let old = VerdictReceipt::from_verdict(
+            FlowVerdict::Allow,
+            "r",
+            "a",
+            label,
+            label,
+            vec![1],
+            1000,
+            [0u8; 32],
+        );
+        let new = VerdictReceipt::from_verdict_full(
+            FlowVerdict::Allow,
+            "r",
+            "a",
+            label,
+            label,
+            vec![1],
+            1000,
+            [0u8; 32],
+            None,
+            None,
+        );
+        assert_eq!(old.receipt_hash, new.receipt_hash);
+    }
+
+    #[test]
+    fn chain_with_derivation_verifies() {
+        let mut chain = ReceiptChain::new();
+        let label = test_label(1000);
+        let r1 = VerdictReceipt::from_verdict_full(
+            FlowVerdict::Allow,
+            "web_fetch",
+            "a",
+            label,
+            label,
+            vec![1],
+            1000,
+            *chain.head_hash(),
+            None,
+            Some(DerivationClass::AIDerived),
+        );
+        chain.append(r1).unwrap();
+        let r2 = VerdictReceipt::from_verdict_full(
+            FlowVerdict::Allow,
+            "write",
+            "a",
+            label,
+            label,
+            vec![2],
+            2000,
+            *chain.head_hash(),
+            None,
+            Some(DerivationClass::Mixed),
+        );
+        chain.append(r2).unwrap();
+        assert_eq!(chain.len(), 2);
+        assert!(chain.verify().is_ok());
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn export_includes_derivation_class() {
+        let mut chain = ReceiptChain::new();
+        let label = test_label(1000);
+        let r = VerdictReceipt::from_verdict_full(
+            FlowVerdict::Allow,
+            "web_fetch",
+            "agent-1",
+            label,
+            label,
+            vec![1],
+            1000,
+            *chain.head_hash(),
+            None,
+            Some(DerivationClass::AIDerived),
+        );
+        chain.append(r).unwrap();
+
+        let json = chain.export_json().expect("JSON export should succeed");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("JSON should parse");
+        let receipts = parsed["receipts"].as_array().unwrap();
+
+        assert_eq!(receipts[0]["derivation_class"], "AIDerived");
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn export_omits_derivation_when_none() {
+        let mut chain = ReceiptChain::new();
+        let label = test_label(1000);
+        let r = VerdictReceipt::from_verdict(
+            FlowVerdict::Allow,
+            "read_files",
+            "agent-1",
+            label,
+            label,
+            vec![1],
+            1000,
+            *chain.head_hash(),
+        );
+        chain.append(r).unwrap();
+
+        let json = chain.export_json().expect("JSON export should succeed");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("JSON should parse");
+        let receipts = parsed["receipts"].as_array().unwrap();
+
+        // derivation_class should not be present when None
+        assert!(receipts[0].get("derivation_class").is_none());
     }
 }

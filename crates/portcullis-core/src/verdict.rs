@@ -19,7 +19,7 @@
 //!    (the Aeneas verification target). It uses only types already defined
 //!    in this crate (`IFCLabel`, `SinkClass`, `Operation`).
 
-use crate::{IFCLabel, Operation, SinkClass};
+use crate::{DerivationClass, IFCLabel, Operation, SinkClass};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Decision — the kernel's binary-plus-deferred outcome
@@ -127,6 +127,12 @@ pub struct Evidence {
     /// Declassification tokens that were applied (or attempted) during
     /// this decision. Presence of a token means the label was weakened.
     pub declassification_tokens: Vec<String>,
+    /// The derivation class of the data flowing through this decision (#776).
+    ///
+    /// Captures whether the data is deterministic, AI-derived, mixed,
+    /// human-promoted, or from an opaque external source. `None` when
+    /// derivation tracking is not applicable (e.g., capability gates).
+    pub derivation_class: Option<DerivationClass>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -385,6 +391,7 @@ mod tests {
             sink_class: Some(SinkClass::HTTPEgress),
             causal_parents: vec![100, 200, 300],
             declassification_tokens: vec!["declass-token-1".to_string()],
+            derivation_class: Some(crate::DerivationClass::Deterministic),
         };
 
         let v = StructuredVerdict::deny(
@@ -409,6 +416,10 @@ mod tests {
         assert_eq!(v.evidence.causal_parents, vec![100, 200, 300]);
         assert_eq!(v.evidence.declassification_tokens.len(), 1);
         assert!(v.evidence.artifact_label.is_some());
+        assert_eq!(
+            v.evidence.derivation_class,
+            Some(crate::DerivationClass::Deterministic)
+        );
     }
 
     #[test]
@@ -436,6 +447,7 @@ mod tests {
         assert!(e.sink_class.is_none());
         assert!(e.causal_parents.is_empty());
         assert!(e.declassification_tokens.is_empty());
+        assert!(e.derivation_class.is_none());
     }
 
     #[test]
@@ -463,5 +475,32 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn evidence_includes_derivation_class() {
+        // #776: Evidence carries derivation provenance for audit trails.
+        let evidence = Evidence {
+            derivation_class: Some(crate::DerivationClass::AIDerived),
+            ..Evidence::default()
+        };
+        assert_eq!(
+            evidence.derivation_class,
+            Some(crate::DerivationClass::AIDerived),
+        );
+
+        // Verify it survives a verdict round-trip via with_evidence.
+        let v = StructuredVerdict::allow(
+            sample_rule(),
+            Mode::Enforce,
+            Operation::WebFetch,
+            "agent-1".to_string(),
+            1_700_000_010,
+        )
+        .with_evidence(evidence);
+        assert_eq!(
+            v.evidence.derivation_class,
+            Some(crate::DerivationClass::AIDerived),
+        );
     }
 }
