@@ -48,3 +48,7 @@ lean_lib «FlowGraphProofs» where
 -- Compartment ceiling proofs (research/draft/execute/breakglass ordering)
 lean_lib «CompartmentProofs» where
   roots := #[`CompartmentProofs]
+
+-- Delegation narrowing proofs (monotone attenuation, scope subset)
+lean_lib «DelegationProofs» where
+  roots := #[`DelegationProofs]
