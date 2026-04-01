@@ -626,6 +626,14 @@ fn format_denial_for_user(
                 - Run in a higher isolation environment (container or microVM)"
             )
         }
+        DenyReason::PolicyDenied { description, .. } => {
+            format!(
+                "Blocked: {description}{comp_hint}.\n  \
+                How to fix:\n  \
+                - Check .nucleus/policy.toml admissibility rules\n  \
+                - Add an allow rule for this sink class and source label"
+            )
+        }
     }
 }
 

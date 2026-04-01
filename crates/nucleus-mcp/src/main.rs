@@ -530,6 +530,9 @@ fn format_deny_reason(reason: &DenyReason) -> String {
         DenyReason::FlowViolation { rule, .. } => {
             format!("flow violation: {rule}")
         }
+        DenyReason::PolicyDenied { description, .. } => {
+            format!("policy denied: {description}")
+        }
     }
 }
 

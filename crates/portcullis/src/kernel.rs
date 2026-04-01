@@ -78,6 +78,7 @@ use crate::guard::{ExposureLabel, ExposureSet};
 use crate::isolation::{IsolationLattice, NetworkIsolation};
 use crate::lattice::PermissionLattice;
 use crate::token::SessionProvenance;
+use portcullis_core::policy_rules::{PolicyRuleSet, RuleVerdict};
 
 /// A single decision made by the kernel.
 ///
@@ -219,6 +220,17 @@ pub enum DenyReason {
         )]
         receipt: Option<String>,
     },
+    /// Denied by an admissibility policy rule.
+    ///
+    /// The action was allowed by capabilities and flow checks, but a
+    /// [`PolicyRuleSet`](portcullis_core::policy_rules::PolicyRuleSet)
+    /// rule explicitly denies or blocks this source/artifact/sink triple.
+    PolicyDenied {
+        /// Index of the rule in the policy rule set that triggered denial.
+        rule_index: Option<usize>,
+        /// Human-readable description of the denial (rule name or default-deny).
+        description: String,
+    },
 }
 
 /// The source of a RequiresApproval verdict.
@@ -359,6 +371,12 @@ pub struct Kernel {
     /// Must be declared before the session starts (monotonicity of rule set).
     /// Each application produces an audit entry in the trace.
     declassification_rules: Vec<portcullis_core::declassify::DeclassificationRule>,
+    /// Optional admissibility policy rules.
+    ///
+    /// When present, `decide()` evaluates the action's source labels,
+    /// artifact label, and sink class against the rule set after all other
+    /// checks pass. Rules are loaded from `.nucleus/policy.toml`.
+    policy_rules: Option<PolicyRuleSet>,
     /// Optional Ed25519 signing key for receipt signing.
     ///
     /// When present, `decide_with_parents()` produces signed receipts
@@ -401,6 +419,7 @@ impl Kernel {
             flow_label: None,
             flow_graph: None,
             declassification_rules: Vec::new(),
+            policy_rules: None,
             #[cfg(feature = "crypto")]
             signing_key: None,
         }
@@ -443,6 +462,41 @@ impl Kernel {
         rule: portcullis_core::declassify::DeclassificationRule,
     ) {
         self.declassification_rules.push(rule);
+    }
+
+    /// Set the admissibility policy rules for this session.
+    ///
+    /// When set, `decide()` evaluates each action against the rule set
+    /// after capability, flow, and isolation checks pass. If a rule
+    /// matches with `Deny` verdict, the operation is denied with
+    /// `DenyReason::PolicyDenied`.
+    ///
+    /// Must be set before the session starts processing operations.
+    pub fn set_policy_rules(&mut self, rules: PolicyRuleSet) {
+        self.policy_rules = Some(rules);
+    }
+
+    /// Load admissibility policy rules from `.nucleus/policy.toml` in the given directory.
+    ///
+    /// Returns `Ok(true)` if rules were loaded, `Ok(false)` if no policy file exists,
+    /// or `Err` if the file exists but is malformed.
+    #[cfg(feature = "serde")]
+    pub fn load_policy_from_dir(
+        &mut self,
+        dir: &std::path::Path,
+    ) -> Result<bool, portcullis_core::policy_rules::PolicyLoadError> {
+        match PolicyRuleSet::load_from_dir(dir)? {
+            Some(rules) => {
+                self.policy_rules = Some(rules);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Get the current policy rules, if any.
+    pub fn policy_rules(&self) -> Option<&PolicyRuleSet> {
+        self.policy_rules.as_ref()
     }
 
     /// Set the Ed25519 signing key for receipt signing.
@@ -642,6 +696,7 @@ impl Kernel {
             flow_label: None,
             flow_graph: None,
             declassification_rules: Vec::new(),
+            policy_rules: None,
             #[cfg(feature = "crypto")]
             signing_key: None,
         }
@@ -678,6 +733,7 @@ impl Kernel {
             flow_label: None,
             flow_graph: None,
             declassification_rules: Vec::new(),
+            policy_rules: None,
             #[cfg(feature = "crypto")]
             signing_key: None,
         }
@@ -886,6 +942,64 @@ impl Kernel {
                     // Phase B: taint the session label with the operation's intrinsic
                     let intrinsic = flow::intrinsic_label(Self::node_kind_for(operation), now_unix);
                     *flow_label = flow_label.join(intrinsic);
+                }
+            }
+        }
+
+        // 6b. Policy rule check (when enabled) — after flow, before approval paths.
+        //
+        // Evaluates the action against the admissibility rule set loaded from
+        // `.nucleus/policy.toml`. Uses the session's flow label (if enabled)
+        // as both source and artifact label, and `default_sink_class(operation)`
+        // for the sink class.
+        //
+        // If flow control is not enabled, policy rules are skipped (there are
+        // no labels to evaluate against). This is intentional: policy rules
+        // operate on the IFC label lattice and are meaningless without labels.
+        if let Some(ref rules) = self.policy_rules {
+            if let Some(ref flow_label) = self.flow_label {
+                let sink = portcullis_core::default_sink_class(operation);
+                let eval = rules.evaluate(&[*flow_label], flow_label, sink);
+                match eval.verdict {
+                    RuleVerdict::Deny => {
+                        let description = if eval.matched_rule.is_some() {
+                            format!("policy rule '{}' denied this action", eval.rule_name)
+                        } else {
+                            "default-deny: no policy rule matched this action".to_string()
+                        };
+                        return self.record_with_exposure(
+                            operation,
+                            subject,
+                            Verdict::Deny(DenyReason::PolicyDenied {
+                                rule_index: eval.matched_rule,
+                                description,
+                            }),
+                            &pre_hash,
+                            pre_exposure_count,
+                            contributed_label,
+                            false,
+                            false,
+                        );
+                    }
+                    RuleVerdict::RequiresApproval => {
+                        // Policy says this needs approval — check pre-grants
+                        if !self.consume_approval(operation) {
+                            return self.record_with_exposure(
+                                operation,
+                                subject,
+                                Verdict::RequiresApproval,
+                                &pre_hash,
+                                pre_exposure_count,
+                                contributed_label,
+                                false,
+                                false,
+                            );
+                        }
+                        // Approval consumed — fall through to allow path
+                    }
+                    RuleVerdict::Allow => {
+                        // Policy explicitly allows — continue to remaining checks
+                    }
                 }
             }
         }
@@ -2601,5 +2715,345 @@ mod tests {
             "Declassified tool response should allow write, got {:?}",
             d.verdict
         );
+    }
+
+    // ── PolicyRuleSet integration tests (#657) ──────────────────────────
+
+    mod policy_integration {
+        use super::*;
+        use portcullis_core::policy_rules::{
+            AdmissibilityRule, LabelPredicate, PolicyRuleSet, RuleVerdict,
+        };
+        use portcullis_core::{IntegLevel, SinkClass};
+
+        /// Build a truly permissive lattice with NO uninhabitable constraint.
+        ///
+        /// `PermissionLattice::permissive()` calls `normalize()` which adds
+        /// approval obligations for the uninhabitable state. For policy-only
+        /// testing we need a lattice that lets everything through capability
+        /// and static approval checks so that only the policy gate is tested.
+        fn fully_permissive() -> PermissionLattice {
+            use crate::budget::BudgetLattice;
+            use crate::capability::CapabilityLattice;
+            use crate::time::TimeLattice;
+            use chrono::Duration;
+            use rust_decimal::Decimal;
+
+            PermissionLattice {
+                description: "Fully permissive (no uninhabitable constraint)".to_string(),
+                capabilities: CapabilityLattice::permissive(),
+                obligations: Default::default(),
+                budget: BudgetLattice {
+                    max_cost_usd: Decimal::from(100),
+                    max_input_tokens: 1_000_000,
+                    max_output_tokens: 100_000,
+                    ..Default::default()
+                },
+                time: TimeLattice::with_duration(Duration::hours(4)),
+                ..Default::default()
+            }
+        }
+
+        /// Helper: build a kernel with flow control enabled and a policy rule set.
+        fn kernel_with_policy(rules: PolicyRuleSet) -> Kernel {
+            let perms = fully_permissive();
+            let mut kernel = Kernel::new(perms);
+            kernel.enable_flow_control();
+            kernel.set_policy_rules(rules);
+            kernel
+        }
+
+        #[test]
+        fn policy_allows_trusted_write() {
+            let mut rules = PolicyRuleSet::new();
+            rules.push(AdmissibilityRule {
+                name: "allow workspace writes".into(),
+                source_predicate: LabelPredicate::any(),
+                artifact_predicate: LabelPredicate::any(),
+                sink_class: SinkClass::WorkspaceWrite,
+                verdict: RuleVerdict::Allow,
+            });
+            let mut kernel = kernel_with_policy(rules);
+
+            let (d, token) = kernel.decide(Operation::WriteFiles, "/workspace/foo.rs");
+            assert!(
+                d.verdict.is_allowed(),
+                "Policy should allow workspace write, got {:?}",
+                d.verdict
+            );
+            assert!(token.is_some());
+        }
+
+        #[test]
+        fn policy_denies_by_explicit_rule() {
+            let mut rules = PolicyRuleSet::new();
+            rules.push(AdmissibilityRule {
+                name: "block all git pushes".into(),
+                source_predicate: LabelPredicate::any(),
+                artifact_predicate: LabelPredicate::any(),
+                sink_class: SinkClass::GitPush,
+                verdict: RuleVerdict::Deny,
+            });
+            // Also allow workspace writes so we can verify selectivity
+            rules.push(AdmissibilityRule {
+                name: "allow workspace writes".into(),
+                source_predicate: LabelPredicate::any(),
+                artifact_predicate: LabelPredicate::any(),
+                sink_class: SinkClass::WorkspaceWrite,
+                verdict: RuleVerdict::Allow,
+            });
+
+            let mut kernel = kernel_with_policy(rules);
+
+            // GitPush should be denied by policy
+            let (d, token) = kernel.decide(Operation::GitPush, "origin/main");
+            assert!(
+                d.verdict.is_denied(),
+                "GitPush should be denied, got {:?}",
+                d.verdict
+            );
+            assert!(token.is_none());
+            match &d.verdict {
+                Verdict::Deny(DenyReason::PolicyDenied {
+                    rule_index,
+                    description,
+                }) => {
+                    assert_eq!(*rule_index, Some(0));
+                    assert!(
+                        description.contains("block all git pushes"),
+                        "Description should mention rule name: {description}"
+                    );
+                }
+                other => panic!("Expected PolicyDenied, got {:?}", other),
+            }
+
+            // WriteFiles should still be allowed
+            let (d, _) = kernel.decide(Operation::WriteFiles, "/workspace/bar.rs");
+            assert!(
+                d.verdict.is_allowed(),
+                "WriteFiles should be allowed, got {:?}",
+                d.verdict
+            );
+        }
+
+        #[test]
+        fn policy_default_deny_when_no_rule_matches() {
+            // Empty rule set = default-deny everything
+            let rules = PolicyRuleSet::new();
+            let mut kernel = kernel_with_policy(rules);
+
+            let (d, token) = kernel.decide(Operation::WriteFiles, "/workspace/foo.rs");
+            assert!(
+                d.verdict.is_denied(),
+                "Empty rule set should deny, got {:?}",
+                d.verdict
+            );
+            assert!(token.is_none());
+            match &d.verdict {
+                Verdict::Deny(DenyReason::PolicyDenied {
+                    rule_index,
+                    description,
+                }) => {
+                    assert!(rule_index.is_none(), "No rule matched");
+                    assert!(
+                        description.contains("default-deny"),
+                        "Should mention default-deny: {description}"
+                    );
+                }
+                other => panic!("Expected PolicyDenied, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn policy_requires_approval() {
+            let mut rules = PolicyRuleSet::new();
+            rules.push(AdmissibilityRule {
+                name: "egress needs approval".into(),
+                source_predicate: LabelPredicate::any(),
+                artifact_predicate: LabelPredicate::any(),
+                sink_class: SinkClass::HTTPEgress,
+                verdict: RuleVerdict::RequiresApproval,
+            });
+
+            let mut kernel = kernel_with_policy(rules);
+
+            // Without pre-granted approval, should require approval
+            let (d, token) = kernel.decide(Operation::WebFetch, "https://example.com");
+            assert!(
+                matches!(d.verdict, Verdict::RequiresApproval),
+                "Should require approval, got {:?}",
+                d.verdict
+            );
+            assert!(token.is_none());
+        }
+
+        #[test]
+        fn policy_requires_approval_with_pregrant() {
+            let mut rules = PolicyRuleSet::new();
+            rules.push(AdmissibilityRule {
+                name: "egress needs approval".into(),
+                source_predicate: LabelPredicate::any(),
+                artifact_predicate: LabelPredicate::any(),
+                sink_class: SinkClass::HTTPEgress,
+                verdict: RuleVerdict::RequiresApproval,
+            });
+
+            let mut kernel = kernel_with_policy(rules);
+            kernel.grant_approval(Operation::WebFetch, 1);
+
+            // With pre-granted approval, should be allowed
+            let (d, token) = kernel.decide(Operation::WebFetch, "https://example.com");
+            assert!(
+                d.verdict.is_allowed(),
+                "Pre-granted approval should allow, got {:?}",
+                d.verdict
+            );
+            assert!(token.is_some());
+        }
+
+        #[test]
+        fn policy_not_evaluated_without_flow_control() {
+            // When flow control is NOT enabled, policy rules should be skipped
+            // because there are no labels to evaluate against.
+            let rules = PolicyRuleSet::new(); // empty = default-deny
+            let perms = fully_permissive();
+            let mut kernel = Kernel::new(perms);
+            // Set policy but do NOT enable flow control
+            kernel.set_policy_rules(rules);
+
+            // Should be allowed (policy check skipped — no flow label)
+            let (d, _) = kernel.decide(Operation::WriteFiles, "/workspace/foo.rs");
+            assert!(
+                d.verdict.is_allowed(),
+                "Without flow control, policy should not be evaluated, got {:?}",
+                d.verdict
+            );
+        }
+
+        #[test]
+        fn policy_integrity_predicate_filters() {
+            let mut rules = PolicyRuleSet::new();
+            // Only allow git push from Trusted sources
+            rules.push(AdmissibilityRule {
+                name: "only trusted code may push".into(),
+                source_predicate: LabelPredicate {
+                    min_integrity: Some(IntegLevel::Trusted),
+                    ..LabelPredicate::any()
+                },
+                artifact_predicate: LabelPredicate {
+                    min_integrity: Some(IntegLevel::Trusted),
+                    ..LabelPredicate::any()
+                },
+                sink_class: SinkClass::GitPush,
+                verdict: RuleVerdict::Allow,
+            });
+            // Allow all workspace writes
+            rules.push(AdmissibilityRule {
+                name: "allow workspace writes".into(),
+                source_predicate: LabelPredicate::any(),
+                artifact_predicate: LabelPredicate::any(),
+                sink_class: SinkClass::WorkspaceWrite,
+                verdict: RuleVerdict::Allow,
+            });
+            // Allow HTTP egress (so WebFetch passes policy and taints the session)
+            rules.push(AdmissibilityRule {
+                name: "allow http egress".into(),
+                source_predicate: LabelPredicate::any(),
+                artifact_predicate: LabelPredicate::any(),
+                sink_class: SinkClass::HTTPEgress,
+                verdict: RuleVerdict::Allow,
+            });
+
+            let mut kernel = kernel_with_policy(rules);
+
+            // Fresh session: flow_label starts as user_prompt (Trusted, Directive).
+            // Git push should be allowed by policy (trusted label).
+            let (d, _) = kernel.decide(Operation::GitPush, "origin/main");
+            assert!(
+                d.verdict.is_allowed(),
+                "Trusted label should allow push, got {:?}",
+                d.verdict
+            );
+
+            // Now taint the session by reading web content
+            let (d, _) = kernel.decide(Operation::WebFetch, "https://evil.com");
+            assert!(d.verdict.is_allowed(), "WebFetch should be allowed");
+
+            // After web fetch, flow_label has Adversarial integrity.
+            // Git push should now be denied by policy (integrity too low).
+            let (d, _) = kernel.decide(Operation::GitPush, "origin/main");
+            assert!(
+                d.verdict.is_denied(),
+                "Tainted label should deny push, got {:?}",
+                d.verdict
+            );
+            match &d.verdict {
+                Verdict::Deny(DenyReason::PolicyDenied { description, .. }) => {
+                    assert!(
+                        description.contains("default-deny"),
+                        "Should be default-deny (predicate didn't match): {description}"
+                    );
+                }
+                // It may also be a FlowViolation from the flow check (step 6).
+                // That's also correct — flow check fires before policy.
+                Verdict::Deny(DenyReason::FlowViolation { .. }) => {
+                    // Also acceptable — flow check catches it first
+                }
+                other => panic!("Expected PolicyDenied or FlowViolation, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn policy_trace_records_denial() {
+            let mut rules = PolicyRuleSet::new();
+            rules.push(AdmissibilityRule {
+                name: "block workspace writes".into(),
+                source_predicate: LabelPredicate::any(),
+                artifact_predicate: LabelPredicate::any(),
+                sink_class: SinkClass::WorkspaceWrite,
+                verdict: RuleVerdict::Deny,
+            });
+
+            let mut kernel = kernel_with_policy(rules);
+            let (d, _) = kernel.decide(Operation::WriteFiles, "/workspace/foo.rs");
+
+            // Verify the decision is in the trace
+            assert_eq!(kernel.trace().len(), 1);
+            assert!(matches!(
+                &kernel.trace()[0].verdict,
+                Verdict::Deny(DenyReason::PolicyDenied { .. })
+            ));
+            assert_eq!(d.sequence, 0);
+        }
+
+        #[cfg(feature = "serde")]
+        #[test]
+        fn policy_loaded_from_toml() {
+            use portcullis_core::policy_rules::PolicyRuleSet;
+
+            let toml = r#"
+[[admissibility]]
+name = "allow workspace writes"
+sink_class = "workspace_write"
+verdict = "allow"
+[admissibility.source_predicate]
+[admissibility.artifact_predicate]
+
+[[admissibility]]
+name = "block git push"
+sink_class = "git_push"
+verdict = "deny"
+[admissibility.source_predicate]
+[admissibility.artifact_predicate]
+"#;
+            let rules = PolicyRuleSet::from_toml(toml).unwrap();
+            let mut kernel = kernel_with_policy(rules);
+
+            let (d, _) = kernel.decide(Operation::WriteFiles, "/workspace/foo.rs");
+            assert!(d.verdict.is_allowed(), "TOML-loaded allow rule works");
+
+            let (d, _) = kernel.decide(Operation::GitPush, "origin/main");
+            assert!(d.verdict.is_denied(), "TOML-loaded deny rule works");
+        }
     }
 }
