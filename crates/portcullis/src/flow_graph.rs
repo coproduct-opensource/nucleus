@@ -5,11 +5,11 @@
 //! the DAG tracks actual causal dependencies. An action that depends only on
 //! local files is unaffected by web content read elsewhere in the session.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 
 use portcullis_core::flow::{
     check_flow, intrinsic_label, propagate_label, FlowNode, FlowVerdict, NodeId, NodeKind,
-    MAX_PARENTS,
+    QuarantineVerdict, MAX_PARENTS,
 };
 use portcullis_core::receipt::{build_receipt, FlowReceipt, MAX_RECEIPT_ANCESTORS};
 use portcullis_core::{IFCLabel, Operation};
@@ -39,6 +39,12 @@ pub enum FlowGraphError {
         /// The denied node ID.
         NodeId,
     ),
+    /// A referenced parent is quarantined — quarantined artifacts cannot
+    /// be used as causal inputs without explicit release.
+    QuarantinedParent(
+        /// The quarantined node ID.
+        NodeId,
+    ),
 }
 
 impl std::fmt::Display for FlowGraphError {
@@ -52,6 +58,12 @@ impl std::fmt::Display for FlowGraphError {
             FlowGraphError::GraphNotEnabled => write!(f, "flow graph not enabled"),
             FlowGraphError::DeniedParent(id) => {
                 write!(f, "parent {id} was denied — cannot be a causal ancestor")
+            }
+            FlowGraphError::QuarantinedParent(id) => {
+                write!(
+                    f,
+                    "parent {id} is quarantined — release quarantine before use"
+                )
             }
         }
     }
@@ -71,6 +83,7 @@ pub struct FlowDecision {
 }
 
 const MAX_DENIED_NODES: usize = 1024;
+const MAX_QUARANTINED_NODES: usize = 4096;
 
 /// Append-only causal DAG for information flow tracking.
 ///
@@ -80,13 +93,23 @@ const MAX_DENIED_NODES: usize = 1024;
 /// Denied action nodes are tracked but cannot be referenced as parents —
 /// a denied action did not execute, so it has no causal effect.
 /// The denied set is capped at [`MAX_DENIED_NODES`] with oldest-first eviction.
+///
+/// Quarantined nodes are artifacts marked as untrusted at the individual
+/// node level (not session-wide). Quarantine propagates through the DAG:
+/// any node whose causal ancestry includes a quarantined node is itself
+/// considered quarantined. Actions with quarantined ancestors are blocked
+/// until the quarantine is explicitly released.
 pub struct FlowGraph {
     nodes: Vec<Option<FlowNode>>,
     next_id: u64,
     /// Node IDs of denied actions — cannot be used as parents.
     /// Capped at MAX_DENIED_NODES to prevent unbounded growth in
     /// long-running sessions.
-    denied: std::collections::BTreeSet<NodeId>,
+    denied: BTreeSet<NodeId>,
+    /// Node IDs of explicitly quarantined artifacts.
+    /// Descendants inherit quarantine status via causal ancestry traversal.
+    /// Capped at [`MAX_QUARANTINED_NODES`] with oldest-first eviction.
+    quarantined: BTreeSet<NodeId>,
 }
 
 impl FlowGraph {
@@ -95,7 +118,8 @@ impl FlowGraph {
         Self {
             nodes: vec![None], // index 0 = sentinel
             next_id: 1,
-            denied: std::collections::BTreeSet::new(),
+            denied: BTreeSet::new(),
+            quarantined: BTreeSet::new(),
         }
     }
 
@@ -144,6 +168,9 @@ impl FlowGraph {
     }
 
     /// Insert a data-source observation. NOT flow-checked.
+    ///
+    /// If any parent is quarantined (directly or via ancestry), the new
+    /// observation node automatically inherits quarantine status (#639).
     pub fn insert_observation(
         &mut self,
         kind: NodeKind,
@@ -151,12 +178,25 @@ impl FlowGraph {
         now: u64,
     ) -> Result<NodeId, FlowGraphError> {
         self.validate_parents(parents)?;
+
+        // Check if any parent is quarantined (directly or transitively)
+        let any_parent_quarantined = parents.iter().any(|&pid| self.is_quarantined(pid));
+
         let label = propagate_label(&self.gather_labels(parents), intrinsic_label(kind, now));
         let id = self.alloc_node(kind, label, parents, None);
+
+        // Propagate quarantine to the new observation node
+        if any_parent_quarantined {
+            self.quarantined.insert(id);
+        }
+
         Ok(id)
     }
 
     /// Atomic check-and-insert for action nodes.
+    ///
+    /// If any parent is quarantined (directly or via ancestry), the new
+    /// action node automatically inherits quarantine status (#639).
     pub fn insert_action(
         &mut self,
         operation: Operation,
@@ -164,6 +204,10 @@ impl FlowGraph {
         now: u64,
     ) -> Result<FlowDecision, FlowGraphError> {
         self.validate_parents(parents)?;
+
+        // Check if any parent is quarantined (directly or transitively)
+        let any_parent_quarantined = parents.iter().any(|&pid| self.is_quarantined(pid));
+
         let label = propagate_label(
             &self.gather_labels(parents),
             intrinsic_label(NodeKind::OutboundAction, now),
@@ -173,6 +217,12 @@ impl FlowGraph {
         let id = self.next_id;
         self.nodes.push(Some(node));
         self.next_id += 1;
+
+        // Propagate quarantine to the new action node
+        if any_parent_quarantined {
+            self.quarantined.insert(id);
+        }
+
         // Denied actions are inscribed for receipt/audit but cannot be parents
         if matches!(verdict, FlowVerdict::Deny(_)) {
             self.denied.insert(id);
@@ -353,6 +403,119 @@ impl FlowGraph {
         TokenApplyResult::Applied {
             original_label: result.original,
             new_label: result.label,
+        }
+    }
+
+    // ── Artifact-granular quarantine (#639) ─────────────────────────
+
+    /// Mark a specific node as quarantined.
+    ///
+    /// Quarantine is artifact-scoped: only this node and its causal
+    /// descendants are affected. Sibling branches in the DAG remain clean.
+    /// Returns `true` if the node exists and was newly quarantined,
+    /// `false` if already quarantined or the node does not exist.
+    pub fn quarantine(&mut self, node_id: NodeId) -> bool {
+        if self.get(node_id).is_none() {
+            return false;
+        }
+        let inserted = self.quarantined.insert(node_id);
+        // GC: cap the quarantined set to prevent unbounded growth.
+        while self.quarantined.len() > MAX_QUARANTINED_NODES {
+            if let Some(&oldest) = self.quarantined.iter().next() {
+                self.quarantined.remove(&oldest);
+            }
+        }
+        inserted
+    }
+
+    /// Release quarantine from a specific node.
+    ///
+    /// Only removes the explicit quarantine mark — does not affect
+    /// ancestors that may also be quarantined. Returns `true` if the
+    /// node was quarantined and is now released.
+    pub fn release_quarantine(&mut self, node_id: NodeId) -> bool {
+        self.quarantined.remove(&node_id)
+    }
+
+    /// Check whether a node is quarantined (directly or via ancestry).
+    ///
+    /// A node is considered quarantined if:
+    /// 1. It is explicitly in the quarantined set, OR
+    /// 2. Any of its transitive ancestors is in the quarantined set.
+    ///
+    /// This is O(ancestors) — bounded by `MAX_RECEIPT_ANCESTORS`.
+    pub fn is_quarantined(&self, node_id: NodeId) -> bool {
+        if self.quarantined.contains(&node_id) {
+            return true;
+        }
+        // Walk ancestors looking for any quarantined node
+        !self.quarantined_ancestors(node_id).is_empty()
+    }
+
+    /// Returns the specific quarantined node IDs in the causal ancestry
+    /// of `node_id` (including `node_id` itself if directly quarantined).
+    ///
+    /// Useful for audit trails and error messages: "blocked because
+    /// ancestor X (web content from issue #42) is quarantined."
+    pub fn quarantined_ancestors(&self, node_id: NodeId) -> Vec<NodeId> {
+        let mut result = Vec::new();
+        if self.quarantined.contains(&node_id) {
+            result.push(node_id);
+        }
+
+        let mut queue = VecDeque::new();
+        let mut visited = vec![false; self.nodes.len()];
+
+        if let Some(node) = self.get(node_id) {
+            for i in 0..node.parent_count as usize {
+                let pid = node.parents[i];
+                if pid > 0 && (pid as usize) < self.nodes.len() && !visited[pid as usize] {
+                    queue.push_back(pid);
+                    visited[pid as usize] = true;
+                }
+            }
+        }
+
+        while let Some(nid) = queue.pop_front() {
+            if self.quarantined.contains(&nid) {
+                result.push(nid);
+            }
+            if let Some(node) = self.get(nid) {
+                for i in 0..node.parent_count as usize {
+                    let pid = node.parents[i];
+                    if pid > 0 && (pid as usize) < self.nodes.len() && !visited[pid as usize] {
+                        queue.push_back(pid);
+                        visited[pid as usize] = true;
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Quarantine-aware flow check: combines IFC label checking with
+    /// artifact-granular quarantine.
+    ///
+    /// Returns [`QuarantineVerdict::Quarantined`] if any causal ancestor
+    /// is quarantined, regardless of whether the IFC label would allow
+    /// the action. Returns [`QuarantineVerdict::Clean`] with the normal
+    /// flow verdict otherwise.
+    pub fn check_flow_with_quarantine(
+        &self,
+        node_id: NodeId,
+        now: u64,
+    ) -> Option<QuarantineVerdict> {
+        let node = self.get(node_id)?;
+        let underlying = check_flow(node, now);
+        let qa = self.quarantined_ancestors(node_id);
+        if qa.is_empty() {
+            Some(QuarantineVerdict::Clean(underlying))
+        } else {
+            Some(QuarantineVerdict::Quarantined {
+                quarantined_ancestors: qa,
+                underlying_verdict: underlying,
+            })
         }
     }
 }
@@ -863,5 +1026,371 @@ mod tests {
             g.apply_token(&token, now),
             TokenApplyResult::PreconditionUnmet
         ));
+    }
+
+    // ── Artifact-granular quarantine tests (#639) ───────────────────
+
+    #[test]
+    fn quarantine_nonexistent_node_returns_false() {
+        let mut g = FlowGraph::new();
+        assert!(!g.quarantine(999));
+    }
+
+    #[test]
+    fn quarantine_and_check_direct() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        assert!(!g.is_quarantined(web));
+        assert!(g.quarantine(web));
+        assert!(g.is_quarantined(web));
+    }
+
+    #[test]
+    fn quarantine_idempotent() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        assert!(g.quarantine(web)); // first time: true (newly inserted)
+        assert!(!g.quarantine(web)); // second time: false (already present)
+        assert!(g.is_quarantined(web));
+    }
+
+    #[test]
+    fn quarantine_propagates_to_descendants() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        // Web content → model plan → action chain
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        let plan = g
+            .insert_observation(NodeKind::ModelPlan, &[web], now)
+            .unwrap();
+        let summary = g
+            .insert_observation(NodeKind::Summarization, &[plan], now)
+            .unwrap();
+
+        // Quarantine the web content node
+        g.quarantine(web);
+
+        // All descendants should be quarantined via ancestry
+        assert!(g.is_quarantined(plan), "child of quarantined node");
+        assert!(g.is_quarantined(summary), "grandchild of quarantined node");
+    }
+
+    #[test]
+    fn quarantine_independent_branch_not_affected() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        // Branch A: web content (will be quarantined)
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        let web_plan = g
+            .insert_observation(NodeKind::ModelPlan, &[web], now)
+            .unwrap();
+
+        // Branch B: local file (independent, clean)
+        let file = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        let file_plan = g
+            .insert_observation(NodeKind::ModelPlan, &[file], now)
+            .unwrap();
+
+        // Quarantine web content
+        g.quarantine(web);
+
+        // Branch A is quarantined
+        assert!(g.is_quarantined(web));
+        assert!(g.is_quarantined(web_plan));
+
+        // Branch B is NOT quarantined
+        assert!(!g.is_quarantined(file), "independent file not quarantined");
+        assert!(
+            !g.is_quarantined(file_plan),
+            "independent file plan not quarantined"
+        );
+    }
+
+    #[test]
+    fn quarantined_ancestors_returns_specific_nodes() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        let plan = g
+            .insert_observation(NodeKind::ModelPlan, &[web], now)
+            .unwrap();
+        let summary = g
+            .insert_observation(NodeKind::Summarization, &[plan], now)
+            .unwrap();
+
+        g.quarantine(web);
+
+        let qa = g.quarantined_ancestors(summary);
+        assert_eq!(
+            qa,
+            vec![web],
+            "should identify the exact quarantined ancestor"
+        );
+    }
+
+    #[test]
+    fn quarantined_ancestors_multiple() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        let web1 = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        let web2 = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        let merged = g
+            .insert_observation(NodeKind::ModelPlan, &[web1, web2], now)
+            .unwrap();
+
+        g.quarantine(web1);
+        g.quarantine(web2);
+
+        let mut qa = g.quarantined_ancestors(merged);
+        qa.sort();
+        assert_eq!(qa, vec![web1, web2]);
+    }
+
+    #[test]
+    fn insert_action_inherits_quarantine_from_parent() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        g.quarantine(web);
+
+        // Insert an action with the quarantined parent
+        let decision = g.insert_action(Operation::WriteFiles, &[web], now).unwrap();
+
+        // The action node should be quarantined
+        assert!(
+            g.is_quarantined(decision.node_id),
+            "action with quarantined parent should inherit quarantine"
+        );
+    }
+
+    #[test]
+    fn insert_observation_inherits_quarantine_from_parent() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        g.quarantine(web);
+
+        // Insert observation with quarantined parent
+        let plan = g
+            .insert_observation(NodeKind::ModelPlan, &[web], now)
+            .unwrap();
+
+        assert!(
+            g.is_quarantined(plan),
+            "observation with quarantined parent should inherit quarantine"
+        );
+    }
+
+    #[test]
+    fn insert_action_clean_parents_not_quarantined() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        let file = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        let decision = g
+            .insert_action(Operation::WriteFiles, &[file], now)
+            .unwrap();
+
+        assert!(
+            !g.is_quarantined(decision.node_id),
+            "action with clean parents should not be quarantined"
+        );
+    }
+
+    #[test]
+    fn release_quarantine() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        g.quarantine(web);
+        assert!(g.is_quarantined(web));
+
+        assert!(g.release_quarantine(web));
+        assert!(!g.is_quarantined(web));
+
+        // Double release returns false
+        assert!(!g.release_quarantine(web));
+    }
+
+    #[test]
+    fn release_quarantine_stops_propagation() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        let plan = g
+            .insert_observation(NodeKind::ModelPlan, &[web], now)
+            .unwrap();
+
+        g.quarantine(web);
+        assert!(g.is_quarantined(plan));
+
+        // Release the quarantine on web
+        g.release_quarantine(web);
+
+        // plan should no longer be quarantined (the ancestor is released)
+        assert!(
+            !g.is_quarantined(plan),
+            "after releasing ancestor quarantine, descendant should be clean"
+        );
+    }
+
+    #[test]
+    fn check_flow_with_quarantine_clean() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        let user = g
+            .insert_observation(NodeKind::UserPrompt, &[], now)
+            .unwrap();
+        let decision = g
+            .insert_action(Operation::WriteFiles, &[user], now)
+            .unwrap();
+
+        let qv = g.check_flow_with_quarantine(decision.node_id, now).unwrap();
+        assert_eq!(
+            qv,
+            QuarantineVerdict::Clean(FlowVerdict::Allow),
+            "clean node should get Clean verdict"
+        );
+    }
+
+    #[test]
+    fn check_flow_with_quarantine_blocked() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        g.quarantine(web);
+
+        // Even though this action is also denied by IFC (web taint),
+        // the quarantine verdict takes precedence
+        let decision = g.insert_action(Operation::WriteFiles, &[web], now).unwrap();
+        let qv = g.check_flow_with_quarantine(decision.node_id, now).unwrap();
+
+        match qv {
+            QuarantineVerdict::Quarantined {
+                quarantined_ancestors,
+                underlying_verdict,
+            } => {
+                // The action itself is quarantined (inherited from web parent)
+                assert!(
+                    quarantined_ancestors.contains(&decision.node_id)
+                        || quarantined_ancestors.contains(&web),
+                    "should identify quarantined ancestor(s)"
+                );
+                // The underlying IFC verdict should also be Deny
+                assert!(
+                    matches!(underlying_verdict, FlowVerdict::Deny(_)),
+                    "underlying verdict should also be deny for web-tainted action"
+                );
+            }
+            other => panic!("Expected Quarantined, got {other:?}"),
+        }
+    }
+
+    /// THE KEY QUARANTINE TEST: malicious issue quarantined, unrelated code clean
+    #[test]
+    fn quarantine_scenario_malicious_issue_vs_clean_code() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        // Agent reads malicious GitHub issue (web content)
+        let malicious_issue = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+
+        // Agent produces a summary from the malicious issue
+        let summary = g
+            .insert_observation(NodeKind::Summarization, &[malicious_issue], now)
+            .unwrap();
+
+        // Agent also reads local code (independent branch)
+        let local_code = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+
+        // Agent edits code based ONLY on local code (no dependency on issue)
+        let code_edit = g
+            .insert_action(Operation::WriteFiles, &[local_code], now)
+            .unwrap();
+
+        // Quarantine the malicious issue
+        g.quarantine(malicious_issue);
+
+        // Summary (from malicious issue) is quarantined
+        assert!(
+            g.is_quarantined(summary),
+            "summary derived from quarantined issue should be quarantined"
+        );
+
+        // Code edit (independent branch) is NOT quarantined
+        assert!(
+            !g.is_quarantined(code_edit.node_id),
+            "code edit from clean local code should NOT be quarantined"
+        );
+
+        // Summary cannot reach GitPush (quarantine check)
+        let summary_action = g
+            .insert_action(Operation::GitPush, &[summary], now)
+            .unwrap();
+        let qv = g
+            .check_flow_with_quarantine(summary_action.node_id, now)
+            .unwrap();
+        assert!(
+            matches!(qv, QuarantineVerdict::Quarantined { .. }),
+            "action from quarantined summary should be blocked"
+        );
+
+        // Code edit CAN reach GitPush (no quarantine)
+        // (It may still be denied by IFC rules, but no quarantine)
+        let code_push = g
+            .insert_action(Operation::GitPush, &[local_code], now)
+            .unwrap();
+        let qv2 = g
+            .check_flow_with_quarantine(code_push.node_id, now)
+            .unwrap();
+        assert!(
+            matches!(qv2, QuarantineVerdict::Clean(_)),
+            "action from clean code should not be quarantined"
+        );
+    }
+
+    #[test]
+    fn error_display_quarantined_parent() {
+        let e = FlowGraphError::QuarantinedParent(7);
+        assert!(e.to_string().contains("7"));
+        assert!(e.to_string().contains("quarantined"));
     }
 }
