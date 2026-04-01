@@ -204,12 +204,13 @@ pub enum ManifestPolicy {
 }
 
 /// Result of admission control check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdmissionVerdict {
     /// Tool is admitted.
     Admit,
-    /// Tool is rejected with ALL reasons (not just the first).
-    Reject(AdmissionDenyReason),
+    /// Tool is rejected with ALL matching deny reasons.
+    /// Every violated rule is reported so operators can fix all issues at once.
+    Reject(Vec<AdmissionDenyReason>),
 }
 
 /// Check if a tool manifest should be admitted.
@@ -220,9 +221,11 @@ pub enum AdmissionVerdict {
 /// **Limitation**: This checks the manifest, not the tool's behavior.
 /// A tool that lies in its manifest will pass admission.
 pub fn check_admission(manifest: &ToolManifest) -> AdmissionVerdict {
+    let mut reasons = Vec::new();
+
     // Rule 1: Must declare at least one capability
     if manifest.capabilities.is_empty() {
-        return AdmissionVerdict::Reject(AdmissionDenyReason::EmptyCapabilities);
+        reasons.push(AdmissionDenyReason::EmptyCapabilities);
     }
 
     // Rule 2: Remote fetch + unlabeled instruction sources = reject
@@ -232,7 +235,7 @@ pub fn check_admission(manifest: &ToolManifest) -> AdmissionVerdict {
             .iter()
             .any(|s| matches!(s, InstructionSource::Unlabeled));
         if has_unlabeled {
-            return AdmissionVerdict::Reject(AdmissionDenyReason::RemoteFetchUnlabeledInstructions);
+            reasons.push(AdmissionDenyReason::RemoteFetchUnlabeledInstructions);
         }
     }
 
@@ -242,12 +245,12 @@ pub fn check_admission(manifest: &ToolManifest) -> AdmissionVerdict {
         .iter()
         .any(|s| matches!(s, SinkClass::ExternalNetwork));
     if has_external_sink && !manifest.remote_fetch {
-        return AdmissionVerdict::Reject(AdmissionDenyReason::UndeclaredExternalSink);
+        reasons.push(AdmissionDenyReason::UndeclaredExternalSink);
     }
 
     // Rule 4: Trusted output cannot come from remote-fetching tools
     if manifest.remote_fetch && manifest.output_integrity == IntegLevel::Trusted {
-        return AdmissionVerdict::Reject(AdmissionDenyReason::TrustedOutputFromRemote);
+        reasons.push(AdmissionDenyReason::TrustedOutputFromRemote);
     }
 
     // Rule 5: Directive authority cannot come from transitive instruction sources
@@ -256,14 +259,12 @@ pub fn check_admission(manifest: &ToolManifest) -> AdmissionVerdict {
         .iter()
         .any(|s| matches!(s, InstructionSource::TransitiveTool));
     if has_transitive && manifest.output_authority == AuthorityLevel::Directive {
-        return AdmissionVerdict::Reject(AdmissionDenyReason::DirectiveFromTransitive);
+        reasons.push(AdmissionDenyReason::DirectiveFromTransitive);
     }
 
     // Rule 6: authority_to_instruct requires Directive output_authority
-    // A tool that claims its output can steer agent behavior must also
-    // declare Directive authority. Otherwise it's a covert instruction channel.
     if manifest.authority_to_instruct && manifest.output_authority < AuthorityLevel::Suggestive {
-        return AdmissionVerdict::Reject(AdmissionDenyReason::InstructionWithoutAuthority);
+        reasons.push(AdmissionDenyReason::InstructionWithoutAuthority);
     }
 
     // Rule 7: Remote fetch with authority_to_instruct from untrusted sources
@@ -274,11 +275,15 @@ pub fn check_admission(manifest: &ToolManifest) -> AdmissionVerdict {
             .iter()
             .any(|s| !matches!(s, InstructionSource::UserPrompt | InstructionSource::Static));
         if has_untrusted_source {
-            return AdmissionVerdict::Reject(AdmissionDenyReason::InstructionFromUntrustedRemote);
+            reasons.push(AdmissionDenyReason::InstructionFromUntrustedRemote);
         }
     }
 
-    AdmissionVerdict::Admit
+    if reasons.is_empty() {
+        AdmissionVerdict::Admit
+    } else {
+        AdmissionVerdict::Reject(reasons)
+    }
 }
 
 /// Check admission for a tool, applying the manifest policy for tools
@@ -297,7 +302,7 @@ pub fn check_admission_with_policy(
         Some(m) => check_admission(m),
         None => match policy {
             ManifestPolicy::DefaultDeny => {
-                AdmissionVerdict::Reject(AdmissionDenyReason::NoManifest)
+                AdmissionVerdict::Reject(vec![AdmissionDenyReason::NoManifest])
             }
             ManifestPolicy::DefaultAllow => AdmissionVerdict::Admit,
         },
@@ -351,10 +356,12 @@ mod kani_proofs {
             memory_behavior: MemoryBehavior::None,
             allowed_compartments: vec![],
         };
-        assert!(matches!(
-            check_admission(&manifest),
-            AdmissionVerdict::Reject(AdmissionDenyReason::EmptyCapabilities)
-        ));
+        match check_admission(&manifest) {
+            AdmissionVerdict::Reject(reasons) => {
+                assert!(reasons.contains(&AdmissionDenyReason::EmptyCapabilities));
+            }
+            AdmissionVerdict::Admit => panic!("should reject empty capabilities"),
+        }
     }
 
     /// **M2 — Remote fetch + unlabeled instructions always rejected.**
@@ -399,10 +406,12 @@ mod kani_proofs {
             memory_behavior: MemoryBehavior::None,
             allowed_compartments: vec![],
         };
-        assert!(matches!(
-            check_admission(&manifest),
-            AdmissionVerdict::Reject(AdmissionDenyReason::TrustedOutputFromRemote)
-        ));
+        match check_admission(&manifest) {
+            AdmissionVerdict::Reject(reasons) => {
+                assert!(reasons.contains(&AdmissionDenyReason::TrustedOutputFromRemote));
+            }
+            AdmissionVerdict::Admit => panic!("should reject trusted from remote"),
+        }
     }
 
     /// **M4 — Directive from transitive always rejected.**
@@ -503,7 +512,7 @@ mod tests {
         m.capabilities.clear();
         assert_eq!(
             check_admission(&m),
-            AdmissionVerdict::Reject(AdmissionDenyReason::EmptyCapabilities)
+            AdmissionVerdict::Reject(vec![AdmissionDenyReason::EmptyCapabilities])
         );
     }
 
@@ -514,7 +523,7 @@ mod tests {
         m.instruction_sources.push(InstructionSource::Unlabeled);
         assert_eq!(
             check_admission(&m),
-            AdmissionVerdict::Reject(AdmissionDenyReason::RemoteFetchUnlabeledInstructions)
+            AdmissionVerdict::Reject(vec![AdmissionDenyReason::RemoteFetchUnlabeledInstructions])
         );
     }
 
@@ -524,7 +533,7 @@ mod tests {
         m.admissible_sinks.push(SinkClass::ExternalNetwork);
         assert_eq!(
             check_admission(&m),
-            AdmissionVerdict::Reject(AdmissionDenyReason::UndeclaredExternalSink)
+            AdmissionVerdict::Reject(vec![AdmissionDenyReason::UndeclaredExternalSink])
         );
     }
 
@@ -535,7 +544,7 @@ mod tests {
         m.output_integrity = IntegLevel::Trusted;
         assert_eq!(
             check_admission(&m),
-            AdmissionVerdict::Reject(AdmissionDenyReason::TrustedOutputFromRemote)
+            AdmissionVerdict::Reject(vec![AdmissionDenyReason::TrustedOutputFromRemote])
         );
     }
 
@@ -547,7 +556,7 @@ mod tests {
         m.output_authority = AuthorityLevel::Directive;
         assert_eq!(
             check_admission(&m),
-            AdmissionVerdict::Reject(AdmissionDenyReason::DirectiveFromTransitive)
+            AdmissionVerdict::Reject(vec![AdmissionDenyReason::DirectiveFromTransitive])
         );
     }
 
@@ -560,16 +569,31 @@ mod tests {
     }
 
     #[test]
-    fn rejects_poisoned_tool_manifest() {
+    fn rejects_poisoned_tool_manifest_with_all_reasons() {
+        // A manifest with multiple violations now reports ALL of them (#591)
         let mut m = base_manifest();
         m.remote_fetch = true;
         m.instruction_sources.push(InstructionSource::RemoteUrl);
         m.instruction_sources.push(InstructionSource::Unlabeled);
-        m.output_authority = AuthorityLevel::Directive;
-        assert_eq!(
-            check_admission(&m),
-            AdmissionVerdict::Reject(AdmissionDenyReason::RemoteFetchUnlabeledInstructions)
-        );
+        m.output_integrity = IntegLevel::Trusted;
+        match check_admission(&m) {
+            AdmissionVerdict::Reject(reasons) => {
+                assert!(
+                    reasons.contains(&AdmissionDenyReason::RemoteFetchUnlabeledInstructions),
+                    "should report unlabeled instructions"
+                );
+                assert!(
+                    reasons.contains(&AdmissionDenyReason::TrustedOutputFromRemote),
+                    "should report trusted from remote"
+                );
+                assert!(
+                    reasons.len() >= 2,
+                    "should have at least 2 reasons, got {}",
+                    reasons.len()
+                );
+            }
+            AdmissionVerdict::Admit => panic!("should reject poisoned manifest"),
+        }
     }
 
     #[test]
@@ -592,7 +616,7 @@ mod tests {
         let verdict = check_admission_with_policy(None, ManifestPolicy::DefaultDeny);
         assert_eq!(
             verdict,
-            AdmissionVerdict::Reject(AdmissionDenyReason::NoManifest)
+            AdmissionVerdict::Reject(vec![AdmissionDenyReason::NoManifest])
         );
     }
 
@@ -616,7 +640,7 @@ mod tests {
         let verdict = check_admission_with_policy(Some(&m), ManifestPolicy::DefaultDeny);
         assert_eq!(
             verdict,
-            AdmissionVerdict::Reject(AdmissionDenyReason::EmptyCapabilities)
+            AdmissionVerdict::Reject(vec![AdmissionDenyReason::EmptyCapabilities])
         );
     }
 

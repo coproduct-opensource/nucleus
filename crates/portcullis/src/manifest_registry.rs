@@ -34,8 +34,8 @@ use serde::Deserialize;
 pub struct ManifestRegistry {
     /// Admitted tools: MCP tool name → manifest.
     tools: BTreeMap<String, ToolManifest>,
-    /// Rejected tools: MCP tool name → reason.
-    rejected: BTreeMap<String, AdmissionDenyReason>,
+    /// Rejected tools: MCP tool name → all deny reasons.
+    rejected: BTreeMap<String, Vec<AdmissionDenyReason>>,
     /// Tools with invalid or missing signatures (when trust store is present).
     unsigned: Vec<String>,
 }
@@ -247,8 +247,8 @@ impl ManifestRegistry {
             AdmissionVerdict::Admit => {
                 self.tools.insert(name, manifest);
             }
-            AdmissionVerdict::Reject(reason) => {
-                self.rejected.insert(name, reason);
+            AdmissionVerdict::Reject(reasons) => {
+                self.rejected.insert(name, reasons);
             }
         }
     }
@@ -267,8 +267,9 @@ impl ManifestRegistry {
     }
 
     /// Check if a tool was rejected during admission.
-    pub fn is_rejected(&self, tool_name: &str) -> Option<AdmissionDenyReason> {
-        self.rejected.get(tool_name).copied()
+    /// Returns the list of all deny reasons (empty vec = not rejected).
+    pub fn is_rejected(&self, tool_name: &str) -> Option<&[AdmissionDenyReason]> {
+        self.rejected.get(tool_name).map(|v| v.as_slice())
     }
 
     /// Number of admitted tools.
@@ -429,10 +430,10 @@ capabilities = []
         registry.load_toml(toml);
 
         assert_eq!(registry.admitted_count(), 0);
-        assert_eq!(
-            registry.is_rejected("empty_tool"),
-            Some(AdmissionDenyReason::EmptyCapabilities)
-        );
+        assert!(registry
+            .is_rejected("empty_tool")
+            .unwrap()
+            .contains(&AdmissionDenyReason::EmptyCapabilities));
     }
 
     #[test]
@@ -451,10 +452,10 @@ output_authority = "informational"
         registry.load_toml(toml);
 
         assert_eq!(registry.admitted_count(), 0);
-        assert_eq!(
-            registry.is_rejected("lying_tool"),
-            Some(AdmissionDenyReason::TrustedOutputFromRemote)
-        );
+        assert!(registry
+            .is_rejected("lying_tool")
+            .unwrap()
+            .contains(&AdmissionDenyReason::TrustedOutputFromRemote));
     }
 
     #[test]
@@ -493,9 +494,9 @@ admissible_sinks = ["unknown_sink_type"]
         // Unknown sink maps to ExternalNetwork (most dangerous)
         // But remote_fetch=false + ExternalNetwork sink → rejected (Rule 3)
         assert_eq!(registry.admitted_count(), 0);
-        assert_eq!(
-            registry.is_rejected("weird_tool"),
-            Some(AdmissionDenyReason::UndeclaredExternalSink)
-        );
+        assert!(registry
+            .is_rejected("weird_tool")
+            .unwrap()
+            .contains(&AdmissionDenyReason::UndeclaredExternalSink));
     }
 }
