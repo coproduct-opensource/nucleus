@@ -183,6 +183,25 @@ pub struct VerifiedPermissions {
     pub sink_scope: SinkScope,
 }
 
+impl VerifiedPermissions {
+    /// Construct verified permissions (typically from certificate chain verification).
+    pub fn new(
+        effective: PermissionLattice,
+        chain_depth: usize,
+        root_identity: String,
+        leaf_identity: String,
+        sink_scope: SinkScope,
+    ) -> Self {
+        Self {
+            effective,
+            chain_depth,
+            root_identity,
+            leaf_identity,
+            sink_scope,
+        }
+    }
+}
+
 impl fmt::Debug for VerifiedPermissions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("VerifiedPermissions")

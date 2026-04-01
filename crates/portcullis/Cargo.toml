@@ -93,3 +93,11 @@ kani = "0.0.1"
 [[test]]
 name = "example_policies"
 required-features = ["spec"]
+
+[[test]]
+name = "kernel_egress"
+required-features = ["spec"]
+
+[[test]]
+name = "kernel_token"
+required-features = ["crypto"]
