@@ -1168,7 +1168,20 @@ fn generate_compartment_token() -> String {
     use ring::rand::SecureRandom;
     let rng = ring::rand::SystemRandom::new();
     let mut bytes = [0u8; 16];
-    rng.fill(&mut bytes).expect("SystemRandom failed");
+    if let Err(e) = rng.fill(&mut bytes) {
+        eprintln!("nucleus: WARNING — SystemRandom failed: {e}. Using fallback token.");
+        // Fallback: use process ID + timestamp as low-entropy token.
+        // Not cryptographically secure, but prevents a panic in the hot path (#481).
+        let fallback = format!(
+            "{:016x}{:016x}",
+            std::process::id() as u64,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64
+        );
+        return fallback;
+    }
     hex::encode(bytes)
 }
 
@@ -1946,6 +1959,7 @@ fn run_help() {
     println!("  NUCLEUS_COMPARTMENT        Compartment: research, draft, execute, breakglass");
     println!("  NUCLEUS_FAIL_CLOSED        Set to 1: infrastructure errors block (CISO mode)");
     println!("  NUCLEUS_REQUIRE_MANIFESTS  Set to 1: deny MCP tools without manifests");
+    println!("  NUCLEUS_AUTONOMY_CEILING   Org cap: production, sandbox (default: unrestricted)");
     println!();
     println!("COMPARTMENTS:");
     println!("  research    Read + web only (no writes, no execution)");
@@ -2556,6 +2570,47 @@ fn main() {
         perms
     };
 
+    // Apply organizational autonomy ceiling (#482).
+    // NUCLEUS_AUTONOMY_CEILING controls the org-wide cap:
+    //   "production" — no git push/PR, writes at LowRisk
+    //   "sandbox"    — read-only, no execution
+    //   (unset)      — unrestricted (no organizational cap)
+    let effective_perms = match std::env::var("NUCLEUS_AUTONOMY_CEILING").ok().as_deref() {
+        Some("production") | Some("sandbox") => {
+            let core_ceiling =
+                if std::env::var("NUCLEUS_AUTONOMY_CEILING").as_deref() == Ok("sandbox") {
+                    let c = portcullis_core::autonomy::AutonomyCeiling::sandbox();
+                    eprintln!("nucleus: autonomy ceiling: sandbox (read-only)");
+                    c.capabilities
+                } else {
+                    let c = portcullis_core::autonomy::AutonomyCeiling::production();
+                    eprintln!("nucleus: autonomy ceiling: production (no push/PR)");
+                    c.capabilities
+                };
+            // Convert portcullis_core::CapabilityLattice to portcullis::CapabilityLattice
+            let ceiling = portcullis::CapabilityLattice {
+                read_files: core_ceiling.read_files,
+                write_files: core_ceiling.write_files,
+                edit_files: core_ceiling.edit_files,
+                run_bash: core_ceiling.run_bash,
+                glob_search: core_ceiling.glob_search,
+                grep_search: core_ceiling.grep_search,
+                web_search: core_ceiling.web_search,
+                web_fetch: core_ceiling.web_fetch,
+                git_commit: core_ceiling.git_commit,
+                git_push: core_ceiling.git_push,
+                create_pr: core_ceiling.create_pr,
+                manage_pods: core_ceiling.manage_pods,
+                spawn_agent: core_ceiling.spawn_agent,
+                ..Default::default()
+            };
+            let mut capped = effective_perms;
+            capped.capabilities = capped.capabilities.meet(&ceiling);
+            capped
+        }
+        _ => effective_perms,
+    };
+
     let mut kernel = Kernel::new(effective_perms);
     kernel.enable_flow_graph();
 
@@ -2633,14 +2688,29 @@ fn main() {
 
     // Get or create the session's signing key.
     // Ephemeral per session — generated once, persisted in session state.
-    let signing_key = if session.signing_key_pkcs8.is_empty() {
+    // If key generation fails (low entropy, sandboxed env), proceed without
+    // signing rather than panicking the security gate (#481).
+    let signing_key: Option<Ed25519KeyPair> = if session.signing_key_pkcs8.is_empty() {
         let rng = SystemRandom::new();
-        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).expect("Ed25519 key generation failed");
-        session.signing_key_pkcs8 = pkcs8.as_ref().to_vec();
-        Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).expect("Ed25519 key from PKCS#8 failed")
+        match Ed25519KeyPair::generate_pkcs8(&rng) {
+            Ok(pkcs8) => {
+                session.signing_key_pkcs8 = pkcs8.as_ref().to_vec();
+                Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).ok()
+            }
+            Err(e) => {
+                eprintln!("nucleus: WARNING — Ed25519 key generation failed: {e}. Receipts will be unsigned.");
+                None
+            }
+        }
     } else {
-        Ed25519KeyPair::from_pkcs8(&session.signing_key_pkcs8)
-            .expect("Ed25519 key from stored PKCS#8 failed")
+        match Ed25519KeyPair::from_pkcs8(&session.signing_key_pkcs8) {
+            Ok(key) => Some(key),
+            Err(e) => {
+                eprintln!("nucleus: WARNING — stored signing key corrupted: {e}. Receipts will be unsigned.");
+                session.signing_key_pkcs8.clear(); // Don't reuse corrupted key
+                None
+            }
+        }
     };
 
     // Build a receipt from the flow graph's action node (if available).
@@ -2674,7 +2744,9 @@ fn main() {
                 id
             };
             receipt.set_chain_id(chain_id);
-            sign_receipt(&mut receipt, &signing_key);
+            if let Some(ref key) = signing_key {
+                sign_receipt(&mut receipt, key);
+            }
             Some(receipt)
         })
     });
@@ -2810,7 +2882,14 @@ fn main() {
     }
 
     // Write output to stdout
-    let json = serde_json::to_string(&output).unwrap();
+    let json = match serde_json::to_string(&output) {
+        Ok(j) => j,
+        Err(e) => {
+            // Defense-in-depth: if serialization fails, output a deny to fail-closed (#481)
+            eprintln!("nucleus: CRITICAL — failed to serialize output: {e}. Denying.");
+            r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"internal error: serialization failed"}}"#.to_string()
+        }
+    };
     println!("{json}");
     io::stdout().flush().ok();
 
