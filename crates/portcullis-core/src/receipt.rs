@@ -314,6 +314,7 @@ mod tests {
                     ttl_secs: 0,
                 },
                 authority: AuthorityLevel::Directive,
+                derivation: crate::DerivationClass::Deterministic,
             },
             None,
         );

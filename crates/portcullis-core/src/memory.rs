@@ -348,6 +348,7 @@ impl GovernedMemory {
                     observed_at: entry.created_at,
                     ttl_secs: entry.ttl_secs,
                 },
+                derivation: crate::DerivationClass::Deterministic,
             }
         })
     }

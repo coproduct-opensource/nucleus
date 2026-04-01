@@ -238,6 +238,7 @@ mod tests {
                     ttl_secs: 0,
                 },
                 authority: AuthorityLevel::Directive,
+                derivation: portcullis_core::DerivationClass::Deterministic,
             },
             None,
         );

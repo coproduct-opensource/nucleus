@@ -268,6 +268,19 @@ mod kani_declassify_proofs {
         }
     }
 
+    /// Generate a symbolic DerivationClass.
+    fn any_derivation() -> crate::DerivationClass {
+        let v: u8 = kani::any();
+        kani::assume(v <= 4);
+        match v {
+            0 => crate::DerivationClass::Deterministic,
+            1 => crate::DerivationClass::AIDerived,
+            2 => crate::DerivationClass::Mixed,
+            3 => crate::DerivationClass::HumanPromoted,
+            _ => crate::DerivationClass::OpaqueExternal,
+        }
+    }
+
     /// Generate a symbolic IFCLabel.
     fn any_label() -> IFCLabel {
         IFCLabel {
@@ -279,6 +292,7 @@ mod kani_declassify_proofs {
                 ttl_secs: kani::any(),
             },
             authority: any_auth(),
+            derivation: any_derivation(),
         }
     }
 
@@ -364,6 +378,7 @@ mod tests {
                 ttl_secs: 0,
             },
             authority: AuthorityLevel::NoAuthority,
+            derivation: crate::DerivationClass::OpaqueExternal,
         }
     }
 
@@ -377,6 +392,7 @@ mod tests {
                 ttl_secs: 0,
             },
             authority: AuthorityLevel::Directive,
+            derivation: crate::DerivationClass::Deterministic,
         }
     }
 

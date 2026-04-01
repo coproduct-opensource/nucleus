@@ -10,7 +10,10 @@
 //! **Current status**: types + pure functions + tests. Not yet wired into
 //! `Kernel::decide()` — integration is Phase 3 of the Flow Kernel plan.
 
-use crate::{AuthorityLevel, ConfLevel, IFCLabel, IntegLevel, Operation, ProvenanceSet, SinkClass};
+use crate::{
+    AuthorityLevel, ConfLevel, DerivationClass, IFCLabel, IntegLevel, Operation, ProvenanceSet,
+    SinkClass,
+};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Node types
@@ -70,6 +73,7 @@ pub fn intrinsic_label(kind: NodeKind, now: u64) -> IFCLabel {
                 ttl_secs: 0,
             },
             authority: AuthorityLevel::Informational,
+            derivation: DerivationClass::AIDerived,
         },
         NodeKind::FileRead => IFCLabel {
             confidentiality: ConfLevel::Internal,
@@ -80,6 +84,7 @@ pub fn intrinsic_label(kind: NodeKind, now: u64) -> IFCLabel {
                 ttl_secs: 0,
             },
             authority: AuthorityLevel::Directive,
+            derivation: DerivationClass::Deterministic,
         },
         NodeKind::EnvVar => IFCLabel {
             confidentiality: ConfLevel::Secret,
@@ -90,6 +95,7 @@ pub fn intrinsic_label(kind: NodeKind, now: u64) -> IFCLabel {
                 ttl_secs: 0,
             },
             authority: AuthorityLevel::NoAuthority,
+            derivation: DerivationClass::Deterministic,
         },
         NodeKind::ModelPlan => IFCLabel {
             confidentiality: ConfLevel::Internal,
@@ -100,6 +106,7 @@ pub fn intrinsic_label(kind: NodeKind, now: u64) -> IFCLabel {
                 ttl_secs: 0,
             },
             authority: AuthorityLevel::Directive,
+            derivation: DerivationClass::AIDerived,
         },
         NodeKind::Secret => IFCLabel::secret(now),
         NodeKind::OutboundAction => IFCLabel {
@@ -111,6 +118,7 @@ pub fn intrinsic_label(kind: NodeKind, now: u64) -> IFCLabel {
                 ttl_secs: 0,
             },
             authority: AuthorityLevel::Directive,
+            derivation: DerivationClass::Deterministic,
         },
         // Summarization inherits from parents via propagation.
         // The intrinsic label is neutral — the join with parent labels
@@ -124,6 +132,7 @@ pub fn intrinsic_label(kind: NodeKind, now: u64) -> IFCLabel {
                 ttl_secs: 0,
             },
             authority: AuthorityLevel::Directive,
+            derivation: DerivationClass::AIDerived,
         },
         // Retry has the same neutral intrinsic as Summarization.
         // The taint comes from parents (the original attempt's data).
@@ -136,6 +145,7 @@ pub fn intrinsic_label(kind: NodeKind, now: u64) -> IFCLabel {
                 ttl_secs: 0,
             },
             authority: AuthorityLevel::Directive,
+            derivation: DerivationClass::Deterministic,
         },
     }
 }
@@ -169,7 +179,7 @@ pub struct FlowNode {
 
 /// Propagate labels through the DAG: join all parent labels with intrinsic.
 ///
-/// This is Denning's fundamental lemma generalized to our 5-dimensional
+/// This is Denning's fundamental lemma generalized to our 6-dimensional
 /// product lattice. The result is always ≥ each input (monotone).
 pub fn propagate_label(parent_labels: &[IFCLabel], intrinsic: IFCLabel) -> IFCLabel {
     let mut result = intrinsic;
@@ -404,6 +414,19 @@ mod kani_proofs {
         }
     }
 
+    /// Generate a symbolic DerivationClass.
+    fn any_derivation() -> crate::DerivationClass {
+        let v: u8 = kani::any();
+        kani::assume(v <= 4);
+        match v {
+            0 => crate::DerivationClass::Deterministic,
+            1 => crate::DerivationClass::AIDerived,
+            2 => crate::DerivationClass::Mixed,
+            3 => crate::DerivationClass::HumanPromoted,
+            _ => crate::DerivationClass::OpaqueExternal,
+        }
+    }
+
     /// Generate a symbolic Operation.
     fn any_operation() -> Operation {
         let v: u8 = kani::any();
@@ -422,6 +445,7 @@ mod kani_proofs {
                 ttl_secs: kani::any(),
             },
             authority: any_auth(),
+            derivation: any_derivation(),
         }
     }
 
@@ -616,6 +640,7 @@ mod kani_proofs {
                 ttl_secs: 0,
             },
             authority: AuthorityLevel::Directive,
+            derivation: DerivationClass::Deterministic,
         };
 
         let node = FlowNode {
@@ -780,6 +805,7 @@ mod tests {
                 ttl_secs: 0,
             },
             authority: AuthorityLevel::Directive,
+            derivation: DerivationClass::Deterministic,
         };
 
         // Step 3: Agent's plan node combines both (propagation)
@@ -912,6 +938,7 @@ mod tests {
                 ttl_secs: 0,
             },
             authority: AuthorityLevel::NoAuthority,
+            derivation: DerivationClass::Deterministic,
         };
         let node = make_node_with_sink(
             NodeKind::OutboundAction,
@@ -935,6 +962,7 @@ mod tests {
                 ttl_secs: 0,
             },
             authority: AuthorityLevel::Directive,
+            derivation: DerivationClass::Deterministic,
         };
         let node = make_node_with_sink(
             NodeKind::OutboundAction,
@@ -975,6 +1003,7 @@ mod tests {
                 ttl_secs: 0,
             },
             authority: AuthorityLevel::Directive,
+            derivation: DerivationClass::OpaqueExternal,
         };
         let node = make_node_with_sink(
             NodeKind::OutboundAction,
