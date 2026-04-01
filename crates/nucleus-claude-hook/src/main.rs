@@ -306,6 +306,11 @@ fn format_denial_for_user(
                 - Run in a higher isolation environment (container or microVM)"
             )
         }
+        DenyReason::EgressBlocked { policy_reason, .. } => format!(
+            "{policy_reason}\n  How to fix:\n  \
+            - Add the host to allowed_hosts in .nucleus/egress.toml\n  \
+            - Or remove egress.toml to disable egress filtering"
+        ),
     }
 }
 
@@ -1837,6 +1842,30 @@ fn main() {
 
     let mut kernel = Kernel::new(effective_perms);
     kernel.enable_flow_graph();
+
+    // Load egress policy from .nucleus/egress.toml (if present).
+    // SECURITY: Fail-closed — malformed policy denies all egress.
+    let egress_dir = std::env::current_dir().unwrap_or_default().join(".nucleus");
+    match portcullis::EgressPolicy::load_from_dir(&egress_dir) {
+        Ok(Some(policy)) => {
+            if is_first_invocation {
+                eprintln!(
+                    "nucleus: egress policy loaded ({} allowed, {} denied hosts)",
+                    policy.allowed_hosts.len(),
+                    policy.denied_hosts.len()
+                );
+            }
+            kernel.set_egress_policy(policy);
+        }
+        Ok(None) => {} // No egress.toml — all hosts allowed
+        Err(e) => {
+            eprintln!("nucleus: WARNING — failed to load egress policy: {e}");
+            eprintln!("nucleus: fail-closed — all egress denied until egress.toml is fixed");
+            if let Ok(p) = portcullis::EgressPolicy::from_toml("") {
+                kernel.set_egress_policy(p);
+            }
+        }
+    }
 
     // PHASE 4: Import parent agent's flow label and chain reference.
     // When a parent agent spawns this session, it sets:
