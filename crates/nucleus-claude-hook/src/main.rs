@@ -515,13 +515,48 @@ fn map_tool(name: &str) -> Operation {
     }
 }
 
-/// Classify an MCP tool by its name suffix.
+/// Classify an MCP tool using its manifest capabilities (if available),
+/// falling back to name-based heuristics (#490).
+///
+/// The manifest is the authoritative source — it declares what operations
+/// the tool actually performs. Name-based classification is a fallback
+/// with known ambiguity issues (e.g., "search_and_create").
+fn classify_mcp_tool(name: &str) -> Operation {
+    // Try manifest-based classification first
+    let mcp_tool_name = name
+        .strip_prefix("mcp__")
+        .and_then(|rest| rest.split("__").nth(1))
+        .unwrap_or(name);
+
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let registry = portcullis::manifest_registry::ManifestRegistry::load_from_dir(&cwd);
+    if let Some(manifest) = registry.get(mcp_tool_name) {
+        // Use the first declared capability as the classification.
+        // If the manifest declares multiple capabilities, the most
+        // restrictive one wins (fail-conservative).
+        if let Some(op) = manifest.capabilities.first() {
+            return *op;
+        }
+    } else if registry.admitted_count() > 0 {
+        // Registry has manifests but not for this tool — log a warning
+        // so users know this tool is using the less-secure heuristic path.
+        eprintln!(
+            "nucleus: MCP tool '{}' has no manifest — using name-based classification (less secure). \
+             Add a manifest in .nucleus/manifests/",
+            mcp_tool_name
+        );
+    }
+
+    classify_mcp_tool_by_name(name)
+}
+
+/// Classify an MCP tool by its name suffix (fallback).
 ///
 /// MCP tool names follow `mcp__<server>__<tool>`. We extract the tool
 /// portion and classify by known patterns. Unknown tools default to
 /// RunBash (the most restrictive operation — requires Always capability
 /// and contributes ExfilVector exposure).
-fn classify_mcp_tool(name: &str) -> Operation {
+fn classify_mcp_tool_by_name(name: &str) -> Operation {
     // Extract the tool name: mcp__server__tool_name → tool_name
     let tool = name
         .strip_prefix("mcp__")
