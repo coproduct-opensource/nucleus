@@ -40,6 +40,8 @@ pub enum CliCommand {
     ShowProfile { name: Option<String> },
     /// `--receipts [session-id]` — view receipt chain.
     Receipts { session_id: Option<String> },
+    /// `--completions <shell>` — print shell completion script.
+    Completions { shell: String },
 }
 
 /// CLI parsing error.
@@ -125,6 +127,15 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
         "--receipts" => {
             let session_id = args.get(1).cloned();
             Ok(CliCommand::Receipts { session_id })
+        }
+        "--completions" => {
+            let shell = args.get(1).ok_or_else(|| CliError::MissingArgument {
+                flag: "--completions".into(),
+                expected: "<shell> (bash|zsh|fish)".into(),
+            })?;
+            Ok(CliCommand::Completions {
+                shell: shell.clone(),
+            })
         }
         other if other.starts_with('-') => Err(CliError::UnknownFlag(other.to_string())),
         // No recognised flag — fall through to stdin hook mode.
@@ -263,6 +274,22 @@ mod tests {
             parse_args(&args(&["--receipts"])).unwrap(),
             CliCommand::Receipts { session_id: None }
         );
+    }
+
+    #[test]
+    fn completions_with_shell() {
+        assert_eq!(
+            parse_args(&args(&["--completions", "bash"])).unwrap(),
+            CliCommand::Completions {
+                shell: "bash".into()
+            }
+        );
+    }
+
+    #[test]
+    fn completions_missing_shell() {
+        let err = parse_args(&args(&["--completions"])).unwrap_err();
+        assert!(matches!(err, CliError::MissingArgument { .. }));
     }
 
     #[test]
