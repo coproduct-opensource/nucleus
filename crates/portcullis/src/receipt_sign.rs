@@ -10,53 +10,14 @@
 #[cfg(feature = "crypto")]
 use ring::signature::{self, Ed25519KeyPair, UnparsedPublicKey};
 
-use portcullis_core::receipt::{FlowReceipt, ReceiptNode, SignatureError};
+use portcullis_core::receipt::{receipt_canonical_bytes, FlowReceipt, SignatureError};
 
 /// Serialize receipt content to canonical bytes for signing.
 ///
-/// The canonical form includes all security-relevant fields in a
-/// deterministic order. Changes to any field invalidate the signature.
+/// Delegates to `portcullis_core::receipt::receipt_canonical_bytes()` —
+/// the single source of truth for the canonical byte representation.
 fn receipt_content_bytes(receipt: &FlowReceipt) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(256);
-
-    // Version tag
-    buf.extend_from_slice(b"nucleus-receipt-v3\n");
-
-    // Chain ID — binds this receipt to a specific session (#492).
-    // Prevents cross-session receipt injection.
-    buf.extend_from_slice(receipt.chain_id());
-
-    // Chain link — hash of the previous receipt.
-    buf.extend_from_slice(receipt.prev_hash());
-
-    // Action node
-    append_receipt_node(&mut buf, receipt.action());
-
-    // Verdict + rule
-    buf.extend_from_slice(format!("verdict:{:?}\n", receipt.verdict()).as_bytes());
-    buf.extend_from_slice(format!("rule:{}\n", receipt.rule_name()).as_bytes());
-
-    // Timestamp
-    buf.extend_from_slice(&receipt.created_at().to_le_bytes());
-
-    // Ancestors (ordered — receipt construction preserves BFS order)
-    buf.extend_from_slice(&(receipt.ancestors().len() as u32).to_le_bytes());
-    for ancestor in receipt.ancestors() {
-        append_receipt_node(&mut buf, ancestor);
-    }
-
-    buf
-}
-
-fn append_receipt_node(buf: &mut Vec<u8>, node: &ReceiptNode) {
-    buf.extend_from_slice(&node.id.to_le_bytes());
-    buf.extend_from_slice(&(node.kind as u8).to_le_bytes());
-    buf.extend_from_slice(&(node.label.confidentiality as u8).to_le_bytes());
-    buf.extend_from_slice(&(node.label.integrity as u8).to_le_bytes());
-    buf.extend_from_slice(&(node.label.authority as u8).to_le_bytes());
-    buf.extend_from_slice(&node.label.provenance.bits().to_le_bytes());
-    buf.extend_from_slice(&node.label.freshness.observed_at.to_le_bytes());
-    buf.extend_from_slice(&node.label.freshness.ttl_secs.to_le_bytes());
+    receipt_canonical_bytes(receipt)
 }
 
 /// Compute the SHA-256 hash of a receipt's canonical content + signature.
@@ -353,6 +314,55 @@ mod tests {
             verify_receipt(&tampered, pk),
             Err(SignatureError::InvalidSignature),
             "Tampering with prev_hash must invalidate signature"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_forged_signature() {
+        let key = test_key();
+        let label = IFCLabel::user_prompt(1000);
+        let action = make_node(
+            1,
+            NodeKind::OutboundAction,
+            label,
+            Some(Operation::WriteFiles),
+        );
+        let mut receipt = build_receipt(&action, &[], FlowVerdict::Allow, 2000);
+
+        // Set a fake signature (non-zero but not valid Ed25519)
+        receipt.set_signature([0xDE; 64]);
+        assert!(receipt.is_signed());
+
+        let pk = key.public_key().as_ref();
+        assert_eq!(
+            verify_receipt(&receipt, pk),
+            Err(SignatureError::InvalidSignature),
+            "Forged signature bytes must be rejected"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_tampered_chain_id() {
+        let key = test_key();
+        let label = IFCLabel::user_prompt(1000);
+        let action = make_node(
+            1,
+            NodeKind::OutboundAction,
+            label,
+            Some(Operation::WriteFiles),
+        );
+        let mut receipt = build_receipt(&action, &[], FlowVerdict::Allow, 2000);
+        receipt.set_chain_id([0x42; 32]);
+        sign_receipt(&mut receipt, &key);
+
+        // Tamper with chain_id after signing
+        let mut tampered = receipt.clone();
+        tampered.set_chain_id([0xFF; 32]);
+        let pk = key.public_key().as_ref();
+        assert_eq!(
+            verify_receipt(&tampered, pk),
+            Err(SignatureError::InvalidSignature),
+            "Tampering with chain_id must invalidate signature"
         );
     }
 }

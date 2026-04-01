@@ -153,6 +153,8 @@ pub mod profile;
 pub mod receipt_chain;
 #[cfg(feature = "crypto")]
 pub mod receipt_sign;
+#[cfg(feature = "crypto")]
+pub use receipt_sign::{receipt_hash, sign_receipt, verify_receipt};
 #[cfg(feature = "remote-audit")]
 pub mod s3_audit_backend;
 #[cfg(feature = "crypto")]
