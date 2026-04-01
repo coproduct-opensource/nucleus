@@ -42,6 +42,8 @@ pub enum CliCommand {
     Receipts { session_id: Option<String> },
     /// `--completions <shell>` — print shell completion script.
     Completions { shell: String },
+    /// `--classify <tool-name>` -- show classification and rationale for a tool (#554).
+    Classify { tool_name: String },
 }
 
 /// CLI parsing error.
@@ -135,6 +137,15 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
             })?;
             Ok(CliCommand::Completions {
                 shell: shell.clone(),
+            })
+        }
+        "--classify" => {
+            let tool_name = args.get(1).ok_or_else(|| CliError::MissingArgument {
+                flag: "--classify".into(),
+                expected: "<tool-name> (e.g. mcp__server__tool)".into(),
+            })?;
+            Ok(CliCommand::Classify {
+                tool_name: tool_name.clone(),
             })
         }
         other if other.starts_with('-') => Err(CliError::UnknownFlag(other.to_string())),

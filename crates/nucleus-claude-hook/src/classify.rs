@@ -7,6 +7,119 @@
 use portcullis::manifest_registry::ManifestRegistry;
 use portcullis::Operation;
 use portcullis_core::flow::NodeKind;
+use serde::Serialize;
+use std::fmt;
+
+// ---------------------------------------------------------------------------
+// Classification result types (#554)
+// ---------------------------------------------------------------------------
+
+/// How the classification was determined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ClassificationSource {
+    /// Built-in tool (Bash, Read, Write, etc.).
+    Builtin,
+    /// Matched via `.nucleus/manifests/` declaration.
+    Manifest,
+    /// Heuristic: tool name matched a known pattern (e.g. "read_file").
+    NameHeuristic,
+    /// No pattern matched; fell through to the most restrictive default.
+    DefaultFallback,
+}
+
+impl fmt::Display for ClassificationSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Builtin => write!(f, "builtin"),
+            Self::Manifest => write!(f, "manifest"),
+            Self::NameHeuristic => write!(f, "name-heuristic"),
+            Self::DefaultFallback => write!(f, "default-fallback"),
+        }
+    }
+}
+
+/// How confident we are in the classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Confidence {
+    /// Authoritative source (builtin or manifest).
+    High,
+    /// Strong name match (e.g. "read_file", "write_file").
+    Medium,
+    /// Weak or default match; may be wrong.
+    Low,
+}
+
+impl fmt::Display for Confidence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::High => write!(f, "high"),
+            Self::Medium => write!(f, "medium"),
+            Self::Low => write!(f, "low"),
+        }
+    }
+}
+
+/// Full classification result with provenance and confidence.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ClassificationResult {
+    /// The tool name that was classified.
+    pub tool_name: String,
+    /// The resolved operation.
+    pub operation: Operation,
+    /// How the classification was determined.
+    pub source: ClassificationSource,
+    /// Confidence level.
+    pub confidence: Confidence,
+    /// Human-readable rationale.
+    pub rationale: String,
+}
+
+impl fmt::Display for ClassificationResult {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} -> {:?} [source={}, confidence={}] ({})",
+            self.tool_name, self.operation, self.source, self.confidence, self.rationale
+        )
+    }
+}
+
+/// Aggregate classification counts for `--status --json` output.
+#[derive(Debug, Clone, Serialize, Default)]
+pub(crate) struct ClassificationSummary {
+    pub total: usize,
+    pub by_builtin: usize,
+    pub by_manifest: usize,
+    pub by_name_heuristic: usize,
+    pub by_default_fallback: usize,
+    pub low_confidence_tools: Vec<String>,
+}
+
+impl ClassificationSummary {
+    /// Build a summary from a set of tool names.
+    pub(crate) fn from_tool_names(names: &[String]) -> Self {
+        let mut summary = Self::default();
+        for name in names {
+            summary.total += 1;
+            let result = classify_with_detail(name);
+            match result.source {
+                ClassificationSource::Builtin => summary.by_builtin += 1,
+                ClassificationSource::Manifest => summary.by_manifest += 1,
+                ClassificationSource::NameHeuristic => summary.by_name_heuristic += 1,
+                ClassificationSource::DefaultFallback => {
+                    summary.by_default_fallback += 1;
+                }
+            }
+            if result.confidence == Confidence::Low && !summary.low_confidence_tools.contains(name)
+            {
+                summary.low_confidence_tools.push(name.clone());
+            }
+        }
+        summary
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Tool name -> Operation mapping
@@ -14,40 +127,75 @@ use portcullis_core::flow::NodeKind;
 
 /// Map a tool name to a portcullis Operation.
 ///
-/// SECURITY: Every tool is gated — no passthrough. The Agent tool spawns
+/// SECURITY: Every tool is gated. No passthrough. The Agent tool spawns
 /// subprocesses with fresh session IDs; passthrough would let a tainted
 /// session escape its flow restrictions via a clean child process.
 /// MCP tools (`mcp__<server>__<tool>`) are classified by their tool name suffix,
 /// defaulting to RunBash (most restrictive) for unknown tools.
 pub(crate) fn map_tool(name: &str) -> Operation {
+    classify_with_detail(name).operation
+}
+
+/// Classify a tool and return full provenance details (#554).
+///
+/// Returns the operation, how it was determined, confidence level, and a
+/// human-readable rationale.
+pub(crate) fn classify_with_detail(name: &str) -> ClassificationResult {
     match name {
-        "Bash" => Operation::RunBash,
-        "Read" => Operation::ReadFiles,
-        "Write" => Operation::WriteFiles,
-        "Edit" => Operation::EditFiles,
-        "Glob" => Operation::GlobSearch,
-        "Grep" => Operation::GrepSearch,
-        "WebFetch" => Operation::WebFetch,
-        "WebSearch" => Operation::WebSearch,
-        // SECURITY: Agent spawns a subprocess with its own session_id.
-        // Classified as SpawnAgent so the kernel can gate agent spawning
-        // independently from bash execution.
-        "Agent" => Operation::SpawnAgent,
-        // MCP tools: classify by tool name, fail-closed for unknown
-        _ if name.starts_with("mcp__") => classify_mcp_tool(name),
-        // Unknown tools: fail-closed (RunBash = most restrictive)
-        _ => Operation::RunBash,
+        "Bash" | "Read" | "Write" | "Edit" | "Glob" | "Grep" | "WebFetch" | "WebSearch"
+        | "Agent" => {
+            let operation = match name {
+                "Bash" => Operation::RunBash,
+                "Read" => Operation::ReadFiles,
+                "Write" => Operation::WriteFiles,
+                "Edit" => Operation::EditFiles,
+                "Glob" => Operation::GlobSearch,
+                "Grep" => Operation::GrepSearch,
+                "WebFetch" => Operation::WebFetch,
+                "WebSearch" => Operation::WebSearch,
+                "Agent" => Operation::SpawnAgent,
+                _ => unreachable!(),
+            };
+            ClassificationResult {
+                tool_name: name.to_string(),
+                operation,
+                source: ClassificationSource::Builtin,
+                confidence: Confidence::High,
+                rationale: format!("built-in {} tool", name),
+            }
+        }
+        _ if name.starts_with("mcp__") => classify_mcp_tool_with_detail(name),
+        _ => ClassificationResult {
+            tool_name: name.to_string(),
+            operation: Operation::RunBash,
+            source: ClassificationSource::DefaultFallback,
+            confidence: Confidence::Low,
+            rationale: format!("unknown tool '{}'; fail-closed as RunBash", name),
+        },
     }
 }
 
+/// Log classification detail to stderr if `NUCLEUS_LOG_CLASSIFICATION=1`.
+pub(crate) fn maybe_log_classification(result: &ClassificationResult) {
+    if std::env::var("NUCLEUS_LOG_CLASSIFICATION").as_deref() == Ok("1") {
+        eprintln!("nucleus: classify: {result}");
+    }
+}
+
+/// Classify a tool and log if verbose classification is enabled.
+pub(crate) fn map_tool_verbose(name: &str) -> Operation {
+    let result = classify_with_detail(name);
+    maybe_log_classification(&result);
+    result.operation
+}
+
+// ---------------------------------------------------------------------------
+// MCP tool classification with detail
+// ---------------------------------------------------------------------------
+
 /// Classify an MCP tool using its manifest capabilities (if available),
 /// falling back to name-based heuristics (#490).
-///
-/// The manifest is the authoritative source — it declares what operations
-/// the tool actually performs. Name-based classification is a fallback
-/// with known ambiguity issues (e.g., "search_and_create").
-fn classify_mcp_tool(name: &str) -> Operation {
-    // Try manifest-based classification first
+fn classify_mcp_tool_with_detail(name: &str) -> ClassificationResult {
     let mcp_tool_name = name
         .strip_prefix("mcp__")
         .and_then(|rest| rest.split("__").nth(1))
@@ -56,48 +204,40 @@ fn classify_mcp_tool(name: &str) -> Operation {
     let cwd = std::env::current_dir().unwrap_or_default();
     let registry = ManifestRegistry::load_from_dir(&cwd);
     if let Some(manifest) = registry.get(mcp_tool_name) {
-        // Use the first declared capability as the classification.
-        // If the manifest declares multiple capabilities, the most
-        // restrictive one wins (fail-conservative).
         if let Some(op) = manifest.capabilities.first() {
-            return *op;
+            return ClassificationResult {
+                tool_name: name.to_string(),
+                operation: *op,
+                source: ClassificationSource::Manifest,
+                confidence: Confidence::High,
+                rationale: format!("manifest declares {:?} for '{}'", op, mcp_tool_name),
+            };
         }
     } else if registry.admitted_count() > 0 {
-        // Registry has manifests but not for this tool — log a warning
-        // so users know this tool is using the less-secure heuristic path.
         eprintln!(
-            "nucleus: MCP tool '{}' has no manifest — using name-based classification (less secure). \
+            "nucleus: MCP tool '{}' has no manifest; using name-based classification (less secure). \
              Add a manifest in .nucleus/manifests/",
             mcp_tool_name
         );
     }
 
-    classify_mcp_tool_by_name(name)
+    classify_mcp_tool_by_name_with_detail(name)
 }
 
-/// Classify an MCP tool by its name suffix (fallback).
-///
-/// MCP tool names follow `mcp__<server>__<tool>`. We extract the tool
-/// portion and classify by known patterns. Unknown tools default to
-/// RunBash (the most restrictive operation — requires Always capability
-/// and contributes ExfilVector exposure).
-fn classify_mcp_tool_by_name(name: &str) -> Operation {
-    // Extract the tool name: mcp__server__tool_name → tool_name
+/// Classify an MCP tool by its name suffix (fallback), returning full detail.
+fn classify_mcp_tool_by_name_with_detail(name: &str) -> ClassificationResult {
     let tool = name
         .strip_prefix("mcp__")
         .and_then(|rest| rest.split("__").nth(1))
         .unwrap_or(name);
 
-    // Classify by known tool patterns.
-    // Order matters — more specific patterns before general ones.
-    match tool {
-        // Git PR tools (before "create" matches WriteFiles)
-        t if t.contains("pull_request") || t.contains("pr_create") => Operation::CreatePr,
-        // Git push/commit (before general patterns)
-        t if t.contains("push") || t.contains("commit") || t.contains("merge") => {
-            Operation::GitPush
+    let (operation, matched_pattern) = match tool {
+        t if t.contains("pull_request") || t.contains("pr_create") => {
+            (Operation::CreatePr, "pull_request|pr_create")
         }
-        // Exec/run tools (high priority — these are dangerous)
+        t if t.contains("push") || t.contains("commit") || t.contains("merge") => {
+            (Operation::GitPush, "push|commit|merge")
+        }
         t if t.contains("run")
             || t.contains("exec")
             || t.contains("shell")
@@ -105,18 +245,16 @@ fn classify_mcp_tool_by_name(name: &str) -> Operation {
             || t.contains("bash")
             || t.contains("terminal") =>
         {
-            Operation::RunBash
+            (Operation::RunBash, "run|exec|shell|command|bash|terminal")
         }
-        // Web/fetch tools (before read, since "fetch" is network)
         t if t.contains("fetch")
             || t.contains("download")
             || t.contains("http")
             || t.contains("url")
             || t.contains("browse") =>
         {
-            Operation::WebFetch
+            (Operation::WebFetch, "fetch|download|http|url|browse")
         }
-        // Write-like tools
         t if t.contains("write")
             || t.contains("create")
             || t.contains("update")
@@ -127,9 +265,11 @@ fn classify_mcp_tool_by_name(name: &str) -> Operation {
             || t.contains("edit")
             || t.contains("modify") =>
         {
-            Operation::WriteFiles
+            (
+                Operation::WriteFiles,
+                "write|create|update|delete|put|set|insert|edit|modify",
+            )
         }
-        // Read-like tools
         t if t.contains("read")
             || t.contains("get")
             || t.contains("list")
@@ -138,14 +278,35 @@ fn classify_mcp_tool_by_name(name: &str) -> Operation {
             || t.contains("describe")
             || t.contains("request") =>
         {
-            Operation::ReadFiles
+            (
+                Operation::ReadFiles,
+                "read|get|list|search|query|describe|request",
+            )
         }
-        // Search tools
         t if t.contains("grep") || t.contains("find") || t.contains("glob") => {
-            Operation::GlobSearch
+            (Operation::GlobSearch, "grep|find|glob")
         }
-        // Unknown MCP tool → fail-closed as RunBash (most restrictive)
-        _ => Operation::RunBash,
+        _ => {
+            return ClassificationResult {
+                tool_name: name.to_string(),
+                operation: Operation::RunBash,
+                source: ClassificationSource::DefaultFallback,
+                confidence: Confidence::Low,
+                rationale: format!(
+                    "MCP tool '{}' matched no pattern; fail-closed as RunBash \
+                     (add a manifest for explicit classification)",
+                    tool
+                ),
+            };
+        }
+    };
+
+    ClassificationResult {
+        tool_name: name.to_string(),
+        operation,
+        source: ClassificationSource::NameHeuristic,
+        confidence: Confidence::Medium,
+        rationale: format!("tool '{}' matched pattern [{}]", tool, matched_pattern),
     }
 }
 
@@ -154,11 +315,6 @@ fn classify_mcp_tool_by_name(name: &str) -> Operation {
 // ---------------------------------------------------------------------------
 
 /// Map an Operation to the NodeKind that represents its data contribution.
-///
-/// After an allowed operation executes, its result enters the session as
-/// an observation of this kind. This determines the IFC label assigned
-/// to the data: web content gets Adversarial/NoAuthority, file reads get
-/// Internal/Trusted, etc.
 pub(crate) fn operation_to_node_kind(op: Operation) -> NodeKind {
     match op {
         Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch => NodeKind::FileRead,
@@ -172,23 +328,10 @@ pub(crate) fn operation_to_node_kind(op: Operation) -> NodeKind {
 }
 
 /// Classify the output of a completed tool into its appropriate NodeKind.
-///
-/// This is different from `operation_to_node_kind()` which classifies the
-/// _action_ of invoking the tool. Here we classify the _result_:
-/// - Web tools produce WebContent (adversarial) — the output IS web content
-/// - File read tools produce ToolResponse — the output is data the model will use
-/// - Outbound actions produce ToolResponse — the result (e.g., "file written") is metadata
-///
-/// The critical distinction: a WebFetch action is an OutboundAction in the
-/// pre-tool observation, but its OUTPUT is WebContent (adversarial). This
-/// ensures that subsequent actions depending on web results get tainted (#593).
 pub(crate) fn classify_tool_output(op: Operation) -> NodeKind {
     match op {
-        // Web tool outputs ARE web content — adversarial taint propagates
         Operation::WebFetch | Operation::WebSearch => NodeKind::WebContent,
-        // File read outputs are file content — trusted category
         Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch => NodeKind::FileRead,
-        // Everything else: generic tool response (model category)
         _ => NodeKind::ToolResponse,
     }
 }
@@ -198,7 +341,6 @@ pub(crate) fn truncate_subject(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
     } else {
-        // Find a valid UTF-8 boundary at or before max_len - 3
         let end = s
             .char_indices()
             .take_while(|(i, _)| *i <= max_len.saturating_sub(3))
@@ -246,21 +388,9 @@ pub(crate) fn u8_to_node_kind(v: u8) -> NodeKind {
 }
 
 // ---------------------------------------------------------------------------
-// DAG parent assignment — category-based leaf tracking
+// DAG parent assignment
 // ---------------------------------------------------------------------------
 
-/// Tracks the most recent flow graph node ID for each source category.
-///
-/// Instead of a linear chain (where every node depends on the previous one),
-/// we maintain leaf nodes by category. This means independent branches
-/// (e.g., file reads vs web fetches) don't cross-contaminate — only nodes
-/// that actually depend on a source category inherit its taint.
-///
-/// Categories:
-/// - `trusted`: FileRead, UserPrompt, EnvVar, MemoryRead — internal, trusted data
-/// - `adversarial`: WebContent — untrusted, potentially attacker-controlled
-/// - `action`: OutboundAction, MemoryWrite — side effects (writes, bash, git)
-/// - `model`: ModelPlan, ToolResponse — model-generated content
 #[derive(Debug, Default)]
 pub(crate) struct LeafTracker {
     pub(crate) trusted: Vec<u64>,
@@ -270,7 +400,6 @@ pub(crate) struct LeafTracker {
 }
 
 impl LeafTracker {
-    /// Record a new node, replacing the leaf for its category.
     pub(crate) fn record(&mut self, kind: NodeKind, node_id: u64) {
         let leaves = match kind {
             NodeKind::FileRead | NodeKind::UserPrompt | NodeKind::EnvVar | NodeKind::MemoryRead => {
@@ -284,46 +413,23 @@ impl LeafTracker {
             | NodeKind::Summarization
             | NodeKind::Retry => &mut self.model,
         };
-        // Keep only the most recent leaf per category
         *leaves = vec![node_id];
     }
 
-    /// Get parents for a new observation based on its NodeKind.
-    ///
-    /// Source observations (FileRead, WebContent) have no parents from other
-    /// categories — they're independent input branches entering the session.
-    ///
-    /// Action observations (OutboundAction) depend on ALL current source
-    /// leaves — the action may have been influenced by any data in the session.
-    /// This is the conservative choice: if web content exists anywhere in the
-    /// session, actions inherit its taint. But if no web content has been
-    /// fetched, actions only depend on trusted sources.
     pub(crate) fn parents_for(&self, kind: NodeKind) -> Vec<u64> {
         match kind {
-            // Source nodes: independent entry points, no cross-category parents.
-            // A file read doesn't depend on web content.
-            // A web fetch doesn't depend on prior file reads.
             NodeKind::FileRead | NodeKind::UserPrompt | NodeKind::EnvVar | NodeKind::MemoryRead => {
-                // Source-only: previous trusted node (for ordering) but no adversarial parent
                 self.trusted.clone()
             }
-            NodeKind::WebContent => {
-                // Web content enters independently
-                self.adversarial.clone()
-            }
-            // Actions depend on ALL sources — the model may have used any of them.
-            // This is where taint propagation happens: if adversarial leaves exist,
-            // the action inherits adversarial labels.
+            NodeKind::WebContent => self.adversarial.clone(),
             NodeKind::OutboundAction | NodeKind::MemoryWrite => {
                 let mut parents = Vec::new();
                 parents.extend_from_slice(&self.trusted);
                 parents.extend_from_slice(&self.adversarial);
                 parents.extend_from_slice(&self.model);
-                // Include prior action for ordering
                 parents.extend_from_slice(&self.action);
                 parents
             }
-            // Model/tool responses depend on all sources (model synthesizes from inputs)
             NodeKind::ModelPlan
             | NodeKind::ToolResponse
             | NodeKind::Secret
@@ -377,15 +483,11 @@ mod tests {
 
     #[test]
     fn test_agent_is_gated_not_passthrough() {
-        // SECURITY: Agent spawns subprocesses with fresh session IDs.
-        // Passthrough would let tainted sessions escape via clean child.
-        // Must be gated as RunBash (most restrictive).
         assert_eq!(map_tool("Agent"), Operation::SpawnAgent);
     }
 
     #[test]
     fn test_mcp_tools_are_gated() {
-        // All tools return an Operation — no passthrough
         assert_eq!(map_tool("mcp__server__read_file"), Operation::ReadFiles);
         assert_eq!(map_tool("mcp__github__create_issue"), Operation::WriteFiles);
         assert_eq!(map_tool("mcp__unknown__unknown_tool"), Operation::RunBash);
@@ -393,29 +495,22 @@ mod tests {
 
     #[test]
     fn test_mcp_tool_classification() {
-        // Read-like
         assert_eq!(map_tool("mcp__fs__read_file"), Operation::ReadFiles);
         assert_eq!(map_tool("mcp__db__get_record"), Operation::ReadFiles);
         assert_eq!(map_tool("mcp__api__list_items"), Operation::ReadFiles);
-        // Write-like
         assert_eq!(map_tool("mcp__fs__write_file"), Operation::WriteFiles);
         assert_eq!(map_tool("mcp__db__create_record"), Operation::WriteFiles);
         assert_eq!(map_tool("mcp__db__delete_item"), Operation::WriteFiles);
-        // Web/fetch
         assert_eq!(map_tool("mcp__http__fetch_url"), Operation::WebFetch);
-        // Exec
         assert_eq!(map_tool("mcp__shell__run_command"), Operation::RunBash);
         assert_eq!(map_tool("mcp__term__exec_script"), Operation::RunBash);
-        // Git
         assert_eq!(map_tool("mcp__git__push_branch"), Operation::GitPush);
         assert_eq!(map_tool("mcp__gh__pull_request"), Operation::CreatePr);
-        // Unknown → fail-closed as RunBash
         assert_eq!(map_tool("mcp__evil__pwn"), Operation::RunBash);
     }
 
     #[test]
     fn test_unknown_tools_fail_closed() {
-        // Unknown non-MCP tools also fail-closed
         assert_eq!(map_tool("UnknownTool"), Operation::RunBash);
     }
 
@@ -449,7 +544,6 @@ mod tests {
 
     #[test]
     fn test_classify_tool_output_web() {
-        // Web tool outputs produce WebContent (adversarial taint)
         assert_eq!(
             classify_tool_output(Operation::WebFetch),
             NodeKind::WebContent
@@ -462,7 +556,6 @@ mod tests {
 
     #[test]
     fn test_classify_tool_output_file_read() {
-        // File read outputs produce FileRead (trusted)
         assert_eq!(
             classify_tool_output(Operation::ReadFiles),
             NodeKind::FileRead
@@ -479,7 +572,6 @@ mod tests {
 
     #[test]
     fn test_classify_tool_output_generic() {
-        // Other tool outputs produce ToolResponse (model category)
         assert_eq!(
             classify_tool_output(Operation::WriteFiles),
             NodeKind::ToolResponse
@@ -503,18 +595,113 @@ mod tests {
     fn test_truncate_subject_long() {
         let long = "a".repeat(300);
         let truncated = truncate_subject(&long, 100);
-        assert!(truncated.len() <= 103); // 100 chars + "..."
+        assert!(truncated.len() <= 103);
         assert!(truncated.ends_with("..."));
     }
 
     #[test]
     fn test_truncate_subject_unicode() {
-        // Ensure truncation doesn't split multi-byte characters
-        let s = "a\u{1F600}b\u{1F600}c"; // mixed ASCII + 4-byte emoji
+        let s = "a\u{1F600}b\u{1F600}c";
         let truncated = truncate_subject(s, 5);
-        // Should truncate at a valid UTF-8 boundary
         assert!(truncated.ends_with("..."));
-        // The result should be valid UTF-8
         assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // Classification detail tests (#554)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_builtin_classification_source() {
+        for name in &[
+            "Bash",
+            "Read",
+            "Write",
+            "Edit",
+            "Glob",
+            "Grep",
+            "WebFetch",
+            "WebSearch",
+            "Agent",
+        ] {
+            let result = classify_with_detail(name);
+            assert_eq!(result.source, ClassificationSource::Builtin, "tool: {name}");
+            assert_eq!(result.confidence, Confidence::High, "tool: {name}");
+        }
+    }
+
+    #[test]
+    fn test_mcp_heuristic_classification_source() {
+        let result = classify_with_detail("mcp__fs__read_file");
+        assert_eq!(result.operation, Operation::ReadFiles);
+        assert_eq!(result.source, ClassificationSource::NameHeuristic);
+        assert_eq!(result.confidence, Confidence::Medium);
+        assert!(result.rationale.contains("read"));
+    }
+
+    #[test]
+    fn test_mcp_fallback_classification_source() {
+        let result = classify_with_detail("mcp__evil__pwn");
+        assert_eq!(result.operation, Operation::RunBash);
+        assert_eq!(result.source, ClassificationSource::DefaultFallback);
+        assert_eq!(result.confidence, Confidence::Low);
+        assert!(result.rationale.contains("no pattern"));
+    }
+
+    #[test]
+    fn test_unknown_tool_classification_source() {
+        let result = classify_with_detail("UnknownTool");
+        assert_eq!(result.operation, Operation::RunBash);
+        assert_eq!(result.source, ClassificationSource::DefaultFallback);
+        assert_eq!(result.confidence, Confidence::Low);
+    }
+
+    #[test]
+    fn test_classification_result_display() {
+        let result = classify_with_detail("mcp__fs__read_file");
+        let display = format!("{result}");
+        assert!(display.contains("mcp__fs__read_file"));
+        assert!(display.contains("ReadFiles"));
+        assert!(display.contains("name-heuristic"));
+        assert!(display.contains("medium"));
+    }
+
+    #[test]
+    fn test_classification_result_serializes() {
+        let result = classify_with_detail("Bash");
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"source\":\"builtin\""));
+        assert!(json.contains("\"confidence\":\"high\""));
+        assert!(json.contains("\"operation\":\"run_bash\""));
+    }
+
+    #[test]
+    fn test_classification_summary() {
+        let tools: Vec<String> = vec![
+            "Bash".into(),
+            "Read".into(),
+            "mcp__fs__read_file".into(),
+            "mcp__evil__pwn".into(),
+            "UnknownTool".into(),
+        ];
+        let summary = ClassificationSummary::from_tool_names(&tools);
+        assert_eq!(summary.total, 5);
+        assert_eq!(summary.by_builtin, 2);
+        assert_eq!(summary.by_name_heuristic, 1);
+        assert_eq!(summary.by_default_fallback, 2);
+        assert_eq!(summary.low_confidence_tools.len(), 2);
+    }
+
+    #[test]
+    fn test_map_tool_verbose_returns_same_operation() {
+        assert_eq!(map_tool_verbose("Bash"), map_tool("Bash"));
+        assert_eq!(
+            map_tool_verbose("mcp__fs__read_file"),
+            map_tool("mcp__fs__read_file")
+        );
+        assert_eq!(
+            map_tool_verbose("mcp__evil__pwn"),
+            map_tool("mcp__evil__pwn")
+        );
     }
 }

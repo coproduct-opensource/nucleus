@@ -1177,6 +1177,16 @@ fn main() {
             }
             return;
         }
+        Ok(cli::CliCommand::Classify { tool_name }) => {
+            let result = classify::classify_with_detail(&tool_name);
+            let json = serde_json::to_string_pretty(&result).unwrap_or_else(|e| {
+                eprintln!("nucleus: failed to serialize classification: {e}");
+                std::process::exit(1);
+            });
+            println!("{json}");
+            eprintln!("{result}");
+            return;
+        }
         Err(e) => {
             eprintln!("nucleus-claude-hook: {e}");
             std::process::exit(1);
@@ -1448,8 +1458,9 @@ fn main() {
         return;
     }
 
-    // Map tool to operation — every tool is gated, no passthrough
-    let operation = map_tool(&input.tool_name);
+    // Map tool to operation — every tool is gated, no passthrough.
+    // When NUCLEUS_LOG_CLASSIFICATION=1, logs classification details to stderr (#554).
+    let operation = map_tool_verbose(&input.tool_name);
 
     // Check MCP tools against manifest registry (admission control).
     // Loads manifests from .nucleus/manifests/*.toml in the working directory.

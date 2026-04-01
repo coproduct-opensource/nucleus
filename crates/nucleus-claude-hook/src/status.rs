@@ -10,6 +10,7 @@
 use serde::Serialize;
 use std::path::Path;
 
+use crate::classify::ClassificationSummary;
 use crate::session::{self, SessionState};
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -41,6 +42,8 @@ pub(crate) struct NucleusStatus {
     pub compartmentfile: bool,
     /// Project `.nucleus/` directory path (if found).
     pub nucleus_dir: Option<String>,
+    /// Classification summary: how tools seen in active sessions were classified (#554).
+    pub classification: ClassificationSummary,
 }
 
 /// Per-session status summary.
@@ -64,6 +67,9 @@ pub(crate) struct SessionSummary {
     pub taint: String,
     /// Flow graph observations count.
     pub flow_observations: usize,
+    /// Tool names observed in this session (for classification summary).
+    #[serde(skip)]
+    pub observed_tools: Vec<String>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -103,6 +109,13 @@ pub(crate) fn collect_status() -> NucleusStatus {
     // Compartmentfile.
     let compartmentfile = nucleus_dir.join("Compartmentfile").exists();
 
+    // Build classification summary from all tools seen across sessions (#554).
+    let all_tool_names: Vec<String> = sessions
+        .iter()
+        .flat_map(|s| s.observed_tools.clone())
+        .collect();
+    let classification = ClassificationSummary::from_tool_names(&all_tool_names);
+
     let nucleus_dir_display = if nucleus_dir.exists() {
         Some(nucleus_dir.display().to_string())
     } else {
@@ -121,6 +134,7 @@ pub(crate) fn collect_status() -> NucleusStatus {
         enterprise_managed,
         compartmentfile,
         nucleus_dir: nucleus_dir_display,
+        classification,
     }
 }
 
@@ -165,6 +179,12 @@ fn collect_sessions(session_dir: &Path) -> Vec<SessionSummary> {
                 // web/fetch content (NodeKind::Source with fetch-like ops).
                 let taint = detect_taint(&state);
 
+                let observed_tools: Vec<String> = state
+                    .allowed_ops
+                    .iter()
+                    .map(|(tool, _)| tool.clone())
+                    .collect();
+
                 summaries.push(SessionSummary {
                     session_id,
                     profile: state.profile.clone(),
@@ -175,6 +195,7 @@ fn collect_sessions(session_dir: &Path) -> Vec<SessionSummary> {
                     receipt_chain_intact,
                     taint,
                     flow_observations: state.flow_observations.len(),
+                    observed_tools,
                 });
             }
         }
@@ -328,6 +349,40 @@ fn print_human(s: &NucleusStatus) {
         }
     );
 
+    // Classification summary (#554).
+    if s.classification.total > 0 {
+        eprintln!();
+        eprintln!("{bold}Classification:{reset}");
+        eprintln!("  Tools seen:       {}", s.classification.total);
+        if s.classification.by_builtin > 0 {
+            eprintln!(
+                "  Builtin:          {green}{}{reset}",
+                s.classification.by_builtin
+            );
+        }
+        if s.classification.by_manifest > 0 {
+            eprintln!(
+                "  Manifest:         {green}{}{reset}",
+                s.classification.by_manifest
+            );
+        }
+        if s.classification.by_name_heuristic > 0 {
+            eprintln!(
+                "  Name heuristic:   {yellow}{}{reset}",
+                s.classification.by_name_heuristic
+            );
+        }
+        if s.classification.by_default_fallback > 0 {
+            eprintln!(
+                "  Default fallback: {red}{}{reset} (add manifests for these)",
+                s.classification.by_default_fallback
+            );
+            for tool in &s.classification.low_confidence_tools {
+                eprintln!("    {red}!{reset} {tool}");
+            }
+        }
+    }
+
     // Sessions.
     eprintln!();
     if s.sessions.is_empty() {
@@ -425,6 +480,7 @@ mod tests {
             enterprise_managed: false,
             compartmentfile: true,
             nucleus_dir: Some("/tmp/test/.nucleus".into()),
+            classification: Default::default(),
         };
         let json = serde_json::to_string(&status).unwrap();
         assert!(json.contains("\"version\":\"0.1.0\""));
@@ -445,6 +501,7 @@ mod tests {
             receipt_chain_intact: true,
             taint: "CLEAN".into(),
             flow_observations: 3,
+            observed_tools: vec![],
         };
         let json = serde_json::to_string(&summary).unwrap();
         assert!(json.contains("\"taint\":\"CLEAN\""));
