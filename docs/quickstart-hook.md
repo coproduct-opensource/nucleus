@@ -50,6 +50,9 @@ nucleus-claude-hook --doctor         # Check everything's working
 nucleus-claude-hook --show-profile safe_pr_fixer  # See what's allowed
 nucleus-claude-hook --receipts       # View audit trail
 nucleus-claude-hook --status         # Show active sessions
+nucleus-claude-hook --gc             # Clean up stale session files (>24h)
+nucleus-claude-hook --version        # Show installed version
+nucleus-claude-hook --init           # Create .nucleus/config.toml
 nucleus-claude-hook --help           # All options
 ```
 
@@ -83,7 +86,7 @@ Nucleus uses **information flow control** (IFC) — every piece of data gets a s
 
 Labels propagate. When web content enters, subsequent writes inherit adversarial integrity. The kernel blocks the escalation — adversarial data can't steer privileged actions.
 
-The kernel is backed by **181 formal verification artifacts** (68 Kani bounded model checks + 113 Lean 4 theorems) proving the lattice algebra and flow rules are correct.
+The kernel is backed by **191 formal verification artifacts** (78 Kani bounded model checks + 113 Lean 4 theorems) proving the lattice algebra, flow rules, compartment properties, and admission control are correct.
 
 ## Tamper detection
 
