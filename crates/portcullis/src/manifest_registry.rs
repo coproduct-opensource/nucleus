@@ -141,6 +141,10 @@ struct ToolEntry {
     /// Whether output carries authority_to_instruct (optional, default false).
     #[serde(default)]
     authority_to_instruct: Option<bool>,
+    /// Compartments where this tool is allowed (#462).
+    /// Empty = all compartments. When set, tool is only available in listed compartments.
+    #[serde(default)]
+    allowed_compartments: Option<Vec<String>>,
 }
 
 fn default_conf() -> String {
@@ -363,6 +367,7 @@ fn convert_entry(entry: &ToolEntry) -> Option<ToolManifest> {
         allowed_hosts: entry.allowed_hosts.clone().unwrap_or_default(),
         authority_to_instruct: entry.authority_to_instruct.unwrap_or(false),
         memory_behavior: portcullis_core::manifest::MemoryBehavior::None,
+        allowed_compartments: entry.allowed_compartments.clone().unwrap_or_default(),
     })
 }
 
