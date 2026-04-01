@@ -10,12 +10,20 @@
 //!   entries produce high-confidentiality flow labels.
 //! - Each entry has a `IntegLevel` — writes from adversarial sources
 //!   are stored with adversarial integrity.
+//! - Each entry has a `MemoryAuthority` — `MayInform` entries can
+//!   contribute to reasoning, while `MayNotAuthorize` entries MUST NOT
+//!   be used as causal ancestors of privileged actions.
 //! - TTLs prevent stale data from persisting indefinitely.
 //! - Schema types enable validation (string, json, binary).
+//! - Rebuttal history tracks previous values when entries are
+//!   overwritten, capped at [`MAX_REBUTTAL_HISTORY`] per key.
 
 use crate::{AuthorityLevel, ConfLevel, Freshness, IFCLabel, IntegLevel, ProvenanceSet};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+/// Maximum number of rebuttal history entries retained per key.
+const MAX_REBUTTAL_HISTORY: usize = 10;
 
 /// A governed memory store with typed, labeled entries.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -33,10 +41,17 @@ pub struct MemoryEntry {
     pub schema: SchemaType,
     /// IFC label — tracks confidentiality and integrity of the data.
     pub label: MemoryLabel,
+    /// Authority class — whether this entry can authorize privileged actions.
+    #[serde(default)]
+    pub authority: MemoryAuthority,
     /// Unix timestamp when the entry was created.
     pub created_at: u64,
     /// Time-to-live in seconds (0 = no expiry).
     pub ttl_secs: u64,
+    /// History of previous values that were superseded, most recent first.
+    /// Capped at [`MAX_REBUTTAL_HISTORY`] entries per key.
+    #[serde(default)]
+    pub rebuttal_history: Vec<RebuttalEntry>,
 }
 
 /// Simplified IFC label for memory entries (serializable as strings).
@@ -100,6 +115,34 @@ pub enum SchemaType {
     Binary,
 }
 
+/// Authority class for a memory entry — controls whether the entry
+/// can influence privileged actions.
+///
+/// Poisoned memory (written from web-tainted or adversarial sources)
+/// should be marked `MayNotAuthorize` so that even if the entry is
+/// readable, it cannot become a causal ancestor of privileged operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryAuthority {
+    /// Entry can inform the model's reasoning (default for trusted sources).
+    #[default]
+    MayInform,
+    /// Entry can be read but MUST NOT be used to authorize actions.
+    /// Reads produce `AuthorityLevel::NoAuthority` in the flow label.
+    MayNotAuthorize,
+}
+
+/// A record of a previous value that was superseded by a write.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RebuttalEntry {
+    /// The previous value before it was overwritten.
+    pub previous_value: String,
+    /// Unix timestamp when this value was replaced.
+    pub replaced_at: u64,
+    /// Human-readable reason the value was superseded.
+    pub reason: String,
+}
+
 impl GovernedMemory {
     /// Create an empty memory store.
     pub fn new() -> Self {
@@ -109,6 +152,8 @@ impl GovernedMemory {
     /// Write a memory entry with the given label.
     ///
     /// Returns false if max_entries would be exceeded (entry not written).
+    /// Uses [`MemoryAuthority::MayInform`] by default — use
+    /// [`write_governed`] or [`write_with_limit`] to specify authority.
     pub fn write(
         &mut self,
         key: String,
@@ -118,10 +163,41 @@ impl GovernedMemory {
         now: u64,
         ttl_secs: u64,
     ) -> bool {
-        self.write_with_limit(key, value, schema, label, now, ttl_secs, 1000)
+        self.write_with_limit(
+            key,
+            value,
+            schema,
+            label,
+            MemoryAuthority::MayInform,
+            now,
+            ttl_secs,
+            1000,
+        )
     }
 
-    /// Write with explicit max_entries limit (#587).
+    /// Write a memory entry with explicit authority class.
+    ///
+    /// Entries from adversarial or web-tainted sources should use
+    /// [`MemoryAuthority::MayNotAuthorize`] to prevent poisoned memory
+    /// from acquiring operational authority.
+    #[allow(clippy::too_many_arguments)]
+    pub fn write_governed(
+        &mut self,
+        key: String,
+        value: String,
+        schema: SchemaType,
+        label: MemoryLabel,
+        authority: MemoryAuthority,
+        now: u64,
+        ttl_secs: u64,
+    ) -> bool {
+        self.write_with_limit(key, value, schema, label, authority, now, ttl_secs, 1000)
+    }
+
+    /// Write with explicit max_entries limit and authority class (#587, #508).
+    ///
+    /// When overwriting an existing key, the previous value is pushed
+    /// onto the rebuttal history (capped at [`MAX_REBUTTAL_HISTORY`]).
     #[allow(clippy::too_many_arguments)]
     pub fn write_with_limit(
         &mut self,
@@ -129,6 +205,7 @@ impl GovernedMemory {
         value: String,
         schema: SchemaType,
         label: MemoryLabel,
+        authority: MemoryAuthority,
         now: u64,
         ttl_secs: u64,
         max_entries: usize,
@@ -137,14 +214,35 @@ impl GovernedMemory {
         if !self.entries.contains_key(&key) && self.entries.len() >= max_entries {
             return false; // Reject: would exceed limit
         }
+
+        // Preserve rebuttal history from the previous entry (if any).
+        let mut rebuttal_history = Vec::new();
+        if let Some(old) = self.entries.remove(&key) {
+            // Carry forward existing rebuttal history.
+            rebuttal_history = old.rebuttal_history;
+            // Push the superseded value onto the front.
+            rebuttal_history.insert(
+                0,
+                RebuttalEntry {
+                    previous_value: old.value,
+                    replaced_at: now,
+                    reason: String::new(),
+                },
+            );
+            // Cap at MAX_REBUTTAL_HISTORY.
+            rebuttal_history.truncate(MAX_REBUTTAL_HISTORY);
+        }
+
         self.entries.insert(
             key,
             MemoryEntry {
                 value,
                 schema,
                 label,
+                authority,
                 created_at: now,
                 ttl_secs,
+                rebuttal_history,
             },
         );
         true
@@ -156,17 +254,33 @@ impl GovernedMemory {
     }
 
     /// Get the IFC label for a memory read (for flow graph observation).
+    ///
+    /// `MayNotAuthorize` entries produce `AuthorityLevel::NoAuthority`
+    /// so they cannot become causal ancestors of privileged operations.
     pub fn read_label(&self, key: &str, now: u64) -> Option<IFCLabel> {
-        self.read(key, now).map(|entry| IFCLabel {
-            confidentiality: entry.label.conf_level(),
-            integrity: entry.label.integ_level(),
-            authority: AuthorityLevel::Informational,
-            provenance: ProvenanceSet::MEMORY,
-            freshness: Freshness {
-                observed_at: entry.created_at,
-                ttl_secs: entry.ttl_secs,
-            },
+        self.read(key, now).map(|entry| {
+            let authority = match entry.authority {
+                MemoryAuthority::MayInform => AuthorityLevel::Informational,
+                MemoryAuthority::MayNotAuthorize => AuthorityLevel::NoAuthority,
+            };
+            IFCLabel {
+                confidentiality: entry.label.conf_level(),
+                integrity: entry.label.integ_level(),
+                authority,
+                provenance: ProvenanceSet::MEMORY,
+                freshness: Freshness {
+                    observed_at: entry.created_at,
+                    ttl_secs: entry.ttl_secs,
+                },
+            }
         })
+    }
+
+    /// Get the rebuttal history for a key (empty if key doesn't exist).
+    pub fn rebuttal_history(&self, key: &str, now: u64) -> &[RebuttalEntry] {
+        self.read(key, now)
+            .map(|e| e.rebuttal_history.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Remove expired entries.
@@ -347,6 +461,7 @@ max_entries = 500
                 "value".to_string(),
                 SchemaType::String,
                 label.clone(),
+                MemoryAuthority::MayInform,
                 1000,
                 0,
                 3,
@@ -360,6 +475,7 @@ max_entries = 500
             "value".to_string(),
             SchemaType::String,
             label.clone(),
+            MemoryAuthority::MayInform,
             1000,
             0,
             3,
@@ -372,10 +488,177 @@ max_entries = 500
             "updated".to_string(),
             SchemaType::String,
             label,
+            MemoryAuthority::MayInform,
             1000,
             0,
             3,
         ));
         assert_eq!(mem.read("key0", 1000).unwrap().value, "updated");
+    }
+
+    #[test]
+    fn rebuttal_history_on_overwrite() {
+        let mut mem = GovernedMemory::new();
+        let label = MemoryLabel::from_levels(ConfLevel::Internal, IntegLevel::Trusted);
+
+        // Initial write — no rebuttal history.
+        mem.write(
+            "key".into(),
+            "v1".into(),
+            SchemaType::String,
+            label.clone(),
+            1000,
+            0,
+        );
+        assert!(mem.rebuttal_history("key", 1000).is_empty());
+
+        // Overwrite — v1 moves to rebuttal history.
+        mem.write(
+            "key".into(),
+            "v2".into(),
+            SchemaType::String,
+            label.clone(),
+            2000,
+            0,
+        );
+        let hist = mem.rebuttal_history("key", 2000);
+        assert_eq!(hist.len(), 1);
+        assert_eq!(hist[0].previous_value, "v1");
+        assert_eq!(hist[0].replaced_at, 2000);
+
+        // Second overwrite — v2 is newest rebuttal, v1 is second.
+        mem.write(
+            "key".into(),
+            "v3".into(),
+            SchemaType::String,
+            label,
+            3000,
+            0,
+        );
+        let hist = mem.rebuttal_history("key", 3000);
+        assert_eq!(hist.len(), 2);
+        assert_eq!(hist[0].previous_value, "v2");
+        assert_eq!(hist[1].previous_value, "v1");
+    }
+
+    #[test]
+    fn rebuttal_history_capped_at_max() {
+        let mut mem = GovernedMemory::new();
+        let label = MemoryLabel::from_levels(ConfLevel::Public, IntegLevel::Trusted);
+
+        // Write 12 times — only the last 10 rebuttals should be kept.
+        for i in 0..12 {
+            mem.write(
+                "key".into(),
+                format!("v{i}"),
+                SchemaType::String,
+                label.clone(),
+                1000 + i as u64,
+                0,
+            );
+        }
+
+        let hist = mem.rebuttal_history("key", 2000);
+        assert_eq!(hist.len(), MAX_REBUTTAL_HISTORY);
+        // Most recent rebuttal is v10 (the value just before v11).
+        assert_eq!(hist[0].previous_value, "v10");
+        // Oldest retained is v1 (v0 was evicted).
+        assert_eq!(hist[MAX_REBUTTAL_HISTORY - 1].previous_value, "v1");
+    }
+
+    #[test]
+    fn may_not_authorize_produces_no_authority() {
+        let mut mem = GovernedMemory::new();
+        let label = MemoryLabel::from_levels(ConfLevel::Internal, IntegLevel::Adversarial);
+
+        // Write with MayNotAuthorize — simulating web-tainted data.
+        mem.write_governed(
+            "tainted".into(),
+            "from-web".into(),
+            SchemaType::String,
+            label,
+            MemoryAuthority::MayNotAuthorize,
+            1000,
+            0,
+        );
+
+        let ifc = mem.read_label("tainted", 1000).unwrap();
+        assert_eq!(ifc.authority, AuthorityLevel::NoAuthority);
+        assert_eq!(ifc.integrity, IntegLevel::Adversarial);
+    }
+
+    #[test]
+    fn may_inform_produces_informational() {
+        let mut mem = GovernedMemory::new();
+        let label = MemoryLabel::from_levels(ConfLevel::Internal, IntegLevel::Trusted);
+
+        mem.write_governed(
+            "trusted".into(),
+            "safe-data".into(),
+            SchemaType::String,
+            label,
+            MemoryAuthority::MayInform,
+            1000,
+            0,
+        );
+
+        let ifc = mem.read_label("trusted", 1000).unwrap();
+        assert_eq!(ifc.authority, AuthorityLevel::Informational);
+    }
+
+    #[test]
+    fn default_write_is_may_inform() {
+        let mut mem = GovernedMemory::new();
+        let label = MemoryLabel::from_levels(ConfLevel::Public, IntegLevel::Trusted);
+
+        // Default write() should use MayInform.
+        mem.write(
+            "key".into(),
+            "val".into(),
+            SchemaType::String,
+            label,
+            1000,
+            0,
+        );
+        let entry = mem.read("key", 1000).unwrap();
+        assert_eq!(entry.authority, MemoryAuthority::MayInform);
+    }
+
+    #[test]
+    fn rebuttal_history_preserves_across_authority_change() {
+        let mut mem = GovernedMemory::new();
+        let label = MemoryLabel::from_levels(ConfLevel::Internal, IntegLevel::Trusted);
+
+        // Write trusted entry.
+        mem.write_governed(
+            "key".into(),
+            "trusted-v1".into(),
+            SchemaType::String,
+            label.clone(),
+            MemoryAuthority::MayInform,
+            1000,
+            0,
+        );
+
+        // Overwrite with tainted entry — old value in rebuttal history.
+        let tainted_label = MemoryLabel::from_levels(ConfLevel::Internal, IntegLevel::Adversarial);
+        mem.write_governed(
+            "key".into(),
+            "tainted-v2".into(),
+            SchemaType::String,
+            tainted_label,
+            MemoryAuthority::MayNotAuthorize,
+            2000,
+            0,
+        );
+
+        let entry = mem.read("key", 2000).unwrap();
+        assert_eq!(entry.authority, MemoryAuthority::MayNotAuthorize);
+        assert_eq!(entry.rebuttal_history.len(), 1);
+        assert_eq!(entry.rebuttal_history[0].previous_value, "trusted-v1");
+
+        // IFC label reflects the new authority.
+        let ifc = mem.read_label("key", 2000).unwrap();
+        assert_eq!(ifc.authority, AuthorityLevel::NoAuthority);
     }
 }
