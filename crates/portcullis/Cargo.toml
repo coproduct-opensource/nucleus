@@ -39,7 +39,7 @@ cedar = ["dep:cedar-policy", "serde"]
 testing = []
 
 [dependencies]
-portcullis-core = { path = "../portcullis-core", features = ["serde"] }
+portcullis-core = { path = "../portcullis-core", features = ["serde", "envelope"] }
 chrono = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
