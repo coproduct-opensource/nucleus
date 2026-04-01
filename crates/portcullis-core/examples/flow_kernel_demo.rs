@@ -130,17 +130,15 @@ fn main() {
     println!("╚══════════════════════════════════════════════════════════════╝");
     println!("{}", receipt.display_chain());
 
-    // Verify signature (should fail — unsigned)
-    match verify_signature(&receipt) {
-        Ok(()) => println!("  Signature: ✅ verified"),
+    // Verify signature (should fail — unsigned in this demo)
+    // In production, use portcullis::verify_receipt() with Ed25519 keys.
+    match verify_signature(&receipt, |_content, _sig| false) {
+        Ok(()) => println!("  Signature: verified"),
         Err(SignatureError::Unsigned) => {
-            println!("  Signature: ⚠ unsigned (Ed25519 signing not yet wired in)")
-        }
-        Err(SignatureError::VerificationNotImplemented) => {
-            println!("  Signature: ❌ verification not implemented")
+            println!("  Signature: unsigned (use portcullis::sign_receipt to sign)")
         }
         Err(SignatureError::InvalidSignature) => {
-            println!("  Signature: ❌ invalid (tampered or wrong key)")
+            println!("  Signature: invalid (tampered or wrong key)")
         }
     }
 
