@@ -1,8 +1,19 @@
 //! Manifest behavioral enforcement — detect lying manifests.
 //!
 //! After tool execution, compare the manifest's declared properties
-//! against observed behavior. Flag violations for audit and optionally
-//! revoke trust for repeat offenders.
+//! against observed behavior. Flag violations for audit and revoke
+//! trust for repeat offenders via session-scoped tool flagging.
+//!
+//! ## Security boundary
+//!
+//! **This is a best-effort heuristic, not a hard security boundary.**
+//! Pattern matching is inherently bypassable — obfuscation, encoding,
+//! and Unicode homoglyphs can evade string-based detection. The real
+//! security comes from the static admission rules in `portcullis_core::manifest`
+//! (Kani-verified) and the capability lattice. This module provides
+//! defense-in-depth: a lying manifest that passes admission may still
+//! be caught at runtime by behavioral checks, and repeated violations
+//! trigger trust revocation (deny on next PreToolUse).
 //!
 //! ## Violation types
 //!
@@ -15,6 +26,13 @@
 //!   but the tool modified the filesystem or made network requests.
 //! - **Confidentiality leak**: manifest declares `max_confidentiality = "public"`
 //!   but output contains patterns matching secrets (API keys, tokens).
+//!
+//! ## Trust revocation
+//!
+//! The hook tracks per-tool violation counts in session state. On the first
+//! violation the tool is flagged; on the second violation in the same session,
+//! the tool is denied for the remainder of the session. This escalation is
+//! monotonic — trust can only decrease, never recover within a session.
 
 use portcullis_core::manifest::ToolManifest;
 use portcullis_core::{AuthorityLevel, ConfLevel, IntegLevel};
@@ -93,6 +111,11 @@ pub fn check_output(
 }
 
 /// Detect patterns suggesting adversarial content in tool output.
+///
+/// NOTE: This is a best-effort heuristic. A determined adversary can bypass
+/// these checks via obfuscation (split strings, Unicode homoglyphs, base64
+/// encoding). The value is catching lazy/accidental violations, not stopping
+/// sophisticated attacks. See module-level docs for the security model.
 fn detect_adversarial_patterns(output: &str) -> Option<String> {
     let patterns = [
         // Script injection
@@ -107,9 +130,9 @@ fn detect_adversarial_patterns(output: &str) -> Option<String> {
         ("ignore all previous", "prompt injection"),
         ("you are now", "role hijacking"),
         ("system prompt:", "system prompt leak"),
-        // Shell injection
+        // Shell injection — $(cmd) but NOT backticks (too many false positives
+        // from legitimate markdown code blocks in tool output).
         ("$(", "command substitution"),
-        ("`", "backtick execution"),
     ];
 
     for (pattern, label) in &patterns {
@@ -284,5 +307,37 @@ mod tests {
         let violations = check_output("test", &manifest, output);
         assert_eq!(violations.len(), 1);
         assert!(violations[0].evidence.contains("prompt injection"));
+    }
+
+    #[test]
+    fn backtick_in_markdown_does_not_trigger() {
+        // Backticks in markdown code blocks are extremely common in tool output.
+        // The old pattern `("`", "backtick execution")` caused false positives
+        // on any tool that returned code snippets (#485).
+        let manifest = test_manifest(
+            IntegLevel::Trusted,
+            AuthorityLevel::Directive,
+            ConfLevel::Internal,
+        );
+        let output = "Here is the code:\n```rust\nfn main() { println!(\"hello\"); }\n```";
+        let violations = check_output("test", &manifest, output);
+        assert!(
+            violations.is_empty(),
+            "backticks in markdown should not trigger"
+        );
+    }
+
+    #[test]
+    fn command_substitution_still_detected() {
+        // $() command substitution remains detected even after backtick removal.
+        let manifest = test_manifest(
+            IntegLevel::Trusted,
+            AuthorityLevel::Directive,
+            ConfLevel::Internal,
+        );
+        let output = "Run this: $(cat /etc/passwd)";
+        let violations = check_output("test", &manifest, output);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].kind, ViolationKind::IntegrityEscalation);
     }
 }

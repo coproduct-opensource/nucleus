@@ -125,7 +125,12 @@ impl HookOutput {
 /// Version history:
 ///   1 — initial schema (implicit in pre-versioned files)
 ///   2 — added schema_version, last_pre_tool_obs_index (#523, #593)
-const SESSION_SCHEMA_VERSION: u32 = 2;
+///   3 — added flagged_tools for manifest violation tracking (#485)
+const SESSION_SCHEMA_VERSION: u32 = 3;
+
+/// Number of manifest violations before a tool is denied for the session (#485).
+/// First violation: logged + flagged. Second violation: tool denied.
+const MANIFEST_VIOLATION_REVOKE_THRESHOLD: u32 = 2;
 
 /// Persisted session state for cross-invocation exposure tracking.
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -176,6 +181,12 @@ struct SessionState {
     /// so the ToolResponse can be wired as a sibling in the DAG (#593).
     #[serde(default)]
     last_pre_tool_obs_index: Option<usize>,
+    /// Per-tool manifest violation counts (#485). Incremented on PostToolUse
+    /// when behavioral enforcement detects a violation. On PreToolUse, tools
+    /// with count >= MANIFEST_VIOLATION_REVOKE_THRESHOLD are denied.
+    /// Monotonic — trust can only decrease within a session.
+    #[serde(default)]
+    flagged_tools: std::collections::HashMap<String, u32>,
 }
 
 impl SessionState {
@@ -2206,6 +2217,31 @@ fn main() {
                                     v.tool_name, v.kind, v.description
                                 );
                             }
+                            // Persist violation count in session state (#485).
+                            // Trust revocation is monotonic — count only increases.
+                            if let SessionLoad::Loaded(ref mut session)
+                            | SessionLoad::Fresh(ref mut session) =
+                                load_session(&input.session_id)
+                            {
+                                let count = session
+                                    .flagged_tools
+                                    .entry(input.tool_name.clone())
+                                    .or_insert(0);
+                                *count = count.saturating_add(violations.len() as u32);
+                                let current = *count;
+                                save_session(&input.session_id, session);
+                                if current >= MANIFEST_VIOLATION_REVOKE_THRESHOLD {
+                                    eprintln!(
+                                        "nucleus: tool '{}' has {} violations (threshold {}) — will be DENIED on next use",
+                                        input.tool_name, current, MANIFEST_VIOLATION_REVOKE_THRESHOLD
+                                    );
+                                } else {
+                                    eprintln!(
+                                        "nucleus: tool '{}' flagged ({}/{} violations before revocation)",
+                                        input.tool_name, current, MANIFEST_VIOLATION_REVOKE_THRESHOLD
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -2402,6 +2438,34 @@ fn main() {
                     println!("{}", serde_json::to_string(&out).unwrap());
                     std::process::exit(2);
                 }
+            }
+        }
+    }
+
+    // SECURITY (#485): Check if tool has been flagged for manifest violations.
+    // Trust revocation is checked early — before kernel.decide() — because a
+    // tool that lied about its manifest should not be re-evaluated against the
+    // capability lattice (it already proved it cannot be trusted).
+    if let SessionLoad::Loaded(ref session) | SessionLoad::Fresh(ref session) =
+        load_session(&input.session_id)
+    {
+        if let Some(&count) = session.flagged_tools.get(&input.tool_name) {
+            if count >= MANIFEST_VIOLATION_REVOKE_THRESHOLD {
+                let out = HookOutput::deny(format!(
+                    "Blocked: tool '{}' has been revoked for this session — \
+                     {} manifest violation(s) detected in prior outputs. \
+                     A tool that lies about its manifest cannot be trusted.\n  \
+                     How to fix:\n  \
+                     - Start a new session to reset trust\n  \
+                     - Or update the tool's manifest to match its actual behavior",
+                    input.tool_name, count
+                ));
+                eprintln!(
+                    "nucleus: {} DENIED — trust revoked ({} manifest violations, threshold {})",
+                    input.tool_name, count, MANIFEST_VIOLATION_REVOKE_THRESHOLD
+                );
+                println!("{}", serde_json::to_string(&out).unwrap());
+                std::process::exit(2);
             }
         }
     }
@@ -3782,5 +3846,55 @@ mod tests {
 
         // Receipts directory should survive GC
         assert!(receipts.is_dir(), "receipts directory should be preserved");
+    }
+
+    // -----------------------------------------------------------------------
+    // Trust revocation via flagged_tools (#485)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn flagged_tools_persists_in_session_state() {
+        let mut session = SessionState::new_versioned();
+        assert!(session.flagged_tools.is_empty());
+
+        session
+            .flagged_tools
+            .insert("mcp__evil__tool".to_string(), 1);
+
+        let json = serde_json::to_string(&session).unwrap();
+        let loaded: SessionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.flagged_tools.get("mcp__evil__tool"), Some(&1));
+    }
+
+    #[test]
+    fn flagged_tools_defaults_empty_on_old_schema() {
+        // Simulate loading a schema v2 session (no flagged_tools field).
+        let json = r#"{"schema_version":2,"profile":"default","high_water_mark":5,
+                       "allowed_ops":[],"flow_observations":[],"chain_head_hash":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+                       "signing_key_pkcs8":[],"compartment_token":""}"#;
+        let session: SessionState = serde_json::from_str(json).unwrap();
+        assert!(
+            session.flagged_tools.is_empty(),
+            "old schema should deserialize with empty flagged_tools"
+        );
+    }
+
+    #[test]
+    fn violation_count_is_monotonic() {
+        let mut session = SessionState::new_versioned();
+        let tool = "mcp__shady__fetch".to_string();
+
+        // First violation
+        let count = session.flagged_tools.entry(tool.clone()).or_insert(0);
+        *count = count.saturating_add(1);
+        assert_eq!(session.flagged_tools[&tool], 1);
+
+        // Second violation
+        let count = session.flagged_tools.entry(tool.clone()).or_insert(0);
+        *count = count.saturating_add(2);
+        assert_eq!(session.flagged_tools[&tool], 3);
+
+        // Verify threshold check
+        assert!(session.flagged_tools[&tool] >= MANIFEST_VIOLATION_REVOKE_THRESHOLD);
     }
 }
