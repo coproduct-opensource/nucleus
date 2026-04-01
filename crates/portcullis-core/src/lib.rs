@@ -70,6 +70,8 @@ pub mod delegation;
 pub mod effect;
 #[cfg(feature = "serde")]
 pub mod enterprise;
+#[cfg(feature = "envelope")]
+pub mod envelope;
 pub mod flow;
 #[cfg(feature = "serde")]
 pub mod managed_settings;
