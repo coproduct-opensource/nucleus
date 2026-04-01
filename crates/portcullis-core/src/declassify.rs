@@ -161,6 +161,8 @@ pub enum TokenApplyResult {
     Expired { valid_until: u64, now: u64 },
     /// The underlying rule's precondition didn't match the node's label.
     PreconditionUnmet,
+    /// Ed25519 signature is missing (all zeros) or failed verification.
+    InvalidSignature,
 }
 
 impl DeclassificationToken {
@@ -180,6 +182,16 @@ impl DeclassificationToken {
             justification,
             signature: [0u8; 64],
         }
+    }
+
+    /// Check if the token has been signed (signature is not all zeros).
+    pub fn is_signed(&self) -> bool {
+        self.signature != [0u8; 64]
+    }
+
+    /// Set the signature bytes (called by the signing layer).
+    pub fn set_signature(&mut self, sig: [u8; 64]) {
+        self.signature = sig;
     }
 
     /// Check if the token has expired.
