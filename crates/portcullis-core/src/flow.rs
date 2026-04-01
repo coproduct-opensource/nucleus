@@ -10,6 +10,7 @@
 //! **Current status**: types + pure functions + tests. Not yet wired into
 //! `Kernel::decide()` — integration is Phase 3 of the Flow Kernel plan.
 
+use crate::storage_lane::StorageLane;
 use crate::{
     AuthorityLevel, ConfLevel, DerivationClass, IFCLabel, IntegLevel, Operation, ProvenanceSet,
     SinkClass,
@@ -204,6 +205,14 @@ pub enum FlowDenyReason {
     IntegrityViolation,
     /// Expired data used in a decision.
     FreshnessExpired,
+    /// AI-derived or mixed-derivation data flowing to a verified sink.
+    ///
+    /// Verified sinks (e.g., `GitPush`, `GitCommit`, `PRCommentWrite`)
+    /// require data that passes the [`StorageLane::Verified`] gate —
+    /// only `Deterministic` and `HumanPromoted` derivations are accepted.
+    /// This prevents AI-generated content from reaching publish vectors
+    /// without explicit human promotion.
+    DerivationViolation,
 }
 
 /// Result of checking a flow.
@@ -300,13 +309,14 @@ pub fn required_integrity(op: Operation) -> IntegLevel {
 
 /// Check whether a flow node's action is permitted by the flow policy.
 ///
-/// Enforces 6 rules:
+/// Enforces 7 rules:
 /// 1. No-exfil: secret data cannot flow to external sinks (incl. WebFetch)
 /// 2. No-authority-escalation: NoAuthority data cannot steer privileged actions
 /// 3. No-integrity-laundering: untrusted data cannot reach trusted-required sinks
 /// 4. No-web-exfil: web-provenance data cannot reach exfil sinks
 /// 5. Freshness: expired data cannot be used in decisions
-/// 6. Monotonicity: implicit (enforced by propagate_label's join)
+/// 6. Derivation-sink compatibility: AI-derived data cannot reach verified sinks
+/// 7. Monotonicity: implicit (enforced by propagate_label's join)
 ///
 /// When a [`SinkClass`] is present on the node, authority and integrity
 /// requirements come from the sink class. Otherwise, the legacy per-Operation
@@ -366,6 +376,17 @@ pub fn check_flow(node: &FlowNode, now: u64) -> FlowVerdict {
     // Rule 5: Freshness check
     if label.freshness.is_expired_at(now) {
         return FlowVerdict::Deny(FlowDenyReason::FreshnessExpired);
+    }
+
+    // Rule 6: Derivation-sink compatibility — AI-derived data cannot reach
+    // verified sinks (GitPush, GitCommit, PRCommentWrite) without human
+    // promotion. Uses the StorageLane::Verified gate as the acceptance
+    // predicate: only Deterministic and HumanPromoted derivations pass.
+    if let Some(sink) = node.sink_class
+        && sink.requires_verified_derivation()
+        && !StorageLane::Verified.accepts(label.derivation)
+    {
+        return FlowVerdict::Deny(FlowDenyReason::DerivationViolation);
     }
 
     FlowVerdict::Allow
