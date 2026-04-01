@@ -1631,6 +1631,73 @@ fn run_uninstall() {
     println!("\n  Restart Claude Code to deactivate.");
 }
 
+/// Default TTL for stale session files (24 hours).
+const SESSION_GC_TTL_SECS: u64 = 24 * 60 * 60;
+
+/// Garbage-collect stale session files older than `ttl_secs` (#520).
+///
+/// Removes .json (state), .hwm (watermark), and .compartment files.
+/// Receipt directories are preserved for audit.
+/// Returns the number of files removed.
+fn gc_stale_sessions(ttl_secs: u64) -> usize {
+    let dir = session_dir();
+    let now = std::time::SystemTime::now();
+    let mut removed = 0;
+
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+
+        // Only GC session files, not the receipts directory
+        if path.is_dir() {
+            continue;
+        }
+
+        // Only GC known session file extensions
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let is_session_file = ext == "json"
+            || ext == "hwm"
+            || ext == "compartment"
+            || name.ends_with(".parent-label")
+            || name.ends_with(".parent-chain");
+
+        if !is_session_file {
+            continue;
+        }
+
+        // Check file age
+        let age = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|modified| now.duration_since(modified).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        if age > ttl_secs && std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+
+    removed
+}
+
+/// Run the `--gc` command: remove stale session files.
+fn run_gc() {
+    let removed = gc_stale_sessions(SESSION_GC_TTL_SECS);
+    if removed > 0 {
+        println!("nucleus: garbage collected {removed} stale session file(s) (older than 24h)");
+    } else {
+        println!("nucleus: no stale session files to clean up");
+    }
+    println!("nucleus: session directory: {}", session_dir().display());
+}
+
 fn run_doctor() {
     let mut ok = true;
 
@@ -1771,6 +1838,7 @@ fn run_help() {
     println!("  nucleus-claude-hook              Read hook JSON from stdin (normal mode)");
     println!("  nucleus-claude-hook --setup       Configure ~/.claude/settings.json");
     println!("  nucleus-claude-hook --status      Show active sessions");
+    println!("  nucleus-claude-hook --gc          Remove stale session files (>24h)");
     println!("  nucleus-claude-hook --help        This message");
     println!("  nucleus-claude-hook --version     Show version");
     println!();
@@ -1861,6 +1929,10 @@ fn main() {
     }
     if args.iter().any(|a| a == "--smoke-test") {
         run_smoke_test();
+        return;
+    }
+    if args.iter().any(|a| a == "--gc") {
+        run_gc();
         return;
     }
     // Show what a profile allows (#556)
@@ -1984,6 +2056,20 @@ fn main() {
                     std::fs::remove_file(&comp_path).ok();
                 }
                 eprintln!("nucleus: session state cleaned up (receipts preserved)");
+
+                // Opportunistic GC: clean up stale sessions from other
+                // sessions that didn't get a SessionEnd event (#520).
+                // Use a simple hash of session_id to get ~10% probability.
+                let gc_trigger: u8 = input
+                    .session_id
+                    .bytes()
+                    .fold(0u8, |acc, b| acc.wrapping_add(b));
+                if gc_trigger % 10 == 0 {
+                    let removed = gc_stale_sessions(SESSION_GC_TTL_SECS);
+                    if removed > 0 {
+                        eprintln!("nucleus: gc — removed {removed} stale session file(s)");
+                    }
+                }
             }
         }
         // PostToolUse: observe the tool result and insert into flow graph (#593, #497)
@@ -3387,5 +3473,51 @@ mod tests {
         );
         assert!(msg.contains("How to fix"), "path blocked: {msg}");
         assert!(msg.contains("policy.toml"), "should mention config file");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Session GC tests (#520)
+    // ─────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_gc_preserves_fresh_files() {
+        let dir = session_dir();
+        let fresh_file = dir.join("gc-test-fresh.json");
+
+        // Create a fresh file
+        std::fs::write(&fresh_file, "{}").unwrap();
+
+        // GC with 24h TTL should preserve it (it's < 1 second old)
+        gc_stale_sessions(SESSION_GC_TTL_SECS);
+        assert!(fresh_file.exists(), "fresh file should be preserved");
+
+        // Cleanup
+        std::fs::remove_file(&fresh_file).ok();
+    }
+
+    #[test]
+    fn test_gc_skips_non_session_files() {
+        let dir = session_dir();
+        let txt_file = dir.join("gc-test-notes.txt");
+        std::fs::write(&txt_file, "not a session file").unwrap();
+
+        // GC with TTL=0 should still skip .txt files (not a session extension)
+        gc_stale_sessions(0);
+        assert!(txt_file.exists(), ".txt file should not be GC'd");
+
+        // Cleanup
+        std::fs::remove_file(&txt_file).ok();
+    }
+
+    #[test]
+    fn test_gc_preserves_receipts_dir() {
+        let dir = session_dir();
+        let receipts = dir.join("receipts");
+        std::fs::create_dir_all(&receipts).ok();
+
+        gc_stale_sessions(0);
+
+        // Receipts directory should survive GC
+        assert!(receipts.is_dir(), "receipts directory should be preserved");
     }
 }
