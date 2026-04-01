@@ -19,11 +19,69 @@
 //! where `>=` is the lattice ordering (least upper bound).
 
 use std::collections::BTreeMap;
+use std::fmt;
 
 use crate::DerivationClass;
 use crate::IFCLabel;
 use crate::effect::EffectKind;
 use crate::flow::NodeId;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EnvelopeError — verification failures for envelope invariants
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Errors arising from envelope invariant checks.
+///
+/// These are not construction errors — envelopes can always be created.
+/// Instead, these signal that an envelope does not satisfy the requirements
+/// for entering the **verified** storage lane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnvelopeError {
+    /// A non-deterministic derivation class requires a `witness_bundle_id`,
+    /// but the field has `None`.
+    MissingWitness {
+        /// The derivation class that triggered the requirement.
+        derivation: DerivationClass,
+    },
+
+    /// A `HumanPromoted` field requires `promoted_by` to be set.
+    MissingPromoter {
+        /// The derivation class (always `HumanPromoted`).
+        derivation: DerivationClass,
+    },
+
+    /// One or more fields in a row are not verified-ready.
+    FieldNotVerifiedReady {
+        /// Field name that failed the check.
+        field_name: String,
+        /// The underlying error for that field.
+        reason: Box<EnvelopeError>,
+    },
+}
+
+impl fmt::Display for EnvelopeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EnvelopeError::MissingWitness { derivation } => {
+                write!(
+                    f,
+                    "derivation class {derivation:?} requires witness_bundle_id for verified lane"
+                )
+            }
+            EnvelopeError::MissingPromoter { derivation } => {
+                write!(
+                    f,
+                    "derivation class {derivation:?} requires promoted_by for verified lane"
+                )
+            }
+            EnvelopeError::FieldNotVerifiedReady { field_name, reason } => {
+                write!(f, "field '{field_name}' not verified-ready: {reason}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for EnvelopeError {}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SourceRef — provenance pointer to an upstream data source
@@ -141,6 +199,53 @@ impl FieldEnvelope {
     pub fn verify_content_hash(&self) -> bool {
         self.content_hash == self.compute_content_hash()
     }
+
+    /// Check whether this field satisfies derivation-specific requirements
+    /// for the **verified** storage lane.
+    ///
+    /// Rules:
+    /// - `Deterministic`: no witness needed — reproducible by definition.
+    /// - `AIDerived` / `Mixed` / `OpaqueExternal`: `witness_bundle_id` required.
+    /// - `HumanPromoted`: `witness_bundle_id` AND `promoted_by` required.
+    ///
+    /// This does NOT prevent construction — callers in the proposed lane may
+    /// create envelopes without witnesses. This method gates promotion to
+    /// verified storage.
+    pub fn verify_derivation_requirements(&self) -> Result<(), EnvelopeError> {
+        match self.derivation_class {
+            DerivationClass::Deterministic => Ok(()),
+            DerivationClass::HumanPromoted => {
+                if self.witness_bundle_id.is_none() {
+                    return Err(EnvelopeError::MissingWitness {
+                        derivation: self.derivation_class,
+                    });
+                }
+                if self.promoted_by.is_none() {
+                    return Err(EnvelopeError::MissingPromoter {
+                        derivation: self.derivation_class,
+                    });
+                }
+                Ok(())
+            }
+            DerivationClass::AIDerived
+            | DerivationClass::Mixed
+            | DerivationClass::OpaqueExternal => {
+                if self.witness_bundle_id.is_none() {
+                    return Err(EnvelopeError::MissingWitness {
+                        derivation: self.derivation_class,
+                    });
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Returns `true` if this field is ready for the verified storage lane.
+    ///
+    /// Equivalent to `self.verify_derivation_requirements().is_ok()`.
+    pub fn is_verified_ready(&self) -> bool {
+        self.verify_derivation_requirements().is_ok()
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -252,6 +357,27 @@ impl RowEnvelope {
         let (expected_label, expected_derivation) =
             Self::compute_row_label_and_derivation(&self.fields);
         self.row_label == expected_label && self.row_derivation_class == expected_derivation
+    }
+
+    /// Check derivation requirements for **all** fields in this row.
+    ///
+    /// Returns the first error encountered, wrapped in
+    /// [`EnvelopeError::FieldNotVerifiedReady`] with the offending field name.
+    pub fn verify_derivation_requirements(&self) -> Result<(), EnvelopeError> {
+        for (name, field) in &self.fields {
+            if let Err(e) = field.verify_derivation_requirements() {
+                return Err(EnvelopeError::FieldNotVerifiedReady {
+                    field_name: name.clone(),
+                    reason: Box::new(e),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns `true` if **every** field in this row is verified-ready.
+    pub fn is_verified_ready(&self) -> bool {
+        self.verify_derivation_requirements().is_ok()
     }
 }
 
@@ -512,6 +638,156 @@ mod tests {
         assert_eq!(field.derivation_class, DerivationClass::AIDerived);
         assert_eq!(field.witness_bundle_id.as_deref(), Some("wb-abc123"));
         assert!(field.verify_content_hash());
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Verified-readiness tests (issue #743)
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn deterministic_is_verified_ready_without_witness() {
+        let field = make_field(b"pure", DerivationClass::Deterministic, IFCLabel::default());
+        assert!(field.is_verified_ready());
+        assert!(field.verify_derivation_requirements().is_ok());
+    }
+
+    #[test]
+    fn ai_derived_without_witness_not_verified_ready() {
+        let field = make_field(
+            b"llm output",
+            DerivationClass::AIDerived,
+            IFCLabel::default(),
+        );
+        assert!(!field.is_verified_ready());
+        assert_eq!(
+            field.verify_derivation_requirements().unwrap_err(),
+            EnvelopeError::MissingWitness {
+                derivation: DerivationClass::AIDerived,
+            }
+        );
+    }
+
+    #[test]
+    fn ai_derived_with_witness_is_verified_ready() {
+        let mut field = make_field(
+            b"llm output",
+            DerivationClass::AIDerived,
+            IFCLabel::default(),
+        );
+        field.witness_bundle_id = Some("wb-001".into());
+        assert!(field.is_verified_ready());
+    }
+
+    #[test]
+    fn mixed_without_witness_not_verified_ready() {
+        let field = make_field(b"mixed", DerivationClass::Mixed, IFCLabel::default());
+        assert!(!field.is_verified_ready());
+        assert_eq!(
+            field.verify_derivation_requirements().unwrap_err(),
+            EnvelopeError::MissingWitness {
+                derivation: DerivationClass::Mixed,
+            }
+        );
+    }
+
+    #[test]
+    fn opaque_external_without_witness_not_verified_ready() {
+        let field = make_field(b"ext", DerivationClass::OpaqueExternal, IFCLabel::default());
+        assert!(!field.is_verified_ready());
+    }
+
+    #[test]
+    fn human_promoted_requires_witness_and_promoter() {
+        // Neither witness nor promoter
+        let field = make_field(
+            b"promoted",
+            DerivationClass::HumanPromoted,
+            IFCLabel::default(),
+        );
+        assert!(!field.is_verified_ready());
+        assert_eq!(
+            field.verify_derivation_requirements().unwrap_err(),
+            EnvelopeError::MissingWitness {
+                derivation: DerivationClass::HumanPromoted,
+            }
+        );
+
+        // Witness but no promoter
+        let mut field2 = make_field(
+            b"promoted",
+            DerivationClass::HumanPromoted,
+            IFCLabel::default(),
+        );
+        field2.witness_bundle_id = Some("wb-002".into());
+        assert!(!field2.is_verified_ready());
+        assert_eq!(
+            field2.verify_derivation_requirements().unwrap_err(),
+            EnvelopeError::MissingPromoter {
+                derivation: DerivationClass::HumanPromoted,
+            }
+        );
+
+        // Both witness and promoter
+        let mut field3 = make_field(
+            b"promoted",
+            DerivationClass::HumanPromoted,
+            IFCLabel::default(),
+        );
+        field3.witness_bundle_id = Some("wb-003".into());
+        field3.promoted_by = Some("alice@example.com".into());
+        assert!(field3.is_verified_ready());
+    }
+
+    #[test]
+    fn row_verified_ready_all_deterministic() {
+        let f1 = make_field(b"a", DerivationClass::Deterministic, IFCLabel::default());
+        let f2 = make_field(b"b", DerivationClass::Deterministic, IFCLabel::default());
+        let mut fields = BTreeMap::new();
+        fields.insert("c1".into(), f1);
+        fields.insert("c2".into(), f2);
+        let row = RowEnvelope::new("r1".into(), "t".into(), fields, None, "v1".into(), 1000);
+        assert!(row.is_verified_ready());
+    }
+
+    #[test]
+    fn row_not_verified_ready_if_any_field_missing_witness() {
+        let f1 = make_field(b"a", DerivationClass::Deterministic, IFCLabel::default());
+        let f2 = make_field(b"b", DerivationClass::AIDerived, IFCLabel::default()); // no witness
+        let mut fields = BTreeMap::new();
+        fields.insert("det".into(), f1);
+        fields.insert("gen".into(), f2);
+        let row = RowEnvelope::new("r2".into(), "t".into(), fields, None, "v1".into(), 1000);
+        assert!(!row.is_verified_ready());
+
+        let err = row.verify_derivation_requirements().unwrap_err();
+        match err {
+            EnvelopeError::FieldNotVerifiedReady { field_name, .. } => {
+                assert_eq!(field_name, "gen");
+            }
+            other => panic!("expected FieldNotVerifiedReady, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn row_verified_ready_with_mixed_fields_all_witnessed() {
+        let f1 = make_field(b"a", DerivationClass::Deterministic, IFCLabel::default());
+        let mut f2 = make_field(b"b", DerivationClass::AIDerived, IFCLabel::default());
+        f2.witness_bundle_id = Some("wb-100".into());
+        let mut fields = BTreeMap::new();
+        fields.insert("det".into(), f1);
+        fields.insert("gen".into(), f2);
+        let row = RowEnvelope::new("r3".into(), "t".into(), fields, None, "v1".into(), 1000);
+        assert!(row.is_verified_ready());
+    }
+
+    #[test]
+    fn envelope_error_display() {
+        let err = EnvelopeError::MissingWitness {
+            derivation: DerivationClass::AIDerived,
+        };
+        let msg = format!("{err}");
+        assert!(msg.contains("witness_bundle_id"));
+        assert!(msg.contains("AIDerived"));
     }
 
     #[test]
