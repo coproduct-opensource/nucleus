@@ -5,10 +5,10 @@
 # not blocking) and automatically tightened by the post-merge workflow.
 #
 # To extract code: move logic into sub-modules under src/, re-export from
-# main.rs, and watch the ceiling drop naturally.
+# the parent module, and watch the ceiling drop naturally.
 
 [ratchet]
-# Current maximum allowed line count for the file.
+# Current maximum allowed line count for each file.
 ceiling = 2691
 # The target we're ratcheting toward.
 target = 1000
@@ -17,3 +17,9 @@ step = 1
 
 [[files]]
 path = "crates/nucleus-claude-hook/src/main.rs"
+
+[[files]]
+path = "crates/portcullis/src/kernel.rs"
+ceiling = 5100
+target = 2500
+step = 1
