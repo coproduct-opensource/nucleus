@@ -42,6 +42,8 @@ pub enum CliCommand {
     Receipts { session_id: Option<String> },
     /// `--completions <shell>` — print shell completion script.
     Completions { shell: String },
+    /// `--exit-codes` — print exit code documentation.
+    ExitCodes,
 }
 
 /// CLI parsing error.
@@ -137,6 +139,7 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
                 shell: shell.clone(),
             })
         }
+        "--exit-codes" => Ok(CliCommand::ExitCodes),
         other if other.starts_with('-') => Err(CliError::UnknownFlag(other.to_string())),
         // No recognised flag — fall through to stdin hook mode.
         _ => Ok(CliCommand::Hook),
@@ -306,6 +309,14 @@ mod tests {
         assert_eq!(
             parse_args(&args(&["--build", ".", "-o", "out.json"])).unwrap(),
             CliCommand::Build
+        );
+    }
+
+    #[test]
+    fn exit_codes_flag() {
+        assert_eq!(
+            parse_args(&args(&["--exit-codes"])).unwrap(),
+            CliCommand::ExitCodes
         );
     }
 

@@ -262,7 +262,7 @@ pub(crate) fn run_status(json: bool) {
         // Machine-parseable JSON on stdout.
         let out = serde_json::to_string_pretty(&status).unwrap_or_else(|e| {
             eprintln!("nucleus: failed to serialize status: {e}");
-            std::process::exit(1);
+            crate::exit_codes::ExitCode::Error.exit();
         });
         println!("{out}");
     } else {
