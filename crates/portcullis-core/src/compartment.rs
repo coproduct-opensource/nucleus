@@ -118,6 +118,18 @@ impl Compartment {
         *self == Compartment::Breakglass
     }
 
+    /// Does this compartment require trusted ancestry for data flowing
+    /// to privileged sinks?
+    ///
+    /// In Execute and Breakglass compartments, all data reaching
+    /// privileged sinks must have a verified chain of trusted provenance
+    /// — it is not enough that the current session simply has not seen
+    /// web content. The ancestry check verifies that every causal
+    /// ancestor has integrity >= Untrusted (i.e. not Adversarial).
+    pub fn requires_trusted_ancestry(&self) -> bool {
+        matches!(self, Compartment::Execute | Compartment::Breakglass)
+    }
+
     /// Parse from string (for env var / CLI).
     ///
     /// For breakglass, accepts `breakglass:reason text` format.
@@ -364,5 +376,29 @@ mod tests {
         assert_eq!(e1.entered_at, 42);
         assert_eq!(e2.entered_at, 42);
         assert_eq!(e1.entered_at, e2.entered_at);
+    }
+
+    #[test]
+    fn requires_trusted_ancestry_execute_and_breakglass() {
+        assert!(
+            Compartment::Execute.requires_trusted_ancestry(),
+            "Execute requires trusted ancestry"
+        );
+        assert!(
+            Compartment::Breakglass.requires_trusted_ancestry(),
+            "Breakglass requires trusted ancestry"
+        );
+    }
+
+    #[test]
+    fn requires_trusted_ancestry_not_for_lower_compartments() {
+        assert!(
+            !Compartment::Research.requires_trusted_ancestry(),
+            "Research does not require trusted ancestry"
+        );
+        assert!(
+            !Compartment::Draft.requires_trusted_ancestry(),
+            "Draft does not require trusted ancestry"
+        );
     }
 }
