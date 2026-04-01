@@ -75,6 +75,42 @@ impl std::fmt::Display for FlowGraphError {
 
 impl std::error::Error for FlowGraphError {}
 
+/// Errors specific to quarantine operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuarantineError {
+    /// Attempted to release a node that is not quarantined.
+    NotQuarantined(NodeId),
+}
+
+impl std::fmt::Display for QuarantineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            QuarantineError::NotQuarantined(id) => {
+                write!(f, "node {id} is not quarantined — cannot release")
+            }
+        }
+    }
+}
+
+impl std::error::Error for QuarantineError {}
+
+/// Audit record of a quarantine release.
+///
+/// Every successful quarantine release produces one of these records,
+/// capturing who released it, why, and when. This provides an audit
+/// trail for a security-critical operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuarantineRelease {
+    /// The node that was released from quarantine.
+    pub node_id: NodeId,
+    /// The principal (identity) that authorized the release.
+    pub released_by: String,
+    /// Human-readable justification for the release.
+    pub reason: String,
+    /// Timestamp (epoch seconds) when the release occurred.
+    pub released_at: u64,
+}
+
 /// Result of inserting an action node (atomic check-and-insert).
 #[derive(Debug, Clone)]
 pub struct FlowDecision {
@@ -180,6 +216,10 @@ pub struct FlowGraph {
     /// Prevents "compaction laundering" — the taint information survives
     /// even when the node itself is tombstoned for memory management.
     compaction_log: Vec<CompactionRecord>,
+    /// Audit log of quarantine releases. Every successful call to
+    /// `release_quarantine()` appends a record here, capturing the
+    /// principal, reason, and timestamp.
+    quarantine_releases: Vec<QuarantineRelease>,
 }
 
 impl FlowGraph {
@@ -191,6 +231,7 @@ impl FlowGraph {
             denied: BTreeSet::new(),
             quarantined: BTreeSet::new(),
             compaction_log: Vec::new(),
+            quarantine_releases: Vec::new(),
         }
     }
 
@@ -758,13 +799,40 @@ impl FlowGraph {
         inserted
     }
 
-    /// Release quarantine from a specific node.
+    /// Release quarantine from a specific node with authorization.
+    ///
+    /// Requires a principal identity and justification reason. The release
+    /// is recorded in the audit trail (`quarantine_releases`).
     ///
     /// Only removes the explicit quarantine mark — does not affect
-    /// ancestors that may also be quarantined. Returns `true` if the
-    /// node was quarantined and is now released.
-    pub fn release_quarantine(&mut self, node_id: NodeId) -> bool {
-        self.quarantined.remove(&node_id)
+    /// ancestors that may also be quarantined.
+    ///
+    /// Returns `Ok(QuarantineRelease)` with the audit record on success,
+    /// or `Err(QuarantineError::NotQuarantined)` if the node was not
+    /// quarantined.
+    pub fn release_quarantine(
+        &mut self,
+        node_id: NodeId,
+        principal: &str,
+        reason: &str,
+        now: u64,
+    ) -> Result<QuarantineRelease, QuarantineError> {
+        if !self.quarantined.remove(&node_id) {
+            return Err(QuarantineError::NotQuarantined(node_id));
+        }
+        let record = QuarantineRelease {
+            node_id,
+            released_by: principal.to_string(),
+            reason: reason.to_string(),
+            released_at: now,
+        };
+        self.quarantine_releases.push(record.clone());
+        Ok(record)
+    }
+
+    /// Returns the audit log of quarantine releases.
+    pub fn quarantine_releases(&self) -> &[QuarantineRelease] {
+        &self.quarantine_releases
     }
 
     /// Check whether a node is quarantined (directly or via ancestry).
@@ -1554,7 +1622,7 @@ mod tests {
     }
 
     #[test]
-    fn release_quarantine() {
+    fn release_quarantine_with_audit() {
         let mut g = FlowGraph::new();
         let now = 1000;
 
@@ -1564,11 +1632,25 @@ mod tests {
         g.quarantine(web);
         assert!(g.is_quarantined(web));
 
-        assert!(g.release_quarantine(web));
+        let release = g
+            .release_quarantine(
+                web,
+                "admin@example.com",
+                "verified safe by human review",
+                now,
+            )
+            .unwrap();
+        assert_eq!(release.node_id, web);
+        assert_eq!(release.released_by, "admin@example.com");
+        assert_eq!(release.reason, "verified safe by human review");
+        assert_eq!(release.released_at, now);
         assert!(!g.is_quarantined(web));
 
-        // Double release returns false
-        assert!(!g.release_quarantine(web));
+        // Double release returns NotQuarantined error
+        assert_eq!(
+            g.release_quarantine(web, "admin@example.com", "again", now),
+            Err(QuarantineError::NotQuarantined(web))
+        );
     }
 
     #[test]
@@ -1587,13 +1669,71 @@ mod tests {
         assert!(g.is_quarantined(plan));
 
         // Release the quarantine on web
-        g.release_quarantine(web);
+        g.release_quarantine(web, "reviewer@example.com", "content verified", now)
+            .unwrap();
 
         // plan should no longer be quarantined (the ancestor is released)
         assert!(
             !g.is_quarantined(plan),
             "after releasing ancestor quarantine, descendant should be clean"
         );
+    }
+
+    #[test]
+    fn release_quarantine_not_quarantined_fails() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        let file = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+
+        // Node exists but is not quarantined
+        assert_eq!(
+            g.release_quarantine(file, "admin@example.com", "not needed", now),
+            Err(QuarantineError::NotQuarantined(file))
+        );
+    }
+
+    #[test]
+    fn quarantine_releases_are_logged() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        let web1 = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        let web2 = g
+            .insert_observation(NodeKind::WebContent, &[], now + 1)
+            .unwrap();
+
+        g.quarantine(web1);
+        g.quarantine(web2);
+
+        assert!(g.quarantine_releases().is_empty());
+
+        g.release_quarantine(web1, "alice@example.com", "reviewed content", now + 10)
+            .unwrap();
+        g.release_quarantine(web2, "bob@example.com", "false positive", now + 20)
+            .unwrap();
+
+        let releases = g.quarantine_releases();
+        assert_eq!(releases.len(), 2);
+
+        assert_eq!(releases[0].node_id, web1);
+        assert_eq!(releases[0].released_by, "alice@example.com");
+        assert_eq!(releases[0].reason, "reviewed content");
+        assert_eq!(releases[0].released_at, now + 10);
+
+        assert_eq!(releases[1].node_id, web2);
+        assert_eq!(releases[1].released_by, "bob@example.com");
+        assert_eq!(releases[1].reason, "false positive");
+        assert_eq!(releases[1].released_at, now + 20);
+    }
+
+    #[test]
+    fn quarantine_error_display() {
+        let err = QuarantineError::NotQuarantined(42);
+        assert!(err.to_string().contains("not quarantined"));
+        assert!(err.to_string().contains("42"));
     }
 
     #[test]
