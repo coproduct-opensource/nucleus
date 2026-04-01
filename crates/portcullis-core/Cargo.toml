@@ -20,6 +20,7 @@ default = []
 serde = ["dep:serde", "dep:toml"]
 attestation = ["dep:sha2"]
 artifact = ["dep:serde", "dep:serde_json", "dep:sha2"]
+envelope = ["dep:sha2"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"], optional = true }
