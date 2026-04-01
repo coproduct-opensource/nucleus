@@ -536,6 +536,12 @@ fn format_deny_reason(reason: &DenyReason) -> String {
         } => {
             format!("egress blocked: {host} — {policy_reason}")
         }
+        DenyReason::PolicyDenied {
+            rule_name,
+            sink_class,
+        } => {
+            format!("policy denied: rule '{rule_name}' blocked sink {sink_class}")
+        }
     }
 }
 

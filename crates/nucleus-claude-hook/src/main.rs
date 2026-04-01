@@ -311,6 +311,18 @@ fn format_denial_for_user(
             - Add the host to allowed_hosts in .nucleus/egress.toml\n  \
             - Or remove egress.toml to disable egress filtering"
         ),
+        DenyReason::PolicyDenied {
+            rule_name,
+            sink_class,
+        } => {
+            format!(
+                "Blocked: admissibility rule '{rule_name}' denied this operation (sink: {sink_class}){comp_hint}.\n  \
+                How to fix:\n  \
+                - Review the rule in .nucleus/policy.toml under [[admissibility]]\n  \
+                - Adjust source_predicate or artifact_predicate to match your data labels\n  \
+                - Or change the rule's verdict to 'allow' or 'requires_approval'"
+            )
+        }
     }
 }
 
@@ -1864,6 +1876,28 @@ fn main() {
             if let Ok(p) = portcullis::EgressPolicy::from_toml("") {
                 kernel.set_egress_policy(p);
             }
+        }
+    }
+
+    // Load admissibility policy from .nucleus/policy.toml (if present).
+    // SECURITY: Fail-closed — malformed policy denies all operations.
+    let policy_dir = std::env::current_dir().unwrap_or_default();
+    match portcullis::PolicyRuleSet::load_from_dir(&policy_dir) {
+        Ok(Some(rules)) => {
+            if is_first_invocation {
+                eprintln!(
+                    "nucleus: admissibility policy loaded ({} rules)",
+                    rules.len()
+                );
+            }
+            kernel.set_policy_rules(rules);
+        }
+        Ok(None) => {} // No policy.toml — no admissibility filtering
+        Err(e) => {
+            eprintln!("nucleus: WARNING — failed to load admissibility policy: {e}");
+            eprintln!("nucleus: fail-closed — all operations denied until policy.toml is fixed");
+            // Empty rule set = default deny everything
+            kernel.set_policy_rules(portcullis::PolicyRuleSet::new());
         }
     }
 
