@@ -58,6 +58,7 @@ pub mod attestation;
 pub mod autonomy;
 pub mod compartment;
 pub mod declassify;
+pub mod delegation;
 #[cfg(feature = "serde")]
 pub mod enterprise;
 pub mod flow;
