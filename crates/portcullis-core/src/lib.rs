@@ -85,6 +85,8 @@ pub mod promotion;
 pub mod receipt;
 #[cfg(feature = "artifact")]
 pub mod registry;
+#[cfg(feature = "envelope")]
+pub mod replay;
 pub mod storage_lane;
 pub mod verdict;
 pub mod wire;
