@@ -21,6 +21,7 @@ use serde::Serialize;
 mod build;
 mod classify;
 mod cli;
+mod color;
 mod completions;
 mod exit_codes;
 mod init;
@@ -29,6 +30,7 @@ mod session;
 mod status;
 
 use classify::*;
+use color::{nucleus_allow, nucleus_deny, nucleus_info, nucleus_warn};
 use protocol::{HookInput, HookOutput};
 use session::{
     compartment_file_path, gc_stale_sessions, generate_compartment_token, keyed_compartment_name,
@@ -1277,9 +1279,7 @@ fn main() {
             if let SessionLoad::Loaded(session) = load_session(&input.session_id) {
                 let chain_hash = hex::encode(session.chain_head_hash);
                 let op_count = session.allowed_ops.len();
-                eprintln!(
-                    "nucleus: session ended — {op_count} operations, chain hash: {chain_hash}"
-                );
+                nucleus_info!("session ended — {op_count} operations, chain hash: {chain_hash}");
 
                 persist_transition_receipt(
                     &input.session_id,
@@ -1299,7 +1299,7 @@ fn main() {
                     let comp_path = session_dir().join(format!("{keyed}.compartment"));
                     std::fs::remove_file(&comp_path).ok();
                 }
-                eprintln!("nucleus: session state cleaned up (receipts preserved)");
+                nucleus_info!("session state cleaned up (receipts preserved)");
 
                 // Opportunistic GC: clean up stale sessions from other
                 // sessions that didn't get a SessionEnd event (#520).
@@ -1311,7 +1311,7 @@ fn main() {
                 if gc_trigger % 10 == 0 {
                     let removed = gc_stale_sessions(SESSION_GC_TTL_SECS);
                     if removed > 0 {
-                        eprintln!("nucleus: gc — removed {removed} stale session file(s)");
+                        nucleus_info!("gc — removed {removed} stale session file(s)");
                     }
                 }
             }
@@ -1336,9 +1336,11 @@ fn main() {
                         );
                         if !violations.is_empty() {
                             for v in &violations {
-                                eprintln!(
-                                    "nucleus: MANIFEST VIOLATION — {}: {:?} — {}",
-                                    v.tool_name, v.kind, v.description
+                                nucleus_warn!(
+                                    "MANIFEST VIOLATION — {}: {:?} — {}",
+                                    v.tool_name,
+                                    v.kind,
+                                    v.description
                                 );
                             }
                             // Persist violation count in session state (#485).
@@ -1399,7 +1401,7 @@ fn main() {
                         );
                     }
                     SessionLoad::Tampered { .. } => {
-                        eprintln!("nucleus: post-tool skipped — session tampered");
+                        nucleus_deny!("post-tool skipped — session tampered");
                     }
                 }
 
@@ -1506,9 +1508,10 @@ fn main() {
             let out = HookOutput::deny(format!(
                 "Blocked: MCP tool '{mcp_tool_name}' rejected by manifest admission: {reason:?}"
             ));
-            eprintln!(
-                "nucleus: {} rejected by manifest admission: {:?}",
-                input.tool_name, reason
+            nucleus_deny!(
+                "{} rejected by manifest admission: {:?}",
+                input.tool_name,
+                reason
             );
             println!("{}", serde_json::to_string(&out).unwrap());
             exit_codes::ExitCode::Deny.exit();
@@ -1528,8 +1531,8 @@ fn main() {
                  'nucleus manifest init --server {}'.",
                 mcp_tool_name.split("__").next().unwrap_or(mcp_tool_name)
             ));
-            eprintln!(
-                "nucleus: {} denied — no manifest (NUCLEUS_REQUIRE_MANIFESTS=1)",
+            nucleus_deny!(
+                "{} denied — no manifest (NUCLEUS_REQUIRE_MANIFESTS=1)",
                 input.tool_name
             );
             println!("{}", serde_json::to_string(&out).unwrap());
@@ -1555,8 +1558,8 @@ fn main() {
                             manifest.allowed_compartments.join(", ")
                         }
                     ));
-                    eprintln!(
-                        "nucleus: {} denied — not allowed in compartment '{comp_name}'",
+                    nucleus_deny!(
+                        "{}  denied — not allowed in compartment '{comp_name}'",
                         input.tool_name
                     );
                     println!("{}", serde_json::to_string(&out).unwrap());
@@ -1584,9 +1587,11 @@ fn main() {
                      - Or update the tool's manifest to match its actual behavior",
                     input.tool_name, count
                 ));
-                eprintln!(
-                    "nucleus: {} DENIED — trust revoked ({} manifest violations, threshold {})",
-                    input.tool_name, count, MANIFEST_VIOLATION_REVOKE_THRESHOLD
+                nucleus_deny!(
+                    "{} DENIED — trust revoked ({} manifest violations, threshold {})",
+                    input.tool_name,
+                    count,
+                    MANIFEST_VIOLATION_REVOKE_THRESHOLD
                 );
                 println!("{}", serde_json::to_string(&out).unwrap());
                 exit_codes::ExitCode::Deny.exit();
@@ -1610,11 +1615,12 @@ fn main() {
             // This is the social engineering attack: "please delete the session file
             // so I can help you." Fail closed — deny everything.
             let msg = format!(
-                "nucleus: TAMPER DETECTED — session state deleted (expected hwm={expected_hwm}). \
+                "TAMPER DETECTED — session state deleted (expected hwm={expected_hwm}). \
                  A compromised model may have asked you to delete session files. \
                  All operations denied until session restart."
             );
-            eprintln!("{msg}");
+            nucleus_deny!("{msg}");
+            let msg = format!("nucleus: {msg}");
             let out = HookOutput::deny(&msg);
             println!("{}", serde_json::to_string(&out).unwrap());
             exit_codes::ExitCode::Deny.exit();
@@ -1626,8 +1632,8 @@ fn main() {
 
     // DX (#549): Welcome banner on first invocation
     if is_first_invocation {
-        eprintln!("nucleus: \u{2713} Active (profile: {profile_name})");
-        eprintln!("nucleus: Info: 'nucleus-claude-hook --help' for options");
+        nucleus_allow!("\u{2713} Active (profile: {profile_name})");
+        nucleus_info!("Info: 'nucleus-claude-hook --help' for options");
     }
 
     if session.compartment_token.is_empty() {
@@ -1681,8 +1687,8 @@ fn main() {
 
                 match reason {
                     Some(entry) => {
-                        eprintln!(
-                            "nucleus: BREAKGLASS entered — reason: '{}' (enhanced audit active)",
+                        nucleus_warn!(
+                            "BREAKGLASS entered — reason: '{}' (enhanced audit active)",
                             entry.reason
                         );
                     }
@@ -1702,11 +1708,12 @@ fn main() {
             // SECURITY (#457): Upward transitions (escalation) require human approval.
             if is_escalation {
                 let msg = format!(
-                    "nucleus: compartment escalation {} -> {} requires human approval",
+                    "compartment escalation {} -> {} requires human approval",
                     prev_compartment.map(|c| c.to_string()).unwrap_or_default(),
                     new_comp,
                 );
-                eprintln!("{msg}");
+                nucleus_warn!("{msg}");
+                let msg = format!("nucleus: {msg}");
                 let out = HookOutput::ask(&msg);
                 println!("{}", serde_json::to_string(&out).unwrap());
                 // FIX #483: Do NOT save the escalated compartment before approval.
@@ -1798,11 +1805,11 @@ fn main() {
             let core_ceiling =
                 if std::env::var("NUCLEUS_AUTONOMY_CEILING").as_deref() == Ok("sandbox") {
                     let c = portcullis_core::autonomy::AutonomyCeiling::sandbox();
-                    eprintln!("nucleus: autonomy ceiling: sandbox (read-only)");
+                    nucleus_info!("autonomy ceiling: sandbox (read-only)");
                     c.capabilities
                 } else {
                     let c = portcullis_core::autonomy::AutonomyCeiling::production();
-                    eprintln!("nucleus: autonomy ceiling: production (no push/PR)");
+                    nucleus_info!("autonomy ceiling: production (no push/PR)");
                     c.capabilities
                 };
             // Convert portcullis_core::CapabilityLattice to portcullis::CapabilityLattice
@@ -1838,8 +1845,8 @@ fn main() {
     match portcullis::EgressPolicy::load_from_dir(&egress_dir) {
         Ok(Some(policy)) => {
             if is_first_invocation {
-                eprintln!(
-                    "nucleus: egress policy loaded ({} allowed, {} denied hosts)",
+                nucleus_info!(
+                    "egress policy loaded ({} allowed, {} denied hosts)",
                     policy.allowed_hosts.len(),
                     policy.denied_hosts.len()
                 );
@@ -1848,8 +1855,8 @@ fn main() {
         }
         Ok(None) => {} // No egress.toml — all hosts allowed
         Err(e) => {
-            eprintln!("nucleus: WARNING — failed to load egress policy: {e}");
-            eprintln!("nucleus: fail-closed — all egress denied until egress.toml is fixed");
+            nucleus_warn!("WARNING — failed to load egress policy: {e}");
+            nucleus_warn!("fail-closed — all egress denied until egress.toml is fixed");
             if let Ok(p) = portcullis::EgressPolicy::from_toml("") {
                 kernel.set_egress_policy(p);
             }
@@ -1862,17 +1869,14 @@ fn main() {
     match portcullis::PolicyRuleSet::load_from_dir(&policy_dir) {
         Ok(Some(rules)) => {
             if is_first_invocation {
-                eprintln!(
-                    "nucleus: admissibility policy loaded ({} rules)",
-                    rules.len()
-                );
+                nucleus_info!("admissibility policy loaded ({} rules)", rules.len());
             }
             kernel.set_policy_rules(rules);
         }
         Ok(None) => {} // No policy.toml — no admissibility filtering
         Err(e) => {
-            eprintln!("nucleus: WARNING — failed to load admissibility policy: {e}");
-            eprintln!("nucleus: fail-closed — all operations denied until policy.toml is fixed");
+            nucleus_warn!("WARNING — failed to load admissibility policy: {e}");
+            nucleus_warn!("fail-closed — all operations denied until policy.toml is fixed");
             // Empty rule set = default deny everything
             kernel.set_policy_rules(portcullis::PolicyRuleSet::new());
         }
@@ -2011,7 +2015,9 @@ fn main() {
                 Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).ok()
             }
             Err(e) => {
-                eprintln!("nucleus: WARNING — Ed25519 key generation failed: {e}. Receipts will be unsigned.");
+                nucleus_warn!(
+                    "WARNING — Ed25519 key generation failed: {e}. Receipts will be unsigned."
+                );
                 None
             }
         }
@@ -2019,7 +2025,9 @@ fn main() {
         match Ed25519KeyPair::from_pkcs8(&session.signing_key_pkcs8) {
             Ok(key) => Some(key),
             Err(e) => {
-                eprintln!("nucleus: WARNING — stored signing key corrupted: {e}. Receipts will be unsigned.");
+                nucleus_warn!(
+                    "WARNING — stored signing key corrupted: {e}. Receipts will be unsigned."
+                );
                 session.signing_key_pkcs8.clear(); // Don't reuse corrupted key
                 None
             }
@@ -2096,9 +2104,7 @@ fn main() {
 
             // DX (#567): When web content taints the session, print recovery path
             if matches!(operation, Operation::WebFetch | Operation::WebSearch) {
-                eprintln!(
-                    "nucleus: \u{26a0} Session tainted by web content — writes will be blocked."
-                );
+                nucleus_warn!("\u{26a0} Session tainted by web content — writes will be blocked.");
                 if compartment.is_some() {
                     eprintln!(
                         "nucleus: Tip: switch to 'draft' compartment to write (flow graph resets on transition)"
@@ -2198,11 +2204,9 @@ fn main() {
         } else {
             subject.clone()
         };
-        eprintln!("nucleus: \u{2713} {operation} {short_subject}{timing}");
+        nucleus_allow!("\u{2713} {operation} {short_subject}{timing}");
     } else {
-        eprintln!(
-            "nucleus: \u{2717} {operation} {subject} -> {verdict_str} [exposure: {exposure_count}/3{flow_node}]{timing}"
-        );
+        nucleus_deny!("\u{2717} {operation} {subject} -> {verdict_str} [exposure: {exposure_count}/3{flow_node}]{timing}");
     }
 
     // Write output to stdout
@@ -2210,7 +2214,7 @@ fn main() {
         Ok(j) => j,
         Err(e) => {
             // Defense-in-depth: if serialization fails, output a deny to fail-closed (#481)
-            eprintln!("nucleus: CRITICAL — failed to serialize output: {e}. Denying.");
+            nucleus_deny!("CRITICAL — failed to serialize output: {e}. Denying.");
             r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"internal error: serialization failed"}}"#.to_string()
         }
     };
