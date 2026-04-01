@@ -478,9 +478,12 @@ mod tests {
             "legacy /tmp/nucleus-hook/ must be blocked"
         );
 
-        // Normal files still allowed
-        assert!(lattice.can_access(Path::new("src/main.rs")));
-        assert!(lattice.can_access(Path::new("README.md")));
+        // Normal files still allowed.
+        // Use paths that won't exist in the CWD to avoid macOS
+        // case-insensitive canonicalize resolving them to absolute paths
+        // that match blocked patterns (e.g., **/.claude/** in worktrees).
+        assert!(lattice.can_access(Path::new("allowed_file.rs")));
+        assert!(lattice.can_access(Path::new("docs/guide.md")));
     }
 
     // Security: Path traversal tests
