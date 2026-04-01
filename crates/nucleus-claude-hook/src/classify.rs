@@ -6,6 +6,7 @@
 
 use portcullis::manifest_registry::ManifestRegistry;
 use portcullis::Operation;
+use portcullis_core::effect::EffectKind;
 use portcullis_core::flow::NodeKind;
 
 // ---------------------------------------------------------------------------
@@ -242,6 +243,43 @@ pub(crate) fn u8_to_node_kind(v: u8) -> NodeKind {
         9 => NodeKind::OutboundAction,
         10 => NodeKind::Summarization,
         _ => NodeKind::Retry,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tool name -> EffectKind mapping (#775)
+// ---------------------------------------------------------------------------
+
+/// Map a tool name to an [`EffectKind`] classifying how its output is derived.
+#[allow(dead_code)]
+pub(crate) fn map_tool_to_effect_kind(name: &str) -> EffectKind {
+    match name {
+        "WebFetch" | "WebSearch" => EffectKind::DeterministicFetch,
+        "Read" | "Glob" | "Grep" => EffectKind::DeterministicFetch,
+        "Agent" => EffectKind::ExternalImport,
+        "Bash" => EffectKind::PureTransform,
+        "Write" | "Edit" => EffectKind::ProposedWrite,
+        _ if name.starts_with("mcp__") => classify_mcp_effect(name),
+        _ => EffectKind::PureTransform,
+    }
+}
+
+#[allow(dead_code)]
+fn classify_mcp_effect(name: &str) -> EffectKind {
+    let tool = name
+        .strip_prefix("mcp__")
+        .and_then(|rest| rest.split("__").nth(1))
+        .unwrap_or(name);
+    if tool.contains("fetch")
+        || tool.contains("read")
+        || tool.contains("get")
+        || tool.contains("search")
+    {
+        EffectKind::DeterministicFetch
+    } else if tool.contains("write") || tool.contains("create") || tool.contains("delete") {
+        EffectKind::ProposedWrite
+    } else {
+        EffectKind::PureTransform
     }
 }
 
@@ -516,5 +554,45 @@ mod tests {
         assert!(truncated.ends_with("..."));
         // The result should be valid UTF-8
         assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn test_effect_kind_web_tools() {
+        assert_eq!(
+            map_tool_to_effect_kind("WebFetch"),
+            EffectKind::DeterministicFetch
+        );
+        assert_eq!(
+            map_tool_to_effect_kind("WebSearch"),
+            EffectKind::DeterministicFetch
+        );
+    }
+
+    #[test]
+    fn test_effect_kind_read_tools() {
+        assert_eq!(
+            map_tool_to_effect_kind("Read"),
+            EffectKind::DeterministicFetch
+        );
+        assert_eq!(
+            map_tool_to_effect_kind("Glob"),
+            EffectKind::DeterministicFetch
+        );
+    }
+
+    #[test]
+    fn test_effect_kind_agent() {
+        assert_eq!(map_tool_to_effect_kind("Agent"), EffectKind::ExternalImport);
+    }
+
+    #[test]
+    fn test_effect_kind_bash() {
+        assert_eq!(map_tool_to_effect_kind("Bash"), EffectKind::PureTransform);
+    }
+
+    #[test]
+    fn test_effect_kind_write_tools() {
+        assert_eq!(map_tool_to_effect_kind("Write"), EffectKind::ProposedWrite);
+        assert_eq!(map_tool_to_effect_kind("Edit"), EffectKind::ProposedWrite);
     }
 }

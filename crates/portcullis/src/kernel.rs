@@ -1362,6 +1362,7 @@ impl Kernel {
                     parents: [0; flow::MAX_PARENTS],
                     operation: Some(operation),
                     sink_class: Some(portcullis_core::default_sink_class(operation)),
+                    effect_kind: None,
                 };
 
                 if let flow::FlowVerdict::Deny(reason) = flow::check_flow(&node, now_unix) {
@@ -1827,19 +1828,19 @@ impl Kernel {
                 .flow_label
                 .unwrap_or_else(|| portcullis_core::IFCLabel::user_prompt(now_unix));
 
-            // Causal parent node IDs from the flow graph, if available.
-            let causal_parents: Vec<portcullis_core::flow::NodeId> = decision
+            // Causal parent node IDs and effect kind from the flow graph.
+            let flow_node = decision
                 .flow_node_id
-                .and_then(|nid| {
-                    self.flow_graph
-                        .as_ref()
-                        .and_then(|g| g.get(nid))
-                        .map(|node| node.parents[..node.parent_count as usize].to_vec())
-                })
+                .and_then(|nid| self.flow_graph.as_ref().and_then(|g| g.get(nid)));
+            let causal_parents: Vec<portcullis_core::flow::NodeId> = flow_node
+                .map(|node| node.parents[..node.parent_count as usize].to_vec())
                 .unwrap_or_default();
+            let effect_kind_str = flow_node
+                .and_then(|node| node.effect_kind)
+                .map(|ek| ek.as_str().to_string());
 
             let prev_hash = *chain.head_hash();
-            let receipt = VerdictReceipt::from_verdict(
+            let receipt = VerdictReceipt::from_verdict_with_effect(
                 flow_verdict,
                 format!("{:?}", decision.operation),
                 &decision.subject,
@@ -1848,6 +1849,7 @@ impl Kernel {
                 causal_parents,
                 now_unix,
                 prev_hash,
+                effect_kind_str,
             );
 
             // Append should never fail — we computed prev_hash from chain head.

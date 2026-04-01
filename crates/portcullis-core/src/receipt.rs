@@ -411,6 +411,7 @@ mod tests {
             parents: [0; MAX_PARENTS],
             operation: op,
             sink_class: None,
+            effect_kind: None,
         }
     }
 

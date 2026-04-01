@@ -49,6 +49,8 @@ pub struct VerdictReceipt {
     /// SHA-256 hash of this receipt's canonical content.
     /// Computed via `compute_hash()` and verified on chain append.
     pub receipt_hash: [u8; 32],
+    /// Computation-step effect classification (#775).
+    pub effect_kind: Option<String>,
 }
 
 impl VerdictReceipt {
@@ -102,6 +104,13 @@ impl VerdictReceipt {
         // Timestamp
         buf.extend_from_slice(&self.timestamp.to_le_bytes());
 
+        // Effect kind (#775)
+        if let Some(ref ek) = self.effect_kind {
+            buf.extend_from_slice(b"effect:");
+            buf.extend_from_slice(&(ek.len() as u32).to_le_bytes());
+            buf.extend_from_slice(ek.as_bytes());
+        }
+
         buf
     }
 
@@ -120,6 +129,32 @@ impl VerdictReceipt {
         timestamp: u64,
         prev_hash: [u8; 32],
     ) -> Self {
+        Self::from_verdict_with_effect(
+            verdict,
+            operation,
+            subject,
+            pre_label,
+            post_label,
+            causal_parents,
+            timestamp,
+            prev_hash,
+            None,
+        )
+    }
+
+    /// Like [`from_verdict`](Self::from_verdict) but with an explicit effect kind (#775).
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_verdict_with_effect(
+        verdict: FlowVerdict,
+        operation: impl Into<String>,
+        subject: impl Into<String>,
+        pre_label: IFCLabel,
+        post_label: IFCLabel,
+        causal_parents: Vec<NodeId>,
+        timestamp: u64,
+        prev_hash: [u8; 32],
+        effect_kind: Option<String>,
+    ) -> Self {
         let mut receipt = Self {
             verdict,
             operation: operation.into(),
@@ -129,7 +164,8 @@ impl VerdictReceipt {
             causal_parents,
             timestamp,
             prev_hash,
-            receipt_hash: [0u8; 32], // placeholder
+            receipt_hash: [0u8; 32],
+            effect_kind,
         };
         receipt.receipt_hash = receipt.compute_hash();
         receipt
@@ -312,7 +348,7 @@ impl ReceiptChain {
             .receipts
             .iter()
             .map(|r| {
-                json!({
+                let mut obj = json!({
                     "verdict": format!("{:?}", r.verdict),
                     "operation": r.operation,
                     "subject": r.subject,
@@ -323,7 +359,11 @@ impl ReceiptChain {
                     "prev_hash": hex::encode(r.prev_hash),
                     "receipt_hash": hex::encode(r.receipt_hash),
                     "canonical_preimage": hex::encode(r.canonical_preimage()),
-                })
+                });
+                if let Some(ref ek) = r.effect_kind {
+                    obj["effect_kind"] = json!(ek);
+                }
+                obj
             })
             .collect();
 
@@ -962,5 +1002,108 @@ mod tests {
             // content_valid is None because no preimage was present
             assert_eq!(report.content_valid, None);
         }
+    }
+
+    #[test]
+    fn receipt_with_effect_kind_hashes_differently() {
+        let label = test_label(1000);
+        let without = VerdictReceipt::from_verdict(
+            FlowVerdict::Allow,
+            "read_files",
+            "a",
+            label,
+            label,
+            vec![1],
+            1000,
+            [0u8; 32],
+        );
+        let with = VerdictReceipt::from_verdict_with_effect(
+            FlowVerdict::Allow,
+            "read_files",
+            "a",
+            label,
+            label,
+            vec![1],
+            1000,
+            [0u8; 32],
+            Some("deterministic_fetch".to_string()),
+        );
+        assert_ne!(without.receipt_hash, with.receipt_hash);
+    }
+
+    #[test]
+    fn receipt_without_effect_kind_backward_compatible() {
+        let label = test_label(1000);
+        let old = VerdictReceipt::from_verdict(
+            FlowVerdict::Allow,
+            "r",
+            "a",
+            label,
+            label,
+            vec![1],
+            1000,
+            [0u8; 32],
+        );
+        let new = VerdictReceipt::from_verdict_with_effect(
+            FlowVerdict::Allow,
+            "r",
+            "a",
+            label,
+            label,
+            vec![1],
+            1000,
+            [0u8; 32],
+            None,
+        );
+        assert_eq!(old.receipt_hash, new.receipt_hash);
+    }
+
+    #[test]
+    fn chain_with_effect_kind_verifies() {
+        let mut chain = ReceiptChain::new();
+        let label = test_label(1000);
+        let r1 = VerdictReceipt::from_verdict_with_effect(
+            FlowVerdict::Allow,
+            "web_fetch",
+            "a",
+            label,
+            label,
+            vec![1],
+            1000,
+            *chain.head_hash(),
+            Some("deterministic_fetch".to_string()),
+        );
+        chain.append(r1).unwrap();
+        let r2 = VerdictReceipt::from_verdict_with_effect(
+            FlowVerdict::Allow,
+            "write",
+            "a",
+            label,
+            label,
+            vec![2],
+            2000,
+            *chain.head_hash(),
+            Some("proposed_write".to_string()),
+        );
+        chain.append(r2).unwrap();
+        assert_eq!(chain.len(), 2);
+        assert!(chain.verify().is_ok());
+    }
+
+    #[test]
+    fn receipt_effect_kind_is_accessible() {
+        let label = test_label(1000);
+        let r = VerdictReceipt::from_verdict_with_effect(
+            FlowVerdict::Allow,
+            "r",
+            "a",
+            label,
+            label,
+            vec![],
+            1000,
+            [0u8; 32],
+            Some("deterministic_fetch".to_string()),
+        );
+        assert_eq!(r.effect_kind.as_deref(), Some("deterministic_fetch"));
     }
 }

@@ -9,6 +9,7 @@ use std::collections::{BTreeSet, VecDeque};
 
 use tracing::warn;
 
+use portcullis_core::effect::EffectKind;
 use portcullis_core::flow::{
     check_flow, intrinsic_label, propagate_label, FlowNode, FlowVerdict, NodeId, NodeKind,
     QuarantineVerdict, TrustAncestryResult, MAX_PARENTS,
@@ -322,6 +323,17 @@ impl FlowGraph {
         parents: &[NodeId],
         now: u64,
     ) -> Result<FlowDecision, FlowGraphError> {
+        self.insert_action_with_effect(operation, parents, now, None)
+    }
+
+    /// Like [`insert_action`](Self::insert_action) but attaches an [`EffectKind`] (#775).
+    pub fn insert_action_with_effect(
+        &mut self,
+        operation: Operation,
+        parents: &[NodeId],
+        now: u64,
+        effect_kind: Option<EffectKind>,
+    ) -> Result<FlowDecision, FlowGraphError> {
         self.validate_parents(parents)?;
 
         // Check if any parent is quarantined (directly or transitively)
@@ -332,12 +344,13 @@ impl FlowGraph {
             intrinsic_label(NodeKind::OutboundAction, now),
         );
         let sink_class = Some(default_sink_class(operation));
-        let node = self.build_node(
+        let node = self.build_node_with_effect(
             NodeKind::OutboundAction,
             label,
             parents,
             Some(operation),
             sink_class,
+            effect_kind,
         );
         let verdict = check_flow(&node, now);
         self.maybe_compact();
@@ -524,7 +537,22 @@ impl FlowGraph {
             parents: parent_array,
             operation,
             sink_class,
+            effect_kind: None,
         }
+    }
+
+    fn build_node_with_effect(
+        &self,
+        kind: NodeKind,
+        label: IFCLabel,
+        parents: &[NodeId],
+        operation: Option<Operation>,
+        sink_class: Option<SinkClass>,
+        effect_kind: Option<EffectKind>,
+    ) -> FlowNode {
+        let mut node = self.build_node(kind, label, parents, operation, sink_class);
+        node.effect_kind = effect_kind;
+        node
     }
 
     fn alloc_node(
@@ -2601,5 +2629,41 @@ mod tests {
             FlowVerdict::Deny(FlowDenyReason::Exfiltration),
             "secret data to GitPush (exfil sink) must be denied"
         );
+    }
+
+    // ── EffectKind threading tests (#775) ────────────────────────────
+
+    #[test]
+    fn insert_action_with_effect_stores_effect_kind() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+        let user = g
+            .insert_observation(NodeKind::UserPrompt, &[], now)
+            .unwrap();
+        let r = g
+            .insert_action_with_effect(
+                Operation::ReadFiles,
+                &[user],
+                now,
+                Some(EffectKind::DeterministicFetch),
+            )
+            .unwrap();
+        assert_eq!(r.verdict, FlowVerdict::Allow);
+        let node = g.get(r.node_id).unwrap();
+        assert_eq!(node.effect_kind, Some(EffectKind::DeterministicFetch));
+    }
+
+    #[test]
+    fn insert_action_without_effect_has_none() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+        let user = g
+            .insert_observation(NodeKind::UserPrompt, &[], now)
+            .unwrap();
+        let r = g
+            .insert_action(Operation::WriteFiles, &[user], now)
+            .unwrap();
+        let node = g.get(r.node_id).unwrap();
+        assert_eq!(node.effect_kind, None);
     }
 }
