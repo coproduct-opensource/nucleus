@@ -67,6 +67,7 @@ pub mod manifest;
 pub mod memory;
 pub mod policy_rules;
 pub mod receipt;
+pub mod verdict;
 pub mod wire;
 
 /// Tool permission levels in lattice ordering.
@@ -902,6 +903,7 @@ pub enum AuthorityLevel {
 /// Tracks which sources contributed to a datum. Represented as a 6-bit
 /// bitmask for Aeneas translatability (no BTreeSet, no Vec).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ProvenanceSet(u8);
 
 impl ProvenanceSet {
@@ -945,6 +947,7 @@ impl ProvenanceSet {
 ///
 /// Uses u64 unix timestamps for Aeneas translatability (no chrono).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Freshness {
     /// Unix timestamp when the data was observed.
     pub observed_at: u64,
@@ -990,6 +993,7 @@ impl Freshness {
 /// `integrity = Adversarial, authority = NoAuthority`. This data cannot
 /// steer privileged actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct IFCLabel {
     pub confidentiality: ConfLevel,
     pub integrity: IntegLevel,
