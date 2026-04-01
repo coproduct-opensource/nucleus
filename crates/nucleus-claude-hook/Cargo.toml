@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 portcullis = { path = "../portcullis", features = ["serde", "crypto", "spec"] }
-portcullis-core = { path = "../portcullis-core" }
+portcullis-core = { path = "../portcullis-core", features = ["artifact"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ring = { workspace = true }
