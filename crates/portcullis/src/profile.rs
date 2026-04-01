@@ -29,7 +29,8 @@
 //!   duration_hours: 2
 //! ```
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -260,6 +261,24 @@ pub struct TimeSpec {
     pub duration_minutes: Option<u64>,
 }
 
+/// The source from which a profile was loaded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProfileSource {
+    /// Embedded at compile time (canonical built-in).
+    Builtin,
+    /// Loaded at runtime from a directory on disk.
+    Directory(String),
+}
+
+impl std::fmt::Display for ProfileSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProfileSource::Builtin => write!(f, "built-in"),
+            ProfileSource::Directory(path) => write!(f, "{}", path),
+        }
+    }
+}
+
 /// Error from profile specification operations.
 #[derive(Debug)]
 pub enum ProfileError {
@@ -273,6 +292,8 @@ pub enum ProfileError {
     Budget(String),
     /// Profile not found.
     NotFound(String),
+    /// Filesystem I/O error.
+    Io(std::io::Error),
 }
 
 impl std::fmt::Display for ProfileError {
@@ -283,7 +304,14 @@ impl std::fmt::Display for ProfileError {
             ProfileError::Validation(msg) => write!(f, "Validation error: {}", msg),
             ProfileError::Budget(msg) => write!(f, "Budget parse error: {}", msg),
             ProfileError::NotFound(name) => write!(f, "Profile not found: {}", name),
+            ProfileError::Io(err) => write!(f, "I/O error: {}", err),
         }
+    }
+}
+
+impl From<std::io::Error> for ProfileError {
+    fn from(err: std::io::Error) -> Self {
+        ProfileError::Io(err)
     }
 }
 
@@ -436,17 +464,47 @@ const RESEARCH_WEB_YAML: &str = include_str!("../profiles/research-web.yaml");
 const READ_ONLY_YAML: &str = include_str!("../profiles/read-only.yaml");
 const LOCAL_DEV_YAML: &str = include_str!("../profiles/local-dev.yaml");
 
+/// A profile entry with its specification and provenance.
+#[derive(Debug, Clone)]
+pub struct ProfileEntry {
+    /// The profile specification.
+    pub spec: ProfileSpec,
+    /// Where this profile was loaded from.
+    pub source: ProfileSource,
+}
+
 /// Registry of named profiles, combining embedded canonical profiles
-/// with optional user-supplied ones.
+/// with optional runtime-loaded ones.
+///
+/// Profiles are stored in a [`BTreeMap`] keyed by normalized name
+/// (lowercase, hyphens). When profiles from different sources share a
+/// name, the last one registered wins — enabling runtime overrides of
+/// built-in defaults.
 #[derive(Debug)]
 pub struct ProfileRegistry {
-    profiles: Vec<ProfileSpec>,
+    profiles: BTreeMap<String, ProfileEntry>,
+}
+
+/// Normalize a profile name for lookup: lowercase, underscores to hyphens.
+fn normalize_name(name: &str) -> String {
+    name.to_lowercase().replace('_', "-")
 }
 
 impl ProfileRegistry {
+    /// Create an empty registry with no profiles.
+    pub fn empty() -> Self {
+        Self {
+            profiles: BTreeMap::new(),
+        }
+    }
+
     /// Create a registry with only the canonical (embedded) profiles.
+    ///
+    /// This is the backward-compatible constructor — all compile-time
+    /// profiles are available immediately.
     pub fn canonical() -> Result<Self, ProfileError> {
-        let profiles = vec![
+        let mut registry = Self::empty();
+        let builtins = vec![
             ProfileSpec::from_yaml(SAFE_PR_FIXER_YAML)?,
             ProfileSpec::from_yaml(DOC_EDITOR_YAML)?,
             ProfileSpec::from_yaml(TEST_RUNNER_YAML)?,
@@ -458,39 +516,143 @@ impl ProfileRegistry {
             ProfileSpec::from_yaml(READ_ONLY_YAML)?,
             ProfileSpec::from_yaml(LOCAL_DEV_YAML)?,
         ];
-        Ok(Self { profiles })
+        for spec in builtins {
+            registry.register_with_source(spec, ProfileSource::Builtin);
+        }
+        Ok(registry)
+    }
+
+    /// Alias for [`canonical()`](Self::canonical) — creates a registry
+    /// pre-loaded with the compile-time built-in profiles.
+    pub fn with_builtins() -> Result<Self, ProfileError> {
+        Self::canonical()
+    }
+
+    /// Load profiles from a directory on disk.
+    ///
+    /// Reads all `*.yaml`, `*.yml`, and `*.toml` files in the given
+    /// directory. Each file must contain a valid [`ProfileSpec`]. Files
+    /// that fail to parse or validate are returned as errors rather than
+    /// silently ignored.
+    ///
+    /// Returns an empty registry if the directory does not exist (this is
+    /// not an error — the directory is optional).
+    pub fn load_from_dir(dir: &Path) -> Result<Self, ProfileError> {
+        let mut registry = Self::empty();
+
+        if !dir.exists() {
+            return Ok(registry);
+        }
+
+        let entries = std::fs::read_dir(dir)?;
+        let dir_str = dir.display().to_string();
+
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+
+            // Skip non-files (directories, symlinks to dirs, etc.)
+            if !path.is_file() {
+                continue;
+            }
+
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+
+            let spec = match ext.as_str() {
+                "yaml" | "yml" => {
+                    let content = std::fs::read_to_string(&path)?;
+                    ProfileSpec::from_yaml(&content).map_err(|e| {
+                        ProfileError::Validation(format!("{}: {}", path.display(), e))
+                    })?
+                }
+                "toml" => {
+                    let content = std::fs::read_to_string(&path)?;
+                    ProfileSpec::from_toml(&content).map_err(|e| {
+                        ProfileError::Validation(format!("{}: {}", path.display(), e))
+                    })?
+                }
+                _ => continue, // Skip files with unrecognized extensions
+            };
+
+            // Validate eagerly so callers get errors at load time.
+            spec.validate()
+                .map_err(|e| ProfileError::Validation(format!("{}: {}", path.display(), e)))?;
+
+            registry.register_with_source(spec, ProfileSource::Directory(dir_str.clone()));
+        }
+
+        Ok(registry)
+    }
+
+    /// Add a profile to the registry with explicit provenance.
+    pub fn register_with_source(&mut self, spec: ProfileSpec, source: ProfileSource) {
+        let key = normalize_name(&spec.name);
+        self.profiles.insert(key, ProfileEntry { spec, source });
     }
 
     /// Add a profile to the registry.
+    ///
+    /// The profile source is set to [`ProfileSource::Builtin`] for
+    /// backward compatibility. Prefer [`register_with_source`](Self::register_with_source)
+    /// when the provenance is known.
     pub fn register(&mut self, spec: ProfileSpec) {
-        // Replace existing profile with same name
-        self.profiles.retain(|p| p.name != spec.name);
-        self.profiles.push(spec);
+        self.register_with_source(spec, ProfileSource::Builtin);
     }
 
     /// Look up a profile by name and build a [`PermissionLattice`].
     ///
     /// Name matching is case-insensitive and normalizes hyphens/underscores.
     pub fn resolve(&self, name: &str) -> Result<PermissionLattice, ProfileError> {
-        let normalized = name.to_lowercase().replace('_', "-");
+        let key = normalize_name(name);
         self.profiles
-            .iter()
-            .find(|p| p.name.to_lowercase().replace('_', "-") == normalized)
+            .get(&key)
             .ok_or_else(|| ProfileError::NotFound(name.to_string()))?
+            .spec
             .build()
     }
 
-    /// List all registered profile names.
+    /// List all registered profile names (normalized).
     pub fn names(&self) -> Vec<&str> {
-        self.profiles.iter().map(|p| p.name.as_str()).collect()
+        self.profiles
+            .values()
+            .map(|e| e.spec.name.as_str())
+            .collect()
     }
 
     /// Get the raw [`ProfileSpec`] for a profile by name.
     pub fn get(&self, name: &str) -> Option<&ProfileSpec> {
-        let normalized = name.to_lowercase().replace('_', "-");
-        self.profiles
-            .iter()
-            .find(|p| p.name.to_lowercase().replace('_', "-") == normalized)
+        let key = normalize_name(name);
+        self.profiles.get(&key).map(|e| &e.spec)
+    }
+
+    /// Get the [`ProfileEntry`] (spec + source) for a profile by name.
+    pub fn get_entry(&self, name: &str) -> Option<&ProfileEntry> {
+        let key = normalize_name(name);
+        self.profiles.get(&key)
+    }
+
+    /// Merge another registry into this one.
+    ///
+    /// Profiles from `other` take precedence: if both registries contain
+    /// a profile with the same normalized name, the one from `other` wins.
+    pub fn merge(&mut self, other: ProfileRegistry) {
+        for (key, entry) in other.profiles {
+            self.profiles.insert(key, entry);
+        }
+    }
+
+    /// Return the number of profiles in the registry.
+    pub fn len(&self) -> usize {
+        self.profiles.len()
+    }
+
+    /// Return true if the registry contains no profiles.
+    pub fn is_empty(&self) -> bool {
+        self.profiles.is_empty()
     }
 }
 
@@ -507,17 +669,25 @@ mod tests {
     #[test]
     fn test_canonical_profiles_parse() {
         let registry = ProfileRegistry::canonical().unwrap();
-        assert_eq!(registry.names().len(), 10);
-        assert!(registry.names().contains(&"safe-pr-fixer"));
-        assert!(registry.names().contains(&"doc-editor"));
-        assert!(registry.names().contains(&"test-runner"));
-        assert!(registry.names().contains(&"triage-bot"));
-        assert!(registry.names().contains(&"code-review"));
-        assert!(registry.names().contains(&"codegen"));
-        assert!(registry.names().contains(&"release"));
-        assert!(registry.names().contains(&"research-web"));
-        assert!(registry.names().contains(&"read-only"));
-        assert!(registry.names().contains(&"local-dev"));
+        assert_eq!(registry.len(), 10);
+        let names = registry.names();
+        assert!(names.contains(&"safe-pr-fixer"));
+        assert!(names.contains(&"doc-editor"));
+        assert!(names.contains(&"test-runner"));
+        assert!(names.contains(&"triage-bot"));
+        assert!(names.contains(&"code-review"));
+        assert!(names.contains(&"codegen"));
+        assert!(names.contains(&"release"));
+        assert!(names.contains(&"research-web"));
+        assert!(names.contains(&"read-only"));
+        assert!(names.contains(&"local-dev"));
+    }
+
+    #[test]
+    fn test_builtin_provenance() {
+        let registry = ProfileRegistry::canonical().unwrap();
+        let entry = registry.get_entry("codegen").unwrap();
+        assert_eq!(entry.source, ProfileSource::Builtin);
     }
 
     #[test]
@@ -835,5 +1005,206 @@ capabilities:
         assert_eq!(spec.name, parsed.name);
         assert_eq!(spec.capabilities.read_files, parsed.capabilities.read_files);
         assert_eq!(spec.capabilities.git_push, parsed.capabilities.git_push);
+    }
+
+    // ── Runtime loading tests ───────────────────────────────────────
+
+    #[test]
+    fn test_load_from_dir_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("my-agent.yaml"),
+            r#"
+name: my-agent
+description: "loaded at runtime"
+capabilities:
+  read_files: always
+  write_files: never
+  git_push: never
+budget:
+  max_cost_usd: "2.00"
+"#,
+        )
+        .unwrap();
+
+        let registry = ProfileRegistry::load_from_dir(dir.path()).unwrap();
+        assert_eq!(registry.len(), 1);
+
+        let lattice = registry.resolve("my-agent").unwrap();
+        assert_eq!(lattice.capabilities.read_files, CapabilityLevel::Always);
+        assert_eq!(lattice.capabilities.write_files, CapabilityLevel::Never);
+
+        let entry = registry.get_entry("my-agent").unwrap();
+        assert!(matches!(entry.source, ProfileSource::Directory(_)));
+    }
+
+    #[test]
+    fn test_load_from_dir_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("toml-agent.toml"),
+            r#"
+name = "toml-agent"
+description = "loaded from TOML"
+
+[capabilities]
+read_files = "always"
+write_files = "never"
+git_push = "never"
+
+[budget]
+max_cost_usd = "3.00"
+"#,
+        )
+        .unwrap();
+
+        let registry = ProfileRegistry::load_from_dir(dir.path()).unwrap();
+        assert_eq!(registry.len(), 1);
+
+        let lattice = registry.resolve("toml-agent").unwrap();
+        assert_eq!(lattice.capabilities.read_files, CapabilityLevel::Always);
+        assert_eq!(lattice.capabilities.write_files, CapabilityLevel::Never);
+    }
+
+    #[test]
+    fn test_load_from_dir_nonexistent_is_empty() {
+        let registry =
+            ProfileRegistry::load_from_dir(Path::new("/tmp/does-not-exist-nucleus-test")).unwrap();
+        assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn test_load_from_dir_skips_unknown_extensions() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("readme.md"), "# Not a profile").unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "some notes").unwrap();
+
+        let registry = ProfileRegistry::load_from_dir(dir.path()).unwrap();
+        assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn test_load_from_dir_invalid_yaml_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("bad.yaml"), "{{invalid yaml").unwrap();
+
+        let result = ProfileRegistry::load_from_dir(dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_from_dir_invalid_profile_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        // Valid YAML but empty name fails validation.
+        std::fs::write(
+            dir.path().join("empty-name.yaml"),
+            r#"
+name: ""
+capabilities:
+  read_files: always
+"#,
+        )
+        .unwrap();
+
+        let result = ProfileRegistry::load_from_dir(dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_merge_runtime_overrides_builtin() {
+        let mut builtins = ProfileRegistry::canonical().unwrap();
+
+        // Verify the built-in codegen allows write_files
+        let builtin_codegen = builtins.resolve("codegen").unwrap();
+        assert_eq!(
+            builtin_codegen.capabilities.write_files,
+            CapabilityLevel::LowRisk
+        );
+
+        // Create a runtime override that disables write_files
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("codegen.yaml"),
+            r#"
+name: codegen
+description: "Stricter codegen — read-only"
+capabilities:
+  read_files: always
+  write_files: never
+  git_push: never
+"#,
+        )
+        .unwrap();
+
+        let runtime = ProfileRegistry::load_from_dir(dir.path()).unwrap();
+        builtins.merge(runtime);
+
+        // After merge, the runtime version wins.
+        let merged_codegen = builtins.resolve("codegen").unwrap();
+        assert_eq!(
+            merged_codegen.capabilities.write_files,
+            CapabilityLevel::Never
+        );
+
+        // The entry should show directory provenance.
+        let entry = builtins.get_entry("codegen").unwrap();
+        assert!(matches!(entry.source, ProfileSource::Directory(_)));
+
+        // Other builtins are unaffected.
+        assert!(builtins.resolve("safe-pr-fixer").is_ok());
+    }
+
+    #[test]
+    fn test_merge_adds_new_profiles() {
+        let mut builtins = ProfileRegistry::canonical().unwrap();
+        let initial_count = builtins.len();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("brand-new.yaml"),
+            r#"
+name: brand-new
+capabilities:
+  read_files: always
+  git_push: never
+"#,
+        )
+        .unwrap();
+
+        let runtime = ProfileRegistry::load_from_dir(dir.path()).unwrap();
+        builtins.merge(runtime);
+
+        assert_eq!(builtins.len(), initial_count + 1);
+        assert!(builtins.resolve("brand-new").is_ok());
+    }
+
+    #[test]
+    fn test_with_builtins_alias() {
+        let a = ProfileRegistry::canonical().unwrap();
+        let b = ProfileRegistry::with_builtins().unwrap();
+        assert_eq!(a.len(), b.len());
+        for name in a.names() {
+            assert!(b.resolve(name).is_ok());
+        }
+    }
+
+    #[test]
+    fn test_load_multiple_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("alpha.yaml"),
+            "name: alpha\ncapabilities:\n  read_files: always\n  git_push: never\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("beta.toml"),
+            "name = \"beta\"\n\n[capabilities]\nread_files = \"always\"\ngit_push = \"never\"\n",
+        )
+        .unwrap();
+
+        let registry = ProfileRegistry::load_from_dir(dir.path()).unwrap();
+        assert_eq!(registry.len(), 2);
+        assert!(registry.resolve("alpha").is_ok());
+        assert!(registry.resolve("beta").is_ok());
     }
 }
