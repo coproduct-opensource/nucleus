@@ -150,6 +150,23 @@ pub enum MemoryAuthority {
     MayNotAuthorize,
 }
 
+impl MemoryAuthority {
+    /// Derive the appropriate authority from an integrity level.
+    ///
+    /// This is the fail-safe mapping used by [`GovernedMemory::write()`]:
+    /// - `IntegLevel::Trusted` → `MayInform` (trusted data may inform reasoning)
+    /// - `IntegLevel::Untrusted` → `MayInform` (but callers should prefer
+    ///   [`GovernedMemory::write_governed()`] for explicit control)
+    /// - `IntegLevel::Adversarial` → `MayNotAuthorize` (adversarial data is
+    ///   automatically prevented from authorizing privileged actions)
+    pub fn from_integrity(integ: IntegLevel) -> Self {
+        match integ {
+            IntegLevel::Adversarial => MemoryAuthority::MayNotAuthorize,
+            IntegLevel::Untrusted | IntegLevel::Trusted => MemoryAuthority::MayInform,
+        }
+    }
+}
+
 /// A record of a previous value that was superseded by a write.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RebuttalEntry {
@@ -170,9 +187,16 @@ impl GovernedMemory {
     /// Write a memory entry with the given label.
     ///
     /// Returns false if max_entries would be exceeded (entry not written).
-    /// Uses [`MemoryAuthority::MayInform`] and empty provenance by default —
-    /// use [`write_governed`] or [`write_with_provenance`] to specify authority
-    /// and provenance explicitly.
+    ///
+    /// **Authority is automatically derived from the label's integrity level**
+    /// via [`MemoryAuthority::from_integrity()`]:
+    /// - `IntegLevel::Trusted` / `IntegLevel::Untrusted` → `MayInform`
+    /// - `IntegLevel::Adversarial` → `MayNotAuthorize` (fail-safe protection
+    ///   against memory poisoning — adversarial data can never silently acquire
+    ///   informational authority through the convenience API)
+    ///
+    /// Uses empty provenance by default. Use [`write_governed`] or
+    /// [`write_with_provenance`] to specify authority and provenance explicitly.
     pub fn write(
         &mut self,
         key: String,
@@ -182,12 +206,13 @@ impl GovernedMemory {
         now: u64,
         ttl_secs: u64,
     ) -> bool {
+        let authority = MemoryAuthority::from_integrity(label.integrity);
         self.write_with_limit(
             key,
             value,
             schema,
             label,
-            MemoryAuthority::MayInform,
+            authority,
             ProvenanceSet::EMPTY,
             now,
             ttl_secs,
@@ -728,11 +753,11 @@ max_entries = 500
     }
 
     #[test]
-    fn default_write_is_may_inform() {
+    fn write_trusted_derives_may_inform() {
         let mut mem = GovernedMemory::new();
         let label = MemoryLabel::from_levels(ConfLevel::Public, IntegLevel::Trusted);
 
-        // Default write() should use MayInform.
+        // write() with Trusted integrity derives MayInform.
         mem.write(
             "key".into(),
             "val".into(),
@@ -743,6 +768,63 @@ max_entries = 500
         );
         let entry = mem.read("key", 1000).unwrap();
         assert_eq!(entry.authority, MemoryAuthority::MayInform);
+    }
+
+    #[test]
+    fn write_untrusted_derives_may_inform() {
+        let mut mem = GovernedMemory::new();
+        let label = MemoryLabel::from_levels(ConfLevel::Public, IntegLevel::Untrusted);
+
+        // write() with Untrusted integrity still derives MayInform.
+        mem.write(
+            "key".into(),
+            "val".into(),
+            SchemaType::String,
+            label,
+            1000,
+            0,
+        );
+        let entry = mem.read("key", 1000).unwrap();
+        assert_eq!(entry.authority, MemoryAuthority::MayInform);
+    }
+
+    #[test]
+    fn write_adversarial_derives_may_not_authorize() {
+        let mut mem = GovernedMemory::new();
+        let label = MemoryLabel::from_levels(ConfLevel::Public, IntegLevel::Adversarial);
+
+        // write() with Adversarial integrity automatically derives MayNotAuthorize —
+        // this is the fail-safe protection against memory poisoning (#737).
+        mem.write(
+            "key".into(),
+            "val".into(),
+            SchemaType::String,
+            label,
+            1000,
+            0,
+        );
+        let entry = mem.read("key", 1000).unwrap();
+        assert_eq!(entry.authority, MemoryAuthority::MayNotAuthorize);
+
+        // Confirm read_label produces NoAuthority for adversarial write().
+        let ifc = mem.read_label("key", 1000).unwrap();
+        assert_eq!(ifc.authority, AuthorityLevel::NoAuthority);
+    }
+
+    #[test]
+    fn from_integrity_mapping() {
+        assert_eq!(
+            MemoryAuthority::from_integrity(IntegLevel::Trusted),
+            MemoryAuthority::MayInform,
+        );
+        assert_eq!(
+            MemoryAuthority::from_integrity(IntegLevel::Untrusted),
+            MemoryAuthority::MayInform,
+        );
+        assert_eq!(
+            MemoryAuthority::from_integrity(IntegLevel::Adversarial),
+            MemoryAuthority::MayNotAuthorize,
+        );
     }
 
     #[test]
