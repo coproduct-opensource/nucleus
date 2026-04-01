@@ -529,7 +529,10 @@ fn spec_clinejection_blocked() {
         .build();
     perms.obligations = Obligations::default();
 
-    let mut kernel = Kernel::new(perms);
+    // Use capability_only() to isolate exposure gating from flow control.
+    // (With Kernel::new(), flow control blocks this attack even earlier
+    // via FlowViolation — this test specifically validates exposure gating.)
+    let mut kernel = Kernel::capability_only(perms);
 
     // Step 1: WebFetch injects untrusted content
     let (d, _token) = kernel.decide(Operation::WebFetch, "https://attacker.com/payload.js");
@@ -573,7 +576,8 @@ fn spec_toxic_agent_flow_blocked() {
         .build();
     perms.obligations = Obligations::default();
 
-    let mut kernel = Kernel::new(perms);
+    // Use capability_only() to isolate exposure gating from flow control.
+    let mut kernel = Kernel::capability_only(perms);
 
     // Step 1: Read private data
     let (d, _token) = kernel.decide(Operation::ReadFiles, "/etc/passwd");
@@ -618,7 +622,8 @@ fn spec_pre_approval_consumed_exactly() {
         .build();
     perms.obligations = Obligations::default();
 
-    let mut kernel = Kernel::new(perms);
+    // Use capability_only() to isolate exposure gating from flow control.
+    let mut kernel = Kernel::capability_only(perms);
 
     // Pre-grant exactly 2 GitPush approvals
     kernel.grant_approval(Operation::GitPush, 2);
@@ -669,7 +674,8 @@ fn spec_neutral_ops_unaffected_by_exposure() {
         .build();
     perms.obligations = Obligations::default();
 
-    let mut kernel = Kernel::new(perms);
+    // Use capability_only() to isolate exposure gating from flow control.
+    let mut kernel = Kernel::capability_only(perms);
 
     // Build up 2 exposure legs
     kernel.decide(Operation::ReadFiles, "/workspace/main.rs");

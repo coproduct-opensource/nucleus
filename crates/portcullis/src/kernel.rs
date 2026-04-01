@@ -413,22 +413,84 @@ pub struct Kernel {
 impl Kernel {
     /// Create a new kernel with the given initial permissions.
     ///
+    /// Flow control is enabled by default, providing information flow
+    /// control (provenance tracking, taint propagation, exfiltration
+    /// prevention) out of the box. This is secure-by-default: callers
+    /// get IFC enforcement without remembering to opt in.
+    ///
+    /// The causal flow graph is NOT enabled by default — call
+    /// [`Kernel::enable_flow_graph`] for precise per-action tracking
+    /// via `decide_with_parents()`.
+    ///
     /// The initial permissions set the ceiling — effective permissions
     /// can only stay the same or decrease from here. Uses localhost
     /// isolation level (no isolation constraints enforced).
+    ///
+    /// For a stripped-down kernel without IFC (testing, benchmarks),
+    /// use [`Kernel::capability_only`].
     pub fn new(initial: PermissionLattice) -> Self {
         Self::with_isolation(initial, IsolationLattice::localhost())
     }
 
     /// Create a new kernel with explicit isolation level.
     ///
-    /// The isolation level is immutable for the session lifetime.
-    /// It enables defense-in-depth checks: network operations are denied
-    /// in airgapped environments, regardless of capability levels.
+    /// Flow control is enabled by default. The isolation level is
+    /// immutable for the session lifetime. It enables defense-in-depth
+    /// checks: network operations are denied in airgapped environments,
+    /// regardless of capability levels.
     ///
     /// If the policy's `minimum_isolation` exceeds the runtime isolation,
     /// ALL operations will be denied.
+    ///
+    /// For a stripped-down kernel without IFC, use
+    /// [`Kernel::capability_only_with_isolation`].
     pub fn with_isolation(initial: PermissionLattice, isolation: IsolationLattice) -> Self {
+        let now = chrono::Utc::now().timestamp() as u64;
+        let initial_hash = initial.checksum();
+        Self {
+            session_id: Uuid::new_v4(),
+            effective: initial,
+            initial_hash,
+            isolation,
+            trace: Vec::new(),
+            next_seq: 0,
+            consumed_usd: Decimal::ZERO,
+            approvals: std::collections::BTreeMap::new(),
+            exposure: ExposureSet::empty(),
+            provenance: None,
+            flow_label: Some(portcullis_core::IFCLabel::user_prompt(now)),
+            flow_graph: None,
+            declassification_rules: Vec::new(),
+            #[cfg(feature = "spec")]
+            egress_policy: None,
+            #[cfg(feature = "spec")]
+            policy_rules: None,
+            #[cfg(feature = "crypto")]
+            signing_key: None,
+            receipt_chain: None,
+        }
+    }
+
+    /// Create a capability-only kernel without information flow control.
+    ///
+    /// This constructor creates a kernel that enforces only capability
+    /// levels, paths, commands, budget, time, and exposure gating —
+    /// but does NOT enable flow control or the causal flow graph.
+    ///
+    /// **Use this only for testing and benchmarks.** Production kernels
+    /// should use [`Kernel::new`] which enables IFC by default.
+    pub fn capability_only(initial: PermissionLattice) -> Self {
+        Self::capability_only_with_isolation(initial, IsolationLattice::localhost())
+    }
+
+    /// Create a capability-only kernel with explicit isolation level.
+    ///
+    /// Like [`Kernel::capability_only`] but with a custom isolation level.
+    /// Does NOT enable flow control or the causal flow graph.
+    pub fn capability_only_with_isolation(
+        initial: PermissionLattice,
+        isolation: IsolationLattice,
+    ) -> Self {
         let initial_hash = initial.checksum();
         Self {
             session_id: Uuid::new_v4(),
@@ -687,6 +749,7 @@ impl Kernel {
         verified: VerifiedPermissions,
         certificate_fingerprint: [u8; 32],
     ) -> Self {
+        let now = chrono::Utc::now().timestamp() as u64;
         let provenance = SessionProvenance {
             certificate_fingerprint,
             root_identity: verified.root_identity.clone(),
@@ -705,7 +768,7 @@ impl Kernel {
             approvals: std::collections::BTreeMap::new(),
             exposure: ExposureSet::empty(),
             provenance: Some(provenance),
-            flow_label: None,
+            flow_label: Some(portcullis_core::IFCLabel::user_prompt(now)),
             flow_graph: None,
             declassification_rules: Vec::new(),
             #[cfg(feature = "spec")]
@@ -728,6 +791,7 @@ impl Kernel {
         certificate_fingerprint: [u8; 32],
         isolation: IsolationLattice,
     ) -> Self {
+        let now = chrono::Utc::now().timestamp() as u64;
         let provenance = SessionProvenance {
             certificate_fingerprint,
             root_identity: verified.root_identity.clone(),
@@ -746,7 +810,7 @@ impl Kernel {
             approvals: std::collections::BTreeMap::new(),
             exposure: ExposureSet::empty(),
             provenance: Some(provenance),
-            flow_label: None,
+            flow_label: Some(portcullis_core::IFCLabel::user_prompt(now)),
             flow_graph: None,
             declassification_rules: Vec::new(),
             #[cfg(feature = "spec")]
@@ -2187,7 +2251,9 @@ mod tests {
         // Clear any obligations the builder might have added
         perms.obligations.approvals.clear();
 
-        let mut kernel = Kernel::new(perms);
+        // Use capability_only() to isolate the exposure gating subsystem
+        // from flow control (which would deny earlier via FlowViolation).
+        let mut kernel = Kernel::capability_only(perms);
 
         // Step 1: Read private data → exposure PrivateData
         let (d, _token) = kernel.decide(Operation::ReadFiles, "/etc/passwd");
@@ -2236,7 +2302,8 @@ mod tests {
 
         perms.obligations.approvals.clear();
 
-        let mut kernel = Kernel::new(perms);
+        // Use capability_only() to isolate the exposure gating subsystem.
+        let mut kernel = Kernel::capability_only(perms);
 
         // Pre-grant approval for the exfil operation
         kernel.grant_approval(Operation::GitPush, 1);
@@ -2282,7 +2349,8 @@ mod tests {
 
         perms.obligations.approvals.clear();
 
-        let mut kernel = Kernel::new(perms);
+        // Use capability_only() to isolate the exposure gating subsystem.
+        let mut kernel = Kernel::capability_only(perms);
 
         // Accumulate two legs
         kernel.decide(Operation::ReadFiles, "/etc/passwd");
@@ -2378,7 +2446,8 @@ mod tests {
 
         perms.obligations.approvals.clear();
 
-        let mut kernel = Kernel::new(perms);
+        // Use capability_only() to isolate the exposure gating subsystem.
+        let mut kernel = Kernel::capability_only(perms);
 
         // Fetch untrusted content
         kernel.decide(Operation::WebFetch, "https://evil.com/payload");
@@ -2702,10 +2771,26 @@ mod tests {
     // ── Flow control integration tests ───────────────────────────────
 
     #[test]
-    fn flow_disabled_by_default() {
+    fn flow_enabled_by_default() {
         let perms = PermissionLattice::permissive();
         let mut kernel = Kernel::new(perms);
-        // Without enable_flow_control(), web + write should work fine
+        // Flow control is on by default — web fetch taints the session,
+        // then write is blocked by flow violation (NoAuthority < Suggestive).
+        let (d1, _) = kernel.decide(Operation::WebFetch, "https://example.com");
+        assert!(matches!(d1.verdict, Verdict::Allow));
+        let (d2, _) = kernel.decide(Operation::WriteFiles, "/tmp/test.txt");
+        assert!(
+            matches!(d2.verdict, Verdict::Deny(DenyReason::FlowViolation { .. })),
+            "Flow control should be on by default, got {:?}",
+            d2.verdict
+        );
+    }
+
+    #[test]
+    fn capability_only_skips_flow_control() {
+        let perms = PermissionLattice::permissive();
+        let mut kernel = Kernel::capability_only(perms);
+        // Without flow control, web + write should work fine
         let (d1, _) = kernel.decide(Operation::WebFetch, "https://example.com");
         assert!(matches!(d1.verdict, Verdict::Allow));
         let (d2, _) = kernel.decide(Operation::WriteFiles, "/tmp/test.txt");
@@ -2910,8 +2995,8 @@ mod tests {
     #[test]
     fn dag_fallback_without_enable() {
         let perms = PermissionLattice::safe_pr_fixer();
-        let mut kernel = Kernel::new(perms);
-        // Don't call enable_flow_graph() — decide_with_parents should fall back to decide()
+        let mut kernel = Kernel::capability_only(perms);
+        // capability_only() has no flow graph — decide_with_parents should fall back to decide()
 
         let (d, _) = kernel.decide_with_parents(Operation::ReadFiles, "/workspace/main.rs", &[]);
         assert!(d.verdict.is_allowed());
@@ -2975,7 +3060,7 @@ mod tests {
     fn dag_observe_returns_error_without_enable() {
         // Issue #364: observe() should return Err, not panic
         let perms = PermissionLattice::safe_pr_fixer();
-        let mut kernel = Kernel::new(perms);
+        let mut kernel = Kernel::capability_only(perms);
         let result = kernel.observe(portcullis_core::flow::NodeKind::FileRead, &[]);
         assert!(result.is_err());
     }
