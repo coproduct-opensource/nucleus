@@ -563,6 +563,42 @@ mod kani_proofs {
         assert!(result.authority <= b.authority);
     }
 
+    /// **F4b — propagate_label is monotone via lattice order.**
+    ///
+    /// For any parent label, the propagated result is ≥ that parent
+    /// in the IFCLabel product lattice ordering. This is the formal
+    /// lattice-theoretic version of F4 using IFCLabel::leq.
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn proof_propagation_monotone_leq() {
+        let parent = any_label();
+        let intrinsic = any_label();
+
+        // Fix freshness to make leq tractable (freshness checked separately)
+        let parent = IFCLabel {
+            freshness: crate::Freshness {
+                observed_at: 100,
+                ttl_secs: 0,
+            },
+            ..parent
+        };
+        let intrinsic = IFCLabel {
+            freshness: crate::Freshness {
+                observed_at: 100,
+                ttl_secs: 0,
+            },
+            ..intrinsic
+        };
+
+        let result = propagate_label(&[parent], intrinsic);
+
+        // The result must be ≥ the parent in the lattice order.
+        // join(intrinsic, parent) ≥ parent always holds because join is LUB.
+        assert!(parent.leq(result));
+        // Also ≥ intrinsic
+        assert!(intrinsic.leq(result));
+    }
+
     /// **F5 — Legitimate user actions are allowed.**
     ///
     /// For any operation: a fully trusted, user-sourced, non-expired,
