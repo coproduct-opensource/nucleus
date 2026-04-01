@@ -128,12 +128,19 @@ jobs:
 
       - name: lake build (type-check proofs)
         working-directory: crates/portcullis-core/lean
-        run: lake build PortcullisCoreBridge
+        run: |
+          lake build PortcullisCoreBridge
+          lake build ExposureProofs
+          lake build DecidePureProofs
+          lake build DeclassifyProofs
+          lake build FlowProofs
+          lake build FlowGraphProofs
+          lake build CompartmentProofs
 
       - name: Reject sorry (proof holes)
         working-directory: crates/portcullis-core/lean
         run: |
-          if grep -rn 'sorry' PortcullisCoreBridge.lean generated/PortcullisCore/FunsExternal.lean generated/PortcullisCore/CoreFuns.lean; then
+          if grep -rn 'sorry' PortcullisCoreBridge.lean ExposureProofs.lean DecidePureProofs.lean DeclassifyProofs.lean FlowProofs.lean FlowGraphProofs.lean CompartmentProofs.lean generated/PortcullisCore/FunsExternal.lean generated/PortcullisCore/CoreFuns.lean; then
             echo "ERROR: Lean proofs contain 'sorry' — proof has holes."
             exit 1
           fi
