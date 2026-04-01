@@ -57,6 +57,8 @@
 pub mod attestation;
 pub mod autonomy;
 pub mod compartment;
+#[cfg(feature = "serde")]
+pub mod compartmentfile;
 pub mod declassify;
 pub mod delegation;
 #[cfg(feature = "serde")]
@@ -154,19 +156,34 @@ impl CapabilityLevel {
 /// The Lean 4 proof shows this forms a distributive Heyting algebra
 /// (as a product of Heyting algebras).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 pub struct CapabilityLattice {
+    #[cfg_attr(feature = "serde", serde(default))]
     pub read_files: CapabilityLevel,
+    #[cfg_attr(feature = "serde", serde(default))]
     pub write_files: CapabilityLevel,
+    #[cfg_attr(feature = "serde", serde(default))]
     pub edit_files: CapabilityLevel,
+    #[cfg_attr(feature = "serde", serde(default))]
     pub run_bash: CapabilityLevel,
+    #[cfg_attr(feature = "serde", serde(default))]
     pub glob_search: CapabilityLevel,
+    #[cfg_attr(feature = "serde", serde(default))]
     pub grep_search: CapabilityLevel,
+    #[cfg_attr(feature = "serde", serde(default))]
     pub web_search: CapabilityLevel,
+    #[cfg_attr(feature = "serde", serde(default))]
     pub web_fetch: CapabilityLevel,
+    #[cfg_attr(feature = "serde", serde(default))]
     pub git_commit: CapabilityLevel,
+    #[cfg_attr(feature = "serde", serde(default))]
     pub git_push: CapabilityLevel,
+    #[cfg_attr(feature = "serde", serde(default))]
     pub create_pr: CapabilityLevel,
+    #[cfg_attr(feature = "serde", serde(default))]
     pub manage_pods: CapabilityLevel,
+    #[cfg_attr(feature = "serde", serde(default))]
     pub spawn_agent: CapabilityLevel,
 }
 
