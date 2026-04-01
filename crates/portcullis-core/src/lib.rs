@@ -1743,6 +1743,62 @@ mod kani_ifc_label_proofs {
             assert!(a.leq(b));
         }
     }
+
+    // ── DPI-1: No silent cleansing — AIDerived ⊔ x ≠ Deterministic ───
+
+    /// **DPI-1 — AIDerived can never be laundered back to Deterministic.**
+    ///
+    /// For all DerivationClass values x, `AIDerived.join(x) != Deterministic`.
+    /// This is the foundational DPI invariant: AI-generated data carries its
+    /// taint irreversibly through all join operations.
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn proof_derivation_no_silent_cleansing() {
+        let x = any_derivation();
+        let result = DerivationClass::AIDerived.join(x);
+        assert!(result != DerivationClass::Deterministic);
+    }
+
+    // ── DPI-2: Monotone join — join never reduces taint level ─────────
+
+    /// Map DerivationClass to its height in the Hasse diagram (taint level).
+    ///
+    /// ```text
+    ///       OpaqueExternal  = 3 (top)
+    ///            |
+    ///          Mixed         = 2
+    ///         /     \
+    ///   AIDerived  HumanPromoted  = 1
+    ///         \     /
+    ///       Deterministic    = 0 (bottom)
+    /// ```
+    fn taint_level(d: DerivationClass) -> u8 {
+        match d {
+            DerivationClass::Deterministic => 0,
+            DerivationClass::AIDerived => 1,
+            DerivationClass::HumanPromoted => 1,
+            DerivationClass::Mixed => 2,
+            DerivationClass::OpaqueExternal => 3,
+        }
+    }
+
+    /// **DPI-2 — DerivationClass join is monotone in taint level.**
+    ///
+    /// For all a, b: `taint_level(join(a, b)) >= max(taint_level(a), taint_level(b))`.
+    /// Joining data can only increase (or maintain) the taint level, never reduce it.
+    #[kani::proof]
+    #[kani::solver(cadical)]
+    fn proof_derivation_join_monotone() {
+        let a = any_derivation();
+        let b = any_derivation();
+        let result = a.join(b);
+        let max_input = if taint_level(a) >= taint_level(b) {
+            taint_level(a)
+        } else {
+            taint_level(b)
+        };
+        assert!(taint_level(result) >= max_input);
+    }
 }
 
 #[cfg(test)]
@@ -2653,6 +2709,70 @@ mod tests {
                 "AIDerived.join({:?}) = Deterministic violates no-silent-cleansing",
                 other
             );
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // DPI invariant test mirrors (non-Kani mirrors of Kani proofs)
+    // ════════════════════════════════════════════════════════════════════
+
+    /// Taint level height in the Hasse diagram (mirrors Kani taint_level).
+    fn taint_level(d: DerivationClass) -> u8 {
+        match d {
+            DerivationClass::Deterministic => 0,
+            DerivationClass::AIDerived => 1,
+            DerivationClass::HumanPromoted => 1,
+            DerivationClass::Mixed => 2,
+            DerivationClass::OpaqueExternal => 3,
+        }
+    }
+
+    #[test]
+    fn derivation_no_silent_cleansing_exhaustive() {
+        use DerivationClass::*;
+        // DPI-1: For ALL variants, AIDerived.join(x) != Deterministic
+        for &x in &[
+            Deterministic,
+            AIDerived,
+            Mixed,
+            HumanPromoted,
+            OpaqueExternal,
+        ] {
+            let result = AIDerived.join(x);
+            assert_ne!(
+                result, Deterministic,
+                "DPI-1 violated: AIDerived.join({:?}) = Deterministic",
+                x
+            );
+        }
+    }
+
+    #[test]
+    fn derivation_join_monotone_exhaustive() {
+        use DerivationClass::*;
+        // DPI-2: For ALL pairs, taint_level(join(a,b)) >= max(taint_level(a), taint_level(b))
+        let all = [
+            Deterministic,
+            AIDerived,
+            Mixed,
+            HumanPromoted,
+            OpaqueExternal,
+        ];
+        for &a in &all {
+            for &b in &all {
+                let result = a.join(b);
+                let max_input = taint_level(a).max(taint_level(b));
+                assert!(
+                    taint_level(result) >= max_input,
+                    "DPI-2 violated: taint_level({:?}.join({:?})) = {} < max({}, {}) = {}",
+                    a,
+                    b,
+                    taint_level(result),
+                    taint_level(a),
+                    taint_level(b),
+                    max_input
+                );
+            }
         }
     }
 
