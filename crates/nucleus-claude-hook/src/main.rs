@@ -18,6 +18,7 @@ use ring::rand::SystemRandom;
 use ring::signature::Ed25519KeyPair;
 use serde::Serialize;
 
+mod build;
 mod classify;
 mod init;
 mod protocol;
@@ -1060,6 +1061,8 @@ fn run_help() {
     println!("USAGE:");
     println!("  nucleus-claude-hook              Read hook JSON from stdin (normal mode)");
     println!("  nucleus-claude-hook --init        Scaffold .nucleus/ project directory");
+    println!("  nucleus-claude-hook --build [DIR] Build artifact from .nucleus/ directory");
+    println!("    -o, --output FILE               Write artifact JSON to file instead of stdout");
     println!("  nucleus-claude-hook --setup       Configure ~/.claude/settings.json");
     println!("  nucleus-claude-hook --status      Show active sessions");
     println!("  nucleus-claude-hook --gc          Remove stale session files (>24h)");
@@ -1142,6 +1145,10 @@ fn main() {
     }
     if args.iter().any(|a| a == "--init") {
         run_init();
+        return;
+    }
+    if args.iter().any(|a| a == "--build") {
+        build::run_build(&args);
         return;
     }
     if args.iter().any(|a| a == "--uninstall") {
