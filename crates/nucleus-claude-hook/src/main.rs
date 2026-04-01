@@ -1865,6 +1865,7 @@ fn run_help() {
     println!("  NUCLEUS_COMPARTMENT        Compartment: research, draft, execute, breakglass");
     println!("  NUCLEUS_FAIL_CLOSED        Set to 1: infrastructure errors block (CISO mode)");
     println!("  NUCLEUS_REQUIRE_MANIFESTS  Set to 1: deny MCP tools without manifests");
+    println!("  NUCLEUS_AUTONOMY_CEILING   Org cap: production, sandbox (default: unrestricted)");
     println!();
     println!("COMPARTMENTS:");
     println!("  research    Read + web only (no writes, no execution)");
@@ -2473,6 +2474,47 @@ fn main() {
         narrowed
     } else {
         perms
+    };
+
+    // Apply organizational autonomy ceiling (#482).
+    // NUCLEUS_AUTONOMY_CEILING controls the org-wide cap:
+    //   "production" — no git push/PR, writes at LowRisk
+    //   "sandbox"    — read-only, no execution
+    //   (unset)      — unrestricted (no organizational cap)
+    let effective_perms = match std::env::var("NUCLEUS_AUTONOMY_CEILING").ok().as_deref() {
+        Some("production") | Some("sandbox") => {
+            let core_ceiling =
+                if std::env::var("NUCLEUS_AUTONOMY_CEILING").as_deref() == Ok("sandbox") {
+                    let c = portcullis_core::autonomy::AutonomyCeiling::sandbox();
+                    eprintln!("nucleus: autonomy ceiling: sandbox (read-only)");
+                    c.capabilities
+                } else {
+                    let c = portcullis_core::autonomy::AutonomyCeiling::production();
+                    eprintln!("nucleus: autonomy ceiling: production (no push/PR)");
+                    c.capabilities
+                };
+            // Convert portcullis_core::CapabilityLattice to portcullis::CapabilityLattice
+            let ceiling = portcullis::CapabilityLattice {
+                read_files: core_ceiling.read_files,
+                write_files: core_ceiling.write_files,
+                edit_files: core_ceiling.edit_files,
+                run_bash: core_ceiling.run_bash,
+                glob_search: core_ceiling.glob_search,
+                grep_search: core_ceiling.grep_search,
+                web_search: core_ceiling.web_search,
+                web_fetch: core_ceiling.web_fetch,
+                git_commit: core_ceiling.git_commit,
+                git_push: core_ceiling.git_push,
+                create_pr: core_ceiling.create_pr,
+                manage_pods: core_ceiling.manage_pods,
+                spawn_agent: core_ceiling.spawn_agent,
+                ..Default::default()
+            };
+            let mut capped = effective_perms;
+            capped.capabilities = capped.capabilities.meet(&ceiling);
+            capped
+        }
+        _ => effective_perms,
     };
 
     let mut kernel = Kernel::new(effective_perms);
