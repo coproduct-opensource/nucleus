@@ -226,6 +226,15 @@ pub enum DenyReason {
         /// The sink class that was denied.
         sink_class: String,
     },
+    /// Operation denied by enterprise allowlist.
+    ///
+    /// The enterprise policy (`.nucleus/enterprise.toml`) explicitly blocks
+    /// this operation's sink class — either via `denied_sinks` or by omission
+    /// from `allowed_sinks`.
+    EnterpriseBlocked {
+        /// Human-readable detail about why the enterprise policy blocked this.
+        detail: String,
+    },
     /// Information flow control violation.
     ///
     /// The session's accumulated IFC label violates a flow enforcement rule.
@@ -393,6 +402,13 @@ pub struct Kernel {
     /// Loaded from `.nucleus/policy.toml`. When `None`, no admissibility
     /// filtering is applied (all operations pass through to capability checks).
     policy_rules: Option<portcullis_core::policy_rules::PolicyRuleSet>,
+    /// Optional enterprise allowlist — when present, `decide()` checks the
+    /// operation's sink class against the enterprise policy after admissibility
+    /// policy checks and before path/command checks.
+    ///
+    /// Loaded from `.nucleus/enterprise.toml`. When `None`, no enterprise
+    /// filtering is applied.
+    enterprise: Option<portcullis_core::enterprise::EnterpriseAllowlist>,
     /// Optional Ed25519 signing key for receipt signing.
     ///
     /// When present, `decide_with_parents()` produces signed receipts
@@ -461,6 +477,7 @@ impl Kernel {
             declassification_rules: Vec::new(),
             egress_policy: None,
             policy_rules: None,
+            enterprise: None,
             #[cfg(feature = "crypto")]
             signing_key: None,
             receipt_chain: None,
@@ -504,6 +521,7 @@ impl Kernel {
             declassification_rules: Vec::new(),
             egress_policy: None,
             policy_rules: None,
+            enterprise: None,
             #[cfg(feature = "crypto")]
             signing_key: None,
             receipt_chain: None,
@@ -767,6 +785,7 @@ impl Kernel {
             declassification_rules: Vec::new(),
             egress_policy: None,
             policy_rules: None,
+            enterprise: None,
             #[cfg(feature = "crypto")]
             signing_key: None,
             receipt_chain: None,
@@ -807,6 +826,7 @@ impl Kernel {
             declassification_rules: Vec::new(),
             egress_policy: None,
             policy_rules: None,
+            enterprise: None,
             #[cfg(feature = "crypto")]
             signing_key: None,
             receipt_chain: None,
@@ -1013,6 +1033,31 @@ impl Kernel {
                     }
                     // Approved — fall through to remaining checks
                 }
+            }
+        }
+
+        // 3e. Enterprise allowlist check — organizational sink-level filtering.
+        //
+        // When an enterprise allowlist is loaded, the operation's sink class
+        // is checked against the allowed/denied sink lists. Deny-takes-precedence:
+        // any sink in `denied_sinks` is blocked regardless of `allowed_sinks`.
+        if let Some(ref enterprise) = self.enterprise {
+            let sink = crate::hook_adapter::classify_sink(operation, subject);
+            if !enterprise.check_sink(sink) {
+                return self.record_with_exposure(
+                    operation,
+                    subject,
+                    Verdict::Deny(DenyReason::EnterpriseBlocked {
+                        detail: format!(
+                            "sink class {sink:?} is not permitted by enterprise policy"
+                        ),
+                    }),
+                    &pre_hash,
+                    pre_exposure_count,
+                    contributed_label,
+                    false,
+                    false,
+                );
             }
         }
 
@@ -1340,6 +1385,24 @@ impl Kernel {
     /// Get the policy rules, if set.
     pub fn policy_rules(&self) -> Option<&portcullis_core::policy_rules::PolicyRuleSet> {
         self.policy_rules.as_ref()
+    }
+
+    /// Set the enterprise allowlist for this session.
+    ///
+    /// When set, `decide()` checks the operation's sink class against the
+    /// enterprise policy after admissibility policy checks. If the sink is
+    /// denied by the enterprise policy, the operation is denied with
+    /// [`DenyReason::EnterpriseBlocked`].
+    ///
+    /// Must be called before the first `decide()` — the enterprise policy
+    /// is immutable for the session lifetime.
+    pub fn set_enterprise(&mut self, allowlist: portcullis_core::enterprise::EnterpriseAllowlist) {
+        self.enterprise = Some(allowlist);
+    }
+
+    /// Get the enterprise allowlist, if set.
+    pub fn enterprise(&self) -> Option<&portcullis_core::enterprise::EnterpriseAllowlist> {
+        self.enterprise.as_ref()
     }
 
     /// Get the append-only session trace.
@@ -3782,5 +3845,69 @@ denied_hosts = ["evil.github.com"]
                 );
             }
         }
+    }
+
+    // ── Enterprise allowlist enforcement (#734) ─────────────────────
+
+    #[test]
+    fn enterprise_blocks_denied_sink() {
+        use portcullis_core::enterprise::EnterpriseAllowlist;
+        use portcullis_core::SinkClass;
+
+        let perms = PermissionLattice::safe_pr_fixer();
+        let mut kernel = Kernel::capability_only(perms);
+
+        // Enterprise policy denies git_commit sink
+        kernel.set_enterprise(EnterpriseAllowlist {
+            denied_sinks: vec![SinkClass::GitCommit],
+            ..Default::default()
+        });
+
+        let (d, token) = kernel.decide(Operation::GitCommit, "fix: something");
+        assert!(d.verdict.is_denied(), "enterprise should block git_commit");
+        assert!(token.is_none());
+        match &d.verdict {
+            Verdict::Deny(DenyReason::EnterpriseBlocked { detail }) => {
+                assert!(
+                    detail.contains("GitCommit"),
+                    "detail should mention the sink class: {detail}"
+                );
+            }
+            other => panic!("expected EnterpriseBlocked, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enterprise_allows_permitted_sink() {
+        use portcullis_core::enterprise::EnterpriseAllowlist;
+        use portcullis_core::SinkClass;
+
+        let perms = PermissionLattice::safe_pr_fixer();
+        let mut kernel = Kernel::capability_only(perms);
+
+        // Enterprise policy allows only workspace_write and git_commit
+        kernel.set_enterprise(EnterpriseAllowlist {
+            allowed_sinks: Some(vec![SinkClass::WorkspaceWrite, SinkClass::GitCommit]),
+            ..Default::default()
+        });
+
+        // git_commit is in the allowlist — should pass
+        let (d, token) = kernel.decide(Operation::GitCommit, "fix: allowed");
+        assert!(d.verdict.is_allowed(), "enterprise should allow git_commit");
+        assert!(token.is_some());
+    }
+
+    #[test]
+    fn no_enterprise_is_passthrough() {
+        let perms = PermissionLattice::safe_pr_fixer();
+        let mut kernel = Kernel::capability_only(perms);
+
+        // No enterprise policy set — git_commit should be allowed by capabilities
+        let (d, token) = kernel.decide(Operation::GitCommit, "fix: no enterprise");
+        assert!(
+            d.verdict.is_allowed(),
+            "without enterprise policy, capabilities alone decide"
+        );
+        assert!(token.is_some());
     }
 }

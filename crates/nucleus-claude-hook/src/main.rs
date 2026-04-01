@@ -329,6 +329,14 @@ fn format_denial_for_user(
                 - Or change the rule's verdict to 'allow' or 'requires_approval'"
             )
         }
+        DenyReason::EnterpriseBlocked { detail } => {
+            format!(
+                "Blocked: enterprise policy denied this operation: {detail}{comp_hint}.\n  \
+                How to fix:\n  \
+                - Ask your organization admin to update .nucleus/enterprise.toml\n  \
+                - Add the sink class to allowed_sinks or remove it from denied_sinks"
+            )
+        }
     }
 }
 
