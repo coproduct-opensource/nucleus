@@ -108,6 +108,17 @@ pub struct ToolManifest {
     /// A web_fetch tool with `allowed_compartments: ["research"]` is blocked
     /// in draft/execute/breakglass.
     pub allowed_compartments: Vec<String>,
+
+    /// Ed25519 signature over `canonical_bytes()` (64 bytes, optional).
+    /// When present, the manifest can be verified against a trust store
+    /// of known public keys. When absent, the manifest is "unsigned" —
+    /// admission depends on `ManifestPolicy`.
+    pub signature: Option<[u8; 64]>,
+
+    /// Ed25519 public key that produced `signature` (32 bytes, optional).
+    /// Stored alongside the signature so verifiers know which key to check.
+    /// The key must appear in the trust store for verification to succeed.
+    pub signing_key: Option<[u8; 32]>,
 }
 
 impl ToolManifest {
@@ -118,6 +129,83 @@ impl ToolManifest {
     pub fn is_allowed_in_compartment(&self, compartment: &str) -> bool {
         self.allowed_compartments.is_empty()
             || self.allowed_compartments.iter().any(|c| c == compartment)
+    }
+
+    /// Deterministic canonical byte serialization for signing/verification.
+    ///
+    /// Covers ALL security-relevant fields in a fixed order. Changes to
+    /// any field invalidate the signature. The `signature` and `signing_key`
+    /// fields are deliberately excluded (you can't sign your own signature).
+    ///
+    /// Format: `"nucleus-manifest-v1\n"` || field bytes in declaration order.
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(512);
+
+        // Version tag — bump this if canonical format changes
+        buf.extend_from_slice(b"nucleus-manifest-v1\n");
+
+        // Name (length-prefixed)
+        let name_bytes = self.name.as_str().as_bytes();
+        buf.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
+        buf.extend_from_slice(name_bytes);
+
+        // Capabilities (count + discriminants)
+        buf.extend_from_slice(&(self.capabilities.len() as u32).to_le_bytes());
+        for op in &self.capabilities {
+            buf.extend_from_slice(&(*op as u8).to_le_bytes());
+        }
+
+        // remote_fetch
+        buf.push(self.remote_fetch as u8);
+
+        // instruction_sources (count + discriminants)
+        buf.extend_from_slice(&(self.instruction_sources.len() as u32).to_le_bytes());
+        for src in &self.instruction_sources {
+            buf.push(*src as u8);
+        }
+
+        // admissible_sinks (count + discriminants)
+        buf.extend_from_slice(&(self.admissible_sinks.len() as u32).to_le_bytes());
+        for sink in &self.admissible_sinks {
+            buf.push(*sink as u8);
+        }
+
+        // Security levels
+        buf.push(self.max_confidentiality as u8);
+        buf.push(self.output_integrity as u8);
+        buf.push(self.output_authority as u8);
+
+        // schema_hash
+        buf.extend_from_slice(&self.schema_hash);
+
+        // allowed_hosts (count + length-prefixed strings)
+        buf.extend_from_slice(&(self.allowed_hosts.len() as u32).to_le_bytes());
+        for host in &self.allowed_hosts {
+            let host_bytes = host.as_bytes();
+            buf.extend_from_slice(&(host_bytes.len() as u32).to_le_bytes());
+            buf.extend_from_slice(host_bytes);
+        }
+
+        // authority_to_instruct
+        buf.push(self.authority_to_instruct as u8);
+
+        // memory_behavior
+        buf.push(self.memory_behavior as u8);
+
+        // allowed_compartments (count + length-prefixed strings)
+        buf.extend_from_slice(&(self.allowed_compartments.len() as u32).to_le_bytes());
+        for comp in &self.allowed_compartments {
+            let comp_bytes = comp.as_bytes();
+            buf.extend_from_slice(&(comp_bytes.len() as u32).to_le_bytes());
+            buf.extend_from_slice(comp_bytes);
+        }
+
+        buf
+    }
+
+    /// Whether this manifest carries a signature.
+    pub fn is_signed(&self) -> bool {
+        self.signature.is_some() && self.signing_key.is_some()
     }
 }
 
@@ -184,6 +272,13 @@ pub enum AdmissionDenyReason {
     /// Without a manifest, the tool's security properties are unknown — the
     /// capability lattice alone cannot defend against classification gaming (#588).
     NoManifest,
+    /// Tool manifest is unsigned and the policy requires signed manifests (#650).
+    /// The manifest content may be legitimate but cannot be verified against
+    /// a trust store — it could have been tampered with.
+    UnsignedManifest,
+    /// Tool manifest signature is invalid — the content has been tampered with
+    /// or was signed by a key not in the trust store (#650).
+    InvalidSignature,
 }
 
 /// Policy for tools without manifests.
@@ -201,6 +296,11 @@ pub enum ManifestPolicy {
     /// entry in `.nucleus/manifests/`. This is the recommended production
     /// setting — it prevents classification gaming via tool name manipulation.
     DefaultDeny,
+    /// All manifests MUST be signed with a valid Ed25519 signature (#650).
+    /// Unsigned manifests are rejected with `UnsignedManifest`. This is the
+    /// highest security setting — it ensures manifests haven't been tampered
+    /// with and were authored by a trusted key holder.
+    RequireSigned,
 }
 
 /// Result of admission control check.
@@ -299,9 +399,15 @@ pub fn check_admission_with_policy(
     policy: ManifestPolicy,
 ) -> AdmissionVerdict {
     match manifest {
-        Some(m) => check_admission(m),
+        Some(m) => {
+            // RequireSigned: reject unsigned manifests before checking content
+            if matches!(policy, ManifestPolicy::RequireSigned) && !m.is_signed() {
+                return AdmissionVerdict::Reject(vec![AdmissionDenyReason::UnsignedManifest]);
+            }
+            check_admission(m)
+        }
         None => match policy {
-            ManifestPolicy::DefaultDeny => {
+            ManifestPolicy::DefaultDeny | ManifestPolicy::RequireSigned => {
                 AdmissionVerdict::Reject(vec![AdmissionDenyReason::NoManifest])
             }
             ManifestPolicy::DefaultAllow => AdmissionVerdict::Admit,
@@ -355,6 +461,8 @@ mod kani_proofs {
             authority_to_instruct: false,
             memory_behavior: MemoryBehavior::None,
             allowed_compartments: vec![],
+            signature: None,
+            signing_key: None,
         };
         match check_admission(&manifest) {
             AdmissionVerdict::Reject(reasons) => {
@@ -381,6 +489,8 @@ mod kani_proofs {
             authority_to_instruct: false,
             memory_behavior: MemoryBehavior::None,
             allowed_compartments: vec![],
+            signature: None,
+            signing_key: None,
         };
         assert!(!matches!(
             check_admission(&manifest),
@@ -405,6 +515,8 @@ mod kani_proofs {
             authority_to_instruct: false,
             memory_behavior: MemoryBehavior::None,
             allowed_compartments: vec![],
+            signature: None,
+            signing_key: None,
         };
         match check_admission(&manifest) {
             AdmissionVerdict::Reject(reasons) => {
@@ -431,6 +543,8 @@ mod kani_proofs {
             authority_to_instruct: false,
             memory_behavior: MemoryBehavior::None,
             allowed_compartments: vec![],
+            signature: None,
+            signing_key: None,
         };
         assert!(!matches!(
             check_admission(&manifest),
@@ -458,6 +572,8 @@ mod kani_proofs {
             authority_to_instruct: false,
             memory_behavior: MemoryBehavior::None,
             allowed_compartments: vec![],
+            signature: None,
+            signing_key: None,
         };
         // Should always be admitted — no rule triggers
         kani::assume(
@@ -497,6 +613,8 @@ mod tests {
             authority_to_instruct: false,
             memory_behavior: MemoryBehavior::None,
             allowed_compartments: vec![],
+            signature: None,
+            signing_key: None,
         }
     }
 
@@ -648,5 +766,88 @@ mod tests {
     fn manifest_policy_default_is_allow() {
         // Backward compatible: default policy allows unmanifested tools
         assert_eq!(ManifestPolicy::default(), ManifestPolicy::DefaultAllow);
+    }
+
+    // ── Signed manifest tests (#650) ──────────────────────────────────
+
+    #[test]
+    fn canonical_bytes_deterministic() {
+        let m = base_manifest();
+        let bytes1 = m.canonical_bytes();
+        let bytes2 = m.canonical_bytes();
+        assert_eq!(bytes1, bytes2, "canonical_bytes must be deterministic");
+        assert!(bytes1.starts_with(b"nucleus-manifest-v1\n"));
+    }
+
+    #[test]
+    fn canonical_bytes_changes_with_name() {
+        let m1 = base_manifest();
+        let mut m2 = base_manifest();
+        m2.name = ToolName::new("write_file");
+        assert_ne!(m1.canonical_bytes(), m2.canonical_bytes());
+    }
+
+    #[test]
+    fn canonical_bytes_changes_with_capabilities() {
+        let m1 = base_manifest();
+        let mut m2 = base_manifest();
+        m2.capabilities.push(Operation::WriteFiles);
+        assert_ne!(m1.canonical_bytes(), m2.canonical_bytes());
+    }
+
+    #[test]
+    fn canonical_bytes_excludes_signature() {
+        let m1 = base_manifest();
+        let mut m2 = base_manifest();
+        m2.signature = Some([0xAA; 64]);
+        m2.signing_key = Some([0xBB; 32]);
+        assert_eq!(
+            m1.canonical_bytes(),
+            m2.canonical_bytes(),
+            "signature fields must not affect canonical bytes"
+        );
+    }
+
+    #[test]
+    fn is_signed_requires_both_fields() {
+        let mut m = base_manifest();
+        assert!(!m.is_signed());
+
+        m.signature = Some([0; 64]);
+        assert!(!m.is_signed(), "needs signing_key too");
+
+        m.signing_key = Some([0; 32]);
+        assert!(m.is_signed());
+    }
+
+    #[test]
+    fn require_signed_rejects_unsigned_manifest() {
+        let m = base_manifest();
+        let verdict = check_admission_with_policy(Some(&m), ManifestPolicy::RequireSigned);
+        assert_eq!(
+            verdict,
+            AdmissionVerdict::Reject(vec![AdmissionDenyReason::UnsignedManifest])
+        );
+    }
+
+    #[test]
+    fn require_signed_rejects_no_manifest() {
+        let verdict = check_admission_with_policy(None, ManifestPolicy::RequireSigned);
+        assert_eq!(
+            verdict,
+            AdmissionVerdict::Reject(vec![AdmissionDenyReason::NoManifest])
+        );
+    }
+
+    #[test]
+    fn require_signed_admits_signed_manifest() {
+        // RequireSigned only checks is_signed() — actual crypto verification
+        // happens in portcullis (which has the ring dependency).
+        let mut m = base_manifest();
+        m.signature = Some([0x42; 64]);
+        m.signing_key = Some([0x42; 32]);
+        let verdict = check_admission_with_policy(Some(&m), ManifestPolicy::RequireSigned);
+        // Should pass the policy gate (is_signed=true) and then pass admission rules
+        assert_eq!(verdict, AdmissionVerdict::Admit);
     }
 }

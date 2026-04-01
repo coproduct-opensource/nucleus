@@ -109,6 +109,39 @@ impl TrustStore {
     }
 }
 
+/// Verify an Ed25519 signature on a `ToolManifest` against a trust store.
+///
+/// Returns `Ok(())` if the signature is valid for at least one trusted key,
+/// or an `AdmissionDenyReason` if verification fails.
+#[cfg(feature = "crypto")]
+pub fn verify_manifest_signature(
+    manifest: &ToolManifest,
+    trust_store: &TrustStore,
+) -> Result<(), AdmissionDenyReason> {
+    use ring::signature::{self, UnparsedPublicKey};
+
+    let (sig, key) = match (manifest.signature.as_ref(), manifest.signing_key.as_ref()) {
+        (Some(s), Some(k)) => (s, k),
+        _ => return Err(AdmissionDenyReason::UnsignedManifest),
+    };
+
+    // First check: the signing key must be in the trust store
+    if !trust_store
+        .keys
+        .iter()
+        .any(|k2| k2.as_slice() == key.as_slice())
+    {
+        return Err(AdmissionDenyReason::InvalidSignature);
+    }
+
+    // Second check: the signature must verify against canonical bytes
+    let canonical = manifest.canonical_bytes();
+    let public_key = UnparsedPublicKey::new(&signature::ED25519, key.as_slice());
+    public_key
+        .verify(&canonical, sig.as_slice())
+        .map_err(|_| AdmissionDenyReason::InvalidSignature)
+}
+
 /// TOML-deserializable manifest format.
 #[derive(Deserialize)]
 struct ManifestFile {
@@ -132,9 +165,12 @@ struct ToolEntry {
     output_integrity: String,
     #[serde(default = "default_auth")]
     output_authority: String,
-    /// Ed25519 signature of the manifest content (hex-encoded, optional).
+    /// Ed25519 signature of the manifest content (hex-encoded, 64 bytes, optional).
     #[serde(default)]
     signature: Option<String>,
+    /// Ed25519 public key that produced the signature (hex-encoded, 32 bytes, optional).
+    #[serde(default)]
+    signing_key: Option<String>,
     /// Allowed hosts for remote fetch (optional).
     #[serde(default)]
     allowed_hosts: Option<Vec<String>>,
@@ -286,6 +322,37 @@ impl ManifestRegistry {
     pub fn admitted(&self) -> impl Iterator<Item = (&str, &ToolManifest)> {
         self.tools.iter().map(|(k, v)| (k.as_str(), v))
     }
+
+    /// Verify Ed25519 signatures on all admitted manifests against a trust store.
+    ///
+    /// Returns the names of manifests that failed verification (unsigned or
+    /// invalid signature). Manifests that pass are left in the registry;
+    /// failed manifests are moved to `unsigned`.
+    ///
+    /// This is separate from `load_from_dir` so callers can load manifests
+    /// first, then apply signature verification as a policy gate.
+    #[cfg(feature = "crypto")]
+    pub fn verify_all(&mut self, trust_store: &TrustStore) -> Vec<(String, AdmissionDenyReason)> {
+        let mut failures = Vec::new();
+        let mut to_remove = Vec::new();
+
+        for (name, manifest) in &self.tools {
+            match verify_manifest_signature(manifest, trust_store) {
+                Ok(()) => {} // valid signature
+                Err(reason) => {
+                    failures.push((name.clone(), reason));
+                    to_remove.push(name.clone());
+                }
+            }
+        }
+
+        for name in &to_remove {
+            self.tools.remove(name);
+            self.unsigned.push(name.clone());
+        }
+
+        failures
+    }
 }
 
 /// Extract the signable content from a manifest TOML.
@@ -355,6 +422,18 @@ fn convert_entry(entry: &ToolEntry) -> Option<ToolManifest> {
         _ => AuthorityLevel::NoAuthority, // fail-closed
     };
 
+    // Parse signature (hex → [u8; 64])
+    let signature = entry.signature.as_ref().and_then(|hex_str| {
+        let bytes = hex::decode(hex_str).ok()?;
+        <[u8; 64]>::try_from(bytes.as_slice()).ok()
+    });
+
+    // Parse signing key (hex → [u8; 32])
+    let signing_key = entry.signing_key.as_ref().and_then(|hex_str| {
+        let bytes = hex::decode(hex_str).ok()?;
+        <[u8; 32]>::try_from(bytes.as_slice()).ok()
+    });
+
     Some(ToolManifest {
         name: ToolName::new(&entry.name),
         capabilities,
@@ -369,6 +448,8 @@ fn convert_entry(entry: &ToolEntry) -> Option<ToolManifest> {
         authority_to_instruct: entry.authority_to_instruct.unwrap_or(false),
         memory_behavior: portcullis_core::manifest::MemoryBehavior::None,
         allowed_compartments: entry.allowed_compartments.clone().unwrap_or_default(),
+        signature,
+        signing_key,
     })
 }
 
@@ -498,5 +579,199 @@ admissible_sinks = ["unknown_sink_type"]
             .is_rejected("weird_tool")
             .unwrap()
             .contains(&AdmissionDenyReason::UndeclaredExternalSink));
+    }
+
+    // ── Signed manifest tests (#650) ──────────────────────────────────
+
+    #[test]
+    fn load_manifest_with_signature_fields() {
+        // Signature fields are parsed from TOML but don't affect admission
+        // (crypto verification is separate from content admission)
+        let toml = r#"
+[tool]
+name = "signed_tool"
+capabilities = ["read_files"]
+instruction_sources = ["static"]
+admissible_sinks = ["local_memory"]
+output_integrity = "untrusted"
+output_authority = "informational"
+signature = "aa"
+signing_key = "bb"
+"#;
+        let mut registry = ManifestRegistry::new();
+        registry.load_toml(toml);
+
+        // Should be admitted (valid content), but signature is malformed
+        // (too short for Ed25519) so sig/key fields will be None
+        assert_eq!(registry.admitted_count(), 1);
+        let m = registry.get("signed_tool").unwrap();
+        assert!(!m.is_signed(), "malformed hex should not parse as signed");
+    }
+
+    #[cfg(feature = "crypto")]
+    mod crypto_tests {
+        use super::*;
+        use ring::rand::SystemRandom;
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+
+        fn test_keypair() -> Ed25519KeyPair {
+            let rng = SystemRandom::new();
+            let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+            Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap()
+        }
+
+        fn make_trust_store(public_key: &[u8]) -> TrustStore {
+            TrustStore {
+                keys: vec![public_key.to_vec()],
+            }
+        }
+
+        fn signed_manifest(key_pair: &Ed25519KeyPair) -> ToolManifest {
+            use portcullis_core::manifest::MemoryBehavior;
+
+            let mut manifest = ToolManifest {
+                name: ToolName::new("verified_tool"),
+                capabilities: vec![portcullis_core::Operation::ReadFiles],
+                remote_fetch: false,
+                instruction_sources: vec![InstructionSource::Static],
+                admissible_sinks: vec![SinkClass::LocalMemory],
+                max_confidentiality: ConfLevel::Internal,
+                output_integrity: IntegLevel::Untrusted,
+                output_authority: AuthorityLevel::Informational,
+                schema_hash: [0; 32],
+                allowed_hosts: vec![],
+                authority_to_instruct: false,
+                memory_behavior: MemoryBehavior::None,
+                allowed_compartments: vec![],
+                signature: None,
+                signing_key: None,
+            };
+
+            // Sign
+            let canonical = manifest.canonical_bytes();
+            let sig = key_pair.sign(&canonical);
+            let sig_bytes: [u8; 64] = sig.as_ref().try_into().unwrap();
+            let pub_bytes: [u8; 32] = key_pair.public_key().as_ref().try_into().unwrap();
+
+            manifest.signature = Some(sig_bytes);
+            manifest.signing_key = Some(pub_bytes);
+            manifest
+        }
+
+        #[test]
+        fn verify_manifest_signature_valid() {
+            let kp = test_keypair();
+            let manifest = signed_manifest(&kp);
+            let trust = make_trust_store(kp.public_key().as_ref());
+
+            assert!(
+                verify_manifest_signature(&manifest, &trust).is_ok(),
+                "valid signature should verify"
+            );
+        }
+
+        #[test]
+        fn verify_manifest_signature_tampered() {
+            let kp = test_keypair();
+            let mut manifest = signed_manifest(&kp);
+            let trust = make_trust_store(kp.public_key().as_ref());
+
+            // Tamper with the manifest after signing
+            manifest.name = ToolName::new("evil_replacement");
+
+            assert_eq!(
+                verify_manifest_signature(&manifest, &trust),
+                Err(AdmissionDenyReason::InvalidSignature),
+                "tampered manifest should fail verification"
+            );
+        }
+
+        #[test]
+        fn verify_manifest_signature_unsigned() {
+            let kp = test_keypair();
+            let trust = make_trust_store(kp.public_key().as_ref());
+
+            let manifest = ToolManifest {
+                name: ToolName::new("unsigned_tool"),
+                capabilities: vec![portcullis_core::Operation::ReadFiles],
+                remote_fetch: false,
+                instruction_sources: vec![InstructionSource::Static],
+                admissible_sinks: vec![SinkClass::LocalMemory],
+                max_confidentiality: ConfLevel::Internal,
+                output_integrity: IntegLevel::Untrusted,
+                output_authority: AuthorityLevel::Informational,
+                schema_hash: [0; 32],
+                allowed_hosts: vec![],
+                authority_to_instruct: false,
+                memory_behavior: portcullis_core::manifest::MemoryBehavior::None,
+                allowed_compartments: vec![],
+                signature: None,
+                signing_key: None,
+            };
+
+            assert_eq!(
+                verify_manifest_signature(&manifest, &trust),
+                Err(AdmissionDenyReason::UnsignedManifest),
+                "unsigned manifest should be rejected"
+            );
+        }
+
+        #[test]
+        fn verify_manifest_signature_wrong_key() {
+            let kp1 = test_keypair();
+            let kp2 = test_keypair();
+            let manifest = signed_manifest(&kp1);
+            // Trust store has kp2's key, not kp1's
+            let trust = make_trust_store(kp2.public_key().as_ref());
+
+            assert_eq!(
+                verify_manifest_signature(&manifest, &trust),
+                Err(AdmissionDenyReason::InvalidSignature),
+                "signature by untrusted key should fail"
+            );
+        }
+
+        #[test]
+        fn verify_all_removes_invalid() {
+            let kp = test_keypair();
+            let trust = make_trust_store(kp.public_key().as_ref());
+
+            let mut registry = ManifestRegistry::new();
+
+            // Load a valid unsigned manifest (passes admission, no crypto)
+            let toml = r#"
+[tool]
+name = "unsigned_tool"
+capabilities = ["read_files"]
+instruction_sources = ["static"]
+admissible_sinks = ["local_memory"]
+output_integrity = "untrusted"
+output_authority = "informational"
+"#;
+            registry.load_toml(toml);
+            assert_eq!(registry.admitted_count(), 1);
+
+            // Now verify_all — the unsigned manifest should be removed
+            let failures = registry.verify_all(&trust);
+            assert_eq!(failures.len(), 1);
+            assert_eq!(failures[0].0, "unsigned_tool");
+            assert_eq!(failures[0].1, AdmissionDenyReason::UnsignedManifest);
+            assert_eq!(registry.admitted_count(), 0);
+            assert_eq!(registry.unsigned_count(), 1);
+        }
+
+        #[test]
+        fn verify_all_keeps_valid_signed() {
+            let kp = test_keypair();
+            let trust = make_trust_store(kp.public_key().as_ref());
+
+            let manifest = signed_manifest(&kp);
+            let mut registry = ManifestRegistry::new();
+            registry.tools.insert("verified_tool".to_string(), manifest);
+
+            let failures = registry.verify_all(&trust);
+            assert!(failures.is_empty(), "valid signed manifest should pass");
+            assert_eq!(registry.admitted_count(), 1);
+        }
     }
 }
