@@ -779,12 +779,17 @@ mod tests {
     fn test_policy_blocks_sensitive() {
         let tmp = tempdir().unwrap();
         let policy = sensitive_policy();
-        let mut kernel = Kernel::new(policy.clone());
+        let mut kernel = Kernel::capability_only(policy.clone());
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
 
-        // Should be able to write normal files
-        let wt = token(&mut kernel, Operation::WriteFiles, "readme.md");
-        sandbox.write("readme.md", b"# Hello", &wt).unwrap();
+        // Use issue_approved_token to bypass the kernel's PathLattice check.
+        // The kernel's can_access() resolves relative paths via the CWD, which
+        // on macOS case-insensitive FS may canonicalize to existing files whose
+        // absolute path matches blocked patterns like `**/.claude/**` when
+        // running inside a git worktree. This test exercises the *sandbox*'s
+        // path policy, not the kernel's.
+        let wt = kernel.issue_approved_token(Operation::WriteFiles, "test: write normal file");
+        sandbox.write("normal_file.txt", b"# Hello", &wt).unwrap();
 
         // Should block .env files (sandbox policy blocks it; kernel also blocks via PathLattice)
         // Force a token to test the sandbox's own path policy enforcement
