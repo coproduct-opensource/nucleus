@@ -5,7 +5,7 @@
 //! the DAG tracks actual causal dependencies. An action that depends only on
 //! local files is unaffected by web content read elsewhere in the session.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 
 use tracing::warn;
 
@@ -111,6 +111,82 @@ pub struct QuarantineRelease {
     /// Timestamp (epoch seconds) when the release occurred.
     pub released_at: u64,
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Field-level lineage (DPI §13, #711)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A reference to a specific field on a specific node.
+///
+/// This is the atomic unit of field-level provenance: "field X on node Y".
+/// Used in [`FieldLineage`] to express which source fields contributed to
+/// an output field.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FieldRef {
+    /// The node that contains this field.
+    pub node_id: NodeId,
+    /// The field name within that node's structured output.
+    pub field_name: String,
+}
+
+/// Field-level lineage record for a single output field.
+///
+/// Captures the fine-grained provenance of one field in a node's structured
+/// output: which source fields contributed, what kind of effect produced it,
+/// and what derivation class it carries. This enables mixed rows where some
+/// fields are deterministic (price from a database) and others are AI-derived
+/// (summary from an LLM), each with their own label — rather than tainting
+/// the entire row as `Mixed`.
+///
+/// The field's effective IFC label is the join of all source field labels,
+/// refined by the `derivation` override. This is strictly more precise than
+/// node-level labeling: `field_label <= node_label` (monotonicity).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldLineage {
+    /// The name of the output field this lineage describes.
+    pub field_name: String,
+    /// The source fields that contributed to this output field.
+    /// Each entry is a `(node_id, field_name)` pair identifying an input field.
+    pub source_fields: Vec<FieldRef>,
+    /// The effect kind that produced this field (e.g., PureTransform, LLMGenerate).
+    pub effect_kind: EffectKind,
+    /// The derivation class of this specific field. This may differ from the
+    /// node-level derivation: a node that produces both deterministic and
+    /// AI-derived fields will have `Mixed` at the node level, but individual
+    /// fields can be `Deterministic` or `AIDerived`.
+    pub derivation: portcullis_core::DerivationClass,
+}
+
+/// Errors from field lineage operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FieldLineageError {
+    /// The target node does not exist in the graph.
+    NodeNotFound(NodeId),
+    /// A source field references a node that does not exist.
+    SourceNodeNotFound {
+        /// The field lineage entry that has the bad reference.
+        field_name: String,
+        /// The missing source node ID.
+        source_node_id: NodeId,
+    },
+}
+
+impl std::fmt::Display for FieldLineageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FieldLineageError::NodeNotFound(id) => write!(f, "node {id} not found"),
+            FieldLineageError::SourceNodeNotFound {
+                field_name,
+                source_node_id,
+            } => write!(
+                f,
+                "field '{field_name}' references source node {source_node_id} which does not exist"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FieldLineageError {}
 
 /// Result of inserting an action node (atomic check-and-insert).
 #[derive(Debug, Clone)]
@@ -221,6 +297,13 @@ pub struct FlowGraph {
     /// `release_quarantine()` appends a record here, capturing the
     /// principal, reason, and timestamp.
     quarantine_releases: Vec<QuarantineRelease>,
+    /// Field-level lineage annotations, keyed by node ID.
+    ///
+    /// Stored separately from `FlowNode` (which is `Copy` in portcullis-core)
+    /// because field lineage uses heap-allocated strings and vectors.
+    /// Most nodes have no field lineage — only nodes that produce structured
+    /// output (rows, records) need this annotation.
+    field_lineage: HashMap<NodeId, Vec<FieldLineage>>,
 }
 
 impl FlowGraph {
@@ -233,6 +316,7 @@ impl FlowGraph {
             quarantined: BTreeSet::new(),
             compaction_log: Vec::new(),
             quarantine_releases: Vec::new(),
+            field_lineage: HashMap::new(),
         }
     }
 
@@ -943,6 +1027,125 @@ impl FlowGraph {
                 underlying_verdict: underlying,
             })
         }
+    }
+
+    // ── Field-level lineage (DPI §13, #711) ────────────────────────────
+
+    /// Annotate a node with field-level provenance after creation.
+    ///
+    /// This is the primary entry point for setting field lineage on a node
+    /// that produces structured output (e.g., a row with named fields).
+    /// Each [`FieldLineage`] entry describes one output field: its name,
+    /// which source fields contributed to it, and its derivation class.
+    ///
+    /// Validates that:
+    /// 1. The target node exists in the graph
+    /// 2. All source field references point to existing nodes
+    ///
+    /// Overwrites any previous field lineage for this node.
+    pub fn set_field_lineage(
+        &mut self,
+        node_id: NodeId,
+        fields: Vec<FieldLineage>,
+    ) -> Result<(), FieldLineageError> {
+        if self.get(node_id).is_none() {
+            return Err(FieldLineageError::NodeNotFound(node_id));
+        }
+        // Validate all source node references exist
+        for fl in &fields {
+            for src in &fl.source_fields {
+                if self.get(src.node_id).is_none() {
+                    return Err(FieldLineageError::SourceNodeNotFound {
+                        field_name: fl.field_name.clone(),
+                        source_node_id: src.node_id,
+                    });
+                }
+            }
+        }
+        self.field_lineage.insert(node_id, fields);
+        Ok(())
+    }
+
+    /// Get the field lineage annotations for a node, if any.
+    pub fn get_field_lineage(&self, node_id: NodeId) -> Option<&[FieldLineage]> {
+        self.field_lineage.get(&node_id).map(|v| v.as_slice())
+    }
+
+    /// Trace a specific field's source nodes through the lineage chain.
+    ///
+    /// Returns the transitive closure of source node IDs for the named
+    /// field on the given node. If the source fields themselves have field
+    /// lineage, this recurses to find the ultimate sources.
+    ///
+    /// Returns an empty Vec if the node has no field lineage or the field
+    /// is not found.
+    pub fn field_ancestry(&self, node_id: NodeId, field_name: &str) -> Vec<NodeId> {
+        let mut result = BTreeSet::new();
+        let mut queue: VecDeque<(NodeId, String)> = VecDeque::new();
+        queue.push_back((node_id, field_name.to_string()));
+
+        while let Some((nid, fname)) = queue.pop_front() {
+            if let Some(lineage_entries) = self.field_lineage.get(&nid) {
+                if let Some(entry) = lineage_entries.iter().find(|fl| fl.field_name == fname) {
+                    for src in &entry.source_fields {
+                        if result.insert(src.node_id) {
+                            // Recurse: if the source node also has field lineage
+                            // for this source field, follow it
+                            queue.push_back((src.node_id, src.field_name.clone()));
+                        }
+                    }
+                }
+            }
+        }
+
+        result.into_iter().collect()
+    }
+
+    /// Compute the IFC label for a specific field on a node.
+    ///
+    /// The field's label is the join of its source fields' node labels,
+    /// with the derivation class overridden by the field lineage entry's
+    /// `derivation` value. This is strictly more precise than the node-level
+    /// label: a deterministic field on a Mixed node will have a Deterministic
+    /// field label.
+    ///
+    /// Returns `None` if the node has no field lineage or the field is not
+    /// found. In that case, callers should fall back to the node-level label.
+    pub fn field_label(&self, node_id: NodeId, field_name: &str) -> Option<IFCLabel> {
+        let lineage_entries = self.field_lineage.get(&node_id)?;
+        let entry = lineage_entries
+            .iter()
+            .find(|fl| fl.field_name == field_name)?;
+
+        if entry.source_fields.is_empty() {
+            // No sources — use the node's own label with the field's derivation
+            let node = self.get(node_id)?;
+            let mut label = node.label;
+            label.derivation = entry.derivation;
+            return Some(label);
+        }
+
+        // Join the labels of all source nodes
+        let mut label: Option<IFCLabel> = None;
+        for src in &entry.source_fields {
+            if let Some(src_node) = self.get(src.node_id) {
+                // If the source node has field lineage for this source field,
+                // use the field-specific label; otherwise use the node label
+                let src_label = self
+                    .field_label(src.node_id, &src.field_name)
+                    .unwrap_or(src_node.label);
+                label = Some(match label {
+                    Some(existing) => existing.join(src_label),
+                    None => src_label,
+                });
+            }
+        }
+
+        // Override the derivation class with the field-specific value
+        label.map(|mut l| {
+            l.derivation = entry.derivation;
+            l
+        })
     }
 }
 
@@ -2665,5 +2868,363 @@ mod tests {
             .unwrap();
         let node = g.get(r.node_id).unwrap();
         assert_eq!(node.effect_kind, None);
+    }
+
+    // ── Field-level lineage tests (#711) ───────────────────────────────
+
+    #[test]
+    fn set_field_lineage_basic() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        let db_read = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        let llm_call = g
+            .insert_observation(NodeKind::ToolResponse, &[], now)
+            .unwrap();
+
+        // A node that combines both sources
+        let output = g
+            .insert_observation(NodeKind::ModelPlan, &[db_read, llm_call], now)
+            .unwrap();
+
+        // Annotate: price comes from DB (deterministic), summary from LLM (AI-derived)
+        g.set_field_lineage(
+            output,
+            vec![
+                FieldLineage {
+                    field_name: "price".to_string(),
+                    source_fields: vec![FieldRef {
+                        node_id: db_read,
+                        field_name: "raw_price".to_string(),
+                    }],
+                    effect_kind: EffectKind::DeterministicFetch,
+                    derivation: DerivationClass::Deterministic,
+                },
+                FieldLineage {
+                    field_name: "summary".to_string(),
+                    source_fields: vec![FieldRef {
+                        node_id: llm_call,
+                        field_name: "description".to_string(),
+                    }],
+                    effect_kind: EffectKind::LLMGenerate,
+                    derivation: DerivationClass::AIDerived,
+                },
+            ],
+        )
+        .unwrap();
+
+        let lineage = g.get_field_lineage(output).unwrap();
+        assert_eq!(lineage.len(), 2);
+        assert_eq!(lineage[0].field_name, "price");
+        assert_eq!(lineage[1].field_name, "summary");
+    }
+
+    #[test]
+    fn set_field_lineage_node_not_found() {
+        let mut g = FlowGraph::new();
+        let result = g.set_field_lineage(999, vec![]);
+        assert_eq!(result, Err(FieldLineageError::NodeNotFound(999)));
+    }
+
+    #[test]
+    fn set_field_lineage_bad_source_ref() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+        let node = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+
+        let result = g.set_field_lineage(
+            node,
+            vec![FieldLineage {
+                field_name: "x".to_string(),
+                source_fields: vec![FieldRef {
+                    node_id: 999,
+                    field_name: "y".to_string(),
+                }],
+                effect_kind: EffectKind::DeterministicFetch,
+                derivation: DerivationClass::Deterministic,
+            }],
+        );
+        assert!(matches!(
+            result,
+            Err(FieldLineageError::SourceNodeNotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn field_ancestry_traces_sources() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        let source_a = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        let source_b = g
+            .insert_observation(NodeKind::ToolResponse, &[], now)
+            .unwrap();
+        let output = g
+            .insert_observation(NodeKind::ModelPlan, &[source_a, source_b], now)
+            .unwrap();
+
+        g.set_field_lineage(
+            output,
+            vec![FieldLineage {
+                field_name: "result".to_string(),
+                source_fields: vec![
+                    FieldRef {
+                        node_id: source_a,
+                        field_name: "val_a".to_string(),
+                    },
+                    FieldRef {
+                        node_id: source_b,
+                        field_name: "val_b".to_string(),
+                    },
+                ],
+                effect_kind: EffectKind::DeterministicFetch,
+                derivation: DerivationClass::Mixed,
+            }],
+        )
+        .unwrap();
+
+        let ancestry = g.field_ancestry(output, "result");
+        assert!(ancestry.contains(&source_a));
+        assert!(ancestry.contains(&source_b));
+        assert_eq!(ancestry.len(), 2);
+    }
+
+    #[test]
+    fn field_ancestry_transitive() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        let original = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        let intermediate = g
+            .insert_observation(NodeKind::ModelPlan, &[original], now)
+            .unwrap();
+        let output = g
+            .insert_observation(NodeKind::ModelPlan, &[intermediate], now)
+            .unwrap();
+
+        // intermediate.val derived from original.raw
+        g.set_field_lineage(
+            intermediate,
+            vec![FieldLineage {
+                field_name: "val".to_string(),
+                source_fields: vec![FieldRef {
+                    node_id: original,
+                    field_name: "raw".to_string(),
+                }],
+                effect_kind: EffectKind::DeterministicFetch,
+                derivation: DerivationClass::Deterministic,
+            }],
+        )
+        .unwrap();
+
+        // output.final_val derived from intermediate.val
+        g.set_field_lineage(
+            output,
+            vec![FieldLineage {
+                field_name: "final_val".to_string(),
+                source_fields: vec![FieldRef {
+                    node_id: intermediate,
+                    field_name: "val".to_string(),
+                }],
+                effect_kind: EffectKind::DeterministicFetch,
+                derivation: DerivationClass::Deterministic,
+            }],
+        )
+        .unwrap();
+
+        // Transitive: output.final_val should trace back to both intermediate and original
+        let ancestry = g.field_ancestry(output, "final_val");
+        assert!(ancestry.contains(&intermediate));
+        assert!(ancestry.contains(&original));
+    }
+
+    #[test]
+    fn field_ancestry_unknown_field_returns_empty() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+        let node = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        assert!(g.field_ancestry(node, "nonexistent").is_empty());
+    }
+
+    #[test]
+    fn field_label_deterministic_vs_ai_derived() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        // DB source: FileRead → deterministic, trusted
+        let db = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        // LLM source: ToolResponse → untrusted
+        let llm = g
+            .insert_observation(NodeKind::ToolResponse, &[], now)
+            .unwrap();
+
+        // Combined node
+        let output = g
+            .insert_observation(NodeKind::ModelPlan, &[db, llm], now)
+            .unwrap();
+
+        g.set_field_lineage(
+            output,
+            vec![
+                FieldLineage {
+                    field_name: "price".to_string(),
+                    source_fields: vec![FieldRef {
+                        node_id: db,
+                        field_name: "raw_price".to_string(),
+                    }],
+                    effect_kind: EffectKind::DeterministicFetch,
+                    derivation: DerivationClass::Deterministic,
+                },
+                FieldLineage {
+                    field_name: "summary".to_string(),
+                    source_fields: vec![FieldRef {
+                        node_id: llm,
+                        field_name: "text".to_string(),
+                    }],
+                    effect_kind: EffectKind::LLMGenerate,
+                    derivation: DerivationClass::AIDerived,
+                },
+            ],
+        )
+        .unwrap();
+
+        // The node-level label is Mixed (joined from both sources)
+        let node_label = g.get(output).unwrap().label;
+        // The node-level derivation is AIDerived or Mixed depending on propagation,
+        // but it's NOT Deterministic (because it includes LLM source)
+        assert_ne!(node_label.derivation, DerivationClass::Deterministic);
+
+        // Field-level: price is Deterministic, from the DB source only
+        let price_label = g.field_label(output, "price").unwrap();
+        assert_eq!(price_label.derivation, DerivationClass::Deterministic);
+        // The price field should have the DB's integrity (Trusted)
+        assert_eq!(price_label.integrity, IntegLevel::Trusted);
+
+        // Field-level: summary is AIDerived, from the LLM source
+        let summary_label = g.field_label(output, "summary").unwrap();
+        assert_eq!(summary_label.derivation, DerivationClass::AIDerived);
+    }
+
+    #[test]
+    fn field_label_unknown_field_returns_none() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+        let node = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        assert!(g.field_label(node, "nonexistent").is_none());
+    }
+
+    #[test]
+    fn field_label_no_sources_uses_node_label() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+        let node = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+
+        g.set_field_lineage(
+            node,
+            vec![FieldLineage {
+                field_name: "inline".to_string(),
+                source_fields: vec![],
+                effect_kind: EffectKind::DeterministicFetch,
+                derivation: DerivationClass::Deterministic,
+            }],
+        )
+        .unwrap();
+
+        let label = g.field_label(node, "inline").unwrap();
+        // Should use the node's own label with the field's derivation
+        let node_label = g.get(node).unwrap().label;
+        assert_eq!(label.integrity, node_label.integrity);
+        assert_eq!(label.derivation, DerivationClass::Deterministic);
+    }
+
+    #[test]
+    fn field_label_join_of_multiple_sources() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        // Secret source
+        let secret = g.insert_observation(NodeKind::EnvVar, &[], now).unwrap();
+        // Public source
+        let public = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+
+        let output = g
+            .insert_observation(NodeKind::ModelPlan, &[secret, public], now)
+            .unwrap();
+
+        g.set_field_lineage(
+            output,
+            vec![FieldLineage {
+                field_name: "merged".to_string(),
+                source_fields: vec![
+                    FieldRef {
+                        node_id: secret,
+                        field_name: "api_key".to_string(),
+                    },
+                    FieldRef {
+                        node_id: public,
+                        field_name: "data".to_string(),
+                    },
+                ],
+                effect_kind: EffectKind::LLMGenerate,
+                derivation: DerivationClass::Mixed,
+            }],
+        )
+        .unwrap();
+
+        let label = g.field_label(output, "merged").unwrap();
+        // Join of Secret + Public confidentiality = Secret
+        assert_eq!(label.confidentiality, ConfLevel::Secret);
+        // Join of Trusted + Adversarial integrity = Adversarial
+        assert_eq!(label.integrity, IntegLevel::Adversarial);
+        // Derivation is overridden to Mixed
+        assert_eq!(label.derivation, DerivationClass::Mixed);
+    }
+
+    #[test]
+    fn field_label_monotonicity_field_leq_node() {
+        // DPI monotonicity invariant: row_label >= any field label.
+        // Since the node label is the join of ALL parents, and a field
+        // label is the join of a SUBSET of source nodes, the field label
+        // should be <= the node label in the lattice ordering.
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        let db = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+
+        let output = g
+            .insert_observation(NodeKind::ModelPlan, &[db, web], now)
+            .unwrap();
+
+        g.set_field_lineage(
+            output,
+            vec![FieldLineage {
+                field_name: "clean_field".to_string(),
+                source_fields: vec![FieldRef {
+                    node_id: db,
+                    field_name: "val".to_string(),
+                }],
+                effect_kind: EffectKind::DeterministicFetch,
+                derivation: DerivationClass::Deterministic,
+            }],
+        )
+        .unwrap();
+
+        let field_lbl = g.field_label(output, "clean_field").unwrap();
+        let node_lbl = g.get(output).unwrap().label;
+
+        // Field integrity should be >= node integrity (remember: lower is "worse"
+        // for integrity, so field.integrity >= node.integrity means field is
+        // at least as good as node)
+        assert!(
+            field_lbl.integrity >= node_lbl.integrity,
+            "field integrity ({:?}) should be >= node integrity ({:?})",
+            field_lbl.integrity,
+            node_lbl.integrity,
+        );
     }
 }
