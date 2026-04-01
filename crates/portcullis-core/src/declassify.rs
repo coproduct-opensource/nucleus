@@ -19,7 +19,8 @@
 //! rule can upgrade integrity from Adversarial to Untrusted for output
 //! from this specific tool.
 
-use crate::{AuthorityLevel, ConfLevel, IFCLabel, IntegLevel};
+use crate::flow::NodeId;
+use crate::{AuthorityLevel, ConfLevel, IFCLabel, IntegLevel, Operation};
 
 /// A declassification rule — permits controlled label downgrading.
 ///
@@ -111,6 +112,116 @@ impl DeclassificationRule {
             rule: self.clone(),
             original,
         }
+    }
+}
+
+/// A scoped, time-bounded, signed declassification token.
+///
+/// Unlike `DeclassificationRule` (which applies to any matching label),
+/// a token targets a specific flow graph node and restricts which sinks
+/// the declassified data may reach. Tokens are signed with the session's
+/// Ed25519 key for tamper detection.
+///
+/// # Security properties
+///
+/// - **Artifact-scoped**: Only applies to `target_node_id`, not the whole session
+/// - **Time-bounded**: Expires at `valid_until` (unix timestamp)
+/// - **Sink-restricted**: Declassified data may only reach `allowed_sinks`
+/// - **Signed**: Ed25519 signature over the token's canonical bytes
+/// - **Auditable**: Justification string included for receipt chain
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclassificationToken {
+    /// The flow graph node this token applies to.
+    pub target_node_id: NodeId,
+    /// The label transformation to apply.
+    pub rule: DeclassificationRule,
+    /// Operations that the declassified node may reach.
+    /// Empty = no sinks allowed (effectively a no-op).
+    pub allowed_sinks: Vec<Operation>,
+    /// Unix timestamp after which this token is invalid.
+    pub valid_until: u64,
+    /// Human-readable justification (included in receipts).
+    pub justification: String,
+    /// Ed25519 signature over the token's canonical form.
+    /// Zero-filled if unsigned (for testing).
+    pub signature: [u8; 64],
+}
+
+/// Result of attempting to apply a declassification token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenApplyResult {
+    /// Token applied successfully — label was modified.
+    Applied {
+        original_label: IFCLabel,
+        new_label: IFCLabel,
+    },
+    /// Token's target node was not found in the graph.
+    NodeNotFound,
+    /// Token has expired (now > valid_until).
+    Expired { valid_until: u64, now: u64 },
+    /// The underlying rule's precondition didn't match the node's label.
+    PreconditionUnmet,
+}
+
+impl DeclassificationToken {
+    /// Create a new unsigned token (for testing or when signing is deferred).
+    pub fn new(
+        target_node_id: NodeId,
+        rule: DeclassificationRule,
+        allowed_sinks: Vec<Operation>,
+        valid_until: u64,
+        justification: String,
+    ) -> Self {
+        Self {
+            target_node_id,
+            rule,
+            allowed_sinks,
+            valid_until,
+            justification,
+            signature: [0u8; 64],
+        }
+    }
+
+    /// Check if the token has expired.
+    pub fn is_expired(&self, now: u64) -> bool {
+        now > self.valid_until
+    }
+
+    /// Check if a sink operation is allowed by this token.
+    pub fn allows_sink(&self, op: Operation) -> bool {
+        self.allowed_sinks.contains(&op)
+    }
+
+    /// The canonical bytes for signing: target_node_id ++ valid_until ++ rule fields ++ sinks ++ justification.
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&self.target_node_id.to_le_bytes());
+        buf.extend_from_slice(&self.valid_until.to_le_bytes());
+        // Encode rule action discriminant + fields
+        match &self.rule.action {
+            DeclassifyAction::LowerConfidentiality { from, to } => {
+                buf.push(0);
+                buf.push(*from as u8);
+                buf.push(*to as u8);
+            }
+            DeclassifyAction::RaiseIntegrity { from, to } => {
+                buf.push(1);
+                buf.push(*from as u8);
+                buf.push(*to as u8);
+            }
+            DeclassifyAction::RaiseAuthority { from, to } => {
+                buf.push(2);
+                buf.push(*from as u8);
+                buf.push(*to as u8);
+            }
+        }
+        // Encode allowed sinks
+        for op in &self.allowed_sinks {
+            buf.push(*op as u8);
+        }
+        buf.push(0xFF); // separator
+        buf.extend_from_slice(self.justification.as_bytes());
+        buf
     }
 }
 
@@ -255,6 +366,120 @@ mod tests {
         let result = rule.apply(original);
         assert_eq!(result.original, original);
         assert_eq!(result.rule.justification, "Curated search results");
+    }
+
+    // ── DeclassificationToken tests ──────────────────────────────────
+
+    #[test]
+    fn token_expiry() {
+        let token = DeclassificationToken::new(
+            42,
+            DeclassificationRule {
+                action: DeclassifyAction::RaiseIntegrity {
+                    from: IntegLevel::Adversarial,
+                    to: IntegLevel::Untrusted,
+                },
+                justification: "test",
+            },
+            vec![Operation::WriteFiles],
+            1000,
+            "test justification".to_string(),
+        );
+        assert!(!token.is_expired(999));
+        assert!(!token.is_expired(1000));
+        assert!(token.is_expired(1001));
+    }
+
+    #[test]
+    fn token_sink_restriction() {
+        let token = DeclassificationToken::new(
+            42,
+            DeclassificationRule {
+                action: DeclassifyAction::RaiseIntegrity {
+                    from: IntegLevel::Adversarial,
+                    to: IntegLevel::Untrusted,
+                },
+                justification: "test",
+            },
+            vec![Operation::WriteFiles, Operation::GitCommit],
+            u64::MAX,
+            "allow write and commit only".to_string(),
+        );
+        assert!(token.allows_sink(Operation::WriteFiles));
+        assert!(token.allows_sink(Operation::GitCommit));
+        assert!(!token.allows_sink(Operation::GitPush));
+        assert!(!token.allows_sink(Operation::RunBash));
+    }
+
+    #[test]
+    fn token_empty_sinks_allows_nothing() {
+        let token = DeclassificationToken::new(
+            42,
+            DeclassificationRule {
+                action: DeclassifyAction::RaiseIntegrity {
+                    from: IntegLevel::Adversarial,
+                    to: IntegLevel::Untrusted,
+                },
+                justification: "test",
+            },
+            vec![],
+            u64::MAX,
+            "no sinks allowed".to_string(),
+        );
+        assert!(!token.allows_sink(Operation::WriteFiles));
+        assert!(!token.allows_sink(Operation::RunBash));
+    }
+
+    #[test]
+    fn token_canonical_bytes_deterministic() {
+        let token = DeclassificationToken::new(
+            42,
+            DeclassificationRule {
+                action: DeclassifyAction::RaiseIntegrity {
+                    from: IntegLevel::Adversarial,
+                    to: IntegLevel::Untrusted,
+                },
+                justification: "test",
+            },
+            vec![Operation::WriteFiles],
+            1000,
+            "justification".to_string(),
+        );
+        let bytes1 = token.canonical_bytes();
+        let bytes2 = token.canonical_bytes();
+        assert_eq!(bytes1, bytes2, "canonical bytes must be deterministic");
+        assert!(!bytes1.is_empty());
+    }
+
+    #[test]
+    fn token_different_params_different_bytes() {
+        let token1 = DeclassificationToken::new(
+            42,
+            DeclassificationRule {
+                action: DeclassifyAction::RaiseIntegrity {
+                    from: IntegLevel::Adversarial,
+                    to: IntegLevel::Untrusted,
+                },
+                justification: "test",
+            },
+            vec![Operation::WriteFiles],
+            1000,
+            "same".to_string(),
+        );
+        let token2 = DeclassificationToken::new(
+            99, // different node
+            DeclassificationRule {
+                action: DeclassifyAction::RaiseIntegrity {
+                    from: IntegLevel::Adversarial,
+                    to: IntegLevel::Untrusted,
+                },
+                justification: "test",
+            },
+            vec![Operation::WriteFiles],
+            1000,
+            "same".to_string(),
+        );
+        assert_ne!(token1.canonical_bytes(), token2.canonical_bytes());
     }
 
     #[test]

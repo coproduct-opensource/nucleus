@@ -292,6 +292,50 @@ impl FlowGraph {
         self.next_id += 1;
         id
     }
+
+    /// Apply a scoped declassification token to a specific node.
+    ///
+    /// Validates that:
+    /// 1. The target node exists in the graph
+    /// 2. The token has not expired
+    /// 3. The underlying rule's precondition matches the node's label
+    ///
+    /// On success, modifies the node's label and returns the old/new labels.
+    /// The caller is responsible for recording this in the receipt chain.
+    pub fn apply_token(
+        &mut self,
+        token: &portcullis_core::declassify::DeclassificationToken,
+        now: u64,
+    ) -> portcullis_core::declassify::TokenApplyResult {
+        use portcullis_core::declassify::TokenApplyResult;
+
+        // Check expiry
+        if token.is_expired(now) {
+            return TokenApplyResult::Expired {
+                valid_until: token.valid_until,
+                now,
+            };
+        }
+
+        // Check node exists
+        let node = match self.get(token.target_node_id) {
+            Some(n) => n,
+            None => return TokenApplyResult::NodeNotFound,
+        };
+
+        // Apply the underlying rule
+        let result = token.rule.apply(node.label);
+        if !result.applied {
+            return TokenApplyResult::PreconditionUnmet;
+        }
+
+        // Modify the node's label
+        self.modify_label(token.target_node_id, result.label);
+        TokenApplyResult::Applied {
+            original_label: result.original,
+            new_label: result.label,
+        }
+    }
 }
 
 impl Default for FlowGraph {
@@ -559,5 +603,150 @@ mod tests {
 
         let e = FlowGraphError::ParentNotFound(99);
         assert!(e.to_string().contains("99"));
+    }
+
+    // ── DeclassificationToken integration tests ──────────────────────
+
+    #[test]
+    fn apply_token_raises_integrity() {
+        use portcullis_core::declassify::*;
+
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        // Insert web content (adversarial integrity)
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+        let web_label = g.get(web).unwrap().label;
+        assert_eq!(
+            web_label.integrity,
+            portcullis_core::IntegLevel::Adversarial
+        );
+
+        // Create a token to raise integrity for this specific node
+        let token = DeclassificationToken::new(
+            web,
+            DeclassificationRule {
+                action: DeclassifyAction::RaiseIntegrity {
+                    from: portcullis_core::IntegLevel::Adversarial,
+                    to: portcullis_core::IntegLevel::Untrusted,
+                },
+                justification: "Validated search results",
+            },
+            vec![Operation::WriteFiles, Operation::GitCommit],
+            now + 3600,
+            "Curated API output".to_string(),
+        );
+
+        let result = g.apply_token(&token, now);
+        match result {
+            TokenApplyResult::Applied {
+                original_label,
+                new_label,
+            } => {
+                assert_eq!(
+                    original_label.integrity,
+                    portcullis_core::IntegLevel::Adversarial
+                );
+                assert_eq!(new_label.integrity, portcullis_core::IntegLevel::Untrusted);
+            }
+            other => panic!("Expected Applied, got {other:?}"),
+        }
+
+        // Verify the node's label was actually modified in the graph
+        assert_eq!(
+            g.get(web).unwrap().label.integrity,
+            portcullis_core::IntegLevel::Untrusted
+        );
+    }
+
+    #[test]
+    fn apply_token_expired() {
+        use portcullis_core::declassify::*;
+
+        let mut g = FlowGraph::new();
+        let now = 1000;
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+
+        let token = DeclassificationToken::new(
+            web,
+            DeclassificationRule {
+                action: DeclassifyAction::RaiseIntegrity {
+                    from: portcullis_core::IntegLevel::Adversarial,
+                    to: portcullis_core::IntegLevel::Untrusted,
+                },
+                justification: "test",
+            },
+            vec![Operation::WriteFiles],
+            999, // expired before now=1000
+            "expired token".to_string(),
+        );
+
+        let result = g.apply_token(&token, now);
+        assert!(matches!(result, TokenApplyResult::Expired { .. }));
+
+        // Label should be unchanged
+        assert_eq!(
+            g.get(web).unwrap().label.integrity,
+            portcullis_core::IntegLevel::Adversarial
+        );
+    }
+
+    #[test]
+    fn apply_token_node_not_found() {
+        use portcullis_core::declassify::*;
+
+        let mut g = FlowGraph::new();
+        let token = DeclassificationToken::new(
+            999, // nonexistent
+            DeclassificationRule {
+                action: DeclassifyAction::RaiseIntegrity {
+                    from: portcullis_core::IntegLevel::Adversarial,
+                    to: portcullis_core::IntegLevel::Untrusted,
+                },
+                justification: "test",
+            },
+            vec![],
+            u64::MAX,
+            "ghost node".to_string(),
+        );
+
+        assert!(matches!(
+            g.apply_token(&token, 1000),
+            TokenApplyResult::NodeNotFound
+        ));
+    }
+
+    #[test]
+    fn apply_token_precondition_unmet() {
+        use portcullis_core::declassify::*;
+
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        // FileRead has Trusted integrity — rule expects Adversarial
+        let file = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+
+        let token = DeclassificationToken::new(
+            file,
+            DeclassificationRule {
+                action: DeclassifyAction::RaiseIntegrity {
+                    from: portcullis_core::IntegLevel::Adversarial,
+                    to: portcullis_core::IntegLevel::Untrusted,
+                },
+                justification: "test",
+            },
+            vec![Operation::WriteFiles],
+            u64::MAX,
+            "wrong precondition".to_string(),
+        );
+
+        assert!(matches!(
+            g.apply_token(&token, now),
+            TokenApplyResult::PreconditionUnmet
+        ));
     }
 }
