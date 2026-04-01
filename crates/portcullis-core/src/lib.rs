@@ -58,6 +58,8 @@ pub mod attestation;
 pub mod autonomy;
 pub mod compartment;
 pub mod declassify;
+#[cfg(feature = "serde")]
+pub mod enterprise;
 pub mod flow;
 pub mod manifest;
 #[cfg(feature = "serde")]
