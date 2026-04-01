@@ -20,6 +20,7 @@ const FLAGS: &[&str] = &[
     "--show-profile",
     "--receipts",
     "--completions",
+    "--exit-codes",
 ];
 
 /// Generate a shell completion script for the given shell name.
@@ -145,6 +146,7 @@ mod tests {
             "--show-profile",
             "--receipts",
             "--completions",
+            "--exit-codes",
         ];
         for flag in expected {
             assert!(FLAGS.contains(&flag), "missing flag in completions: {flag}");

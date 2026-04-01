@@ -37,14 +37,14 @@ pub fn run_build(args: &[String]) {
                 Ok(j) => j,
                 Err(e) => {
                     eprintln!("error: failed to serialize artifact: {e}");
-                    std::process::exit(1);
+                    crate::exit_codes::ExitCode::Error.exit();
                 }
             };
             match output_path {
                 Some(path) => {
                     if let Err(e) = std::fs::write(path, &json) {
                         eprintln!("error: failed to write {path}: {e}");
-                        std::process::exit(1);
+                        crate::exit_codes::ExitCode::Error.exit();
                     }
                     eprintln!("Built: {} -> {path}", manifest.digest);
                 }
@@ -56,7 +56,7 @@ pub fn run_build(args: &[String]) {
         }
         Err(e) => {
             eprintln!("error: {e}");
-            std::process::exit(1);
+            crate::exit_codes::ExitCode::Error.exit();
         }
     }
 }

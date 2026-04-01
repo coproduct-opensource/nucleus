@@ -22,6 +22,7 @@ mod build;
 mod classify;
 mod cli;
 mod completions;
+mod exit_codes;
 mod init;
 mod protocol;
 mod session;
@@ -810,7 +811,7 @@ fn run_smoke_test() {
             "\x1b[31m{passed}/{} tests passed, {failed} failed.\x1b[0m",
             passed + failed
         );
-        std::process::exit(1);
+        exit_codes::ExitCode::Error.exit();
     }
 }
 
@@ -1032,6 +1033,7 @@ fn run_help() {
     println!("  nucleus-claude-hook --gc          Remove stale session files (>24h)");
     println!("  nucleus-claude-hook --help        This message");
     println!("  nucleus-claude-hook --version     Show version");
+    println!("  nucleus-claude-hook --exit-codes  Print exit code protocol documentation");
     println!();
     println!("PROFILES (set NUCLEUS_PROFILE env var):");
     for (name, desc) in PROFILE_DESCRIPTIONS {
@@ -1172,14 +1174,18 @@ fn main() {
                         "nucleus-claude-hook: unsupported shell '{shell}'. \
                          Supported: bash, zsh, fish"
                     );
-                    std::process::exit(1);
+                    exit_codes::ExitCode::Error.exit();
                 }
             }
             return;
         }
+        Ok(cli::CliCommand::ExitCodes) => {
+            exit_codes::ExitCode::print_docs();
+            return;
+        }
         Err(e) => {
             eprintln!("nucleus-claude-hook: {e}");
-            std::process::exit(1);
+            exit_codes::ExitCode::Error.exit();
         }
         Ok(cli::CliCommand::Hook) => {} // fall through to stdin processing
     }
@@ -1208,7 +1214,7 @@ fn main() {
                     "nucleus: no hook input — failing closed (NUCLEUS_FAIL_CLOSED=1)",
                 );
                 println!("{}", serde_json::to_string(&out).unwrap());
-                std::process::exit(2);
+                exit_codes::ExitCode::Deny.exit();
             }
             // Non-blocking: exit 0 with no JSON → Claude Code asks user normally
             return;
@@ -1222,7 +1228,7 @@ fn main() {
             if fail_closed {
                 let out = HookOutput::deny(format!("nucleus: parse error — failing closed: {e}"));
                 println!("{}", serde_json::to_string(&out).unwrap());
-                std::process::exit(2);
+                exit_codes::ExitCode::Deny.exit();
             }
             // Non-blocking: exit 0 with no JSON → Claude Code asks user normally
             return;
@@ -1470,7 +1476,7 @@ fn main() {
                 input.tool_name, reason
             );
             println!("{}", serde_json::to_string(&out).unwrap());
-            std::process::exit(2);
+            exit_codes::ExitCode::Deny.exit();
         }
 
         // SECURITY (#512): Default-deny unmanifested MCP tools.
@@ -1492,7 +1498,7 @@ fn main() {
                 input.tool_name
             );
             println!("{}", serde_json::to_string(&out).unwrap());
-            std::process::exit(2);
+            exit_codes::ExitCode::Deny.exit();
         }
 
         // SECURITY (#462): Check if the tool is allowed in the current compartment.
@@ -1519,7 +1525,7 @@ fn main() {
                         input.tool_name
                     );
                     println!("{}", serde_json::to_string(&out).unwrap());
-                    std::process::exit(2);
+                    exit_codes::ExitCode::Deny.exit();
                 }
             }
         }
@@ -1548,7 +1554,7 @@ fn main() {
                     input.tool_name, count, MANIFEST_VIOLATION_REVOKE_THRESHOLD
                 );
                 println!("{}", serde_json::to_string(&out).unwrap());
-                std::process::exit(2);
+                exit_codes::ExitCode::Deny.exit();
             }
         }
     }
@@ -1576,7 +1582,7 @@ fn main() {
             eprintln!("{msg}");
             let out = HookOutput::deny(&msg);
             println!("{}", serde_json::to_string(&out).unwrap());
-            std::process::exit(2);
+            exit_codes::ExitCode::Deny.exit();
         }
     };
     if session.profile.is_empty() {
@@ -1653,7 +1659,7 @@ fn main() {
                         println!("{}", serde_json::to_string(&out).unwrap());
                         session.high_water_mark += 1;
                         save_session(&input.session_id, &session);
-                        std::process::exit(2);
+                        exit_codes::ExitCode::Deny.exit();
                     }
                 }
             }
@@ -2178,8 +2184,9 @@ fn main() {
 
     // Exit non-zero on deny to block the tool call via exit code.
     // Claude Code blocks on exit 2 regardless of JSON output.
-    if matches!(decision.verdict, Verdict::Deny(_)) {
-        std::process::exit(2);
+    let code = exit_codes::ExitCode::from_verdict(&decision.verdict);
+    if code != exit_codes::ExitCode::Allow {
+        code.exit();
     }
 }
 
