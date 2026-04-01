@@ -117,6 +117,8 @@ enum ManifestPolicyStr {
     /// Tools without manifests are allowed (default for backward compat).
     #[default]
     DefaultAllow,
+    /// All manifests must be signed with a valid Ed25519 signature (#650).
+    RequireSigned,
 }
 
 impl From<ManifestPolicyStr> for ManifestPolicy {
@@ -124,6 +126,7 @@ impl From<ManifestPolicyStr> for ManifestPolicy {
         match s {
             ManifestPolicyStr::DefaultDeny => ManifestPolicy::DefaultDeny,
             ManifestPolicyStr::DefaultAllow => ManifestPolicy::DefaultAllow,
+            ManifestPolicyStr::RequireSigned => ManifestPolicy::RequireSigned,
         }
     }
 }
