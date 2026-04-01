@@ -2259,8 +2259,9 @@ mod tests {
     #[test]
     fn test_exposure_accumulation() {
         // safe_pr_fixer: read + web_fetch + bash should trigger exposure gate
+        // Use capability_only() to isolate the exposure subsystem from flow control.
         let perms = PermissionLattice::safe_pr_fixer();
-        let mut kernel = Kernel::new(perms);
+        let mut kernel = Kernel::capability_only(perms);
 
         // Read: private data (exposure 1/3)
         let (d1, _token) = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");

@@ -1742,7 +1742,7 @@ mod tests {
 
     #[test]
     fn test_kernel_dynamic_exposure_gates_exfil() {
-        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        let mut kernel = Kernel::capability_only(permissive_no_static_obligations());
         // Read: private_data
         kernel.decide(Operation::ReadFiles, "secrets.txt");
         // Fetch: untrusted_content
@@ -1755,10 +1755,12 @@ mod tests {
 
     #[test]
     fn test_kernel_uninhabitable_allows_non_exfil_after_read_and_fetch() {
-        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        // Use capability_only to test the exposure subsystem in isolation,
+        // without flow control tainting writes after web fetch.
+        let mut kernel = Kernel::capability_only(permissive_no_static_obligations());
         kernel.decide(Operation::ReadFiles, "data.txt");
         kernel.decide(Operation::WebFetch, "https://example.com");
-        // Non-exfil ops are allowed even with full exposure
+        // Non-exfil ops are allowed even with full exposure (capability-only)
         let (d, _token) = kernel.decide(Operation::ReadFiles, "more.txt");
         assert!(matches!(d.verdict, Verdict::Allow));
         let (d, _token) = kernel.decide(Operation::WriteFiles, "out.txt");
@@ -1767,7 +1769,7 @@ mod tests {
 
     #[test]
     fn test_kernel_omnibus_uninhabitable_with_untrusted_content() {
-        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        let mut kernel = Kernel::capability_only(permissive_no_static_obligations());
         // Only untrusted content + RunBash (omnibus) → uninhabitable_state triggers!
         kernel.decide(Operation::WebFetch, "https://evil.com");
         let (d, _token) = kernel.decide(Operation::RunBash, "cmd");
@@ -1776,7 +1778,7 @@ mod tests {
 
     #[test]
     fn test_kernel_no_uninhabitable_with_only_two_legs() {
-        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        let mut kernel = Kernel::capability_only(permissive_no_static_obligations());
         // untrusted_content + GitPush (not omnibus) → only 2/3, no block
         kernel.decide(Operation::WebFetch, "https://example.com");
         let (d, _token) = kernel.decide(Operation::GitPush, "origin");
@@ -1809,7 +1811,7 @@ mod tests {
 
     #[test]
     fn test_kernel_approval_flow() {
-        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        let mut kernel = Kernel::capability_only(permissive_no_static_obligations());
         kernel.decide(Operation::ReadFiles, "data.txt");
         kernel.decide(Operation::WebFetch, "https://evil.com");
         // Dynamic exposure gate triggers
@@ -1864,7 +1866,7 @@ mod tests {
     #[test]
     fn test_kernel_grep_websearch_run_scenario() {
         // Real scenario: agent greps code, searches web, tries to run a command
-        let mut kernel = Kernel::new(permissive_no_static_obligations());
+        let mut kernel = Kernel::capability_only(permissive_no_static_obligations());
         kernel.decide(Operation::GrepSearch, "password");
         kernel.decide(Operation::WebSearch, "how to exfiltrate");
         // RunBash completes uninhabitable_state (omnibus projection)
