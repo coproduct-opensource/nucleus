@@ -443,8 +443,17 @@ pub(crate) fn resolve_compartment(
         }
     }
 
-    // Detect escalation (#464)
+    // Enforce transition rules (#733) — block disallowed escalations.
     if let Some(from) = current {
+        if !from.can_transition_to(target) {
+            eprintln!(
+                "nucleus: DENIED — compartment transition {from} -> {target} is not allowed. \
+                 Escalation must proceed one step at a time: Research -> Draft -> Execute -> Breakglass. \
+                 Transition blocked to prevent privilege escalation (#733)."
+            );
+            return None;
+        }
+
         if portcullis_core::compartment::is_escalation(from, target) {
             eprintln!(
                 "nucleus: WARNING — compartment escalation detected: {from} -> {target}. \
