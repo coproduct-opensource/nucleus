@@ -530,6 +530,12 @@ fn format_deny_reason(reason: &DenyReason) -> String {
         DenyReason::FlowViolation { rule, .. } => {
             format!("flow violation: {rule}")
         }
+        DenyReason::EgressBlocked {
+            host,
+            policy_reason,
+        } => {
+            format!("egress blocked: {host} — {policy_reason}")
+        }
     }
 }
 
