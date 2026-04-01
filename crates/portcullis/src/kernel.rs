@@ -77,6 +77,7 @@ use crate::exposure_core;
 use crate::guard::{ExposureLabel, ExposureSet};
 use crate::isolation::{IsolationLattice, NetworkIsolation};
 use crate::lattice::PermissionLattice;
+use crate::receipt_chain::{ReceiptChain, VerdictReceipt};
 use crate::token::SessionProvenance;
 
 /// A single decision made by the kernel.
@@ -400,6 +401,13 @@ pub struct Kernel {
     /// that downstream consumers can verify.
     #[cfg(feature = "crypto")]
     signing_key: Option<std::sync::Arc<ring::signature::Ed25519KeyPair>>,
+    /// Optional append-only receipt chain for verdict attestation.
+    ///
+    /// When enabled via [`Kernel::enable_receipt_chain`], every call to
+    /// `decide()` appends a [`VerdictReceipt`] to this chain, creating a
+    /// tamper-evident log of all kernel verdicts. The chain is hash-linked:
+    /// each receipt commits to its predecessor's hash.
+    receipt_chain: Option<ReceiptChain>,
 }
 
 impl Kernel {
@@ -442,6 +450,7 @@ impl Kernel {
             policy_rules: None,
             #[cfg(feature = "crypto")]
             signing_key: None,
+            receipt_chain: None,
         }
     }
 
@@ -469,6 +478,24 @@ impl Kernel {
     /// when callers explicitly provide parent node IDs.
     pub fn enable_flow_graph(&mut self) {
         self.flow_graph = Some(crate::flow_graph::FlowGraph::new());
+    }
+
+    /// Enable the receipt chain for verdict attestation.
+    ///
+    /// When enabled, every `decide()` call appends a [`VerdictReceipt`] to an
+    /// append-only, hash-linked chain. The chain provides a tamper-evident log
+    /// of all kernel verdicts that can be verified offline.
+    ///
+    /// Call this before the first `decide()` to capture the complete session history.
+    pub fn enable_receipt_chain(&mut self) {
+        self.receipt_chain = Some(ReceiptChain::new());
+    }
+
+    /// Read-only access to the receipt chain, if enabled.
+    ///
+    /// Returns `None` if `enable_receipt_chain()` was not called.
+    pub fn receipt_chain(&self) -> Option<&ReceiptChain> {
+        self.receipt_chain.as_ref()
     }
 
     /// Add a declassification rule to this session.
@@ -687,6 +714,7 @@ impl Kernel {
             policy_rules: None,
             #[cfg(feature = "crypto")]
             signing_key: None,
+            receipt_chain: None,
         }
     }
 
@@ -727,6 +755,7 @@ impl Kernel {
             policy_rules: None,
             #[cfg(feature = "crypto")]
             signing_key: None,
+            receipt_chain: None,
         }
     }
 
@@ -1411,6 +1440,50 @@ impl Kernel {
             flow_node_id: None,
         };
 
+        // Append a receipt to the chain if enabled.
+        if let Some(ref mut chain) = self.receipt_chain {
+            let now_unix = decision.timestamp.timestamp() as u64;
+
+            // Map kernel Verdict → FlowVerdict for the receipt.
+            let flow_verdict = verdict_to_flow_verdict(&decision.verdict);
+
+            // Gather the IFC label snapshot. Use the session flow label if
+            // available, otherwise a neutral user_prompt label at the decision time.
+            let label = self
+                .flow_label
+                .unwrap_or_else(|| portcullis_core::IFCLabel::user_prompt(now_unix));
+
+            // Causal parent node IDs from the flow graph, if available.
+            let causal_parents: Vec<portcullis_core::flow::NodeId> = decision
+                .flow_node_id
+                .and_then(|nid| {
+                    self.flow_graph
+                        .as_ref()
+                        .and_then(|g| g.get(nid))
+                        .map(|node| node.parents[..node.parent_count as usize].to_vec())
+                })
+                .unwrap_or_default();
+
+            let prev_hash = *chain.head_hash();
+            let receipt = VerdictReceipt::from_verdict(
+                flow_verdict,
+                format!("{:?}", decision.operation),
+                &decision.subject,
+                label,
+                label,
+                causal_parents,
+                now_unix,
+                prev_hash,
+            );
+
+            // Append should never fail — we computed prev_hash from chain head.
+            // If it does (programming error), debug-log and continue; the receipt
+            // chain is optional and must not break the decide() hot path.
+            if let Err(e) = chain.append(receipt) {
+                debug_assert!(false, "receipt chain append failed: {e}");
+            }
+        }
+
         self.trace.push(decision.clone());
         (decision, token)
     }
@@ -1450,6 +1523,43 @@ fn is_exfil_operation(op: Operation) -> bool {
         op,
         Operation::RunBash | Operation::GitPush | Operation::CreatePr | Operation::SpawnAgent
     )
+}
+
+/// Map a kernel [`Verdict`] to a [`FlowVerdict`] for receipt construction.
+///
+/// The receipt chain uses `portcullis_core::flow::FlowVerdict` which has two
+/// variants: `Allow` and `Deny(FlowDenyReason)`. The kernel's `Verdict` is
+/// richer (includes `RequiresApproval`), so we map:
+///
+/// - `Allow` → `FlowVerdict::Allow`
+/// - `RequiresApproval` → `FlowVerdict::Allow` (approval was requested, not denied)
+/// - `Deny(InsufficientCapability)` → `Deny(AuthorityEscalation)`
+/// - `Deny(FlowViolation { rule })` → mapped by rule name
+/// - All other denials → `Deny(Exfiltration)` as a conservative default
+fn verdict_to_flow_verdict(verdict: &Verdict) -> portcullis_core::flow::FlowVerdict {
+    use portcullis_core::flow::{FlowDenyReason, FlowVerdict};
+
+    match verdict {
+        Verdict::Allow | Verdict::RequiresApproval => FlowVerdict::Allow,
+        Verdict::Deny(reason) => {
+            let flow_reason = match reason {
+                DenyReason::InsufficientCapability => FlowDenyReason::AuthorityEscalation,
+                DenyReason::FlowViolation { rule, .. } => {
+                    if rule.contains("AuthorityEscalation") {
+                        FlowDenyReason::AuthorityEscalation
+                    } else if rule.contains("IntegrityViolation") {
+                        FlowDenyReason::IntegrityViolation
+                    } else if rule.contains("FreshnessExpired") {
+                        FlowDenyReason::FreshnessExpired
+                    } else {
+                        FlowDenyReason::Exfiltration
+                    }
+                }
+                _ => FlowDenyReason::Exfiltration,
+            };
+            FlowVerdict::Deny(flow_reason)
+        }
+    }
 }
 
 /// Check an operation against the egress policy, returning a `DenyReason` if blocked.
@@ -3492,6 +3602,119 @@ denied_hosts = ["evil.github.com"]
             let (d, token) = kernel.decide(Operation::WriteFiles, "src/main.rs");
             assert!(matches!(d.verdict, Verdict::Allow));
             assert!(token.is_some());
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Receipt chain integration tests
+    // ═══════════════════════════════════════════════════════════════════
+
+    mod receipt_chain_tests {
+        use super::*;
+        use crate::PermissionLattice;
+
+        #[test]
+        fn decide_produces_receipt_when_enabled() {
+            let perms = PermissionLattice::safe_pr_fixer();
+            let mut kernel = Kernel::new(perms);
+            kernel.enable_receipt_chain();
+
+            let (d, _token) = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+            assert!(d.verdict.is_allowed());
+
+            let chain = kernel.receipt_chain().expect("chain should be enabled");
+            assert_eq!(chain.len(), 1);
+            assert!(chain.verify().is_ok());
+
+            let receipt = &chain.receipts()[0];
+            assert_eq!(receipt.operation, "ReadFiles");
+            assert_eq!(receipt.subject, "/workspace/main.rs");
+        }
+
+        #[test]
+        fn deny_produces_receipt() {
+            let perms = PermissionLattice::safe_pr_fixer();
+            let mut kernel = Kernel::new(perms);
+            kernel.enable_receipt_chain();
+
+            // safe_pr_fixer has git_push=Never
+            let (d, _token) = kernel.decide(Operation::GitPush, "origin/main");
+            assert!(d.verdict.is_denied());
+
+            let chain = kernel.receipt_chain().unwrap();
+            assert_eq!(chain.len(), 1);
+            assert!(chain.verify().is_ok());
+
+            let receipt = &chain.receipts()[0];
+            assert!(matches!(
+                receipt.verdict,
+                portcullis_core::flow::FlowVerdict::Deny(_)
+            ));
+        }
+
+        #[test]
+        fn chain_valid_after_multiple_decisions() {
+            let perms = PermissionLattice::safe_pr_fixer();
+            let mut kernel = Kernel::new(perms);
+            kernel.enable_receipt_chain();
+
+            // Mix of allows and denies
+            kernel.decide(Operation::ReadFiles, "/workspace/a.rs");
+            kernel.decide(Operation::WriteFiles, "/workspace/b.rs");
+            kernel.decide(Operation::GitPush, "origin/main"); // denied
+            kernel.decide(Operation::GlobSearch, "/workspace/**");
+            kernel.decide(Operation::ReadFiles, "/workspace/c.rs");
+
+            let chain = kernel.receipt_chain().unwrap();
+            assert_eq!(chain.len(), 5);
+            assert!(
+                chain.verify().is_ok(),
+                "chain should verify after 5 decisions"
+            );
+
+            // Head hash should not be zeros
+            assert_ne!(chain.head_hash(), &[0u8; 32]);
+        }
+
+        #[test]
+        fn receipt_chain_disabled_by_default() {
+            let perms = PermissionLattice::safe_pr_fixer();
+            let mut kernel = Kernel::new(perms);
+
+            kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
+
+            assert!(
+                kernel.receipt_chain().is_none(),
+                "chain should be None when not enabled"
+            );
+        }
+
+        #[test]
+        fn receipt_links_are_contiguous() {
+            let perms = PermissionLattice::safe_pr_fixer();
+            let mut kernel = Kernel::new(perms);
+            kernel.enable_receipt_chain();
+
+            kernel.decide(Operation::ReadFiles, "/a");
+            kernel.decide(Operation::ReadFiles, "/b");
+            kernel.decide(Operation::ReadFiles, "/c");
+
+            let chain = kernel.receipt_chain().unwrap();
+            let receipts = chain.receipts();
+
+            // First receipt links to genesis (all zeros)
+            assert_eq!(receipts[0].prev_hash, [0u8; 32]);
+
+            // Each subsequent receipt's prev_hash == predecessor's receipt_hash
+            for i in 1..receipts.len() {
+                assert_eq!(
+                    receipts[i].prev_hash,
+                    receipts[i - 1].receipt_hash,
+                    "receipt {} should link to receipt {}",
+                    i,
+                    i - 1
+                );
+            }
         }
     }
 }
