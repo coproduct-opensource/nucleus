@@ -1641,19 +1641,19 @@ fn main() {
         eprintln!("nucleus: Info: 'nucleus-claude-hook --help' for options");
     }
 
-    // Generate compartment token on first session invocation
     if session.compartment_token.is_empty() {
         session.compartment_token = generate_compartment_token();
     }
-
-    // Apply compartment ceiling. Checks side-channel file first, then env var.
-    // Detects transitions and logs them to stderr + receipt chain.
-    let compartment = resolve_compartment(&input.session_id, &session.compartment_token);
+    // Resolve compartment with escalation detection (#464)
     let prev_compartment = session
         .active_compartment
         .as_deref()
         .and_then(portcullis_core::compartment::Compartment::from_str_opt);
-
+    let compartment = resolve_compartment(
+        &input.session_id,
+        &session.compartment_token,
+        prev_compartment,
+    );
     // Detect compartment transition
     if compartment != prev_compartment {
         if let Some(ref new_comp) = compartment {

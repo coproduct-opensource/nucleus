@@ -164,6 +164,17 @@ impl BreakglassEntry {
     }
 }
 
+/// Returns `true` if transitioning from `from` to `to` is a privilege escalation.
+///
+/// Escalation means moving to a strictly higher compartment in the lattice:
+/// Research < Draft < Execute < Breakglass.
+///
+/// This uses the `Ord` derivation on the `#[repr(u8)]` enum, which mirrors
+/// the declared discriminant order (compile-time asserted below).
+pub fn is_escalation(from: Compartment, to: Compartment) -> bool {
+    to > from
+}
+
 impl std::fmt::Display for Compartment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -295,6 +306,54 @@ mod tests {
     fn breakglass_entry_extracts_reason() {
         let entry = BreakglassEntry::parse("breakglass:production outage P1", 1000).unwrap();
         assert_eq!(entry.reason, "production outage P1");
+    }
+
+    #[test]
+    fn is_escalation_research_to_draft() {
+        assert!(super::is_escalation(
+            Compartment::Research,
+            Compartment::Draft
+        ));
+    }
+
+    #[test]
+    fn is_escalation_research_to_breakglass() {
+        assert!(super::is_escalation(
+            Compartment::Research,
+            Compartment::Breakglass
+        ));
+    }
+
+    #[test]
+    fn is_escalation_draft_to_execute() {
+        assert!(super::is_escalation(
+            Compartment::Draft,
+            Compartment::Execute
+        ));
+    }
+
+    #[test]
+    fn is_not_escalation_same_compartment() {
+        assert!(!super::is_escalation(
+            Compartment::Execute,
+            Compartment::Execute
+        ));
+    }
+
+    #[test]
+    fn is_not_escalation_downward() {
+        assert!(!super::is_escalation(
+            Compartment::Breakglass,
+            Compartment::Research
+        ));
+        assert!(!super::is_escalation(
+            Compartment::Execute,
+            Compartment::Draft
+        ));
+        assert!(!super::is_escalation(
+            Compartment::Draft,
+            Compartment::Research
+        ));
     }
 
     #[test]

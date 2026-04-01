@@ -410,26 +410,87 @@ pub(crate) fn generate_compartment_token() -> String {
     hex::encode(bytes)
 }
 
+/// Resolve the active compartment for a session.
+///
+/// When `current` is `Some`, detects privilege escalation and logs a
+/// WARNING to stderr (#464). For breakglass escalation, the compartment
+/// file (or env var) must use the `breakglass:reason` format — bare
+/// `breakglass` without a reason is rejected to prevent social-engineering
+/// attacks where the model tricks the user into writing just "breakglass".
 pub(crate) fn resolve_compartment(
     session_id: &str,
     token: &str,
+    current: Option<portcullis_core::compartment::Compartment>,
 ) -> Option<portcullis_core::compartment::Compartment> {
+    let (resolved, raw_content) = resolve_compartment_raw(session_id, token);
+    let target = resolved?;
+
+    // Enforce breakglass reason requirement (#464)
+    if target == portcullis_core::compartment::Compartment::Breakglass {
+        let content = raw_content.unwrap_or_default();
+        let trimmed = content.trim();
+        if !trimmed.starts_with("breakglass:")
+            || trimmed
+                .strip_prefix("breakglass:")
+                .map_or(true, |r| r.trim().is_empty())
+        {
+            eprintln!(
+                "nucleus: DENIED — breakglass compartment requires a reason. \
+                 Use 'breakglass:<reason>' format (e.g. 'breakglass:production outage P1'). \
+                 Bare 'breakglass' is not accepted to prevent social-engineering attacks (#464)."
+            );
+            return None;
+        }
+    }
+
+    // Detect escalation (#464)
+    if let Some(from) = current {
+        if portcullis_core::compartment::is_escalation(from, target) {
+            eprintln!(
+                "nucleus: WARNING — compartment escalation detected: {from} -> {target}. \
+                 This grants additional capabilities. Ensure this was an intentional operator action."
+            );
+            if target == portcullis_core::compartment::Compartment::Breakglass {
+                eprintln!(
+                    "nucleus: WARNING — BREAKGLASS escalation grants ALL capabilities \
+                     with enhanced audit. This should only be used for emergency operations."
+                );
+            }
+        }
+    }
+
+    Some(target)
+}
+
+/// Inner resolution that returns both the parsed compartment and the raw
+/// content string (needed for breakglass reason validation).
+fn resolve_compartment_raw(
+    session_id: &str,
+    token: &str,
+) -> (
+    Option<portcullis_core::compartment::Compartment>,
+    Option<String>,
+) {
     // 1. Check side-channel file with keyed filename
     if !token.is_empty() {
         let keyed_name = keyed_compartment_name(session_id, token);
         let compartment_file = session_dir().join(format!("{keyed_name}.compartment"));
         if let Ok(content) = std::fs::read_to_string(&compartment_file) {
-            if let Some(c) = portcullis_core::compartment::Compartment::from_str_opt(content.trim())
-            {
-                return Some(c);
+            let trimmed = content.trim().to_string();
+            if let Some(c) = portcullis_core::compartment::Compartment::from_str_opt(&trimmed) {
+                return (Some(c), Some(trimmed));
             }
         }
     }
 
     // 2. Fall back to env var
-    std::env::var("NUCLEUS_COMPARTMENT")
-        .ok()
-        .and_then(|s| portcullis_core::compartment::Compartment::from_str_opt(&s))
+    if let Ok(s) = std::env::var("NUCLEUS_COMPARTMENT") {
+        if let Some(c) = portcullis_core::compartment::Compartment::from_str_opt(&s) {
+            return (Some(c), Some(s));
+        }
+    }
+
+    (None, None)
 }
 
 /// Get the compartment file path for a session (for external tools to write).
@@ -755,5 +816,112 @@ mod tests {
         assert_eq!(restored.flow_observations[1].0, TOOL_RESPONSE);
         assert!(restored.flow_observations[1].1.starts_with("post:"));
         assert!(restored.last_pre_tool_obs_index.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Compartment escalation detection (#464)
+    // -----------------------------------------------------------------------
+
+    /// Helper: write a compartment file for a test session and resolve it.
+    fn write_and_resolve(
+        session_id: &str,
+        token: &str,
+        content: &str,
+        current: Option<portcullis_core::compartment::Compartment>,
+    ) -> Option<portcullis_core::compartment::Compartment> {
+        let keyed = keyed_compartment_name(session_id, token);
+        let path = session_dir().join(format!("{keyed}.compartment"));
+        std::fs::write(&path, content).unwrap();
+        let result = resolve_compartment(session_id, token, current);
+        // Cleanup
+        std::fs::remove_file(&path).ok();
+        result
+    }
+
+    #[test]
+    fn resolve_compartment_no_escalation_from_none() {
+        let sid = format!("esc-none-{}", std::process::id());
+        let token = "test-token-esc-none";
+        // No current compartment -> no escalation warning, just resolution
+        let result = write_and_resolve(&sid, token, "draft", None);
+        assert_eq!(
+            result,
+            Some(portcullis_core::compartment::Compartment::Draft)
+        );
+    }
+
+    #[test]
+    fn resolve_compartment_escalation_research_to_execute() {
+        let sid = format!("esc-r2e-{}", std::process::id());
+        let token = "test-token-esc-r2e";
+        let result = write_and_resolve(
+            &sid,
+            token,
+            "execute",
+            Some(portcullis_core::compartment::Compartment::Research),
+        );
+        // Should still resolve (warning goes to stderr)
+        assert_eq!(
+            result,
+            Some(portcullis_core::compartment::Compartment::Execute)
+        );
+    }
+
+    #[test]
+    fn resolve_compartment_de_escalation_no_warning() {
+        let sid = format!("esc-deesc-{}", std::process::id());
+        let token = "test-token-deesc";
+        let result = write_and_resolve(
+            &sid,
+            token,
+            "research",
+            Some(portcullis_core::compartment::Compartment::Execute),
+        );
+        assert_eq!(
+            result,
+            Some(portcullis_core::compartment::Compartment::Research)
+        );
+    }
+
+    #[test]
+    fn resolve_compartment_breakglass_requires_reason() {
+        let sid = format!("esc-bg-noreason-{}", std::process::id());
+        let token = "test-token-bg-noreason";
+        // Bare "breakglass" without reason should be DENIED
+        let result = write_and_resolve(
+            &sid,
+            token,
+            "breakglass",
+            Some(portcullis_core::compartment::Compartment::Research),
+        );
+        assert_eq!(
+            result, None,
+            "bare breakglass without reason must be denied"
+        );
+    }
+
+    #[test]
+    fn resolve_compartment_breakglass_with_reason_accepted() {
+        let sid = format!("esc-bg-reason-{}", std::process::id());
+        let token = "test-token-bg-reason";
+        let result = write_and_resolve(
+            &sid,
+            token,
+            "breakglass:production outage P1",
+            Some(portcullis_core::compartment::Compartment::Execute),
+        );
+        assert_eq!(
+            result,
+            Some(portcullis_core::compartment::Compartment::Breakglass)
+        );
+    }
+
+    #[test]
+    fn resolve_compartment_breakglass_empty_reason_denied() {
+        let sid = format!("esc-bg-empty-{}", std::process::id());
+        let token = "test-token-bg-empty";
+        // "breakglass:" with empty reason should be denied
+        let result = write_and_resolve(&sid, token, "breakglass:", None);
+        assert_eq!(result, None, "breakglass with empty reason must be denied");
     }
 }
