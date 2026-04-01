@@ -664,6 +664,21 @@ impl SinkClass {
                 | SinkClass::CloudMutation
         )
     }
+
+    /// Whether this sink class requires verified-lane derivation.
+    ///
+    /// Verified sinks are publish vectors where AI-derived data must not
+    /// land without explicit human promotion. Only `Deterministic` and
+    /// `HumanPromoted` derivations pass the [`StorageLane::Verified`] gate.
+    ///
+    /// This covers sinks that produce externally-visible, hard-to-revoke
+    /// artifacts: git pushes, git commits, and PR comments.
+    pub fn requires_verified_derivation(self) -> bool {
+        matches!(
+            self,
+            SinkClass::GitPush | SinkClass::GitCommit | SinkClass::PRCommentWrite
+        )
+    }
 }
 
 impl std::fmt::Display for SinkClass {

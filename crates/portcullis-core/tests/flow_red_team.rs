@@ -1997,3 +1997,283 @@ fn exploit_owasp_ag02_memory_authority_prevents_action() {
         "MayNotAuthorize memory entry MUST NOT authorize even WriteFiles"
     );
 }
+
+// ═════════════════════════════════════════════════════════════════════════
+// Derivation-sink compatibility — AI-derived data cannot reach verified sinks
+//
+// Issue #777: DerivationClass enforcement gate. When a sink requires
+// verified-lane derivation (GitPush, GitCommit, PRCommentWrite), only
+// Deterministic and HumanPromoted data may pass. AIDerived and Mixed
+// derivations are denied with DerivationViolation.
+//
+// This prevents LLM-generated content from being pushed to git or
+// published as PR comments without explicit human review/promotion.
+// ═════════════════════════════════════════════════════════════════════════
+
+use portcullis_core::storage_lane::StorageLane;
+
+// ── Red team: LLM output → verified sink → DENIED ─────────────────────
+//
+// Attack: An LLM generates code (AIDerived derivation) and the agent
+// attempts to push it directly to a remote repository via GitPush.
+// The derivation gate blocks this — AIDerived data cannot reach the
+// Verified storage lane that GitPush requires.
+
+#[test]
+fn derivation_ai_derived_blocked_at_git_push() {
+    let now = 1000u64;
+
+    // LLM output: trusted integrity, suggestive authority, but AIDerived
+    let label = IFCLabel {
+        confidentiality: ConfLevel::Internal,
+        integrity: IntegLevel::Trusted,
+        provenance: ProvenanceSet::EMPTY,
+        freshness: Freshness {
+            observed_at: now,
+            ttl_secs: 3600,
+        },
+        authority: AuthorityLevel::Suggestive,
+        derivation: DerivationClass::AIDerived,
+    };
+
+    let push = FlowNode {
+        id: 0,
+        kind: NodeKind::OutboundAction,
+        label,
+        parent_count: 0,
+        parents: [0; MAX_PARENTS],
+        operation: Some(Operation::GitPush),
+        sink_class: Some(SinkClass::GitPush),
+    };
+
+    // Confirm StorageLane::Verified rejects AIDerived
+    assert!(!StorageLane::Verified.accepts(DerivationClass::AIDerived));
+
+    // BLOCKED: derivation violation — AIDerived cannot reach GitPush
+    assert_eq!(
+        check_flow(&push, now + 1),
+        FlowVerdict::Deny(FlowDenyReason::DerivationViolation),
+        "AIDerived data MUST NOT reach GitPush sink without human promotion"
+    );
+}
+
+#[test]
+fn derivation_mixed_blocked_at_git_commit() {
+    let now = 1000u64;
+
+    // Mixed derivation: human + AI combined output
+    let label = IFCLabel {
+        confidentiality: ConfLevel::Internal,
+        integrity: IntegLevel::Trusted,
+        provenance: ProvenanceSet::EMPTY,
+        freshness: Freshness {
+            observed_at: now,
+            ttl_secs: 3600,
+        },
+        authority: AuthorityLevel::Suggestive,
+        derivation: DerivationClass::Mixed,
+    };
+
+    let commit = FlowNode {
+        id: 0,
+        kind: NodeKind::OutboundAction,
+        label,
+        parent_count: 0,
+        parents: [0; MAX_PARENTS],
+        operation: Some(Operation::GitCommit),
+        sink_class: Some(SinkClass::GitCommit),
+    };
+
+    // BLOCKED: Mixed derivation also rejected by Verified lane
+    assert!(!StorageLane::Verified.accepts(DerivationClass::Mixed));
+    assert_eq!(
+        check_flow(&commit, now + 1),
+        FlowVerdict::Deny(FlowDenyReason::DerivationViolation),
+        "Mixed derivation MUST NOT reach GitCommit sink"
+    );
+}
+
+#[test]
+fn derivation_ai_derived_blocked_at_pr_comment() {
+    let now = 1000u64;
+
+    let label = IFCLabel {
+        confidentiality: ConfLevel::Internal,
+        integrity: IntegLevel::Trusted,
+        provenance: ProvenanceSet::EMPTY,
+        freshness: Freshness {
+            observed_at: now,
+            ttl_secs: 3600,
+        },
+        authority: AuthorityLevel::Suggestive,
+        derivation: DerivationClass::AIDerived,
+    };
+
+    let pr = FlowNode {
+        id: 0,
+        kind: NodeKind::OutboundAction,
+        label,
+        parent_count: 0,
+        parents: [0; MAX_PARENTS],
+        operation: Some(Operation::CreatePr),
+        sink_class: Some(SinkClass::PRCommentWrite),
+    };
+
+    assert_eq!(
+        check_flow(&pr, now + 1),
+        FlowVerdict::Deny(FlowDenyReason::DerivationViolation),
+        "AIDerived data MUST NOT reach PRCommentWrite sink"
+    );
+}
+
+// ── Control: deterministic output → verified sink → ALLOWED ────────────
+//
+// A deterministic tool (compiler, linter, parser) produces output with
+// Deterministic derivation. This data IS allowed to reach verified sinks
+// because it passes the StorageLane::Verified gate.
+
+#[test]
+fn derivation_deterministic_allowed_at_git_push() {
+    let now = 1000u64;
+
+    let label = IFCLabel {
+        confidentiality: ConfLevel::Internal,
+        integrity: IntegLevel::Trusted,
+        provenance: ProvenanceSet::EMPTY,
+        freshness: Freshness {
+            observed_at: now,
+            ttl_secs: 3600,
+        },
+        authority: AuthorityLevel::Suggestive,
+        derivation: DerivationClass::Deterministic,
+    };
+
+    let push = FlowNode {
+        id: 0,
+        kind: NodeKind::OutboundAction,
+        label,
+        parent_count: 0,
+        parents: [0; MAX_PARENTS],
+        operation: Some(Operation::GitPush),
+        sink_class: Some(SinkClass::GitPush),
+    };
+
+    // Confirm StorageLane::Verified accepts Deterministic
+    assert!(StorageLane::Verified.accepts(DerivationClass::Deterministic));
+
+    // ALLOWED: deterministic data can reach verified sinks
+    assert_eq!(
+        check_flow(&push, now + 1),
+        FlowVerdict::Allow,
+        "Deterministic data MUST be allowed to reach GitPush sink"
+    );
+}
+
+#[test]
+fn derivation_human_promoted_allowed_at_git_push() {
+    let now = 1000u64;
+
+    let label = IFCLabel {
+        confidentiality: ConfLevel::Internal,
+        integrity: IntegLevel::Trusted,
+        provenance: ProvenanceSet::EMPTY,
+        freshness: Freshness {
+            observed_at: now,
+            ttl_secs: 3600,
+        },
+        authority: AuthorityLevel::Suggestive,
+        derivation: DerivationClass::HumanPromoted,
+    };
+
+    let push = FlowNode {
+        id: 0,
+        kind: NodeKind::OutboundAction,
+        label,
+        parent_count: 0,
+        parents: [0; MAX_PARENTS],
+        operation: Some(Operation::GitPush),
+        sink_class: Some(SinkClass::GitPush),
+    };
+
+    // Confirm StorageLane::Verified accepts HumanPromoted
+    assert!(StorageLane::Verified.accepts(DerivationClass::HumanPromoted));
+
+    // ALLOWED: human-promoted data can reach verified sinks
+    assert_eq!(
+        check_flow(&push, now + 1),
+        FlowVerdict::Allow,
+        "HumanPromoted data MUST be allowed to reach GitPush sink"
+    );
+}
+
+// ── Control: AIDerived → non-verified sink → ALLOWED ───────────────────
+//
+// AIDerived data CAN reach non-verified sinks like WorkspaceWrite.
+// The derivation gate only applies to verified sinks.
+
+#[test]
+fn derivation_ai_derived_allowed_at_workspace_write() {
+    let now = 1000u64;
+
+    let label = IFCLabel {
+        confidentiality: ConfLevel::Internal,
+        integrity: IntegLevel::Untrusted,
+        provenance: ProvenanceSet::EMPTY,
+        freshness: Freshness {
+            observed_at: now,
+            ttl_secs: 3600,
+        },
+        authority: AuthorityLevel::Suggestive,
+        derivation: DerivationClass::AIDerived,
+    };
+
+    let write = FlowNode {
+        id: 0,
+        kind: NodeKind::OutboundAction,
+        label,
+        parent_count: 0,
+        parents: [0; MAX_PARENTS],
+        operation: Some(Operation::WriteFiles),
+        sink_class: Some(SinkClass::WorkspaceWrite),
+    };
+
+    // WorkspaceWrite does NOT require verified derivation
+    assert!(!SinkClass::WorkspaceWrite.requires_verified_derivation());
+
+    assert_eq!(
+        check_flow(&write, now + 1),
+        FlowVerdict::Allow,
+        "AIDerived data MUST be allowed to reach WorkspaceWrite (non-verified sink)"
+    );
+}
+
+// ── Control: no sink_class set → derivation check skipped ──────────────
+//
+// When sink_class is None (legacy path), the derivation check is not
+// applied. This preserves backward compatibility.
+
+#[test]
+fn derivation_check_skipped_without_sink_class() {
+    let now = 1000u64;
+
+    let label = IFCLabel {
+        confidentiality: ConfLevel::Internal,
+        integrity: IntegLevel::Trusted,
+        provenance: ProvenanceSet::EMPTY,
+        freshness: Freshness {
+            observed_at: now,
+            ttl_secs: 3600,
+        },
+        authority: AuthorityLevel::Suggestive,
+        derivation: DerivationClass::AIDerived,
+    };
+
+    // GitPush without sink_class — derivation check NOT applied
+    let push = node(0, NodeKind::OutboundAction, label, Some(Operation::GitPush));
+
+    assert_eq!(
+        check_flow(&push, now + 1),
+        FlowVerdict::Allow,
+        "Without sink_class, derivation check is skipped (backward compat)"
+    );
+}

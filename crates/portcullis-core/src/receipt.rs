@@ -150,6 +150,9 @@ pub fn build_receipt(
         FlowVerdict::Deny(FlowDenyReason::FreshnessExpired) => {
             "freshness: expired data in decision"
         }
+        FlowVerdict::Deny(FlowDenyReason::DerivationViolation) => {
+            "derivation-violation: AI-derived data to verified sink"
+        }
     };
 
     let ancestors: Vec<ReceiptNode> = ancestors

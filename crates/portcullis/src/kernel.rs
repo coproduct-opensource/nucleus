@@ -1661,6 +1661,8 @@ fn verdict_to_flow_verdict(verdict: &Verdict) -> portcullis_core::flow::FlowVerd
                         FlowDenyReason::IntegrityViolation
                     } else if rule.contains("FreshnessExpired") {
                         FlowDenyReason::FreshnessExpired
+                    } else if rule.contains("DerivationViolation") {
+                        FlowDenyReason::DerivationViolation
                     } else {
                         FlowDenyReason::Exfiltration
                     }
