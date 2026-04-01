@@ -1771,7 +1771,8 @@ fn gc_stale_sessions(ttl_secs: u64) -> usize {
             || ext == "lock"
             || ext == "tmp"
             || name.ends_with(".parent-label")
-            || name.ends_with(".parent-chain");
+            || name.ends_with(".parent-chain")
+            || name.ends_with(".parent-compartment");
 
         if !is_session_file {
             continue;
@@ -2652,6 +2653,55 @@ fn main() {
                 );
             }
         }
+
+        // Inherit parent compartment (#461).
+        // The child's compartment is capped at the parent's level:
+        // child ≤ parent (can only narrow, never escalate).
+        if let Ok(parent_sid) = std::env::var("NUCLEUS_PARENT_SESSION") {
+            let safe_parent = sanitize_session_id(&parent_sid);
+            let comp_path = session_dir().join(format!("{safe_parent}.parent-compartment"));
+            if let Ok(parent_comp_str) = std::fs::read_to_string(&comp_path) {
+                if let Some(parent_comp) =
+                    portcullis_core::compartment::Compartment::from_str_opt(parent_comp_str.trim())
+                {
+                    // If child has no compartment, inherit parent's.
+                    // If child has a compartment, cap it at parent's level.
+                    match &compartment {
+                        None => {
+                            eprintln!("nucleus: inherited parent compartment: {parent_comp}");
+                            // Write compartment file so resolve_compartment picks it up
+                            if !session.compartment_token.is_empty() {
+                                let keyed = keyed_compartment_name(
+                                    &input.session_id,
+                                    &session.compartment_token,
+                                );
+                                let file = session_dir().join(format!("{keyed}.compartment"));
+                                std::fs::write(&file, parent_comp.to_string()).ok();
+                            }
+                            session.active_compartment = Some(parent_comp.to_string());
+                        }
+                        Some(child_comp) if *child_comp > parent_comp => {
+                            eprintln!(
+                                "nucleus: child compartment {} exceeds parent {} — capping to parent",
+                                child_comp, parent_comp
+                            );
+                            if !session.compartment_token.is_empty() {
+                                let keyed = keyed_compartment_name(
+                                    &input.session_id,
+                                    &session.compartment_token,
+                                );
+                                let file = session_dir().join(format!("{keyed}.compartment"));
+                                std::fs::write(&file, parent_comp.to_string()).ok();
+                            }
+                            session.active_compartment = Some(parent_comp.to_string());
+                        }
+                        _ => {
+                            // Child is at or below parent level — OK
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Replay previous operations to rebuild exposure state AND flow graph.
@@ -2819,6 +2869,17 @@ fn main() {
                 let chain_path = session_dir().join(format!("{safe_id}.parent-chain"));
                 let chain_ref = format!("session={}\nhash={}\n", &input.session_id, chain_hash_hex);
                 std::fs::write(&chain_path, &chain_ref).ok();
+
+                // Export parent compartment so child inherits ceiling (#461).
+                // Child compartment ≤ parent compartment (can only narrow).
+                if let Some(ref comp) = compartment {
+                    let comp_path = session_dir().join(format!("{safe_id}.parent-compartment"));
+                    std::fs::write(&comp_path, comp.to_string()).ok();
+                    eprintln!(
+                        "nucleus: exported parent compartment '{}' for child agent",
+                        comp
+                    );
+                }
             }
 
             session.high_water_mark += 1;
