@@ -5,6 +5,7 @@
 //! [`ArtifactManifest`] with a SHA-256 digest computed over the canonical
 //! layer ordering.
 
+use crate::exit_codes::ExitCode;
 use portcullis_core::artifact::{ArtifactBuilder, ArtifactManifest};
 use portcullis_core::compartmentfile::Compartmentfile;
 use std::path::Path;
@@ -37,14 +38,14 @@ pub fn run_build(args: &[String]) {
                 Ok(j) => j,
                 Err(e) => {
                     eprintln!("error: failed to serialize artifact: {e}");
-                    std::process::exit(1);
+                    ExitCode::Error.exit();
                 }
             };
             match output_path {
                 Some(path) => {
                     if let Err(e) = std::fs::write(path, &json) {
                         eprintln!("error: failed to write {path}: {e}");
-                        std::process::exit(1);
+                        ExitCode::Error.exit();
                     }
                     eprintln!("Built: {} -> {path}", manifest.digest);
                 }
@@ -56,7 +57,7 @@ pub fn run_build(args: &[String]) {
         }
         Err(e) => {
             eprintln!("error: {e}");
-            std::process::exit(1);
+            ExitCode::Error.exit();
         }
     }
 }

@@ -39,6 +39,8 @@ pub enum CliCommand {
     ShowProfile { name: Option<String> },
     /// `--receipts [session-id]` — view receipt chain.
     Receipts { session_id: Option<String> },
+    /// `--exit-codes` — print exit code documentation.
+    ExitCodes,
 }
 
 /// CLI parsing error.
@@ -114,6 +116,7 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
                 session_id: session_id.clone(),
             })
         }
+        "--exit-codes" => Ok(CliCommand::ExitCodes),
         "--show-profile" => {
             let name = args.get(1).cloned();
             Ok(CliCommand::ShowProfile { name })
@@ -177,6 +180,14 @@ mod tests {
             CliCommand::SmokeTest
         );
         assert_eq!(parse_args(&args(&["--gc"])).unwrap(), CliCommand::Gc);
+    }
+
+    #[test]
+    fn exit_codes_flag() {
+        assert_eq!(
+            parse_args(&args(&["--exit-codes"])).unwrap(),
+            CliCommand::ExitCodes
+        );
     }
 
     #[test]
