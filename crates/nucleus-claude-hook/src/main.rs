@@ -19,6 +19,7 @@ use ring::signature::Ed25519KeyPair;
 use serde::Serialize;
 
 mod classify;
+mod init;
 mod protocol;
 mod session;
 
@@ -850,51 +851,7 @@ fn run_smoke_test() {
 }
 
 fn run_init() {
-    let config_dir = std::path::Path::new(".nucleus");
-    let config_path = config_dir.join("config.toml");
-
-    if config_path.exists() {
-        println!("  \x1b[33m!\x1b[0m .nucleus/config.toml already exists");
-        println!("    Edit it directly or delete to regenerate.");
-        return;
-    }
-
-    std::fs::create_dir_all(config_dir).ok();
-
-    let config = r#"# Nucleus security configuration
-# See: nucleus-claude-hook --help
-
-# Permission profile (run --show-profile <name> to preview)
-profile = "safe_pr_fixer"
-
-# Compartment (research/draft/execute/breakglass)
-# compartment = "research"
-
-# Deny MCP tools without manifests in .nucleus/manifests/
-require_manifests = false
-
-# Block all tool calls on hook infrastructure errors
-fail_closed = false
-"#;
-
-    match std::fs::write(&config_path, config) {
-        Ok(()) => {
-            println!("  \x1b[32m\u{2713}\x1b[0m Created .nucleus/config.toml");
-            println!();
-            println!("  Next steps:");
-            println!("    1. Edit .nucleus/config.toml to customize");
-            println!("    2. Run nucleus-claude-hook --doctor to verify");
-            println!("    3. Restart Claude Code");
-        }
-        Err(e) => {
-            println!("  \x1b[31m\u{2717}\x1b[0m Failed to create config: {e}");
-        }
-    }
-
-    // Also create manifests dir
-    let manifests_dir = config_dir.join("manifests");
-    std::fs::create_dir_all(&manifests_dir).ok();
-    println!("  \x1b[32m\u{2713}\x1b[0m Created .nucleus/manifests/");
+    init::run_init();
 }
 
 fn run_uninstall() {
@@ -1102,6 +1059,7 @@ fn run_help() {
     println!();
     println!("USAGE:");
     println!("  nucleus-claude-hook              Read hook JSON from stdin (normal mode)");
+    println!("  nucleus-claude-hook --init        Scaffold .nucleus/ project directory");
     println!("  nucleus-claude-hook --setup       Configure ~/.claude/settings.json");
     println!("  nucleus-claude-hook --status      Show active sessions");
     println!("  nucleus-claude-hook --gc          Remove stale session files (>24h)");
