@@ -255,6 +255,11 @@ pub use metrics::{
     build_deviation_report, DeviationDetail, DeviationReport, InMemoryMetrics, MetricEvent,
     MetricsCollector, MetricsReport, ReputationMetrics, ReputationWeights,
 };
+#[cfg(feature = "serde")]
+pub use portcullis_core::policy_rules::PolicyLoadError;
+pub use portcullis_core::policy_rules::{
+    AdmissibilityRule, LabelPredicate, PolicyEvaluation, PolicyRuleSet, RuleVerdict,
+};
 #[cfg(feature = "crypto")]
 pub use token::{AttenuationToken, SessionProvenance, TokenError};
 pub use tool_schema::{ApprovedToolSchema, SchemaError, ToolSchemaRegistry};

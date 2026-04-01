@@ -215,6 +215,16 @@ pub enum DenyReason {
         /// Human-readable reason from the egress policy.
         policy_reason: String,
     },
+    /// Operation denied by an admissibility policy rule.
+    ///
+    /// The `PolicyRuleSet` evaluated the operation's sink class against
+    /// source/artifact labels and a matching rule denied the action.
+    PolicyDenied {
+        /// Name of the rule that caused the denial.
+        rule_name: String,
+        /// The sink class that was denied.
+        sink_class: String,
+    },
     /// Information flow control violation.
     ///
     /// The session's accumulated IFC label violates a flow enforcement rule.
@@ -377,6 +387,13 @@ pub struct Kernel {
     /// is applied (all hosts are allowed).
     #[cfg(feature = "spec")]
     egress_policy: Option<crate::egress_policy::EgressPolicy>,
+    /// Optional admissibility policy rules — when present, `decide()` evaluates
+    /// operations against source/artifact/sink predicates after egress checks.
+    ///
+    /// Loaded from `.nucleus/policy.toml`. When `None`, no admissibility
+    /// filtering is applied (all operations pass through to capability checks).
+    #[cfg(feature = "spec")]
+    policy_rules: Option<portcullis_core::policy_rules::PolicyRuleSet>,
     /// Optional Ed25519 signing key for receipt signing.
     ///
     /// When present, `decide_with_parents()` produces signed receipts
@@ -421,6 +438,8 @@ impl Kernel {
             declassification_rules: Vec::new(),
             #[cfg(feature = "spec")]
             egress_policy: None,
+            #[cfg(feature = "spec")]
+            policy_rules: None,
             #[cfg(feature = "crypto")]
             signing_key: None,
         }
@@ -664,6 +683,8 @@ impl Kernel {
             declassification_rules: Vec::new(),
             #[cfg(feature = "spec")]
             egress_policy: None,
+            #[cfg(feature = "spec")]
+            policy_rules: None,
             #[cfg(feature = "crypto")]
             signing_key: None,
         }
@@ -702,6 +723,8 @@ impl Kernel {
             declassification_rules: Vec::new(),
             #[cfg(feature = "spec")]
             egress_policy: None,
+            #[cfg(feature = "spec")]
+            policy_rules: None,
             #[cfg(feature = "crypto")]
             signing_key: None,
         }
@@ -850,6 +873,65 @@ impl Kernel {
                     false,
                     false,
                 );
+            }
+        }
+
+        // 3d. Admissibility policy check — declarative source/artifact/sink rules.
+        //
+        // When a PolicyRuleSet is loaded, evaluate the operation's sink class
+        // against source/artifact label predicates. The policy is fail-closed:
+        // if rules are present and no rule matches, the operation is denied.
+        //
+        // Source labels come from the causal flow graph (if enabled) or the
+        // flat session label. When neither is enabled, the policy is evaluated
+        // with empty source labels (vacuously true for source predicates).
+        #[cfg(feature = "spec")]
+        if let Some(ref policy_rules) = self.policy_rules {
+            use portcullis_core::policy_rules::RuleVerdict;
+
+            let sink = crate::hook_adapter::classify_sink(operation, subject);
+
+            // Gather source/artifact labels from the flow state.
+            let (source_labels, artifact_label) = self.policy_flow_labels();
+
+            let eval = policy_rules.evaluate(&source_labels, &artifact_label, sink);
+            match eval.verdict {
+                RuleVerdict::Allow => {} // pass through to remaining checks
+                RuleVerdict::Deny => {
+                    return self.record_with_exposure(
+                        operation,
+                        subject,
+                        Verdict::Deny(DenyReason::PolicyDenied {
+                            rule_name: if eval.rule_name.is_empty() {
+                                "(default deny)".to_string()
+                            } else {
+                                eval.rule_name
+                            },
+                            sink_class: format!("{sink:?}"),
+                        }),
+                        &pre_hash,
+                        pre_exposure_count,
+                        contributed_label,
+                        false,
+                        false,
+                    );
+                }
+                RuleVerdict::RequiresApproval => {
+                    // Check if there's a pre-granted approval
+                    if !self.consume_approval(operation) {
+                        return self.record_with_exposure(
+                            operation,
+                            subject,
+                            Verdict::RequiresApproval,
+                            &pre_hash,
+                            pre_exposure_count,
+                            contributed_label,
+                            false,
+                            false,
+                        );
+                    }
+                    // Approved — fall through to remaining checks
+                }
             }
         }
 
@@ -1059,6 +1141,25 @@ impl Kernel {
         }
     }
 
+    /// Extract source and artifact labels for policy rule evaluation.
+    ///
+    /// When the flow graph or flat flow label is enabled, derives labels from
+    /// the current flow state. Otherwise returns empty sources and a bottom
+    /// label (which causes source predicates to be vacuously true and
+    /// artifact predicates to match permissively).
+    #[cfg(feature = "spec")]
+    fn policy_flow_labels(&self) -> (Vec<portcullis_core::IFCLabel>, portcullis_core::IFCLabel) {
+        if let Some(ref label) = self.flow_label {
+            // Flat session label: use it as both source and artifact.
+            (vec![*label], *label)
+        } else {
+            // No flow control — use bottom label (most permissive).
+            let now = chrono::Utc::now().timestamp() as u64;
+            let bottom = portcullis_core::IFCLabel::user_prompt(now);
+            (vec![], bottom)
+        }
+    }
+
     /// Tighten effective permissions by taking the meet with a ceiling.
     ///
     /// This is the monotone ratchet: `effective' = effective ∧ ceiling`.
@@ -1144,6 +1245,25 @@ impl Kernel {
     #[cfg(feature = "spec")]
     pub fn egress_policy(&self) -> Option<&crate::egress_policy::EgressPolicy> {
         self.egress_policy.as_ref()
+    }
+
+    /// Set the admissibility policy rules for this session.
+    ///
+    /// When set, `decide()` evaluates operations against source/artifact/sink
+    /// predicates after the egress check. Rules are evaluated in order (first
+    /// match wins); if no rule matches, the default is deny (fail-closed).
+    ///
+    /// Must be called before the first `decide()` — policy rules are
+    /// immutable for the session lifetime.
+    #[cfg(feature = "spec")]
+    pub fn set_policy_rules(&mut self, rules: portcullis_core::policy_rules::PolicyRuleSet) {
+        self.policy_rules = Some(rules);
+    }
+
+    /// Get the policy rules, if set.
+    #[cfg(feature = "spec")]
+    pub fn policy_rules(&self) -> Option<&portcullis_core::policy_rules::PolicyRuleSet> {
+        self.policy_rules.as_ref()
     }
 
     /// Get the append-only session trace.
@@ -3191,5 +3311,187 @@ denied_hosts = ["evil.github.com"]
 
         // Exposure is tracked for audit even though flow graph is active
         assert_eq!(kernel.exposure().count(), 2);
+    }
+
+    // ── PolicyRuleSet integration tests (#657) ──────────────────────────
+
+    #[cfg(feature = "spec")]
+    mod policy_rules_integration {
+        use super::*;
+        use crate::{CapabilityLattice, CommandLattice};
+        use portcullis_core::policy_rules::{
+            AdmissibilityRule, LabelPredicate, PolicyRuleSet, RuleVerdict,
+        };
+        use portcullis_core::{IntegLevel, SinkClass};
+
+        /// Helper: build a kernel with the given policy rules and all capabilities.
+        fn kernel_with_policy(rules: PolicyRuleSet) -> Kernel {
+            // All capabilities set to Always — policy is the only gate.
+            let all_caps = CapabilityLattice {
+                read_files: CapabilityLevel::Always,
+                write_files: CapabilityLevel::Always,
+                edit_files: CapabilityLevel::Always,
+                run_bash: CapabilityLevel::Always,
+                glob_search: CapabilityLevel::Always,
+                grep_search: CapabilityLevel::Always,
+                web_search: CapabilityLevel::Always,
+                web_fetch: CapabilityLevel::Always,
+                git_commit: CapabilityLevel::Always,
+                git_push: CapabilityLevel::Always,
+                create_pr: CapabilityLevel::Always,
+                manage_pods: CapabilityLevel::Always,
+                spawn_agent: CapabilityLevel::Always,
+                #[cfg(not(kani))]
+                extensions: std::collections::BTreeMap::new(),
+            };
+            let mut perms = PermissionLattice::builder()
+                .description("policy-test: all caps, policy is the gate")
+                .capabilities(all_caps)
+                .commands(CommandLattice::permissive())
+                .build();
+            // Clear obligations so the uninhabitable state doesn't interfere.
+            perms.obligations.approvals.clear();
+            let mut kernel = Kernel::new(perms);
+            kernel.enable_flow_control();
+            kernel.set_policy_rules(rules);
+            kernel
+        }
+
+        #[test]
+        fn policy_allows_trusted_write() {
+            let mut rules = PolicyRuleSet::new();
+            rules.push(AdmissibilityRule {
+                name: "trusted workspace writes allowed".to_string(),
+                source_predicate: LabelPredicate {
+                    min_integrity: Some(IntegLevel::Trusted),
+                    ..LabelPredicate::any()
+                },
+                artifact_predicate: LabelPredicate::any(),
+                sink_class: SinkClass::WorkspaceWrite,
+                verdict: RuleVerdict::Allow,
+            });
+
+            let mut kernel = kernel_with_policy(rules);
+
+            // WriteFiles to a workspace path → classified as WorkspaceWrite
+            let (d, token) = kernel.decide(Operation::WriteFiles, "src/main.rs");
+            assert!(
+                matches!(d.verdict, Verdict::Allow),
+                "trusted write should be allowed, got: {:?}",
+                d.verdict
+            );
+            assert!(token.is_some());
+        }
+
+        #[test]
+        fn policy_denies_by_rule() {
+            let mut rules = PolicyRuleSet::new();
+            rules.push(AdmissibilityRule {
+                name: "no git push ever".to_string(),
+                source_predicate: LabelPredicate::any(),
+                artifact_predicate: LabelPredicate::any(),
+                sink_class: SinkClass::GitPush,
+                verdict: RuleVerdict::Deny,
+            });
+
+            let mut kernel = kernel_with_policy(rules);
+
+            // GitPush → denied by policy even though capabilities allow it
+            let (d, token) = kernel.decide(Operation::GitPush, "origin/main");
+            assert!(
+                matches!(d.verdict, Verdict::Deny(DenyReason::PolicyDenied { .. })),
+                "git push should be denied by policy rule, got: {:?}",
+                d.verdict
+            );
+            assert!(token.is_none());
+
+            // Verify the deny reason contains the rule name
+            if let Verdict::Deny(DenyReason::PolicyDenied {
+                rule_name,
+                sink_class,
+            }) = &d.verdict
+            {
+                assert_eq!(rule_name, "no git push ever");
+                assert!(sink_class.contains("GitPush"));
+            }
+        }
+
+        #[test]
+        fn policy_requires_approval() {
+            let mut rules = PolicyRuleSet::new();
+            rules.push(AdmissibilityRule {
+                name: "bash needs approval".to_string(),
+                source_predicate: LabelPredicate::any(),
+                artifact_predicate: LabelPredicate::any(),
+                sink_class: SinkClass::BashExec,
+                verdict: RuleVerdict::RequiresApproval,
+            });
+
+            let mut kernel = kernel_with_policy(rules);
+
+            // RunBash → requires approval by policy
+            let (d, token) = kernel.decide(Operation::RunBash, "ls -la");
+            assert!(
+                matches!(d.verdict, Verdict::RequiresApproval),
+                "bash should require approval, got: {:?}",
+                d.verdict
+            );
+            assert!(token.is_none());
+
+            // Grant approval and try again
+            kernel.grant_approval(Operation::RunBash, 1);
+            let (d, token) = kernel.decide(Operation::RunBash, "ls -la");
+            assert!(
+                matches!(d.verdict, Verdict::Allow),
+                "bash should be allowed after approval, got: {:?}",
+                d.verdict
+            );
+            assert!(token.is_some());
+        }
+
+        #[test]
+        fn policy_default_deny_when_no_rule_matches() {
+            let mut rules = PolicyRuleSet::new();
+            // Only allow WorkspaceWrite — everything else default-denied
+            rules.push(AdmissibilityRule {
+                name: "allow writes only".to_string(),
+                source_predicate: LabelPredicate::any(),
+                artifact_predicate: LabelPredicate::any(),
+                sink_class: SinkClass::WorkspaceWrite,
+                verdict: RuleVerdict::Allow,
+            });
+
+            let mut kernel = kernel_with_policy(rules);
+
+            // Write is allowed
+            let (d, _) = kernel.decide(Operation::WriteFiles, "src/lib.rs");
+            assert!(matches!(d.verdict, Verdict::Allow));
+
+            // GitPush has no matching rule → default deny
+            let (d, token) = kernel.decide(Operation::GitPush, "origin/main");
+            assert!(
+                matches!(d.verdict, Verdict::Deny(DenyReason::PolicyDenied { .. })),
+                "unmatched operation should be default-denied, got: {:?}",
+                d.verdict
+            );
+            assert!(token.is_none());
+
+            // Verify it's a default deny (empty rule name)
+            if let Verdict::Deny(DenyReason::PolicyDenied { rule_name, .. }) = &d.verdict {
+                assert_eq!(rule_name, "(default deny)");
+            }
+        }
+
+        #[test]
+        fn no_policy_rules_means_no_filtering() {
+            // Kernel without policy rules — all operations pass through
+            let perms = PermissionLattice::safe_pr_fixer();
+            let mut kernel = Kernel::new(perms);
+            // Don't call set_policy_rules
+
+            let (d, token) = kernel.decide(Operation::WriteFiles, "src/main.rs");
+            assert!(matches!(d.verdict, Verdict::Allow));
+            assert!(token.is_some());
+        }
     }
 }
