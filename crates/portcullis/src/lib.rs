@@ -275,7 +275,74 @@ pub use tool_schema::{ApprovedToolSchema, SchemaError, ToolSchemaRegistry};
 pub use uninhabitable_state::{ConstraintNucleus, CoreExposureRequirement, UninhabitableState};
 pub use verdict_sink::{ActorIdentity, SinkError, VerdictContext, VerdictOutcome, VerdictSink};
 
+// Re-export envelope and witness types from portcullis-core (envelope feature)
+pub use portcullis_core::envelope::{FieldEnvelope, RowEnvelope, SourceRef, TransformRef};
+pub use portcullis_core::witness::WitnessBundle;
+
 /// Check if a glob pattern matches a path.
 pub fn glob_match(pattern: &str, path: &str) -> bool {
     path::glob_match(pattern, path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use portcullis_core::{effect::EffectKind, DerivationClass, IFCLabel};
+
+    /// Proves that FieldEnvelope, RowEnvelope, and WitnessBundle are
+    /// accessible from the portcullis crate (issue #781).
+    #[test]
+    fn envelope_types_are_accessible() {
+        let field = FieldEnvelope {
+            value_bytes: b"hello".to_vec(),
+            schema_type: "string".into(),
+            label: IFCLabel::default(),
+            derivation_class: DerivationClass::Deterministic,
+            effect_kind: EffectKind::PureTransform,
+            source_node_id: 1,
+            causal_parents: vec![],
+            source_refs: vec![],
+            transform_refs: vec![],
+            witness_bundle_id: None,
+            promoted_by: None,
+            promoted_reason: None,
+            created_at: 1_700_000_000,
+            content_hash: [0u8; 32],
+        };
+
+        // Verify content hash computation works (requires sha2 via envelope feature)
+        let hash = field.compute_content_hash();
+        assert_ne!(hash, [0u8; 32], "SHA-256 of 'hello' should not be zero");
+        assert!(
+            !field.verify_content_hash(),
+            "stored zero-hash should not match"
+        );
+
+        // RowEnvelope is constructible
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert("f1".into(), field);
+        let row = RowEnvelope::new(
+            "row-1".into(),
+            "test_table".into(),
+            fields,
+            None,
+            "v1".into(),
+            1_700_000_000,
+        );
+        assert_eq!(row.fields.len(), 1);
+
+        // WitnessBundle is constructible
+        let wb = WitnessBundle {
+            witness_id: "wb-1".into(),
+            input_blobs: vec![],
+            parser_chain: vec![],
+            transform_chain: vec![],
+            validation_results: vec![],
+            final_output_hash: [0u8; 32],
+            signature: None,
+            created_at: 1_700_000_000,
+        };
+        let digest = wb.compute_digest();
+        assert_eq!(digest.len(), 32);
+    }
 }
