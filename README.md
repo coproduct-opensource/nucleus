@@ -14,7 +14,7 @@ Nucleus is a security framework for AI agents that combines a mathematically ver
 
 | Layer | Tool | Count | Scope |
 |-------|------|-------|-------|
-| **Proved** (unbounded) | Lean 4 + Mathlib | 115 theorems | HeytingAlgebra on 13-dim production lattice ([Aeneas](https://github.com/AeneasVerif/aeneas)-generated types), exposure tracker monotonicity/soundness, IFC flow rules, compartment proofs, declassification safety |
+| **Proved** (unbounded) | Lean 4 + Mathlib | 128 theorems | HeytingAlgebra on 13-dim production lattice ([Aeneas](https://github.com/AeneasVerif/aeneas)-generated types), exposure tracker monotonicity/soundness, IFC flow rules, compartment proofs, declassification safety, delegation narrowing monotonicity |
 | **Bounded-model-checked** | [Kani](https://github.com/model-checking/kani) BMC | 90 harnesses | DecisionToken linearity, lattice distributivity, exposure monoid laws, constitutional kernel invariants, flow enforcement rules, manifest admission |
 | **Tested** | Rust + CI | — | Sandbox isolation, path/command restrictions, network policy, end-to-end |
 
@@ -200,7 +200,7 @@ The core security primitive. When an agent has all three capabilities at autonom
 
 Nucleus detects this combination statically (via `nucleus-audit scan`) and enforces it at runtime (via `portcullis`). When the uninhabitable state is complete, exfiltration operations require **explicit human approval** — the agent cannot bypass this.
 
-The uninhabitable state guard's monotonicity is formally proven: once an operation is denied, it stays denied for the rest of the session (proofs E1-E3 in `portcullis-verified`).
+The uninhabitable state guard's monotonicity is formally proven: once an operation is denied, it stays denied for the rest of the session (proofs E1-E3 in `portcullis`).
 
 ## What Nucleus Provides
 
@@ -216,10 +216,10 @@ Three layers, at different levels of maturity:
 
 | Component | Maturity | Evidence |
 |-----------|----------|----------|
-| **Permission lattice** (portcullis) | Verified | 58K LOC, 1,247 tests, 297 Verus VCs, 90 Kani BMC proofs, 3 fuzz targets |
+| **Permission lattice** (portcullis) | Verified | 73K LOC, 1,347 tests, 297 Verus VCs, 90 Kani BMC proofs, 3 fuzz targets |
 | ** Uninhabitable state detection** | Verified | Static scan + runtime guard, monotonicity proven (E1-E3, Kani B1-B9) |
 | **Attenuation tokens** | Verified | Compact delegation credentials with Kani-proven invariants (D1-D7) |
-| **Delegation chains** | Tested | Monotone attenuation with `meet_with_justification`, audit-reconstructable chains |
+| **Delegation chains** | Verified | Monotone attenuation with `meet_with_justification`, audit-reconstructable chains, Lean proofs for delegation narrowing |
 | **Unicode injection defense** | Tested | 8-category invisible character detection (bidi, tags, ZWJ); warn/strip/deny policy |
 | **Execution receipts** | Tested | Cryptographic pod execution proof with token usage and cost tracking |
 | **Permission market** | Tested | Lagrangian pricing oracle for multi-dimensional capability constraints |
@@ -236,13 +236,21 @@ Three layers, at different levels of maturity:
 | **Budget tracking** | Partial | AtomicBudget exists; pre-exec reservation works, post-exec accounting incomplete |
 | **SPIFFE identity** | Implemented | mTLS + cert management code exists; no SPIRE deployment |
 | **Command exfiltration detection** | Partial | Program-name matching; `bash -c` bypasses documented |
-| **Sink classification** | Tested | First-class `SinkClass` enum for typed sink classification (filesystem, network, process, git, display) |
+| **Sink classification** | Tested | First-class `SinkClass` enum with 13 typed categories (workspace, system, bash, HTTP egress, git, PR, email, memory, agent spawn, MCP, secret, cloud) |
 | **Declassification tokens** | Tested | Artifact-scoped, time-bounded, HMAC-signed tokens for controlled information release with Lean proofs |
-| **Egress policy** | Tested | Config-driven `EgressPolicy` with `HostPattern` matcher for bash command egress destination extraction |
+| **Egress policy** | Tested | Config-driven `EgressPolicy` with `HostPattern` matcher wired into `Kernel::decide()` via `EgressBroker` for bash command egress destination extraction |
 | **Governed memory** | Tested | `GovernedMemory` with rebuttal history and `MemoryAuthority` for auditable agent memory |
 | **Autonomy ceiling** | Tested | Org-level `AutonomyCeiling` cap wired via `NUCLEUS_AUTONOMY_CEILING` env var |
-| **Constitutional kernel** | Tested | `ck-kernel` admission engine with `AdmissionVerdict` that collects all deny reasons, 17 Kani proofs |
-| **Lean 4 proof (Aeneas)** | Verified | Lean 4 HeytingAlgebra instance on `CapabilityLevel` — the same type used in production (re-exported from `portcullis-core`). Aeneas translates Rust MIR to Lean; function correspondence proven via `rfl` (`meet_eq_inf`, `join_eq_sup`, `implies_eq_himp`). CI type-checks proofs and rejects `sorry`. 115 theorems across 7 proof files. |
+| **Causal ancestry** | Tested | Per-artifact `FlowGraph::causal_label()` queries replace flat per-session flow labels; kernel refactored for artifact-granular decisions |
+| **Enterprise managed allowlists** | Tested | Organizational policy controls for managed tool and domain allowlists |
+| **Signed manifests** | Tested | Ed25519 manifest signatures with verification in the admission pipeline |
+| **Artifact-granular quarantine** | Tested | Per-node flow blocking for targeted quarantine without session-wide denial |
+| **Trusted ancestry check** | Tested | Compartment-aware trusted ancestry verification for Execute transitions |
+| **Delegation scope** | Tested | `DelegationScope` + `DelegationConstraints` for fine-grained delegation control |
+| **Receipt chain** | Tested | `ReceiptChain` with hash-chain integrity for linked execution receipts across sessions |
+| **Compartment escalation warnings** | Tested | Warnings on compartment escalation; breakglass requires explicit reason string |
+| **Constitutional kernel** | Tested | `ck-kernel` admission engine with `AdmissionVerdict` that collects all deny reasons, `PolicyRuleSet` admissibility rules wired into `Kernel::decide()`, 17 Kani proofs |
+| **Lean 4 proof (Aeneas)** | Verified | Lean 4 HeytingAlgebra instance on `CapabilityLevel` — the same type used in production (re-exported from `portcullis-core`). Aeneas translates Rust MIR to Lean; function correspondence proven via `rfl` (`meet_eq_inf`, `join_eq_sup`, `implies_eq_himp`). CI type-checks proofs and rejects `sorry`. 128 theorems across 8 proof files. |
 | **OTLP permission telemetry** | Tested | Every tool call verdict emits an OTel span with all 13 capability dimensions, exposure state, lockdown status. VerdictSink trait ensures both HTTP and MCP paths produce telemetry. Supports gRPC and http/protobuf (Grafana Cloud). |
 | **Fleet lockdown** | Tested | `nucleus lockdown` drops agents to read-only via gRPC streaming (sub-second). Lattice meet semantics: reads allowed for forensics, writes blocked. OR-semantics between signal file and gRPC stream. Label-based pod scoping. |
 
@@ -250,7 +258,7 @@ Three layers, at different levels of maturity:
 
 ## Permission Lattice
 
-Permissions compose predictably via a mathematical lattice. This is the most mature part of Nucleus — 58K lines of Rust with 297 SMT verification conditions (Verus/Z3) and 90 bounded model checking proofs (Kani/CaDiCaL).
+Permissions compose predictably via a mathematical lattice. This is the most mature part of Nucleus — 73K lines of Rust with 297 SMT verification conditions (Verus/Z3) and 90 bounded model checking proofs (Kani/CaDiCaL).
 
 | Structure | What It Gives You | Status |
 |-----------|-------------------|--------|
@@ -261,7 +269,7 @@ Permissions compose predictably via a mathematical lattice. This is the most mat
 | **Attenuation Tokens** | Compact delegation credentials for wire transport | Verified (Kani D1-D7) |
 | **Exposure Invariants** | Exposure-set monotonicity, uninhabitable state iff count==3 | Verified (Kani B1-B9) |
 | **Modal Operators** | Distinguish "guaranteed safe" (□) from "might be safe" (◇) | Tested |
-| **Delegation Chains** | Monotone attenuation with justification trails | Tested |
+| **Delegation Chains** | Monotone attenuation with justification trails, scope/constraints | Verified (Lean) |
 
 For the theory: [docs/THEORY.md](docs/THEORY.md).
 
@@ -270,9 +278,9 @@ For the theory: [docs/THEORY.md](docs/THEORY.md).
 Nucleus uses three complementary verification tools:
 - [Verus](https://verus-lang.github.io/verus/) (SMT-based, SOSP 2025 Best Paper) — 297 verification conditions checked by Z3
 - [Kani](https://model-checking.github.io/kani/) (bounded model checking) — 90 proofs checked by CaDiCaL SAT solver
-- [Lean 4](https://lean-lang.org/) + [Aeneas](https://github.com/AeneasVerif/aeneas) (kernel-checked) — 115 theorems: HeytingAlgebra on 13-dim lattice, exposure tracker, flow rules, compartment safety, declassification, decide_pure correctness
+- [Lean 4](https://lean-lang.org/) + [Aeneas](https://github.com/AeneasVerif/aeneas) (kernel-checked) — 128 theorems: HeytingAlgebra on 13-dim lattice, exposure tracker, flow rules, compartment safety, declassification, decide_pure correctness, delegation narrowing monotonicity
 
-**What's proven (297 Verus VCs + 90 Kani proofs + 115 Lean 4 theorems + Lean 4 HeytingAlgebra):**
+**What's proven (297 Verus VCs + 90 Kani proofs + 128 Lean 4 theorems + Lean 4 HeytingAlgebra):**
 
 *Verus (SMT):*
 - Lattice laws: idempotent, commutative, associative, absorptive for all 13 capability dimensions
@@ -295,11 +303,12 @@ Nucleus uses three complementary verification tools:
 - Manifest admission (5 proofs): `AdmissionVerdict` construction, manifest-based tool admission in `portcullis-core`
 - Flow enforcement (5 proofs): Flow graph enforcement rules, taint propagation correctness in `portcullis-core`
 
-*Lean 4 (kernel-checked, 115 theorems, zero sorry):*
+*Lean 4 (kernel-checked, 128 theorems across 8 proof libraries, zero sorry):*
 - HeytingAlgebra instance on `CapabilityLevel` (the production type, re-exported from `portcullis-core`)
 - Function correspondence via `rfl`: `meet_eq_inf`, `join_eq_sup`, `implies_eq_himp` — the Lean kernel reduces both sides to identical terms
 - Aeneas pipeline: Charon extracts Rust MIR, Aeneas translates to Lean, CI diffs against committed output and type-checks proofs
 - Discriminant ordering invariant: compile-time assertion ensures declaration order = `#[repr(u8)]` values
+- Delegation narrowing: monotone attenuation verified — narrowed delegations never exceed the parent scope
 
 **What's tested but not formally verified:**
 - Modal operators (necessity/possibility, S4 axioms) — 16 property tests
@@ -372,25 +381,24 @@ The enforcement path: Agent → MCP → tool-proxy (inside VM) → portcullis ch
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
-| **portcullis** | Permission lattice: 12 algebraic modules + attenuation tokens | 1,247 |
-| **portcullis-core** | Core types: `CapabilityLevel`, `SinkClass`, `DeclassificationToken`, flow graph, manifests | 169 |
-| **portcullis-verified** | Verus SMT proofs for portcullis | 297 VCs |
-| **ck-kernel** | Constitutional kernel: admission engine, lineage store, 17 Kani proofs | 40 |
+| **portcullis** | Permission lattice: 12 algebraic modules + attenuation tokens + egress policy + receipt chain | 1,347 |
+| **portcullis-core** | Core types: `CapabilityLevel`, `SinkClass` (13 categories), `DeclassificationToken`, flow graph, policy rules, enterprise allowlists, signed manifests, delegation scope, manifests | 204 |
+| **ck-kernel** | Constitutional kernel: admission engine, lineage store, `PolicyRuleSet` wiring, 17 Kani proofs | 35 |
 | **ck-types** | Constitutional kernel core types: manifests, digests, policy lattice | 32 |
 | **ck-policy** | Constitutional kernel policy subset and monotonicity checks | — |
-| **nucleus-claude-hook** | Hook binary for AI coding assistants (IFC kernel, compartments, profiles) | 47 |
+| **nucleus-claude-hook** | Hook binary for AI coding assistants (IFC kernel, compartments, profiles, causal ancestry, quarantine) | 53 |
 | **nucleus-audit** | `scan` PodSpecs, AI assistant settings, MCP configs; `verify` audit logs | 66 |
-| **nucleus** | Enforcement: sandbox, executor, budget | 39 |
-| **nucleus-node** | Node daemon managing Firecracker microVMs + containers | 52 |
-| **nucleus-tool-proxy** | MCP tool proxy running inside pods (+ unicode audit, exit reports) | 154 |
+| **nucleus** | Enforcement: sandbox, executor, budget | 41 |
+| **nucleus-node** | Node daemon managing Firecracker microVMs + containers | 66 |
+| **nucleus-tool-proxy** | MCP tool proxy running inside pods (+ unicode audit, exit reports) | 169 |
 | **nucleus-mcp** | MCP server bridging to tool-proxy | 53 |
-| **nucleus-identity** | SPIFFE workload identity, mTLS, certs | 191 |
+| **nucleus-identity** | SPIFFE workload identity, mTLS, certs | 303 |
 | **nucleus-spec** | PodSpec definitions (policy, network, creds, execution receipts) | 21 |
 | **nucleus-proto** | Generated gRPC/Protobuf types for nucleus-node | — |
-| **nucleus-permission-market** | Lagrangian pricing oracle for capability constraints | 27 |
+| **nucleus-permission-market** | Lagrangian pricing oracle for capability constraints | 28 |
 | **nucleus-cli** | CLI for running tasks with enforced permissions | 57 |
-| **nucleus-sdk** | Rust SDK for building sandboxed AI agents | 28 |
-| **nucleus-client** | Client signing utilities + drand anchoring | 22 |
+| **nucleus-sdk** | Rust SDK for building sandboxed AI agents | 35 |
+| **nucleus-client** | Client signing utilities + drand anchoring | 29 |
 | **nucleus-guest-init** | Guest init for Firecracker rootfs | 3 |
 | **nucleus-net-probe** | TCP probe for network policy tests | — |
 | **ctf-engine** | Capture-the-flag engine for security testing | — |
@@ -398,7 +406,7 @@ The enforcement path: Agent → MCP → tool-proxy (inside VM) → portcullis ch
 | **ctf-server** | CTF web server | — |
 | **exposure-playground** | Interactive TUI for exploring the lattice | — |
 
-Total: ~1,860 test functions across the workspace (146K LOC Rust). Proptest invariants each generate 256 random cases. 90 Kani BMC proofs run in CI alongside 297 Verus VCs and 115 Lean 4 theorems.
+Total: ~2,625 test functions across the workspace (151K LOC Rust). Proptest invariants each generate 256 random cases. 90 Kani BMC proofs run in CI alongside 297 Verus VCs and 128 Lean 4 theorems.
 
 ## Permission Profiles
 
