@@ -21,6 +21,7 @@ use serde::Serialize;
 mod build;
 mod classify;
 mod cli;
+mod completions;
 mod init;
 mod protocol;
 mod session;
@@ -1158,6 +1159,21 @@ fn main() {
                     println!("No receipt chains found.");
                 }
                 println!("\nUsage: nucleus-claude-hook --receipts <session-id>");
+            }
+            return;
+        }
+        Ok(cli::CliCommand::Completions { shell }) => {
+            match completions::generate_completions(&shell) {
+                Some(script) => {
+                    print!("{script}");
+                }
+                None => {
+                    eprintln!(
+                        "nucleus-claude-hook: unsupported shell '{shell}'. \
+                         Supported: bash, zsh, fish"
+                    );
+                    std::process::exit(1);
+                }
             }
             return;
         }
