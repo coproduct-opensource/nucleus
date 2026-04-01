@@ -149,6 +149,8 @@ pub mod profile;
 /// Attenuation tokens — compact delegation credentials for wire transport.
 ///
 /// Requires the `serde` feature for serialization.
+/// Append-only receipt chain with hash-chain integrity enforcement.
+pub mod receipt_chain;
 #[cfg(feature = "crypto")]
 pub mod receipt_sign;
 #[cfg(feature = "remote-audit")]
@@ -260,6 +262,7 @@ pub use portcullis_core::policy_rules::PolicyLoadError;
 pub use portcullis_core::policy_rules::{
     AdmissibilityRule, LabelPredicate, PolicyEvaluation, PolicyRuleSet, RuleVerdict,
 };
+pub use receipt_chain::{ChainAppendError, ChainVerifyError, ReceiptChain, VerdictReceipt};
 #[cfg(feature = "crypto")]
 pub use token::{AttenuationToken, SessionProvenance, TokenError};
 pub use tool_schema::{ApprovedToolSchema, SchemaError, ToolSchemaRegistry};
