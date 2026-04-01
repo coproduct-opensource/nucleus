@@ -61,6 +61,11 @@ pub(crate) struct SessionState {
     pub(crate) chain_head_hash: [u8; 32],
     /// Ephemeral Ed25519 signing key (PKCS#8 DER, generated per session).
     /// Stored so receipts across hook invocations use the same key.
+    ///
+    /// **Threat model**: The session file is protected by 0600 permissions and
+    /// the parent directory by 0700. This prevents other-user access but not
+    /// same-user process access. Full protection against same-user compromise
+    /// requires process isolation (Nucleus pods / Firecracker microVMs). See #744.
     #[serde(default)]
     pub(crate) signing_key_pkcs8: Vec<u8>,
     /// Active compartment name (if any). Used to detect transitions.
@@ -117,6 +122,41 @@ pub(crate) enum SessionLoad {
 // Path helpers
 // ---------------------------------------------------------------------------
 
+/// Set file permissions to owner-only read/write (0600) on Unix.
+/// This is a defense-in-depth measure for files containing key material (#744).
+#[cfg(unix)]
+fn set_file_owner_only(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+        eprintln!(
+            "nucleus: WARNING — failed to set 0600 permissions on {}: {e}. \
+             Key material may be readable by other processes.",
+            path.display()
+        );
+    }
+}
+
+/// Check that the session directory does not have group or other permissions.
+/// Warns if the directory is too permissive (e.g., someone ran chmod manually).
+#[cfg(unix)]
+fn warn_if_dir_too_permissive(dir: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = std::fs::metadata(dir) {
+        let mode = meta.permissions().mode();
+        // Check for group (0o070) or other (0o007) permission bits
+        if mode & 0o077 != 0 {
+            eprintln!(
+                "nucleus: WARNING — session directory {} has group/other permissions \
+                 (mode {:04o}). Key material may be accessible to other users. \
+                 Expected 0700. Run: chmod 700 {}",
+                dir.display(),
+                mode & 0o7777,
+                dir.display()
+            );
+        }
+    }
+}
+
 pub(crate) fn session_dir() -> PathBuf {
     // Use XDG-compliant path: ~/.local/share/nucleus/sessions/ (#552)
     // Falls back to /tmp/nucleus-hook if home dir unavailable.
@@ -135,6 +175,8 @@ pub(crate) fn session_dir() -> PathBuf {
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).ok();
+        // Warn if permissions were externally changed (#744)
+        warn_if_dir_too_permissive(&dir);
     }
     dir
 }
@@ -274,6 +316,9 @@ pub(crate) fn save_session(session_id: &str, state: &SessionState) {
                 // Fallback: direct write (better than losing state entirely)
                 std::fs::write(&path, &json).ok();
             }
+            // Restrict file permissions to owner-only (0600) — key material (#744)
+            #[cfg(unix)]
+            set_file_owner_only(&path);
 
             // Write HWM file separately — survives state file deletion.
             // Also atomic: temp + rename.
@@ -290,6 +335,9 @@ pub(crate) fn save_session(session_id: &str, state: &SessionState) {
                     eprintln!("nucleus: WARNING — failed to save HWM file: {e}");
                 }
             }
+            // Restrict HWM file permissions to owner-only (0600)
+            #[cfg(unix)]
+            set_file_owner_only(&hwm_path);
         }
         Err(e) => {
             eprintln!("nucleus: WARNING �� failed to serialize session state: {e}");
@@ -982,5 +1030,80 @@ mod tests {
         // "breakglass:" with empty reason should be denied
         let result = write_and_resolve(&sid, token, "breakglass:", None);
         assert_eq!(result, None, "breakglass with empty reason must be denied");
+    }
+
+    // -----------------------------------------------------------------
+    // File permission tests (#744)
+    // -----------------------------------------------------------------
+
+    #[cfg(unix)]
+    #[test]
+    fn test_session_file_permissions_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let test_id = format!("perms-test-{}", std::process::id());
+        let state = SessionState {
+            high_water_mark: 1,
+            profile: "test".to_string(),
+            signing_key_pkcs8: vec![1, 2, 3, 4], // Simulated key material
+            ..Default::default()
+        };
+        save_session(&test_id, &state);
+
+        // Verify session state file has 0600 permissions
+        let state_path = session_state_path(&test_id);
+        let meta = std::fs::metadata(&state_path).expect("state file should exist");
+        let mode = meta.permissions().mode() & 0o7777;
+        assert_eq!(
+            mode, 0o600,
+            "session state file should have 0600 permissions, got {:04o}",
+            mode
+        );
+
+        // Verify HWM file also has 0600 permissions
+        let hwm_path = session_hwm_path(&test_id);
+        let hwm_meta = std::fs::metadata(&hwm_path).expect("HWM file should exist");
+        let hwm_mode = hwm_meta.permissions().mode() & 0o7777;
+        assert_eq!(
+            hwm_mode, 0o600,
+            "HWM file should have 0600 permissions, got {:04o}",
+            hwm_mode
+        );
+
+        // Verify session directory has 0700 permissions
+        let dir = session_dir();
+        let dir_meta = std::fs::metadata(&dir).expect("session dir should exist");
+        let dir_mode = dir_meta.permissions().mode() & 0o7777;
+        assert_eq!(
+            dir_mode, 0o700,
+            "session directory should have 0700 permissions, got {:04o}",
+            dir_mode
+        );
+
+        // Cleanup
+        std::fs::remove_file(&state_path).ok();
+        std::fs::remove_file(&hwm_path).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_session_dir_permission_warning() {
+        // Verify that session_dir() sets 0700 permissions even if
+        // the directory already exists with looser permissions.
+        let dir = session_dir();
+        use std::os::unix::fs::PermissionsExt;
+
+        // Temporarily loosen permissions
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).ok();
+
+        // Re-call session_dir() — it should fix permissions back to 0700
+        let dir2 = session_dir();
+        let meta = std::fs::metadata(&dir2).expect("session dir should exist");
+        let mode = meta.permissions().mode() & 0o7777;
+        assert_eq!(
+            mode, 0o700,
+            "session_dir() should restore 0700 permissions, got {:04o}",
+            mode
+        );
     }
 }
