@@ -14,7 +14,7 @@ use portcullis_core::flow::{
     QuarantineVerdict, TrustAncestryResult, MAX_PARENTS,
 };
 use portcullis_core::receipt::{build_receipt, FlowReceipt, MAX_RECEIPT_ANCESTORS};
-use portcullis_core::{IFCLabel, Operation};
+use portcullis_core::{default_sink_class, IFCLabel, Operation, SinkClass};
 
 /// Errors during graph operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -232,7 +232,14 @@ impl FlowGraph {
             &self.gather_labels(parents),
             intrinsic_label(NodeKind::OutboundAction, now),
         );
-        let node = self.build_node(NodeKind::OutboundAction, label, parents, Some(operation));
+        let sink_class = Some(default_sink_class(operation));
+        let node = self.build_node(
+            NodeKind::OutboundAction,
+            label,
+            parents,
+            Some(operation),
+            sink_class,
+        );
         let verdict = check_flow(&node, now);
         self.maybe_compact();
         let id = self.next_id;
@@ -353,6 +360,7 @@ impl FlowGraph {
         label: IFCLabel,
         parents: &[NodeId],
         operation: Option<Operation>,
+        sink_class: Option<SinkClass>,
     ) -> FlowNode {
         let mut parent_array = [0u64; MAX_PARENTS];
         for (i, &pid) in parents.iter().take(MAX_PARENTS).enumerate() {
@@ -365,7 +373,7 @@ impl FlowGraph {
             parent_count: parents.len().min(MAX_PARENTS) as u8,
             parents: parent_array,
             operation,
-            sink_class: None,
+            sink_class,
         }
     }
 
@@ -377,7 +385,7 @@ impl FlowGraph {
         operation: Option<Operation>,
     ) -> NodeId {
         self.maybe_compact();
-        let node = self.build_node(kind, label, parents, operation);
+        let node = self.build_node(kind, label, parents, operation, None);
         let id = self.next_id;
         self.nodes.push(Some(node));
         self.next_id += 1;
@@ -2061,6 +2069,42 @@ mod tests {
         assert!(
             g.get(recent_id).is_some(),
             "recent node (id={recent_id}) should survive compaction"
+        );
+    }
+
+    #[test]
+    fn insert_action_populates_sink_class() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+        let user = g
+            .insert_observation(NodeKind::UserPrompt, &[], now)
+            .unwrap();
+        let file = g
+            .insert_observation(NodeKind::FileRead, &[user], now)
+            .unwrap();
+
+        let r = g.insert_action(Operation::GitPush, &[file], now).unwrap();
+        let node = g.get(r.node_id).unwrap();
+        assert_eq!(
+            node.sink_class,
+            Some(SinkClass::GitPush),
+            "insert_action must populate sink_class from operation"
+        );
+    }
+
+    #[test]
+    fn insert_action_sink_class_enables_sink_based_rules() {
+        // Secret data flowing to GitPush (an exfil vector) must be denied.
+        // This only works when sink_class is populated on the node.
+        let mut g = FlowGraph::new();
+        let now = 1000;
+        let secret = g.insert_observation(NodeKind::Secret, &[], now).unwrap();
+
+        let r = g.insert_action(Operation::GitPush, &[secret], now).unwrap();
+        assert_eq!(
+            r.verdict,
+            FlowVerdict::Deny(FlowDenyReason::Exfiltration),
+            "secret data to GitPush (exfil sink) must be denied"
         );
     }
 }
