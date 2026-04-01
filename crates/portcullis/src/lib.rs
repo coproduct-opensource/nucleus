@@ -277,7 +277,7 @@ pub use verdict_sink::{ActorIdentity, SinkError, VerdictContext, VerdictOutcome,
 
 // Re-export envelope and witness types from portcullis-core (envelope feature)
 pub use portcullis_core::envelope::{FieldEnvelope, RowEnvelope, SourceRef, TransformRef};
-pub use portcullis_core::witness::WitnessBundle;
+pub use portcullis_core::witness::{ChainVerifyError as WitnessChainVerifyError, WitnessBundle};
 
 /// Check if a glob pattern matches a path.
 pub fn glob_match(pattern: &str, path: &str) -> bool {

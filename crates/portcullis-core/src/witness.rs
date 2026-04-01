@@ -26,6 +26,87 @@
 //! changes the digest.
 
 use sha2::{Digest, Sha256};
+use std::fmt;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ChainVerifyError — structured errors from verify_chain()
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Error returned by [`WitnessBundle::verify_chain`] when the hash chain
+/// is broken or a step has no linkage to known inputs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChainVerifyError {
+    /// The bundle has no input blobs — there is nothing to derive from.
+    EmptyInputBlobs,
+    /// A parser step's `input_hash` does not match any available hash
+    /// (input blob content hashes for the first parser, or previous step
+    /// outputs for subsequent parsers).
+    UnlinkedParser {
+        parser_id: String,
+        step_index: usize,
+    },
+    /// A transform step references an `input_hash` that was never produced
+    /// by a preceding step or input blob.
+    UnlinkedTransform {
+        transform_id: String,
+        step_index: usize,
+        missing_hash: [u8; 32],
+    },
+    /// A transform step has an empty `input_hashes` list.
+    EmptyTransformInputs {
+        transform_id: String,
+        step_index: usize,
+    },
+    /// The `final_output_hash` does not match the last step's output.
+    FinalHashMismatch,
+    /// Multiple input blobs but no parsers or transforms — ambiguous passthrough.
+    AmbiguousPassthrough,
+}
+
+impl fmt::Display for ChainVerifyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyInputBlobs => write!(f, "witness bundle has no input blobs"),
+            Self::UnlinkedParser {
+                parser_id,
+                step_index,
+            } => write!(
+                f,
+                "parser '{parser_id}' at step {step_index} does not consume any known input hash"
+            ),
+            Self::UnlinkedTransform {
+                transform_id,
+                step_index,
+                missing_hash,
+            } => write!(
+                f,
+                "transform '{transform_id}' at step {step_index} references unknown input hash {}",
+                hex_short(missing_hash)
+            ),
+            Self::EmptyTransformInputs {
+                transform_id,
+                step_index,
+            } => write!(
+                f,
+                "transform '{transform_id}' at step {step_index} has empty input_hashes"
+            ),
+            Self::FinalHashMismatch => {
+                write!(f, "final_output_hash does not match last step output")
+            }
+            Self::AmbiguousPassthrough => write!(
+                f,
+                "multiple input blobs with no parsers or transforms — ambiguous passthrough"
+            ),
+        }
+    }
+}
+
+fn hex_short(hash: &[u8; 32]) -> String {
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}...",
+        hash[0], hash[1], hash[2], hash[3]
+    )
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // InputBlob — a fetched data source
@@ -56,6 +137,10 @@ pub struct InputBlob {
 /// Parsers consume raw input and produce structured output. The
 /// `parser_hash` is the content hash of the parser implementation
 /// (e.g. WASM module hash), enabling reproducibility verification.
+///
+/// The `input_hash` field declares which input this parser consumes.
+/// For the first parser this must be one of the input blob content hashes;
+/// for subsequent parsers it must be a preceding step's output hash.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParserStep {
     /// Unique identifier for the parser (e.g. "json_parser", "csv_reader").
@@ -64,6 +149,9 @@ pub struct ParserStep {
     pub parser_version: String,
     /// SHA-256 hash of the parser implementation binary/source.
     pub parser_hash: [u8; 32],
+    /// SHA-256 hash of the input this parser consumes. Must reference an
+    /// input blob content hash or a preceding parser step's output hash.
+    pub input_hash: [u8; 32],
     /// SHA-256 hash of the parser output.
     pub output_hash: [u8; 32],
 }
@@ -182,6 +270,7 @@ impl WitnessBundle {
             hasher.update(step.parser_id.as_bytes());
             hasher.update(step.parser_version.as_bytes());
             hasher.update(step.parser_hash);
+            hasher.update(step.input_hash);
             hasher.update(step.output_hash);
         }
 
@@ -220,41 +309,51 @@ impl WitnessBundle {
     /// Verify the hash chain: each step's output feeds the next step's input.
     ///
     /// The chain is:
-    /// 1. Input blob content hashes feed into the first parser step (any blob
-    ///    hash must appear as a known input).
-    /// 2. Each parser step's `output_hash` must appear in the next stage's
-    ///    input hashes.
-    /// 3. Each transform step's `output_hash` must appear in a subsequent
-    ///    transform's `input_hashes` (or be the `final_output_hash`).
+    /// 1. Each parser step's `input_hash` must reference an input blob
+    ///    content hash or a preceding parser step's output hash.
+    /// 2. Each parser step's `output_hash` is added to the available set.
+    /// 3. Each transform step's `input_hashes` must all reference hashes
+    ///    in the available set (input blobs, parser outputs, or preceding
+    ///    transform outputs).
     /// 4. The last step's `output_hash` must equal `final_output_hash`.
     ///
     /// Empty chains are invalid — at least one input blob is required.
-    pub fn verify_chain(&self) -> bool {
+    pub fn verify_chain(&self) -> Result<(), ChainVerifyError> {
         // Must have at least one input blob.
         if self.input_blobs.is_empty() {
-            return false;
+            return Err(ChainVerifyError::EmptyInputBlobs);
         }
 
         // Collect all input blob content hashes as the initial available set.
         let mut available_hashes: Vec<[u8; 32]> =
             self.input_blobs.iter().map(|b| b.content_hash).collect();
 
-        // Parser chain: each parser consumes from available hashes and produces
-        // its output hash.
-        for step in &self.parser_chain {
-            // Parser must consume at least one available hash.
-            // (Parsers take raw input — we check that input blobs exist.)
+        // Parser chain: each parser's input_hash must be in available_hashes.
+        for (step_index, step) in self.parser_chain.iter().enumerate() {
+            if !available_hashes.contains(&step.input_hash) {
+                return Err(ChainVerifyError::UnlinkedParser {
+                    parser_id: step.parser_id.clone(),
+                    step_index,
+                });
+            }
             available_hashes.push(step.output_hash);
         }
 
         // Transform chain: each transform's input_hashes must all be available.
-        for step in &self.transform_chain {
+        for (step_index, step) in self.transform_chain.iter().enumerate() {
             if step.input_hashes.is_empty() {
-                return false;
+                return Err(ChainVerifyError::EmptyTransformInputs {
+                    transform_id: step.transform_id.clone(),
+                    step_index,
+                });
             }
             for ih in &step.input_hashes {
                 if !available_hashes.contains(ih) {
-                    return false;
+                    return Err(ChainVerifyError::UnlinkedTransform {
+                        transform_id: step.transform_id.clone(),
+                        step_index,
+                        missing_hash: *ih,
+                    });
                 }
             }
             available_hashes.push(step.output_hash);
@@ -271,12 +370,16 @@ impl WitnessBundle {
         } else {
             // No parsers or transforms — single input passthrough.
             if self.input_blobs.len() != 1 {
-                return false;
+                return Err(ChainVerifyError::AmbiguousPassthrough);
             }
             self.input_blobs[0].content_hash
         };
 
-        last_output == self.final_output_hash
+        if last_output != self.final_output_hash {
+            return Err(ChainVerifyError::FinalHashMismatch);
+        }
+
+        Ok(())
     }
 
     /// Check whether this witness bundle is fully valid.
@@ -290,7 +393,7 @@ impl WitnessBundle {
     /// does not store a digest internally — the bundle is content-addressed
     /// by its digest.
     pub fn is_valid(&self) -> bool {
-        if !self.verify_chain() {
+        if self.verify_chain().is_err() {
             return false;
         }
 
@@ -338,6 +441,7 @@ mod tests {
                 parser_id: "json_parser".to_string(),
                 parser_version: "1.0.0".to_string(),
                 parser_hash: sha256(b"json_parser_v1_binary"),
+                input_hash,
                 output_hash: parser_output,
             }],
             transform_chain: vec![TransformStep {
@@ -367,7 +471,7 @@ mod tests {
     #[test]
     fn valid_bundle_passes_all_checks() {
         let bundle = make_valid_bundle();
-        assert!(bundle.verify_chain());
+        assert!(bundle.verify_chain().is_ok());
         assert!(bundle.is_valid());
     }
 
@@ -376,7 +480,7 @@ mod tests {
         let mut bundle = make_valid_bundle();
         // Point transform at a hash that was never produced.
         bundle.transform_chain[0].input_hashes = vec![[0xDE; 32]];
-        assert!(!bundle.verify_chain());
+        assert!(bundle.verify_chain().is_err());
         assert!(!bundle.is_valid());
     }
 
@@ -385,7 +489,7 @@ mod tests {
         let mut bundle = make_valid_bundle();
         // Tamper with the final output hash.
         bundle.final_output_hash = [0xFF; 32];
-        assert!(!bundle.verify_chain());
+        assert!(bundle.verify_chain().is_err());
         assert!(!bundle.is_valid());
     }
 
@@ -394,7 +498,7 @@ mod tests {
         let mut bundle = make_valid_bundle();
         // Fail one validator.
         bundle.validation_results[1].passed = false;
-        assert!(bundle.verify_chain()); // Chain is still intact.
+        assert!(bundle.verify_chain().is_ok()); // Chain is still intact.
         assert!(!bundle.is_valid()); // But bundle is invalid.
     }
 
@@ -450,7 +554,7 @@ mod tests {
     fn empty_input_blobs_rejected() {
         let mut bundle = make_valid_bundle();
         bundle.input_blobs.clear();
-        assert!(!bundle.verify_chain());
+        assert!(bundle.verify_chain().is_err());
         assert!(!bundle.is_valid());
     }
 
@@ -476,7 +580,7 @@ mod tests {
             signature: None,
             created_at: 1000,
         };
-        assert!(bundle.verify_chain());
+        assert!(bundle.verify_chain().is_ok());
         assert!(bundle.is_valid());
     }
 
@@ -509,12 +613,14 @@ mod tests {
                     parser_id: "json_parser".to_string(),
                     parser_version: "1.0.0".to_string(),
                     parser_hash: sha256(b"json_v1"),
+                    input_hash: hash_a,
                     output_hash: parser_out_a,
                 },
                 ParserStep {
                     parser_id: "sql_parser".to_string(),
                     parser_version: "1.0.0".to_string(),
                     parser_hash: sha256(b"sql_v1"),
+                    input_hash: hash_b,
                     output_hash: parser_out_b,
                 },
             ],
@@ -533,7 +639,7 @@ mod tests {
             signature: None,
             created_at: 2000,
         };
-        assert!(bundle.verify_chain());
+        assert!(bundle.verify_chain().is_ok());
         assert!(bundle.is_valid());
     }
 
@@ -567,6 +673,7 @@ mod tests {
                 parser_id: "p".to_string(),
                 parser_version: "1.0.0".to_string(),
                 parser_hash: sha256(b"p"),
+                input_hash,
                 output_hash: parser_out,
             }],
             transform_chain: vec![TransformStep {
@@ -580,6 +687,227 @@ mod tests {
             signature: None,
             created_at: 1000,
         };
-        assert!(!bundle.verify_chain());
+        assert!(bundle.verify_chain().is_err());
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Input linkage verification tests (issue #742)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn parser_with_no_input_linkage_rejected() {
+        let input_hash = sha256(b"real input");
+        let parser_output = sha256(b"parsed output");
+        let fabricated_input = sha256(b"fabricated - not an input blob");
+
+        let bundle = WitnessBundle {
+            witness_id: "wb-unlinked-parser".to_string(),
+            input_blobs: vec![InputBlob {
+                source_class: "api".to_string(),
+                content_hash: input_hash,
+                fetched_at: 1000,
+                fetched_by: "agent".to_string(),
+            }],
+            parser_chain: vec![ParserStep {
+                parser_id: "evil_parser".to_string(),
+                parser_version: "1.0.0".to_string(),
+                parser_hash: sha256(b"evil"),
+                input_hash: fabricated_input, // Not in input_blobs!
+                output_hash: parser_output,
+            }],
+            transform_chain: vec![],
+            validation_results: vec![],
+            final_output_hash: parser_output,
+            signature: None,
+            created_at: 1000,
+        };
+
+        let err = bundle.verify_chain().unwrap_err();
+        assert_eq!(
+            err,
+            ChainVerifyError::UnlinkedParser {
+                parser_id: "evil_parser".to_string(),
+                step_index: 0,
+            }
+        );
+        assert!(!bundle.is_valid());
+    }
+
+    #[test]
+    fn second_parser_can_consume_first_parser_output() {
+        let input_hash = sha256(b"raw data");
+        let parser_1_output = sha256(b"stage 1 parsed");
+        let parser_2_output = sha256(b"stage 2 parsed");
+
+        let bundle = WitnessBundle {
+            witness_id: "wb-chained-parsers".to_string(),
+            input_blobs: vec![InputBlob {
+                source_class: "file".to_string(),
+                content_hash: input_hash,
+                fetched_at: 1000,
+                fetched_by: "agent".to_string(),
+            }],
+            parser_chain: vec![
+                ParserStep {
+                    parser_id: "stage1".to_string(),
+                    parser_version: "1.0.0".to_string(),
+                    parser_hash: sha256(b"s1"),
+                    input_hash,
+                    output_hash: parser_1_output,
+                },
+                ParserStep {
+                    parser_id: "stage2".to_string(),
+                    parser_version: "1.0.0".to_string(),
+                    parser_hash: sha256(b"s2"),
+                    input_hash: parser_1_output, // Consumes first parser's output.
+                    output_hash: parser_2_output,
+                },
+            ],
+            transform_chain: vec![],
+            validation_results: vec![],
+            final_output_hash: parser_2_output,
+            signature: None,
+            created_at: 1000,
+        };
+
+        assert!(bundle.verify_chain().is_ok());
+        assert!(bundle.is_valid());
+    }
+
+    #[test]
+    fn second_parser_with_unknown_input_rejected() {
+        let input_hash = sha256(b"raw data");
+        let parser_1_output = sha256(b"stage 1 parsed");
+        let parser_2_output = sha256(b"stage 2 parsed");
+        let unknown_hash = sha256(b"unknown source");
+
+        let bundle = WitnessBundle {
+            witness_id: "wb-bad-chain".to_string(),
+            input_blobs: vec![InputBlob {
+                source_class: "file".to_string(),
+                content_hash: input_hash,
+                fetched_at: 1000,
+                fetched_by: "agent".to_string(),
+            }],
+            parser_chain: vec![
+                ParserStep {
+                    parser_id: "stage1".to_string(),
+                    parser_version: "1.0.0".to_string(),
+                    parser_hash: sha256(b"s1"),
+                    input_hash,
+                    output_hash: parser_1_output,
+                },
+                ParserStep {
+                    parser_id: "stage2".to_string(),
+                    parser_version: "1.0.0".to_string(),
+                    parser_hash: sha256(b"s2"),
+                    input_hash: unknown_hash, // Not from any known source!
+                    output_hash: parser_2_output,
+                },
+            ],
+            transform_chain: vec![],
+            validation_results: vec![],
+            final_output_hash: parser_2_output,
+            signature: None,
+            created_at: 1000,
+        };
+
+        let err = bundle.verify_chain().unwrap_err();
+        assert_eq!(
+            err,
+            ChainVerifyError::UnlinkedParser {
+                parser_id: "stage2".to_string(),
+                step_index: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn transform_consuming_unknown_hash_rejected() {
+        let input_hash = sha256(b"data");
+        let parser_output = sha256(b"parsed");
+        let unknown_hash = sha256(b"never produced by any step");
+        let transform_output = sha256(b"transformed");
+
+        let bundle = WitnessBundle {
+            witness_id: "wb-bad-transform".to_string(),
+            input_blobs: vec![InputBlob {
+                source_class: "api".to_string(),
+                content_hash: input_hash,
+                fetched_at: 1000,
+                fetched_by: "agent".to_string(),
+            }],
+            parser_chain: vec![ParserStep {
+                parser_id: "p".to_string(),
+                parser_version: "1.0.0".to_string(),
+                parser_hash: sha256(b"p"),
+                input_hash,
+                output_hash: parser_output,
+            }],
+            transform_chain: vec![TransformStep {
+                transform_id: "bad_transform".to_string(),
+                version: "1.0.0".to_string(),
+                input_hashes: vec![parser_output, unknown_hash], // One valid, one unknown.
+                output_hash: transform_output,
+            }],
+            validation_results: vec![],
+            final_output_hash: transform_output,
+            signature: None,
+            created_at: 1000,
+        };
+
+        let err = bundle.verify_chain().unwrap_err();
+        assert_eq!(
+            err,
+            ChainVerifyError::UnlinkedTransform {
+                transform_id: "bad_transform".to_string(),
+                step_index: 0,
+                missing_hash: unknown_hash,
+            }
+        );
+    }
+
+    #[test]
+    fn transform_can_consume_input_blob_directly() {
+        // A transform that references an input blob hash (no parser needed)
+        // should be valid — transforms consume from available hashes which
+        // includes input blob content hashes.
+        let input_hash = sha256(b"direct data");
+        let transform_output = sha256(b"transformed");
+
+        let bundle = WitnessBundle {
+            witness_id: "wb-direct-transform".to_string(),
+            input_blobs: vec![InputBlob {
+                source_class: "file".to_string(),
+                content_hash: input_hash,
+                fetched_at: 1000,
+                fetched_by: "agent".to_string(),
+            }],
+            parser_chain: vec![],
+            transform_chain: vec![TransformStep {
+                transform_id: "t".to_string(),
+                version: "1.0.0".to_string(),
+                input_hashes: vec![input_hash],
+                output_hash: transform_output,
+            }],
+            validation_results: vec![],
+            final_output_hash: transform_output,
+            signature: None,
+            created_at: 1000,
+        };
+
+        assert!(bundle.verify_chain().is_ok());
+    }
+
+    #[test]
+    fn error_display_is_informative() {
+        let err = ChainVerifyError::UnlinkedParser {
+            parser_id: "evil".to_string(),
+            step_index: 0,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("evil"));
+        assert!(msg.contains("step 0"));
+        assert!(msg.contains("known input hash"));
     }
 }
