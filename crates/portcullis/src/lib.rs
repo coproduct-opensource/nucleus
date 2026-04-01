@@ -106,12 +106,11 @@ pub mod delegation;
 pub mod dropout;
 /// Bash command egress analysis — detect network exfiltration.
 pub mod egress;
-/// Egress policy — config loader and host pattern matching for outbound traffic control.
+/// Egress policy — host pattern matching for outbound traffic control.
 ///
-/// Requires the `spec` feature (includes `serde`, `toml`).
-#[cfg(feature = "spec")]
+/// Types and enforcement are always compiled. TOML loading methods
+/// (`load_from_dir`, `from_toml`) require the `spec` feature.
 pub mod egress_extract;
-#[cfg(feature = "spec")]
 pub mod egress_policy;
 pub mod escalation;
 pub mod exposure_core;
@@ -252,9 +251,7 @@ pub use delegation::{
     meet_with_justification, DelegationChain, DelegationLink, MeetJustification, RestrictionDetail,
     RestrictionReason,
 };
-#[cfg(feature = "spec")]
 pub use egress_extract::{extract_egress_destinations, EgressDestination};
-#[cfg(feature = "spec")]
 pub use egress_policy::{EgressPolicy, EgressPolicyError, EgressVerdict, HostPattern};
 pub use metrics::{
     build_deviation_report, DeviationDetail, DeviationReport, InMemoryMetrics, MetricEvent,

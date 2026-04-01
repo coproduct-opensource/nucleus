@@ -386,14 +386,12 @@ pub struct Kernel {
     ///
     /// Loaded from `.nucleus/egress.toml`. When `None`, no egress filtering
     /// is applied (all hosts are allowed).
-    #[cfg(feature = "spec")]
     egress_policy: Option<crate::egress_policy::EgressPolicy>,
     /// Optional admissibility policy rules — when present, `decide()` evaluates
     /// operations against source/artifact/sink predicates after egress checks.
     ///
     /// Loaded from `.nucleus/policy.toml`. When `None`, no admissibility
     /// filtering is applied (all operations pass through to capability checks).
-    #[cfg(feature = "spec")]
     policy_rules: Option<portcullis_core::policy_rules::PolicyRuleSet>,
     /// Optional Ed25519 signing key for receipt signing.
     ///
@@ -461,9 +459,7 @@ impl Kernel {
             flow_label: Some(portcullis_core::IFCLabel::user_prompt(now)),
             flow_graph: None,
             declassification_rules: Vec::new(),
-            #[cfg(feature = "spec")]
             egress_policy: None,
-            #[cfg(feature = "spec")]
             policy_rules: None,
             #[cfg(feature = "crypto")]
             signing_key: None,
@@ -506,9 +502,7 @@ impl Kernel {
             flow_label: None,
             flow_graph: None,
             declassification_rules: Vec::new(),
-            #[cfg(feature = "spec")]
             egress_policy: None,
-            #[cfg(feature = "spec")]
             policy_rules: None,
             #[cfg(feature = "crypto")]
             signing_key: None,
@@ -771,9 +765,7 @@ impl Kernel {
             flow_label: Some(portcullis_core::IFCLabel::user_prompt(now)),
             flow_graph: None,
             declassification_rules: Vec::new(),
-            #[cfg(feature = "spec")]
             egress_policy: None,
-            #[cfg(feature = "spec")]
             policy_rules: None,
             #[cfg(feature = "crypto")]
             signing_key: None,
@@ -813,9 +805,7 @@ impl Kernel {
             flow_label: Some(portcullis_core::IFCLabel::user_prompt(now)),
             flow_graph: None,
             declassification_rules: Vec::new(),
-            #[cfg(feature = "spec")]
             egress_policy: None,
-            #[cfg(feature = "spec")]
             policy_rules: None,
             #[cfg(feature = "crypto")]
             signing_key: None,
@@ -953,7 +943,6 @@ impl Kernel {
         // For RunBash: extract destinations from the command string.
         // For WebFetch: extract host from the URL subject.
         // For GitPush/CreatePr: extract host from the remote URL subject.
-        #[cfg(feature = "spec")]
         if let Some(ref egress) = self.egress_policy {
             if let Some(denial) = check_egress(operation, subject, egress) {
                 return self.record_with_exposure(
@@ -978,7 +967,6 @@ impl Kernel {
         // Source labels come from the causal flow graph (if enabled) or the
         // flat session label. When neither is enabled, the policy is evaluated
         // with empty source labels (vacuously true for source predicates).
-        #[cfg(feature = "spec")]
         if let Some(ref policy_rules) = self.policy_rules {
             use portcullis_core::policy_rules::RuleVerdict;
 
@@ -1240,7 +1228,6 @@ impl Kernel {
     /// the current flow state. Otherwise returns empty sources and a bottom
     /// label (which causes source predicates to be vacuously true and
     /// artifact predicates to match permissively).
-    #[cfg(feature = "spec")]
     fn policy_flow_labels(&self) -> (Vec<portcullis_core::IFCLabel>, portcullis_core::IFCLabel) {
         if let Some(ref label) = self.flow_label {
             // Flat session label: use it as both source and artifact.
@@ -1329,13 +1316,11 @@ impl Kernel {
     ///
     /// Must be called before the first `decide()` — egress policy is
     /// immutable for the session lifetime (like isolation level).
-    #[cfg(feature = "spec")]
     pub fn set_egress_policy(&mut self, policy: crate::egress_policy::EgressPolicy) {
         self.egress_policy = Some(policy);
     }
 
     /// Get the egress policy, if set.
-    #[cfg(feature = "spec")]
     pub fn egress_policy(&self) -> Option<&crate::egress_policy::EgressPolicy> {
         self.egress_policy.as_ref()
     }
@@ -1348,13 +1333,11 @@ impl Kernel {
     ///
     /// Must be called before the first `decide()` — policy rules are
     /// immutable for the session lifetime.
-    #[cfg(feature = "spec")]
     pub fn set_policy_rules(&mut self, rules: portcullis_core::policy_rules::PolicyRuleSet) {
         self.policy_rules = Some(rules);
     }
 
     /// Get the policy rules, if set.
-    #[cfg(feature = "spec")]
     pub fn policy_rules(&self) -> Option<&portcullis_core::policy_rules::PolicyRuleSet> {
         self.policy_rules.as_ref()
     }
@@ -1635,7 +1618,6 @@ fn verdict_to_flow_verdict(verdict: &Verdict) -> portcullis_core::flow::FlowVerd
 /// [`crate::egress_extract::extract_egress_destinations`].
 /// For `WebFetch`/`WebSearch`, extracts the host from the URL subject.
 /// For `GitPush`/`CreatePr`, extracts the host from the remote URL subject.
-#[cfg(feature = "spec")]
 fn check_egress(
     operation: Operation,
     subject: &str,
@@ -1722,7 +1704,6 @@ fn check_egress(
 ///
 /// Handles: `https://host/path`, `http://host:port/path`, `git@host:org/repo.git`,
 /// and bare `hostname` strings (if they contain a dot).
-#[cfg(feature = "spec")]
 fn extract_host_from_subject(subject: &str) -> Option<String> {
     let trimmed = subject.trim();
 
