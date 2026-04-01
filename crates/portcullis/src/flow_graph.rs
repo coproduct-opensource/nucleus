@@ -362,7 +362,18 @@ impl FlowGraph {
         id
     }
 
-    /// Apply a scoped declassification token to a specific node.
+    /// Apply a scoped declassification token to a specific node **without
+    /// signature verification**.
+    ///
+    /// # Security Warning
+    ///
+    /// This method does **not** verify the token's Ed25519 signature.
+    /// In production, use [`apply_token_verified()`](Self::apply_token_verified)
+    /// which cryptographically verifies the signature against trusted keys
+    /// before applying the declassification.
+    ///
+    /// This unverified method is retained for backward compatibility and
+    /// testing scenarios where signature infrastructure is not available.
     ///
     /// Validates that:
     /// 1. The target node exists in the graph
@@ -404,6 +415,40 @@ impl FlowGraph {
             original_label: result.original,
             new_label: result.label,
         }
+    }
+
+    /// Apply a declassification token with Ed25519 signature verification.
+    ///
+    /// Unlike `apply_token()`, this method **requires** a valid signature
+    /// verified against at least one of the provided trusted public keys.
+    /// Unsigned or tampered tokens are rejected with `InvalidSignature`.
+    ///
+    /// This is the recommended method for production use. The unverified
+    /// `apply_token()` should only be used in tests.
+    ///
+    /// # Arguments
+    ///
+    /// * `token` — The declassification token to apply.
+    /// * `trusted_keys` — Ed25519 public keys (32 bytes each) that may
+    ///   have signed this token. Supports key rotation by accepting
+    ///   multiple keys.
+    /// * `now` — Current unix timestamp for expiry checking.
+    #[cfg(feature = "crypto")]
+    pub fn apply_token_verified(
+        &mut self,
+        token: &portcullis_core::declassify::DeclassificationToken,
+        trusted_keys: &[&[u8]],
+        now: u64,
+    ) -> portcullis_core::declassify::TokenApplyResult {
+        use portcullis_core::declassify::TokenApplyResult;
+
+        // Verify signature FIRST — before any other checks
+        if crate::token_sign::verify_token_any_key(token, trusted_keys).is_err() {
+            return TokenApplyResult::InvalidSignature;
+        }
+
+        // Delegate to the existing apply logic
+        self.apply_token(token, now)
     }
 
     // ── Trusted ancestry check (#515) ────────────────────────────────
@@ -1648,6 +1693,181 @@ mod tests {
                 );
             }
             other => panic!("Expected Untrusted, got {other:?}"),
+        }
+    }
+
+    // ── apply_token_verified integration tests (#731) ───────────────
+
+    #[cfg(feature = "crypto")]
+    mod apply_token_verified_tests {
+        use super::*;
+        use portcullis_core::declassify::*;
+        use ring::rand::SystemRandom;
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+
+        fn test_key() -> Ed25519KeyPair {
+            let rng = SystemRandom::new();
+            let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+            Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap()
+        }
+
+        fn make_graph_with_web_node() -> (FlowGraph, u64) {
+            let mut g = FlowGraph::new();
+            let now = 1000;
+            let web = g
+                .insert_observation(NodeKind::WebContent, &[], now)
+                .unwrap();
+            assert_eq!(
+                g.get(web).unwrap().label.integrity,
+                portcullis_core::IntegLevel::Adversarial
+            );
+            (g, web)
+        }
+
+        fn make_token_for(node_id: u64) -> DeclassificationToken {
+            DeclassificationToken::new(
+                node_id,
+                DeclassificationRule {
+                    action: DeclassifyAction::RaiseIntegrity {
+                        from: portcullis_core::IntegLevel::Adversarial,
+                        to: portcullis_core::IntegLevel::Untrusted,
+                    },
+                    justification: "Validated search results",
+                },
+                vec![Operation::WriteFiles, Operation::GitCommit],
+                2000, // valid_until
+                "Curated API output".to_string(),
+            )
+        }
+
+        #[test]
+        fn apply_token_verified_signed_token_succeeds() {
+            let key = test_key();
+            let (mut g, web) = make_graph_with_web_node();
+            let mut token = make_token_for(web);
+
+            crate::token_sign::sign_token(&mut token, &key);
+            assert!(token.is_signed());
+
+            let pk = key.public_key().as_ref();
+            let result = g.apply_token_verified(&token, &[pk], 1000);
+
+            match result {
+                TokenApplyResult::Applied {
+                    original_label,
+                    new_label,
+                } => {
+                    assert_eq!(
+                        original_label.integrity,
+                        portcullis_core::IntegLevel::Adversarial
+                    );
+                    assert_eq!(new_label.integrity, portcullis_core::IntegLevel::Untrusted);
+                }
+                other => panic!("Expected Applied, got {other:?}"),
+            }
+
+            // Verify the graph node was actually modified
+            assert_eq!(
+                g.get(web).unwrap().label.integrity,
+                portcullis_core::IntegLevel::Untrusted
+            );
+        }
+
+        #[test]
+        fn apply_token_verified_tampered_signature_rejected() {
+            let key = test_key();
+            let (mut g, web) = make_graph_with_web_node();
+            let mut token = make_token_for(web);
+
+            crate::token_sign::sign_token(&mut token, &key);
+
+            // Tamper: change the target node ID after signing
+            token.target_node_id = web; // keep same so node exists, but tamper justification
+            token.justification = "malicious override".to_string();
+
+            let pk = key.public_key().as_ref();
+            let result = g.apply_token_verified(&token, &[pk], 1000);
+            assert_eq!(result, TokenApplyResult::InvalidSignature);
+
+            // Verify the graph node was NOT modified
+            assert_eq!(
+                g.get(web).unwrap().label.integrity,
+                portcullis_core::IntegLevel::Adversarial
+            );
+        }
+
+        #[test]
+        fn apply_token_verified_unsigned_token_rejected() {
+            let key = test_key();
+            let (mut g, web) = make_graph_with_web_node();
+            let token = make_token_for(web); // unsigned
+
+            assert!(!token.is_signed());
+
+            let pk = key.public_key().as_ref();
+            let result = g.apply_token_verified(&token, &[pk], 1000);
+            assert_eq!(result, TokenApplyResult::InvalidSignature);
+
+            // Verify the graph node was NOT modified
+            assert_eq!(
+                g.get(web).unwrap().label.integrity,
+                portcullis_core::IntegLevel::Adversarial
+            );
+        }
+
+        #[test]
+        fn apply_token_verified_wrong_key_rejected() {
+            let sign_key = test_key();
+            let wrong_key = test_key();
+            let (mut g, web) = make_graph_with_web_node();
+            let mut token = make_token_for(web);
+
+            crate::token_sign::sign_token(&mut token, &sign_key);
+
+            let wrong_pk = wrong_key.public_key().as_ref();
+            let result = g.apply_token_verified(&token, &[wrong_pk], 1000);
+            assert_eq!(result, TokenApplyResult::InvalidSignature);
+        }
+
+        #[test]
+        fn apply_token_verified_with_key_rotation() {
+            let old_key = test_key();
+            let new_key = test_key();
+            let (mut g, web) = make_graph_with_web_node();
+            let mut token = make_token_for(web);
+
+            // Sign with old key
+            crate::token_sign::sign_token(&mut token, &old_key);
+
+            // Verify with both keys (rotation scenario)
+            let old_pk = old_key.public_key().as_ref();
+            let new_pk = new_key.public_key().as_ref();
+            let result = g.apply_token_verified(&token, &[new_pk, old_pk], 1000);
+
+            assert!(
+                matches!(result, TokenApplyResult::Applied { .. }),
+                "Should accept token signed by rotated-out key: {result:?}"
+            );
+        }
+
+        #[test]
+        fn apply_token_verified_expired_after_sig_check() {
+            let key = test_key();
+            let (mut g, web) = make_graph_with_web_node();
+            let mut token = make_token_for(web);
+            token.valid_until = 500; // expired
+
+            // Re-sign with the updated valid_until
+            crate::token_sign::sign_token(&mut token, &key);
+
+            let pk = key.public_key().as_ref();
+            let result = g.apply_token_verified(&token, &[pk], 1000);
+
+            // Signature is valid, but token is expired
+            assert!(
+                matches!(result, TokenApplyResult::Expired { .. }),
+                "Expected Expired after valid signature, got {result:?}"
+            );
         }
     }
 }
