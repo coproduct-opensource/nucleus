@@ -157,6 +157,8 @@ pub mod receipt_sign;
 pub mod s3_audit_backend;
 #[cfg(feature = "crypto")]
 pub mod token;
+/// Ed25519 signing and verification for declassification tokens.
+pub mod token_sign;
 /// MCP tool schema pinning: rug-pull detection for MCP servers.
 ///
 /// Stores SHA-256 hashes of approved tool schemas and detects silent

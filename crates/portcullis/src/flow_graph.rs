@@ -362,7 +362,18 @@ impl FlowGraph {
         id
     }
 
-    /// Apply a scoped declassification token to a specific node.
+    /// Apply a scoped declassification token to a specific node **without
+    /// signature verification**.
+    ///
+    /// # Security Warning
+    ///
+    /// This method does **not** verify the token's Ed25519 signature.
+    /// In production, use [`apply_token_verified()`](Self::apply_token_verified)
+    /// which cryptographically verifies the signature against trusted keys
+    /// before applying the declassification.
+    ///
+    /// This unverified method is retained for backward compatibility and
+    /// testing scenarios where signature infrastructure is not available.
     ///
     /// Validates that:
     /// 1. The target node exists in the graph
@@ -404,6 +415,40 @@ impl FlowGraph {
             original_label: result.original,
             new_label: result.label,
         }
+    }
+
+    /// Apply a declassification token with Ed25519 signature verification.
+    ///
+    /// Unlike `apply_token()`, this method **requires** a valid signature
+    /// verified against at least one of the provided trusted public keys.
+    /// Unsigned or tampered tokens are rejected with `InvalidSignature`.
+    ///
+    /// This is the recommended method for production use. The unverified
+    /// `apply_token()` should only be used in tests.
+    ///
+    /// # Arguments
+    ///
+    /// * `token` — The declassification token to apply.
+    /// * `trusted_keys` — Ed25519 public keys (32 bytes each) that may
+    ///   have signed this token. Supports key rotation by accepting
+    ///   multiple keys.
+    /// * `now` — Current unix timestamp for expiry checking.
+    #[cfg(feature = "crypto")]
+    pub fn apply_token_verified(
+        &mut self,
+        token: &portcullis_core::declassify::DeclassificationToken,
+        trusted_keys: &[&[u8]],
+        now: u64,
+    ) -> portcullis_core::declassify::TokenApplyResult {
+        use portcullis_core::declassify::TokenApplyResult;
+
+        // Verify signature FIRST — before any other checks
+        if crate::token_sign::verify_token_any_key(token, trusted_keys).is_err() {
+            return TokenApplyResult::InvalidSignature;
+        }
+
+        // Delegate to the existing apply logic
+        self.apply_token(token, now)
     }
 
     // ── Trusted ancestry check (#515) ────────────────────────────────
@@ -1102,6 +1147,225 @@ mod tests {
         assert!(matches!(
             g.apply_token(&token, now),
             TokenApplyResult::PreconditionUnmet
+        ));
+    }
+
+    // ── apply_token_verified integration tests (#731) ────────────────
+
+    #[cfg(feature = "crypto")]
+    #[test]
+    fn apply_token_verified_accepts_signed() {
+        use portcullis_core::declassify::*;
+        use ring::rand::SystemRandom;
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+
+        let rng = SystemRandom::new();
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let key = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+        let pub_key = key.public_key().as_ref();
+
+        let mut g = FlowGraph::new();
+        let now = 1000;
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+
+        let mut token = DeclassificationToken::new(
+            web,
+            DeclassificationRule {
+                action: DeclassifyAction::RaiseIntegrity {
+                    from: portcullis_core::IntegLevel::Adversarial,
+                    to: portcullis_core::IntegLevel::Untrusted,
+                },
+                justification: "Validated search results",
+            },
+            vec![Operation::WriteFiles],
+            now + 3600,
+            "Curated API output".to_string(),
+        );
+        crate::token_sign::sign_token(&mut token, &key);
+
+        let result = g.apply_token_verified(&token, &[pub_key], now);
+        match result {
+            TokenApplyResult::Applied {
+                original_label,
+                new_label,
+            } => {
+                assert_eq!(
+                    original_label.integrity,
+                    portcullis_core::IntegLevel::Adversarial
+                );
+                assert_eq!(new_label.integrity, portcullis_core::IntegLevel::Untrusted);
+            }
+            other => panic!("Expected Applied, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "crypto")]
+    #[test]
+    fn apply_token_verified_rejects_unsigned() {
+        use portcullis_core::declassify::*;
+        use ring::rand::SystemRandom;
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+
+        let rng = SystemRandom::new();
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let key = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+        let pub_key = key.public_key().as_ref();
+
+        let mut g = FlowGraph::new();
+        let now = 1000;
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+
+        let token = DeclassificationToken::new(
+            web,
+            DeclassificationRule {
+                action: DeclassifyAction::RaiseIntegrity {
+                    from: portcullis_core::IntegLevel::Adversarial,
+                    to: portcullis_core::IntegLevel::Untrusted,
+                },
+                justification: "test",
+            },
+            vec![Operation::WriteFiles],
+            now + 3600,
+            "unsigned".to_string(),
+        );
+
+        assert!(matches!(
+            g.apply_token_verified(&token, &[pub_key], now),
+            TokenApplyResult::InvalidSignature
+        ));
+
+        assert_eq!(
+            g.get(web).unwrap().label.integrity,
+            portcullis_core::IntegLevel::Adversarial
+        );
+    }
+
+    #[cfg(feature = "crypto")]
+    #[test]
+    fn apply_token_verified_rejects_wrong_key() {
+        use portcullis_core::declassify::*;
+        use ring::rand::SystemRandom;
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+
+        let rng = SystemRandom::new();
+        let sign_pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let sign_key = Ed25519KeyPair::from_pkcs8(sign_pkcs8.as_ref()).unwrap();
+        let wrong_pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let wrong_key = Ed25519KeyPair::from_pkcs8(wrong_pkcs8.as_ref()).unwrap();
+        let wrong_pub = wrong_key.public_key().as_ref();
+
+        let mut g = FlowGraph::new();
+        let now = 1000;
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+
+        let mut token = DeclassificationToken::new(
+            web,
+            DeclassificationRule {
+                action: DeclassifyAction::RaiseIntegrity {
+                    from: portcullis_core::IntegLevel::Adversarial,
+                    to: portcullis_core::IntegLevel::Untrusted,
+                },
+                justification: "test",
+            },
+            vec![Operation::WriteFiles],
+            now + 3600,
+            "wrong signer".to_string(),
+        );
+        crate::token_sign::sign_token(&mut token, &sign_key);
+
+        assert!(matches!(
+            g.apply_token_verified(&token, &[wrong_pub], now),
+            TokenApplyResult::InvalidSignature
+        ));
+
+        assert_eq!(
+            g.get(web).unwrap().label.integrity,
+            portcullis_core::IntegLevel::Adversarial
+        );
+    }
+
+    #[cfg(feature = "crypto")]
+    #[test]
+    fn apply_token_verified_rejects_tampered() {
+        use portcullis_core::declassify::*;
+        use ring::rand::SystemRandom;
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+
+        let rng = SystemRandom::new();
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let key = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+        let pub_key = key.public_key().as_ref();
+
+        let mut g = FlowGraph::new();
+        let now = 1000;
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+
+        let mut token = DeclassificationToken::new(
+            web,
+            DeclassificationRule {
+                action: DeclassifyAction::RaiseIntegrity {
+                    from: portcullis_core::IntegLevel::Adversarial,
+                    to: portcullis_core::IntegLevel::Untrusted,
+                },
+                justification: "test",
+            },
+            vec![Operation::WriteFiles],
+            now + 3600,
+            "will be tampered".to_string(),
+        );
+        crate::token_sign::sign_token(&mut token, &key);
+
+        token.target_node_id = 999;
+
+        assert!(matches!(
+            g.apply_token_verified(&token, &[pub_key], now),
+            TokenApplyResult::InvalidSignature
+        ));
+    }
+
+    #[cfg(feature = "crypto")]
+    #[test]
+    fn apply_token_verified_no_trusted_keys() {
+        use portcullis_core::declassify::*;
+        use ring::rand::SystemRandom;
+        use ring::signature::Ed25519KeyPair;
+
+        let rng = SystemRandom::new();
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let key = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+
+        let mut g = FlowGraph::new();
+        let now = 1000;
+        let web = g
+            .insert_observation(NodeKind::WebContent, &[], now)
+            .unwrap();
+
+        let mut token = DeclassificationToken::new(
+            web,
+            DeclassificationRule {
+                action: DeclassifyAction::RaiseIntegrity {
+                    from: portcullis_core::IntegLevel::Adversarial,
+                    to: portcullis_core::IntegLevel::Untrusted,
+                },
+                justification: "test",
+            },
+            vec![Operation::WriteFiles],
+            now + 3600,
+            "no keys".to_string(),
+        );
+        crate::token_sign::sign_token(&mut token, &key);
+
+        assert!(matches!(
+            g.apply_token_verified(&token, &[], now),
+            TokenApplyResult::InvalidSignature
         ));
     }
 
