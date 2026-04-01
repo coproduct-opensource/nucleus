@@ -250,6 +250,15 @@ pub enum DenyReason {
         )]
         receipt: Option<String>,
     },
+    /// Declassification token failed cryptographic verification.
+    ///
+    /// A declassification token was rejected because its Ed25519 signature
+    /// is missing, invalid, or not signed by any of the kernel's trusted
+    /// public keys. This prevents unauthorized label downgrading.
+    InvalidDeclassification {
+        /// Human-readable detail about why the declassification was rejected.
+        detail: String,
+    },
 }
 
 /// The source of a RequiresApproval verdict.
@@ -409,6 +418,15 @@ pub struct Kernel {
     /// Loaded from `.nucleus/enterprise.toml`. When `None`, no enterprise
     /// filtering is applied.
     enterprise: Option<portcullis_core::enterprise::EnterpriseAllowlist>,
+    /// Trusted Ed25519 public keys for declassification token verification.
+    ///
+    /// When non-empty, declassification tokens applied via
+    /// [`Kernel::apply_declassification_token`] must carry a valid Ed25519
+    /// signature from one of these keys. Unsigned rules applied via
+    /// [`Kernel::add_declassification_rule`] will log a warning when
+    /// trusted keys are configured.
+    #[cfg(feature = "crypto")]
+    trusted_public_keys: Vec<[u8; 32]>,
     /// Optional Ed25519 signing key for receipt signing.
     ///
     /// When present, `decide_with_parents()` produces signed receipts
@@ -479,6 +497,8 @@ impl Kernel {
             policy_rules: None,
             enterprise: None,
             #[cfg(feature = "crypto")]
+            trusted_public_keys: Vec::new(),
+            #[cfg(feature = "crypto")]
             signing_key: None,
             receipt_chain: None,
         }
@@ -522,6 +542,8 @@ impl Kernel {
             egress_policy: None,
             policy_rules: None,
             enterprise: None,
+            #[cfg(feature = "crypto")]
+            trusted_public_keys: Vec::new(),
             #[cfg(feature = "crypto")]
             signing_key: None,
             receipt_chain: None,
@@ -578,11 +600,97 @@ impl Kernel {
     /// Each rule that fires during flow checking produces an audit-visible
     /// label modification. Rules cannot escalate — only controlled downgrading
     /// in the direction specified by the rule type.
+    ///
+    /// # Security Warning
+    ///
+    /// This method accepts unsigned rules. When trusted public keys are
+    /// configured via [`set_trusted_keys`](Self::set_trusted_keys), a
+    /// warning is logged because unsigned rules bypass signature verification.
+    /// Prefer [`apply_declassification_token`](Self::apply_declassification_token)
+    /// for cryptographically verified declassification.
     pub fn add_declassification_rule(
         &mut self,
         rule: portcullis_core::declassify::DeclassificationRule,
     ) {
+        #[cfg(feature = "crypto")]
+        if !self.trusted_public_keys.is_empty() {
+            tracing::warn!(
+                justification = %rule.justification,
+                "unsigned declassification rule added while trusted keys are configured — \
+                 use apply_declassification_token() for verified declassification"
+            );
+        }
         self.declassification_rules.push(rule);
+    }
+
+    /// Set trusted Ed25519 public keys for declassification token verification.
+    ///
+    /// When set, [`apply_declassification_token`](Self::apply_declassification_token)
+    /// verifies token signatures against these keys before applying label
+    /// changes. Supports key rotation by accepting multiple keys.
+    ///
+    /// When no trusted keys are set (the default), unsigned declassification
+    /// rules are applied without verification for backward compatibility.
+    #[cfg(feature = "crypto")]
+    pub fn set_trusted_keys(&mut self, keys: Vec<[u8; 32]>) {
+        self.trusted_public_keys = keys;
+    }
+
+    /// Apply a cryptographically signed declassification token to a flow graph node.
+    ///
+    /// This is the secure path for declassification. The token must carry a
+    /// valid Ed25519 signature from one of the kernel's trusted public keys
+    /// (set via [`set_trusted_keys`](Self::set_trusted_keys)).
+    ///
+    /// If trusted keys are configured, the token's signature is verified
+    /// before applying. If no trusted keys are configured, the token is
+    /// applied without verification (backward compatibility) with a warning.
+    ///
+    /// Returns `Err(DenyReason::InvalidDeclassification)` if:
+    /// - The flow graph is not enabled
+    /// - Trusted keys are set and signature verification fails
+    ///
+    /// Returns `Ok(TokenApplyResult)` on success (or if the token was
+    /// expired / precondition unmet — those are non-error rejections).
+    #[cfg(feature = "crypto")]
+    pub fn apply_declassification_token(
+        &mut self,
+        token: &portcullis_core::declassify::DeclassificationToken,
+    ) -> Result<portcullis_core::declassify::TokenApplyResult, DenyReason> {
+        let graph = self
+            .flow_graph
+            .as_mut()
+            .ok_or(DenyReason::InvalidDeclassification {
+                detail: "flow graph not enabled".to_string(),
+            })?;
+
+        let now = chrono::Utc::now().timestamp() as u64;
+
+        if self.trusted_public_keys.is_empty() {
+            tracing::warn!(
+                target_node = token.target_node_id,
+                "applying declassification token without signature verification — \
+                 no trusted keys configured"
+            );
+            Ok(graph.apply_token(token, now))
+        } else {
+            let key_refs: Vec<&[u8]> = self
+                .trusted_public_keys
+                .iter()
+                .map(|k| k.as_slice())
+                .collect();
+            let result = graph.apply_token_verified(token, &key_refs, now);
+            if matches!(
+                result,
+                portcullis_core::declassify::TokenApplyResult::InvalidSignature
+            ) {
+                return Err(DenyReason::InvalidDeclassification {
+                    detail: "token signature verification failed — not signed by any trusted key"
+                        .to_string(),
+                });
+            }
+            Ok(result)
+        }
     }
 
     /// Set the Ed25519 signing key for receipt signing.
@@ -623,7 +731,22 @@ impl Kernel {
         // Apply declassification rules to the observation's label.
         // This is where controlled downgrading happens — e.g., a validated
         // search tool's output gets Adversarial → Untrusted integrity.
+        //
+        // SECURITY: When trusted keys are configured, unsigned rules in
+        // observe() are a legacy path. Production code should use
+        // apply_declassification_token() instead, which verifies Ed25519
+        // signatures before applying label changes.
         if !self.declassification_rules.is_empty() {
+            #[cfg(feature = "crypto")]
+            if !self.trusted_public_keys.is_empty() {
+                tracing::warn!(
+                    node_id = node_id,
+                    rule_count = self.declassification_rules.len(),
+                    "applying unsigned declassification rules during observe() while trusted \
+                     keys are configured — use apply_declassification_token() for verified \
+                     declassification"
+                );
+            }
             if let Some(node) = graph.get(node_id) {
                 let mut label = node.label;
                 for rule in &self.declassification_rules {
@@ -787,6 +910,8 @@ impl Kernel {
             policy_rules: None,
             enterprise: None,
             #[cfg(feature = "crypto")]
+            trusted_public_keys: Vec::new(),
+            #[cfg(feature = "crypto")]
             signing_key: None,
             receipt_chain: None,
         }
@@ -827,6 +952,8 @@ impl Kernel {
             egress_policy: None,
             policy_rules: None,
             enterprise: None,
+            #[cfg(feature = "crypto")]
+            trusted_public_keys: Vec::new(),
             #[cfg(feature = "crypto")]
             signing_key: None,
             receipt_chain: None,
@@ -3911,5 +4038,212 @@ denied_hosts = ["evil.github.com"]
             "without enterprise policy, capabilities alone decide"
         );
         assert!(token.is_some());
+    }
+
+    // ── Kernel token verification tests (#783) ─────────────────────────
+    //
+    // These tests verify that the kernel enforces Ed25519 signature
+    // verification on declassification tokens when trusted keys are
+    // configured, and falls back to unsigned for backward compatibility.
+
+    #[cfg(feature = "crypto")]
+    mod kernel_token_verification_tests {
+        use super::*;
+        use portcullis_core::declassify::{
+            DeclassificationRule, DeclassificationToken, DeclassifyAction, TokenApplyResult,
+        };
+        use portcullis_core::flow::NodeKind;
+        use portcullis_core::IntegLevel;
+        use ring::rand::SystemRandom;
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+
+        fn test_key() -> Ed25519KeyPair {
+            let rng = SystemRandom::new();
+            let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+            Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap()
+        }
+
+        fn public_key_bytes(key: &Ed25519KeyPair) -> [u8; 32] {
+            let pk = key.public_key().as_ref();
+            let mut bytes = [0u8; 32];
+            bytes.copy_from_slice(pk);
+            bytes
+        }
+
+        fn make_kernel_with_graph() -> Kernel {
+            let perms = PermissionLattice::safe_pr_fixer();
+            let mut kernel = Kernel::new(perms);
+            kernel.enable_flow_graph();
+            kernel
+        }
+
+        fn make_token(node_id: u64) -> DeclassificationToken {
+            DeclassificationToken::new(
+                node_id,
+                DeclassificationRule {
+                    action: DeclassifyAction::RaiseIntegrity {
+                        from: IntegLevel::Adversarial,
+                        to: IntegLevel::Untrusted,
+                    },
+                    justification: "Validated search results",
+                },
+                vec![Operation::WriteFiles],
+                u64::MAX,
+                "Curated API output".to_string(),
+            )
+        }
+
+        #[test]
+        fn verified_token_applied_with_trusted_keys() {
+            let key = test_key();
+            let mut kernel = make_kernel_with_graph();
+            kernel.set_trusted_keys(vec![public_key_bytes(&key)]);
+
+            // Observe web content to get a node
+            let node_id = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+
+            // Sign a token targeting that node
+            let mut token = make_token(node_id);
+            crate::token_sign::sign_token(&mut token, &key);
+            assert!(token.is_signed());
+
+            // Apply via kernel — should succeed
+            let result = kernel.apply_declassification_token(&token);
+            match result {
+                Ok(TokenApplyResult::Applied {
+                    original_label,
+                    new_label,
+                }) => {
+                    assert_eq!(
+                        original_label.integrity,
+                        IntegLevel::Adversarial,
+                        "original should be Adversarial"
+                    );
+                    assert_eq!(
+                        new_label.integrity,
+                        IntegLevel::Untrusted,
+                        "new should be Untrusted after declassification"
+                    );
+                }
+                other => panic!("expected Applied with label change, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn unsigned_token_rejected_when_keys_set() {
+            let key = test_key();
+            let mut kernel = make_kernel_with_graph();
+            kernel.set_trusted_keys(vec![public_key_bytes(&key)]);
+
+            let node_id = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+
+            // Create unsigned token (no signature)
+            let token = make_token(node_id);
+            assert!(!token.is_signed());
+
+            // Apply via kernel — should be rejected
+            let result = kernel.apply_declassification_token(&token);
+            match result {
+                Err(DenyReason::InvalidDeclassification { detail }) => {
+                    assert!(
+                        detail.contains("signature verification failed"),
+                        "expected signature failure detail, got: {detail}"
+                    );
+                }
+                other => panic!("expected InvalidDeclassification error, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn wrong_key_token_rejected() {
+            let sign_key = test_key();
+            let wrong_key = test_key();
+            let mut kernel = make_kernel_with_graph();
+            // Set wrong key as trusted
+            kernel.set_trusted_keys(vec![public_key_bytes(&wrong_key)]);
+
+            let node_id = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+
+            // Sign with a different key
+            let mut token = make_token(node_id);
+            crate::token_sign::sign_token(&mut token, &sign_key);
+
+            let result = kernel.apply_declassification_token(&token);
+            match result {
+                Err(DenyReason::InvalidDeclassification { detail }) => {
+                    assert!(
+                        detail.contains("signature verification failed"),
+                        "expected signature failure detail, got: {detail}"
+                    );
+                }
+                other => panic!("expected InvalidDeclassification error, got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn backward_compat_no_keys_allows_unsigned() {
+            // No trusted keys configured — unsigned tokens should work
+            let mut kernel = make_kernel_with_graph();
+
+            let node_id = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+
+            let token = make_token(node_id);
+            assert!(!token.is_signed());
+
+            // Apply without keys — backward compatible, should succeed
+            let result = kernel.apply_declassification_token(&token);
+            match result {
+                Ok(TokenApplyResult::Applied { .. }) => {} // expected
+                other => panic!("expected Applied (backward compat), got {:?}", other),
+            }
+        }
+
+        #[test]
+        fn key_rotation_accepts_old_key() {
+            let old_key = test_key();
+            let new_key = test_key();
+            let mut kernel = make_kernel_with_graph();
+            // Both old and new keys are trusted
+            kernel.set_trusted_keys(vec![public_key_bytes(&new_key), public_key_bytes(&old_key)]);
+
+            let node_id = kernel.observe(NodeKind::WebContent, &[]).unwrap();
+
+            // Sign with old key
+            let mut token = make_token(node_id);
+            crate::token_sign::sign_token(&mut token, &old_key);
+
+            let result = kernel.apply_declassification_token(&token);
+            assert!(
+                matches!(result, Ok(TokenApplyResult::Applied { .. })),
+                "old key should still be accepted during rotation, got {:?}",
+                result
+            );
+        }
+
+        #[test]
+        fn apply_token_without_flow_graph_returns_error() {
+            let key = test_key();
+            let perms = PermissionLattice::safe_pr_fixer();
+            let mut kernel = Kernel::new(perms);
+            // Do NOT enable flow graph
+            kernel.set_trusted_keys(vec![public_key_bytes(&key)]);
+
+            let mut token = make_token(42);
+            crate::token_sign::sign_token(&mut token, &key);
+
+            let result = kernel.apply_declassification_token(&token);
+            match result {
+                Err(DenyReason::InvalidDeclassification { detail }) => {
+                    assert!(
+                        detail.contains("flow graph not enabled"),
+                        "expected flow graph error, got: {detail}"
+                    );
+                }
+                other => panic!(
+                    "expected InvalidDeclassification (flow graph), got {:?}",
+                    other
+                ),
+            }
+        }
     }
 }

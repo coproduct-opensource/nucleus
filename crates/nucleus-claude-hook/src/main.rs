@@ -337,6 +337,14 @@ fn format_denial_for_user(
                 - Add the sink class to allowed_sinks or remove it from denied_sinks"
             )
         }
+        DenyReason::InvalidDeclassification { detail } => {
+            format!(
+                "Blocked: declassification token rejected: {detail}{comp_hint}.\n  \
+                How to fix:\n  \
+                - Ensure the declassification token is signed by a trusted key\n  \
+                - Check that set_trusted_keys() includes the signing key's public key"
+            )
+        }
     }
 }
 
