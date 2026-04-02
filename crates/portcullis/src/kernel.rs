@@ -399,14 +399,20 @@ pub struct Kernel {
     /// [`Kernel::from_certificate`]. Provides an auditable chain from every
     /// decision back to the root authority.
     provenance: Option<SessionProvenance>,
-    /// Flow label accumulator — tracks information flow control labels across
-    /// the session. When enabled, `decide()` runs `check_flow` as an additional
-    /// defense-in-depth gate after all existing checks.
+    /// Cached flow label — derived from the causal flow graph.
     ///
-    /// The label is the join (least upper bound) of all intrinsic labels
-    /// for operations allowed in this session. It monotonically accumulates
-    /// taint: once web content is read, the session label gains `Adversarial`
-    /// integrity and `NoAuthority` authority.
+    /// This is a **cache**, not independent state. It holds the join (least
+    /// upper bound) of all node labels inserted into the flow graph during
+    /// this session, incrementally updated via [`recompute_flow_label`].
+    ///
+    /// `None` when flow control is disabled (capability-only kernels).
+    /// When `Some`, it monotonically accumulates taint: once web content
+    /// is read, the cached label gains `Adversarial` integrity and
+    /// `NoAuthority` authority.
+    ///
+    /// Used by [`policy_flow_labels`] for admissibility policy evaluation
+    /// and by the receipt chain for label snapshots. NOT used as a decision
+    /// gate — the flow graph handles enforcement via `decide_with_parents()`.
     flow_label: Option<portcullis_core::IFCLabel>,
     /// Causal DAG for precise per-action flow tracking.
     ///
@@ -592,9 +598,9 @@ impl Kernel {
 
     /// Enable information flow control for this session.
     ///
-    /// When enabled, `decide()` accumulates IFC labels and runs `check_flow`
-    /// as a defense-in-depth gate. The initial label is the least restrictive
-    /// (bottom of the label lattice).
+    /// When enabled, the cached flow label is initialized and kept in sync
+    /// with graph state via `recompute_flow_label()`. The initial label is
+    /// `user_prompt(now)` — the seed for the monotone cache.
     pub fn enable_flow_control(&mut self) {
         let now = chrono::Utc::now().timestamp() as u64;
         // Initialize with user_prompt label (Trusted, Directive) at current time.
@@ -780,18 +786,24 @@ impl Kernel {
             }
         }
 
+        // Update the cached flow label from the (possibly declassified) node.
+        if let Some(node) = self.flow_graph.get(node_id) {
+            self.recompute_flow_label(node.label);
+        }
+
         Ok(node_id)
     }
 
     /// Decide an operation with explicit causal parents from the DAG.
     ///
-    /// Like `decide()`, but instead of using the flat session-level label,
+    /// Like `decide()`, but instead of using the session-level cached label,
     /// computes the flow label from the specified parent nodes. This means
     /// an action depending only on local files won't be blocked by web
     /// content read elsewhere in the session.
     ///
     /// The flow graph is always active; this method provides precise
-    /// per-action flow checking via causal parents.
+    /// per-action flow checking via causal parents. The cached `flow_label`
+    /// is updated from the inserted graph node's propagated label.
     pub fn decide_with_parents(
         &mut self,
         operation: Operation,
@@ -858,28 +870,18 @@ impl Kernel {
             return result;
         }
 
-        // DAG says allow — delegate to standard decide() for remaining checks
-        // (budget, capability, path, command, exposure, approvals).
+        // DAG says allow — update the cached flow label from the graph node,
+        // then delegate to standard decide() for remaining checks (budget,
+        // capability, path, command, exposure, approvals).
         //
-        // Temporarily disable the flat flow_label so decide() doesn't re-check
-        // flow with the session-level accumulator. The DAG's per-action verdict
-        // supersedes the flat label — that's the whole point of the DAG.
-        //
-        // FIX #369: After decide(), monotonically join the saved label with
-        // any label that decide() computed (labels only grow).
-        // FIX #373: Explicit restoration in all code paths. If decide()
-        // panics (unlikely but possible), flow_label stays None — this is
-        // fail-closed (flow checks fail on None, blocking all operations).
-        let saved_flow_label = self.flow_label.take();
+        // The cached flow_label is derived from graph state (#753 Phase 2).
+        // We join the action node's propagated label into the cache here.
+        // When decide() later joins the intrinsic label (line ~1392), that's
+        // idempotent — the node's propagated label already includes its
+        // intrinsic, so `cache.join(intrinsic)` is a no-op after
+        // `cache.join(propagated)`.
+        self.recompute_flow_label(flow_decision.label);
         let mut result = self.decide(operation, subject);
-
-        // Monotonic restore: join saved label with post-decide label (#369)
-        let post_label = self.flow_label.take();
-        self.flow_label = match (saved_flow_label, post_label) {
-            (Some(saved), Some(decided)) => Some(saved.join(decided)),
-            (Some(saved), None) => Some(saved),
-            (None, decided) => decided,
-        };
 
         result.0.flow_node_id = Some(flow_decision.node_id);
         result
@@ -1374,20 +1376,19 @@ impl Kernel {
         // but the session is TAINTED afterward. The NEXT write/push/PR will be
         // checked against the tainted label and blocked if authority is insufficient.
         //
-        // IMPORTANT (#654): When the FlowGraph is enabled, the flat session-level
-        // label is NO LONGER used as a decision gate. The FlowGraph provides
-        // precise per-action causal labels via `decide_with_parents()`, which
-        // eliminates the over-tainting problem. The flat label is still updated
-        // for audit/reporting purposes, but only `decide_with_parents()` enforces
-        // flow policy. The flow graph is always active — callers should use
-        // `decide_with_parents()` for flow-checked decisions.
+        // IMPORTANT (#654, #753): The cached flow_label is derived from graph
+        // state — NOT used as a decision gate. The FlowGraph provides precise
+        // per-action causal labels via `decide_with_parents()`, which eliminates
+        // the over-tainting problem. Here we join the operation's intrinsic
+        // label into the cache to keep it in sync for audit/reporting and
+        // policy rule evaluation. When called from `decide_with_parents()`,
+        // `recompute_flow_label()` already joined the propagated label (which
+        // includes the intrinsic), making this join idempotent.
         if let Some(ref mut flow_label) = self.flow_label {
             use portcullis_core::flow;
 
             let now_unix = now.timestamp() as u64;
 
-            // Phase B: taint the session label with the operation's intrinsic
-            // (for audit/reporting — the DAG handles enforcement)
             let intrinsic = flow::intrinsic_label(Self::node_kind_for(operation), now_unix);
             *flow_label = flow_label.join(intrinsic);
         }
@@ -1510,19 +1511,36 @@ impl Kernel {
 
     /// Extract source and artifact labels for policy rule evaluation.
     ///
-    /// When the flow graph or flat flow label is enabled, derives labels from
-    /// the current flow state. Otherwise returns empty sources and a bottom
-    /// label (which causes source predicates to be vacuously true and
-    /// artifact predicates to match permissively).
+    /// Reads the cached flow label (derived from graph state). When flow
+    /// control is enabled, uses the cache as both source and artifact label.
+    /// Otherwise returns empty sources and a bottom label (which causes
+    /// source predicates to be vacuously true and artifact predicates to
+    /// match permissively).
     fn policy_flow_labels(&self) -> (Vec<portcullis_core::IFCLabel>, portcullis_core::IFCLabel) {
         if let Some(ref label) = self.flow_label {
-            // Flat session label: use it as both source and artifact.
+            // Cached label (derived from graph): use as both source and artifact.
             (vec![*label], *label)
         } else {
             // No flow control — use bottom label (most permissive).
             let now = chrono::Utc::now().timestamp() as u64;
             let bottom = portcullis_core::IFCLabel::user_prompt(now);
             (vec![], bottom)
+        }
+    }
+
+    /// Incrementally update the cached flow label from a newly inserted
+    /// graph node's label.
+    ///
+    /// This is the mechanism by which `flow_label` stays in sync with the
+    /// flow graph. Since `join` is monotone, associative, commutative, and
+    /// idempotent, joining each new node's label into the cache produces
+    /// the same result as joining ALL node labels from scratch — without
+    /// an O(n) traversal.
+    ///
+    /// Called after every `observe()` and `decide_with_parents()` insertion.
+    fn recompute_flow_label(&mut self, node_label: portcullis_core::IFCLabel) {
+        if let Some(ref mut cached) = self.flow_label {
+            *cached = cached.join(node_label);
         }
     }
 
