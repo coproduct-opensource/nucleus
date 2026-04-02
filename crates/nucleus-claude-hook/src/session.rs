@@ -303,13 +303,21 @@ pub(crate) fn load_session(session_id: &str) -> SessionLoad {
 /// Uses write-to-temp-then-rename for atomic writes (POSIX guarantees
 /// rename is atomic within the same filesystem). Advisory flock prevents
 /// concurrent hook invocations from racing on the same session.
+///
+/// **Prefer `with_session()`** for load-modify-save cycles to avoid TOCTOU
+/// races (#872). This function is still useful when you already have a
+/// `SessionState` in hand from an earlier `load_session()` call that was
+/// protected by `lock_session()`.
 pub(crate) fn save_session(session_id: &str, state: &SessionState) {
+    let _lock_guard = lock_session(session_id);
+    save_session_unlocked(session_id, state);
+}
+
+/// Inner save that assumes the caller already holds the session lock.
+/// Used by `with_session()` and `save_session()`.
+fn save_session_unlocked(session_id: &str, state: &SessionState) {
     let path = session_state_path(session_id);
     let hwm_path = session_hwm_path(session_id);
-    let lock_path = session_lock_path(session_id);
-
-    // Acquire advisory lock (non-blocking — if locked, warn and proceed)
-    let _lock_guard = acquire_session_lock(&lock_path);
 
     match serde_json::to_string(state) {
         Ok(json) => {
@@ -363,18 +371,35 @@ pub(crate) fn save_session(session_id: &str, state: &SessionState) {
 // Advisory file locking
 // ---------------------------------------------------------------------------
 
+/// Default timeout for acquiring the session lock (milliseconds).
+/// Short enough to avoid stalling Claude Code, long enough to survive
+/// brief contention from concurrent PostToolUse invocations (#872).
+const SESSION_LOCK_TIMEOUT_MS: u64 = 500;
+
 /// RAII guard for advisory file lock.
-struct SessionLockGuard {
+/// Holds the lock file open; the flock is released when the File is dropped.
+pub(crate) struct SessionLockGuard {
     #[cfg(unix)]
     _file: std::fs::File,
 }
 
-/// Acquire an advisory file lock (non-blocking).
+/// Acquire an advisory file lock for a session by ID.
 ///
-/// Returns a guard that releases the lock on drop. If locking fails
-/// (e.g., another invocation holds it), logs a warning and returns
-/// a no-op guard — we proceed without the lock rather than blocking
-/// the hook response (which would stall Claude Code).
+/// Returns a guard that releases the lock on drop. The lock is blocking
+/// with a short timeout — concurrent hook invocations will wait briefly
+/// rather than silently racing (#872).
+pub(crate) fn lock_session(session_id: &str) -> SessionLockGuard {
+    let lock_path = session_lock_path(session_id);
+    acquire_session_lock(&lock_path)
+}
+
+/// Acquire an advisory file lock (blocking with timeout).
+///
+/// Uses a polling loop with `LOCK_NB` to implement a timeout, since
+/// `flock(LOCK_EX)` has no native timeout on most Unix systems.
+/// If the lock cannot be acquired within `SESSION_LOCK_TIMEOUT_MS`,
+/// logs a warning and returns a guard anyway (defense in depth — we'd
+/// rather have a rare race than a hung hook process).
 fn acquire_session_lock(lock_path: &std::path::Path) -> SessionLockGuard {
     #[cfg(unix)]
     {
@@ -386,15 +411,33 @@ fn acquire_session_lock(lock_path: &std::path::Path) -> SessionLockGuard {
             .open(lock_path)
         {
             Ok(file) => {
-                // Non-blocking exclusive lock
                 let fd = file.as_raw_fd();
+                // Try non-blocking first (fast path — no contention)
                 // SAFETY: fd is valid, LOCK_EX | LOCK_NB is a valid flock operation
                 let ret = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
                 if ret != 0 {
-                    eprintln!(
-                        "nucleus: WARNING — session lock contention (concurrent hook invocation). \
-                         Proceeding without lock."
-                    );
+                    // Contention — poll with backoff up to timeout (#872)
+                    let deadline = std::time::Instant::now()
+                        + std::time::Duration::from_millis(SESSION_LOCK_TIMEOUT_MS);
+                    let mut backoff = std::time::Duration::from_millis(1);
+                    let mut acquired = false;
+                    while std::time::Instant::now() < deadline {
+                        std::thread::sleep(backoff);
+                        let ret = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+                        if ret == 0 {
+                            acquired = true;
+                            break;
+                        }
+                        // Exponential backoff: 1ms, 2ms, 4ms, 8ms, ... capped at 50ms
+                        backoff = std::cmp::min(backoff * 2, std::time::Duration::from_millis(50));
+                    }
+                    if !acquired {
+                        eprintln!(
+                            "nucleus: WARNING — session lock timeout after {SESSION_LOCK_TIMEOUT_MS}ms \
+                             (concurrent hook invocation). Proceeding without lock — \
+                             taint state may be incomplete (#872)."
+                        );
+                    }
                 }
                 SessionLockGuard { _file: file }
             }
@@ -415,6 +458,30 @@ fn acquire_session_lock(lock_path: &std::path::Path) -> SessionLockGuard {
     {
         let _ = lock_path;
         SessionLockGuard {}
+    }
+}
+
+/// Atomically load, mutate, and save session state under a single lock (#872).
+///
+/// This eliminates the TOCTOU race where concurrent PostToolUse calls could
+/// each load stale state, mutate independently, and overwrite each other's
+/// changes. The lock is held across the entire load-modify-save cycle.
+///
+/// Returns `None` if the session is tampered (caller should deny).
+/// The closure receives a mutable reference to the session state.
+pub(crate) fn with_session<F>(session_id: &str, f: F) -> Option<SessionState>
+where
+    F: FnOnce(&mut SessionState),
+{
+    let _lock = lock_session(session_id);
+
+    match load_session(session_id) {
+        SessionLoad::Loaded(mut state) | SessionLoad::Fresh(mut state) => {
+            f(&mut state);
+            save_session_unlocked(session_id, &state);
+            Some(state)
+        }
+        SessionLoad::Tampered { .. } => None,
     }
 }
 
@@ -1187,5 +1254,115 @@ mod tests {
             "session_dir() should restore 0700 permissions, got {:04o}",
             mode
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // TOCTOU race prevention tests (#872)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn with_session_atomic_increment() {
+        // Verify that with_session correctly loads, mutates, and saves.
+        let test_id = format!("atomic-incr-{}", std::process::id());
+
+        // Create initial state
+        let mut state = SessionState::new_versioned();
+        state.profile = "test".to_string();
+        state.high_water_mark = 10;
+        save_session(&test_id, &state);
+
+        // Atomically increment HWM
+        let result = with_session(&test_id, |s| {
+            s.high_water_mark += 1;
+        });
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().high_water_mark, 11);
+
+        // Verify persisted correctly
+        match load_session(&test_id) {
+            SessionLoad::Loaded(s) => assert_eq!(s.high_water_mark, 11),
+            other => panic!("expected Loaded, got {other:?}"),
+        }
+
+        // Cleanup
+        std::fs::remove_file(session_state_path(&test_id)).ok();
+        std::fs::remove_file(session_hwm_path(&test_id)).ok();
+    }
+
+    #[test]
+    fn with_session_returns_none_on_tampered() {
+        // Verify that with_session returns None for tampered sessions.
+        let test_id = format!("atomic-tamper-{}", std::process::id());
+
+        // Create session with HWM > 0
+        let mut state = SessionState::new_versioned();
+        state.profile = "test".to_string();
+        state.high_water_mark = 5;
+        save_session(&test_id, &state);
+
+        // Delete state file (simulate social engineering)
+        std::fs::remove_file(session_state_path(&test_id)).unwrap();
+
+        // with_session should detect tamper and return None
+        let result = with_session(&test_id, |s| {
+            s.high_water_mark += 1; // should never execute
+        });
+        assert!(result.is_none(), "tampered session should return None");
+
+        // Cleanup
+        std::fs::remove_file(session_hwm_path(&test_id)).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_with_session_no_lost_updates() {
+        // Spawn N threads that each atomically increment HWM via with_session.
+        // If the lock works, final HWM == initial + N. Without the lock,
+        // concurrent load+save would lose increments.
+        use std::sync::Arc;
+
+        let test_id = format!("concurrent-{}", std::process::id());
+        let initial_hwm = 0u64;
+        let num_threads = 8;
+
+        // Create initial state
+        let mut state = SessionState::new_versioned();
+        state.profile = "test".to_string();
+        state.high_water_mark = initial_hwm;
+        save_session(&test_id, &state);
+
+        let test_id = Arc::new(test_id);
+        let handles: Vec<_> = (0..num_threads)
+            .map(|_| {
+                let id = Arc::clone(&test_id);
+                std::thread::spawn(move || {
+                    with_session(&id, |s| {
+                        s.high_water_mark += 1;
+                    });
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().expect("thread panicked");
+        }
+
+        // Verify all increments were applied (no lost updates)
+        match load_session(&test_id) {
+            SessionLoad::Loaded(s) => {
+                assert_eq!(
+                    s.high_water_mark,
+                    initial_hwm + num_threads,
+                    "expected {num_threads} increments, got {} (lost updates!)",
+                    s.high_water_mark - initial_hwm
+                );
+            }
+            other => panic!("expected Loaded, got {other:?}"),
+        }
+
+        // Cleanup
+        std::fs::remove_file(session_state_path(&test_id)).ok();
+        std::fs::remove_file(session_hwm_path(&test_id)).ok();
+        std::fs::remove_file(session_lock_path(&test_id)).ok();
     }
 }
