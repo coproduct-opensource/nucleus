@@ -47,6 +47,15 @@ struct ReceiptEntry {
     /// Previous compartment (if this entry records a transition)
     #[serde(skip_serializing_if = "Option::is_none")]
     compartment_transition_from: Option<String>,
+    /// True if signing was attempted but failed (#902).
+    /// An unsigned receipt in a chain that should be signed indicates
+    /// key corruption, low entropy, or sandboxed environment.
+    #[serde(default, skip_serializing_if = "is_false")]
+    signing_failed: bool,
+}
+
+fn is_false(v: &bool) -> bool {
+    !v
 }
 
 /// Persist a signed receipt to `.nucleus/receipts/<session-id>.jsonl`.
@@ -54,6 +63,7 @@ struct ReceiptEntry {
 /// Append-only JSONL — one receipt per line. Creates the directory
 /// and file if they don't exist. Failures are silent (audit is
 /// best-effort, not on the critical path).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn persist_receipt(
     session_id: &str,
     receipt: &portcullis_core::receipt::FlowReceipt,
@@ -62,6 +72,7 @@ pub(crate) fn persist_receipt(
     parent_session_id: &Option<String>,
     parent_chain_hash: &Option<String>,
     compartment: Option<&str>,
+    signing_failed: bool,
 ) {
     let safe_id = sanitize_session_id(session_id);
     let receipts_dir = session_dir().join("receipts");
@@ -97,6 +108,7 @@ pub(crate) fn persist_receipt(
         parent_chain_hash: parent_chain_hash.clone(),
         compartment: compartment.map(|s| s.to_string()),
         compartment_transition_from: None,
+        signing_failed,
     };
 
     if let Ok(json) = serde_json::to_string(&entry) {
@@ -166,6 +178,7 @@ pub(crate) fn persist_transition_receipt(
 
         // Update chain head.
         s.chain_head_hash = hash;
+        let sign_failed = signature.is_empty();
 
         built_entry = Some(ReceiptEntry {
             timestamp: now,
@@ -182,6 +195,7 @@ pub(crate) fn persist_transition_receipt(
             parent_chain_hash: None,
             compartment: Some(target.clone()),
             compartment_transition_from: from_str.clone(),
+            signing_failed: sign_failed,
         });
     });
 
@@ -228,6 +242,9 @@ pub(crate) fn show_receipts(session_id: &str) {
     let mut count = 0u32;
     let mut allowed = 0u32;
     let mut denied = 0u32;
+    let mut unsigned = 0u32;
+    let mut chain_breaks = 0u32;
+    let mut expected_prev_hash = String::new(); // empty for the first receipt
 
     for line in content.lines() {
         if line.trim().is_empty() {
@@ -238,13 +255,46 @@ pub(crate) fn show_receipts(session_id: &str) {
             let subject = entry["subject"].as_str().unwrap_or("?");
             let verdict = entry["verdict"].as_str().unwrap_or("?");
             let comp = entry["compartment"].as_str().unwrap_or("");
+            let sig = entry["signature"].as_str().unwrap_or("");
+            let prev = entry["prev_hash"].as_str().unwrap_or("");
+            let hash = entry["receipt_hash"].as_str().unwrap_or("");
+            let sign_failed = entry["signing_failed"].as_bool().unwrap_or(false);
 
-            let icon = if verdict.contains("Deny") {
+            // Chain verification (#897): check prev_hash links to prior receipt_hash.
+            let chain_ok = if count == 0 {
+                true // first receipt has no predecessor
+            } else {
+                prev == expected_prev_hash
+            };
+            if !chain_ok {
+                chain_breaks += 1;
+            }
+            expected_prev_hash = hash.to_string();
+
+            // Signature check: empty or all-zero means unsigned.
+            let is_unsigned = sig.is_empty() || sig.chars().all(|c| c == '0') || sign_failed;
+            if is_unsigned {
+                unsigned += 1;
+            }
+
+            let verdict_icon = if verdict.contains("Deny") {
                 denied += 1;
                 "\x1b[31m\u{2717}\x1b[0m"
             } else {
                 allowed += 1;
                 "\x1b[32m\u{2713}\x1b[0m"
+            };
+
+            let chain_icon = if !chain_ok {
+                " \x1b[31m[CHAIN BREAK]\x1b[0m"
+            } else {
+                ""
+            };
+
+            let sig_icon = if is_unsigned {
+                " \x1b[33m[UNSIGNED]\x1b[0m"
+            } else {
+                ""
             };
 
             let comp_tag = if comp.is_empty() {
@@ -259,12 +309,25 @@ pub(crate) fn show_receipts(session_id: &str) {
                 subject.to_string()
             };
 
-            println!("  {icon} {op:<25} {short}{comp_tag}");
+            println!("  {verdict_icon} {op:<25} {short}{comp_tag}{chain_icon}{sig_icon}");
             count += 1;
         }
     }
 
     println!();
     println!("Total: {count} receipts ({allowed} allowed, {denied} denied)");
+
+    // Chain integrity summary (#897).
+    if chain_breaks > 0 {
+        println!("\x1b[31mChain integrity: BROKEN — {chain_breaks} break(s) detected\x1b[0m");
+    } else if count > 0 {
+        println!("\x1b[32mChain integrity: intact ({count} linked receipts)\x1b[0m");
+    }
+    if unsigned > 0 {
+        println!("\x1b[33mSignature status: {unsigned}/{count} receipts unsigned\x1b[0m");
+    } else if count > 0 {
+        println!("\x1b[32mSignature status: all {count} receipts signed\x1b[0m");
+    }
+
     println!("Chain file: {}", path.display());
 }

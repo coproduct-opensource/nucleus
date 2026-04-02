@@ -1,0 +1,3 @@
+{"debug":"Starting connection with timeout of 30000ms","timestamp":"2026-03-30T03:19:09.482Z","sessionId":"6d90959c-f2f6-4105-adf9-fd65bf4a327a","cwd":"/Users/bcrisp/coproduct/nucleus"}
+{"debug":"Connection failed after 21ms: ENOENT: no such file or directory, posix_spawn '/Users/bcrisp/coproduct/workstream-kg/target/release/groundtruth-mcp'","timestamp":"2026-03-30T03:19:09.486Z","sessionId":"6d90959c-f2f6-4105-adf9-fd65bf4a327a","cwd":"/Users/bcrisp/coproduct/nucleus"}
+{"error":"Connection failed: ENOENT: no such file or directory, posix_spawn '/Users/bcrisp/coproduct/workstream-kg/target/release/groundtruth-mcp'","timestamp":"2026-03-30T03:19:09.486Z","sessionId":"6d90959c-f2f6-4105-adf9-fd65bf4a327a","cwd":"/Users/bcrisp/coproduct/nucleus"}

@@ -1,0 +1,355 @@
+{
+  "cachedGrowthBookFeatures": {
+    "tengu_amber_quartz": true,
+    "tengu_grey_step": true,
+    "tengu_native_installation": false,
+    "tengu_disable_bypass_permissions_mode": false,
+    "tengu_file_write_optimization": false,
+    "tengu_penguins_enabled": true,
+    "tengu_passport_quail": false,
+    "tengu_react_vulnerability_warning": false,
+    "tengu_onyx_plover": {
+      "enabled": false,
+      "minHours": 24,
+      "minSessions": 3
+    },
+    "tengu_year_end_2025_campaign_promo": false,
+    "tengu_streaming_text": false,
+    "tengu_hayate": false,
+    "tengu_tool_pear": false,
+    "tengu_code_diff_cli": true,
+    "tengu_tangerine_ladder_boost": true,
+    "tengu_amber_prism": false,
+    "tengu_trace_lantern": false,
+    "tengu_willow_sentinel_ttl_hours": 1,
+    "tengu_brief_tool_enabled": false,
+    "tengu_bridge_poll_interval_ms": 0,
+    "tengu_plank_river_frost": "user_intent",
+    "tengu_marble_whisper2": true,
+    "tengu_willow_mode": "off",
+    "tengu_ant_attribution_header_new": true,
+    "tengu_amber_flint": true,
+    "tengu_harbor_permissions": true,
+    "tengu_bergotte_lantern": false,
+    "auto_migrate_to_native": false,
+    "tengu_walrus_canteen": false,
+    "tengu_basalt_3kr": true,
+    "tengu_max_version_config": {},
+    "tengu_negative_interaction_transcript_ask_config": {
+      "probability": 0
+    },
+    "ccr_auto_permission_mode": false,
+    "tengu_scarf_coffee": false,
+    "tengu_log_datadog_events": true,
+    "tengu_marble_whisper": true,
+    "tengu_vscode_review_upsell": false,
+    "tengu_compact_cache_prefix": false,
+    "tengu_ccr_bridge_multi_session": false,
+    "tengu_ccr_bridge": false,
+    "tengu_scratch": false,
+    "tengu_claudeai_mcp_connectors": true,
+    "tengu_moth_copse": false,
+    "tengu_sotto_voce": true,
+    "tengu_plum_vx3": false,
+    "tengu_kairos_cron": true,
+    "tengu_borax_j4w": false,
+    "tengu_c4w_usage_limit_notifications_enabled": true,
+    "tengu_cork_m4q": false,
+    "tengu_bad_survey_transcript_ask_config": {
+      "probability": 0
+    },
+    "tengu_auto_mode_config": {
+      "enabled": "disabled"
+    },
+    "tengu_collage_kaleidoscope": true,
+    "tengu_tide_elm": "off",
+    "tengu_mulberry_fog": false,
+    "tengu_birthday_hat": false,
+    "tengu_kv7_prompt_sort": false,
+    "tengu_kairos_cron_durable": false,
+    "tengu_pr_status_cli": true,
+    "tengu_olive_hinge": "",
+    "tengu_tool_result_persistence": false,
+    "tengu_bramble_lintel": 2,
+    "tengu_turnip_cathedral": false,
+    "tengu_immediate_model_command": false,
+    "tengu_dunwich_bell": false,
+    "tengu_vscode_cc_auth": true,
+    "tengu_bridge_repl_v2_config": {
+      "init_retry_max_attempts": 3,
+      "init_retry_base_delay_ms": 500,
+      "init_retry_jitter_fraction": 0.25,
+      "init_retry_max_delay_ms": 4000,
+      "http_timeout_ms": 10000,
+      "uuid_dedup_buffer_size": 2000,
+      "heartbeat_interval_ms": 20000,
+      "heartbeat_jitter_fraction": 0.1,
+      "token_refresh_buffer_ms": 600000,
+      "teardown_archive_timeout_ms": 1500,
+      "connect_timeout_ms": 15000,
+      "min_version": "2.1.70",
+      "should_show_app_upgrade_message": true
+    },
+    "tengu_pewter_kestrel": {
+      "global": 50000,
+      "Bash": 30000,
+      "PowerShell": 30000,
+      "Grep": 20000,
+      "Snip": 1000,
+      "StrReplaceBasedEditTool": 30000,
+      "BashSearchTool": 20000
+    },
+    "tengu_bridge_min_version": {
+      "minVersion": "2.1.70"
+    },
+    "tengu_cache_plum_violet": false,
+    "tengu_destructive_command_warning": false,
+    "tengu_cork_lantern": false,
+    "tengu_tool_search_unsupported_models": [
+      "haiku"
+    ],
+    "tengu_harbor": true,
+    "tengu_cobalt_compass": true,
+    "tengu_slate_nexus": false,
+    "tengu_red_coaster": false,
+    "tengu_copper_bridge": true,
+    "tengu_coral_whistle": false,
+    "tengu_defer_all_bn4": false,
+    "tengu_flint_harbor": false,
+    "tengu_thinkback": false,
+    "tengu_snippet_save": false,
+    "tengu_glacier_2xr": true,
+    "tengu_pebble_leaf_prune": true,
+    "tengu_swinburne_dune": true,
+    "tengu_cobalt_raccoon": false,
+    "tengu_jade_anvil_4": false,
+    "tengu_accept_with_feedback": true,
+    "tengu_cobalt_lantern": false,
+    "tengu_mcp_tool_search": false,
+    "tengu_marble_fox": false,
+    "tengu_attribution_header": true,
+    "tengu_blue_coaster": false,
+    "tengu_copper_wren": false,
+    "tengu_opus_default_pro_plan": false,
+    "tengu_otk_slot_v1": false,
+    "tengu_birch_mist": false,
+    "tengu_malort_pedway": {
+      "enabled": false,
+      "pixelValidation": false,
+      "clipboardPasteMultiline": true,
+      "screenshotFilter": true,
+      "mouseAnimation": true,
+      "hideBeforeAction": true,
+      "autoTargetDisplay": true,
+      "coordinateMode": "pixels"
+    },
+    "tengu_hawthorn_window": 200000,
+    "tengu_ccr_bundle_max_bytes": 104857600,
+    "tengu_event_sampling_config": {},
+    "tengu_plugin_official_mkt_git_fallback": true,
+    "tengu_miraculo_the_bard": false,
+    "tengu_worktree_mode": true,
+    "tengu_amber_stoat": true,
+    "tengu_vscode_onboarding": false,
+    "tengu_lapis_finch": true,
+    "tengu_read_dedup_killswitch": false,
+    "tengu_sm_compact_config": {
+      "minTokens": 2000,
+      "maxTokens": 20000,
+      "minTextBlockMessages": 5
+    },
+    "tengu_grey_step2": {
+      "enabled": true,
+      "dialogTitle": "We recommend medium effort for Opus",
+      "dialogDescription": "Effort determines how long Claude thinks for when completing your task. We recommend medium effort for most tasks to balance speed and intelligence and maximize rate limits. Use ultrathink to trigger high effort when needed."
+    },
+    "tengu_compact_line_prefix_killswitch": false,
+    "tengu_prompt_suggestion": true,
+    "tengu_marble_sandcastle": false,
+    "tengu_quiet_hollow": true,
+    "tengu_feedback_survey_config": {
+      "minTimeBeforeFeedbackMs": 600000,
+      "minTimeBetweenFeedbackMs": 100000000,
+      "minTimeBetweenGlobalFeedbackMs": 100000000,
+      "minUserTurnsBeforeFeedback": 5,
+      "minUserTurnsBetweenFeedback": 25,
+      "hideThanksAfterMs": 3000,
+      "onForModels": [
+        "*"
+      ],
+      "probability": 0.01
+    },
+    "tengu_prompt_cache_1h_config": {
+      "allowlist": [
+        "repl_main_thread*",
+        "sdk",
+        "auto_mode"
+      ]
+    },
+    "tengu_swann_brevity": "focused",
+    "tengu_defer_caveat_m9k": false,
+    "tengu_silver_lantern": false,
+    "tengu_willow_census_ttl_hours": 24,
+    "tengu_sage_compass": {},
+    "tengu_pewter_ledger": "OFF",
+    "tengu_harbor_ledger": [
+      {
+        "marketplace": "claude-plugins-official",
+        "plugin": "discord"
+      },
+      {
+        "marketplace": "claude-plugins-official",
+        "plugin": "telegram"
+      },
+      {
+        "marketplace": "claude-plugins-official",
+        "plugin": "fakechat"
+      },
+      {
+        "marketplace": "claude-plugins-official",
+        "plugin": "imessage"
+      }
+    ],
+    "tengu_review_bughunter_config": {
+      "fleet_size": 5,
+      "max_duration_minutes": 10,
+      "agent_timeout_seconds": 600,
+      "total_wallclock_minutes": 22
+    },
+    "tengu_keybinding_customization_release": true,
+    "tengu_vinteuil_phrase": true,
+    "tengu_marble_anvil": true,
+    "tengu_crystal_beam": {
+      "budgetTokens": 0
+    },
+    "tengu_frond_boric": {},
+    "tengu_turtle_carbon": true,
+    "tengu_lodestone_enabled": true,
+    "tengu_sm_config": {
+      "minimumMessageTokensToInit": 150000,
+      "minimumTokensBetweenUpdate": 40000,
+      "toolCallsBetweenUpdates": 10
+    },
+    "tengu_brass_pebble": false,
+    "tengu_session_memory": false,
+    "tengu_quiet_fern": true,
+    "tengu_ccr_bundle_seed_enabled": false,
+    "tengu_good_survey_transcript_ask_config": {
+      "probability": 0
+    },
+    "tengu_hawthorn_steeple": false,
+    "tengu_sumi": true,
+    "tengu_tst_hint_m7r": false,
+    "tengu_amber_lattice": {
+      "plugins": [
+        "security-guidance",
+        "code-review",
+        "commit-commands",
+        "code-simplifier",
+        "hookify",
+        "feature-dev",
+        "frontend-design",
+        "pr-review-toolkit",
+        "skill-creator",
+        "plugin-dev",
+        "agent-sdk-dev",
+        "mcp-server-dev",
+        "claude-code-setup",
+        "claude-md-management",
+        "playground",
+        "ralph-loop",
+        "explanatory-output-style",
+        "learning-output-style",
+        "clangd-lsp",
+        "csharp-lsp",
+        "gopls-lsp",
+        "jdtls-lsp",
+        "kotlin-lsp",
+        "lua-lsp",
+        "php-lsp",
+        "pyright-lsp",
+        "ruby-lsp",
+        "rust-analyzer-lsp",
+        "swift-lsp",
+        "typescript-lsp"
+      ]
+    },
+    "tengu_herring_clock": false,
+    "tengu_gha_plugin_code_review": false,
+    "tengu_desktop_upsell": {
+      "enable_shortcut_tip": false,
+      "enable_startup_dialog": false
+    },
+    "tengu-top-of-feed-tip": {
+      "tip": "",
+      "color": ""
+    },
+    "tengu_1p_event_batch_config": {
+      "scheduledDelayMillis": 10000,
+      "maxExportBatchSize": 400,
+      "maxQueueSize": 8192
+    },
+    "tengu_copper_lantern": false,
+    "tengu_frozen_nest": false,
+    "tengu_version_config": {
+      "minVersion": "1.0.24"
+    },
+    "tengu_sepia_heron": false,
+    "tengu_system_prompt_global_cache": false,
+    "tengu_streaming_tool_execution2": true,
+    "tengu_summarize_tool_results": false,
+    "tengu_workout2": true,
+    "tengu_chomp_inflection": false,
+    "tengu_amber_wren": {
+      "targetedRangeNudge": true,
+      "maxTokens": 10000
+    },
+    "tengu_orchid_trellis": false,
+    "tengu_chair_sermon": false,
+    "tengu_oboe": true,
+    "tengu_satin_quoll": {},
+    "tengu_cobalt_frost": true,
+    "tengu_surreal_dali": true,
+    "tengu_penguin_mode_promo": {
+      "discountPercent": 0,
+      "endDate": "Feb 16"
+    },
+    "tengu_grey_wool": true,
+    "tengu_bridge_poll_interval_config": {
+      "poll_interval_ms_not_at_capacity": 2000,
+      "poll_interval_ms_at_capacity": 600000,
+      "heartbeat_interval_ms": 0,
+      "multisession_poll_interval_ms_not_at_capacity": 5000,
+      "multisession_poll_interval_ms_at_capacity": 60000,
+      "multisession_poll_interval_ms_partial_capacity": 5000,
+      "non_exclusive_heartbeat_interval_ms": 180000,
+      "session_keepalive_interval_ms": 0,
+      "session_keepalive_interval_v2_ms": 0
+    },
+    "tengu_tern_alloy": "off",
+    "tengu-off-switch": {
+      "activated": false
+    },
+    "tengu_bridge_repl_v2": true,
+    "tengu_slate_thimble": false,
+    "tengu_pid_based_version_locking": true,
+    "tengu_permission_explainer": true,
+    "tengu_slate_ridge": true,
+    "tengu_post_compact_survey": false,
+    "tengu_mcp_elicitation": true,
+    "tengu_slate_heron": {
+      "enabled": false,
+      "gapThresholdMinutes": 60,
+      "keepRecent": 5
+    },
+    "tengu_quartz_lantern": true,
+    "tengu_willow_refresh_ttl_hours": 0,
+    "tengu_coral_fern": false
+  },
+  "hasCompletedOnboarding": true,
+  "firstStartTime": "2026-03-30T03:19:09.428Z",
+  "opusProMigrationComplete": true,
+  "sonnet1m45MigrationComplete": true,
+  "userID": "3278990df2f0a42ccc69a8931e0dbc64e2b2ca331ac16a3f1f4814f81ac37d5d",
+  "cachedExtraUsageDisabledReason": null
+}
