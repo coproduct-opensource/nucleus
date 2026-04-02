@@ -146,8 +146,10 @@ pub fn source_category(kind: NodeKind) -> SourceCategory {
         NodeKind::FileRead | NodeKind::UserPrompt | NodeKind::EnvVar | NodeKind::MemoryRead => {
             SourceCategory::Trusted
         }
-        NodeKind::WebContent => SourceCategory::Adversarial,
+        NodeKind::WebContent | NodeKind::CachedDatum => SourceCategory::Adversarial,
         NodeKind::OutboundAction | NodeKind::MemoryWrite => SourceCategory::Action,
+        NodeKind::DatabaseRow | NodeKind::GitBlob => SourceCategory::Trusted,
+        NodeKind::HTTPResponse => SourceCategory::Adversarial,
         NodeKind::ModelPlan
         | NodeKind::ToolResponse
         | NodeKind::Secret

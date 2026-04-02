@@ -341,6 +341,12 @@ fn sink_from_u8(v: u8) -> Result<SinkClass, ExtensionError> {
         10 => Ok(SinkClass::MCPWrite),
         11 => Ok(SinkClass::SecretRead),
         12 => Ok(SinkClass::CloudMutation),
+        13 => Ok(SinkClass::ProposedTableWrite),
+        14 => Ok(SinkClass::VerifiedTableWrite),
+        15 => Ok(SinkClass::SearchIndexWrite),
+        16 => Ok(SinkClass::CacheWrite),
+        17 => Ok(SinkClass::TicketWrite),
+        18 => Ok(SinkClass::AuditLogAppend),
         _ => Err(ExtensionError::InvalidDiscriminant {
             type_name: "SinkClass",
             value: v,

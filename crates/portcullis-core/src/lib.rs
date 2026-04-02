@@ -564,6 +564,18 @@ pub enum SinkClass {
     SecretRead = 11,
     /// Mutate cloud infrastructure (deploy, scale, delete).
     CloudMutation = 12,
+    /// Write to the proposed (unverified) storage lane.
+    ProposedTableWrite = 13,
+    /// Write to the verified storage lane (requires witness / human promotion).
+    VerifiedTableWrite = 14,
+    /// Mutation of a search index.
+    SearchIndexWrite = 15,
+    /// Write to a cache layer.
+    CacheWrite = 16,
+    /// Create or update a ticket / issue.
+    TicketWrite = 17,
+    /// Append to an audit log (always allowed for integrity data).
+    AuditLogAppend = 18,
 }
 
 // Compile-time invariant: discriminants match declaration order for Aeneas.
@@ -581,11 +593,17 @@ const _: () = {
     assert!(SinkClass::MCPWrite as u8 == 10);
     assert!(SinkClass::SecretRead as u8 == 11);
     assert!(SinkClass::CloudMutation as u8 == 12);
+    assert!(SinkClass::ProposedTableWrite as u8 == 13);
+    assert!(SinkClass::VerifiedTableWrite as u8 == 14);
+    assert!(SinkClass::SearchIndexWrite as u8 == 15);
+    assert!(SinkClass::CacheWrite as u8 == 16);
+    assert!(SinkClass::TicketWrite as u8 == 17);
+    assert!(SinkClass::AuditLogAppend as u8 == 18);
 };
 
 impl SinkClass {
-    /// All 13 sink classes.
-    pub const ALL: [SinkClass; 13] = [
+    /// All 19 sink classes.
+    pub const ALL: [SinkClass; 19] = [
         SinkClass::WorkspaceWrite,
         SinkClass::SystemWrite,
         SinkClass::BashExec,
@@ -599,6 +617,12 @@ impl SinkClass {
         SinkClass::MCPWrite,
         SinkClass::SecretRead,
         SinkClass::CloudMutation,
+        SinkClass::ProposedTableWrite,
+        SinkClass::VerifiedTableWrite,
+        SinkClass::SearchIndexWrite,
+        SinkClass::CacheWrite,
+        SinkClass::TicketWrite,
+        SinkClass::AuditLogAppend,
     ];
 
     /// Minimum authority required for this sink class.
@@ -607,8 +631,8 @@ impl SinkClass {
     /// authority. Read-only sinks require no authority.
     pub fn required_authority(self) -> AuthorityLevel {
         match self {
-            // Read-only — no authority needed
-            SinkClass::SecretRead => AuthorityLevel::NoAuthority,
+            // Read-only / append-only — no authority needed
+            SinkClass::SecretRead | SinkClass::AuditLogAppend => AuthorityLevel::NoAuthority,
             // Write/exec/publish — require Suggestive
             SinkClass::WorkspaceWrite
             | SinkClass::SystemWrite
@@ -621,7 +645,12 @@ impl SinkClass {
             | SinkClass::MemoryPersist
             | SinkClass::AgentSpawn
             | SinkClass::MCPWrite
-            | SinkClass::CloudMutation => AuthorityLevel::Suggestive,
+            | SinkClass::CloudMutation
+            | SinkClass::ProposedTableWrite
+            | SinkClass::VerifiedTableWrite
+            | SinkClass::SearchIndexWrite
+            | SinkClass::CacheWrite
+            | SinkClass::TicketWrite => AuthorityLevel::Suggestive,
         }
     }
 
@@ -633,24 +662,30 @@ impl SinkClass {
     pub fn required_integrity(self) -> IntegLevel {
         match self {
             // Publish vectors — require Trusted
-            SinkClass::GitPush | SinkClass::PRCommentWrite | SinkClass::EmailSend => {
-                IntegLevel::Trusted
-            }
+            SinkClass::GitPush
+            | SinkClass::PRCommentWrite
+            | SinkClass::EmailSend
+            | SinkClass::TicketWrite => IntegLevel::Trusted,
+            // Verified-lane writes — require Trusted (witness gate)
+            SinkClass::VerifiedTableWrite => IntegLevel::Trusted,
             // Local mutations — require at least Untrusted
             SinkClass::WorkspaceWrite
             | SinkClass::SystemWrite
             | SinkClass::BashExec
             | SinkClass::GitCommit
             | SinkClass::CloudMutation
-            | SinkClass::MCPWrite => IntegLevel::Untrusted,
+            | SinkClass::MCPWrite
+            | SinkClass::ProposedTableWrite
+            | SinkClass::SearchIndexWrite
+            | SinkClass::CacheWrite => IntegLevel::Untrusted,
             // Delegation — require Untrusted (child inherits taint)
             SinkClass::AgentSpawn => IntegLevel::Untrusted,
             // HTTP egress — require Untrusted (URL can encode data)
             SinkClass::HTTPEgress => IntegLevel::Untrusted,
             // Memory persist — require Untrusted (cross-session taint)
             SinkClass::MemoryPersist => IntegLevel::Untrusted,
-            // Read-only — no integrity requirement
-            SinkClass::SecretRead => IntegLevel::Adversarial,
+            // Read-only / append-only — no integrity requirement
+            SinkClass::SecretRead | SinkClass::AuditLogAppend => IntegLevel::Adversarial,
         }
     }
 
@@ -667,6 +702,7 @@ impl SinkClass {
                 | SinkClass::EmailSend
                 | SinkClass::AgentSpawn
                 | SinkClass::CloudMutation
+                | SinkClass::TicketWrite
         )
     }
 
@@ -681,7 +717,10 @@ impl SinkClass {
     pub fn requires_verified_derivation(self) -> bool {
         matches!(
             self,
-            SinkClass::GitPush | SinkClass::GitCommit | SinkClass::PRCommentWrite
+            SinkClass::GitPush
+                | SinkClass::GitCommit
+                | SinkClass::PRCommentWrite
+                | SinkClass::VerifiedTableWrite
         )
     }
 }
@@ -702,6 +741,12 @@ impl std::fmt::Display for SinkClass {
             SinkClass::MCPWrite => "mcp_write",
             SinkClass::SecretRead => "secret_read",
             SinkClass::CloudMutation => "cloud_mutation",
+            SinkClass::ProposedTableWrite => "proposed_table_write",
+            SinkClass::VerifiedTableWrite => "verified_table_write",
+            SinkClass::SearchIndexWrite => "search_index_write",
+            SinkClass::CacheWrite => "cache_write",
+            SinkClass::TicketWrite => "ticket_write",
+            SinkClass::AuditLogAppend => "audit_log_append",
         };
         write!(f, "{s}")
     }
@@ -1958,8 +2003,8 @@ mod tests {
     // ════════════════════════════════════════════════════════════════════
 
     #[test]
-    fn sink_class_all_has_13_variants() {
-        assert_eq!(SinkClass::ALL.len(), 13);
+    fn sink_class_all_has_19_variants() {
+        assert_eq!(SinkClass::ALL.len(), 19);
     }
 
     #[test]
@@ -1980,6 +2025,8 @@ mod tests {
         assert!(SinkClass::AgentSpawn.is_exfil_vector());
         assert!(SinkClass::CloudMutation.is_exfil_vector());
 
+        assert!(SinkClass::TicketWrite.is_exfil_vector());
+
         // Non-exfil: workspace writes, bash exec, git commit, memory persist, MCP write, secret read
         assert!(!SinkClass::WorkspaceWrite.is_exfil_vector());
         assert!(!SinkClass::SystemWrite.is_exfil_vector());
@@ -1988,18 +2035,27 @@ mod tests {
         assert!(!SinkClass::MemoryPersist.is_exfil_vector());
         assert!(!SinkClass::MCPWrite.is_exfil_vector());
         assert!(!SinkClass::SecretRead.is_exfil_vector());
+        assert!(!SinkClass::ProposedTableWrite.is_exfil_vector());
+        assert!(!SinkClass::VerifiedTableWrite.is_exfil_vector());
+        assert!(!SinkClass::SearchIndexWrite.is_exfil_vector());
+        assert!(!SinkClass::CacheWrite.is_exfil_vector());
+        assert!(!SinkClass::AuditLogAppend.is_exfil_vector());
     }
 
     #[test]
     fn sink_class_authority_requirements() {
-        // SecretRead requires no authority
+        // SecretRead and AuditLogAppend require no authority
         assert_eq!(
             SinkClass::SecretRead.required_authority(),
             AuthorityLevel::NoAuthority
         );
+        assert_eq!(
+            SinkClass::AuditLogAppend.required_authority(),
+            AuthorityLevel::NoAuthority
+        );
         // All write/exec sinks require Suggestive
         for sink in SinkClass::ALL {
-            if sink != SinkClass::SecretRead {
+            if sink != SinkClass::SecretRead && sink != SinkClass::AuditLogAppend {
                 assert_eq!(
                     sink.required_authority(),
                     AuthorityLevel::Suggestive,
@@ -2035,6 +2091,31 @@ mod tests {
         assert_eq!(
             SinkClass::BashExec.required_integrity(),
             IntegLevel::Untrusted
+        );
+        // New data-pipeline sinks
+        assert_eq!(
+            SinkClass::TicketWrite.required_integrity(),
+            IntegLevel::Trusted
+        );
+        assert_eq!(
+            SinkClass::VerifiedTableWrite.required_integrity(),
+            IntegLevel::Trusted
+        );
+        assert_eq!(
+            SinkClass::ProposedTableWrite.required_integrity(),
+            IntegLevel::Untrusted
+        );
+        assert_eq!(
+            SinkClass::SearchIndexWrite.required_integrity(),
+            IntegLevel::Untrusted
+        );
+        assert_eq!(
+            SinkClass::CacheWrite.required_integrity(),
+            IntegLevel::Untrusted
+        );
+        assert_eq!(
+            SinkClass::AuditLogAppend.required_integrity(),
+            IntegLevel::Adversarial
         );
     }
 

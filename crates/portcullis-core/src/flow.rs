@@ -57,6 +57,18 @@ pub enum NodeKind {
     /// Carries the same label as the original attempt — retrying does
     /// not launder taint.
     Retry,
+    /// Structured API response (distinct from raw WebContent).
+    /// Internal confidentiality, untrusted integrity (external service).
+    HTTPResponse,
+    /// Row fetched from a database.
+    /// Internal confidentiality, trusted integrity (local data store).
+    DatabaseRow,
+    /// Content from a git object (blob, tree).
+    /// Internal confidentiality, trusted integrity (version-controlled).
+    GitBlob,
+    /// Data retrieved from a cache layer.
+    /// Public confidentiality, untrusted integrity (cache can be stale/poisoned).
+    CachedDatum,
 }
 
 /// Intrinsic label for a node kind — the base label before propagation.
@@ -147,6 +159,54 @@ pub fn intrinsic_label(kind: NodeKind, now: u64) -> IFCLabel {
                 ttl_secs: 0,
             },
             authority: AuthorityLevel::Directive,
+            derivation: DerivationClass::Deterministic,
+        },
+        // Structured API response — internal, untrusted (external service).
+        NodeKind::HTTPResponse => IFCLabel {
+            confidentiality: ConfLevel::Internal,
+            integrity: IntegLevel::Untrusted,
+            provenance: ProvenanceSet::TOOL,
+            freshness: crate::Freshness {
+                observed_at: now,
+                ttl_secs: 0,
+            },
+            authority: AuthorityLevel::NoAuthority,
+            derivation: DerivationClass::Deterministic,
+        },
+        // Database row — internal, trusted (local data store).
+        NodeKind::DatabaseRow => IFCLabel {
+            confidentiality: ConfLevel::Internal,
+            integrity: IntegLevel::Trusted,
+            provenance: ProvenanceSet::SYSTEM,
+            freshness: crate::Freshness {
+                observed_at: now,
+                ttl_secs: 0,
+            },
+            authority: AuthorityLevel::Informational,
+            derivation: DerivationClass::Deterministic,
+        },
+        // Git blob — internal, trusted (version-controlled content).
+        NodeKind::GitBlob => IFCLabel {
+            confidentiality: ConfLevel::Internal,
+            integrity: IntegLevel::Trusted,
+            provenance: ProvenanceSet::SYSTEM,
+            freshness: crate::Freshness {
+                observed_at: now,
+                ttl_secs: 0,
+            },
+            authority: AuthorityLevel::Directive,
+            derivation: DerivationClass::Deterministic,
+        },
+        // Cached datum — public, untrusted (cache may be stale or poisoned).
+        NodeKind::CachedDatum => IFCLabel {
+            confidentiality: ConfLevel::Public,
+            integrity: IntegLevel::Untrusted,
+            provenance: ProvenanceSet::TOOL,
+            freshness: crate::Freshness {
+                observed_at: now,
+                ttl_secs: 0,
+            },
+            authority: AuthorityLevel::NoAuthority,
             derivation: DerivationClass::Deterministic,
         },
     }
