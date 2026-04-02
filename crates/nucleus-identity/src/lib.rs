@@ -70,8 +70,8 @@ pub use did_resolver::{CachingDidResolver, DidResolver, InMemoryDidResolver};
 pub use dpop::{DpopClaims, DpopHeader, DpopProofBuilder, DpopVerifier};
 pub use identity::Identity;
 pub use ifc_extension::{
-    decode_ifc_extension, encode_ifc_extension, ExtensionError, NUCLEUS_IFC_OID,
-    OID_NUCLEUS_IFC_BYTES, OID_NUCLEUS_IFC_TUPLE,
+    decode_ifc_extension, default_peer_label, encode_ifc_extension, extract_peer_ifc,
+    ExtensionError, NUCLEUS_IFC_OID, OID_NUCLEUS_IFC_BYTES, OID_NUCLEUS_IFC_TUPLE,
 };
 pub use manager::SecretManager;
 pub use session::{SessionId, SessionIdentity};
