@@ -640,7 +640,20 @@ fn main() {
                 let op = map_tool(&input.tool_name);
                 let output_kind = classify_tool_output(op);
                 let taint_tool = input.tool_name.clone();
+                let hash_tool = input.tool_name.clone();
                 let rt = result_text.to_string();
+
+                // Compute SHA-256 of the tool result for witness anchoring (#873).
+                let is_web = detect_web_taint(&hash_tool);
+                let content_hash: [u8; 32] = if is_web {
+                    use sha2::{Digest, Sha256};
+                    let mut hasher = Sha256::new();
+                    hasher.update(rt.as_bytes());
+                    hasher.finalize().into()
+                } else {
+                    [0u8; 32]
+                };
+
                 match with_session(&input.session_id, |s| {
                     s.flow_observations.push((
                         node_kind_to_u8(output_kind),
@@ -648,15 +661,36 @@ fn main() {
                         truncate_subject(&rt, 200),
                     ));
                     s.last_pre_tool_obs_index = None;
-                    if detect_web_taint(&taint_tool) && !s.web_tainted {
-                        s.web_tainted = true;
-                        eprintln!("{}", web_taint_warning(&taint_tool, &rt));
+                    if is_web {
+                        if !s.web_tainted {
+                            s.web_tainted = true;
+                            eprintln!("{}", web_taint_warning(&taint_tool, &rt));
+                        }
+                        // Record content hash as pending source for ReductionWitness (#873).
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        s.pending_source_hashes.push(session::PendingSourceHash {
+                            content_hash,
+                            tool_name: hash_tool.clone(),
+                            captured_at: now,
+                            witnessed: false,
+                        });
                     }
                 }) {
-                    Some(_) => eprintln!(
-                        "nucleus: post-tool {op} {} — inserted {:?} observation into flow graph",
-                        input.tool_name, output_kind
-                    ),
+                    Some(_) => {
+                        eprintln!(
+                            "nucleus: post-tool {op} {} — inserted {:?} observation into flow graph",
+                            input.tool_name, output_kind
+                        );
+                        if is_web {
+                            eprintln!(
+                                "nucleus: captured source hash {:02x}{:02x}{:02x}{:02x}... for witness anchoring (#873)",
+                                content_hash[0], content_hash[1], content_hash[2], content_hash[3]
+                            );
+                        }
+                    }
                     None => nucleus_deny!("post-tool skipped — session tampered"),
                 }
             }

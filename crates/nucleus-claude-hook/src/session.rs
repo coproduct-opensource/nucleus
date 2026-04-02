@@ -108,6 +108,30 @@ pub(crate) struct SessionState {
     /// Prevents repeated injection — the model only needs to be told once.
     #[serde(default)]
     pub(crate) web_taint_context_injected: bool,
+    /// Content hashes of web tool outputs, captured at PostToolUse time (#873).
+    /// Each entry records the SHA-256 of the tool result, the tool name, and
+    /// the Unix timestamp. These are the anchors for future `ReductionWitness`
+    /// chains — `/clearance` can reference them as `InputBlob.content_hash`.
+    #[serde(default)]
+    pub(crate) pending_source_hashes: Vec<PendingSourceHash>,
+}
+
+/// A content hash captured from a tool output during PostToolUse (#873).
+///
+/// This is the "record" side of record-and-replay: we record the SHA-256
+/// of untrusted content at capture time so that a future reduction pipeline
+/// can prove it processed *this exact content*.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub(crate) struct PendingSourceHash {
+    /// SHA-256 of the tool result content.
+    pub(crate) content_hash: [u8; 32],
+    /// Tool that produced this content (e.g. "WebFetch", "mcp__server__tool").
+    pub(crate) tool_name: String,
+    /// Unix timestamp (seconds) when the content was captured.
+    pub(crate) captured_at: u64,
+    /// Whether a `ReductionWitness` has been constructed for this content.
+    /// Once true, the hash has been consumed by the reduction pipeline.
+    pub(crate) witnessed: bool,
 }
 
 impl SessionState {
@@ -1021,6 +1045,46 @@ mod tests {
         assert_eq!(restored.flow_observations[1].0, TOOL_RESPONSE);
         assert!(restored.flow_observations[1].1.starts_with("post:"));
         assert!(restored.last_pre_tool_obs_index.is_none());
+    }
+
+    #[test]
+    fn pending_source_hash_round_trip() {
+        let hash = {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(b"<html>example</html>");
+            let result: [u8; 32] = h.finalize().into();
+            result
+        };
+        let mut state = SessionState {
+            profile: "test".to_string(),
+            ..Default::default()
+        };
+        state.pending_source_hashes.push(PendingSourceHash {
+            content_hash: hash,
+            tool_name: "WebFetch".to_string(),
+            captured_at: 1711900000,
+            witnessed: false,
+        });
+
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: SessionState = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.pending_source_hashes.len(), 1);
+        assert_eq!(restored.pending_source_hashes[0].content_hash, hash);
+        assert_eq!(restored.pending_source_hashes[0].tool_name, "WebFetch");
+        assert!(!restored.pending_source_hashes[0].witnessed);
+    }
+
+    #[test]
+    fn pending_source_hash_backward_compatible() {
+        // Old session JSON without pending_source_hashes field should deserialize
+        let json = r#"{"schema_version":3,"profile":"test","high_water_mark":0,
+            "allowed_ops":[],"flow_observations":[],"chain_head_hash":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            "signing_key_pkcs8":[],"compartment_token":"","web_tainted":false,
+            "web_taint_context_injected":false}"#;
+        let state: SessionState = serde_json::from_str(json).unwrap();
+        assert!(state.pending_source_hashes.is_empty());
     }
 
     // -----------------------------------------------------------------------
