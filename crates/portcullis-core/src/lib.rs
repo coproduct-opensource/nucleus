@@ -89,6 +89,8 @@ pub mod registry;
 pub mod replay;
 pub mod storage_lane;
 pub mod verdict;
+#[cfg(feature = "wasm-sandbox")]
+pub mod wasm_sandbox;
 pub mod wire;
 #[cfg(feature = "envelope")]
 pub mod witness;
