@@ -82,6 +82,7 @@ pub mod parser_registry;
 pub mod policy_rules;
 #[cfg(feature = "envelope")]
 pub mod promotion;
+pub mod provenance_schema;
 pub mod receipt;
 #[cfg(feature = "artifact")]
 pub mod registry;
