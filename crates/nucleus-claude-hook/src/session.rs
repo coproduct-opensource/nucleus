@@ -1443,6 +1443,47 @@ pub(crate) fn assemble_witness_bundle(s: &mut SessionState) -> ClearanceResult {
     ClearanceResult::Verified { bundle, digest }
 }
 
+// ---------------------------------------------------------------------------
+// Deterministic field enforcement (#933)
+// ---------------------------------------------------------------------------
+
+/// Check whether a write to a schema field should be denied because the
+/// field is declared `derivation: deterministic` but no `DeterministicBind`
+/// exists for it.
+///
+/// Returns `Some(reason)` if the write should be denied, `None` if allowed.
+#[allow(dead_code)]
+pub(crate) fn check_deterministic_field_write(
+    s: &SessionState,
+    schema: &portcullis_core::provenance_schema::ProvenanceSchema,
+    field_name: &str,
+) -> Option<String> {
+    use portcullis_core::provenance_schema::DerivationKind;
+
+    let field = schema.fields.get(field_name)?;
+
+    if field.derivation != DerivationKind::Deterministic {
+        // AI-derived and user-provided fields can be written directly.
+        return None;
+    }
+
+    // Deterministic field — check for a DeterministicBind record.
+    let has_bind = s
+        .deterministic_binds
+        .iter()
+        .any(|b| b.field_name == field_name);
+
+    if has_bind {
+        None
+    } else {
+        Some(format!(
+            "field '{}' is declared deterministic — use the WASM parser pipeline, not direct model output. \
+             Apply a registered parser first, then the DeterministicBind will populate this field automatically.",
+            field_name
+        ))
+    }
+}
+
 /// Handle `UserPromptSubmit` — detect `!` bash passthrough (#918).
 pub(crate) fn handle_user_prompt_submit(input: &crate::protocol::HookInput) {
     let prompt = input
@@ -2673,5 +2714,92 @@ mod tests {
         let json = serde_json::to_string(&state).unwrap();
         let restored: SessionState = serde_json::from_str(&json).unwrap();
         assert_eq!(state.deterministic_binds, restored.deterministic_binds);
+    }
+
+    // -----------------------------------------------------------------
+    // Deterministic field enforcement (#933)
+    // -----------------------------------------------------------------
+
+    fn test_schema() -> portcullis_core::provenance_schema::ProvenanceSchema {
+        use portcullis_core::provenance_schema::*;
+        use std::collections::BTreeMap;
+
+        let mut sources = BTreeMap::new();
+        sources.insert(
+            "api".into(),
+            SourceDeclaration {
+                url_template: "https://example.com".into(),
+                content_type: None,
+            },
+        );
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "revenue".into(),
+            FieldDeclaration {
+                source: "api".into(),
+                derivation: DerivationKind::Deterministic,
+                parser: Some("jq".into()),
+                expression: Some(".revenue".into()),
+            },
+        );
+        fields.insert(
+            "summary".into(),
+            FieldDeclaration {
+                source: "api".into(),
+                derivation: DerivationKind::AiDerived,
+                parser: None,
+                expression: None,
+            },
+        );
+        ProvenanceSchema {
+            schema_version: 1,
+            description: "test".into(),
+            sources,
+            fields,
+        }
+    }
+
+    #[test]
+    fn deterministic_field_denied_without_bind() {
+        let s = SessionState::default();
+        let schema = test_schema();
+        let result = check_deterministic_field_write(&s, &schema, "revenue");
+        assert!(
+            result.is_some(),
+            "should deny write to deterministic field without bind"
+        );
+    }
+
+    #[test]
+    fn deterministic_field_allowed_with_bind() {
+        let mut s = SessionState::default();
+        s.deterministic_binds.push(DeterministicBindRecord {
+            field_name: "revenue".into(),
+            output_hash: [0xCC; 32],
+            parser_id: "jq".into(),
+            node_kind_u8: 16,
+        });
+        let schema = test_schema();
+        let result = check_deterministic_field_write(&s, &schema, "revenue");
+        assert!(result.is_none(), "should allow write when bind exists");
+    }
+
+    #[test]
+    fn ai_derived_field_always_allowed() {
+        let s = SessionState::default();
+        let schema = test_schema();
+        let result = check_deterministic_field_write(&s, &schema, "summary");
+        assert!(
+            result.is_none(),
+            "AI-derived fields should always be writable"
+        );
+    }
+
+    #[test]
+    fn unknown_field_always_allowed() {
+        let s = SessionState::default();
+        let schema = test_schema();
+        let result = check_deterministic_field_write(&s, &schema, "nonexistent");
+        assert!(result.is_none(), "unknown fields should pass through");
     }
 }
