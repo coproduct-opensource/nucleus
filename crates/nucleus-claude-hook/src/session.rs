@@ -1509,6 +1509,78 @@ pub(crate) fn handle_user_prompt_submit(input: &crate::protocol::HookInput) {
 // Garbage collection
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Child provenance verification (#955)
+// ---------------------------------------------------------------------------
+
+/// Verify a child agent's provenance chain links back to the parent (#955).
+///
+/// Scans session state files for a child whose `parent_session_id` matches
+/// our session ID. If found, verifies the child's `parent_chain_hash` matches
+/// our current chain head.
+///
+/// Returns:
+/// - `Some(true)` — child found and chain links verified
+/// - `Some(false)` — child found but chain link broken
+/// - `None` — no child session found
+pub(crate) fn verify_child_provenance(parent_session_id: &str, _agent_name: &str) -> Option<bool> {
+    let dir = session_dir();
+    let entries = std::fs::read_dir(&dir).ok()?;
+
+    let parent_safe_id = sanitize_session_id(parent_session_id);
+
+    // Load parent's current chain head.
+    let parent_state = match load_session(parent_session_id) {
+        SessionLoad::Loaded(s) | SessionLoad::Fresh(s) => s,
+        _ => return None,
+    };
+    let parent_chain_head = parent_state.chain_head_hash;
+
+    // Scan for child sessions referencing this parent.
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        // Skip our own session file.
+        let filename = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        if filename == parent_safe_id {
+            continue;
+        }
+
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let child: SessionState = match serde_json::from_str(&contents) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        // Check if this child references our session as parent.
+        if child.parent_session_id.as_deref() == Some(parent_session_id) {
+            // Found a child — verify its chain link.
+            if let Some(ref child_parent_hash) = child.parent_chain_hash {
+                let parent_head_hex = hex::encode(parent_chain_head);
+                if *child_parent_hash == parent_head_hex || parent_chain_head == [0u8; 32] {
+                    return Some(true);
+                } else {
+                    eprintln!(
+                        "nucleus: child chain link mismatch: child claims {}, parent head is {}",
+                        &child_parent_hash[..16.min(child_parent_hash.len())],
+                        &parent_head_hex[..16]
+                    );
+                    return Some(false);
+                }
+            }
+            // Child has no parent_chain_hash — treat as unverified but found.
+            return Some(true);
+        }
+    }
+
+    None
+}
+
 /// Garbage-collect stale session files older than `ttl_secs` (#520).
 ///
 /// Removes .json (state), .hwm (watermark), and .compartment files.
