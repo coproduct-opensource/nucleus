@@ -303,6 +303,9 @@ private def latticeCompl (a : CapabilityLattice) : CapabilityLattice := {
 -- We define the entire HeytingAlgebra in one `where` block to avoid
 -- instance chain mismatches between LE, PartialOrder, SemilatticeInf.
 
+-- Increase heartbeats for the 13-field product lattice proofs (#798).
+-- The `simp only` in le_himp_iff needs more reduction steps than the default 200000.
+set_option maxHeartbeats 800000 in
 instance instHeytingAlgebra : HeytingAlgebra CapabilityLattice where
   le := latticeLE
   lt a b := latticeLE a b ∧ ¬latticeLE b a
