@@ -48,6 +48,7 @@ pub fn print_help() {
     println!("  --smoke-test           Quick self-test: pipe synthetic hook input and verify");
     println!("  --gc                   Garbage-collect stale session files (>24h)");
     println!("  --reset-session <SID>  Clear taint on a session (receipts preserved)");
+    println!("  --compartment <NAME>   Switch compartment for the active session");
     println!("  --compartment-path <SID>  Print the compartment file path for a session");
     println!("  --uninstall            Remove hook configuration from settings.json");
     println!("  --completions <SHELL>  Print shell completions (bash, zsh, fish)");
@@ -145,7 +146,8 @@ pub fn print_help_compartments() {
     println!("              operation is logged with enhanced audit detail.");
     println!();
     println!("SETTING A COMPARTMENT:");
-    println!("  export NUCLEUS_COMPARTMENT=research     # env var (session-wide)");
+    println!("  nucleus-claude-hook --compartment research  # switch active session (recommended)");
+    println!("  export NUCLEUS_COMPARTMENT=research         # env var (session-wide)");
     println!(
         "  echo research > $(nucleus-claude-hook --compartment-path $SID)  # per-session file"
     );

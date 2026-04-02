@@ -49,6 +49,8 @@ pub enum CliCommand {
     Benchmark { iterations: usize },
     /// `--statusline` — output a short status string for Claude Code's status line.
     StatusLine,
+    /// `--compartment <name>` — switch the active compartment for the latest session.
+    Compartment { name: String },
 }
 
 /// CLI parsing error.
@@ -158,6 +160,13 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
             Ok(CliCommand::Benchmark { iterations })
         }
         "--statusline" => Ok(CliCommand::StatusLine),
+        "--compartment" => {
+            let name = args.get(1).ok_or_else(|| CliError::MissingArgument {
+                flag: "--compartment".into(),
+                expected: "<name> (research|draft|execute|breakglass:<reason>)".into(),
+            })?;
+            Ok(CliCommand::Compartment { name: name.clone() })
+        }
         other if other.starts_with('-') => Err(CliError::UnknownFlag(other.to_string())),
         // No recognised flag — fall through to stdin hook mode.
         _ => Ok(CliCommand::Hook),
@@ -366,6 +375,28 @@ mod tests {
             parse_args(&args(&["--statusline"])).unwrap(),
             CliCommand::StatusLine
         );
+    }
+
+    #[test]
+    fn compartment_with_name() {
+        assert_eq!(
+            parse_args(&args(&["--compartment", "research"])).unwrap(),
+            CliCommand::Compartment {
+                name: "research".into()
+            }
+        );
+        assert_eq!(
+            parse_args(&args(&["--compartment", "breakglass:prod outage"])).unwrap(),
+            CliCommand::Compartment {
+                name: "breakglass:prod outage".into()
+            }
+        );
+    }
+
+    #[test]
+    fn compartment_missing_name() {
+        let err = parse_args(&args(&["--compartment"])).unwrap_err();
+        assert!(matches!(err, CliError::MissingArgument { .. }));
     }
 
     #[test]
