@@ -555,6 +555,70 @@ impl LeafTracker {
 // Tests
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Subject extraction from tool_input
+// ---------------------------------------------------------------------------
+
+/// Extract a human-readable subject from the tool_input JSON.
+pub(crate) fn extract_subject(tool_name: &str, input: &serde_json::Value) -> String {
+    match tool_name {
+        "Bash" => input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(unknown)")
+            .to_string(),
+        "Read" => input
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(unknown)")
+            .to_string(),
+        "Write" => input
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(unknown)")
+            .to_string(),
+        "Edit" => input
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(unknown)")
+            .to_string(),
+        "Glob" => input
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .unwrap_or("*")
+            .to_string(),
+        "Grep" => input
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(unknown)")
+            .to_string(),
+        "WebFetch" => input
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(unknown)")
+            .to_string(),
+        "WebSearch" => input
+            .get("query")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(unknown)")
+            .to_string(),
+        _ if tool_name.starts_with("mcp__") => {
+            // For MCP tools, combine tool name + first string argument as subject
+            let tool_part = tool_name.strip_prefix("mcp__").unwrap_or(tool_name);
+            let arg = input
+                .as_object()
+                .and_then(|obj| obj.values().find_map(|v| v.as_str().map(|s| s.to_string())))
+                .unwrap_or_default();
+            if arg.is_empty() {
+                tool_part.to_string()
+            } else {
+                format!("{tool_part}: {arg}")
+            }
+        }
+        _ => "(unknown)".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -857,6 +921,18 @@ mod tests {
         // Low < Medium < High
         assert!(Confidence::Low < Confidence::Medium);
         assert!(Confidence::Medium < Confidence::High);
+    }
+
+    #[test]
+    fn test_extract_subject_bash() {
+        let input = serde_json::json!({"command": "ls -la"});
+        assert_eq!(extract_subject("Bash", &input), "ls -la");
+    }
+
+    #[test]
+    fn test_extract_subject_read() {
+        let input = serde_json::json!({"file_path": "/etc/passwd"});
+        assert_eq!(extract_subject("Read", &input), "/etc/passwd");
     }
 
     #[test]
