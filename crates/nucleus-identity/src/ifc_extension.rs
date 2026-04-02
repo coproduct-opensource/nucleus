@@ -31,6 +31,7 @@ use portcullis_core::{
     delegation::DelegationScope, AuthorityLevel, ConfLevel, DerivationClass, Freshness, IFCLabel,
     IntegLevel, ProvenanceSet, SinkClass,
 };
+use x509_parser::prelude::*;
 
 /// Placeholder private OID under the nucleus PEN arc.
 ///
@@ -159,6 +160,50 @@ pub fn decode_ifc_extension(bytes: &[u8]) -> Result<(IFCLabel, DelegationScope),
     };
 
     Ok((label, scope))
+}
+
+/// Extract the IFC label and delegation scope from a DER-encoded peer certificate.
+///
+/// Parses the X.509 certificate, searches for the custom extension identified
+/// by [`NUCLEUS_IFC_OID`], and decodes it using [`decode_ifc_extension`].
+///
+/// Returns `None` if the certificate does not contain the IFC extension.
+/// Returns `Some(Err(_))` if the extension is present but malformed.
+pub fn extract_peer_ifc(
+    cert_der: &[u8],
+) -> Option<Result<(IFCLabel, DelegationScope), ExtensionError>> {
+    let (_, cert) = X509Certificate::from_der(cert_der).ok()?;
+
+    let target_oid = x509_parser::oid_registry::asn1_rs::oid!(1.3.6 .1 .4 .1 .57212 .1 .3);
+
+    for ext in cert.extensions() {
+        if ext.oid == target_oid {
+            return Some(decode_ifc_extension(ext.value));
+        }
+    }
+
+    None
+}
+
+/// Returns the default (most restrictive) IFC label and delegation scope for
+/// a peer that does not present an IFC extension in its certificate.
+///
+/// This follows the principle of least privilege: unknown peers are treated as
+/// opaque external entities with adversarial integrity and no delegation authority.
+pub fn default_peer_label() -> (IFCLabel, DelegationScope) {
+    let label = IFCLabel {
+        confidentiality: ConfLevel::Public,
+        integrity: IntegLevel::Adversarial,
+        provenance: ProvenanceSet::EMPTY,
+        freshness: Freshness {
+            observed_at: 0,
+            ttl_secs: 0,
+        },
+        authority: AuthorityLevel::NoAuthority,
+        derivation: DerivationClass::OpaqueExternal,
+    };
+    let scope = DelegationScope::empty();
+    (label, scope)
 }
 
 // ---------------------------------------------------------------------------
@@ -501,5 +546,90 @@ mod tests {
         let scope = DelegationScope::empty();
         let bytes = encode_ifc_extension(&label, &scope);
         assert!(bytes.starts_with(VERSION_TAG));
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_peer_ifc / default_peer_label tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: create a self-signed cert with an optional IFC custom extension.
+    fn make_test_cert(ifc_payload: Option<Vec<u8>>) -> Vec<u8> {
+        use rcgen::{CertificateParams, CustomExtension, KeyPair};
+
+        let key_pair = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+        let mut params = CertificateParams::new(vec!["test.local".to_string()]).unwrap();
+
+        if let Some(payload) = ifc_payload {
+            let mut ext = CustomExtension::from_oid_content(OID_NUCLEUS_IFC_TUPLE, payload);
+            ext.set_criticality(false);
+            params.custom_extensions = vec![ext];
+        }
+
+        let cert = params.self_signed(&key_pair).unwrap();
+        cert.der().to_vec()
+    }
+
+    #[test]
+    fn extract_peer_ifc_with_extension() {
+        let label = sample_label();
+        let scope = sample_scope();
+        let payload = encode_ifc_extension(&label, &scope);
+        let cert_der = make_test_cert(Some(payload));
+
+        let result = extract_peer_ifc(&cert_der);
+        assert!(result.is_some(), "should find IFC extension");
+
+        let (decoded_label, decoded_scope) = result.unwrap().expect("decode should succeed");
+        assert_eq!(decoded_label.confidentiality, label.confidentiality);
+        assert_eq!(decoded_label.integrity, label.integrity);
+        assert_eq!(decoded_label.provenance, label.provenance);
+        assert_eq!(decoded_label.authority, label.authority);
+        assert_eq!(decoded_label.derivation, label.derivation);
+        assert_eq!(decoded_scope.allowed_paths, scope.allowed_paths);
+        assert_eq!(decoded_scope.allowed_sinks, scope.allowed_sinks);
+        assert_eq!(decoded_scope.allowed_repos, scope.allowed_repos);
+    }
+
+    #[test]
+    fn extract_peer_ifc_missing_extension() {
+        let cert_der = make_test_cert(None);
+        let result = extract_peer_ifc(&cert_der);
+        assert!(result.is_none(), "should return None when no IFC extension");
+    }
+
+    #[test]
+    fn extract_peer_ifc_malformed_extension() {
+        let cert_der = make_test_cert(Some(b"not-valid-ifc-payload".to_vec()));
+        let result = extract_peer_ifc(&cert_der);
+        assert!(result.is_some(), "should find the extension");
+        assert!(
+            result.unwrap().is_err(),
+            "should fail to decode malformed payload"
+        );
+    }
+
+    #[test]
+    fn extract_peer_ifc_invalid_der() {
+        let result = extract_peer_ifc(b"not a certificate");
+        assert!(result.is_none(), "invalid DER should return None");
+    }
+
+    #[test]
+    fn default_peer_label_is_restrictive() {
+        let (label, scope) = default_peer_label();
+
+        // Most restrictive IFC dimensions
+        assert_eq!(label.confidentiality, ConfLevel::Public);
+        assert_eq!(label.integrity, IntegLevel::Adversarial);
+        assert_eq!(label.provenance, ProvenanceSet::EMPTY);
+        assert_eq!(label.authority, AuthorityLevel::NoAuthority);
+        assert_eq!(label.derivation, DerivationClass::OpaqueExternal);
+        assert_eq!(label.freshness.observed_at, 0);
+        assert_eq!(label.freshness.ttl_secs, 0);
+
+        // Empty delegation scope
+        assert!(scope.allowed_paths.is_empty());
+        assert!(scope.allowed_sinks.is_empty());
+        assert!(scope.allowed_repos.is_empty());
     }
 }
