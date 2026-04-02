@@ -27,6 +27,7 @@
 use crate::DerivationClass;
 use crate::SinkClass;
 use crate::envelope::FieldEnvelope;
+use crate::witness::ReductionWitness;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PromotionScope — where promoted data may flow
@@ -117,6 +118,13 @@ pub enum PromotionError {
     /// Cannot promote `Deterministic` data — it is already the strongest
     /// reproducibility class and does not need human attestation.
     CannotPromoteDeterministic,
+    /// Content was evacuated from the airlock. A valid `ReductionWitness`
+    /// is required to promote non-deterministic data, but was missing or
+    /// invalid.
+    AirlockEvacuated {
+        /// Human-readable explanation of why the content was evacuated.
+        reason: String,
+    },
 }
 
 impl core::fmt::Display for PromotionError {
@@ -139,6 +147,9 @@ impl core::fmt::Display for PromotionError {
             Self::AlreadyPromoted => write!(f, "field is already HumanPromoted"),
             Self::CannotPromoteDeterministic => {
                 write!(f, "deterministic data does not need promotion")
+            }
+            Self::AirlockEvacuated { reason } => {
+                write!(f, "airlock evacuated: {reason}")
             }
         }
     }
@@ -163,6 +174,7 @@ impl core::fmt::Display for PromotionError {
 pub fn promote(
     envelope: &mut FieldEnvelope,
     request: &PromotionRequest,
+    witness: Option<&ReductionWitness>,
     now: u64,
 ) -> Result<PromotionResult, PromotionError> {
     // --- validation ---
@@ -194,6 +206,35 @@ pub fn promote(
         });
     }
 
+    // --- reduction witness gate ---
+    //
+    // Non-deterministic derivation classes require a valid ReductionWitness.
+    // This ensures raw content cannot be promoted without being processed
+    // through a deterministic parser chain first.
+    match envelope.derivation_class {
+        DerivationClass::AIDerived | DerivationClass::Mixed | DerivationClass::OpaqueExternal => {
+            match witness {
+                None => {
+                    return Err(PromotionError::AirlockEvacuated {
+                        reason: format!(
+                            "{:?} content requires a ReductionWitness for promotion",
+                            envelope.derivation_class
+                        ),
+                    });
+                }
+                Some(w) if !w.is_valid() => {
+                    return Err(PromotionError::AirlockEvacuated {
+                        reason: "ReductionWitness is invalid: chain broken or validation failed"
+                            .to_string(),
+                    });
+                }
+                Some(_) => { /* valid witness, proceed */ }
+            }
+        }
+        // Deterministic and HumanPromoted are handled above (early returns).
+        _ => {}
+    }
+
     // --- apply promotion ---
 
     let original = envelope.derivation_class;
@@ -219,7 +260,14 @@ mod tests {
     use super::*;
     use crate::IFCLabel;
     use crate::effect::EffectKind;
+    use crate::witness::{ParserStep, ValidationResult};
     use sha2::{Digest, Sha256};
+
+    fn sha256(data: &[u8]) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        hasher.finalize().into()
+    }
 
     /// Helper: build a minimal `FieldEnvelope` with the given derivation class.
     fn make_envelope(derivation: DerivationClass) -> FieldEnvelope {
@@ -254,11 +302,34 @@ mod tests {
         }
     }
 
+    fn make_valid_witness() -> ReductionWitness {
+        let source = sha256(b"raw web content");
+        let parsed = sha256(b"parsed json");
+        ReductionWitness {
+            source_hash: source,
+            parser_steps: vec![ParserStep {
+                parser_id: "json_parser".to_string(),
+                parser_version: "1.0.0".to_string(),
+                parser_hash: sha256(b"json_parser_binary"),
+                input_hash: source,
+                output_hash: parsed,
+            }],
+            validation_steps: vec![ValidationResult {
+                validator_id: "schema_check".to_string(),
+                version: "1.0.0".to_string(),
+                passed: true,
+            }],
+            output_hash: parsed,
+        }
+    }
+
     #[test]
     fn successful_promotion() {
         let mut env = make_envelope(DerivationClass::AIDerived);
         let req = base_request();
-        let result = promote(&mut env, &req, 2000).expect("promotion should succeed");
+        let witness = make_valid_witness();
+        let result =
+            promote(&mut env, &req, Some(&witness), 2000).expect("promotion should succeed");
 
         assert!(result.promoted);
         assert_eq!(result.new_derivation, DerivationClass::HumanPromoted);
@@ -284,7 +355,9 @@ mod tests {
         let mut env = make_envelope(DerivationClass::Mixed);
         let mut req = base_request();
         req.from_derivation = DerivationClass::Mixed;
-        let result = promote(&mut env, &req, 2000).expect("mixed promotion should succeed");
+        let witness = make_valid_witness();
+        let result =
+            promote(&mut env, &req, Some(&witness), 2000).expect("mixed promotion should succeed");
 
         assert_eq!(result.original_derivation, DerivationClass::Mixed);
         assert_eq!(env.derivation_class, DerivationClass::HumanPromoted);
@@ -296,9 +369,8 @@ mod tests {
         let mut req = base_request();
         req.principal = String::new();
 
-        let err = promote(&mut env, &req, 2000).unwrap_err();
+        let err = promote(&mut env, &req, None, 2000).unwrap_err();
         assert_eq!(err, PromotionError::EmptyPrincipal);
-        // Envelope unchanged
         assert_eq!(env.derivation_class, DerivationClass::AIDerived);
     }
 
@@ -308,17 +380,16 @@ mod tests {
         let mut req = base_request();
         req.reason = String::new();
 
-        let err = promote(&mut env, &req, 2000).unwrap_err();
+        let err = promote(&mut env, &req, None, 2000).unwrap_err();
         assert_eq!(err, PromotionError::EmptyReason);
     }
 
     #[test]
     fn derivation_mismatch_rejected() {
         let mut env = make_envelope(DerivationClass::Mixed);
-        // Request claims AIDerived but envelope is Mixed
         let req = base_request();
 
-        let err = promote(&mut env, &req, 2000).unwrap_err();
+        let err = promote(&mut env, &req, None, 2000).unwrap_err();
         assert_eq!(
             err,
             PromotionError::DerivationMismatch {
@@ -326,7 +397,6 @@ mod tests {
                 actual: DerivationClass::Mixed,
             }
         );
-        // Envelope unchanged
         assert_eq!(env.derivation_class, DerivationClass::Mixed);
     }
 
@@ -336,7 +406,7 @@ mod tests {
         let mut req = base_request();
         req.expires_at = Some(1500);
 
-        let err = promote(&mut env, &req, 2000).unwrap_err();
+        let err = promote(&mut env, &req, None, 2000).unwrap_err();
         assert_eq!(
             err,
             PromotionError::Expired {
@@ -351,8 +421,10 @@ mod tests {
         let mut env = make_envelope(DerivationClass::AIDerived);
         let mut req = base_request();
         req.expires_at = Some(3000);
+        let witness = make_valid_witness();
 
-        let result = promote(&mut env, &req, 2000).expect("should succeed before expiry");
+        let result =
+            promote(&mut env, &req, Some(&witness), 2000).expect("should succeed before expiry");
         assert!(result.promoted);
     }
 
@@ -362,7 +434,7 @@ mod tests {
         let mut req = base_request();
         req.from_derivation = DerivationClass::HumanPromoted;
 
-        let err = promote(&mut env, &req, 2000).unwrap_err();
+        let err = promote(&mut env, &req, None, 2000).unwrap_err();
         assert_eq!(err, PromotionError::AlreadyPromoted);
     }
 
@@ -372,7 +444,7 @@ mod tests {
         let mut req = base_request();
         req.from_derivation = DerivationClass::Deterministic;
 
-        let err = promote(&mut env, &req, 2000).unwrap_err();
+        let err = promote(&mut env, &req, None, 2000).unwrap_err();
         assert_eq!(err, PromotionError::CannotPromoteDeterministic);
     }
 
@@ -382,8 +454,10 @@ mod tests {
         let mut req = base_request();
         req.scope =
             PromotionScope::SpecificSinks(vec![SinkClass::WorkspaceWrite, SinkClass::GitCommit]);
+        let witness = make_valid_witness();
 
-        let result = promote(&mut env, &req, 2000).expect("scoped promotion should succeed");
+        let result =
+            promote(&mut env, &req, Some(&witness), 2000).expect("scoped promotion should succeed");
         assert!(result.promoted);
     }
 
@@ -392,8 +466,10 @@ mod tests {
         let mut env = make_envelope(DerivationClass::AIDerived);
         let mut req = base_request();
         req.scope = PromotionScope::SingleField;
+        let witness = make_valid_witness();
 
-        let result = promote(&mut env, &req, 2000).expect("single-field promotion should succeed");
+        let result = promote(&mut env, &req, Some(&witness), 2000)
+            .expect("single-field promotion should succeed");
         assert!(result.promoted);
     }
 
@@ -402,10 +478,116 @@ mod tests {
         let mut env = make_envelope(DerivationClass::OpaqueExternal);
         let mut req = base_request();
         req.from_derivation = DerivationClass::OpaqueExternal;
+        let witness = make_valid_witness();
 
-        let result =
-            promote(&mut env, &req, 2000).expect("opaque external promotion should succeed");
+        let result = promote(&mut env, &req, Some(&witness), 2000)
+            .expect("opaque external promotion should succeed");
         assert_eq!(result.original_derivation, DerivationClass::OpaqueExternal);
         assert_eq!(env.derivation_class, DerivationClass::HumanPromoted);
+    }
+
+    // ReductionWitness gate tests (issue #860)
+
+    #[test]
+    fn raw_content_without_witness_evacuated() {
+        let mut env = make_envelope(DerivationClass::AIDerived);
+        let req = base_request();
+
+        let err = promote(&mut env, &req, None, 2000).unwrap_err();
+        match &err {
+            PromotionError::AirlockEvacuated { reason } => {
+                assert!(reason.contains("ReductionWitness"));
+            }
+            other => panic!("expected AirlockEvacuated, got {other:?}"),
+        }
+        assert_eq!(env.derivation_class, DerivationClass::AIDerived);
+    }
+
+    #[test]
+    fn opaque_external_without_witness_evacuated() {
+        let mut env = make_envelope(DerivationClass::OpaqueExternal);
+        let mut req = base_request();
+        req.from_derivation = DerivationClass::OpaqueExternal;
+
+        let err = promote(&mut env, &req, None, 2000).unwrap_err();
+        match &err {
+            PromotionError::AirlockEvacuated { reason } => {
+                assert!(reason.contains("ReductionWitness"));
+            }
+            other => panic!("expected AirlockEvacuated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mixed_without_witness_evacuated() {
+        let mut env = make_envelope(DerivationClass::Mixed);
+        let mut req = base_request();
+        req.from_derivation = DerivationClass::Mixed;
+
+        let err = promote(&mut env, &req, None, 2000).unwrap_err();
+        match &err {
+            PromotionError::AirlockEvacuated { reason } => {
+                assert!(reason.contains("ReductionWitness"));
+            }
+            other => panic!("expected AirlockEvacuated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn web_content_with_valid_witness_cleared() {
+        let mut env = make_envelope(DerivationClass::AIDerived);
+        let req = base_request();
+        let witness = make_valid_witness();
+
+        let result = promote(&mut env, &req, Some(&witness), 2000)
+            .expect("promotion with valid witness should succeed");
+        assert!(result.promoted);
+        assert_eq!(env.derivation_class, DerivationClass::HumanPromoted);
+    }
+
+    #[test]
+    fn invalid_witness_broken_chain_evacuated() {
+        let mut env = make_envelope(DerivationClass::AIDerived);
+        let req = base_request();
+
+        let mut witness = make_valid_witness();
+        witness.parser_steps[0].input_hash = [0xDE; 32];
+        assert!(!witness.is_valid());
+
+        let err = promote(&mut env, &req, Some(&witness), 2000).unwrap_err();
+        match &err {
+            PromotionError::AirlockEvacuated { reason } => {
+                assert!(reason.contains("invalid"));
+            }
+            other => panic!("expected AirlockEvacuated, got {other:?}"),
+        }
+        assert_eq!(env.derivation_class, DerivationClass::AIDerived);
+    }
+
+    #[test]
+    fn invalid_witness_failed_validation_evacuated() {
+        let mut env = make_envelope(DerivationClass::AIDerived);
+        let req = base_request();
+
+        let mut witness = make_valid_witness();
+        witness.validation_steps[0].passed = false;
+
+        let err = promote(&mut env, &req, Some(&witness), 2000).unwrap_err();
+        match &err {
+            PromotionError::AirlockEvacuated { reason } => {
+                assert!(reason.contains("invalid"));
+            }
+            other => panic!("expected AirlockEvacuated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deterministic_without_witness_ok() {
+        let mut env = make_envelope(DerivationClass::Deterministic);
+        let mut req = base_request();
+        req.from_derivation = DerivationClass::Deterministic;
+
+        let err = promote(&mut env, &req, None, 2000).unwrap_err();
+        assert_eq!(err, PromotionError::CannotPromoteDeterministic);
     }
 }
