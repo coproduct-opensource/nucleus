@@ -30,6 +30,7 @@ mod init;
 mod protocol;
 mod session;
 mod status;
+mod web_taint;
 
 use classify::*;
 use color::{nucleus_allow, nucleus_deny, nucleus_info, nucleus_warn};
@@ -1365,6 +1366,24 @@ fn main() {
                         ));
                         // Clear the pre-tool index — this PostToolUse is consumed.
                         session.last_pre_tool_obs_index = None;
+
+                        // Web taint tagging (#838): when a web-fetching tool returns,
+                        // set the monotonic taint flag and warn on stderr. The NEXT
+                        // PreToolUse will inject additionalContext for the model.
+                        if web_taint::detect_web_taint(&input.tool_name) {
+                            if !session.web_tainted {
+                                session.web_tainted = true;
+                                nucleus_warn!(
+                                    "web content entered session — tagging as untrusted (#838)"
+                                );
+                            }
+                            let preview = truncate_subject(result_text, 120);
+                            eprintln!(
+                                "{}",
+                                web_taint::web_taint_warning(&input.tool_name, &preview)
+                            );
+                        }
+
                         save_session(&input.session_id, &session);
 
                         eprintln!(
@@ -2144,9 +2163,19 @@ fn main() {
             }
 
             session.high_water_mark += 1;
+
+            // Build additionalContext: combine compartment + web taint (#459, #838)
+            let (context, taint_injected) = web_taint::build_additional_context(
+                compartment.as_ref(),
+                session.web_tainted,
+                session.web_taint_context_injected,
+            );
+            if taint_injected {
+                session.web_taint_context_injected = true;
+            }
+
             save_session(&input.session_id, &session);
-            // Inject compartment context into Claude's prompt (#459)
-            HookOutput::allow_with_context(compartment.as_ref().map(|c| c.to_string()).as_deref())
+            HookOutput::allow_with_context(context)
         }
         Verdict::RequiresApproval => {
             session.high_water_mark += 1;

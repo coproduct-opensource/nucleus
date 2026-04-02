@@ -94,6 +94,16 @@ pub(crate) struct SessionState {
     /// Monotonic — trust can only decrease within a session.
     #[serde(default)]
     pub(crate) flagged_tools: std::collections::HashMap<String, u32>,
+    /// Set to `true` by PostToolUse when a web-fetching tool returns a result (#838).
+    /// The NEXT PreToolUse checks this flag and injects `additionalContext` to
+    /// warn the model about untrusted web content in the session.
+    /// Once set, this flag stays true for the remainder of the session (monotonic).
+    #[serde(default)]
+    pub(crate) web_tainted: bool,
+    /// Whether the web taint context warning has already been injected (#838).
+    /// Prevents repeating the warning on every subsequent PreToolUse.
+    #[serde(default)]
+    pub(crate) web_taint_context_injected: bool,
 }
 
 impl SessionState {

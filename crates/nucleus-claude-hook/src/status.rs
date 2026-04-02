@@ -430,6 +430,8 @@ mod tests {
             parent_chain_hash: None,
             last_pre_tool_obs_index: None,
             flagged_tools: Default::default(),
+            web_tainted: false,
+            web_taint_context_injected: false,
         }
     }
 
