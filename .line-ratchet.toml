@@ -23,3 +23,9 @@ path = "crates/portcullis/src/kernel.rs"
 ceiling = 3900
 target = 2500
 step = 1
+
+[[files]]
+path = "crates/nucleus-tool-proxy/src/main.rs"
+ceiling = 4443
+target = 2500
+step = 1
