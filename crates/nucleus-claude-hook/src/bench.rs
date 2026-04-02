@@ -163,7 +163,6 @@ fn bench_single_decide(
     let build_start = Instant::now();
     let operation = map_tool(tool_name);
     let mut kernel = Kernel::new(perms.clone());
-    kernel.enable_flow_graph();
     let kernel_build = build_start.elapsed();
 
     // Phase 2: Replay flow observations
@@ -193,7 +192,8 @@ fn bench_single_decide(
     // Phase 4: Receipt build (simulate the signing overhead)
     let receipt_start = Instant::now();
     if let Some(node_id) = decision.flow_node_id {
-        if let Some(graph) = kernel.flow_graph() {
+        {
+            let graph = kernel.flow_graph();
             if let Some(action_node) = graph.get(node_id) {
                 let ancestor_refs: Vec<&_> =
                     parents.iter().filter_map(|&pid| graph.get(pid)).collect();
@@ -411,8 +411,7 @@ pub(crate) fn run_benchmark(config: BenchConfig) {
     let kernel_start = Instant::now();
     for _ in 0..100 {
         let p = PermissionLattice::safe_pr_fixer();
-        let mut k = Kernel::new(p);
-        k.enable_flow_graph();
+        let _k = Kernel::new(p);
     }
     let kernel_avg = kernel_start.elapsed() / 100;
     eprintln!(
@@ -428,7 +427,6 @@ pub(crate) fn run_benchmark(config: BenchConfig) {
         let start = Instant::now();
         for _ in 0..10 {
             let mut k = Kernel::new(perms.clone());
-            k.enable_flow_graph();
             let mut lv = LeafTracker::default();
             for (op_str, subj) in &ops {
                 if let Ok(op) = portcullis::Operation::try_from(op_str.as_str()) {

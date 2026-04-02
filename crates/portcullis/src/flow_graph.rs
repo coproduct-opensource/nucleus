@@ -36,8 +36,6 @@ pub enum FlowGraphError {
     },
     /// Parent ID 0 (sentinel) is not a valid parent reference.
     SentinelParent,
-    /// The flow graph has not been enabled via `enable_flow_graph()`.
-    GraphNotEnabled,
     /// A referenced parent was a denied action — denied actions did not
     /// execute and cannot be causal ancestors.
     DeniedParent(
@@ -60,7 +58,6 @@ impl std::fmt::Display for FlowGraphError {
                 write!(f, "too many parents: {provided} > {max}")
             }
             FlowGraphError::SentinelParent => write!(f, "sentinel (0) is not a valid parent"),
-            FlowGraphError::GraphNotEnabled => write!(f, "flow graph not enabled"),
             FlowGraphError::DeniedParent(id) => {
                 write!(f, "parent {id} was denied — cannot be a causal ancestor")
             }

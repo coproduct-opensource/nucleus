@@ -1161,7 +1161,6 @@ fn main() {
 
     let t_kernel_start = std::time::Instant::now();
     let mut kernel = Kernel::new(effective_perms);
-    kernel.enable_flow_graph();
 
     // Load egress policy from .nucleus/egress.toml (if present).
     // SECURITY: Fail-closed — malformed policy denies all egress.
@@ -1367,39 +1366,38 @@ fn main() {
     // The receipt captures the causal chain and verdict.
     let t_receipt_start = std::time::Instant::now();
     let flow_receipt = decision.flow_node_id.and_then(|node_id| {
-        kernel.flow_graph().and_then(|graph| {
-            let action_node = graph.get(node_id)?;
-            let ancestor_refs: Vec<&_> = parents.iter().filter_map(|&pid| graph.get(pid)).collect();
-            let flow_verdict = if decision.verdict.is_denied() {
-                portcullis_core::flow::FlowVerdict::Deny(
-                    portcullis_core::flow::FlowDenyReason::AuthorityEscalation,
-                )
-            } else {
-                portcullis_core::flow::FlowVerdict::Allow
-            };
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            let mut receipt = build_receipt(action_node, &ancestor_refs, flow_verdict, now);
-            receipt.set_prev_hash(session.chain_head_hash);
-            // Bind receipt to this session (#492)
-            let chain_id = {
-                use sha2::{Digest, Sha256};
-                let mut h = Sha256::new();
-                h.update(b"nucleus-chain:");
-                h.update(input.session_id.as_bytes());
-                let hash = h.finalize();
-                let mut id = [0u8; 32];
-                id.copy_from_slice(&hash);
-                id
-            };
-            receipt.set_chain_id(chain_id);
-            if let Some(ref key) = signing_key {
-                sign_receipt(&mut receipt, key);
-            }
-            Some(receipt)
-        })
+        let graph = kernel.flow_graph();
+        let action_node = graph.get(node_id)?;
+        let ancestor_refs: Vec<&_> = parents.iter().filter_map(|&pid| graph.get(pid)).collect();
+        let flow_verdict = if decision.verdict.is_denied() {
+            portcullis_core::flow::FlowVerdict::Deny(
+                portcullis_core::flow::FlowDenyReason::AuthorityEscalation,
+            )
+        } else {
+            portcullis_core::flow::FlowVerdict::Allow
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let mut receipt = build_receipt(action_node, &ancestor_refs, flow_verdict, now);
+        receipt.set_prev_hash(session.chain_head_hash);
+        // Bind receipt to this session (#492)
+        let chain_id = {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(b"nucleus-chain:");
+            h.update(input.session_id.as_bytes());
+            let hash = h.finalize();
+            let mut id = [0u8; 32];
+            id.copy_from_slice(&hash);
+            id
+        };
+        receipt.set_chain_id(chain_id);
+        if let Some(ref key) = signing_key {
+            sign_receipt(&mut receipt, key);
+        }
+        Some(receipt)
     });
 
     let t_receipt = t_receipt_start.elapsed();
@@ -1453,7 +1451,8 @@ fn main() {
             // its receipt chain links back to the parent's.
             if operation == Operation::SpawnAgent {
                 let safe_id = sanitize_session_id(&input.session_id);
-                if let Some(graph) = kernel.flow_graph() {
+                {
+                    let graph = kernel.flow_graph();
                     if let Some(node_id) = decision.flow_node_id {
                         if let Some(node) = graph.get(node_id) {
                             let label_str = portcullis_core::wire::encode_label(&node.label);
@@ -1698,7 +1697,6 @@ mod tests {
         // subsequent writes are blocked by flow control (authority escalation).
         let perms = PermissionLattice::safe_pr_fixer();
         let mut kernel = Kernel::new(perms);
-        kernel.enable_flow_graph();
 
         // Observe web content
         let web_id = kernel.observe(NodeKind::WebContent, &[]).unwrap();
@@ -1719,7 +1717,6 @@ mod tests {
         // Clean file read → write should be allowed
         let perms = PermissionLattice::safe_pr_fixer();
         let mut kernel = Kernel::new(perms);
-        kernel.enable_flow_graph();
 
         let file_id = kernel.observe(NodeKind::FileRead, &[]).unwrap();
 
@@ -1744,7 +1741,6 @@ mod tests {
         // — they don't depend on web content.
         let perms = PermissionLattice::safe_pr_fixer();
         let mut kernel = Kernel::new(perms);
-        kernel.enable_flow_graph();
 
         let mut leaves = LeafTracker::default();
 
@@ -1802,7 +1798,6 @@ mod tests {
         // model doesn't break this fundamental property.
         let perms = PermissionLattice::safe_pr_fixer();
         let mut kernel = Kernel::new(perms);
-        kernel.enable_flow_graph();
 
         let mut leaves = LeafTracker::default();
 
@@ -1871,7 +1866,6 @@ mod tests {
         // causal links so taint propagates through tool outputs.
         let perms = PermissionLattice::permissive();
         let mut kernel = Kernel::new(perms);
-        kernel.enable_flow_graph();
 
         let mut leaves = LeafTracker::default();
 
