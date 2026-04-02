@@ -36,6 +36,7 @@ pub mod did_crypto;
 pub mod did_resolver;
 pub mod dpop;
 pub mod identity;
+pub mod ifc_extension;
 pub mod manager;
 pub mod oid;
 pub mod session;
@@ -68,6 +69,10 @@ pub use did_resolver::HttpDidResolver;
 pub use did_resolver::{CachingDidResolver, DidResolver, InMemoryDidResolver};
 pub use dpop::{DpopClaims, DpopHeader, DpopProofBuilder, DpopVerifier};
 pub use identity::Identity;
+pub use ifc_extension::{
+    decode_ifc_extension, encode_ifc_extension, ExtensionError, NUCLEUS_IFC_OID,
+    OID_NUCLEUS_IFC_BYTES, OID_NUCLEUS_IFC_TUPLE,
+};
 pub use manager::SecretManager;
 pub use session::{SessionId, SessionIdentity};
 pub use tls::{TlsClientConfig, TlsServerConfig};
