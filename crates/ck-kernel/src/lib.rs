@@ -90,9 +90,27 @@ impl Kernel {
     ///
     /// The first record is treated as genesis. Returns an error if records
     /// are empty or if sequence numbers are not monotonically increasing.
+    ///
+    /// **Important**: Without `policy_snapshots`, the first amendment after
+    /// restoration can forge `policy_before` because no policies are stored.
+    /// Production kernels MUST call [`restore_with_policies`] instead, or
+    /// supply snapshots here.
     pub fn restore(
         records: Vec<LineageRecord>,
         signature_policy: SignaturePolicy,
+    ) -> Result<Self, String> {
+        Self::restore_with_policies(records, signature_policy, std::collections::HashMap::new())
+    }
+
+    /// Restore a kernel from persisted lineage records and policy snapshots.
+    ///
+    /// `policy_snapshots` maps `candidate_digest` → `PolicyManifest` for each
+    /// previously admitted amendment. This ensures the anti-forgery check on
+    /// `policy_before` works correctly after restoration.
+    pub fn restore_with_policies(
+        records: Vec<LineageRecord>,
+        signature_policy: SignaturePolicy,
+        policy_snapshots: std::collections::HashMap<String, ck_types::manifest::PolicyManifest>,
     ) -> Result<Self, String> {
         if records.is_empty() {
             return Err("Cannot restore kernel from empty lineage".into());
@@ -101,7 +119,7 @@ impl Kernel {
         Ok(Self {
             lineage,
             signature_policy,
-            admitted_policies: std::collections::HashMap::new(),
+            admitted_policies: policy_snapshots,
         })
     }
 
@@ -513,6 +531,13 @@ impl Kernel {
 
         // 7. Admit with ConstitutionalAmendment mode
         let witness_digest = candidate.witness.digest();
+        // Store the admitted policy for future policy_before verification.
+        // Without this, the next amendment's anti-forgery check would find
+        // no entry and skip verification — enabling policy_before forgery.
+        self.admitted_policies.insert(
+            candidate.candidate_digest.as_str().to_string(),
+            candidate.witness.policy_after.clone(),
+        );
         let record = self.lineage.append_constitutional(
             candidate.parent_digest,
             candidate.candidate_digest.clone(),
@@ -1481,5 +1506,201 @@ mod tests {
             manifest_digest_before: None,
             manifest_digest_after: None,
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Issue #835 — constitutional amendment must store admitted policy
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_constitutional_stores_admitted_policy() {
+        // After a constitutional amendment is admitted, its policy must be
+        // stored so the next amendment's anti-forgery check can compare.
+        let genesis = ArtifactDigest::from_bytes(b"genesis");
+        let mut kernel = Kernel::new(genesis.clone());
+
+        let candidate = ArtifactDigest::from_bytes(b"constitutional-v1");
+        let mut tighter_policy = test_manifest();
+        tighter_policy.capabilities.network_allow.clear(); // remove all network access
+
+        let witness = make_witness_with_policies(
+            &genesis,
+            &candidate,
+            PatchClass::Constitutional,
+            &test_manifest(),
+            &tighter_policy,
+        );
+
+        let (alice_kp, alice_pk) = human_keypair(b"alice-seed");
+        let (bob_kp, bob_pk) = human_keypair(b"bob-seed");
+
+        let sigs = vec![
+            sign_as_human("alice@example.com", &alice_kp, &witness),
+            sign_as_human("bob@example.com", &bob_kp, &witness),
+        ];
+        let trusted_keys = vec![
+            ("alice@example.com".into(), alice_pk),
+            ("bob@example.com".into(), bob_pk),
+        ];
+
+        let result = kernel.admit_constitutional(
+            CandidateAmendment {
+                parent_digest: genesis,
+                candidate_digest: candidate.clone(),
+                patch_class: PatchClass::Constitutional,
+                witness,
+            },
+            &sigs,
+            2,
+            &trusted_keys,
+        );
+        assert!(
+            matches!(result, AdmissionDecision::Accepted { .. }),
+            "Constitutional amendment should be accepted: {result:?}"
+        );
+
+        // The admitted_policies map must now contain the constitutional amendment's policy.
+        assert!(
+            kernel.admitted_policies.contains_key(candidate.as_str()),
+            "admitted_policies must contain the constitutional amendment's digest"
+        );
+        assert_eq!(
+            kernel.admitted_policies[candidate.as_str()],
+            tighter_policy,
+            "Stored policy must match the constitutional amendment's policy_after"
+        );
+    }
+
+    #[test]
+    fn test_forgery_after_constitutional_amendment_rejected() {
+        // Attack scenario from issue #835:
+        // 1. Constitutional amendment tightens policy (removes network access)
+        // 2. Attacker submits ordinary amendment claiming network access still present
+        // 3. Must be REJECTED because admitted_policies now contains the tighter policy
+        let genesis = ArtifactDigest::from_bytes(b"genesis");
+        let mut kernel = Kernel::new(genesis.clone());
+
+        // Step 1: Constitutional amendment removes network access
+        let constitutional = ArtifactDigest::from_bytes(b"constitutional-tighten");
+        let mut tighter_policy = test_manifest();
+        tighter_policy.capabilities.network_allow.clear();
+        tighter_policy.io_surface.outbound_domains.clear();
+
+        let witness = make_witness_with_policies(
+            &genesis,
+            &constitutional,
+            PatchClass::Constitutional,
+            &test_manifest(),
+            &tighter_policy,
+        );
+
+        let (alice_kp, alice_pk) = human_keypair(b"alice-seed");
+        let (bob_kp, bob_pk) = human_keypair(b"bob-seed");
+
+        let sigs = vec![
+            sign_as_human("alice@example.com", &alice_kp, &witness),
+            sign_as_human("bob@example.com", &bob_kp, &witness),
+        ];
+        let trusted_keys = vec![
+            ("alice@example.com".into(), alice_pk),
+            ("bob@example.com".into(), bob_pk),
+        ];
+
+        let result = kernel.admit_constitutional(
+            CandidateAmendment {
+                parent_digest: genesis,
+                candidate_digest: constitutional.clone(),
+                patch_class: PatchClass::Constitutional,
+                witness,
+            },
+            &sigs,
+            2,
+            &trusted_keys,
+        );
+        assert!(matches!(result, AdmissionDecision::Accepted { .. }));
+
+        // Step 2: Attacker forges policy_before to claim network was still present
+        let attack = ArtifactDigest::from_bytes(b"attack-forgery");
+        let forged_before = test_manifest(); // lies: claims parent had network access
+        let forged_after = test_manifest(); // "maintains" the forged network access
+        let witness = make_witness_with_policies(
+            &constitutional,
+            &attack,
+            PatchClass::Config,
+            &forged_before,
+            &forged_after,
+        );
+
+        let result = kernel.admit(CandidateAmendment {
+            parent_digest: constitutional,
+            candidate_digest: attack,
+            patch_class: PatchClass::Config,
+            witness,
+        });
+
+        // Must be REJECTED: policy_before doesn't match what constitutional actually admitted
+        assert!(
+            matches!(result, AdmissionDecision::Rejected { .. }),
+            "Forgery after constitutional amendment must be rejected: {result:?}"
+        );
+        if let AdmissionDecision::Rejected { reasons } = result {
+            assert!(
+                reasons.iter().any(|r| r.message.contains("forgery")),
+                "Must cite forgery: {reasons:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_restore_with_policies_enables_anti_forgery() {
+        // After restore with policy snapshots, the anti-forgery check works.
+        let genesis = ArtifactDigest::from_bytes(b"genesis");
+        let mut kernel = Kernel::new(genesis.clone());
+
+        // Admit v2 with normal policy
+        let v2 = ArtifactDigest::from_bytes(b"v2");
+        let witness = make_witness(&genesis, &v2, test_manifest(), true, true, None);
+        let _ = kernel.admit(CandidateAmendment {
+            parent_digest: genesis,
+            candidate_digest: v2.clone(),
+            patch_class: PatchClass::Config,
+            witness,
+        });
+
+        // Simulate restore with policy snapshots
+        let records = kernel.lineage().to_vec();
+        let mut snapshots = std::collections::HashMap::new();
+        snapshots.insert(v2.as_str().to_string(), test_manifest());
+
+        let mut restored =
+            Kernel::restore_with_policies(records, SignaturePolicy::SkipForTesting, snapshots)
+                .expect("restore should succeed");
+
+        // Now try a forgery against the restored kernel
+        let v3 = ArtifactDigest::from_bytes(b"v3");
+        let mut forged_before = test_manifest();
+        forged_before
+            .capabilities
+            .network_allow
+            .insert("evil.com".into());
+        let witness = make_witness_with_policies(
+            &v2,
+            &v3,
+            PatchClass::Config,
+            &forged_before,
+            &forged_before,
+        );
+
+        let result = restored.admit(CandidateAmendment {
+            parent_digest: v2,
+            candidate_digest: v3,
+            patch_class: PatchClass::Config,
+            witness,
+        });
+
+        assert!(
+            matches!(result, AdmissionDecision::Rejected { .. }),
+            "Forgery after restore must be rejected: {result:?}"
+        );
     }
 }
