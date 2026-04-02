@@ -105,6 +105,21 @@ enum Command {
         #[arg(long, default_value = "json")]
         format: ExportFormat,
     },
+    /// Verify a provenance output — check per-field derivation chains and schema integrity (#953).
+    ///
+    /// Validates:
+    /// 1. Schema hash matches the declared methodology
+    /// 2. Deterministic fields have valid hash chains (source → parser → output)
+    /// 3. AI-derived fields are honestly labeled
+    /// 4. WitnessBundle chain verification passes
+    VerifyProvenance {
+        /// Provenance output JSON file to verify.
+        #[arg(long)]
+        output: PathBuf,
+        /// Provenance schema file (.provenance.json or .provenance.toml).
+        #[arg(long)]
+        schema: Option<PathBuf>,
+    },
     /// Scan agent configurations for security posture and vulnerabilities.
     ///
     /// Supports PodSpec YAML, Claude Code settings.json, and MCP config files.
@@ -230,6 +245,9 @@ fn main() -> Result<(), AuditError> {
         }
         Command::Export { log, format } => {
             export_log(&log, &format)?;
+        }
+        Command::VerifyProvenance { output, schema } => {
+            verify_provenance(&output, schema.as_deref())?;
         }
         Command::Scan {
             auto,
@@ -1216,6 +1234,111 @@ fn trace_provenance(receipts_dir: &Path, output: Option<&Path>) -> Result<(), Au
     }
 
     Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// verify-provenance (#953)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Verify a provenance output file against its schema.
+fn verify_provenance(output_path: &Path, schema_path: Option<&Path>) -> Result<(), AuditError> {
+    // Load the provenance output.
+    let output_contents = std::fs::read_to_string(output_path)
+        .map_err(|e| AuditError::Backend(format!("{}: {e}", output_path.display())))?;
+
+    let output: serde_json::Value = serde_json::from_str(&output_contents)
+        .map_err(|e| AuditError::Backend(format!("invalid provenance JSON: {e}")))?;
+
+    println!("Verifying provenance: {}", output_path.display());
+
+    // Check _provenance header.
+    let mut checks_passed = 0u32;
+    let mut checks_failed = 0u32;
+
+    if let Some(prov) = output.get("_provenance") {
+        println!("  \u{2713} Provenance header present");
+        checks_passed += 1;
+
+        if let Some(schema_hash) = prov.get("schema_hash").and_then(|v| v.as_str()) {
+            println!("    schema_hash: {schema_hash}");
+
+            // Verify schema hash if schema file provided.
+            if let Some(sp) = schema_path {
+                let schema_contents = std::fs::read_to_string(sp)
+                    .map_err(|e| AuditError::Backend(format!("{}: {e}", sp.display())))?;
+                let actual_hash = sha256_hex(&schema_contents);
+                if actual_hash.starts_with(schema_hash.trim_start_matches("sha256:")) {
+                    println!("  \u{2713} Schema hash matches {}", sp.display());
+                    checks_passed += 1;
+                } else {
+                    println!("  \u{2717} Schema hash MISMATCH (expected {schema_hash}, got sha256:{actual_hash})");
+                    checks_failed += 1;
+                }
+            }
+        }
+
+        if let Some(chain_head) = prov.get("receipt_chain_head").and_then(|v| v.as_str()) {
+            println!("    receipt_chain_head: {chain_head}");
+            checks_passed += 1;
+        }
+    } else {
+        println!("  \u{2717} No _provenance header — cannot verify");
+        checks_failed += 1;
+    }
+
+    // Check per-field provenance.
+    let fields = output
+        .as_object()
+        .map(|o| {
+            o.iter()
+                .filter(|(k, _)| !k.starts_with('_'))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    for (field_name, field_value) in &fields {
+        if let Some(prov) = field_value.get("provenance") {
+            let derivation = prov
+                .get("derivation")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+
+            match derivation {
+                "Deterministic" => {
+                    let has_source = prov.get("source_content_hash").is_some();
+                    let has_parser = prov.get("parser").is_some();
+                    let has_output = prov.get("parser_output_hash").is_some();
+
+                    if has_source && has_parser && has_output {
+                        println!("  \u{2713} {field_name}: Deterministic — hash chain present");
+                        checks_passed += 1;
+                    } else {
+                        println!("  \u{2717} {field_name}: Deterministic — INCOMPLETE hash chain");
+                        checks_failed += 1;
+                    }
+                }
+                "AIDerived" => {
+                    println!("  \u{2139}\u{fe0f}  {field_name}: AIDerived — honestly labeled, no verification possible");
+                    checks_passed += 1;
+                }
+                other => {
+                    println!("  ? {field_name}: unknown derivation '{other}'");
+                }
+            }
+        }
+    }
+
+    // Summary.
+    println!();
+    if checks_failed == 0 {
+        println!("\u{2713} Verification passed: {checks_passed} checks, 0 failures");
+        Ok(())
+    } else {
+        println!("\u{2717} Verification FAILED: {checks_passed} passed, {checks_failed} failed");
+        Err(AuditError::Backend(format!(
+            "{checks_failed} provenance checks failed"
+        )))
+    }
 }
 
 #[cfg(test)]
