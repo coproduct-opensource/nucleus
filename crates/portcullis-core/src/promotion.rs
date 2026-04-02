@@ -27,7 +27,7 @@
 use crate::DerivationClass;
 use crate::SinkClass;
 use crate::envelope::FieldEnvelope;
-use crate::witness::ReductionWitness;
+use crate::witness::ValidatedWitness;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PromotionScope — where promoted data may flow
@@ -166,15 +166,21 @@ impl core::fmt::Display for PromotionError {
 /// `derivation_class`, `promoted_by`, and `promoted_reason` fields are
 /// updated.
 ///
+/// Accepts a `&ValidatedWitness` — a newtype that can only be constructed
+/// through validation. This makes it a **compile-time guarantee** that
+/// no unvalidated witness can reach the promotion path. Non-deterministic
+/// derivation classes (AIDerived, Mixed, OpaqueExternal) require a witness;
+/// passing `None` for these classes is rejected.
+///
 /// # Errors
 ///
 /// Returns [`PromotionError`] if any validation check fails (empty principal,
-/// empty reason, derivation mismatch, expiry, already promoted, or
-/// deterministic source).
+/// empty reason, derivation mismatch, expiry, already promoted,
+/// deterministic source, or missing witness for non-deterministic data).
 pub fn promote(
     envelope: &mut FieldEnvelope,
     request: &PromotionRequest,
-    witness: Option<&ReductionWitness>,
+    witness: Option<&ValidatedWitness>,
     now: u64,
 ) -> Result<PromotionResult, PromotionError> {
     // --- validation ---
@@ -208,27 +214,19 @@ pub fn promote(
 
     // --- reduction witness gate ---
     //
-    // Non-deterministic derivation classes require a valid ReductionWitness.
-    // This ensures raw content cannot be promoted without being processed
-    // through a deterministic parser chain first.
+    // Non-deterministic derivation classes require a ValidatedWitness.
+    // Because ValidatedWitness can only be constructed via validate(),
+    // the witness is guaranteed to have a valid chain and passing
+    // validations — no runtime re-check needed.
     match envelope.derivation_class {
         DerivationClass::AIDerived | DerivationClass::Mixed | DerivationClass::OpaqueExternal => {
-            match witness {
-                None => {
-                    return Err(PromotionError::AirlockEvacuated {
-                        reason: format!(
-                            "{:?} content requires a ReductionWitness for promotion",
-                            envelope.derivation_class
-                        ),
-                    });
-                }
-                Some(w) if !w.is_valid() => {
-                    return Err(PromotionError::AirlockEvacuated {
-                        reason: "ReductionWitness is invalid: chain broken or validation failed"
-                            .to_string(),
-                    });
-                }
-                Some(_) => { /* valid witness, proceed */ }
+            if witness.is_none() {
+                return Err(PromotionError::AirlockEvacuated {
+                    reason: format!(
+                        "{:?} content requires a ValidatedWitness for promotion",
+                        envelope.derivation_class
+                    ),
+                });
             }
         }
         // Deterministic and HumanPromoted are handled above (early returns).
@@ -260,7 +258,7 @@ mod tests {
     use super::*;
     use crate::IFCLabel;
     use crate::effect::EffectKind;
-    use crate::witness::{ParserStep, ValidationResult};
+    use crate::witness::{ParserStep, ReductionWitness, ValidatedWitness, ValidationResult};
     use sha2::{Digest, Sha256};
 
     fn sha256(data: &[u8]) -> [u8; 32] {
@@ -302,10 +300,10 @@ mod tests {
         }
     }
 
-    fn make_valid_witness() -> ReductionWitness {
+    fn make_valid_witness() -> ValidatedWitness {
         let source = sha256(b"raw web content");
         let parsed = sha256(b"parsed json");
-        ReductionWitness {
+        let witness = ReductionWitness {
             source_hash: source,
             parser_steps: vec![ParserStep {
                 parser_id: "json_parser".to_string(),
@@ -320,7 +318,8 @@ mod tests {
                 passed: true,
             }],
             output_hash: parsed,
-        }
+        };
+        ValidatedWitness::validate(witness).expect("test witness should be valid")
     }
 
     #[test]
@@ -496,7 +495,7 @@ mod tests {
         let err = promote(&mut env, &req, None, 2000).unwrap_err();
         match &err {
             PromotionError::AirlockEvacuated { reason } => {
-                assert!(reason.contains("ReductionWitness"));
+                assert!(reason.contains("ValidatedWitness"));
             }
             other => panic!("expected AirlockEvacuated, got {other:?}"),
         }
@@ -512,7 +511,7 @@ mod tests {
         let err = promote(&mut env, &req, None, 2000).unwrap_err();
         match &err {
             PromotionError::AirlockEvacuated { reason } => {
-                assert!(reason.contains("ReductionWitness"));
+                assert!(reason.contains("ValidatedWitness"));
             }
             other => panic!("expected AirlockEvacuated, got {other:?}"),
         }
@@ -527,7 +526,7 @@ mod tests {
         let err = promote(&mut env, &req, None, 2000).unwrap_err();
         match &err {
             PromotionError::AirlockEvacuated { reason } => {
-                assert!(reason.contains("ReductionWitness"));
+                assert!(reason.contains("ValidatedWitness"));
             }
             other => panic!("expected AirlockEvacuated, got {other:?}"),
         }
@@ -546,39 +545,58 @@ mod tests {
     }
 
     #[test]
-    fn invalid_witness_broken_chain_evacuated() {
-        let mut env = make_envelope(DerivationClass::AIDerived);
-        let req = base_request();
+    fn invalid_witness_cannot_reach_promote() {
+        // With ValidatedWitness, invalid witnesses are rejected at construction
+        // time — they can never reach promote(). This test verifies that the
+        // type-level guarantee holds: a broken chain cannot be wrapped.
+        let source = sha256(b"raw web content");
+        let parsed = sha256(b"parsed json");
+        let mut raw_witness = ReductionWitness {
+            source_hash: source,
+            parser_steps: vec![ParserStep {
+                parser_id: "json_parser".to_string(),
+                parser_version: "1.0.0".to_string(),
+                parser_hash: sha256(b"json_parser_binary"),
+                input_hash: source,
+                output_hash: parsed,
+            }],
+            validation_steps: vec![ValidationResult {
+                validator_id: "schema_check".to_string(),
+                version: "1.0.0".to_string(),
+                passed: true,
+            }],
+            output_hash: parsed,
+        };
 
-        let mut witness = make_valid_witness();
-        witness.parser_steps[0].input_hash = [0xDE; 32];
-        assert!(!witness.is_valid());
-
-        let err = promote(&mut env, &req, Some(&witness), 2000).unwrap_err();
-        match &err {
-            PromotionError::AirlockEvacuated { reason } => {
-                assert!(reason.contains("invalid"));
-            }
-            other => panic!("expected AirlockEvacuated, got {other:?}"),
-        }
-        assert_eq!(env.derivation_class, DerivationClass::AIDerived);
+        // Break the chain
+        raw_witness.parser_steps[0].input_hash = [0xDE; 32];
+        assert!(ValidatedWitness::validate(raw_witness).is_err());
     }
 
     #[test]
-    fn invalid_witness_failed_validation_evacuated() {
-        let mut env = make_envelope(DerivationClass::AIDerived);
-        let req = base_request();
+    fn failed_validation_cannot_reach_promote() {
+        // A witness with a failed validation step cannot be wrapped in
+        // ValidatedWitness, so it can never reach promote().
+        let source = sha256(b"raw web content");
+        let parsed = sha256(b"parsed json");
+        let raw_witness = ReductionWitness {
+            source_hash: source,
+            parser_steps: vec![ParserStep {
+                parser_id: "json_parser".to_string(),
+                parser_version: "1.0.0".to_string(),
+                parser_hash: sha256(b"json_parser_binary"),
+                input_hash: source,
+                output_hash: parsed,
+            }],
+            validation_steps: vec![ValidationResult {
+                validator_id: "schema_check".to_string(),
+                version: "1.0.0".to_string(),
+                passed: false,
+            }],
+            output_hash: parsed,
+        };
 
-        let mut witness = make_valid_witness();
-        witness.validation_steps[0].passed = false;
-
-        let err = promote(&mut env, &req, Some(&witness), 2000).unwrap_err();
-        match &err {
-            PromotionError::AirlockEvacuated { reason } => {
-                assert!(reason.contains("invalid"));
-            }
-            other => panic!("expected AirlockEvacuated, got {other:?}"),
-        }
+        assert!(ValidatedWitness::validate(raw_witness).is_err());
     }
 
     #[test]
