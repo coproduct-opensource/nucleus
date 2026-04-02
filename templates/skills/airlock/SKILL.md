@@ -5,12 +5,18 @@ description: Transition between security compartments (research, draft, exec, br
 
 The user wants to change their security compartment.
 
-Parse the argument:
-- "research" or "seal" → `nucleus-claude-hook --compartment research`
-- "draft" → `nucleus-claude-hook --compartment draft`
-- "exec" or "execute" → `nucleus-claude-hook --compartment execute`
-- "breach" followed by a reason → `nucleus-claude-hook --compartment "breakglass:REASON"`
+Parse the argument and write a transition request file. **Do NOT run any CLI commands.**
+Write the JSON to `.nucleus/transition-request.json`:
 
-After switching, confirm: "Airlock cycled to [compartment]. [capabilities summary]."
+- "research" or "seal" -> `{"target": "research", "reason": "user requested seal/research"}`
+- "draft" -> `{"target": "draft", "reason": "user requested draft mode"}`
+- "exec" or "execute" -> `{"target": "execute", "reason": "user requested execute mode"}`
+- "breach" followed by a reason -> `{"target": "breakglass:REASON", "reason": "REASON"}`
 
-If "breach" is requested without a reason, ask for one — it's required.
+The transition will be validated and applied by the nucleus hook on the next tool
+invocation. The hook enforces single-step escalation (research -> draft -> execute ->
+breakglass) and will deny skip-level transitions.
+
+After writing the file, confirm: "Airlock transition to [compartment] requested. Will take effect on next tool call."
+
+If "breach" is requested without a reason, ask for one -- it is required.
