@@ -415,6 +415,85 @@ mod kani_declassify_proofs {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Rate-limited declassification (#962)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Sliding-window rate limiter for declassification rules (#962).
+///
+/// Prevents slow exfiltration attacks where a compromised agent repeatedly
+/// triggers legitimate declassification rules to leak data through many
+/// small declassifications.
+#[derive(Debug, Clone)]
+pub struct DeclassifyRateLimiter {
+    /// Maximum declassifications allowed in the window.
+    pub max_per_window: u32,
+    /// Window duration in seconds.
+    pub window_secs: u64,
+    /// Timestamps of recent declassifications (unix seconds).
+    events: Vec<u64>,
+}
+
+/// Rate limit exceeded error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RateLimitExceeded {
+    /// Number of declassifications in the current window.
+    pub count: u32,
+    /// Maximum allowed.
+    pub max: u32,
+    /// Window duration.
+    pub window_secs: u64,
+}
+
+impl std::fmt::Display for RateLimitExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "declassification rate limit exceeded: {} in {}s (max: {})",
+            self.count, self.window_secs, self.max
+        )
+    }
+}
+
+impl std::error::Error for RateLimitExceeded {}
+
+impl DeclassifyRateLimiter {
+    /// Create a new rate limiter.
+    pub fn new(max_per_window: u32, window_secs: u64) -> Self {
+        Self {
+            max_per_window,
+            window_secs,
+            events: Vec::new(),
+        }
+    }
+
+    /// Check if a declassification is allowed, and record it if so.
+    ///
+    /// Returns `Ok(())` if under the limit, `Err(RateLimitExceeded)` if not.
+    pub fn check_and_record(&mut self, now: u64) -> Result<(), RateLimitExceeded> {
+        // Evict events outside the window.
+        let cutoff = now.saturating_sub(self.window_secs);
+        self.events.retain(|&t| t >= cutoff);
+
+        if self.events.len() as u32 >= self.max_per_window {
+            return Err(RateLimitExceeded {
+                count: self.events.len() as u32,
+                max: self.max_per_window,
+                window_secs: self.window_secs,
+            });
+        }
+
+        self.events.push(now);
+        Ok(())
+    }
+
+    /// Number of declassifications in the current window.
+    pub fn current_count(&self, now: u64) -> u32 {
+        let cutoff = now.saturating_sub(self.window_secs);
+        self.events.iter().filter(|&&t| t >= cutoff).count() as u32
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -795,5 +874,45 @@ mod tests {
         };
         let result = rule.apply(label);
         assert!(!result.applied, "Cannot escalate via declassification");
+    }
+
+    // -----------------------------------------------------------------
+    // Rate limiter (#962)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn rate_limiter_allows_under_limit() {
+        let mut rl = DeclassifyRateLimiter::new(3, 60);
+        assert!(rl.check_and_record(100).is_ok());
+        assert!(rl.check_and_record(110).is_ok());
+        assert!(rl.check_and_record(120).is_ok());
+    }
+
+    #[test]
+    fn rate_limiter_denies_over_limit() {
+        let mut rl = DeclassifyRateLimiter::new(2, 60);
+        assert!(rl.check_and_record(100).is_ok());
+        assert!(rl.check_and_record(110).is_ok());
+        let err = rl.check_and_record(120).unwrap_err();
+        assert_eq!(err.count, 2);
+        assert_eq!(err.max, 2);
+    }
+
+    #[test]
+    fn rate_limiter_evicts_old_events() {
+        let mut rl = DeclassifyRateLimiter::new(2, 60);
+        assert!(rl.check_and_record(100).is_ok());
+        assert!(rl.check_and_record(110).is_ok());
+        // At t=170, the event at t=100 is outside the 60s window.
+        assert!(rl.check_and_record(170).is_ok());
+    }
+
+    #[test]
+    fn rate_limiter_current_count() {
+        let mut rl = DeclassifyRateLimiter::new(10, 60);
+        rl.check_and_record(100).ok();
+        rl.check_and_record(110).ok();
+        assert_eq!(rl.current_count(120), 2);
+        assert_eq!(rl.current_count(200), 0); // both events expired
     }
 }
