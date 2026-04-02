@@ -269,6 +269,7 @@ mod tests {
                 content_hash: input_hash,
                 fetched_at: 1000,
                 fetched_by: "fetcher-agent".to_string(),
+                raw_content: None,
             }],
             parser_chain: vec![ParserStep {
                 parser_id: "json_parser".to_string(),
@@ -541,6 +542,7 @@ mod tests {
                 content_hash: input_hash,
                 fetched_at: 1000,
                 fetched_by: "agent".to_string(),
+                raw_content: None,
             }],
             parser_chain: vec![],
             transform_chain: vec![],

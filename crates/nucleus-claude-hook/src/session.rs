@@ -1383,6 +1383,7 @@ pub(crate) fn assemble_witness_bundle(s: &mut SessionState) -> ClearanceResult {
             content_hash: src.content_hash,
             fetched_at: src.captured_at,
             fetched_by: src.tool_name.clone(),
+            raw_content: None, // TODO: store raw bytes for replay (#939)
         })
         .collect();
 
