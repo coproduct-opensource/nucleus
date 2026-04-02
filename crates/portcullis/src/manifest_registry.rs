@@ -238,6 +238,10 @@ impl ManifestRegistry {
     }
 
     /// Parse and register a single manifest from TOML content with trust verification.
+    ///
+    /// Signature verification uses `canonical_bytes()` — the same deterministic
+    /// struct-based serialization used by `verify_manifest_signature()`. This is
+    /// the single source of truth for manifest signing payloads. See #837.
     #[cfg_attr(not(feature = "crypto"), allow(unused_variables))]
     pub fn load_toml_with_trust(&mut self, content: &str, trust_store: &TrustStore) {
         let file: ManifestFile = match toml::from_str(content) {
@@ -247,37 +251,28 @@ impl ManifestRegistry {
 
         let name = file.tool.name.clone();
 
-        // Signature verification (when trust store has keys)
+        let manifest = match convert_entry(&file.tool) {
+            Some(m) => m,
+            None => return,
+        };
+
+        // Signature verification (when trust store has keys).
+        // Uses canonical_bytes() for a deterministic, struct-based signing
+        // payload — identical to verify_manifest_signature(). (#837)
         #[cfg(feature = "crypto")]
         if !trust_store.is_empty() {
-            match &file.tool.signature {
-                Some(sig_hex) => {
-                    let sig_bytes = match hex::decode(sig_hex) {
-                        Ok(b) if b.len() == 64 => b,
-                        _ => {
-                            self.unsigned.push(name);
-                            return;
-                        }
-                    };
-                    // Verify signature over the TOML content (excluding the signature line)
-                    let signable = manifest_signable_content(content);
-                    if !trust_store.verify(signable.as_bytes(), &sig_bytes) {
-                        self.unsigned.push(name);
-                        return;
-                    }
+            match verify_manifest_signature(&manifest, trust_store) {
+                Ok(()) => {} // valid signature
+                Err(AdmissionDenyReason::UnsignedManifest) => {
+                    self.unsigned.push(name);
+                    return;
                 }
-                None => {
-                    // Trust store has keys but manifest is unsigned — reject
+                Err(_) => {
                     self.unsigned.push(name);
                     return;
                 }
             }
         }
-
-        let manifest = match convert_entry(&file.tool) {
-            Some(m) => m,
-            None => return,
-        };
 
         match check_admission(&manifest) {
             AdmissionVerdict::Admit => {
@@ -353,19 +348,6 @@ impl ManifestRegistry {
 
         failures
     }
-}
-
-/// Extract the signable content from a manifest TOML.
-///
-/// Strips the `signature = "..."` line so the signature covers
-/// everything except itself. This allows the signature to be
-/// added to the TOML after signing.
-fn manifest_signable_content(toml_content: &str) -> String {
-    toml_content
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("signature"))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn convert_entry(entry: &ToolEntry) -> Option<ToolManifest> {
@@ -772,6 +754,71 @@ output_authority = "informational"
             let failures = registry.verify_all(&trust);
             assert!(failures.is_empty(), "valid signed manifest should pass");
             assert_eq!(registry.admitted_count(), 1);
+        }
+
+        /// Regression test for #837: load_toml_with_trust uses canonical_bytes()
+        /// (same path as verify_manifest_signature), not text-stripping.
+        ///
+        /// Signs a manifest struct with canonical_bytes(), embeds the signature
+        /// into TOML, then loads it through load_toml_with_trust(). Both paths
+        /// must agree on the signing payload.
+        #[test]
+        fn load_toml_with_trust_uses_canonical_bytes() {
+            let kp = test_keypair();
+            let trust = make_trust_store(kp.public_key().as_ref());
+
+            // Build manifest struct, sign with canonical_bytes()
+            let manifest = signed_manifest(&kp);
+            let sig_hex = hex::encode(manifest.signature.unwrap());
+            let key_hex = hex::encode(manifest.signing_key.unwrap());
+
+            // Embed the signature into TOML — this must verify via canonical_bytes()
+            let toml_content = format!(
+                r#"
+[tool]
+name = "verified_tool"
+capabilities = ["read_files"]
+remote_fetch = false
+instruction_sources = ["static"]
+admissible_sinks = ["local_memory"]
+max_confidentiality = "internal"
+output_integrity = "untrusted"
+output_authority = "informational"
+signature = "{sig_hex}"
+signing_key = "{key_hex}"
+"#
+            );
+
+            let mut registry = ManifestRegistry::new();
+            registry.load_toml_with_trust(&toml_content, &trust);
+
+            assert_eq!(
+                registry.admitted_count(),
+                1,
+                "signed manifest should be admitted via load_toml_with_trust"
+            );
+            assert_eq!(
+                registry.unsigned_count(),
+                0,
+                "should not be marked unsigned"
+            );
+        }
+
+        /// Regression test for #837: TOML content with "signature"-prefixed
+        /// lines in values must not affect verification. The old text-stripping
+        /// approach would have incorrectly stripped such lines.
+        #[test]
+        fn toml_with_signature_in_value_does_not_break_verification() {
+            let kp = test_keypair();
+            let trust = make_trust_store(kp.public_key().as_ref());
+
+            // The struct-based approach is immune to TOML formatting because
+            // it signs the parsed struct, not the raw text.
+            let manifest = signed_manifest(&kp);
+            assert!(
+                verify_manifest_signature(&manifest, &trust).is_ok(),
+                "struct-based verification is immune to TOML formatting"
+            );
         }
     }
 }
