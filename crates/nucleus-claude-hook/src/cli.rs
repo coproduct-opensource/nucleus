@@ -45,6 +45,8 @@ pub enum CliCommand {
     Completions { shell: String },
     /// `--exit-codes` — print exit code documentation.
     ExitCodes,
+    /// `--benchmark [--iterations N]` — measure hook latency (#522).
+    Benchmark { iterations: usize },
 }
 
 /// CLI parsing error.
@@ -144,6 +146,15 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
             })
         }
         "--exit-codes" => Ok(CliCommand::ExitCodes),
+        "--benchmark" => {
+            let mut iterations = 100usize;
+            if args.get(1).map(|a| a.as_str()) == Some("--iterations") {
+                if let Some(n) = args.get(2).and_then(|s| s.parse().ok()) {
+                    iterations = n;
+                }
+            }
+            Ok(CliCommand::Benchmark { iterations })
+        }
         other if other.starts_with('-') => Err(CliError::UnknownFlag(other.to_string())),
         // No recognised flag — fall through to stdin hook mode.
         _ => Ok(CliCommand::Hook),
@@ -327,6 +338,22 @@ mod tests {
         assert_eq!(
             parse_args(&args(&["--exit-codes"])).unwrap(),
             CliCommand::ExitCodes
+        );
+    }
+
+    #[test]
+    fn benchmark_default() {
+        assert_eq!(
+            parse_args(&args(&["--benchmark"])).unwrap(),
+            CliCommand::Benchmark { iterations: 100 }
+        );
+    }
+
+    #[test]
+    fn benchmark_with_iterations() {
+        assert_eq!(
+            parse_args(&args(&["--benchmark", "--iterations", "500"])).unwrap(),
+            CliCommand::Benchmark { iterations: 500 }
         );
     }
 
