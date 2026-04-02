@@ -63,6 +63,14 @@ pub struct SourceDeclaration {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub content_type: Option<String>,
+    /// Maximum staleness in seconds (#941). If set, a DeterministicBind
+    /// is rejected when `now - source.fetched_at > max_staleness_secs`.
+    /// Prevents replay attacks with outdated data.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub max_staleness_secs: Option<u64>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -215,6 +223,9 @@ impl ProvenanceSchema {
             if let Some(ref ct) = src.content_type {
                 hasher.update(ct.as_bytes());
             }
+            if let Some(max) = src.max_staleness_secs {
+                hasher.update(max.to_le_bytes());
+            }
         }
 
         // Fields in sorted order.
@@ -251,6 +262,25 @@ impl ProvenanceSchema {
             .filter(|f| f.derivation == DerivationKind::AiDerived)
             .count()
     }
+
+    /// Check if a source's data is still fresh enough (#941).
+    ///
+    /// Returns `Some(reason)` if the data is stale, `None` if fresh.
+    pub fn check_freshness(&self, field_name: &str, fetched_at: u64, now: u64) -> Option<String> {
+        let field = self.fields.get(field_name)?;
+        let source = self.sources.get(&field.source)?;
+        let max_staleness = source.max_staleness_secs?;
+
+        let age = now.saturating_sub(fetched_at);
+        if age > max_staleness {
+            Some(format!(
+                "source '{}' data is {age}s old (max: {max_staleness}s) — re-fetch required",
+                field.source
+            ))
+        } else {
+            None
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -268,6 +298,7 @@ mod tests {
             SourceDeclaration {
                 url_template: "https://efts.sec.gov/search?q={ticker}".into(),
                 content_type: Some("application/json".into()),
+                max_staleness_secs: Some(600), // 10 minutes
             },
         );
 
@@ -404,5 +435,43 @@ mod tests {
         let schema = sample_schema();
         assert_eq!(schema.deterministic_field_count(), 1);
         assert_eq!(schema.ai_derived_field_count(), 1);
+    }
+
+    // -----------------------------------------------------------------
+    // Temporal freshness (#941)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn fresh_data_passes() {
+        let schema = sample_schema();
+        // Fetched 5 minutes ago, max staleness 10 minutes → fresh
+        assert!(schema.check_freshness("revenue", 1000, 1300).is_none());
+    }
+
+    #[test]
+    fn stale_data_rejected() {
+        let schema = sample_schema();
+        // Fetched 15 minutes ago, max staleness 10 minutes → stale
+        let result = schema.check_freshness("revenue", 1000, 1900);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("re-fetch required"));
+    }
+
+    #[test]
+    fn no_staleness_limit_always_fresh() {
+        let mut schema = sample_schema();
+        schema
+            .sources
+            .get_mut("sec_10k")
+            .unwrap()
+            .max_staleness_secs = None;
+        // No limit → always fresh
+        assert!(schema.check_freshness("revenue", 0, 999_999).is_none());
+    }
+
+    #[test]
+    fn unknown_field_returns_none() {
+        let schema = sample_schema();
+        assert!(schema.check_freshness("nonexistent", 1000, 1100).is_none());
     }
 }
