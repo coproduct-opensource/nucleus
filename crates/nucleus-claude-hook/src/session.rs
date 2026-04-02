@@ -573,6 +573,74 @@ pub(crate) fn compartment_file_path(session_id: &str) -> std::path::PathBuf {
     session_dir().join(format!("{keyed_name}.compartment"))
 }
 
+/// Find the most recently modified session (by `.json` mtime in the session dir).
+///
+/// Returns the session ID (filename stem) of the newest session, or `None`
+/// if no sessions exist. Used by `--compartment` to target the active session
+/// without requiring the caller to know the session ID.
+pub(crate) fn find_latest_session() -> Option<String> {
+    let dir = session_dir();
+    let mut best: Option<(String, std::time::SystemTime)> = None;
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                if let Ok(meta) = path.metadata() {
+                    if let Ok(mtime) = meta.modified() {
+                        let stem = path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if !stem.is_empty() {
+                            match &best {
+                                Some((_, best_time)) if mtime <= *best_time => {}
+                                _ => best = Some((stem, mtime)),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    best.map(|(id, _)| id)
+}
+
+/// Write a compartment value for a given session.
+///
+/// Used by `--compartment <name>` to directly set the compartment without
+/// requiring the caller to know the keyed hash mechanism.
+pub(crate) fn write_compartment(session_id: &str, value: &str) -> Result<(), String> {
+    let path = compartment_file_path(session_id);
+    if path.file_name().and_then(|f| f.to_str()) == Some("no-session.compartment") {
+        return Err(format!(
+            "no active session found for '{session_id}' -- start a Claude Code session first"
+        ));
+    }
+    std::fs::write(&path, value).map_err(|e| format!("failed to write compartment file: {e}"))
+}
+
+/// Switch the compartment for the latest active session.
+///
+/// Combines `find_latest_session` + `write_compartment` into a single call
+/// with user-facing output. Exits the process on failure.
+pub(crate) fn switch_compartment(name: &str) {
+    let session_id = match find_latest_session() {
+        Some(id) => id,
+        None => {
+            eprintln!("nucleus: no active session found -- start a Claude Code session first");
+            std::process::exit(1);
+        }
+    };
+    match write_compartment(&session_id, name) {
+        Ok(()) => println!("nucleus: compartment set to '{name}' (session: {session_id})"),
+        Err(e) => {
+            eprintln!("nucleus: error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Garbage collection
 // ---------------------------------------------------------------------------

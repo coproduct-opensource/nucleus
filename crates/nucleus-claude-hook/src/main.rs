@@ -1085,9 +1085,12 @@ fn main() {
             println!("nucleus-claude-hook {}", env!("CARGO_PKG_VERSION"));
             return;
         }
+        Ok(cli::CliCommand::Compartment { name }) => {
+            session::switch_compartment(&name);
+            return;
+        }
         Ok(cli::CliCommand::CompartmentPath { session_id }) => {
-            let path = compartment_file_path(&session_id);
-            println!("{}", path.display());
+            println!("{}", compartment_file_path(&session_id).display());
             return;
         }
         Ok(cli::CliCommand::ResetSession { session_id }) => {

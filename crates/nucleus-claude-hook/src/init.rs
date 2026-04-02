@@ -330,6 +330,194 @@ fn scaffold_claude_commands(claude_dir: &Path) -> (u32, u32) {
     (created, skipped)
 }
 
+/// Skill template content: (directory_name, SKILL.md content).
+const SKILL_TEMPLATES: &[(&str, &str)] = &[
+    (
+        "nucleus-research",
+        "---\n\
+         name: nucleus-research\n\
+         description: Switch to the research compartment (read-only exploration)\n\
+         ---\n\
+         \n\
+         # Switch to Research Compartment\n\
+         \n\
+         Switch the active Nucleus compartment to **research**.\n\
+         \n\
+         Research compartment allows read-only exploration: file reading, glob/grep search, \
+         and web fetch are permitted. File writes, shell commands, and git operations are blocked.\n\
+         \n\
+         ## Usage\n\
+         \n\
+         Run this command to switch:\n\
+         \n\
+         ```bash\n\
+         nucleus-claude-hook --compartment research\n\
+         ```\n\
+         \n\
+         After switching, your capabilities will be restricted to read-only operations \
+         until you switch to a different compartment.\n",
+    ),
+    (
+        "nucleus-draft",
+        "---\n\
+         name: nucleus-draft\n\
+         description: Switch to the draft compartment (read + write, no execution)\n\
+         ---\n\
+         \n\
+         # Switch to Draft Compartment\n\
+         \n\
+         Switch the active Nucleus compartment to **draft**.\n\
+         \n\
+         Draft compartment allows file reads and writes (low-risk edits) but blocks shell \
+         command execution, git push, and web access. Use this when writing or editing code.\n\
+         \n\
+         ## Usage\n\
+         \n\
+         Run this command to switch:\n\
+         \n\
+         ```bash\n\
+         nucleus-claude-hook --compartment draft\n\
+         ```\n\
+         \n\
+         After switching, you can read and write files but cannot run bash commands \
+         or access the web.\n",
+    ),
+    (
+        "nucleus-execute",
+        "---\n\
+         name: nucleus-execute\n\
+         description: Switch to the execute compartment (full execution access)\n\
+         ---\n\
+         \n\
+         # Switch to Execute Compartment\n\
+         \n\
+         Switch the active Nucleus compartment to **execute**.\n\
+         \n\
+         Execute compartment enables shell commands, git commit, and full build/test/deploy \
+         capabilities. Use this when you need to run commands, build, or test.\n\
+         \n\
+         ## Usage\n\
+         \n\
+         Run this command to switch:\n\
+         \n\
+         ```bash\n\
+         nucleus-claude-hook --compartment execute\n\
+         ```\n\
+         \n\
+         After switching, you can run bash commands, git operations, and other execution tasks. \
+         Note: escalation from research directly to execute is blocked -- you must go through \
+         draft first.\n",
+    ),
+    (
+        "nucleus-breakglass",
+        "---\n\
+         name: nucleus-breakglass\n\
+         description: Emergency breakglass -- unlock all capabilities with a reason\n\
+         ---\n\
+         \n\
+         # Emergency Breakglass\n\
+         \n\
+         Switch to **breakglass** compartment, unlocking all capabilities. \
+         Requires a justification reason.\n\
+         \n\
+         Breakglass is for emergencies only (e.g., production outage). All actions are audited. \
+         You must provide a reason -- bare breakglass without justification is denied.\n\
+         \n\
+         ## Usage\n\
+         \n\
+         Run this command with your reason as $ARGUMENTS:\n\
+         \n\
+         ```bash\n\
+         nucleus-claude-hook --compartment \"breakglass:$ARGUMENTS\"\n\
+         ```\n\
+         \n\
+         The reason is recorded in the audit trail. Escalation rules still apply -- \
+         you must be in the execute compartment to escalate to breakglass.\n",
+    ),
+    (
+        "nucleus-status",
+        "---\n\
+         name: nucleus-status\n\
+         description: Show current Nucleus security status and active compartment\n\
+         ---\n\
+         \n\
+         # Nucleus Security Status\n\
+         \n\
+         Display the current Nucleus security posture: active compartment, profile, \
+         session info, and any taint state.\n\
+         \n\
+         ## Usage\n\
+         \n\
+         Run this command to see the current status:\n\
+         \n\
+         ```bash\n\
+         nucleus-claude-hook --status\n\
+         ```\n\
+         \n\
+         For machine-readable JSON output:\n\
+         \n\
+         ```bash\n\
+         nucleus-claude-hook --status --json\n\
+         ```\n\
+         \n\
+         This shows:\n\
+         - Active compartment (research/draft/execute/breakglass)\n\
+         - Security profile in effect\n\
+         - Session taint state\n\
+         - Operation counts\n",
+    ),
+    (
+        "nucleus-promote",
+        "---\n\
+         name: nucleus-promote\n\
+         description: Promote AI-generated content to human-verified status\n\
+         ---\n\
+         \n\
+         # Promote Content\n\
+         \n\
+         Mark AI-generated content as human-verified. This updates the provenance metadata \
+         so downstream consumers know a human has reviewed and approved the output.\n\
+         \n\
+         ## Usage\n\
+         \n\
+         After reviewing AI-generated content, run:\n\
+         \n\
+         ```bash\n\
+         nucleus-claude-hook --reset-session \"$ARGUMENTS\"\n\
+         ```\n\
+         \n\
+         This clears the taint flag on the specified session, indicating human review is complete. \
+         The receipt chain is preserved for audit -- only the taint state is cleared.\n\
+         \n\
+         Provide the session ID as $ARGUMENTS. To find the current session ID, \
+         use `/nucleus-status`.\n",
+    ),
+];
+
+/// Scaffold `.claude/skills/` with Nucleus compartment management skills.
+///
+/// Returns `(created, skipped)` counts.
+fn scaffold_claude_skills(claude_dir: &Path) -> (u32, u32) {
+    let skills_dir = claude_dir.join("skills");
+    fs::create_dir_all(&skills_dir).ok();
+
+    let mut created = 0u32;
+    let mut skipped = 0u32;
+
+    for (dir_name, content) in SKILL_TEMPLATES {
+        let skill_dir = skills_dir.join(dir_name);
+        fs::create_dir_all(&skill_dir).ok();
+        let path = skill_dir.join("SKILL.md");
+        if write_if_absent(&path, content) {
+            created += 1;
+        } else {
+            skipped += 1;
+        }
+    }
+
+    (created, skipped)
+}
+
 /// Run the `--init` scaffold: create `.nucleus/` with all default files,
 /// then scaffold `.claude/` integration (settings.json + slash commands).
 pub fn run_init() {
@@ -380,6 +568,10 @@ pub fn run_init() {
     created += c;
     skipped += s;
 
+    let (c, s) = scaffold_claude_skills(claude_dir);
+    created += c;
+    skipped += s;
+
     println!();
     if created > 0 {
         println!("Created {created} file(s)/dir(s).");
@@ -400,18 +592,26 @@ pub fn run_init() {
     println!();
     println!("  .claude/");
     println!("  \u{251c}\u{2500}\u{2500} settings.json       # Env vars + hooks + status line");
-    println!("  \u{2514}\u{2500}\u{2500} commands/");
-    println!("      \u{251c}\u{2500}\u{2500} compartment-research.md");
-    println!("      \u{251c}\u{2500}\u{2500} compartment-draft.md");
-    println!("      \u{251c}\u{2500}\u{2500} compartment-execute.md");
-    println!("      \u{2514}\u{2500}\u{2500} compartment-breakglass.md");
+    println!("  \u{251c}\u{2500}\u{2500} commands/");
+    println!("  \u{2502}   \u{251c}\u{2500}\u{2500} compartment-research.md");
+    println!("  \u{2502}   \u{251c}\u{2500}\u{2500} compartment-draft.md");
+    println!("  \u{2502}   \u{251c}\u{2500}\u{2500} compartment-execute.md");
+    println!("  \u{2502}   \u{2514}\u{2500}\u{2500} compartment-breakglass.md");
+    println!("  \u{2514}\u{2500}\u{2500} skills/");
+    println!("      \u{251c}\u{2500}\u{2500} nucleus-research/SKILL.md");
+    println!("      \u{251c}\u{2500}\u{2500} nucleus-draft/SKILL.md");
+    println!("      \u{251c}\u{2500}\u{2500} nucleus-execute/SKILL.md");
+    println!("      \u{251c}\u{2500}\u{2500} nucleus-breakglass/SKILL.md");
+    println!("      \u{251c}\u{2500}\u{2500} nucleus-status/SKILL.md");
+    println!("      \u{2514}\u{2500}\u{2500} nucleus-promote/SKILL.md");
 
     println!();
     println!("Next steps:");
     println!("  1. Edit .nucleus/policy.toml to customize capabilities");
     println!("  2. Run nucleus-claude-hook --doctor to verify");
     println!("  3. Restart Claude Code — hooks activate automatically");
-    println!("  4. Use /compartment-execute to switch compartments");
+    println!("  4. Use /nucleus-execute to switch compartments (skills)");
+    println!("  5. Or use: nucleus-claude-hook --compartment draft");
 }
 
 #[cfg(test)]
@@ -651,5 +851,71 @@ mod tests {
         assert_eq!(content, "custom");
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn scaffold_claude_skills_creates_all() {
+        let dir = temp_dir();
+        let claude_dir = dir.join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+
+        let (created, skipped) = scaffold_claude_skills(&claude_dir);
+        assert_eq!(created, 6);
+        assert_eq!(skipped, 0);
+
+        // All skill directories and SKILL.md files exist.
+        for (name, _) in SKILL_TEMPLATES {
+            let skill_file = claude_dir.join("skills").join(name).join("SKILL.md");
+            assert!(skill_file.exists(), "missing: {}", skill_file.display());
+        }
+
+        // Verify content structure — YAML frontmatter present.
+        let content =
+            fs::read_to_string(claude_dir.join("skills/nucleus-research/SKILL.md")).unwrap();
+        assert!(
+            content.starts_with("---\n"),
+            "should start with YAML frontmatter"
+        );
+        assert!(content.contains("name: nucleus-research"));
+        assert!(content.contains("nucleus-claude-hook --compartment research"));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn scaffold_claude_skills_skips_existing() {
+        let dir = temp_dir();
+        let claude_dir = dir.join(".claude");
+        let skill_dir = claude_dir.join("skills/nucleus-draft");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "custom skill").unwrap();
+
+        let (created, skipped) = scaffold_claude_skills(&claude_dir);
+        assert_eq!(created, 5);
+        assert_eq!(skipped, 1);
+
+        // Original content preserved.
+        let content = fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        assert_eq!(content, "custom skill");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn skill_templates_have_valid_frontmatter() {
+        for (name, content) in SKILL_TEMPLATES {
+            assert!(
+                content.starts_with("---\n"),
+                "skill {name} must start with YAML frontmatter"
+            );
+            assert!(
+                content.contains(&format!("name: {name}")),
+                "skill {name} frontmatter must contain name field"
+            );
+            assert!(
+                content.contains("description:"),
+                "skill {name} frontmatter must contain description field"
+            );
+        }
     }
 }
