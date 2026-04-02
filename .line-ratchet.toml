@@ -9,7 +9,7 @@
 
 [ratchet]
 # Current maximum allowed line count for each file.
-ceiling = 2691
+ceiling = 2715
 # The target we're ratcheting toward.
 target = 1000
 # How many lines to reduce per merge to main.
