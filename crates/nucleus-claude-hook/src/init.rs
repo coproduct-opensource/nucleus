@@ -159,7 +159,7 @@ fn mkdir_if_absent(path: &Path) -> bool {
 /// Default `.claude/settings.json` nucleus entries.
 ///
 /// Returns the JSON object that should be merged into `.claude/settings.json`.
-fn default_claude_settings() -> serde_json::Value {
+pub(crate) fn default_claude_settings() -> serde_json::Value {
     serde_json::json!({
         "env": {
             "NUCLEUS_PROFILE": "safe_pr_fixer",
