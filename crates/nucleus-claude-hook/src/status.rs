@@ -436,6 +436,7 @@ mod tests {
             web_taint_context_injected: false,
             pending_user_bash: false,
             pending_source_hashes: vec![],
+            pending_parser_steps: vec![],
         }
     }
 
