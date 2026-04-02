@@ -1199,6 +1199,21 @@ fn main() {
             }
         }
 
+        // Cross-session chain linking (#942): if no parent session (not a
+        // sub-agent), link to the most recent prior session's chain head.
+        if session.parent_session_id.is_none() {
+            if let Some((prior_sid, prior_hash)) =
+                session::find_prior_session_chain(&input.session_id)
+            {
+                session.parent_session_id = Some(prior_sid.clone());
+                session.parent_chain_hash = Some(prior_hash.clone());
+                eprintln!(
+                    "nucleus: continuation chain: prior={prior_sid} hash={}...",
+                    &prior_hash[..16.min(prior_hash.len())]
+                );
+            }
+        }
+
         // Inherit parent compartment (#461).
         // The child's compartment is capped at the parent's level:
         // child ≤ parent (can only narrow, never escalate).
