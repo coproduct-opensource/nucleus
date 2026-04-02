@@ -1426,6 +1426,10 @@ fn main() {
             &session.parent_chain_hash,
             compartment.as_ref().map(|c| c.to_string()).as_deref(),
             !sign_ok,
+            Some(receipts::ExecutionContext::from_session(
+                &session,
+                start_time.elapsed().as_secs_f64() * 1000.0,
+            )),
         );
         if !sign_ok {
             nucleus_warn!(
