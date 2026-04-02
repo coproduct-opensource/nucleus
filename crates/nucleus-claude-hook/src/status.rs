@@ -271,6 +271,40 @@ pub(crate) fn run_status(json: bool) {
     }
 }
 
+/// Output a compact single-line status string for Claude Code's status line feature.
+///
+/// Format: `compartment | profile | taint | N ops`
+/// Designed to be short enough for an editor status bar.
+pub(crate) fn run_statusline() {
+    let status = collect_status();
+
+    let compartment = status.compartment.as_deref().unwrap_or("default");
+
+    // Aggregate taint across all sessions; show worst case.
+    let mut total_ops: usize = 0;
+    let mut tainted = false;
+    let mut has_flow = false;
+
+    for sess in &status.sessions {
+        total_ops += sess.allowed_ops + sess.denied_ops;
+        if sess.taint == "TAINTED" {
+            tainted = true;
+        }
+        if sess.flow_observations > 0 {
+            has_flow = true;
+        }
+    }
+
+    let taint_str = if tainted { "tainted" } else { "clean" };
+    let flow_str = if has_flow { "yes" } else { "no" };
+
+    // Keep it short: compartment | profile | flow | taint | ops
+    println!(
+        "{compartment} | {profile} | flow:{flow_str} | {taint_str} | {total_ops} ops",
+        profile = status.profile,
+    );
+}
+
 /// Print coloured, human-readable status to stderr.
 fn print_human(s: &NucleusStatus) {
     let bold = "\x1b[1m";

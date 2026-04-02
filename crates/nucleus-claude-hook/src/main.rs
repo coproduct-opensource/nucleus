@@ -1188,6 +1188,10 @@ fn main() {
             bench::run_benchmark(bench::BenchConfig { iterations });
             return;
         }
+        Ok(cli::CliCommand::StatusLine) => {
+            status::run_statusline();
+            return;
+        }
         Err(e) => {
             eprintln!("nucleus-claude-hook: {e}");
             exit_codes::ExitCode::Error.exit();
