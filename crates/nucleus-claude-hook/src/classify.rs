@@ -10,6 +10,180 @@ use portcullis_core::effect::EffectKind;
 use portcullis_core::flow::NodeKind;
 
 // ---------------------------------------------------------------------------
+// Classification provenance (#554)
+// ---------------------------------------------------------------------------
+
+/// How a tool classification was determined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum ClassificationSource {
+    /// Tool matched a built-in name exactly (e.g., "Bash", "Read").
+    BuiltIn,
+    /// Tool classified from a `.nucleus/manifests/` manifest file.
+    Manifest,
+    /// MCP tool classified by name-pattern heuristic.
+    NameHeuristic,
+    /// No pattern matched — fell back to the most restrictive default.
+    DefaultFallback,
+}
+
+impl std::fmt::Display for ClassificationSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BuiltIn => write!(f, "built-in"),
+            Self::Manifest => write!(f, "manifest"),
+            Self::NameHeuristic => write!(f, "name-heuristic"),
+            Self::DefaultFallback => write!(f, "default-fallback"),
+        }
+    }
+}
+
+/// Confidence in a classification decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(dead_code)]
+pub(crate) enum Confidence {
+    /// Default fallback or weak heuristic — may be wrong.
+    Low,
+    /// Strong name-pattern match — likely correct but not authoritative.
+    Medium,
+    /// Manifest or built-in — authoritative source of truth.
+    High,
+}
+
+impl std::fmt::Display for Confidence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Low => write!(f, "low"),
+            Self::Medium => write!(f, "medium"),
+            Self::High => write!(f, "high"),
+        }
+    }
+}
+
+/// Full classification result with provenance metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) struct ClassificationResult {
+    /// The classified operation.
+    pub(crate) operation: Operation,
+    /// How the classification was determined.
+    pub(crate) source: ClassificationSource,
+    /// Confidence in the classification.
+    pub(crate) confidence: Confidence,
+}
+
+/// Classify a tool name with full provenance detail.
+///
+/// This is the provenance-aware counterpart of [`map_tool()`]. It returns
+/// the same `Operation` but also records *how* and *how confidently* the
+/// classification was made so callers can surface diagnostics.
+#[allow(dead_code)]
+pub(crate) fn classify_with_detail(name: &str) -> ClassificationResult {
+    let result = match name {
+        "Bash" | "Read" | "Write" | "Edit" | "Glob" | "Grep" | "WebFetch" | "WebSearch"
+        | "Agent" => ClassificationResult {
+            operation: map_tool(name),
+            source: ClassificationSource::BuiltIn,
+            confidence: Confidence::High,
+        },
+        _ if name.starts_with("mcp__") => classify_mcp_tool_with_detail(name),
+        _ => ClassificationResult {
+            operation: Operation::RunBash,
+            source: ClassificationSource::DefaultFallback,
+            confidence: Confidence::Low,
+        },
+    };
+
+    // Opt-in verbose logging to stderr (#554)
+    if std::env::var("NUCLEUS_LOG_CLASSIFICATION").as_deref() == Ok("1") {
+        eprintln!(
+            "nucleus: classify '{}' → {:?} (source={}, confidence={})",
+            name, result.operation, result.source, result.confidence,
+        );
+    }
+
+    result
+}
+
+/// Classify an MCP tool with full provenance detail.
+fn classify_mcp_tool_with_detail(name: &str) -> ClassificationResult {
+    let mcp_tool_name = name
+        .strip_prefix("mcp__")
+        .and_then(|rest| rest.split("__").nth(1))
+        .unwrap_or(name);
+
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let registry = ManifestRegistry::load_from_dir(&cwd);
+    if let Some(manifest) = registry.get(mcp_tool_name) {
+        if let Some(op) = manifest.capabilities.first() {
+            return ClassificationResult {
+                operation: *op,
+                source: ClassificationSource::Manifest,
+                confidence: Confidence::High,
+            };
+        }
+    }
+
+    // Fall through to name heuristic
+    let op = classify_mcp_tool_by_name(name);
+
+    // Determine confidence: specific pattern match vs default fallback
+    let tool = name
+        .strip_prefix("mcp__")
+        .and_then(|rest| rest.split("__").nth(1))
+        .unwrap_or(name);
+    let matched_pattern = tool.contains("pull_request")
+        || tool.contains("pr_create")
+        || tool.contains("push")
+        || tool.contains("commit")
+        || tool.contains("merge")
+        || tool.contains("run")
+        || tool.contains("exec")
+        || tool.contains("shell")
+        || tool.contains("command")
+        || tool.contains("bash")
+        || tool.contains("terminal")
+        || tool.contains("fetch")
+        || tool.contains("download")
+        || tool.contains("http")
+        || tool.contains("url")
+        || tool.contains("browse")
+        || tool.contains("write")
+        || tool.contains("create")
+        || tool.contains("update")
+        || tool.contains("delete")
+        || tool.contains("put")
+        || tool.contains("set")
+        || tool.contains("insert")
+        || tool.contains("edit")
+        || tool.contains("modify")
+        || tool.contains("read")
+        || tool.contains("get")
+        || tool.contains("list")
+        || tool.contains("search")
+        || tool.contains("query")
+        || tool.contains("describe")
+        || tool.contains("request")
+        || tool.contains("grep")
+        || tool.contains("find")
+        || tool.contains("glob");
+
+    if matched_pattern {
+        ClassificationResult {
+            operation: op,
+            source: ClassificationSource::NameHeuristic,
+            confidence: Confidence::Medium,
+        }
+    } else {
+        ClassificationResult {
+            operation: op,
+            source: ClassificationSource::DefaultFallback,
+            confidence: Confidence::Low,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tool name -> Operation mapping
 // ---------------------------------------------------------------------------
 
@@ -594,5 +768,108 @@ mod tests {
     fn test_effect_kind_write_tools() {
         assert_eq!(map_tool_to_effect_kind("Write"), EffectKind::ProposedWrite);
         assert_eq!(map_tool_to_effect_kind("Edit"), EffectKind::ProposedWrite);
+    }
+
+    // -----------------------------------------------------------------------
+    // Classification provenance tests (#554)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_classify_builtin_tools_high_confidence() {
+        for name in &[
+            "Bash",
+            "Read",
+            "Write",
+            "Edit",
+            "Glob",
+            "Grep",
+            "WebFetch",
+            "WebSearch",
+            "Agent",
+        ] {
+            let result = classify_with_detail(name);
+            assert_eq!(result.source, ClassificationSource::BuiltIn, "tool: {name}");
+            assert_eq!(result.confidence, Confidence::High, "tool: {name}");
+            assert_eq!(result.operation, map_tool(name), "tool: {name}");
+        }
+    }
+
+    #[test]
+    fn test_classify_mcp_heuristic_medium_confidence() {
+        let result = classify_with_detail("mcp__fs__read_file");
+        assert_eq!(result.operation, Operation::ReadFiles);
+        assert_eq!(result.source, ClassificationSource::NameHeuristic);
+        assert_eq!(result.confidence, Confidence::Medium);
+    }
+
+    #[test]
+    fn test_classify_mcp_write_heuristic() {
+        let result = classify_with_detail("mcp__db__create_record");
+        assert_eq!(result.operation, Operation::WriteFiles);
+        assert_eq!(result.source, ClassificationSource::NameHeuristic);
+        assert_eq!(result.confidence, Confidence::Medium);
+    }
+
+    #[test]
+    fn test_classify_mcp_unknown_low_confidence() {
+        let result = classify_with_detail("mcp__evil__pwn");
+        assert_eq!(result.operation, Operation::RunBash);
+        assert_eq!(result.source, ClassificationSource::DefaultFallback);
+        assert_eq!(result.confidence, Confidence::Low);
+    }
+
+    #[test]
+    fn test_classify_unknown_tool_default_fallback() {
+        let result = classify_with_detail("TotallyUnknown");
+        assert_eq!(result.operation, Operation::RunBash);
+        assert_eq!(result.source, ClassificationSource::DefaultFallback);
+        assert_eq!(result.confidence, Confidence::Low);
+    }
+
+    #[test]
+    fn test_classify_with_detail_matches_map_tool() {
+        // classify_with_detail must always agree with map_tool on the Operation
+        for name in &[
+            "Bash",
+            "Read",
+            "Write",
+            "Edit",
+            "Glob",
+            "Grep",
+            "WebFetch",
+            "WebSearch",
+            "Agent",
+            "mcp__fs__read_file",
+            "mcp__db__create_record",
+            "mcp__evil__pwn",
+            "UnknownTool",
+        ] {
+            assert_eq!(
+                classify_with_detail(name).operation,
+                map_tool(name),
+                "mismatch for tool: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_confidence_ordering() {
+        // Low < Medium < High
+        assert!(Confidence::Low < Confidence::Medium);
+        assert!(Confidence::Medium < Confidence::High);
+    }
+
+    #[test]
+    fn test_classification_source_display() {
+        assert_eq!(ClassificationSource::BuiltIn.to_string(), "built-in");
+        assert_eq!(ClassificationSource::Manifest.to_string(), "manifest");
+        assert_eq!(
+            ClassificationSource::NameHeuristic.to_string(),
+            "name-heuristic"
+        );
+        assert_eq!(
+            ClassificationSource::DefaultFallback.to_string(),
+            "default-fallback"
+        );
     }
 }
