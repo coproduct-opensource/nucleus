@@ -54,6 +54,7 @@ pub fn print_help() {
     println!("  --exit-codes           Print the exit code protocol documentation");
     println!("  --benchmark            Measure hook decision latency (p50/p95/p99)");
     println!("    --iterations N         Number of iterations (default: 100)");
+    println!("  --statusline           Output compact status for Claude Code status line");
     println!("  --help, -h             This message");
     println!("  --version, -V          Show version");
     println!();

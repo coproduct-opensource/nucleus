@@ -47,6 +47,8 @@ pub enum CliCommand {
     ExitCodes,
     /// `--benchmark [--iterations N]` — measure hook latency (#522).
     Benchmark { iterations: usize },
+    /// `--statusline` — output a short status string for Claude Code's status line.
+    StatusLine,
 }
 
 /// CLI parsing error.
@@ -155,6 +157,7 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
             }
             Ok(CliCommand::Benchmark { iterations })
         }
+        "--statusline" => Ok(CliCommand::StatusLine),
         other if other.starts_with('-') => Err(CliError::UnknownFlag(other.to_string())),
         // No recognised flag — fall through to stdin hook mode.
         _ => Ok(CliCommand::Hook),
@@ -354,6 +357,14 @@ mod tests {
         assert_eq!(
             parse_args(&args(&["--benchmark", "--iterations", "500"])).unwrap(),
             CliCommand::Benchmark { iterations: 500 }
+        );
+    }
+
+    #[test]
+    fn statusline_flag() {
+        assert_eq!(
+            parse_args(&args(&["--statusline"])).unwrap(),
+            CliCommand::StatusLine
         );
     }
 
