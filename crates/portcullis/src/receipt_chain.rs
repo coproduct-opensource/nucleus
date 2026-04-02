@@ -43,6 +43,9 @@ pub struct VerdictReceipt {
     pub causal_parents: Vec<NodeId>,
     /// Unix timestamp (seconds since epoch) when the verdict was issued.
     pub timestamp: u64,
+    /// Chain identifier — SHA-256 of "nucleus-chain:" + session_id (#900).
+    /// Prevents cross-session replay attacks. Matches FlowReceipt's chain_id.
+    pub chain_id: [u8; 32],
     /// SHA-256 hash of the previous receipt in the chain.
     /// All zeros for the first receipt.
     pub prev_hash: [u8; 32],
@@ -109,6 +112,9 @@ impl VerdictReceipt {
         // Timestamp
         buf.extend_from_slice(&self.timestamp.to_le_bytes());
 
+        // Chain ID (#900) — anti-replay across sessions
+        buf.extend_from_slice(&self.chain_id);
+
         // Effect kind (#775)
         if let Some(ref ek) = self.effect_kind {
             buf.extend_from_slice(b"effect:");
@@ -174,6 +180,7 @@ impl VerdictReceipt {
             post_label,
             causal_parents,
             timestamp,
+            chain_id: [0u8; 32],
             prev_hash,
             receipt_hash: [0u8; 32],
             effect_kind,
@@ -206,6 +213,7 @@ impl VerdictReceipt {
             post_label,
             causal_parents,
             timestamp,
+            chain_id: [0u8; 32],
             prev_hash,
             receipt_hash: [0u8; 32],
             effect_kind,
@@ -213,6 +221,13 @@ impl VerdictReceipt {
         };
         receipt.receipt_hash = receipt.compute_hash();
         receipt
+    }
+
+    /// Set the chain ID after construction (#900).
+    /// Recomputes the receipt hash to include the chain ID.
+    pub fn set_chain_id(&mut self, chain_id: [u8; 32]) {
+        self.chain_id = chain_id;
+        self.receipt_hash = self.compute_hash();
     }
 }
 
@@ -243,6 +258,13 @@ pub enum ChainAppendError {
     },
     /// The receipt's `receipt_hash` does not match `compute_hash()`.
     InvalidReceiptHash,
+    /// The receipt's timestamp is earlier than the previous receipt (#900).
+    TimestampRegression {
+        /// Timestamp of the most recent receipt in the chain.
+        last: u64,
+        /// Timestamp of the receipt being appended.
+        current: u64,
+    },
 }
 
 impl std::fmt::Display for ChainAppendError {
@@ -258,6 +280,9 @@ impl std::fmt::Display for ChainAppendError {
             }
             Self::InvalidReceiptHash => {
                 write!(f, "receipt_hash does not match computed hash")
+            }
+            Self::TimestampRegression { last, current } => {
+                write!(f, "timestamp regression: last={last}, current={current}")
             }
         }
     }
@@ -307,6 +332,8 @@ impl std::error::Error for ChainVerifyError {}
 pub struct ReceiptChain {
     receipts: Vec<VerdictReceipt>,
     head_hash: [u8; 32],
+    /// Timestamp of the most recent receipt — for monotonicity enforcement (#900).
+    last_timestamp: u64,
 }
 
 impl Default for ReceiptChain {
@@ -323,6 +350,7 @@ impl ReceiptChain {
         Self {
             receipts: Vec::new(),
             head_hash: [0u8; 32],
+            last_timestamp: 0,
         }
     }
 
@@ -348,6 +376,15 @@ impl ReceiptChain {
             return Err(ChainAppendError::InvalidReceiptHash);
         }
 
+        // Verify timestamp monotonicity (#900) — prevent backdating.
+        if receipt.timestamp < self.last_timestamp {
+            return Err(ChainAppendError::TimestampRegression {
+                last: self.last_timestamp,
+                current: receipt.timestamp,
+            });
+        }
+
+        self.last_timestamp = receipt.timestamp;
         self.head_hash = receipt.receipt_hash;
         self.receipts.push(receipt);
         Ok(())
