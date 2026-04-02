@@ -128,6 +128,12 @@ pub(crate) struct SessionState {
     /// Consumed by `/clearance` to assemble `WitnessBundle`s.
     #[serde(default)]
     pub(crate) pending_parser_steps: Vec<PendingParserStep>,
+    /// Completed deterministic binds (#932). Each records a parser output
+    /// that was bound to a schema field without model intermediation.
+    /// Replayed during session rebuild to re-insert DeterministicBind
+    /// observations into the flow graph.
+    #[serde(default)]
+    pub(crate) deterministic_binds: Vec<DeterministicBindRecord>,
 }
 
 /// A content hash captured from a tool output during PostToolUse (#873).
@@ -167,6 +173,20 @@ pub(crate) struct PendingParserStep {
     pub(crate) output: Vec<u8>,
     /// Unix timestamp when the parser ran.
     pub(crate) executed_at: u64,
+}
+
+/// A completed deterministic bind — parser output routed to a schema field
+/// without model intermediation (#932).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub(crate) struct DeterministicBindRecord {
+    /// Schema field name this bind populates.
+    pub(crate) field_name: String,
+    /// SHA-256 of the parser output (links to PendingParserStep.output_hash).
+    pub(crate) output_hash: [u8; 32],
+    /// Parser ID that produced the output.
+    pub(crate) parser_id: String,
+    /// Flow graph NodeKind discriminant stored for replay (always 16 = DeterministicBind).
+    pub(crate) node_kind_u8: u8,
 }
 
 impl SessionState {
@@ -1155,7 +1175,32 @@ pub(crate) fn record_post_tool(
             content_hash[0], content_hash[1], content_hash[2], content_hash[3]
         );
         // Attempt WASM reduction on the captured content (#915).
+        let steps_before = s.pending_parser_steps.len();
         try_wasm_reduction(s, content_hash, result_text.as_bytes(), hash_tool);
+
+        // If a parser step was added, record a DeterministicBind observation (#932).
+        // The bind's flow_observations entry uses NodeKind::DeterministicBind (16)
+        // with no parents from the LeafTracker — the actual parent (the parser
+        // output's WebContent source) will be wired during flow graph replay.
+        if s.pending_parser_steps.len() > steps_before {
+            let step = &s.pending_parser_steps[s.pending_parser_steps.len() - 1];
+            let bind_label = format!("bind:{}:{}", step.parser_id, hash_tool);
+            s.flow_observations.push((
+                node_kind_to_u8(portcullis_core::flow::NodeKind::DeterministicBind),
+                bind_label,
+                String::new(),
+            ));
+            s.deterministic_binds.push(DeterministicBindRecord {
+                field_name: String::new(), // populated when schema is loaded
+                output_hash: step.output_hash,
+                parser_id: step.parser_id.clone(),
+                node_kind_u8: node_kind_to_u8(portcullis_core::flow::NodeKind::DeterministicBind),
+            });
+            eprintln!(
+                "nucleus: DeterministicBind recorded for parser '{}'",
+                step.parser_id
+            );
+        }
     }
 }
 
@@ -2597,5 +2642,36 @@ mod tests {
             assemble_witness_bundle(&mut s),
             ClearanceResult::ChainBroken(_)
         ));
+    }
+
+    // -----------------------------------------------------------------
+    // DeterministicBind records (#932)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn deterministic_bind_record_serialization_roundtrip() {
+        let record = DeterministicBindRecord {
+            field_name: "revenue".into(),
+            output_hash: [0xCC; 32],
+            parser_id: "jq".into(),
+            node_kind_u8: 16,
+        };
+        let json = serde_json::to_string(&record).unwrap();
+        let restored: DeterministicBindRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(record, restored);
+    }
+
+    #[test]
+    fn session_with_deterministic_binds_roundtrip() {
+        let mut state = SessionState::default();
+        state.deterministic_binds.push(DeterministicBindRecord {
+            field_name: "revenue".into(),
+            output_hash: [0xCC; 32],
+            parser_id: "jq".into(),
+            node_kind_u8: 16,
+        });
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: SessionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state.deterministic_binds, restored.deterministic_binds);
     }
 }
