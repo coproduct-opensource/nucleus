@@ -31,13 +31,13 @@ use proptest::prelude::*;
 /// EditFiles, WebSearch, etc. as baseline safety. The Verus model only models
 /// uninhabitable_state-derived obligations. This helper starts clean so conformance tests
 /// verify the uninhabitable_state model in isolation.
+#[allow(clippy::field_reassign_with_default)]
 fn perms_with_empty_obligations(caps: CapabilityLattice) -> PermissionLattice {
-    PermissionLattice {
-        capabilities: caps,
-        obligations: Obligations::default(), // empty
-        paths: PathLattice::default(),
-        ..Default::default()
-    }
+    let mut perms = PermissionLattice::default();
+    perms.capabilities = caps;
+    perms.obligations = Obligations::default(); // empty
+    perms.paths = PathLattice::default();
+    perms
 }
 
 // ============================================================================

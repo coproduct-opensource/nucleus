@@ -38,11 +38,12 @@ fn main() {
 
     // Using the full permission lattice
     println!("\n3. Using PermissionLattice with automatic uninhabitable_state enforcement:");
-    let perms = PermissionLattice {
-        capabilities: dangerous.clone(),
-        obligations: Default::default(),
-        uninhabitable_constraint: true,
-        ..Default::default()
+    #[allow(clippy::field_reassign_with_default)]
+    let perms = {
+        let mut p = PermissionLattice::default();
+        p.capabilities = dangerous.clone();
+        p.obligations = Default::default();
+        p
     };
 
     // Meet operation automatically applies constraint
