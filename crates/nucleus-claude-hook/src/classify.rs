@@ -399,6 +399,10 @@ pub(crate) fn node_kind_to_u8(kind: NodeKind) -> u8 {
         NodeKind::OutboundAction => 9,
         NodeKind::Summarization => 10,
         NodeKind::Retry => 11,
+        NodeKind::HTTPResponse => 12,
+        NodeKind::DatabaseRow => 13,
+        NodeKind::GitBlob => 14,
+        NodeKind::CachedDatum => 15,
     }
 }
 
@@ -416,7 +420,11 @@ pub(crate) fn u8_to_node_kind(v: u8) -> NodeKind {
         8 => NodeKind::Secret,
         9 => NodeKind::OutboundAction,
         10 => NodeKind::Summarization,
-        _ => NodeKind::Retry,
+        11 => NodeKind::Retry,
+        12 => NodeKind::HTTPResponse,
+        13 => NodeKind::DatabaseRow,
+        14 => NodeKind::GitBlob,
+        _ => NodeKind::CachedDatum,
     }
 }
 
@@ -485,10 +493,15 @@ impl LeafTracker {
     /// Record a new node, replacing the leaf for its category.
     pub(crate) fn record(&mut self, kind: NodeKind, node_id: u64) {
         let leaves = match kind {
-            NodeKind::FileRead | NodeKind::UserPrompt | NodeKind::EnvVar | NodeKind::MemoryRead => {
-                &mut self.trusted
+            NodeKind::FileRead
+            | NodeKind::UserPrompt
+            | NodeKind::EnvVar
+            | NodeKind::MemoryRead
+            | NodeKind::DatabaseRow
+            | NodeKind::GitBlob => &mut self.trusted,
+            NodeKind::WebContent | NodeKind::HTTPResponse | NodeKind::CachedDatum => {
+                &mut self.adversarial
             }
-            NodeKind::WebContent => &mut self.adversarial,
             NodeKind::OutboundAction | NodeKind::MemoryWrite => &mut self.action,
             NodeKind::ModelPlan
             | NodeKind::ToolResponse
@@ -515,12 +528,17 @@ impl LeafTracker {
             // Source nodes: independent entry points, no cross-category parents.
             // A file read doesn't depend on web content.
             // A web fetch doesn't depend on prior file reads.
-            NodeKind::FileRead | NodeKind::UserPrompt | NodeKind::EnvVar | NodeKind::MemoryRead => {
+            NodeKind::FileRead
+            | NodeKind::UserPrompt
+            | NodeKind::EnvVar
+            | NodeKind::MemoryRead
+            | NodeKind::DatabaseRow
+            | NodeKind::GitBlob => {
                 // Source-only: previous trusted node (for ordering) but no adversarial parent
                 self.trusted.clone()
             }
-            NodeKind::WebContent => {
-                // Web content enters independently
+            NodeKind::WebContent | NodeKind::HTTPResponse | NodeKind::CachedDatum => {
+                // External/untrusted content enters independently
                 self.adversarial.clone()
             }
             // Actions depend on ALL sources — the model may have used any of them.

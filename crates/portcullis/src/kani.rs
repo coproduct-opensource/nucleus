@@ -1766,7 +1766,7 @@ use portcullis_core::flow::{FlowVerdict, NodeKind};
 fn proof_sentinel_parent_always_rejected() {
     let mut g = FlowGraph::new();
     let kind_idx: u8 = kani::any();
-    kani::assume(kind_idx < 12);
+    kani::assume(kind_idx < 16);
     let kind = match kind_idx {
         0 => NodeKind::UserPrompt,
         1 => NodeKind::ToolResponse,
@@ -1779,7 +1779,11 @@ fn proof_sentinel_parent_always_rejected() {
         8 => NodeKind::Secret,
         9 => NodeKind::OutboundAction,
         10 => NodeKind::Summarization,
-        _ => NodeKind::Retry,
+        11 => NodeKind::Retry,
+        12 => NodeKind::HTTPResponse,
+        13 => NodeKind::DatabaseRow,
+        14 => NodeKind::GitBlob,
+        _ => NodeKind::CachedDatum,
     };
     let result = g.insert_observation(kind, &[0], 1000);
     assert!(matches!(result, Err(FlowGraphError::SentinelParent)));
