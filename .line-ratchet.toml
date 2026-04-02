@@ -29,3 +29,9 @@ path = "crates/nucleus-tool-proxy/src/main.rs"
 ceiling = 4443
 target = 2500
 step = 1
+
+[[files]]
+path = "crates/nucleus-node/src/main.rs"
+ceiling = 3304
+target = 2000
+step = 1
