@@ -25,5 +25,10 @@ toml = { workspace = true }
 dirs-next = "2"
 libc = "0.2"
 
+[features]
+# Enable WASM parser execution in PostToolUse reduction pipeline (#915).
+# Adds wasmtime dependency (~2MB). Without this, parser steps are skipped.
+wasm-sandbox = ["portcullis-core/wasm-sandbox"]
+
 [lints]
 workspace = true

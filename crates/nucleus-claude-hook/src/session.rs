@@ -124,6 +124,10 @@ pub(crate) struct SessionState {
     /// chains — `/clearance` can reference them as `InputBlob.content_hash`.
     #[serde(default)]
     pub(crate) pending_source_hashes: Vec<PendingSourceHash>,
+    /// Completed parser steps from WASM execution (#915).
+    /// Consumed by `/clearance` to assemble `WitnessBundle`s.
+    #[serde(default)]
+    pub(crate) pending_parser_steps: Vec<PendingParserStep>,
 }
 
 /// A content hash captured from a tool output during PostToolUse (#873).
@@ -142,6 +146,27 @@ pub(crate) struct PendingSourceHash {
     /// Whether a `ReductionWitness` has been constructed for this content.
     /// Once true, the hash has been consumed by the reduction pipeline.
     pub(crate) witnessed: bool,
+}
+
+/// A completed parser step captured during PostToolUse (#915).
+///
+/// Records the deterministic transformation of source content through a
+/// registered WASM parser. The hash chain (input → parser → output) forms
+/// the core of a `WitnessBundle` that proves data wasn't AI-derived.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub(crate) struct PendingParserStep {
+    /// SHA-256 of the parser input (matches a `PendingSourceHash.content_hash`).
+    pub(crate) input_hash: [u8; 32],
+    /// Parser ID from the registry (e.g. "jq", "json_extract").
+    pub(crate) parser_id: String,
+    /// SHA-256 of the parser WASM binary (content-addressed).
+    pub(crate) parser_hash: [u8; 32],
+    /// SHA-256 of the parser output.
+    pub(crate) output_hash: [u8; 32],
+    /// The raw parser output bytes (kept for schema binding).
+    pub(crate) output: Vec<u8>,
+    /// Unix timestamp when the parser ran.
+    pub(crate) executed_at: u64,
 }
 
 impl SessionState {
@@ -1129,7 +1154,131 @@ pub(crate) fn record_post_tool(
             "nucleus: source hash {:02x}{:02x}{:02x}{:02x}...",
             content_hash[0], content_hash[1], content_hash[2], content_hash[3]
         );
+        // Attempt WASM reduction on the captured content (#915).
+        try_wasm_reduction(s, content_hash, result_text.as_bytes(), hash_tool);
     }
+}
+
+/// Attempt to run a registered WASM parser on captured web content (#915).
+///
+/// If `.nucleus/parsers/` contains a declaration matching the tool's content
+/// type, compiles and executes the parser, then records a `PendingParserStep`
+/// with the full hash chain: input_hash → parser_hash → output_hash.
+///
+/// This is the "reduction" step: deterministic transformation of untrusted
+/// content, producing a witness-ready output that bypasses the AI-derived gate.
+#[cfg(feature = "wasm-sandbox")]
+pub(crate) fn try_wasm_reduction(
+    s: &mut SessionState,
+    content_hash: [u8; 32],
+    result_bytes: &[u8],
+    tool_name: &str,
+) {
+    use portcullis_core::parser_registry::ParserRegistry;
+    use portcullis_core::wasm_sandbox::ParserSandbox;
+    use sha2::{Digest, Sha256};
+
+    // Load parser declarations from .nucleus/parsers/
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let parsers_dir = cwd.join(".nucleus").join("parsers");
+    if !parsers_dir.is_dir() {
+        return;
+    }
+
+    let mut registry = ParserRegistry::new();
+    if registry.load_from_dir(&parsers_dir).is_err() {
+        return;
+    }
+
+    // Find a parser whose input_format matches the tool name convention.
+    // Convention: WebFetch → "http", WebSearch → "search", or explicit match.
+    let input_format = match tool_name {
+        "WebFetch" => "http",
+        "WebSearch" => "search",
+        _ if tool_name.starts_with("mcp__") => "mcp",
+        _ => return,
+    };
+
+    let matching_parser = registry
+        .parsers()
+        .find(|(_, decl)| decl.input_format == input_format && decl.is_deterministic);
+
+    let (parser_id, decl) = match matching_parser {
+        Some((id, decl)) => (id.clone(), decl.clone()),
+        None => return,
+    };
+
+    // Load and compile the WASM module.
+    let wasm_path = parsers_dir.join(format!("{parser_id}.wasm"));
+    let wasm_bytes = match std::fs::read(&wasm_path) {
+        Ok(bytes) => bytes,
+        Err(_) => return,
+    };
+
+    let sandbox = ParserSandbox::new();
+    if registry
+        .compile_parser(&sandbox, &parser_id, &wasm_bytes)
+        .is_err()
+    {
+        return;
+    }
+
+    // Execute with a conservative fuel limit.
+    let fuel_limit = 10_000_000;
+    let output = match registry.execute_parser(&sandbox, &parser_id, result_bytes, fuel_limit) {
+        Ok(out) => out,
+        Err(e) => {
+            eprintln!("nucleus: WASM parser '{parser_id}' failed: {e}");
+            return;
+        }
+    };
+
+    let output_hash = {
+        let mut hasher = Sha256::new();
+        hasher.update(&output);
+        let result = hasher.finalize();
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&result);
+        hash
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // Mark the source hash as witnessed.
+    if let Some(src) = s
+        .pending_source_hashes
+        .iter_mut()
+        .find(|h| h.content_hash == content_hash && !h.witnessed)
+    {
+        src.witnessed = true;
+    }
+
+    s.pending_parser_steps.push(PendingParserStep {
+        input_hash: content_hash,
+        parser_id: parser_id.clone(),
+        parser_hash: decl.build_hash,
+        output_hash,
+        output,
+        executed_at: now,
+    });
+
+    eprintln!(
+        "nucleus: WASM reduction '{parser_id}' → output {:02x}{:02x}{:02x}{:02x}... (Deterministic)",
+        output_hash[0], output_hash[1], output_hash[2], output_hash[3]
+    );
+}
+
+#[cfg(not(feature = "wasm-sandbox"))]
+pub(crate) fn try_wasm_reduction(
+    _s: &mut SessionState,
+    _content_hash: [u8; 32],
+    _result_bytes: &[u8],
+    _tool_name: &str,
+) {
+    // WASM sandbox not enabled — parser steps skipped.
 }
 
 /// Handle `UserPromptSubmit` — detect `!` bash passthrough (#918).
@@ -2207,6 +2356,36 @@ mod tests {
         assert!(
             label.starts_with("post:Bash"),
             "label should NOT have user prefix, got: {label}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // WASM reduction pipeline (#915)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn pending_parser_step_serialization_roundtrip() {
+        let step = PendingParserStep {
+            input_hash: [0xAA; 32],
+            parser_id: "jq".into(),
+            parser_hash: [0xBB; 32],
+            output_hash: [0xCC; 32],
+            output: b"parsed output".to_vec(),
+            executed_at: 1234567890,
+        };
+        let json = serde_json::to_string(&step).unwrap();
+        let restored: PendingParserStep = serde_json::from_str(&json).unwrap();
+        assert_eq!(step, restored);
+    }
+
+    #[test]
+    fn try_wasm_reduction_noop_without_parsers_dir() {
+        // No .nucleus/parsers/ directory → should return without error.
+        let mut s = SessionState::default();
+        try_wasm_reduction(&mut s, [0u8; 32], b"test", "WebFetch");
+        assert!(
+            s.pending_parser_steps.is_empty(),
+            "no parser steps should be added without a parsers directory"
         );
     }
 }
