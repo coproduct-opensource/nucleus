@@ -2,8 +2,8 @@
 //!
 //! This module handles two related concerns:
 //!
-//! **Context injection** — When `NUCLEUS_INJECT_CONTEXT=1` is set, the hook
-//! injects security context into Claude's `additionalContext` field on state
+//! **Context injection** — The hook injects security context into the model's
+//! `additionalContext` field on state
 //! changes (first call, compartment transition, web taint detection). This lets
 //! the model adapt its behavior to the current security posture without guessing.
 //!
@@ -158,15 +158,15 @@ fn has_web_taint_in_session(session: &SessionState) -> bool {
 /// - After a compartment change
 /// - After web taint is first detected (WebFetch/WebSearch)
 ///
-/// Gated by `NUCLEUS_INJECT_CONTEXT=1` (opt-in).
+/// Enabled by default. Set `NUCLEUS_INJECT_CONTEXT=0` to disable (#956).
 pub(crate) fn maybe_build_context(
     session: &SessionState,
     compartment: Option<&Compartment>,
     operation: Operation,
     is_first_invocation: bool,
 ) -> Option<String> {
-    // Opt-in gate
-    if std::env::var("NUCLEUS_INJECT_CONTEXT").as_deref() != Ok("1") {
+    // Opt-out gate (was opt-in before #956)
+    if std::env::var("NUCLEUS_INJECT_CONTEXT").as_deref() == Ok("0") {
         return None;
     }
 
@@ -324,14 +324,14 @@ mod tests {
     }
 
     #[test]
-    fn test_maybe_build_context_respects_env() {
+    fn test_maybe_build_context_default_on() {
         let session = SessionState::new_versioned();
-        // Without NUCLEUS_INJECT_CONTEXT=1, should return None
+        // Default (no env var): should inject on first invocation (#956)
         let result = maybe_build_context(&session, None, Operation::ReadFiles, true);
-        if std::env::var("NUCLEUS_INJECT_CONTEXT").as_deref() != Ok("1") {
+        if std::env::var("NUCLEUS_INJECT_CONTEXT").as_deref() != Ok("0") {
             assert!(
-                result.is_none(),
-                "should not inject without NUCLEUS_INJECT_CONTEXT=1"
+                result.is_some(),
+                "should inject by default (set NUCLEUS_INJECT_CONTEXT=0 to disable)"
             );
         }
     }
