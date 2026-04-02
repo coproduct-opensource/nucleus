@@ -1654,8 +1654,19 @@ mod tests {
     // Transition request protocol tests (#875)
     // -----------------------------------------------------------------------
 
+    /// In-process mutex for transition request tests — prevents parallel
+    /// test interference on the global transition-request.json file.
+    static TRANSITION_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn transition_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        TRANSITION_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn transition_request_roundtrip() {
+        let _lock = transition_test_lock();
         let sid = format!("tr-roundtrip-{}", std::process::id());
         let path = request_compartment_transition(&sid, "draft", "test transition")
             .expect("should write request file");
@@ -1672,6 +1683,7 @@ mod tests {
 
     #[test]
     fn transition_request_apply_valid_single_step() {
+        let _lock = transition_test_lock();
         let sid = format!("tr-apply-{}", std::process::id());
         let token = "test-token-tr-apply";
 
@@ -1719,6 +1731,7 @@ mod tests {
 
     #[test]
     fn transition_request_deny_skip_level() {
+        let _lock = transition_test_lock();
         let sid = format!("tr-skip-{}", std::process::id());
         let token = "test-token-tr-skip";
 
@@ -1757,6 +1770,7 @@ mod tests {
 
     #[test]
     fn transition_request_deny_breakglass_no_reason() {
+        let _lock = transition_test_lock();
         let sid = format!("tr-bg-noreason-{}", std::process::id());
         let token = "test-token-tr-bg-noreason";
 
@@ -1791,6 +1805,7 @@ mod tests {
 
     #[test]
     fn transition_request_breakglass_with_reason_accepted() {
+        let _lock = transition_test_lock();
         let sid = format!("tr-bg-reason-{}", std::process::id());
         let token = "test-token-tr-bg-reason";
 
@@ -1828,6 +1843,7 @@ mod tests {
 
     #[test]
     fn transition_request_stale_rejected() {
+        let _lock = transition_test_lock();
         let sid = format!("tr-stale-{}", std::process::id());
         let token = "test-token-tr-stale";
 
@@ -1863,6 +1879,7 @@ mod tests {
 
     #[test]
     fn transition_request_invalid_target() {
+        let _lock = transition_test_lock();
         let sid = format!("tr-invalid-{}", std::process::id());
         let token = "test-token-tr-invalid";
 
@@ -1890,6 +1907,7 @@ mod tests {
 
     #[test]
     fn transition_request_de_escalation_allowed() {
+        let _lock = transition_test_lock();
         let sid = format!("tr-deesc-{}", std::process::id());
         let token = "test-token-tr-deesc";
 
@@ -1926,6 +1944,7 @@ mod tests {
 
     #[test]
     fn check_pending_transition_returns_none_when_no_file() {
+        let _lock = transition_test_lock();
         let req_path = transition_request_path();
         std::fs::remove_file(&req_path).ok();
 
