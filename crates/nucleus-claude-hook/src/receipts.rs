@@ -47,6 +47,15 @@ struct ReceiptEntry {
     /// Previous compartment (if this entry records a transition)
     #[serde(skip_serializing_if = "Option::is_none")]
     compartment_transition_from: Option<String>,
+    /// True if signing was attempted but failed (#902).
+    /// An unsigned receipt in a chain that should be signed indicates
+    /// key corruption, low entropy, or sandboxed environment.
+    #[serde(default, skip_serializing_if = "is_false")]
+    signing_failed: bool,
+}
+
+fn is_false(v: &bool) -> bool {
+    !v
 }
 
 /// Persist a signed receipt to `.nucleus/receipts/<session-id>.jsonl`.
@@ -54,6 +63,7 @@ struct ReceiptEntry {
 /// Append-only JSONL — one receipt per line. Creates the directory
 /// and file if they don't exist. Failures are silent (audit is
 /// best-effort, not on the critical path).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn persist_receipt(
     session_id: &str,
     receipt: &portcullis_core::receipt::FlowReceipt,
@@ -62,6 +72,7 @@ pub(crate) fn persist_receipt(
     parent_session_id: &Option<String>,
     parent_chain_hash: &Option<String>,
     compartment: Option<&str>,
+    signing_failed: bool,
 ) {
     let safe_id = sanitize_session_id(session_id);
     let receipts_dir = session_dir().join("receipts");
@@ -97,6 +108,7 @@ pub(crate) fn persist_receipt(
         parent_chain_hash: parent_chain_hash.clone(),
         compartment: compartment.map(|s| s.to_string()),
         compartment_transition_from: None,
+        signing_failed,
     };
 
     if let Ok(json) = serde_json::to_string(&entry) {
@@ -111,39 +123,90 @@ pub(crate) fn persist_receipt(
     }
 }
 
-/// Emit a synthetic receipt for a compartment transition.
+/// Emit a signed receipt for a compartment transition (#898).
+///
+/// Unlike the old version, this receipt is properly chained: it uses the
+/// session's `chain_head_hash` as `prev_hash`, computes a `receipt_hash`,
+/// signs with the session key, and updates `chain_head_hash` in session state.
 pub(crate) fn persist_transition_receipt(
     session_id: &str,
     from: Option<&str>,
     to: &str,
     direction: &str,
 ) {
-    let safe_id = sanitize_session_id(session_id);
-    let receipts_dir = session_dir().join("receipts");
-    std::fs::create_dir_all(&receipts_dir).ok();
-    let path = receipts_dir.join(format!("{safe_id}.jsonl"));
+    use crate::session::with_session;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
 
-    let entry = ReceiptEntry {
-        timestamp: now,
-        operation: "compartment_transition".to_string(),
-        subject: format!("{} -> {} ({direction})", from.unwrap_or("none"), to),
-        verdict: "Allow".to_string(),
-        rule: "compartment_transition".to_string(),
-        action_label: String::new(),
-        ancestors: vec![],
-        signature: String::new(),
-        prev_hash: String::new(),
-        receipt_hash: String::new(),
-        parent_session_id: None,
-        parent_chain_hash: None,
-        compartment: Some(to.to_string()),
-        compartment_transition_from: from.map(|s| s.to_string()),
+    let subject = format!("{} -> {} ({direction})", from.unwrap_or("none"), to);
+
+    // Atomically load session, compute chain link, sign, and update chain head.
+    let mut built_entry: Option<ReceiptEntry> = None;
+    let target = to.to_string();
+    let from_str = from.map(|s| s.to_string());
+
+    let result = with_session(session_id, |s| {
+        let prev_hash = s.chain_head_hash;
+
+        // Compute receipt hash over canonical fields.
+        let hash: [u8; 32] = {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(now.to_le_bytes());
+            h.update(b"compartment_transition");
+            h.update(subject.as_bytes());
+            h.update(b"Allow");
+            h.update(prev_hash);
+            h.finalize().into()
+        };
+
+        // Sign the hash with the session key.
+        let signature = if !s.signing_key_pkcs8.is_empty() {
+            use ring::signature::Ed25519KeyPair;
+            if let Ok(key) = Ed25519KeyPair::from_pkcs8(&s.signing_key_pkcs8) {
+                let sig = key.sign(&hash);
+                hex::encode(sig.as_ref())
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
+        // Update chain head.
+        s.chain_head_hash = hash;
+        let sign_failed = signature.is_empty();
+
+        built_entry = Some(ReceiptEntry {
+            timestamp: now,
+            operation: "compartment_transition".to_string(),
+            subject: subject.clone(),
+            verdict: "Allow".to_string(),
+            rule: "compartment_transition".to_string(),
+            action_label: String::new(),
+            ancestors: vec![],
+            signature,
+            prev_hash: hex::encode(prev_hash),
+            receipt_hash: hex::encode(hash),
+            parent_session_id: None,
+            parent_chain_hash: None,
+            compartment: Some(target.clone()),
+            compartment_transition_from: from_str.clone(),
+            signing_failed: sign_failed,
+        });
+    });
+
+    let Some(entry) = result.and(built_entry) else {
+        return;
     };
+
+    let safe_id = sanitize_session_id(session_id);
+    let receipts_dir = session_dir().join("receipts");
+    std::fs::create_dir_all(&receipts_dir).ok();
+    let path = receipts_dir.join(format!("{safe_id}.jsonl"));
 
     if let Ok(json) = serde_json::to_string(&entry) {
         use std::io::Write;
