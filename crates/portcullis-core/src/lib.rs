@@ -82,6 +82,8 @@ pub mod parser_registry;
 pub mod policy_rules;
 #[cfg(feature = "envelope")]
 pub mod promotion;
+#[cfg(feature = "serde")]
+pub mod prov_export;
 pub mod provenance_schema;
 pub mod receipt;
 #[cfg(feature = "artifact")]
