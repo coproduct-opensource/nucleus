@@ -186,6 +186,16 @@ pub(crate) fn format_denial_for_user(
     }
 }
 
+/// Format a provenance schema denial as a user-friendly message (#952).
+pub(crate) fn format_provenance_denial(reason: &str) -> String {
+    format!(
+        "\u{1f6d1} Provenance guard: {reason}\n  \
+        How to fix:\n  \
+        - Use the WASM parser pipeline to populate deterministic fields\n  \
+        - Or change the field's derivation to 'ai_derived' in the .provenance.yaml schema"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -23,6 +23,7 @@ mod classify;
 mod cli;
 mod color;
 mod completions;
+mod config;
 mod context;
 mod denial;
 mod doctor;
@@ -53,83 +54,11 @@ use context::{current_fingerprint, detect_web_taint, maybe_build_context, web_ta
 // Profile resolution
 // ---------------------------------------------------------------------------
 
-/// Known profiles and their constructors.
-fn resolve_profile(name: &str) -> Option<PermissionLattice> {
-    match name {
-        "read_only" => Some(PermissionLattice::read_only()),
-        "code_review" => Some(PermissionLattice::code_review()),
-        "edit_only" => Some(PermissionLattice::edit_only()),
-        "fix_issue" => Some(PermissionLattice::fix_issue()),
-        "safe_pr_fixer" => Some(PermissionLattice::safe_pr_fixer()),
-        "release" => Some(PermissionLattice::release()),
-        "permissive" => Some(PermissionLattice::permissive()),
-        _ => None,
-    }
-}
-
-/// Load config from `.nucleus/config.toml` (#550).
-///
-/// Example config.toml:
-/// ```toml
-/// profile = "safe_pr_fixer"
-/// compartment = "research"
-/// fail_closed = false
-/// require_manifests = true
-/// ```
-///
-/// Priority: env var > config file > default.
-pub(crate) fn load_config_file() -> std::collections::HashMap<String, String> {
-    let mut config = std::collections::HashMap::new();
-
-    let config_paths = [
-        std::env::current_dir()
-            .ok()
-            .map(|d| d.join(".nucleus").join("config.toml")),
-        dirs_next::home_dir().map(|d| d.join(".nucleus").join("config.toml")),
-    ];
-
-    for path in config_paths.iter().flatten() {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            if let Ok(table) = content.parse::<toml::Table>() {
-                for (key, value) in &table {
-                    if let Some(s) = value.as_str() {
-                        config.insert(key.clone(), s.to_string());
-                    } else if let Some(b) = value.as_bool() {
-                        config.insert(key.clone(), if b { "1" } else { "0" }.to_string());
-                    }
-                }
-            }
-            break;
-        }
-    }
-
-    config
-}
-
-pub(crate) fn default_profile_name() -> String {
-    // Check env var first, then config file, then default
-    if let Ok(p) = std::env::var("NUCLEUS_PROFILE") {
-        return p;
-    }
-    let config = load_config_file();
-    if let Some(p) = config.get("profile") {
-        return p.clone();
-    }
-    "safe_pr_fixer".to_string()
-}
-
-const PROFILES: &[&str] = &[
-    "read_only",
-    "code_review",
-    "edit_only",
-    "fix_issue",
-    "safe_pr_fixer",
-    "release",
-    "permissive",
-];
-
-// (--setup handler moved to setup.rs)
-// (--status handler moved to status.rs)
+// Profile resolution, config loading, and provenance schema loading
+// live in config.rs (#952).
+use config::{
+    default_profile_name, load_config_file, load_provenance_schema, resolve_profile, PROFILES,
+};
 
 // ---------------------------------------------------------------------------
 // --help
@@ -1461,112 +1390,137 @@ fn main() {
         }
     }
 
-    let output = match decision.verdict {
-        Verdict::Allow => {
-            // Persist: operation will execute — track in both exposure and flow graph
-            session
-                .allowed_ops
-                .push((operation.to_string(), subject.clone()));
-            let obs_kind = operation_to_node_kind(operation);
-            session.flow_observations.push((
-                node_kind_to_u8(obs_kind),
-                operation.to_string(),
-                subject.clone(),
-            ));
-            // Record the observation index so PostToolUse can insert the
-            // ToolResponse as a sibling of this pre-tool observation (#593).
-            session.last_pre_tool_obs_index = Some(session.flow_observations.len() - 1);
+    // Provenance schema enforcement (#952): if a write targets a deterministic
+    // field, check that a DeterministicBind exists. This overrides the kernel
+    // verdict — the kernel allows the write (capability-wise) but the provenance
+    // schema requires the data to come through the parser pipeline.
+    let provenance_deny = if matches!(operation, Operation::WriteFiles | Operation::EditFiles) {
+        // Load schema from .provenance.yaml in cwd (if present).
+        let cwd = std::env::current_dir().unwrap_or_default();
+        load_provenance_schema(&cwd).and_then(|schema| {
+            session::check_deterministic_field_write(&session, &schema, &subject)
+        })
+    } else {
+        None
+    };
 
-            // DX (#567): When web content taints the session, print recovery path
-            if matches!(operation, Operation::WebFetch | Operation::WebSearch) {
-                nucleus_warn!("\u{26a0} Session tainted by web content — writes will be blocked.");
-                if compartment.is_some() {
-                    eprintln!(
+    let output = if let Some(reason) = provenance_deny {
+        // Provenance schema blocks this write — deterministic field needs parser pipeline.
+        let msg = crate::denial::format_provenance_denial(&reason);
+        eprintln!("{msg}");
+        protocol::HookOutput::deny(reason)
+    } else {
+        match decision.verdict {
+            Verdict::Allow => {
+                // Persist: operation will execute — track in both exposure and flow graph
+                session
+                    .allowed_ops
+                    .push((operation.to_string(), subject.clone()));
+                let obs_kind = operation_to_node_kind(operation);
+                session.flow_observations.push((
+                    node_kind_to_u8(obs_kind),
+                    operation.to_string(),
+                    subject.clone(),
+                ));
+                // Record the observation index so PostToolUse can insert the
+                // ToolResponse as a sibling of this pre-tool observation (#593).
+                session.last_pre_tool_obs_index = Some(session.flow_observations.len() - 1);
+
+                // DX (#567): When web content taints the session, print recovery path
+                if matches!(operation, Operation::WebFetch | Operation::WebSearch) {
+                    nucleus_warn!(
+                        "\u{26a0} Session tainted by web content — writes will be blocked."
+                    );
+                    if compartment.is_some() {
+                        eprintln!(
                         "nucleus: Tip: switch to 'draft' compartment to write (flow graph resets on transition)"
                     );
-                } else {
-                    eprintln!(
-                        "nucleus: Tip: set NUCLEUS_COMPARTMENT=draft or restart to clear taint"
-                    );
-                }
-            }
-
-            // PHASE 4: When SpawnAgent is allowed, export the current flow
-            // label AND chain reference so the child inherits taint and
-            // its receipt chain links back to the parent's.
-            if operation == Operation::SpawnAgent {
-                let safe_id = sanitize_session_id(&input.session_id);
-                {
-                    let graph = kernel.flow_graph();
-                    if let Some(node_id) = decision.flow_node_id {
-                        if let Some(node) = graph.get(node_id) {
-                            let label_str = portcullis_core::wire::encode_label(&node.label);
-                            let label_path = session_dir().join(format!("{safe_id}.parent-label"));
-                            std::fs::write(&label_path, &label_str).ok();
-                            eprintln!(
-                                "nucleus: exported parent label for child agent: {label_str}"
-                            );
-                        }
+                    } else {
+                        eprintln!(
+                            "nucleus: Tip: set NUCLEUS_COMPARTMENT=draft or restart to clear taint"
+                        );
                     }
                 }
-                // Export chain reference so child can link back
-                let chain_hash_hex = hex::encode(session.chain_head_hash);
-                let chain_path = session_dir().join(format!("{safe_id}.parent-chain"));
-                let chain_ref = format!("session={}\nhash={}\n", &input.session_id, chain_hash_hex);
-                std::fs::write(&chain_path, &chain_ref).ok();
 
-                // Export parent compartment so child inherits ceiling (#461).
-                // Child compartment ≤ parent compartment (can only narrow).
-                if let Some(ref comp) = compartment {
-                    let comp_path = session_dir().join(format!("{safe_id}.parent-compartment"));
-                    std::fs::write(&comp_path, comp.to_string()).ok();
-                    eprintln!(
-                        "nucleus: exported parent compartment '{}' for child agent",
-                        comp
-                    );
+                // PHASE 4: When SpawnAgent is allowed, export the current flow
+                // label AND chain reference so the child inherits taint and
+                // its receipt chain links back to the parent's.
+                if operation == Operation::SpawnAgent {
+                    let safe_id = sanitize_session_id(&input.session_id);
+                    {
+                        let graph = kernel.flow_graph();
+                        if let Some(node_id) = decision.flow_node_id {
+                            if let Some(node) = graph.get(node_id) {
+                                let label_str = portcullis_core::wire::encode_label(&node.label);
+                                let label_path =
+                                    session_dir().join(format!("{safe_id}.parent-label"));
+                                std::fs::write(&label_path, &label_str).ok();
+                                eprintln!(
+                                    "nucleus: exported parent label for child agent: {label_str}"
+                                );
+                            }
+                        }
+                    }
+                    // Export chain reference so child can link back
+                    let chain_hash_hex = hex::encode(session.chain_head_hash);
+                    let chain_path = session_dir().join(format!("{safe_id}.parent-chain"));
+                    let chain_ref =
+                        format!("session={}\nhash={}\n", &input.session_id, chain_hash_hex);
+                    std::fs::write(&chain_path, &chain_ref).ok();
+
+                    // Export parent compartment so child inherits ceiling (#461).
+                    // Child compartment ≤ parent compartment (can only narrow).
+                    if let Some(ref comp) = compartment {
+                        let comp_path = session_dir().join(format!("{safe_id}.parent-compartment"));
+                        std::fs::write(&comp_path, comp.to_string()).ok();
+                        eprintln!(
+                            "nucleus: exported parent compartment '{}' for child agent",
+                            comp
+                        );
+                    }
                 }
-            }
 
-            session.high_water_mark += 1;
+                session.high_water_mark += 1;
 
-            // Inject additionalContext when state changes (#842)
-            let context = maybe_build_context(
-                &session,
-                compartment.as_ref(),
-                operation,
-                is_first_invocation,
-            );
-            if context.is_some() {
-                // Update fingerprint so we don't repeat on next call
-                session.last_injected_context_key = Some(current_fingerprint(
-                    compartment.as_ref(),
+                // Inject additionalContext when state changes (#842)
+                let context = maybe_build_context(
                     &session,
+                    compartment.as_ref(),
                     operation,
-                ));
-            }
+                    is_first_invocation,
+                );
+                if context.is_some() {
+                    // Update fingerprint so we don't repeat on next call
+                    session.last_injected_context_key = Some(current_fingerprint(
+                        compartment.as_ref(),
+                        &session,
+                        operation,
+                    ));
+                }
 
-            save_session(&input.session_id, &session);
-            HookOutput::allow_with_context(context)
-        }
-        Verdict::RequiresApproval => {
-            session.high_water_mark += 1;
-            save_session(&input.session_id, &session);
-            HookOutput::ask(format!(
-                "nucleus: exposure {exposure_count}/3 — requires human approval"
-            ))
-        }
-        Verdict::Deny(ref reason) => {
-            // Do NOT persist op: operation was blocked.
-            // Still increment HWM — denied ops prove the session existed.
-            session.high_water_mark += 1;
-            save_session(&input.session_id, &session);
-            HookOutput::deny(format_denial_for_user(
-                reason,
-                operation,
-                compartment.as_ref().map(|c| c.to_string()).as_deref(),
-            ))
-        }
-    };
+                save_session(&input.session_id, &session);
+                HookOutput::allow_with_context(context)
+            }
+            Verdict::RequiresApproval => {
+                session.high_water_mark += 1;
+                save_session(&input.session_id, &session);
+                HookOutput::ask(format!(
+                    "nucleus: exposure {exposure_count}/3 — requires human approval"
+                ))
+            }
+            Verdict::Deny(ref reason) => {
+                // Do NOT persist op: operation was blocked.
+                // Still increment HWM — denied ops prove the session existed.
+                session.high_water_mark += 1;
+                save_session(&input.session_id, &session);
+                HookOutput::deny(format_denial_for_user(
+                    reason,
+                    operation,
+                    compartment.as_ref().map(|c| c.to_string()).as_deref(),
+                ))
+            }
+        } // match decision.verdict
+    }; // provenance_deny else
 
     // NUCLEUS_TIMING=1: emit phase breakdown to stderr (#522)
     if timing_enabled {
