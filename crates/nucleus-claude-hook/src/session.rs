@@ -1281,6 +1281,123 @@ pub(crate) fn try_wasm_reduction(
     // WASM sandbox not enabled — parser steps skipped.
 }
 
+// ---------------------------------------------------------------------------
+// WitnessBundle assembly for /clearance (#916)
+// ---------------------------------------------------------------------------
+
+/// Result of attempting to assemble a WitnessBundle from pending session state.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub(crate) enum ClearanceResult {
+    /// Successfully assembled and verified a WitnessBundle.
+    Verified {
+        bundle: portcullis_core::witness::WitnessBundle,
+        digest: [u8; 32],
+    },
+    /// No pending source hashes — nothing to clear.
+    NoPendingContent,
+    /// Source hashes exist but no parser steps — reduction pipeline incomplete.
+    NoParserSteps { pending_sources: usize },
+    /// Chain verification failed.
+    ChainBroken(String),
+}
+
+/// Assemble a `WitnessBundle` from pending session state (#916).
+///
+/// Collects unwitnessed `PendingSourceHash`es as `InputBlob`s and
+/// `PendingParserStep`s as `ParserStep`s, then verifies the chain.
+/// On success, marks all consumed sources as witnessed and clears
+/// the pending parser steps.
+#[allow(dead_code)]
+pub(crate) fn assemble_witness_bundle(s: &mut SessionState) -> ClearanceResult {
+    use portcullis_core::witness::{InputBlob, ParserStep, WitnessBundle};
+
+    // Collect unwitnessed source hashes.
+    let unwitnessed: Vec<(usize, &PendingSourceHash)> = s
+        .pending_source_hashes
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| !h.witnessed)
+        .collect();
+
+    if unwitnessed.is_empty() {
+        return ClearanceResult::NoPendingContent;
+    }
+
+    if s.pending_parser_steps.is_empty() {
+        return ClearanceResult::NoParserSteps {
+            pending_sources: unwitnessed.len(),
+        };
+    }
+
+    // Build InputBlobs from source hashes.
+    let input_blobs: Vec<InputBlob> = unwitnessed
+        .iter()
+        .map(|(_, src)| InputBlob {
+            source_class: "web".to_string(),
+            content_hash: src.content_hash,
+            fetched_at: src.captured_at,
+            fetched_by: src.tool_name.clone(),
+        })
+        .collect();
+
+    // Build ParserSteps from pending steps.
+    let parser_chain: Vec<ParserStep> = s
+        .pending_parser_steps
+        .iter()
+        .map(|step| ParserStep {
+            parser_id: step.parser_id.clone(),
+            parser_version: "1.0.0".to_string(),
+            parser_hash: step.parser_hash,
+            input_hash: step.input_hash,
+            output_hash: step.output_hash,
+        })
+        .collect();
+
+    // Final output hash is the last parser step's output.
+    let final_output_hash = s
+        .pending_parser_steps
+        .last()
+        .map(|s| s.output_hash)
+        .unwrap_or([0u8; 32]);
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let bundle = WitnessBundle {
+        witness_id: format!("wtn_{now:x}"),
+        input_blobs,
+        parser_chain,
+        transform_chain: vec![],
+        validation_results: vec![],
+        final_output_hash,
+        signature: None,
+        created_at: now,
+    };
+
+    // Verify the chain.
+    if let Err(e) = bundle.verify_chain() {
+        return ClearanceResult::ChainBroken(format!("{e}"));
+    }
+
+    // Mark sources as witnessed and clear parser steps.
+    let consumed_hashes: Vec<[u8; 32]> = unwitnessed
+        .iter()
+        .map(|(_, src)| src.content_hash)
+        .collect();
+    for src in &mut s.pending_source_hashes {
+        if consumed_hashes.contains(&src.content_hash) {
+            src.witnessed = true;
+        }
+    }
+    s.pending_parser_steps.clear();
+
+    let digest = bundle.compute_digest();
+    ClearanceResult::Verified { bundle, digest }
+}
+
 /// Handle `UserPromptSubmit` — detect `!` bash passthrough (#918).
 pub(crate) fn handle_user_prompt_submit(input: &crate::protocol::HookInput) {
     let prompt = input
@@ -2387,5 +2504,98 @@ mod tests {
             s.pending_parser_steps.is_empty(),
             "no parser steps should be added without a parsers directory"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // WitnessBundle assembly / /clearance (#916)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn assemble_witness_no_pending_content() {
+        let mut s = SessionState::default();
+        assert!(matches!(
+            assemble_witness_bundle(&mut s),
+            ClearanceResult::NoPendingContent
+        ));
+    }
+
+    #[test]
+    fn assemble_witness_no_parser_steps() {
+        let mut s = SessionState::default();
+        s.pending_source_hashes.push(PendingSourceHash {
+            content_hash: [0xAA; 32],
+            tool_name: "WebFetch".into(),
+            captured_at: 1000,
+            witnessed: false,
+        });
+        match assemble_witness_bundle(&mut s) {
+            ClearanceResult::NoParserSteps { pending_sources } => {
+                assert_eq!(pending_sources, 1);
+            }
+            other => panic!("expected NoParserSteps, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assemble_witness_valid_chain() {
+        let source_hash = [0xAA; 32];
+        let parser_hash = [0xBB; 32];
+        let output_hash = [0xCC; 32];
+
+        let mut s = SessionState::default();
+        s.pending_source_hashes.push(PendingSourceHash {
+            content_hash: source_hash,
+            tool_name: "WebFetch".into(),
+            captured_at: 1000,
+            witnessed: false,
+        });
+        s.pending_parser_steps.push(PendingParserStep {
+            input_hash: source_hash, // links to source
+            parser_id: "jq".into(),
+            parser_hash,
+            output_hash,
+            output: b"parsed".to_vec(),
+            executed_at: 1001,
+        });
+
+        match assemble_witness_bundle(&mut s) {
+            ClearanceResult::Verified { bundle, digest } => {
+                assert!(bundle.is_valid());
+                assert_eq!(bundle.parser_chain.len(), 1);
+                assert_eq!(bundle.input_blobs.len(), 1);
+                assert_eq!(bundle.final_output_hash, output_hash);
+                assert_ne!(digest, [0u8; 32]);
+            }
+            other => panic!("expected Verified, got: {other:?}"),
+        }
+
+        // Sources should be marked as witnessed.
+        assert!(s.pending_source_hashes[0].witnessed);
+        // Parser steps should be cleared.
+        assert!(s.pending_parser_steps.is_empty());
+    }
+
+    #[test]
+    fn assemble_witness_broken_chain() {
+        let mut s = SessionState::default();
+        s.pending_source_hashes.push(PendingSourceHash {
+            content_hash: [0xAA; 32],
+            tool_name: "WebFetch".into(),
+            captured_at: 1000,
+            witnessed: false,
+        });
+        s.pending_parser_steps.push(PendingParserStep {
+            input_hash: [0xFF; 32], // does NOT link to source hash
+            parser_id: "jq".into(),
+            parser_hash: [0xBB; 32],
+            output_hash: [0xCC; 32],
+            output: b"parsed".to_vec(),
+            executed_at: 1001,
+        });
+
+        assert!(matches!(
+            assemble_witness_bundle(&mut s),
+            ClearanceResult::ChainBroken(_)
+        ));
     }
 }
