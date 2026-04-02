@@ -9,8 +9,30 @@ use portcullis::Operation;
 use portcullis_core::compartment::Compartment;
 use portcullis_core::flow::NodeKind;
 
+use sha2::{Digest, Sha256};
+
 use crate::classify::node_kind_to_u8;
 use crate::session::SessionState;
+
+/// Derive a session-unique nonce for the `[nucleus-{nonce}]` context prefix.
+///
+/// The nonce is the first 8 hex chars of SHA-256("context-nonce:" || token),
+/// where `token` is the session's random `compartment_token`. This makes the
+/// prefix unpredictable to external tools (MCP servers, web content) because
+/// they cannot observe the token stored in the session state file.
+///
+/// An empty token produces a fallback nonce so context injection still works,
+/// but without anti-spoofing protection.
+pub(crate) fn context_nonce(compartment_token: &str) -> String {
+    if compartment_token.is_empty() {
+        return "00000000".to_string();
+    }
+    let mut h = Sha256::new();
+    h.update(b"context-nonce:");
+    h.update(compartment_token.as_bytes());
+    let hash = h.finalize();
+    hex::encode(&hash[..4])
+}
 
 /// Build a context fingerprint for deduplication. When this changes, we
 /// re-inject context so Claude knows the security state has shifted.
@@ -34,11 +56,17 @@ pub(crate) fn compartment_str(c: &Compartment) -> &'static str {
 ///
 /// This is injected as `additionalContext` in the hook response so the model
 /// knows its current compartment, capabilities, and restrictions.
+///
+/// The `nonce` parameter (from [`context_nonce`]) is embedded in the prefix
+/// as `[nucleus-{nonce}]`, making it statistically improbable for a malicious
+/// tool result to spoof the context prefix (#876).
 pub(crate) fn build_security_context(
     compartment: Option<&Compartment>,
     has_web_taint: bool,
+    nonce: &str,
 ) -> String {
     let mut parts = Vec::new();
+    let tag = format!("[nucleus-{nonce}]");
 
     if let Some(comp) = compartment {
         let (name, caps) = match comp {
@@ -57,10 +85,12 @@ pub(crate) fn build_security_context(
             Compartment::Breakglass => ("breakglass", "all capabilities (enhanced audit active)"),
         };
         parts.push(format!(
-            "[nucleus] You are in the '{name}' compartment ({caps})."
+            "{tag} You are in the '{name}' compartment ({caps})."
         ));
     } else {
-        parts.push("[nucleus] No compartment active — full profile permissions apply.".to_string());
+        parts.push(format!(
+            "{tag} No compartment active — full profile permissions apply."
+        ));
     }
 
     if has_web_taint {
@@ -131,7 +161,8 @@ pub(crate) fn maybe_build_context(
 
     // Inject on first invocation or when the fingerprint changes
     if is_first_invocation || session.last_injected_context_key.as_deref() != Some(&fingerprint) {
-        Some(build_security_context(compartment, has_web_taint))
+        let nonce = context_nonce(&session.compartment_token);
+        Some(build_security_context(compartment, has_web_taint, &nonce))
     } else {
         None
     }
@@ -163,8 +194,29 @@ mod tests {
     }
 
     #[test]
+    fn test_context_nonce_deterministic() {
+        let n1 = context_nonce("my-secret-token");
+        let n2 = context_nonce("my-secret-token");
+        assert_eq!(n1, n2);
+        assert_eq!(n1.len(), 8); // 4 bytes = 8 hex chars
+    }
+
+    #[test]
+    fn test_context_nonce_varies_by_token() {
+        let n1 = context_nonce("token-a");
+        let n2 = context_nonce("token-b");
+        assert_ne!(n1, n2);
+    }
+
+    #[test]
+    fn test_context_nonce_empty_token_fallback() {
+        assert_eq!(context_nonce(""), "00000000");
+    }
+
+    #[test]
     fn test_build_security_context_research() {
-        let ctx = build_security_context(Some(&Compartment::Research), false);
+        let ctx = build_security_context(Some(&Compartment::Research), false, "abc12345");
+        assert!(ctx.starts_with("[nucleus-abc12345]"));
         assert!(ctx.contains("research"));
         assert!(ctx.contains("read + search + web"));
         assert!(!ctx.contains("Web content taint"));
@@ -172,7 +224,7 @@ mod tests {
 
     #[test]
     fn test_build_security_context_with_taint() {
-        let ctx = build_security_context(Some(&Compartment::Research), true);
+        let ctx = build_security_context(Some(&Compartment::Research), true, "abc12345");
         assert!(ctx.contains("research"));
         assert!(ctx.contains("Web content taint is active"));
         assert!(ctx.contains("NoAuthority"));
@@ -180,27 +232,27 @@ mod tests {
 
     #[test]
     fn test_build_security_context_no_compartment() {
-        let ctx = build_security_context(None, false);
+        let ctx = build_security_context(None, false, "abc12345");
         assert!(ctx.contains("No compartment active"));
     }
 
     #[test]
     fn test_build_security_context_draft() {
-        let ctx = build_security_context(Some(&Compartment::Draft), false);
+        let ctx = build_security_context(Some(&Compartment::Draft), false, "abc12345");
         assert!(ctx.contains("draft"));
         assert!(ctx.contains("read + write + edit + commit"));
     }
 
     #[test]
     fn test_build_security_context_execute() {
-        let ctx = build_security_context(Some(&Compartment::Execute), false);
+        let ctx = build_security_context(Some(&Compartment::Execute), false, "abc12345");
         assert!(ctx.contains("execute"));
         assert!(ctx.contains("bash"));
     }
 
     #[test]
     fn test_build_security_context_breakglass() {
-        let ctx = build_security_context(Some(&Compartment::Breakglass), false);
+        let ctx = build_security_context(Some(&Compartment::Breakglass), false, "abc12345");
         assert!(ctx.contains("breakglass"));
         assert!(ctx.contains("enhanced audit"));
     }
