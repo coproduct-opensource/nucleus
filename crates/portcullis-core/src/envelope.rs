@@ -394,7 +394,7 @@ impl RowEnvelope {
         &mut self,
         field_name: &str,
         request: &crate::promotion::PromotionRequest,
-        witness: Option<&crate::witness::ReductionWitness>,
+        witness: Option<&crate::witness::ValidatedWitness>,
         now: u64,
     ) -> Result<crate::promotion::PromotionResult, PromotionApiError> {
         let field = self
@@ -430,7 +430,7 @@ impl RowEnvelope {
     pub fn promote_all(
         &mut self,
         request: &crate::promotion::PromotionRequest,
-        witness: Option<&crate::witness::ReductionWitness>,
+        witness: Option<&crate::witness::ValidatedWitness>,
         now: u64,
     ) -> Result<Vec<(String, crate::promotion::PromotionResult)>, PromotionApiError> {
         // Collect field names and their current derivation classes to avoid
@@ -1001,17 +1001,17 @@ mod tests {
     // ═══════════════════════════════════════════════════════════════════
 
     use crate::promotion::{PromotionRequest, PromotionScope};
-    use crate::witness::{ParserStep, ReductionWitness, ValidationResult};
+    use crate::witness::{ParserStep, ReductionWitness, ValidatedWitness, ValidationResult};
 
     fn envelope_sha256(data: &[u8]) -> [u8; 32] {
         use sha2::{Digest, Sha256};
         Sha256::digest(data).into()
     }
 
-    fn make_valid_witness() -> ReductionWitness {
+    fn make_valid_witness() -> ValidatedWitness {
         let source = envelope_sha256(b"raw web content");
         let parsed = envelope_sha256(b"parsed json");
-        ReductionWitness {
+        let witness = ReductionWitness {
             source_hash: source,
             parser_steps: vec![ParserStep {
                 parser_id: "json_parser".to_string(),
@@ -1026,7 +1026,8 @@ mod tests {
                 passed: true,
             }],
             output_hash: parsed,
-        }
+        };
+        ValidatedWitness::validate(witness).expect("test witness should be valid")
     }
 
     fn base_promotion_request(field: &str, from: DerivationClass) -> PromotionRequest {

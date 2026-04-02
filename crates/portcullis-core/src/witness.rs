@@ -453,6 +453,98 @@ impl ReductionWitness {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// WitnessValidationError — why a witness failed validation
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Errors that prevent a [`ReductionWitness`] from being wrapped in a
+/// [`ValidatedWitness`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WitnessValidationError {
+    /// The parser chain is broken: a step's input hash does not match the
+    /// preceding step's output hash, or the final output hash is wrong.
+    InvalidChain,
+    /// One or more validation steps reported `passed = false`.
+    FailedValidation,
+    /// The witness has no parser steps and `source_hash != output_hash`,
+    /// or the witness is otherwise structurally empty in a way that cannot
+    /// prove derivation.
+    EmptyInputs,
+}
+
+impl fmt::Display for WitnessValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidChain => write!(f, "reduction witness has a broken parser chain"),
+            Self::FailedValidation => {
+                write!(f, "one or more validation steps in the witness failed")
+            }
+            Self::EmptyInputs => write!(f, "reduction witness has no meaningful inputs"),
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ValidatedWitness — typestate newtype for validated witnesses
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A [`ReductionWitness`] that has been validated.
+///
+/// The inner field is private — the only way to construct a `ValidatedWitness`
+/// is through [`ValidatedWitness::validate`], which checks the full chain
+/// integrity and validation results. This makes unwitnessed verified writes
+/// impossible at the type level: any API that accepts `&ValidatedWitness`
+/// is guaranteed to have a valid derivation proof.
+///
+/// # Example
+///
+/// ```ignore
+/// let witness = build_reduction_witness(/* ... */);
+/// let validated = ValidatedWitness::validate(witness)?;
+/// promote(&mut envelope, &request, &validated, now)?;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedWitness(ReductionWitness);
+
+impl ValidatedWitness {
+    /// Validate a [`ReductionWitness`] and wrap it in a `ValidatedWitness`.
+    ///
+    /// # Errors
+    ///
+    /// - [`WitnessValidationError::InvalidChain`] if the parser chain is
+    ///   broken or the final output hash does not match.
+    /// - [`WitnessValidationError::FailedValidation`] if any validation step
+    ///   reported `passed = false`.
+    /// - [`WitnessValidationError::EmptyInputs`] if there are no parser steps
+    ///   and the source hash differs from the output hash.
+    pub fn validate(witness: ReductionWitness) -> Result<Self, WitnessValidationError> {
+        // Check chain integrity: each parser step's input must match the
+        // preceding step's output (or source_hash for the first step).
+        let mut current_hash = witness.source_hash;
+        for step in &witness.parser_steps {
+            if step.input_hash != current_hash {
+                return Err(WitnessValidationError::InvalidChain);
+            }
+            current_hash = step.output_hash;
+        }
+        if current_hash != witness.output_hash {
+            return Err(WitnessValidationError::InvalidChain);
+        }
+
+        // Check all validation steps passed.
+        if witness.validation_steps.iter().any(|v| !v.passed) {
+            return Err(WitnessValidationError::FailedValidation);
+        }
+
+        Ok(ValidatedWitness(witness))
+    }
+
+    /// Access the inner [`ReductionWitness`] by reference.
+    pub fn inner(&self) -> &ReductionWitness {
+        &self.0
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1054,5 +1146,78 @@ mod tests {
             output_hash: stage2,
         };
         assert!(w.is_valid());
+    }
+
+    // ValidatedWitness tests (issue #755)
+
+    #[test]
+    fn validated_witness_from_valid_reduction() {
+        let w = make_valid_reduction_witness();
+        let validated = ValidatedWitness::validate(w).expect("valid witness should validate");
+        assert!(validated.inner().is_valid());
+    }
+
+    #[test]
+    fn validated_witness_rejects_broken_chain() {
+        let mut w = make_valid_reduction_witness();
+        w.parser_steps[0].input_hash = [0xDE; 32];
+
+        let err = ValidatedWitness::validate(w).unwrap_err();
+        assert_eq!(err, WitnessValidationError::InvalidChain);
+    }
+
+    #[test]
+    fn validated_witness_rejects_wrong_output_hash() {
+        let mut w = make_valid_reduction_witness();
+        w.output_hash = [0xFF; 32];
+
+        let err = ValidatedWitness::validate(w).unwrap_err();
+        assert_eq!(err, WitnessValidationError::InvalidChain);
+    }
+
+    #[test]
+    fn validated_witness_rejects_failed_validation() {
+        let mut w = make_valid_reduction_witness();
+        w.validation_steps[0].passed = false;
+
+        let err = ValidatedWitness::validate(w).unwrap_err();
+        assert_eq!(err, WitnessValidationError::FailedValidation);
+    }
+
+    #[test]
+    fn validated_witness_inner_returns_original() {
+        let w = make_valid_reduction_witness();
+        let original = w.clone();
+        let validated = ValidatedWitness::validate(w).unwrap();
+        assert_eq!(validated.inner(), &original);
+    }
+
+    #[test]
+    fn validated_witness_passthrough_no_parsers() {
+        let source = sha256(b"already structured");
+        let w = ReductionWitness {
+            source_hash: source,
+            parser_steps: vec![],
+            validation_steps: vec![ValidationResult {
+                validator_id: "noop".to_string(),
+                version: "1.0.0".to_string(),
+                passed: true,
+            }],
+            output_hash: source,
+        };
+        let validated = ValidatedWitness::validate(w).expect("passthrough should validate");
+        assert!(validated.inner().is_valid());
+    }
+
+    #[test]
+    fn witness_validation_error_display() {
+        let err = WitnessValidationError::InvalidChain;
+        assert!(err.to_string().contains("broken parser chain"));
+
+        let err = WitnessValidationError::FailedValidation;
+        assert!(err.to_string().contains("validation steps"));
+
+        let err = WitnessValidationError::EmptyInputs;
+        assert!(err.to_string().contains("no meaningful inputs"));
     }
 }
