@@ -18,6 +18,7 @@ use ring::rand::SystemRandom;
 use ring::signature::Ed25519KeyPair;
 use serde::Serialize;
 
+mod bench;
 mod build;
 mod classify;
 mod cli;
@@ -1071,6 +1072,8 @@ fn run_help() {
     println!("  nucleus-claude-hook --help        This message");
     println!("  nucleus-claude-hook --version     Show version");
     println!("  nucleus-claude-hook --exit-codes  Print exit code protocol documentation");
+    println!("  nucleus-claude-hook --benchmark   Measure hook latency (p50/p95/p99)");
+    println!("    --iterations N                  Number of iterations (default: 100)");
     println!();
     println!("PROFILES (set NUCLEUS_PROFILE env var):");
     for (name, desc) in PROFILE_DESCRIPTIONS {
@@ -1082,6 +1085,7 @@ fn run_help() {
     println!("  NUCLEUS_COMPARTMENT        Compartment: research, draft, execute, breakglass");
     println!("  NUCLEUS_FAIL_CLOSED        Set to 1: infrastructure errors block (CISO mode)");
     println!("  NUCLEUS_REQUIRE_MANIFESTS  Set to 1: deny MCP tools without manifests");
+    println!("  NUCLEUS_TIMING             Set to 1: emit phase latency breakdown to stderr");
     println!("  NUCLEUS_AUTONOMY_CEILING   Org cap: production, sandbox (default: unrestricted)");
     println!();
     println!("COMPARTMENTS:");
@@ -1218,6 +1222,10 @@ fn main() {
         }
         Ok(cli::CliCommand::ExitCodes) => {
             exit_codes::ExitCode::print_docs();
+            return;
+        }
+        Ok(cli::CliCommand::Benchmark { iterations }) => {
+            bench::run_benchmark(bench::BenchConfig { iterations });
             return;
         }
         Err(e) => {
@@ -1599,6 +1607,9 @@ fn main() {
         }
     }
 
+    let timing_enabled = std::env::var("NUCLEUS_TIMING").as_deref() == Ok("1");
+    let t_profile_start = std::time::Instant::now();
+
     let subject = extract_subject(&input.tool_name, &input.tool_input);
     let profile_name = default_profile_name();
     let perms = resolve_profile(&profile_name).unwrap_or_else(|| {
@@ -1606,7 +1617,10 @@ fn main() {
         PermissionLattice::safe_pr_fixer()
     });
 
+    let t_profile = t_profile_start.elapsed();
+
     // Load session state — detect tamper (social engineering state deletion)
+    let t_session_start = std::time::Instant::now();
     let (mut session, is_first_invocation) = match load_session(&input.session_id) {
         SessionLoad::Fresh(s) => (s, true),
         SessionLoad::Loaded(s) => (s, false),
@@ -1626,6 +1640,7 @@ fn main() {
             exit_codes::ExitCode::Deny.exit();
         }
     };
+    let t_session = t_session_start.elapsed();
     if session.profile.is_empty() {
         session.profile = profile_name.clone();
     }
@@ -1836,6 +1851,7 @@ fn main() {
         _ => effective_perms,
     };
 
+    let t_kernel_start = std::time::Instant::now();
     let mut kernel = Kernel::new(effective_perms);
     kernel.enable_flow_graph();
 
@@ -1981,6 +1997,8 @@ fn main() {
     // This means file reads and web fetches are independent branches —
     // a write only inherits adversarial taint if web content actually exists
     // in the session. If you never fetch a URL, writes remain untainted.
+    let t_kernel_build = t_kernel_start.elapsed();
+    let t_replay_start = std::time::Instant::now();
     let mut leaves = LeafTracker::default();
     for (op_str, subj) in &session.allowed_ops {
         if let Ok(op) = Operation::try_from(op_str.as_str()) {
@@ -1998,10 +2016,13 @@ fn main() {
     // Make the actual decision using the causal DAG.
     // The current operation's parents come from the leaf tracker —
     // actions depend on all source categories, sources are independent.
+    let t_replay = t_replay_start.elapsed();
+    let t_decide_start = std::time::Instant::now();
     let obs_kind = operation_to_node_kind(operation);
     let parents = leaves.parents_for(obs_kind);
     let (decision, _token) = kernel.decide_with_parents(operation, &subject, &parents);
     let exposure_count = decision.exposure_transition.post_count;
+    let t_decide = t_decide_start.elapsed();
 
     // Get or create the session's signing key.
     // Ephemeral per session — generated once, persisted in session state.
@@ -2036,6 +2057,7 @@ fn main() {
 
     // Build a receipt from the flow graph's action node (if available).
     // The receipt captures the causal chain and verdict.
+    let t_receipt_start = std::time::Instant::now();
     let flow_receipt = decision.flow_node_id.and_then(|node_id| {
         kernel.flow_graph().and_then(|graph| {
             let action_node = graph.get(node_id)?;
@@ -2071,6 +2093,8 @@ fn main() {
             Some(receipt)
         })
     });
+
+    let t_receipt = t_receipt_start.elapsed();
 
     // Update chain head hash and persist receipt if produced.
     if let Some(ref receipt) = flow_receipt {
@@ -2175,6 +2199,22 @@ fn main() {
             ))
         }
     };
+
+    // NUCLEUS_TIMING=1: emit phase breakdown to stderr (#522)
+    if timing_enabled {
+        let total_ms = start_time.elapsed().as_secs_f64() * 1000.0;
+        eprintln!(
+            "nucleus-timing: total={:.2}ms profile={:.3}ms session={:.3}ms kernel={:.3}ms replay={:.3}ms decide={:.3}ms receipt={:.3}ms obs={}",
+            total_ms,
+            t_profile.as_secs_f64() * 1000.0,
+            t_session.as_secs_f64() * 1000.0,
+            t_kernel_build.as_secs_f64() * 1000.0,
+            t_replay.as_secs_f64() * 1000.0,
+            t_decide.as_secs_f64() * 1000.0,
+            t_receipt.as_secs_f64() * 1000.0,
+            session.flow_observations.len(),
+        );
+    }
 
     // Log to stderr
     let verdict_str = output.permission_decision();
