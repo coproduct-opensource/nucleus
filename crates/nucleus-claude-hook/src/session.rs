@@ -1510,6 +1510,63 @@ pub(crate) fn handle_user_prompt_submit(input: &crate::protocol::HookInput) {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// Cross-session chain linking (#942)
+// ---------------------------------------------------------------------------
+
+/// Find the most recent prior session and return its chain head hash (#942).
+///
+/// Creates a timeline-linked chain across independent sessions (not spawned
+/// sub-agents, which use NUCLEUS_PARENT_SESSION instead).
+pub(crate) fn find_prior_session_chain(current_session_id: &str) -> Option<(String, String)> {
+    let dir = session_dir();
+    let entries = std::fs::read_dir(&dir).ok()?;
+
+    let current_safe = sanitize_session_id(current_session_id);
+    let mut best: Option<(String, u64, [u8; 32])> = None;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let filename = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        if filename == current_safe {
+            continue;
+        }
+
+        let mtime = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let contents = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let state: SessionState = match serde_json::from_str(&contents) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        if state.chain_head_hash == [0u8; 32] {
+            continue;
+        }
+
+        match &best {
+            Some((_, best_mtime, _)) if mtime <= *best_mtime => {}
+            _ => {
+                best = Some((filename.to_string(), mtime, state.chain_head_hash));
+            }
+        }
+    }
+
+    best.map(|(sid, _, hash)| (sid, hex::encode(hash)))
+}
+
+// ---------------------------------------------------------------------------
 // Child provenance verification (#955)
 // ---------------------------------------------------------------------------
 
