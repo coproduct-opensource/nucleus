@@ -129,6 +129,20 @@ pub enum RegistryError {
     /// I/O error reading a directory or file.
     #[cfg(feature = "serde")]
     IoError { path: String, message: String },
+    /// WASM compilation or pre-compilation lookup failed.
+    #[cfg(feature = "wasm-sandbox")]
+    CompileError(String),
+    /// WASM execution failed.
+    #[cfg(feature = "wasm-sandbox")]
+    ExecutionError(String),
+    /// The actual content hash of WASM bytes doesn't match the declared
+    /// `build_hash` — the binary has been tampered with or is the wrong version.
+    #[cfg(feature = "wasm-sandbox")]
+    HashMismatch {
+        id: String,
+        declared: [u8; 32],
+        actual: [u8; 32],
+    },
 }
 
 impl fmt::Display for RegistryError {
@@ -154,6 +168,23 @@ impl fmt::Display for RegistryError {
             Self::IoError { path, message } => {
                 write!(f, "I/O error at '{path}': {message}")
             }
+            #[cfg(feature = "wasm-sandbox")]
+            Self::CompileError(msg) => write!(f, "compile error: {msg}"),
+            #[cfg(feature = "wasm-sandbox")]
+            Self::ExecutionError(msg) => write!(f, "execution error: {msg}"),
+            #[cfg(feature = "wasm-sandbox")]
+            Self::HashMismatch {
+                id,
+                declared,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "hash mismatch for '{id}': declared {} vs actual {}",
+                    hex_encode(declared),
+                    hex_encode(actual),
+                )
+            }
         }
     }
 }
@@ -172,10 +203,15 @@ impl std::error::Error for RegistryError {}
 ///
 /// Re-registering the exact same declaration (same ID, same hash) is a no-op,
 /// which makes the registry idempotent.
-#[derive(Debug, Clone, Default)]
+#[cfg_attr(not(feature = "wasm-sandbox"), derive(Clone))]
+#[derive(Debug, Default)]
 pub struct ParserRegistry {
     parsers: BTreeMap<String, ParserDeclaration>,
     transforms: BTreeMap<String, TransformDeclaration>,
+    /// Compiled WASM parsers, keyed by parser ID. Only populated when
+    /// the `wasm-sandbox` feature is enabled and `compile_parser` is called.
+    #[cfg(feature = "wasm-sandbox")]
+    compiled_parsers: BTreeMap<String, LiveParser>,
 }
 
 impl ParserRegistry {
@@ -335,6 +371,112 @@ impl ParserRegistry {
         }
 
         Ok(count)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WASM-backed registry (wasm-sandbox feature)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A compiled, content-addressed parser ready for execution.
+///
+/// Bridges [`ParserDeclaration`] (metadata) with
+/// [`crate::wasm_sandbox::CompiledParser`] (executable code).
+#[cfg(feature = "wasm-sandbox")]
+pub struct LiveParser {
+    /// The declaration this compiled parser corresponds to.
+    pub declaration: ParserDeclaration,
+    /// The compiled WASM module, ready for execution.
+    pub compiled: crate::wasm_sandbox::CompiledParser,
+}
+
+#[cfg(feature = "wasm-sandbox")]
+impl fmt::Debug for LiveParser {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LiveParser")
+            .field("parser_id", &self.declaration.parser_id)
+            .field("version", &self.declaration.version)
+            .field("content_hash", &self.declaration.build_hash)
+            .finish()
+    }
+}
+
+#[cfg(feature = "wasm-sandbox")]
+impl ParserRegistry {
+    /// Compile and register a parser from raw WASM bytes.
+    ///
+    /// 1. SHA-256 hashes the bytes (via [`crate::wasm_sandbox::ParserSandbox`])
+    /// 2. Verifies the hash matches the declaration's `build_hash`
+    /// 3. Caches the compiled module for subsequent `execute_parser` calls
+    ///
+    /// Returns the content hash on success.
+    pub fn compile_parser(
+        &mut self,
+        sandbox: &crate::wasm_sandbox::ParserSandbox,
+        parser_id: &str,
+        wasm_bytes: &[u8],
+    ) -> Result<[u8; 32], RegistryError> {
+        let decl = self.parsers.get(parser_id).ok_or_else(|| {
+            RegistryError::CompileError(format!("parser '{parser_id}' not registered"))
+        })?;
+
+        let compiled = sandbox.compile(wasm_bytes).map_err(|e| {
+            RegistryError::CompileError(format!("WASM compile failed for '{parser_id}': {e}"))
+        })?;
+
+        let actual_hash = *compiled.content_hash();
+        if actual_hash != decl.build_hash {
+            return Err(RegistryError::HashMismatch {
+                id: parser_id.to_string(),
+                declared: decl.build_hash,
+                actual: actual_hash,
+            });
+        }
+
+        let live = LiveParser {
+            declaration: decl.clone(),
+            compiled,
+        };
+        self.compiled_parsers.insert(parser_id.to_string(), live);
+
+        Ok(actual_hash)
+    }
+
+    /// Execute a previously compiled parser on the given input.
+    ///
+    /// Returns the raw output bytes. The caller is responsible for hashing
+    /// the output and recording it in a [`crate::witness::WitnessBundle`].
+    pub fn execute_parser(
+        &self,
+        sandbox: &crate::wasm_sandbox::ParserSandbox,
+        parser_id: &str,
+        input: &[u8],
+        fuel_limit: u64,
+    ) -> Result<Vec<u8>, RegistryError> {
+        let live = self.compiled_parsers.get(parser_id).ok_or_else(|| {
+            RegistryError::CompileError(format!(
+                "parser '{parser_id}' not compiled — call compile_parser first"
+            ))
+        })?;
+
+        sandbox
+            .execute(&live.compiled, input, fuel_limit)
+            .map_err(|e| {
+                RegistryError::ExecutionError(format!(
+                    "WASM execution failed for '{parser_id}': {e}"
+                ))
+            })
+    }
+
+    /// Look up a compiled (live) parser by ID.
+    #[cfg(feature = "wasm-sandbox")]
+    pub fn get_live_parser(&self, parser_id: &str) -> Option<&LiveParser> {
+        self.compiled_parsers.get(parser_id)
+    }
+
+    /// Number of compiled (live) parsers ready for execution.
+    pub fn live_parser_count(&self) -> usize {
+        self.compiled_parsers.len()
     }
 }
 
@@ -763,5 +905,156 @@ is_deterministic = true
         assert!(!serialized.contains("test_corpus_hash"));
         let deserialized: ParserDeclaration = toml::from_str(&serialized).unwrap();
         assert_eq!(decl, deserialized);
+    }
+
+    // -----------------------------------------------------------------
+    // WASM-backed registry tests (#914)
+    // -----------------------------------------------------------------
+
+    #[cfg(feature = "wasm-sandbox")]
+    mod wasm_tests {
+        use super::*;
+        use crate::wasm_sandbox::ParserSandbox;
+        use sha2::{Digest, Sha256};
+
+        /// Identity parser WAT — copies input to output unchanged.
+        fn identity_wat() -> &'static str {
+            r#"
+            (module
+                (memory (export "memory") 1)
+                (global $bump (mut i32) (i32.const 1024))
+                (func (export "alloc") (param $len i32) (result i32)
+                    (local $ptr i32)
+                    (local.set $ptr (global.get $bump))
+                    (global.set $bump (i32.add (global.get $bump) (local.get $len)))
+                    (local.get $ptr))
+                (func (export "parse") (param $ptr i32) (param $len i32) (result i64)
+                    (local $out i32)
+                    (local.set $out (global.get $bump))
+                    (global.set $bump (i32.add (global.get $bump) (local.get $len)))
+                    (memory.copy (local.get $out) (local.get $ptr) (local.get $len))
+                    (i64.or
+                        (i64.shl (i64.extend_i32_u (local.get $out)) (i64.const 32))
+                        (i64.extend_i32_u (local.get $len))))
+            )
+            "#
+        }
+
+        fn wasm_hash(wasm_bytes: &[u8]) -> [u8; 32] {
+            let mut hasher = Sha256::new();
+            hasher.update(wasm_bytes);
+            let result = hasher.finalize();
+            let mut hash = [0u8; 32];
+            hash.copy_from_slice(&result);
+            hash
+        }
+
+        #[test]
+        fn compile_and_execute_via_registry() {
+            let sandbox = ParserSandbox::new();
+            let wasm = wat::parse_str(identity_wat()).unwrap();
+            let hash = wasm_hash(&wasm);
+
+            let mut reg = ParserRegistry::new();
+            reg.register_parser(ParserDeclaration {
+                parser_id: "identity".into(),
+                version: "1.0.0".into(),
+                build_hash: hash,
+                input_format: "bytes".into(),
+                output_schema: "bytes".into(),
+                is_deterministic: true,
+                test_corpus_hash: None,
+            })
+            .unwrap();
+
+            let returned_hash = reg.compile_parser(&sandbox, "identity", &wasm).unwrap();
+            assert_eq!(returned_hash, hash);
+            assert_eq!(reg.live_parser_count(), 1);
+
+            let output = reg
+                .execute_parser(&sandbox, "identity", b"hello", 100_000)
+                .unwrap();
+            assert_eq!(output, b"hello");
+        }
+
+        #[test]
+        fn compile_rejects_hash_mismatch() {
+            let sandbox = ParserSandbox::new();
+            let wasm = wat::parse_str(identity_wat()).unwrap();
+
+            let mut reg = ParserRegistry::new();
+            reg.register_parser(ParserDeclaration {
+                parser_id: "tampered".into(),
+                version: "1.0.0".into(),
+                build_hash: [0xAA; 32], // wrong hash
+                input_format: "bytes".into(),
+                output_schema: "bytes".into(),
+                is_deterministic: true,
+                test_corpus_hash: None,
+            })
+            .unwrap();
+
+            let err = reg.compile_parser(&sandbox, "tampered", &wasm).unwrap_err();
+            assert!(
+                matches!(err, RegistryError::HashMismatch { .. }),
+                "expected HashMismatch, got: {err}"
+            );
+        }
+
+        #[test]
+        fn compile_rejects_unregistered_parser() {
+            let sandbox = ParserSandbox::new();
+            let wasm = wat::parse_str(identity_wat()).unwrap();
+
+            let mut reg = ParserRegistry::new();
+            let err = reg
+                .compile_parser(&sandbox, "nonexistent", &wasm)
+                .unwrap_err();
+            assert!(
+                matches!(err, RegistryError::CompileError(_)),
+                "expected CompileError, got: {err}"
+            );
+        }
+
+        #[test]
+        fn execute_rejects_uncompiled_parser() {
+            let sandbox = ParserSandbox::new();
+            let reg = ParserRegistry::new();
+            let err = reg
+                .execute_parser(&sandbox, "missing", b"input", 100_000)
+                .unwrap_err();
+            assert!(
+                matches!(err, RegistryError::CompileError(_)),
+                "expected CompileError, got: {err}"
+            );
+        }
+
+        #[test]
+        fn determinism_via_registry() {
+            let sandbox = ParserSandbox::new();
+            let wasm = wat::parse_str(identity_wat()).unwrap();
+            let hash = wasm_hash(&wasm);
+
+            let mut reg = ParserRegistry::new();
+            reg.register_parser(ParserDeclaration {
+                parser_id: "det_test".into(),
+                version: "1.0.0".into(),
+                build_hash: hash,
+                input_format: "bytes".into(),
+                output_schema: "bytes".into(),
+                is_deterministic: true,
+                test_corpus_hash: None,
+            })
+            .unwrap();
+            reg.compile_parser(&sandbox, "det_test", &wasm).unwrap();
+
+            let out1 = reg
+                .execute_parser(&sandbox, "det_test", b"abc", 100_000)
+                .unwrap();
+            let out2 = reg
+                .execute_parser(&sandbox, "det_test", b"abc", 100_000)
+                .unwrap();
+            assert_eq!(out1, out2, "same input must produce identical output");
+        }
     }
 }
