@@ -100,8 +100,6 @@ pub mod uninhabitable_state;
 
 /// Kernel decision engine — complete mediation with monotone session state.
 #[cfg(all(feature = "serde", feature = "crypto"))]
-/// Platform adapters — I/O abstraction for cross-platform deployment.
-pub mod adapter;
 pub mod delegation;
 pub mod dropout;
 /// Bash command egress analysis — detect network exfiltration.
