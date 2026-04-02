@@ -67,20 +67,19 @@ impl HookOutput {
         &self.hook_specific_output.permission_decision
     }
 
-    /// Allow with optional compartment context injected into Claude's prompt.
-    pub fn allow_with_context(compartment: Option<&str>) -> Self {
+    /// Allow with optional security context injected into Claude's prompt.
+    ///
+    /// When `context` is Some, the string is set as `additionalContext` in the
+    /// hook response. Claude Code prepends this to the model's context before
+    /// the tool executes, informing the model of compartment restrictions and
+    /// taint status (#842).
+    pub fn allow_with_context(context: Option<String>) -> Self {
         Self {
             hook_specific_output: HookSpecificOutput {
                 hook_event_name: "PreToolUse".to_string(),
                 permission_decision: "allow".to_string(),
                 permission_decision_reason: None,
-                additional_context: compartment.map(|c| {
-                    format!(
-                        "[nucleus security context: compartment={c}] \
-                         You are operating in {c} mode. Your capabilities \
-                         are restricted to this compartment's permissions."
-                    )
-                }),
+                additional_context: context,
             },
         }
     }
