@@ -437,6 +437,7 @@ mod tests {
             pending_user_bash: false,
             pending_source_hashes: vec![],
             pending_parser_steps: vec![],
+            deterministic_binds: vec![],
         }
     }
 
