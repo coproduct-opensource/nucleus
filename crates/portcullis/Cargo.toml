@@ -99,5 +99,9 @@ name = "kernel_egress"
 required-features = ["spec"]
 
 [[test]]
+name = "kernel_policy"
+required-features = ["spec"]
+
+[[test]]
 name = "kernel_token"
 required-features = ["crypto"]
