@@ -1362,6 +1362,26 @@ fn main() {
         }
     };
 
+    // Export public key on first invocation (#901) so external verifiers
+    // can check receipt signatures without access to the private key.
+    if is_first_invocation {
+        if let Some(ref key) = signing_key {
+            use ring::signature::KeyPair;
+            let pub_bytes = key.public_key().as_ref();
+            let safe_id = sanitize_session_id(&input.session_id);
+            let receipts_dir = session_dir().join("receipts");
+            std::fs::create_dir_all(&receipts_dir).ok();
+            let pub_path = receipts_dir.join(format!("{safe_id}.pub"));
+            if std::fs::write(&pub_path, hex::encode(pub_bytes)).is_ok() {
+                eprintln!(
+                    "nucleus: public key exported to {} ({} bytes)",
+                    pub_path.display(),
+                    pub_bytes.len()
+                );
+            }
+        }
+    }
+
     // Build a receipt from the flow graph's action node (if available).
     // The receipt captures the causal chain and verdict.
     let t_receipt_start = std::time::Instant::now();
