@@ -64,6 +64,12 @@ pub(crate) struct SessionSummary {
     pub taint: String,
     /// Flow graph observations count.
     pub flow_observations: usize,
+    /// Number of pending source hashes (web content captured but not yet witnessed).
+    pub pending_sources: usize,
+    /// Number of completed WASM parser steps.
+    pub parser_steps: usize,
+    /// Number of deterministic binds (model-free field populations).
+    pub deterministic_binds: usize,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -175,6 +181,9 @@ fn collect_sessions(session_dir: &Path) -> Vec<SessionSummary> {
                     receipt_chain_intact,
                     taint,
                     flow_observations: state.flow_observations.len(),
+                    pending_sources: state.pending_source_hashes.len(),
+                    parser_steps: state.pending_parser_steps.len(),
+                    deterministic_binds: state.deterministic_binds.len(),
                 });
             }
         }
@@ -403,6 +412,12 @@ fn print_human(s: &NucleusStatus) {
             };
             eprintln!("    Receipts:     {chain_display}");
             eprintln!("    Flow nodes:   {}", sess.flow_observations);
+            if sess.pending_sources > 0 || sess.parser_steps > 0 || sess.deterministic_binds > 0 {
+                eprintln!(
+                    "    Provenance:   {} sources, {} parser steps, {} binds",
+                    sess.pending_sources, sess.parser_steps, sess.deterministic_binds
+                );
+            }
         }
     }
 }
@@ -487,6 +502,9 @@ mod tests {
             receipt_chain_intact: true,
             taint: "CLEAN".into(),
             flow_observations: 3,
+            pending_sources: 0,
+            parser_steps: 0,
+            deterministic_binds: 0,
         };
         let json = serde_json::to_string(&summary).unwrap();
         assert!(json.contains("\"taint\":\"CLEAN\""));

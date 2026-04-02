@@ -419,6 +419,49 @@ const SKILL_TEMPLATES: &[(&str, &str)] = &[
          \n\
          Clearance is auditable and cannot be revoked.\n",
     ),
+    (
+        "provenance",
+        "---\n\
+         name: provenance\n\
+         description: Show per-field provenance metadata for the current session\n\
+         ---\n\
+         \n\
+         The user wants to see provenance information for the current session.\n\
+         \n\
+         ## What to report\n\
+         \n\
+         1. **Session taint status**: Is the session web-tainted? How many flow observations?\n\
+         2. **Pending source hashes**: List all captured content hashes (from WebFetch, etc.)\n\
+         3. **Parser steps**: List completed WASM parser reductions with input/output hashes\n\
+         4. **Deterministic binds**: List fields populated via DeterministicBind (model-free)\n\
+         5. **Derivation summary**: For each data source used in this session:\n\
+         \n\
+         ```\n\
+         Source: https://example.com/data.json\n\
+           Captured: sha256:abc1... at 2026-04-02T17:00:00Z\n\
+           Parser: jq (sha256:def2...)\n\
+           Output: sha256:ghi3...\n\
+           Derivation: Deterministic\n\
+         \n\
+         Source: (model reasoning)\n\
+           Derivation: AIDerived — no verification possible\n\
+         ```\n\
+         \n\
+         ## How to get the data\n\
+         \n\
+         Read the nucleus session state from the status line output.\n\
+         The session file at ~/.nucleus/sessions/{session_id}.json contains:\n\
+         - pending_source_hashes: [{content_hash, tool_name, captured_at, witnessed}]\n\
+         - pending_parser_steps: [{input_hash, parser_id, parser_hash, output_hash}]\n\
+         - deterministic_binds: [{field_name, output_hash, parser_id}]\n\
+         - web_tainted: bool\n\
+         - flow_observations: [(kind, label, subject)]\n\
+         \n\
+         ## Tone\n\
+         \n\
+         Be precise and factual. Use the hash prefixes (first 8 hex chars) for readability.\n\
+         Clearly distinguish Deterministic (provable) from AIDerived (honest label only).\n",
+    ),
 ];
 
 /// Scaffold `.claude/skills/` with Nucleus compartment management skills.
@@ -816,7 +859,7 @@ mod tests {
         fs::create_dir_all(&claude_dir).unwrap();
 
         let (created, skipped) = scaffold_claude_skills(&claude_dir);
-        assert_eq!(created, 3);
+        assert_eq!(created, SKILL_TEMPLATES.len() as u32);
         assert_eq!(skipped, 0);
 
         // All skill directories and SKILL.md files exist.
@@ -846,7 +889,7 @@ mod tests {
         fs::write(skill_dir.join("SKILL.md"), "custom skill").unwrap();
 
         let (created, skipped) = scaffold_claude_skills(&claude_dir);
-        assert_eq!(created, 2);
+        assert_eq!(created, SKILL_TEMPLATES.len() as u32 - 1);
         assert_eq!(skipped, 1);
 
         // Original content preserved.
