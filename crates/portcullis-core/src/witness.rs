@@ -407,6 +407,52 @@ impl WitnessBundle {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ReductionWitness - proof that content was processed through a parser chain
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Proof that raw content was reduced through a deterministic parser chain
+/// before promotion to the verified lane.
+///
+/// Without a valid `ReductionWitness`, promotion of non-deterministic data
+/// (AIDerived, Mixed, OpaqueExternal) is denied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReductionWitness {
+    /// SHA-256 hash of the raw input content (content-addressed).
+    pub source_hash: [u8; 32],
+    /// Parser steps applied to reduce the raw input.
+    pub parser_steps: Vec<ParserStep>,
+    /// Validation results from all validators applied to the output.
+    pub validation_steps: Vec<ValidationResult>,
+    /// SHA-256 hash of the final reduced output.
+    pub output_hash: [u8; 32],
+}
+
+impl ReductionWitness {
+    /// Check whether this reduction witness is valid.
+    ///
+    /// A witness is valid when:
+    /// 1. The parser chain is intact (each step's output feeds the next input).
+    /// 2. The last parser step's output matches `output_hash`.
+    /// 3. All validation results passed.
+    pub fn is_valid(&self) -> bool {
+        let mut current_hash = self.source_hash;
+        for step in &self.parser_steps {
+            if step.input_hash != current_hash {
+                return false;
+            }
+            current_hash = step.output_hash;
+        }
+        if current_hash != self.output_hash {
+            return false;
+        }
+        if self.validation_steps.iter().any(|v| !v.passed) {
+            return false;
+        }
+        true
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -909,5 +955,104 @@ mod tests {
         assert!(msg.contains("evil"));
         assert!(msg.contains("step 0"));
         assert!(msg.contains("known input hash"));
+    }
+
+    // ReductionWitness tests (issue #860)
+
+    fn make_valid_reduction_witness() -> ReductionWitness {
+        let source = sha256(b"raw web content");
+        let parsed = sha256(b"parsed json");
+        ReductionWitness {
+            source_hash: source,
+            parser_steps: vec![ParserStep {
+                parser_id: "json_parser".to_string(),
+                parser_version: "1.0.0".to_string(),
+                parser_hash: sha256(b"json_parser_binary"),
+                input_hash: source,
+                output_hash: parsed,
+            }],
+            validation_steps: vec![ValidationResult {
+                validator_id: "schema_check".to_string(),
+                version: "1.0.0".to_string(),
+                passed: true,
+            }],
+            output_hash: parsed,
+        }
+    }
+
+    #[test]
+    fn valid_reduction_witness() {
+        let w = make_valid_reduction_witness();
+        assert!(w.is_valid());
+    }
+
+    #[test]
+    fn reduction_witness_broken_chain() {
+        let mut w = make_valid_reduction_witness();
+        w.parser_steps[0].input_hash = [0xDE; 32];
+        assert!(!w.is_valid());
+    }
+
+    #[test]
+    fn reduction_witness_wrong_output() {
+        let mut w = make_valid_reduction_witness();
+        w.output_hash = [0xFF; 32];
+        assert!(!w.is_valid());
+    }
+
+    #[test]
+    fn reduction_witness_failed_validation() {
+        let mut w = make_valid_reduction_witness();
+        w.validation_steps[0].passed = false;
+        assert!(!w.is_valid());
+    }
+
+    #[test]
+    fn reduction_witness_passthrough_no_parsers() {
+        let source = sha256(b"already structured");
+        let w = ReductionWitness {
+            source_hash: source,
+            parser_steps: vec![],
+            validation_steps: vec![ValidationResult {
+                validator_id: "noop".to_string(),
+                version: "1.0.0".to_string(),
+                passed: true,
+            }],
+            output_hash: source,
+        };
+        assert!(w.is_valid());
+    }
+
+    #[test]
+    fn reduction_witness_multi_step_chain() {
+        let source = sha256(b"raw html");
+        let stage1 = sha256(b"stage 1");
+        let stage2 = sha256(b"stage 2");
+        let w = ReductionWitness {
+            source_hash: source,
+            parser_steps: vec![
+                ParserStep {
+                    parser_id: "html_parser".to_string(),
+                    parser_version: "1.0.0".to_string(),
+                    parser_hash: sha256(b"html_parser_binary"),
+                    input_hash: source,
+                    output_hash: stage1,
+                },
+                ParserStep {
+                    parser_id: "text_extractor".to_string(),
+                    parser_version: "1.0.0".to_string(),
+                    parser_hash: sha256(b"text_extractor_binary"),
+                    input_hash: stage1,
+                    output_hash: stage2,
+                },
+            ],
+            validation_steps: vec![ValidationResult {
+                validator_id: "schema_check".to_string(),
+                version: "1.0.0".to_string(),
+                passed: true,
+            }],
+            output_hash: stage2,
+        };
+        assert!(w.is_valid());
     }
 }

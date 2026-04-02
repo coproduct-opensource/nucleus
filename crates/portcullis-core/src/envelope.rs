@@ -394,6 +394,7 @@ impl RowEnvelope {
         &mut self,
         field_name: &str,
         request: &crate::promotion::PromotionRequest,
+        witness: Option<&crate::witness::ReductionWitness>,
         now: u64,
     ) -> Result<crate::promotion::PromotionResult, PromotionApiError> {
         let field = self
@@ -401,8 +402,8 @@ impl RowEnvelope {
             .get_mut(field_name)
             .ok_or_else(|| PromotionApiError::FieldNotFound(field_name.to_string()))?;
 
-        let result =
-            crate::promotion::promote(field, request, now).map_err(PromotionApiError::Promotion)?;
+        let result = crate::promotion::promote(field, request, witness, now)
+            .map_err(PromotionApiError::Promotion)?;
 
         // Re-derive row-level derivation class after mutation.
         self.row_derivation_class = self.compute_derivation_class();
@@ -429,6 +430,7 @@ impl RowEnvelope {
     pub fn promote_all(
         &mut self,
         request: &crate::promotion::PromotionRequest,
+        witness: Option<&crate::witness::ReductionWitness>,
         now: u64,
     ) -> Result<Vec<(String, crate::promotion::PromotionResult)>, PromotionApiError> {
         // Collect field names and their current derivation classes to avoid
@@ -453,7 +455,7 @@ impl RowEnvelope {
             per_field_request.target_field = name.clone();
             per_field_request.from_derivation = current_derivation;
 
-            let result = crate::promotion::promote(field, &per_field_request, now)
+            let result = crate::promotion::promote(field, &per_field_request, witness, now)
                 .map_err(PromotionApiError::Promotion)?;
             results.push((name, result));
         }
@@ -999,6 +1001,33 @@ mod tests {
     // ═══════════════════════════════════════════════════════════════════
 
     use crate::promotion::{PromotionRequest, PromotionScope};
+    use crate::witness::{ParserStep, ReductionWitness, ValidationResult};
+
+    fn envelope_sha256(data: &[u8]) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(data).into()
+    }
+
+    fn make_valid_witness() -> ReductionWitness {
+        let source = envelope_sha256(b"raw web content");
+        let parsed = envelope_sha256(b"parsed json");
+        ReductionWitness {
+            source_hash: source,
+            parser_steps: vec![ParserStep {
+                parser_id: "json_parser".to_string(),
+                parser_version: "1.0.0".to_string(),
+                parser_hash: envelope_sha256(b"json_parser_binary"),
+                input_hash: source,
+                output_hash: parsed,
+            }],
+            validation_steps: vec![ValidationResult {
+                validator_id: "schema_check".to_string(),
+                version: "1.0.0".to_string(),
+                passed: true,
+            }],
+            output_hash: parsed,
+        }
+    }
 
     fn base_promotion_request(field: &str, from: DerivationClass) -> PromotionRequest {
         PromotionRequest {
@@ -1030,8 +1059,9 @@ mod tests {
         assert_eq!(row.row_derivation_class, DerivationClass::AIDerived);
 
         let req = base_promotion_request("gen", DerivationClass::AIDerived);
+        let witness = make_valid_witness();
         let result = row
-            .promote_field("gen", &req, 2000)
+            .promote_field("gen", &req, Some(&witness), 2000)
             .expect("should succeed");
 
         assert!(result.promoted);
@@ -1062,7 +1092,9 @@ mod tests {
         let mut row = RowEnvelope::new("r1".into(), "t".into(), fields, None, "v1".into(), 1000);
 
         let req = base_promotion_request("nonexistent", DerivationClass::AIDerived);
-        let err = row.promote_field("nonexistent", &req, 2000).unwrap_err();
+        let err = row
+            .promote_field("nonexistent", &req, None, 2000)
+            .unwrap_err();
         assert_eq!(err, PromotionApiError::FieldNotFound("nonexistent".into()),);
     }
 
@@ -1084,7 +1116,10 @@ mod tests {
         assert_eq!(row.row_derivation_class, DerivationClass::Mixed);
 
         let req = base_promotion_request("ignored", DerivationClass::AIDerived);
-        let results = row.promote_all(&req, 3000).expect("should succeed");
+        let witness = make_valid_witness();
+        let results = row
+            .promote_all(&req, Some(&witness), 3000)
+            .expect("should succeed");
 
         // Two fields promoted (AIDerived and Mixed); Deterministic skipped.
         assert_eq!(results.len(), 2);
@@ -1135,7 +1170,8 @@ mod tests {
         assert!(row.is_verified_ready());
 
         let req = base_promotion_request("gen", DerivationClass::AIDerived);
-        row.promote_field("gen", &req, 2000)
+        let witness = make_valid_witness();
+        row.promote_field("gen", &req, Some(&witness), 2000)
             .expect("should succeed");
 
         // After promotion: HumanPromoted with witness_bundle_id + promoted_by => verified-ready.
@@ -1160,7 +1196,9 @@ mod tests {
         let mut row = RowEnvelope::new("r4".into(), "t".into(), fields, None, "v1".into(), 1000);
 
         let req = base_promotion_request("ignored", DerivationClass::AIDerived);
-        row.promote_all(&req, 4000).expect("should succeed");
+        let witness = make_valid_witness();
+        row.promote_all(&req, Some(&witness), 4000)
+            .expect("should succeed");
 
         // All promoted fields now have witness_bundle_id + promoted_by.
         assert!(row.is_verified_ready());
@@ -1182,7 +1220,7 @@ mod tests {
         let mut row = RowEnvelope::new("r5".into(), "t".into(), fields, None, "v1".into(), 1000);
 
         let req = base_promotion_request("ignored", DerivationClass::HumanPromoted);
-        let results = row.promote_all(&req, 5000).expect("should succeed");
+        let results = row.promote_all(&req, None, 5000).expect("should succeed");
 
         // No fields to promote.
         assert!(results.is_empty());
