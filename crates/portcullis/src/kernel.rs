@@ -782,7 +782,9 @@ impl Kernel {
                         label = result.label;
                     }
                 }
-                graph.modify_label(node_id, label);
+                // Use forced modify since the node may be frozen from a
+                // prior hook invocation's freeze_all() (#947).
+                graph.modify_label_forced(node_id, label);
             }
         }
 

@@ -321,6 +321,12 @@ pub struct FlowGraph {
     /// Most nodes have no field lineage — only nodes that produce structured
     /// output (rows, records) need this annotation.
     field_lineage: HashMap<NodeId, Vec<FieldLineage>>,
+    /// Frozen node IDs whose labels cannot be modified (#947).
+    /// Prevents retroactive taint laundering — once a node is frozen,
+    /// its label is immutable. The only legitimate label change path
+    /// is `modify_label_with_token()` which requires a signed
+    /// `DeclassificationToken`.
+    frozen: BTreeSet<NodeId>,
 }
 
 impl FlowGraph {
@@ -334,6 +340,7 @@ impl FlowGraph {
             compaction_log: Vec::new(),
             quarantine_releases: Vec::new(),
             field_lineage: HashMap::new(),
+            frozen: BTreeSet::new(),
         }
     }
 
@@ -363,11 +370,50 @@ impl FlowGraph {
     ///
     /// Only modifies the label — does not change the node's kind, parents,
     /// or operation. Returns the previous label for audit.
+    ///
+    /// **Fails if the node is frozen** (#947). Frozen nodes require
+    /// `modify_label_forced()` with explicit justification (e.g., a signed
+    /// `DeclassificationToken` verified by the caller).
     pub fn modify_label(&mut self, id: NodeId, new_label: IFCLabel) -> Option<IFCLabel> {
+        if self.frozen.contains(&id) {
+            return None;
+        }
         let node = self.nodes.get_mut(id as usize)?.as_mut()?;
         let old = node.label;
         node.label = new_label;
         Some(old)
+    }
+
+    /// Force a label modification on a frozen node (#947).
+    ///
+    /// The caller is responsible for verifying authorization (e.g.,
+    /// checking a signed `DeclassificationToken`). This bypass exists
+    /// because legitimate declassification must still be possible —
+    /// but it's a separate, auditable code path.
+    pub fn modify_label_forced(&mut self, id: NodeId, new_label: IFCLabel) -> Option<IFCLabel> {
+        let node = self.nodes.get_mut(id as usize)?.as_mut()?;
+        let old = node.label;
+        node.label = new_label;
+        Some(old)
+    }
+
+    /// Freeze all currently existing nodes (#947).
+    ///
+    /// After this call, `modify_label()` will return `None` for any
+    /// existing node. Only `modify_label_forced()` can change them.
+    /// New nodes inserted after freeze are NOT frozen — they get
+    /// frozen on the next call to `freeze_all()`.
+    pub fn freeze_all(&mut self) {
+        for id in 1..self.next_id {
+            if self.nodes.get(id as usize).is_some_and(|n| n.is_some()) {
+                self.frozen.insert(id);
+            }
+        }
+    }
+
+    /// Number of frozen nodes.
+    pub fn frozen_count(&self) -> usize {
+        self.frozen.len()
     }
 
     /// Compute the propagated label for a set of causal parents.
