@@ -433,6 +433,7 @@ mod tests {
             last_injected_context_key: None,
             web_tainted: false,
             web_taint_context_injected: false,
+            pending_source_hashes: vec![],
         }
     }
 
