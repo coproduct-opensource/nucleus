@@ -213,6 +213,14 @@ const MAX_GRAPH_NODES: usize = 10_000;
 /// Warn when the graph reaches this fraction of MAX_GRAPH_NODES.
 const GRAPH_WARN_THRESHOLD: usize = MAX_GRAPH_NODES * 8 / 10; // 80%
 
+/// Maximum number of entries in the compaction audit log.
+/// Oldest entries are evicted when this cap is reached.
+const MAX_COMPACTION_LOG: usize = 1000;
+
+/// Maximum number of entries in the quarantine-release audit log.
+/// Oldest entries are evicted when this cap is reached.
+const MAX_QUARANTINE_RELEASES: usize = 1000;
+
 /// Record of a node that was tombstoned during compaction.
 ///
 /// When `maybe_compact()` removes old nodes to cap memory, it preserves
@@ -520,12 +528,25 @@ impl FlowGraph {
                 // the ancestor, we include the compaction record so the
                 // audit trail shows that compaction occurred and what label
                 // (taint) the compacted node carried.
+                //
+                // If the compaction record was evicted (log capped at
+                // MAX_COMPACTION_LOG, #836), synthesize a minimal record
+                // so ancestor traversal still reports the gap.
                 if let Some(record) = self
                     .compaction_log
                     .iter()
                     .find(|r| r.compacted_node_id == nid)
                 {
                     tombstoned.push(record.clone());
+                } else {
+                    // Record evicted from capped log — synthesize a
+                    // placeholder so callers know a gap exists.
+                    tombstoned.push(CompactionRecord {
+                        compacted_node_id: nid,
+                        preserved_label: IFCLabel::default(),
+                        original_parent_count: 0,
+                        compacted_at: 0,
+                    });
                 }
             }
         }
@@ -712,6 +733,24 @@ impl FlowGraph {
                 self.nodes[i] = None;
             }
         }
+
+        // Cap compaction_log — evict oldest entries (#836).
+        if self.compaction_log.len() > MAX_COMPACTION_LOG {
+            let excess = self.compaction_log.len() - MAX_COMPACTION_LOG;
+            self.compaction_log.drain(..excess);
+        }
+
+        // Cap quarantine_releases — evict oldest entries (#836).
+        if self.quarantine_releases.len() > MAX_QUARANTINE_RELEASES {
+            let excess = self.quarantine_releases.len() - MAX_QUARANTINE_RELEASES;
+            self.quarantine_releases.drain(..excess);
+        }
+
+        // Remove field_lineage entries for tombstoned nodes (#836).
+        self.field_lineage.retain(|nid, _| {
+            let idx = *nid as usize;
+            idx < self.nodes.len() && self.nodes[idx].is_some()
+        });
     }
 
     /// Read-only access to the compaction audit log.
@@ -2577,17 +2616,32 @@ mod tests {
     fn compaction_records_preserved_labels() {
         // Verify that when compaction tombstones a node, its label
         // is recorded in the compaction log.
+        //
+        // The web node is inserted close to the keep_from boundary so its
+        // compaction record falls within the retained MAX_COMPACTION_LOG
+        // entries after capping (#836).
         let mut g = FlowGraph::new();
         let now = 1000;
 
-        // Insert a tainted node early (web content has high conf, low integ).
+        // Fill most of the graph first.
+        // keep_from will be count - MAX_GRAPH_NODES/2.
+        // When count = MAX_GRAPH_NODES, keep_from = MAX_GRAPH_NODES/2 = 5000.
+        // We want web node just below keep_from so it gets compacted but its
+        // record is among the last MAX_COMPACTION_LOG entries.
+        // Insert filler up to index ~(keep_from - 500).
+        let filler_count = MAX_GRAPH_NODES / 2 - 500;
+        for _ in 0..filler_count {
+            g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        }
+
+        // Insert the tainted web content node.
         let web = g
             .insert_observation(NodeKind::WebContent, &[], now)
             .unwrap();
         let web_label = g.get(web).unwrap().label;
 
-        // Fill the graph past the compaction limit.
-        for _ in 0..(MAX_GRAPH_NODES + 100) {
+        // Fill past the compaction limit.
+        for _ in 0..(MAX_GRAPH_NODES - filler_count) {
             g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
         }
 
@@ -2600,6 +2654,10 @@ mod tests {
         // But its label should be preserved in the compaction log.
         let log = g.compaction_log();
         assert!(!log.is_empty(), "compaction log should not be empty");
+        assert!(
+            log.len() <= MAX_COMPACTION_LOG,
+            "compaction log should be capped at {MAX_COMPACTION_LOG}"
+        );
 
         let web_record = log.iter().find(|r| r.compacted_node_id == web);
         assert!(
@@ -3225,6 +3283,99 @@ mod tests {
             "field integrity ({:?}) should be >= node integrity ({:?})",
             field_lbl.integrity,
             node_lbl.integrity,
+        );
+    }
+
+    // ── Compaction leak prevention tests (#836) ────────────────────────
+
+    #[test]
+    fn compaction_caps_compaction_log() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        // Fill well past MAX_GRAPH_NODES so compaction fires repeatedly
+        // and generates many compaction_log entries.
+        // Each compaction tombstones ~MAX_GRAPH_NODES/2 nodes, each producing a log entry.
+        // We need enough inserts to exceed MAX_COMPACTION_LOG entries.
+        // After one compaction: ~5000 entries. After two: ~10000 entries total,
+        // but capped to 1000 at end of each compaction.
+        for _ in 0..(MAX_GRAPH_NODES * 3) {
+            g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        }
+
+        assert!(
+            g.compaction_log().len() <= MAX_COMPACTION_LOG,
+            "compaction_log ({}) should be capped at {MAX_COMPACTION_LOG}",
+            g.compaction_log().len(),
+        );
+    }
+
+    #[test]
+    fn compaction_caps_quarantine_releases() {
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        // Generate many quarantine releases.
+        for i in 0..(MAX_QUARANTINE_RELEASES + 500) {
+            let nid = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+            g.quarantine(nid);
+            let _ = g.release_quarantine(nid, "admin", &format!("release-{i}"), now);
+        }
+
+        // Force compaction to trigger the cap.
+        while g.nodes.len() < MAX_GRAPH_NODES {
+            g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        }
+        // One more to trigger compaction.
+        g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+
+        assert!(
+            g.quarantine_releases().len() <= MAX_QUARANTINE_RELEASES,
+            "quarantine_releases ({}) should be capped at {MAX_QUARANTINE_RELEASES}",
+            g.quarantine_releases().len(),
+        );
+    }
+
+    #[test]
+    fn compaction_cleans_field_lineage_for_tombstoned_nodes() {
+        use crate::flow_graph::{EffectKind, FieldLineage, FieldRef};
+        use portcullis_core::DerivationClass;
+
+        let mut g = FlowGraph::new();
+        let now = 1000;
+
+        // Insert a node early and give it field lineage.
+        let early = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        g.set_field_lineage(
+            early,
+            vec![FieldLineage {
+                field_name: "col_a".to_string(),
+                source_fields: vec![FieldRef {
+                    node_id: early,
+                    field_name: "col_a".to_string(),
+                }],
+                effect_kind: EffectKind::DeterministicFetch,
+                derivation: DerivationClass::Deterministic,
+            }],
+        )
+        .unwrap();
+        assert!(
+            g.get_field_lineage(early).is_some(),
+            "field lineage should exist before compaction"
+        );
+
+        // Fill past the compaction threshold so `early` is tombstoned.
+        for _ in 0..(MAX_GRAPH_NODES + 100) {
+            g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
+        }
+
+        // The early node should be tombstoned.
+        assert!(g.get(early).is_none(), "early node should be tombstoned");
+
+        // Its field lineage should have been cleaned up.
+        assert!(
+            g.get_field_lineage(early).is_none(),
+            "field_lineage for tombstoned node should be removed during compaction"
         );
     }
 }

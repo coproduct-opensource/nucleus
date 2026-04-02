@@ -1609,6 +1609,10 @@ fn main() {
     if is_first_invocation {
         nucleus_allow!("\u{2713} Active (profile: {profile_name})");
         nucleus_info!("Info: 'nucleus-claude-hook --help' for options");
+        let compartment_display = session.active_compartment.as_deref().unwrap_or("none");
+        nucleus_info!(
+            "nucleus: session started | profile={profile_name} | compartment={compartment_display} | flow=enabled"
+        );
     }
 
     if session.compartment_token.is_empty() {
