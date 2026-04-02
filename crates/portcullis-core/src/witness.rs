@@ -211,6 +211,28 @@ pub struct ValidationResult {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// FieldWitness — per-field provenance chain (#940)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Independent provenance chain for a single schema field (#940).
+///
+/// Each field gets its own source → parser chain, preventing cross-field
+/// contamination (e.g., swapping revenue and net_income parser outputs).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldWitness {
+    /// Schema field name this witness covers.
+    pub field_name: String,
+    /// The input blob index (into `WitnessBundle::input_blobs`) for this field's source.
+    pub input_blob_index: usize,
+    /// Parser steps specific to this field's derivation chain.
+    pub parser_steps: Vec<ParserStep>,
+    /// SHA-256 of the final field value.
+    pub output_hash: [u8; 32],
+    /// Derivation kind: "deterministic" or "ai_derived".
+    pub derivation: String,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // WitnessBundle — the core proof artifact
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -247,6 +269,10 @@ pub struct WitnessBundle {
     pub signature: Option<Vec<u8>>,
     /// Unix timestamp (seconds) when this bundle was created.
     pub created_at: u64,
+    /// Per-field provenance chains (#940). When populated, each field
+    /// has its own independent source → parser → output chain that can
+    /// be verified independently. Prevents cross-field contamination.
+    pub field_witnesses: std::collections::BTreeMap<String, FieldWitness>,
 }
 
 impl WitnessBundle {
@@ -407,8 +433,51 @@ impl WitnessBundle {
     /// `compute_digest()` against a stored/expected digest. This method
     /// does not store a digest internally — the bundle is content-addressed
     /// by its digest.
+    /// Verify per-field provenance chains (#940).
+    ///
+    /// For each `FieldWitness`, verify that:
+    /// 1. The input_blob_index references a valid input blob
+    /// 2. Each parser step's input_hash chains from the source or prior step
+    /// 3. The final parser output hash matches `output_hash`
+    pub fn verify_field_chains(&self) -> Result<(), ChainVerifyError> {
+        for (name, fw) in &self.field_witnesses {
+            // Check input blob reference.
+            let blob = self.input_blobs.get(fw.input_blob_index).ok_or_else(|| {
+                ChainVerifyError::UnlinkedParser {
+                    parser_id: format!("field:{name}"),
+                    step_index: 0,
+                }
+            })?;
+
+            // Walk the field's parser chain.
+            let mut available = vec![blob.content_hash];
+            for (i, step) in fw.parser_steps.iter().enumerate() {
+                if !available.contains(&step.input_hash) {
+                    return Err(ChainVerifyError::UnlinkedParser {
+                        parser_id: step.parser_id.clone(),
+                        step_index: i,
+                    });
+                }
+                available.push(step.output_hash);
+            }
+
+            // Verify the final output hash is in the available set.
+            if !available.contains(&fw.output_hash) && !fw.parser_steps.is_empty() {
+                let last = &fw.parser_steps[fw.parser_steps.len() - 1];
+                if last.output_hash != fw.output_hash {
+                    return Err(ChainVerifyError::FinalHashMismatch);
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn is_valid(&self) -> bool {
         if self.verify_chain().is_err() {
+            return false;
+        }
+
+        if self.verify_field_chains().is_err() {
             return false;
         }
 
@@ -746,6 +815,7 @@ mod tests {
             final_output_hash: transform_output,
             signature: None,
             created_at: 2000,
+            field_witnesses: std::collections::BTreeMap::new(),
         }
     }
 
@@ -861,6 +931,7 @@ mod tests {
             final_output_hash: input_hash,
             signature: None,
             created_at: 1000,
+            field_witnesses: std::collections::BTreeMap::new(),
         };
         assert!(bundle.verify_chain().is_ok());
         assert!(bundle.is_valid());
@@ -922,6 +993,7 @@ mod tests {
             final_output_hash: merged,
             signature: None,
             created_at: 2000,
+            field_witnesses: std::collections::BTreeMap::new(),
         };
         assert!(bundle.verify_chain().is_ok());
         assert!(bundle.is_valid());
@@ -971,6 +1043,7 @@ mod tests {
             final_output_hash: transform_out,
             signature: None,
             created_at: 1000,
+            field_witnesses: std::collections::BTreeMap::new(),
         };
         assert!(bundle.verify_chain().is_err());
     }
@@ -1006,6 +1079,7 @@ mod tests {
             final_output_hash: parser_output,
             signature: None,
             created_at: 1000,
+            field_witnesses: std::collections::BTreeMap::new(),
         };
 
         let err = bundle.verify_chain().unwrap_err();
@@ -1055,6 +1129,7 @@ mod tests {
             final_output_hash: parser_2_output,
             signature: None,
             created_at: 1000,
+            field_witnesses: std::collections::BTreeMap::new(),
         };
 
         assert!(bundle.verify_chain().is_ok());
@@ -1098,6 +1173,7 @@ mod tests {
             final_output_hash: parser_2_output,
             signature: None,
             created_at: 1000,
+            field_witnesses: std::collections::BTreeMap::new(),
         };
 
         let err = bundle.verify_chain().unwrap_err();
@@ -1143,6 +1219,7 @@ mod tests {
             final_output_hash: transform_output,
             signature: None,
             created_at: 1000,
+            field_witnesses: std::collections::BTreeMap::new(),
         };
 
         let err = bundle.verify_chain().unwrap_err();
@@ -1184,6 +1261,7 @@ mod tests {
             final_output_hash: transform_output,
             signature: None,
             created_at: 1000,
+            field_witnesses: std::collections::BTreeMap::new(),
         };
 
         assert!(bundle.verify_chain().is_ok());

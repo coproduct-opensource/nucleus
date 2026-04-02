@@ -1336,7 +1336,7 @@ pub(crate) fn try_wasm_reduction(
 pub(crate) enum ClearanceResult {
     /// Successfully assembled and verified a WitnessBundle.
     Verified {
-        bundle: portcullis_core::witness::WitnessBundle,
+        bundle: Box<portcullis_core::witness::WitnessBundle>,
         digest: [u8; 32],
     },
     /// No pending source hashes — nothing to clear.
@@ -1421,6 +1421,7 @@ pub(crate) fn assemble_witness_bundle(s: &mut SessionState) -> ClearanceResult {
         final_output_hash,
         signature: None,
         created_at: now,
+        field_witnesses: std::collections::BTreeMap::new(),
     };
 
     // Verify the chain.
@@ -1441,7 +1442,10 @@ pub(crate) fn assemble_witness_bundle(s: &mut SessionState) -> ClearanceResult {
     s.pending_parser_steps.clear();
 
     let digest = bundle.compute_digest();
-    ClearanceResult::Verified { bundle, digest }
+    ClearanceResult::Verified {
+        bundle: Box::new(bundle),
+        digest,
+    }
 }
 
 // ---------------------------------------------------------------------------

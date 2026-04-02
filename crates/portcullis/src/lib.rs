@@ -339,6 +339,7 @@ mod tests {
             final_output_hash: [0u8; 32],
             signature: None,
             created_at: 1_700_000_000,
+            field_witnesses: std::collections::BTreeMap::new(),
         };
         let digest = wb.compute_digest();
         assert_eq!(digest.len(), 32);
