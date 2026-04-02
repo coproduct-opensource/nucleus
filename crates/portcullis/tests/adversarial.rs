@@ -3,6 +3,8 @@
 //! These tests verify that the security invariants hold even when
 //! an attacker tries to exploit edge cases or bypass protections.
 
+#![allow(clippy::field_reassign_with_default)]
+
 use portcullis::{
     BudgetLattice, CapabilityLevel, CommandLattice, Operation, PathLattice, PermissionLattice,
 };
@@ -372,9 +374,10 @@ fn command_null_byte_handling() {
 #[test]
 fn delegation_cannot_escalate_capabilities() {
     let parent = PermissionLattice::restrictive();
-    let requested = PermissionLattice {
-        capabilities: portcullis::CapabilityLattice::permissive(),
-        ..Default::default()
+    let requested = {
+        let mut p = PermissionLattice::default();
+        p.capabilities = portcullis::CapabilityLattice::permissive();
+        p
     };
 
     let result = parent.delegate_to(&requested, "test delegation");
@@ -417,15 +420,17 @@ fn delegation_chain_monotonicity() {
 
 #[test]
 fn delegation_budget_cannot_exceed_remaining() {
-    let mut parent = PermissionLattice {
-        budget: BudgetLattice::with_cost_limit(10.0),
-        ..PermissionLattice::default()
+    let mut parent = {
+        let mut p = PermissionLattice::default();
+        p.budget = BudgetLattice::with_cost_limit(10.0);
+        p
     };
     parent.budget.charge_f64(8.0); // Use up most of the budget
 
-    let requested = PermissionLattice {
-        budget: BudgetLattice::with_cost_limit(5.0), // Requests more than remaining
-        ..Default::default()
+    let requested = {
+        let mut p = PermissionLattice::default();
+        p.budget = BudgetLattice::with_cost_limit(5.0); // Requests more than remaining
+        p
     };
 
     let result = parent.delegate_to(&requested, "greedy child");

@@ -92,12 +92,11 @@ fn arb_capability_lattice() -> impl Strategy<Value = portcullis::CapabilityLatti
 }
 
 /// Build a PermissionLattice from arbitrary capabilities.
+#[allow(clippy::field_reassign_with_default)]
 fn perms_from_caps(caps: portcullis::CapabilityLattice) -> PermissionLattice {
-    PermissionLattice {
-        capabilities: caps,
-        ..Default::default()
-    }
-    .normalize()
+    let mut p = PermissionLattice::default();
+    p.capabilities = caps;
+    p.normalize()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
