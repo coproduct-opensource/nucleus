@@ -586,6 +586,10 @@ fn main() {
                 }
             }
         }
+        // UserPromptSubmit: detect `!` bash passthrough (#918).
+        if input.hook_event_name == "UserPromptSubmit" {
+            session::handle_user_prompt_submit(&input);
+        }
         // PostToolUse: observe the tool result and insert into flow graph (#593, #497)
         if input.hook_event_name == "PostToolUse" && !input.tool_name.is_empty() {
             if let Some(ref result_text) = input.tool_result {

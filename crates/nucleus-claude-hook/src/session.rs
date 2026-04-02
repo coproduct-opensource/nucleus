@@ -113,15 +113,17 @@ pub(crate) struct SessionState {
     /// Prevents repeated injection — the model only needs to be told once.
     #[serde(default)]
     pub(crate) web_taint_context_injected: bool,
+    /// Set by `UserPromptSubmit` when the user types `! <cmd>` (#918).
+    /// Consumed by the next `PostToolUse` to classify the output as
+    /// `Deterministic/Directive` (user-directed reduction).
+    #[serde(default)]
+    pub(crate) pending_user_bash: bool,
     /// Content hashes of web tool outputs, captured at PostToolUse time (#873).
     /// Each entry records the SHA-256 of the tool result, the tool name, and
     /// the Unix timestamp. These are the anchors for future `ReductionWitness`
     /// chains — `/clearance` can reference them as `InputBlob.content_hash`.
     #[serde(default)]
     pub(crate) pending_source_hashes: Vec<PendingSourceHash>,
-    /// True when the user submitted a `!` bash passthrough (#918).
-    #[serde(default)]
-    pub(crate) pending_user_bash: bool,
 }
 
 /// A content hash captured from a tool output during PostToolUse (#873).
@@ -1085,6 +1087,14 @@ pub(crate) fn record_post_tool(
     if user_bash {
         s.pending_user_bash = false;
     }
+    // When the user typed `! <cmd>`, the output is user-directed deterministic
+    // data — classify as UserPrompt so the flow graph assigns Directive authority
+    // and Deterministic derivation (#918).
+    let effective_kind = if user_bash {
+        portcullis_core::flow::NodeKind::UserPrompt
+    } else {
+        output_kind
+    };
     let label = if user_bash {
         format!("post:user:{op}")
     } else {
@@ -1096,7 +1106,7 @@ pub(crate) fn record_post_tool(
         result_text
     };
     s.flow_observations
-        .push((node_kind_to_u8(output_kind), label, subj.to_string()));
+        .push((node_kind_to_u8(effective_kind), label, subj.to_string()));
     s.last_pre_tool_obs_index = None;
     if user_bash {
         eprintln!("nucleus: user ! passthrough — Deterministic");
@@ -1123,7 +1133,6 @@ pub(crate) fn record_post_tool(
 }
 
 /// Handle `UserPromptSubmit` — detect `!` bash passthrough (#918).
-#[allow(dead_code)]
 pub(crate) fn handle_user_prompt_submit(input: &crate::protocol::HookInput) {
     let prompt = input
         .tool_input
@@ -2129,6 +2138,75 @@ mod tests {
         assert!(
             check_pending_transition().is_none(),
             "should return None when no request file exists"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // User bash passthrough (#918)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn record_post_tool_user_bash_sets_user_prompt_kind() {
+        use crate::classify::node_kind_to_u8;
+
+        let mut s = SessionState {
+            pending_user_bash: true,
+            ..Default::default()
+        };
+
+        record_post_tool(
+            &mut s,
+            portcullis_core::flow::NodeKind::OutboundAction,
+            "Bash",
+            "hello world",
+            false,
+            [0u8; 32],
+            "",
+            "",
+        );
+
+        assert!(!s.pending_user_bash, "flag should be cleared after use");
+        assert_eq!(s.flow_observations.len(), 1);
+        let (kind_u8, ref label, _) = s.flow_observations[0];
+        assert_eq!(
+            kind_u8,
+            node_kind_to_u8(portcullis_core::flow::NodeKind::UserPrompt),
+            "user bash passthrough should be classified as UserPrompt"
+        );
+        assert!(
+            label.starts_with("post:user:"),
+            "label should have user prefix, got: {label}"
+        );
+    }
+
+    #[test]
+    fn record_post_tool_normal_bash_keeps_original_kind() {
+        use crate::classify::node_kind_to_u8;
+
+        let mut s = SessionState::default();
+        // pending_user_bash is false by default
+
+        record_post_tool(
+            &mut s,
+            portcullis_core::flow::NodeKind::OutboundAction,
+            "Bash",
+            "hello world",
+            false,
+            [0u8; 32],
+            "",
+            "",
+        );
+
+        assert_eq!(s.flow_observations.len(), 1);
+        let (kind_u8, ref label, _) = s.flow_observations[0];
+        assert_eq!(
+            kind_u8,
+            node_kind_to_u8(portcullis_core::flow::NodeKind::OutboundAction),
+            "normal bash should keep OutboundAction kind"
+        );
+        assert!(
+            label.starts_with("post:Bash"),
+            "label should NOT have user prefix, got: {label}"
         );
     }
 }
