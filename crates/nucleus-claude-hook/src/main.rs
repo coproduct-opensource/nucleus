@@ -670,34 +670,45 @@ fn main() {
             }
         }
 
-        // SubagentStop: log child completion (#498)
+        // SubagentStop: verify child provenance + log completion (#498, #955)
         if input.hook_event_name == "SubagentStop" {
             let agent_name = input.tool_name.as_str();
-            eprintln!(
-                "nucleus: subagent stopped: {}",
-                if agent_name.is_empty() {
-                    "unnamed"
-                } else {
-                    agent_name
-                },
-            );
+            let display_name = if agent_name.is_empty() {
+                "unnamed"
+            } else {
+                agent_name
+            };
 
-            // Record in receipt chain
+            // Attempt to find and verify child session provenance (#955).
+            let child_verified = session::verify_child_provenance(&input.session_id, display_name);
+            match child_verified {
+                Some(true) => {
+                    eprintln!(
+                        "nucleus: subagent stopped: {display_name} \u{2713} (chain verified)"
+                    );
+                }
+                Some(false) => {
+                    eprintln!("nucleus: subagent stopped: {display_name} \u{2717} (chain broken)");
+                }
+                None => {
+                    eprintln!("nucleus: subagent stopped: {display_name} (no child session found)");
+                }
+            }
+
+            // Record in receipt chain with verification status
             if let SessionLoad::Loaded(session) | SessionLoad::Fresh(session) =
                 load_session(&input.session_id)
             {
+                let status = match child_verified {
+                    Some(true) => "completed:verified",
+                    Some(false) => "completed:chain_broken",
+                    None => "completed",
+                };
                 persist_transition_receipt(
                     &input.session_id,
                     session.active_compartment.as_deref(),
-                    &format!(
-                        "subagent_stop:{}",
-                        if agent_name.is_empty() {
-                            "unnamed"
-                        } else {
-                            agent_name
-                        }
-                    ),
-                    "completed",
+                    &format!("subagent_stop:{display_name}"),
+                    status,
                 );
             }
         }
