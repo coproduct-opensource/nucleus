@@ -40,7 +40,8 @@ use denial::format_denial_for_user;
 use protocol::{HookInput, HookOutput};
 use receipts::{persist_receipt, persist_transition_receipt, show_receipts};
 use session::{
-    compartment_file_path, gc_stale_sessions, generate_compartment_token, keyed_compartment_name,
+    apply_pending_transition, check_pending_transition, compartment_file_path,
+    deny_pending_transition, gc_stale_sessions, generate_compartment_token, keyed_compartment_name,
     load_session, lock_session, resolve_compartment, run_gc, sanitize_session_id, save_session,
     session_dir, session_hwm_path, session_state_path, with_session, SessionLoad,
     MANIFEST_VIOLATION_REVOKE_THRESHOLD, SESSION_GC_TTL_SECS,
@@ -936,11 +937,36 @@ fn main() {
     if session.compartment_token.is_empty() {
         session.compartment_token = generate_compartment_token();
     }
-    // Resolve compartment with escalation detection (#464)
+
+    // Check for pending transition request (#875).
+    // The model (via /airlock skill) or CLI (via --compartment) writes a
+    // transition-request.json file. We validate and apply it here, inside
+    // the trusted hook, before resolve_compartment reads the compartment file.
     let prev_compartment = session
         .active_compartment
         .as_deref()
         .and_then(portcullis_core::compartment::Compartment::from_str_opt);
+    if let Some(request) = check_pending_transition() {
+        match apply_pending_transition(
+            &input.session_id,
+            &session.compartment_token,
+            prev_compartment,
+            &request,
+        ) {
+            Ok(()) => {
+                eprintln!(
+                    "nucleus: transition request applied -- target '{}' (reason: '{}')",
+                    request.target, request.reason
+                );
+            }
+            Err(e) => {
+                let msg = deny_pending_transition(&e);
+                eprintln!("{msg}");
+            }
+        }
+    }
+
+    // Resolve compartment with escalation detection (#464)
     let compartment = resolve_compartment(
         &input.session_id,
         &session.compartment_token,

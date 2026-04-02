@@ -708,8 +708,11 @@ pub(crate) fn find_latest_session() -> Option<String> {
 
 /// Write a compartment value for a given session.
 ///
-/// Used by `--compartment <name>` to directly set the compartment without
-/// requiring the caller to know the keyed hash mechanism.
+/// **Note**: Direct compartment writes are deprecated for external callers
+/// (#875). Use `request_compartment_transition()` instead, which goes through
+/// the hook-mediated validation path. This function is retained for internal
+/// use (parent compartment inheritance) and tests.
+#[allow(dead_code)]
 pub(crate) fn write_compartment(session_id: &str, value: &str) -> Result<(), String> {
     let path = compartment_file_path(session_id);
     if path.file_name().and_then(|f| f.to_str()) == Some("no-session.compartment") {
@@ -722,8 +725,10 @@ pub(crate) fn write_compartment(session_id: &str, value: &str) -> Result<(), Str
 
 /// Switch the compartment for the latest active session.
 ///
-/// Combines `find_latest_session` + `write_compartment` into a single call
-/// with user-facing output. Exits the process on failure.
+/// **Deprecated path** -- retained for backward compatibility. Now writes a
+/// transition *request* file instead of directly mutating the compartment.
+/// The actual transition is applied by the PreToolUse hook via
+/// `check_pending_transition()` + `apply_pending_transition()`.
 pub(crate) fn switch_compartment(name: &str) {
     let session_id = match find_latest_session() {
         Some(id) => id,
@@ -732,13 +737,228 @@ pub(crate) fn switch_compartment(name: &str) {
             std::process::exit(1);
         }
     };
-    match write_compartment(&session_id, name) {
-        Ok(()) => println!("nucleus: compartment set to '{name}' (session: {session_id})"),
+    match request_compartment_transition(&session_id, name, "CLI --compartment flag") {
+        Ok(path) => println!(
+            "nucleus: transition to '{name}' requested (session: {session_id})\n\
+             nucleus: request written to {}. Will be applied on next hook invocation.",
+            path.display()
+        ),
         Err(e) => {
             eprintln!("nucleus: error: {e}");
             std::process::exit(1);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Transition request protocol (#875)
+// ---------------------------------------------------------------------------
+//
+// Instead of the model (or CLI) directly writing compartment files, transitions
+// go through a request file that the PreToolUse hook validates and applies.
+// This ensures policy enforcement (single-step escalation, breakglass reason)
+// happens in trusted hook code, not in an untrusted Bash invocation.
+//
+// Flow:
+// 1. Model writes `.nucleus/transition-request.json` (or CLI `--compartment`)
+// 2. PreToolUse hook calls `check_pending_transition()` -- reads & validates
+// 3. If valid, `apply_pending_transition()` writes the keyed compartment file
+// 4. Request file is deleted regardless of outcome (single-use)
+
+/// A compartment transition request written by the model or CLI.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub(crate) struct TransitionRequest {
+    /// Target compartment name (e.g. "draft", "execute", "breakglass:reason").
+    pub(crate) target: String,
+    /// Human-readable reason for the transition.
+    pub(crate) reason: String,
+    /// Unix timestamp when the request was created.
+    #[serde(default)]
+    pub(crate) requested_at: u64,
+}
+
+/// Errors that can occur when applying a transition request.
+#[derive(Debug)]
+pub(crate) enum TransitionError {
+    /// Target compartment name is not recognized.
+    InvalidTarget(String),
+    /// Transition violates single-step escalation policy.
+    SkipLevel { from: String, to: String },
+    /// Breakglass requires a reason string.
+    BreakglassNoReason,
+    /// Request file is stale (older than 60 seconds).
+    Stale,
+    /// Failed to write compartment file.
+    WriteError(String),
+}
+
+impl std::fmt::Display for TransitionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TransitionError::InvalidTarget(t) => {
+                write!(f, "unrecognized compartment target: '{t}'")
+            }
+            TransitionError::SkipLevel { from, to } => {
+                write!(
+                    f,
+                    "skip-level escalation {from} -> {to} denied. \
+                     Escalate one step at a time (research -> draft -> execute -> breakglass)."
+                )
+            }
+            TransitionError::BreakglassNoReason => {
+                write!(
+                    f,
+                    "breakglass requires a reason. Use 'breakglass:<reason>' format."
+                )
+            }
+            TransitionError::Stale => {
+                write!(f, "transition request is stale (>60s old). Re-request.")
+            }
+            TransitionError::WriteError(e) => write!(f, "failed to apply transition: {e}"),
+        }
+    }
+}
+
+/// Maximum age (in seconds) for a transition request to be considered valid.
+/// Prevents replay of old request files.
+const TRANSITION_REQUEST_MAX_AGE_SECS: u64 = 60;
+
+/// Path to the transition request file in the project's `.nucleus/` directory.
+pub(crate) fn transition_request_path() -> PathBuf {
+    std::env::current_dir()
+        .unwrap_or_default()
+        .join(".nucleus")
+        .join("transition-request.json")
+}
+
+/// Write a transition request file (#875).
+///
+/// Called by the `/airlock` skill (via model file-write) or by
+/// `--compartment` CLI flag. The hook will read and validate this on the
+/// next PreToolUse invocation.
+///
+/// Returns the path to the written request file.
+pub(crate) fn request_compartment_transition(
+    _session_id: &str,
+    target: &str,
+    reason: &str,
+) -> Result<PathBuf, String> {
+    let path = transition_request_path();
+    // Ensure .nucleus/ directory exists
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create .nucleus/ directory: {e}"))?;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let request = TransitionRequest {
+        target: target.to_string(),
+        reason: reason.to_string(),
+        requested_at: now,
+    };
+    let json = serde_json::to_string_pretty(&request)
+        .map_err(|e| format!("failed to serialize transition request: {e}"))?;
+    std::fs::write(&path, json).map_err(|e| format!("failed to write transition request: {e}"))?;
+    Ok(path)
+}
+
+/// Check for a pending transition request (#875).
+///
+/// Reads `.nucleus/transition-request.json` if it exists. Returns `None`
+/// if no request is pending. Does NOT delete the file -- that happens in
+/// `apply_pending_transition()` or `deny_pending_transition()`.
+pub(crate) fn check_pending_transition() -> Option<TransitionRequest> {
+    let path = transition_request_path();
+    let content = std::fs::read_to_string(&path).ok()?;
+    let request: TransitionRequest = serde_json::from_str(&content).ok()?;
+    Some(request)
+}
+
+/// Delete the transition request file (called after apply or deny).
+fn delete_transition_request() {
+    let path = transition_request_path();
+    std::fs::remove_file(&path).ok();
+}
+
+/// Apply a pending transition request after validation (#875).
+///
+/// Validates:
+/// 1. Request is not stale (within `TRANSITION_REQUEST_MAX_AGE_SECS`)
+/// 2. Target is a recognized compartment name
+/// 3. Transition follows single-step escalation policy (`can_transition_to()`)
+/// 4. Breakglass includes a reason string
+///
+/// On success, writes the keyed compartment file and deletes the request.
+/// On failure, deletes the request and returns the error.
+pub(crate) fn apply_pending_transition(
+    session_id: &str,
+    token: &str,
+    current: Option<portcullis_core::compartment::Compartment>,
+    request: &TransitionRequest,
+) -> Result<(), TransitionError> {
+    // 1. Check staleness
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if request.requested_at > 0
+        && now.saturating_sub(request.requested_at) > TRANSITION_REQUEST_MAX_AGE_SECS
+    {
+        delete_transition_request();
+        return Err(TransitionError::Stale);
+    }
+
+    // 2. Parse target compartment
+    let target = portcullis_core::compartment::Compartment::from_str_opt(&request.target)
+        .ok_or_else(|| {
+            delete_transition_request();
+            TransitionError::InvalidTarget(request.target.clone())
+        })?;
+
+    // 3. Enforce breakglass reason
+    if target == portcullis_core::compartment::Compartment::Breakglass {
+        let trimmed = request.target.trim();
+        if !trimmed.starts_with("breakglass:")
+            || trimmed
+                .strip_prefix("breakglass:")
+                .map_or(true, |r| r.trim().is_empty())
+        {
+            delete_transition_request();
+            return Err(TransitionError::BreakglassNoReason);
+        }
+    }
+
+    // 4. Enforce single-step escalation
+    if let Some(from) = current {
+        if !from.can_transition_to(target) {
+            delete_transition_request();
+            return Err(TransitionError::SkipLevel {
+                from: from.to_string(),
+                to: target.to_string(),
+            });
+        }
+    }
+
+    // 5. Write the keyed compartment file (trusted path)
+    let keyed_name = keyed_compartment_name(session_id, token);
+    let compartment_file = session_dir().join(format!("{keyed_name}.compartment"));
+    std::fs::write(&compartment_file, &request.target).map_err(|e| {
+        delete_transition_request();
+        TransitionError::WriteError(e.to_string())
+    })?;
+
+    // 6. Delete the request file (single-use)
+    delete_transition_request();
+
+    Ok(())
+}
+
+/// Deny and delete a pending transition request, returning a user-facing message.
+pub(crate) fn deny_pending_transition(error: &TransitionError) -> String {
+    delete_transition_request();
+    format!("nucleus: DENIED -- compartment transition request rejected: {error}")
 }
 
 // ---------------------------------------------------------------------------
@@ -1428,5 +1648,290 @@ mod tests {
         std::fs::remove_file(session_state_path(&test_id)).ok();
         std::fs::remove_file(session_hwm_path(&test_id)).ok();
         std::fs::remove_file(session_lock_path(&test_id)).ok();
+    }
+
+    // -----------------------------------------------------------------------
+    // Transition request protocol tests (#875)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn transition_request_roundtrip() {
+        let sid = format!("tr-roundtrip-{}", std::process::id());
+        let path = request_compartment_transition(&sid, "draft", "test transition")
+            .expect("should write request file");
+        assert!(path.exists(), "request file should exist");
+
+        let request = check_pending_transition().expect("should read pending transition");
+        assert_eq!(request.target, "draft");
+        assert_eq!(request.reason, "test transition");
+        assert!(request.requested_at > 0, "timestamp should be set");
+
+        // Cleanup
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn transition_request_apply_valid_single_step() {
+        let sid = format!("tr-apply-{}", std::process::id());
+        let token = "test-token-tr-apply";
+
+        let request = TransitionRequest {
+            target: "draft".to_string(),
+            reason: "escalate to draft".to_string(),
+            requested_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        };
+
+        let req_path = transition_request_path();
+        if let Some(parent) = req_path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(&req_path, serde_json::to_string(&request).unwrap()).unwrap();
+
+        let result = apply_pending_transition(
+            &sid,
+            token,
+            Some(portcullis_core::compartment::Compartment::Research),
+            &request,
+        );
+        assert!(
+            result.is_ok(),
+            "single-step research -> draft should succeed"
+        );
+
+        // Verify compartment file was written
+        let keyed = keyed_compartment_name(&sid, token);
+        let comp_path = session_dir().join(format!("{keyed}.compartment"));
+        let content = std::fs::read_to_string(&comp_path).expect("compartment file should exist");
+        assert_eq!(content.trim(), "draft");
+
+        // Verify request file was deleted
+        assert!(
+            !req_path.exists(),
+            "request file should be deleted after apply"
+        );
+
+        // Cleanup
+        std::fs::remove_file(&comp_path).ok();
+    }
+
+    #[test]
+    fn transition_request_deny_skip_level() {
+        let sid = format!("tr-skip-{}", std::process::id());
+        let token = "test-token-tr-skip";
+
+        let request = TransitionRequest {
+            target: "execute".to_string(),
+            reason: "try to skip".to_string(),
+            requested_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        };
+
+        let req_path = transition_request_path();
+        if let Some(parent) = req_path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(&req_path, serde_json::to_string(&request).unwrap()).unwrap();
+
+        let result = apply_pending_transition(
+            &sid,
+            token,
+            Some(portcullis_core::compartment::Compartment::Research),
+            &request,
+        );
+        assert!(
+            matches!(result, Err(TransitionError::SkipLevel { .. })),
+            "skip-level research -> execute must be denied, got: {result:?}"
+        );
+
+        // Verify request file was deleted even on denial
+        assert!(
+            !req_path.exists(),
+            "request file should be deleted after denial"
+        );
+    }
+
+    #[test]
+    fn transition_request_deny_breakglass_no_reason() {
+        let sid = format!("tr-bg-noreason-{}", std::process::id());
+        let token = "test-token-tr-bg-noreason";
+
+        let request = TransitionRequest {
+            target: "breakglass".to_string(),
+            reason: "emergency".to_string(),
+            requested_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        };
+
+        let req_path = transition_request_path();
+        if let Some(parent) = req_path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(&req_path, serde_json::to_string(&request).unwrap()).unwrap();
+
+        let result = apply_pending_transition(
+            &sid,
+            token,
+            Some(portcullis_core::compartment::Compartment::Execute),
+            &request,
+        );
+        assert!(
+            matches!(result, Err(TransitionError::BreakglassNoReason)),
+            "bare breakglass without reason in target must be denied, got: {result:?}"
+        );
+
+        std::fs::remove_file(&req_path).ok();
+    }
+
+    #[test]
+    fn transition_request_breakglass_with_reason_accepted() {
+        let sid = format!("tr-bg-reason-{}", std::process::id());
+        let token = "test-token-tr-bg-reason";
+
+        let request = TransitionRequest {
+            target: "breakglass:production outage P1".to_string(),
+            reason: "production outage P1".to_string(),
+            requested_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        };
+
+        let req_path = transition_request_path();
+        if let Some(parent) = req_path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(&req_path, serde_json::to_string(&request).unwrap()).unwrap();
+
+        let result = apply_pending_transition(
+            &sid,
+            token,
+            Some(portcullis_core::compartment::Compartment::Execute),
+            &request,
+        );
+        assert!(
+            result.is_ok(),
+            "breakglass with reason should succeed, got: {result:?}"
+        );
+
+        let keyed = keyed_compartment_name(&sid, token);
+        let comp_path = session_dir().join(format!("{keyed}.compartment"));
+        std::fs::remove_file(&comp_path).ok();
+        std::fs::remove_file(&req_path).ok();
+    }
+
+    #[test]
+    fn transition_request_stale_rejected() {
+        let sid = format!("tr-stale-{}", std::process::id());
+        let token = "test-token-tr-stale";
+
+        let old_timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - 120; // 2 minutes ago, well past the 60s TTL
+
+        let request = TransitionRequest {
+            target: "draft".to_string(),
+            reason: "stale request".to_string(),
+            requested_at: old_timestamp,
+        };
+
+        let req_path = transition_request_path();
+        if let Some(parent) = req_path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(&req_path, serde_json::to_string(&request).unwrap()).unwrap();
+
+        let result = apply_pending_transition(
+            &sid,
+            token,
+            Some(portcullis_core::compartment::Compartment::Research),
+            &request,
+        );
+        assert!(
+            matches!(result, Err(TransitionError::Stale)),
+            "stale request should be rejected, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn transition_request_invalid_target() {
+        let sid = format!("tr-invalid-{}", std::process::id());
+        let token = "test-token-tr-invalid";
+
+        let request = TransitionRequest {
+            target: "nonexistent".to_string(),
+            reason: "bad target".to_string(),
+            requested_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        };
+
+        let req_path = transition_request_path();
+        if let Some(parent) = req_path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(&req_path, serde_json::to_string(&request).unwrap()).unwrap();
+
+        let result = apply_pending_transition(&sid, token, None, &request);
+        assert!(
+            matches!(result, Err(TransitionError::InvalidTarget(_))),
+            "invalid target should be rejected, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn transition_request_de_escalation_allowed() {
+        let sid = format!("tr-deesc-{}", std::process::id());
+        let token = "test-token-tr-deesc";
+
+        let request = TransitionRequest {
+            target: "research".to_string(),
+            reason: "sealing back down".to_string(),
+            requested_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        };
+
+        let req_path = transition_request_path();
+        if let Some(parent) = req_path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(&req_path, serde_json::to_string(&request).unwrap()).unwrap();
+
+        let result = apply_pending_transition(
+            &sid,
+            token,
+            Some(portcullis_core::compartment::Compartment::Execute),
+            &request,
+        );
+        assert!(
+            result.is_ok(),
+            "de-escalation should always be allowed, got: {result:?}"
+        );
+
+        let keyed = keyed_compartment_name(&sid, token);
+        let comp_path = session_dir().join(format!("{keyed}.compartment"));
+        std::fs::remove_file(&comp_path).ok();
+    }
+
+    #[test]
+    fn check_pending_transition_returns_none_when_no_file() {
+        let req_path = transition_request_path();
+        std::fs::remove_file(&req_path).ok();
+
+        assert!(
+            check_pending_transition().is_none(),
+            "should return None when no request file exists"
+        );
     }
 }
