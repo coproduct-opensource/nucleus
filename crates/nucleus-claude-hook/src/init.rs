@@ -181,6 +181,10 @@ pub(crate) fn default_claude_settings() -> serde_json::Value {
             "SessionEnd": [{
                 "matcher": "",
                 "hooks": [{"type": "command", "command": "nucleus-claude-hook --session-end"}]
+            }],
+            "UserPromptSubmit": [{
+                "matcher": "",
+                "hooks": [{"type": "command", "command": "nucleus-claude-hook"}]
             }]
         },
         "statusLine": "nucleus-claude-hook --statusline"

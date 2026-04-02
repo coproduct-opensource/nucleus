@@ -119,6 +119,9 @@ pub(crate) struct SessionState {
     /// chains — `/clearance` can reference them as `InputBlob.content_hash`.
     #[serde(default)]
     pub(crate) pending_source_hashes: Vec<PendingSourceHash>,
+    /// True when the user submitted a `!` bash passthrough (#918).
+    #[serde(default)]
+    pub(crate) pending_user_bash: bool,
 }
 
 /// A content hash captured from a tool output during PostToolUse (#873).
@@ -1056,6 +1059,84 @@ pub(crate) fn auto_detect_compartment(
         eprintln!("nucleus: auto-compartment detected from {tool_name}: {comp}");
     }
     inferred
+}
+
+// ---------------------------------------------------------------------------
+// PostToolUse observation + user bash passthrough (#593, #873, #918)
+// ---------------------------------------------------------------------------
+
+/// Record a PostToolUse observation in session state.
+#[allow(dead_code, clippy::too_many_arguments)]
+pub(crate) fn record_post_tool(
+    s: &mut SessionState,
+    output_kind: portcullis_core::flow::NodeKind,
+    op: &str,
+    result_text: &str,
+    is_web: bool,
+    content_hash: [u8; 32],
+    taint_tool: &str,
+    hash_tool: &str,
+) {
+    #[allow(unused_imports)]
+    use crate::classify::{node_kind_to_u8, truncate_subject};
+    #[allow(unused_imports)]
+    use crate::context::web_taint_warning;
+    let user_bash = s.pending_user_bash;
+    if user_bash {
+        s.pending_user_bash = false;
+    }
+    let label = if user_bash {
+        format!("post:user:{op}")
+    } else {
+        format!("post:{op}")
+    };
+    let subj = if result_text.len() > 200 {
+        &result_text[..200]
+    } else {
+        result_text
+    };
+    s.flow_observations
+        .push((node_kind_to_u8(output_kind), label, subj.to_string()));
+    s.last_pre_tool_obs_index = None;
+    if user_bash {
+        eprintln!("nucleus: user ! passthrough — Deterministic");
+    } else if is_web {
+        if !s.web_tainted {
+            s.web_tainted = true;
+            eprintln!("{}", web_taint_warning(taint_tool, result_text));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        s.pending_source_hashes.push(PendingSourceHash {
+            content_hash,
+            tool_name: hash_tool.to_string(),
+            captured_at: now,
+            witnessed: false,
+        });
+        eprintln!(
+            "nucleus: source hash {:02x}{:02x}{:02x}{:02x}...",
+            content_hash[0], content_hash[1], content_hash[2], content_hash[3]
+        );
+    }
+}
+
+/// Handle `UserPromptSubmit` — detect `!` bash passthrough (#918).
+#[allow(dead_code)]
+pub(crate) fn handle_user_prompt_submit(input: &crate::protocol::HookInput) {
+    let prompt = input
+        .tool_input
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .or(input.tool_result.as_deref())
+        .unwrap_or("");
+    if prompt.starts_with('!') {
+        with_session(&input.session_id, |s| {
+            s.pending_user_bash = true;
+        });
+        eprintln!("nucleus: user bash passthrough detected — next output Deterministic/Directive");
+    }
 }
 
 // ---------------------------------------------------------------------------
