@@ -30,6 +30,7 @@ mod doctor;
 mod exit_codes;
 mod help;
 mod init;
+mod integrity;
 mod protocol;
 mod receipts;
 mod session;
@@ -286,6 +287,24 @@ fn run_help(topic: Option<String>) {
 // ---------------------------------------------------------------------------
 
 fn main() {
+    // Binary self-integrity check (#946) — run once at startup.
+    match integrity::verify_binary_integrity() {
+        integrity::IntegrityResult::Verified => {
+            eprintln!("nucleus: binary integrity verified \u{2713}");
+        }
+        integrity::IntegrityResult::Mismatch { expected, actual } => {
+            eprintln!(
+                "\u{26a0}\u{fe0f} NUCLEUS INTEGRITY WARNING: binary hash mismatch!\n  \
+                 expected: {expected}\n  actual:   {actual}\n  \
+                 The nucleus-claude-hook binary may have been tampered with."
+            );
+        }
+        integrity::IntegrityResult::NoManifest => {} // silent — not configured
+        integrity::IntegrityResult::ReadError(e) => {
+            eprintln!("nucleus: integrity check skipped (cannot read binary: {e})");
+        }
+    }
+
     let start_time = std::time::Instant::now();
     let args: Vec<String> = std::env::args().collect();
 
