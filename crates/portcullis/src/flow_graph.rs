@@ -48,6 +48,12 @@ pub enum FlowGraphError {
         /// The quarantined node ID.
         NodeId,
     ),
+    /// A DeterministicBind node has a parent with AIDerived/Mixed derivation.
+    /// This would break the deterministic data path invariant (#922).
+    DeterministicBindTainted(
+        /// The tainted parent node ID.
+        NodeId,
+    ),
 }
 
 impl std::fmt::Display for FlowGraphError {
@@ -65,6 +71,12 @@ impl std::fmt::Display for FlowGraphError {
                 write!(
                     f,
                     "parent {id} is quarantined — release quarantine before use"
+                )
+            }
+            FlowGraphError::DeterministicBindTainted(id) => {
+                write!(
+                    f,
+                    "parent {id} has AI-derived taint — DeterministicBind requires clean ancestry"
                 )
             }
         }
@@ -387,6 +399,21 @@ impl FlowGraph {
         now: u64,
     ) -> Result<NodeId, FlowGraphError> {
         self.validate_parents(parents)?;
+
+        // DeterministicBind nodes require all parents to have Deterministic derivation.
+        // This prevents AI-derived taint from entering the deterministic data path (#922).
+        if kind == NodeKind::DeterministicBind {
+            for &pid in parents {
+                if let Some(node) = self.get(pid) {
+                    if !matches!(
+                        node.label.derivation,
+                        portcullis_core::DerivationClass::Deterministic
+                    ) {
+                        return Err(FlowGraphError::DeterministicBindTainted(pid));
+                    }
+                }
+            }
+        }
 
         // Check if any parent is quarantined (directly or transitively)
         let any_parent_quarantined = parents.iter().any(|&pid| self.is_quarantined(pid));

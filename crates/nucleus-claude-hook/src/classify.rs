@@ -403,6 +403,7 @@ pub(crate) fn node_kind_to_u8(kind: NodeKind) -> u8 {
         NodeKind::DatabaseRow => 13,
         NodeKind::GitBlob => 14,
         NodeKind::CachedDatum => 15,
+        NodeKind::DeterministicBind => 16,
     }
 }
 
@@ -424,7 +425,8 @@ pub(crate) fn u8_to_node_kind(v: u8) -> NodeKind {
         12 => NodeKind::HTTPResponse,
         13 => NodeKind::DatabaseRow,
         14 => NodeKind::GitBlob,
-        _ => NodeKind::CachedDatum,
+        15 => NodeKind::CachedDatum,
+        _ => NodeKind::DeterministicBind,
     }
 }
 
@@ -498,7 +500,8 @@ impl LeafTracker {
             | NodeKind::EnvVar
             | NodeKind::MemoryRead
             | NodeKind::DatabaseRow
-            | NodeKind::GitBlob => &mut self.trusted,
+            | NodeKind::GitBlob
+            | NodeKind::DeterministicBind => &mut self.trusted,
             NodeKind::WebContent | NodeKind::HTTPResponse | NodeKind::CachedDatum => {
                 &mut self.adversarial
             }
@@ -565,6 +568,10 @@ impl LeafTracker {
                 parents.extend_from_slice(&self.model);
                 parents
             }
+            // DeterministicBind: parents are supplied explicitly by the caller,
+            // NOT from the LeafTracker. This ensures no model node sneaks into
+            // the deterministic ancestry chain (#922).
+            NodeKind::DeterministicBind => vec![],
         }
     }
 }
