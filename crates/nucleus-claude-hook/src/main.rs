@@ -25,6 +25,7 @@ mod cli;
 mod color;
 mod completions;
 mod exit_codes;
+mod help;
 mod init;
 mod protocol;
 mod session;
@@ -506,22 +507,6 @@ const PROFILES: &[&str] = &[
     "safe_pr_fixer",
     "release",
     "permissive",
-];
-
-const PROFILE_DESCRIPTIONS: &[(&str, &str)] = &[
-    ("read_only", "Read + search only, no writes or execution"),
-    ("code_review", "Read + search, no writes (PR review)"),
-    ("edit_only", "Read + write, no execution or web"),
-    ("fix_issue", "Read + write + bash + web, no push"),
-    (
-        "safe_pr_fixer",
-        "Full dev workflow, no git push/PR (DEFAULT)",
-    ),
-    ("release", "Full access including git push and PR creation"),
-    (
-        "permissive",
-        "All capabilities, audit-only (no enforcement)",
-    ),
 ];
 
 // ---------------------------------------------------------------------------
@@ -1057,44 +1042,19 @@ fn show_profile(name: &str) {
     println!("  spawn_agent:  {}", fmt(caps.spawn_agent));
 }
 
-fn run_help() {
-    println!("nucleus-claude-hook — Nucleus verified permission kernel for Claude Code");
-    println!();
-    println!("USAGE:");
-    println!("  nucleus-claude-hook              Read hook JSON from stdin (normal mode)");
-    println!("  nucleus-claude-hook --init        Scaffold .nucleus/ project directory");
-    println!("  nucleus-claude-hook --build [DIR] Build artifact from .nucleus/ directory");
-    println!("    -o, --output FILE               Write artifact JSON to file instead of stdout");
-    println!("  nucleus-claude-hook --setup       Configure ~/.claude/settings.json");
-    println!("  nucleus-claude-hook --status       Show active sessions and configuration");
-    println!("  nucleus-claude-hook --status --json  Machine-parseable JSON output");
-    println!("  nucleus-claude-hook --gc          Remove stale session files (>24h)");
-    println!("  nucleus-claude-hook --help        This message");
-    println!("  nucleus-claude-hook --version     Show version");
-    println!("  nucleus-claude-hook --exit-codes  Print exit code protocol documentation");
-    println!("  nucleus-claude-hook --benchmark   Measure hook latency (p50/p95/p99)");
-    println!("    --iterations N                  Number of iterations (default: 100)");
-    println!();
-    println!("PROFILES (set NUCLEUS_PROFILE env var):");
-    for (name, desc) in PROFILE_DESCRIPTIONS {
-        println!("  {name:<16} {desc}");
+fn run_help(topic: Option<String>) {
+    match topic.as_deref() {
+        Some("compartments") => help::print_help_compartments(),
+        Some("flow") => help::print_help_flow(),
+        Some("profiles") => help::print_help_profiles(),
+        Some(unknown) => {
+            eprintln!("Unknown help topic: '{unknown}'");
+            eprintln!("Available topics: compartments, flow, profiles");
+            eprintln!("Run 'nucleus-claude-hook --help' for general help.");
+            std::process::exit(1);
+        }
+        None => help::print_help(),
     }
-    println!();
-    println!("ENVIRONMENT:");
-    println!("  NUCLEUS_PROFILE            Permission profile (default: safe_pr_fixer)");
-    println!("  NUCLEUS_COMPARTMENT        Compartment: research, draft, execute, breakglass");
-    println!("  NUCLEUS_FAIL_CLOSED        Set to 1: infrastructure errors block (CISO mode)");
-    println!("  NUCLEUS_REQUIRE_MANIFESTS  Set to 1: deny MCP tools without manifests");
-    println!("  NUCLEUS_TIMING             Set to 1: emit phase latency breakdown to stderr");
-    println!("  NUCLEUS_AUTONOMY_CEILING   Org cap: production, sandbox (default: unrestricted)");
-    println!();
-    println!("COMPARTMENTS:");
-    println!("  research    Read + web only (no writes, no execution)");
-    println!("  draft       Read + write (no execution, no web)");
-    println!("  execute     Read + write + bash (no push)");
-    println!("  breakglass  All capabilities + enhanced audit (reason required)");
-    println!();
-    println!("Learn more: https://github.com/coproduct-opensource/nucleus/blob/main/docs/quickstart-hook.md");
 }
 
 // ---------------------------------------------------------------------------
@@ -1114,8 +1074,8 @@ fn main() {
             status::run_status(json);
             return;
         }
-        Ok(cli::CliCommand::Help) => {
-            run_help();
+        Ok(cli::CliCommand::Help { topic }) => {
+            run_help(topic);
             return;
         }
         Ok(cli::CliCommand::Version) => {

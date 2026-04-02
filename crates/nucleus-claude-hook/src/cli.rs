@@ -17,7 +17,8 @@ pub enum CliCommand {
     /// When `json` is true, output machine-parseable JSON to stdout.
     Status { json: bool },
     /// `--help` / `-h` — print usage information.
-    Help,
+    /// When `topic` is `Some`, print detailed help for that topic.
+    Help { topic: Option<String> },
     /// `--version` / `-V` — print version string.
     Version,
     /// `--init` — scaffold `.nucleus/` project directory.
@@ -98,7 +99,10 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
             let json = args.get(1).map(|a| a == "--json").unwrap_or(false);
             Ok(CliCommand::Status { json })
         }
-        "--help" | "-h" => Ok(CliCommand::Help),
+        "--help" | "-h" => {
+            let topic = args.get(1).cloned();
+            Ok(CliCommand::Help { topic })
+        }
         "--version" | "-V" => Ok(CliCommand::Version),
         "--init" => Ok(CliCommand::Init),
         "--build" => Ok(CliCommand::Build),
@@ -184,8 +188,14 @@ mod tests {
             parse_args(&args(&["--status"])).unwrap(),
             CliCommand::Status { json: false }
         );
-        assert_eq!(parse_args(&args(&["--help"])).unwrap(), CliCommand::Help);
-        assert_eq!(parse_args(&args(&["-h"])).unwrap(), CliCommand::Help);
+        assert_eq!(
+            parse_args(&args(&["--help"])).unwrap(),
+            CliCommand::Help { topic: None }
+        );
+        assert_eq!(
+            parse_args(&args(&["-h"])).unwrap(),
+            CliCommand::Help { topic: None }
+        );
         assert_eq!(
             parse_args(&args(&["--version"])).unwrap(),
             CliCommand::Version
@@ -352,5 +362,21 @@ mod tests {
         // If someone accidentally passes a non-flag arg, treat as hook mode
         // (stdin will likely fail, but that's the existing behavior).
         assert_eq!(parse_args(&args(&["something"])).unwrap(), CliCommand::Hook);
+    }
+
+    #[test]
+    fn help_with_topic() {
+        assert_eq!(
+            parse_args(&args(&["--help", "compartments"])).unwrap(),
+            CliCommand::Help {
+                topic: Some("compartments".into())
+            }
+        );
+        assert_eq!(
+            parse_args(&args(&["-h", "flow"])).unwrap(),
+            CliCommand::Help {
+                topic: Some("flow".into())
+            }
+        );
     }
 }
