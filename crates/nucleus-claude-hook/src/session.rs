@@ -94,6 +94,11 @@ pub(crate) struct SessionState {
     /// Monotonic — trust can only decrease within a session.
     #[serde(default)]
     pub(crate) flagged_tools: std::collections::HashMap<String, u32>,
+    /// Fingerprint of the last additionalContext injected (#842).
+    /// Format: "compartment:taint_state" (e.g. "research:clean", "draft:tainted").
+    /// When this changes (or is empty), we inject context again.
+    #[serde(default)]
+    pub(crate) last_injected_context_key: Option<String>,
 }
 
 impl SessionState {

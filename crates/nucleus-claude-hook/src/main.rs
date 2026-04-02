@@ -24,6 +24,7 @@ mod classify;
 mod cli;
 mod color;
 mod completions;
+mod context;
 mod exit_codes;
 mod help;
 mod init;
@@ -370,6 +371,8 @@ fn format_denial_for_user(
         }
     }
 }
+
+use context::{current_fingerprint, maybe_build_context};
 
 fn extract_subject(tool_name: &str, input: &serde_json::Value) -> String {
     match tool_name {
@@ -2144,9 +2147,25 @@ fn main() {
             }
 
             session.high_water_mark += 1;
+
+            // Inject additionalContext when state changes (#842)
+            let context = maybe_build_context(
+                &session,
+                compartment.as_ref(),
+                operation,
+                is_first_invocation,
+            );
+            if context.is_some() {
+                // Update fingerprint so we don't repeat on next call
+                session.last_injected_context_key = Some(current_fingerprint(
+                    compartment.as_ref(),
+                    &session,
+                    operation,
+                ));
+            }
+
             save_session(&input.session_id, &session);
-            // Inject compartment context into Claude's prompt (#459)
-            HookOutput::allow_with_context(compartment.as_ref().map(|c| c.to_string()).as_deref())
+            HookOutput::allow_with_context(context)
         }
         Verdict::RequiresApproval => {
             session.high_water_mark += 1;
@@ -2301,6 +2320,16 @@ mod tests {
         let json = serde_json::to_string(&deny).unwrap();
         assert!(json.contains("\"permissionDecision\":\"deny\""));
         assert!(json.contains("\"permissionDecisionReason\":\"test reason\""));
+    }
+
+    #[test]
+    fn test_hook_output_with_additional_context() {
+        let ctx = "You are in the 'research' compartment.".to_string();
+        let out = HookOutput::allow_with_context(Some(ctx));
+        let json = serde_json::to_string(&out).unwrap();
+        assert!(json.contains("\"additionalContext\""));
+        assert!(json.contains("research"));
+        assert!(json.contains("\"permissionDecision\":\"allow\""));
     }
 
     #[test]
