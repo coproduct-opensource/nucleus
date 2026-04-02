@@ -43,9 +43,9 @@ use protocol::{HookInput, HookOutput};
 use receipts::{persist_receipt, persist_transition_receipt, show_receipts};
 use session::{
     compartment_file_path, gc_stale_sessions, generate_compartment_token, keyed_compartment_name,
-    load_session, resolve_compartment, run_gc, sanitize_session_id, save_session, session_dir,
-    session_hwm_path, session_state_path, SessionLoad, MANIFEST_VIOLATION_REVOKE_THRESHOLD,
-    SESSION_GC_TTL_SECS,
+    load_session, lock_session, resolve_compartment, run_gc, sanitize_session_id, save_session,
+    session_dir, session_hwm_path, session_state_path, with_session, SessionLoad,
+    MANIFEST_VIOLATION_REVOKE_THRESHOLD, SESSION_GC_TTL_SECS,
 };
 
 use context::{current_fingerprint, maybe_build_context};
@@ -614,28 +614,23 @@ fn main() {
                                     v.description
                                 );
                             }
-                            // Persist violation count in session state (#485).
-                            // Trust revocation is monotonic — count only increases.
-                            if let SessionLoad::Loaded(ref mut session)
-                            | SessionLoad::Fresh(ref mut session) =
-                                load_session(&input.session_id)
-                            {
-                                let count = session
-                                    .flagged_tools
-                                    .entry(input.tool_name.clone())
-                                    .or_insert(0);
-                                *count = count.saturating_add(violations.len() as u32);
-                                let current = *count;
-                                save_session(&input.session_id, session);
+                            // Persist violation count atomically (#485, #872).
+                            let tool = input.tool_name.clone();
+                            let n = violations.len() as u32;
+                            if let Some(s) = with_session(&input.session_id, |s| {
+                                let c = s.flagged_tools.entry(tool.clone()).or_insert(0);
+                                *c = c.saturating_add(n);
+                            }) {
+                                let current = s.flagged_tools.get(&tool).copied().unwrap_or(0);
                                 if current >= MANIFEST_VIOLATION_REVOKE_THRESHOLD {
                                     eprintln!(
                                         "nucleus: tool '{}' has {} violations (threshold {}) — will be DENIED on next use",
-                                        input.tool_name, current, MANIFEST_VIOLATION_REVOKE_THRESHOLD
+                                        tool, current, MANIFEST_VIOLATION_REVOKE_THRESHOLD
                                     );
                                 } else {
                                     eprintln!(
                                         "nucleus: tool '{}' flagged ({}/{} violations before revocation)",
-                                        input.tool_name, current, MANIFEST_VIOLATION_REVOKE_THRESHOLD
+                                        tool, current, MANIFEST_VIOLATION_REVOKE_THRESHOLD
                                     );
                                 }
                             }
@@ -643,45 +638,28 @@ fn main() {
                     }
                 }
 
-                // Insert tool output as a ToolResponse observation in the flow graph.
-                // This closes the gap where tool outputs were invisible to IFC (#593).
-                // The ToolResponse node's kind depends on the tool: web tools produce
-                // WebContent (adversarial), file reads produce FileRead (trusted),
-                // everything else produces ToolResponse (model-category).
-                match load_session(&input.session_id) {
-                    SessionLoad::Loaded(mut session) | SessionLoad::Fresh(mut session) => {
-                        // Classify the tool output's node kind based on the operation.
-                        // The output of a web fetch IS web content (adversarial).
-                        // The output of a file read IS file content (trusted).
-                        // Everything else is a generic tool response (model category).
-                        let op = map_tool(&input.tool_name);
-                        let output_kind = classify_tool_output(op);
-
-                        session.flow_observations.push((
-                            node_kind_to_u8(output_kind),
-                            format!("post:{op}"),
-                            truncate_subject(result_text, 200),
-                        ));
-                        // Clear the pre-tool index — this PostToolUse is consumed.
-                        session.last_pre_tool_obs_index = None;
-                        // Web taint detection (#838) — monotonic, never reverts.
-                        if web_taint::detect_web_taint(&input.tool_name) && !session.web_tainted {
-                            session.web_tainted = true;
-                            eprintln!(
-                                "{}",
-                                web_taint::web_taint_warning(&input.tool_name, result_text)
-                            );
-                        }
-                        save_session(&input.session_id, &session);
-
-                        eprintln!(
-                            "nucleus: post-tool {op} {} — inserted {:?} observation into flow graph",
-                            input.tool_name, output_kind
-                        );
+                // Insert tool output as a flow graph observation (#593, #872).
+                let op = map_tool(&input.tool_name);
+                let output_kind = classify_tool_output(op);
+                let taint_tool = input.tool_name.clone();
+                let rt = result_text.to_string();
+                match with_session(&input.session_id, |s| {
+                    s.flow_observations.push((
+                        node_kind_to_u8(output_kind),
+                        format!("post:{op}"),
+                        truncate_subject(&rt, 200),
+                    ));
+                    s.last_pre_tool_obs_index = None;
+                    if web_taint::detect_web_taint(&taint_tool) && !s.web_tainted {
+                        s.web_tainted = true;
+                        eprintln!("{}", web_taint::web_taint_warning(&taint_tool, &rt));
                     }
-                    SessionLoad::Tampered { .. } => {
-                        nucleus_deny!("post-tool skipped — session tampered");
-                    }
+                }) {
+                    Some(_) => eprintln!(
+                        "nucleus: post-tool {op} {} — inserted {:?} observation into flow graph",
+                        input.tool_name, output_kind
+                    ),
+                    None => nucleus_deny!("post-tool skipped — session tampered"),
                 }
             }
         }
@@ -881,6 +859,11 @@ fn main() {
     });
 
     let t_profile = t_profile_start.elapsed();
+
+    // Hold session lock across entire PreToolUse load-mutate-save cycle (#872).
+    // This prevents TOCTOU races where concurrent hook invocations could
+    // overwrite each other's state mutations.
+    let _session_lock = lock_session(&input.session_id);
 
     // Load session state — detect tamper (social engineering state deletion)
     let t_session_start = std::time::Instant::now();
