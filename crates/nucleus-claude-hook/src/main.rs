@@ -34,8 +34,6 @@ mod receipts;
 mod session;
 mod setup;
 mod status;
-mod web_taint;
-
 use classify::*;
 use color::{nucleus_allow, nucleus_deny, nucleus_info, nucleus_warn};
 use denial::format_denial_for_user;
@@ -48,7 +46,7 @@ use session::{
     MANIFEST_VIOLATION_REVOKE_THRESHOLD, SESSION_GC_TTL_SECS,
 };
 
-use context::{current_fingerprint, maybe_build_context};
+use context::{current_fingerprint, detect_web_taint, maybe_build_context, web_taint_warning};
 
 // ---------------------------------------------------------------------------
 // Profile resolution
@@ -650,9 +648,9 @@ fn main() {
                         truncate_subject(&rt, 200),
                     ));
                     s.last_pre_tool_obs_index = None;
-                    if web_taint::detect_web_taint(&taint_tool) && !s.web_tainted {
+                    if detect_web_taint(&taint_tool) && !s.web_tainted {
                         s.web_tainted = true;
-                        eprintln!("{}", web_taint::web_taint_warning(&taint_tool, &rt));
+                        eprintln!("{}", web_taint_warning(&taint_tool, &rt));
                     }
                 }) {
                     Some(_) => eprintln!(
