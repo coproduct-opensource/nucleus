@@ -972,6 +972,17 @@ fn main() {
         &session.compartment_token,
         prev_compartment,
     );
+
+    // Auto-compartment detection (#472).
+    let compartment = session::auto_detect_compartment(
+        compartment,
+        prev_compartment,
+        &operation.to_string(),
+        &input.tool_name,
+        &input.session_id,
+        &session.compartment_token,
+    );
+
     // Detect compartment transition
     if compartment != prev_compartment {
         if let Some(ref new_comp) = compartment {
@@ -1624,6 +1635,8 @@ fn main() {
 
 // ---------------------------------------------------------------------------
 // Tests
+// ---------------------------------------------------------------------------
+
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]

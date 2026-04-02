@@ -1014,6 +1014,51 @@ pub(crate) fn deny_pending_transition(error: &TransitionError) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Auto-compartment detection (#472)
+// ---------------------------------------------------------------------------
+
+/// Infer compartment from tool usage when no compartment is set.
+///
+/// When `NUCLEUS_AUTO_COMPARTMENT=1` and no compartment is active, maps:
+/// WebSearch/WebFetch → Research, Write/Edit → Draft, RunBash/GitPush → Execute.
+/// Never auto-escalates — only sets the initial compartment.
+pub(crate) fn auto_detect_compartment(
+    current: Option<portcullis_core::compartment::Compartment>,
+    prev: Option<portcullis_core::compartment::Compartment>,
+    operation_name: &str,
+    tool_name: &str,
+    session_id: &str,
+    token: &str,
+) -> Option<portcullis_core::compartment::Compartment> {
+    if current.is_some() || prev.is_some() {
+        return current;
+    }
+    if !std::env::var("NUCLEUS_AUTO_COMPARTMENT")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        return current;
+    }
+    let inferred = match operation_name {
+        "WebSearch" | "WebFetch" => Some(portcullis_core::compartment::Compartment::Research),
+        "WriteFiles" | "EditFiles" | "NotebookEdit" => {
+            Some(portcullis_core::compartment::Compartment::Draft)
+        }
+        "RunBash" | "GitPush" | "GitCommit" => {
+            Some(portcullis_core::compartment::Compartment::Execute)
+        }
+        _ => None,
+    };
+    if let Some(ref comp) = inferred {
+        let keyed_name = keyed_compartment_name(session_id, token);
+        let comp_path = session_dir().join(format!("{keyed_name}.compartment"));
+        std::fs::write(&comp_path, comp.to_string()).ok();
+        eprintln!("nucleus: auto-compartment detected from {tool_name}: {comp}");
+    }
+    inferred
+}
+
+// ---------------------------------------------------------------------------
 // Garbage collection
 // ---------------------------------------------------------------------------
 
