@@ -292,6 +292,7 @@ mod tests {
             final_output_hash: transform_output,
             signature: None,
             created_at: 2000,
+            field_witnesses: std::collections::BTreeMap::new(),
         }
     }
 
@@ -550,6 +551,7 @@ mod tests {
             final_output_hash: input_hash,
             signature: None,
             created_at: 1000,
+            field_witnesses: std::collections::BTreeMap::new(),
         };
 
         let input = ReplayInput {
