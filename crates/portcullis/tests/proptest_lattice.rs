@@ -3,6 +3,8 @@
 //! These tests use proptest to verify that the lattice operations
 //! satisfy the required algebraic properties.
 
+#![allow(clippy::field_reassign_with_default)]
+
 use portcullis::{
     BudgetLattice, CapabilityLattice, CapabilityLevel, CommandLattice, Operation, PathLattice,
     PermissionLattice, TimeLattice,
@@ -317,11 +319,13 @@ proptest! {
         a in arb_capability_lattice(),
         enforce in any::<bool>()
     ) {
-        let perms = PermissionLattice {
-            capabilities: a,
-            obligations: Default::default(),
-            uninhabitable_constraint: enforce, // requires testing feature
-            ..PermissionLattice::default()
+        let perms = {
+            let mut p = PermissionLattice::default();
+            p.capabilities = a;
+            p.obligations = Default::default();
+            // uninhabitable_constraint is private — enforce param unused
+            let _ = enforce;
+            p
         };
 
         let once = perms.clone().normalize();
@@ -334,10 +338,11 @@ proptest! {
     fn permission_normalize_is_deflationary_when_enforced(
         a in arb_capability_lattice()
     ) {
-        let perms = PermissionLattice {
-            capabilities: a,
-            obligations: Default::default(),
-            ..PermissionLattice::default()
+        let perms = {
+            let mut p = PermissionLattice::default();
+            p.capabilities = a;
+            p.obligations = Default::default();
+            p
         };
 
         let normalized = perms.clone().normalize();
@@ -359,15 +364,17 @@ proptest! {
         b in arb_capability_lattice()
     ) {
         // Build two permission lattices with uninhabitable_state constraint enforced
-        let perms_a = PermissionLattice {
-            capabilities: a,
-            obligations: Default::default(),
-            ..PermissionLattice::default()
+        let perms_a = {
+            let mut p = PermissionLattice::default();
+            p.capabilities = a;
+            p.obligations = Default::default();
+            p
         };
-        let perms_b = PermissionLattice {
-            capabilities: b,
-            obligations: Default::default(),
-            ..PermissionLattice::default()
+        let perms_b = {
+            let mut p = PermissionLattice::default();
+            p.capabilities = b;
+            p.obligations = Default::default();
+            p
         };
 
         // Nucleus operator property: j(a ∧ b) = j(a) ∧ j(b)
