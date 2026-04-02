@@ -1394,16 +1394,19 @@ fn main() {
             id
         };
         receipt.set_chain_id(chain_id);
-        if let Some(ref key) = signing_key {
+        let sign_ok = if let Some(ref key) = signing_key {
             sign_receipt(&mut receipt, key);
-        }
-        Some(receipt)
+            true
+        } else {
+            false
+        };
+        Some((receipt, sign_ok))
     });
 
     let t_receipt = t_receipt_start.elapsed();
 
     // Update chain head hash and persist receipt if produced.
-    if let Some(ref receipt) = flow_receipt {
+    if let Some((ref receipt, sign_ok)) = flow_receipt {
         session.chain_head_hash = receipt_hash(receipt);
         persist_receipt(
             &input.session_id,
@@ -1413,7 +1416,14 @@ fn main() {
             &session.parent_session_id,
             &session.parent_chain_hash,
             compartment.as_ref().map(|c| c.to_string()).as_deref(),
+            !sign_ok,
         );
+        if !sign_ok {
+            nucleus_warn!(
+                "UNSIGNED RECEIPT — signing key unavailable for {}:{} — receipt chain integrity degraded",
+                operation, subject
+            );
+        }
     }
 
     let output = match decision.verdict {
@@ -1547,7 +1557,7 @@ fn main() {
         .unwrap_or_default();
     let _receipt_status = if flow_receipt
         .as_ref()
-        .map(|r| r.is_signed())
+        .map(|(r, _)| r.is_signed())
         .unwrap_or(false)
     {
         ", receipt: signed"

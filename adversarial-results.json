@@ -1,0 +1,18 @@
+[
+  {
+    "cycle_number": 1,
+    "claim": {
+      "id": "d323b9de-e5e1-421a-903d-32422acefd11",
+      "assertion": "The Kani bounded model checking suite contains exactly 67 proofs: 50 in portcullis (crates/portcullis/src/kani.rs) and 17 in the constitutional kernel (crates/ck-kernel/src/kani.rs). Five of the portcullis proofs (labeled E1–E5) cover the two token-issuing paths — decide() and issue_approved_token() — proving that denied operations never produce tokens (E2), that token operation fields match the decision operation (E3), and that issue_approved_token() bypass is always audited (E4–E5).",
+      "evidence": "Count #[kani::proof] annotations in each file. E1–E5 are defined starting at line ~1630 in kani.rs with doc comments labeling each harness. proof_issue_approved_token_is_audited() (E4) and proof_approved_token_bypass_is_audited() (E5) cover issue_approved_token().",
+      "source": "crates/portcullis/src/kani.rs, crates/ck-kernel/src/kani.rs",
+      "content_hash": "5eb71776b49687edc05565e57fc98ecb317b643fa13d1d769edd5aa6c421c05d"
+    },
+    "critique": null,
+    "fix": null,
+    "verdict": null,
+    "state": "Converged",
+    "attempts": 0,
+    "max_attempts": 3
+  }
+]

@@ -1,0 +1,27 @@
+[
+  {
+    "assertion": "The Kani bounded model checking suite contains exactly 67 proofs: 50 in portcullis (crates/portcullis/src/kani.rs) and 17 in the constitutional kernel (crates/ck-kernel/src/kani.rs). Five of the portcullis proofs (labeled E1–E5) cover the two token-issuing paths — decide() and issue_approved_token() — proving that denied operations never produce tokens (E2), that token operation fields match the decision operation (E3), and that issue_approved_token() bypass is always audited (E4–E5).",
+    "evidence": "Count #[kani::proof] annotations in each file. E1–E5 are defined starting at line ~1630 in kani.rs with doc comments labeling each harness. proof_issue_approved_token_is_audited() (E4) and proof_approved_token_bypass_is_audited() (E5) cover issue_approved_token().",
+    "source": "crates/portcullis/src/kani.rs, crates/ck-kernel/src/kani.rs"
+  },
+  {
+    "assertion": "The Lean 4 HeytingAlgebra proof in PortcullisCoreBridge.lean provides two instances derived from Aeneas-generated types: instHeytingAlgebra for CapabilityLevel (the 3-element total order Never/LowRisk/Always) and instHeytingAlgebra for CapabilityLattice (the product lattice). Both instances satisfy the GeneralizedHeytingAlgebra axioms from Mathlib, with himp defined as pseudo-complement over the linear order. The Lean project is built with Lake and depends on Mathlib4.",
+    "evidence": "PortcullisCoreBridge.lean defines instance instHeytingAlgebra : HeytingAlgebra CapabilityLevel and instance instHeytingAlgebra : HeytingAlgebra CapabilityLattice. The lakefile.lean lists Mathlib as a dependency. Aeneas-generated types live in lean/generated/PortcullisCore/.",
+    "source": "crates/portcullis-core/lean/PortcullisCoreBridge.lean, crates/portcullis-core/lean/lakefile.lean, crates/portcullis-core/lean/generated/PortcullisCore/Types.lean"
+  },
+  {
+    "assertion": "ExposureSet tracks exactly three Boolean flags (private_data, untrusted_content, exfil_vector) and ExposureSet::is_uninhabitable() returns true if and only if all three are set simultaneously. The pure decision kernel — classify_operation(), project_exposure(), should_deny(), apply_record() in exposure_core.rs — has no I/O or side effects, and should_deny() returns true when project_exposure() would produce an uninhabitable set. RunBash is classified as projecting both PrivateData and ExfilVector simultaneously.",
+    "evidence": "ExposureSet struct and is_uninhabitable() in guard.rs. Pure functions in exposure_core.rs. classify_operation() maps RunBash to a combined label. should_deny() computes project_exposure() and checks is_uninhabitable() on the result.",
+    "source": "crates/portcullis/src/guard.rs, crates/portcullis/src/exposure_core.rs"
+  },
+  {
+    "assertion": "The nucleus-claude-hook binary reads a JSON HookInput from stdin and exits non-zero (denying the tool call) for all failure modes: empty or EOF stdin, JSON parse errors, and Kernel::decide() returning Verdict::Deny. On success it writes a JSON HookOutput with decision='approve' to stdout and persists session state to /tmp/nucleus-hook/{session_id}.json for cross-invocation exposure tracking. The hook is installed via exactly two shell commands modifying Claude Code's settings.json hooks configuration.",
+    "evidence": "main.rs in nucleus-claude-hook handles stdin read errors and serde_json::from_str errors with process::exit(1) or equivalent non-zero exit. SessionState is serialized to the /tmp path. The README or install script shows the 2-command install.",
+    "source": "crates/nucleus-claude-hook/src/main.rs"
+  },
+  {
+    "assertion": "Fleet lockdown is delivered via gRPC bidirectional streaming: the WatchLockdown RPC in nucleus_node.proto has signature rpc WatchLockdown(stream LockdownAck) returns (stream LockdownCommand). run_lockdown_watcher() in lockdown_client.rs holds an open stream and flips an Arc<AtomicBool> flag the moment a LockdownCommand with active=true arrives, causing the tool-proxy to block all non-read operations with no additional round-trip. The nucleus-audit scan subcommand exits with a non-zero status code when any Critical or High severity findings are present, enabling CI gating.",
+    "evidence": "nucleus_node.proto line 159 defines WatchLockdown as bidirectional streaming. lockdown_client.rs::run_lockdown_watcher() receives LockdownCommand and sets the AtomicBool. nucleus-audit/src/main.rs checks finding severity and calls process::exit(1) on critical/high findings.",
+    "source": "crates/nucleus-node/proto/nucleus_node.proto, crates/nucleus-tool-proxy/src/lockdown_client.rs, crates/nucleus-audit/src/main.rs, crates/nucleus-tool-proxy/src/main.rs"
+  }
+]

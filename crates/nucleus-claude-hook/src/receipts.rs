@@ -47,6 +47,15 @@ struct ReceiptEntry {
     /// Previous compartment (if this entry records a transition)
     #[serde(skip_serializing_if = "Option::is_none")]
     compartment_transition_from: Option<String>,
+    /// True if signing was attempted but failed (#902).
+    /// An unsigned receipt in a chain that should be signed indicates
+    /// key corruption, low entropy, or sandboxed environment.
+    #[serde(default, skip_serializing_if = "is_false")]
+    signing_failed: bool,
+}
+
+fn is_false(v: &bool) -> bool {
+    !v
 }
 
 /// Persist a signed receipt to `.nucleus/receipts/<session-id>.jsonl`.
@@ -54,6 +63,7 @@ struct ReceiptEntry {
 /// Append-only JSONL — one receipt per line. Creates the directory
 /// and file if they don't exist. Failures are silent (audit is
 /// best-effort, not on the critical path).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn persist_receipt(
     session_id: &str,
     receipt: &portcullis_core::receipt::FlowReceipt,
@@ -62,6 +72,7 @@ pub(crate) fn persist_receipt(
     parent_session_id: &Option<String>,
     parent_chain_hash: &Option<String>,
     compartment: Option<&str>,
+    signing_failed: bool,
 ) {
     let safe_id = sanitize_session_id(session_id);
     let receipts_dir = session_dir().join("receipts");
@@ -97,6 +108,7 @@ pub(crate) fn persist_receipt(
         parent_chain_hash: parent_chain_hash.clone(),
         compartment: compartment.map(|s| s.to_string()),
         compartment_transition_from: None,
+        signing_failed,
     };
 
     if let Ok(json) = serde_json::to_string(&entry) {
@@ -166,6 +178,7 @@ pub(crate) fn persist_transition_receipt(
 
         // Update chain head.
         s.chain_head_hash = hash;
+        let sign_failed = signature.is_empty();
 
         built_entry = Some(ReceiptEntry {
             timestamp: now,
@@ -182,6 +195,7 @@ pub(crate) fn persist_transition_receipt(
             parent_chain_hash: None,
             compartment: Some(target.clone()),
             compartment_transition_from: from_str.clone(),
+            signing_failed: sign_failed,
         });
     });
 
