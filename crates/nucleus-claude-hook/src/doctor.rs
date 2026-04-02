@@ -20,6 +20,18 @@ pub(crate) fn run_doctor() {
                         "\x1b[32m\u{2713}\x1b[0m Hook configured in {}",
                         path.display()
                     );
+
+                    // Check for incomplete hook registration (#874)
+                    if let Ok(settings) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if let Some(hooks_obj) = settings.get("hooks").and_then(|h| h.as_object()) {
+                            if crate::setup::needs_migration(hooks_obj) {
+                                println!(
+                                    "\x1b[33m!\x1b[0m Hook config is outdated (missing PostToolUse/SessionStart/SessionEnd) — run --setup to upgrade"
+                                );
+                                ok = false;
+                            }
+                        }
+                    }
                 } else {
                     println!(
                         "\x1b[31m\u{2717}\x1b[0m Hook NOT configured in {} — run --setup",
