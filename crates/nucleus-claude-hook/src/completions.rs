@@ -21,6 +21,7 @@ const FLAGS: &[&str] = &[
     "--receipts",
     "--completions",
     "--exit-codes",
+    "--benchmark",
 ];
 
 /// Generate a shell completion script for the given shell name.
