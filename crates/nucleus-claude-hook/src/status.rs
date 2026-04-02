@@ -425,6 +425,7 @@ mod tests {
             chain_head_hash: [0u8; 32],
             signing_key_pkcs8: vec![],
             active_compartment: None,
+            lowest_compartment: None,
             compartment_token: String::new(),
             parent_session_id: None,
             parent_chain_hash: None,
