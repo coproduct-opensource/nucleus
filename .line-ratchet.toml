@@ -20,6 +20,6 @@ path = "crates/nucleus-claude-hook/src/main.rs"
 
 [[files]]
 path = "crates/portcullis/src/kernel.rs"
-ceiling = 4300
+ceiling = 4080
 target = 2500
 step = 1
