@@ -148,7 +148,9 @@ pub fn source_category(kind: NodeKind) -> SourceCategory {
         }
         NodeKind::WebContent | NodeKind::CachedDatum => SourceCategory::Adversarial,
         NodeKind::OutboundAction | NodeKind::MemoryWrite => SourceCategory::Action,
-        NodeKind::DatabaseRow | NodeKind::GitBlob => SourceCategory::Trusted,
+        NodeKind::DatabaseRow | NodeKind::GitBlob | NodeKind::DeterministicBind => {
+            SourceCategory::Trusted
+        }
         NodeKind::HTTPResponse => SourceCategory::Adversarial,
         NodeKind::ModelPlan
         | NodeKind::ToolResponse

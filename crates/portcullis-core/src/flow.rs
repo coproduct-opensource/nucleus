@@ -69,6 +69,11 @@ pub enum NodeKind {
     /// Data retrieved from a cache layer.
     /// Public confidentiality, untrusted integrity (cache can be stale/poisoned).
     CachedDatum,
+    /// Parser output bound to a schema field without model intermediation.
+    /// Parents must be exclusively deterministic (non-model) nodes.
+    /// This is the "air gap" that keeps AI-derived taint out of
+    /// deterministic data paths (#922).
+    DeterministicBind,
 }
 
 /// Intrinsic label for a node kind — the base label before propagation.
@@ -201,6 +206,18 @@ pub fn intrinsic_label(kind: NodeKind, now: u64) -> IFCLabel {
         NodeKind::CachedDatum => IFCLabel {
             confidentiality: ConfLevel::Public,
             integrity: IntegLevel::Untrusted,
+            provenance: ProvenanceSet::TOOL,
+            freshness: crate::Freshness {
+                observed_at: now,
+                ttl_secs: 0,
+            },
+            authority: AuthorityLevel::NoAuthority,
+            derivation: DerivationClass::Deterministic,
+        },
+        // DeterministicBind — parser output bound to schema field, no model touch.
+        NodeKind::DeterministicBind => IFCLabel {
+            confidentiality: ConfLevel::Internal,
+            integrity: IntegLevel::Trusted,
             provenance: ProvenanceSet::TOOL,
             freshness: crate::Freshness {
                 observed_at: now,
