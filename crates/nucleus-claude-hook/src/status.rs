@@ -431,6 +431,8 @@ mod tests {
             last_pre_tool_obs_index: None,
             flagged_tools: Default::default(),
             last_injected_context_key: None,
+            web_tainted: false,
+            web_taint_context_injected: false,
         }
     }
 

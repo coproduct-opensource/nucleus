@@ -99,6 +99,15 @@ pub(crate) struct SessionState {
     /// When this changes (or is empty), we inject context again.
     #[serde(default)]
     pub(crate) last_injected_context_key: Option<String>,
+    /// Whether this session has been tainted by web content (#838).
+    /// Set on PostToolUse when a web-fetching tool returns data.
+    /// Once true, never reverts — web taint is monotonic within a session.
+    #[serde(default)]
+    pub(crate) web_tainted: bool,
+    /// Whether the web taint warning has been injected into additionalContext (#838).
+    /// Prevents repeated injection — the model only needs to be told once.
+    #[serde(default)]
+    pub(crate) web_taint_context_injected: bool,
 }
 
 impl SessionState {

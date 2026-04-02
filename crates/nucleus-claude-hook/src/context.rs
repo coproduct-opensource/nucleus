@@ -95,11 +95,14 @@ pub(crate) fn build_security_context(
     parts.join(" ")
 }
 
-/// Check whether any flow observation records a web content node.
-fn has_web_taint_in_observations(session: &SessionState) -> bool {
-    session.flow_observations.iter().any(|(kind, op, _)| {
-        *kind == node_kind_to_u8(NodeKind::WebContent) && (op == "WebFetch" || op == "WebSearch")
-    })
+/// Check whether this session has web taint — either via the explicit
+/// `web_tainted` flag (#838) or by scanning flow observations for WebContent nodes.
+fn has_web_taint_in_session(session: &SessionState) -> bool {
+    session.web_tainted
+        || session.flow_observations.iter().any(|(kind, op, _)| {
+            *kind == node_kind_to_u8(NodeKind::WebContent)
+                && (op == "WebFetch" || op == "WebSearch")
+        })
 }
 
 /// Determine whether to inject additionalContext on this invocation.
@@ -122,7 +125,7 @@ pub(crate) fn maybe_build_context(
     }
 
     let has_web_taint = matches!(operation, Operation::WebFetch | Operation::WebSearch)
-        || has_web_taint_in_observations(session);
+        || has_web_taint_in_session(session);
 
     let fingerprint = context_fingerprint(compartment.map(compartment_str), has_web_taint);
 
@@ -141,7 +144,7 @@ pub(crate) fn current_fingerprint(
     operation: Operation,
 ) -> String {
     let has_web_taint = matches!(operation, Operation::WebFetch | Operation::WebSearch)
-        || has_web_taint_in_observations(session);
+        || has_web_taint_in_session(session);
     context_fingerprint(compartment.map(compartment_str), has_web_taint)
 }
 

@@ -31,6 +31,7 @@ mod init;
 mod protocol;
 mod session;
 mod status;
+mod web_taint;
 
 use classify::*;
 use color::{nucleus_allow, nucleus_deny, nucleus_info, nucleus_warn};
@@ -1371,6 +1372,14 @@ fn main() {
                         ));
                         // Clear the pre-tool index — this PostToolUse is consumed.
                         session.last_pre_tool_obs_index = None;
+                        // Web taint detection (#838) — monotonic, never reverts.
+                        if web_taint::detect_web_taint(&input.tool_name) && !session.web_tainted {
+                            session.web_tainted = true;
+                            eprintln!(
+                                "{}",
+                                web_taint::web_taint_warning(&input.tool_name, result_text)
+                            );
+                        }
                         save_session(&input.session_id, &session);
 
                         eprintln!(
@@ -1382,14 +1391,6 @@ fn main() {
                         nucleus_deny!("post-tool skipped — session tampered");
                     }
                 }
-
-                // Log the post-tool observation
-                let op = map_tool(&input.tool_name);
-                let truncated = truncate_subject(result_text, 100);
-                eprintln!(
-                    "nucleus: post-tool {op} {} — result: {truncated}",
-                    input.tool_name
-                );
             }
         }
 
