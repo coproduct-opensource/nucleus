@@ -84,6 +84,8 @@ pub mod policy_rules;
 pub mod promotion;
 #[cfg(feature = "serde")]
 pub mod prov_export;
+#[cfg(feature = "serde")]
+pub mod provenance_output;
 pub mod provenance_schema;
 pub mod receipt;
 #[cfg(feature = "artifact")]
