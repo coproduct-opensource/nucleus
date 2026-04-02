@@ -71,6 +71,11 @@ pub(crate) struct SessionState {
     /// Active compartment name (if any). Used to detect transitions.
     #[serde(default)]
     pub(crate) active_compartment: Option<String>,
+    /// Lowest compartment reached during this session (#471).
+    /// When `NUCLEUS_RATCHET_MODE=1`, escalation above this level is denied.
+    /// Tracks the lowest (most restrictive) compartment ever activated.
+    #[serde(default)]
+    pub(crate) lowest_compartment: Option<String>,
     /// Random token for keying the compartment filename (hex string).
     /// Generated once per session. The model cannot predict this because
     /// it's stored in session state (which the model can't read).
@@ -790,6 +795,8 @@ pub(crate) enum TransitionError {
     Stale,
     /// Failed to write compartment file.
     WriteError(String),
+    /// Ratchet mode: escalation above lowest-ever compartment denied (#471).
+    RatchetViolation { lowest: String, requested: String },
 }
 
 impl std::fmt::Display for TransitionError {
@@ -815,6 +822,13 @@ impl std::fmt::Display for TransitionError {
                 write!(f, "transition request is stale (>60s old). Re-request.")
             }
             TransitionError::WriteError(e) => write!(f, "failed to apply transition: {e}"),
+            TransitionError::RatchetViolation { lowest, requested } => {
+                write!(
+                    f,
+                    "ratchet mode: escalation to '{requested}' denied — session already \
+                     de-escalated to '{lowest}'. De-escalation is permanent in ratchet mode."
+                )
+            }
         }
     }
 }
@@ -941,6 +955,31 @@ pub(crate) fn apply_pending_transition(
         }
     }
 
+    // 4b. Enforce ratchet mode (#471) — if enabled, deny escalation above
+    // the lowest compartment ever reached in this session.
+    let ratchet_mode = std::env::var("NUCLEUS_RATCHET_MODE")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    if ratchet_mode {
+        let lowest_from_session = match load_session(session_id) {
+            SessionLoad::Loaded(s) | SessionLoad::Fresh(s) => s.lowest_compartment.clone(),
+            _ => None,
+        };
+        if let Some(lowest) = lowest_from_session {
+            if let Some(lowest_comp) =
+                portcullis_core::compartment::Compartment::from_str_opt(&lowest)
+            {
+                if target > lowest_comp {
+                    delete_transition_request();
+                    return Err(TransitionError::RatchetViolation {
+                        lowest: lowest.clone(),
+                        requested: target.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
     // 5. Write the keyed compartment file (trusted path)
     let keyed_name = keyed_compartment_name(session_id, token);
     let compartment_file = session_dir().join(format!("{keyed_name}.compartment"));
@@ -949,7 +988,20 @@ pub(crate) fn apply_pending_transition(
         TransitionError::WriteError(e.to_string())
     })?;
 
-    // 6. Delete the request file (single-use)
+    // 6. Update lowest compartment for ratchet tracking (#471).
+    with_session(session_id, |s| {
+        let target_str = target.to_string();
+        let should_update = match &s.lowest_compartment {
+            None => true,
+            Some(existing) => portcullis_core::compartment::Compartment::from_str_opt(existing)
+                .map_or(true, |existing_comp| target < existing_comp),
+        };
+        if should_update {
+            s.lowest_compartment = Some(target_str);
+        }
+    });
+
+    // 7. Delete the request file (single-use)
     delete_transition_request();
 
     Ok(())
