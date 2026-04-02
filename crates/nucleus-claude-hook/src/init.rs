@@ -385,16 +385,39 @@ const SKILL_TEMPLATES: &[(&str, &str)] = &[
         "clearance",
         "---\n\
          name: clearance\n\
-         description: Promote AI-derived content to human-verified status\n\
+         description: Promote content to verified status via WitnessBundle\n\
          ---\n\
          \n\
-         The user wants to grant clearance (promote) AI-generated content.\n\
+         The user wants to grant clearance (promote) content to verified status.\n\
          \n\
-         Ask for:\n\
-         1. Which content to promote (field name or description)\n\
-         2. The reason for clearance\n\
+         ## With reduction pipeline (preferred)\n\
          \n\
-         Confirm before executing. Clearance is auditable and cannot be revoked.\n",
+         If WASM parser steps have been recorded (shown in the status line as\n\
+         parser steps > 0), the clearance assembles a WitnessBundle:\n\
+         \n\
+         1. Collects pending source hashes (from web fetches)\n\
+         2. Collects pending parser steps (from WASM reduction)\n\
+         3. Verifies the hash chain: source → parser → output\n\
+         4. If valid: promotes content, reports witness ID and digest\n\
+         5. If broken: reports which step failed and why\n\
+         \n\
+         ## Without reduction pipeline\n\
+         \n\
+         If no parser steps exist, report that the reduction pipeline is\n\
+         incomplete. The user must apply a registered parser first:\n\
+         \n\
+         ```\n\
+         ❌ Cannot clear — no reduction witness.\n\
+         Content has N pending source hashes but no parser steps.\n\
+         Apply a registered parser first, then retry /clearance.\n\
+         ```\n\
+         \n\
+         ## Manual clearance (user attestation)\n\
+         \n\
+         For `!` bash passthrough content (Deterministic/Directive), the user\n\
+         IS the witness. Ask for a reason and grant clearance directly.\n\
+         \n\
+         Clearance is auditable and cannot be revoked.\n",
     ),
 ];
 
