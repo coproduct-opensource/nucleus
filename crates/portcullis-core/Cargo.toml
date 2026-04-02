@@ -21,12 +21,17 @@ serde = ["dep:serde", "dep:toml"]
 attestation = ["dep:sha2"]
 artifact = ["dep:serde", "dep:serde_json", "dep:sha2"]
 envelope = ["dep:sha2"]
+wasm-sandbox = ["dep:wasmtime", "dep:sha2"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"], optional = true }
 toml = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+wasmtime = { version = "43", optional = true }
+
+[dev-dependencies]
+wat = "1"
 
 [lints.rust]
 unexpected_cfgs = { level = "allow", check-cfg = ['cfg(kani)'] }
