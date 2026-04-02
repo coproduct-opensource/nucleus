@@ -2735,6 +2735,7 @@ mod tests {
             SourceDeclaration {
                 url_template: "https://example.com".into(),
                 content_type: None,
+                max_staleness_secs: None,
             },
         );
         let mut fields = BTreeMap::new();
