@@ -88,10 +88,11 @@ fn main() {
 
     // Scenario 4: Automatic uninhabitable_state enforcement via PermissionLattice
     println!("\nScenario 4: Automatic enforcement via meet()");
-    let perms = PermissionLattice {
-        capabilities: dangerous.clone(),
-        uninhabitable_constraint: true,
-        ..Default::default()
+    #[allow(clippy::field_reassign_with_default)]
+    let perms = {
+        let mut p = PermissionLattice::default();
+        p.capabilities = dangerous.clone();
+        p
     };
     let enforced = perms.meet(&perms);
     println!(
