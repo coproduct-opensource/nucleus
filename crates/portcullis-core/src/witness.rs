@@ -28,6 +28,16 @@
 use sha2::{Digest, Sha256};
 use std::fmt;
 
+/// SHA-256 helper for content hashing.
+fn sha256(data: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    let result = hasher.finalize();
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&result);
+    hash
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ChainVerifyError — structured errors from verify_chain()
 // ═══════════════════════════════════════════════════════════════════════════
@@ -126,6 +136,11 @@ pub struct InputBlob {
     pub fetched_at: u64,
     /// Identity of the principal that performed the fetch.
     pub fetched_by: String,
+    /// Raw content bytes for replay verification (#939).
+    /// When present, an auditor can re-execute the parser chain on this
+    /// input and verify the output hashes match. When absent, the auditor
+    /// must trust the content_hash.
+    pub raw_content: Option<Vec<u8>>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -404,7 +419,134 @@ impl WitnessBundle {
 
         true
     }
+
+    /// Verify the bundle by replaying parser execution (#939).
+    ///
+    /// For each parser step where the input blob has `raw_content`, re-hash
+    /// the content and verify it matches `content_hash`, then call the
+    /// provided executor to re-run the parser and verify the output hash.
+    ///
+    /// This is the strongest verification: the auditor doesn't trust our
+    /// hashes — they independently compute them from the raw data.
+    pub fn verify_replay<F>(&self, mut executor: F) -> Result<(), ReplayError>
+    where
+        F: FnMut(&str, &[u8]) -> Result<Vec<u8>, String>,
+    {
+        // Verify raw content hashes for input blobs that include raw data.
+        for (i, blob) in self.input_blobs.iter().enumerate() {
+            if let Some(ref raw) = blob.raw_content {
+                let actual = sha256(raw);
+                if actual != blob.content_hash {
+                    return Err(ReplayError::InputHashMismatch {
+                        blob_index: i,
+                        declared: blob.content_hash,
+                        actual,
+                    });
+                }
+            }
+        }
+
+        // Replay each parser step.
+        for (i, step) in self.parser_chain.iter().enumerate() {
+            // Find the input bytes from an input blob with matching hash.
+            let input_bytes = self
+                .input_blobs
+                .iter()
+                .find(|b| b.content_hash == step.input_hash)
+                .and_then(|b| b.raw_content.as_deref());
+
+            let Some(input) = input_bytes else {
+                // No raw content available — skip replay (hash chain still applies).
+                continue;
+            };
+
+            // Re-execute the parser.
+            let output =
+                executor(&step.parser_id, input).map_err(|e| ReplayError::ExecutionFailed {
+                    step_index: i,
+                    parser_id: step.parser_id.clone(),
+                    message: e,
+                })?;
+
+            // Verify the output hash.
+            let actual_hash = sha256(&output);
+            if actual_hash != step.output_hash {
+                return Err(ReplayError::OutputHashMismatch {
+                    step_index: i,
+                    parser_id: step.parser_id.clone(),
+                    declared: step.output_hash,
+                    actual: actual_hash,
+                });
+            }
+        }
+
+        Ok(())
+    }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ReplayError — errors from verify_replay (#939)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Error returned by [`WitnessBundle::verify_replay`] when replay
+/// verification detects a discrepancy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplayError {
+    /// Raw content hash doesn't match the declared content_hash.
+    InputHashMismatch {
+        blob_index: usize,
+        declared: [u8; 32],
+        actual: [u8; 32],
+    },
+    /// Parser re-execution produced a different output hash.
+    OutputHashMismatch {
+        step_index: usize,
+        parser_id: String,
+        declared: [u8; 32],
+        actual: [u8; 32],
+    },
+    /// Parser execution failed during replay.
+    ExecutionFailed {
+        step_index: usize,
+        parser_id: String,
+        message: String,
+    },
+}
+
+impl std::fmt::Display for ReplayError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InputHashMismatch { blob_index, .. } => {
+                write!(
+                    f,
+                    "input blob {blob_index}: content hash mismatch on replay"
+                )
+            }
+            Self::OutputHashMismatch {
+                step_index,
+                parser_id,
+                ..
+            } => {
+                write!(
+                    f,
+                    "parser step {step_index} ({parser_id}): output hash mismatch on replay"
+                )
+            }
+            Self::ExecutionFailed {
+                step_index,
+                parser_id,
+                message,
+            } => {
+                write!(
+                    f,
+                    "parser step {step_index} ({parser_id}): execution failed: {message}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ReplayError {}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ReductionWitness - proof that content was processed through a parser chain
@@ -574,6 +716,7 @@ mod tests {
                 content_hash: input_hash,
                 fetched_at: 1000,
                 fetched_by: "fetcher-agent".to_string(),
+                raw_content: None,
             }],
             parser_chain: vec![ParserStep {
                 parser_id: "json_parser".to_string(),
@@ -706,6 +849,7 @@ mod tests {
                 content_hash: input_hash,
                 fetched_at: 1000,
                 fetched_by: "agent".to_string(),
+                raw_content: None,
             }],
             parser_chain: vec![],
             transform_chain: vec![],
@@ -738,12 +882,14 @@ mod tests {
                     content_hash: hash_a,
                     fetched_at: 1000,
                     fetched_by: "agent-a".to_string(),
+                    raw_content: None,
                 },
                 InputBlob {
                     source_class: "database".to_string(),
                     content_hash: hash_b,
                     fetched_at: 1001,
                     fetched_by: "agent-b".to_string(),
+                    raw_content: None,
                 },
             ],
             parser_chain: vec![
@@ -806,6 +952,7 @@ mod tests {
                 content_hash: input_hash,
                 fetched_at: 1000,
                 fetched_by: "agent".to_string(),
+                raw_content: None,
             }],
             parser_chain: vec![ParserStep {
                 parser_id: "p".to_string(),
@@ -845,6 +992,7 @@ mod tests {
                 content_hash: input_hash,
                 fetched_at: 1000,
                 fetched_by: "agent".to_string(),
+                raw_content: None,
             }],
             parser_chain: vec![ParserStep {
                 parser_id: "evil_parser".to_string(),
@@ -884,6 +1032,7 @@ mod tests {
                 content_hash: input_hash,
                 fetched_at: 1000,
                 fetched_by: "agent".to_string(),
+                raw_content: None,
             }],
             parser_chain: vec![
                 ParserStep {
@@ -926,6 +1075,7 @@ mod tests {
                 content_hash: input_hash,
                 fetched_at: 1000,
                 fetched_by: "agent".to_string(),
+                raw_content: None,
             }],
             parser_chain: vec![
                 ParserStep {
@@ -974,6 +1124,7 @@ mod tests {
                 content_hash: input_hash,
                 fetched_at: 1000,
                 fetched_by: "agent".to_string(),
+                raw_content: None,
             }],
             parser_chain: vec![ParserStep {
                 parser_id: "p".to_string(),
@@ -1020,6 +1171,7 @@ mod tests {
                 content_hash: input_hash,
                 fetched_at: 1000,
                 fetched_by: "agent".to_string(),
+                raw_content: None,
             }],
             parser_chain: vec![],
             transform_chain: vec![TransformStep {
