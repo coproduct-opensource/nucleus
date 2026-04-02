@@ -671,7 +671,6 @@ fn main() -> Result<()> {
     // state. Otherwise, use a permissive lattice (proxy handles enforcement).
     let kernel_lattice = policy.clone().unwrap_or_else(PermissionLattice::permissive);
     let mut kernel = Kernel::new(kernel_lattice);
-    kernel.enable_flow_graph();
 
     // Track the last flow graph node ID for causal chaining.
     // Each allowed operation produces an observation node; the next operation's

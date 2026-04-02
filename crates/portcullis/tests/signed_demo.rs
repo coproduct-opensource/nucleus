@@ -24,7 +24,6 @@ fn invariant_exploit_blocked_with_signed_receipt() {
     // Create kernel with flow graph and signing key
     let perms = PermissionLattice::safe_pr_fixer();
     let mut kernel = Kernel::new(perms);
-    kernel.enable_flow_graph();
     kernel.set_signing_key(std::sync::Arc::new(signing_key));
 
     // ── Simulate the Invariant exploit scenario ──

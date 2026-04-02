@@ -1,7 +1,7 @@
 //! Kernel-integration red team tests.
 //!
 //! These tests exercise the FULL enforcement path:
-//!   Kernel::new() → enable_flow_graph() → observe() → decide_with_parents()
+//!   Kernel::new() → observe() → decide_with_parents()
 //!
 //! Unlike `portcullis-core/tests/flow_red_team.rs` which constructs FlowNode
 //! structs manually and calls check_flow() directly, these tests go through
@@ -30,7 +30,6 @@ use portcullis_core::flow::NodeKind;
 fn kernel_web_content_blocks_git_push() {
     let perms = PermissionLattice::permissive();
     let mut kernel = Kernel::new(perms);
-    kernel.enable_flow_graph();
 
     // Step 1: Observe web content (reading is fine — no action, no check)
     let web_node = kernel
@@ -96,7 +95,6 @@ fn kernel_web_content_blocks_git_push() {
 fn kernel_clean_write_allowed_alongside_tainted_session() {
     let perms = PermissionLattice::permissive();
     let mut kernel = Kernel::new(perms);
-    kernel.enable_flow_graph();
 
     // Step 1: Observe web content — taints the session-level label
     let _web_node = kernel
@@ -147,7 +145,6 @@ fn kernel_clean_write_allowed_alongside_tainted_session() {
 fn kernel_ai_derived_blocked_from_git_push() {
     let perms = PermissionLattice::permissive();
     let mut kernel = Kernel::new(perms);
-    kernel.enable_flow_graph();
 
     // Step 1: Observe a model plan step (AI-derived content)
     let model_node = kernel
@@ -191,7 +188,6 @@ fn kernel_ai_derived_blocked_from_git_push() {
 fn kernel_web_content_blocks_create_pr() {
     let perms = PermissionLattice::permissive();
     let mut kernel = Kernel::new(perms);
-    kernel.enable_flow_graph();
 
     let web_node = kernel
         .observe(NodeKind::WebContent, &[])
@@ -226,7 +222,6 @@ fn kernel_web_content_blocks_create_pr() {
 fn kernel_transitive_web_taint_through_model_plan() {
     let perms = PermissionLattice::permissive();
     let mut kernel = Kernel::new(perms);
-    kernel.enable_flow_graph();
 
     // Step 1: Observe web content
     let web_node = kernel
@@ -270,7 +265,6 @@ fn kernel_transitive_web_taint_through_model_plan() {
 fn kernel_clean_chain_allows_git_commit() {
     let perms = PermissionLattice::permissive();
     let mut kernel = Kernel::new(perms);
-    kernel.enable_flow_graph();
 
     // User prompt → file read → model plan → git commit
     let user = kernel
@@ -306,7 +300,6 @@ fn kernel_clean_chain_allows_git_commit() {
 fn kernel_secret_exfil_blocked() {
     let perms = PermissionLattice::permissive();
     let mut kernel = Kernel::new(perms);
-    kernel.enable_flow_graph();
 
     // Observe a secret (environment variable)
     let secret_node = kernel
@@ -374,7 +367,6 @@ fn flagship_demo_b_poisoned_memory_delegated_agent() {
 
     let perms_a = PermissionLattice::permissive();
     let mut kernel_a = Kernel::new(perms_a);
-    kernel_a.enable_flow_graph();
 
     // Step 1: Observe the malicious web content (reading is fine)
     let _web_node = kernel_a
@@ -413,7 +405,6 @@ fn flagship_demo_b_poisoned_memory_delegated_agent() {
 
     let perms_b = PermissionLattice::permissive();
     let mut kernel_b = Kernel::new(perms_b);
-    kernel_b.enable_flow_graph();
 
     // Step 3: Read the poisoned memory entry's IFC label.
     // read_label() maps MayNotAuthorize → AuthorityLevel::NoAuthority
@@ -659,7 +650,6 @@ fn flagship_demo_b_poisoned_memory_delegated_agent() {
 fn flagship_demo_c_mcp_skill_remote_instruction_attack() {
     let perms = PermissionLattice::permissive();
     let mut kernel = Kernel::new(perms);
-    kernel.enable_flow_graph();
 
     // ─── Phase 1: MCP skill fetches remote instructions ────────────
     //

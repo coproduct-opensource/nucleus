@@ -30,9 +30,7 @@ fn public_key_bytes(key: &Ed25519KeyPair) -> [u8; 32] {
 
 fn make_kernel_with_graph() -> Kernel {
     let perms = PermissionLattice::safe_pr_fixer();
-    let mut kernel = Kernel::new(perms);
-    kernel.enable_flow_graph();
-    kernel
+    Kernel::new(perms)
 }
 
 fn make_token(node_id: u64) -> DeclassificationToken {
@@ -179,27 +177,21 @@ fn key_rotation_accepts_old_key() {
 }
 
 #[test]
-fn apply_token_without_flow_graph_returns_error() {
+fn apply_token_for_nonexistent_node_returns_not_found() {
+    // #753: flow graph is always present. Applying a token for a
+    // nonexistent node returns NodeNotFound (not GraphNotEnabled).
     let key = test_key();
     let perms = PermissionLattice::safe_pr_fixer();
     let mut kernel = Kernel::new(perms);
-    // Do NOT enable flow graph
     kernel.set_trusted_keys(vec![public_key_bytes(&key)]);
 
     let mut token = make_token(42);
     token_sign::sign_token(&mut token, &key);
 
     let result = kernel.apply_declassification_token(&token);
-    match result {
-        Err(DenyReason::InvalidDeclassification { detail }) => {
-            assert!(
-                detail.contains("flow graph not enabled"),
-                "expected flow graph error, got: {detail}"
-            );
-        }
-        other => panic!(
-            "expected InvalidDeclassification (flow graph), got {:?}",
-            other
-        ),
-    }
+    assert!(
+        matches!(result, Ok(TokenApplyResult::NodeNotFound)),
+        "expected NodeNotFound for nonexistent node, got {:?}",
+        result
+    );
 }
