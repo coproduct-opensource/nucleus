@@ -166,10 +166,22 @@ fn default_claude_settings() -> serde_json::Value {
             "NUCLEUS_COMPARTMENT": "research"
         },
         "hooks": {
-            "PreToolUse": [{"command": "nucleus-claude-hook"}],
-            "PostToolUse": [{"command": "nucleus-claude-hook"}],
-            "SessionStart": [{"command": "nucleus-claude-hook --session-init"}],
-            "SessionEnd": [{"command": "nucleus-claude-hook --session-end"}]
+            "PreToolUse": [{
+                "matcher": ".*",
+                "hooks": [{"type": "command", "command": "nucleus-claude-hook"}]
+            }],
+            "PostToolUse": [{
+                "matcher": ".*",
+                "hooks": [{"type": "command", "command": "nucleus-claude-hook"}]
+            }],
+            "SessionStart": [{
+                "matcher": "",
+                "hooks": [{"type": "command", "command": "nucleus-claude-hook --session-init"}]
+            }],
+            "SessionEnd": [{
+                "matcher": "",
+                "hooks": [{"type": "command", "command": "nucleus-claude-hook --session-end"}]
+            }]
         },
         "statusLine": "nucleus-claude-hook --statusline"
     })
@@ -698,6 +710,33 @@ mod tests {
         assert!(v["hooks"]["PreToolUse"].is_array());
         assert!(v["hooks"]["SessionStart"].is_array());
         assert!(v["statusLine"].is_string());
+
+        // Verify matcher-based hook format (not the old flat command format).
+        for hook_type in &["PreToolUse", "PostToolUse", "SessionStart", "SessionEnd"] {
+            let arr = v["hooks"][hook_type].as_array().unwrap();
+            assert!(
+                !arr.is_empty(),
+                "{hook_type} should have at least one entry"
+            );
+            let entry = &arr[0];
+            assert!(
+                entry.get("matcher").is_some(),
+                "{hook_type} entry needs matcher field"
+            );
+            let hooks = entry
+                .get("hooks")
+                .unwrap_or_else(|| panic!("{hook_type} entry needs hooks array"));
+            assert!(hooks.is_array(), "{hook_type} hooks should be an array");
+            let hook = &hooks.as_array().unwrap()[0];
+            assert_eq!(
+                hook["type"], "command",
+                "{hook_type} hook type must be 'command'"
+            );
+            assert!(
+                hook.get("command").is_some(),
+                "{hook_type} hook needs command field"
+            );
+        }
     }
 
     #[test]
@@ -728,10 +767,12 @@ mod tests {
 
     #[test]
     fn merge_json_appends_to_arrays_without_duplicates() {
-        let mut target = serde_json::json!([{"command": "my-hook"}]);
+        let mut target = serde_json::json!([
+            {"matcher": ".*", "hooks": [{"type": "command", "command": "my-hook"}]}
+        ]);
         let source = serde_json::json!([
-            {"command": "my-hook"},
-            {"command": "nucleus-claude-hook"}
+            {"matcher": ".*", "hooks": [{"type": "command", "command": "my-hook"}]},
+            {"matcher": ".*", "hooks": [{"type": "command", "command": "nucleus-claude-hook"}]}
         ]);
         merge_json(&mut target, &source);
         // my-hook should not be duplicated, nucleus-claude-hook appended.
@@ -744,7 +785,10 @@ mod tests {
         let mut target = serde_json::json!({
             "env": {"MY_TOKEN": "secret"},
             "hooks": {
-                "PreToolUse": [{"command": "my-linter"}]
+                "PreToolUse": [{
+                    "matcher": ".*",
+                    "hooks": [{"type": "command", "command": "my-linter"}]
+                }]
             }
         });
         let source = default_claude_settings();
@@ -757,8 +801,8 @@ mod tests {
         // User's hook preserved, nucleus hook appended.
         let pre = target["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(pre.len(), 2);
-        assert_eq!(pre[0]["command"], "my-linter");
-        assert_eq!(pre[1]["command"], "nucleus-claude-hook");
+        assert_eq!(pre[0]["hooks"][0]["command"], "my-linter");
+        assert_eq!(pre[1]["hooks"][0]["command"], "nucleus-claude-hook");
 
         // New hook types added.
         assert!(target["hooks"]["SessionStart"].is_array());
