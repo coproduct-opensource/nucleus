@@ -52,6 +52,41 @@ struct ReceiptEntry {
     /// key corruption, low entropy, or sandboxed environment.
     #[serde(default, skip_serializing_if = "is_false")]
     signing_failed: bool,
+    /// Execution context telemetry (#964, NIST AI RMF alignment).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution_context: Option<ExecutionContext>,
+}
+
+/// Execution environment context attached to receipts (#964).
+///
+/// Provides the "where and how" for each decision, enabling auditors
+/// to reconstruct the execution environment. Aligned with NIST AI RMF
+/// documentation requirements.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ExecutionContext {
+    /// Number of flow graph observations at decision time.
+    pub flow_observations: usize,
+    /// Wall-clock duration of the hook invocation (milliseconds).
+    pub hook_duration_ms: f64,
+    /// Number of pending source hashes (provenance pipeline state).
+    pub pending_sources: usize,
+    /// Number of deterministic binds completed.
+    pub deterministic_binds: usize,
+    /// Whether the session is web-tainted.
+    pub web_tainted: bool,
+}
+
+impl ExecutionContext {
+    /// Build from session state and timing info.
+    pub fn from_session(session: &crate::session::SessionState, elapsed_ms: f64) -> Self {
+        Self {
+            flow_observations: session.flow_observations.len(),
+            hook_duration_ms: elapsed_ms,
+            pending_sources: session.pending_source_hashes.len(),
+            deterministic_binds: session.deterministic_binds.len(),
+            web_tainted: session.web_tainted,
+        }
+    }
 }
 
 fn is_false(v: &bool) -> bool {
@@ -73,6 +108,7 @@ pub(crate) fn persist_receipt(
     parent_chain_hash: &Option<String>,
     compartment: Option<&str>,
     signing_failed: bool,
+    exec_ctx: Option<ExecutionContext>,
 ) {
     let safe_id = sanitize_session_id(session_id);
     let receipts_dir = session_dir().join("receipts");
@@ -109,6 +145,7 @@ pub(crate) fn persist_receipt(
         compartment: compartment.map(|s| s.to_string()),
         compartment_transition_from: None,
         signing_failed,
+        execution_context: exec_ctx,
     };
 
     if let Ok(json) = serde_json::to_string(&entry) {
@@ -196,6 +233,7 @@ pub(crate) fn persist_transition_receipt(
             compartment: Some(target.clone()),
             compartment_transition_from: from_str.clone(),
             signing_failed: sign_failed,
+            execution_context: None,
         });
     });
 
