@@ -29,6 +29,8 @@ libc = "0.2"
 # Enable WASM parser execution in PostToolUse reduction pipeline (#915).
 # Adds wasmtime dependency (~2MB). Without this, parser steps are skipped.
 wasm-sandbox = ["portcullis-core/wasm-sandbox"]
+# Enable C2PA content credential sidecar emission at SessionEnd (#1017).
+c2pa = ["portcullis-core/c2pa-manifest"]
 
 [lints]
 workspace = true
