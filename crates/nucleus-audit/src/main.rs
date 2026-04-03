@@ -120,6 +120,15 @@ enum Command {
         #[arg(long)]
         schema: Option<PathBuf>,
     },
+    /// Diff two provenance outputs — show what changed between runs (#1001).
+    DiffProvenance {
+        /// Old provenance output JSON.
+        #[arg(long)]
+        old: PathBuf,
+        /// New provenance output JSON.
+        #[arg(long)]
+        new: PathBuf,
+    },
     /// Scan agent configurations for security posture and vulnerabilities.
     ///
     /// Supports PodSpec YAML, Claude Code settings.json, and MCP config files.
@@ -245,6 +254,9 @@ fn main() -> Result<(), AuditError> {
         }
         Command::Export { log, format } => {
             export_log(&log, &format)?;
+        }
+        Command::DiffProvenance { old, new } => {
+            diff_provenance(&old, &new)?;
         }
         Command::VerifyProvenance { output, schema } => {
             verify_provenance(&output, schema.as_deref())?;
@@ -1241,6 +1253,96 @@ fn trace_provenance(receipts_dir: &Path, output: Option<&Path>) -> Result<(), Au
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Verify a provenance output file against its schema.
+/// Diff two provenance outputs (#1001).
+fn diff_provenance(old_path: &Path, new_path: &Path) -> Result<(), AuditError> {
+    let old_str = std::fs::read_to_string(old_path)
+        .map_err(|e| AuditError::Backend(format!("{}: {e}", old_path.display())))?;
+    let new_str = std::fs::read_to_string(new_path)
+        .map_err(|e| AuditError::Backend(format!("{}: {e}", new_path.display())))?;
+
+    let old: serde_json::Value = serde_json::from_str(&old_str)
+        .map_err(|e| AuditError::Backend(format!("invalid JSON in old: {e}")))?;
+    let new: serde_json::Value = serde_json::from_str(&new_str)
+        .map_err(|e| AuditError::Backend(format!("invalid JSON in new: {e}")))?;
+
+    println!(
+        "Provenance diff: {} → {}",
+        old_path.display(),
+        new_path.display()
+    );
+
+    let old_fields = old.as_object().map(|o| {
+        o.iter()
+            .filter(|(k, _)| !k.starts_with('_'))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    });
+    let new_fields = new.as_object().map(|o| {
+        o.iter()
+            .filter(|(k, _)| !k.starts_with('_'))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    });
+
+    let (Some(old_f), Some(new_f)) = (old_fields, new_fields) else {
+        println!("  Cannot diff — one or both files are not JSON objects");
+        return Ok(());
+    };
+
+    let mut added = 0u32;
+    let mut removed = 0u32;
+    let mut changed = 0u32;
+    let mut unchanged = 0u32;
+
+    // Fields in new but not old.
+    for (key, val) in &new_f {
+        if !old_f.contains_key(*key) {
+            let derivation = val
+                .get("provenance")
+                .and_then(|p| p.get("derivation"))
+                .and_then(|d| d.as_str())
+                .unwrap_or("?");
+            println!("  + {key}: {derivation} (new field)");
+            added += 1;
+        }
+    }
+
+    // Fields in old but not new.
+    for key in old_f.keys() {
+        if !new_f.contains_key(*key) {
+            println!("  - {key}: removed");
+            removed += 1;
+        }
+    }
+
+    // Fields in both — check for changes.
+    for (key, new_val) in &new_f {
+        if let Some(old_val) = old_f.get(*key) {
+            let old_hash = old_val
+                .get("provenance")
+                .and_then(|p| p.get("parser_output_hash"))
+                .and_then(|h| h.as_str());
+            let new_hash = new_val
+                .get("provenance")
+                .and_then(|p| p.get("parser_output_hash"))
+                .and_then(|h| h.as_str());
+
+            if old_hash != new_hash && old_hash.is_some() {
+                println!(
+                    "  ~ {key}: hash changed ({}→{})",
+                    &old_hash.unwrap_or("?")[..16.min(old_hash.unwrap_or("?").len())],
+                    &new_hash.unwrap_or("?")[..16.min(new_hash.unwrap_or("?").len())]
+                );
+                changed += 1;
+            } else {
+                println!("  = {key}: unchanged");
+                unchanged += 1;
+            }
+        }
+    }
+
+    println!("\nSummary: +{added} -{removed} ~{changed} ={unchanged}");
+    Ok(())
+}
+
 fn verify_provenance(output_path: &Path, schema_path: Option<&Path>) -> Result<(), AuditError> {
     // Load the provenance output.
     let output_contents = std::fs::read_to_string(output_path)
