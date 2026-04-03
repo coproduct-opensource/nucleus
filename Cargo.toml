@@ -12,6 +12,7 @@ members = [
     "crates/nucleus-net-probe", # TCP probe for network policy tests
     "crates/nucleus-mcp", # MCP server bridging Claude to tool-proxy
     "crates/nucleus-audit", # Audit log verifier CLI
+    "crates/nucleus-ifc",      # Standalone IFC library for AI agents
     "crates/nucleus-identity", # SPIFFE-based workload identity
     "crates/exposure-playground", # Interactive TUI demo for HN
     "crates/nucleus-sdk",        # Rust SDK for building sandboxed AI agents

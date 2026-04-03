@@ -3725,6 +3725,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-ifc"
+version = "1.0.0"
+dependencies = [
+ "portcullis-core",
+]
+
+[[package]]
 name = "nucleus-mcp"
 version = "1.0.0"
 dependencies = [
