@@ -95,6 +95,7 @@ pub mod provenance_node;
 pub mod provenance_output;
 pub mod provenance_schema;
 pub mod receipt;
+pub mod redaction;
 #[cfg(feature = "artifact")]
 pub mod registry;
 #[cfg(feature = "envelope")]
