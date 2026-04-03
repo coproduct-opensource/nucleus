@@ -46,3 +46,4 @@ LOOPS.md
 .verus/verus-x86-linux/
 .verus/*.zip
 .claude/worktrees/
+portcullis_core.llbc

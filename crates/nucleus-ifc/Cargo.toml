@@ -1,0 +1,13 @@
+[package]
+name = "nucleus-ifc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Information Flow Control for AI agents — the only IFC library shipping in production"
+repository = "https://github.com/coproduct-opensource/nucleus"
+keywords = ["ai", "security", "ifc", "information-flow", "provenance"]
+categories = ["development-tools", "command-line-utilities"]
+
+[dependencies]
+portcullis-core = { path = "../portcullis-core" }
