@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "description": "SEC 10-K financial extraction demo",
+  "sources": {
+    "sec_edgar": {
+      "url_template": "https://efts.sec.gov/LATEST/search-index?q={ticker}&forms=10-K",
+      "content_type": "application/json",
+      "max_staleness_secs": 600
+    }
+  },
+  "fields": {
+    "revenue": {
+      "source": "sec_edgar",
+      "derivation": "deterministic",
+      "parser": "jq",
+      "expression": ".hits[0].revenue"
+    },
+    "net_income": {
+      "source": "sec_edgar",
+      "derivation": "deterministic",
+      "parser": "jq",
+      "expression": ".hits[0].net_income"
+    },
+    "filing_date": {
+      "source": "sec_edgar",
+      "derivation": "deterministic",
+      "parser": "jq",
+      "expression": ".hits[0].filed"
+    },
+    "business_summary": {
+      "source": "sec_edgar",
+      "derivation": "ai_derived"
+    }
+  }
+}
