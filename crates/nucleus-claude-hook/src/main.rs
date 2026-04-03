@@ -973,6 +973,25 @@ fn main() {
         _ => effective_perms,
     };
 
+    // Apply delegation ceiling from parent (#1031).
+    let effective_perms = if let Some(ref parent_sid) = session.parent_session_id {
+        let safe_parent = sanitize_session_id(parent_sid);
+        let token_path = session_dir().join(format!("{safe_parent}.delegation-token"));
+        if let Ok(json) = std::fs::read_to_string(&token_path) {
+            if let Ok(ceiling) = serde_json::from_str::<PermissionLattice>(&json) {
+                let capped = effective_perms.meet(&ceiling);
+                eprintln!("nucleus: delegation ceiling applied from parent {safe_parent}");
+                capped
+            } else {
+                effective_perms
+            }
+        } else {
+            effective_perms
+        }
+    } else {
+        effective_perms
+    };
+
     let t_kernel_start = std::time::Instant::now();
     let mut kernel = Kernel::new(effective_perms);
 
