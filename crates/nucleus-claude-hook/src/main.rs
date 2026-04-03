@@ -1323,6 +1323,9 @@ fn main() {
                 start_time.elapsed().as_secs_f64() * 1000.0,
             )),
         );
+        // Anchor chain head to external log (#948).
+        receipts::anchor_chain_head(&input.session_id, &session.chain_head_hash);
+
         if !sign_ok {
             nucleus_warn!(
                 "UNSIGNED RECEIPT — signing key unavailable for {}:{} — receipt chain integrity degraded",
