@@ -113,6 +113,39 @@ fn main() {
             println!("nucleus-claude-hook {}", env!("CARGO_PKG_VERSION"));
             return;
         }
+        Ok(cli::CliCommand::ProvenanceSchema) => {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            if let Some(schema) = load_provenance_schema(&cwd) {
+                // Emit a JSON Schema that claude -p --json-schema can use.
+                let mut properties = serde_json::Map::new();
+                for (name, field) in &schema.fields {
+                    let field_schema = serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "value": { "type": ["string", "number", "boolean", "null"] },
+                            "derivation": { "type": "string", "enum": [
+                                if field.derivation == portcullis_core::provenance_schema::DerivationKind::Deterministic { "deterministic" } else { "ai_derived" }
+                            ]}
+                        },
+                        "required": ["value"]
+                    });
+                    properties.insert(name.clone(), field_schema);
+                }
+                let json_schema = serde_json::json!({
+                    "type": "object",
+                    "properties": properties,
+                    "required": schema.fields.keys().collect::<Vec<_>>()
+                });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json_schema).unwrap_or_default()
+                );
+            } else {
+                eprintln!("No .provenance.json found in {}", cwd.display());
+                std::process::exit(1);
+            }
+            return;
+        }
         Ok(cli::CliCommand::Compartment { name }) => {
             session::switch_compartment(&name);
             return;
