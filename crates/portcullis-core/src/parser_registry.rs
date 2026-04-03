@@ -498,6 +498,7 @@ fn hex_encode(bytes: &[u8; 32]) -> String {
 }
 
 /// Decode a hex string into a 32-byte array.
+#[cfg(any(feature = "serde", test))]
 fn hex_decode(s: &str) -> Result<[u8; 32], String> {
     if s.len() != 64 {
         return Err(format!("expected 64 hex chars, got {}", s.len()));
