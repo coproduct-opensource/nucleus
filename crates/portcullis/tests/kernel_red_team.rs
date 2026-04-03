@@ -1114,3 +1114,65 @@ fn flagship_demo_e_covert_exfiltration_blocked() {
         clean_fetch.verdict
     );
 }
+
+// ═════════════════════════════════════════════════════════════════════════
+// Delegation attenuation (#505, #1032): child cannot exceed parent
+//
+// Parent has safe_pr_fixer (no git_push). Child requests permissive.
+// Delegation ceiling = meet(safe_pr_fixer, permissive) = safe_pr_fixer.
+// Child's git_push attempt must be DENIED.
+// ═════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn delegation_attenuation_child_cannot_exceed_parent() {
+    // Parent has safe_pr_fixer — no git_push, no create_pr.
+    let parent_perms = PermissionLattice::safe_pr_fixer();
+
+    // Child requests permissive — wants everything.
+    let child_requested = PermissionLattice::permissive();
+
+    // Delegation ceiling: meet(parent, child) = parent (narrower wins).
+    let delegated = parent_perms.meet(&child_requested);
+
+    // The child's effective permissions are capped by the parent.
+    assert_eq!(
+        delegated.capabilities.git_push, parent_perms.capabilities.git_push,
+        "delegation must cap git_push to parent's level"
+    );
+
+    // Build kernel with delegated (capped) permissions.
+    let mut kernel = Kernel::new(delegated);
+
+    // Child reads a local file (clean).
+    let file_id = kernel
+        .observe(NodeKind::FileRead, &[])
+        .expect("file read should succeed");
+
+    let plan_id = kernel
+        .observe(NodeKind::ModelPlan, &[file_id])
+        .expect("model plan should succeed");
+
+    // Child attempts git_push — DENIED (parent didn't have it).
+    let (push_decision, _) =
+        kernel.decide_with_parents(Operation::GitPush, "origin/main", &[plan_id]);
+
+    assert!(
+        !matches!(push_decision.verdict, Verdict::Allow),
+        "delegated child must NOT be allowed to git_push, got: {:?}",
+        push_decision.verdict
+    );
+
+    // Child attempts WriteFiles — ALLOWED (parent had it).
+    let (write_decision, _) =
+        kernel.decide_with_parents(Operation::WriteFiles, "output.txt", &[plan_id]);
+
+    assert!(
+        matches!(write_decision.verdict, Verdict::Allow),
+        "delegated child should be ALLOWED to write files, got: {:?}",
+        write_decision.verdict
+    );
+
+    // The key invariant: meet() is monotone. Authority can only narrow
+    // through delegation chains, never escalate. A child spawned by a
+    // read-only parent cannot write, even if it requests permissive.
+}
