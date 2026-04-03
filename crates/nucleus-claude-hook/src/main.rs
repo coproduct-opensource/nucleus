@@ -38,6 +38,7 @@ mod receipts;
 mod session;
 mod setup;
 mod status;
+mod url_policy;
 use classify::*;
 use color::{nucleus_allow, nucleus_deny, nucleus_info, nucleus_warn};
 use denial::format_denial_for_user;
@@ -1371,6 +1372,17 @@ fn main() {
     // field, check that a DeterministicBind exists. This overrides the kernel
     // verdict — the kernel allows the write (capability-wise) but the provenance
     // schema requires the data to come through the parser pipeline.
+    // URL covert channel check (#979): flag suspicious URLs when secrets exist.
+    if matches!(operation, Operation::WebFetch) {
+        let has_secrets = session
+            .flow_observations
+            .iter()
+            .any(|(kind, _, _)| *kind == 8); // 8 = Secret
+        if let Some(reason) = url_policy::check_url_exfiltration(&subject, has_secrets) {
+            nucleus_warn!("URL policy: {reason}");
+        }
+    }
+
     let provenance_deny = if matches!(operation, Operation::WriteFiles | Operation::EditFiles) {
         // Load schema from .provenance.yaml in cwd (if present).
         let cwd = std::env::current_dir().unwrap_or_default();
