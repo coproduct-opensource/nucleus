@@ -120,6 +120,12 @@ enum Command {
         #[arg(long)]
         schema: Option<PathBuf>,
     },
+    /// Show provenance log — navigate the session DAG like jj log (#1002).
+    ProvenanceLog {
+        /// Provenance output JSON file.
+        #[arg(long)]
+        output: PathBuf,
+    },
     /// Diff two provenance outputs — show what changed between runs (#1001).
     DiffProvenance {
         /// Old provenance output JSON.
@@ -254,6 +260,9 @@ fn main() -> Result<(), AuditError> {
         }
         Command::Export { log, format } => {
             export_log(&log, &format)?;
+        }
+        Command::ProvenanceLog { output } => {
+            provenance_log(&output)?;
         }
         Command::DiffProvenance { old, new } => {
             diff_provenance(&old, &new)?;
@@ -1253,6 +1262,86 @@ fn trace_provenance(receipts_dir: &Path, output: Option<&Path>) -> Result<(), Au
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Verify a provenance output file against its schema.
+/// Show provenance log as a visual tree (#1002).
+fn provenance_log(output_path: &Path) -> Result<(), AuditError> {
+    let contents = std::fs::read_to_string(output_path)
+        .map_err(|e| AuditError::Backend(format!("{}: {e}", output_path.display())))?;
+    let output: serde_json::Value = serde_json::from_str(&contents)
+        .map_err(|e| AuditError::Backend(format!("invalid JSON: {e}")))?;
+
+    // Print header.
+    if let Some(prov) = output.get("_provenance") {
+        let schema = prov
+            .get("schema_hash")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        let chain = prov
+            .get("receipt_chain_head")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        let ai = prov
+            .get("contains_ai_derived")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        println!("@ Provenance output ({})", output_path.display());
+        println!("\u{2502} schema: {}", &schema[..20.min(schema.len())]);
+        println!("\u{2502} chain:  {}", &chain[..20.min(chain.len())]);
+        if ai {
+            println!("\u{2502} \u{26a0} contains AI-derived content");
+        }
+        println!("\u{2502}");
+    }
+
+    // Print each field as a tree node.
+    let fields: Vec<_> = output
+        .as_object()
+        .map(|o| {
+            o.iter()
+                .filter(|(k, _)| !k.starts_with('_'))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    for (i, (name, val)) in fields.iter().enumerate() {
+        let is_last = i == fields.len() - 1;
+        let connector = if is_last { "\u{2514}" } else { "\u{251c}" };
+        let continuation = if is_last { " " } else { "\u{2502}" };
+
+        let derivation = val
+            .get("provenance")
+            .and_then(|p| p.get("derivation"))
+            .and_then(|d| d.as_str())
+            .unwrap_or("?");
+
+        let icon = match derivation {
+            "Deterministic" => "\u{2713}",
+            "AIDerived" => "\u{2139}\u{fe0f}",
+            _ => "?",
+        };
+
+        println!("{connector}\u{2500}\u{2500} {icon} {name}: {derivation}");
+
+        if let Some(prov) = val.get("provenance") {
+            if let Some(parser) = prov.get("parser").and_then(|p| p.as_str()) {
+                let expr = prov
+                    .get("parser_expression")
+                    .and_then(|e| e.as_str())
+                    .unwrap_or("");
+                println!("{continuation}   parser: {parser} \"{expr}\"");
+            }
+            if let Some(hash) = prov.get("source_content_hash").and_then(|h| h.as_str()) {
+                println!("{continuation}   source: {}", &hash[..20.min(hash.len())]);
+            }
+            if let Some(out) = prov.get("parser_output_hash").and_then(|h| h.as_str()) {
+                println!("{continuation}   output: {}", &out[..20.min(out.len())]);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Diff two provenance outputs (#1001).
 fn diff_provenance(old_path: &Path, new_path: &Path) -> Result<(), AuditError> {
     let old_str = std::fs::read_to_string(old_path)
