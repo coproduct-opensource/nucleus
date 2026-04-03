@@ -1,0 +1,16 @@
+[package]
+name = "nucleus-memory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Governed memory for AI agents — IFC labels, integrity tracking, poisoning detection"
+repository = "https://github.com/coproduct-opensource/nucleus"
+keywords = ["ai", "security", "memory", "poisoning", "ifc"]
+categories = ["development-tools"]
+
+[dependencies]
+portcullis-core = { path = "../portcullis-core", features = ["serde"] }
+
+[features]
+serde = ["portcullis-core/serde"]
