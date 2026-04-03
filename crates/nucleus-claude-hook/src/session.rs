@@ -448,9 +448,34 @@ fn save_session_unlocked(session_id: &str, state: &SessionState) {
             // Restrict HWM file permissions to owner-only (0600)
             #[cfg(unix)]
             set_file_owner_only(&hwm_path);
+
+            // Update session index for O(1) lookups (#1008).
+            update_session_index(session_id, state);
         }
         Err(e) => {
             eprintln!("nucleus: WARNING �� failed to serialize session state: {e}");
+        }
+    }
+}
+
+/// Update `.session-index` with this session's metadata (#1008).
+fn update_session_index(session_id: &str, state: &SessionState) {
+    let index_path = session_dir().join(".session-index");
+    let entry = serde_json::json!({
+        "id": sanitize_session_id(session_id),
+        "parent": state.parent_session_id,
+        "chain_head": hex::encode(state.chain_head_hash),
+        "ops": state.allowed_ops.len(),
+        "tainted": state.web_tainted,
+    });
+    if let Ok(line) = serde_json::to_string(&entry) {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&index_path)
+        {
+            writeln!(f, "{line}").ok();
         }
     }
 }
