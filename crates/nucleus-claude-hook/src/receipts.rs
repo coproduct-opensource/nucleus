@@ -369,3 +369,69 @@ pub(crate) fn show_receipts(session_id: &str) {
 
     println!("Chain file: {}", path.display());
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// External anchor (#948)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Publish the receipt chain head hash to an external anchor (#948).
+///
+/// If `NUCLEUS_ANCHOR_WEBHOOK` is set, POST the chain head to that URL.
+/// If `NUCLEUS_ANCHOR_FILE` is set, append to that file.
+/// This creates a tamper-evident external record — even if the signing
+/// key is compromised, the attacker cannot retroactively modify anchored
+/// receipts without detection.
+pub(crate) fn anchor_chain_head(session_id: &str, chain_head: &[u8; 32]) {
+    let head_hex = hex::encode(chain_head);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // File anchor: append to a local audit log.
+    if let Ok(anchor_path) = std::env::var("NUCLEUS_ANCHOR_FILE") {
+        use std::io::Write;
+        let entry = format!("{now}\t{session_id}\t{head_hex}\n");
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&anchor_path)
+        {
+            f.write_all(entry.as_bytes()).ok();
+        }
+    }
+
+    // Webhook anchor: POST to an external transparency service.
+    // Non-blocking: fire-and-forget via a short-lived thread.
+    if let Ok(webhook_url) = std::env::var("NUCLEUS_ANCHOR_WEBHOOK") {
+        let payload = serde_json::json!({
+            "session_id": session_id,
+            "chain_head": head_hex,
+            "timestamp": now,
+            "type": "chain_anchor",
+        });
+        // Best-effort: don't block the hook for network I/O.
+        let _ = std::thread::Builder::new()
+            .name("anchor-webhook".into())
+            .spawn(move || {
+                // Use a simple HTTP POST via a subprocess to avoid
+                // adding an HTTP client dependency.
+                let json = payload.to_string();
+                std::process::Command::new("curl")
+                    .args([
+                        "-s",
+                        "-X",
+                        "POST",
+                        "-H",
+                        "Content-Type: application/json",
+                        "-d",
+                        &json,
+                        "--max-time",
+                        "5",
+                        &webhook_url,
+                    ])
+                    .output()
+                    .ok();
+            });
+    }
+}
