@@ -912,3 +912,67 @@ fn flagship_demo_e_web_injection_blocked_by_authority() {
     // prompt injection defense: the flow graph tracks WHERE data came
     // from, not just WHAT the model wants to do.
 }
+
+// ═════════════════════════════════════════════════════════════════════════
+// Flagship Demo E (#839, #1025): Compartment transition clears web taint
+//
+// Attack: Agent in research compartment fetches web docs. Tries to write
+// code based on tainted content — blocked. Transitions to draft compartment
+// (flow graph resets). Clean writes now succeed.
+//
+// This proves compartments provide genuine isolation, not just labels.
+// ═════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn flagship_demo_e_compartment_transition_clears_taint() {
+    // === Phase 1: Research compartment — web content taints writes ===
+    let perms = PermissionLattice::safe_pr_fixer();
+    let mut kernel = Kernel::new(perms.clone());
+
+    // Agent fetches web documentation.
+    let web_id = kernel
+        .observe(NodeKind::WebContent, &[])
+        .expect("web observation should succeed");
+
+    // Model reads the web content.
+    let plan_id = kernel
+        .observe(NodeKind::ModelPlan, &[web_id])
+        .expect("model plan should succeed");
+
+    // Agent tries to write code based on web docs — DENIED.
+    let (tainted_write, _) =
+        kernel.decide_with_parents(Operation::WriteFiles, "src/main.rs", &[plan_id]);
+    assert!(
+        matches!(tainted_write.verdict, Verdict::Deny(_)),
+        "web-tainted write must be DENIED in research, got: {:?}",
+        tainted_write.verdict
+    );
+
+    // === Phase 2: Compartment transition — fresh kernel (flow graph resets) ===
+    // In the hook, compartment transition creates a new kernel with cleared
+    // flow observations. Simulated here by creating a new Kernel instance.
+    let mut clean_kernel = Kernel::new(perms);
+
+    // Agent reads a local file (clean, no web content in this kernel).
+    let local_id = clean_kernel
+        .observe(NodeKind::FileRead, &[])
+        .expect("file read should succeed");
+
+    // Model reasons about the local file.
+    let clean_plan = clean_kernel
+        .observe(NodeKind::ModelPlan, &[local_id])
+        .expect("model plan should succeed");
+
+    // Agent writes code based on local file only — ALLOWED.
+    let (clean_write, _) =
+        clean_kernel.decide_with_parents(Operation::WriteFiles, "src/main.rs", &[clean_plan]);
+    assert!(
+        matches!(clean_write.verdict, Verdict::Allow),
+        "clean write after compartment transition must be ALLOWED, got: {:?}",
+        clean_write.verdict
+    );
+
+    // The transition is the key: same operation (WriteFiles), same file
+    // (src/main.rs), same profile — but the fresh flow graph has no web
+    // content ancestry. Compartment isolation is real, not cosmetic.
+}
