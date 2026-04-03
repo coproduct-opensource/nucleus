@@ -60,6 +60,8 @@ pub mod attestation;
 pub mod autonomy;
 #[cfg(feature = "artifact")]
 pub mod c2pa_assertions;
+#[cfg(feature = "c2pa-manifest")]
+pub mod c2pa_manifest;
 pub mod compartment;
 #[cfg(feature = "serde")]
 pub mod compartmentfile;
