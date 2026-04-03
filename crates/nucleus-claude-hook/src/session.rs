@@ -1277,9 +1277,13 @@ pub(crate) fn try_wasm_reduction(
         Err(_) => return,
     };
 
-    let sandbox = ParserSandbox::new();
+    // Cache the sandbox engine across invocations (#1005).
+    // ParserSandbox::new() creates a Wasmtime Engine — expensive (~50ms).
+    use std::sync::OnceLock;
+    static SANDBOX: OnceLock<ParserSandbox> = OnceLock::new();
+    let sandbox = SANDBOX.get_or_init(ParserSandbox::new);
     if registry
-        .compile_parser(&sandbox, &parser_id, &wasm_bytes)
+        .compile_parser(sandbox, &parser_id, &wasm_bytes)
         .is_err()
     {
         return;
@@ -1287,7 +1291,7 @@ pub(crate) fn try_wasm_reduction(
 
     // Execute with a conservative fuel limit.
     let fuel_limit = 10_000_000;
-    let output = match registry.execute_parser(&sandbox, &parser_id, result_bytes, fuel_limit) {
+    let output = match registry.execute_parser(sandbox, &parser_id, result_bytes, fuel_limit) {
         Ok(out) => out,
         Err(e) => {
             eprintln!("nucleus: WASM parser '{parser_id}' failed: {e}");
