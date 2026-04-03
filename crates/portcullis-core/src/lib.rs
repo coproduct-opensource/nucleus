@@ -58,6 +58,8 @@ pub mod artifact;
 #[cfg(feature = "attestation")]
 pub mod attestation;
 pub mod autonomy;
+#[cfg(feature = "artifact")]
+pub mod c2pa_assertions;
 pub mod compartment;
 #[cfg(feature = "serde")]
 pub mod compartmentfile;
