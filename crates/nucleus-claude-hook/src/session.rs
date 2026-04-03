@@ -1528,6 +1528,71 @@ pub(crate) fn resolve_bind_field_names(
     }
 }
 
+/// Build a ProvenanceOutput from session state + schema (#988).
+///
+/// For each schema field, constructs the per-field provenance attestation:
+/// - Deterministic fields with DeterministicBind: full hash chain
+/// - AI-derived fields: honest labeling
+#[allow(dead_code)]
+pub(crate) fn build_provenance_output(
+    s: &SessionState,
+    schema: &portcullis_core::provenance_schema::ProvenanceSchema,
+) -> portcullis_core::provenance_output::ProvenanceOutput {
+    use portcullis_core::provenance_output::{ProvenanceHeader, ProvenanceOutput};
+    use portcullis_core::provenance_schema::DerivationKind;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let header = ProvenanceHeader {
+        schema_hash: format!("sha256:{}", hex::encode(schema.content_hash())),
+        schema_version: schema.schema_version,
+        completed_at: format!("{now}"),
+        receipt_chain_head: format!("sha256:{}", hex::encode(s.chain_head_hash)),
+        nucleus_version: env!("CARGO_PKG_VERSION").to_string(),
+        contains_ai_derived: false,
+    };
+
+    let mut output = ProvenanceOutput::new(header);
+
+    for (name, field) in &schema.fields {
+        match field.derivation {
+            DerivationKind::Deterministic => {
+                // Find the bind record for this field.
+                if let Some(bind) = s.deterministic_binds.iter().find(|b| b.field_name == *name) {
+                    // Find the source hash from pending_source_hashes.
+                    let source_hash = s
+                        .pending_parser_steps
+                        .iter()
+                        .find(|p| p.parser_id == bind.parser_id)
+                        .map(|p| hex::encode(p.input_hash))
+                        .unwrap_or_default();
+
+                    output.add_deterministic(
+                        name,
+                        serde_json::Value::Null, // value populated by caller
+                        &format!("sha256:{source_hash}"),
+                        &bind.parser_id,
+                        field.expression.as_deref(),
+                        &format!("sha256:{}", hex::encode(bind.output_hash)),
+                    );
+                }
+            }
+            DerivationKind::AiDerived => {
+                output.add_ai_derived(name, serde_json::Value::Null, None);
+            }
+            DerivationKind::UserProvided => {
+                // User-provided fields are like deterministic — Directive authority.
+                output.add_deterministic(name, serde_json::Value::Null, "", "user", None, "");
+            }
+        }
+    }
+
+    output
+}
+
 /// Handle `UserPromptSubmit` — detect `!` bash passthrough (#918).
 pub(crate) fn handle_user_prompt_submit(input: &crate::protocol::HookInput) {
     let prompt = input
