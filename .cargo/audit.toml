@@ -7,4 +7,13 @@ ignore = [
     # It's a transitive dependency of cel-interpreter used for CEL policy constraints.
     # TODO: Watch for cel-interpreter updates that remove paste dependency.
     "RUSTSEC-2024-0436",
+
+    # rsa Marvin Attack (RUSTSEC-2023-0071) — no fix available upstream.
+    # Transitive dependency via c2pa-rs. Not exploitable in our use case:
+    # we use c2pa for content credential assertions, not RSA key operations.
+    "RUSTSEC-2023-0071",
+
+    # proc-macro-error unmaintained (RUSTSEC-2024-0370) — no security impact.
+    # Transitive dependency via c2pa-rs → iref → static-regular-grammar.
+    "RUSTSEC-2024-0370",
 ]
