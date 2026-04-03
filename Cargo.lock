@@ -3752,6 +3752,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-memory"
+version = "1.0.0"
+dependencies = [
+ "portcullis-core",
+]
+
+[[package]]
 name = "nucleus-net-probe"
 version = "1.0.0"
 
