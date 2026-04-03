@@ -756,6 +756,73 @@ impl ValidatedWitness {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// VerifiedBundle — typestate for chain-verified WitnessBundle (#1052)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A [`WitnessBundle`] that has passed chain verification.
+///
+/// The inner field is private — the only way to construct a `VerifiedBundle`
+/// is through [`VerifiedBundle::verify`], which calls `verify_chain()` and
+/// `is_valid()`. This makes it a compile-time guarantee that any API
+/// accepting `&VerifiedBundle` has a valid, verified derivation chain.
+///
+/// ```ignore
+/// let bundle = assemble_witness_bundle(/* ... */);
+/// let verified = VerifiedBundle::verify(bundle)?;
+/// let digest = verified.digest(); // only available on VerifiedBundle
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedBundle(WitnessBundle);
+
+/// Error from `VerifiedBundle::verify`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BundleVerifyError {
+    /// The hash chain is broken.
+    ChainError(ChainVerifyError),
+    /// A validation result reported failure.
+    ValidationFailed,
+}
+
+impl std::fmt::Display for BundleVerifyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ChainError(e) => write!(f, "chain verification failed: {e}"),
+            Self::ValidationFailed => write!(f, "validation result reported failure"),
+        }
+    }
+}
+
+impl std::error::Error for BundleVerifyError {}
+
+impl VerifiedBundle {
+    /// Verify a WitnessBundle and wrap it. Consumes the unverified bundle.
+    pub fn verify(bundle: WitnessBundle) -> Result<Self, BundleVerifyError> {
+        bundle
+            .verify_chain()
+            .map_err(BundleVerifyError::ChainError)?;
+        if bundle.validation_results.iter().any(|v| !v.passed) {
+            return Err(BundleVerifyError::ValidationFailed);
+        }
+        Ok(Self(bundle))
+    }
+
+    /// Compute the canonical SHA-256 digest. Only available on verified bundles.
+    pub fn digest(&self) -> [u8; 32] {
+        self.0.compute_digest()
+    }
+
+    /// Access the verified bundle's witness ID.
+    pub fn witness_id(&self) -> &str {
+        &self.0.witness_id
+    }
+
+    /// Access the inner verified bundle.
+    pub fn inner(&self) -> &WitnessBundle {
+        &self.0
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
