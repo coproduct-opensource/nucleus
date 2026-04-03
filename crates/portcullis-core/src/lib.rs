@@ -113,6 +113,8 @@ pub mod wasm_sandbox;
 pub mod wire;
 #[cfg(feature = "envelope")]
 pub mod witness;
+#[cfg(feature = "zkvm")]
+pub mod zkvm_receipt;
 
 /// Tool permission levels in lattice ordering.
 ///
