@@ -152,6 +152,11 @@ pub(crate) struct PendingSourceHash {
     /// Whether a `ReductionWitness` has been constructed for this content.
     /// Once true, the hash has been consumed by the reduction pipeline.
     pub(crate) witnessed: bool,
+    /// Raw content bytes for replay verification (#986).
+    /// Capped at 1MB. When present, an auditor can re-execute the parser
+    /// on this exact content and verify the output hash matches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) raw_content: Option<Vec<u8>>,
 }
 
 /// A completed parser step captured during PostToolUse (#915).
@@ -1164,11 +1169,19 @@ pub(crate) fn record_post_tool(
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
+        // Store raw bytes for replay verification (#986). Cap at 1MB.
+        const MAX_RAW_BYTES: usize = 1_048_576;
+        let raw = if result_text.len() <= MAX_RAW_BYTES {
+            Some(result_text.as_bytes().to_vec())
+        } else {
+            None
+        };
         s.pending_source_hashes.push(PendingSourceHash {
             content_hash,
             tool_name: hash_tool.to_string(),
             captured_at: now,
             witnessed: false,
+            raw_content: raw,
         });
         eprintln!(
             "nucleus: source hash {:02x}{:02x}{:02x}{:02x}...",
@@ -1383,7 +1396,7 @@ pub(crate) fn assemble_witness_bundle(s: &mut SessionState) -> ClearanceResult {
             content_hash: src.content_hash,
             fetched_at: src.captured_at,
             fetched_by: src.tool_name.clone(),
-            raw_content: None, // TODO: store raw bytes for replay (#939)
+            raw_content: src.raw_content.clone(),
         })
         .collect();
 
@@ -1958,6 +1971,7 @@ mod tests {
             tool_name: "WebFetch".to_string(),
             captured_at: 1711900000,
             witnessed: false,
+            raw_content: None,
         });
 
         let json = serde_json::to_string(&state).unwrap();
@@ -2747,6 +2761,7 @@ mod tests {
             tool_name: "WebFetch".into(),
             captured_at: 1000,
             witnessed: false,
+            raw_content: None,
         });
         match assemble_witness_bundle(&mut s) {
             ClearanceResult::NoParserSteps { pending_sources } => {
@@ -2768,6 +2783,7 @@ mod tests {
             tool_name: "WebFetch".into(),
             captured_at: 1000,
             witnessed: false,
+            raw_content: None,
         });
         s.pending_parser_steps.push(PendingParserStep {
             input_hash: source_hash, // links to source
@@ -2803,6 +2819,7 @@ mod tests {
             tool_name: "WebFetch".into(),
             captured_at: 1000,
             witnessed: false,
+            raw_content: None,
         });
         s.pending_parser_steps.push(PendingParserStep {
             input_hash: [0xFF; 32], // does NOT link to source hash
