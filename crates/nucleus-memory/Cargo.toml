@@ -10,7 +10,7 @@ keywords = ["ai", "security", "memory", "poisoning", "ifc"]
 categories = ["development-tools"]
 
 [dependencies]
-portcullis-core = { path = "../portcullis-core", features = ["serde"] }
+portcullis-core = { version = "1.0.0", path = "../portcullis-core", features = ["serde"] }
 
 [features]
 serde = ["portcullis-core/serde"]
