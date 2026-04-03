@@ -4207,6 +4207,7 @@ dependencies = [
 name = "nucleus-audit"
 version = "1.0.0"
 dependencies = [
+ "c2pa",
  "chrono",
  "clap",
  "hex",

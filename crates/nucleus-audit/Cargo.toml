@@ -19,6 +19,11 @@ chrono = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
 url = "2.5"
+c2pa = { workspace = true, optional = true, features = ["file_io"] }
+
+[features]
+default = []
+c2pa-verify = ["dep:c2pa"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
