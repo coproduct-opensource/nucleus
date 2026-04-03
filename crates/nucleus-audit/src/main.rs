@@ -1493,11 +1493,7 @@ fn verify_c2pa(output_path: &Path, receipts_path: Option<&Path>) -> Result<(), A
     println!("Contains AI:     {contains_ai}");
     println!("Fields:          {det_count} deterministic, {ai_count} AI-derived");
 
-    // Check for .c2pa sidecar — report presence only, NOT validity.
-    // NOTE: Cryptographic signature verification requires c2pa::Reader,
-    // which is not yet wired into nucleus-audit. The sidecar check below
-    // confirms the file exists and is non-empty — it does NOT verify the
-    // C2PA manifest signature or certificate chain.
+    // Check for .c2pa sidecar and verify if c2pa-verify feature is enabled.
     let sidecar_path = output_path.with_extension("c2pa");
     if sidecar_path.exists() {
         let sidecar_size = std::fs::metadata(&sidecar_path)
@@ -1507,10 +1503,27 @@ fn verify_c2pa(output_path: &Path, receipts_path: Option<&Path>) -> Result<(), A
             println!("C2PA sidecar:    EMPTY (0 bytes) — invalid");
             had_failure = true;
         } else {
-            println!(
-                "C2PA sidecar:    present ({} bytes, signature NOT verified)",
-                sidecar_size
-            );
+            #[cfg(feature = "c2pa-verify")]
+            {
+                match verify_c2pa_sidecar(output_path) {
+                    Ok(info) => {
+                        println!("C2PA sidecar:    VERIFIED ({} bytes)", sidecar_size);
+                        println!("  Assertions:    {}", info.assertion_count);
+                        println!("  Validation:    {:?}", info.validation_state);
+                    }
+                    Err(e) => {
+                        println!("C2PA sidecar:    FAILED — {e}");
+                        had_failure = true;
+                    }
+                }
+            }
+            #[cfg(not(feature = "c2pa-verify"))]
+            {
+                println!(
+                    "C2PA sidecar:    present ({} bytes, build with --features c2pa-verify to verify signature)",
+                    sidecar_size
+                );
+            }
         }
     } else {
         println!("C2PA sidecar:    not found (run with NUCLEUS_C2PA_CERT to generate)");
@@ -1576,6 +1589,29 @@ fn verify_c2pa(output_path: &Path, receipts_path: Option<&Path>) -> Result<(), A
         "\nresult: ok — provenance inspection complete (note: C2PA signature not yet verified)"
     );
     Ok(())
+}
+
+#[cfg(feature = "c2pa-verify")]
+struct C2paVerifyInfo {
+    assertion_count: usize,
+    validation_state: String,
+}
+
+#[cfg(feature = "c2pa-verify")]
+fn verify_c2pa_sidecar(output_path: &Path) -> Result<C2paVerifyInfo, String> {
+    let reader: c2pa::Reader = c2pa::Reader::from_file(output_path).map_err(|e| format!("{e}"))?;
+
+    let validation_state = format!("{:?}", reader.validation_state());
+
+    let assertion_count = reader
+        .active_manifest()
+        .map(|m: &c2pa::Manifest| m.assertions().len())
+        .unwrap_or(0);
+
+    Ok(C2paVerifyInfo {
+        assertion_count,
+        validation_state,
+    })
 }
 
 fn diff_provenance(old_path: &Path, new_path: &Path) -> Result<(), AuditError> {
