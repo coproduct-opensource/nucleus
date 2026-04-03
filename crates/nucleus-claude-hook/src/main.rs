@@ -477,6 +477,28 @@ fn main() {
                     eprintln!("nucleus: parent label exported at {}", label_path.display());
                 }
 
+                // Generate delegation token (#1029)
+                // Write parent's effective permissions as a delegation ceiling
+                // for the child agent. Full LatticeCertificate signing requires
+                // chrono — for now, write the permission lattice directly.
+                {
+                    let effective_perms = resolve_profile(&default_profile_name())
+                        .unwrap_or_else(PermissionLattice::safe_pr_fixer);
+                    let safe_id = sanitize_session_id(&input.session_id);
+                    let token_path = session_dir().join(format!("{safe_id}.delegation-token"));
+                    if let Ok(json) = serde_json::to_string(&effective_perms) {
+                        std::fs::write(&token_path, &json).ok();
+                        eprintln!(
+                            "nucleus: delegation ceiling written for subagent '{}'",
+                            if agent_name.is_empty() {
+                                "unnamed"
+                            } else {
+                                agent_name
+                            }
+                        );
+                    }
+                }
+
                 // Record in receipt chain
                 persist_transition_receipt(
                     &input.session_id,
