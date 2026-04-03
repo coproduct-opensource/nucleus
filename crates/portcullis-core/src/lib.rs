@@ -82,6 +82,8 @@ pub mod managed_settings;
 pub mod manifest;
 #[cfg(feature = "serde")]
 pub mod memory;
+#[cfg(feature = "serde")]
+pub mod nist_metadata;
 pub mod parser_registry;
 pub mod policy_rules;
 #[cfg(feature = "envelope")]
