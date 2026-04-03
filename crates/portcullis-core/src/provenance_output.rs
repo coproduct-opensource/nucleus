@@ -25,6 +25,9 @@ pub struct ProvenanceOutput {
     /// Per-field values with provenance attestation.
     #[serde(flatten)]
     pub fields: BTreeMap<String, FieldOutput>,
+    /// Fields with conflicting candidates awaiting resolution (#1003).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub conflicts: BTreeMap<String, FieldConflict>,
 }
 
 /// Provenance header — metadata about the overall output.
@@ -51,6 +54,59 @@ pub struct FieldOutput {
     pub value: serde_json::Value,
     /// Provenance metadata for this field.
     pub provenance: FieldProvenance,
+}
+
+/// A candidate value for a field with conflicting derivations (#1003).
+///
+/// Like jj's first-class conflicts: a field can have BOTH a deterministic
+/// candidate AND an AI-derived candidate. The user resolves at /clearance.
+#[derive(Debug, Clone, Serialize)]
+pub struct FieldCandidate {
+    /// The candidate value.
+    pub value: serde_json::Value,
+    /// Derivation class of this candidate.
+    pub derivation: String,
+    /// How this candidate was produced (parser ID or "model").
+    pub source: String,
+}
+
+/// A field with multiple candidates awaiting resolution.
+#[derive(Debug, Clone, Serialize)]
+pub struct FieldConflict {
+    /// The competing candidates for this field.
+    pub candidates: Vec<FieldCandidate>,
+    /// Whether the conflict has been resolved.
+    pub resolved: bool,
+    /// Index of the chosen candidate (if resolved).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chosen: Option<usize>,
+}
+
+impl FieldConflict {
+    /// Create a new unresolved conflict.
+    pub fn new(candidates: Vec<FieldCandidate>) -> Self {
+        Self {
+            candidates,
+            resolved: false,
+            chosen: None,
+        }
+    }
+
+    /// Resolve the conflict by choosing a candidate.
+    pub fn resolve(&mut self, index: usize) -> bool {
+        if index < self.candidates.len() {
+            self.chosen = Some(index);
+            self.resolved = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get the chosen candidate (if resolved).
+    pub fn chosen_candidate(&self) -> Option<&FieldCandidate> {
+        self.chosen.and_then(|i| self.candidates.get(i))
+    }
 }
 
 /// Per-field provenance attestation.
@@ -90,6 +146,7 @@ impl ProvenanceOutput {
         Self {
             header,
             fields: BTreeMap::new(),
+            conflicts: BTreeMap::new(),
         }
     }
 
