@@ -453,6 +453,7 @@ mod tests {
             pending_source_hashes: vec![],
             pending_parser_steps: vec![],
             deterministic_binds: vec![],
+            provenance_mode: false,
         }
     }
 

@@ -702,6 +702,19 @@ fn main() {
         );
     }
 
+    // Provenance mode detection (#1020): on first invocation, check for schema.
+    if is_first_invocation && !session.provenance_mode {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        if let Some(schema) = load_provenance_schema(&cwd) {
+            session.provenance_mode = true;
+            nucleus_info!(
+                "provenance mode activated — {} deterministic, {} AI-derived fields",
+                schema.deterministic_field_count(),
+                schema.ai_derived_field_count()
+            );
+        }
+    }
+
     if session.compartment_token.is_empty() {
         session.compartment_token = generate_compartment_token();
     }
