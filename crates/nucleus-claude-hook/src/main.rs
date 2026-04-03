@@ -25,6 +25,7 @@ mod color;
 mod commands;
 mod completions;
 mod config;
+mod config_provenance;
 mod context;
 mod denial;
 mod doctor;
