@@ -230,6 +230,122 @@ pub struct FieldWitness {
     pub output_hash: [u8; 32],
     /// Derivation kind: "deterministic" or "ai_derived".
     pub derivation: String,
+    /// Confidence metadata for AI-derived fields (#944).
+    /// None for deterministic fields.
+    pub ai_confidence: Option<AiDerivedWitness>,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AiDerivedWitness — transparency metadata for AI-generated fields (#944)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Transparency metadata for AI-derived fields.
+///
+/// This does NOT make AI output verifiable — a compromised model can generate
+/// consistent-but-wrong output. This provides **audit transparency** so
+/// downstream consumers can assess confidence.
+///
+/// Fields mirror NIST AI RMF uncertainty measurement recommendations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiDerivedWitness {
+    /// SHA-256 of the input context the model received.
+    /// Allows auditors to verify what the model actually read.
+    pub input_context_hash: [u8; 32],
+    /// Vendor-agnostic model identifier string.
+    /// e.g., "gpt-4o-2024-05-13" or "llm-v2.1" — just a label.
+    pub model_id: String,
+    /// Number of independent generations used for consistency check.
+    /// 1 = single generation (no consistency check performed).
+    pub generation_count: u32,
+    /// Agreement rate across multiple generations (0.0 to 1.0).
+    /// Only meaningful when `generation_count > 1`.
+    /// 1.0 = all generations produced identical output.
+    /// None if consistency check was not performed.
+    pub agreement_rate: Option<AgreementRate>,
+}
+
+/// Agreement rate as a fixed-point fraction (numerator / denominator).
+///
+/// Avoids floating-point non-determinism in hash chains.
+/// e.g., 3 out of 5 generations agreed → `AgreementRate { agreed: 3, total: 5 }`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgreementRate {
+    /// Number of generations that produced matching output.
+    pub agreed: u32,
+    /// Total number of generations.
+    pub total: u32,
+}
+
+impl AgreementRate {
+    /// Create a new agreement rate.
+    ///
+    /// # Panics
+    /// Panics if `total` is 0 or `agreed > total`.
+    pub fn new(agreed: u32, total: u32) -> Self {
+        assert!(total > 0, "total must be > 0");
+        assert!(agreed <= total, "agreed must be <= total");
+        Self { agreed, total }
+    }
+
+    /// Agreement as a float (for display/reporting).
+    pub fn as_f64(self) -> f64 {
+        f64::from(self.agreed) / f64::from(self.total)
+    }
+
+    /// Whether all generations agreed.
+    pub fn is_unanimous(self) -> bool {
+        self.agreed == self.total
+    }
+}
+
+impl fmt::Display for AgreementRate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}/{} ({:.0}%)",
+            self.agreed,
+            self.total,
+            self.as_f64() * 100.0
+        )
+    }
+}
+
+impl AiDerivedWitness {
+    /// Create a witness for a single-generation AI output (no consistency check).
+    pub fn single_generation(input_context: &[u8], model_id: &str) -> Self {
+        Self {
+            input_context_hash: sha256(input_context),
+            model_id: model_id.to_string(),
+            generation_count: 1,
+            agreement_rate: None,
+        }
+    }
+
+    /// Create a witness with multi-generation consistency check.
+    pub fn with_consistency(input_context: &[u8], model_id: &str, agreed: u32, total: u32) -> Self {
+        Self {
+            input_context_hash: sha256(input_context),
+            model_id: model_id.to_string(),
+            generation_count: total,
+            agreement_rate: Some(AgreementRate::new(agreed, total)),
+        }
+    }
+
+    /// Content hash for inclusion in witness bundle digests.
+    pub fn content_hash(&self) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(self.input_context_hash);
+        hasher.update(self.model_id.as_bytes());
+        hasher.update(self.generation_count.to_le_bytes());
+        if let Some(rate) = self.agreement_rate {
+            hasher.update(rate.agreed.to_le_bytes());
+            hasher.update(rate.total.to_le_bytes());
+        }
+        let result = hasher.finalize();
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&result);
+        hash
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1516,5 +1632,102 @@ mod tests {
 
         let err = WitnessValidationError::EmptyInputs;
         assert!(err.to_string().contains("no meaningful inputs"));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // AiDerivedWitness tests (#944)
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn ai_witness_single_generation() {
+        let w = AiDerivedWitness::single_generation(b"prompt context", "llm-v2.1");
+        assert_eq!(w.generation_count, 1);
+        assert!(w.agreement_rate.is_none());
+        assert_eq!(w.model_id, "llm-v2.1");
+        assert_ne!(w.input_context_hash, [0u8; 32]);
+    }
+
+    #[test]
+    fn ai_witness_with_consistency() {
+        let w = AiDerivedWitness::with_consistency(b"prompt", "llm-v3", 4, 5);
+        assert_eq!(w.generation_count, 5);
+        let rate = w.agreement_rate.unwrap();
+        assert_eq!(rate.agreed, 4);
+        assert_eq!(rate.total, 5);
+        assert!(!rate.is_unanimous());
+        assert!((rate.as_f64() - 0.8).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn ai_witness_unanimous() {
+        let w = AiDerivedWitness::with_consistency(b"prompt", "model", 3, 3);
+        let rate = w.agreement_rate.unwrap();
+        assert!(rate.is_unanimous());
+        assert_eq!(rate.to_string(), "3/3 (100%)");
+    }
+
+    #[test]
+    fn ai_witness_content_hash_deterministic() {
+        let w1 = AiDerivedWitness::single_generation(b"same input", "model-a");
+        let w2 = AiDerivedWitness::single_generation(b"same input", "model-a");
+        assert_eq!(w1.content_hash(), w2.content_hash());
+
+        let w3 = AiDerivedWitness::single_generation(b"different input", "model-a");
+        assert_ne!(w1.content_hash(), w3.content_hash());
+    }
+
+    #[test]
+    fn ai_witness_content_hash_includes_consistency() {
+        let w1 = AiDerivedWitness::single_generation(b"input", "model");
+        let w2 = AiDerivedWitness::with_consistency(b"input", "model", 3, 3);
+        assert_ne!(w1.content_hash(), w2.content_hash());
+    }
+
+    #[test]
+    fn agreement_rate_display() {
+        let rate = AgreementRate::new(7, 10);
+        assert_eq!(rate.to_string(), "7/10 (70%)");
+    }
+
+    #[test]
+    #[should_panic(expected = "total must be > 0")]
+    fn agreement_rate_zero_total_panics() {
+        AgreementRate::new(0, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "agreed must be <= total")]
+    fn agreement_rate_overflow_panics() {
+        AgreementRate::new(5, 3);
+    }
+
+    #[test]
+    fn field_witness_with_ai_confidence() {
+        let fw = FieldWitness {
+            field_name: "summary".into(),
+            input_blob_index: 0,
+            parser_steps: vec![],
+            output_hash: [0u8; 32],
+            derivation: "ai_derived".into(),
+            ai_confidence: Some(AiDerivedWitness::single_generation(
+                b"context",
+                "test-model",
+            )),
+        };
+        assert!(fw.ai_confidence.is_some());
+        assert_eq!(fw.ai_confidence.unwrap().model_id, "test-model");
+    }
+
+    #[test]
+    fn field_witness_deterministic_no_confidence() {
+        let fw = FieldWitness {
+            field_name: "revenue".into(),
+            input_blob_index: 0,
+            parser_steps: vec![],
+            output_hash: [0u8; 32],
+            derivation: "deterministic".into(),
+            ai_confidence: None,
+        };
+        assert!(fw.ai_confidence.is_none());
     }
 }
