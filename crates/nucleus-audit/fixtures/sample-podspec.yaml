@@ -1,0 +1,28 @@
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: safe-pr-fixer
+  labels:
+    profile: safe_pr_fixer
+spec:
+  work_dir: /workspace
+  timeout_seconds: 600
+  capabilities:
+    read_files: always
+    write_files: low_risk
+    edit_files: low_risk
+    run_bash: low_risk
+    git_commit: low_risk
+    git_push: never
+    create_pr: never
+    web_fetch: low_risk
+    web_search: never
+  network:
+    egress_policy: allowlist
+    allowed_hosts:
+      - "github.com"
+      - "api.github.com"
+      - "crates.io"
+  credentials:
+    env:
+      LLM_API_TOKEN: "${LLM_API_TOKEN}"
