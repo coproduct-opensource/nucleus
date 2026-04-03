@@ -51,6 +51,8 @@ pub enum CliCommand {
     StatusLine,
     /// `--compartment <name>` — switch the active compartment for the latest session.
     Compartment { name: String },
+    /// `--provenance-schema` — emit JSON Schema from .provenance.json for --json-schema flag.
+    ProvenanceSchema,
 }
 
 /// CLI parsing error.
@@ -160,6 +162,7 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, CliError> {
             Ok(CliCommand::Benchmark { iterations })
         }
         "--statusline" => Ok(CliCommand::StatusLine),
+        "--provenance-schema" => Ok(CliCommand::ProvenanceSchema),
         "--compartment" => {
             let name = args.get(1).ok_or_else(|| CliError::MissingArgument {
                 flag: "--compartment".into(),
