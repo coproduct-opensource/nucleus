@@ -340,6 +340,7 @@ mod tests {
             signature: None,
             created_at: 1_700_000_000,
             field_witnesses: std::collections::BTreeMap::new(),
+            zkvm_receipt: None,
         };
         let digest = wb.compute_digest();
         assert_eq!(digest.len(), 32);

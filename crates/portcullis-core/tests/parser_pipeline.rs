@@ -120,6 +120,7 @@ mod wasm_pipeline {
             signature: None,
             created_at: 1000,
             field_witnesses: BTreeMap::new(),
+            zkvm_receipt: None,
         };
 
         assert!(bundle.verify_chain().is_ok());

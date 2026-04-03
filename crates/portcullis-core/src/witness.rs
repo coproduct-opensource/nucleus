@@ -389,6 +389,12 @@ pub struct WitnessBundle {
     /// has its own independent source → parser → output chain that can
     /// be verified independently. Prevents cross-field contamination.
     pub field_witnesses: std::collections::BTreeMap<String, FieldWitness>,
+    /// Optional zkVM receipt bytes proving parser execution (#1117).
+    /// When present, this is a serialized RISC Zero receipt that
+    /// cryptographically attests the parser execution. Use
+    /// `zkvm_receipt::ZkvmReceipt` (behind `zkvm` feature) to parse
+    /// and verify. Raw bytes stored here to avoid feature coupling.
+    pub zkvm_receipt: Option<Vec<u8>>,
 }
 
 impl WitnessBundle {
@@ -460,7 +466,17 @@ impl WitnessBundle {
         // Created at
         hasher.update(self.created_at.to_le_bytes());
 
+        // zkVM receipt (if present, include in digest for tamper evidence)
+        if let Some(ref receipt) = self.zkvm_receipt {
+            hasher.update(receipt);
+        }
+
         hasher.finalize().into()
+    }
+
+    /// Returns true if this bundle has a zkVM receipt attached.
+    pub fn has_zkvm_receipt(&self) -> bool {
+        self.zkvm_receipt.is_some()
     }
 
     /// Verify the hash chain: each step's output feeds the next step's input.
@@ -999,6 +1015,7 @@ mod tests {
             signature: None,
             created_at: 2000,
             field_witnesses: std::collections::BTreeMap::new(),
+            zkvm_receipt: None,
         }
     }
 
@@ -1115,6 +1132,7 @@ mod tests {
             signature: None,
             created_at: 1000,
             field_witnesses: std::collections::BTreeMap::new(),
+            zkvm_receipt: None,
         };
         assert!(bundle.verify_chain().is_ok());
         assert!(bundle.is_valid());
@@ -1177,6 +1195,7 @@ mod tests {
             signature: None,
             created_at: 2000,
             field_witnesses: std::collections::BTreeMap::new(),
+            zkvm_receipt: None,
         };
         assert!(bundle.verify_chain().is_ok());
         assert!(bundle.is_valid());
@@ -1227,6 +1246,7 @@ mod tests {
             signature: None,
             created_at: 1000,
             field_witnesses: std::collections::BTreeMap::new(),
+            zkvm_receipt: None,
         };
         assert!(bundle.verify_chain().is_err());
     }
@@ -1263,6 +1283,7 @@ mod tests {
             signature: None,
             created_at: 1000,
             field_witnesses: std::collections::BTreeMap::new(),
+            zkvm_receipt: None,
         };
 
         let err = bundle.verify_chain().unwrap_err();
@@ -1313,6 +1334,7 @@ mod tests {
             signature: None,
             created_at: 1000,
             field_witnesses: std::collections::BTreeMap::new(),
+            zkvm_receipt: None,
         };
 
         assert!(bundle.verify_chain().is_ok());
@@ -1357,6 +1379,7 @@ mod tests {
             signature: None,
             created_at: 1000,
             field_witnesses: std::collections::BTreeMap::new(),
+            zkvm_receipt: None,
         };
 
         let err = bundle.verify_chain().unwrap_err();
@@ -1403,6 +1426,7 @@ mod tests {
             signature: None,
             created_at: 1000,
             field_witnesses: std::collections::BTreeMap::new(),
+            zkvm_receipt: None,
         };
 
         let err = bundle.verify_chain().unwrap_err();
@@ -1445,6 +1469,7 @@ mod tests {
             signature: None,
             created_at: 1000,
             field_witnesses: std::collections::BTreeMap::new(),
+            zkvm_receipt: None,
         };
 
         assert!(bundle.verify_chain().is_ok());
