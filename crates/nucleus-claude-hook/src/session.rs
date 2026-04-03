@@ -1533,7 +1533,6 @@ pub(crate) fn resolve_bind_field_names(
 /// For each schema field, constructs the per-field provenance attestation:
 /// - Deterministic fields with DeterministicBind: full hash chain
 /// - AI-derived fields: honest labeling
-#[allow(dead_code)]
 pub(crate) fn build_provenance_output(
     s: &SessionState,
     schema: &portcullis_core::provenance_schema::ProvenanceSchema,
