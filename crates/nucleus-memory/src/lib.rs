@@ -40,6 +40,6 @@
 
 // Re-export the public API from portcullis-core.
 pub use portcullis_core::memory::{
-    GovernedMemory, MemoryAuthority, MemoryEntry, MemoryLabel, RebuttalEntry,
+    GovernedMemory, MemoryAuthority, MemoryEntry, MemoryLabel, RebuttalEntry, SchemaType,
 };
 pub use portcullis_core::{ConfLevel, IntegLevel, ProvenanceSet};
