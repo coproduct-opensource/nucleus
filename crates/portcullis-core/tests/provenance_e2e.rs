@@ -133,6 +133,7 @@ fn e2e_provenance_pipeline() {
         signature: None,
         created_at: now,
         field_witnesses: BTreeMap::new(),
+        zkvm_receipt: None,
     };
 
     // ── Step 8: Verify hash chain ────────────────────────────────────

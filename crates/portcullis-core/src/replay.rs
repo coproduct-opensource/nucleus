@@ -293,6 +293,7 @@ mod tests {
             signature: None,
             created_at: 2000,
             field_witnesses: std::collections::BTreeMap::new(),
+            zkvm_receipt: None,
         }
     }
 
@@ -552,6 +553,7 @@ mod tests {
             signature: None,
             created_at: 1000,
             field_witnesses: std::collections::BTreeMap::new(),
+            zkvm_receipt: None,
         };
 
         let input = ReplayInput {

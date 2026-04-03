@@ -1530,6 +1530,7 @@ pub(crate) fn assemble_witness_bundle(s: &mut SessionState) -> ClearanceResult {
         signature: None,
         created_at: now,
         field_witnesses: std::collections::BTreeMap::new(),
+        zkvm_receipt: None,
     };
 
     // Verify the chain.
