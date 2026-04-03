@@ -1198,10 +1198,20 @@ pub(crate) fn record_post_tool(
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        // Store raw bytes for replay verification (#986). Cap at 1MB.
+        // Store raw bytes for replay verification (#986, #1006).
+        // Write to separate blob file instead of inline in session JSON.
         const MAX_RAW_BYTES: usize = 1_048_576;
         let raw = if result_text.len() <= MAX_RAW_BYTES {
-            Some(result_text.as_bytes().to_vec())
+            // Write blob to .nucleus/sessions/blobs/{hash}.bin
+            let blob_dir = session_dir().join("blobs");
+            std::fs::create_dir_all(&blob_dir).ok();
+            let hash_hex = hex::encode(content_hash);
+            let blob_path = blob_dir.join(format!("{hash_hex}.bin"));
+            if !blob_path.exists() {
+                std::fs::write(&blob_path, result_text.as_bytes()).ok();
+            }
+            // Don't store in session JSON — load from blob on demand.
+            None
         } else {
             None
         };
@@ -1429,7 +1439,12 @@ pub(crate) fn assemble_witness_bundle(s: &mut SessionState) -> ClearanceResult {
             content_hash: src.content_hash,
             fetched_at: src.captured_at,
             fetched_by: src.tool_name.clone(),
-            raw_content: src.raw_content.clone(),
+            // Load raw content from blob file if not inline (#1006).
+            raw_content: src.raw_content.clone().or_else(|| {
+                let hash_hex = hex::encode(src.content_hash);
+                let blob_path = session_dir().join("blobs").join(format!("{hash_hex}.bin"));
+                std::fs::read(&blob_path).ok()
+            }),
         })
         .collect();
 
