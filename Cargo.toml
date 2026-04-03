@@ -112,6 +112,9 @@ proptest = "1.11"
 aws-sdk-s3 = "1.127"
 aws-config = { version = "1.6", features = ["behavior-version-latest"] }
 
+# zkVM (verifiable computation receipts)
+risc0-zkvm = "3.0"
+
 # Build
 tonic-prost-build = "0.14"
 protoc-bin-vendored = "3.2"

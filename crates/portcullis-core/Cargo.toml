@@ -23,6 +23,7 @@ artifact = ["dep:serde", "dep:serde_json", "dep:sha2"]
 c2pa-manifest = ["dep:c2pa", "artifact"]
 envelope = ["dep:sha2"]
 wasm-sandbox = ["dep:wasmtime", "dep:sha2"]
+zkvm = ["dep:risc0-zkvm", "dep:serde", "dep:serde_json", "dep:sha2"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"], optional = true }
@@ -31,6 +32,7 @@ sha2 = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 wasmtime = { version = "43", optional = true }
 c2pa = { workspace = true, optional = true }
+risc0-zkvm = { workspace = true, optional = true }
 
 [dev-dependencies]
 wat = "1"
