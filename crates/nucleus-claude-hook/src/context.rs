@@ -240,6 +240,86 @@ pub(crate) fn web_taint_warning(tool_name: &str, result_preview: &str) -> String
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Prompt segment labels (#960)
+// ---------------------------------------------------------------------------
+
+/// IFC label for a prompt segment (#960).
+///
+/// Tags context window segments with trust levels. Preparatory for
+/// CIV-style (arXiv 2508.09288) attention masking enforcement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) struct SegmentLabel {
+    /// Which part of the prompt this covers.
+    pub segment: SegmentKind,
+    /// Integrity level of this segment.
+    pub integrity: portcullis_core::IntegLevel,
+    /// Authority level of this segment.
+    pub authority: portcullis_core::AuthorityLevel,
+}
+
+/// Kind of prompt segment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum SegmentKind {
+    /// System prompt — fully trusted.
+    System,
+    /// User message — trusted, directive authority.
+    UserMessage,
+    /// Tool response from file read — trusted, deterministic.
+    ToolResponseFile,
+    /// Tool response from web fetch — adversarial, no authority.
+    ToolResponseWeb,
+    /// Sub-agent output — untrusted, informational.
+    SubAgentOutput,
+    /// Additional context (injected by nucleus).
+    NucleusContext,
+}
+
+impl SegmentLabel {
+    /// Label for system prompt.
+    #[allow(dead_code)]
+    pub fn system() -> Self {
+        Self {
+            segment: SegmentKind::System,
+            integrity: portcullis_core::IntegLevel::Trusted,
+            authority: portcullis_core::AuthorityLevel::Directive,
+        }
+    }
+
+    /// Label for user message.
+    #[allow(dead_code)]
+    pub fn user() -> Self {
+        Self {
+            segment: SegmentKind::UserMessage,
+            integrity: portcullis_core::IntegLevel::Trusted,
+            authority: portcullis_core::AuthorityLevel::Directive,
+        }
+    }
+
+    /// Label for web-derived tool response.
+    #[allow(dead_code)]
+    pub fn web_response() -> Self {
+        Self {
+            segment: SegmentKind::ToolResponseWeb,
+            integrity: portcullis_core::IntegLevel::Adversarial,
+            authority: portcullis_core::AuthorityLevel::NoAuthority,
+        }
+    }
+
+    /// Label for file-derived tool response.
+    #[allow(dead_code)]
+    pub fn file_response() -> Self {
+        Self {
+            segment: SegmentKind::ToolResponseFile,
+            integrity: portcullis_core::IntegLevel::Trusted,
+            authority: portcullis_core::AuthorityLevel::Informational,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Provenance mode context (#992)
 // ---------------------------------------------------------------------------
 
