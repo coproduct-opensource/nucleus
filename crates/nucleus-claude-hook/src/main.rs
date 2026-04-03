@@ -757,6 +757,39 @@ fn main() {
         );
     }
 
+    // MCP tool signature integrity check (#978).
+    if input.tool_name.starts_with("mcp__") {
+        let tool_sig = format!(
+            "{}:{}",
+            input.tool_name,
+            input
+                .tool_input
+                .as_object()
+                .map(|o| o.keys().cloned().collect::<Vec<_>>().join(","))
+                .unwrap_or_default()
+        );
+        let sig_hash = {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(tool_sig.as_bytes());
+            let r = h.finalize();
+            u32::from_le_bytes([r[0], r[1], r[2], r[3]])
+        };
+        let key = format!("mcp_sig:{}", input.tool_name);
+        match session.flagged_tools.get(&key) {
+            Some(&prev) if prev != sig_hash => {
+                nucleus_warn!(
+                    "MCP tool signature CHANGED: {} — possible tool poisoning",
+                    input.tool_name
+                );
+            }
+            None => {
+                session.flagged_tools.insert(key, sig_hash);
+            }
+            _ => {}
+        }
+    }
+
     // Provenance mode detection (#1020): on first invocation, check for schema.
     if is_first_invocation && !session.provenance_mode {
         let cwd = std::env::current_dir().unwrap_or_default();
