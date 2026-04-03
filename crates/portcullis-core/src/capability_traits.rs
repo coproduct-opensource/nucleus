@@ -184,6 +184,64 @@ pub fn full_access_context(
     Context::new(session_id, work_dir)
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Capability-bounded tool operations (#1121)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Read a file — requires `HasFileRead` capability.
+///
+/// The compiler rejects calls from contexts missing file read access.
+pub fn read_file<C: HasFileRead>(ctx: &Context<C>, path: &str) -> Result<String, String> {
+    let full = ctx.work_dir().join(path);
+    std::fs::read_to_string(&full).map_err(|e| format!("{}: {e}", full.display()))
+}
+
+/// Write a file — requires `HasFileWrite` capability.
+pub fn write_file<C: HasFileWrite>(ctx: &Context<C>, path: &str, data: &str) -> Result<(), String> {
+    let full = ctx.work_dir().join(path);
+    std::fs::write(&full, data).map_err(|e| format!("{}: {e}", full.display()))
+}
+
+/// Search files by pattern — requires `HasGlobSearch` capability.
+pub fn glob_search<C: HasGlobSearch>(
+    _ctx: &Context<C>,
+    _pattern: &str,
+) -> Result<Vec<String>, String> {
+    // Stub — real implementation would use glob crate
+    Ok(vec![])
+}
+
+/// Search file contents — requires `HasGrepSearch` capability.
+pub fn grep_search<C: HasGrepSearch>(
+    _ctx: &Context<C>,
+    _pattern: &str,
+) -> Result<Vec<String>, String> {
+    // Stub — real implementation would use regex
+    Ok(vec![])
+}
+
+/// Fetch a URL — requires `HasWebFetch` capability.
+pub fn web_fetch<C: HasWebFetch>(_ctx: &Context<C>, _url: &str) -> Result<String, String> {
+    // Stub — real implementation would use reqwest
+    Err("web_fetch not implemented in portcullis-core (use nucleus-tool-proxy)".into())
+}
+
+/// Execute a bash command — requires `HasBashExec` capability.
+pub fn bash_exec<C: HasBashExec>(_ctx: &Context<C>, _cmd: &str) -> Result<String, String> {
+    // Stub — real implementation would use std::process::Command
+    Err("bash_exec not implemented in portcullis-core (use nucleus-tool-proxy)".into())
+}
+
+/// Git commit — requires `HasGitCommit` capability.
+pub fn git_commit<C: HasGitCommit>(_ctx: &Context<C>, _message: &str) -> Result<(), String> {
+    Err("git_commit not implemented in portcullis-core".into())
+}
+
+/// Git push — requires `HasGitPush` capability.
+pub fn git_push<C: HasGitPush>(_ctx: &Context<C>) -> Result<(), String> {
+    Err("git_push not implemented in portcullis-core".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,4 +313,49 @@ mod tests {
         assert!(debug.contains("ReadOnly"));
         assert!(debug.contains("test"));
     }
+
+    // ── Capability-bounded tool function tests (#1121) ─────────────
+
+    #[test]
+    fn read_file_compiles_for_read_only() {
+        let dir = std::env::temp_dir();
+        let ctx = read_only_context("test".into(), dir);
+        // read_file compiles because ReadOnly has HasFileRead
+        let _ = read_file(&ctx, "nonexistent.txt");
+    }
+
+    #[test]
+    fn write_file_compiles_for_codegen() {
+        let dir = std::env::temp_dir();
+        let ctx = codegen_context("test".into(), dir);
+        // write_file compiles because Codegen has HasFileWrite
+        let _ = write_file(&ctx, "test.txt", "hello");
+    }
+
+    #[test]
+    fn web_fetch_compiles_for_code_review() {
+        let dir = std::env::temp_dir();
+        let ctx = code_review_context("test".into(), dir);
+        // web_fetch compiles because CodeReview has HasWebFetch
+        let result = web_fetch(&ctx, "https://example.com");
+        assert!(result.is_err()); // stub returns error
+    }
+
+    #[test]
+    fn bash_exec_compiles_for_codegen() {
+        let dir = std::env::temp_dir();
+        let ctx = codegen_context("test".into(), dir);
+        let result = bash_exec(&ctx, "echo hi");
+        assert!(result.is_err()); // stub
+    }
+
+    // NOTE: The following would NOT compile — proving the type system works:
+    // fn web_fetch_rejected_for_codegen() {
+    //     let ctx = codegen_context("t".into(), "/tmp".into());
+    //     web_fetch(&ctx, "https://evil.com");  // ERROR: Codegen lacks HasWebFetch
+    // }
+    // fn write_rejected_for_read_only() {
+    //     let ctx = read_only_context("t".into(), "/tmp".into());
+    //     write_file(&ctx, "file.txt", "data");  // ERROR: ReadOnly lacks HasFileWrite
+    // }
 }
