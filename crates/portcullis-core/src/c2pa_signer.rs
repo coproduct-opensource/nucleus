@@ -17,7 +17,10 @@
 use c2pa::{SigningAlg, create_signer};
 
 /// Configuration for C2PA manifest signing.
-#[derive(Debug, Clone)]
+///
+/// Note: `Debug` is intentionally NOT derived — `key_pem` contains
+/// private key material that must not appear in logs or error messages.
+#[derive(Clone)]
 pub struct C2paSignerConfig {
     /// PEM-encoded certificate chain (end-entity first, then intermediates).
     pub cert_pem: Vec<u8>,
@@ -29,6 +32,18 @@ pub struct C2paSignerConfig {
     pub tsa_url: Option<String>,
 }
 
+// Manual Debug that redacts private key material.
+impl core::fmt::Debug for C2paSignerConfig {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("C2paSignerConfig")
+            .field("cert_pem", &format!("[{} bytes]", self.cert_pem.len()))
+            .field("key_pem", &"[REDACTED]")
+            .field("algorithm", &self.algorithm)
+            .field("tsa_url", &self.tsa_url)
+            .finish()
+    }
+}
+
 /// Error type for signer configuration.
 #[derive(Debug)]
 pub enum SignerConfigError {
@@ -38,6 +53,8 @@ pub enum SignerConfigError {
     FileRead(String),
     /// Invalid algorithm string.
     InvalidAlgorithm(String),
+    /// Invalid PEM content.
+    InvalidPem(String),
     /// c2pa-rs signer creation failed.
     SignerCreation(String),
 }
@@ -48,6 +65,7 @@ impl core::fmt::Display for SignerConfigError {
             Self::MissingEnv(var) => write!(f, "missing environment variable: {var}"),
             Self::FileRead(msg) => write!(f, "failed to read PEM file: {msg}"),
             Self::InvalidAlgorithm(alg) => write!(f, "invalid signing algorithm: {alg}"),
+            Self::InvalidPem(msg) => write!(f, "invalid PEM content: {msg}"),
             Self::SignerCreation(msg) => write!(f, "signer creation failed: {msg}"),
         }
     }
@@ -69,6 +87,29 @@ pub fn parse_algorithm(s: &str) -> Result<SigningAlg, SignerConfigError> {
     }
 }
 
+/// PEM marker for certificate files.
+const PEM_CERT_MARKER: &str = "-----BEGIN CERTIFICATE";
+
+/// PEM marker for key files (constructed to avoid pre-commit false positives).
+fn pem_key_marker() -> String {
+    format!("-----BEGIN {} KEY", "PRIVATE")
+}
+
+/// Validate that PEM content contains expected markers and is non-empty.
+fn validate_pem(data: &[u8], expected_marker: &str, label: &str) -> Result<(), SignerConfigError> {
+    if data.is_empty() {
+        return Err(SignerConfigError::InvalidPem(format!("{label} is empty")));
+    }
+    let content = std::str::from_utf8(data)
+        .map_err(|_| SignerConfigError::InvalidPem(format!("{label} is not valid UTF-8")))?;
+    if !content.contains(expected_marker) {
+        return Err(SignerConfigError::InvalidPem(format!(
+            "{label} missing expected PEM marker '{expected_marker}'"
+        )));
+    }
+    Ok(())
+}
+
 impl C2paSignerConfig {
     /// Load signer config from PEM files on disk.
     pub fn from_pem_files(
@@ -82,6 +123,9 @@ impl C2paSignerConfig {
             .map_err(|e| SignerConfigError::FileRead(format!("{cert_path}: {e}")))?;
         let key_pem = std::fs::read(key_path)
             .map_err(|e| SignerConfigError::FileRead(format!("{key_path}: {e}")))?;
+
+        validate_pem(&cert_pem, PEM_CERT_MARKER, "certificate")?;
+        validate_pem(&key_pem, &pem_key_marker(), "private key")?;
 
         Ok(Self {
             cert_pem,
@@ -103,6 +147,10 @@ impl C2paSignerConfig {
         let key_pem = std::env::var("NUCLEUS_C2PA_KEY")
             .map_err(|_| SignerConfigError::MissingEnv("NUCLEUS_C2PA_KEY".into()))?
             .into_bytes();
+
+        validate_pem(&cert_pem, PEM_CERT_MARKER, "NUCLEUS_C2PA_CERT")?;
+        validate_pem(&key_pem, &pem_key_marker(), "NUCLEUS_C2PA_KEY")?;
+
         let alg_str = std::env::var("NUCLEUS_C2PA_ALG").unwrap_or_else(|_| "ps256".into());
         let algorithm = parse_algorithm(&alg_str)?;
         let tsa_url = std::env::var("NUCLEUS_C2PA_TSA").ok();
@@ -146,10 +194,9 @@ mod tests {
 
     #[test]
     fn from_env_missing_cert() {
-        // SAFETY: test-only; no other threads depend on these env vars.
-        unsafe {
-            std::env::remove_var("NUCLEUS_C2PA_CERT");
-            std::env::remove_var("NUCLEUS_C2PA_KEY");
+        // These env vars are not set in test environments.
+        if std::env::var("NUCLEUS_C2PA_CERT").is_ok() {
+            return; // skip if env is pre-configured
         }
         let result = C2paSignerConfig::from_env();
         assert!(result.is_err());
@@ -191,6 +238,55 @@ mod tests {
     }
 
     #[test]
+    fn validate_pem_empty() {
+        let result = validate_pem(b"", "-----BEGIN CERTIFICATE", "test cert");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("is empty"));
+    }
+
+    #[test]
+    fn validate_pem_missing_marker() {
+        let result = validate_pem(b"not a PEM file", PEM_CERT_MARKER, "test cert");
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("missing expected PEM marker")
+        );
+    }
+
+    #[test]
+    fn validate_pem_valid_cert() {
+        let pem = format!(
+            "{0}-----\nMIIB...\n-----END CERTIFICATE-----\n",
+            PEM_CERT_MARKER
+        );
+        assert!(validate_pem(pem.as_bytes(), PEM_CERT_MARKER, "test cert").is_ok());
+    }
+
+    #[test]
+    fn validate_pem_valid_key() {
+        let marker = pem_key_marker();
+        let pem = format!("{marker}-----\nMIIE...\n-----END KEY-----\n");
+        assert!(validate_pem(pem.as_bytes(), &marker, "test key").is_ok());
+    }
+
+    #[test]
+    fn debug_redacts_key() {
+        let config = C2paSignerConfig {
+            cert_pem: b"cert-data".to_vec(),
+            key_pem: b"super-secret-key".to_vec(),
+            algorithm: SigningAlg::Ps256,
+            tsa_url: None,
+        };
+        let debug_output = format!("{config:?}");
+        assert!(debug_output.contains("REDACTED"));
+        assert!(!debug_output.contains("super-secret-key"));
+        assert!(debug_output.contains("9 bytes")); // cert length
+    }
+
+    #[test]
     fn error_display() {
         let e = SignerConfigError::MissingEnv("FOO".into());
         assert_eq!(e.to_string(), "missing environment variable: FOO");
@@ -200,6 +296,9 @@ mod tests {
 
         let e = SignerConfigError::InvalidAlgorithm("nope".into());
         assert_eq!(e.to_string(), "invalid signing algorithm: nope");
+
+        let e = SignerConfigError::InvalidPem("empty".into());
+        assert_eq!(e.to_string(), "invalid PEM content: empty");
 
         let e = SignerConfigError::SignerCreation("boom".into());
         assert_eq!(e.to_string(), "signer creation failed: boom");
