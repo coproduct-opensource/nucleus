@@ -973,4 +973,115 @@ mod tests {
             "default-fallback"
         );
     }
+
+    // -----------------------------------------------------------------
+    // Labeling oracle correctness verification (#980)
+    //
+    // These tests verify that the label assignment functions are correct
+    // — if any of these fail, the entire IFC defense is compromised.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn oracle_web_content_is_adversarial() {
+        use portcullis_core::flow::{intrinsic_label, NodeKind};
+        use portcullis_core::IntegLevel;
+
+        let label = intrinsic_label(NodeKind::WebContent, 0);
+        assert_eq!(
+            label.integrity,
+            IntegLevel::Adversarial,
+            "CRITICAL: WebContent must be Adversarial — if this fails, prompt injection defense is broken"
+        );
+    }
+
+    #[test]
+    fn oracle_web_fetch_maps_to_web_content() {
+        let kind = classify_tool_output(Operation::WebFetch);
+        assert_eq!(
+            kind,
+            portcullis_core::flow::NodeKind::WebContent,
+            "CRITICAL: WebFetch must produce WebContent — if this fails, web taint tracking is broken"
+        );
+    }
+
+    #[test]
+    fn oracle_web_search_maps_to_web_content() {
+        let kind = classify_tool_output(Operation::WebSearch);
+        assert_eq!(
+            kind,
+            portcullis_core::flow::NodeKind::WebContent,
+            "CRITICAL: WebSearch must produce WebContent"
+        );
+    }
+
+    #[test]
+    fn oracle_file_read_is_trusted() {
+        use portcullis_core::flow::{intrinsic_label, NodeKind};
+        use portcullis_core::IntegLevel;
+
+        let label = intrinsic_label(NodeKind::FileRead, 0);
+        assert_eq!(label.integrity, IntegLevel::Trusted);
+    }
+
+    #[test]
+    fn oracle_user_prompt_is_directive() {
+        use portcullis_core::flow::{intrinsic_label, NodeKind};
+        use portcullis_core::AuthorityLevel;
+
+        let label = intrinsic_label(NodeKind::UserPrompt, 0);
+        assert_eq!(label.authority, AuthorityLevel::Directive);
+    }
+
+    #[test]
+    fn oracle_deterministic_bind_is_deterministic() {
+        use portcullis_core::flow::{intrinsic_label, NodeKind};
+        use portcullis_core::DerivationClass;
+
+        let label = intrinsic_label(NodeKind::DeterministicBind, 0);
+        assert_eq!(label.derivation, DerivationClass::Deterministic);
+    }
+
+    #[test]
+    fn oracle_model_plan_is_ai_derived() {
+        use portcullis_core::flow::{intrinsic_label, NodeKind};
+        use portcullis_core::DerivationClass;
+
+        let label = intrinsic_label(NodeKind::ModelPlan, 0);
+        assert_eq!(label.derivation, DerivationClass::AIDerived);
+    }
+
+    #[test]
+    fn oracle_all_node_kinds_have_u8_roundtrip() {
+        // Every NodeKind must survive u8 → NodeKind → u8 roundtrip.
+        for i in 0u8..=16 {
+            let kind = u8_to_node_kind(i);
+            let back = node_kind_to_u8(kind);
+            assert_eq!(
+                back, i,
+                "NodeKind roundtrip failed for discriminant {i}: {kind:?} → {back}"
+            );
+        }
+    }
+
+    #[test]
+    fn oracle_adversarial_sources_never_trusted() {
+        // No source classified as adversarial should have Trusted integrity.
+        use portcullis_core::flow::{intrinsic_label, NodeKind};
+        use portcullis_core::IntegLevel;
+
+        let adversarial_kinds = [
+            NodeKind::WebContent,
+            NodeKind::HTTPResponse,
+            NodeKind::CachedDatum,
+        ];
+
+        for kind in &adversarial_kinds {
+            let label = intrinsic_label(*kind, 0);
+            assert_ne!(
+                label.integrity,
+                IntegLevel::Trusted,
+                "CRITICAL: {kind:?} must NOT be Trusted — adversarial sources cannot be trusted"
+            );
+        }
+    }
 }
