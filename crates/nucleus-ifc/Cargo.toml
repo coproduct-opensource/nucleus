@@ -10,4 +10,4 @@ keywords = ["ai", "security", "ifc", "information-flow", "provenance"]
 categories = ["development-tools", "command-line-utilities"]
 
 [dependencies]
-portcullis-core = { path = "../portcullis-core" }
+portcullis-core = { version = "1.0.0", path = "../portcullis-core" }
