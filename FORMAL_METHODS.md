@@ -239,3 +239,65 @@ cargo run -p nucleus-audit -- assurance --project-dir .
 | OPA/Rego | Policy as code | No formal verification | We have Lean + Kani proofs |
 | HACL* | Cryptography | F* + C extraction | We trust ring, don't verify crypto |
 | CompCert | C compiler | Coq, binary-level | We use the standard "trusted compiler" assumption |
+
+## Component Status
+
+Full maturity table for every nucleus component. **Maturity key:** *Verified* = formal proofs + tests. *Tested* = compiles, has passing tests, never deployed. *Partial* = works for some cases, known gaps. *Implemented* = code exists, minimal testing.
+
+| Component | Maturity | Evidence |
+|-----------|----------|----------|
+| **Permission lattice** (portcullis) | Verified | 162K LOC, 1,443 tests, 297 Verus VCs, 112 Kani BMC proofs, 3 fuzz targets |
+| **Uninhabitable state detection** | Verified | Static scan + runtime guard, monotonicity proven (E1-E3, Kani B1-B9) |
+| **Attenuation tokens** | Verified | Compact delegation credentials with Kani-proven invariants (D1-D7) |
+| **Delegation chains** | Verified | Monotone attenuation with `meet_with_justification`, Lean proofs for delegation narrowing |
+| **Deep packet inspection (DPI)** | Verified | `DerivationClass`, `EffectKind`, `StorageLane`, `FieldEnvelope`, `WitnessBundle`. 3 Kani proofs + 16 Lean theorems |
+| **Constitutional kernel** | Tested | `ck-kernel` admission engine, `PolicyRuleSet`, 17 Kani proofs |
+| **Unicode injection defense** | Tested | 8-category invisible character detection; warn/strip/deny policy |
+| **Execution receipts** | Tested | Cryptographic pod execution proof with token usage and cost tracking |
+| **Permission market** | Tested | Lagrangian pricing oracle for multi-dimensional capability constraints |
+| **Web fetch security** | Tested | Unified MCP+HTTP path: MIME gating, DNS/URL allowlist, redirect verification |
+| **Audit log verification** | Tested | HMAC-SHA256 + SHA-256 chain; optional S3 append-only sink |
+| **PodSpec scanner** | Tested | Uninhabitable state, credentials, network, isolation, timeout checks |
+| **Claude Code scanner** | Tested | Uninhabitable state via allow/deny projection, Bash capability propagation |
+| **MCP config scanner** | Tested | Well-known server classification (15 packages), `npx -y` supply chain detection |
+| **Permission profiles** | Tested | 18 named profiles (10 canonical + 8 legacy) backed by lattice constructors |
+| **Tool proxy** (MCP enforcement) | Tested | 154 tests; enforces agent sessions in GitHub Actions |
+| **Firecracker isolation** | Tested | Real jailer invocation + iptables; Linux+KVM only |
+| **Network enforcement** | Tested | Default-deny egress, DNS allowlisting, drift detection |
+| **Causal ancestry** | Tested | Per-artifact `FlowGraph::causal_label()` queries; kernel refactored for artifact-granular decisions |
+| **Governed memory** | Tested | `GovernedMemory` with rebuttal history and `MemoryAuthority` |
+| **Egress policy** | Tested | Config-driven `EgressPolicy` with `HostPattern` matcher wired into `Kernel::decide()` |
+| **Receipt chain** | Tested | Hash-chain integrity for linked execution receipts across sessions |
+| **OWASP LLM Top 10 gauntlet** | Tested | 70 attack scenarios covering all 9 OWASP LLM vulnerability categories |
+| **DPI flow red team** | Tested | 33 red team tests for causal flow graph attacks |
+| **OTLP permission telemetry** | Tested | OTel spans with all 13 capability dimensions, exposure state, lockdown status |
+| **Fleet lockdown** | Tested | `nucleus lockdown` drops agents to read-only via gRPC streaming (sub-second) |
+| **C2PA content credentials** | Tested | c2pa-rs manifest builder, signer config, sidecar emission, audit verification |
+| **AI confidence scoring** | Tested | `AiDerivedWitness` with input context hash, model ID, multi-generation agreement rate |
+| **Budget tracking** | Partial | AtomicBudget exists; pre-exec reservation works, post-exec accounting incomplete |
+| **SPIFFE identity** | Implemented | mTLS + cert management code exists; no SPIRE deployment |
+| **Command exfiltration detection** | Partial | Program-name matching; `bash -c` bypasses documented |
+
+## Verification Tools
+
+| Tool | Type | Count | What It Proves |
+|------|------|-------|----------------|
+| **Lean 4 + Mathlib** | Unbounded, kernel-checked | 165 theorems | HeytingAlgebra, IFC flow rules, compartment safety, delegation narrowing, DerivationClass lattice |
+| **Kani** | Bounded model checking | 112 harnesses | DecisionToken linearity, lattice distributivity, exposure monoid, constitutional kernel invariants |
+| **Verus** | SMT (Z3) | 297 VCs | Lattice laws, nucleus operator, Heyting adjunction, Galois connections, graded monad |
+| **Proptest** | Property-based testing | 130+ invariants | Full PermissionLattice composition |
+| **Red team** | Adversarial testing | 162 scenarios | OWASP LLM Top 10, DPI flow attacks, delegation chain attacks |
+
+## Permission Lattice Algebra
+
+| Structure | What It Gives You | Status |
+|-----------|-------------------|--------|
+| **Quotient Lattice** | Uninhabitable state detection as a structural nucleus operator | Verified (Verus) |
+| **Heyting Algebra** | Conditional permissions with formal semantics | Verified (Verus + Lean) |
+| **Galois Connections** | Policy translation across trust domains | Verified (Verus) |
+| **Graded Monad** | Risk accumulation through computation chains | Verified (Verus) |
+| **Deep Packet Inspection** | DerivationClass, EffectKind, StorageLane, FieldEnvelope, WitnessBundle | Verified (Kani + Lean) |
+| **Attenuation Tokens** | Compact delegation credentials for wire transport | Verified (Kani D1-D7) |
+| **Exposure Invariants** | Exposure-set monotonicity, uninhabitable state iff count==3 | Verified (Kani B1-B9) |
+| **Modal Operators** | Distinguish "guaranteed safe" from "might be safe" | Tested |
+| **Delegation Chains** | Monotone attenuation with justification trails | Verified (Lean) |
