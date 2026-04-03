@@ -1444,106 +1444,137 @@ fn provenance_log(output_path: &Path) -> Result<(), AuditError> {
 
 /// Diff two provenance outputs (#1001).
 fn verify_c2pa(output_path: &Path, receipts_path: Option<&Path>) -> Result<(), AuditError> {
-    // Read provenance output
     let prov_str = std::fs::read_to_string(output_path)
         .map_err(|e| AuditError::Backend(format!("{}: {e}", output_path.display())))?;
     let prov: serde_json::Value = serde_json::from_str(&prov_str)
         .map_err(|e| AuditError::Backend(format!("parse {}: {e}", output_path.display())))?;
 
-    // Extract provenance header fields
+    // Extract and validate provenance header — fail on missing fields, don't default.
     let header = prov
         .get("_provenance")
         .ok_or_else(|| AuditError::Backend("missing _provenance header".into()))?;
     let chain_head = header
         .get("receipt_chain_head")
         .and_then(|v| v.as_str())
-        .unwrap_or("<missing>");
+        .ok_or_else(|| AuditError::Backend("missing receipt_chain_head in header".into()))?;
     let schema_hash = header
         .get("schema_hash")
         .and_then(|v| v.as_str())
-        .unwrap_or("<missing>");
+        .ok_or_else(|| AuditError::Backend("missing schema_hash in header".into()))?;
     let contains_ai = header
         .get("contains_ai_derived")
         .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+        .ok_or_else(|| AuditError::Backend("missing contains_ai_derived in header".into()))?;
 
     // Count field types
-    let fields = prov.as_object().map(|m| {
-        m.iter()
-            .filter(|(k, _)| *k != "_provenance")
-            .filter_map(|(_, v)| v.get("provenance").and_then(|p| p.get("derivation")))
-            .fold((0usize, 0usize), |(det, ai), d| {
-                if d.as_str() == Some("Deterministic") {
-                    (det + 1, ai)
-                } else {
-                    (det, ai + 1)
-                }
-            })
-    });
-    let (det_count, ai_count) = fields.unwrap_or((0, 0));
+    let (det_count, ai_count) = prov
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .filter(|(k, _)| *k != "_provenance")
+                .filter_map(|(_, v)| v.get("provenance").and_then(|p| p.get("derivation")))
+                .fold((0usize, 0usize), |(det, ai), d| {
+                    if d.as_str() == Some("Deterministic") {
+                        (det + 1, ai)
+                    } else {
+                        (det, ai + 1)
+                    }
+                })
+        })
+        .unwrap_or((0, 0));
 
-    println!("C2PA Provenance Verification");
-    println!("============================");
+    let mut had_failure = false;
+
+    println!("C2PA Provenance Inspection");
+    println!("==========================");
     println!("Source:          {}", output_path.display());
     println!("Schema hash:     {schema_hash}");
     println!("Chain head:      {chain_head}");
     println!("Contains AI:     {contains_ai}");
     println!("Fields:          {det_count} deterministic, {ai_count} AI-derived");
 
-    // Check for .c2pa sidecar
+    // Check for .c2pa sidecar — report presence only, NOT validity.
+    // NOTE: Cryptographic signature verification requires c2pa::Reader,
+    // which is not yet wired into nucleus-audit. The sidecar check below
+    // confirms the file exists and is non-empty — it does NOT verify the
+    // C2PA manifest signature or certificate chain.
     let sidecar_path = output_path.with_extension("c2pa");
     if sidecar_path.exists() {
         let sidecar_size = std::fs::metadata(&sidecar_path)
             .map(|m| m.len())
             .unwrap_or(0);
-        println!(
-            "C2PA sidecar:    {} ({} bytes)",
-            sidecar_path.display(),
-            sidecar_size
-        );
+        if sidecar_size == 0 {
+            println!("C2PA sidecar:    EMPTY (0 bytes) — invalid");
+            had_failure = true;
+        } else {
+            println!(
+                "C2PA sidecar:    present ({} bytes, signature NOT verified)",
+                sidecar_size
+            );
+        }
     } else {
         println!("C2PA sidecar:    not found (run with NUCLEUS_C2PA_CERT to generate)");
     }
 
-    // Cross-check with receipt chain if provided
+    // Cross-check receipt chain head — use exact equality, not substring match.
     if let Some(rpath) = receipts_path {
         let rfile = File::open(rpath)
             .map_err(|e| AuditError::Backend(format!("{}: {e}", rpath.display())))?;
         let reader = BufReader::new(rfile);
         let mut last_hash = String::new();
         let mut count = 0usize;
+        let mut parse_errors = 0usize;
         for line in reader.lines() {
             let line =
                 line.map_err(|e| AuditError::Backend(format!("read {}: {e}", rpath.display())))?;
             if line.trim().is_empty() {
                 continue;
             }
-            if let Ok(entry) = serde_json::from_str::<serde_json::Value>(&line) {
-                if let Some(h) = entry.get("receipt_hash").and_then(|v| v.as_str()) {
-                    last_hash = h.to_string();
+            match serde_json::from_str::<serde_json::Value>(&line) {
+                Ok(entry) => {
+                    if let Some(h) = entry.get("receipt_hash").and_then(|v| v.as_str()) {
+                        last_hash = h.to_string();
+                    }
+                    count += 1;
                 }
-                count += 1;
+                Err(_) => parse_errors += 1,
             }
         }
+
         println!("\nReceipt Chain Cross-Check");
         println!("-------------------------");
         println!("Receipts file:   {}", rpath.display());
         println!("Receipt count:   {count}");
+        if parse_errors > 0 {
+            println!("Parse errors:    {parse_errors} (malformed entries skipped)");
+            had_failure = true;
+        }
         println!("Last hash:       {last_hash}");
 
-        // Verify chain head matches
-        if !last_hash.is_empty() && chain_head.contains(&last_hash) {
-            println!("Match:           PASS — chain head matches last receipt");
-        } else if last_hash.is_empty() {
+        // Exact equality check — chain_head should match last receipt hash.
+        // Handle both bare hashes and "sha256:" prefixed forms.
+        let chain_head_bare = chain_head.strip_prefix("sha256:").unwrap_or(chain_head);
+        let last_hash_bare = last_hash.strip_prefix("sha256:").unwrap_or(&last_hash);
+
+        if last_hash.is_empty() {
             println!("Match:           SKIP — no receipt hashes found");
+        } else if chain_head_bare == last_hash_bare {
+            println!("Match:           PASS — chain head matches last receipt");
         } else {
             println!("Match:           FAIL — chain head does not match last receipt");
             println!("  Expected: {chain_head}");
             println!("  Got:      {last_hash}");
+            had_failure = true;
         }
     }
 
-    println!("\nok: C2PA verification complete");
+    if had_failure {
+        println!("\nresult: FAIL — issues found (see above)");
+        return Err(AuditError::Backend("C2PA verification found issues".into()));
+    }
+    println!(
+        "\nresult: ok — provenance inspection complete (note: C2PA signature not yet verified)"
+    );
     Ok(())
 }
 
