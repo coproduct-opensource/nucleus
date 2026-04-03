@@ -75,6 +75,7 @@ pub mod enterprise;
 #[cfg(feature = "envelope")]
 pub mod envelope;
 pub mod flow;
+pub mod ifc_api;
 #[cfg(feature = "serde")]
 pub mod managed_settings;
 pub mod manifest;
