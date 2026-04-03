@@ -6,9 +6,27 @@
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/coproduct-opensource/nucleus/badge)](https://securityscorecards.dev/viewer/?uri=github.com/coproduct-opensource/nucleus)
 [![Docs](https://img.shields.io/badge/docs-github.io-blue)](https://coproduct-opensource.github.io/nucleus/)
 
-**A formally verified permission lattice and security runtime for AI agents.**
+**Cryptographically prove which data in an AI agent's output the model never touched.**
 
-Nucleus is a security framework for AI agents that combines a mathematically verified permission algebra with a Firecracker-based enforcement runtime.
+Nucleus is the only system that provides *negative provenance* — proving specific values were extracted deterministically from source systems, with the AI model structurally excluded from the data path. Not confidence scores. Not "the model said it copied faithfully." Cryptographic proof, replay-verifiable by any auditor.
+
+```
+revenue: 383,285,000,000 — Deterministic (source→parser→output hash chain verified)
+summary: "Apple designs..." — AIDerived (honestly labeled, no verification possible)
+```
+
+**EU AI Act Article 50 ready.** Machine-readable provenance with `contains_ai_derived` flag.
+**FINRA/SEC compliant.** Immutable audit trail with Ed25519-signed receipt chains.
+
+### How It Works
+
+1. **Fetch** — WebFetch captures content + SHA-256 hash at source
+2. **Parse** — WASM sandbox extracts fields deterministically (zero-WASI, fuel-metered, model excluded)
+3. **Bind** — DeterministicBind routes parser output to schema field (flow graph rejects if ANY parent has AI-derived taint)
+4. **Prove** — WitnessBundle records the hash chain; auditor re-executes the parser independently
+5. **Export** — Per-field provenance output + W3C PROV-JSON for compliance tooling
+
+Built on a formally verified permission lattice and Firecracker-based enforcement runtime.
 
 **Verification assurance** (see [`FORMAL_METHODS.md`](FORMAL_METHODS.md) for the honest self-audit):
 
