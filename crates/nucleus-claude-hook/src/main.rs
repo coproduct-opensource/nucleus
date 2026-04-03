@@ -294,6 +294,22 @@ fn main() {
                     "finalized",
                 );
 
+                // Generate provenance output if schema exists (#991).
+                let cwd = std::env::current_dir().unwrap_or_default();
+                if let Some(schema) = load_provenance_schema(&cwd) {
+                    let output = session::build_provenance_output(&session, &schema);
+                    if let Ok(json) = output.to_json() {
+                        let out_path = cwd.join("provenance-output.json");
+                        if std::fs::write(&out_path, &json).is_ok() {
+                            nucleus_info!(
+                                "provenance output written: {} ({} fields)",
+                                out_path.display(),
+                                schema.fields.len()
+                            );
+                        }
+                    }
+                }
+
                 // Clean up session state (keep receipts for audit)
                 let state_path = session_state_path(&input.session_id);
                 let hwm_path = session_hwm_path(&input.session_id);
