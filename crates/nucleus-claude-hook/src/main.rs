@@ -417,6 +417,7 @@ fn main() {
                             tool_name: hash_tool.clone(),
                             captured_at: now,
                             witnessed: false,
+                            raw_content: None,
                         });
                     }
                 }) {
