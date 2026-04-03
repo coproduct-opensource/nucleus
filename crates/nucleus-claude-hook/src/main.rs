@@ -19,6 +19,8 @@ use ring::signature::Ed25519KeyPair;
 
 mod bench;
 mod build;
+#[cfg(feature = "c2pa")]
+mod c2pa_output;
 mod classify;
 mod cli;
 mod color;
@@ -340,6 +342,13 @@ fn main() {
                                 out_path.display(),
                                 schema.fields.len()
                             );
+                            // Emit C2PA sidecar if signer is configured (#1017).
+                            #[cfg(feature = "c2pa")]
+                            match c2pa_output::try_emit_c2pa_sidecar(&output, None, &cwd) {
+                                Ok(Some(p)) => nucleus_info!("C2PA sidecar: {}", p.display()),
+                                Ok(None) => {} // no signer configured, normal
+                                Err(e) => nucleus_info!("C2PA sidecar skipped: {e}"),
+                            }
                         }
                     }
                 }
