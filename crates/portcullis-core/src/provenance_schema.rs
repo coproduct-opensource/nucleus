@@ -281,6 +281,41 @@ impl ProvenanceSchema {
             None
         }
     }
+
+    /// Resolve a source URL template by substituting `{key}` placeholders (#985).
+    ///
+    /// Values are percent-encoded for URL safety. Returns `None` if the
+    /// source doesn't exist.
+    pub fn resolve_url(
+        &self,
+        source_name: &str,
+        params: &BTreeMap<String, String>,
+    ) -> Option<String> {
+        let source = self.sources.get(source_name)?;
+        let mut url = source.url_template.clone();
+        for (key, value) in params {
+            let encoded = percent_encode(value);
+            url = url.replace(&format!("{{{key}}}"), &encoded);
+        }
+        Some(url)
+    }
+}
+
+/// Minimal percent-encoding for URL query values.
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => {
+                out.push('%');
+                out.push_str(&format!("{byte:02X}"));
+            }
+        }
+    }
+    out
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -473,5 +508,45 @@ mod tests {
     fn unknown_field_returns_none() {
         let schema = sample_schema();
         assert!(schema.check_freshness("nonexistent", 1000, 1100).is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // URL template substitution (#985)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn resolve_url_substitutes_params() {
+        let schema = sample_schema();
+        let mut params = BTreeMap::new();
+        params.insert("ticker".into(), "AAPL".into());
+        let url = schema.resolve_url("sec_10k", &params).unwrap();
+        assert_eq!(url, "https://efts.sec.gov/search?q=AAPL");
+    }
+
+    #[test]
+    fn resolve_url_percent_encodes() {
+        let schema = sample_schema();
+        let mut params = BTreeMap::new();
+        params.insert("ticker".into(), "A B&C".into());
+        let url = schema.resolve_url("sec_10k", &params).unwrap();
+        assert!(url.contains("A%20B%26C"));
+    }
+
+    #[test]
+    fn resolve_url_unknown_source_returns_none() {
+        let schema = sample_schema();
+        assert!(
+            schema
+                .resolve_url("nonexistent", &BTreeMap::new())
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn percent_encode_preserves_unreserved() {
+        assert_eq!(
+            super::percent_encode("hello-world_2.0~test"),
+            "hello-world_2.0~test"
+        );
     }
 }
