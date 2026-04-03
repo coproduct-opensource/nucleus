@@ -1204,7 +1204,7 @@ pub(crate) fn record_post_tool(
                 String::new(),
             ));
             s.deterministic_binds.push(DeterministicBindRecord {
-                field_name: String::new(), // populated when schema is loaded
+                field_name: String::new(), // resolved by resolve_bind_field_names()
                 output_hash: step.output_hash,
                 parser_id: step.parser_id.clone(),
                 node_kind_u8: node_kind_to_u8(portcullis_core::flow::NodeKind::DeterministicBind),
@@ -1499,6 +1499,32 @@ pub(crate) fn check_deterministic_field_write(
              Apply a registered parser first, then the DeterministicBind will populate this field automatically.",
             field_name
         ))
+    }
+}
+
+/// Resolve field names on DeterministicBindRecords from a schema (#987).
+///
+/// Matches bind records (which have parser_id but empty field_name) to
+/// schema fields that declare the same parser. Called after schema is loaded.
+pub(crate) fn resolve_bind_field_names(
+    s: &mut SessionState,
+    schema: &portcullis_core::provenance_schema::ProvenanceSchema,
+) {
+    use portcullis_core::provenance_schema::DerivationKind;
+
+    for bind in &mut s.deterministic_binds {
+        if !bind.field_name.is_empty() {
+            continue; // already resolved
+        }
+        // Find a deterministic field whose parser matches this bind's parser_id.
+        for (name, field) in &schema.fields {
+            if field.derivation == DerivationKind::Deterministic
+                && field.parser.as_deref() == Some(&bind.parser_id)
+            {
+                bind.field_name = name.clone();
+                break;
+            }
+        }
     }
 }
 

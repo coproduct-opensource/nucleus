@@ -1236,6 +1236,8 @@ fn main() {
         // Load schema from .provenance.yaml in cwd (if present).
         let cwd = std::env::current_dir().unwrap_or_default();
         load_provenance_schema(&cwd).and_then(|schema| {
+            // Resolve bind field names from schema (#987).
+            session::resolve_bind_field_names(&mut session, &schema);
             session::check_deterministic_field_write(&session, &schema, &subject)
         })
     } else {
