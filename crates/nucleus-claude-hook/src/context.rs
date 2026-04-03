@@ -240,6 +240,62 @@ pub(crate) fn web_taint_warning(tool_name: &str, result_preview: &str) -> String
 }
 
 // ---------------------------------------------------------------------------
+// Provenance mode context (#992)
+// ---------------------------------------------------------------------------
+
+/// Build provenance mode context for additionalContext injection (#992).
+///
+/// When a .provenance.json schema is detected, tells the model:
+/// - Which fields are deterministic vs AI-derived
+/// - That deterministic fields will be populated automatically by the parser pipeline
+/// - That direct model writes to deterministic fields will be denied
+/// - How to invoke /clearance when done
+#[allow(dead_code)]
+pub(crate) fn build_provenance_context(
+    schema: &portcullis_core::provenance_schema::ProvenanceSchema,
+) -> String {
+    use portcullis_core::provenance_schema::DerivationKind;
+
+    let mut ctx = String::new();
+    ctx.push_str("[nucleus-provenance] Provenance mode active.\n");
+    ctx.push_str(&format!("Schema: {}\n\n", schema.description));
+
+    // List deterministic fields.
+    ctx.push_str("DETERMINISTIC fields (populated automatically by parser pipeline — do NOT write these directly):\n");
+    for (name, field) in &schema.fields {
+        if field.derivation == DerivationKind::Deterministic {
+            let parser = field.parser.as_deref().unwrap_or("?");
+            let expr = field.expression.as_deref().unwrap_or("");
+            ctx.push_str(&format!(
+                "  - {name}: parser={parser} expression=\"{expr}\"\n"
+            ));
+        }
+    }
+
+    // List AI-derived fields.
+    ctx.push_str("\nAI-DERIVED fields (you generate these — they will be honestly labeled):\n");
+    for (name, field) in &schema.fields {
+        if field.derivation == DerivationKind::AiDerived {
+            ctx.push_str(&format!("  - {name}\n"));
+        }
+    }
+
+    // Instructions.
+    ctx.push_str("\nWorkflow:\n");
+    ctx.push_str("1. Fetch the source URLs (the parser pipeline will extract deterministic fields automatically)\n");
+    ctx.push_str("2. Write AI-derived fields normally\n");
+    ctx.push_str(
+        "3. Use /clearance to assemble the WitnessBundle and finalize the provenance output\n",
+    );
+    ctx.push_str(
+        "\nIMPORTANT: If you try to write a deterministic field directly, it will be DENIED.\n",
+    );
+    ctx.push_str("The WASM parser extracts these values without your involvement — this is the provenance guarantee.\n");
+
+    ctx
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
