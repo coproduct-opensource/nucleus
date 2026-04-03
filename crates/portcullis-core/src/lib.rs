@@ -442,6 +442,52 @@ const _: () = {
     assert!(Operation::SpawnAgent as u8 == 12);
 };
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Sealed LatticeOperation trait (#1051)
+// ═══════════════════════════════════════════════════════════════════════════
+
+mod private {
+    pub trait Sealed {}
+}
+
+/// Trait for operations that participate in the verified permission lattice.
+///
+/// **SEALED**: Cannot be implemented outside this crate. The 13 core
+/// operations have Verus verification conditions. Extensions must use
+/// string-based `ExtensionOperation` which goes through a separate,
+/// runtime-checked code path.
+pub trait LatticeOperation: private::Sealed {
+    /// Whether this operation can exfiltrate data to external systems.
+    fn is_exfiltration_vector(&self) -> bool;
+
+    /// Whether this operation modifies persistent state.
+    fn is_mutation(&self) -> bool;
+}
+
+impl private::Sealed for Operation {}
+
+impl LatticeOperation for Operation {
+    fn is_exfiltration_vector(&self) -> bool {
+        matches!(
+            self,
+            Operation::WebFetch | Operation::GitPush | Operation::CreatePr | Operation::SpawnAgent
+        )
+    }
+
+    fn is_mutation(&self) -> bool {
+        matches!(
+            self,
+            Operation::WriteFiles
+                | Operation::EditFiles
+                | Operation::RunBash
+                | Operation::GitCommit
+                | Operation::GitPush
+                | Operation::CreatePr
+                | Operation::ManagePods
+        )
+    }
+}
+
 impl Operation {
     /// All 13 core operations.
     pub const ALL: [Operation; 13] = [
