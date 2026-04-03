@@ -1474,7 +1474,6 @@ pub(crate) fn assemble_witness_bundle(s: &mut SessionState) -> ClearanceResult {
 /// exists for it.
 ///
 /// Returns `Some(reason)` if the write should be denied, `None` if allowed.
-#[allow(dead_code)]
 pub(crate) fn check_deterministic_field_write(
     s: &SessionState,
     schema: &portcullis_core::provenance_schema::ProvenanceSchema,
