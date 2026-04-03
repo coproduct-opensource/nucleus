@@ -404,6 +404,9 @@ pub(crate) fn node_kind_to_u8(kind: NodeKind) -> u8 {
         NodeKind::GitBlob => 14,
         NodeKind::CachedDatum => 15,
         NodeKind::DeterministicBind => 16,
+        NodeKind::ImageContent => 17,
+        NodeKind::AudioContent => 18,
+        NodeKind::PDFContent => 19,
     }
 }
 
@@ -426,7 +429,10 @@ pub(crate) fn u8_to_node_kind(v: u8) -> NodeKind {
         13 => NodeKind::DatabaseRow,
         14 => NodeKind::GitBlob,
         15 => NodeKind::CachedDatum,
-        _ => NodeKind::DeterministicBind,
+        16 => NodeKind::DeterministicBind,
+        17 => NodeKind::ImageContent,
+        18 => NodeKind::AudioContent,
+        _ => NodeKind::PDFContent,
     }
 }
 
@@ -502,9 +508,12 @@ impl LeafTracker {
             | NodeKind::DatabaseRow
             | NodeKind::GitBlob
             | NodeKind::DeterministicBind => &mut self.trusted,
-            NodeKind::WebContent | NodeKind::HTTPResponse | NodeKind::CachedDatum => {
-                &mut self.adversarial
-            }
+            NodeKind::WebContent
+            | NodeKind::HTTPResponse
+            | NodeKind::CachedDatum
+            | NodeKind::ImageContent
+            | NodeKind::AudioContent
+            | NodeKind::PDFContent => &mut self.adversarial,
             NodeKind::OutboundAction | NodeKind::MemoryWrite => &mut self.action,
             NodeKind::ModelPlan
             | NodeKind::ToolResponse
@@ -540,7 +549,12 @@ impl LeafTracker {
                 // Source-only: previous trusted node (for ordering) but no adversarial parent
                 self.trusted.clone()
             }
-            NodeKind::WebContent | NodeKind::HTTPResponse | NodeKind::CachedDatum => {
+            NodeKind::WebContent
+            | NodeKind::HTTPResponse
+            | NodeKind::CachedDatum
+            | NodeKind::ImageContent
+            | NodeKind::AudioContent
+            | NodeKind::PDFContent => {
                 // External/untrusted content enters independently
                 self.adversarial.clone()
             }

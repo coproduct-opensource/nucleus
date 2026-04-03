@@ -33,7 +33,10 @@ fn u8_to_node_kind(v: u8) -> NodeKind {
         13 => NodeKind::DatabaseRow,
         14 => NodeKind::GitBlob,
         15 => NodeKind::CachedDatum,
-        _ => NodeKind::DeterministicBind,
+        16 => NodeKind::DeterministicBind,
+        17 => NodeKind::ImageContent,
+        18 => NodeKind::AudioContent,
+        _ => NodeKind::PDFContent,
     }
 }
 
@@ -134,7 +137,10 @@ fn prov_category(kind: NodeKind) -> ProvCategory {
         | NodeKind::DatabaseRow
         | NodeKind::GitBlob
         | NodeKind::CachedDatum
-        | NodeKind::DeterministicBind => ProvCategory::Entity,
+        | NodeKind::DeterministicBind
+        | NodeKind::ImageContent
+        | NodeKind::AudioContent
+        | NodeKind::PDFContent => ProvCategory::Entity,
         // Activities: computations/actions
         NodeKind::OutboundAction
         | NodeKind::MemoryWrite
@@ -199,6 +205,9 @@ fn node_kind_str(kind: NodeKind) -> &'static str {
         NodeKind::GitBlob => "GitBlob",
         NodeKind::CachedDatum => "CachedDatum",
         NodeKind::DeterministicBind => "DeterministicBind",
+        NodeKind::ImageContent => "ImageContent",
+        NodeKind::AudioContent => "AudioContent",
+        NodeKind::PDFContent => "PDFContent",
     }
 }
 

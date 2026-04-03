@@ -146,7 +146,11 @@ pub fn source_category(kind: NodeKind) -> SourceCategory {
         NodeKind::FileRead | NodeKind::UserPrompt | NodeKind::EnvVar | NodeKind::MemoryRead => {
             SourceCategory::Trusted
         }
-        NodeKind::WebContent | NodeKind::CachedDatum => SourceCategory::Adversarial,
+        NodeKind::WebContent
+        | NodeKind::CachedDatum
+        | NodeKind::ImageContent
+        | NodeKind::AudioContent
+        | NodeKind::PDFContent => SourceCategory::Adversarial,
         NodeKind::OutboundAction | NodeKind::MemoryWrite => SourceCategory::Action,
         NodeKind::DatabaseRow | NodeKind::GitBlob | NodeKind::DeterministicBind => {
             SourceCategory::Trusted

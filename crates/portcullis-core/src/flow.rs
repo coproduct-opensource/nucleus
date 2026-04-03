@@ -74,6 +74,14 @@ pub enum NodeKind {
     /// This is the "air gap" that keeps AI-derived taint out of
     /// deterministic data paths (#922).
     DeterministicBind,
+    /// Image content — adversarial by default (#961).
+    /// Multimodal prompt injection can hide instructions in images.
+    ImageContent,
+    /// Audio content — adversarial by default (#961).
+    AudioContent,
+    /// PDF document — adversarial by default (#961).
+    /// PDFs can contain hidden text, JavaScript, and form fields.
+    PDFContent,
 }
 
 /// Intrinsic label for a node kind — the base label before propagation.
@@ -226,6 +234,11 @@ pub fn intrinsic_label(kind: NodeKind, now: u64) -> IFCLabel {
             authority: AuthorityLevel::NoAuthority,
             derivation: DerivationClass::Deterministic,
         },
+        // Multimodal content (#961) — all adversarial by default.
+        // Prompt injection can hide in images, audio, and PDF documents.
+        NodeKind::ImageContent | NodeKind::AudioContent | NodeKind::PDFContent => {
+            IFCLabel::web_content(now)
+        }
     }
 }
 
