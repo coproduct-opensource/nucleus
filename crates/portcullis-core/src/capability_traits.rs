@@ -103,6 +103,87 @@ impl HasGitPush for FullAccess {}
 impl HasCreatePr for FullAccess {}
 impl HasManagePods for FullAccess {}
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Context<Caps> — phantom-typed execution context (#1120)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A phantom-typed execution context carrying compile-time capability information.
+///
+/// The type parameter `Caps` determines which capabilities are available.
+/// Functions requiring specific capabilities constrain `Caps` with marker traits:
+///
+/// ```rust,ignore
+/// fn write_file<C: HasFileWrite>(ctx: &Context<C>, path: &str, data: &[u8]) { ... }
+/// ```
+///
+/// The context also carries runtime state (session ID, working directory)
+/// that is independent of the capability type.
+pub struct Context<Caps> {
+    /// Session identifier for audit trail correlation.
+    pub session_id: String,
+    /// Working directory for file operations.
+    pub work_dir: std::path::PathBuf,
+    /// Phantom data carrying the capability type.
+    _caps: std::marker::PhantomData<Caps>,
+}
+
+impl<Caps> Context<Caps> {
+    /// Create a new context with the given session ID and working directory.
+    pub fn new(session_id: String, work_dir: std::path::PathBuf) -> Self {
+        Self {
+            session_id,
+            work_dir,
+            _caps: std::marker::PhantomData,
+        }
+    }
+
+    /// Get the session ID.
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    /// Get the working directory.
+    pub fn work_dir(&self) -> &std::path::Path {
+        &self.work_dir
+    }
+}
+
+impl<Caps> std::fmt::Debug for Context<Caps> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Context")
+            .field("session_id", &self.session_id)
+            .field("work_dir", &self.work_dir)
+            .field("caps", &std::any::type_name::<Caps>())
+            .finish()
+    }
+}
+
+/// Create a read-only context.
+pub fn read_only_context(session_id: String, work_dir: std::path::PathBuf) -> Context<ReadOnly> {
+    Context::new(session_id, work_dir)
+}
+
+/// Create a code review context.
+pub fn code_review_context(
+    session_id: String,
+    work_dir: std::path::PathBuf,
+) -> Context<CodeReview> {
+    Context::new(session_id, work_dir)
+}
+
+/// Create a code generation context.
+pub fn codegen_context(session_id: String, work_dir: std::path::PathBuf) -> Context<Codegen> {
+    Context::new(session_id, work_dir)
+}
+
+/// Create a full access context.
+pub fn full_access_context(
+    session_id: String,
+    work_dir: std::path::PathBuf,
+) -> Context<FullAccess> {
+    Context::new(session_id, work_dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,5 +217,42 @@ mod tests {
         requires_web_fetch(&FullAccess);
         requires_bash(&FullAccess);
         requires_push(&FullAccess);
+    }
+
+    // ── Context<Caps> tests (#1120) ────────────────────────────────
+
+    fn ctx_requires_read<C: HasFileRead>(ctx: &Context<C>) -> &str {
+        ctx.session_id()
+    }
+
+    fn ctx_requires_web<C: HasWebFetch>(ctx: &Context<C>) -> &str {
+        ctx.session_id()
+    }
+
+    #[test]
+    fn read_only_context_has_read() {
+        let ctx = read_only_context("sess1".into(), "/tmp".into());
+        assert_eq!(ctx_requires_read(&ctx), "sess1");
+    }
+
+    #[test]
+    fn code_review_context_has_web() {
+        let ctx = code_review_context("sess2".into(), "/tmp".into());
+        assert_eq!(ctx_requires_web(&ctx), "sess2");
+    }
+
+    #[test]
+    fn codegen_context_has_bash() {
+        let ctx = codegen_context("sess3".into(), "/work".into());
+        requires_bash(&Codegen); // caps type has bash
+        assert_eq!(ctx.work_dir().to_str().unwrap(), "/work");
+    }
+
+    #[test]
+    fn context_debug_shows_caps_type() {
+        let ctx = read_only_context("test".into(), "/tmp".into());
+        let debug = format!("{ctx:?}");
+        assert!(debug.contains("ReadOnly"));
+        assert!(debug.contains("test"));
     }
 }
