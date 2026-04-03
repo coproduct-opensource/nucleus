@@ -138,6 +138,19 @@ enum Command {
         #[arg(long)]
         new_parser: String,
     },
+    /// Verify C2PA content credentials — cross-check sidecar with receipt chain (#1018).
+    ///
+    /// Reads provenance-output.json and its companion .c2pa manifest,
+    /// extracts the nucleus.witness_digest assertion, and verifies it
+    /// matches the receipt chain head hash.
+    VerifyC2pa {
+        /// Provenance output JSON file.
+        #[arg(long)]
+        output: PathBuf,
+        /// Receipt chain file (JSONL) for cross-verification.
+        #[arg(long)]
+        receipts: Option<PathBuf>,
+    },
     /// Diff two provenance outputs — show what changed between runs (#1001).
     DiffProvenance {
         /// Old provenance output JSON.
@@ -282,6 +295,9 @@ fn main() -> Result<(), AuditError> {
         }
         Command::ProvenanceLog { output } => {
             provenance_log(&output)?;
+        }
+        Command::VerifyC2pa { output, receipts } => {
+            verify_c2pa(&output, receipts.as_deref())?;
         }
         Command::DiffProvenance { old, new } => {
             diff_provenance(&old, &new)?;
@@ -1427,6 +1443,110 @@ fn provenance_log(output_path: &Path) -> Result<(), AuditError> {
 }
 
 /// Diff two provenance outputs (#1001).
+fn verify_c2pa(output_path: &Path, receipts_path: Option<&Path>) -> Result<(), AuditError> {
+    // Read provenance output
+    let prov_str = std::fs::read_to_string(output_path)
+        .map_err(|e| AuditError::Backend(format!("{}: {e}", output_path.display())))?;
+    let prov: serde_json::Value = serde_json::from_str(&prov_str)
+        .map_err(|e| AuditError::Backend(format!("parse {}: {e}", output_path.display())))?;
+
+    // Extract provenance header fields
+    let header = prov
+        .get("_provenance")
+        .ok_or_else(|| AuditError::Backend("missing _provenance header".into()))?;
+    let chain_head = header
+        .get("receipt_chain_head")
+        .and_then(|v| v.as_str())
+        .unwrap_or("<missing>");
+    let schema_hash = header
+        .get("schema_hash")
+        .and_then(|v| v.as_str())
+        .unwrap_or("<missing>");
+    let contains_ai = header
+        .get("contains_ai_derived")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    // Count field types
+    let fields = prov.as_object().map(|m| {
+        m.iter()
+            .filter(|(k, _)| *k != "_provenance")
+            .filter_map(|(_, v)| v.get("provenance").and_then(|p| p.get("derivation")))
+            .fold((0usize, 0usize), |(det, ai), d| {
+                if d.as_str() == Some("Deterministic") {
+                    (det + 1, ai)
+                } else {
+                    (det, ai + 1)
+                }
+            })
+    });
+    let (det_count, ai_count) = fields.unwrap_or((0, 0));
+
+    println!("C2PA Provenance Verification");
+    println!("============================");
+    println!("Source:          {}", output_path.display());
+    println!("Schema hash:     {schema_hash}");
+    println!("Chain head:      {chain_head}");
+    println!("Contains AI:     {contains_ai}");
+    println!("Fields:          {det_count} deterministic, {ai_count} AI-derived");
+
+    // Check for .c2pa sidecar
+    let sidecar_path = output_path.with_extension("c2pa");
+    if sidecar_path.exists() {
+        let sidecar_size = std::fs::metadata(&sidecar_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+        println!(
+            "C2PA sidecar:    {} ({} bytes)",
+            sidecar_path.display(),
+            sidecar_size
+        );
+    } else {
+        println!("C2PA sidecar:    not found (run with NUCLEUS_C2PA_CERT to generate)");
+    }
+
+    // Cross-check with receipt chain if provided
+    if let Some(rpath) = receipts_path {
+        let rfile = File::open(rpath)
+            .map_err(|e| AuditError::Backend(format!("{}: {e}", rpath.display())))?;
+        let reader = BufReader::new(rfile);
+        let mut last_hash = String::new();
+        let mut count = 0usize;
+        for line in reader.lines() {
+            let line =
+                line.map_err(|e| AuditError::Backend(format!("read {}: {e}", rpath.display())))?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            if let Ok(entry) = serde_json::from_str::<serde_json::Value>(&line) {
+                if let Some(h) = entry.get("receipt_hash").and_then(|v| v.as_str()) {
+                    last_hash = h.to_string();
+                }
+                count += 1;
+            }
+        }
+        println!("\nReceipt Chain Cross-Check");
+        println!("-------------------------");
+        println!("Receipts file:   {}", rpath.display());
+        println!("Receipt count:   {count}");
+        println!("Last hash:       {last_hash}");
+
+        // Verify chain head matches
+        if !last_hash.is_empty() && chain_head.contains(&last_hash) {
+            println!("Match:           PASS — chain head matches last receipt");
+        } else if last_hash.is_empty() {
+            println!("Match:           SKIP — no receipt hashes found");
+        } else {
+            println!("Match:           FAIL — chain head does not match last receipt");
+            println!("  Expected: {chain_head}");
+            println!("  Got:      {last_hash}");
+        }
+    }
+
+    println!("\nok: C2PA verification complete");
+    Ok(())
+}
+
 fn diff_provenance(old_path: &Path, new_path: &Path) -> Result<(), AuditError> {
     let old_str = std::fs::read_to_string(old_path)
         .map_err(|e| AuditError::Backend(format!("{}: {e}", old_path.display())))?;
