@@ -134,6 +134,10 @@ pub(crate) struct SessionState {
     /// observations into the flow graph.
     #[serde(default)]
     pub(crate) deterministic_binds: Vec<DeterministicBindRecord>,
+    /// Whether provenance mode is active (#1020).
+    /// Set on first PreToolUse when a .provenance.json schema is detected.
+    #[serde(default)]
+    pub(crate) provenance_mode: bool,
 }
 
 /// A content hash captured from a tool output during PostToolUse (#873).
