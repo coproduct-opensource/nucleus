@@ -140,9 +140,52 @@ impl FlowTracker {
         self.nodes.get((node_id - 1) as usize).map(|(_, l, _)| l)
     }
 
+    /// Check whether performing an action based on a specific node is safe.
+    ///
+    /// This is the **recommended API**. It checks the node's already-joined
+    /// label, which correctly reflects all transitive ancestry. Since
+    /// `observe_with_parents()` joins parent labels at observation time,
+    /// checking the node's own label is sufficient.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let web = tracker.observe(NodeKind::WebContent)?;
+    /// let plan = tracker.observe_with_parents(NodeKind::ModelPlan, &[web])?;
+    /// // plan's label already includes web's taint via join
+    /// assert!(tracker.check_action_safety(plan, true).is_denied());
+    /// ```
+    pub fn check_action_safety(&self, node_id: u64, requires_authority: bool) -> SafetyCheck {
+        let Some((_, label, _)) = self.nodes.get((node_id - 1) as usize) else {
+            // Unknown node — deny by default (fail-closed)
+            return SafetyCheck::AdversarialAncestry {
+                tainted_node: node_id,
+            };
+        };
+        if label.integrity == IntegLevel::Adversarial {
+            return SafetyCheck::AdversarialAncestry {
+                tainted_node: node_id,
+            };
+        }
+        if requires_authority && label.authority == AuthorityLevel::NoAuthority {
+            return SafetyCheck::InsufficientAuthority {
+                actual: label.authority,
+                required: AuthorityLevel::Informational,
+            };
+        }
+        SafetyCheck::Safe
+    }
+
     /// Check whether an action with the given ancestry is safe.
     ///
-    /// An action is unsafe if any ancestor has:
+    /// **Prefer [`check_action_safety`] instead** — it takes a single node ID
+    /// whose label already reflects all transitive ancestry via join.
+    ///
+    /// This method checks each provided parent individually. If you pass the
+    /// wrong nodes (e.g., only trusted parents, omitting a tainted one), the
+    /// check will incorrectly return `Safe`.
+    ///
+    /// An action is unsafe if any of the provided nodes has:
     /// - `Adversarial` integrity (prompt injection risk)
     /// - `NoAuthority` while the action requires authority
     pub fn check_safety(&self, parents: &[u64], requires_authority: bool) -> SafetyCheck {
@@ -264,5 +307,58 @@ mod tests {
             .observe_with_parents(NodeKind::ModelPlan, &[999])
             .unwrap_err();
         assert!(matches!(err, FlowError::ParentNotFound(999)));
+    }
+
+    // ── check_action_safety tests (#1099) ──────────────────────────
+
+    #[test]
+    fn action_safety_detects_taint_transitively() {
+        let mut t = FlowTracker::new();
+        let web = t.observe(NodeKind::WebContent).unwrap();
+        let plan = t.observe_with_parents(NodeKind::ModelPlan, &[web]).unwrap();
+        // plan's label includes web's adversarial taint via join
+        assert!(t.check_action_safety(plan, false).is_denied());
+    }
+
+    #[test]
+    fn action_safety_clean_node_passes() {
+        let mut t = FlowTracker::new();
+        let file = t.observe(NodeKind::FileRead).unwrap();
+        assert!(t.check_action_safety(file, false).is_safe());
+    }
+
+    #[test]
+    fn action_safety_unknown_node_denied() {
+        let t = FlowTracker::new();
+        // Node 999 doesn't exist — fail-closed
+        assert!(t.check_action_safety(999, false).is_denied());
+    }
+
+    #[test]
+    fn action_safety_vs_check_safety_equivalence() {
+        // When used correctly, both APIs produce the same result
+        let mut t = FlowTracker::new();
+        let web = t.observe(NodeKind::WebContent).unwrap();
+        let plan = t.observe_with_parents(NodeKind::ModelPlan, &[web]).unwrap();
+
+        let old_api = t.check_safety(&[plan], false);
+        let new_api = t.check_action_safety(plan, false);
+        assert_eq!(old_api.is_denied(), new_api.is_denied());
+    }
+
+    #[test]
+    fn action_safety_prevents_footgun() {
+        // The footgun: check_safety with wrong parents gives false Safe
+        let mut t = FlowTracker::new();
+        let trusted = t.observe(NodeKind::FileRead).unwrap();
+        let web = t.observe(NodeKind::WebContent).unwrap();
+        let plan = t
+            .observe_with_parents(NodeKind::ModelPlan, &[trusted, web])
+            .unwrap();
+
+        // FOOTGUN: passing only trusted parent to old API → false Safe
+        assert!(t.check_safety(&[trusted], false).is_safe());
+        // CORRECT: new API checks plan's own label → correctly denied
+        assert!(t.check_action_safety(plan, false).is_denied());
     }
 }
