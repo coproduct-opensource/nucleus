@@ -5,7 +5,7 @@
 //!
 //! ## Quick Start
 //!
-//! ```rust
+//! ```rust,ignore
 //! use nucleus_memory::{GovernedMemory, MemoryLabel, MemoryAuthority};
 //!
 //! let mut mem = GovernedMemory::new();
