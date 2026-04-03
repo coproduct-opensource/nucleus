@@ -976,3 +976,69 @@ fn flagship_demo_e_compartment_transition_clears_taint() {
     // (src/main.rs), same profile — but the fresh flow graph has no web
     // content ancestry. Compartment isolation is real, not cosmetic.
 }
+
+// ═════════════════════════════════════════════════════════════════════════
+// Flagship Demo E (#839, #1027): Positive control — clean workflow passes
+//
+// A legitimate workflow: local file read → AI summarize → write output.
+// This MUST succeed. Zero false positives for clean workflows.
+// Also: web content can be written when mixed with user-directed input.
+// ═════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn flagship_demo_e_positive_control_clean_workflow() {
+    // Permissive profile — all capabilities allowed.
+    let perms = PermissionLattice::permissive();
+    let mut kernel = Kernel::new(perms);
+
+    // Step 1: User provides a prompt (Directive authority, Trusted integrity).
+    let user_id = kernel
+        .observe(NodeKind::UserPrompt, &[])
+        .expect("user prompt should succeed");
+
+    // Step 2: Agent reads a local file (Trusted integrity).
+    let file_id = kernel
+        .observe(NodeKind::FileRead, &[])
+        .expect("file read should succeed");
+
+    // Step 3: Model reasons about the file (inherits Trusted from inputs).
+    let plan_id = kernel
+        .observe(NodeKind::ModelPlan, &[user_id, file_id])
+        .expect("model plan should succeed");
+
+    // Step 4: Write the output — ALLOWED (clean ancestry, no web taint).
+    let (write_decision, _) =
+        kernel.decide_with_parents(Operation::WriteFiles, "output.md", &[plan_id]);
+
+    assert!(
+        matches!(write_decision.verdict, Verdict::Allow),
+        "clean file-based workflow must be ALLOWED, got: {:?}",
+        write_decision.verdict
+    );
+
+    // Step 5: Now add web content to the SAME session.
+    let web_id = kernel
+        .observe(NodeKind::WebContent, &[])
+        .expect("web observation should succeed");
+
+    // Step 6: Model reads web content.
+    let web_plan = kernel
+        .observe(NodeKind::ModelPlan, &[web_id])
+        .expect("web plan should succeed");
+
+    // Step 7: Write based on web content — DENIED (authority escalation).
+    let (web_write, _) =
+        kernel.decide_with_parents(Operation::WriteFiles, "tainted.md", &[web_plan]);
+
+    assert!(
+        matches!(web_write.verdict, Verdict::Deny(_)),
+        "web-tainted write must be DENIED even in permissive, got: {:?}",
+        web_write.verdict
+    );
+
+    // The key insight: IFC is INDEPENDENT of the capability lattice.
+    // Even a "permissive" profile cannot bypass the flow graph's
+    // authority escalation check. NoAuthority data cannot drive writes.
+    // This is defense-in-depth: capabilities are the first layer,
+    // IFC is the second, and it can't be overridden.
+}
