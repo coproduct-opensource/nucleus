@@ -138,6 +138,9 @@ pub(crate) struct SessionState {
     /// Set on first PreToolUse when a .provenance.json schema is detected.
     #[serde(default)]
     pub(crate) provenance_mode: bool,
+    /// Number of flow observations archived to checkpoint (#1007).
+    #[serde(default)]
+    pub(crate) checkpoint_offset: usize,
 }
 
 /// A content hash captured from a tool output during PostToolUse (#873).
@@ -459,6 +462,50 @@ fn save_session_unlocked(session_id: &str, state: &SessionState) {
 }
 
 /// Update `.session-index` with this session's metadata (#1008).
+/// Checkpoint flow observations if they exceed the threshold (#1007).
+///
+/// Archives older observations to a checkpoint file, keeping only the
+/// most recent MAX_LIVE_OBSERVATIONS in session state. This bounds
+/// session JSON growth and replay time.
+#[allow(dead_code)]
+const MAX_LIVE_OBSERVATIONS: usize = 1000;
+
+#[allow(dead_code)]
+pub(crate) fn checkpoint_flow_observations(session_id: &str, state: &mut SessionState) {
+    if state.flow_observations.len() <= MAX_LIVE_OBSERVATIONS {
+        return;
+    }
+
+    // Archive older observations to checkpoint file.
+    let safe_id = sanitize_session_id(session_id);
+    let checkpoint_dir = session_dir().join("checkpoints");
+    std::fs::create_dir_all(&checkpoint_dir).ok();
+    let checkpoint_path = checkpoint_dir.join(format!("{safe_id}.jsonl"));
+
+    let archive_count = state.flow_observations.len() - MAX_LIVE_OBSERVATIONS;
+    let archived: Vec<_> = state.flow_observations.drain(..archive_count).collect();
+
+    // Append to checkpoint file.
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&checkpoint_path)
+    {
+        use std::io::Write;
+        for obs in &archived {
+            if let Ok(json) = serde_json::to_string(obs) {
+                writeln!(f, "{json}").ok();
+            }
+        }
+    }
+
+    state.checkpoint_offset += archive_count;
+    eprintln!(
+        "nucleus: checkpointed {archive_count} flow observations ({} total archived)",
+        state.checkpoint_offset
+    );
+}
+
 fn update_session_index(session_id: &str, state: &SessionState) {
     let index_path = session_dir().join(".session-index");
     let entry = serde_json::json!({
