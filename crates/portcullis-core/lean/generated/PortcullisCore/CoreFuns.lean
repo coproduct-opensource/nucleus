@@ -90,7 +90,8 @@ def CapabilityLattice.bottom : Result CapabilityLattice := do
       git_commit := CapabilityLevel.Never,
       git_push := CapabilityLevel.Never,
       create_pr := CapabilityLevel.Never,
-      manage_pods := CapabilityLevel.Never
+      manage_pods := CapabilityLevel.Never,
+      spawn_agent := CapabilityLevel.Never
     }
 
 /-- [portcullis_core::{portcullis_core::CapabilityLattice}::top]:
@@ -110,7 +111,8 @@ def CapabilityLattice.top : Result CapabilityLattice := do
       git_commit := CapabilityLevel.Always,
       git_push := CapabilityLevel.Always,
       create_pr := CapabilityLevel.Always,
-      manage_pods := CapabilityLevel.Always
+      manage_pods := CapabilityLevel.Always,
+      spawn_agent := CapabilityLevel.Always
     }
 
 /-- [portcullis_core::{portcullis_core::CapabilityLattice}::meet]:
@@ -132,6 +134,7 @@ def CapabilityLattice.meet
   let cl9 ← CapabilityLevel.meet self.git_push other.git_push
   let cl10 ← CapabilityLevel.meet self.create_pr other.create_pr
   let cl11 ← CapabilityLevel.meet self.manage_pods other.manage_pods
+  let cl12 ← CapabilityLevel.meet self.spawn_agent other.spawn_agent
   ok
     {
       read_files := cl,
@@ -145,7 +148,8 @@ def CapabilityLattice.meet
       git_commit := cl8,
       git_push := cl9,
       create_pr := cl10,
-      manage_pods := cl11
+      manage_pods := cl11,
+      spawn_agent := cl12
     }
 
 /-- [portcullis_core::{portcullis_core::CapabilityLattice}::join]:
@@ -167,6 +171,7 @@ def CapabilityLattice.join
   let cl9 ← CapabilityLevel.join self.git_push other.git_push
   let cl10 ← CapabilityLevel.join self.create_pr other.create_pr
   let cl11 ← CapabilityLevel.join self.manage_pods other.manage_pods
+  let cl12 ← CapabilityLevel.join self.spawn_agent other.spawn_agent
   ok
     {
       read_files := cl,
@@ -180,7 +185,8 @@ def CapabilityLattice.join
       git_commit := cl8,
       git_push := cl9,
       create_pr := cl10,
-      manage_pods := cl11
+      manage_pods := cl11,
+      spawn_agent := cl12
     }
 
 /-- [portcullis_core::{portcullis_core::CapabilityLattice}::leq]:
@@ -223,7 +229,12 @@ def CapabilityLattice.leq
                         CapabilityLevel.leq self.create_pr other.create_pr
                       if b10
                       then
-                        CapabilityLevel.leq self.manage_pods other.manage_pods
+                        let b11 ←
+                          CapabilityLevel.leq self.manage_pods other.manage_pods
+                        if b11
+                        then
+                          CapabilityLevel.leq self.spawn_agent other.spawn_agent
+                        else ok false
                       else ok false
                     else ok false
                   else ok false
@@ -255,6 +266,7 @@ def CapabilityLattice.implies
   let cl9 ← CapabilityLevel.implies self.git_push other.git_push
   let cl10 ← CapabilityLevel.implies self.create_pr other.create_pr
   let cl11 ← CapabilityLevel.implies self.manage_pods other.manage_pods
+  let cl12 ← CapabilityLevel.implies self.spawn_agent other.spawn_agent
   ok
     {
       read_files := cl,
@@ -268,7 +280,8 @@ def CapabilityLattice.implies
       git_commit := cl8,
       git_push := cl9,
       create_pr := cl10,
-      manage_pods := cl11
+      manage_pods := cl11,
+      spawn_agent := cl12
     }
 
 end portcullis_core
