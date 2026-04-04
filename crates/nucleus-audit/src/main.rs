@@ -7,6 +7,7 @@ mod scan_mcp_config;
 mod scan_podspec;
 mod suggest;
 mod tool_pattern;
+mod verify_build;
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -160,6 +161,25 @@ enum Command {
         #[arg(long)]
         new: PathBuf,
     },
+    /// Verify SLSA build provenance attestation for a nucleus artifact (#981).
+    ///
+    /// Validates the in-toto statement against the artifact's SHA-256 digest,
+    /// confirms the builder is a trusted GitHub Actions runner, and optionally
+    /// checks the source repository and git ref.
+    VerifyBuild {
+        /// Path to the SLSA attestation JSON (unwrapped in-toto statement).
+        #[arg(long)]
+        attestation: PathBuf,
+        /// Path to the artifact binary to hash-verify (optional).
+        #[arg(long)]
+        artifact: Option<PathBuf>,
+        /// Expected source repository (e.g. coproduct-opensource/nucleus).
+        #[arg(long)]
+        expected_repo: Option<String>,
+        /// Expected git ref (e.g. refs/heads/main or refs/tags/v1.2.3).
+        #[arg(long)]
+        expected_ref: Option<String>,
+    },
     /// Scan agent configurations for security posture and vulnerabilities.
     ///
     /// Supports PodSpec YAML, Claude Code settings.json, and MCP config files.
@@ -304,6 +324,21 @@ fn main() -> Result<(), AuditError> {
         }
         Command::VerifyProvenance { output, schema } => {
             verify_provenance(&output, schema.as_deref())?;
+        }
+        Command::VerifyBuild {
+            attestation,
+            artifact,
+            expected_repo,
+            expected_ref,
+        } => {
+            let report = verify_build::verify_build(
+                &attestation,
+                artifact.as_deref(),
+                expected_repo.as_deref(),
+                expected_ref.as_deref(),
+            )
+            .map_err(|e| AuditError::Backend(e.to_string()))?;
+            report.print();
         }
         Command::Scan {
             auto,
