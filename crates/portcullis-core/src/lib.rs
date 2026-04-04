@@ -53,6 +53,7 @@
 //!   proof verifies algebraic structure of the type. Together they provide
 //!   complementary assurance.
 
+pub mod agent_message;
 #[cfg(feature = "artifact")]
 pub mod artifact;
 #[cfg(feature = "attestation")]
@@ -110,6 +111,7 @@ pub mod registry;
 #[cfg(feature = "envelope")]
 pub mod replay;
 pub mod storage_lane;
+pub mod structured_prompt;
 pub mod task_shield;
 pub mod verdict;
 #[cfg(feature = "wasm-sandbox")]
