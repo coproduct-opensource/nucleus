@@ -276,6 +276,11 @@ impl GovernedMemory {
     ///
     /// When overwriting an existing key, the previous value is pushed
     /// onto the rebuttal history (capped at [`MAX_REBUTTAL_HISTORY`]).
+    ///
+    /// **Invariant enforcement:** If `label.integrity == IntegLevel::Adversarial`,
+    /// the caller-supplied `authority` is silently overridden to
+    /// `MemoryAuthority::MayNotAuthorize` regardless of what was passed. This
+    /// prevents authority escalation on adversarial entries (#1178).
     #[allow(clippy::too_many_arguments)]
     pub fn write_with_limit(
         &mut self,
@@ -289,6 +294,14 @@ impl GovernedMemory {
         ttl_secs: u64,
         max_entries: usize,
     ) -> bool {
+        // Invariant: adversarial-integrity entries can never hold informational
+        // authority, regardless of what the caller passed (#1178).
+        let authority = if label.integrity == IntegLevel::Adversarial {
+            MemoryAuthority::MayNotAuthorize
+        } else {
+            authority
+        };
+
         // If key already exists, allow overwrite (doesn't increase count)
         if !self.entries.contains_key(&key) && self.entries.len() >= max_entries {
             return false; // Reject: would exceed limit
@@ -1120,5 +1133,59 @@ max_entries = 500
         assert!(row.provenance.contains(ProvenanceSet::WEB));
         assert!(row.provenance.contains(ProvenanceSet::MODEL));
         assert_eq!(row.integrity, IntegLevel::Adversarial);
+    }
+
+    #[test]
+    fn write_governed_cannot_escalate_adversarial_to_inform() {
+        // #1178: write_governed must not let adversarial entries acquire MayInform authority.
+        let mut mem = GovernedMemory::new();
+        let adversarial_label =
+            MemoryLabel::from_levels(ConfLevel::Public, IntegLevel::Adversarial);
+
+        // Caller attempts to escalate by supplying MayInform for adversarial data.
+        let ok = mem.write_governed(
+            "poisoned".into(),
+            "injected content".into(),
+            SchemaType::String,
+            adversarial_label,
+            MemoryAuthority::MayInform, // attempted escalation
+            0,
+            0,
+        );
+        assert!(ok);
+
+        // The stored entry must have MayNotAuthorize, not the caller-supplied MayInform.
+        let entry = mem.read("poisoned", 0).unwrap();
+        assert_eq!(
+            entry.authority,
+            MemoryAuthority::MayNotAuthorize,
+            "adversarial entry must not hold MayInform authority"
+        );
+
+        // It must appear in poisoned_entries().
+        assert_eq!(mem.poisoned_entries(0).len(), 1);
+    }
+
+    #[test]
+    fn write_with_limit_cannot_escalate_adversarial() {
+        // #1178: invariant is enforced at write_with_limit, the lowest write path.
+        let mut mem = GovernedMemory::new();
+        let adversarial_label =
+            MemoryLabel::from_levels(ConfLevel::Public, IntegLevel::Adversarial);
+
+        mem.write_with_limit(
+            "k".into(),
+            "v".into(),
+            SchemaType::String,
+            adversarial_label,
+            MemoryAuthority::MayInform, // attempted escalation
+            crate::ProvenanceSet::EMPTY,
+            0,
+            0,
+            1000,
+        );
+
+        let entry = mem.read("k", 0).unwrap();
+        assert_eq!(entry.authority, MemoryAuthority::MayNotAuthorize);
     }
 }

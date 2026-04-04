@@ -277,11 +277,28 @@ impl PolicyCheck for RequireTrustedSource {
 /// Budget is tracked atomically — safe for concurrent policy evaluation.
 /// The budget is shared across all clones of this check.
 ///
+/// ## Atomic reservation (eliminates TOCTOU window, #1179)
+///
+/// When the caller passes `cost_micro_usd` in the [`PolicyRequest`] context,
+/// `check()` atomically reserves that amount using `fetch_add` + rollback. This
+/// eliminates the time-of-check-to-time-of-use window where concurrent calls can
+/// each pass the check before any of them records the cost.
+///
+/// ```rust,ignore
+/// let req = PolicyRequest::new("web_fetch", CapabilityLevel::LowRisk)
+///     .with_context("cost_micro_usd", "1500");
+/// // check() will atomically reserve 1500 µUSD — no separate record_cost() needed.
+/// ```
+///
+/// When `cost_micro_usd` is not in context, `check()` falls back to a snapshot
+/// read (with `Acquire` ordering, so cross-thread writes are visible) and the
+/// caller is responsible for calling `record_cost()` separately.
+///
 /// # Example
 /// ```rust,ignore
 /// let gate = BudgetGate::new(1_000_000); // $1.00 limit
 /// gate.record_cost(500_000);             // $0.50 spent
-/// assert!(gate.check(&req("any_op")).is_allow());
+/// assert!(gate.check(&req("any_op")).is_abstain());
 /// gate.record_cost(600_000);             // now $1.10 total
 /// assert!(gate.check(&req("any_op")).is_deny());
 /// ```
@@ -300,18 +317,37 @@ impl BudgetGate {
     }
 
     /// Record additional cost in micro-USD.
+    ///
+    /// Uses `AcqRel` ordering so the write is immediately visible to
+    /// concurrent `spent()` reads on other threads.
     pub fn record_cost(&self, micro_usd: u64) {
-        self.spent_micro_usd.fetch_add(micro_usd, Ordering::Relaxed);
+        self.spent_micro_usd.fetch_add(micro_usd, Ordering::AcqRel);
     }
 
     /// Current total spend in micro-USD.
+    ///
+    /// Uses `Acquire` ordering so this read sees all preceding `record_cost` writes.
     pub fn spent(&self) -> u64 {
-        self.spent_micro_usd.load(Ordering::Relaxed)
+        self.spent_micro_usd.load(Ordering::Acquire)
     }
 
     /// Remaining budget in micro-USD.
     pub fn remaining(&self) -> u64 {
         self.max_micro_usd.saturating_sub(self.spent())
+    }
+
+    /// Atomically try to reserve `cost` µUSD, returning `true` if successful.
+    ///
+    /// On success the budget is debited. On failure the debit is rolled back.
+    /// This is the TOCTOU-safe alternative to a separate `check()`+`record_cost()`.
+    pub fn try_reserve(&self, cost: u64) -> bool {
+        let prev = self.spent_micro_usd.fetch_add(cost, Ordering::AcqRel);
+        if prev.saturating_add(cost) > self.max_micro_usd {
+            self.spent_micro_usd.fetch_sub(cost, Ordering::Release);
+            false
+        } else {
+            true
+        }
     }
 }
 
@@ -326,6 +362,27 @@ impl Clone for BudgetGate {
 
 impl PolicyCheck for BudgetGate {
     fn check(&self, req: &PolicyRequest) -> CheckResult {
+        // If caller provides expected cost, use atomic reservation to eliminate TOCTOU.
+        if let Some(cost) = req
+            .context
+            .get("cost_micro_usd")
+            .and_then(|s| s.parse::<u64>().ok())
+        {
+            if !self.try_reserve(cost) {
+                return CheckResult::Deny(format!(
+                    "{}: budget exhausted — cannot reserve {} µUSD ({}/{} µUSD used)",
+                    req.operation,
+                    cost,
+                    self.spent(),
+                    self.max_micro_usd
+                ));
+            }
+            return CheckResult::Abstain;
+        }
+
+        // Fallback: snapshot read (Acquire ensures cross-thread visibility).
+        // Caller must call record_cost() separately — a TOCTOU window remains
+        // but cross-thread write visibility is now correct.
         if self.spent() >= self.max_micro_usd {
             CheckResult::Deny(format!(
                 "{}: budget exhausted ({}/{} µUSD)",
@@ -348,7 +405,15 @@ impl PolicyCheck for BudgetGate {
 /// Deny operations once a counter limit is exceeded within a session.
 ///
 /// This is a simple counter-based rate limiter (not time-windowed).
-/// Use `record_call()` after each allowed operation.
+///
+/// ## Atomic slot reservation (eliminates TOCTOU window, #1179)
+///
+/// `check()` atomically reserves a call slot via `fetch_add` + rollback. This
+/// eliminates the time-of-check-to-time-of-use window where concurrent calls can
+/// each pass the check before any increments the counter.
+///
+/// `record_call()` is kept for backward compatibility but is a no-op when the
+/// caller uses `check()` — slots are consumed by `check()` itself.
 ///
 /// For time-windowed rate limiting, integrate with an external clock.
 pub struct RateLimit {
@@ -364,12 +429,24 @@ impl RateLimit {
         }
     }
 
+    /// No-op: kept for API backward compatibility.
+    ///
+    /// `check()` now atomically consumes a call slot, so separate `record_call()`
+    /// is no longer needed and would double-count. Callers that previously did
+    /// `check()` + `record_call()` should remove the `record_call()` call.
+    #[deprecated(
+        since = "1.0.0",
+        note = "check() now atomically reserves a slot; calling record_call() separately double-counts"
+    )]
     pub fn record_call(&self) {
-        self.call_count.fetch_add(1, Ordering::Relaxed);
+        // Intentional no-op: slot reservation moved into check() (#1179).
     }
 
+    /// Current consumed call count.
+    ///
+    /// Uses `Acquire` ordering so cross-thread writes are visible.
     pub fn count(&self) -> u64 {
-        self.call_count.load(Ordering::Relaxed)
+        self.call_count.load(Ordering::Acquire)
     }
 }
 
@@ -384,7 +461,12 @@ impl Clone for RateLimit {
 
 impl PolicyCheck for RateLimit {
     fn check(&self, req: &PolicyRequest) -> CheckResult {
-        if self.count() >= self.max_calls {
+        // Atomically try to reserve one call slot, eliminating the TOCTOU window
+        // where concurrent threads can each pass the check before any increments.
+        let prev = self.call_count.fetch_add(1, Ordering::AcqRel);
+        if prev >= self.max_calls {
+            // Over limit — roll back the reservation.
+            self.call_count.fetch_sub(1, Ordering::Release);
             CheckResult::Deny(format!(
                 "{}: rate limit exceeded ({}/{} calls)",
                 req.operation,
@@ -583,22 +665,63 @@ mod tests {
         assert_eq!(gate.remaining(), 700_000);
     }
 
+    #[test]
+    fn budget_gate_atomic_reservation_via_context() {
+        // Passing cost_micro_usd in context uses atomic try_reserve (#1179).
+        let gate = BudgetGate::new(1_000_000);
+        let req_with_cost = PolicyRequest::new("web_fetch", CapabilityLevel::LowRisk)
+            .with_context("cost_micro_usd", "400000");
+        assert_eq!(gate.check(&req_with_cost), CheckResult::Abstain);
+        assert_eq!(gate.spent(), 400_000);
+        // Second request that would exceed budget is denied and rolled back.
+        let req2 = PolicyRequest::new("web_fetch", CapabilityLevel::LowRisk)
+            .with_context("cost_micro_usd", "700000");
+        assert!(gate.check(&req2).is_deny());
+        // Spent should still be 400_000 (rollback succeeded).
+        assert_eq!(gate.spent(), 400_000);
+    }
+
+    #[test]
+    fn budget_gate_try_reserve_rollback() {
+        let gate = BudgetGate::new(100);
+        assert!(gate.try_reserve(80));
+        assert!(!gate.try_reserve(30)); // 80+30=110 > 100 → deny + rollback
+        assert_eq!(gate.spent(), 80); // only 80 committed
+    }
+
     // ── RateLimit ────────────────────────────────────────────────────────────
 
     #[test]
     fn rate_limit_allows_under_max() {
+        // check() atomically reserves slots (#1179).
         let rl = RateLimit::new(3);
-        rl.record_call();
-        rl.record_call();
-        assert_eq!(rl.check(&req("op")), CheckResult::Abstain);
+        assert_eq!(rl.check(&req("op")), CheckResult::Abstain); // slot 1
+        assert_eq!(rl.check(&req("op")), CheckResult::Abstain); // slot 2
+        assert_eq!(rl.check(&req("op")), CheckResult::Abstain); // slot 3 (last)
     }
 
     #[test]
     fn rate_limit_denies_at_max() {
         let rl = RateLimit::new(2);
-        rl.record_call();
-        rl.record_call();
-        assert!(rl.check(&req("op")).is_deny());
+        assert_eq!(rl.check(&req("op")), CheckResult::Abstain); // slot 1
+        assert_eq!(rl.check(&req("op")), CheckResult::Abstain); // slot 2
+        assert!(rl.check(&req("op")).is_deny()); // over limit
+    }
+
+    #[test]
+    fn rate_limit_count_reflects_consumed_slots() {
+        let rl = RateLimit::new(5);
+        rl.check(&req("op"));
+        rl.check(&req("op"));
+        assert_eq!(rl.count(), 2);
+    }
+
+    #[test]
+    fn rate_limit_rollback_on_deny_keeps_count_stable() {
+        let rl = RateLimit::new(1);
+        assert_eq!(rl.check(&req("op")), CheckResult::Abstain); // 1 consumed
+        assert!(rl.check(&req("op")).is_deny()); // over limit, rolled back
+        assert_eq!(rl.count(), 1); // still 1, not 2
     }
 
     // ── Composition ──────────────────────────────────────────────────────────
