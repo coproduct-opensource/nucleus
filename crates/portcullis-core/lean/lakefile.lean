@@ -56,3 +56,7 @@ lean_lib «DelegationProofs» where
 -- DerivationClass DPI invariant proofs (no silent cleansing, monotone join)
 lean_lib «DerivationProofs» where
   roots := #[`DerivationProofs]
+
+-- IFC semilattice typeclass instances: ConfLevel, IntegLevel, IFCLabel2 (#1123-#1127)
+lean_lib «IFCSemilatticeProofs» where
+  roots := #[`IFCSemilatticeProofs]
