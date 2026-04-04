@@ -30,7 +30,7 @@ These types are HAND-WRITTEN Lean models mirroring the Rust source in
 - **no_silent_cleansing**: AIDerived.join(x) != Deterministic for all x
 - **join_monotone**: join result >= both inputs in taint ordering
 
-All proofs discharge via `decide` over finite types. No sorry, no SMT.
+All proofs discharge via `decide` over finite types. Fully kernel-checked, no SMT.
 -/
 
 namespace DerivationProofs
