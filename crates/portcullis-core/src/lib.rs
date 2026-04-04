@@ -58,6 +58,7 @@ pub mod artifact;
 #[cfg(feature = "attestation")]
 pub mod attestation;
 pub mod autonomy;
+pub mod bilattice;
 #[cfg(feature = "artifact")]
 pub mod c2pa_assertions;
 #[cfg(feature = "c2pa-manifest")]
