@@ -1,0 +1,31 @@
+[package]
+name = "portcullis-zkvm-guest"
+version = "1.0.0"
+edition = "2021"
+description = "RISC-V guest program for zkVM-verified WASM parser execution"
+license = "MIT"
+
+# Guest binary — compiled to RISC-V ELF via risc0-build.
+# Host crates embed the ELF via `risc0_build::embed_methods_recursive()`.
+[[bin]]
+name = "portcullis-zkvm-guest"
+path = "src/main.rs"
+
+[lib]
+name = "portcullis_zkvm_guest"
+path = "src/lib.rs"
+
+[dependencies]
+# When building for the RISC-V zkVM target, disable host-side prover machinery.
+# When building on the host for tests, use default features.
+risc0-zkvm = { version = "3.0", default-features = false, features = ["std"] }
+sha2 = "0.10"
+wasmi = "1.0"
+
+[dev-dependencies]
+hex = "0.4"
+wat = "1"
+
+# Declare this as an isolated workspace so it is not included in the main
+# nucleus workspace and can be compiled independently with the RISC-V target.
+[workspace]

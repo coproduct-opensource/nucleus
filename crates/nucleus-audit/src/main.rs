@@ -1825,6 +1825,11 @@ fn verify_provenance(output_path: &Path, schema_path: Option<&Path>) -> Result<(
         }
     }
 
+    // Check for zkVM receipt in the provenance output (#1118).
+    // A receipt proves cryptographically that a specific parser produced a
+    // specific output from a specific input — stronger than a hash chain.
+    check_zkvm_receipt(&output, &mut checks_passed, &mut checks_failed);
+
     // Summary.
     println!();
     if checks_failed == 0 {
@@ -1835,6 +1840,83 @@ fn verify_provenance(output_path: &Path, schema_path: Option<&Path>) -> Result<(
         Err(AuditError::Backend(format!(
             "{checks_failed} provenance checks failed"
         )))
+    }
+}
+
+/// Check for a zkVM receipt in a provenance output JSON (#1118).
+///
+/// A valid receipt entry looks like:
+/// ```json
+/// {
+///   "_provenance": {
+///     "zkvm_receipt": {
+///       "parser_hash":  "<64 hex chars>",
+///       "input_hash":   "<64 hex chars>",
+///       "output_hash":  "<64 hex chars>",
+///       "has_proof":    true
+///     }
+///   }
+/// }
+/// ```
+///
+/// Hash-only verification is always performed (no network, no risc0 runtime).
+/// Full cryptographic proof verification requires the risc0-zkvm feature and
+/// a running RISC Zero verifier — flagged as an offline-only limitation.
+fn check_zkvm_receipt(
+    output: &serde_json::Value,
+    checks_passed: &mut u32,
+    checks_failed: &mut u32,
+) {
+    // Look for zkvm_receipt in _provenance first, then top-level.
+    let receipt = output
+        .get("_provenance")
+        .and_then(|p| p.get("zkvm_receipt"))
+        .or_else(|| output.get("zkvm_receipt"));
+
+    let Some(receipt) = receipt else {
+        // No receipt present — this is fine, not every bundle has one.
+        return;
+    };
+
+    println!("  Checking zkVM receipt...");
+
+    // Validate required hash fields.
+    let parser_hash = receipt.get("parser_hash").and_then(|v| v.as_str());
+    let input_hash = receipt.get("input_hash").and_then(|v| v.as_str());
+    let output_hash = receipt.get("output_hash").and_then(|v| v.as_str());
+
+    let hashes_valid = [parser_hash, input_hash, output_hash].iter().all(|h| {
+        h.map(|s| s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit()))
+            .unwrap_or(false)
+    });
+
+    if !hashes_valid {
+        println!("  \u{2717} zkVM receipt: missing or malformed hash fields (need 64-char hex)");
+        *checks_failed += 1;
+        return;
+    }
+
+    println!("  \u{2713} zkVM receipt: hash fields present and well-formed");
+    println!("    parser_hash:  {}", parser_hash.unwrap());
+    println!("    input_hash:   {}", input_hash.unwrap());
+    println!("    output_hash:  {}", output_hash.unwrap());
+    *checks_passed += 1;
+
+    // Report whether cryptographic proof bytes are present.
+    let has_proof = receipt
+        .get("has_proof")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if has_proof {
+        println!(
+            "  \u{2713} zkVM receipt: proof bytes present (full verification requires risc0-zkvm)"
+        );
+        *checks_passed += 1;
+    } else {
+        println!(
+            "  \u{2139}\u{fe0f}  zkVM receipt: no proof bytes — hash-only receipt (weak guarantee)"
+        );
     }
 }
 
@@ -2014,5 +2096,92 @@ spec:
         merge_dimension(&mut dim, "airgapped");
         merge_dimension(&mut dim, "filtered");
         assert_eq!(dim.as_deref(), Some("multiple"));
+    }
+
+    // ── zkVM receipt verification tests (#1118) ───────────────────────────
+
+    #[test]
+    fn test_zkvm_receipt_no_receipt_is_ok() {
+        // No zkvm_receipt field — check_zkvm_receipt is a no-op.
+        let output = serde_json::json!({
+            "_provenance": { "schema_hash": "sha256:abc" }
+        });
+        let mut passed = 0u32;
+        let mut failed = 0u32;
+        check_zkvm_receipt(&output, &mut passed, &mut failed);
+        assert_eq!(passed, 0);
+        assert_eq!(failed, 0);
+    }
+
+    #[test]
+    fn test_zkvm_receipt_valid_with_proof() {
+        let hash = "a".repeat(64);
+        let output = serde_json::json!({
+            "_provenance": {
+                "zkvm_receipt": {
+                    "parser_hash":  hash,
+                    "input_hash":   hash,
+                    "output_hash":  hash,
+                    "has_proof":    true
+                }
+            }
+        });
+        let mut passed = 0u32;
+        let mut failed = 0u32;
+        check_zkvm_receipt(&output, &mut passed, &mut failed);
+        assert_eq!(failed, 0, "valid receipt must have no failures");
+        assert!(passed >= 2, "should record at least 2 checks");
+    }
+
+    #[test]
+    fn test_zkvm_receipt_valid_hash_only() {
+        let hash = "b".repeat(64);
+        let output = serde_json::json!({
+            "zkvm_receipt": {
+                "parser_hash":  hash,
+                "input_hash":   hash,
+                "output_hash":  hash,
+                "has_proof":    false
+            }
+        });
+        let mut passed = 0u32;
+        let mut failed = 0u32;
+        check_zkvm_receipt(&output, &mut passed, &mut failed);
+        assert_eq!(failed, 0);
+        assert_eq!(passed, 1); // only hash presence check, no proof check
+    }
+
+    #[test]
+    fn test_zkvm_receipt_malformed_hash() {
+        let output = serde_json::json!({
+            "_provenance": {
+                "zkvm_receipt": {
+                    "parser_hash":  "not-a-hex-hash",
+                    "input_hash":   "also-not-hex",
+                    "output_hash":  "nope"
+                }
+            }
+        });
+        let mut passed = 0u32;
+        let mut failed = 0u32;
+        check_zkvm_receipt(&output, &mut passed, &mut failed);
+        assert_eq!(failed, 1, "malformed hashes must fail");
+    }
+
+    #[test]
+    fn test_zkvm_receipt_missing_field() {
+        let hash = "c".repeat(64);
+        let output = serde_json::json!({
+            "_provenance": {
+                "zkvm_receipt": {
+                    "parser_hash": hash,
+                    // input_hash and output_hash missing
+                }
+            }
+        });
+        let mut passed = 0u32;
+        let mut failed = 0u32;
+        check_zkvm_receipt(&output, &mut passed, &mut failed);
+        assert_eq!(failed, 1, "missing hash fields must fail");
     }
 }

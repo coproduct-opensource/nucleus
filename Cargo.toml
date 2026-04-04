@@ -29,7 +29,11 @@ members = [
 ]
 # exposure-web is WASM-only (wasm32-unknown-unknown); build with: cd crates/exposure-web && trunk build
 # portcullis-python requires Python + maturin; build with: cd crates/portcullis-python && maturin develop
-exclude = ["crates/exposure-web", "crates/portcullis-python"]
+exclude = [
+    "crates/exposure-web",       # WASM-only (wasm32-unknown-unknown)
+    "crates/portcullis-python",  # Python bindings (requires maturin)
+    "crates/portcullis-zkvm-guest", # RISC-V zkVM guest (compiled separately by risc0-build)
+]
 resolver = "2"
 
 [workspace.package]
