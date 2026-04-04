@@ -68,6 +68,16 @@ pub enum SafetyCheck {
         /// The minimum authority required.
         required: AuthorityLevel,
     },
+    /// A referenced parent node ID does not exist in the tracker.
+    ///
+    /// Returned by [`FlowTracker::check_safety`] when a caller supplies a
+    /// node ID that is not tracked. The check fails closed (#1180) — an
+    /// unknown node could be the result of a bug that skipped taint tracking,
+    /// so we treat it as unsafe rather than allowing it silently.
+    UnknownNode {
+        /// The node ID that was not found.
+        node_id: u64,
+    },
 }
 
 impl SafetyCheck {
@@ -188,17 +198,28 @@ impl FlowTracker {
     /// An action is unsafe if any of the provided nodes has:
     /// - `Adversarial` integrity (prompt injection risk)
     /// - `NoAuthority` while the action requires authority
+    ///
+    /// **Fails closed on unknown node IDs** (#1180): if any `pid` is not
+    /// found in the tracker, `SafetyCheck::UnknownNode` is returned. An
+    /// unknown ID may indicate a bug where taint tracking was skipped for
+    /// the ancestor — treating it as safe would silently bypass the IFC check.
     pub fn check_safety(&self, parents: &[u64], requires_authority: bool) -> SafetyCheck {
         for &pid in parents {
-            if let Some((_, label, _)) = self.nodes.get((pid - 1) as usize) {
-                if label.integrity == IntegLevel::Adversarial {
-                    return SafetyCheck::AdversarialAncestry { tainted_node: pid };
+            match self.nodes.get((pid - 1) as usize) {
+                None => {
+                    // Fail closed: unknown node IDs are unsafe (#1180).
+                    return SafetyCheck::UnknownNode { node_id: pid };
                 }
-                if requires_authority && label.authority == AuthorityLevel::NoAuthority {
-                    return SafetyCheck::InsufficientAuthority {
-                        actual: label.authority,
-                        required: AuthorityLevel::Informational,
-                    };
+                Some((_, label, _)) => {
+                    if label.integrity == IntegLevel::Adversarial {
+                        return SafetyCheck::AdversarialAncestry { tainted_node: pid };
+                    }
+                    if requires_authority && label.authority == AuthorityLevel::NoAuthority {
+                        return SafetyCheck::InsufficientAuthority {
+                            actual: label.authority,
+                            required: AuthorityLevel::Informational,
+                        };
+                    }
                 }
             }
         }
@@ -360,5 +381,24 @@ mod tests {
         assert!(t.check_safety(&[trusted], false).is_safe());
         // CORRECT: new API checks plan's own label → correctly denied
         assert!(t.check_action_safety(plan, false).is_denied());
+    }
+
+    #[test]
+    fn check_safety_fails_closed_on_unknown_node() {
+        // #1180: unknown node IDs must not silently pass — fail closed.
+        let t = FlowTracker::new();
+        let result = t.check_safety(&[999], false);
+        assert!(result.is_denied());
+        assert!(matches!(result, SafetyCheck::UnknownNode { node_id: 999 }));
+    }
+
+    #[test]
+    fn check_safety_unknown_node_in_mixed_list() {
+        // If the unknown node comes after a safe known node, still fails closed.
+        let mut t = FlowTracker::new();
+        let file = t.observe(NodeKind::FileRead).unwrap();
+        let result = t.check_safety(&[file, 9999], false);
+        assert!(result.is_denied());
+        assert!(matches!(result, SafetyCheck::UnknownNode { node_id: 9999 }));
     }
 }
