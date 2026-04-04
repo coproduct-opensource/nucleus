@@ -36,5 +36,6 @@ structure CapabilityLattice where
   git_push : CapabilityLevel
   create_pr : CapabilityLevel
   manage_pods : CapabilityLevel
+  spawn_agent : CapabilityLevel
 
 end portcullis_core
