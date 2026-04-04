@@ -29,6 +29,114 @@ use core::fmt;
 use std::collections::BTreeMap;
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Sigstore supply chain verification (#943)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Sigstore bundle attached to a parser or transform declaration.
+///
+/// Carries the cryptographic evidence that a specific binary was signed by
+/// a trusted identity and recorded in the Rekor transparency log. Offline
+/// verification confirms that `signed_artifact_hash == hex(build_hash)`.
+/// Full Rekor verification (checking the log entry is present and unrevoked)
+/// must be done by the application layer with network access.
+///
+/// ## TOML format
+///
+/// ```toml
+/// [parser.sigstore_bundle]
+/// certificate_pem = "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
+/// signature_b64 = "MEUCIQDx..."
+/// rekor_log_id = "24296fb24b8ad77a88acdd4b8fca..."
+/// signed_artifact_hash = "abcdef0123456789..."
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SigstoreBundle {
+    /// PEM-encoded Fulcio certificate chain for the signing identity.
+    pub certificate_pem: String,
+    /// Base64-encoded signature over the artifact (DSSE or raw).
+    pub signature_b64: String,
+    /// Rekor transparency log entry UUID (for audit / online verification).
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub rekor_log_id: Option<String>,
+    /// Hex-encoded SHA-256 of the artifact that was signed.
+    /// Must match `build_hash` for offline verification to pass.
+    pub signed_artifact_hash: String,
+}
+
+impl SigstoreBundle {
+    /// Offline verification: confirm the bundle covers the declared `build_hash`.
+    ///
+    /// This does NOT verify the cryptographic signature or check Rekor.
+    /// It only asserts that the bundle's `signed_artifact_hash` field
+    /// matches the declared binary hash — preventing a bundle from one
+    /// binary being attached to a different binary.
+    ///
+    /// Full Sigstore verification (certificate chain + Rekor) requires
+    /// network access and must be performed by the application layer.
+    pub fn verify_covers_hash(&self, build_hash: &[u8; 32]) -> Result<(), SignatureError> {
+        let declared = hex_encode(build_hash);
+        if self.signed_artifact_hash.to_lowercase() == declared.to_lowercase() {
+            Ok(())
+        } else {
+            Err(SignatureError::HashMismatch {
+                bundle_hash: self.signed_artifact_hash.clone(),
+                declared_hash: declared,
+            })
+        }
+    }
+}
+
+/// Policy controlling whether a Sigstore bundle is required for registration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum SignaturePolicy {
+    /// No signature required (default). Bundle is stored if present but not verified.
+    #[default]
+    Ignore,
+    /// A bundle must be present and its `signed_artifact_hash` must match `build_hash`.
+    /// Full Rekor verification is recommended but not enforced here.
+    Require,
+}
+
+/// Errors from Sigstore bundle verification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SignatureError {
+    /// No bundle was provided but the policy requires one.
+    BundleRequired { parser_id: String },
+    /// The bundle's `signed_artifact_hash` does not match the declared `build_hash`.
+    HashMismatch {
+        bundle_hash: String,
+        declared_hash: String,
+    },
+}
+
+impl fmt::Display for SignatureError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BundleRequired { parser_id } => {
+                write!(f, "sigstore bundle required but missing for '{parser_id}'")
+            }
+            Self::HashMismatch {
+                bundle_hash,
+                declared_hash,
+            } => {
+                write!(
+                    f,
+                    "sigstore bundle covers {bundle_hash} but declaration has {declared_hash}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for SignatureError {}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // ParserDeclaration
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -38,7 +146,7 @@ use std::collections::BTreeMap;
 /// Example: a JSON parser that reads raw bytes and produces `company_record`
 /// structs. The `build_hash` pins the exact binary so replay verification can
 /// re-execute the identical code path.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ParserDeclaration {
     /// Unique identifier for this parser (e.g. `"json_company_parser"`).
@@ -68,6 +176,35 @@ pub struct ParserDeclaration {
         )
     )]
     pub test_corpus_hash: Option<[u8; 32]>,
+    /// Optional Sigstore bundle providing supply-chain provenance for this binary.
+    /// See [`SigstoreBundle`] and [`SignaturePolicy`].
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub sigstore_bundle: Option<SigstoreBundle>,
+    /// Whether a Sigstore bundle must be present and cover `build_hash`.
+    /// Defaults to [`SignaturePolicy::Ignore`].
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub signature_policy: SignaturePolicy,
+}
+
+impl ParserDeclaration {
+    /// Verify the Sigstore bundle against the declared `build_hash`.
+    ///
+    /// - `SignaturePolicy::Ignore`: always returns `Ok(())`.
+    /// - `SignaturePolicy::Require`: bundle must be present and cover the hash.
+    pub fn verify_signature(&self) -> Result<(), SignatureError> {
+        match self.signature_policy {
+            SignaturePolicy::Ignore => Ok(()),
+            SignaturePolicy::Require => match &self.sigstore_bundle {
+                None => Err(SignatureError::BundleRequired {
+                    parser_id: self.parser_id.clone(),
+                }),
+                Some(bundle) => bundle.verify_covers_hash(&self.build_hash),
+            },
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -79,7 +216,7 @@ pub struct ParserDeclaration {
 ///
 /// Structurally identical to [`ParserDeclaration`] but semantically distinct:
 /// parsers convert raw formats to typed schemas, transforms map between schemas.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TransformDeclaration {
     /// Unique identifier for this transform (e.g. `"normalize_address"`).
@@ -106,6 +243,30 @@ pub struct TransformDeclaration {
         )
     )]
     pub test_corpus_hash: Option<[u8; 32]>,
+    /// Optional Sigstore bundle providing supply-chain provenance for this binary.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub sigstore_bundle: Option<SigstoreBundle>,
+    /// Whether a Sigstore bundle must be present and cover `build_hash`.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub signature_policy: SignaturePolicy,
+}
+
+impl TransformDeclaration {
+    /// Verify the Sigstore bundle against the declared `build_hash`.
+    pub fn verify_signature(&self) -> Result<(), SignatureError> {
+        match self.signature_policy {
+            SignaturePolicy::Ignore => Ok(()),
+            SignaturePolicy::Require => match &self.sigstore_bundle {
+                None => Err(SignatureError::BundleRequired {
+                    parser_id: self.transform_id.clone(),
+                }),
+                Some(bundle) => bundle.verify_covers_hash(&self.build_hash),
+            },
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -129,6 +290,8 @@ pub enum RegistryError {
     /// I/O error reading a directory or file.
     #[cfg(feature = "serde")]
     IoError { path: String, message: String },
+    /// Sigstore signature policy violation — bundle missing or hash mismatch.
+    SignatureInvalid(SignatureError),
     /// WASM compilation or pre-compilation lookup failed.
     #[cfg(feature = "wasm-sandbox")]
     CompileError(String),
@@ -160,6 +323,7 @@ impl fmt::Display for RegistryError {
                     hex_encode(incoming),
                 )
             }
+            Self::SignatureInvalid(e) => write!(f, "signature verification failed: {e}"),
             #[cfg(feature = "serde")]
             Self::ParseError { path, message } => {
                 write!(f, "failed to parse '{path}': {message}")
@@ -228,8 +392,10 @@ impl ParserRegistry {
     /// - The parser ID is new, or
     /// - The parser ID already exists with the **same** `build_hash` (idempotent).
     ///
-    /// Returns `Err(RegistryError::ConflictingHash)` if the ID exists with a
-    /// different `build_hash`.
+    /// Returns `Err` if:
+    /// - The ID exists with a different `build_hash` ([`RegistryError::ConflictingHash`])
+    /// - The `signature_policy` is [`SignaturePolicy::Require`] and the bundle
+    ///   is missing or doesn't cover `build_hash` ([`RegistryError::SignatureInvalid`])
     pub fn register_parser(&mut self, decl: ParserDeclaration) -> Result<(), RegistryError> {
         if let Some(existing) = self.parsers.get(&decl.parser_id) {
             if existing.build_hash != decl.build_hash {
@@ -242,6 +408,8 @@ impl ParserRegistry {
             // Same hash -- idempotent, do nothing.
             return Ok(());
         }
+        decl.verify_signature()
+            .map_err(RegistryError::SignatureInvalid)?;
         self.parsers.insert(decl.parser_id.clone(), decl);
         Ok(())
     }
@@ -276,7 +444,8 @@ impl ParserRegistry {
 
     /// Register a transform declaration.
     ///
-    /// Same idempotency and conflict semantics as [`Self::register_parser`].
+    /// Same idempotency, conflict, and signature-policy semantics as
+    /// [`Self::register_parser`].
     pub fn register_transform(&mut self, decl: TransformDeclaration) -> Result<(), RegistryError> {
         if let Some(existing) = self.transforms.get(&decl.transform_id) {
             if existing.build_hash != decl.build_hash {
@@ -288,6 +457,8 @@ impl ParserRegistry {
             }
             return Ok(());
         }
+        decl.verify_signature()
+            .map_err(RegistryError::SignatureInvalid)?;
         self.transforms.insert(decl.transform_id.clone(), decl);
         Ok(())
     }
@@ -592,6 +763,8 @@ mod tests {
             output_schema: "company_record".to_string(),
             is_deterministic: deterministic,
             test_corpus_hash: None,
+            sigstore_bundle: None,
+            signature_policy: SignaturePolicy::Ignore,
         }
     }
 
@@ -604,6 +777,18 @@ mod tests {
             output_schema: "normalized_company".to_string(),
             is_deterministic: deterministic,
             test_corpus_hash: None,
+            sigstore_bundle: None,
+            signature_policy: SignaturePolicy::Ignore,
+        }
+    }
+
+    fn make_bundle(build_hash: &[u8; 32]) -> SigstoreBundle {
+        SigstoreBundle {
+            certificate_pem: "-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----"
+                .to_string(),
+            signature_b64: "MEUCIQDxtest==".to_string(),
+            rekor_log_id: Some("24296fb24b8ad77a".to_string()),
+            signed_artifact_hash: hex_encode(build_hash),
         }
     }
 
@@ -882,6 +1067,8 @@ is_deterministic = true
             output_schema: "test".to_string(),
             is_deterministic: true,
             test_corpus_hash: Some(sample_hash_b()),
+            sigstore_bundle: None,
+            signature_policy: SignaturePolicy::Ignore,
         };
 
         let serialized = toml::to_string(&decl).unwrap();
@@ -900,12 +1087,138 @@ is_deterministic = true
             output_schema: "rows".to_string(),
             is_deterministic: false,
             test_corpus_hash: None,
+            sigstore_bundle: None,
+            signature_policy: SignaturePolicy::Ignore,
         };
 
         let serialized = toml::to_string(&decl).unwrap();
         assert!(!serialized.contains("test_corpus_hash"));
         let deserialized: ParserDeclaration = toml::from_str(&serialized).unwrap();
         assert_eq!(decl, deserialized);
+    }
+
+    // -----------------------------------------------------------------
+    // Sigstore supply-chain verification tests (#943)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn ignore_policy_allows_registration_without_bundle() {
+        let mut reg = ParserRegistry::new();
+        let decl = make_parser("no_sig", sample_hash_a(), true);
+        assert_eq!(decl.signature_policy, SignaturePolicy::Ignore);
+        reg.register_parser(decl).unwrap();
+    }
+
+    #[test]
+    fn require_policy_rejects_missing_bundle() {
+        let mut reg = ParserRegistry::new();
+        let decl = ParserDeclaration {
+            signature_policy: SignaturePolicy::Require,
+            ..make_parser("needs_sig", sample_hash_a(), true)
+        };
+        let err = reg.register_parser(decl).unwrap_err();
+        assert!(matches!(
+            err,
+            RegistryError::SignatureInvalid(SignatureError::BundleRequired { .. })
+        ));
+    }
+
+    #[test]
+    fn require_policy_accepts_matching_bundle() {
+        let mut reg = ParserRegistry::new();
+        let hash = sample_hash_a();
+        let decl = ParserDeclaration {
+            signature_policy: SignaturePolicy::Require,
+            sigstore_bundle: Some(make_bundle(&hash)),
+            ..make_parser("signed_parser", hash, true)
+        };
+        reg.register_parser(decl).unwrap();
+        assert!(reg.get_parser("signed_parser").is_some());
+    }
+
+    #[test]
+    fn require_policy_rejects_bundle_covering_wrong_hash() {
+        let mut reg = ParserRegistry::new();
+        let declaration_hash = sample_hash_a();
+        let bundle_hash = sample_hash_b(); // covers a different binary
+        let decl = ParserDeclaration {
+            signature_policy: SignaturePolicy::Require,
+            sigstore_bundle: Some(make_bundle(&bundle_hash)),
+            ..make_parser("mismatch_parser", declaration_hash, true)
+        };
+        let err = reg.register_parser(decl).unwrap_err();
+        assert!(matches!(
+            err,
+            RegistryError::SignatureInvalid(SignatureError::HashMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn transform_require_policy_rejects_missing_bundle() {
+        let mut reg = ParserRegistry::new();
+        let decl = TransformDeclaration {
+            signature_policy: SignaturePolicy::Require,
+            ..make_transform("needs_sig", sample_hash_a(), true)
+        };
+        let err = reg.register_transform(decl).unwrap_err();
+        assert!(matches!(
+            err,
+            RegistryError::SignatureInvalid(SignatureError::BundleRequired { .. })
+        ));
+    }
+
+    #[test]
+    fn transform_require_policy_accepts_matching_bundle() {
+        let mut reg = ParserRegistry::new();
+        let hash = sample_hash_a();
+        let decl = TransformDeclaration {
+            signature_policy: SignaturePolicy::Require,
+            sigstore_bundle: Some(make_bundle(&hash)),
+            ..make_transform("signed_xform", hash, true)
+        };
+        reg.register_transform(decl).unwrap();
+    }
+
+    #[test]
+    fn bundle_covers_hash_ok() {
+        let hash = sample_hash_a();
+        let bundle = make_bundle(&hash);
+        assert!(bundle.verify_covers_hash(&hash).is_ok());
+    }
+
+    #[test]
+    fn bundle_covers_hash_mismatch() {
+        let bundle = make_bundle(&sample_hash_a());
+        let err = bundle.verify_covers_hash(&sample_hash_b()).unwrap_err();
+        assert!(matches!(err, SignatureError::HashMismatch { .. }));
+        assert!(err.to_string().contains("sigstore bundle covers"));
+    }
+
+    #[test]
+    fn bundle_with_rekor_log_id_roundtrips() {
+        let hash = sample_hash_a();
+        let bundle = SigstoreBundle {
+            certificate_pem: "cert".to_string(),
+            signature_b64: "sig".to_string(),
+            rekor_log_id: Some("abc123".to_string()),
+            signed_artifact_hash: hex_encode(&hash),
+        };
+        assert_eq!(bundle.rekor_log_id.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn signature_error_display() {
+        let e = SignatureError::BundleRequired {
+            parser_id: "my_parser".to_string(),
+        };
+        assert!(e.to_string().contains("my_parser"));
+
+        let e2 = SignatureError::HashMismatch {
+            bundle_hash: "aaa".to_string(),
+            declared_hash: "bbb".to_string(),
+        };
+        assert!(e2.to_string().contains("aaa"));
+        assert!(e2.to_string().contains("bbb"));
     }
 
     // -----------------------------------------------------------------
@@ -964,7 +1277,7 @@ is_deterministic = true
                 input_format: "bytes".into(),
                 output_schema: "bytes".into(),
                 is_deterministic: true,
-                test_corpus_hash: None,
+                ..Default::default()
             })
             .unwrap();
 
@@ -991,7 +1304,7 @@ is_deterministic = true
                 input_format: "bytes".into(),
                 output_schema: "bytes".into(),
                 is_deterministic: true,
-                test_corpus_hash: None,
+                ..Default::default()
             })
             .unwrap();
 
@@ -1044,7 +1357,7 @@ is_deterministic = true
                 input_format: "bytes".into(),
                 output_schema: "bytes".into(),
                 is_deterministic: true,
-                test_corpus_hash: None,
+                ..Default::default()
             })
             .unwrap();
             reg.compile_parser(&sandbox, "det_test", &wasm).unwrap();
