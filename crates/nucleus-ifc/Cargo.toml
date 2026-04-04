@@ -7,7 +7,11 @@ license.workspace = true
 description = "Information Flow Control for AI agents — the only IFC library shipping in production"
 repository = "https://github.com/coproduct-opensource/nucleus"
 keywords = ["ai", "security", "ifc", "information-flow", "provenance"]
-categories = ["development-tools", "command-line-utilities"]
+categories = ["development-tools"]
 
 [dependencies]
 portcullis-core = { version = "1.0.0", path = "../portcullis-core" }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
