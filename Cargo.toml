@@ -28,7 +28,8 @@ members = [
     "crates/nucleus-claude-hook",        # Claude Code PreToolUse hook via Nucleus kernel
 ]
 # exposure-web is WASM-only (wasm32-unknown-unknown); build with: cd crates/exposure-web && trunk build
-exclude = ["crates/exposure-web"]
+# portcullis-python requires Python + maturin; build with: cd crates/portcullis-python && maturin develop
+exclude = ["crates/exposure-web", "crates/portcullis-python"]
 resolver = "2"
 
 [workspace.package]
