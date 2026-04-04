@@ -307,7 +307,7 @@ mod tests {
             input_format: "json".to_string(),
             output_schema: "company_record".to_string(),
             is_deterministic: true,
-            test_corpus_hash: None,
+            ..Default::default()
         })
         .unwrap();
         reg.register_transform(TransformDeclaration {
@@ -317,7 +317,7 @@ mod tests {
             input_format: "company_record".to_string(),
             output_schema: "normalized_company".to_string(),
             is_deterministic: true,
-            test_corpus_hash: None,
+            ..Default::default()
         })
         .unwrap();
         reg
@@ -411,7 +411,7 @@ mod tests {
                 input_format: "json".to_string(),
                 output_schema: "company_record".to_string(),
                 is_deterministic: false, // Non-deterministic!
-                test_corpus_hash: None,
+                ..Default::default()
             })
             .unwrap();
 
@@ -445,7 +445,7 @@ mod tests {
                 input_format: "json".to_string(),
                 output_schema: "company_record".to_string(),
                 is_deterministic: true,
-                test_corpus_hash: None,
+                ..Default::default()
             })
             .unwrap();
 
@@ -606,7 +606,7 @@ mod tests {
                 input_format: "json".to_string(),
                 output_schema: "company_record".to_string(),
                 is_deterministic: true,
-                test_corpus_hash: None,
+                ..Default::default()
             })
             .unwrap();
         registry
@@ -617,7 +617,7 @@ mod tests {
                 input_format: "company_record".to_string(),
                 output_schema: "normalized_company".to_string(),
                 is_deterministic: false, // Non-deterministic!
-                test_corpus_hash: None,
+                ..Default::default()
             })
             .unwrap();
 

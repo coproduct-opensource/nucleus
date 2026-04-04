@@ -59,7 +59,7 @@ mod wasm_pipeline {
                 input_format: "bytes".into(),
                 output_schema: "bytes".into(),
                 is_deterministic: true,
-                test_corpus_hash: None,
+                ..Default::default()
             })
             .unwrap();
 
@@ -153,7 +153,7 @@ mod wasm_pipeline {
                 input_format: "bytes".into(),
                 output_schema: "bytes".into(),
                 is_deterministic: true,
-                test_corpus_hash: None,
+                ..Default::default()
             })
             .unwrap();
 
