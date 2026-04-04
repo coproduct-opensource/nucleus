@@ -1,0 +1,17 @@
+[package]
+name = "portcullis-python"
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+description = "Python bindings for the portcullis policy algebra — formally verified, pip installable"
+repository = "https://github.com/coproduct-opensource/nucleus"
+keywords = ["ai", "security", "policy", "python", "formal-verification"]
+categories = ["development-tools"]
+
+[lib]
+name = "portcullis"
+crate-type = ["cdylib"]
+
+[dependencies]
+portcullis-core = { path = "../portcullis-core" }
+pyo3 = { version = "0.28", features = ["extension-module"] }
