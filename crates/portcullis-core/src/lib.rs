@@ -110,6 +110,7 @@ pub mod registry;
 #[cfg(feature = "envelope")]
 pub mod replay;
 pub mod storage_lane;
+pub mod task_shield;
 pub mod verdict;
 #[cfg(feature = "wasm-sandbox")]
 pub mod wasm_sandbox;

@@ -71,6 +71,12 @@ pub struct PolicyRequest {
     pub required_level: crate::CapabilityLevel,
     /// Additional context as key-value pairs.
     pub context: std::collections::BTreeMap<String, String>,
+    /// Optional task witness for task-alignment checks.
+    ///
+    /// Attach via [`PolicyRequest::with_task_witness`]. Policy checks that
+    /// implement task-scope enforcement (e.g., [`crate::task_shield::TaskScopePolicy`])
+    /// read this field to constrain operations to the declared task scope.
+    pub task_witness: Option<std::sync::Arc<crate::task_shield::TaskWitness>>,
 }
 
 impl PolicyRequest {
@@ -80,6 +86,7 @@ impl PolicyRequest {
             operation: operation.to_string(),
             required_level: level,
             context: std::collections::BTreeMap::new(),
+            task_witness: None,
         }
     }
 
@@ -87,6 +94,23 @@ impl PolicyRequest {
     pub fn with_context(mut self, key: &str, value: &str) -> Self {
         self.context.insert(key.to_string(), value.to_string());
         self
+    }
+
+    /// Attach a [`TaskWitness`] to this request for task-alignment enforcement.
+    ///
+    /// [`crate::task_shield::TaskScopePolicy`] checks use this to gate operations
+    /// against the declared task scope.
+    pub fn with_task_witness(
+        mut self,
+        witness: std::sync::Arc<crate::task_shield::TaskWitness>,
+    ) -> Self {
+        self.task_witness = Some(witness);
+        self
+    }
+
+    /// Borrow the attached task witness, if any.
+    pub fn task_witness(&self) -> Option<&crate::task_shield::TaskWitness> {
+        self.task_witness.as_deref()
     }
 }
 
