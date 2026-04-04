@@ -79,6 +79,7 @@ use crate::isolation::{IsolationLattice, NetworkIsolation};
 use crate::lattice::PermissionLattice;
 use crate::receipt_chain::{ReceiptChain, VerdictReceipt};
 use crate::token::SessionProvenance;
+use crate::{ActionTerm, PreflightContext, PreflightResult, PreflightVerdict};
 
 /// A single decision made by the kernel.
 ///
@@ -113,6 +114,18 @@ pub struct Decision {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub flow_node_id: Option<u64>,
+    /// Optional action term that was preflighted before this decision.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub action_term: Option<ActionTerm>,
+    /// Result of preflighting the action term, when present.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub preflight_result: Option<PreflightResult>,
 }
 
 /// Records the exposure state before and after a decision.
@@ -277,6 +290,11 @@ pub enum DenyReason {
         /// Which dimension blocked the operation ("path", "host", or "git_ref").
         dimension: String,
         /// Human-readable detail about what was denied and the allowed set.
+        detail: String,
+    },
+    /// Operation denied by action-term preflight before lowering.
+    ActionTermRejected {
+        /// Human-readable detail from the failed preflight obligations.
         detail: String,
     },
 }
@@ -1493,6 +1511,69 @@ impl Kernel {
         )
     }
 
+    /// Decide a typed [`ActionTerm`] by preflighting it, then lowering to the
+    /// existing runtime mediation path.
+    ///
+    /// This is intentionally a narrow bridge: the term is checked by the pure
+    /// preflight engine first, and only then mapped to the existing
+    /// `Operation + subject` kernel path. The resulting [`Decision`] carries
+    /// the serialized term and preflight result for audit/replay.
+    pub fn decide_term(&mut self, term: ActionTerm) -> (Decision, Option<DecisionToken>) {
+        let operation = term.operation();
+        let subject = term.subject().to_string();
+        let preflight =
+            crate::action_term::preflight_action(&term, &PreflightContext::new(&self.effective));
+
+        let (mut decision, token) = match preflight.verdict {
+            PreflightVerdict::Pass => self.decide(operation, &subject),
+            PreflightVerdict::RequiresApproval => {
+                let pre_hash = self.effective.checksum();
+                let pre_exposure_count = self.exposure.count();
+                let contributed_label = exposure_core::classify_operation(operation);
+                self.record_with_exposure(
+                    operation,
+                    &subject,
+                    Verdict::RequiresApproval,
+                    &pre_hash,
+                    pre_exposure_count,
+                    contributed_label,
+                    false,
+                    false,
+                )
+            }
+            PreflightVerdict::Deny => {
+                let pre_hash = self.effective.checksum();
+                let pre_exposure_count = self.exposure.count();
+                let contributed_label = exposure_core::classify_operation(operation);
+                let detail = preflight
+                    .failures
+                    .iter()
+                    .map(|f| format!("{:?}: {}", f.obligation, f.detail))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                self.record_with_exposure(
+                    operation,
+                    &subject,
+                    Verdict::Deny(DenyReason::ActionTermRejected { detail }),
+                    &pre_hash,
+                    pre_exposure_count,
+                    contributed_label,
+                    false,
+                    false,
+                )
+            }
+        };
+
+        decision.action_term = Some(term.clone());
+        decision.preflight_result = Some(preflight.clone());
+        if let Some(last) = self.trace.last_mut() {
+            last.action_term = Some(term);
+            last.preflight_result = Some(preflight);
+        }
+
+        (decision, token)
+    }
+
     /// Map an Operation to the most appropriate FlowNode kind.
     fn node_kind_for(op: Operation) -> portcullis_core::flow::NodeKind {
         use portcullis_core::flow::NodeKind;
@@ -1846,6 +1927,8 @@ impl Kernel {
                 dynamic_gate_applied,
             },
             flow_node_id: None,
+            action_term: None,
+            preflight_result: None,
         };
 
         // Append a receipt to the chain if enabled.

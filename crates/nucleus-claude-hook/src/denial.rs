@@ -173,6 +173,15 @@ pub(crate) fn format_denial_for_user(
                 - Check that set_trusted_keys() includes the signing key's public key"
             )
         }
+        DenyReason::ActionTermRejected { detail } => {
+            format!(
+                "Blocked: action preflight rejected this request: {detail}{comp_hint}.\n  \
+                How to fix:\n  \
+                - Narrow the action to the task's allowed paths and operations\n  \
+                - Ensure the requested authority matches the operation being attempted\n  \
+                - Remove untrusted or AI-derived inputs before retrying"
+            )
+        }
         DenyReason::SinkScopeDenied {
             dimension, detail, ..
         } => {

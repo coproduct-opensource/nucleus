@@ -85,6 +85,7 @@
 #![deny(missing_docs)]
 #![deny(unsafe_code)]
 
+pub mod action_term;
 pub mod audit;
 #[cfg(feature = "serde")]
 pub mod audit_backend;
@@ -238,6 +239,11 @@ pub use pipeline::{
 };
 
 // Re-export key audit and metrics types
+pub use action_term::{
+    preflight_action, ActionInput, ActionTerm, CapabilityRequest, EffectDisposition,
+    ObligationFailure, PreflightContext, PreflightResult, PreflightVerdict, PrimitiveAction,
+    ProofObligation, ProposedEffect, TaskRef,
+};
 pub use audit::{
     AuditEntry, AuditLog, ChainVerificationError, IdentityAuditSummary, PermissionEvent,
     RetentionPolicy,

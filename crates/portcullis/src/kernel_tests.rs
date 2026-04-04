@@ -1,6 +1,14 @@
 use super::*;
 use crate::{CapabilityLevel, PermissionLattice};
 
+fn trusted_term_input(name: &str) -> crate::ActionInput {
+    crate::ActionInput::new(
+        name,
+        "sha256:abc123",
+        portcullis_core::DerivationClass::Deterministic,
+    )
+}
+
 #[test]
 fn test_basic_allow() {
     let perms = PermissionLattice::safe_pr_fixer();
@@ -166,6 +174,107 @@ fn test_initial_hash_preserved() {
     let kernel = Kernel::new(perms);
 
     assert_eq!(kernel.initial_hash(), expected_hash);
+}
+
+#[test]
+fn test_decide_term_attaches_action_term_and_preflight() {
+    let perms = PermissionLattice::safe_pr_fixer();
+    let mut kernel = Kernel::new(perms);
+    let task = crate::TaskRef::new(
+        "pr-241",
+        "fix auth regression",
+        vec![Operation::EditFiles],
+        vec!["src/auth/".to_string()],
+    );
+    let term = crate::ActionTerm::edit_file(
+        Some(task),
+        "src/auth/session.rs",
+        "@@ -1 +1 @@",
+        vec![trusted_term_input("session")],
+        crate::EffectDisposition::Proposed,
+    );
+
+    let (decision, token) = kernel.decide_term(term.clone());
+
+    assert!(decision.verdict.is_allowed());
+    assert!(token.is_some());
+    assert_eq!(decision.action_term, Some(term.clone()));
+    assert_eq!(
+        decision.preflight_result.as_ref().map(|r| &r.verdict),
+        Some(&crate::PreflightVerdict::Pass)
+    );
+    assert_eq!(kernel.trace().last().unwrap().action_term, Some(term));
+}
+
+#[test]
+fn test_decide_term_requires_approval_for_task_scope_violation() {
+    let perms = PermissionLattice::safe_pr_fixer();
+    let mut kernel = Kernel::new(perms);
+    let task = crate::TaskRef::new(
+        "docs-1",
+        "docs only",
+        vec![Operation::EditFiles],
+        vec!["docs/".to_string()],
+    );
+    let term = crate::ActionTerm::edit_file(
+        Some(task),
+        "src/main.rs",
+        "@@ -1 +1 @@",
+        vec![trusted_term_input("main")],
+        crate::EffectDisposition::Proposed,
+    );
+
+    let (decision, token) = kernel.decide_term(term);
+
+    assert!(matches!(decision.verdict, Verdict::RequiresApproval));
+    assert!(token.is_none());
+    assert_eq!(
+        decision.preflight_result.as_ref().map(|r| &r.verdict),
+        Some(&crate::PreflightVerdict::RequiresApproval)
+    );
+}
+
+#[test]
+fn test_decide_term_denies_when_preflight_rejects() {
+    let perms = PermissionLattice::read_only();
+    let mut kernel = Kernel::new(perms);
+    let mut term = crate::ActionTerm::run_command(
+        None,
+        "cargo test",
+        vec![trusted_term_input("tests")],
+        crate::EffectDisposition::Proposed,
+    );
+    term.authority.requested_level = CapabilityLevel::Always;
+
+    let (decision, token) = kernel.decide_term(term);
+
+    assert!(token.is_none());
+    assert!(matches!(
+        decision.verdict,
+        Verdict::Deny(DenyReason::ActionTermRejected { .. })
+    ));
+    assert_eq!(
+        decision.preflight_result.as_ref().map(|r| &r.verdict),
+        Some(&crate::PreflightVerdict::Deny)
+    );
+}
+
+#[test]
+fn test_decision_with_action_term_serializes() {
+    let perms = PermissionLattice::safe_pr_fixer();
+    let mut kernel = Kernel::new(perms);
+    let term = crate::ActionTerm::run_command(
+        None,
+        "cargo test",
+        vec![trusted_term_input("tests")],
+        crate::EffectDisposition::Proposed,
+    );
+
+    let (decision, _token) = kernel.decide_term(term);
+    let json = serde_json::to_string(&decision).unwrap();
+
+    assert!(json.contains("\"action_term\""));
+    assert!(json.contains("\"preflight_result\""));
 }
 
 #[test]
