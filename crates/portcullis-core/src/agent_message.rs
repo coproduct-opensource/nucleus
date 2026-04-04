@@ -50,11 +50,11 @@
 //! let untrusted = MessageContext {
 //!     payload_bytes: 100,
 //!     conf_level: ConfLevel::Public,
-//!     integ_level: IntegLevel::Adversarial,
-//!     derivation: DerivationClass::OpaqueExternal,
+//!     integ_level: IntegLevel::Untrusted,
+//!     derivation: DerivationClass::Deterministic,
 //!     destination: "agent-b".into(),
 //! };
-//! assert!(policy.evaluate(&untrusted).is_requires_approval());
+//! assert!(matches!(policy.evaluate(&untrusted), CheckResult::RequiresApproval(_)));
 //! ```
 
 use crate::combinators::CheckResult;
