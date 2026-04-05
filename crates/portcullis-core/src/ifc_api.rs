@@ -196,7 +196,8 @@ impl FlowTracker {
     /// Node IDs are 1-based; ID 0 is reserved as a sentinel and must not be
     /// used in arithmetic without first checking for zero (#1203).
     fn node_entry(&self, node_id: u64) -> Option<&(NodeKind, IFCLabel, Vec<u64>)> {
-        let idx = node_id.checked_sub(1)? as usize;
+        // Use try_from to avoid silent truncation on 32-bit targets (#1212).
+        let idx = usize::try_from(node_id.checked_sub(1)?).ok()?;
         self.nodes.get(idx)
     }
 
