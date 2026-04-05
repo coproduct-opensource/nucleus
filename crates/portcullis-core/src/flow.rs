@@ -517,7 +517,16 @@ pub fn check_flow(node: &FlowNode, now: u64) -> FlowVerdict {
     // verified sinks (GitPush, GitCommit, PRCommentWrite) without human
     // promotion. Uses the StorageLane::Verified gate as the acceptance
     // predicate: only Deterministic and HumanPromoted derivations pass.
-    if let Some(sink) = node.sink_class
+    //
+    // Fail-closed (#1227): when sink_class is None but the operation
+    // unambiguously maps to a verified sink, infer the sink class so Rule 6
+    // is never silently skipped. Any FlowNode that sets
+    // `operation: Some(Operation::GitPush)` but leaves `sink_class: None`
+    // would otherwise bypass this check entirely.
+    let effective_sink = node
+        .sink_class
+        .or_else(|| infer_sink_class_for_derivation(op));
+    if let Some(sink) = effective_sink
         && sink.requires_verified_derivation()
         && !StorageLane::Verified.accepts(label.derivation)
     {
@@ -525,6 +534,27 @@ pub fn check_flow(node: &FlowNode, now: u64) -> FlowVerdict {
     }
 
     FlowVerdict::Allow
+}
+
+/// Infer the sink class for derivation checking when `sink_class` is not
+/// explicitly set on the [`FlowNode`] (#1227).
+///
+/// Only operations that unambiguously imply a verified sink are inferred —
+/// `GitPush`, `GitCommit`, and `CreatePr`. All other operations return `None`
+/// so their derivation is unconstrained (they may or may not be verified sinks
+/// depending on context; callers that know the context should set `sink_class`
+/// explicitly).
+///
+/// This is used **only** as a fallback for Rule 6. Rules 1–5 continue to use
+/// the legacy per-Operation authority/integrity thresholds when `sink_class`
+/// is absent, to preserve backward compatibility.
+fn infer_sink_class_for_derivation(op: Operation) -> Option<SinkClass> {
+    match op {
+        Operation::GitPush => Some(SinkClass::GitPush),
+        Operation::GitCommit => Some(SinkClass::GitCommit),
+        Operation::CreatePr => Some(SinkClass::PRCommentWrite),
+        _ => None,
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1178,6 +1208,108 @@ mod tests {
             check_flow(&node, 2000),
             FlowVerdict::Deny(FlowDenyReason::Exfiltration)
         );
+    }
+
+    // ── Rule 6 fail-closed: derivation check without sink_class (#1227) ──
+
+    fn ai_derived_label(now: u64) -> IFCLabel {
+        IFCLabel {
+            confidentiality: ConfLevel::Internal,
+            integrity: IntegLevel::Trusted,
+            provenance: ProvenanceSet::MODEL,
+            freshness: Freshness {
+                observed_at: now,
+                ttl_secs: 0,
+            },
+            authority: AuthorityLevel::Directive,
+            derivation: DerivationClass::AIDerived,
+        }
+    }
+
+    #[test]
+    fn rule6_ai_derived_git_push_blocked_without_sink_class() {
+        // Before fix: sink_class=None skipped Rule 6; AI-derived content reached GitPush.
+        // After fix: infer_sink_class_for_derivation fills in SinkClass::GitPush.
+        let label = ai_derived_label(1000);
+        let node = make_node(NodeKind::OutboundAction, label, Some(Operation::GitPush));
+        assert_eq!(
+            node.sink_class, None,
+            "precondition: make_node sets sink_class=None"
+        );
+        assert_eq!(
+            check_flow(&node, 2000),
+            FlowVerdict::Deny(FlowDenyReason::DerivationViolation),
+            "AI-derived content must not reach GitPush even when sink_class is None"
+        );
+    }
+
+    #[test]
+    fn rule6_ai_derived_git_commit_blocked_without_sink_class() {
+        let label = ai_derived_label(1000);
+        let node = make_node(NodeKind::OutboundAction, label, Some(Operation::GitCommit));
+        assert_eq!(
+            check_flow(&node, 2000),
+            FlowVerdict::Deny(FlowDenyReason::DerivationViolation),
+            "AI-derived content must not reach GitCommit even when sink_class is None"
+        );
+    }
+
+    #[test]
+    fn rule6_ai_derived_create_pr_blocked_without_sink_class() {
+        let label = ai_derived_label(1000);
+        let node = make_node(NodeKind::OutboundAction, label, Some(Operation::CreatePr));
+        assert_eq!(
+            check_flow(&node, 2000),
+            FlowVerdict::Deny(FlowDenyReason::DerivationViolation),
+            "AI-derived content must not reach CreatePr even when sink_class is None"
+        );
+    }
+
+    #[test]
+    fn rule6_deterministic_git_push_allowed_without_sink_class() {
+        // Regression guard: deterministic content must still pass Rule 6.
+        let label = IFCLabel {
+            confidentiality: ConfLevel::Internal,
+            integrity: IntegLevel::Trusted,
+            provenance: ProvenanceSet::USER,
+            freshness: Freshness {
+                observed_at: 1000,
+                ttl_secs: 0,
+            },
+            authority: AuthorityLevel::Directive,
+            derivation: DerivationClass::Deterministic,
+        };
+        let node = make_node(NodeKind::OutboundAction, label, Some(Operation::GitPush));
+        assert_eq!(check_flow(&node, 2000), FlowVerdict::Allow);
+    }
+
+    #[test]
+    fn rule6_human_promoted_git_push_allowed_without_sink_class() {
+        // HumanPromoted also passes StorageLane::Verified.
+        let label = IFCLabel {
+            confidentiality: ConfLevel::Internal,
+            integrity: IntegLevel::Trusted,
+            provenance: ProvenanceSet::USER,
+            freshness: Freshness {
+                observed_at: 1000,
+                ttl_secs: 0,
+            },
+            authority: AuthorityLevel::Directive,
+            derivation: DerivationClass::HumanPromoted,
+        };
+        let node = make_node(NodeKind::OutboundAction, label, Some(Operation::GitPush));
+        assert_eq!(check_flow(&node, 2000), FlowVerdict::Allow);
+    }
+
+    #[test]
+    fn rule6_ai_derived_write_files_not_blocked_without_sink_class() {
+        // Non-verified-sink operations are NOT inferred — WriteFiles has no
+        // derivation constraint when sink_class is absent.
+        let label = ai_derived_label(1000);
+        let node = make_node(NodeKind::OutboundAction, label, Some(Operation::WriteFiles));
+        // WriteFiles is not a verified sink; only integrity/authority/freshness apply.
+        // user_prompt has Trusted integrity + Directive authority → allowed.
+        assert_eq!(check_flow(&node, 2000), FlowVerdict::Allow);
     }
 
     // ── canonical_bytes / canonical_tag stability tests (#747) ──────
