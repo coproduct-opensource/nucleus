@@ -90,11 +90,105 @@ impl PolicyProfile {
             Self::Permissive => "permissive",
         }
     }
+
+    /// Compose this profile with an additional capability (#1251).
+    ///
+    /// Returns a [`ComposedPolicy`] that is the lattice join of this profile's
+    /// lattice with the given capability raised to `Always`.
+    ///
+    /// ```rust
+    /// use portcullis_effects::runtime::{PolicyProfile, RuntimeCapability};
+    ///
+    /// let policy = PolicyProfile::Research.with(RuntimeCapability::RunBash);
+    /// // Research capabilities + RunBash
+    /// assert!(policy.allows(RuntimeCapability::WebFetch));  // from Research
+    /// assert!(policy.allows(RuntimeCapability::RunBash));   // added
+    /// assert!(!policy.allows(RuntimeCapability::WriteFiles)); // neither has it
+    /// ```
+    pub fn with(self, cap: RuntimeCapability) -> ComposedPolicy {
+        let mut lattice = self.to_lattice();
+        cap.raise(&mut lattice, CapabilityLevel::Always);
+        ComposedPolicy {
+            base: self,
+            lattice,
+        }
+    }
+
+    /// Compose two profiles via lattice join (#1251).
+    ///
+    /// The result has every capability that either profile grants.
+    ///
+    /// ```rust
+    /// use portcullis_effects::runtime::{PolicyProfile, RuntimeCapability};
+    ///
+    /// let policy = PolicyProfile::Research.join_profile(PolicyProfile::Codegen);
+    /// // Has both web (Research) and bash (Codegen)
+    /// assert!(policy.allows(RuntimeCapability::WebFetch));
+    /// assert!(policy.allows(RuntimeCapability::RunBash));
+    /// ```
+    pub fn join_profile(self, other: PolicyProfile) -> ComposedPolicy {
+        let lattice = self.to_lattice().join(&other.to_lattice());
+        ComposedPolicy {
+            base: self,
+            lattice,
+        }
+    }
 }
 
 impl std::fmt::Display for PolicyProfile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ComposedPolicy — result of profile composition (#1251)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A policy composed from a base profile plus additional capabilities.
+///
+/// Created by [`PolicyProfile::with`] or [`PolicyProfile::join_profile`].
+/// Can be further composed via chained `.with()` calls.
+///
+/// ```rust
+/// use portcullis_effects::runtime::{PolicyProfile, RuntimeCapability};
+///
+/// let policy = PolicyProfile::Research
+///     .with(RuntimeCapability::RunBash)
+///     .with(RuntimeCapability::WriteFiles);
+///
+/// assert!(policy.allows(RuntimeCapability::WebFetch));   // Research
+/// assert!(policy.allows(RuntimeCapability::RunBash));    // added
+/// assert!(policy.allows(RuntimeCapability::WriteFiles)); // added
+/// ```
+#[derive(Debug, Clone)]
+pub struct ComposedPolicy {
+    /// The base profile (for diagnostics and audit).
+    base: PolicyProfile,
+    /// The composed lattice.
+    lattice: CapabilityLattice,
+}
+
+impl ComposedPolicy {
+    /// Add another capability to this composed policy.
+    pub fn with(mut self, cap: RuntimeCapability) -> Self {
+        cap.raise(&mut self.lattice, CapabilityLevel::Always);
+        self
+    }
+
+    /// Check whether a capability is allowed in this composed policy.
+    pub fn allows(&self, cap: RuntimeCapability) -> bool {
+        cap.level_in(&self.lattice) != CapabilityLevel::Never
+    }
+
+    /// The composed `CapabilityLattice`.
+    pub fn to_lattice(&self) -> CapabilityLattice {
+        self.lattice.clone()
+    }
+
+    /// The base profile name (for diagnostics).
+    pub fn base_profile(&self) -> PolicyProfile {
+        self.base
     }
 }
 
@@ -442,18 +536,7 @@ impl NucleusRuntime {
     ///
     /// Returns `true` if the capability level is `LowRisk` or `Always`.
     pub fn can(&self, check: RuntimeCapability) -> bool {
-        let level = match check {
-            RuntimeCapability::ReadFiles => self.policy.read_files,
-            RuntimeCapability::WriteFiles => self.policy.write_files,
-            RuntimeCapability::EditFiles => self.policy.edit_files,
-            RuntimeCapability::RunBash => self.policy.run_bash,
-            RuntimeCapability::WebFetch => self.policy.web_fetch,
-            RuntimeCapability::WebSearch => self.policy.web_search,
-            RuntimeCapability::GitCommit => self.policy.git_commit,
-            RuntimeCapability::GitPush => self.policy.git_push,
-            RuntimeCapability::CreatePr => self.policy.create_pr,
-        };
-        level != CapabilityLevel::Never
+        check.level_in(&self.policy) != CapabilityLevel::Never
     }
 
     /// Returns `true` if the session's IFC flow tracker has observed
@@ -484,7 +567,8 @@ impl std::fmt::Debug for NucleusRuntime {
 // RuntimeCapability — queryable capability dimensions
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Queryable capability dimensions for `NucleusRuntime::can()`.
+/// Queryable capability dimensions for `NucleusRuntime::can()` and
+/// `PolicyProfile::with()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeCapability {
     ReadFiles,
@@ -496,6 +580,39 @@ pub enum RuntimeCapability {
     GitCommit,
     GitPush,
     CreatePr,
+}
+
+impl RuntimeCapability {
+    /// Get the current level of this capability in a lattice.
+    pub fn level_in(self, lattice: &CapabilityLattice) -> CapabilityLevel {
+        match self {
+            Self::ReadFiles => lattice.read_files,
+            Self::WriteFiles => lattice.write_files,
+            Self::EditFiles => lattice.edit_files,
+            Self::RunBash => lattice.run_bash,
+            Self::WebFetch => lattice.web_fetch,
+            Self::WebSearch => lattice.web_search,
+            Self::GitCommit => lattice.git_commit,
+            Self::GitPush => lattice.git_push,
+            Self::CreatePr => lattice.create_pr,
+        }
+    }
+
+    /// Raise this capability to the given level in a lattice (join semantics).
+    pub fn raise(self, lattice: &mut CapabilityLattice, level: CapabilityLevel) {
+        let field = match self {
+            Self::ReadFiles => &mut lattice.read_files,
+            Self::WriteFiles => &mut lattice.write_files,
+            Self::EditFiles => &mut lattice.edit_files,
+            Self::RunBash => &mut lattice.run_bash,
+            Self::WebFetch => &mut lattice.web_fetch,
+            Self::WebSearch => &mut lattice.web_search,
+            Self::GitCommit => &mut lattice.git_commit,
+            Self::GitPush => &mut lattice.git_push,
+            Self::CreatePr => &mut lattice.create_pr,
+        };
+        *field = (*field).join(level);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -519,6 +636,23 @@ impl NucleusRuntimeBuilder {
     /// call [`custom_policy`], the custom policy takes precedence.
     pub fn profile(mut self, profile: PolicyProfile) -> Self {
         self.profile = profile;
+        self
+    }
+
+    /// Set a composed policy from [`PolicyProfile::with`] or [`PolicyProfile::join_profile`].
+    ///
+    /// ```rust
+    /// use portcullis_effects::runtime::{NucleusRuntime, PolicyProfile, RuntimeCapability};
+    ///
+    /// let rt = NucleusRuntime::builder()
+    ///     .composed(PolicyProfile::Research.with(RuntimeCapability::RunBash))
+    ///     .build();
+    /// assert!(rt.can(RuntimeCapability::WebFetch));  // Research
+    /// assert!(rt.can(RuntimeCapability::RunBash));   // added
+    /// ```
+    pub fn composed(mut self, policy: ComposedPolicy) -> Self {
+        self.profile = policy.base;
+        self.custom_policy = Some(policy.to_lattice());
         self
     }
 
@@ -895,6 +1029,68 @@ mod tests {
         assert!(
             msg.contains("denied") || msg.contains("Never"),
             "expected denial message, got: {msg}"
+        );
+    }
+
+    // ── Profile composition tests (#1251) ───────────────────────────────
+
+    #[test]
+    fn profile_with_adds_capability() {
+        let policy = PolicyProfile::Research.with(RuntimeCapability::RunBash);
+        assert!(policy.allows(RuntimeCapability::WebFetch)); // from Research
+        assert!(policy.allows(RuntimeCapability::RunBash)); // added
+        assert!(!policy.allows(RuntimeCapability::WriteFiles)); // neither has it
+    }
+
+    #[test]
+    fn profile_with_chained() {
+        let policy = PolicyProfile::ReadOnly
+            .with(RuntimeCapability::WebFetch)
+            .with(RuntimeCapability::RunBash);
+        assert!(policy.allows(RuntimeCapability::ReadFiles)); // ReadOnly
+        assert!(policy.allows(RuntimeCapability::WebFetch)); // added
+        assert!(policy.allows(RuntimeCapability::RunBash)); // added
+        assert!(!policy.allows(RuntimeCapability::GitPush)); // not added
+    }
+
+    #[test]
+    fn join_profile_combines_both() {
+        let policy = PolicyProfile::Research.join_profile(PolicyProfile::Codegen);
+        // Research: web fetch + web search
+        assert!(policy.allows(RuntimeCapability::WebFetch));
+        assert!(policy.allows(RuntimeCapability::WebSearch));
+        // Codegen: bash + write + edit + git commit
+        assert!(policy.allows(RuntimeCapability::RunBash));
+        assert!(policy.allows(RuntimeCapability::WriteFiles));
+        assert!(policy.allows(RuntimeCapability::GitCommit));
+    }
+
+    #[test]
+    fn composed_policy_in_builder() {
+        let rt = NucleusRuntime::builder()
+            .composed(PolicyProfile::Research.with(RuntimeCapability::RunBash))
+            .build();
+        assert!(rt.can(RuntimeCapability::WebFetch));
+        assert!(rt.can(RuntimeCapability::RunBash));
+        assert!(!rt.can(RuntimeCapability::WriteFiles));
+    }
+
+    #[test]
+    fn composed_base_profile_preserved() {
+        let policy = PolicyProfile::Research.with(RuntimeCapability::RunBash);
+        assert_eq!(policy.base_profile(), PolicyProfile::Research);
+    }
+
+    #[test]
+    fn runtime_capability_level_in() {
+        let lattice = CapabilityLattice::for_codegen();
+        assert_eq!(
+            RuntimeCapability::RunBash.level_in(&lattice),
+            CapabilityLevel::Always
+        );
+        assert_eq!(
+            RuntimeCapability::WebFetch.level_in(&lattice),
+            CapabilityLevel::Never
         );
     }
 }
