@@ -431,11 +431,13 @@ impl<E: AgentSpawnEffect> AgentSpawnEffect for PolicyEnforced<E> {
 /// This is the **only public constructor** for I/O-capable effects.
 /// `RealEffects` is not constructible by callers directly; it can only
 /// be obtained wrapped in `PolicyEnforced`, ensuring policy is always checked.
+/// The concrete return type is intentionally opaque — callers interact through
+/// the effect traits, never through the underlying implementation type.
 ///
 /// # Example
 ///
 /// ```rust
-/// use portcullis_effects::production_effects;
+/// use portcullis_effects::{production_effects, FileEffect};
 /// use portcullis_core::{CapabilityLattice, CapabilityLevel};
 ///
 /// let policy = CapabilityLattice {
@@ -443,13 +445,15 @@ impl<E: AgentSpawnEffect> AgentSpawnEffect for PolicyEnforced<E> {
 ///     ..CapabilityLattice::bottom()
 /// };
 /// let fx = production_effects(policy);
-/// // fx implements FileEffect, WebEffect, ShellEffect, GitEffect
+/// // fx implements FileEffect, WebEffect, ShellEffect, GitEffect, AgentSpawnEffect
+/// // Policy is checked at every call — no separate preflight needed.
+/// let result = fx.read(std::path::Path::new("Cargo.toml"));
+/// // May succeed or fail depending on filesystem; policy gate is open.
+/// let _ = result;
 /// ```
-// The private_interfaces warning is intentional: callers can hold a
-// `PolicyEnforced<RealEffects>` but cannot name or construct `RealEffects` directly.
-// This is the sealing mechanism — suppress the lint here.
-#[allow(private_interfaces)]
-pub fn production_effects(policy: CapabilityLattice) -> PolicyEnforced<RealEffects> {
+pub fn production_effects(
+    policy: CapabilityLattice,
+) -> impl FileEffect + WebEffect + ShellEffect + GitEffect + AgentSpawnEffect {
     PolicyEnforced {
         inner: RealEffects::new(),
         policy,
