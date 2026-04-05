@@ -277,12 +277,12 @@ impl PolicyCheck for RequireTrustedSource {
 /// Budget is tracked atomically — safe for concurrent policy evaluation.
 /// The budget is shared across all clones of this check.
 ///
-/// ## Atomic reservation (eliminates TOCTOU window, #1179)
+/// ## Atomic reservation (eliminates TOCTOU window, #1179 / #1196)
 ///
 /// When the caller passes `cost_micro_usd` in the [`PolicyRequest`] context,
-/// `check()` atomically reserves that amount using `fetch_add` + rollback. This
-/// eliminates the time-of-check-to-time-of-use window where concurrent calls can
-/// each pass the check before any of them records the cost.
+/// `check()` atomically reserves that amount using a compare-and-swap loop.
+/// This eliminates both the TOCTOU window and the wrapping-arithmetic race that
+/// affects fetch_add + rollback under high concurrency.
 ///
 /// ```rust,ignore
 /// let req = PolicyRequest::new("web_fetch", CapabilityLevel::LowRisk)
@@ -338,15 +338,26 @@ impl BudgetGate {
 
     /// Atomically try to reserve `cost` µUSD, returning `true` if successful.
     ///
-    /// On success the budget is debited. On failure the debit is rolled back.
-    /// This is the TOCTOU-safe alternative to a separate `check()`+`record_cost()`.
+    /// Uses a compare-and-swap loop to avoid the wrapping-arithmetic race in
+    /// fetch_add + rollback: under concurrent pressure, a wrapping fetch_add
+    /// could temporarily expose a small counter value to a racing thread before
+    /// the rollback fires, allowing the racing thread to bypass the limit (#1196).
     pub fn try_reserve(&self, cost: u64) -> bool {
-        let prev = self.spent_micro_usd.fetch_add(cost, Ordering::AcqRel);
-        if prev.saturating_add(cost) > self.max_micro_usd {
-            self.spent_micro_usd.fetch_sub(cost, Ordering::Release);
-            false
-        } else {
-            true
+        let mut current = self.spent_micro_usd.load(Ordering::Acquire);
+        loop {
+            let new = match current.checked_add(cost) {
+                Some(n) if n <= self.max_micro_usd => n,
+                _ => return false,
+            };
+            match self.spent_micro_usd.compare_exchange_weak(
+                current,
+                new,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(actual) => current = actual,
+            }
         }
     }
 }
@@ -406,11 +417,11 @@ impl PolicyCheck for BudgetGate {
 ///
 /// This is a simple counter-based rate limiter (not time-windowed).
 ///
-/// ## Atomic slot reservation (eliminates TOCTOU window, #1179)
+/// ## Atomic slot reservation (eliminates TOCTOU window, #1179 / #1196)
 ///
-/// `check()` atomically reserves a call slot via `fetch_add` + rollback. This
-/// eliminates the time-of-check-to-time-of-use window where concurrent calls can
-/// each pass the check before any increments the counter.
+/// `check()` atomically reserves a call slot via a compare-and-swap loop.
+/// This eliminates both the TOCTOU window and the wrapping-arithmetic race that
+/// affects fetch_add + rollback under high concurrency.
 ///
 /// `record_call()` is kept for backward compatibility but is a no-op when the
 /// caller uses `check()` — slots are consumed by `check()` itself.
@@ -461,20 +472,25 @@ impl Clone for RateLimit {
 
 impl PolicyCheck for RateLimit {
     fn check(&self, req: &PolicyRequest) -> CheckResult {
-        // Atomically try to reserve one call slot, eliminating the TOCTOU window
-        // where concurrent threads can each pass the check before any increments.
-        let prev = self.call_count.fetch_add(1, Ordering::AcqRel);
-        if prev >= self.max_calls {
-            // Over limit — roll back the reservation.
-            self.call_count.fetch_sub(1, Ordering::Release);
-            CheckResult::Deny(format!(
-                "{}: rate limit exceeded ({}/{} calls)",
-                req.operation,
-                self.count(),
-                self.max_calls
-            ))
-        } else {
-            CheckResult::Abstain
+        // CAS loop: atomically reserve one call slot without the wrapping-arithmetic
+        // race that fetch_add + rollback has under high concurrency (#1196).
+        let mut current = self.call_count.load(Ordering::Acquire);
+        loop {
+            if current >= self.max_calls {
+                return CheckResult::Deny(format!(
+                    "{}: rate limit exceeded ({}/{} calls)",
+                    req.operation, current, self.max_calls
+                ));
+            }
+            match self.call_count.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return CheckResult::Abstain,
+                Err(actual) => current = actual,
+            }
         }
     }
 
@@ -733,9 +749,9 @@ mod tests {
             Box::new(RequireApprovalFor::new(["git_push"])),
         ]);
 
-        // Low-risk read: ReadOnly allows, RequireApprovalFor abstains → AllOf abstains
-        // (AllOf short-circuits on Abstain — no constituent declared an opinion)
-        assert_eq!(policy.check(&req("read_files")), CheckResult::Abstain);
+        // Low-risk read: ReadOnly allows, RequireApprovalFor abstains (no opinion).
+        // AllOf treats Abstain as identity, so the Allow from ReadOnly wins (#1197).
+        assert_eq!(policy.check(&req("read_files")), CheckResult::Allow);
 
         // Always-level write: deny (ReadOnly short-circuits before RequireApprovalFor)
         assert!(policy.check(&req_always("run_bash")).is_deny());
