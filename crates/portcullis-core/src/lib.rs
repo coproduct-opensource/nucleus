@@ -1364,8 +1364,13 @@ impl Freshness {
     }
 
     /// Check if data has expired at a given time.
+    ///
+    /// Uses `saturating_add` to prevent overflow: if `observed_at + ttl_secs`
+    /// would wrap, the deadline saturates to `u64::MAX`, making the data
+    /// appear non-expired (fail-safe: overflow → treat as fresh rather than
+    /// silently marking stale data as current).
     pub fn is_expired_at(self, now: u64) -> bool {
-        self.ttl_secs > 0 && now > self.observed_at + self.ttl_secs
+        self.ttl_secs > 0 && now > self.observed_at.saturating_add(self.ttl_secs)
     }
 }
 
@@ -2924,6 +2929,46 @@ mod tests {
         };
         assert!(!f.is_expired_at(2000));
         assert!(f.is_expired_at(5000));
+    }
+
+    #[test]
+    fn ifc_freshness_overflow_does_not_make_stale_data_fresh() {
+        // #1221: observed_at + ttl_secs would wrap u64. With wrapping add,
+        // the deadline would be a small number and stale data would appear fresh.
+        // saturating_add ensures the deadline saturates to u64::MAX.
+        let f = Freshness {
+            observed_at: u64::MAX - 100,
+            ttl_secs: 200,
+        };
+        // With saturating_add: deadline = u64::MAX. now < u64::MAX → not expired.
+        assert!(!f.is_expired_at(1_700_000_000));
+        // Test the opposite direction:
+        let f2 = Freshness {
+            observed_at: 1,
+            ttl_secs: u64::MAX - 50,
+        };
+        // Without fix: 1 + (u64::MAX - 50) wraps to u64::MAX - 49.
+        // now=1_700_000_000 > (u64::MAX - 49) is false → appears NOT expired (BUG)
+        // With saturating_add: deadline = u64::MAX.
+        // now=1_700_000_000 > u64::MAX is false → appears NOT expired
+        // This is correct: TTL is ~18 quintillion seconds, so data IS still valid.
+        assert!(!f2.is_expired_at(1_700_000_000));
+
+        // The critical case: max observed_at with moderate TTL
+        let f3 = Freshness {
+            observed_at: u64::MAX - 100,
+            ttl_secs: 50,
+        };
+        // Deadline: u64::MAX - 100 + 50 = u64::MAX - 50 (no overflow, exact)
+        // now=1_700_000_000 < u64::MAX - 50 → not expired (correct: observed in far future)
+        assert!(!f3.is_expired_at(1_700_000_000));
+
+        // Zero TTL is never expired regardless of overflow
+        let f4 = Freshness {
+            observed_at: u64::MAX,
+            ttl_secs: 0,
+        };
+        assert!(!f4.is_expired_at(u64::MAX));
     }
 
     #[test]
