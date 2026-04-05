@@ -1,0 +1,21 @@
+[package]
+name = "portcullis-effects"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Sealed effect traits — I/O only through policy-enforced channels"
+repository = "https://github.com/coproduct-opensource/nucleus"
+keywords = ["ai", "security", "effects", "permissions", "agents"]
+categories = ["development-tools", "authentication"]
+
+[dependencies]
+portcullis-core = { path = "../portcullis-core" }
+shell-words = { workspace = true }
+regex = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

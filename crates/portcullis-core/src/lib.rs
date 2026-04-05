@@ -3,6 +3,21 @@
 //! This crate contains the minimal, dependency-free types that form the
 //! permission lattice verified by the Lean 4 HeytingAlgebra proofs.
 //!
+//! ## Primary surface for callers: `portcullis-effects`
+//!
+//! **New code should use the `portcullis-effects` crate, not this one directly.**
+//!
+//! `portcullis-effects` provides sealed effect traits (`FileEffect`, `WebEffect`,
+//! `ShellEffect`, `GitEffect`) backed by a `PolicyEnforced<E>` wrapper. The
+//! capability lattice defined here becomes internal enforcement state — callers
+//! never call `std::fs` or `std::process` directly; they receive an effect
+//! handler from `production_effects(policy)` and every call is policy-checked
+//! at the type boundary.
+//!
+//! This crate's types (`CapabilityLevel`, `CapabilityLattice`) remain the
+//! *verified algebraic core* — the source of truth for what the policy means.
+//! `portcullis-effects` consumes them; agent builders interact with effects.
+//!
 //! ## Why a separate crate?
 //!
 //! Aeneas (the Rust MIR → Lean 4 translator) requires dependency-free code.
