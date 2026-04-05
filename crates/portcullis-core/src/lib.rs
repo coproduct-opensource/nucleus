@@ -411,6 +411,177 @@ impl CapabilityLattice {
             spawn_agent: self.spawn_agent.implies(other.spawn_agent),
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Named capability profiles (#1214)
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Read-only profile: read + glob + grep. No writes, no network, no shell.
+    ///
+    /// Runtime equivalent of the compile-time [`crate::capability_traits::ReadOnly`]
+    /// marker set. Use with `production_effects()` for agents that should only
+    /// read and search the workspace.
+    pub fn for_read_only() -> Self {
+        Self {
+            read_files: CapabilityLevel::Always,
+            glob_search: CapabilityLevel::Always,
+            grep_search: CapabilityLevel::Always,
+            ..Self::bottom()
+        }
+    }
+
+    /// Research profile: read + glob + grep + web fetch + web search.
+    /// No writes, no shell, no git.
+    ///
+    /// For agents that need to search the codebase and fetch external
+    /// documentation but must not modify any state.
+    pub fn for_research() -> Self {
+        Self {
+            read_files: CapabilityLevel::Always,
+            glob_search: CapabilityLevel::Always,
+            grep_search: CapabilityLevel::Always,
+            web_search: CapabilityLevel::Always,
+            web_fetch: CapabilityLevel::Always,
+            ..Self::bottom()
+        }
+    }
+
+    /// Codegen profile: read + write + edit + bash + glob + grep + git commit.
+    /// No network, no push.
+    ///
+    /// Runtime equivalent of [`crate::capability_traits::Codegen`]. For agents
+    /// that generate, edit, and test code locally but cannot publish or
+    /// communicate externally.
+    pub fn for_codegen() -> Self {
+        Self {
+            read_files: CapabilityLevel::Always,
+            write_files: CapabilityLevel::Always,
+            edit_files: CapabilityLevel::Always,
+            run_bash: CapabilityLevel::Always,
+            glob_search: CapabilityLevel::Always,
+            grep_search: CapabilityLevel::Always,
+            git_commit: CapabilityLevel::Always,
+            ..Self::bottom()
+        }
+    }
+
+    /// Review profile: read + glob + grep + web + git commit + push + create_pr.
+    ///
+    /// Runtime equivalent of [`crate::capability_traits::CodeReview`] plus git
+    /// publish capabilities. For agents that review code, fetch references,
+    /// and submit PRs but do not write workspace files or run shell commands.
+    pub fn for_review() -> Self {
+        Self {
+            read_files: CapabilityLevel::Always,
+            glob_search: CapabilityLevel::Always,
+            grep_search: CapabilityLevel::Always,
+            web_search: CapabilityLevel::Always,
+            web_fetch: CapabilityLevel::Always,
+            git_commit: CapabilityLevel::Always,
+            git_push: CapabilityLevel::Always,
+            create_pr: CapabilityLevel::Always,
+            ..Self::bottom()
+        }
+    }
+
+    /// Returns a builder for composing a least-privilege lattice.
+    ///
+    /// Unset fields default to `Never` — the secure default. Callers
+    /// explicitly grant only the capabilities they need.
+    ///
+    /// ```rust
+    /// use portcullis_core::{CapabilityLattice, CapabilityLevel};
+    ///
+    /// let policy = CapabilityLattice::builder()
+    ///     .read_files(CapabilityLevel::Always)
+    ///     .web_fetch(CapabilityLevel::LowRisk)
+    ///     .build();
+    ///
+    /// assert_eq!(policy.read_files, CapabilityLevel::Always);
+    /// assert_eq!(policy.web_fetch, CapabilityLevel::LowRisk);
+    /// assert_eq!(policy.run_bash, CapabilityLevel::Never); // unset → Never
+    /// ```
+    pub fn builder() -> CapabilityLatticeBuilder {
+        CapabilityLatticeBuilder(Self::bottom())
+    }
+}
+
+/// Builder for [`CapabilityLattice`] with secure defaults (#1214).
+///
+/// All fields start at `Never`. Each setter raises a single capability
+/// dimension, enforcing least-privilege by construction.
+pub struct CapabilityLatticeBuilder(CapabilityLattice);
+
+impl CapabilityLatticeBuilder {
+    /// Set the `read_files` capability level.
+    pub fn read_files(mut self, level: CapabilityLevel) -> Self {
+        self.0.read_files = level;
+        self
+    }
+    /// Set the `write_files` capability level.
+    pub fn write_files(mut self, level: CapabilityLevel) -> Self {
+        self.0.write_files = level;
+        self
+    }
+    /// Set the `edit_files` capability level.
+    pub fn edit_files(mut self, level: CapabilityLevel) -> Self {
+        self.0.edit_files = level;
+        self
+    }
+    /// Set the `run_bash` capability level.
+    pub fn run_bash(mut self, level: CapabilityLevel) -> Self {
+        self.0.run_bash = level;
+        self
+    }
+    /// Set the `glob_search` capability level.
+    pub fn glob_search(mut self, level: CapabilityLevel) -> Self {
+        self.0.glob_search = level;
+        self
+    }
+    /// Set the `grep_search` capability level.
+    pub fn grep_search(mut self, level: CapabilityLevel) -> Self {
+        self.0.grep_search = level;
+        self
+    }
+    /// Set the `web_search` capability level.
+    pub fn web_search(mut self, level: CapabilityLevel) -> Self {
+        self.0.web_search = level;
+        self
+    }
+    /// Set the `web_fetch` capability level.
+    pub fn web_fetch(mut self, level: CapabilityLevel) -> Self {
+        self.0.web_fetch = level;
+        self
+    }
+    /// Set the `git_commit` capability level.
+    pub fn git_commit(mut self, level: CapabilityLevel) -> Self {
+        self.0.git_commit = level;
+        self
+    }
+    /// Set the `git_push` capability level.
+    pub fn git_push(mut self, level: CapabilityLevel) -> Self {
+        self.0.git_push = level;
+        self
+    }
+    /// Set the `create_pr` capability level.
+    pub fn create_pr(mut self, level: CapabilityLevel) -> Self {
+        self.0.create_pr = level;
+        self
+    }
+    /// Set the `manage_pods` capability level.
+    pub fn manage_pods(mut self, level: CapabilityLevel) -> Self {
+        self.0.manage_pods = level;
+        self
+    }
+    /// Set the `spawn_agent` capability level.
+    pub fn spawn_agent(mut self, level: CapabilityLevel) -> Self {
+        self.0.spawn_agent = level;
+        self
+    }
+    /// Consume the builder and return the lattice.
+    pub fn build(self) -> CapabilityLattice {
+        self.0
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2070,6 +2241,157 @@ mod tests {
         let a = CapabilityLattice::default();
         let ro = a.read_only();
         assert!(ro.leq(&a));
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Named profiles (#1214)
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn for_read_only_profile() {
+        let p = CapabilityLattice::for_read_only();
+        assert_eq!(p.read_files, CapabilityLevel::Always);
+        assert_eq!(p.glob_search, CapabilityLevel::Always);
+        assert_eq!(p.grep_search, CapabilityLevel::Always);
+        // Everything else is Never
+        assert_eq!(p.write_files, CapabilityLevel::Never);
+        assert_eq!(p.edit_files, CapabilityLevel::Never);
+        assert_eq!(p.run_bash, CapabilityLevel::Never);
+        assert_eq!(p.web_search, CapabilityLevel::Never);
+        assert_eq!(p.web_fetch, CapabilityLevel::Never);
+        assert_eq!(p.git_commit, CapabilityLevel::Never);
+        assert_eq!(p.git_push, CapabilityLevel::Never);
+        assert_eq!(p.create_pr, CapabilityLevel::Never);
+        assert_eq!(p.manage_pods, CapabilityLevel::Never);
+        assert_eq!(p.spawn_agent, CapabilityLevel::Never);
+    }
+
+    #[test]
+    fn for_research_profile() {
+        let p = CapabilityLattice::for_research();
+        assert_eq!(p.read_files, CapabilityLevel::Always);
+        assert_eq!(p.glob_search, CapabilityLevel::Always);
+        assert_eq!(p.grep_search, CapabilityLevel::Always);
+        assert_eq!(p.web_search, CapabilityLevel::Always);
+        assert_eq!(p.web_fetch, CapabilityLevel::Always);
+        // No writes, no shell, no git
+        assert_eq!(p.write_files, CapabilityLevel::Never);
+        assert_eq!(p.run_bash, CapabilityLevel::Never);
+        assert_eq!(p.git_commit, CapabilityLevel::Never);
+        assert_eq!(p.git_push, CapabilityLevel::Never);
+    }
+
+    #[test]
+    fn for_codegen_profile() {
+        let p = CapabilityLattice::for_codegen();
+        assert_eq!(p.read_files, CapabilityLevel::Always);
+        assert_eq!(p.write_files, CapabilityLevel::Always);
+        assert_eq!(p.edit_files, CapabilityLevel::Always);
+        assert_eq!(p.run_bash, CapabilityLevel::Always);
+        assert_eq!(p.glob_search, CapabilityLevel::Always);
+        assert_eq!(p.grep_search, CapabilityLevel::Always);
+        assert_eq!(p.git_commit, CapabilityLevel::Always);
+        // No network, no push
+        assert_eq!(p.web_search, CapabilityLevel::Never);
+        assert_eq!(p.web_fetch, CapabilityLevel::Never);
+        assert_eq!(p.git_push, CapabilityLevel::Never);
+        assert_eq!(p.create_pr, CapabilityLevel::Never);
+    }
+
+    #[test]
+    fn for_review_profile() {
+        let p = CapabilityLattice::for_review();
+        assert_eq!(p.read_files, CapabilityLevel::Always);
+        assert_eq!(p.glob_search, CapabilityLevel::Always);
+        assert_eq!(p.grep_search, CapabilityLevel::Always);
+        assert_eq!(p.web_search, CapabilityLevel::Always);
+        assert_eq!(p.web_fetch, CapabilityLevel::Always);
+        assert_eq!(p.git_commit, CapabilityLevel::Always);
+        assert_eq!(p.git_push, CapabilityLevel::Always);
+        assert_eq!(p.create_pr, CapabilityLevel::Always);
+        // No writes, no shell
+        assert_eq!(p.write_files, CapabilityLevel::Never);
+        assert_eq!(p.run_bash, CapabilityLevel::Never);
+    }
+
+    #[test]
+    fn profiles_are_leq_top() {
+        let top = CapabilityLattice::top();
+        assert!(CapabilityLattice::for_read_only().leq(&top));
+        assert!(CapabilityLattice::for_research().leq(&top));
+        assert!(CapabilityLattice::for_codegen().leq(&top));
+        assert!(CapabilityLattice::for_review().leq(&top));
+    }
+
+    #[test]
+    fn profiles_are_geq_bottom() {
+        let bottom = CapabilityLattice::bottom();
+        assert!(bottom.leq(&CapabilityLattice::for_read_only()));
+        assert!(bottom.leq(&CapabilityLattice::for_research()));
+        assert!(bottom.leq(&CapabilityLattice::for_codegen()));
+        assert!(bottom.leq(&CapabilityLattice::for_review()));
+    }
+
+    #[test]
+    fn read_only_leq_research() {
+        // Research is a superset of read-only.
+        assert!(CapabilityLattice::for_read_only().leq(&CapabilityLattice::for_research()));
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Builder (#1214)
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn builder_defaults_to_never() {
+        let p = CapabilityLattice::builder().build();
+        assert_eq!(p, CapabilityLattice::bottom());
+    }
+
+    #[test]
+    fn builder_sets_individual_fields() {
+        let p = CapabilityLattice::builder()
+            .read_files(CapabilityLevel::Always)
+            .web_fetch(CapabilityLevel::LowRisk)
+            .build();
+        assert_eq!(p.read_files, CapabilityLevel::Always);
+        assert_eq!(p.web_fetch, CapabilityLevel::LowRisk);
+        assert_eq!(p.write_files, CapabilityLevel::Never);
+        assert_eq!(p.run_bash, CapabilityLevel::Never);
+    }
+
+    #[test]
+    fn builder_reproduces_codegen_profile() {
+        let from_builder = CapabilityLattice::builder()
+            .read_files(CapabilityLevel::Always)
+            .write_files(CapabilityLevel::Always)
+            .edit_files(CapabilityLevel::Always)
+            .run_bash(CapabilityLevel::Always)
+            .glob_search(CapabilityLevel::Always)
+            .grep_search(CapabilityLevel::Always)
+            .git_commit(CapabilityLevel::Always)
+            .build();
+        assert_eq!(from_builder, CapabilityLattice::for_codegen());
+    }
+
+    #[test]
+    fn builder_all_fields() {
+        let p = CapabilityLattice::builder()
+            .read_files(CapabilityLevel::Always)
+            .write_files(CapabilityLevel::Always)
+            .edit_files(CapabilityLevel::Always)
+            .run_bash(CapabilityLevel::Always)
+            .glob_search(CapabilityLevel::Always)
+            .grep_search(CapabilityLevel::Always)
+            .web_search(CapabilityLevel::Always)
+            .web_fetch(CapabilityLevel::Always)
+            .git_commit(CapabilityLevel::Always)
+            .git_push(CapabilityLevel::Always)
+            .create_pr(CapabilityLevel::Always)
+            .manage_pods(CapabilityLevel::Always)
+            .spawn_agent(CapabilityLevel::Always)
+            .build();
+        assert_eq!(p, CapabilityLattice::top());
     }
 
     // ════════════════════════════════════════════════════════════════════
