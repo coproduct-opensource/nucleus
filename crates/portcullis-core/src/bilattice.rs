@@ -207,14 +207,35 @@ impl Verdict {
     /// This method is provided for cases where the caller has already handled
     /// the `RequiresApproval` branch and only needs a `Verdict` for subsequent
     /// information-lattice aggregation.
+    #[deprecated(
+        since = "1.1.0",
+        note = "lossy: RequiresApproval maps to Unknown, enabling silent approval bypass \
+                via truth_join(Unknown, Allow) = Allow. Use try_from_check_result() instead (#1204)."
+    )]
     pub fn from_check_result_lossy(cr: super::combinators::CheckResult) -> Self {
         match cr {
             super::combinators::CheckResult::Allow => Verdict::Allow,
             super::combinators::CheckResult::Deny(_) => Verdict::Deny,
-            // Both map to Unknown — approval obligation is NOT preserved.
-            // See security warning in the doc comment above.
             super::combinators::CheckResult::RequiresApproval(_) => Verdict::Unknown,
             super::combinators::CheckResult::Abstain => Verdict::Unknown,
+        }
+    }
+
+    /// Convert a [`CheckResult`] to a `Verdict`, refusing to erase
+    /// `RequiresApproval` (#1204).
+    ///
+    /// Returns `Err(reason)` when the check result is `RequiresApproval`,
+    /// forcing the caller to handle the approval obligation explicitly
+    /// before entering the bilattice. `Abstain` maps to `Unknown` (safe:
+    /// no obligation carried).
+    ///
+    /// This is the **safe replacement** for [`from_check_result_lossy`].
+    pub fn try_from_check_result(cr: super::combinators::CheckResult) -> Result<Self, String> {
+        match cr {
+            super::combinators::CheckResult::Allow => Ok(Verdict::Allow),
+            super::combinators::CheckResult::Deny(_) => Ok(Verdict::Deny),
+            super::combinators::CheckResult::Abstain => Ok(Verdict::Unknown),
+            super::combinators::CheckResult::RequiresApproval(reason) => Err(reason),
         }
     }
 }
@@ -387,6 +408,7 @@ mod tests {
     // ── Conversion ─────────────────────────────────────────────────
 
     #[test]
+    #[allow(deprecated)]
     fn from_check_result_lossy_basic() {
         use super::super::combinators::CheckResult;
         assert_eq!(Verdict::from_check_result_lossy(CheckResult::Allow), Allow);
@@ -405,16 +427,49 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn requires_approval_is_overrideable_by_truth_join_documenting_the_lossy_gap() {
-        // This test documents the known limitation (#1204): once RequiresApproval
-        // is flattened to Unknown, truth_join with Allow produces Allow.
-        // Callers must NOT rely on the bilattice to preserve approval obligations.
-        // Use the combinator layer's CheckResult directly for that purpose.
         use super::super::combinators::CheckResult;
         let approval_as_verdict =
             Verdict::from_check_result_lossy(CheckResult::RequiresApproval("review".into()));
         assert_eq!(approval_as_verdict, Unknown);
-        // truth_join(Unknown, Allow) = Allow — approval obligation is gone.
         assert_eq!(approval_as_verdict.truth_join(Allow), Allow);
+    }
+
+    // ── try_from_check_result (#1204) ───────────────────────────────
+
+    #[test]
+    fn try_from_check_result_allow_ok() {
+        use super::super::combinators::CheckResult;
+        assert_eq!(
+            Verdict::try_from_check_result(CheckResult::Allow),
+            Ok(Allow)
+        );
+    }
+
+    #[test]
+    fn try_from_check_result_deny_ok() {
+        use super::super::combinators::CheckResult;
+        assert_eq!(
+            Verdict::try_from_check_result(CheckResult::Deny("x".into())),
+            Ok(Deny)
+        );
+    }
+
+    #[test]
+    fn try_from_check_result_abstain_ok() {
+        use super::super::combinators::CheckResult;
+        assert_eq!(
+            Verdict::try_from_check_result(CheckResult::Abstain),
+            Ok(Unknown)
+        );
+    }
+
+    #[test]
+    fn try_from_check_result_requires_approval_is_err() {
+        use super::super::combinators::CheckResult;
+        let result = Verdict::try_from_check_result(CheckResult::RequiresApproval("review".into()));
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "review");
     }
 }
