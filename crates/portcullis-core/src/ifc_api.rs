@@ -67,6 +67,16 @@ pub enum FlowError {
     TooManyParents(usize),
     /// Node ID space exhausted — cannot allocate more node IDs (#1226, #1235).
     IdSpaceExhausted,
+    /// A `DeterministicBind` node has an AI-derived parent (#1230).
+    ///
+    /// `DeterministicBind` is the "air gap" that keeps AI-derived taint out
+    /// of deterministic data paths. Parents must be exclusively non-AI nodes.
+    NonDeterministicParent {
+        /// The parent node that violates the invariant.
+        parent_id: u64,
+        /// The parent's node kind.
+        parent_kind: NodeKind,
+    },
 }
 
 impl std::fmt::Display for FlowError {
@@ -75,6 +85,14 @@ impl std::fmt::Display for FlowError {
             Self::ParentNotFound(id) => write!(f, "parent node {id} not found"),
             Self::TooManyParents(n) => write!(f, "too many parents: {n} (max 8)"),
             Self::IdSpaceExhausted => write!(f, "node ID space exhausted (u64 overflow)"),
+            Self::NonDeterministicParent {
+                parent_id,
+                parent_kind,
+            } => write!(
+                f,
+                "DeterministicBind requires non-AI parents, but parent {parent_id} \
+                 is {parent_kind:?}"
+            ),
         }
     }
 }
@@ -187,6 +205,20 @@ impl FlowTracker {
         for &pid in parents {
             if pid == 0 || pid >= self.next_id {
                 return Err(FlowError::ParentNotFound(pid));
+            }
+        }
+
+        // DeterministicBind invariant (#1230): parents must be non-AI nodes.
+        if kind == NodeKind::DeterministicBind {
+            for &pid in parents {
+                if let Some((parent_kind, _, _)) = self.node_entry(pid)
+                    && parent_kind.is_ai_derived()
+                {
+                    return Err(FlowError::NonDeterministicParent {
+                        parent_id: pid,
+                        parent_kind: *parent_kind,
+                    });
+                }
             }
         }
 
@@ -1114,5 +1146,67 @@ mod tests {
         // Next allocation would overflow — should fail
         let result2 = t.observe(NodeKind::FileRead);
         assert!(matches!(result2, Err(FlowError::IdSpaceExhausted)));
+    }
+
+    // ── DeterministicBind parent invariant (#1230) ──────────────────────
+
+    #[test]
+    fn deterministic_bind_rejects_model_plan_parent() {
+        let mut t = FlowTracker::new();
+        let model = t.observe(NodeKind::ModelPlan).unwrap();
+        let result = t.observe_with_parents(NodeKind::DeterministicBind, &[model]);
+        assert!(
+            matches!(
+                result,
+                Err(FlowError::NonDeterministicParent {
+                    parent_kind: NodeKind::ModelPlan,
+                    ..
+                })
+            ),
+            "DeterministicBind with ModelPlan parent should be rejected, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn deterministic_bind_rejects_summarization_parent() {
+        let mut t = FlowTracker::new();
+        let summary = t.observe(NodeKind::Summarization).unwrap();
+        let result = t.observe_with_parents(NodeKind::DeterministicBind, &[summary]);
+        assert!(matches!(
+            result,
+            Err(FlowError::NonDeterministicParent { .. })
+        ));
+    }
+
+    #[test]
+    fn deterministic_bind_accepts_file_read_parent() {
+        let mut t = FlowTracker::new();
+        let file = t.observe(NodeKind::FileRead).unwrap();
+        let result = t.observe_with_parents(NodeKind::DeterministicBind, &[file]);
+        assert!(
+            result.is_ok(),
+            "FileRead is deterministic — should be accepted"
+        );
+    }
+
+    #[test]
+    fn deterministic_bind_accepts_env_var_parent() {
+        let mut t = FlowTracker::new();
+        let env = t.observe(NodeKind::EnvVar).unwrap();
+        let result = t.observe_with_parents(NodeKind::DeterministicBind, &[env]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn deterministic_bind_mixed_parents_rejected() {
+        // One deterministic + one AI-derived → rejected
+        let mut t = FlowTracker::new();
+        let file = t.observe(NodeKind::FileRead).unwrap();
+        let model = t.observe(NodeKind::ModelPlan).unwrap();
+        let result = t.observe_with_parents(NodeKind::DeterministicBind, &[file, model]);
+        assert!(matches!(
+            result,
+            Err(FlowError::NonDeterministicParent { .. })
+        ));
     }
 }
