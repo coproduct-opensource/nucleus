@@ -85,6 +85,55 @@ pub enum PrimitiveAction {
         /// Command string to execute.
         command: String,
     },
+    /// Read a file from disk.
+    ReadFile {
+        /// Path to read.
+        path: String,
+    },
+    /// Write a file to disk (create or overwrite).
+    WriteFile {
+        /// Path to write.
+        path: String,
+    },
+    /// Search for files matching a glob pattern.
+    GlobSearch {
+        /// Glob pattern (e.g., `src/**/*.rs`).
+        pattern: String,
+    },
+    /// Fetch the body of a URL.
+    WebFetch {
+        /// URL to fetch.
+        url: String,
+    },
+    /// Perform a web search query.
+    WebSearch {
+        /// Search query string.
+        query: String,
+    },
+    /// Create a git commit.
+    GitCommit {
+        /// Commit message.
+        message: String,
+    },
+    /// Push to a remote git repository.
+    GitPush {
+        /// Remote name (e.g., `origin`).
+        remote: String,
+        /// Branch name.
+        branch: String,
+    },
+    /// Create a pull request.
+    CreatePr {
+        /// PR title.
+        title: String,
+    },
+    /// Spawn a sub-agent or subprocess.
+    SpawnAgent {
+        /// Endpoint or command for the sub-agent.
+        endpoint: String,
+        /// Serialized payload size in bytes.
+        payload_bytes: usize,
+    },
 }
 
 /// Intended handling lane for the action's effect.
@@ -232,8 +281,14 @@ impl ActionTerm {
             obs.push(ProofObligation::InputsAuthorized);
         }
 
-        // Path access: required for any filesystem write (EditFile).
-        if matches!(self.action, PrimitiveAction::EditFile { .. }) {
+        // Path access: required for any filesystem operation with a path.
+        if matches!(
+            self.action,
+            PrimitiveAction::EditFile { .. }
+                | PrimitiveAction::ReadFile { .. }
+                | PrimitiveAction::WriteFile { .. }
+                | PrimitiveAction::GlobSearch { .. }
+        ) {
             obs.push(ProofObligation::PathAllowed);
         }
 
@@ -306,21 +361,41 @@ impl ActionTerm {
         match self.action {
             PrimitiveAction::EditFile { .. } => Operation::EditFiles,
             PrimitiveAction::RunCommand { .. } => Operation::RunBash,
+            PrimitiveAction::ReadFile { .. } => Operation::ReadFiles,
+            PrimitiveAction::WriteFile { .. } => Operation::WriteFiles,
+            PrimitiveAction::GlobSearch { .. } => Operation::GlobSearch,
+            PrimitiveAction::WebFetch { .. } => Operation::WebFetch,
+            PrimitiveAction::WebSearch { .. } => Operation::WebSearch,
+            PrimitiveAction::GitCommit { .. } => Operation::GitCommit,
+            PrimitiveAction::GitPush { .. } => Operation::GitPush,
+            PrimitiveAction::CreatePr { .. } => Operation::CreatePr,
+            PrimitiveAction::SpawnAgent { .. } => Operation::SpawnAgent,
         }
     }
 
     /// Subject string used by the existing kernel API.
     pub fn subject(&self) -> &str {
         match &self.action {
-            PrimitiveAction::EditFile { path, .. } => path,
+            PrimitiveAction::EditFile { path, .. }
+            | PrimitiveAction::ReadFile { path }
+            | PrimitiveAction::WriteFile { path } => path,
             PrimitiveAction::RunCommand { command } => command,
+            PrimitiveAction::GlobSearch { pattern } => pattern,
+            PrimitiveAction::WebFetch { url } => url,
+            PrimitiveAction::WebSearch { query } => query,
+            PrimitiveAction::GitCommit { message } => message,
+            PrimitiveAction::GitPush { remote, .. } => remote,
+            PrimitiveAction::CreatePr { title } => title,
+            PrimitiveAction::SpawnAgent { endpoint, .. } => endpoint,
         }
     }
 
     fn action_path(&self) -> Option<&str> {
         match &self.action {
-            PrimitiveAction::EditFile { path, .. } => Some(path),
-            PrimitiveAction::RunCommand { .. } => None,
+            PrimitiveAction::EditFile { path, .. }
+            | PrimitiveAction::ReadFile { path }
+            | PrimitiveAction::WriteFile { path } => Some(path),
+            _ => None,
         }
     }
 }
@@ -815,5 +890,176 @@ mod tests {
         assert!(high
             .derive_obligations()
             .contains(&ProofObligation::InputsAuthorized));
+    }
+
+    // ── New PrimitiveAction variant tests (#1190) ───────────────────────
+
+    fn make_term(action: PrimitiveAction, op: Operation) -> ActionTerm {
+        ActionTerm {
+            task: None,
+            action,
+            inputs: vec![],
+            authority: CapabilityRequest::new(op, CapabilityLevel::LowRisk),
+            proposed_effect: ProposedEffect::CommandExecution {
+                command: "stub".to_string(),
+                disposition: EffectDisposition::Proposed,
+            },
+            obligations: vec![],
+        }
+    }
+
+    #[test]
+    fn operation_maps_all_variants() {
+        assert_eq!(
+            make_term(
+                PrimitiveAction::ReadFile {
+                    path: "f".to_string()
+                },
+                Operation::ReadFiles
+            )
+            .operation(),
+            Operation::ReadFiles
+        );
+        assert_eq!(
+            make_term(
+                PrimitiveAction::WriteFile {
+                    path: "f".to_string()
+                },
+                Operation::WriteFiles
+            )
+            .operation(),
+            Operation::WriteFiles
+        );
+        assert_eq!(
+            make_term(
+                PrimitiveAction::GlobSearch {
+                    pattern: "*.rs".to_string()
+                },
+                Operation::GlobSearch
+            )
+            .operation(),
+            Operation::GlobSearch
+        );
+        assert_eq!(
+            make_term(
+                PrimitiveAction::WebFetch {
+                    url: "https://x.com".to_string()
+                },
+                Operation::WebFetch
+            )
+            .operation(),
+            Operation::WebFetch
+        );
+        assert_eq!(
+            make_term(
+                PrimitiveAction::WebSearch {
+                    query: "q".to_string()
+                },
+                Operation::WebSearch
+            )
+            .operation(),
+            Operation::WebSearch
+        );
+        assert_eq!(
+            make_term(
+                PrimitiveAction::GitCommit {
+                    message: "m".to_string()
+                },
+                Operation::GitCommit
+            )
+            .operation(),
+            Operation::GitCommit
+        );
+        assert_eq!(
+            make_term(
+                PrimitiveAction::GitPush {
+                    remote: "origin".to_string(),
+                    branch: "main".to_string()
+                },
+                Operation::GitPush
+            )
+            .operation(),
+            Operation::GitPush
+        );
+        assert_eq!(
+            make_term(
+                PrimitiveAction::CreatePr {
+                    title: "t".to_string()
+                },
+                Operation::CreatePr
+            )
+            .operation(),
+            Operation::CreatePr
+        );
+        assert_eq!(
+            make_term(
+                PrimitiveAction::SpawnAgent {
+                    endpoint: "e".to_string(),
+                    payload_bytes: 0
+                },
+                Operation::SpawnAgent
+            )
+            .operation(),
+            Operation::SpawnAgent
+        );
+    }
+
+    #[test]
+    fn path_allowed_derived_for_read_write_glob() {
+        let read = make_term(
+            PrimitiveAction::ReadFile {
+                path: "f".to_string(),
+            },
+            Operation::ReadFiles,
+        );
+        assert!(read
+            .derive_obligations()
+            .contains(&ProofObligation::PathAllowed));
+
+        let write = make_term(
+            PrimitiveAction::WriteFile {
+                path: "f".to_string(),
+            },
+            Operation::WriteFiles,
+        );
+        assert!(write
+            .derive_obligations()
+            .contains(&ProofObligation::PathAllowed));
+
+        let glob = make_term(
+            PrimitiveAction::GlobSearch {
+                pattern: "*.rs".to_string(),
+            },
+            Operation::GlobSearch,
+        );
+        assert!(glob
+            .derive_obligations()
+            .contains(&ProofObligation::PathAllowed));
+    }
+
+    #[test]
+    fn web_fetch_does_not_derive_path_allowed() {
+        let fetch = make_term(
+            PrimitiveAction::WebFetch {
+                url: "https://example.com".to_string(),
+            },
+            Operation::WebFetch,
+        );
+        assert!(!fetch
+            .derive_obligations()
+            .contains(&ProofObligation::PathAllowed));
+    }
+
+    #[test]
+    fn spawn_agent_maps_to_spawn_agent_operation() {
+        let spawn = make_term(
+            PrimitiveAction::SpawnAgent {
+                endpoint: "http://child".to_string(),
+                payload_bytes: 1024,
+            },
+            Operation::SpawnAgent,
+        );
+        assert_eq!(spawn.operation(), Operation::SpawnAgent);
+        assert_eq!(spawn.subject(), "http://child");
     }
 }
