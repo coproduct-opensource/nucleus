@@ -218,6 +218,21 @@ pub struct RebuttalEntry {
     pub replaced_at: u64,
     /// Human-readable reason the value was superseded.
     pub reason: String,
+    /// The label of the previous entry (#1229) — preserved for forensic
+    /// analysis. Without this, taint laundering via overwrite leaves no trace.
+    #[serde(default = "default_rebuttal_label")]
+    pub previous_label: MemoryLabel,
+    /// The authority of the previous entry (#1229).
+    #[serde(default = "default_rebuttal_authority")]
+    pub previous_authority: MemoryAuthority,
+}
+
+fn default_rebuttal_label() -> MemoryLabel {
+    MemoryLabel::from_levels(ConfLevel::Public, IntegLevel::Untrusted)
+}
+
+fn default_rebuttal_authority() -> MemoryAuthority {
+    MemoryAuthority::MayNotAuthorize
 }
 
 impl GovernedMemory {
@@ -349,18 +364,34 @@ impl GovernedMemory {
             return false; // Reject: would exceed limit
         }
 
+        // Monotonic integrity gate (#1229): overwriting an entry must NOT
+        // raise the integrity level (lower the restriction). An adversarial
+        // entry cannot be silently promoted to trusted — that would be taint
+        // laundering. The only way to raise integrity is through an explicit
+        // declassification path with human authorization.
+        //
+        // Biba ordering: Adversarial(0) < Untrusted(1) < Trusted(2).
+        // "New label has higher integrity" means it's LESS restrictive.
+        if let Some(old) = self.entries.get(&key)
+            && label.integrity > old.label.integrity
+        {
+            return false; // Reject: would lower restriction (launder taint)
+        }
+
         // Preserve rebuttal history from the previous entry (if any).
         let mut rebuttal_history = Vec::new();
         if let Some(old) = self.entries.remove(&key) {
             // Carry forward existing rebuttal history.
             rebuttal_history = old.rebuttal_history;
-            // Push the superseded value onto the front.
+            // Push the superseded value onto the front, preserving old label + authority.
             rebuttal_history.insert(
                 0,
                 RebuttalEntry {
                     previous_value: old.value,
                     replaced_at: now,
                     reason: String::new(),
+                    previous_label: old.label,
+                    previous_authority: old.authority,
                 },
             );
             // Cap at MAX_REBUTTAL_HISTORY.
@@ -1369,10 +1400,120 @@ max_entries = 500
     #[cfg(feature = "artifact")]
     #[test]
     fn serde_missing_derivation_defaults_to_deterministic() {
-        // Backward compat: existing serialized entries without a derivation field
-        // deserialize to Deterministic (the lattice bottom / previous hardcoded value).
         let json = r#"{"confidentiality":"internal","integrity":"trusted"}"#;
         let label: MemoryLabel = serde_json::from_str(json).unwrap();
         assert_eq!(label.derivation, crate::DerivationClass::Deterministic);
+    }
+
+    // ── Integrity monotonicity (#1229) ──────────────────────────────────
+
+    #[test]
+    fn overwrite_cannot_raise_integrity() {
+        // Write adversarial, then try to overwrite with trusted → rejected
+        let mut mem = GovernedMemory::new();
+        let adversarial_label =
+            MemoryLabel::from_levels(ConfLevel::Internal, IntegLevel::Adversarial);
+        let trusted_label = MemoryLabel::from_levels(ConfLevel::Internal, IntegLevel::Trusted);
+
+        mem.write_with_limit(
+            "key".into(),
+            "adversarial data".into(),
+            SchemaType::String,
+            adversarial_label,
+            MemoryAuthority::MayNotAuthorize,
+            crate::ProvenanceSet::WEB,
+            1000,
+            0,
+            100,
+        );
+
+        // Overwrite with trusted label → should be rejected
+        let ok = mem.write_with_limit(
+            "key".into(),
+            "laundered data".into(),
+            SchemaType::String,
+            trusted_label,
+            MemoryAuthority::MayInform,
+            crate::ProvenanceSet::EMPTY,
+            1001,
+            0,
+            100,
+        );
+        assert!(!ok, "raising integrity on overwrite should be rejected");
+
+        // Original entry should remain adversarial
+        let entry = mem.read("key", 1001).unwrap();
+        assert_eq!(entry.label.integrity, IntegLevel::Adversarial);
+    }
+
+    #[test]
+    fn overwrite_can_lower_or_maintain_integrity() {
+        // Write trusted, then overwrite with untrusted → allowed (more restrictive)
+        let mut mem = GovernedMemory::new();
+        let trusted_label = MemoryLabel::from_levels(ConfLevel::Internal, IntegLevel::Trusted);
+        let untrusted_label = MemoryLabel::from_levels(ConfLevel::Internal, IntegLevel::Untrusted);
+
+        mem.write_with_limit(
+            "key".into(),
+            "original".into(),
+            SchemaType::String,
+            trusted_label,
+            MemoryAuthority::MayInform,
+            crate::ProvenanceSet::EMPTY,
+            1000,
+            0,
+            100,
+        );
+
+        let ok = mem.write_with_limit(
+            "key".into(),
+            "updated".into(),
+            SchemaType::String,
+            untrusted_label,
+            MemoryAuthority::MayInform,
+            crate::ProvenanceSet::EMPTY,
+            1001,
+            0,
+            100,
+        );
+        assert!(ok, "lowering integrity should be allowed");
+        assert_eq!(mem.read("key", 1001).unwrap().value, "updated");
+    }
+
+    #[test]
+    fn rebuttal_entry_preserves_old_label() {
+        let mut mem = GovernedMemory::new();
+        let trusted_label = MemoryLabel::from_levels(ConfLevel::Internal, IntegLevel::Trusted);
+        let untrusted_label = MemoryLabel::from_levels(ConfLevel::Internal, IntegLevel::Untrusted);
+
+        mem.write_with_limit(
+            "key".into(),
+            "v1".into(),
+            SchemaType::String,
+            trusted_label,
+            MemoryAuthority::MayInform,
+            crate::ProvenanceSet::EMPTY,
+            1000,
+            0,
+            100,
+        );
+        mem.write_with_limit(
+            "key".into(),
+            "v2".into(),
+            SchemaType::String,
+            untrusted_label,
+            MemoryAuthority::MayInform,
+            crate::ProvenanceSet::EMPTY,
+            1001,
+            0,
+            100,
+        );
+
+        let entry = mem.read("key", 1001).unwrap();
+        assert_eq!(entry.rebuttal_history.len(), 1);
+        let rebuttal = &entry.rebuttal_history[0];
+        assert_eq!(rebuttal.previous_value, "v1");
+        assert_eq!(rebuttal.previous_label.integrity, IntegLevel::Trusted);
+        assert_eq!(rebuttal.previous_authority, MemoryAuthority::MayInform);
     }
 }
