@@ -901,6 +901,7 @@ impl Kernel {
         // intrinsic, so `cache.join(intrinsic)` is a no-op after
         // `cache.join(propagated)`.
         self.recompute_flow_label(flow_decision.label);
+        #[allow(deprecated)] // decide_with_parents delegates to decide; migration via decide_term
         let mut result = self.decide(operation, subject);
 
         result.0.flow_node_id = Some(flow_decision.node_id);
@@ -1050,6 +1051,12 @@ impl Kernel {
     /// only when the verdict is `Allow`, providing a linear proof that the
     /// operation was authorized. The token is non-Clone, non-Copy, and
     /// `#[must_use]` — it must be consumed by executing the authorized operation.
+    #[deprecated(
+        since = "1.1.0",
+        note = "use `decide_term()` instead — it runs obligation discharge, task scope checking, \
+                and causal ancestry validation. `decide()` bypasses all of these. \
+                See #1194 for migration guide."
+    )]
     pub fn decide(
         &mut self,
         operation: Operation,
@@ -1524,6 +1531,7 @@ impl Kernel {
         let preflight =
             crate::action_term::preflight_action(&term, &PreflightContext::new(&self.effective));
 
+        #[allow(deprecated)] // decide_term delegates to decide; this is the migration bridge
         let (mut decision, token) = match preflight.verdict {
             PreflightVerdict::Pass => self.decide(operation, &subject),
             PreflightVerdict::RequiresApproval => {

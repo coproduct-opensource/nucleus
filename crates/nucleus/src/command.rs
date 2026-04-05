@@ -683,6 +683,7 @@ mod tests {
     }
 
     /// Helper: get a DecisionToken for RunBash from a kernel matching the test policy.
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn run_token(kernel: &mut Kernel, subject: &str) -> DecisionToken {
         let (_decision, tok) = kernel.decide(Operation::RunBash, subject);
         tok.expect("test kernel should allow RunBash")
@@ -747,6 +748,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_never_capability() {
         let tmp = tempdir().unwrap();
         let mut policy = test_policy();

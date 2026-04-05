@@ -1,3 +1,5 @@
+#![allow(deprecated)] // Tests exercise both decide() and decide_term(); migration tracked in #1194
+
 use super::*;
 use crate::{CapabilityLevel, PermissionLattice};
 

@@ -151,6 +151,7 @@ const TOOL_NAMES: &[&str] = &[
 ];
 
 /// Run a single benchmarked decide() through the full pipeline.
+#[allow(deprecated)] // Migration to decide_term tracked in #1194
 fn bench_single_decide(
     perms: &PermissionLattice,
     tool_name: &str,
@@ -254,6 +255,7 @@ fn build_observations(count: usize) -> (Vec<(u8, String, String)>, Vec<(String, 
 }
 
 /// Main benchmark entry point.
+#[allow(deprecated)] // Migration to decide_term tracked in #1194
 pub(crate) fn run_benchmark(config: BenchConfig) {
     eprintln!(
         "nucleus benchmark — {} iterations per scenario",

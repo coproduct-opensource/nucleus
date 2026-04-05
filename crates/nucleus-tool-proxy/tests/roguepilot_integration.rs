@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! RoguePilot Integration Tests
 //!
 //! End-to-end tests verifying that the nucleus security stack blocks

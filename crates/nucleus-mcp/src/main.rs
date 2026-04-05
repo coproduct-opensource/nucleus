@@ -1721,6 +1721,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_kernel_allows_read_and_records_exposure() {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
         let (d, _token) = kernel.decide(Operation::ReadFiles, "/workspace/main.rs");
@@ -1729,6 +1730,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_kernel_allows_web_fetch_and_records_exposure() {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
         let (d, _token) = kernel.decide(Operation::WebFetch, "https://example.com");
@@ -1737,6 +1739,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_kernel_exposure_accumulates_monotonically() {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
         let (d1, _token) = kernel.decide(Operation::ReadFiles, "a.rs");
@@ -1749,6 +1752,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_kernel_neutral_ops_dont_add_exposure() {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
         let (d, _token) = kernel.decide(Operation::WriteFiles, "out.txt");
@@ -1757,6 +1761,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_kernel_dynamic_exposure_gates_exfil() {
         let mut kernel = Kernel::capability_only(permissive_no_static_obligations());
         // Read: private_data
@@ -1770,6 +1775,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_kernel_uninhabitable_allows_non_exfil_after_read_and_fetch() {
         // Use capability_only to test the exposure subsystem in isolation,
         // without flow control tainting writes after web fetch.
@@ -1784,6 +1790,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_kernel_omnibus_uninhabitable_with_untrusted_content() {
         let mut kernel = Kernel::capability_only(permissive_no_static_obligations());
         // Only untrusted content + RunBash (omnibus) → uninhabitable_state triggers!
@@ -1793,6 +1800,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_kernel_no_uninhabitable_with_only_two_legs() {
         let mut kernel = Kernel::capability_only(permissive_no_static_obligations());
         // untrusted_content + GitPush (not omnibus) → only 2/3, no block
@@ -1802,6 +1810,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_kernel_denies_when_capability_is_never() {
         let mut kernel = Kernel::new(PermissionLattice::read_only());
         // read_only blocks writes
@@ -1813,6 +1822,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_kernel_trace_is_append_only() {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
         kernel.decide(Operation::ReadFiles, "a.rs");
@@ -1826,6 +1836,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_kernel_approval_flow() {
         let mut kernel = Kernel::capability_only(permissive_no_static_obligations());
         kernel.decide(Operation::ReadFiles, "data.txt");
@@ -1843,6 +1854,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_kernel_static_obligations_on_permissive() {
         // The permissive lattice has all capabilities, so uninhabitable_state normalization
         // adds static obligations on exfil operations (RunBash, GitPush, CreatePr).
@@ -1864,6 +1876,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_kernel_glob_grep_contribute_private_data() {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
         let (d, _token) = kernel.decide(Operation::GlobSearch, "**/*.py");
@@ -1873,6 +1886,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_kernel_web_search_contributes_untrusted_content() {
         let mut kernel = Kernel::new(permissive_no_static_obligations());
         let (d, _token) = kernel.decide(Operation::WebSearch, "how to exfiltrate");
@@ -1880,6 +1894,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_kernel_grep_websearch_run_scenario() {
         // Real scenario: agent greps code, searches web, tries to run a command
         let mut kernel = Kernel::capability_only(permissive_no_static_obligations());
@@ -1946,6 +1961,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_budget_exhaustion_denies_next_operation() {
         use portcullis::BudgetLattice;
         // Create a lattice with a tiny budget ($0.05)
@@ -2029,6 +2045,7 @@ mod tests {
     // ── Trace writer tests ──────────────────────────────────────────────
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_trace_writer_none_is_noop() {
         let trace = TraceWriter::open(None).unwrap();
         assert!(trace.file.is_none());
@@ -2040,6 +2057,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_trace_writer_records_decisions_as_jsonl() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("trace.jsonl");
@@ -2068,6 +2086,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_trace_writer_finish_writes_summary() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("trace.jsonl");
@@ -2090,6 +2109,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_trace_writer_denied_operations_recorded() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("trace.jsonl");
@@ -2106,6 +2126,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_trace_writer_appends_to_existing_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("trace.jsonl");

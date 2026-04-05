@@ -753,6 +753,7 @@ mod tests {
     }
 
     /// Helper: get a DecisionToken from a permissive kernel for a given operation.
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn token(kernel: &mut Kernel, op: Operation, subject: &str) -> DecisionToken {
         let (_decision, tok) = kernel.decide(op, subject);
         tok.expect("permissive kernel should allow this operation")
@@ -800,6 +801,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_write_requires_capability() {
         let tmp = tempdir().unwrap();
         let mut policy = permissive_policy();
@@ -822,6 +824,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_write_requires_approval() {
         let tmp = tempdir().unwrap();
         let mut policy = permissive_policy();
