@@ -103,6 +103,7 @@ pub mod envelope;
 pub mod flow;
 pub mod hash_types;
 pub mod ifc_api;
+pub mod labeled;
 #[cfg(feature = "serde")]
 pub mod managed_settings;
 pub mod manifest;
