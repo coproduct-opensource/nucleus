@@ -189,12 +189,30 @@ impl core::fmt::Display for Verdict {
     }
 }
 
-/// Convert from the combinator CheckResult to a Verdict.
-impl From<super::combinators::CheckResult> for Verdict {
-    fn from(cr: super::combinators::CheckResult) -> Self {
+impl Verdict {
+    /// Convert a combinator [`CheckResult`] to a `Verdict` **lossily**.
+    ///
+    /// # Security warning
+    ///
+    /// `CheckResult::RequiresApproval` and `CheckResult::Abstain` both map to
+    /// `Verdict::Unknown`. This is **intentionally lossy**: the bilattice has
+    /// no variant that encodes "human approval required," so the obligation is
+    /// dropped. Once flattened to `Unknown`, `truth_join(Unknown, Allow) = Allow`
+    /// — a downstream Allow from any source silently overrides the approval gate.
+    ///
+    /// **Do not use this method** when `RequiresApproval` must be enforced. Use
+    /// the combinator layer directly and check [`CheckResult::is_allow`] /
+    /// [`CheckResult::is_deny`] before invoking bilattice operations (#1204).
+    ///
+    /// This method is provided for cases where the caller has already handled
+    /// the `RequiresApproval` branch and only needs a `Verdict` for subsequent
+    /// information-lattice aggregation.
+    pub fn from_check_result_lossy(cr: super::combinators::CheckResult) -> Self {
         match cr {
             super::combinators::CheckResult::Allow => Verdict::Allow,
             super::combinators::CheckResult::Deny(_) => Verdict::Deny,
+            // Both map to Unknown — approval obligation is NOT preserved.
+            // See security warning in the doc comment above.
             super::combinators::CheckResult::RequiresApproval(_) => Verdict::Unknown,
             super::combinators::CheckResult::Abstain => Verdict::Unknown,
         }
@@ -369,14 +387,34 @@ mod tests {
     // ── Conversion ─────────────────────────────────────────────────
 
     #[test]
-    fn from_check_result() {
+    fn from_check_result_lossy_basic() {
         use super::super::combinators::CheckResult;
-        assert_eq!(Verdict::from(CheckResult::Allow), Allow);
-        assert_eq!(Verdict::from(CheckResult::Deny("x".into())), Deny);
+        assert_eq!(Verdict::from_check_result_lossy(CheckResult::Allow), Allow);
         assert_eq!(
-            Verdict::from(CheckResult::RequiresApproval("x".into())),
+            Verdict::from_check_result_lossy(CheckResult::Deny("x".into())),
+            Deny
+        );
+        assert_eq!(
+            Verdict::from_check_result_lossy(CheckResult::RequiresApproval("x".into())),
             Unknown
         );
-        assert_eq!(Verdict::from(CheckResult::Abstain), Unknown);
+        assert_eq!(
+            Verdict::from_check_result_lossy(CheckResult::Abstain),
+            Unknown
+        );
+    }
+
+    #[test]
+    fn requires_approval_is_overrideable_by_truth_join_documenting_the_lossy_gap() {
+        // This test documents the known limitation (#1204): once RequiresApproval
+        // is flattened to Unknown, truth_join with Allow produces Allow.
+        // Callers must NOT rely on the bilattice to preserve approval obligations.
+        // Use the combinator layer's CheckResult directly for that purpose.
+        use super::super::combinators::CheckResult;
+        let approval_as_verdict =
+            Verdict::from_check_result_lossy(CheckResult::RequiresApproval("review".into()));
+        assert_eq!(approval_as_verdict, Unknown);
+        // truth_join(Unknown, Allow) = Allow — approval obligation is gone.
+        assert_eq!(approval_as_verdict.truth_join(Allow), Allow);
     }
 }

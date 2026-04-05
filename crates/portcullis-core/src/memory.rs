@@ -461,8 +461,13 @@ pub struct AuditEntry<'a> {
 
 impl MemoryEntry {
     /// Is this entry expired?
+    ///
+    /// Uses `saturating_add` to prevent overflow: an adversarial `ttl_secs`
+    /// that would wrap `created_at + ttl_secs` past `u64::MAX` is clamped to
+    /// `u64::MAX`, making the entry appear non-expiring rather than
+    /// unexpectedly expired or panicking (#1202).
     pub fn is_expired(&self, now: u64) -> bool {
-        self.ttl_secs > 0 && now > self.created_at + self.ttl_secs
+        self.ttl_secs > 0 && now > self.created_at.saturating_add(self.ttl_secs)
     }
 }
 
@@ -1187,5 +1192,38 @@ max_entries = 500
 
         let entry = mem.read("k", 0).unwrap();
         assert_eq!(entry.authority, MemoryAuthority::MayNotAuthorize);
+    }
+
+    // ── is_expired overflow safety (#1202) ──────────────────────────────
+
+    fn make_entry(created_at: u64, ttl_secs: u64) -> MemoryEntry {
+        MemoryEntry {
+            value: "v".to_string(),
+            schema: SchemaType::String,
+            label: MemoryLabel::from_levels(crate::ConfLevel::Public, crate::IntegLevel::Trusted),
+            authority: MemoryAuthority::MayNotAuthorize,
+            provenance: ProvenanceSet::default(),
+            created_at,
+            ttl_secs,
+            rebuttal_history: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn is_expired_does_not_panic_on_max_ttl() {
+        // Adversarial: ttl_secs = u64::MAX would overflow in debug without saturating_add.
+        let entry = make_entry(1_000_000, u64::MAX);
+        // saturating_add clamps to u64::MAX; entry is treated as non-expiring.
+        assert!(!entry.is_expired(u64::MAX));
+        assert!(!entry.is_expired(1_000_001));
+    }
+
+    #[test]
+    fn is_expired_overflow_does_not_produce_false_expiry() {
+        // Without saturating_add, created_at=1_000_000 + ttl=u64::MAX-999_999 wraps to 0,
+        // making now > 0 always true. With saturating_add it clamps to u64::MAX.
+        let entry = make_entry(1_000_000, u64::MAX - 999_999);
+        // saturating_add → u64::MAX; now=2_000_000 < u64::MAX → not expired.
+        assert!(!entry.is_expired(2_000_000));
     }
 }

@@ -134,7 +134,7 @@ impl FlowTracker {
         // Compute label: intrinsic join with parent labels.
         let mut label = intrinsic_label(kind, now);
         for &pid in parents {
-            if let Some((_, parent_label, _)) = self.nodes.get((pid - 1) as usize) {
+            if let Some((_, parent_label, _)) = self.node_entry(pid) {
                 label = label.join(*parent_label);
             }
         }
@@ -146,8 +146,19 @@ impl FlowTracker {
     }
 
     /// Get the IFC label for a node.
+    ///
+    /// Returns `None` for unknown or sentinel (0) IDs without panicking (#1203).
     pub fn label(&self, node_id: u64) -> Option<&IFCLabel> {
-        self.nodes.get((node_id - 1) as usize).map(|(_, l, _)| l)
+        self.node_entry(node_id).map(|(_, l, _)| l)
+    }
+
+    /// Internal helper: look up a node entry by ID, guarding the sentinel.
+    ///
+    /// Node IDs are 1-based; ID 0 is reserved as a sentinel and must not be
+    /// used in arithmetic without first checking for zero (#1203).
+    fn node_entry(&self, node_id: u64) -> Option<&(NodeKind, IFCLabel, Vec<u64>)> {
+        let idx = node_id.checked_sub(1)? as usize;
+        self.nodes.get(idx)
     }
 
     /// Check whether performing an action based on a specific node is safe.
@@ -166,9 +177,8 @@ impl FlowTracker {
     /// assert!(tracker.check_action_safety(plan, true).is_denied());
     /// ```
     pub fn check_action_safety(&self, node_id: u64, requires_authority: bool) -> SafetyCheck {
-        let Some((_, label, _)) = self.nodes.get((node_id - 1) as usize) else {
-            // Unknown node — fail-closed with the correct variant so callers
-            // can distinguish a tracking bug from actual adversarial taint (#1198).
+        let Some((_, label, _)) = self.node_entry(node_id) else {
+            // Unknown or sentinel node — fail-closed (#1198, #1203).
             return SafetyCheck::UnknownNode { node_id };
         };
         if label.integrity == IntegLevel::Adversarial {
@@ -204,9 +214,9 @@ impl FlowTracker {
     /// the ancestor — treating it as safe would silently bypass the IFC check.
     pub fn check_safety(&self, parents: &[u64], requires_authority: bool) -> SafetyCheck {
         for &pid in parents {
-            match self.nodes.get((pid - 1) as usize) {
+            match self.node_entry(pid) {
                 None => {
-                    // Fail closed: unknown node IDs are unsafe (#1180).
+                    // Fail closed: unknown or sentinel IDs are unsafe (#1180, #1203).
                     return SafetyCheck::UnknownNode { node_id: pid };
                 }
                 Some((_, label, _)) => {
@@ -428,5 +438,29 @@ mod tests {
         // id 1 is valid; next_id (2) is not yet assigned
         let plan = t.observe_with_parents(NodeKind::ModelPlan, &[file]);
         assert!(plan.is_ok());
+    }
+
+    // ── Sentinel ID 0 guard (#1203) ──────────────────────────────────────
+
+    #[test]
+    fn label_sentinel_id_zero_returns_none_not_panic() {
+        // Before #1203, (0u64 - 1) panicked in debug via underflow.
+        let t = FlowTracker::new();
+        assert!(t.label(0).is_none());
+    }
+
+    #[test]
+    fn check_action_safety_sentinel_zero_returns_unknown_node() {
+        let t = FlowTracker::new();
+        let result = t.check_action_safety(0, false);
+        assert!(matches!(result, SafetyCheck::UnknownNode { node_id: 0 }));
+    }
+
+    #[test]
+    fn check_safety_sentinel_zero_fails_closed() {
+        let t = FlowTracker::new();
+        let result = t.check_safety(&[0], false);
+        assert!(result.is_denied());
+        assert!(matches!(result, SafetyCheck::UnknownNode { node_id: 0 }));
     }
 }
