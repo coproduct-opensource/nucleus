@@ -392,24 +392,33 @@ impl Clone for BudgetGate {
 impl PolicyCheck for BudgetGate {
     fn check(&self, req: &PolicyRequest) -> CheckResult {
         // If caller provides expected cost, use atomic reservation to eliminate TOCTOU.
-        if let Some(cost) = req
-            .context
-            .get("cost_micro_usd")
-            .and_then(|s| s.parse::<u64>().ok())
-        {
-            if !self.try_reserve(cost) {
-                return CheckResult::Deny(format!(
-                    "{}: budget exhausted — cannot reserve {} µUSD ({}/{} µUSD used)",
-                    req.operation,
-                    cost,
-                    self.spent(),
-                    self.max_micro_usd
-                ));
+        if let Some(raw) = req.context.get("cost_micro_usd") {
+            match raw.parse::<u64>() {
+                Ok(cost) => {
+                    if !self.try_reserve(cost) {
+                        return CheckResult::Deny(format!(
+                            "{}: budget exhausted — cannot reserve {} µUSD ({}/{} µUSD used)",
+                            req.operation,
+                            cost,
+                            self.spent(),
+                            self.max_micro_usd
+                        ));
+                    }
+                    return CheckResult::Abstain;
+                }
+                Err(_) => {
+                    // Fail-closed: unparseable cost is denied, not silently ignored (#1225).
+                    return CheckResult::Deny(format!(
+                        "{}: cost_micro_usd value '{}' is not a valid u64 — \
+                         refusing to fall through to snapshot path",
+                        req.operation, raw
+                    ));
+                }
             }
-            return CheckResult::Abstain;
         }
 
         // Fallback: snapshot read (Acquire ensures cross-thread visibility).
+        // Only reached when cost_micro_usd is NOT present in context at all.
         // Caller must call record_cost() separately — a TOCTOU window remains
         // but cross-thread write visibility is now correct.
         if self.spent() >= self.max_micro_usd {
@@ -721,6 +730,38 @@ mod tests {
         assert!(gate.try_reserve(80));
         assert!(!gate.try_reserve(30)); // 80+30=110 > 100 → deny + rollback
         assert_eq!(gate.spent(), 80); // only 80 committed
+    }
+
+    #[test]
+    fn budget_gate_unparseable_cost_denied_not_fallthrough() {
+        // #1225: When cost_micro_usd is present but unparseable, deny.
+        // Without fix: falls through to snapshot path, no cost reserved.
+        let gate = BudgetGate::new(1_000_000);
+        let bad_req = req("test_op").with_context("cost_micro_usd", "not_a_number");
+        let result = gate.check(&bad_req);
+        assert!(result.is_deny(), "unparseable cost should be denied");
+        if let CheckResult::Deny(msg) = &result {
+            assert!(
+                msg.contains("not a valid u64"),
+                "denial should explain parse failure, got: {msg}"
+            );
+        }
+        // Budget counter should NOT have been modified
+        assert_eq!(gate.spent(), 0);
+    }
+
+    #[test]
+    fn budget_gate_negative_cost_denied() {
+        let gate = BudgetGate::new(1_000_000);
+        let bad_req = req("test_op").with_context("cost_micro_usd", "-1");
+        assert!(gate.check(&bad_req).is_deny());
+    }
+
+    #[test]
+    fn budget_gate_overflow_cost_denied() {
+        let gate = BudgetGate::new(1_000_000);
+        let bad_req = req("test_op").with_context("cost_micro_usd", "99999999999999999999999");
+        assert!(gate.check(&bad_req).is_deny());
     }
 
     // ── RateLimit ────────────────────────────────────────────────────────────
