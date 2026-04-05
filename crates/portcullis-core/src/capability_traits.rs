@@ -1,5 +1,19 @@
 //! Compile-time capability marker traits (#1119, part of #1103).
 //!
+//! ## Primary surface: `portcullis-effects`
+//!
+//! For new code, prefer the `portcullis-effects` crate, which provides sealed
+//! effect traits (`FileEffect`, `WebEffect`, `ShellEffect`, `GitEffect`) with
+//! a `PolicyEnforced<E>` wrapper. That layer enforces the `CapabilityLattice`
+//! at every method call — policy is structural, not a convention.
+//!
+//! The types in this module remain useful for compile-time phantom-type gating
+//! (e.g., `fn requires_read<C: HasFileRead>(ctx: &Context<C>)`), but callers
+//! performing real I/O should obtain effects via `production_effects(policy)`
+//! from `portcullis-effects`, not call `std::fs` or `std::process` directly.
+//!
+//! ## Compile-time capability marker traits
+//!
 //! Sealed marker traits for each capability dimension. When combined with
 //! a phantom-typed `Context<Caps>`, these enable compile-time enforcement:
 //! a function requiring `HasWebFetch` won't compile if called from a
