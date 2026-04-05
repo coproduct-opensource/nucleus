@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 use portcullis_core::discharge::{preflight_action, ActionTerm, PreflightResult};
 use portcullis_core::flow::NodeKind;
 use portcullis_core::ifc_api::FlowTracker;
+use portcullis_core::labeled::{self, Labeled};
 use portcullis_core::{CapabilityLattice, CapabilityLevel, IFCLabel, Operation, SinkClass};
 
 use crate::{
@@ -373,14 +374,19 @@ impl NucleusRuntime {
     // Mediated methods — discharge + path check + effect + IFC (#1239)
     // ═══════════════════════════════════════════════════════════════════
 
-    /// Read a file with full obligation discharge and IFC tracking.
+    /// Read a file with full obligation discharge and IFC tracking (#1249).
     ///
     /// 1. Discharges obligations via `preflight_action`
     /// 2. Executes the read through `PolicyEnforced`
     /// 3. Observes a `FileRead` node in the FlowTracker
     ///
-    /// Returns the file contents and the IFC node ID for the read.
-    pub fn read_file(&mut self, path: &Path) -> Result<(Vec<u8>, u64), RuntimeError> {
+    /// Returns `Labeled<Vec<u8>, Trusted, Internal>` — the compile-time type
+    /// encodes that file reads are trusted-integrity, internal-confidentiality.
+    /// Passing this to a function requiring `Adversarial` input is a type error.
+    pub fn read_file(
+        &mut self,
+        path: &Path,
+    ) -> Result<(Labeled<Vec<u8>, labeled::Trusted, labeled::Internal>, u64), RuntimeError> {
         let term = self.build_term(Operation::ReadFiles, SinkClass::AuditLogAppend);
         self.discharge(&term)?;
 
@@ -394,7 +400,7 @@ impl NucleusRuntime {
             .observe(NodeKind::FileRead)
             .map_err(|e| RuntimeError::Io(e.to_string()))?;
 
-        Ok((data, node_id))
+        Ok((Labeled::new(data), node_id))
     }
 
     /// Write a file with full obligation discharge, path checking, and IFC tracking.
@@ -413,14 +419,19 @@ impl NucleusRuntime {
             .map_err(|e| self.translate_error(e, "write file", path))
     }
 
-    /// Fetch a URL with full obligation discharge and IFC tracking.
+    /// Fetch a URL with full obligation discharge and IFC tracking (#1249).
     ///
     /// 1. Discharges obligations via `preflight_action`
     /// 2. Executes the fetch through `PolicyEnforced`
     /// 3. Observes a `WebContent` node in the FlowTracker (adversarial label)
     ///
-    /// Returns the response bytes and the IFC node ID.
-    pub fn fetch_url(&mut self, url: &str) -> Result<(Vec<u8>, u64), RuntimeError> {
+    /// Returns `Labeled<Vec<u8>, Adversarial, Public>` — the compile-time type
+    /// encodes that web content is adversarial-integrity, public-confidentiality.
+    /// Passing this to a function requiring `Trusted` input is a **compile error**.
+    pub fn fetch_url(
+        &mut self,
+        url: &str,
+    ) -> Result<(Labeled<Vec<u8>, labeled::Adversarial, labeled::Public>, u64), RuntimeError> {
         let term = self.build_term(Operation::WebFetch, SinkClass::HTTPEgress);
         self.discharge(&term)?;
 
@@ -432,7 +443,7 @@ impl NucleusRuntime {
             .observe(NodeKind::WebContent)
             .map_err(|e| RuntimeError::Io(e.to_string()))?;
 
-        Ok((data, node_id))
+        Ok((Labeled::new(data), node_id))
     }
 
     /// Run a shell command with full obligation discharge.
@@ -968,12 +979,23 @@ mod tests {
 
         // Read a file that exists
         let result = rt.read_file(std::path::Path::new("Cargo.toml"));
-        if let Ok((_, node_id)) = result {
+        if let Ok((labeled_data, node_id)) = result {
             assert!(node_id > 0);
             assert_eq!(rt.flow_tracker().node_count(), 1);
             // The label should be FileRead (Internal, Trusted)
             let label = rt.flow_tracker().label(node_id).unwrap();
             assert_eq!(label.integrity, portcullis_core::IntegLevel::Trusted);
+            // Type-level: data carries Trusted integrity, Internal confidentiality
+            assert_eq!(
+                labeled_data.integrity_level(),
+                portcullis_core::IntegLevel::Trusted
+            );
+            assert_eq!(
+                labeled_data.conf_level(),
+                portcullis_core::ConfLevel::Internal
+            );
+            // Can access inner data
+            assert!(!labeled_data.inner().is_empty());
         }
     }
 
