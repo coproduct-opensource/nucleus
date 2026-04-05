@@ -14,6 +14,7 @@
   - [Threat Model](architecture/threat-model.md)
   - [Acceptance Tests](architecture/acceptance-tests.md)
 - [Assurance](assurance/formal-methods.md)
+  - [Verified Claims](verified-claims.md)
   - [Hardening Checklist](assurance/hardening-checklist.md)
 - [Use Cases](use-cases/README.md)
   - [OpenClaw Hardening](use-cases/openclaw-hardening.md)
