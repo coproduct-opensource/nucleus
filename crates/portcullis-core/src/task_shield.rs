@@ -368,7 +368,29 @@ fn op_from_str(s: &str) -> Option<Operation> {
 /// - Starts with `docs/`, `doc/`, `documentation/`, or `README`
 /// - Ends with `.md`, `.rst`, `.txt`, `.adoc`
 fn is_docs_path(path: &str) -> bool {
-    let lower = path.to_lowercase();
+    use std::path::{Component, Path};
+
+    // Normalize the path by resolving `.` and `..` components before checking
+    // prefixes, so that `docs/../src/main.rs` is not classified as a docs path.
+    let mut components: Vec<&str> = Vec::new();
+    for component in Path::new(path).components() {
+        match component {
+            Component::ParentDir => {
+                components.pop();
+            }
+            Component::CurDir => {}
+            Component::Normal(s) => {
+                if let Some(s) = s.to_str() {
+                    components.push(s);
+                }
+            }
+            // Preserve prefix/root for absolute paths (rare in our context).
+            _ => {}
+        }
+    }
+    let normalized = components.join("/");
+    let lower = normalized.to_lowercase();
+
     // Prefix heuristics
     let doc_prefixes = ["docs/", "doc/", "documentation/", "readme", "changelog"];
     if doc_prefixes.iter().any(|p| lower.starts_with(p)) {
@@ -584,5 +606,30 @@ mod tests {
         // No witness attached — git_commit is in BugFix.allowed_operations
         let req = PolicyRequest::new("git_commit", CapabilityLevel::Always);
         assert!(policy.check(&req).is_allow());
+    }
+
+    // ── is_docs_path path traversal (#1185) ─────────────────────────────
+
+    #[test]
+    fn docs_path_traversal_not_classified_as_docs() {
+        // `docs/../src/main.rs` must not be classified as a docs path after
+        // normalization — the resolved path is `src/main.rs`.
+        assert!(!is_docs_path("docs/../src/main.rs"));
+        assert!(!is_docs_path("docs/../../etc/passwd"));
+        assert!(!is_docs_path("doc/../lib.rs"));
+    }
+
+    #[test]
+    fn legitimate_docs_paths_still_classified() {
+        assert!(is_docs_path("docs/getting-started.md"));
+        assert!(is_docs_path("doc/README.rst"));
+        assert!(is_docs_path("README.md"));
+        assert!(is_docs_path("changelog.txt"));
+    }
+
+    #[test]
+    fn double_dot_in_docs_subdir_still_docs() {
+        // docs/api/../guide.md normalizes to docs/guide.md — still docs.
+        assert!(is_docs_path("docs/api/../guide.md"));
     }
 }

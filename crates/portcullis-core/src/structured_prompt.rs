@@ -368,7 +368,12 @@ impl StructuredPrompt {
 // ── helpers ───────────────────────────────────────────────────────────────
 
 fn truncate(s: &str, max: usize) -> &str {
-    if s.len() <= max { s } else { &s[..max] }
+    if s.len() <= max {
+        s
+    } else {
+        // Use char boundary-safe slicing to avoid panics on multi-byte UTF-8.
+        s.char_indices().nth(max).map_or(s, |(i, _)| &s[..i])
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -489,5 +494,36 @@ mod tests {
             .with_payload(PayloadRef::mcp_tool("t", "", b"a".to_vec())) // Untrusted
             .with_payload(PayloadRef::web_fetch("https://x.com", b"b".to_vec())); // Adversarial
         assert_eq!(prompt.min_payload_integrity(), IntegLevel::Adversarial);
+    }
+
+    // ── truncate UTF-8 safety (#1184) ────────────────────────────────────
+
+    #[test]
+    fn truncate_ascii_exact_limit() {
+        assert_eq!(truncate("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_ascii_under_limit() {
+        assert_eq!(truncate("hi", 10), "hi");
+    }
+
+    #[test]
+    fn truncate_ascii_over_limit() {
+        assert_eq!(truncate("hello world", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_multibyte_does_not_panic() {
+        // Each '日' is 3 bytes; slicing at byte index 1 or 2 would panic.
+        let s = "日本語テスト";
+        let result = truncate(s, 2); // 2 chars = first 2 characters
+        assert_eq!(result, "日本");
+    }
+
+    #[test]
+    fn truncate_multibyte_at_char_boundary() {
+        let s = "αβγδε"; // each char is 2 bytes
+        assert_eq!(truncate(s, 3), "αβγ");
     }
 }
