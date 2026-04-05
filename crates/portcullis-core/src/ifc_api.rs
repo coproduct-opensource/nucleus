@@ -16,7 +16,7 @@
 //! ```
 
 use crate::flow::{NodeKind, intrinsic_label};
-use crate::{AuthorityLevel, DerivationClass, IFCLabel, IntegLevel};
+use crate::{AuthorityLevel, ConfLevel, DerivationClass, IFCLabel, IntegLevel};
 
 /// A lightweight IFC flow tracker for AI agent data provenance.
 ///
@@ -48,6 +48,14 @@ pub struct FlowTracker {
     /// Only decreasable via the explicit [`reset_session_ceiling`] escape hatch,
     /// which must only be called after verified human authorization.
     session_taint_ceiling: DerivationClass,
+    /// Monotonically non-decreasing session-level confidentiality ceiling (#1208).
+    ///
+    /// Equal to `max(node.confidentiality)` over every node registered in this
+    /// session. Because `ConfLevel` ordering is `Public < Internal < Secret`,
+    /// this value can only increase. Once the session has observed `Secret` data,
+    /// the ceiling stays at `Secret` — any output sink with `max_conf < Secret`
+    /// triggers a [`SafetyCheck::ConfidentialityViolation`].
+    session_conf_ceiling: ConfLevel,
 }
 
 /// Error from flow tracking operations.
@@ -114,6 +122,21 @@ pub enum SafetyCheck {
         /// The threshold the caller required the ceiling to remain below.
         threshold: DerivationClass,
     },
+    /// The data's confidentiality level exceeds the sink's maximum allowed
+    /// confidentiality (#1208).
+    ///
+    /// Returned by [`FlowTracker::check_confidentiality_flow`] and
+    /// [`FlowTracker::check_exfiltration_safety`] when the node's
+    /// (or session's) confidentiality is higher than what the sink permits.
+    ///
+    /// This is the **downflow containment** dual to integrity's upflow taint:
+    /// `Secret` data must not flow to a `Public` sink.
+    ConfidentialityViolation {
+        /// The actual confidentiality level of the data.
+        data_conf: ConfLevel,
+        /// The maximum confidentiality the sink allows.
+        sink_max_conf: ConfLevel,
+    },
 }
 
 impl SafetyCheck {
@@ -135,6 +158,7 @@ impl FlowTracker {
             nodes: Vec::new(),
             next_id: 1, // 0 reserved as sentinel
             session_taint_ceiling: DerivationClass::Deterministic, // bottom
+            session_conf_ceiling: ConfLevel::Public, // bottom
         }
     }
 
@@ -180,6 +204,10 @@ impl FlowTracker {
         self.next_id += 1;
         // Raise the session taint ceiling: join is monotone so this never decreases.
         self.session_taint_ceiling = self.session_taint_ceiling.join(label.derivation);
+        // Raise the session confidentiality ceiling (#1208): max is monotone.
+        if label.confidentiality > self.session_conf_ceiling {
+            self.session_conf_ceiling = label.confidentiality;
+        }
         self.nodes.push((kind, label, parents.to_vec()));
         Ok(id)
     }
@@ -352,6 +380,110 @@ impl FlowTracker {
     /// Equivalent to `session_taint_ceiling() != DerivationClass::Deterministic`.
     pub fn is_session_tainted(&self) -> bool {
         self.session_taint_ceiling != DerivationClass::Deterministic
+    }
+
+    /// The current session confidentiality ceiling (#1208).
+    ///
+    /// Equal to the maximum `ConfLevel` of any node registered since the
+    /// tracker was created. Monotonically non-decreasing (`Public → Internal
+    /// → Secret`).
+    ///
+    /// Once the session has observed `Secret` data, no sink with
+    /// `max_conf < Secret` should be used without an explicit declassification.
+    pub fn session_conf_ceiling(&self) -> ConfLevel {
+        self.session_conf_ceiling
+    }
+
+    /// Returns `true` if the session has observed data above `Public`
+    /// confidentiality.
+    pub fn has_confidential_data(&self) -> bool {
+        self.session_conf_ceiling > ConfLevel::Public
+    }
+
+    /// Check whether writing a node's data to a sink respects confidentiality
+    /// downflow containment (#1208).
+    ///
+    /// The **downflow rule**: data with `ConfLevel = C` may only flow to sinks
+    /// with `max_allowed_conf ≥ C`. Writing `Secret` data to a `Public` sink
+    /// is a confidentiality violation.
+    ///
+    /// This checks the **specific node's** label. For session-wide enforcement,
+    /// use [`check_exfiltration_safety`] which also checks the session ceiling.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use portcullis_core::ifc_api::FlowTracker;
+    /// use portcullis_core::ConfLevel;
+    /// use portcullis_core::flow::NodeKind;
+    ///
+    /// let mut t = FlowTracker::new();
+    /// let secret = t.observe(NodeKind::EnvVar).unwrap();
+    ///
+    /// // Secret data → Secret sink: OK
+    /// assert!(t.check_confidentiality_flow(secret, ConfLevel::Secret).is_safe());
+    /// // Secret data → Public sink: violation
+    /// assert!(t.check_confidentiality_flow(secret, ConfLevel::Public).is_denied());
+    /// ```
+    pub fn check_confidentiality_flow(
+        &self,
+        node_id: u64,
+        sink_max_conf: ConfLevel,
+    ) -> SafetyCheck {
+        let Some((_, label, _)) = self.node_entry(node_id) else {
+            return SafetyCheck::UnknownNode { node_id };
+        };
+        if label.confidentiality > sink_max_conf {
+            return SafetyCheck::ConfidentialityViolation {
+                data_conf: label.confidentiality,
+                sink_max_conf,
+            };
+        }
+        SafetyCheck::Safe
+    }
+
+    /// Full exfiltration safety check: integrity upflow + confidentiality
+    /// downflow + authority + session ceilings (#1208).
+    ///
+    /// This is the **recommended API for write actions**. It combines:
+    /// 1. Integrity upflow: no adversarial ancestry (existing `check_action_safety`)
+    /// 2. Authority gate: data must have sufficient authority (existing)
+    /// 3. Confidentiality downflow: node's `conf ≤ sink_max_conf` (#1208)
+    /// 4. Session taint ceiling check (if `ceiling_threshold` provided)
+    /// 5. Session conf ceiling check: session's max conf ≤ sink_max_conf
+    ///
+    /// The session-level conf ceiling check enforces that if the session has
+    /// *ever* observed `Secret` data, writing to a `Public` sink is blocked
+    /// even if the specific node is `Public`. This prevents laundering attacks
+    /// where secret data is round-tripped through a clean node.
+    pub fn check_exfiltration_safety(
+        &self,
+        node_id: u64,
+        requires_authority: bool,
+        sink_max_conf: ConfLevel,
+    ) -> SafetyCheck {
+        // 1. Integrity + authority (existing semantics).
+        let integrity_check = self.check_action_safety(node_id, requires_authority);
+        if integrity_check.is_denied() {
+            return integrity_check;
+        }
+
+        // 2. Node-level confidentiality downflow.
+        let conf_check = self.check_confidentiality_flow(node_id, sink_max_conf);
+        if conf_check.is_denied() {
+            return conf_check;
+        }
+
+        // 3. Session confidentiality ceiling: has the session ever seen data
+        //    more confidential than the sink allows?
+        if self.session_conf_ceiling > sink_max_conf {
+            return SafetyCheck::ConfidentialityViolation {
+                data_conf: self.session_conf_ceiling,
+                sink_max_conf,
+            };
+        }
+
+        SafetyCheck::Safe
     }
 
     /// Reset the session taint ceiling to the given value.
@@ -753,5 +885,200 @@ mod tests {
 
         t.reset_session_ceiling(DerivationClass::Deterministic);
         assert!(!t.is_session_tainted());
+    }
+
+    // ── Confidentiality downflow containment tests (#1208) ──────────
+
+    #[test]
+    fn conf_ceiling_starts_at_public() {
+        let t = FlowTracker::new();
+        assert_eq!(t.session_conf_ceiling(), ConfLevel::Public);
+        assert!(!t.has_confidential_data());
+    }
+
+    #[test]
+    fn conf_ceiling_raised_by_secret_node() {
+        let mut t = FlowTracker::new();
+        t.observe(NodeKind::EnvVar).unwrap(); // Secret
+        assert_eq!(t.session_conf_ceiling(), ConfLevel::Secret);
+        assert!(t.has_confidential_data());
+    }
+
+    #[test]
+    fn conf_ceiling_raised_by_internal_node() {
+        let mut t = FlowTracker::new();
+        t.observe(NodeKind::FileRead).unwrap(); // Internal
+        assert_eq!(t.session_conf_ceiling(), ConfLevel::Internal);
+        assert!(t.has_confidential_data());
+    }
+
+    #[test]
+    fn conf_ceiling_monotonically_increases() {
+        let mut t = FlowTracker::new();
+        t.observe(NodeKind::WebContent).unwrap(); // Public
+        assert_eq!(t.session_conf_ceiling(), ConfLevel::Public);
+
+        t.observe(NodeKind::FileRead).unwrap(); // Internal
+        assert_eq!(t.session_conf_ceiling(), ConfLevel::Internal);
+
+        t.observe(NodeKind::WebContent).unwrap(); // Public — doesn't lower
+        assert_eq!(t.session_conf_ceiling(), ConfLevel::Internal);
+
+        t.observe(NodeKind::EnvVar).unwrap(); // Secret — raises
+        assert_eq!(t.session_conf_ceiling(), ConfLevel::Secret);
+    }
+
+    #[test]
+    fn conf_propagates_through_join() {
+        let mut t = FlowTracker::new();
+        let secret = t.observe(NodeKind::EnvVar).unwrap();
+        let public = t.observe(NodeKind::WebContent).unwrap();
+        // Joining secret + public → secret (max)
+        let combined = t
+            .observe_with_parents(NodeKind::ModelPlan, &[secret, public])
+            .unwrap();
+        let label = t.label(combined).unwrap();
+        assert_eq!(label.confidentiality, ConfLevel::Secret);
+    }
+
+    #[test]
+    fn check_confidentiality_flow_secret_to_secret_ok() {
+        let mut t = FlowTracker::new();
+        let env = t.observe(NodeKind::EnvVar).unwrap(); // Secret
+        assert!(
+            t.check_confidentiality_flow(env, ConfLevel::Secret)
+                .is_safe()
+        );
+    }
+
+    #[test]
+    fn check_confidentiality_flow_secret_to_public_denied() {
+        let mut t = FlowTracker::new();
+        let env = t.observe(NodeKind::EnvVar).unwrap(); // Secret
+        let check = t.check_confidentiality_flow(env, ConfLevel::Public);
+        assert!(check.is_denied());
+        assert!(
+            matches!(check, SafetyCheck::ConfidentialityViolation { data_conf, sink_max_conf }
+                if data_conf == ConfLevel::Secret && sink_max_conf == ConfLevel::Public)
+        );
+    }
+
+    #[test]
+    fn check_confidentiality_flow_secret_to_internal_denied() {
+        let mut t = FlowTracker::new();
+        let env = t.observe(NodeKind::EnvVar).unwrap(); // Secret
+        assert!(
+            t.check_confidentiality_flow(env, ConfLevel::Internal)
+                .is_denied()
+        );
+    }
+
+    #[test]
+    fn check_confidentiality_flow_internal_to_secret_ok() {
+        let mut t = FlowTracker::new();
+        let file = t.observe(NodeKind::FileRead).unwrap(); // Internal
+        assert!(
+            t.check_confidentiality_flow(file, ConfLevel::Secret)
+                .is_safe()
+        );
+    }
+
+    #[test]
+    fn check_confidentiality_flow_public_to_public_ok() {
+        let mut t = FlowTracker::new();
+        let web = t.observe(NodeKind::WebContent).unwrap(); // Public
+        assert!(
+            t.check_confidentiality_flow(web, ConfLevel::Public)
+                .is_safe()
+        );
+    }
+
+    #[test]
+    fn check_confidentiality_flow_unknown_node_fails_closed() {
+        let t = FlowTracker::new();
+        let check = t.check_confidentiality_flow(999, ConfLevel::Secret);
+        assert!(matches!(check, SafetyCheck::UnknownNode { node_id: 999 }));
+    }
+
+    // ── Exfiltration safety (combined) tests (#1208) ────────────────
+
+    #[test]
+    fn exfiltration_safety_clean_session_to_internal_sink() {
+        // UserPrompt is Internal conf — writing to Internal sink is OK.
+        let mut t = FlowTracker::new();
+        let user = t.observe(NodeKind::UserPrompt).unwrap();
+        assert!(
+            t.check_exfiltration_safety(user, false, ConfLevel::Internal)
+                .is_safe()
+        );
+    }
+
+    #[test]
+    fn exfiltration_safety_secret_node_to_public_sink_denied() {
+        let mut t = FlowTracker::new();
+        let env = t.observe(NodeKind::EnvVar).unwrap(); // Secret
+        let check = t.check_exfiltration_safety(env, false, ConfLevel::Public);
+        assert!(check.is_denied());
+        assert!(matches!(
+            check,
+            SafetyCheck::ConfidentialityViolation { .. }
+        ));
+    }
+
+    #[test]
+    fn exfiltration_safety_session_ceiling_blocks_clean_node() {
+        // Session has seen Secret data. FileRead is Internal, but the
+        // session ceiling (Secret) blocks writing to an Internal sink.
+        let mut t = FlowTracker::new();
+        let _env = t.observe(NodeKind::EnvVar).unwrap(); // Secret — raises ceiling
+        let file = t.observe(NodeKind::FileRead).unwrap(); // Internal, Trusted
+
+        // The file node itself is Internal, but session ceiling is Secret
+        let check = t.check_exfiltration_safety(file, false, ConfLevel::Internal);
+        assert!(check.is_denied());
+        assert!(matches!(
+            check,
+            SafetyCheck::ConfidentialityViolation {
+                data_conf: ConfLevel::Secret,
+                sink_max_conf: ConfLevel::Internal,
+            }
+        ));
+    }
+
+    #[test]
+    fn exfiltration_safety_session_ceiling_ok_for_secret_sink() {
+        // Session has seen Secret but we're writing to a Secret sink — OK.
+        let mut t = FlowTracker::new();
+        let _env = t.observe(NodeKind::EnvVar).unwrap();
+        let file = t.observe(NodeKind::FileRead).unwrap(); // Internal, Trusted
+        assert!(
+            t.check_exfiltration_safety(file, false, ConfLevel::Secret)
+                .is_safe()
+        );
+    }
+
+    #[test]
+    fn exfiltration_safety_integrity_failure_takes_precedence() {
+        // Both integrity (adversarial) and confidentiality (secret) violations
+        // present — integrity check fires first.
+        let mut t = FlowTracker::new();
+        let env = t.observe(NodeKind::EnvVar).unwrap(); // Secret + Trusted
+        let web = t.observe(NodeKind::WebContent).unwrap(); // Public + Adversarial
+        let combined = t
+            .observe_with_parents(NodeKind::OutboundAction, &[env, web])
+            .unwrap();
+        // combined: Secret conf (max), Adversarial integrity (min)
+        let check = t.check_exfiltration_safety(combined, false, ConfLevel::Public);
+        // Integrity fires first
+        assert!(matches!(check, SafetyCheck::AdversarialAncestry { .. }));
+    }
+
+    #[test]
+    fn exfiltration_safety_authority_check_respected() {
+        // Secret node has NoAuthority + Trusted integrity → authority check fires.
+        let mut t = FlowTracker::new();
+        let secret = t.observe(NodeKind::Secret).unwrap(); // NoAuthority, Secret, Trusted
+        let check = t.check_exfiltration_safety(secret, true, ConfLevel::Secret);
+        assert!(matches!(check, SafetyCheck::InsufficientAuthority { .. }));
     }
 }
