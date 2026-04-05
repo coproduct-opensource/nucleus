@@ -385,13 +385,10 @@ impl NucleusRuntime {
     fn discharge(&self, term: &ActionTerm) -> Result<(), RuntimeError> {
         match preflight_action(term) {
             PreflightResult::Allowed(_bundle) => Ok(()),
-            PreflightResult::Denied(reason) => Err(RuntimeError::Denied {
+            PreflightResult::Denied { reason, hint } => Err(RuntimeError::Denied {
                 attempted: format!("{:?} → {:?}", term.operation, term.sink_class),
                 reason,
-                suggestion: format!(
-                    "check your PolicyProfile ({}) or adjust the ActionTerm labels",
-                    self.profile
-                ),
+                suggestion: hint.to_string(),
             }),
             PreflightResult::RequiresApproval { reason } => Err(RuntimeError::Denied {
                 attempted: format!("{:?} → {:?}", term.operation, term.sink_class),

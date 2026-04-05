@@ -41,7 +41,124 @@
 use std::marker::PhantomData;
 
 use crate::storage_lane::StorageLane;
-use crate::{IFCLabel, IntegLevel, Operation, SinkClass};
+use crate::{CapabilityLevel, DerivationClass, IFCLabel, IntegLevel, Operation, SinkClass};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RepairHint — structured self-repair targets (#1189)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A machine-readable hint telling the agent exactly what to change to
+/// satisfy a failed obligation.
+///
+/// Instead of parsing English error messages, an agent receiving a
+/// `RepairHint` can:
+/// - Route to human approval automatically
+/// - Substitute a cleaner data source
+/// - Narrow its operation scope
+/// - Reduce its capability request
+///
+/// Each [`ProofObligation`] variant produces a distinct `RepairHint`
+/// on failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RepairHint {
+    /// Artifact integrity is too low for the sink. Either:
+    /// - Use a higher-integrity data source, or
+    /// - Route through human review to promote the label.
+    RaiseIntegrity {
+        /// The artifact's current integrity level.
+        actual: IntegLevel,
+        /// The minimum integrity the sink requires.
+        required: IntegLevel,
+        /// The sink class that imposed the requirement.
+        sink: SinkClass,
+    },
+    /// The operation/sink pair is structurally inconsistent.
+    /// Use the correct sink class for this operation.
+    CorrectOperationSinkPair {
+        operation: Operation,
+        declared_sink: SinkClass,
+    },
+    /// The artifact's derivation class is incompatible with the sink.
+    /// Either promote the derivation (human review) or write to a
+    /// non-verified sink.
+    PromoteDerivation {
+        /// The artifact's current derivation class.
+        actual: DerivationClass,
+        /// The sink that requires verified derivation.
+        sink: SinkClass,
+    },
+    /// A source label carries adversarial integrity. Either:
+    /// - Remove the adversarial source from the action's inputs, or
+    /// - Declassify the source through human review.
+    DeclassifyOrReplaceInput {
+        /// The subject that submitted the action.
+        subject: String,
+    },
+    /// The action has non-zero cost but no budget gate is wired.
+    /// Either set `estimated_cost_micro_usd` to 0 or wire a
+    /// `BudgetGate` at the application layer.
+    WireBudgetGate {
+        /// The cost that triggered the denial.
+        cost_micro_usd: u64,
+    },
+    /// Agent must route this action through human approval before retrying.
+    ObtainHumanApproval {
+        /// Why approval is needed.
+        reason: String,
+    },
+    /// Capability ceiling exceeded; request a lower privilege level.
+    ReduceCapabilityRequest {
+        /// The requested capability level.
+        requested: CapabilityLevel,
+        /// The policy ceiling for this dimension.
+        ceiling: CapabilityLevel,
+    },
+}
+
+impl std::fmt::Display for RepairHint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RaiseIntegrity {
+                actual,
+                required,
+                sink,
+            } => write!(
+                f,
+                "raise artifact integrity from {actual:?} to at least {required:?} \
+                 (required by {sink:?})"
+            ),
+            Self::CorrectOperationSinkPair {
+                operation,
+                declared_sink,
+            } => write!(
+                f,
+                "operation {operation:?} is not valid for sink {declared_sink:?} — \
+                 use the correct sink class"
+            ),
+            Self::PromoteDerivation { actual, sink } => write!(
+                f,
+                "promote derivation from {actual:?} to Deterministic or HumanPromoted \
+                 (required by verified sink {sink:?})"
+            ),
+            Self::DeclassifyOrReplaceInput { subject } => write!(
+                f,
+                "remove adversarial-integrity source labels from action by '{subject}', \
+                 or declassify through human review"
+            ),
+            Self::WireBudgetGate { cost_micro_usd } => write!(
+                f,
+                "wire a BudgetGate before submitting actions with cost ({cost_micro_usd}µUSD)"
+            ),
+            Self::ObtainHumanApproval { reason } => {
+                write!(f, "obtain human approval: {reason}")
+            }
+            Self::ReduceCapabilityRequest { requested, ceiling } => write!(
+                f,
+                "reduce capability request from {requested:?} to at most {ceiling:?}"
+            ),
+        }
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Sealing infrastructure
@@ -268,8 +385,14 @@ pub struct ActionTerm {
 pub enum PreflightResult {
     /// All obligations passed. The bundle authorizes the effect.
     Allowed(DischargedBundle),
-    /// At least one obligation failed. Contains a human-readable reason.
-    Denied(String),
+    /// At least one obligation failed. Contains a human-readable reason
+    /// and a machine-readable [`RepairHint`] for automated self-repair.
+    Denied {
+        /// Human-readable explanation of the denial.
+        reason: String,
+        /// Structured repair target — tells the agent exactly what to fix.
+        hint: RepairHint,
+    },
     /// The action requires explicit human approval before it may proceed.
     RequiresApproval { reason: String },
 }
@@ -282,7 +405,7 @@ impl PreflightResult {
 
     /// Returns `true` if the preflight check was denied.
     pub fn is_denied(&self) -> bool {
-        matches!(self, Self::Denied(_))
+        matches!(self, Self::Denied { .. })
     }
 
     /// Returns `true` if human approval is required.
@@ -298,7 +421,7 @@ impl PreflightResult {
     pub fn unwrap_bundle(self) -> DischargedBundle {
         match self {
             Self::Allowed(bundle) => bundle,
-            Self::Denied(reason) => panic!("preflight denied: {reason}"),
+            Self::Denied { reason, .. } => panic!("preflight denied: {reason}"),
             Self::RequiresApproval { reason } => {
                 panic!("preflight requires approval: {reason}")
             }
@@ -308,7 +431,15 @@ impl PreflightResult {
     /// Extract the denial reason, or `None` if not `Denied`.
     pub fn denial_reason(&self) -> Option<&str> {
         match self {
-            Self::Denied(reason) => Some(reason.as_str()),
+            Self::Denied { reason, .. } => Some(reason.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Extract the repair hint, or `None` if not `Denied`.
+    pub fn repair_hint(&self) -> Option<&RepairHint> {
+        match self {
+            Self::Denied { hint, .. } => Some(hint),
             _ => None,
         }
     }
@@ -352,7 +483,7 @@ impl PreflightResult {
 ///
 /// match preflight_action(&term) {
 ///     PreflightResult::Allowed(_bundle) => { /* pass bundle to effect fn */ }
-///     PreflightResult::Denied(reason) => { /* log and abort */ }
+///     PreflightResult::Denied { reason, hint } => { /* log and abort */ }
 ///     PreflightResult::RequiresApproval { reason } => { /* await approval */ }
 /// }
 /// ```
@@ -360,55 +491,78 @@ pub fn preflight_action(term: &ActionTerm) -> PreflightResult {
     // 1. IntegrityGate: artifact integrity must meet the sink minimum.
     let min_integ = sink_min_integrity(term.sink_class);
     if term.artifact_label.integrity < min_integ {
-        return PreflightResult::Denied(format!(
-            "IntegrityGate: artifact integrity {:?} below minimum {:?} required for {:?}",
-            term.artifact_label.integrity, min_integ, term.sink_class
-        ));
+        return PreflightResult::Denied {
+            reason: format!(
+                "IntegrityGate: artifact integrity {:?} below minimum {:?} required for {:?}",
+                term.artifact_label.integrity, min_integ, term.sink_class
+            ),
+            hint: RepairHint::RaiseIntegrity {
+                actual: term.artifact_label.integrity,
+                required: min_integ,
+                sink: term.sink_class,
+            },
+        };
     }
 
     // 2. PathAllowed: operation/sink pair must be structurally consistent.
     if !operation_allowed_for_sink(term.operation, term.sink_class) {
-        return PreflightResult::Denied(format!(
-            "PathAllowed: operation {:?} is not permitted for sink {:?}",
-            term.operation, term.sink_class
-        ));
+        return PreflightResult::Denied {
+            reason: format!(
+                "PathAllowed: operation {:?} is not permitted for sink {:?}",
+                term.operation, term.sink_class
+            ),
+            hint: RepairHint::CorrectOperationSinkPair {
+                operation: term.operation,
+                declared_sink: term.sink_class,
+            },
+        };
     }
 
     // 3. DerivationClear: derivation class must be compatible with the sink.
     if sink_requires_verified_derivation(term.sink_class)
         && !StorageLane::Verified.accepts(term.artifact_label.derivation)
     {
-        return PreflightResult::Denied(format!(
-            "DerivationClear: {:?} derivation is not permitted at verified sink {:?} \
-             (requires Deterministic or HumanPromoted)",
-            term.artifact_label.derivation, term.sink_class
-        ));
+        return PreflightResult::Denied {
+            reason: format!(
+                "DerivationClear: {:?} derivation is not permitted at verified sink {:?} \
+                 (requires Deterministic or HumanPromoted)",
+                term.artifact_label.derivation, term.sink_class
+            ),
+            hint: RepairHint::PromoteDerivation {
+                actual: term.artifact_label.derivation,
+                sink: term.sink_class,
+            },
+        };
     }
 
     // 4. NoAdversarialAncestry: no source label may carry Adversarial integrity.
     for label in &term.source_labels {
         if label.integrity == IntegLevel::Adversarial {
-            return PreflightResult::Denied(format!(
-                "NoAdversarialAncestry: adversarial-integrity source label present \
-                 in action by subject '{}'",
-                term.subject
-            ));
+            return PreflightResult::Denied {
+                reason: format!(
+                    "NoAdversarialAncestry: adversarial-integrity source label present \
+                     in action by subject '{}'",
+                    term.subject
+                ),
+                hint: RepairHint::DeclassifyOrReplaceInput {
+                    subject: term.subject.clone(),
+                },
+            };
         }
     }
 
     // 5. BudgetNotExceeded: non-zero cost requires a wired budget gate.
-    //
-    // At the portcullis-core layer there is no budget evaluator — that is
-    // wired in portcullis-effects. Zero-cost operations always pass. Non-zero
-    // cost operations fail here until a budget gate is integrated at the
-    // application layer. This is intentionally fail-closed: an unbounded
-    // operation must explicitly declare zero cost or wire a gate.
     if term.estimated_cost_micro_usd > 0 {
-        return PreflightResult::Denied(format!(
-            "BudgetNotExceeded: non-zero cost {}µUSD requires a budget gate \
-             (wire BudgetGate via portcullis-effects before submitting non-zero-cost terms)",
-            term.estimated_cost_micro_usd
-        ));
+        return PreflightResult::Denied {
+            reason: format!(
+                "BudgetNotExceeded: non-zero cost {}µUSD requires a budget gate \
+                 (wire BudgetGate via portcullis-effects before submitting non-zero-cost terms)",
+                term.estimated_cost_micro_usd
+            ),
+            hint: RepairHint::WireBudgetGate {
+                cost_micro_usd: term.estimated_cost_micro_usd,
+            },
+        };
     }
 
     PreflightResult::Allowed(DischargedBundle::new())
@@ -950,5 +1104,110 @@ mod tests {
             Operation::CreatePr,
             SinkClass::PRCommentWrite
         ));
+    }
+
+    // ── RepairHint tests (#1189) ────────────────────────────────────────────
+
+    #[test]
+    fn integrity_gate_hint_is_raise_integrity() {
+        let term = ActionTerm {
+            operation: Operation::GitPush,
+            sink_class: SinkClass::GitPush,
+            artifact_label: adversarial_label(),
+            ..workspace_write_term()
+        };
+        let result = preflight_action(&term);
+        let hint = result.repair_hint().unwrap();
+        assert!(matches!(
+            hint,
+            RepairHint::RaiseIntegrity {
+                actual: IntegLevel::Adversarial,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn path_allowed_hint_is_correct_pair() {
+        let term = ActionTerm {
+            operation: Operation::GitPush,
+            sink_class: SinkClass::WorkspaceWrite,
+            artifact_label: trusted_label(),
+            ..workspace_write_term()
+        };
+        let result = preflight_action(&term);
+        let hint = result.repair_hint().unwrap();
+        assert!(matches!(
+            hint,
+            RepairHint::CorrectOperationSinkPair {
+                operation: Operation::GitPush,
+                declared_sink: SinkClass::WorkspaceWrite,
+            }
+        ));
+    }
+
+    #[test]
+    fn derivation_hint_is_promote_derivation() {
+        let term = ActionTerm {
+            operation: Operation::GitPush,
+            sink_class: SinkClass::GitPush,
+            artifact_label: ai_derived_label(),
+            ..workspace_write_term()
+        };
+        let result = preflight_action(&term);
+        let hint = result.repair_hint().unwrap();
+        assert!(matches!(
+            hint,
+            RepairHint::PromoteDerivation {
+                actual: DerivationClass::AIDerived,
+                sink: SinkClass::GitPush,
+            }
+        ));
+    }
+
+    #[test]
+    fn adversarial_ancestry_hint_is_declassify() {
+        let term = ActionTerm {
+            source_labels: vec![adversarial_label()],
+            ..workspace_write_term()
+        };
+        let result = preflight_action(&term);
+        let hint = result.repair_hint().unwrap();
+        assert!(matches!(hint, RepairHint::DeclassifyOrReplaceInput { .. }));
+    }
+
+    #[test]
+    fn budget_hint_is_wire_budget_gate() {
+        let term = ActionTerm {
+            estimated_cost_micro_usd: 5_000,
+            ..workspace_write_term()
+        };
+        let result = preflight_action(&term);
+        let hint = result.repair_hint().unwrap();
+        assert!(matches!(
+            hint,
+            RepairHint::WireBudgetGate {
+                cost_micro_usd: 5_000
+            }
+        ));
+    }
+
+    #[test]
+    fn allowed_result_has_no_hint() {
+        let result = preflight_action(&workspace_write_term());
+        assert!(result.repair_hint().is_none());
+    }
+
+    #[test]
+    fn repair_hint_display_is_human_readable() {
+        let hint = RepairHint::RaiseIntegrity {
+            actual: IntegLevel::Adversarial,
+            required: IntegLevel::Untrusted,
+            sink: SinkClass::GitPush,
+        };
+        let msg = hint.to_string();
+        assert!(msg.contains("raise artifact integrity"));
+        assert!(msg.contains("Adversarial"));
+        assert!(msg.contains("Untrusted"));
     }
 }
