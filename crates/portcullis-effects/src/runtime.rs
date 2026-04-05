@@ -194,6 +194,102 @@ impl ComposedPolicy {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Typed output structs (#1262, #1263)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Output from [`NucleusRuntime::read_file`].
+///
+/// Data is `Labeled<Vec<u8>, Trusted, Internal>` — file reads carry
+/// trusted integrity and internal confidentiality at the type level.
+#[derive(Debug, Clone)]
+pub struct ReadOutput {
+    data: Labeled<Vec<u8>, labeled::Trusted, labeled::Internal>,
+    node_id: u64,
+}
+
+impl ReadOutput {
+    /// The file contents with compile-time IFC tags.
+    pub fn data(&self) -> &Labeled<Vec<u8>, labeled::Trusted, labeled::Internal> {
+        &self.data
+    }
+    /// Consume and return the labeled data.
+    pub fn into_data(self) -> Labeled<Vec<u8>, labeled::Trusted, labeled::Internal> {
+        self.data
+    }
+    /// The FlowTracker node ID for this read (for IFC ancestry tracking).
+    pub fn node_id(&self) -> u64 {
+        self.node_id
+    }
+}
+
+/// Output from [`NucleusRuntime::fetch_url`].
+///
+/// Data is `Labeled<Vec<u8>, Adversarial, Public>` — web content carries
+/// adversarial integrity and public confidentiality. Passing this to a
+/// function requiring `Trusted` input is a **compile error**.
+#[derive(Debug, Clone)]
+pub struct FetchOutput {
+    data: Labeled<Vec<u8>, labeled::Adversarial, labeled::Public>,
+    node_id: u64,
+}
+
+impl FetchOutput {
+    /// The response bytes with compile-time IFC tags.
+    pub fn data(&self) -> &Labeled<Vec<u8>, labeled::Adversarial, labeled::Public> {
+        &self.data
+    }
+    /// Consume and return the labeled data.
+    pub fn into_data(self) -> Labeled<Vec<u8>, labeled::Adversarial, labeled::Public> {
+        self.data
+    }
+    /// The FlowTracker node ID for this fetch (adversarial ancestry).
+    pub fn node_id(&self) -> u64 {
+        self.node_id
+    }
+}
+
+/// Output from [`NucleusRuntime::run_shell`].
+///
+/// Shell output is `Labeled<ShellOutput, Untrusted, Public>` — command
+/// output is untrusted (the process ran, but output may be attacker-influenced)
+/// and public confidentiality.
+#[derive(Debug)]
+pub struct ShellResult {
+    data: Labeled<ShellOutput, labeled::Untrusted, labeled::Public>,
+}
+
+impl ShellResult {
+    /// The shell output with compile-time IFC tags.
+    pub fn data(&self) -> &Labeled<ShellOutput, labeled::Untrusted, labeled::Public> {
+        &self.data
+    }
+    /// Consume and return the labeled shell output.
+    pub fn into_data(self) -> Labeled<ShellOutput, labeled::Untrusted, labeled::Public> {
+        self.data
+    }
+}
+
+/// Output from [`NucleusRuntime::git_commit`].
+///
+/// Commit hash is `Labeled<String, Trusted, Internal>` — the hash is
+/// a deterministic output from a trusted local operation.
+#[derive(Debug, Clone)]
+pub struct CommitOutput {
+    hash: Labeled<String, labeled::Trusted, labeled::Internal>,
+}
+
+impl CommitOutput {
+    /// The commit hash with compile-time IFC tags.
+    pub fn hash(&self) -> &Labeled<String, labeled::Trusted, labeled::Internal> {
+        &self.hash
+    }
+    /// Consume and return the labeled hash.
+    pub fn into_hash(self) -> Labeled<String, labeled::Trusted, labeled::Internal> {
+        self.hash
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // RuntimeError — user-facing error with domain language
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -383,10 +479,7 @@ impl NucleusRuntime {
     /// Returns `Labeled<Vec<u8>, Trusted, Internal>` — the compile-time type
     /// encodes that file reads are trusted-integrity, internal-confidentiality.
     /// Passing this to a function requiring `Adversarial` input is a type error.
-    pub fn read_file(
-        &mut self,
-        path: &Path,
-    ) -> Result<(Labeled<Vec<u8>, labeled::Trusted, labeled::Internal>, u64), RuntimeError> {
+    pub fn read_file(&mut self, path: &Path) -> Result<ReadOutput, RuntimeError> {
         let term = self.build_term(Operation::ReadFiles, SinkClass::AuditLogAppend);
         self.discharge(&term)?;
 
@@ -400,7 +493,10 @@ impl NucleusRuntime {
             .observe(NodeKind::FileRead)
             .map_err(|e| RuntimeError::Io(e.to_string()))?;
 
-        Ok((Labeled::new(data), node_id))
+        Ok(ReadOutput {
+            data: Labeled::new(data),
+            node_id,
+        })
     }
 
     /// Write a file with full obligation discharge, path checking, and IFC tracking.
@@ -428,10 +524,7 @@ impl NucleusRuntime {
     /// Returns `Labeled<Vec<u8>, Adversarial, Public>` — the compile-time type
     /// encodes that web content is adversarial-integrity, public-confidentiality.
     /// Passing this to a function requiring `Trusted` input is a **compile error**.
-    pub fn fetch_url(
-        &mut self,
-        url: &str,
-    ) -> Result<(Labeled<Vec<u8>, labeled::Adversarial, labeled::Public>, u64), RuntimeError> {
+    pub fn fetch_url(&mut self, url: &str) -> Result<FetchOutput, RuntimeError> {
         let term = self.build_term(Operation::WebFetch, SinkClass::HTTPEgress);
         self.discharge(&term)?;
 
@@ -443,28 +536,37 @@ impl NucleusRuntime {
             .observe(NodeKind::WebContent)
             .map_err(|e| RuntimeError::Io(e.to_string()))?;
 
-        Ok((Labeled::new(data), node_id))
+        Ok(FetchOutput {
+            data: Labeled::new(data),
+            node_id,
+        })
     }
 
     /// Run a shell command with full obligation discharge.
     ///
     /// 1. Discharges obligations via `preflight_action`
     /// 2. Executes the command through `PolicyEnforced`
-    pub fn run_shell(&mut self, cmd: &str) -> Result<ShellOutput, RuntimeError> {
+    pub fn run_shell(&mut self, cmd: &str) -> Result<ShellResult, RuntimeError> {
         let term = self.build_term(Operation::RunBash, SinkClass::BashExec);
         self.discharge(&term)?;
 
         let fx = production_effects(self.policy.clone());
-        fx.run(cmd).map_err(RuntimeError::from)
+        let output = fx.run(cmd).map_err(RuntimeError::from)?;
+        Ok(ShellResult {
+            data: Labeled::new(output),
+        })
     }
 
     /// Git commit with full obligation discharge.
-    pub fn git_commit(&mut self, message: &str) -> Result<String, RuntimeError> {
+    pub fn git_commit(&mut self, message: &str) -> Result<CommitOutput, RuntimeError> {
         let term = self.build_term(Operation::GitCommit, SinkClass::GitCommit);
         self.discharge(&term)?;
 
         let fx = production_effects(self.policy.clone());
-        fx.commit(message).map_err(RuntimeError::from)
+        let hash = fx.commit(message).map_err(RuntimeError::from)?;
+        Ok(CommitOutput {
+            hash: Labeled::new(hash),
+        })
     }
 
     /// Git push with full obligation discharge.
@@ -979,23 +1081,21 @@ mod tests {
 
         // Read a file that exists
         let result = rt.read_file(std::path::Path::new("Cargo.toml"));
-        if let Ok((labeled_data, node_id)) = result {
-            assert!(node_id > 0);
+        if let Ok(output) = result {
+            assert!(output.node_id() > 0);
             assert_eq!(rt.flow_tracker().node_count(), 1);
-            // The label should be FileRead (Internal, Trusted)
-            let label = rt.flow_tracker().label(node_id).unwrap();
+            let label = rt.flow_tracker().label(output.node_id()).unwrap();
             assert_eq!(label.integrity, portcullis_core::IntegLevel::Trusted);
-            // Type-level: data carries Trusted integrity, Internal confidentiality
+            // Named struct gives clean access
             assert_eq!(
-                labeled_data.integrity_level(),
+                output.data().integrity_level(),
                 portcullis_core::IntegLevel::Trusted
             );
             assert_eq!(
-                labeled_data.conf_level(),
+                output.data().conf_level(),
                 portcullis_core::ConfLevel::Internal
             );
-            // Can access inner data
-            assert!(!labeled_data.inner().is_empty());
+            assert!(!output.data().inner().is_empty());
         }
     }
 
@@ -1009,9 +1109,9 @@ mod tests {
         let result = rt.fetch_url("https://example.com");
         // The fetch may fail with NotImplemented or Io, but not PolicyDenied
         match result {
-            Ok((_, node_id)) => {
+            Ok(output) => {
                 assert!(rt.is_tainted());
-                assert!(node_id > 0);
+                assert!(output.node_id() > 0);
             }
             Err(RuntimeError::Io(_)) | Err(RuntimeError::Config(_)) => {
                 // Stub returned error — that's fine, discharge passed
