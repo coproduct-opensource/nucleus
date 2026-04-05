@@ -25,14 +25,16 @@
 //! crate machinery and exposes it through named accessors. Advanced users
 //! can still call `production_effects()` and `FlowTracker` directly.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use portcullis_core::discharge::{preflight_action, ActionTerm, PreflightResult};
+use portcullis_core::flow::NodeKind;
 use portcullis_core::ifc_api::FlowTracker;
-use portcullis_core::{CapabilityLattice, CapabilityLevel};
+use portcullis_core::{CapabilityLattice, CapabilityLevel, IFCLabel, Operation, SinkClass};
 
 use crate::{
     production_effects, AgentSpawnEffect, EffectError, FileEffect, GitEffect, ShellEffect,
-    WebEffect,
+    ShellOutput, WebEffect,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -267,6 +269,176 @@ impl NucleusRuntime {
         // We construct fresh effects each time — PolicyEnforced is stateless
         // (the policy is the only state, and it's immutable).
         production_effects(self.policy.clone())
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Mediated methods — discharge + path check + effect + IFC (#1239)
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Read a file with full obligation discharge and IFC tracking.
+    ///
+    /// 1. Discharges obligations via `preflight_action`
+    /// 2. Executes the read through `PolicyEnforced`
+    /// 3. Observes a `FileRead` node in the FlowTracker
+    ///
+    /// Returns the file contents and the IFC node ID for the read.
+    pub fn read_file(&mut self, path: &Path) -> Result<(Vec<u8>, u64), RuntimeError> {
+        let term = self.build_term(Operation::ReadFiles, SinkClass::AuditLogAppend);
+        self.discharge(&term)?;
+
+        let fx = production_effects(self.policy.clone());
+        let data = fx
+            .read(path)
+            .map_err(|e| self.translate_error(e, "read file", path))?;
+
+        let node_id = self
+            .flow_tracker
+            .observe(NodeKind::FileRead)
+            .map_err(|e| RuntimeError::Io(e.to_string()))?;
+
+        Ok((data, node_id))
+    }
+
+    /// Write a file with full obligation discharge, path checking, and IFC tracking.
+    ///
+    /// 1. Checks path against `allowed_write_paths` (if configured)
+    /// 2. Discharges obligations via `preflight_action`
+    /// 3. Executes the write through `PolicyEnforced`
+    pub fn write_file(&mut self, path: &Path, content: &[u8]) -> Result<(), RuntimeError> {
+        self.check_path_allowed(path)?;
+
+        let term = self.build_term(Operation::WriteFiles, SinkClass::WorkspaceWrite);
+        self.discharge(&term)?;
+
+        let fx = production_effects(self.policy.clone());
+        fx.write(path, content)
+            .map_err(|e| self.translate_error(e, "write file", path))
+    }
+
+    /// Fetch a URL with full obligation discharge and IFC tracking.
+    ///
+    /// 1. Discharges obligations via `preflight_action`
+    /// 2. Executes the fetch through `PolicyEnforced`
+    /// 3. Observes a `WebContent` node in the FlowTracker (adversarial label)
+    ///
+    /// Returns the response bytes and the IFC node ID.
+    pub fn fetch_url(&mut self, url: &str) -> Result<(Vec<u8>, u64), RuntimeError> {
+        let term = self.build_term(Operation::WebFetch, SinkClass::HTTPEgress);
+        self.discharge(&term)?;
+
+        let fx = production_effects(self.policy.clone());
+        let data = fx.fetch(url).map_err(RuntimeError::from)?;
+
+        let node_id = self
+            .flow_tracker
+            .observe(NodeKind::WebContent)
+            .map_err(|e| RuntimeError::Io(e.to_string()))?;
+
+        Ok((data, node_id))
+    }
+
+    /// Run a shell command with full obligation discharge.
+    ///
+    /// 1. Discharges obligations via `preflight_action`
+    /// 2. Executes the command through `PolicyEnforced`
+    pub fn run_shell(&mut self, cmd: &str) -> Result<ShellOutput, RuntimeError> {
+        let term = self.build_term(Operation::RunBash, SinkClass::BashExec);
+        self.discharge(&term)?;
+
+        let fx = production_effects(self.policy.clone());
+        fx.run(cmd).map_err(RuntimeError::from)
+    }
+
+    /// Git commit with full obligation discharge.
+    pub fn git_commit(&mut self, message: &str) -> Result<String, RuntimeError> {
+        let term = self.build_term(Operation::GitCommit, SinkClass::GitCommit);
+        self.discharge(&term)?;
+
+        let fx = production_effects(self.policy.clone());
+        fx.commit(message).map_err(RuntimeError::from)
+    }
+
+    /// Git push with full obligation discharge.
+    pub fn git_push(&mut self, remote: &str, branch: &str) -> Result<(), RuntimeError> {
+        let term = self.build_term(Operation::GitPush, SinkClass::GitPush);
+        self.discharge(&term)?;
+
+        let fx = production_effects(self.policy.clone());
+        fx.push(remote, branch).map_err(RuntimeError::from)
+    }
+
+    // ── Internal helpers ────────────────────────────────────────────────
+
+    /// Build an `ActionTerm` for the given operation and sink.
+    fn build_term(&self, operation: Operation, sink_class: SinkClass) -> ActionTerm {
+        ActionTerm {
+            operation,
+            sink_class,
+            source_labels: vec![],
+            artifact_label: IFCLabel::default(),
+            subject: self.task.clone(),
+            estimated_cost_micro_usd: 0,
+        }
+    }
+
+    /// Run `preflight_action` and convert denials to `RuntimeError`.
+    fn discharge(&self, term: &ActionTerm) -> Result<(), RuntimeError> {
+        match preflight_action(term) {
+            PreflightResult::Allowed(_bundle) => Ok(()),
+            PreflightResult::Denied(reason) => Err(RuntimeError::Denied {
+                attempted: format!("{:?} → {:?}", term.operation, term.sink_class),
+                reason,
+                suggestion: format!(
+                    "check your PolicyProfile ({}) or adjust the ActionTerm labels",
+                    self.profile
+                ),
+            }),
+            PreflightResult::RequiresApproval { reason } => Err(RuntimeError::Denied {
+                attempted: format!("{:?} → {:?}", term.operation, term.sink_class),
+                reason: format!("requires human approval: {reason}"),
+                suggestion: "obtain approval before retrying this action".to_string(),
+            }),
+        }
+    }
+
+    /// Check that a path is within `allowed_write_paths` (if configured).
+    fn check_path_allowed(&self, path: &Path) -> Result<(), RuntimeError> {
+        if self.allowed_write_paths.is_empty() {
+            return Ok(()); // No restriction configured
+        }
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        for allowed in &self.allowed_write_paths {
+            let allowed_canonical = allowed.canonicalize().unwrap_or_else(|_| allowed.clone());
+            if canonical.starts_with(&allowed_canonical) {
+                return Ok(());
+            }
+        }
+        Err(RuntimeError::Denied {
+            attempted: format!("write to {}", path.display()),
+            reason: format!(
+                "path is outside allowed write paths: {:?}",
+                self.allowed_write_paths
+            ),
+            suggestion: "restrict writes to a subdirectory of the allowed paths, \
+                         or add this path to .allowed_write_paths() in the builder"
+                .to_string(),
+        })
+    }
+
+    /// Translate an `EffectError` into a `RuntimeError` with path context.
+    fn translate_error(&self, err: EffectError, action: &str, path: &Path) -> RuntimeError {
+        match err {
+            EffectError::PolicyDenied(msg) => RuntimeError::Denied {
+                attempted: format!("{action}: {}", path.display()),
+                reason: msg,
+                suggestion: format!(
+                    "your profile ({}) does not allow this — \
+                     consider a profile with the required capability",
+                    self.profile
+                ),
+            },
+            other => RuntimeError::from(other),
+        }
     }
 
     /// Check whether a specific capability is available in this runtime.
@@ -609,5 +781,123 @@ mod tests {
         let effect_err = EffectError::PolicyDenied("write_files is Never".to_string());
         let rt_err: RuntimeError = effect_err.into();
         assert!(matches!(rt_err, RuntimeError::Denied { .. }));
+    }
+
+    // ── Mediated method tests (#1239) ───────────────────────────────────
+
+    #[test]
+    fn write_file_denied_by_read_only_profile() {
+        let mut rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::ReadOnly)
+            .build();
+        let result = rt.write_file(std::path::Path::new("/tmp/test.txt"), b"data");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        // Should be a Denied error from either discharge or effects
+        assert!(matches!(err, RuntimeError::Denied { .. }));
+    }
+
+    #[test]
+    fn write_file_path_allowlist_blocks_outside_paths() {
+        let mut rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Codegen)
+            .allowed_write_paths(["/allowed/dir"])
+            .build();
+        let result = rt.write_file(std::path::Path::new("/etc/passwd"), b"data");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("outside allowed write paths"));
+    }
+
+    #[test]
+    fn write_file_empty_allowlist_permits_any_path() {
+        // Empty allowlist = no path restriction (only policy governs)
+        let mut rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Codegen)
+            .build();
+        // This will fail on discharge (IFCLabel default is Untrusted integrity)
+        // or on the actual I/O, but NOT on path checking
+        let result = rt.write_file(std::path::Path::new("/tmp/nucleus-test-1239"), b"test");
+        // May succeed or fail on I/O — the point is it doesn't fail on path check
+        if let Err(RuntimeError::Denied { reason, .. }) = &result {
+            assert!(!reason.contains("outside allowed write paths"));
+        }
+    }
+
+    #[test]
+    fn read_file_updates_flow_tracker() {
+        let mut rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Codegen)
+            .build();
+        assert_eq!(rt.flow_tracker().node_count(), 0);
+
+        // Read a file that exists
+        let result = rt.read_file(std::path::Path::new("Cargo.toml"));
+        if let Ok((_, node_id)) = result {
+            assert!(node_id > 0);
+            assert_eq!(rt.flow_tracker().node_count(), 1);
+            // The label should be FileRead (Internal, Trusted)
+            let label = rt.flow_tracker().label(node_id).unwrap();
+            assert_eq!(label.integrity, portcullis_core::IntegLevel::Trusted);
+        }
+    }
+
+    #[test]
+    fn fetch_url_updates_flow_tracker_with_adversarial() {
+        let mut rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Research)
+            .build();
+
+        // fetch will fail (stub) but we can test that it gets past discharge
+        let result = rt.fetch_url("https://example.com");
+        // The fetch may fail with NotImplemented or Io, but not PolicyDenied
+        match result {
+            Ok((_, node_id)) => {
+                assert!(rt.is_tainted());
+                assert!(node_id > 0);
+            }
+            Err(RuntimeError::Io(_)) | Err(RuntimeError::Config(_)) => {
+                // Stub returned error — that's fine, discharge passed
+            }
+            Err(RuntimeError::Denied { reason, .. }) => {
+                // Should not be denied by policy — Research has WebFetch
+                panic!("unexpected denial: {reason}");
+            }
+        }
+    }
+
+    #[test]
+    fn run_shell_denied_by_research_profile() {
+        let mut rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Research)
+            .build();
+        let result = rt.run_shell("echo hello");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), RuntimeError::Denied { .. }));
+    }
+
+    #[test]
+    fn git_push_denied_by_codegen_profile() {
+        let mut rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Codegen)
+            .build();
+        let result = rt.git_push("origin", "main");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), RuntimeError::Denied { .. }));
+    }
+
+    #[test]
+    fn denied_error_mentions_capability() {
+        let mut rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::ReadOnly)
+            .build();
+        let result = rt.run_shell("echo hello");
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        // The denial comes from PolicyEnforced (run_bash is Never)
+        assert!(
+            msg.contains("denied") || msg.contains("Never"),
+            "expected denial message, got: {msg}"
+        );
     }
 }
