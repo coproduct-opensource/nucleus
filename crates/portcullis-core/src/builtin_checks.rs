@@ -257,11 +257,17 @@ pub struct RequireTrustedSource;
 impl PolicyCheck for RequireTrustedSource {
     fn check(&self, req: &PolicyRequest) -> CheckResult {
         match req.context.get("source_trust").map(|s| s.as_str()) {
+            Some("trusted") => CheckResult::Abstain,
             Some("untrusted") => CheckResult::Deny(format!(
                 "{}: denied — operation originates from untrusted source",
                 req.operation
             )),
-            _ => CheckResult::Abstain,
+            // Fail-closed: absent or unrecognized source_trust key is denied (#1211).
+            // An attacker who omits the key must not get a free pass through AllOf.
+            None | Some(_) => CheckResult::Deny(format!(
+                "{}: denied — source_trust context key absent or unrecognized value",
+                req.operation
+            )),
         }
     }
 
@@ -318,10 +324,22 @@ impl BudgetGate {
 
     /// Record additional cost in micro-USD.
     ///
-    /// Uses `AcqRel` ordering so the write is immediately visible to
-    /// concurrent `spent()` reads on other threads.
+    /// Uses a CAS loop with saturating addition so the counter can never wrap
+    /// past `u64::MAX` and silently reopen the budget (#1210).
     pub fn record_cost(&self, micro_usd: u64) {
-        self.spent_micro_usd.fetch_add(micro_usd, Ordering::AcqRel);
+        let mut current = self.spent_micro_usd.load(Ordering::Acquire);
+        loop {
+            let new_val = current.saturating_add(micro_usd);
+            match self.spent_micro_usd.compare_exchange_weak(
+                current,
+                new_val,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(actual) => current = actual,
+            }
+        }
     }
 
     /// Current total spend in micro-USD.
@@ -785,11 +803,16 @@ mod tests {
             Box::new(DenyAdversarialTaint),
         ]);
 
-        // Neither triggered: both abstain → abstain
-        assert_eq!(policy.check(&req("op")), CheckResult::Abstain);
+        // Absent source_trust key: fail-closed → deny (#1211).
+        // An attacker who omits the key must not pass through any_of/all_of.
+        assert!(policy.check(&req("op")).is_deny());
 
-        // Untrusted source: first check denies
+        // Explicit untrusted source: also denies.
         let r = req("op").with_context("source_trust", "untrusted");
         assert!(policy.check(&r).is_deny());
+
+        // Explicit trusted source: abstains (passes through to next check).
+        let r = req("op").with_context("source_trust", "trusted");
+        assert_eq!(policy.check(&r), CheckResult::Abstain);
     }
 }
