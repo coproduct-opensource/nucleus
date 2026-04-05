@@ -121,7 +121,7 @@ impl FlowTracker {
             return Err(FlowError::TooManyParents(parents.len()));
         }
         for &pid in parents {
-            if pid == 0 || pid > self.next_id {
+            if pid == 0 || pid >= self.next_id {
                 return Err(FlowError::ParentNotFound(pid));
             }
         }
@@ -400,5 +400,29 @@ mod tests {
         let result = t.check_safety(&[file, 9999], false);
         assert!(result.is_denied());
         assert!(matches!(result, SafetyCheck::UnknownNode { node_id: 9999 }));
+    }
+
+    // ── Off-by-one fix: next_id is not yet assigned (#1186) ──────────────
+
+    #[test]
+    fn observe_rejects_next_id_as_parent() {
+        // next_id is the ID that will be assigned to the *next* node — it
+        // does not exist yet. Before the fix, `pid > next_id` let it through;
+        // after the fix, `pid >= next_id` correctly rejects it.
+        let mut t = FlowTracker::new();
+        // next_id == 1 before any observe
+        let err = t
+            .observe_with_parents(NodeKind::ModelPlan, &[1])
+            .unwrap_err();
+        assert!(matches!(err, FlowError::ParentNotFound(1)));
+    }
+
+    #[test]
+    fn observe_accepts_valid_prior_node_as_parent() {
+        let mut t = FlowTracker::new();
+        let file = t.observe(NodeKind::FileRead).unwrap(); // id == 1, next_id now == 2
+        // id 1 is valid; next_id (2) is not yet assigned
+        let plan = t.observe_with_parents(NodeKind::ModelPlan, &[file]);
+        assert!(plan.is_ok());
     }
 }
