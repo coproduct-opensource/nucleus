@@ -198,6 +198,13 @@ impl PolicyCheck for AllOf {
 }
 
 /// Any-of: if any check allows, allow. Only deny if all deny.
+///
+/// `Allow` is the join-absorber (top of the truth order for disjunction) and
+/// may short-circuit. `RequiresApproval` is accumulated across all checks and
+/// only returned if no check returned `Allow` — this preserves commutativity:
+/// `AnyOf([A, B])` and `AnyOf([B, A])` produce the same result regardless of
+/// order (#1222). Mirrors the accumulation pattern in `AllOf`.
+///
 /// This is the join-combinator on the truth ordering.
 pub struct AnyOf {
     checks: Vec<Box<dyn PolicyCheck>>,
@@ -211,20 +218,27 @@ impl AnyOf {
 
 impl PolicyCheck for AnyOf {
     fn check(&self, req: &PolicyRequest) -> CheckResult {
+        let mut saw_approval = false;
         let mut last_deny = None;
         for c in &self.checks {
             match c.check(req) {
+                // Allow is the join absorber — short-circuit is safe and order-independent.
                 CheckResult::Allow => return CheckResult::Allow,
+                // Accumulate rather than short-circuit: a later Allow must win (#1222).
                 CheckResult::RequiresApproval(_) => {
-                    return CheckResult::RequiresApproval("any-of escalation".into());
+                    saw_approval = true;
                 }
                 CheckResult::Deny(reason) => last_deny = Some(reason),
                 CheckResult::Abstain => {}
             }
         }
-        match last_deny {
-            Some(reason) => CheckResult::Deny(reason),
-            None => CheckResult::Abstain,
+        if saw_approval {
+            CheckResult::RequiresApproval("any-of escalation".into())
+        } else {
+            match last_deny {
+                Some(reason) => CheckResult::Deny(reason),
+                None => CheckResult::Abstain,
+            }
         }
     }
 
@@ -384,6 +398,16 @@ mod tests {
         assert_eq!(combo.check(&req()), CheckResult::Abstain);
     }
 
+    struct AlwaysRequireApproval;
+    impl PolicyCheck for AlwaysRequireApproval {
+        fn check(&self, _: &PolicyRequest) -> CheckResult {
+            CheckResult::RequiresApproval("approval needed".into())
+        }
+        fn name(&self) -> &str {
+            "AlwaysRequireApproval"
+        }
+    }
+
     #[test]
     fn any_of_one_allow_allows() {
         let combo = any_of(vec![Box::new(AlwaysDeny), Box::new(AlwaysAllow)]);
@@ -394,6 +418,57 @@ mod tests {
     fn any_of_all_deny() {
         let combo = any_of(vec![Box::new(AlwaysDeny), Box::new(AlwaysDeny)]);
         assert!(combo.check(&req()).is_deny());
+    }
+
+    // ── AnyOf commutativity (#1222) ──────────────────────────────────────────
+
+    #[test]
+    fn any_of_allow_beats_requires_approval_regardless_of_order() {
+        // AnyOf([RequiresApproval, Allow]) must equal AnyOf([Allow, RequiresApproval]).
+        // Before the fix, the first ordering returned RequiresApproval due to short-circuit.
+        let ab = any_of(vec![Box::new(AlwaysRequireApproval), Box::new(AlwaysAllow)]);
+        assert!(
+            ab.check(&req()).is_allow(),
+            "Allow must beat RequiresApproval even when RequiresApproval comes first"
+        );
+
+        let ba = any_of(vec![Box::new(AlwaysAllow), Box::new(AlwaysRequireApproval)]);
+        assert!(ba.check(&req()).is_allow());
+    }
+
+    #[test]
+    fn any_of_requires_approval_beats_deny() {
+        // RequiresApproval > Deny in truth order for AnyOf.
+        let combo = any_of(vec![Box::new(AlwaysRequireApproval), Box::new(AlwaysDeny)]);
+        assert!(
+            matches!(combo.check(&req()), CheckResult::RequiresApproval(_)),
+            "RequiresApproval must beat Deny in AnyOf"
+        );
+
+        // Commutative: same result in reverse order.
+        let combo2 = any_of(vec![Box::new(AlwaysDeny), Box::new(AlwaysRequireApproval)]);
+        assert!(matches!(
+            combo2.check(&req()),
+            CheckResult::RequiresApproval(_)
+        ));
+    }
+
+    #[test]
+    fn any_of_all_abstain_returns_abstain() {
+        let combo = any_of(vec![Box::new(AlwaysAbstain), Box::new(AlwaysAbstain)]);
+        assert_eq!(combo.check(&req()), CheckResult::Abstain);
+    }
+
+    #[test]
+    fn any_of_requires_approval_with_abstain_returns_approval() {
+        let combo = any_of(vec![
+            Box::new(AlwaysAbstain),
+            Box::new(AlwaysRequireApproval),
+        ]);
+        assert!(matches!(
+            combo.check(&req()),
+            CheckResult::RequiresApproval(_)
+        ));
     }
 
     #[test]
