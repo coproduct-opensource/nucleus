@@ -340,10 +340,16 @@ impl NucleusRuntime {
         &self.allowed_write_paths
     }
 
-    /// Create a policy-enforced effect bundle for performing I/O.
+    /// Raw policy-enforced effect bundle — **advanced use only** (#1248).
     ///
-    /// Every call through the returned bundle is policy-checked.
-    /// This is the primary way to perform side effects in a nucleus session.
+    /// Returns an effect bundle that checks **capability levels** but does
+    /// **NOT** run obligation discharge, path allowlist checks, or FlowTracker
+    /// updates. For the full safety pipeline, use the mediated methods instead:
+    /// [`read_file`], [`write_file`], [`fetch_url`], [`run_shell`], etc.
+    ///
+    /// This escape hatch exists for performance-critical paths or callers
+    /// that manage discharge and IFC tracking externally. Most code should
+    /// use the mediated methods.
     ///
     /// ```rust
     /// use portcullis_effects::runtime::{NucleusRuntime, PolicyProfile};
@@ -353,15 +359,13 @@ impl NucleusRuntime {
     ///     .profile(PolicyProfile::Codegen)
     ///     .build();
     ///
-    /// let fx = rt.effects();
-    /// // fx implements FileEffect + WebEffect + ShellEffect + GitEffect + AgentSpawnEffect
-    /// // All calls are policy-checked against the Codegen profile
+    /// // Prefer: rt.read_file(path) — runs discharge + IFC
+    /// // Only use this when you manage discharge externally:
+    /// let fx = rt.unmediated_effects();
     /// ```
-    pub fn effects(
+    pub fn unmediated_effects(
         &self,
     ) -> impl FileEffect + WebEffect + ShellEffect + GitEffect + AgentSpawnEffect + '_ {
-        // We construct fresh effects each time — PolicyEnforced is stateless
-        // (the policy is the only state, and it's immutable).
         production_effects(self.policy.clone())
     }
 
@@ -862,7 +866,7 @@ mod tests {
         let rt = NucleusRuntime::builder()
             .profile(PolicyProfile::ReadOnly)
             .build();
-        let fx = rt.effects();
+        let fx = rt.unmediated_effects();
 
         // Read should be policy-allowed (may fail on I/O, but not on policy)
         let result = fx.write(std::path::Path::new("/tmp/test"), b"data");
