@@ -206,6 +206,40 @@ No code that breaks a verified claim can reach `main`.
 
 ---
 
+## Known Gaps
+
+The claims above hold for code paths that go through `PolicyEnforced` or
+`NucleusRuntime`. The following gaps mean they do not hold universally:
+
+### Enforcement completeness ([#1216](https://github.com/coproduct-opensource/nucleus/issues/1216))
+
+146 call sites in `nucleus-claude-hook` and `nucleus-mcp` call `std::fs`,
+`std::process::Command`, and `reqwest` directly, bypassing the `PolicyEnforced`
+effect layer. The effect layer exists and is verified, but is not structurally
+required at every I/O site. Migration is tracked in #1216.
+
+**Impact:** An operation routed through these 146 call sites gets capability
+checking via `Kernel::decide_term()` (which runs obligation discharge), but does
+NOT get the `PolicyEnforced` effect wrapper. A bug in the call site code could
+perform I/O without any policy gate.
+
+### NucleusRuntime escape hatch ([#1248](https://github.com/coproduct-opensource/nucleus/issues/1248))
+
+`NucleusRuntime::effects()` returns a raw `PolicyEnforced` bundle that checks
+capabilities but does NOT run obligation discharge or update the FlowTracker.
+The mediated methods (`read_file`, `write_file`, etc.) compose all three layers.
+A developer who discovers `.effects()` first uses the weaker path.
+
+### Type-level IFC not composed into runtime ([#1249](https://github.com/coproduct-opensource/nucleus/issues/1249))
+
+`NucleusRuntime::read_file()` returns `Vec<u8>`, not `Labeled<Vec<u8>, Trusted,
+Internal>`. The compile-time IFC layer (`Labeled<T, I, C>`) and the runtime IFC
+layer (`FlowTracker`) are independently correct but not composed at the API
+boundary. Agents using `NucleusRuntime` get runtime tracking but not compile-time
+enforcement of IFC constraints.
+
+---
+
 ## Verification coverage summary
 
 | Layer | Tool | Harnesses | Scope |
