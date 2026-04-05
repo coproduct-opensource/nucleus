@@ -23,10 +23,31 @@ use crate::{AuthorityLevel, DerivationClass, IFCLabel, IntegLevel};
 /// Tracks how data flows through an agent session: which tools produce
 /// data, what labels that data carries, and whether actions based on
 /// that data are safe.
+///
+/// ## Monotonic session ratchet (#1207)
+///
+/// The tracker maintains a `session_taint_ceiling: DerivationClass` that
+/// is the join of every node's derivation class ever observed in this session.
+/// Because `DerivationClass::join` is monotone, this value can only increase —
+/// it is a durable session-level record that the agent has been exposed to
+/// AI-derived or external content, regardless of which specific node triggered
+/// the exposure.
+///
+/// This closes the "laundering" gap: a node with clean causal ancestry still
+/// produces a session-level flag when checked via
+/// [`check_action_safety_with_ceiling`] if the session has previously observed
+/// `OpaqueExternal` content through *any* path.
 pub struct FlowTracker {
     /// Node storage: (kind, label, parents).
     nodes: Vec<(NodeKind, IFCLabel, Vec<u64>)>,
     next_id: u64,
+    /// Monotonically non-decreasing session-level taint ceiling.
+    ///
+    /// Equal to the join of every node's `derivation` class registered in
+    /// this session. Can only increase via [`observe_with_parents`].
+    /// Only decreasable via the explicit [`reset_session_ceiling`] escape hatch,
+    /// which must only be called after verified human authorization.
+    session_taint_ceiling: DerivationClass,
 }
 
 /// Error from flow tracking operations.
@@ -78,6 +99,21 @@ pub enum SafetyCheck {
         /// The node ID that was not found.
         node_id: u64,
     },
+    /// The session's taint ceiling exceeds the caller's required threshold.
+    ///
+    /// Returned by [`FlowTracker::check_action_safety_with_ceiling`] when the
+    /// session has previously observed content at or above `threshold` — even
+    /// if the specific node being checked has clean causal ancestry.
+    ///
+    /// This is the monotonic ratchet check (#1207): once the session ceiling
+    /// reaches a given level, it cannot drop back below it without an explicit
+    /// human-authorized [`FlowTracker::reset_session_ceiling`] call.
+    SessionCeilingExceeded {
+        /// The current session taint ceiling.
+        ceiling: DerivationClass,
+        /// The threshold the caller required the ceiling to remain below.
+        threshold: DerivationClass,
+    },
 }
 
 impl SafetyCheck {
@@ -98,6 +134,7 @@ impl FlowTracker {
         Self {
             nodes: Vec::new(),
             next_id: 1, // 0 reserved as sentinel
+            session_taint_ceiling: DerivationClass::Deterministic, // bottom
         }
     }
 
@@ -141,6 +178,8 @@ impl FlowTracker {
 
         let id = self.next_id;
         self.next_id += 1;
+        // Raise the session taint ceiling: join is monotone so this never decreases.
+        self.session_taint_ceiling = self.session_taint_ceiling.join(label.derivation);
         self.nodes.push((kind, label, parents.to_vec()));
         Ok(id)
     }
@@ -233,6 +272,101 @@ impl FlowTracker {
             }
         }
         SafetyCheck::Safe
+    }
+
+    /// Check whether an action is safe given its node ancestry *and* the
+    /// session-level taint ceiling (#1207).
+    ///
+    /// This is a stricter version of [`check_action_safety`]: in addition to
+    /// checking the node's own label, it checks whether the session has ever
+    /// been exposed to content at or above `ceiling_threshold`. If so, it
+    /// returns [`SafetyCheck::SessionCeilingExceeded`] even if the specific
+    /// node's causal ancestry is clean.
+    ///
+    /// # When to use this vs `check_action_safety`
+    ///
+    /// - Use `check_action_safety` for per-action checks against a node's
+    ///   own taint ancestry.
+    /// - Use `check_action_safety_with_ceiling` for **privileged writes or
+    ///   external communication** where session-level exposure history matters,
+    ///   not just the specific node's ancestry.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use portcullis_core::ifc_api::{FlowTracker, SafetyCheck};
+    /// use portcullis_core::{DerivationClass};
+    /// use portcullis_core::flow::NodeKind;
+    ///
+    /// let mut t = FlowTracker::new();
+    /// // Session observes web content (OpaqueExternal)
+    /// let _web = t.observe(NodeKind::WebContent).unwrap();
+    /// // Later, a clean file read is observed
+    /// let clean = t.observe(NodeKind::FileRead).unwrap();
+    ///
+    /// // Per-node check: clean node passes
+    /// assert!(t.check_action_safety(clean, false).is_safe());
+    ///
+    /// // Session-ceiling check: session saw OpaqueExternal, so privileged
+    /// // actions are flagged even for the clean node
+    /// let result = t.check_action_safety_with_ceiling(clean, false, DerivationClass::AIDerived);
+    /// assert!(matches!(result, SafetyCheck::SessionCeilingExceeded { .. }));
+    /// ```
+    pub fn check_action_safety_with_ceiling(
+        &self,
+        node_id: u64,
+        requires_authority: bool,
+        ceiling_threshold: DerivationClass,
+    ) -> SafetyCheck {
+        // First: node-level check (existing semantics, fail-closed on unknown).
+        let node_check = self.check_action_safety(node_id, requires_authority);
+        if node_check.is_denied() {
+            return node_check;
+        }
+        // Second: session ceiling check — has the session been exposed at or
+        // above the threshold? `a.leq(b)` iff `a ⊔ b = b`, i.e., b ≥ a.
+        if ceiling_threshold.leq(self.session_taint_ceiling) {
+            return SafetyCheck::SessionCeilingExceeded {
+                ceiling: self.session_taint_ceiling,
+                threshold: ceiling_threshold,
+            };
+        }
+        SafetyCheck::Safe
+    }
+
+    /// The current session taint ceiling.
+    ///
+    /// Equal to the join of every node's `derivation` class registered since
+    /// the tracker was created (or last reset). Monotonically non-decreasing.
+    ///
+    /// Use this for Portcullis Audit session summaries and for determining
+    /// whether the session has ever been exposed to AI-derived or external
+    /// content without walking the full flow graph.
+    pub fn session_taint_ceiling(&self) -> DerivationClass {
+        self.session_taint_ceiling
+    }
+
+    /// Returns `true` if the session has observed content above `Deterministic`.
+    ///
+    /// Equivalent to `session_taint_ceiling() != DerivationClass::Deterministic`.
+    pub fn is_session_tainted(&self) -> bool {
+        self.session_taint_ceiling != DerivationClass::Deterministic
+    }
+
+    /// Reset the session taint ceiling to the given value.
+    ///
+    /// # Security warning
+    ///
+    /// This is an **explicit escape hatch** — it is the only way to lower the
+    /// session ceiling. It MUST only be called after verified human authorization
+    /// (e.g., a `MemoryAuthority::MayResolve` gate or equivalent). Calling this
+    /// in automated agent code without human oversight violates the monotonicity
+    /// invariant and removes the "no silent cleansing" guarantee.
+    ///
+    /// In a future version this will require an explicit `SessionCleanse` token
+    /// minted only by the human-authorization layer (#1207).
+    pub fn reset_session_ceiling(&mut self, new_ceiling: DerivationClass) {
+        self.session_taint_ceiling = new_ceiling;
     }
 
     /// Number of tracked nodes.
@@ -462,5 +596,161 @@ mod tests {
         let result = t.check_safety(&[0], false);
         assert!(result.is_denied());
         assert!(matches!(result, SafetyCheck::UnknownNode { node_id: 0 }));
+    }
+
+    // ── Monotonic session ratchet (#1207) ────────────────────────────────
+
+    #[test]
+    fn new_tracker_has_deterministic_ceiling() {
+        let t = FlowTracker::new();
+        assert_eq!(t.session_taint_ceiling(), DerivationClass::Deterministic);
+        assert!(!t.is_session_tainted());
+    }
+
+    #[test]
+    fn ceiling_raised_by_web_content_observation() {
+        let mut t = FlowTracker::new();
+        t.observe(NodeKind::WebContent).unwrap();
+        // WebContent is OpaqueExternal — ceiling should now be OpaqueExternal
+        assert_eq!(t.session_taint_ceiling(), DerivationClass::OpaqueExternal);
+        assert!(t.is_session_tainted());
+    }
+
+    #[test]
+    fn ceiling_raised_by_model_plan_observation() {
+        let mut t = FlowTracker::new();
+        t.observe(NodeKind::ModelPlan).unwrap();
+        // ModelPlan is AIDerived — ceiling should be at least AIDerived
+        assert!(t.is_session_tainted());
+        assert!(DerivationClass::AIDerived.leq(t.session_taint_ceiling()));
+    }
+
+    #[test]
+    fn ceiling_is_monotone_across_observations() {
+        let mut t = FlowTracker::new();
+        let _f = t.observe(NodeKind::FileRead).unwrap(); // Deterministic
+        assert_eq!(t.session_taint_ceiling(), DerivationClass::Deterministic);
+
+        let _m = t.observe(NodeKind::ModelPlan).unwrap(); // AIDerived
+        let mid = t.session_taint_ceiling();
+        assert!(DerivationClass::Deterministic.leq(mid));
+
+        let _w = t.observe(NodeKind::WebContent).unwrap(); // OpaqueExternal
+        let top = t.session_taint_ceiling();
+        // Ceiling can only go up
+        assert!(mid.leq(top));
+        assert_eq!(top, DerivationClass::OpaqueExternal);
+    }
+
+    #[test]
+    fn ceiling_never_decreases_on_clean_observation_after_taint() {
+        let mut t = FlowTracker::new();
+        t.observe(NodeKind::WebContent).unwrap(); // OpaqueExternal
+        let ceiling_before = t.session_taint_ceiling();
+
+        // Observing clean file reads must not lower the ceiling
+        t.observe(NodeKind::FileRead).unwrap();
+        t.observe(NodeKind::FileRead).unwrap();
+        assert_eq!(t.session_taint_ceiling(), ceiling_before);
+    }
+
+    #[test]
+    fn check_action_safety_with_ceiling_blocks_on_session_exposure() {
+        let mut t = FlowTracker::new();
+        // Session observes web content — ceiling becomes OpaqueExternal
+        let _web = t.observe(NodeKind::WebContent).unwrap();
+        // Later, a clean file read is observed
+        let clean_file = t.observe(NodeKind::FileRead).unwrap();
+
+        // Per-node check: the file read's own label is clean
+        assert!(t.check_action_safety(clean_file, false).is_safe());
+
+        // Session-ceiling check: session saw OpaqueExternal — privileged
+        // actions are blocked even for the clean node
+        let result =
+            t.check_action_safety_with_ceiling(clean_file, false, DerivationClass::AIDerived);
+        assert!(
+            matches!(result, SafetyCheck::SessionCeilingExceeded { .. }),
+            "expected SessionCeilingExceeded, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn check_action_safety_with_ceiling_passes_when_below_threshold() {
+        let mut t = FlowTracker::new();
+        let _m = t.observe(NodeKind::ModelPlan).unwrap(); // AIDerived ceiling
+        let clean = t.observe(NodeKind::FileRead).unwrap();
+
+        // Threshold is OpaqueExternal — ceiling is only AIDerived, so passes
+        let result =
+            t.check_action_safety_with_ceiling(clean, false, DerivationClass::OpaqueExternal);
+        assert!(result.is_safe(), "should pass: ceiling below threshold");
+    }
+
+    #[test]
+    fn check_action_safety_with_ceiling_node_denial_takes_priority() {
+        let mut t = FlowTracker::new();
+        let web = t.observe(NodeKind::WebContent).unwrap();
+        let tainted = t.observe_with_parents(NodeKind::ModelPlan, &[web]).unwrap();
+
+        // Node is adversarially tainted — AdversarialAncestry should be returned
+        // before reaching the ceiling check
+        let result = t.check_action_safety_with_ceiling(tainted, false, DerivationClass::AIDerived);
+        assert!(
+            matches!(result, SafetyCheck::AdversarialAncestry { .. }),
+            "node-level denial should take priority over ceiling check"
+        );
+    }
+
+    #[test]
+    fn check_action_safety_with_ceiling_unknown_node_fails_closed() {
+        let t = FlowTracker::new();
+        let result = t.check_action_safety_with_ceiling(999, false, DerivationClass::AIDerived);
+        assert!(matches!(result, SafetyCheck::UnknownNode { node_id: 999 }));
+    }
+
+    #[test]
+    fn ceiling_deterministic_session_passes_all_thresholds() {
+        let mut t = FlowTracker::new();
+        let f = t.observe(NodeKind::FileRead).unwrap();
+        assert_eq!(t.session_taint_ceiling(), DerivationClass::Deterministic);
+
+        // All thresholds above Deterministic should pass (ceiling is at bottom)
+        for threshold in [
+            DerivationClass::AIDerived,
+            DerivationClass::Mixed,
+            DerivationClass::HumanPromoted,
+            DerivationClass::OpaqueExternal,
+        ] {
+            let result = t.check_action_safety_with_ceiling(f, false, threshold);
+            assert!(
+                result.is_safe(),
+                "deterministic session should pass threshold {threshold:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reset_session_ceiling_lowers_ceiling() {
+        let mut t = FlowTracker::new();
+        t.observe(NodeKind::WebContent).unwrap();
+        assert_eq!(t.session_taint_ceiling(), DerivationClass::OpaqueExternal);
+
+        // Explicit reset (requires human authorization in production)
+        t.reset_session_ceiling(DerivationClass::Deterministic);
+        assert_eq!(t.session_taint_ceiling(), DerivationClass::Deterministic);
+        assert!(!t.is_session_tainted());
+    }
+
+    #[test]
+    fn session_tainted_status_reflects_ceiling() {
+        let mut t = FlowTracker::new();
+        assert!(!t.is_session_tainted());
+
+        t.observe(NodeKind::ModelPlan).unwrap();
+        assert!(t.is_session_tainted());
+
+        t.reset_session_ceiling(DerivationClass::Deterministic);
+        assert!(!t.is_session_tainted());
     }
 }
