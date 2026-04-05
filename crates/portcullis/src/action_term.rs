@@ -187,6 +187,64 @@ pub struct ActionTerm {
 }
 
 impl ActionTerm {
+    /// Derive the required proof obligations mechanically from the term's structure.
+    ///
+    /// This is the **authoritative source** of required obligations.
+    /// [`preflight_action`] evaluates the *derived* set, not the caller-supplied
+    /// `obligations` field, closing the self-attestation gap (#1188): a caller
+    /// cannot skip `NoAdversarialAncestry` by omitting it from the field.
+    ///
+    /// Derivation rules:
+    /// - `WithinDelegationCeiling` — always required.
+    /// - `InScopeWithTask` — when a task witness is attached.
+    /// - `NoAdversarialAncestry` — when any input has non-deterministic provenance
+    ///   (`AIDerived`, `Mixed`, or `OpaqueExternal`).
+    /// - `InputsAuthorized` — when the claimed capability exceeds `LowRisk`
+    ///   (high-risk operations require explicit content-addressing of all inputs).
+    /// - `PathAllowed` — when the action writes to the filesystem (`EditFile`).
+    /// - `VerifiedSinkCompatible` — when the proposed effect targets a verified sink.
+    pub fn derive_obligations(&self) -> Vec<ProofObligation> {
+        let mut obs: Vec<ProofObligation> = Vec::new();
+
+        // Always required: authority must not exceed the session ceiling.
+        obs.push(ProofObligation::WithinDelegationCeiling);
+
+        // Task scoping: required whenever a task witness is present.
+        if self.task.is_some() {
+            obs.push(ProofObligation::InScopeWithTask);
+        }
+
+        // Adversarial ancestry: required when any input has non-deterministic provenance.
+        let has_tainted_input = self.inputs.iter().any(|i| {
+            matches!(
+                i.derivation,
+                portcullis_core::DerivationClass::AIDerived
+                    | portcullis_core::DerivationClass::Mixed
+                    | portcullis_core::DerivationClass::OpaqueExternal
+            )
+        });
+        if has_tainted_input {
+            obs.push(ProofObligation::NoAdversarialAncestry);
+        }
+
+        // Input authorization: required when the claimed capability exceeds LowRisk.
+        if self.authority.requested_level > CapabilityLevel::LowRisk {
+            obs.push(ProofObligation::InputsAuthorized);
+        }
+
+        // Path access: required for any filesystem write (EditFile).
+        if matches!(self.action, PrimitiveAction::EditFile { .. }) {
+            obs.push(ProofObligation::PathAllowed);
+        }
+
+        // Verified sink compatibility: required when the effect targets a verified sink.
+        if self.proposed_effect.disposition() == EffectDisposition::Verified {
+            obs.push(ProofObligation::VerifiedSinkCompatible);
+        }
+
+        obs
+    }
+
     /// Convenience constructor for an edit-file term.
     pub fn edit_file(
         task: Option<TaskRef>,
@@ -328,10 +386,35 @@ impl PreflightResult {
 }
 
 /// Check an [`ActionTerm`] before lowering it to runtime execution.
+///
+/// Evaluates the *derived* obligation set (via [`ActionTerm::derive_obligations`])
+/// rather than the caller-supplied `obligations` field. This closes the
+/// self-attestation gap: a caller cannot skip a required obligation by omitting
+/// it from the term (#1188).
+///
+/// In debug builds, a mismatch between derived and declared obligations is
+/// reported to stderr to help callers keep their constructors aligned.
 pub fn preflight_action(term: &ActionTerm, ctx: &PreflightContext<'_>) -> PreflightResult {
     let mut result = PreflightResult::pass();
 
-    for obligation in &term.obligations {
+    // Derive obligations from term structure — ignore caller-supplied field.
+    let obligations = term.derive_obligations();
+
+    #[cfg(debug_assertions)]
+    {
+        let mut declared: Vec<_> = term.obligations.iter().map(|o| format!("{o:?}")).collect();
+        declared.sort();
+        let mut derived: Vec<_> = obligations.iter().map(|o| format!("{o:?}")).collect();
+        derived.sort();
+        if declared != derived {
+            eprintln!(
+                "portcullis: ActionTerm obligation mismatch for {:?}\n  declared: {declared:?}\n  derived:  {derived:?}",
+                term.operation(),
+            );
+        }
+    }
+
+    for obligation in &obligations {
         match obligation {
             ProofObligation::InScopeWithTask => {
                 if let Some(task) = &term.task {
@@ -598,7 +681,8 @@ mod tests {
     fn verified_effect_requires_clean_derivation() {
         let perms = PermissionLattice::safe_pr_fixer();
         let ctx = PreflightContext::new(&perms);
-        let mut term = ActionTerm::edit_file(
+        // Note: VerifiedSinkCompatible is now auto-derived — no manual push needed (#1188).
+        let term = ActionTerm::edit_file(
             None,
             "src/lib.rs",
             "@@ -1 +1 @@",
@@ -609,8 +693,6 @@ mod tests {
             )],
             EffectDisposition::Verified,
         );
-        term.obligations
-            .push(ProofObligation::VerifiedSinkCompatible);
 
         let result = preflight_action(&term, &ctx);
         assert_eq!(result.verdict, PreflightVerdict::RequiresApproval);
@@ -618,5 +700,120 @@ mod tests {
             .failures
             .iter()
             .any(|f| f.obligation == ProofObligation::VerifiedSinkCompatible));
+    }
+
+    // ── Self-attestation gap closed (#1188) ──────────────────────────────────
+
+    #[test]
+    fn adversarial_input_triggers_obligation_even_without_explicit_declaration() {
+        // The self-attestation gap: caller omits NoAdversarialAncestry from
+        // obligations field. Before #1188, preflight would skip the check.
+        // After #1188, derive_obligations adds it mechanically.
+        let perms = PermissionLattice::safe_pr_fixer();
+        let ctx = PreflightContext::new(&perms);
+        let mut term = ActionTerm::edit_file(
+            None,
+            "src/lib.rs",
+            "@@ -1 +1 @@",
+            vec![ActionInput::new(
+                "web-scrape",
+                "sha256:feed1234",
+                portcullis_core::DerivationClass::OpaqueExternal,
+            )],
+            EffectDisposition::Proposed,
+        );
+        // Attacker strips the obligation they don't want checked.
+        term.obligations
+            .retain(|o| o != &ProofObligation::NoAdversarialAncestry);
+
+        let result = preflight_action(&term, &ctx);
+        // Must still be denied/approved — derivation catches the tainted input.
+        assert_ne!(
+            result.verdict,
+            PreflightVerdict::Pass,
+            "tainted input must not pass even when NoAdversarialAncestry omitted from field"
+        );
+        assert!(
+            result
+                .failures
+                .iter()
+                .any(|f| f.obligation == ProofObligation::NoAdversarialAncestry),
+            "NoAdversarialAncestry failure must be present in result"
+        );
+    }
+
+    #[test]
+    fn derive_obligations_always_includes_delegation_ceiling() {
+        let term = ActionTerm::run_command(None, "echo hi", vec![], EffectDisposition::Proposed);
+        assert!(term
+            .derive_obligations()
+            .contains(&ProofObligation::WithinDelegationCeiling));
+    }
+
+    #[test]
+    fn derive_obligations_includes_scope_check_when_task_present() {
+        let task = TaskRef::new("t1", "test task", vec![], vec![]);
+        let term = ActionTerm::run_command(Some(task), "ls", vec![], EffectDisposition::Proposed);
+        assert!(term
+            .derive_obligations()
+            .contains(&ProofObligation::InScopeWithTask));
+    }
+
+    #[test]
+    fn derive_obligations_no_scope_check_without_task() {
+        let term = ActionTerm::run_command(None, "ls", vec![], EffectDisposition::Proposed);
+        assert!(!term
+            .derive_obligations()
+            .contains(&ProofObligation::InScopeWithTask));
+    }
+
+    #[test]
+    fn derive_obligations_path_allowed_for_edit_not_run() {
+        let edit = ActionTerm::edit_file(
+            None,
+            "src/x.rs",
+            "@@ @@",
+            vec![],
+            EffectDisposition::Proposed,
+        );
+        assert!(edit
+            .derive_obligations()
+            .contains(&ProofObligation::PathAllowed));
+
+        let run = ActionTerm::run_command(None, "ls", vec![], EffectDisposition::Proposed);
+        assert!(!run
+            .derive_obligations()
+            .contains(&ProofObligation::PathAllowed));
+    }
+
+    #[test]
+    fn derive_obligations_verified_sink_only_for_verified_disposition() {
+        let proposed =
+            ActionTerm::edit_file(None, "f.rs", "@@ @@", vec![], EffectDisposition::Proposed);
+        assert!(!proposed
+            .derive_obligations()
+            .contains(&ProofObligation::VerifiedSinkCompatible));
+
+        let verified =
+            ActionTerm::edit_file(None, "f.rs", "@@ @@", vec![], EffectDisposition::Verified);
+        assert!(verified
+            .derive_obligations()
+            .contains(&ProofObligation::VerifiedSinkCompatible));
+    }
+
+    #[test]
+    fn derive_obligations_inputs_authorized_only_above_lowrisk() {
+        // LowRisk authority → no InputsAuthorized required.
+        let low = ActionTerm::edit_file(None, "f.rs", "@@ @@", vec![], EffectDisposition::Proposed);
+        assert!(!low
+            .derive_obligations()
+            .contains(&ProofObligation::InputsAuthorized));
+
+        // Always authority → InputsAuthorized required.
+        let mut high = low.clone();
+        high.authority.requested_level = CapabilityLevel::Always;
+        assert!(high
+            .derive_obligations()
+            .contains(&ProofObligation::InputsAuthorized));
     }
 }
