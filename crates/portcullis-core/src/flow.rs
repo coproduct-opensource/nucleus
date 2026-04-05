@@ -84,6 +84,20 @@ pub enum NodeKind {
     PDFContent,
 }
 
+impl NodeKind {
+    /// Returns `true` if this node kind has an AI-derived intrinsic derivation.
+    ///
+    /// Used by the `DeterministicBind` invariant (#1230): parents of a
+    /// `DeterministicBind` must not be AI-derived, to maintain the "air gap"
+    /// between AI-generated and deterministic data paths.
+    pub fn is_ai_derived(&self) -> bool {
+        matches!(
+            self,
+            Self::ModelPlan | Self::Summarization | Self::MemoryWrite
+        )
+    }
+}
+
 /// Intrinsic label for a node kind — the base label before propagation.
 pub fn intrinsic_label(kind: NodeKind, now: u64) -> IFCLabel {
     match kind {
