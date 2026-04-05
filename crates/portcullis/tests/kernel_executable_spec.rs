@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Executable Specification for the Kernel Decision Engine
 //!
 //! This module defines the kernel's intended behavior as a **reference model**

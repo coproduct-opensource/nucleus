@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Attack Landscape Integration Tests
 //!
 //! This test suite verifies defense against real-world AI agent attack classes.

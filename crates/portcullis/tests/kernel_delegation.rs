@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Delegation constraint enforcement tests (#779) — extracted from kernel.rs.
 //!
 //! These tests verify that the kernel enforces delegation constraints on

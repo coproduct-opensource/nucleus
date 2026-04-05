@@ -77,6 +77,7 @@ use commands::{run_doctor, run_help, run_init, run_smoke_test, show_profile};
 // Main
 // ---------------------------------------------------------------------------
 
+#[allow(deprecated)] // Migration to decide_term tracked in #1194
 fn main() {
     // Binary self-integrity check (#946) — run once at startup.
     match integrity::verify_binary_integrity() {
@@ -1617,6 +1618,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_kernel_allow_read() {
         let perms = PermissionLattice::safe_pr_fixer();
         let mut kernel = Kernel::new(perms);
@@ -1625,6 +1627,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_kernel_deny_git_push() {
         let perms = PermissionLattice::read_only();
         let mut kernel = Kernel::new(perms);
@@ -1658,6 +1661,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     fn test_exposure_accumulation() {
         // safe_pr_fixer: read + web_fetch + bash should trigger exposure gate
         // Use capability_only() to isolate the exposure subsystem from flow control.

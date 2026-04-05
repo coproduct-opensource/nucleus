@@ -1648,6 +1648,7 @@ fn proof_nucleus_counterexample_witness() {
 /// trace entry and update exposure tracking.
 #[kani::proof]
 #[kani::solver(cadical)]
+#[allow(deprecated)] // Migration to decide_term tracked in #1194
 fn proof_decision_token_unforgeable() {
     let perms = PermissionLattice::permissive();
     let mut kernel = Kernel::new(perms);
@@ -1671,6 +1672,7 @@ fn proof_decision_token_unforgeable() {
 /// is Deny then no token is produced.
 #[kani::proof]
 #[kani::solver(cadical)]
+#[allow(deprecated)] // Migration to decide_term tracked in #1194
 fn proof_denied_ops_have_no_token() {
     let perms = PermissionLattice::restrictive();
     let mut kernel = Kernel::new(perms);
@@ -1687,6 +1689,7 @@ fn proof_denied_ops_have_no_token() {
 /// `sequence()` must match the decision's fields exactly.
 #[kani::proof]
 #[kani::solver(cadical)]
+#[allow(deprecated)] // Migration to decide_term tracked in #1194
 fn proof_token_operation_matches_decision() {
     let perms = PermissionLattice::permissive();
     let mut kernel = Kernel::new(perms);
@@ -1733,6 +1736,7 @@ fn proof_issue_approved_token_is_audited() {
 /// audited and exposure-tracked.
 #[kani::proof]
 #[kani::solver(cadical)]
+#[allow(deprecated)] // Migration to decide_term tracked in #1194
 fn proof_approved_token_bypass_is_audited() {
     let perms = PermissionLattice::restrictive();
     let mut kernel = Kernel::new(perms);
@@ -2089,6 +2093,7 @@ fn proof_chain_depth_rejects_deep() {
 /// the I/O surface beyond what the policy permits.
 #[kani::proof]
 #[kani::solver(cadical)]
+#[allow(deprecated)] // Migration to decide_term tracked in #1194
 fn proof_io_confinement_never_capability_blocks() {
     let op_idx: u8 = kani::any();
     kani::assume(op_idx < 13);

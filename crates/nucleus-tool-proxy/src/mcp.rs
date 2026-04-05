@@ -160,6 +160,7 @@ impl NucleusMcpServer {
     /// Check the kernel for a decision on the given operation/subject.
     ///
     /// Returns `Ok(DecisionToken)` if allowed, or an MCP error result for deny/approval.
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
     async fn kernel_decide(
         &self,
         operation: Operation,

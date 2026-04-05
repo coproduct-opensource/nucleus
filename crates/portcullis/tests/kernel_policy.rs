@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! PolicyRuleSet integration tests (#657) — extracted from kernel.rs.
 //!
 //! These tests verify that the kernel enforces policy rules: allow, deny,

@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Receipt chain integration tests — extracted from kernel.rs (#825).
 //!
 //! These tests verify that the kernel correctly produces an append-only

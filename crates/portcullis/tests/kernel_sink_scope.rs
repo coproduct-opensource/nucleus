@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Sink scope enforcement tests (#809) — extracted from kernel.rs (#825).
 //!
 //! These tests verify that the kernel enforces SinkScope constraints

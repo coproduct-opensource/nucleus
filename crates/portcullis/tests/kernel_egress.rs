@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Egress policy integration tests — extracted from kernel.rs (#825).
 //!
 //! These tests verify that the kernel correctly enforces egress policies

@@ -2005,6 +2005,7 @@ fn check_identity_policy(
     !requires_approval
 }
 
+#[allow(deprecated)] // Migration to decide_term tracked in #1194
 async fn read_file(
     State(state): State<AppState>,
     _headers: HeaderMap,
@@ -2132,6 +2133,7 @@ async fn read_file(
     Ok(Json(ReadResponse { contents }))
 }
 
+#[allow(deprecated)] // Migration to decide_term tracked in #1194
 async fn write_file(
     State(state): State<AppState>,
     _headers: HeaderMap,
@@ -2262,6 +2264,7 @@ async fn write_file(
     Ok(Json(WriteResponse { ok: true }))
 }
 
+#[allow(deprecated)] // Migration to decide_term tracked in #1194
 async fn run_command(
     State(state): State<AppState>,
     _headers: HeaderMap,
@@ -2438,6 +2441,7 @@ async fn run_command(
     }))
 }
 
+#[allow(deprecated)] // Migration to decide_term tracked in #1194
 async fn web_fetch(
     State(state): State<AppState>,
     _headers: HeaderMap,
@@ -2662,6 +2666,7 @@ async fn web_fetch(
 }
 
 /// Glob pattern search within the sandbox.
+#[allow(deprecated)] // Migration to decide_term tracked in #1194
 async fn glob_search(
     State(state): State<AppState>,
     _headers: HeaderMap,
@@ -2838,6 +2843,7 @@ async fn glob_search(
 }
 
 /// Grep (regex content search) within the sandbox.
+#[allow(deprecated)] // Migration to decide_term tracked in #1194
 async fn grep_search(
     State(state): State<AppState>,
     _headers: HeaderMap,
@@ -3072,6 +3078,7 @@ async fn grep_search(
 }
 
 /// Web search using configured backend.
+#[allow(deprecated)] // Migration to decide_term tracked in #1194
 async fn web_search(
     State(state): State<AppState>,
     _headers: HeaderMap,
