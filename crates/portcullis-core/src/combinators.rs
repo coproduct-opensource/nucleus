@@ -146,7 +146,13 @@ impl PolicyCheck for FirstMatch {
     }
 }
 
-/// All-of: all checks must allow. If any denies, deny. If any abstains, abstain.
+/// All-of: all checks must allow. If any denies, deny.
+///
+/// `Abstain` is treated as the identity element (no opinion) — checks that
+/// abstain are skipped and do not affect the result. If **all** checks abstain,
+/// the combinator returns `Abstain`. This mirrors the lattice identity: a check
+/// with no opinion should not change the outcome of the conjunction (#1197).
+///
 /// This is the meet-combinator on the truth ordering.
 pub struct AllOf {
     checks: Vec<Box<dyn PolicyCheck>>,
@@ -161,13 +167,23 @@ impl AllOf {
 impl PolicyCheck for AllOf {
     fn check(&self, req: &PolicyRequest) -> CheckResult {
         let mut saw_approval = false;
+        let mut saw_decisive = false;
         for c in &self.checks {
             match c.check(req) {
                 CheckResult::Deny(reason) => return CheckResult::Deny(reason),
-                CheckResult::RequiresApproval(_) => saw_approval = true,
-                CheckResult::Allow => {}
-                CheckResult::Abstain => return CheckResult::Abstain,
+                CheckResult::RequiresApproval(_) => {
+                    saw_approval = true;
+                    saw_decisive = true;
+                }
+                CheckResult::Allow => {
+                    saw_decisive = true;
+                }
+                // Abstain = identity: this check has no opinion; skip it.
+                CheckResult::Abstain => {}
             }
+        }
+        if !saw_decisive {
+            return CheckResult::Abstain;
         }
         if saw_approval {
             CheckResult::RequiresApproval("multiple checks require approval".into())
@@ -325,6 +341,47 @@ mod tests {
     fn all_of_one_deny_denies() {
         let combo = all_of(vec![Box::new(AlwaysAllow), Box::new(AlwaysDeny)]);
         assert!(combo.check(&req()).is_deny());
+    }
+
+    // ── AllOf Abstain identity semantics (#1197) ─────────────────────────
+
+    #[test]
+    fn all_of_abstain_is_identity_not_absorber() {
+        // Abstaining check should be skipped; the Allow still wins.
+        let combo = all_of(vec![Box::new(AlwaysAbstain), Box::new(AlwaysAllow)]);
+        assert!(
+            combo.check(&req()).is_allow(),
+            "Abstain must not absorb Allow"
+        );
+    }
+
+    #[test]
+    fn all_of_abstain_does_not_hide_deny() {
+        // Deny must still win even when another check abstains.
+        let combo = all_of(vec![Box::new(AlwaysAbstain), Box::new(AlwaysDeny)]);
+        assert!(
+            combo.check(&req()).is_deny(),
+            "Deny must not be hidden by Abstain"
+        );
+    }
+
+    #[test]
+    fn all_of_abstain_before_deny_does_not_short_circuit() {
+        // The critical regression: Abstain before Deny must not short-circuit.
+        // Old bug: AllOf returned Abstain immediately on first Abstain, hiding Deny.
+        let combo = all_of(vec![
+            Box::new(AlwaysAbstain),
+            Box::new(AlwaysAbstain),
+            Box::new(AlwaysDeny),
+        ]);
+        assert!(combo.check(&req()).is_deny());
+    }
+
+    #[test]
+    fn all_of_all_abstain_returns_abstain() {
+        // When every check abstains, AllOf itself should abstain.
+        let combo = all_of(vec![Box::new(AlwaysAbstain), Box::new(AlwaysAbstain)]);
+        assert_eq!(combo.check(&req()), CheckResult::Abstain);
     }
 
     #[test]

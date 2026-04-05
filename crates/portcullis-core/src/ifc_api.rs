@@ -167,10 +167,9 @@ impl FlowTracker {
     /// ```
     pub fn check_action_safety(&self, node_id: u64, requires_authority: bool) -> SafetyCheck {
         let Some((_, label, _)) = self.nodes.get((node_id - 1) as usize) else {
-            // Unknown node — deny by default (fail-closed)
-            return SafetyCheck::AdversarialAncestry {
-                tainted_node: node_id,
-            };
+            // Unknown node — fail-closed with the correct variant so callers
+            // can distinguish a tracking bug from actual adversarial taint (#1198).
+            return SafetyCheck::UnknownNode { node_id };
         };
         if label.integrity == IntegLevel::Adversarial {
             return SafetyCheck::AdversarialAncestry {
@@ -351,8 +350,13 @@ mod tests {
     #[test]
     fn action_safety_unknown_node_denied() {
         let t = FlowTracker::new();
-        // Node 999 doesn't exist — fail-closed
-        assert!(t.check_action_safety(999, false).is_denied());
+        // Node 999 doesn't exist — fail-closed with UnknownNode, not AdversarialAncestry (#1198).
+        let result = t.check_action_safety(999, false);
+        assert!(result.is_denied());
+        assert!(
+            matches!(result, SafetyCheck::UnknownNode { node_id: 999 }),
+            "expected UnknownNode(999), got {result:?}"
+        );
     }
 
     #[test]
