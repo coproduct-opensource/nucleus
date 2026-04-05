@@ -483,7 +483,7 @@ impl PreflightResult {
 ///
 /// match preflight_action(&term) {
 ///     PreflightResult::Allowed(_bundle) => { /* pass bundle to effect fn */ }
-///     PreflightResult::Denied(reason) => { /* log and abort */ }
+///     PreflightResult::Denied { reason, hint } => { /* log and abort */ }
 ///     PreflightResult::RequiresApproval { reason } => { /* await approval */ }
 /// }
 /// ```
