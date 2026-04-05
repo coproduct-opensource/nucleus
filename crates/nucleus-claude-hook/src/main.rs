@@ -12,6 +12,8 @@ use portcullis::kernel::{Kernel, Verdict};
 use portcullis::manifest_registry::ManifestRegistry;
 use portcullis::receipt_sign::{receipt_hash, sign_receipt};
 use portcullis::{Operation, PermissionLattice};
+
+mod term_builder;
 use portcullis_core::flow::NodeKind;
 use portcullis_core::receipt::build_receipt;
 use ring::rand::SystemRandom;
@@ -1234,7 +1236,8 @@ fn main() {
     let mut leaves = LeafTracker::default();
     for (op_str, subj) in &session.allowed_ops {
         if let Ok(op) = Operation::try_from(op_str.as_str()) {
-            kernel.decide(op, subj);
+            let term = term_builder::build_action_term(op, subj);
+            kernel.decide_term(term);
         }
     }
     for &(kind_u8, ref _op_str, ref _subj) in &session.flow_observations {

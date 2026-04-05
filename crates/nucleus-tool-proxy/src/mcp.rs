@@ -11,6 +11,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use portcullis::action_term::{
+    ActionTerm, CapabilityRequest, EffectDisposition, PrimitiveAction, ProposedEffect,
+};
 use portcullis::kernel::{Kernel, Verdict};
 use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome, VerdictSink};
 use portcullis::{CapabilityLevel, GradedExposureGuard, Operation, ToolCallGuard};
@@ -159,15 +162,17 @@ impl NucleusMcpServer {
 
     /// Check the kernel for a decision on the given operation/subject.
     ///
-    /// Returns `Ok(DecisionToken)` if allowed, or an MCP error result for deny/approval.
-    #[allow(deprecated)] // Migration to decide_term tracked in #1194
+    /// Constructs an [`ActionTerm`] and routes through [`Kernel::decide_term`],
+    /// which runs obligation discharge, task scope checking, and causal ancestry
+    /// validation (#1187). The old `Kernel::decide()` path is bypassed entirely.
     async fn kernel_decide(
         &self,
         operation: Operation,
         subject: &str,
     ) -> Result<portcullis::kernel::DecisionToken, CallToolResult> {
+        let term = build_action_term(operation, subject);
         let mut kernel = self.kernel.lock().await;
-        let (decision, token) = kernel.decide(operation, subject);
+        let (decision, token) = kernel.decide_term(term);
         match decision.verdict {
             Verdict::Allow => Ok(token.expect("Allow verdict always produces token")),
             Verdict::Deny(ref reason) => {
@@ -977,4 +982,64 @@ pub async fn run_mcp_server(state: Arc<AppState>) -> Result<(), crate::ApiError>
         .map_err(|e| crate::ApiError::Spec(format!("MCP server error: {e}")))?;
 
     Ok(())
+}
+
+/// Build an [`ActionTerm`] from an `(Operation, subject)` pair.
+///
+/// Maps each operation to its corresponding [`PrimitiveAction`] variant
+/// and constructs a minimal term for kernel evaluation (#1187).
+fn build_action_term(operation: Operation, subject: &str) -> ActionTerm {
+    let action = match operation {
+        Operation::ReadFiles => PrimitiveAction::ReadFile {
+            path: subject.to_string(),
+        },
+        Operation::WriteFiles => PrimitiveAction::WriteFile {
+            path: subject.to_string(),
+        },
+        Operation::EditFiles => PrimitiveAction::EditFile {
+            path: subject.to_string(),
+            patch: String::new(),
+        },
+        Operation::RunBash => PrimitiveAction::RunCommand {
+            command: subject.to_string(),
+        },
+        Operation::GlobSearch => PrimitiveAction::GlobSearch {
+            pattern: subject.to_string(),
+        },
+        Operation::GrepSearch => PrimitiveAction::GlobSearch {
+            pattern: subject.to_string(),
+        },
+        Operation::WebSearch => PrimitiveAction::WebSearch {
+            query: subject.to_string(),
+        },
+        Operation::WebFetch => PrimitiveAction::WebFetch {
+            url: subject.to_string(),
+        },
+        Operation::GitCommit => PrimitiveAction::GitCommit {
+            message: subject.to_string(),
+        },
+        Operation::GitPush => PrimitiveAction::GitPush {
+            remote: subject.to_string(),
+            branch: String::new(),
+        },
+        Operation::CreatePr => PrimitiveAction::CreatePr {
+            title: subject.to_string(),
+        },
+        Operation::ManagePods | Operation::SpawnAgent => PrimitiveAction::SpawnAgent {
+            endpoint: subject.to_string(),
+            payload_bytes: 0,
+        },
+    };
+
+    ActionTerm {
+        task: None,
+        action,
+        inputs: vec![],
+        authority: CapabilityRequest::new(operation, CapabilityLevel::LowRisk),
+        proposed_effect: ProposedEffect::CommandExecution {
+            command: subject.to_string(),
+            disposition: EffectDisposition::Proposed,
+        },
+        obligations: vec![], // derive_obligations() is authoritative
+    }
 }
