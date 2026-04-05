@@ -286,8 +286,17 @@ impl PolicyCheck for TaskScopePolicy {
         // Resolve the concrete operation from the request string.
         let op = match op_from_str(&req.operation) {
             Some(o) => o,
-            // Unknown operation string → abstain; let the next check decide.
-            None => return CheckResult::Abstain,
+            // Closed-world default (#1231): unknown operations require approval
+            // rather than silently passing through. An unrecognized operation
+            // string means either a new tool was added without updating op_from_str,
+            // or the caller is probing for bypass vectors.
+            None => {
+                return CheckResult::RequiresApproval(format!(
+                    "task-shield[{:?}]: unrecognized operation '{}' — \
+                     not in scope, requires approval",
+                    self.kind, req.operation
+                ));
+            }
         };
 
         // DocsEdit path-sensitive rule: writing outside docs paths → approval.
@@ -570,10 +579,18 @@ mod tests {
     }
 
     #[test]
-    fn unknown_operation_abstains() {
+    fn unknown_operation_requires_approval() {
+        // #1231: closed-world default — unknown ops require approval, not abstain.
         let policy = TaskScopePolicy::new(TaskKind::BugFix);
         let result = policy.check(&req("unknown_op"));
-        assert_eq!(result, CheckResult::Abstain);
+        assert!(
+            matches!(result, CheckResult::RequiresApproval(_)),
+            "unknown op should require approval, got: {result:?}"
+        );
+        if let CheckResult::RequiresApproval(msg) = &result {
+            assert!(msg.contains("unrecognized"));
+            assert!(msg.contains("unknown_op"));
+        }
     }
 
     #[test]
