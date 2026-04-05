@@ -93,12 +93,31 @@ pub struct MemoryEntry {
 /// Uses [`ConfLevel`] and [`IntegLevel`] enums directly, eliminating the
 /// string-parsing attack surface where unexpected values silently mapped
 /// to the most restrictive level (see issue #749).
+///
+/// The `derivation` field tracks the [`crate::DerivationClass`] of stored data
+/// so that AI-derived content is not laundered back to `Deterministic` on read
+/// (#1220). Older serialized entries without this field default to `Deterministic`
+/// for backward compatibility; new entries should set derivation explicitly via
+/// [`MemoryLabel::from_levels_with_derivation`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryLabel {
     /// Confidentiality level (public, internal, secret).
     pub confidentiality: ConfLevel,
     /// Integrity level (adversarial, untrusted, trusted).
     pub integrity: IntegLevel,
+    /// Derivation class — tracks whether data originated from deterministic
+    /// computation, AI inference, human promotion, or opaque external sources.
+    ///
+    /// Defaults to `Deterministic` for backward-compatible deserialization of
+    /// entries written before this field was added. Callers writing AI-derived
+    /// data MUST use [`MemoryLabel::from_levels_with_derivation`] to ensure the
+    /// derivation class is preserved through the memory plane (#1220).
+    #[serde(default = "default_derivation")]
+    pub derivation: crate::DerivationClass,
+}
+
+fn default_derivation() -> crate::DerivationClass {
+    crate::DerivationClass::Deterministic
 }
 
 impl MemoryLabel {
@@ -112,11 +131,34 @@ impl MemoryLabel {
         self.integrity
     }
 
-    /// Create from typed levels.
+    /// Create from typed levels, defaulting to `Deterministic` derivation.
+    ///
+    /// Use this for entries whose data is known to be deterministic (tool
+    /// outputs, configuration, etc.). For AI-generated content, use
+    /// [`MemoryLabel::from_levels_with_derivation`] with the appropriate
+    /// [`crate::DerivationClass`] to prevent derivation laundering (#1220).
     pub fn from_levels(conf: ConfLevel, integ: IntegLevel) -> Self {
         Self {
             confidentiality: conf,
             integrity: integ,
+            derivation: crate::DerivationClass::Deterministic,
+        }
+    }
+
+    /// Create from typed levels with an explicit derivation class.
+    ///
+    /// Required when storing AI-derived, human-promoted, or opaque-external
+    /// content — the derivation class is preserved through the memory plane
+    /// and reflected in the IFC label returned by [`GovernedMemory::read_label`].
+    pub fn from_levels_with_derivation(
+        conf: ConfLevel,
+        integ: IntegLevel,
+        derivation: crate::DerivationClass,
+    ) -> Self {
+        Self {
+            confidentiality: conf,
+            integrity: integ,
+            derivation,
         }
     }
 }
@@ -370,7 +412,11 @@ impl GovernedMemory {
                     observed_at: entry.created_at,
                     ttl_secs: entry.ttl_secs,
                 },
-                derivation: crate::DerivationClass::Deterministic,
+                // Propagate the stored derivation class (#1220).
+                // Previously hardcoded to Deterministic, which laundered AI-derived
+                // taint: any content stored via write() appeared Deterministic on
+                // read, bypassing DerivationViolation checks for verified sinks.
+                derivation: entry.label.derivation,
             }
         })
     }
@@ -1225,5 +1271,108 @@ max_entries = 500
         let entry = make_entry(1_000_000, u64::MAX - 999_999);
         // saturating_add → u64::MAX; now=2_000_000 < u64::MAX → not expired.
         assert!(!entry.is_expired(2_000_000));
+    }
+
+    // ── Derivation tracking through memory plane (#1220) ─────────────────────
+
+    #[test]
+    fn read_label_propagates_ai_derived_derivation() {
+        // The laundering bug: AI-derived content stored in memory was read back
+        // with DerivationClass::Deterministic, bypassing DerivationViolation checks.
+        // After the fix, read_label must return the stored derivation class.
+        let mut mem = GovernedMemory::new();
+        let label = MemoryLabel::from_levels_with_derivation(
+            ConfLevel::Internal,
+            IntegLevel::Trusted,
+            crate::DerivationClass::AIDerived,
+        );
+
+        mem.write(
+            "ai-content".into(),
+            "model output".into(),
+            SchemaType::String,
+            label,
+            1000,
+            0,
+        );
+
+        let ifc = mem.read_label("ai-content", 1000).unwrap();
+        assert_eq!(
+            ifc.derivation,
+            crate::DerivationClass::AIDerived,
+            "AI-derived content must not be laundered to Deterministic on read"
+        );
+    }
+
+    #[test]
+    fn read_label_propagates_mixed_derivation() {
+        let mut mem = GovernedMemory::new();
+        let label = MemoryLabel::from_levels_with_derivation(
+            ConfLevel::Internal,
+            IntegLevel::Untrusted,
+            crate::DerivationClass::Mixed,
+        );
+        mem.write(
+            "mixed".into(),
+            "val".into(),
+            SchemaType::String,
+            label,
+            1000,
+            0,
+        );
+        let ifc = mem.read_label("mixed", 1000).unwrap();
+        assert_eq!(ifc.derivation, crate::DerivationClass::Mixed);
+    }
+
+    #[test]
+    fn read_label_propagates_opaque_external_derivation() {
+        let mut mem = GovernedMemory::new();
+        let label = MemoryLabel::from_levels_with_derivation(
+            ConfLevel::Secret,
+            IntegLevel::Adversarial,
+            crate::DerivationClass::OpaqueExternal,
+        );
+        mem.write(
+            "opaque".into(),
+            "val".into(),
+            SchemaType::String,
+            label,
+            1000,
+            0,
+        );
+        let ifc = mem.read_label("opaque", 1000).unwrap();
+        assert_eq!(ifc.derivation, crate::DerivationClass::OpaqueExternal);
+    }
+
+    #[test]
+    fn from_levels_defaults_to_deterministic() {
+        // from_levels is the existing convenience constructor; it must keep
+        // defaulting to Deterministic so callers storing known-deterministic
+        // data (config, tool outputs) are unaffected.
+        let label = MemoryLabel::from_levels(ConfLevel::Public, IntegLevel::Trusted);
+        assert_eq!(label.derivation, crate::DerivationClass::Deterministic);
+    }
+
+    #[cfg(feature = "artifact")]
+    #[test]
+    fn serde_roundtrip_preserves_derivation() {
+        let label = MemoryLabel::from_levels_with_derivation(
+            ConfLevel::Internal,
+            IntegLevel::Trusted,
+            crate::DerivationClass::HumanPromoted,
+        );
+        let json = serde_json::to_string(&label).unwrap();
+        let restored: MemoryLabel = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.derivation, crate::DerivationClass::HumanPromoted);
+    }
+
+    #[cfg(feature = "artifact")]
+    #[test]
+    fn serde_missing_derivation_defaults_to_deterministic() {
+        // Backward compat: existing serialized entries without a derivation field
+        // deserialize to Deterministic (the lattice bottom / previous hardcoded value).
+        let json = r#"{"confidentiality":"internal","integrity":"trusted"}"#;
+        let label: MemoryLabel = serde_json::from_str(json).unwrap();
+        assert_eq!(label.derivation, crate::DerivationClass::Deterministic);
     }
 }
