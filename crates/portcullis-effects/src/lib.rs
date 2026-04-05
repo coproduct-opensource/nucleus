@@ -47,6 +47,8 @@
 //! assert_eq!(fx.calls().len(), 1);
 //! ```
 
+pub mod runtime;
+
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
