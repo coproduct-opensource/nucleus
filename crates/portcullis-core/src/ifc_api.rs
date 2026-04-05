@@ -65,6 +65,8 @@ pub enum FlowError {
     ParentNotFound(u64),
     /// Too many parents (max 8).
     TooManyParents(usize),
+    /// Node ID space exhausted — cannot allocate more node IDs (#1226, #1235).
+    IdSpaceExhausted,
 }
 
 impl std::fmt::Display for FlowError {
@@ -72,6 +74,7 @@ impl std::fmt::Display for FlowError {
         match self {
             Self::ParentNotFound(id) => write!(f, "parent node {id} not found"),
             Self::TooManyParents(n) => write!(f, "too many parents: {n} (max 8)"),
+            Self::IdSpaceExhausted => write!(f, "node ID space exhausted (u64 overflow)"),
         }
     }
 }
@@ -201,7 +204,10 @@ impl FlowTracker {
         }
 
         let id = self.next_id;
-        self.next_id += 1;
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .ok_or(FlowError::IdSpaceExhausted)?;
         // Raise the session taint ceiling: join is monotone so this never decreases.
         self.session_taint_ceiling = self.session_taint_ceiling.join(label.derivation);
         // Raise the session confidentiality ceiling (#1208): max is monotone.
@@ -1080,5 +1086,33 @@ mod tests {
         let secret = t.observe(NodeKind::Secret).unwrap(); // NoAuthority, Secret, Trusted
         let check = t.check_exfiltration_safety(secret, true, ConfLevel::Secret);
         assert!(matches!(check, SafetyCheck::InsufficientAuthority { .. }));
+    }
+
+    // ── FlowTracker next_id overflow tests (#1226, #1235) ───────────────
+
+    #[test]
+    fn next_id_overflow_returns_error_not_wrap() {
+        // #1226/#1235: next_id at u64::MAX should fail, not wrap to 0.
+        let mut t = FlowTracker::new();
+        // Force next_id to u64::MAX (just before overflow)
+        t.next_id = u64::MAX;
+        let result = t.observe(NodeKind::FileRead);
+        assert!(
+            matches!(result, Err(FlowError::IdSpaceExhausted)),
+            "expected IdSpaceExhausted, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn next_id_near_max_still_works() {
+        // ID u64::MAX - 1 is the last valid allocation.
+        let mut t = FlowTracker::new();
+        t.next_id = u64::MAX - 1;
+        // This should succeed — assigns ID = u64::MAX - 1, increments to u64::MAX
+        let result = t.observe(NodeKind::FileRead);
+        assert!(result.is_ok());
+        // Next allocation would overflow — should fail
+        let result2 = t.observe(NodeKind::FileRead);
+        assert!(matches!(result2, Err(FlowError::IdSpaceExhausted)));
     }
 }
