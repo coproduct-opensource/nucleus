@@ -1,4 +1,5 @@
 #![allow(deprecated)]
+#![allow(clippy::disallowed_types)] // #1216: migration pending
 //! RoguePilot Integration Tests
 //!
 //! End-to-end tests verifying that the nucleus security stack blocks
