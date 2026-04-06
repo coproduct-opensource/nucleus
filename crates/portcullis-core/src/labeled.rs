@@ -336,8 +336,12 @@ pub fn promote_integrity<T, C: ConfTag>(
     match reason {
         DeclassifyReason::HumanReview
         | DeclassifyReason::DeterministicVerification
-        | DeclassifyReason::Sanitization
-        | DeclassifyReason::TestOnly => Ok(Labeled::new(value.into_inner())),
+        | DeclassifyReason::Sanitization => Ok(Labeled::new(value.into_inner())),
+        DeclassifyReason::TestOnly => Err(DeclassifyError::InsufficientReason(
+            "TestOnly cannot promote integrity — use HumanReview, \
+             DeterministicVerification, or Sanitization"
+                .to_string(),
+        )),
     }
 }
 
@@ -546,6 +550,13 @@ mod tests {
     fn declassify_secret_rejects_test_only() {
         let secret: Labeled<String, Trusted, Secret> = Labeled::new("api-key".to_string());
         let err = declassify_to_internal(secret, DeclassifyReason::TestOnly).unwrap_err();
+        assert!(matches!(err, DeclassifyError::InsufficientReason(_)));
+    }
+
+    #[test]
+    fn promote_integrity_rejects_test_only() {
+        let adv: Labeled<String, Adversarial, Public> = Labeled::new("web data".to_string());
+        let err = promote_integrity(adv, DeclassifyReason::TestOnly).unwrap_err();
         assert!(matches!(err, DeclassifyError::InsufficientReason(_)));
     }
 
