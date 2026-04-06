@@ -17,6 +17,46 @@ Built on a [formally verified permission lattice](FORMAL_METHODS.md): 165 Lean 4
 
 > **Versioning note:** v1.0 means the **interface contract is stable** (see [`STABILITY.md`](STABILITY.md)), not that the system is "production-secure by default." The lattice is heavily verified; the runtime is tested but not yet battle-hardened.
 
+## Why Nucleus
+
+Every major LLM agent exploit in 2025-2026 succeeded because the framework had **no memory of data provenance**. Nucleus remembers where every byte came from — and the labels are permanent, monotonic, and type-enforced.
+
+| CVE | What happened | Why it worked | Nucleus defense |
+|-----|---------------|---------------|-----------------|
+| [CVE-2025-53773](https://embracethered.com/blog/posts/2025/github-copilot-remote-code-execution-via-prompt-injection/) | Copilot RCE — prompt injection writes config to disable all security checks, enables arbitrary shell exec | Security was a JSON config flag (`chat.tools.autoApprove`) that the agent could edit | Security is compiled types (`Discharged<O>`), not config. No file edit can disable obligation checking. |
+| [CVE-2025-32711](https://www.hackthebox.com/blog/cve-2025-32711-echoleak-copilot-vulnerability) | EchoLeak — zero-click exfiltration of emails, Teams chats, OneDrive via hidden prompt in a Word doc | M365 Copilot had no concept of "this data is internal and cannot leave" | [Bidirectional IFC](docs/theory/ifc-semilattice.md): `session_conf_ceiling` blocks internal→public data flow. Once the session reads internal data, ALL outbound public writes are denied. |
+| [MCP Tool Poisoning](https://arxiv.org/html/2509.10540v1) | Malicious MCP server injects hidden instructions in tool responses, steering the agent to exfiltrate data | Agent frameworks treat all tool responses as trusted | MCP responses are labeled `Adversarial` at the type level. `Labeled<T, Adversarial, Public>` cannot flow to verified sinks without explicit human `promote_integrity()`. |
+
+### 10-line secure session (Python)
+
+```python
+from portcullis import Runtime, Profile
+
+with Runtime.session(
+    Profile.RESEARCH.with_capability("run_bash").without_capability("web_search"),
+    "analyze SEC filings"
+) as rt:
+    page = rt.fetch_url("https://sec.gov/filing.html")
+    page.data           # raises UntrustedAccess — adversarial data is gated
+    raw = page.acknowledge("human reviewed for injection")
+    rt.git_push("origin", "main")  # PolicyDenied: hint tells you exactly what to fix
+```
+
+### 10-line secure session (Rust)
+
+```rust
+let mut rt = NucleusRuntime::builder()
+    .composed(PolicyProfile::Research.with(RuntimeCapability::RunBash))
+    .task("analyze SEC filings")
+    .build();
+
+let fetch = rt.fetch_url("https://sec.gov/...")?;
+// fetch.data(): &Labeled<Vec<u8>, Adversarial, Public>
+// Passing this to a Trusted-gated function is a COMPILE ERROR
+```
+
+[Verified Claims](docs/verified-claims.md) — what is proved, what is not, and the [known gaps](docs/verified-claims.md#known-gaps).
+
 ## Who Is This For?
 
 **Securing an AI coding assistant?** Install the hook, get IFC-based protection in 60 seconds.
