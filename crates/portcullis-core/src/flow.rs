@@ -102,6 +102,37 @@ impl NodeKind {
         matches!(self, Self::Custom(_))
     }
 
+    /// Construct a `NodeKind` from its string name (inverse of [`name()`]).
+    ///
+    /// Unknown names become `Custom` with a leaked `&'static str`.
+    /// This is intended for deserialization in short-lived processes
+    /// (e.g., zkVM guests) where the leak is acceptable.
+    pub fn from_name(s: &str) -> Self {
+        match s {
+            "user_prompt" => Self::UserPrompt,
+            "tool_response" => Self::ToolResponse,
+            "web_content" => Self::WebContent,
+            "memory_read" => Self::MemoryRead,
+            "memory_write" => Self::MemoryWrite,
+            "file_read" => Self::FileRead,
+            "env_var" => Self::EnvVar,
+            "model_plan" => Self::ModelPlan,
+            "secret" => Self::Secret,
+            "outbound_action" => Self::OutboundAction,
+            "summarization" => Self::Summarization,
+            "retry" => Self::Retry,
+            "http_response" => Self::HTTPResponse,
+            "database_row" => Self::DatabaseRow,
+            "git_blob" => Self::GitBlob,
+            "cached_datum" => Self::CachedDatum,
+            "deterministic_bind" => Self::DeterministicBind,
+            "image_content" => Self::ImageContent,
+            "audio_content" => Self::AudioContent,
+            "pdf_content" => Self::PDFContent,
+            other => Self::Custom(Box::leak(other.to_string().into_boxed_str())),
+        }
+    }
+
     /// Numeric discriminant for serialization (receipt hashing).
     ///
     /// Built-in kinds are 0-20. Custom kinds are 255.
@@ -156,6 +187,27 @@ impl NodeKind {
             Self::PDFContent => "pdf_content",
             Self::Custom(name) => name,
         }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for NodeKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.name())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for NodeKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = <&str>::deserialize(deserializer)?;
+        Ok(Self::from_name(s))
     }
 }
 
@@ -348,6 +400,7 @@ pub const MAX_PARENTS: usize = 8;
 
 /// A node in the causal DAG.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FlowNode {
     pub id: NodeId,
     pub kind: NodeKind,
@@ -385,6 +438,7 @@ pub fn propagate_label(parent_labels: &[IFCLabel], intrinsic: IFCLabel) -> IFCLa
 
 /// Why a flow was blocked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FlowDenyReason {
     /// Secret data flowing to an external sink.
     Exfiltration,
@@ -430,6 +484,7 @@ impl FlowDenyReason {
 
 /// Result of checking a flow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FlowVerdict {
     /// Flow is permitted.
     Allow,
@@ -942,6 +997,58 @@ mod kani_proofs {
 
         assert_eq!(check_flow(&node, 2000), FlowVerdict::Allow);
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// zkVM guest input (#1133) — serializable flow snapshot for ZK verification
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Serializable snapshot of a flow graph for zkVM guest verification.
+///
+/// Splits data into public (verifier-visible) and private (prover-only)
+/// portions per standard ZK proof architecture:
+///
+/// - **Public input**: the action node being verified and the expected verdict.
+///   The verifier checks that the proof attests to this specific action/verdict.
+/// - **Private input**: the full causal DAG. The prover demonstrates that
+///   the DAG implies the verdict without revealing the graph structure.
+///
+/// # Usage
+///
+/// ```rust
+/// use portcullis_core::flow::{ZkFlowInput, FlowNode, FlowVerdict, NodeKind, MAX_PARENTS};
+/// use portcullis_core::IFCLabel;
+///
+/// let node = FlowNode {
+///     id: 1,
+///     kind: NodeKind::OutboundAction,
+///     label: IFCLabel::default(),
+///     parent_count: 0,
+///     parents: [0; MAX_PARENTS],
+///     operation: None,
+///     sink_class: None,
+///     effect_kind: None,
+/// };
+///
+/// let input = ZkFlowInput {
+///     action_node_id: 1,
+///     expected_verdict: FlowVerdict::Allow,
+///     nodes: vec![node],
+/// };
+///
+/// assert_eq!(input.nodes.len(), 1);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ZkFlowInput {
+    /// **Public input**: the node ID of the action being verified.
+    pub action_node_id: NodeId,
+    /// **Public input**: the expected flow verdict for this action.
+    pub expected_verdict: FlowVerdict,
+    /// **Private input**: all nodes in the causal DAG.
+    /// The zkVM guest re-evaluates `check_flow` on these nodes and
+    /// confirms the verdict matches `expected_verdict`.
+    pub nodes: Vec<FlowNode>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1491,5 +1598,51 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn node_kind_from_name_roundtrip() {
+        let kinds = [
+            NodeKind::UserPrompt,
+            NodeKind::WebContent,
+            NodeKind::FileRead,
+            NodeKind::OutboundAction,
+            NodeKind::DeterministicBind,
+            NodeKind::PDFContent,
+        ];
+        for kind in kinds {
+            assert_eq!(NodeKind::from_name(kind.name()), kind);
+        }
+    }
+
+    #[test]
+    fn node_kind_from_name_unknown_becomes_custom() {
+        let kind = NodeKind::from_name("slack_message");
+        assert!(kind.is_custom());
+        assert_eq!(kind.name(), "slack_message");
+    }
+
+    #[test]
+    fn zk_flow_input_public_private_split() {
+        let node = FlowNode {
+            id: 1,
+            kind: NodeKind::OutboundAction,
+            label: IFCLabel::default(),
+            parent_count: 0,
+            parents: [0; MAX_PARENTS],
+            operation: None,
+            sink_class: None,
+            effect_kind: None,
+        };
+        let input = ZkFlowInput {
+            action_node_id: 1,
+            expected_verdict: FlowVerdict::Allow,
+            nodes: vec![node],
+        };
+        // Public: action_node_id + expected_verdict
+        assert_eq!(input.action_node_id, 1);
+        assert_eq!(input.expected_verdict, FlowVerdict::Allow);
+        // Private: the full node list
+        assert_eq!(input.nodes.len(), 1);
     }
 }
