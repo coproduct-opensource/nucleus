@@ -110,6 +110,14 @@ pub(crate) struct SessionState {
     /// Once true, never reverts — web taint is monotonic within a session.
     #[serde(default)]
     pub(crate) web_tainted: bool,
+    /// Monotonic IFC label ratchet (#1351).
+    /// Joins with each allowed operation's label — only moves toward
+    /// more restrictive (lower integrity, higher confidentiality).
+    /// Used as the `artifact_label` in discharge terms so that once a
+    /// session touches adversarial data, all subsequent operations carry
+    /// that taint through the IFC pipeline.
+    #[serde(default)]
+    pub(crate) ifc_label_ratchet: Option<portcullis_core::IFCLabel>,
     /// Whether the web taint warning has been injected into additionalContext (#838).
     /// Prevents repeated injection — the model only needs to be told once.
     #[serde(default)]
@@ -1188,6 +1196,73 @@ pub(crate) fn auto_detect_compartment(
         eprintln!("nucleus: auto-compartment detected from {tool_name}: {comp}");
     }
     inferred
+}
+
+// ---------------------------------------------------------------------------
+// IFC label ratchet (#1351) — monotonic session-level label tracking
+// ---------------------------------------------------------------------------
+
+/// Advance the session's IFC label ratchet by joining with a node's intrinsic label.
+/// The ratchet only moves toward more restrictive labels (monotonic).
+pub(crate) fn advance_ifc_ratchet(state: &mut SessionState, kind: portcullis_core::flow::NodeKind) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let intrinsic = portcullis_core::flow::intrinsic_label(kind, now);
+    let current = state.ifc_label_ratchet.unwrap_or_default();
+    state.ifc_label_ratchet = Some(current.join(intrinsic));
+}
+
+/// Inherit a parent session's IFC ratchet for delegation narrowing.
+/// The child's ratchet starts ≥ parent's (can only be more restricted).
+pub(crate) fn inherit_parent_ifc_ratchet(state: &mut SessionState, parent_session_id: &str) {
+    let safe_parent = sanitize_session_id(parent_session_id);
+    let ratchet_path = session_dir().join(format!("{safe_parent}.parent-ifc-ratchet"));
+    if let Ok(ratchet_str) = std::fs::read_to_string(&ratchet_path) {
+        if let Some(parent_label) = portcullis_core::wire::decode_label(ratchet_str.trim()) {
+            let child_current = state.ifc_label_ratchet.unwrap_or_default();
+            state.ifc_label_ratchet = Some(child_current.join(parent_label));
+            eprintln!("nucleus: inherited parent IFC ratchet (delegation narrowing)");
+        }
+    }
+}
+
+/// Export this session's IFC ratchet for a child agent to inherit.
+pub(crate) fn export_ifc_ratchet(state: &SessionState, session_id: &str) {
+    if let Some(ref ratchet) = state.ifc_label_ratchet {
+        let safe_id = sanitize_session_id(session_id);
+        let ratchet_str = portcullis_core::wire::encode_label(ratchet);
+        let ratchet_path = session_dir().join(format!("{safe_id}.parent-ifc-ratchet"));
+        std::fs::write(&ratchet_path, &ratchet_str).ok();
+        eprintln!("nucleus: exported parent IFC ratchet for child agent");
+    }
+}
+
+/// Build a discharge ActionTerm from session state and the current operation (#1351).
+/// Uses the session's web_tainted flag for source labels and the IFC ratchet
+/// for the artifact label.
+pub(crate) fn build_discharge_term(
+    state: &SessionState,
+    operation: portcullis_core::Operation,
+    subject: &str,
+) -> portcullis_core::discharge::ActionTerm {
+    let source_labels = if state.web_tainted {
+        vec![portcullis_core::IFCLabel {
+            integrity: portcullis_core::IntegLevel::Adversarial,
+            ..portcullis_core::IFCLabel::default()
+        }]
+    } else {
+        vec![]
+    };
+    portcullis_core::discharge::ActionTerm {
+        operation,
+        sink_class: portcullis_core::default_sink_class(operation),
+        source_labels,
+        artifact_label: state.ifc_label_ratchet.unwrap_or_default(),
+        subject: subject.to_string(),
+        estimated_cost_micro_usd: 0,
+    }
 }
 
 // ---------------------------------------------------------------------------
