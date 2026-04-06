@@ -12,9 +12,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use portcullis::action_term::{
-    ActionTerm, CapabilityRequest, EffectDisposition, PrimitiveAction, ProposedEffect,
-};
+use portcullis::action_term::ActionTerm;
 use portcullis::kernel::{Kernel, Verdict};
 use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome, VerdictSink};
 use portcullis::{CapabilityLevel, GradedExposureGuard, Operation, ToolCallGuard};
@@ -989,60 +987,7 @@ pub async fn run_mcp_server(state: Arc<AppState>) -> Result<(), crate::ApiError>
 
 /// Build an [`ActionTerm`] from an `(Operation, subject)` pair.
 ///
-/// Maps each operation to its corresponding [`PrimitiveAction`] variant
-/// and constructs a minimal term for kernel evaluation (#1187).
+/// Delegates to the canonical [`ActionTerm::from_operation`] (#1292).
 fn build_action_term(operation: Operation, subject: &str) -> ActionTerm {
-    let action = match operation {
-        Operation::ReadFiles => PrimitiveAction::ReadFile {
-            path: subject.to_string(),
-        },
-        Operation::WriteFiles => PrimitiveAction::WriteFile {
-            path: subject.to_string(),
-        },
-        Operation::EditFiles => PrimitiveAction::EditFile {
-            path: subject.to_string(),
-            patch: String::new(),
-        },
-        Operation::RunBash => PrimitiveAction::RunCommand {
-            command: subject.to_string(),
-        },
-        Operation::GlobSearch => PrimitiveAction::GlobSearch {
-            pattern: subject.to_string(),
-        },
-        Operation::GrepSearch => PrimitiveAction::GlobSearch {
-            pattern: subject.to_string(),
-        },
-        Operation::WebSearch => PrimitiveAction::WebSearch {
-            query: subject.to_string(),
-        },
-        Operation::WebFetch => PrimitiveAction::WebFetch {
-            url: subject.to_string(),
-        },
-        Operation::GitCommit => PrimitiveAction::GitCommit {
-            message: subject.to_string(),
-        },
-        Operation::GitPush => PrimitiveAction::GitPush {
-            remote: subject.to_string(),
-            branch: String::new(),
-        },
-        Operation::CreatePr => PrimitiveAction::CreatePr {
-            title: subject.to_string(),
-        },
-        Operation::ManagePods | Operation::SpawnAgent => PrimitiveAction::SpawnAgent {
-            endpoint: subject.to_string(),
-            payload_bytes: 0,
-        },
-    };
-
-    ActionTerm {
-        task: None,
-        action,
-        inputs: vec![],
-        authority: CapabilityRequest::new(operation, CapabilityLevel::LowRisk),
-        proposed_effect: ProposedEffect::CommandExecution {
-            command: subject.to_string(),
-            disposition: EffectDisposition::Proposed,
-        },
-        obligations: vec![], // derive_obligations() is authoritative
-    }
+    ActionTerm::from_operation(operation, subject)
 }

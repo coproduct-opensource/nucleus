@@ -398,6 +398,65 @@ impl ActionTerm {
             _ => None,
         }
     }
+
+    /// Construct an ActionTerm from a legacy `(Operation, subject)` pair (#1292).
+    ///
+    /// Maps each Operation variant to its corresponding PrimitiveAction and
+    /// builds a minimal term for kernel evaluation. This is the canonical
+    /// conversion used by all call sites migrating from `Kernel::decide()`
+    /// to `Kernel::decide_term()`.
+    pub fn from_operation(operation: Operation, subject: &str) -> Self {
+        let action = match operation {
+            Operation::ReadFiles => PrimitiveAction::ReadFile {
+                path: subject.to_string(),
+            },
+            Operation::WriteFiles => PrimitiveAction::WriteFile {
+                path: subject.to_string(),
+            },
+            Operation::EditFiles => PrimitiveAction::EditFile {
+                path: subject.to_string(),
+                patch: String::new(),
+            },
+            Operation::RunBash => PrimitiveAction::RunCommand {
+                command: subject.to_string(),
+            },
+            Operation::GlobSearch | Operation::GrepSearch => PrimitiveAction::GlobSearch {
+                pattern: subject.to_string(),
+            },
+            Operation::WebSearch => PrimitiveAction::WebSearch {
+                query: subject.to_string(),
+            },
+            Operation::WebFetch => PrimitiveAction::WebFetch {
+                url: subject.to_string(),
+            },
+            Operation::GitCommit => PrimitiveAction::GitCommit {
+                message: subject.to_string(),
+            },
+            Operation::GitPush => PrimitiveAction::GitPush {
+                remote: subject.to_string(),
+                branch: String::new(),
+            },
+            Operation::CreatePr => PrimitiveAction::CreatePr {
+                title: subject.to_string(),
+            },
+            Operation::ManagePods | Operation::SpawnAgent => PrimitiveAction::SpawnAgent {
+                endpoint: subject.to_string(),
+                payload_bytes: 0,
+            },
+        };
+
+        Self {
+            task: None,
+            action,
+            inputs: vec![],
+            authority: CapabilityRequest::new(operation, CapabilityLevel::LowRisk),
+            proposed_effect: ProposedEffect::CommandExecution {
+                command: subject.to_string(),
+                disposition: EffectDisposition::Proposed,
+            },
+            obligations: vec![],
+        }
+    }
 }
 
 /// Pure preflight context used to validate an [`ActionTerm`].
