@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_types)] // #1216: migration pending
+#![allow(clippy::disallowed_types)] // #1216 MIGRATION TARGET: agent-facing file/glob I/O (#1273)
 //! MCP server mode for nucleus-tool-proxy.
 //!
 //! When `--mcp` is passed, the tool-proxy serves the Model Context Protocol

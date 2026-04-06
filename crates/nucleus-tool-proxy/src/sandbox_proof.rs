@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_types)] // #1216: migration pending
+#![allow(clippy::disallowed_types)] // #1216 exempt: TLS cert loading at startup
 //! Cryptographic sandbox proof verification.
 //!
 //! Tool-proxy refuses to start unless it can cryptographically prove it's
