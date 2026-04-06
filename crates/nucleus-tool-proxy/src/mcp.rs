@@ -991,3 +991,135 @@ pub async fn run_mcp_server(state: Arc<AppState>) -> Result<(), crate::ApiError>
 fn build_action_term(operation: Operation, subject: &str) -> ActionTerm {
     ActionTerm::from_operation(operation, subject)
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Tests — enforcement boundary coverage (#1295)
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── build_action_term coverage ──────────────────────────────────────
+
+    #[test]
+    fn build_term_read_files() {
+        let term = build_action_term(Operation::ReadFiles, "/workspace/main.rs");
+        assert_eq!(term.operation(), Operation::ReadFiles);
+        assert_eq!(term.subject(), "/workspace/main.rs");
+    }
+
+    #[test]
+    fn build_term_write_files() {
+        let term = build_action_term(Operation::WriteFiles, "/workspace/output.txt");
+        assert_eq!(term.operation(), Operation::WriteFiles);
+    }
+
+    #[test]
+    fn build_term_run_bash() {
+        let term = build_action_term(Operation::RunBash, "cargo test");
+        assert_eq!(term.operation(), Operation::RunBash);
+        assert_eq!(term.subject(), "cargo test");
+    }
+
+    #[test]
+    fn build_term_web_fetch() {
+        let term = build_action_term(Operation::WebFetch, "https://example.com");
+        assert_eq!(term.operation(), Operation::WebFetch);
+    }
+
+    #[test]
+    fn build_term_git_push() {
+        let term = build_action_term(Operation::GitPush, "origin");
+        assert_eq!(term.operation(), Operation::GitPush);
+    }
+
+    #[test]
+    fn build_term_git_commit() {
+        let term = build_action_term(Operation::GitCommit, "fix: update config");
+        assert_eq!(term.operation(), Operation::GitCommit);
+    }
+
+    #[test]
+    fn build_term_glob_search() {
+        let term = build_action_term(Operation::GlobSearch, "src/**/*.rs");
+        assert_eq!(term.operation(), Operation::GlobSearch);
+    }
+
+    #[test]
+    fn build_term_grep_search_maps_to_glob() {
+        // GrepSearch maps to GlobSearch PrimitiveAction (same file-pattern semantic)
+        let term = build_action_term(Operation::GrepSearch, "TODO");
+        assert_eq!(term.operation(), Operation::GlobSearch);
+    }
+
+    #[test]
+    fn build_term_create_pr() {
+        let term = build_action_term(Operation::CreatePr, "feat: add feature");
+        assert_eq!(term.operation(), Operation::CreatePr);
+    }
+
+    #[test]
+    fn build_term_spawn_agent() {
+        let term = build_action_term(Operation::SpawnAgent, "http://child-agent");
+        assert_eq!(term.operation(), Operation::SpawnAgent);
+    }
+
+    #[test]
+    fn build_term_manage_pods() {
+        let term = build_action_term(Operation::ManagePods, "pod-123");
+        assert_eq!(term.operation(), Operation::SpawnAgent); // ManagePods maps to SpawnAgent
+    }
+
+    // ── ActionTerm derives correct obligations ─────────────────────────
+
+    #[test]
+    fn read_term_derives_path_allowed() {
+        let term = build_action_term(Operation::ReadFiles, "/workspace/file.rs");
+        let obs = term.derive_obligations();
+        assert!(
+            obs.iter()
+                .any(|o| matches!(o, portcullis::action_term::ProofObligation::PathAllowed)),
+            "ReadFiles should derive PathAllowed"
+        );
+    }
+
+    #[test]
+    fn web_fetch_term_does_not_derive_path_allowed() {
+        let term = build_action_term(Operation::WebFetch, "https://example.com");
+        let obs = term.derive_obligations();
+        assert!(
+            !obs.iter()
+                .any(|o| matches!(o, portcullis::action_term::ProofObligation::PathAllowed)),
+            "WebFetch should NOT derive PathAllowed"
+        );
+    }
+
+    #[test]
+    fn all_terms_derive_delegation_ceiling() {
+        // Every operation should derive WithinDelegationCeiling
+        let ops = [
+            Operation::ReadFiles,
+            Operation::WriteFiles,
+            Operation::RunBash,
+            Operation::WebFetch,
+            Operation::GitPush,
+            Operation::GitCommit,
+            Operation::GlobSearch,
+            Operation::GrepSearch,
+            Operation::CreatePr,
+            Operation::SpawnAgent,
+        ];
+        for op in ops {
+            let term = build_action_term(op, "test");
+            let obs = term.derive_obligations();
+            assert!(
+                obs.iter().any(|o| matches!(
+                    o,
+                    portcullis::action_term::ProofObligation::WithinDelegationCeiling
+                )),
+                "{op:?} should derive WithinDelegationCeiling"
+            );
+        }
+    }
+}
