@@ -586,6 +586,93 @@ impl CapabilityLatticeBuilder {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// BTreeMap bridge — generic capability access (#1286)
+// ═══════════════════════════════════════════════════════════════════════════
+
+impl CapabilityLattice {
+    /// All 13 capability dimension names.
+    pub const DIMENSION_NAMES: [&'static str; 13] = [
+        "read_files",
+        "write_files",
+        "edit_files",
+        "run_bash",
+        "glob_search",
+        "grep_search",
+        "web_search",
+        "web_fetch",
+        "git_commit",
+        "git_push",
+        "create_pr",
+        "manage_pods",
+        "spawn_agent",
+    ];
+
+    /// Get a capability level by string key.
+    ///
+    /// Returns `None` for unrecognized keys. Integrators who need custom
+    /// dimensions should use the `BTreeMap` bridge.
+    pub fn get(&self, key: &str) -> Option<CapabilityLevel> {
+        match key {
+            "read_files" => Some(self.read_files),
+            "write_files" => Some(self.write_files),
+            "edit_files" => Some(self.edit_files),
+            "run_bash" => Some(self.run_bash),
+            "glob_search" => Some(self.glob_search),
+            "grep_search" => Some(self.grep_search),
+            "web_search" => Some(self.web_search),
+            "web_fetch" => Some(self.web_fetch),
+            "git_commit" => Some(self.git_commit),
+            "git_push" => Some(self.git_push),
+            "create_pr" => Some(self.create_pr),
+            "manage_pods" => Some(self.manage_pods),
+            "spawn_agent" => Some(self.spawn_agent),
+            _ => None,
+        }
+    }
+
+    /// Set a capability level by string key. Returns `false` for unknown keys.
+    pub fn set(&mut self, key: &str, level: CapabilityLevel) -> bool {
+        match key {
+            "read_files" => self.read_files = level,
+            "write_files" => self.write_files = level,
+            "edit_files" => self.edit_files = level,
+            "run_bash" => self.run_bash = level,
+            "glob_search" => self.glob_search = level,
+            "grep_search" => self.grep_search = level,
+            "web_search" => self.web_search = level,
+            "web_fetch" => self.web_fetch = level,
+            "git_commit" => self.git_commit = level,
+            "git_push" => self.git_push = level,
+            "create_pr" => self.create_pr = level,
+            "manage_pods" => self.manage_pods = level,
+            "spawn_agent" => self.spawn_agent = level,
+            _ => return false,
+        }
+        true
+    }
+
+    /// Convert to a BTreeMap for generic/dynamic access.
+    pub fn to_map(&self) -> std::collections::BTreeMap<&'static str, CapabilityLevel> {
+        let mut m = std::collections::BTreeMap::new();
+        for &name in &Self::DIMENSION_NAMES {
+            if let Some(level) = self.get(name) {
+                m.insert(name, level);
+            }
+        }
+        m
+    }
+
+    /// Construct from a BTreeMap. Missing keys default to `Never`.
+    pub fn from_map(map: &std::collections::BTreeMap<&str, CapabilityLevel>) -> Self {
+        let mut lattice = Self::bottom();
+        for (&key, &level) in map {
+            lattice.set(key, level);
+        }
+        lattice
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Operation enum — the 12 core operations (Aeneas-translatable)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2398,6 +2485,52 @@ mod tests {
             .spawn_agent(CapabilityLevel::Always)
             .build();
         assert_eq!(p, CapabilityLattice::top());
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // BTreeMap bridge (#1286)
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn to_map_has_13_entries() {
+        let lattice = CapabilityLattice::default();
+        let map = lattice.to_map();
+        assert_eq!(map.len(), 13);
+    }
+
+    #[test]
+    fn from_map_roundtrip() {
+        let original = CapabilityLattice::for_codegen();
+        let map = original.to_map();
+        let restored = CapabilityLattice::from_map(&map);
+        assert_eq!(original, restored);
+    }
+
+    #[test]
+    fn from_map_missing_keys_default_to_never() {
+        let map = std::collections::BTreeMap::new();
+        let lattice = CapabilityLattice::from_map(&map);
+        assert_eq!(lattice, CapabilityLattice::bottom());
+    }
+
+    #[test]
+    fn get_set_by_string_key() {
+        let mut lattice = CapabilityLattice::bottom();
+        assert_eq!(lattice.get("run_bash"), Some(CapabilityLevel::Never));
+        assert!(lattice.set("run_bash", CapabilityLevel::Always));
+        assert_eq!(lattice.get("run_bash"), Some(CapabilityLevel::Always));
+    }
+
+    #[test]
+    fn get_unknown_key_returns_none() {
+        let lattice = CapabilityLattice::default();
+        assert_eq!(lattice.get("unknown_capability"), None);
+    }
+
+    #[test]
+    fn set_unknown_key_returns_false() {
+        let mut lattice = CapabilityLattice::default();
+        assert!(!lattice.set("unknown_capability", CapabilityLevel::Always));
     }
 
     // ════════════════════════════════════════════════════════════════════
