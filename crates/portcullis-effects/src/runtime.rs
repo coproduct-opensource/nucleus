@@ -634,13 +634,36 @@ impl NucleusRuntime {
 
     // ── Internal helpers ────────────────────────────────────────────────
 
-    /// Build an `ActionTerm` for the given operation and sink.
+    /// Build an `ActionTerm` with real IFC labels from the FlowTracker (#1346).
+    ///
+    /// Collects source labels from all tracked nodes and uses the session's
+    /// highest taint as the artifact label. This ensures the discharge checks
+    /// (IntegrityGate, NoAdversarialAncestry, DerivationClear) operate on
+    /// actual session state, not fabricated defaults.
     fn build_term(&self, operation: Operation, sink_class: SinkClass) -> ActionTerm {
+        // Collect source labels from all tracked nodes
+        let mut source_labels = Vec::new();
+        for node_id in 1..=self.flow_tracker.node_count() as u64 {
+            if let Some(label) = self.flow_tracker.label(node_id) {
+                source_labels.push(*label);
+            }
+        }
+
+        // Artifact label: join of all source labels (most restrictive composite)
+        let artifact_label = if source_labels.is_empty() {
+            IFCLabel::default()
+        } else {
+            source_labels
+                .iter()
+                .skip(1)
+                .fold(source_labels[0], |acc, l| acc.join(*l))
+        };
+
         ActionTerm {
             operation,
             sink_class,
-            source_labels: vec![],
-            artifact_label: IFCLabel::default(),
+            source_labels,
+            artifact_label,
             subject: self.task.clone(),
             estimated_cost_micro_usd: 0,
         }
