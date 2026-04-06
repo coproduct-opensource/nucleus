@@ -159,6 +159,26 @@ impl PolicyProfile {
             lattice,
         }
     }
+
+    /// Remove a capability from this profile (#1298).
+    ///
+    /// Returns a [`ComposedPolicy`] with the named capability set to `Never`.
+    ///
+    /// ```rust
+    /// use portcullis_effects::runtime::{PolicyProfile, RuntimeCapability};
+    ///
+    /// let policy = PolicyProfile::Research.without(RuntimeCapability::WebSearch);
+    /// assert!(policy.allows(RuntimeCapability::WebFetch));   // still has fetch
+    /// assert!(!policy.allows(RuntimeCapability::WebSearch));  // removed
+    /// ```
+    pub fn without(self, cap: RuntimeCapability) -> ComposedPolicy {
+        let mut lattice = self.to_lattice();
+        cap.set_never(&mut lattice);
+        ComposedPolicy {
+            base: self,
+            lattice,
+        }
+    }
 }
 
 impl std::fmt::Display for PolicyProfile {
@@ -199,6 +219,12 @@ impl ComposedPolicy {
     /// Add another capability to this composed policy.
     pub fn with(mut self, cap: RuntimeCapability) -> Self {
         cap.raise(&mut self.lattice, CapabilityLevel::Always);
+        self
+    }
+
+    /// Remove a capability from this composed policy (#1298).
+    pub fn without(mut self, cap: RuntimeCapability) -> Self {
+        cap.set_never(&mut self.lattice);
         self
     }
 
@@ -744,7 +770,17 @@ impl RuntimeCapability {
 
     /// Raise this capability to the given level in a lattice (join semantics).
     pub fn raise(self, lattice: &mut CapabilityLattice, level: CapabilityLevel) {
-        let field = match self {
+        let field = self.field_mut(lattice);
+        *field = (*field).join(level);
+    }
+
+    /// Set this capability to `Never` in the lattice (#1298).
+    pub fn set_never(self, lattice: &mut CapabilityLattice) {
+        *self.field_mut(lattice) = CapabilityLevel::Never;
+    }
+
+    fn field_mut(self, lattice: &mut CapabilityLattice) -> &mut CapabilityLevel {
+        match self {
             Self::ReadFiles => &mut lattice.read_files,
             Self::WriteFiles => &mut lattice.write_files,
             Self::EditFiles => &mut lattice.edit_files,
@@ -754,8 +790,7 @@ impl RuntimeCapability {
             Self::GitCommit => &mut lattice.git_commit,
             Self::GitPush => &mut lattice.git_push,
             Self::CreatePr => &mut lattice.create_pr,
-        };
-        *field = (*field).join(level);
+        }
     }
 }
 
@@ -1244,6 +1279,33 @@ mod tests {
     fn composed_base_profile_preserved() {
         let policy = PolicyProfile::Research.with(RuntimeCapability::RunBash);
         assert_eq!(policy.base_profile(), PolicyProfile::Research);
+    }
+
+    #[test]
+    fn profile_without_removes_capability() {
+        let policy = PolicyProfile::Research.without(RuntimeCapability::WebSearch);
+        assert!(policy.allows(RuntimeCapability::WebFetch)); // still has fetch
+        assert!(policy.allows(RuntimeCapability::ReadFiles)); // still has read
+        assert!(!policy.allows(RuntimeCapability::WebSearch)); // removed
+    }
+
+    #[test]
+    fn composed_without_chains() {
+        let policy = PolicyProfile::Codegen
+            .without(RuntimeCapability::RunBash)
+            .without(RuntimeCapability::GitCommit);
+        assert!(policy.allows(RuntimeCapability::WriteFiles)); // still has write
+        assert!(!policy.allows(RuntimeCapability::RunBash)); // removed
+        assert!(!policy.allows(RuntimeCapability::GitCommit)); // removed
+    }
+
+    #[test]
+    fn with_then_without() {
+        // Add then remove — net effect is removal
+        let policy = PolicyProfile::ReadOnly
+            .with(RuntimeCapability::RunBash)
+            .without(RuntimeCapability::RunBash);
+        assert!(!policy.allows(RuntimeCapability::RunBash));
     }
 
     #[test]
