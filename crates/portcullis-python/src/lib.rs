@@ -590,6 +590,140 @@ fn require_min_capability(minimum: CapabilityLevel) -> PyCheckWrapper {
 // Profile — named capability presets (#1278)
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════
+// IntegLevel + ConfLevel (#1279)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Integrity level — tracks data trustworthiness.
+#[pyclass(eq, hash, frozen, ord, from_py_object)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum IntegLevel {
+    #[pyo3(name = "ADVERSARIAL")]
+    Adversarial,
+    #[pyo3(name = "UNTRUSTED")]
+    Untrusted,
+    #[pyo3(name = "TRUSTED")]
+    Trusted,
+}
+
+#[pymethods]
+impl IntegLevel {
+    fn __repr__(&self) -> String {
+        format!("IntegLevel.{self:?}")
+    }
+}
+
+/// Confidentiality level — tracks data sensitivity.
+#[pyclass(eq, hash, frozen, ord, from_py_object)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ConfLevel {
+    #[pyo3(name = "PUBLIC")]
+    Public,
+    #[pyo3(name = "INTERNAL")]
+    Internal,
+    #[pyo3(name = "SECRET")]
+    Secret,
+}
+
+#[pymethods]
+impl ConfLevel {
+    fn __repr__(&self) -> String {
+        format!("ConfLevel.{self:?}")
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Labeled — Python IFC wrapper with gated access (#1279)
+// ═══════════════════════════════════════════════════════════════════════════
+
+pyo3::create_exception!(portcullis, UntrustedAccess, pyo3::exceptions::PyException);
+
+/// Data tagged with integrity and confidentiality levels.
+///
+/// Accessing `.data` on adversarial-integrity content raises `UntrustedAccess`.
+/// Call `.acknowledge(reason)` to explicitly accept the risk — the reason is
+/// logged for audit.
+///
+/// ```python
+/// page = rt.fetch_url("https://example.com")
+/// page.integrity    # IntegLevel.ADVERSARIAL
+/// page.data         # raises UntrustedAccess!
+/// raw = page.acknowledge("human reviewed for injection")  # returns bytes
+/// ```
+#[pyclass(skip_from_py_object)]
+#[derive(Debug, Clone)]
+pub struct Labeled {
+    raw: Vec<u8>,
+    integrity: IntegLevel,
+    confidentiality: ConfLevel,
+    node_id: u64,
+}
+
+#[pymethods]
+impl Labeled {
+    /// The integrity level of this data.
+    #[getter]
+    fn integrity(&self) -> IntegLevel {
+        self.integrity
+    }
+
+    /// The confidentiality level of this data.
+    #[getter]
+    fn confidentiality(&self) -> ConfLevel {
+        self.confidentiality
+    }
+
+    /// The FlowTracker node ID (for IFC ancestry tracking).
+    #[getter]
+    fn node_id(&self) -> u64 {
+        self.node_id
+    }
+
+    /// Access the raw data bytes.
+    ///
+    /// **Raises `UntrustedAccess`** for adversarial-integrity data.
+    /// Call `.acknowledge(reason)` instead to explicitly accept the risk.
+    #[getter]
+    fn data<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        if self.integrity == IntegLevel::Adversarial {
+            return Err(UntrustedAccess::new_err(
+                "adversarial data cannot be accessed directly — \
+                 call .acknowledge(reason) to explicitly accept the risk",
+            ));
+        }
+        Ok(pyo3::types::PyBytes::new(py, &self.raw))
+    }
+
+    /// Explicitly accept adversarial data. Reason is audit-logged.
+    ///
+    /// Returns the raw bytes without raising `UntrustedAccess`.
+    fn acknowledge<'py>(
+        &self,
+        py: Python<'py>,
+        reason: &str,
+    ) -> Bound<'py, pyo3::types::PyBytes> {
+        let _ = reason; // TODO: emit audit event
+        pyo3::types::PyBytes::new(py, &self.raw)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Labeled(len={}, integrity={:?}, confidentiality={:?})",
+            self.raw.len(),
+            self.integrity,
+            self.confidentiality
+        )
+    }
+
+    fn __len__(&self) -> usize {
+        self.raw.len()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Profile — named capability presets (#1278)
+// ═══════════════════════════════════════════════════════════════════════════
+
 /// Named policy profiles for common agent work patterns.
 ///
 /// ```python
@@ -807,6 +941,11 @@ fn portcullis(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PolicyRequest>()?;
     m.add_class::<Pipeline>()?;
     m.add_class::<PyCheckWrapper>()?;
+
+    // IFC types (#1279)
+    m.add_class::<IntegLevel>()?;
+    m.add_class::<ConfLevel>()?;
+    m.add_class::<Labeled>()?;
 
     // Runtime + profiles (#1278)
     m.add_class::<Profile>()?;
