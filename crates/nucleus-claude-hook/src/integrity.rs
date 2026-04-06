@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_types)] // #1216: migration pending
+#![allow(clippy::disallowed_types)] // #1216 exempt: binary validation at startup, before any agent interaction
 //! Binary self-integrity verification (#946).
 //!
 //! At startup, compute SHA-256 of the running binary and compare against

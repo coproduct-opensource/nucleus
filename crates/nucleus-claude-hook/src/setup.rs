@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_types)] // #1216: migration pending
+#![allow(clippy::disallowed_types)] // #1216 exempt: CLI --setup command, operator-initiated
 //! `--setup` and `--uninstall` commands for managing Claude Code integration.
 
 use crate::session::session_dir;

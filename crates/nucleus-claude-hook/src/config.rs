@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_types)] // #1216: migration pending
+#![allow(clippy::disallowed_types)] // #1216 exempt: reads policy config before kernel exists
 //! Profile resolution and config loading.
 //!
 //! Extracted from main.rs to stay under the line ratchet ceiling.
