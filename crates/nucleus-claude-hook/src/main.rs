@@ -13,10 +13,12 @@ use portcullis::kernel::{Kernel, Verdict};
 use portcullis::manifest_registry::ManifestRegistry;
 use portcullis::receipt_sign::{receipt_hash, sign_receipt};
 use portcullis::{Operation, PermissionLattice};
+use portcullis_core::discharge::{
+    preflight_action, ActionTerm as DischargeActionTerm, PreflightResult,
+};
+use portcullis_core::{default_sink_class, flow::NodeKind, receipt::build_receipt, IFCLabel};
 
 mod term_builder;
-use portcullis_core::flow::NodeKind;
-use portcullis_core::receipt::build_receipt;
 use ring::rand::SystemRandom;
 use ring::signature::Ed25519KeyPair;
 
@@ -1258,6 +1260,29 @@ fn main() {
     let parents = leaves.parents_for(obs_kind);
     let (decision, _token) = kernel.decide_with_parents(operation, &subject, &parents);
     let exposure_count = decision.exposure_transition.post_count;
+
+    // ── IFC discharge gate (#1351) ─────────────────────────────────────
+    // Run preflight_action as a secondary check. The Kernel gates
+    // capabilities and exposure; preflight_action gates IFC integrity,
+    // derivation, adversarial ancestry, and budget. If the Kernel
+    // allows but preflight denies, the overall decision is deny.
+    let ifc_source_labels: Vec<IFCLabel> = if session.web_tainted {
+        vec![IFCLabel {
+            integrity: portcullis_core::IntegLevel::Adversarial,
+            ..IFCLabel::default()
+        }]
+    } else {
+        vec![]
+    };
+    let discharge_term = DischargeActionTerm {
+        operation,
+        sink_class: default_sink_class(operation),
+        source_labels: ifc_source_labels,
+        artifact_label: IFCLabel::default(),
+        subject: subject.clone(),
+        estimated_cost_micro_usd: 0,
+    };
+    let ifc_result = preflight_action(&discharge_term);
     let t_decide = t_decide_start.elapsed();
 
     // Get or create the session's signing key.
@@ -1415,8 +1440,22 @@ fn main() {
         eprintln!("{msg}");
         protocol::HookOutput::deny(reason)
     } else {
-        match decision.verdict {
-            Verdict::Allow => {
+        match (&decision.verdict, &ifc_result) {
+            // IFC gate overrides Kernel allow: if preflight_action denies,
+            // the operation is blocked regardless of Kernel verdict (#1351).
+            (Verdict::Allow, PreflightResult::Denied { reason, hint }) => {
+                session.high_water_mark += 1;
+                save_session(&input.session_id, &session);
+                let repair_msg = format!("IFC discharge denied: {reason}\nRepair hint: {hint}");
+                nucleus_deny!("{repair_msg}");
+                HookOutput::deny(repair_msg)
+            }
+            (Verdict::Allow, PreflightResult::RequiresApproval { reason }) => {
+                session.high_water_mark += 1;
+                save_session(&input.session_id, &session);
+                HookOutput::ask(format!("nucleus IFC: {reason}"))
+            }
+            (Verdict::Allow, PreflightResult::Allowed(_)) => {
                 // Persist: operation will execute — track in both exposure and flow graph
                 session
                     .allowed_ops
@@ -1506,14 +1545,14 @@ fn main() {
                 save_session(&input.session_id, &session);
                 HookOutput::allow_with_context(context)
             }
-            Verdict::RequiresApproval => {
+            (Verdict::RequiresApproval, _) => {
                 session.high_water_mark += 1;
                 save_session(&input.session_id, &session);
                 HookOutput::ask(format!(
                     "nucleus: exposure {exposure_count}/3 — requires human approval"
                 ))
             }
-            Verdict::Deny(ref reason) => {
+            (Verdict::Deny(ref reason), _) => {
                 // Do NOT persist op: operation was blocked.
                 // Still increment HWM — denied ops prove the session existed.
                 session.high_water_mark += 1;
@@ -1524,7 +1563,7 @@ fn main() {
                     compartment.as_ref().map(|c| c.to_string()).as_deref(),
                 ))
             }
-        } // match decision.verdict
+        } // match (decision.verdict, ifc_result)
     }; // provenance_deny else
 
     // NUCLEUS_TIMING=1: emit phase breakdown to stderr (#522)
