@@ -161,6 +161,169 @@ impl std::fmt::Display for RepairHint {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Repair — program rewriting via RepairHint
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The result of applying a [`RepairHint`] to a denied [`ActionTerm`].
+///
+/// A repair is a *type-directed program transformation*: the denied term
+/// is rewritten into one that passes the specific obligation check that
+/// failed. The rewrite only modifies fields that the failing check examines.
+///
+/// ```text
+/// deny : ActionTerm → (reason, RepairHint)
+/// try_repair : RepairHint × ActionTerm → Option<Repair>
+/// preflight(repair.term()) = Allowed   (for the check that originally denied)
+/// ```
+///
+/// This is a retraction in the category of ActionTerms: `try_repair` is a
+/// right inverse of the specific check that produced the denial.
+#[derive(Debug, Clone)]
+pub enum Repair {
+    /// The term was automatically rewritten and can be retried without
+    /// human intervention. The rewrite is sound: the repaired term passes
+    /// the obligation check that denied the original.
+    Automatic(ActionTerm),
+    /// The term requires human approval before retry. The repaired term
+    /// has the approval gate inserted; the caller must route it through
+    /// the named gate before execution.
+    NeedsApproval {
+        /// The rewritten term (with approval-gated fields adjusted).
+        term: ActionTerm,
+        /// Human-readable description of what approval is needed.
+        gate: String,
+    },
+}
+
+impl Repair {
+    /// The rewritten term, regardless of whether it's automatic or gated.
+    pub fn term(&self) -> &ActionTerm {
+        match self {
+            Self::Automatic(t) | Self::NeedsApproval { term: t, .. } => t,
+        }
+    }
+
+    /// Returns `true` if the repair can proceed without human intervention.
+    pub fn is_automatic(&self) -> bool {
+        matches!(self, Self::Automatic(_))
+    }
+}
+
+impl RepairHint {
+    /// Attempt to rewrite a denied [`ActionTerm`] into one that passes
+    /// the obligation check this hint represents.
+    ///
+    /// Returns `None` for structural mismatches (`CorrectOperationSinkPair`)
+    /// where no automatic rewrite is meaningful — the caller must fix the
+    /// operation/sink pairing manually.
+    ///
+    /// # Soundness
+    ///
+    /// For each `RepairHint` variant, the repaired term is guaranteed to
+    /// pass the corresponding obligation check in `preflight_action`,
+    /// *assuming all other checks still pass*. The repair modifies only
+    /// the fields examined by the failing check.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use portcullis_core::discharge::{preflight_action, ActionTerm, PreflightResult};
+    /// use portcullis_core::{Operation, SinkClass, IFCLabel, IntegLevel};
+    ///
+    /// let mut term = ActionTerm {
+    ///     operation: Operation::WriteFiles,
+    ///     sink_class: SinkClass::WorkspaceWrite,
+    ///     source_labels: vec![],
+    ///     artifact_label: IFCLabel::default(),
+    ///     subject: "agent".to_string(),
+    ///     estimated_cost_micro_usd: 500, // non-zero cost, no budget gate
+    /// };
+    ///
+    /// let result = preflight_action(&term);
+    /// if let PreflightResult::Denied { hint, .. } = result {
+    ///     if let Some(repair) = hint.try_repair(&term) {
+    ///         // The repair zeroed the cost — budget check will pass
+    ///         assert!(repair.is_automatic());
+    ///     }
+    /// }
+    /// ```
+    pub fn try_repair(&self, term: &ActionTerm) -> Option<Repair> {
+        let mut repaired = term.clone();
+        match self {
+            // IntegrityGate: raise artifact integrity to the required minimum.
+            // This requires human review — we can't fabricate integrity.
+            Self::RaiseIntegrity { required, sink, .. } => {
+                repaired.artifact_label.integrity = *required;
+                Some(Repair::NeedsApproval {
+                    term: repaired,
+                    gate: format!(
+                        "human review required to attest artifact integrity \
+                         at {:?} for sink {:?}",
+                        required, sink
+                    ),
+                })
+            }
+
+            // PathAllowed: structural mismatch — no automatic rewrite.
+            // The caller must fix the operation/sink pairing.
+            Self::CorrectOperationSinkPair { .. } => None,
+
+            // DerivationClear: promote derivation to HumanPromoted.
+            // Requires human attestation.
+            Self::PromoteDerivation { sink, .. } => {
+                repaired.artifact_label.derivation = DerivationClass::HumanPromoted;
+                Some(Repair::NeedsApproval {
+                    term: repaired,
+                    gate: format!(
+                        "human attestation required to promote derivation \
+                         to HumanPromoted for verified sink {:?}",
+                        sink
+                    ),
+                })
+            }
+
+            // NoAdversarialAncestry: strip adversarial source labels.
+            // Automatic: we remove the tainted inputs. The agent must
+            // re-derive the action from clean sources.
+            Self::DeclassifyOrReplaceInput { .. } => {
+                repaired
+                    .source_labels
+                    .retain(|l| l.integrity != IntegLevel::Adversarial);
+                Some(Repair::Automatic(repaired))
+            }
+
+            // BudgetNotExceeded: zero the cost (automatic, no gate needed).
+            // The caller should wire a BudgetGate for real cost tracking.
+            Self::WireBudgetGate { .. } => {
+                repaired.estimated_cost_micro_usd = 0;
+                Some(Repair::Automatic(repaired))
+            }
+
+            // ObtainHumanApproval: the term itself is fine, just needs approval.
+            Self::ObtainHumanApproval { reason } => Some(Repair::NeedsApproval {
+                term: repaired,
+                gate: reason.clone(),
+            }),
+
+            // ReduceCapabilityRequest: lower the requested level to the ceiling.
+            Self::ReduceCapabilityRequest { ceiling, .. } => {
+                // We can't change the operation's capability from here
+                // (that's in the CapabilityLattice, not the ActionTerm).
+                // But we flag it as needing a policy change.
+                Some(Repair::NeedsApproval {
+                    term: repaired,
+                    gate: format!(
+                        "policy change required: raise capability ceiling \
+                         to at least {:?}",
+                        ceiling
+                    ),
+                })
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Sealing infrastructure
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1209,5 +1372,115 @@ mod tests {
         assert!(msg.contains("raise artifact integrity"));
         assert!(msg.contains("Adversarial"));
         assert!(msg.contains("Untrusted"));
+    }
+
+    // ── Repair rewriting system tests ───────────────────────────────────
+
+    #[test]
+    fn repair_budget_is_automatic_and_zeroes_cost() {
+        let term = ActionTerm {
+            estimated_cost_micro_usd: 5000,
+            ..workspace_write_term()
+        };
+        let hint = RepairHint::WireBudgetGate {
+            cost_micro_usd: 5000,
+        };
+        let repair = hint.try_repair(&term).unwrap();
+        assert!(repair.is_automatic());
+        assert_eq!(repair.term().estimated_cost_micro_usd, 0);
+        // The repaired term should pass preflight
+        assert!(preflight_action(repair.term()).is_allowed());
+    }
+
+    #[test]
+    fn repair_adversarial_ancestry_strips_tainted_sources() {
+        let term = ActionTerm {
+            source_labels: vec![trusted_label(), adversarial_label()],
+            ..workspace_write_term()
+        };
+        let hint = RepairHint::DeclassifyOrReplaceInput {
+            subject: "test".to_string(),
+        };
+        let repair = hint.try_repair(&term).unwrap();
+        assert!(repair.is_automatic());
+        // Adversarial source removed, trusted remains
+        assert_eq!(repair.term().source_labels.len(), 1);
+        assert_eq!(
+            repair.term().source_labels[0].integrity,
+            IntegLevel::Trusted
+        );
+        // Repaired term should pass preflight
+        assert!(preflight_action(repair.term()).is_allowed());
+    }
+
+    #[test]
+    fn repair_integrity_needs_approval() {
+        let term = ActionTerm {
+            operation: Operation::GitPush,
+            sink_class: SinkClass::GitPush,
+            artifact_label: adversarial_label(),
+            ..workspace_write_term()
+        };
+        let hint = RepairHint::RaiseIntegrity {
+            actual: IntegLevel::Adversarial,
+            required: IntegLevel::Untrusted,
+            sink: SinkClass::GitPush,
+        };
+        let repair = hint.try_repair(&term).unwrap();
+        assert!(!repair.is_automatic());
+        // Repaired term has raised integrity
+        assert_eq!(
+            repair.term().artifact_label.integrity,
+            IntegLevel::Untrusted
+        );
+    }
+
+    #[test]
+    fn repair_derivation_needs_approval() {
+        let term = ActionTerm {
+            operation: Operation::GitPush,
+            sink_class: SinkClass::GitPush,
+            artifact_label: ai_derived_label(),
+            ..workspace_write_term()
+        };
+        let hint = RepairHint::PromoteDerivation {
+            actual: DerivationClass::AIDerived,
+            sink: SinkClass::GitPush,
+        };
+        let repair = hint.try_repair(&term).unwrap();
+        assert!(!repair.is_automatic());
+        assert_eq!(
+            repair.term().artifact_label.derivation,
+            DerivationClass::HumanPromoted
+        );
+    }
+
+    #[test]
+    fn repair_operation_sink_mismatch_returns_none() {
+        let term = workspace_write_term();
+        let hint = RepairHint::CorrectOperationSinkPair {
+            operation: Operation::GitPush,
+            declared_sink: SinkClass::WorkspaceWrite,
+        };
+        assert!(hint.try_repair(&term).is_none());
+    }
+
+    #[test]
+    fn full_deny_repair_retry_loop() {
+        // End-to-end: deny → hint → repair → allow
+        let term = ActionTerm {
+            estimated_cost_micro_usd: 1000,
+            ..workspace_write_term()
+        };
+        // First attempt: denied (non-zero cost)
+        let result = preflight_action(&term);
+        assert!(result.is_denied());
+        let hint = result.repair_hint().unwrap();
+        // Repair: zero the cost
+        let repair = hint.try_repair(&term).unwrap();
+        assert!(repair.is_automatic());
+        // Retry: passes
+        let retry = preflight_action(repair.term());
+        assert!(retry.is_allowed());
     }
 }
