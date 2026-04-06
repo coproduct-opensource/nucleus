@@ -648,6 +648,14 @@ impl Profile {
         Ok(ComposedProfile { inner: composed })
     }
 
+    /// Remove a capability from this profile.
+    fn without_capability(&self, capability: &str) -> PyResult<ComposedProfile> {
+        let cap = parse_capability(capability)?;
+        let rust_profile: portcullis_effects::runtime::PolicyProfile = (*self).into();
+        let composed = rust_profile.without(cap);
+        Ok(ComposedProfile { inner: composed })
+    }
+
     /// Compose with another profile (lattice join).
     fn __add__(&self, other: Profile) -> ComposedProfile {
         let a: portcullis_effects::runtime::PolicyProfile = (*self).into();
@@ -676,6 +684,14 @@ impl ComposedProfile {
         let cap = parse_capability(capability)?;
         Ok(ComposedProfile {
             inner: self.inner.clone().with(cap),
+        })
+    }
+
+    /// Remove a capability.
+    fn without_capability(&self, capability: &str) -> PyResult<ComposedProfile> {
+        let cap = parse_capability(capability)?;
+        Ok(ComposedProfile {
+            inner: self.inner.clone().without(cap),
         })
     }
 
