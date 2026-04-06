@@ -722,6 +722,82 @@ impl NucleusRuntime {
     }
 
     // ═══════════════════════════════════════════════════════════════════
+    // Cross-agent delegation (#1335)
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Spawn a child runtime with narrowed capabilities (#1335).
+    ///
+    /// Enforces the delegation ceiling: child ≤ parent on every dimension.
+    /// The child also inherits the parent's session taint and confidentiality
+    /// ceilings, preventing taint laundering through agent delegation.
+    ///
+    /// Returns `Err` if the child profile exceeds the parent on any dimension.
+    ///
+    /// ```rust
+    /// use portcullis_effects::runtime::{NucleusRuntime, PolicyProfile};
+    ///
+    /// let parent = NucleusRuntime::builder()
+    ///     .profile(PolicyProfile::Codegen)
+    ///     .build();
+    ///
+    /// // ReadOnly ≤ Codegen → OK
+    /// let child = parent.spawn_child(PolicyProfile::ReadOnly, "review code");
+    /// assert!(child.is_ok());
+    ///
+    /// // Review has git_push, Codegen doesn't → DENIED
+    /// let child = parent.spawn_child(PolicyProfile::Review, "push changes");
+    /// assert!(child.is_err());
+    /// ```
+    pub fn spawn_child(
+        &self,
+        child_profile: PolicyProfile,
+        task: impl Into<String>,
+    ) -> Result<NucleusRuntime, RuntimeError> {
+        let child_lattice = child_profile.to_lattice();
+        let parent_lattice = &self.policy;
+
+        // Check every dimension: child ≤ parent
+        for &dim in &CapabilityLattice::DIMENSION_NAMES {
+            let child_level = child_lattice.get(dim).unwrap_or(CapabilityLevel::Never);
+            let parent_level = parent_lattice.get(dim).unwrap_or(CapabilityLevel::Never);
+            if child_level > parent_level {
+                return Err(RuntimeError::Denied {
+                    attempted: format!("spawn child with {child_profile}"),
+                    reason: format!(
+                        "delegation violation: child has {dim}={child_level:?} \
+                         but parent has {dim}={parent_level:?}"
+                    ),
+                    suggestion: format!(
+                        "use a profile where {dim} ≤ {:?}, or narrow with .without()",
+                        parent_level
+                    ),
+                });
+            }
+        }
+
+        // Child inherits parent's taint and conf ceilings
+        let mut child = NucleusRuntime::builder()
+            .profile(child_profile)
+            .task(task)
+            .build();
+
+        // Propagate session ceilings — child starts at parent's level
+        // (monotonic: child can only raise, never lower)
+        if self.flow_tracker.is_tainted() || self.has_confidential_data() {
+            // Observe a sentinel node to raise the child's ceilings
+            // to match the parent's. This uses the WebContent kind which
+            // raises both taint ceiling (OpaqueExternal) and conf ceiling.
+            // A more precise approach would set ceilings directly, but
+            // the FlowTracker API only allows raising via observation.
+            let _ = child
+                .flow_tracker_mut()
+                .observe(portcullis_core::flow::NodeKind::WebContent);
+        }
+
+        Ok(child)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
     // Typed context bridge — opt-in compile-time capability checking
     // ═══════════════════════════════════════════════════════════════════
 
@@ -1527,4 +1603,51 @@ mod tests {
     //         Ok(())
     //     });
     // }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Cross-agent delegation tests (#1335)
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn spawn_child_read_only_under_codegen() {
+        let parent = NucleusRuntime::builder()
+            .profile(PolicyProfile::Codegen)
+            .build();
+        let child = parent.spawn_child(PolicyProfile::ReadOnly, "review");
+        assert!(child.is_ok());
+        let child = child.unwrap();
+        assert!(child.can(RuntimeCapability::ReadFiles));
+        assert!(!child.can(RuntimeCapability::WriteFiles)); // ReadOnly has no write
+    }
+
+    #[test]
+    fn spawn_child_rejects_escalation() {
+        let parent = NucleusRuntime::builder()
+            .profile(PolicyProfile::ReadOnly)
+            .build();
+        // Codegen has write + bash — exceeds ReadOnly
+        let child = parent.spawn_child(PolicyProfile::Codegen, "generate");
+        assert!(child.is_err());
+        let err = child.unwrap_err();
+        assert!(matches!(err, RuntimeError::Denied { .. }));
+    }
+
+    #[test]
+    fn spawn_child_review_under_codegen_rejected() {
+        let parent = NucleusRuntime::builder()
+            .profile(PolicyProfile::Codegen)
+            .build();
+        // Review has git_push + create_pr — Codegen doesn't
+        let child = parent.spawn_child(PolicyProfile::Review, "review and push");
+        assert!(child.is_err());
+    }
+
+    #[test]
+    fn spawn_child_same_profile_ok() {
+        let parent = NucleusRuntime::builder()
+            .profile(PolicyProfile::Research)
+            .build();
+        let child = parent.spawn_child(PolicyProfile::Research, "more research");
+        assert!(child.is_ok());
+    }
 }
