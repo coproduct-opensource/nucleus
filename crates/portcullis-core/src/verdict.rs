@@ -711,4 +711,176 @@ mod tests {
         assert!(matches!(lhs, Decision::Allow));
         assert!(matches!(rhs, Decision::Allow));
     }
+
+    // ── Bilattice completeness property tests (#1155) ───────────────────
+
+    /// All 4 values for exhaustive testing.
+    fn all_decisions() -> [Decision; 4] {
+        [
+            Decision::Allow,
+            deny("test"),
+            Decision::RequiresApproval,
+            quarantined("conflict"),
+        ]
+    }
+
+    #[test]
+    fn truth_meet_is_commutative() {
+        for a in &all_decisions() {
+            for b in &all_decisions() {
+                assert_eq!(
+                    a.truth_meet(b).truth_rank(),
+                    b.truth_meet(a).truth_rank(),
+                    "truth_meet not commutative for {a:?}, {b:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn truth_join_is_commutative() {
+        for a in &all_decisions() {
+            for b in &all_decisions() {
+                assert_eq!(
+                    a.truth_join(b).truth_rank(),
+                    b.truth_join(a).truth_rank(),
+                    "truth_join not commutative for {a:?}, {b:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn truth_meet_is_associative() {
+        for a in &all_decisions() {
+            for b in &all_decisions() {
+                for c in &all_decisions() {
+                    let lhs = a.truth_meet(b).truth_meet(c);
+                    let rhs = a.truth_meet(&b.truth_meet(c));
+                    assert_eq!(
+                        lhs.truth_rank(),
+                        rhs.truth_rank(),
+                        "truth_meet not associative for {a:?}, {b:?}, {c:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn truth_join_is_associative() {
+        for a in &all_decisions() {
+            for b in &all_decisions() {
+                for c in &all_decisions() {
+                    let lhs = a.truth_join(b).truth_join(c);
+                    let rhs = a.truth_join(&b.truth_join(c));
+                    assert_eq!(
+                        lhs.truth_rank(),
+                        rhs.truth_rank(),
+                        "truth_join not associative for {a:?}, {b:?}, {c:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn truth_meet_is_idempotent() {
+        for a in &all_decisions() {
+            assert_eq!(
+                a.truth_meet(a).truth_rank(),
+                a.truth_rank(),
+                "truth_meet not idempotent for {a:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn truth_join_is_idempotent() {
+        for a in &all_decisions() {
+            assert_eq!(
+                a.truth_join(a).truth_rank(),
+                a.truth_rank(),
+                "truth_join not idempotent for {a:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn negate_is_involution() {
+        for a in &all_decisions() {
+            assert_eq!(
+                a.negate().negate().truth_rank(),
+                a.truth_rank(),
+                "negate not involution for {a:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn de_morgan_truth_meet_exhaustive() {
+        // ¬(a ∧_t b) = (¬a) ∨_t (¬b)
+        for a in &all_decisions() {
+            for b in &all_decisions() {
+                let lhs = a.truth_meet(b).negate();
+                let rhs = a.negate().truth_join(&b.negate());
+                assert_eq!(
+                    lhs.truth_rank(),
+                    rhs.truth_rank(),
+                    "De Morgan (meet) failed for {a:?}, {b:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn de_morgan_truth_join_exhaustive() {
+        // ¬(a ∨_t b) = (¬a) ∧_t (¬b)
+        for a in &all_decisions() {
+            for b in &all_decisions() {
+                let lhs = a.truth_join(b).negate();
+                let rhs = a.negate().truth_meet(&b.negate());
+                assert_eq!(
+                    lhs.truth_rank(),
+                    rhs.truth_rank(),
+                    "De Morgan (join) failed for {a:?}, {b:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn info_join_never_loses_information() {
+        for a in &all_decisions() {
+            for b in &all_decisions() {
+                let joined = a.info_join(b);
+                assert!(
+                    joined.info_rank() >= a.info_rank(),
+                    "info_join lost info: {a:?} ⊔_k {b:?} = {joined:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn deny_is_truth_bottom() {
+        // Deny is the bottom of the truth ordering
+        for a in &all_decisions() {
+            assert!(
+                deny("x").truth_rank() <= a.truth_rank(),
+                "Deny should be ≤_t {a:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn allow_is_truth_top() {
+        // Allow is the top of the truth ordering
+        for a in &all_decisions() {
+            assert!(
+                Decision::Allow.truth_rank() >= a.truth_rank(),
+                "Allow should be ≥_t {a:?}"
+            );
+        }
+    }
 }
