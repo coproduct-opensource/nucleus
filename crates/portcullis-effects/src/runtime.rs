@@ -39,6 +39,31 @@ use crate::{
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
+// UnmediatedAccess — sealed token for escape hatch (#1264)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Sealed token proving the caller explicitly opted into unmediated effect
+/// access at builder time.
+///
+/// Cannot be constructed outside this module — the private `_seal` field
+/// prevents external creation. The only way to obtain one is through
+/// [`NucleusRuntimeBuilder::allow_unmediated_access`].
+///
+/// Same sealing pattern as `Discharged<O>` in `portcullis-core`.
+#[derive(Debug)]
+pub struct UnmediatedAccess {
+    _seal: Seal,
+}
+
+struct Seal;
+
+impl std::fmt::Debug for Seal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Seal")
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // PolicyProfile — named capability presets
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -452,16 +477,18 @@ impl NucleusRuntime {
     /// use portcullis_effects::runtime::{NucleusRuntime, PolicyProfile};
     /// use portcullis_effects::FileEffect;
     ///
-    /// let rt = NucleusRuntime::builder()
+    /// let (builder, token) = NucleusRuntime::builder()
     ///     .profile(PolicyProfile::Codegen)
-    ///     .build();
+    ///     .allow_unmediated_access();
+    /// let rt = builder.build();
     ///
     /// // Prefer: rt.read_file(path) — runs discharge + IFC
     /// // Only use this when you manage discharge externally:
-    /// let fx = rt.unmediated_effects();
+    /// let fx = rt.unmediated_effects(&token);
     /// ```
     pub fn unmediated_effects(
         &self,
+        _token: &UnmediatedAccess,
     ) -> impl FileEffect + WebEffect + ShellEffect + GitEffect + AgentSpawnEffect + '_ {
         production_effects(self.policy.clone())
     }
@@ -801,6 +828,17 @@ impl NucleusRuntimeBuilder {
         self
     }
 
+    /// Explicitly opt into unmediated effect access (#1264).
+    ///
+    /// Returns `(self, UnmediatedAccess)` — the token is required by
+    /// [`NucleusRuntime::unmediated_effects`]. This opt-in is visible
+    /// in code review and auditable.
+    ///
+    /// Most code should NOT call this. Use the mediated methods instead.
+    pub fn allow_unmediated_access(self) -> (Self, UnmediatedAccess) {
+        (self, UnmediatedAccess { _seal: Seal })
+    }
+
     /// Build the `NucleusRuntime`.
     pub fn build(self) -> NucleusRuntime {
         let policy = self
@@ -976,10 +1014,11 @@ mod tests {
     fn effects_respect_policy() {
         use crate::FileEffect;
 
-        let rt = NucleusRuntime::builder()
+        let (builder, token) = NucleusRuntime::builder()
             .profile(PolicyProfile::ReadOnly)
-            .build();
-        let fx = rt.unmediated_effects();
+            .allow_unmediated_access();
+        let rt = builder.build();
+        let fx = rt.unmediated_effects(&token);
 
         // Read should be policy-allowed (may fail on I/O, but not on policy)
         let result = fx.write(std::path::Path::new("/tmp/test"), b"data");
