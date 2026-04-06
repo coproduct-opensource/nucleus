@@ -1323,4 +1323,116 @@ mod tests {
             CapabilityLevel::Never
         );
     }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Full pipeline enforcement tests (#1295)
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn write_file_denied_by_path_allowlist() {
+        let mut rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Codegen)
+            .allowed_write_paths(["/allowed/dir"])
+            .build();
+        let result = rt.write_file(std::path::Path::new("/etc/passwd"), b"data");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("outside allowed write paths"));
+    }
+
+    #[test]
+    fn git_push_denied_by_codegen_profile_via_discharge() {
+        // Codegen has git_commit but NOT git_push
+        let mut rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Codegen)
+            .build();
+        let result = rt.git_push("origin", "main");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn git_commit_allowed_by_codegen_profile() {
+        let mut rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Codegen)
+            .build();
+        // git_commit may fail on I/O (no repo) but should NOT fail on policy
+        let result = rt.git_commit("test commit");
+        if let Err(RuntimeError::Denied { .. }) = &result {
+            panic!("git_commit should not be denied by Codegen profile");
+        }
+    }
+
+    #[test]
+    fn run_shell_allowed_by_codegen_profile() {
+        let mut rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Codegen)
+            .build();
+        // run_shell may fail on I/O but should NOT fail on policy
+        let result = rt.run_shell("echo test");
+        if let Err(RuntimeError::Denied { .. }) = &result {
+            panic!("run_shell should not be denied by Codegen profile");
+        }
+    }
+
+    #[test]
+    fn read_file_returns_labeled_with_correct_tags() {
+        let mut rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Codegen)
+            .build();
+        let result = rt.read_file(std::path::Path::new("Cargo.toml"));
+        if let Ok(output) = result {
+            assert_eq!(
+                output.data().integrity_level(),
+                portcullis_core::IntegLevel::Trusted
+            );
+            assert_eq!(
+                output.data().conf_level(),
+                portcullis_core::ConfLevel::Internal
+            );
+        }
+    }
+
+    #[test]
+    fn session_tracks_taint_after_operations() {
+        let mut rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Codegen)
+            .build();
+        assert!(!rt.is_tainted());
+        assert_eq!(rt.flow_tracker().node_count(), 0);
+
+        // Read a file — should add a node
+        if rt.read_file(std::path::Path::new("Cargo.toml")).is_ok() {
+            assert_eq!(rt.flow_tracker().node_count(), 1);
+            assert!(rt.has_confidential_data()); // FileRead is Internal
+        }
+    }
+
+    #[test]
+    fn permissive_all_caps_via_can() {
+        let rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Permissive)
+            .build();
+        for cap in [
+            RuntimeCapability::ReadFiles,
+            RuntimeCapability::WriteFiles,
+            RuntimeCapability::RunBash,
+            RuntimeCapability::WebFetch,
+            RuntimeCapability::GitPush,
+            RuntimeCapability::CreatePr,
+        ] {
+            assert!(rt.can(cap), "Permissive should allow {cap:?}");
+        }
+    }
+
+    #[test]
+    fn strict_profile_denies_bash_and_push() {
+        let rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Strict)
+            .build();
+        // Strict = default lattice: run_bash=Never, git_push=Never
+        assert!(!rt.can(RuntimeCapability::RunBash));
+        assert!(!rt.can(RuntimeCapability::GitPush));
+        // But allows reads
+        assert!(rt.can(RuntimeCapability::ReadFiles));
+    }
 }
