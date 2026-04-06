@@ -281,11 +281,12 @@ fn main() {
     // This means a broken/crashing hook doesn't brick the session — it gracefully
     // degrades to standard Claude Code permission prompts.
     //
-    // For production/CISO mode: set NUCLEUS_FAIL_CLOSED=1 to make infrastructure
-    // errors blocking (exit 2). This is the paranoid setting.
-    let fail_closed = std::env::var("NUCLEUS_FAIL_CLOSED")
-        .map(|v| v == "1")
-        .unwrap_or(false);
+    // Default: fail-closed. Infrastructure errors block the operation (#1361).
+    // Set NUCLEUS_FAIL_OPEN=1 to gracefully degrade to Claude Code prompts
+    // in development environments where a broken hook shouldn't brick the session.
+    let fail_closed = std::env::var("NUCLEUS_FAIL_OPEN")
+        .map(|v| v != "1")
+        .unwrap_or(true);
 
     let stdin = io::stdin();
     let line = match stdin.lock().lines().next() {
@@ -294,7 +295,7 @@ fn main() {
             eprintln!("nucleus: no input on stdin — falling through to Claude Code defaults");
             if fail_closed {
                 let out = HookOutput::deny(
-                    "nucleus: no hook input — failing closed (NUCLEUS_FAIL_CLOSED=1)",
+                    "nucleus: no hook input — failing closed (set NUCLEUS_FAIL_OPEN=1 to override)",
                 );
                 println!("{}", serde_json::to_string(&out).unwrap());
                 exit_codes::ExitCode::Deny.exit();
