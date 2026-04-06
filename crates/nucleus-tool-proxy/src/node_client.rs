@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_types)] // #1216: migration pending
 //! HTTP client for nucleus-node pod management.
 //!
 //! Used by orchestrator pods to create and manage sub-pods via

@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_types)] // #1216: migration pending
 //! Integration test: verify nucleus-tool-proxy exits with code 78 (EX_CONFIG)
 //! when launched outside a managed sandbox (no SPIFFE socket, no sandbox token,
 //! no identity cert).

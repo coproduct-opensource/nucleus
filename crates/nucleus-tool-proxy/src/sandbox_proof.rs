@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_types)] // #1216: migration pending
 //! Cryptographic sandbox proof verification.
 //!
 //! Tool-proxy refuses to start unless it can cryptographically prove it's

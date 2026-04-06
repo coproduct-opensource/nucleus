@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_types)] // #1216: migration pending
 //! `nucleus-claude-hook --status` — rich, parseable session & config summary.
 //!
 //! Replaces the minimal status output with structured information about

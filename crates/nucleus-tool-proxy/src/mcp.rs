@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_types)] // #1216: migration pending
 //! MCP server mode for nucleus-tool-proxy.
 //!
 //! When `--mcp` is passed, the tool-proxy serves the Model Context Protocol

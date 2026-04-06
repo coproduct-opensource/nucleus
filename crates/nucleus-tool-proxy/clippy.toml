@@ -1,0 +1,8 @@
+# Enforcement completeness (#1216): all I/O must go through portcullis-effects.
+disallowed-types = [
+    { path = "std::fs::File", reason = "use portcullis_effects::FileEffect" },
+    { path = "std::fs::OpenOptions", reason = "use portcullis_effects::FileEffect" },
+    { path = "std::process::Command", reason = "use portcullis_effects::ShellEffect" },
+    { path = "tokio::process::Command", reason = "use portcullis_effects::ShellEffect" },
+    { path = "reqwest::Client", reason = "use portcullis_effects::WebEffect" },
+]

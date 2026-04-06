@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_types)] // #1216: migration pending
 //! Profile resolution and config loading.
 //!
 //! Extracted from main.rs to stay under the line ratchet ceiling.

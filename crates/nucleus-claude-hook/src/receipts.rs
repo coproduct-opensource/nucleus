@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_types)] // #1216: migration pending
 //! Receipt persistence — append-only JSONL audit trail.
 //!
 //! Extracted from `main.rs` to reduce module size.

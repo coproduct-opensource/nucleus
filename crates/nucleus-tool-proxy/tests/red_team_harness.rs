@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_types)] // #1216: migration pending
 //! Red-Team Harness: Claude vs. Portcullis
 //!
 //! Uses Claude as an adversarial red-team agent trying to exfiltrate planted

@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_types)] // #1216: migration pending
 //! Claude Code PreToolUse hook backed by the Nucleus verified permission kernel.
 //!
 //! This binary reads JSON from stdin (Claude Code hook protocol), runs the
