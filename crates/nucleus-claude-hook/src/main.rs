@@ -163,12 +163,13 @@ fn main() {
         }
         Ok(cli::CliCommand::ResetSession { session_id }) => {
             let state_path = session_state_path(&session_id);
-            let hwm_path = session_hwm_path(&session_id);
             if state_path.exists() {
                 std::fs::remove_file(&state_path).ok();
-                std::fs::remove_file(&hwm_path).ok();
+                // HWM file intentionally preserved (#1364) — it survives
+                // state deletion for tamper detection. An agent cannot
+                // erase evidence that a session existed.
                 println!("nucleus: session '{session_id}' reset — taint cleared");
-                println!("nucleus: Note: receipt chain preserved for audit");
+                println!("nucleus: Note: HWM and receipt chain preserved for audit");
             } else {
                 println!("nucleus: no session found for '{session_id}'");
             }
