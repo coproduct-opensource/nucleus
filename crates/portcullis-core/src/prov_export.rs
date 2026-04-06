@@ -150,6 +150,8 @@ fn prov_category(kind: NodeKind) -> ProvCategory {
         | NodeKind::Retry => ProvCategory::Activity,
         // Agents: principals
         NodeKind::UserPrompt => ProvCategory::Agent,
+        // Custom kinds default to Entity (data that exists)
+        NodeKind::Custom(_) => ProvCategory::Entity,
     }
 }
 
@@ -208,6 +210,7 @@ fn node_kind_str(kind: NodeKind) -> &'static str {
         NodeKind::ImageContent => "ImageContent",
         NodeKind::AudioContent => "AudioContent",
         NodeKind::PDFContent => "PDFContent",
+        NodeKind::Custom(name) => name,
     }
 }
 

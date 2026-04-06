@@ -161,6 +161,8 @@ pub fn source_category(kind: NodeKind) -> SourceCategory {
         | NodeKind::Secret
         | NodeKind::Summarization
         | NodeKind::Retry => SourceCategory::Model,
+        // Custom kinds default to Adversarial (most conservative)
+        NodeKind::Custom(_) => SourceCategory::Adversarial,
     }
 }
 

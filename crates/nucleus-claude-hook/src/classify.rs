@@ -407,6 +407,7 @@ pub(crate) fn node_kind_to_u8(kind: NodeKind) -> u8 {
         NodeKind::ImageContent => 17,
         NodeKind::AudioContent => 18,
         NodeKind::PDFContent => 19,
+        NodeKind::Custom(_) => 255,
     }
 }
 
@@ -513,7 +514,8 @@ impl LeafTracker {
             | NodeKind::CachedDatum
             | NodeKind::ImageContent
             | NodeKind::AudioContent
-            | NodeKind::PDFContent => &mut self.adversarial,
+            | NodeKind::PDFContent
+            | NodeKind::Custom(_) => &mut self.adversarial,
             NodeKind::OutboundAction | NodeKind::MemoryWrite => &mut self.action,
             NodeKind::ModelPlan
             | NodeKind::ToolResponse
@@ -554,7 +556,8 @@ impl LeafTracker {
             | NodeKind::CachedDatum
             | NodeKind::ImageContent
             | NodeKind::AudioContent
-            | NodeKind::PDFContent => {
+            | NodeKind::PDFContent
+            | NodeKind::Custom(_) => {
                 // External/untrusted content enters independently
                 self.adversarial.clone()
             }
