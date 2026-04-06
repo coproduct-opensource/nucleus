@@ -1052,6 +1052,128 @@ pub struct ZkFlowInput {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// zkVM guest verification (#1134) — check IFC noninterference on a flow snapshot
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Verification result from `verify_noninterference`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum VerificationResult {
+    /// The computed verdict matches the expected verdict.
+    Confirmed,
+    /// The computed verdict differs from the expected verdict.
+    Mismatch {
+        computed: FlowVerdict,
+        expected: FlowVerdict,
+    },
+    /// The action node ID was not found in the graph.
+    ActionNodeNotFound,
+    /// A parent reference points to a nonexistent node.
+    BrokenParentRef { node_id: NodeId, parent_id: NodeId },
+}
+
+/// Verify IFC noninterference on a flow graph snapshot (#1134).
+///
+/// Walks the causal DAG, propagates labels from parents to children
+/// (Denning's lemma), then evaluates `check_flow` on the action node.
+/// Returns whether the computed verdict matches the expected verdict.
+///
+/// This is the core function called by the zkVM guest. It is pure
+/// (no I/O, no allocation beyond the input) and deterministic.
+///
+/// ```rust
+/// use portcullis_core::flow::*;
+/// use portcullis_core::*;
+///
+/// let source = FlowNode {
+///     id: 1, kind: NodeKind::FileRead,
+///     label: intrinsic_label(NodeKind::FileRead, 1000),
+///     parent_count: 0, parents: [0; MAX_PARENTS],
+///     operation: None, sink_class: None, effect_kind: None,
+/// };
+/// let action = FlowNode {
+///     id: 2, kind: NodeKind::OutboundAction,
+///     label: IFCLabel {
+///         authority: AuthorityLevel::Directive,
+///         integrity: IntegLevel::Trusted,
+///         confidentiality: ConfLevel::Internal,
+///         freshness: Freshness { observed_at: 1000, ttl_secs: 0 },
+///         provenance: ProvenanceSet::SYSTEM,
+///         derivation: DerivationClass::Deterministic,
+///     },
+///     parent_count: 1, parents: { let mut p = [0; MAX_PARENTS]; p[0] = 1; p },
+///     operation: Some(Operation::WriteFiles),
+///     sink_class: Some(SinkClass::WorkspaceWrite),
+///     effect_kind: None,
+/// };
+/// let input = ZkFlowInput {
+///     action_node_id: 2,
+///     expected_verdict: FlowVerdict::Allow,
+///     nodes: vec![source, action],
+/// };
+/// assert_eq!(verify_noninterference(&input), VerificationResult::Confirmed);
+/// ```
+pub fn verify_noninterference(input: &ZkFlowInput) -> VerificationResult {
+    // Build an ID→index map for parent lookups.
+    let mut id_to_idx: std::collections::BTreeMap<NodeId, usize> =
+        std::collections::BTreeMap::new();
+    for (i, node) in input.nodes.iter().enumerate() {
+        id_to_idx.insert(node.id, i);
+    }
+
+    // Find the action node.
+    let action_idx = match id_to_idx.get(&input.action_node_id) {
+        Some(&idx) => idx,
+        None => return VerificationResult::ActionNodeNotFound,
+    };
+
+    // Propagate labels through the DAG: for each node, join parent labels
+    // with the node's intrinsic label. Process in ID order (topological for
+    // well-formed DAGs where parent IDs < child IDs).
+    let mut propagated_labels: Vec<IFCLabel> = input.nodes.iter().map(|n| n.label).collect();
+
+    for (i, node) in input.nodes.iter().enumerate() {
+        let mut parent_labels = Vec::new();
+        for p in 0..node.parent_count as usize {
+            let parent_id = node.parents[p];
+            if parent_id == 0 {
+                continue; // sentinel
+            }
+            match id_to_idx.get(&parent_id) {
+                Some(&pidx) => parent_labels.push(propagated_labels[pidx]),
+                None => {
+                    return VerificationResult::BrokenParentRef {
+                        node_id: node.id,
+                        parent_id,
+                    };
+                }
+            }
+        }
+        if !parent_labels.is_empty() {
+            propagated_labels[i] = propagate_label(&parent_labels, node.label);
+        }
+    }
+
+    // Build the action node with the propagated label and check flow.
+    let action_node = FlowNode {
+        label: propagated_labels[action_idx],
+        ..input.nodes[action_idx]
+    };
+
+    let now = action_node.label.freshness.observed_at;
+    let computed = check_flow(&action_node, now);
+
+    if computed == input.expected_verdict {
+        VerificationResult::Confirmed
+    } else {
+        VerificationResult::Mismatch {
+            computed,
+            expected: input.expected_verdict,
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1644,5 +1766,166 @@ mod tests {
         assert_eq!(input.expected_verdict, FlowVerdict::Allow);
         // Private: the full node list
         assert_eq!(input.nodes.len(), 1);
+    }
+
+    // ── verify_noninterference tests (#1134) ────────────────────────────
+
+    fn make_source_node(id: NodeId, kind: NodeKind) -> FlowNode {
+        let label = intrinsic_label(kind, 1000);
+        FlowNode {
+            id,
+            kind,
+            label,
+            parent_count: 0,
+            parents: [0; MAX_PARENTS],
+            operation: None,
+            sink_class: None,
+            effect_kind: None,
+        }
+    }
+
+    fn make_action_node(
+        id: NodeId,
+        parent_ids: &[NodeId],
+        op: Operation,
+        sink: SinkClass,
+    ) -> FlowNode {
+        let mut parents = [0u64; MAX_PARENTS];
+        for (i, &pid) in parent_ids.iter().enumerate() {
+            parents[i] = pid;
+        }
+        // Action nodes need Directive authority to satisfy all sinks.
+        let label = IFCLabel {
+            authority: AuthorityLevel::Directive,
+            integrity: IntegLevel::Trusted,
+            confidentiality: ConfLevel::Internal,
+            freshness: Freshness {
+                observed_at: 1000,
+                ttl_secs: 0,
+            },
+            provenance: ProvenanceSet::SYSTEM,
+            derivation: DerivationClass::Deterministic,
+        };
+        FlowNode {
+            id,
+            kind: NodeKind::OutboundAction,
+            label,
+            parent_count: parent_ids.len() as u8,
+            parents,
+            operation: Some(op),
+            sink_class: Some(sink),
+            effect_kind: None,
+        }
+    }
+
+    #[test]
+    fn verify_clean_write_allowed() {
+        let source = make_source_node(1, NodeKind::FileRead);
+        let action = make_action_node(2, &[1], Operation::WriteFiles, SinkClass::WorkspaceWrite);
+        let input = ZkFlowInput {
+            action_node_id: 2,
+            expected_verdict: FlowVerdict::Allow,
+            nodes: vec![source, action],
+        };
+        assert_eq!(
+            verify_noninterference(&input),
+            VerificationResult::Confirmed
+        );
+    }
+
+    #[test]
+    fn verify_web_tainted_write_denied() {
+        let web = make_source_node(1, NodeKind::WebContent);
+        let action = make_action_node(2, &[1], Operation::GitPush, SinkClass::GitPush);
+        let input = ZkFlowInput {
+            action_node_id: 2,
+            // Web content has None authority — AuthorityEscalation fires before IntegrityViolation
+            expected_verdict: FlowVerdict::Deny(FlowDenyReason::AuthorityEscalation),
+            nodes: vec![web, action],
+        };
+        assert_eq!(
+            verify_noninterference(&input),
+            VerificationResult::Confirmed
+        );
+    }
+
+    #[test]
+    fn verify_mismatch_detected() {
+        let web = make_source_node(1, NodeKind::WebContent);
+        let action = make_action_node(2, &[1], Operation::GitPush, SinkClass::GitPush);
+        let input = ZkFlowInput {
+            action_node_id: 2,
+            expected_verdict: FlowVerdict::Allow, // wrong — should be Deny
+            nodes: vec![web, action],
+        };
+        match verify_noninterference(&input) {
+            VerificationResult::Mismatch { computed, expected } => {
+                assert!(matches!(computed, FlowVerdict::Deny(_)));
+                assert_eq!(expected, FlowVerdict::Allow);
+            }
+            other => panic!("expected Mismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_action_not_found() {
+        let node = make_source_node(1, NodeKind::FileRead);
+        let input = ZkFlowInput {
+            action_node_id: 99, // doesn't exist
+            expected_verdict: FlowVerdict::Allow,
+            nodes: vec![node],
+        };
+        assert_eq!(
+            verify_noninterference(&input),
+            VerificationResult::ActionNodeNotFound
+        );
+    }
+
+    #[test]
+    fn verify_broken_parent_ref() {
+        let action = make_action_node(2, &[99], Operation::WriteFiles, SinkClass::WorkspaceWrite);
+        let input = ZkFlowInput {
+            action_node_id: 2,
+            expected_verdict: FlowVerdict::Allow,
+            nodes: vec![action],
+        };
+        assert_eq!(
+            verify_noninterference(&input),
+            VerificationResult::BrokenParentRef {
+                node_id: 2,
+                parent_id: 99
+            }
+        );
+    }
+
+    #[test]
+    fn verify_transitive_taint_propagation() {
+        // web → intermediate → action: taint should flow transitively
+        let web = make_source_node(1, NodeKind::WebContent);
+        let intermediate = FlowNode {
+            id: 2,
+            kind: NodeKind::ModelPlan,
+            label: IFCLabel::default(),
+            parent_count: 1,
+            parents: {
+                let mut p = [0; MAX_PARENTS];
+                p[0] = 1;
+                p
+            },
+            operation: None,
+            sink_class: None,
+            effect_kind: None,
+        };
+        let action = make_action_node(3, &[2], Operation::GitPush, SinkClass::GitPush);
+        let input = ZkFlowInput {
+            action_node_id: 3,
+            // Web content's None authority propagates transitively
+            expected_verdict: FlowVerdict::Deny(FlowDenyReason::AuthorityEscalation),
+            nodes: vec![web, intermediate, action],
+        };
+        assert_eq!(
+            verify_noninterference(&input),
+            VerificationResult::Confirmed
+        );
     }
 }
