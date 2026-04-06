@@ -439,6 +439,7 @@ impl From<EffectError> for RuntimeError {
 pub struct NucleusRuntime {
     profile: PolicyProfile,
     policy: CapabilityLattice,
+    effects: crate::PolicyEnforced<crate::RealEffects>,
     task: String,
     flow_tracker: FlowTracker,
     allowed_write_paths: Vec<PathBuf>,
@@ -516,7 +517,7 @@ impl NucleusRuntime {
         &self,
         _token: &UnmediatedAccess,
     ) -> impl FileEffect + WebEffect + ShellEffect + GitEffect + AgentSpawnEffect + '_ {
-        production_effects(self.policy.clone())
+        production_effects(self.policy.clone()) // unmediated: fresh instance for isolation
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -536,7 +537,7 @@ impl NucleusRuntime {
         let term = self.build_term(Operation::ReadFiles, SinkClass::AuditLogAppend);
         self.discharge(&term)?;
 
-        let fx = production_effects(self.policy.clone());
+        let fx = &self.effects;
         let data = fx
             .read(path)
             .map_err(|e| self.translate_error(e, "read file", path))?;
@@ -563,7 +564,7 @@ impl NucleusRuntime {
         let term = self.build_term(Operation::WriteFiles, SinkClass::WorkspaceWrite);
         self.discharge(&term)?;
 
-        let fx = production_effects(self.policy.clone());
+        let fx = &self.effects;
         fx.write(path, content)
             .map_err(|e| self.translate_error(e, "write file", path))
     }
@@ -581,7 +582,7 @@ impl NucleusRuntime {
         let term = self.build_term(Operation::WebFetch, SinkClass::HTTPEgress);
         self.discharge(&term)?;
 
-        let fx = production_effects(self.policy.clone());
+        let fx = &self.effects;
         let data = fx.fetch(url).map_err(RuntimeError::from)?;
 
         let node_id = self
@@ -603,7 +604,7 @@ impl NucleusRuntime {
         let term = self.build_term(Operation::RunBash, SinkClass::BashExec);
         self.discharge(&term)?;
 
-        let fx = production_effects(self.policy.clone());
+        let fx = &self.effects;
         let output = fx.run(cmd).map_err(RuntimeError::from)?;
         Ok(ShellResult {
             data: Labeled::new(output),
@@ -615,7 +616,7 @@ impl NucleusRuntime {
         let term = self.build_term(Operation::GitCommit, SinkClass::GitCommit);
         self.discharge(&term)?;
 
-        let fx = production_effects(self.policy.clone());
+        let fx = &self.effects;
         let hash = fx.commit(message).map_err(RuntimeError::from)?;
         Ok(CommitOutput {
             hash: Labeled::new(hash),
@@ -627,7 +628,7 @@ impl NucleusRuntime {
         let term = self.build_term(Operation::GitPush, SinkClass::GitPush);
         self.discharge(&term)?;
 
-        let fx = production_effects(self.policy.clone());
+        let fx = &self.effects;
         fx.push(remote, branch).map_err(RuntimeError::from)
     }
 
@@ -880,9 +881,11 @@ impl NucleusRuntimeBuilder {
             .custom_policy
             .unwrap_or_else(|| self.profile.to_lattice());
 
+        let effects = crate::production_effects_concrete(policy.clone());
         NucleusRuntime {
             profile: self.profile,
             policy,
+            effects,
             task: self.task,
             flow_tracker: FlowTracker::new(),
             allowed_write_paths: self.allowed_write_paths,
