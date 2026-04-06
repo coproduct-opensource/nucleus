@@ -29,8 +29,14 @@
 //! fetch_url(&review_ctx);
 //! ```
 
-/// Sealed trait module — prevents external implementations.
-mod sealed {
+/// Sealed trait module.
+///
+/// `pub` visibility is required for the `caps![]` macro to reference it
+/// from external crates. The `Sealed` trait itself prevents external
+/// implementations — only types created by `caps![]` or defined in this
+/// module can implement it.
+pub mod sealed {
+    /// Sealing supertrait — prevents external capability set implementations.
     pub trait Sealed {}
 }
 
@@ -116,6 +122,60 @@ impl HasGitCommit for FullAccess {}
 impl HasGitPush for FullAccess {}
 impl HasCreatePr for FullAccess {}
 impl HasManagePods for FullAccess {}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// caps![] — ergonomic capability set declaration (#1122)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Declare a custom capability set with specific marker traits.
+///
+/// Generates a zero-sized struct implementing `Sealed` and the listed
+/// capability traits. This is the compile-time equivalent of the runtime
+/// `CapabilityLattice::builder()`.
+///
+/// # Examples
+///
+/// ```rust
+/// use portcullis_core::caps;
+/// use portcullis_core::capability_traits::*;
+///
+/// // Define a custom capability set
+/// caps!(MyResearchBot: HasFileRead, HasGlobSearch, HasGrepSearch, HasWebFetch);
+///
+/// // Use in trait bounds
+/// fn fetch_docs<C: HasFileRead + HasWebFetch>(ctx: &Context<C>) -> String {
+///     ctx.session_id().to_string()
+/// }
+///
+/// let ctx = Context::<MyResearchBot>::new("sess".into(), "/tmp".into());
+/// fetch_docs(&ctx); // compiles: MyResearchBot has both traits
+/// ```
+///
+/// ```compile_fail
+/// use portcullis_core::caps;
+/// use portcullis_core::capability_traits::*;
+///
+/// caps!(ReadOnlyBot: HasFileRead, HasGlobSearch);
+///
+/// fn needs_bash<C: HasBashExec>(_ctx: &Context<C>) {}
+///
+/// let ctx = Context::<ReadOnlyBot>::new("s".into(), "/tmp".into());
+/// needs_bash(&ctx); // ERROR: ReadOnlyBot doesn't have HasBashExec
+/// ```
+#[macro_export]
+macro_rules! caps {
+    ($name:ident : $($trait:ident),+ $(,)?) => {
+        pub struct $name;
+        impl $crate::capability_traits::sealed::Sealed for $name {}
+        $(
+            impl $crate::capability_traits::$trait for $name {}
+        )+
+    };
+}
+
+// Make the sealed module visible to the macro (pub(crate) → pub)
+// The Sealed trait itself prevents external impl — the module visibility
+// just lets the macro reference it.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Context<Caps> — phantom-typed execution context (#1120)
@@ -372,4 +432,41 @@ mod tests {
     //     let ctx = read_only_context("t".into(), "/tmp".into());
     //     write_file(&ctx, "file.txt", "data");  // ERROR: ReadOnly lacks HasFileWrite
     // }
+
+    // ── caps![] macro tests (#1122) ───────────────────────────────────
+
+    caps!(TestResearchBot: HasFileRead, HasGlobSearch, HasGrepSearch, HasWebFetch);
+
+    #[test]
+    fn caps_macro_creates_type_with_traits() {
+        requires_read(&TestResearchBot);
+        requires_web_fetch(&TestResearchBot);
+    }
+
+    #[test]
+    fn caps_macro_type_works_with_context() {
+        let ctx = Context::<TestResearchBot>::new("test".into(), "/tmp".into());
+        assert_eq!(ctx_requires_read(&ctx), "test");
+        assert_eq!(ctx_requires_web(&ctx), "test");
+    }
+
+    caps!(TestMinimalBot: HasFileRead);
+
+    #[test]
+    fn caps_macro_single_trait() {
+        requires_read(&TestMinimalBot);
+        // requires_bash(&TestMinimalBot);  // would NOT compile
+    }
+
+    caps!(TestFullBot: HasFileRead, HasFileWrite, HasFileEdit, HasBashExec,
+          HasGlobSearch, HasGrepSearch, HasWebSearch, HasWebFetch,
+          HasGitCommit, HasGitPush, HasCreatePr, HasManagePods);
+
+    #[test]
+    fn caps_macro_all_traits() {
+        requires_read(&TestFullBot);
+        requires_web_fetch(&TestFullBot);
+        requires_bash(&TestFullBot);
+        requires_push(&TestFullBot);
+    }
 }
