@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_types)] // #1216: migration pending
+#![allow(clippy::disallowed_types)] // #1216 exempt: node management HTTP client (infrastructure, not agent I/O)
 //! HTTP client for nucleus-node pod management.
 //!
 //! Used by orchestrator pods to create and manage sub-pods via

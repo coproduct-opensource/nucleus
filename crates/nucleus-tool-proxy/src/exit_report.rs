@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_types)] // #1216: migration pending
+#![allow(clippy::disallowed_types)] // #1216 exempt: exit report collection is post-decision infrastructure
 //! Exit report generation for execution receipts.
 //!
 //! Before shutdown, the tool-proxy computes a workspace content hash and

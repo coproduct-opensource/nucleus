@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_types)] // #1216: migration pending
+#![allow(clippy::disallowed_types)] // #1216 exempt: vsock endpoint setup (infrastructure)
                                     // =============================================================================
                                     // Pod Management Handlers (orchestrator mode)
                                     // =============================================================================
