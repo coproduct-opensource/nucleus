@@ -131,6 +131,8 @@ pub mod sanitize;
 pub mod storage_lane;
 pub mod structured_prompt;
 pub mod task_shield;
+#[cfg(feature = "artifact")]
+pub mod tool_manifest;
 pub mod verdict;
 #[cfg(feature = "wasm-sandbox")]
 pub mod wasm_sandbox;
