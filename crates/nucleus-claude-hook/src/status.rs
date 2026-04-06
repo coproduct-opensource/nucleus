@@ -449,6 +449,7 @@ mod tests {
             flagged_tools: Default::default(),
             last_injected_context_key: None,
             web_tainted: false,
+            ifc_label_ratchet: None,
             web_taint_context_injected: false,
             pending_user_bash: false,
             pending_source_hashes: vec![],

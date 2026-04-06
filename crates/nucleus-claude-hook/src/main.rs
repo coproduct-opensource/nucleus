@@ -13,10 +13,8 @@ use portcullis::kernel::{Kernel, Verdict};
 use portcullis::manifest_registry::ManifestRegistry;
 use portcullis::receipt_sign::{receipt_hash, sign_receipt};
 use portcullis::{Operation, PermissionLattice};
-use portcullis_core::discharge::{
-    preflight_action, ActionTerm as DischargeActionTerm, PreflightResult,
-};
-use portcullis_core::{default_sink_class, flow::NodeKind, receipt::build_receipt, IFCLabel};
+use portcullis_core::discharge::{preflight_action, PreflightResult};
+use portcullis_core::{flow::NodeKind, receipt::build_receipt};
 
 mod term_builder;
 use ring::rand::SystemRandom;
@@ -1222,6 +1220,11 @@ fn main() {
                 }
             }
         }
+
+        // Inherit parent IFC ratchet (#1351) — delegation narrowing
+        if let Ok(parent_sid) = std::env::var("NUCLEUS_PARENT_SESSION") {
+            session::inherit_parent_ifc_ratchet(&mut session, &parent_sid);
+        }
     }
 
     // Replay previous operations to rebuild exposure state AND flow graph.
@@ -1262,26 +1265,9 @@ fn main() {
     let exposure_count = decision.exposure_transition.post_count;
 
     // ── IFC discharge gate (#1351) ─────────────────────────────────────
-    // Run preflight_action as a secondary check. The Kernel gates
-    // capabilities and exposure; preflight_action gates IFC integrity,
-    // derivation, adversarial ancestry, and budget. If the Kernel
-    // allows but preflight denies, the overall decision is deny.
-    let ifc_source_labels: Vec<IFCLabel> = if session.web_tainted {
-        vec![IFCLabel {
-            integrity: portcullis_core::IntegLevel::Adversarial,
-            ..IFCLabel::default()
-        }]
-    } else {
-        vec![]
-    };
-    let discharge_term = DischargeActionTerm {
-        operation,
-        sink_class: default_sink_class(operation),
-        source_labels: ifc_source_labels,
-        artifact_label: IFCLabel::default(),
-        subject: subject.clone(),
-        estimated_cost_micro_usd: 0,
-    };
+    // preflight_action as secondary check: IFC integrity, derivation,
+    // adversarial ancestry, budget. Session ratchet carries accumulated taint.
+    let discharge_term = session::build_discharge_term(&session, operation, &subject);
     let ifc_result = preflight_action(&discharge_term);
     let t_decide = t_decide_start.elapsed();
 
@@ -1466,6 +1452,9 @@ fn main() {
                     operation.to_string(),
                     subject.clone(),
                 ));
+                // Monotonic IFC label ratchet (#1351)
+                session::advance_ifc_ratchet(&mut session, obs_kind);
+
                 // Record the observation index so PostToolUse can insert the
                 // ToolResponse as a sibling of this pre-tool observation (#593).
                 session.last_pre_tool_obs_index = Some(session.flow_observations.len() - 1);
@@ -1522,6 +1511,9 @@ fn main() {
                             comp
                         );
                     }
+
+                    // Export IFC ratchet for child delegation narrowing (#1351)
+                    session::export_ifc_ratchet(&session, &input.session_id);
                 }
 
                 session.high_water_mark += 1;
