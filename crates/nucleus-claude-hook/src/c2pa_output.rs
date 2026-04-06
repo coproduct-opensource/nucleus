@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_types)] // #1216: migration pending
+#![allow(clippy::disallowed_types)] // #1216 exempt: C2PA sidecar output is post-decision audit infrastructure
 //! C2PA sidecar emission for provenance output (#1017).
 //!
 //! After `provenance-output.json` is written at SessionEnd, this module

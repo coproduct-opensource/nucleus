@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_types)] // #1216: migration pending
+#![allow(clippy::disallowed_types)] // #1216 exempt: session state + receipt persistence (post-decision infrastructure)
 //! Claude Code PreToolUse hook backed by the Nucleus verified permission kernel.
 //!
 //! This binary reads JSON from stdin (Claude Code hook protocol), runs the

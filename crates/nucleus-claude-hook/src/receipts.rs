@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_types)] // #1216: migration pending
+#![allow(clippy::disallowed_types)] // #1216 exempt: audit trail persistence — output of policy decisions, not input
 //! Receipt persistence — append-only JSONL audit trail.
 //!
 //! Extracted from `main.rs` to reduce module size.

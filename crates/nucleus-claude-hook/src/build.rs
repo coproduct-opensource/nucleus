@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_types)] // #1216: migration pending
+#![allow(clippy::disallowed_types)] // #1216 exempt: manifest compilation runs before kernel initialization
 //! `nucleus-claude-hook --build` — compile `.nucleus/` into a content-addressable artifact.
 //!
 //! Reads the Compartmentfile, optional policy/egress/enterprise TOML files,

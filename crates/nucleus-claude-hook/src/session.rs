@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_types)] // #1216: migration pending
+#![allow(clippy::disallowed_types)] // #1216 exempt: session state management (lock files, HWM, compartments)
 //! Session state persistence for cross-invocation exposure tracking.
 //!
 //! This module handles all session lifecycle concerns:

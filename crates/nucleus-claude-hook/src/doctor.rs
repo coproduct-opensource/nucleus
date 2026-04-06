@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_types)] // #1216: migration pending
+#![allow(clippy::disallowed_types)] // #1216 exempt: diagnostic CLI command, not agent-accessible
 //! `--doctor` diagnostic command — checks hook installation health.
 
 use crate::session::session_dir;

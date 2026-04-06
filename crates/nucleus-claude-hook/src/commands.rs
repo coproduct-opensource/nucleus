@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_types)] // #1216: migration pending
+#![allow(clippy::disallowed_types)] // #1216 exempt: CLI session reset is operator-initiated, not agent-initiated
 //! CLI subcommand handlers.
 //!
 //! Extracted from main.rs to stay under the line ratchet ceiling.
