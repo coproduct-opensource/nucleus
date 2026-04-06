@@ -5781,6 +5781,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "portcullis-profiles"
+version = "1.0.0"
+dependencies = [
+ "portcullis-core",
+]
+
+[[package]]
 name = "postcard"
 version = "1.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
