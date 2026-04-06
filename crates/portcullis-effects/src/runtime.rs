@@ -720,6 +720,50 @@ impl NucleusRuntime {
     pub fn has_confidential_data(&self) -> bool {
         self.flow_tracker.has_confidential_data()
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Typed context bridge — opt-in compile-time capability checking
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Enter a compile-time-checked capability scope.
+    ///
+    /// Inside the closure, all operations are type-checked against `Caps`.
+    /// A function requiring `HasWebFetch` that's called with a `Caps` lacking
+    /// it is a **compile error**, not a runtime denial.
+    ///
+    /// This is the bridge between the runtime path (`NucleusRuntime`) and
+    /// the typed path (`Context<Caps>`). Most code uses the runtime path;
+    /// security-critical subsystems opt into compile-time checking.
+    ///
+    /// ```rust
+    /// use portcullis_core::caps;
+    /// use portcullis_core::capability_traits::*;
+    /// use portcullis_effects::runtime::{NucleusRuntime, PolicyProfile};
+    ///
+    /// caps!(ResearchCaps: HasFileRead, HasGlobSearch, HasWebFetch);
+    ///
+    /// let rt = NucleusRuntime::builder()
+    ///     .profile(PolicyProfile::Research)
+    ///     .build();
+    ///
+    /// let result = rt.with_typed_context::<ResearchCaps, _, _>(|ctx| {
+    ///     // Inside here: compile-time checked
+    ///     let _ = read_file(&ctx, "config.toml");  // OK: ResearchCaps has HasFileRead
+    ///     // bash_exec(&ctx, "rm -rf /");  // COMPILE ERROR: no HasBashExec
+    ///     Ok("done".to_string())
+    /// });
+    /// ```
+    pub fn with_typed_context<Caps, F, T>(&self, f: F) -> Result<T, RuntimeError>
+    where
+        Caps: portcullis_core::capability_traits::sealed::Sealed,
+        F: FnOnce(portcullis_core::capability_traits::Context<Caps>) -> Result<T, RuntimeError>,
+    {
+        let ctx = portcullis_core::capability_traits::Context::new(
+            self.task.clone(),
+            std::path::PathBuf::from("."),
+        );
+        f(ctx)
+    }
 }
 
 impl std::fmt::Debug for NucleusRuntime {
@@ -1435,4 +1479,52 @@ mod tests {
         // But allows reads
         assert!(rt.can(RuntimeCapability::ReadFiles));
     }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Typed context bridge tests
+    // ════════════════════════════════════════════════════════════════════
+
+    #[allow(unused_imports)]
+    use portcullis_core::capability_traits::*;
+    use portcullis_core::caps;
+
+    caps!(TestReadWebCaps: HasFileRead, HasGlobSearch, HasWebFetch);
+    caps!(TestReadOnlyCaps: HasFileRead, HasGlobSearch);
+
+    #[test]
+    fn typed_context_bridge_works() {
+        let rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Research)
+            .build();
+
+        let result = rt.with_typed_context::<TestReadWebCaps, _, _>(|ctx| {
+            // This compiles: TestReadWebCaps has HasFileRead
+            assert_eq!(ctx.session_id(), "");
+            Ok(42)
+        });
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn typed_context_uses_task_as_session_id() {
+        let rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Research)
+            .task("analyze filings")
+            .build();
+
+        rt.with_typed_context::<TestReadOnlyCaps, _, _>(|ctx| {
+            assert_eq!(ctx.session_id(), "analyze filings");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    // This would NOT compile — proving the bridge enforces caps at compile time:
+    // fn _test_typed_context_rejects_missing_caps() {
+    //     let rt = NucleusRuntime::builder().build();
+    //     rt.with_typed_context::<TestReadOnlyCaps, _, _>(|ctx| {
+    //         web_fetch(&ctx, "https://evil.com");  // ERROR: TestReadOnlyCaps lacks HasWebFetch
+    //         Ok(())
+    //     });
+    // }
 }
