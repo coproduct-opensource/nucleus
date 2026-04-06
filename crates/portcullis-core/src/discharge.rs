@@ -242,8 +242,9 @@ impl RepairHint {
     /// let result = preflight_action(&term);
     /// if let PreflightResult::Denied { hint, .. } = result {
     ///     if let Some(repair) = hint.try_repair(&term) {
-    ///         // The repair zeroed the cost — budget check will pass
-    ///         assert!(repair.is_automatic());
+    ///         // The repair zeroed the cost but requires approval
+    ///         assert!(!repair.is_automatic());
+    ///         assert_eq!(repair.term().estimated_cost_micro_usd, 0);
     ///     }
     /// }
     /// ```
@@ -283,20 +284,35 @@ impl RepairHint {
             }
 
             // NoAdversarialAncestry: strip adversarial source labels.
-            // Automatic: we remove the tainted inputs. The agent must
-            // re-derive the action from clean sources.
-            Self::DeclassifyOrReplaceInput { .. } => {
+            // NeedsApproval: stripping adversarial ancestry is a
+            // security-significant declassification — a naive agent loop
+            // must not auto-launder tainted inputs without human review.
+            Self::DeclassifyOrReplaceInput { subject } => {
                 repaired
                     .source_labels
                     .retain(|l| l.integrity != IntegLevel::Adversarial);
-                Some(Repair::Automatic(repaired))
+                Some(Repair::NeedsApproval {
+                    term: repaired,
+                    gate: format!(
+                        "human review required: adversarial source labels stripped from '{}' — \
+                         verify the action was re-derived from clean sources",
+                        subject
+                    ),
+                })
             }
 
-            // BudgetNotExceeded: zero the cost (automatic, no gate needed).
-            // The caller should wire a BudgetGate for real cost tracking.
-            Self::WireBudgetGate { .. } => {
+            // BudgetNotExceeded: zero the cost requires approval — silently
+            // zeroing cost to bypass budget enforcement is policy-significant.
+            Self::WireBudgetGate { cost_micro_usd } => {
                 repaired.estimated_cost_micro_usd = 0;
-                Some(Repair::Automatic(repaired))
+                Some(Repair::NeedsApproval {
+                    term: repaired,
+                    gate: format!(
+                        "budget gate required: cost {}µ¢ zeroed — \
+                         wire a real budget tracker or obtain approval to waive cost",
+                        cost_micro_usd
+                    ),
+                })
             }
 
             // ObtainHumanApproval: the term itself is fine, just needs approval.
@@ -1377,7 +1393,7 @@ mod tests {
     // ── Repair rewriting system tests ───────────────────────────────────
 
     #[test]
-    fn repair_budget_is_automatic_and_zeroes_cost() {
+    fn repair_budget_needs_approval_and_zeroes_cost() {
         let term = ActionTerm {
             estimated_cost_micro_usd: 5000,
             ..workspace_write_term()
@@ -1386,14 +1402,15 @@ mod tests {
             cost_micro_usd: 5000,
         };
         let repair = hint.try_repair(&term).unwrap();
-        assert!(repair.is_automatic());
+        // Budget zeroing is policy-significant — requires human approval
+        assert!(!repair.is_automatic());
         assert_eq!(repair.term().estimated_cost_micro_usd, 0);
         // The repaired term should pass preflight
         assert!(preflight_action(repair.term()).is_allowed());
     }
 
     #[test]
-    fn repair_adversarial_ancestry_strips_tainted_sources() {
+    fn repair_adversarial_ancestry_needs_approval() {
         let term = ActionTerm {
             source_labels: vec![trusted_label(), adversarial_label()],
             ..workspace_write_term()
@@ -1402,7 +1419,8 @@ mod tests {
             subject: "test".to_string(),
         };
         let repair = hint.try_repair(&term).unwrap();
-        assert!(repair.is_automatic());
+        // Declassifying adversarial ancestry is security-significant — no auto-laundering
+        assert!(!repair.is_automatic());
         // Adversarial source removed, trusted remains
         assert_eq!(repair.term().source_labels.len(), 1);
         assert_eq!(
@@ -1467,7 +1485,7 @@ mod tests {
 
     #[test]
     fn full_deny_repair_retry_loop() {
-        // End-to-end: deny → hint → repair → allow
+        // End-to-end: deny → hint → repair (needs approval) → approved term passes
         let term = ActionTerm {
             estimated_cost_micro_usd: 1000,
             ..workspace_write_term()
@@ -1476,10 +1494,10 @@ mod tests {
         let result = preflight_action(&term);
         assert!(result.is_denied());
         let hint = result.repair_hint().unwrap();
-        // Repair: zero the cost
+        // Repair: cost zeroed, but requires human approval
         let repair = hint.try_repair(&term).unwrap();
-        assert!(repair.is_automatic());
-        // Retry: passes
+        assert!(!repair.is_automatic());
+        // After approval, the repaired term passes preflight
         let retry = preflight_action(repair.term());
         assert!(retry.is_allowed());
     }
