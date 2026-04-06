@@ -96,6 +96,39 @@ pub enum NodeKind {
     Custom(&'static str),
 }
 
+/// Maximum number of unique custom node kind names before overflow.
+const MAX_CUSTOM_NODE_KINDS: usize = 256;
+
+/// Intern a custom node kind name, returning a `&'static str`.
+///
+/// Uses `Box::leak` but caps the total number of interned strings to
+/// `MAX_CUSTOM_NODE_KINDS` to prevent unbounded memory growth (#1365).
+/// Returns `"__overflow__"` when the cap is reached.
+fn intern_custom_name(name: &str) -> &'static str {
+    use std::collections::BTreeSet;
+    use std::sync::Mutex;
+
+    static INTERNED: Mutex<Option<BTreeSet<&'static str>>> = Mutex::new(None);
+
+    let mut guard = INTERNED.lock().unwrap_or_else(|e| e.into_inner());
+    let set = guard.get_or_insert_with(BTreeSet::new);
+
+    // Check if already interned
+    if let Some(&existing) = set.iter().find(|&&s| s == name) {
+        return existing;
+    }
+
+    // Cap check
+    if set.len() >= MAX_CUSTOM_NODE_KINDS {
+        return "__overflow__";
+    }
+
+    // Intern: leak is bounded by MAX_CUSTOM_NODE_KINDS
+    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+    set.insert(leaked);
+    leaked
+}
+
 impl NodeKind {
     /// Returns `true` if this is a custom (integrator-defined) node kind.
     pub fn is_custom(&self) -> bool {
@@ -104,9 +137,10 @@ impl NodeKind {
 
     /// Construct a `NodeKind` from its string name (inverse of [`name()`]).
     ///
-    /// Unknown names become `Custom` with a leaked `&'static str`.
-    /// This is intended for deserialization in short-lived processes
-    /// (e.g., zkVM guests) where the leak is acceptable.
+    /// Unknown names become `Custom` with an interned `&'static str`.
+    /// The interner caps at 256 unique custom names to prevent DoS via
+    /// unbounded memory growth (#1365). Beyond the cap, unknown names
+    /// map to `Custom("__overflow__")`.
     pub fn from_name(s: &str) -> Self {
         match s {
             "user_prompt" => Self::UserPrompt,
@@ -129,7 +163,7 @@ impl NodeKind {
             "image_content" => Self::ImageContent,
             "audio_content" => Self::AudioContent,
             "pdf_content" => Self::PDFContent,
-            other => Self::Custom(Box::leak(other.to_string().into_boxed_str())),
+            other => Self::Custom(intern_custom_name(other)),
         }
     }
 
