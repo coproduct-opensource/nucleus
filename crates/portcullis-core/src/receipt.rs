@@ -273,7 +273,7 @@ pub fn receipt_canonical_bytes(receipt: &FlowReceipt) -> Vec<u8> {
 /// Serialize a receipt node to canonical bytes.
 fn append_receipt_node_bytes(buf: &mut Vec<u8>, node: &ReceiptNode) {
     buf.extend_from_slice(&node.id.to_le_bytes());
-    buf.extend_from_slice(&(node.kind as u8).to_le_bytes());
+    buf.extend_from_slice(&node.kind.discriminant().to_le_bytes());
     buf.extend_from_slice(&(node.label.confidentiality as u8).to_le_bytes());
     buf.extend_from_slice(&(node.label.integrity as u8).to_le_bytes());
     buf.extend_from_slice(&(node.label.authority as u8).to_le_bytes());

@@ -82,6 +82,81 @@ pub enum NodeKind {
     /// PDF document — adversarial by default (#961).
     /// PDFs can contain hidden text, JavaScript, and form fields.
     PDFContent,
+    /// Custom node kind defined by an integrator (#1285).
+    ///
+    /// Integrators can register custom node kinds with their own intrinsic
+    /// labels via [`NodeKindRegistry`]. Unregistered custom kinds default
+    /// to the most conservative label (adversarial integrity, public conf).
+    ///
+    /// ```rust
+    /// use portcullis_core::flow::NodeKind;
+    ///
+    /// let custom = NodeKind::Custom("slack_message");
+    /// ```
+    Custom(&'static str),
+}
+
+impl NodeKind {
+    /// Returns `true` if this is a custom (integrator-defined) node kind.
+    pub fn is_custom(&self) -> bool {
+        matches!(self, Self::Custom(_))
+    }
+
+    /// Numeric discriminant for serialization (receipt hashing).
+    ///
+    /// Built-in kinds are 0-20. Custom kinds are 255.
+    pub fn discriminant(&self) -> u8 {
+        match self {
+            Self::UserPrompt => 0,
+            Self::ToolResponse => 1,
+            Self::WebContent => 2,
+            Self::MemoryRead => 3,
+            Self::MemoryWrite => 4,
+            Self::FileRead => 5,
+            Self::EnvVar => 6,
+            Self::ModelPlan => 7,
+            Self::Secret => 8,
+            Self::OutboundAction => 9,
+            Self::Summarization => 10,
+            Self::Retry => 11,
+            Self::HTTPResponse => 12,
+            Self::DatabaseRow => 13,
+            Self::GitBlob => 14,
+            Self::CachedDatum => 15,
+            Self::DeterministicBind => 16,
+            Self::ImageContent => 17,
+            Self::AudioContent => 18,
+            Self::PDFContent => 19,
+            Self::Custom(_) => 255,
+        }
+    }
+
+    /// The name of this node kind (for audit/display).
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::UserPrompt => "user_prompt",
+            Self::ToolResponse => "tool_response",
+            Self::WebContent => "web_content",
+            Self::MemoryRead => "memory_read",
+            Self::MemoryWrite => "memory_write",
+            Self::FileRead => "file_read",
+            Self::EnvVar => "env_var",
+            Self::ModelPlan => "model_plan",
+            Self::Secret => "secret",
+            Self::OutboundAction => "outbound_action",
+            Self::Summarization => "summarization",
+            Self::Retry => "retry",
+            Self::HTTPResponse => "http_response",
+            Self::DatabaseRow => "database_row",
+            Self::GitBlob => "git_blob",
+            Self::CachedDatum => "cached_datum",
+            Self::DeterministicBind => "deterministic_bind",
+            Self::ImageContent => "image_content",
+            Self::AudioContent => "audio_content",
+            Self::PDFContent => "pdf_content",
+            Self::Custom(name) => name,
+        }
+    }
 }
 
 impl NodeKind {
@@ -95,6 +170,9 @@ impl NodeKind {
             self,
             Self::ModelPlan | Self::Summarization | Self::MemoryWrite
         )
+        // Custom kinds are not AI-derived by default — integrators who
+        // register AI-derived custom kinds should use the label registry
+        // to set derivation: AIDerived on the intrinsic label.
     }
 }
 
@@ -253,6 +331,10 @@ pub fn intrinsic_label(kind: NodeKind, now: u64) -> IFCLabel {
         NodeKind::ImageContent | NodeKind::AudioContent | NodeKind::PDFContent => {
             IFCLabel::web_content(now)
         }
+        // Custom node kinds (#1285): default to adversarial + public
+        // (most conservative). Integrators can override by joining with
+        // parent labels in observe_with_parents.
+        NodeKind::Custom(_) => IFCLabel::web_content(now),
     }
 }
 
