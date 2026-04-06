@@ -587,6 +587,197 @@ fn require_min_capability(minimum: CapabilityLevel) -> PyCheckWrapper {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Profile — named capability presets (#1278)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Named policy profiles for common agent work patterns.
+///
+/// ```python
+/// from portcullis import Profile
+///
+/// # Named presets
+/// profile = Profile.RESEARCH
+///
+/// # Composition via + operator
+/// combined = Profile.RESEARCH + Profile.CODEGEN
+/// assert combined.allows("web_fetch")  # from Research
+/// assert combined.allows("run_bash")    # from Codegen
+///
+/// # Add individual capabilities
+/// custom = Profile.RESEARCH.with_capability("run_bash")
+/// ```
+#[pyclass(eq, hash, frozen, from_py_object)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Profile {
+    #[pyo3(name = "READ_ONLY")]
+    ReadOnly,
+    #[pyo3(name = "RESEARCH")]
+    Research,
+    #[pyo3(name = "CODEGEN")]
+    Codegen,
+    #[pyo3(name = "REVIEW")]
+    Review,
+    #[pyo3(name = "STRICT")]
+    Strict,
+    #[pyo3(name = "PERMISSIVE")]
+    Permissive,
+}
+
+impl From<Profile> for portcullis_effects::runtime::PolicyProfile {
+    fn from(p: Profile) -> Self {
+        match p {
+            Profile::ReadOnly => Self::ReadOnly,
+            Profile::Research => Self::Research,
+            Profile::Codegen => Self::Codegen,
+            Profile::Review => Self::Review,
+            Profile::Strict => Self::Strict,
+            Profile::Permissive => Self::Permissive,
+        }
+    }
+}
+
+#[pymethods]
+impl Profile {
+    /// Add a single capability to this profile.
+    ///
+    /// Returns a new ComposedProfile (does not modify self).
+    fn with_capability(&self, capability: &str) -> PyResult<ComposedProfile> {
+        let cap = parse_capability(capability)?;
+        let rust_profile: portcullis_effects::runtime::PolicyProfile = (*self).into();
+        let composed = rust_profile.with(cap);
+        Ok(ComposedProfile { inner: composed })
+    }
+
+    /// Compose with another profile (lattice join).
+    fn __add__(&self, other: Profile) -> ComposedProfile {
+        let a: portcullis_effects::runtime::PolicyProfile = (*self).into();
+        let b: portcullis_effects::runtime::PolicyProfile = other.into();
+        ComposedProfile {
+            inner: a.join_profile(b),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("Profile.{self:?}")
+    }
+}
+
+/// A composed policy — result of Profile + Profile or Profile.with_capability().
+#[pyclass(skip_from_py_object)]
+#[derive(Debug, Clone)]
+pub struct ComposedProfile {
+    inner: portcullis_effects::runtime::ComposedPolicy,
+}
+
+#[pymethods]
+impl ComposedProfile {
+    /// Add another capability.
+    fn with_capability(&self, capability: &str) -> PyResult<ComposedProfile> {
+        let cap = parse_capability(capability)?;
+        Ok(ComposedProfile {
+            inner: self.inner.clone().with(cap),
+        })
+    }
+
+    /// Check if a capability is allowed.
+    fn allows(&self, capability: &str) -> PyResult<bool> {
+        let cap = parse_capability(capability)?;
+        Ok(self.inner.allows(cap))
+    }
+
+    fn __repr__(&self) -> String {
+        format!("ComposedProfile(base={:?})", self.inner.base_profile())
+    }
+}
+
+fn parse_capability(s: &str) -> PyResult<portcullis_effects::runtime::RuntimeCapability> {
+    use portcullis_effects::runtime::RuntimeCapability;
+    match s {
+        "read_files" => Ok(RuntimeCapability::ReadFiles),
+        "write_files" => Ok(RuntimeCapability::WriteFiles),
+        "edit_files" => Ok(RuntimeCapability::EditFiles),
+        "run_bash" => Ok(RuntimeCapability::RunBash),
+        "web_fetch" => Ok(RuntimeCapability::WebFetch),
+        "web_search" => Ok(RuntimeCapability::WebSearch),
+        "git_commit" => Ok(RuntimeCapability::GitCommit),
+        "git_push" => Ok(RuntimeCapability::GitPush),
+        "create_pr" => Ok(RuntimeCapability::CreatePr),
+        _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown capability: {s}"
+        ))),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Runtime — batteries-included entry point (#1278)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The nucleus runtime — secure agent execution with named profiles.
+///
+/// ```python
+/// from portcullis import Runtime, Profile
+///
+/// rt = Runtime(Profile.RESEARCH, task="analyze SEC filings")
+/// assert rt.can("web_fetch")
+/// assert not rt.can("run_bash")
+/// ```
+#[pyclass(skip_from_py_object)]
+pub struct Runtime {
+    inner: portcullis_effects::runtime::NucleusRuntime,
+}
+
+#[pymethods]
+impl Runtime {
+    /// Create a runtime with a named profile.
+    #[new]
+    #[pyo3(signature = (profile, task=""))]
+    fn new(profile: Profile, task: &str) -> Self {
+        let rust_profile: portcullis_effects::runtime::PolicyProfile = profile.into();
+        Self {
+            inner: portcullis_effects::runtime::NucleusRuntime::builder()
+                .profile(rust_profile)
+                .task(task)
+                .build(),
+        }
+    }
+
+    /// Create a runtime from a composed profile.
+    #[staticmethod]
+    fn from_composed(composed: &ComposedProfile, task: &str) -> Self {
+        Self {
+            inner: portcullis_effects::runtime::NucleusRuntime::builder()
+                .composed(composed.inner.clone())
+                .task(task)
+                .build(),
+        }
+    }
+
+    /// Check if a capability is available.
+    fn can(&self, capability: &str) -> PyResult<bool> {
+        let cap = parse_capability(capability)?;
+        Ok(self.inner.can(cap))
+    }
+
+    /// Whether the session has observed adversarial data.
+    fn is_tainted(&self) -> bool {
+        self.inner.is_tainted()
+    }
+
+    /// Whether the session has observed confidential data.
+    fn has_confidential_data(&self) -> bool {
+        self.inner.has_confidential_data()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Runtime(profile={:?}, task={:?})",
+            self.inner.profile(),
+            self.inner.task()
+        )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Module
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -600,6 +791,11 @@ fn portcullis(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PolicyRequest>()?;
     m.add_class::<Pipeline>()?;
     m.add_class::<PyCheckWrapper>()?;
+
+    // Runtime + profiles (#1278)
+    m.add_class::<Profile>()?;
+    m.add_class::<ComposedProfile>()?;
+    m.add_class::<Runtime>()?;
 
     // Check builder functions
     m.add_function(wrap_pyfunction!(read_only, m)?)?;
