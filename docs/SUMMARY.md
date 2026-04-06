@@ -24,3 +24,5 @@
 - [Terminology](terminology.md)
 - [Temporal Workflow](temporal.md)
 - [Theoretical Foundations](THEORY.md)
+- [Category Theory](theory/index.md)
+  - [Repair Algebra](theory/repair-algebra.md)
