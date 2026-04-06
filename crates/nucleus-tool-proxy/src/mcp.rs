@@ -681,16 +681,18 @@ impl NucleusMcpServer {
                         }
                     }
 
-                    // Read and search
-                    let contents = match std::fs::read_to_string(entry.path()) {
+                    // Read via sandbox cap-std (not raw std::fs) — #1273
+                    let relative = match canonical.strip_prefix(&sandbox_canonical) {
+                        Ok(r) => r,
+                        Err(_) => continue,
+                    };
+                    let contents = match state.runtime.sandbox().read_to_string_for_search(relative)
+                    {
                         Ok(c) => c,
                         Err(_) => continue, // Skip binary/unreadable files
                     };
 
                     let lines: Vec<&str> = contents.lines().collect();
-                    let relative = canonical
-                        .strip_prefix(&sandbox_canonical)
-                        .unwrap_or(&canonical);
 
                     for (i, line) in lines.iter().enumerate() {
                         if re.is_match(line) {

@@ -563,6 +563,23 @@ impl Sandbox {
         &self.root_path
     }
 
+    /// Read a file for search/grep operations (#1273).
+    ///
+    /// Uses the cap-std sandbox directory for I/O, bypassing raw `std::fs`.
+    /// Does NOT require a `DecisionToken` — the caller must have already
+    /// obtained a GrepSearch decision via `kernel_decide`.
+    ///
+    /// Returns `Err` for paths outside the sandbox or unreadable files.
+    pub fn read_to_string_for_search(&self, path: &Path) -> Result<String> {
+        self.check_policy(path)?;
+        self.root
+            .read_to_string(path)
+            .map_err(|e| NucleusError::PathDenied {
+                path: path.to_path_buf(),
+                reason: e.to_string(),
+            })
+    }
+
     /// Check if a path is allowed by the policy.
     fn check_policy(&self, path: &Path) -> Result<()> {
         // First, check for obvious escapes
