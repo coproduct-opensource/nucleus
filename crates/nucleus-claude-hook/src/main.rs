@@ -983,6 +983,11 @@ fn main() {
                     session.flow_observations.len()
                 );
                 session.flow_observations.clear();
+                // Also reset IFC discharge state to match flow graph reset (#1359).
+                // Without this, the discharge gate (preflight_action) disagrees
+                // with the kernel (which sees a clean flow graph).
+                session.web_tainted = false;
+                session.ifc_label_ratchet = None;
             }
         }
         session.active_compartment = compartment.map(|c| c.to_string());
