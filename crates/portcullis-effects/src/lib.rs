@@ -457,6 +457,13 @@ impl<E: AgentSpawnEffect> AgentSpawnEffect for PolicyEnforced<E> {
 pub fn production_effects(
     policy: CapabilityLattice,
 ) -> impl FileEffect + WebEffect + ShellEffect + GitEffect + AgentSpawnEffect {
+    production_effects_concrete(policy)
+}
+
+/// Crate-internal: returns the concrete type so NucleusRuntime can store it.
+pub(crate) fn production_effects_concrete(
+    policy: CapabilityLattice,
+) -> PolicyEnforced<RealEffects> {
     PolicyEnforced {
         inner: RealEffects::new(),
         policy,
