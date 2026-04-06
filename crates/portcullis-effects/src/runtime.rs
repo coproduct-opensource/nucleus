@@ -746,7 +746,7 @@ impl NucleusRuntime {
     ///     .profile(PolicyProfile::Research)
     ///     .build();
     ///
-    /// let result = rt.with_typed_context::<ResearchCaps, _>(|ctx| {
+    /// let result = rt.with_typed_context::<ResearchCaps, _, _>(|ctx| {
     ///     // Inside here: compile-time checked
     ///     let _ = read_file(&ctx, "config.toml");  // OK: ResearchCaps has HasFileRead
     ///     // bash_exec(&ctx, "rm -rf /");  // COMPILE ERROR: no HasBashExec
