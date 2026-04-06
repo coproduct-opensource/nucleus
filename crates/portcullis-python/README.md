@@ -121,6 +121,49 @@ policy = Pipeline.any_of([check1, check2])
 | `deny_when_context_matches(key, val, [ops])` | Deny ops when context key=val |
 | `require_min_capability(level)` | Deny ops below the minimum capability level |
 
+## Runtime — 10-line secure agent session
+
+```python
+from portcullis import Runtime, Profile
+
+# Compose a policy: Research + bash, minus web search
+with Runtime.session(
+    Profile.RESEARCH.with_capability("run_bash").without_capability("web_search"),
+    "analyze SEC filings"
+) as rt:
+    # File reads are tagged Trusted at the type level
+    config = rt.read_file("config.toml")
+    print(config.data)  # works — Trusted data, .data access is direct
+
+    # Web content is tagged Adversarial
+    page = rt.fetch_url("https://sec.gov/filing.html")
+    page.data           # raises UntrustedAccess!
+    raw = page.acknowledge("human reviewed for injection")
+
+    # Policy denial gives actionable repair hints
+    try:
+        rt.git_push("origin", "main")
+    except PolicyDenied as e:
+        print(e.hint)   # "raise artifact integrity from Adversarial to Untrusted"
+```
+
+### Profile composition
+
+```python
+# Named presets
+Profile.READ_ONLY     # read + glob + grep
+Profile.RESEARCH      # read + web
+Profile.CODEGEN       # read + write + bash + git commit
+Profile.REVIEW        # read + web + git push + create_pr
+
+# Additive: + operator or .with_capability()
+Profile.RESEARCH + Profile.CODEGEN
+Profile.RESEARCH.with_capability("run_bash")
+
+# Subtractive: .without_capability()
+Profile.CODEGEN.without_capability("run_bash")
+```
+
 ## Why This Exists
 
 AI agents need policy composition. LangChain tool calls, CrewAI agents, AutoGen tasks — they all need to answer: "is this operation allowed given these constraints?"
