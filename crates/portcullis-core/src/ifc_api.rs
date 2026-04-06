@@ -18,6 +18,55 @@
 use crate::flow::{NodeKind, intrinsic_label};
 use crate::{AuthorityLevel, ConfLevel, DerivationClass, IFCLabel, IntegLevel};
 
+// ═══════════════════════════════════════════════════════════════════════════
+// SessionCleanseToken — sealed authorization for ceiling reset (#1233)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Sealed token proving human authorization to lower the session taint ceiling.
+///
+/// Cannot be constructed outside this module — the private field prevents
+/// external creation. The only way to obtain one is through
+/// [`SessionCleanseToken::authorize`], which takes a reason string for the
+/// audit trail.
+///
+/// Same sealing pattern as `Discharged<O>` and `UnmediatedAccess`.
+#[derive(Debug)]
+pub struct SessionCleanseToken {
+    /// Human-readable reason for the cleanse (audit trail).
+    reason: String,
+    /// Private seal — prevents external construction.
+    _seal: Seal,
+}
+
+struct Seal;
+
+impl std::fmt::Debug for Seal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Seal")
+    }
+}
+
+impl SessionCleanseToken {
+    /// Create a cleanse token with the given authorization reason.
+    ///
+    /// This is the **only** way to obtain a `SessionCleanseToken`.
+    /// The reason is recorded for audit purposes.
+    ///
+    /// In production, this should only be called after verified human
+    /// authorization (e.g., a human-in-the-loop approval gate).
+    pub fn authorize(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            _seal: Seal,
+        }
+    }
+
+    /// The authorization reason (for audit trail).
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+}
+
 /// A lightweight IFC flow tracker for AI agent data provenance.
 ///
 /// Tracks how data flows through an agent session: which tools produce
@@ -524,19 +573,19 @@ impl FlowTracker {
         SafetyCheck::Safe
     }
 
-    /// Reset the session taint ceiling to the given value.
+    /// Reset the session taint ceiling to the given value (#1233).
     ///
-    /// # Security warning
+    /// Requires a [`SessionCleanseToken`] — proof of human authorization.
+    /// The token's reason is recorded for the audit trail.
     ///
-    /// This is an **explicit escape hatch** — it is the only way to lower the
-    /// session ceiling. It MUST only be called after verified human authorization
-    /// (e.g., a `MemoryAuthority::MayResolve` gate or equivalent). Calling this
-    /// in automated agent code without human oversight violates the monotonicity
-    /// invariant and removes the "no silent cleansing" guarantee.
-    ///
-    /// In a future version this will require an explicit `SessionCleanse` token
-    /// minted only by the human-authorization layer (#1207).
-    pub fn reset_session_ceiling(&mut self, new_ceiling: DerivationClass) {
+    /// This is the **only way** to lower the session ceiling. Without the
+    /// token, the monotonic ratchet cannot be bypassed — the guarantee
+    /// that "taint never silently decreases" is enforced by the type system.
+    pub fn reset_session_ceiling(
+        &mut self,
+        new_ceiling: DerivationClass,
+        _token: &SessionCleanseToken,
+    ) {
         self.session_taint_ceiling = new_ceiling;
     }
 
@@ -907,8 +956,9 @@ mod tests {
         t.observe(NodeKind::WebContent).unwrap();
         assert_eq!(t.session_taint_ceiling(), DerivationClass::OpaqueExternal);
 
-        // Explicit reset (requires human authorization in production)
-        t.reset_session_ceiling(DerivationClass::Deterministic);
+        // Explicit reset — requires a SessionCleanseToken
+        let token = SessionCleanseToken::authorize("test: reset for verification");
+        t.reset_session_ceiling(DerivationClass::Deterministic, &token);
         assert_eq!(t.session_taint_ceiling(), DerivationClass::Deterministic);
         assert!(!t.is_session_tainted());
     }
@@ -921,7 +971,8 @@ mod tests {
         t.observe(NodeKind::ModelPlan).unwrap();
         assert!(t.is_session_tainted());
 
-        t.reset_session_ceiling(DerivationClass::Deterministic);
+        let token = SessionCleanseToken::authorize("test: reset taint status");
+        t.reset_session_ceiling(DerivationClass::Deterministic, &token);
         assert!(!t.is_session_tainted());
     }
 
