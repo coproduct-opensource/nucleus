@@ -50,7 +50,7 @@ rustls = { workspace = true }
 webpki-roots = "1.0"
 base64 = "0.22"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
-rand = "0.8"
+rand = "0.10"
 
 # X.509 certificate parsing for SPIFFE ID extraction
 x509-parser = { workspace = true }
