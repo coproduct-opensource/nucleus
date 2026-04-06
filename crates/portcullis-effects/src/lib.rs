@@ -47,6 +47,7 @@
 //! assert_eq!(fx.calls().len(), 1);
 //! ```
 
+pub mod async_traits;
 pub mod runtime;
 
 use std::path::{Path, PathBuf};
