@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_types)] // #1216: migration pending
 //! Identity-based policy enforcement for tool-proxy.
 //!
 //! This module integrates SPIFFE workload identity with the portcullis

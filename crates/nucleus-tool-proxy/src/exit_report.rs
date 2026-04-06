@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_types)] // #1216: migration pending
 //! Exit report generation for execution receipts.
 //!
 //! Before shutdown, the tool-proxy computes a workspace content hash and

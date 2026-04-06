@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_types)] // #1216: migration pending
 //! Binary self-integrity verification (#946).
 //!
 //! At startup, compute SHA-256 of the running binary and compare against

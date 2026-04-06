@@ -1,9 +1,10 @@
-// =============================================================================
-// Pod Management Handlers (orchestrator mode)
-// =============================================================================
-//
-// Extracted from main.rs to reduce file size. These handlers allow the
-// tool-proxy to orchestrate sub-pods via nucleus-node.
+#![allow(clippy::disallowed_types)] // #1216: migration pending
+                                    // =============================================================================
+                                    // Pod Management Handlers (orchestrator mode)
+                                    // =============================================================================
+                                    //
+                                    // Extracted from main.rs to reduce file size. These handlers allow the
+                                    // tool-proxy to orchestrate sub-pods via nucleus-node.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_types)] // #1216: migration pending
 //! `--setup` and `--uninstall` commands for managing Claude Code integration.
 
 use crate::session::session_dir;

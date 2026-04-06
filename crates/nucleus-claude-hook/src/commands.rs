@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_types)] // #1216: migration pending
 //! CLI subcommand handlers.
 //!
 //! Extracted from main.rs to stay under the line ratchet ceiling.

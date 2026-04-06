@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_types)] // #1216: migration pending
 //! Session state persistence for cross-invocation exposure tracking.
 //!
 //! This module handles all session lifecycle concerns:
