@@ -1,0 +1,16 @@
+[package]
+name = "portcullis-profiles"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Application-specific task profiles for the portcullis policy engine"
+repository = "https://github.com/coproduct-opensource/nucleus"
+keywords = ["ai", "security", "policy", "profiles", "agents"]
+categories = ["development-tools"]
+
+[dependencies]
+portcullis-core = { path = "../portcullis-core" }
+
+[lints]
+workspace = true
