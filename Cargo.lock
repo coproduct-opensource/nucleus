@@ -4788,6 +4788,7 @@ dependencies = [
  "hmac 0.13.0",
  "nucleus-spec",
  "portcullis",
+ "portcullis-core",
  "serde",
  "serde_json",
  "serde_yaml",

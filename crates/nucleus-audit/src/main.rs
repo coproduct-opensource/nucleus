@@ -210,6 +210,19 @@ enum Command {
         #[arg(long)]
         suggest_profile: bool,
     },
+    /// Verify IFC noninterference on a flow graph snapshot (#1135).
+    ///
+    /// Reads a JSON file containing a ZkFlowInput (nodes + expected verdict),
+    /// runs verify_noninterference(), and reports whether the flow graph
+    /// satisfies the expected information flow policy.
+    ///
+    /// This is the host-side verification — the same function the zkVM guest
+    /// calls, but run locally without proof generation.
+    VerifyNoninterference {
+        /// Path to a JSON file containing a ZkFlowInput.
+        #[arg(long)]
+        input: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, clap::ValueEnum)]
@@ -553,6 +566,44 @@ fn main() -> Result<(), AuditError> {
                 .unwrap_or(Severity::Info);
             if worst <= Severity::High {
                 std::process::exit(1);
+            }
+        }
+        Command::VerifyNoninterference { input } => {
+            let data = std::fs::read_to_string(&input)?;
+            let zk_input: portcullis_core::flow::ZkFlowInput =
+                serde_json::from_str(&data).map_err(|e| AuditError::Json { line: 0, source: e })?;
+
+            println!(
+                "Verifying noninterference for action node {} (expected: {:?})",
+                zk_input.action_node_id, zk_input.expected_verdict
+            );
+            println!("Flow graph: {} nodes", zk_input.nodes.len());
+
+            let result = portcullis_core::flow::verify_noninterference(&zk_input);
+            match result {
+                portcullis_core::flow::VerificationResult::Confirmed => {
+                    println!("PASS: computed verdict matches expected verdict");
+                }
+                portcullis_core::flow::VerificationResult::Mismatch { computed, expected } => {
+                    println!("FAIL: verdict mismatch");
+                    println!("  expected: {expected:?}");
+                    println!("  computed: {computed:?}");
+                    std::process::exit(1);
+                }
+                portcullis_core::flow::VerificationResult::ActionNodeNotFound => {
+                    println!(
+                        "ERROR: action node {} not found in graph",
+                        zk_input.action_node_id
+                    );
+                    std::process::exit(2);
+                }
+                portcullis_core::flow::VerificationResult::BrokenParentRef {
+                    node_id,
+                    parent_id,
+                } => {
+                    println!("ERROR: node {node_id} references nonexistent parent {parent_id}");
+                    std::process::exit(2);
+                }
             }
         }
     }
