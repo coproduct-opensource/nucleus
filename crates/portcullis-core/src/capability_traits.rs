@@ -173,6 +173,33 @@ macro_rules! caps {
     };
 }
 
+/// Declare a named capability requirement bundle (#1321).
+///
+/// Generates a trait alias that bundles multiple `Has*` traits into one
+/// bound, reducing boilerplate in function signatures.
+///
+/// ```rust,ignore
+/// use portcullis_core::{caps, require_caps};
+/// use portcullis_core::capability_traits::*;
+///
+/// require_caps!(ResearchCapable: HasFileRead, HasGlobSearch, HasWebFetch);
+///
+/// fn analyze<C: ResearchCapable>(ctx: &Context<C>) -> String {
+///     ctx.session_id().to_string()
+/// }
+///
+/// caps!(MyBot: HasFileRead, HasGlobSearch, HasGrepSearch, HasWebFetch);
+/// let ctx = Context::<MyBot>::new("s".into(), "/tmp".into());
+/// analyze(&ctx);  // compiles: MyBot satisfies ResearchCapable
+/// ```
+#[macro_export]
+macro_rules! require_caps {
+    ($name:ident : $($trait:ident),+ $(,)?) => {
+        pub trait $name: $($crate::capability_traits::$trait)+* {}
+        impl<T: $($crate::capability_traits::$trait)+*> $name for T {}
+    };
+}
+
 // Make the sealed module visible to the macro (pub(crate) → pub)
 // The Sealed trait itself prevents external impl — the module visibility
 // just lets the macro reference it.
@@ -469,4 +496,43 @@ mod tests {
         requires_bash(&TestFullBot);
         requires_push(&TestFullBot);
     }
+
+    // ── require_caps! macro tests (#1321) ─────────────────────────────
+
+    // Manual equivalent of require_caps! for test module scope
+    trait TestResearchReq: HasFileRead + HasGlobSearch + HasWebFetch {}
+    impl<T: HasFileRead + HasGlobSearch + HasWebFetch> TestResearchReq for T {}
+
+    trait TestWriteReq: HasFileRead + HasFileWrite {}
+    impl<T: HasFileRead + HasFileWrite> TestWriteReq for T {}
+
+    fn needs_research<C: TestResearchReq>(_ctx: &Context<C>) -> &'static str {
+        "researching"
+    }
+
+    fn needs_write<C: TestWriteReq>(_ctx: &Context<C>) -> &'static str {
+        "writing"
+    }
+
+    #[test]
+    fn require_caps_bundles_traits() {
+        // TestResearchBot has HasFileRead + HasGlobSearch + HasWebFetch
+        // → satisfies TestResearchReq
+        let ctx = Context::<TestResearchBot>::new("s".into(), "/tmp".into());
+        assert_eq!(needs_research(&ctx), "researching");
+    }
+
+    #[test]
+    fn require_caps_with_full_bot() {
+        // TestFullBot has everything → satisfies both bundles
+        let ctx = Context::<TestFullBot>::new("s".into(), "/tmp".into());
+        assert_eq!(needs_research(&ctx), "researching");
+        assert_eq!(needs_write(&ctx), "writing");
+    }
+
+    // NOTE: This would NOT compile — TestMinimalBot only has HasFileRead:
+    // fn _test_research_rejected_for_minimal() {
+    //     let ctx = Context::<TestMinimalBot>::new("s".into(), "/tmp".into());
+    //     needs_research(&ctx);  // ERROR: TestMinimalBot doesn't satisfy TestResearchReq
+    // }
 }
