@@ -86,6 +86,43 @@ pub struct MemoryEntry {
     /// Capped at [`MAX_REBUTTAL_HISTORY`] entries per key.
     #[serde(default)]
     pub rebuttal_history: Vec<RebuttalEntry>,
+    /// Source provenance chain (#1333) — tracks which session wrote this entry.
+    #[serde(default)]
+    pub source_provenance: MemorySourceProvenance,
+}
+
+/// Source provenance for a memory entry (#1333).
+///
+/// Tracks which session and operation wrote the entry, enabling
+/// trust-scored retrieval to filter out potentially poisoned entries.
+/// Per [MINJA (arXiv 2601.05504)](https://arxiv.org/abs/2601.05504),
+/// memory poisoning achieves 95%+ injection success without provenance tracking.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemorySourceProvenance {
+    /// Session ID that wrote this entry.
+    #[serde(default)]
+    pub source_session_id: String,
+    /// The operation that produced this entry.
+    #[serde(default)]
+    pub source_operation: String,
+    /// Trust score: 0.0 = adversarial, 1.0 = human-verified.
+    /// Entries from web content get low trust; human-reviewed entries get high trust.
+    #[serde(default = "default_trust_score")]
+    pub trust_score: f32,
+}
+
+fn default_trust_score() -> f32 {
+    0.5 // default: unknown trust
+}
+
+impl Default for MemorySourceProvenance {
+    fn default() -> Self {
+        Self {
+            source_session_id: String::new(),
+            source_operation: String::new(),
+            trust_score: default_trust_score(),
+        }
+    }
 }
 
 /// Typed IFC label for memory entries.
@@ -409,6 +446,7 @@ impl GovernedMemory {
                 created_at: now,
                 ttl_secs,
                 rebuttal_history,
+                source_provenance: Default::default(),
             },
         );
         true
@@ -417,6 +455,18 @@ impl GovernedMemory {
     /// Read a memory entry (returns None if not found or expired).
     pub fn read(&self, key: &str, now: u64) -> Option<&MemoryEntry> {
         self.entries.get(key).filter(|e| !e.is_expired(now))
+    }
+
+    /// Read a memory entry only if its trust score meets the minimum (#1333).
+    ///
+    /// Filters out potentially poisoned entries. Per [MINJA](https://arxiv.org/abs/2601.05504),
+    /// untrusted entries should not participate in agent decision-making
+    /// without explicit human review.
+    pub fn read_trusted(&self, key: &str, now: u64, min_trust_score: f32) -> Option<&MemoryEntry> {
+        self.entries
+            .get(key)
+            .filter(|e| !e.is_expired(now))
+            .filter(|e| e.source_provenance.trust_score >= min_trust_score)
     }
 
     /// Get the IFC label for a memory read (for flow graph observation).
@@ -1283,6 +1333,7 @@ max_entries = 500
             created_at,
             ttl_secs,
             rebuttal_history: Vec::new(),
+            source_provenance: Default::default(),
         }
     }
 
@@ -1515,5 +1566,33 @@ max_entries = 500
         assert_eq!(rebuttal.previous_value, "v1");
         assert_eq!(rebuttal.previous_label.integrity, IntegLevel::Trusted);
         assert_eq!(rebuttal.previous_authority, MemoryAuthority::MayInform);
+    }
+
+    // ── Memory provenance tests (#1333) ─────────────────────────────────
+
+    #[test]
+    fn read_trusted_filters_by_trust_score() {
+        let mut mem = GovernedMemory::new();
+        let label = MemoryLabel::from_levels(ConfLevel::Internal, IntegLevel::Trusted);
+        mem.write(
+            "key".into(),
+            "val".into(),
+            SchemaType::String,
+            label,
+            1000,
+            0,
+        );
+
+        // Default trust = 0.5
+        assert!(mem.read_trusted("key", 1000, 0.3).is_some()); // 0.5 ≥ 0.3
+        assert!(mem.read_trusted("key", 1000, 0.5).is_some()); // 0.5 ≥ 0.5
+        assert!(mem.read_trusted("key", 1000, 0.8).is_none()); // 0.5 < 0.8
+    }
+
+    #[test]
+    fn source_provenance_defaults_correctly() {
+        let prov = MemorySourceProvenance::default();
+        assert_eq!(prov.source_session_id, "");
+        assert_eq!(prov.trust_score, 0.5);
     }
 }

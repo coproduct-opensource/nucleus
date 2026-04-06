@@ -129,6 +129,7 @@ pub mod registry;
 #[cfg(feature = "envelope")]
 pub mod replay;
 pub mod sanitize;
+pub mod server_registry;
 pub mod storage_lane;
 pub mod structured_prompt;
 pub mod task_shield;
