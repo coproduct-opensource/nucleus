@@ -721,6 +721,62 @@ impl Labeled {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// PolicyDenied + RepairHint (#1280)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Structured policy denial exception with machine-readable repair hints.
+///
+/// Raised when a `Runtime` method is denied by the policy engine.
+/// Carries structured fields so agents can programmatically determine
+/// what to fix.
+///
+/// ```python
+/// try:
+///     rt.git_push("origin", "main")
+/// except PolicyDenied as e:
+///     print(e.attempted)    # "GitPush → GitPush"
+///     print(e.reason)       # "capability git_push is Never"
+///     print(e.hint)         # "raise artifact integrity..."
+///     print(e.suggestion)   # same as hint
+/// ```
+#[pyclass(extends=pyo3::exceptions::PyException, skip_from_py_object)]
+#[derive(Debug, Clone)]
+pub struct PolicyDenied {
+    /// What the caller tried to do.
+    #[pyo3(get)]
+    pub attempted: String,
+    /// Why it was denied.
+    #[pyo3(get)]
+    pub reason: String,
+    /// Machine-readable repair hint (human-readable string form).
+    #[pyo3(get)]
+    pub hint: String,
+    /// Suggested fix (same as hint — for ergonomic access).
+    #[pyo3(get)]
+    pub suggestion: String,
+}
+
+#[pymethods]
+impl PolicyDenied {
+    #[new]
+    fn new(attempted: String, reason: String, hint: String) -> Self {
+        Self {
+            attempted,
+            reason,
+            hint: hint.clone(),
+            suggestion: hint,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PolicyDenied(attempted={:?}, reason={:?})",
+            self.attempted, self.reason
+        )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Profile — named capability presets (#1278)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -946,6 +1002,7 @@ fn portcullis(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<IntegLevel>()?;
     m.add_class::<ConfLevel>()?;
     m.add_class::<Labeled>()?;
+    m.add_class::<PolicyDenied>()?;
 
     // Runtime + profiles (#1278)
     m.add_class::<Profile>()?;
