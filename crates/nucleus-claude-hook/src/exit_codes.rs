@@ -21,9 +21,9 @@
 //! - **Hook ran, operation denied** (exit 2): valid JSON on stdout with
 //!   `permissionDecision: "deny"` and a `permissionDecisionReason`.
 //! - **Hook ran, but hit an internal error** (exit 1): stderr has a diagnostic
-//!   message.  No valid decision JSON on stdout (or a deny if `NUCLEUS_FAIL_CLOSED=1`).
+//!   message.  No valid decision JSON on stdout (or a deny if `NUCLEUS_FAIL_OPEN=1`).
 //!
-//! ## `NUCLEUS_FAIL_CLOSED=1`
+//! ## `NUCLEUS_FAIL_OPEN=1`
 //!
 //! When set, infrastructure errors (no stdin, bad JSON, etc.) are promoted
 //! from exit 1 to exit 2 with a deny JSON, ensuring the tool call is blocked.
@@ -50,7 +50,7 @@ pub enum ExitCode {
     /// Operation denied — JSON on stdout contains a deny with reason.
     ///
     /// This covers both policy denials (capability violations, flow rules,
-    /// tamper detection) and infrastructure failures when `NUCLEUS_FAIL_CLOSED=1`.
+    /// tamper detection) and infrastructure failures when `NUCLEUS_FAIL_OPEN=1`.
     Deny = 2,
 }
 
@@ -97,7 +97,7 @@ impl ExitCode {
         println!("  1          Error    Internal error, no valid decision made");
         println!("  2          Deny     Operation blocked (JSON on stdout with reason)");
         println!();
-        println!("When NUCLEUS_FAIL_CLOSED=1, infrastructure errors use exit 2 (deny)");
+        println!("When NUCLEUS_FAIL_OPEN=1, infrastructure errors use exit 2 (deny)");
         println!("instead of exit 1, ensuring tool calls are blocked on any failure.");
         println!();
         println!("Integration notes:");

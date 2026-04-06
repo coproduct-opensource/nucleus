@@ -79,7 +79,7 @@ pub fn print_help() {
     println!("ENVIRONMENT VARIABLES:");
     println!("  NUCLEUS_PROFILE            Permission profile (default: safe_pr_fixer)");
     println!("  NUCLEUS_COMPARTMENT        Compartment: research, draft, execute, breakglass");
-    println!("  NUCLEUS_FAIL_CLOSED        Set to 1: deny on infrastructure errors (CISO mode)");
+    println!("  NUCLEUS_FAIL_OPEN        Unset (default): deny on infrastructure errors. Set to 1 to allow fallthrough");
     println!("  NUCLEUS_REQUIRE_MANIFESTS  Set to 1: deny MCP tools without manifests");
     println!("  NUCLEUS_TIMING             Set to 1: emit phase latency breakdown to stderr");
     println!("  NUCLEUS_AUTONOMY_CEILING   Org cap: production, sandbox (default: unrestricted)");
@@ -222,7 +222,7 @@ pub fn print_help_flow() {
     println!("     Exit code 0 = allow, 2 = deny. See --exit-codes for the full protocol.");
     println!();
     println!("FAIL-CLOSED MODE:");
-    println!("  Set NUCLEUS_FAIL_CLOSED=1 to deny on any infrastructure error (missing");
+    println!("  Set NUCLEUS_FAIL_OPEN=1 to deny on any infrastructure error (missing");
     println!("  session dir, parse failure, etc.). Default is fail-open with a warning.");
     println!();
     println!("TIMING:");
