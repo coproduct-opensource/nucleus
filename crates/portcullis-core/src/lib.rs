@@ -673,6 +673,116 @@ impl CapabilityLattice {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Capability lens projections (#1149)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A named group of capability dimensions for projection/injection.
+///
+/// Use with [`CapabilityLattice::project`] and [`CapabilityLattice::inject`]
+/// to compose partial policies from different sources.
+///
+/// ```rust
+/// use portcullis_core::{CapabilityLattice, DimGroup};
+///
+/// let reads_from_a = CapabilityLattice::for_research();
+/// let writes_from_b = CapabilityLattice::for_codegen();
+///
+/// // Take reads from A, writes from B
+/// let merged = CapabilityLattice::bottom()
+///     .inject(&reads_from_a, &DimGroup::READS)
+///     .inject(&writes_from_b, &DimGroup::WRITES);
+///
+/// assert_eq!(merged.read_files, reads_from_a.read_files);
+/// assert_eq!(merged.write_files, writes_from_b.write_files);
+/// ```
+pub struct DimGroup {
+    dims: &'static [&'static str],
+}
+
+impl DimGroup {
+    /// Read-oriented dimensions.
+    pub const READS: DimGroup = DimGroup {
+        dims: &["read_files", "glob_search", "grep_search"],
+    };
+
+    /// Write-oriented dimensions.
+    pub const WRITES: DimGroup = DimGroup {
+        dims: &["write_files", "edit_files"],
+    };
+
+    /// Network-oriented dimensions.
+    pub const NETWORK: DimGroup = DimGroup {
+        dims: &["web_search", "web_fetch"],
+    };
+
+    /// Execution dimensions.
+    pub const EXECUTION: DimGroup = DimGroup {
+        dims: &["run_bash"],
+    };
+
+    /// Git/publish dimensions.
+    pub const GIT: DimGroup = DimGroup {
+        dims: &["git_commit", "git_push", "create_pr"],
+    };
+
+    /// Infrastructure/agent dimensions.
+    pub const INFRA: DimGroup = DimGroup {
+        dims: &["manage_pods", "spawn_agent"],
+    };
+
+    /// All dimensions.
+    pub const ALL: DimGroup = DimGroup {
+        dims: &CapabilityLattice::DIMENSION_NAMES,
+    };
+
+    /// The dimension names in this group.
+    pub fn dims(&self) -> &[&'static str] {
+        self.dims
+    }
+}
+
+impl CapabilityLattice {
+    /// Project this lattice onto a dimension group, zeroing all other dimensions.
+    ///
+    /// Returns a new lattice where only the dimensions in `group` retain
+    /// their values; all others are `Never`.
+    pub fn project(&self, group: &DimGroup) -> Self {
+        let mut result = Self::bottom();
+        for &dim in group.dims {
+            if let Some(level) = self.get(dim) {
+                result.set(dim, level);
+            }
+        }
+        result
+    }
+
+    /// Inject dimensions from `source` into this lattice for the given group.
+    ///
+    /// Returns a new lattice where dimensions in `group` are taken from
+    /// `source` and all other dimensions retain their current values.
+    pub fn inject(mut self, source: &Self, group: &DimGroup) -> Self {
+        for &dim in group.dims {
+            if let Some(level) = source.get(dim) {
+                self.set(dim, level);
+            }
+        }
+        self
+    }
+
+    /// Merge dimensions from another lattice using lattice join (max per dimension).
+    ///
+    /// Only the dimensions in `group` are merged; others are unchanged.
+    pub fn merge_from(mut self, other: &Self, group: &DimGroup) -> Self {
+        for &dim in group.dims {
+            if let (Some(mine), Some(theirs)) = (self.get(dim), other.get(dim)) {
+                self.set(dim, mine.join(theirs));
+            }
+        }
+        self
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Operation enum — the 12 core operations (Aeneas-translatable)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2531,6 +2641,66 @@ mod tests {
     fn set_unknown_key_returns_false() {
         let mut lattice = CapabilityLattice::default();
         assert!(!lattice.set("unknown_capability", CapabilityLevel::Always));
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // Capability lens projections (#1149)
+    // ════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn project_reads_from_research() {
+        let research = CapabilityLattice::for_research();
+        let reads = research.project(&DimGroup::READS);
+        assert_eq!(reads.read_files, CapabilityLevel::Always);
+        assert_eq!(reads.glob_search, CapabilityLevel::Always);
+        assert_eq!(reads.grep_search, CapabilityLevel::Always);
+        // Non-read dims zeroed
+        assert_eq!(reads.web_fetch, CapabilityLevel::Never);
+        assert_eq!(reads.write_files, CapabilityLevel::Never);
+    }
+
+    #[test]
+    fn inject_reads_from_a_writes_from_b() {
+        let research = CapabilityLattice::for_research();
+        let codegen = CapabilityLattice::for_codegen();
+
+        let merged = CapabilityLattice::bottom()
+            .inject(&research, &DimGroup::READS)
+            .inject(&codegen, &DimGroup::WRITES);
+
+        // Reads from research
+        assert_eq!(merged.read_files, CapabilityLevel::Always);
+        // Writes from codegen
+        assert_eq!(merged.write_files, CapabilityLevel::Always);
+        assert_eq!(merged.edit_files, CapabilityLevel::Always);
+        // Neither has git_push
+        assert_eq!(merged.git_push, CapabilityLevel::Never);
+    }
+
+    #[test]
+    fn merge_from_combines_via_join() {
+        let base = CapabilityLattice::for_read_only();
+        let extra = CapabilityLattice::for_research();
+
+        // Merge network dims from extra into base
+        let merged = base.merge_from(&extra, &DimGroup::NETWORK);
+        assert_eq!(merged.web_fetch, CapabilityLevel::Always); // from extra
+        assert_eq!(merged.web_search, CapabilityLevel::Always); // from extra
+        assert_eq!(merged.read_files, CapabilityLevel::Always); // preserved from base
+    }
+
+    #[test]
+    fn project_all_is_identity() {
+        let codegen = CapabilityLattice::for_codegen();
+        assert_eq!(codegen.project(&DimGroup::ALL), codegen);
+    }
+
+    #[test]
+    fn inject_is_idempotent() {
+        let research = CapabilityLattice::for_research();
+        let once = CapabilityLattice::bottom().inject(&research, &DimGroup::READS);
+        let twice = once.clone().inject(&research, &DimGroup::READS);
+        assert_eq!(once, twice);
     }
 
     // ════════════════════════════════════════════════════════════════════
