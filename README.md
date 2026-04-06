@@ -26,7 +26,7 @@ Built on a [formally verified permission lattice](FORMAL_METHODS.md): 165 Lean 4
 [Static Analysis](#static-analysis) | [Runtime Enforcement](#runtime-enforcement)
 
 **Formal methods researcher?** Heyting algebra permission lattice with Lean 4, Kani, and Verus proofs.
-[FORMAL_METHODS.md](FORMAL_METHODS.md) | [docs/THEORY.md](docs/THEORY.md) | [Verified Claims](docs/verified-claims.md)
+[FORMAL_METHODS.md](FORMAL_METHODS.md) | [docs/THEORY.md](docs/THEORY.md) | [Verified Claims](docs/verified-claims.md) | [Category Theory](docs/theory/index.md)
 
 ## Quick Start
 
