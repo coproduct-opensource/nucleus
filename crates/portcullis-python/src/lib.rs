@@ -974,6 +974,50 @@ impl Runtime {
         self.inner.has_confidential_data()
     }
 
+    // ── Context manager protocol (#1281) ──────────────────────────────
+
+    /// Context manager entry — returns self for use in `with` block.
+    ///
+    /// ```python
+    /// with Runtime(Profile.CODEGEN, task="fix bug") as rt:
+    ///     config = rt.read_file("config.toml")
+    /// # session cleanup on exit
+    /// ```
+    fn __enter__(self_: PyRefMut<'_, Self>) -> PyRefMut<'_, Self> {
+        self_
+    }
+
+    /// Context manager exit — session cleanup.
+    ///
+    /// Returns `False` to propagate exceptions (never suppress).
+    #[allow(unused_variables)]
+    fn __exit__(
+        &self,
+        exc_type: Option<&Bound<'_, PyAny>>,
+        exc_val: Option<&Bound<'_, PyAny>>,
+        exc_tb: Option<&Bound<'_, PyAny>>,
+    ) -> bool {
+        // Future: emit audit receipt summarizing the session here.
+        false // never suppress exceptions
+    }
+
+    /// Create a runtime as a context manager (convenience).
+    ///
+    /// ```python
+    /// with Runtime.session(Profile.CODEGEN, "fix bug #42") as rt:
+    ///     rt.read_file("config.toml")
+    /// ```
+    #[staticmethod]
+    fn session(profile: Profile, task: &str) -> Self {
+        let rust_profile: portcullis_effects::runtime::PolicyProfile = profile.into();
+        Self {
+            inner: portcullis_effects::runtime::NucleusRuntime::builder()
+                .profile(rust_profile)
+                .task(task)
+                .build(),
+        }
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Runtime(profile={:?}, task={:?})",
