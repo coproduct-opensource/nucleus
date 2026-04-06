@@ -21,12 +21,10 @@ replacing `sorry` with a proof makes the theory doc claim machine-checked.
 
 ## Status
 
-All theorems are `sorry`-gated. They type-check as statements but
-are not proved. The CI `sorry` counter tracks these as open obligations.
+All 11 theorems are **kernel-checked** — no `sorry`, no `axiom`.
+The Lean 4 type-checker has verified every proof.
 
-Completing these proofs is tracked in:
-- #1283: Lean proof of repair soundness
-- #1209-b: repair soundness via Aeneas extraction
+Originally sorry-gated (#1297), completed in #1283.
 -/
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -117,32 +115,32 @@ def repair_budget (term : ActionTerm) : ActionTerm :=
     This is the core safety property of the repair system. -/
 theorem repair_integrity_passes (term : ActionTerm) (required : IntegLevel) :
     check_integrity (repair_integrity term required) required = .Pass := by
-  sorry
+  simp [repair_integrity, check_integrity, integ_order]
 
 /-- Derivation repair produces HumanPromoted, which passes check_derivation. -/
 theorem repair_derivation_passes (term : ActionTerm) :
     check_derivation (repair_derivation term) = .Pass := by
-  sorry
+  simp [repair_derivation, check_derivation]
 
 /-- Ancestry repair removes adversarial sources. -/
 theorem repair_ancestry_passes (term : ActionTerm) :
     check_ancestry (repair_ancestry term) = .Pass := by
-  sorry
+  simp [repair_ancestry, check_ancestry]
 
 /-- Budget repair zeroes cost. -/
 theorem repair_budget_passes (term : ActionTerm) :
     check_budget (repair_budget term) = .Pass := by
-  sorry
+  simp [repair_budget, check_budget]
 
 /-- Repair is idempotent: applying twice = applying once. -/
 theorem repair_integrity_idempotent (term : ActionTerm) (required : IntegLevel) :
     repair_integrity (repair_integrity term required) required =
     repair_integrity term required := by
-  sorry
+  simp [repair_integrity]
 
 theorem repair_budget_idempotent (term : ActionTerm) :
     repair_budget (repair_budget term) = repair_budget term := by
-  sorry
+  simp [repair_budget]
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- Layer 2: Galois connection — composability
@@ -154,17 +152,17 @@ theorem repair_budget_idempotent (term : ActionTerm) :
 theorem repair_integrity_budget_commute (term : ActionTerm) (required : IntegLevel) :
     repair_integrity (repair_budget term) required =
     repair_budget (repair_integrity term required) := by
-  sorry
+  simp [repair_integrity, repair_budget]
 
 /-- Integrity repair preserves budget check result (disjoint fields). -/
 theorem repair_integrity_preserves_budget (term : ActionTerm) (required : IntegLevel) :
     check_budget (repair_integrity term required) = check_budget term := by
-  sorry
+  simp [repair_integrity, check_budget]
 
 /-- Budget repair preserves integrity check result (disjoint fields). -/
 theorem repair_budget_preserves_integrity (term : ActionTerm) (required : IntegLevel) :
     check_integrity (repair_budget term) required = check_integrity term required := by
-  sorry
+  simp [repair_budget, check_integrity]
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- Layer 3: Discharge determinism
@@ -174,6 +172,3 @@ theorem repair_budget_preserves_integrity (term : ActionTerm) (required : IntegL
 theorem discharge_deterministic (term : ActionTerm) (required : IntegLevel) :
     check_integrity term required = check_integrity term required := by
   rfl
-
-/-- The only non-sorry theorem: trivially true by reflexivity.
-    Included to show the pattern for completed proofs. -/
