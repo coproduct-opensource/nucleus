@@ -1,4 +1,4 @@
-//! PermRust-style capability tokens (#1320).
+//! PermRust-style capability tokens (#1320, #1348).
 //!
 //! Per-operation phantom tokens consumed on use. A token encodes WHICH
 //! operation on WHICH resource was authorized. Reuse is a compile error
@@ -6,18 +6,42 @@
 //!
 //! ## Pattern
 //!
+//! Every `authorize()` call requires a `&DischargedBundle` — proof that
+//! `preflight_action` ran and all obligations passed. Without a bundle,
+//! you cannot mint a token. This connects the compile-time token system
+//! to the runtime policy pipeline.
+//!
 //! ```rust
-//! use portcullis_core::capability_token::{CapToken, ReadToken, WriteToken};
+//! use portcullis_core::capability_token::ReadToken;
+//! use portcullis_core::discharge::{preflight_action, ActionTerm, PreflightResult};
+//! use portcullis_core::*;
 //!
-//! // Token minted by authorization — sealed, can't be forged
-//! let token = ReadToken::authorize("config.toml");
+//! let term = ActionTerm {
+//!     operation: Operation::WriteFiles,
+//!     sink_class: SinkClass::WorkspaceWrite,
+//!     source_labels: vec![],
+//!     artifact_label: IFCLabel {
+//!         confidentiality: ConfLevel::Internal,
+//!         integrity: IntegLevel::Trusted,
+//!         authority: AuthorityLevel::Directive,
+//!         provenance: ProvenanceSet::SYSTEM,
+//!         freshness: Freshness { observed_at: 1000, ttl_secs: 0 },
+//!         derivation: DerivationClass::Deterministic,
+//!     },
+//!     subject: "spiffe://nucleus/agent/test".to_string(),
+//!     estimated_cost_micro_usd: 0,
+//! };
 //!
-//! // Token consumed on use — can't be reused (move semantics)
-//! let path = token.resource();  // "config.toml"
-//! let _consumed = token;        // moved — second use is compile error
+//! if let PreflightResult::Allowed(bundle) = preflight_action(&term) {
+//!     // Token minted with policy proof — can't be forged
+//!     let token = ReadToken::authorize("config.toml", &bundle);
+//!     assert_eq!(token.resource(), "config.toml");
+//! }
 //! ```
 
 use std::marker::PhantomData;
+
+use crate::discharge::DischargedBundle;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Operation tag types
@@ -114,42 +138,54 @@ pub type GitPushToken = CapToken<OpGitPush>;
 
 impl ReadToken {
     /// Authorize a file read on the given path.
-    pub fn authorize(path: impl Into<String>) -> Self {
+    ///
+    /// Requires a `&DischargedBundle` — proof that `preflight_action` passed.
+    pub fn authorize(path: impl Into<String>, _proof: &DischargedBundle) -> Self {
         Self::mint(path)
     }
 }
 
 impl WriteToken {
     /// Authorize a file write on the given path.
-    pub fn authorize(path: impl Into<String>) -> Self {
+    ///
+    /// Requires a `&DischargedBundle` — proof that `preflight_action` passed.
+    pub fn authorize(path: impl Into<String>, _proof: &DischargedBundle) -> Self {
         Self::mint(path)
     }
 }
 
 impl ShellToken {
     /// Authorize execution of the given command.
-    pub fn authorize(command: impl Into<String>) -> Self {
+    ///
+    /// Requires a `&DischargedBundle` — proof that `preflight_action` passed.
+    pub fn authorize(command: impl Into<String>, _proof: &DischargedBundle) -> Self {
         Self::mint(command)
     }
 }
 
 impl FetchToken {
     /// Authorize fetching the given URL.
-    pub fn authorize(url: impl Into<String>) -> Self {
+    ///
+    /// Requires a `&DischargedBundle` — proof that `preflight_action` passed.
+    pub fn authorize(url: impl Into<String>, _proof: &DischargedBundle) -> Self {
         Self::mint(url)
     }
 }
 
 impl GitCommitToken {
     /// Authorize a git commit with the given message.
-    pub fn authorize(message: impl Into<String>) -> Self {
+    ///
+    /// Requires a `&DischargedBundle` — proof that `preflight_action` passed.
+    pub fn authorize(message: impl Into<String>, _proof: &DischargedBundle) -> Self {
         Self::mint(message)
     }
 }
 
 impl GitPushToken {
     /// Authorize a git push to the given remote.
-    pub fn authorize(remote: impl Into<String>) -> Self {
+    ///
+    /// Requires a `&DischargedBundle` — proof that `preflight_action` passed.
+    pub fn authorize(remote: impl Into<String>, _proof: &DischargedBundle) -> Self {
         Self::mint(remote)
     }
 }
@@ -161,16 +197,49 @@ impl GitPushToken {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::discharge::{ActionTerm, PreflightResult, preflight_action};
+    use crate::{
+        AuthorityLevel, ConfLevel, DerivationClass, Freshness, IFCLabel, IntegLevel, Operation,
+        ProvenanceSet, SinkClass,
+    };
+
+    /// Helper: produce a DischargedBundle by running preflight on a simple allowed term.
+    fn proof() -> DischargedBundle {
+        let term = ActionTerm {
+            operation: Operation::WriteFiles,
+            sink_class: SinkClass::WorkspaceWrite,
+            source_labels: vec![],
+            artifact_label: IFCLabel {
+                confidentiality: ConfLevel::Internal,
+                integrity: IntegLevel::Trusted,
+                authority: AuthorityLevel::Directive,
+                provenance: ProvenanceSet::SYSTEM,
+                freshness: Freshness {
+                    observed_at: 1000,
+                    ttl_secs: 0,
+                },
+                derivation: DerivationClass::Deterministic,
+            },
+            subject: "spiffe://nucleus/agent/test".to_string(),
+            estimated_cost_micro_usd: 0,
+        };
+        match preflight_action(&term) {
+            PreflightResult::Allowed(bundle) => bundle,
+            _ => panic!("expected Allowed"),
+        }
+    }
 
     #[test]
     fn read_token_carries_resource() {
-        let token = ReadToken::authorize("config.toml");
+        let bundle = proof();
+        let token = ReadToken::authorize("config.toml", &bundle);
         assert_eq!(token.resource(), "config.toml");
     }
 
     #[test]
     fn token_consumed_on_use() {
-        let token = WriteToken::authorize("output.txt");
+        let bundle = proof();
+        let token = WriteToken::authorize("output.txt", &bundle);
         let path = token.consume(); // token moved
         assert_eq!(path, "output.txt");
         // token.resource(); // would be compile error — moved
@@ -178,8 +247,9 @@ mod tests {
 
     #[test]
     fn different_op_types_are_distinct() {
-        let _read: ReadToken = ReadToken::authorize("file.rs");
-        let _write: WriteToken = WriteToken::authorize("file.rs");
+        let bundle = proof();
+        let _read: ReadToken = ReadToken::authorize("file.rs", &bundle);
+        let _write: WriteToken = WriteToken::authorize("file.rs", &bundle);
         // These are different types — can't mix them up
         // fn needs_write(_t: WriteToken) {}
         // needs_write(_read);  // COMPILE ERROR: expected WriteToken, got ReadToken
@@ -187,7 +257,8 @@ mod tests {
 
     #[test]
     fn debug_shows_op_type() {
-        let token = FetchToken::authorize("https://example.com");
+        let bundle = proof();
+        let token = FetchToken::authorize("https://example.com", &bundle);
         let debug = format!("{token:?}");
         assert!(debug.contains("OpFetch"));
         assert!(debug.contains("example.com"));
@@ -195,13 +266,15 @@ mod tests {
 
     #[test]
     fn shell_token_carries_command() {
-        let token = ShellToken::authorize("cargo test");
+        let bundle = proof();
+        let token = ShellToken::authorize("cargo test", &bundle);
         assert_eq!(token.resource(), "cargo test");
     }
 
     #[test]
     fn git_push_token() {
-        let token = GitPushToken::authorize("origin");
+        let bundle = proof();
+        let token = GitPushToken::authorize("origin", &bundle);
         assert_eq!(token.consume(), "origin");
     }
 }
