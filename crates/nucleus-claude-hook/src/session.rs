@@ -1261,6 +1261,9 @@ pub(crate) fn build_discharge_term(
         source_labels,
         artifact_label: state.ifc_label_ratchet.unwrap_or_default(),
         subject: subject.to_string(),
+        // Budget enforcement not yet wired (#1362) — cost estimation requires
+        // integration with an LLM token pricer or API metering service.
+        // The BudgetNotExceeded obligation is structurally sound but dormant.
         estimated_cost_micro_usd: 0,
     }
 }
