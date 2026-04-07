@@ -533,11 +533,18 @@ impl NucleusRuntime {
     /// Returns `Labeled<Vec<u8>, Trusted, Internal>` — the compile-time type
     /// encodes that file reads are trusted-integrity, internal-confidentiality.
     /// Passing this to a function requiring `Adversarial` input is a type error.
-    pub fn read_file(&mut self, path: &Path) -> Result<ReadOutput, RuntimeError> {
+    /// Preflight a file read — returns proof bundle without executing.
+    pub fn preflight_read(&self) -> Result<DischargedBundle, RuntimeError> {
         let term = self.build_term(Operation::ReadFiles, SinkClass::AuditLogAppend);
-        let bundle = self.discharge(&term)?;
-        let _ = &bundle; // proof consumed — bundle witnesses discharge
+        self.discharge(&term)
+    }
 
+    /// Read a file. Requires a `DischargedBundle` from `preflight_read()`.
+    pub fn read_file(
+        &mut self,
+        path: &Path,
+        _proof: DischargedBundle,
+    ) -> Result<ReadOutput, RuntimeError> {
         let fx = &self.effects;
         let data = fx
             .read(path)
@@ -554,18 +561,20 @@ impl NucleusRuntime {
         })
     }
 
-    /// Write a file with full obligation discharge, path checking, and IFC tracking.
-    ///
-    /// 1. Checks path against `allowed_write_paths` (if configured)
-    /// 2. Discharges obligations via `preflight_action`
-    /// 3. Executes the write through `PolicyEnforced`
-    pub fn write_file(&mut self, path: &Path, content: &[u8]) -> Result<(), RuntimeError> {
+    /// Preflight a file write — returns proof bundle without executing.
+    pub fn preflight_write(&self, path: &Path) -> Result<DischargedBundle, RuntimeError> {
         self.check_path_allowed(path)?;
-
         let term = self.build_term(Operation::WriteFiles, SinkClass::WorkspaceWrite);
-        let bundle = self.discharge(&term)?;
-        let _ = &bundle; // proof consumed — bundle witnesses discharge
+        self.discharge(&term)
+    }
 
+    /// Write a file. Requires a `DischargedBundle` from `preflight_write()`.
+    pub fn write_file(
+        &mut self,
+        path: &Path,
+        content: &[u8],
+        _proof: DischargedBundle,
+    ) -> Result<(), RuntimeError> {
         let fx = &self.effects;
         fx.write(path, content)
             .map_err(|e| self.translate_error(e, "write file", path))
@@ -580,11 +589,18 @@ impl NucleusRuntime {
     /// Returns `Labeled<Vec<u8>, Adversarial, Public>` — the compile-time type
     /// encodes that web content is adversarial-integrity, public-confidentiality.
     /// Passing this to a function requiring `Trusted` input is a **compile error**.
-    pub fn fetch_url(&mut self, url: &str) -> Result<FetchOutput, RuntimeError> {
+    /// Preflight a URL fetch — returns proof bundle without executing.
+    pub fn preflight_fetch(&self) -> Result<DischargedBundle, RuntimeError> {
         let term = self.build_term(Operation::WebFetch, SinkClass::HTTPEgress);
-        let bundle = self.discharge(&term)?;
-        let _ = &bundle; // proof consumed — bundle witnesses discharge
+        self.discharge(&term)
+    }
 
+    /// Fetch a URL. Requires a `DischargedBundle` from `preflight_fetch()`.
+    pub fn fetch_url(
+        &mut self,
+        url: &str,
+        _proof: DischargedBundle,
+    ) -> Result<FetchOutput, RuntimeError> {
         let fx = &self.effects;
         let data = fx.fetch(url).map_err(RuntimeError::from)?;
 
@@ -599,15 +615,18 @@ impl NucleusRuntime {
         })
     }
 
-    /// Run a shell command with full obligation discharge.
-    ///
-    /// 1. Discharges obligations via `preflight_action`
-    /// 2. Executes the command through `PolicyEnforced`
-    pub fn run_shell(&mut self, cmd: &str) -> Result<ShellResult, RuntimeError> {
+    /// Preflight a shell command — returns proof bundle without executing.
+    pub fn preflight_shell(&self) -> Result<DischargedBundle, RuntimeError> {
         let term = self.build_term(Operation::RunBash, SinkClass::BashExec);
-        let bundle = self.discharge(&term)?;
-        let _ = &bundle; // proof consumed — bundle witnesses discharge
+        self.discharge(&term)
+    }
 
+    /// Run a shell command. Requires a `DischargedBundle` from `preflight_shell()`.
+    pub fn run_shell(
+        &mut self,
+        cmd: &str,
+        _proof: DischargedBundle,
+    ) -> Result<ShellResult, RuntimeError> {
         let fx = &self.effects;
         let output = fx.run(cmd).map_err(RuntimeError::from)?;
         Ok(ShellResult {
@@ -615,12 +634,18 @@ impl NucleusRuntime {
         })
     }
 
-    /// Git commit with full obligation discharge.
-    pub fn git_commit(&mut self, message: &str) -> Result<CommitOutput, RuntimeError> {
+    /// Preflight a git commit — returns proof bundle without executing.
+    pub fn preflight_commit(&self) -> Result<DischargedBundle, RuntimeError> {
         let term = self.build_term(Operation::GitCommit, SinkClass::GitCommit);
-        let bundle = self.discharge(&term)?;
-        let _ = &bundle; // proof consumed — bundle witnesses discharge
+        self.discharge(&term)
+    }
 
+    /// Git commit. Requires a `DischargedBundle` from `preflight_commit()`.
+    pub fn git_commit(
+        &mut self,
+        message: &str,
+        _proof: DischargedBundle,
+    ) -> Result<CommitOutput, RuntimeError> {
         let fx = &self.effects;
         let hash = fx.commit(message).map_err(RuntimeError::from)?;
         Ok(CommitOutput {
@@ -628,12 +653,19 @@ impl NucleusRuntime {
         })
     }
 
-    /// Git push with full obligation discharge.
-    pub fn git_push(&mut self, remote: &str, branch: &str) -> Result<(), RuntimeError> {
+    /// Preflight a git push — returns proof bundle without executing.
+    pub fn preflight_push(&self) -> Result<DischargedBundle, RuntimeError> {
         let term = self.build_term(Operation::GitPush, SinkClass::GitPush);
-        let bundle = self.discharge(&term)?;
-        let _ = &bundle; // proof consumed — bundle witnesses discharge
+        self.discharge(&term)
+    }
 
+    /// Git push. Requires a `DischargedBundle` from `preflight_push()`.
+    pub fn git_push(
+        &mut self,
+        remote: &str,
+        branch: &str,
+        _proof: DischargedBundle,
+    ) -> Result<(), RuntimeError> {
         let fx = &self.effects;
         fx.push(remote, branch).map_err(RuntimeError::from)
     }
@@ -1267,7 +1299,12 @@ mod tests {
         let mut rt = NucleusRuntime::builder()
             .profile(PolicyProfile::ReadOnly)
             .build();
-        let result = rt.write_file(std::path::Path::new("/tmp/test.txt"), b"data");
+        let result = {
+            let p = rt
+                .preflight_write(std::path::Path::new("/tmp/test.txt"))
+                .unwrap();
+            rt.write_file(std::path::Path::new("/tmp/test.txt"), b"data", p)
+        };
         assert!(result.is_err());
         let err = result.unwrap_err();
         // Should be a Denied error from either discharge or effects
@@ -1276,11 +1313,12 @@ mod tests {
 
     #[test]
     fn write_file_path_allowlist_blocks_outside_paths() {
-        let mut rt = NucleusRuntime::builder()
+        let rt = NucleusRuntime::builder()
             .profile(PolicyProfile::Codegen)
             .allowed_write_paths(["/allowed/dir"])
             .build();
-        let result = rt.write_file(std::path::Path::new("/etc/passwd"), b"data");
+        // Path check now happens at preflight — denied before execution
+        let result = rt.preflight_write(std::path::Path::new("/etc/passwd"));
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("outside allowed write paths"));
@@ -1294,7 +1332,12 @@ mod tests {
             .build();
         // This will fail on discharge (IFCLabel default is Untrusted integrity)
         // or on the actual I/O, but NOT on path checking
-        let result = rt.write_file(std::path::Path::new("/tmp/nucleus-test-1239"), b"test");
+        let result = {
+            let p = rt
+                .preflight_write(std::path::Path::new("/tmp/nucleus-test-1239"))
+                .unwrap();
+            rt.write_file(std::path::Path::new("/tmp/nucleus-test-1239"), b"test", p)
+        };
         // May succeed or fail on I/O — the point is it doesn't fail on path check
         if let Err(RuntimeError::Denied { reason, .. }) = &result {
             assert!(!reason.contains("outside allowed write paths"));
@@ -1309,7 +1352,10 @@ mod tests {
         assert_eq!(rt.flow_tracker().node_count(), 0);
 
         // Read a file that exists
-        let result = rt.read_file(std::path::Path::new("Cargo.toml"));
+        let result = {
+            let p = rt.preflight_read().unwrap();
+            rt.read_file(std::path::Path::new("Cargo.toml"), p)
+        };
         if let Ok(output) = result {
             assert!(output.node_id() > 0);
             assert_eq!(rt.flow_tracker().node_count(), 1);
@@ -1335,7 +1381,10 @@ mod tests {
             .build();
 
         // fetch will fail (stub) but we can test that it gets past discharge
-        let result = rt.fetch_url("https://example.com");
+        let result = {
+            let p = rt.preflight_fetch().unwrap();
+            rt.fetch_url("https://example.com", p)
+        };
         // The fetch may fail with NotImplemented or Io, but not PolicyDenied
         match result {
             Ok(output) => {
@@ -1357,7 +1406,10 @@ mod tests {
         let mut rt = NucleusRuntime::builder()
             .profile(PolicyProfile::Research)
             .build();
-        let result = rt.run_shell("echo hello");
+        let result = {
+            let p = rt.preflight_shell().unwrap();
+            rt.run_shell("echo hello", p)
+        };
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), RuntimeError::Denied { .. }));
     }
@@ -1367,7 +1419,10 @@ mod tests {
         let mut rt = NucleusRuntime::builder()
             .profile(PolicyProfile::Codegen)
             .build();
-        let result = rt.git_push("origin", "main");
+        let result = {
+            let p = rt.preflight_push().unwrap();
+            rt.git_push("origin", "main", p)
+        };
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), RuntimeError::Denied { .. }));
     }
@@ -1377,7 +1432,10 @@ mod tests {
         let mut rt = NucleusRuntime::builder()
             .profile(PolicyProfile::ReadOnly)
             .build();
-        let result = rt.run_shell("echo hello");
+        let result = {
+            let p = rt.preflight_shell().unwrap();
+            rt.run_shell("echo hello", p)
+        };
         let err = result.unwrap_err();
         let msg = err.to_string();
         // The denial comes from PolicyEnforced (run_bash is Never)
@@ -1482,11 +1540,11 @@ mod tests {
 
     #[test]
     fn write_file_denied_by_path_allowlist() {
-        let mut rt = NucleusRuntime::builder()
+        let rt = NucleusRuntime::builder()
             .profile(PolicyProfile::Codegen)
             .allowed_write_paths(["/allowed/dir"])
             .build();
-        let result = rt.write_file(std::path::Path::new("/etc/passwd"), b"data");
+        let result = rt.preflight_write(std::path::Path::new("/etc/passwd"));
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("outside allowed write paths"));
@@ -1498,7 +1556,10 @@ mod tests {
         let mut rt = NucleusRuntime::builder()
             .profile(PolicyProfile::Codegen)
             .build();
-        let result = rt.git_push("origin", "main");
+        let result = {
+            let p = rt.preflight_push().unwrap();
+            rt.git_push("origin", "main", p)
+        };
         assert!(result.is_err());
     }
 
@@ -1508,7 +1569,10 @@ mod tests {
             .profile(PolicyProfile::Codegen)
             .build();
         // git_commit may fail on I/O (no repo) but should NOT fail on policy
-        let result = rt.git_commit("test commit");
+        let result = {
+            let p = rt.preflight_commit().unwrap();
+            rt.git_commit("test commit", p)
+        };
         if let Err(RuntimeError::Denied { .. }) = &result {
             panic!("git_commit should not be denied by Codegen profile");
         }
@@ -1520,7 +1584,10 @@ mod tests {
             .profile(PolicyProfile::Codegen)
             .build();
         // run_shell may fail on I/O but should NOT fail on policy
-        let result = rt.run_shell("echo test");
+        let result = {
+            let p = rt.preflight_shell().unwrap();
+            rt.run_shell("echo test", p)
+        };
         if let Err(RuntimeError::Denied { .. }) = &result {
             panic!("run_shell should not be denied by Codegen profile");
         }
@@ -1531,7 +1598,10 @@ mod tests {
         let mut rt = NucleusRuntime::builder()
             .profile(PolicyProfile::Codegen)
             .build();
-        let result = rt.read_file(std::path::Path::new("Cargo.toml"));
+        let result = {
+            let p = rt.preflight_read().unwrap();
+            rt.read_file(std::path::Path::new("Cargo.toml"), p)
+        };
         if let Ok(output) = result {
             assert_eq!(
                 output.data().integrity_level(),
@@ -1553,7 +1623,11 @@ mod tests {
         assert_eq!(rt.flow_tracker().node_count(), 0);
 
         // Read a file — should add a node
-        if rt.read_file(std::path::Path::new("Cargo.toml")).is_ok() {
+        let proof = rt.preflight_read().unwrap();
+        if rt
+            .read_file(std::path::Path::new("Cargo.toml"), proof)
+            .is_ok()
+        {
             assert_eq!(rt.flow_tracker().node_count(), 1);
             assert!(rt.has_confidential_data()); // FileRead is Internal
         }
