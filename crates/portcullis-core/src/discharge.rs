@@ -666,6 +666,45 @@ impl PreflightResult {
 ///     PreflightResult::RequiresApproval { reason } => { /* await approval */ }
 /// }
 /// ```
+/// Test helpers for producing `DischargedBundle`s in tests.
+///
+/// These run a real `preflight_action` on a known-good term.
+/// Only use in tests — production code must earn its bundle.
+#[doc(hidden)]
+pub mod test_helpers {
+    use super::*;
+    use crate::{
+        AuthorityLevel, ConfLevel, DerivationClass, Freshness, IntegLevel, Operation,
+        ProvenanceSet, SinkClass,
+    };
+
+    /// Produce a `DischargedBundle` by running preflight on a known-good term.
+    pub fn allowed_bundle() -> DischargedBundle {
+        let term = ActionTerm {
+            operation: Operation::WriteFiles,
+            sink_class: SinkClass::WorkspaceWrite,
+            source_labels: vec![],
+            artifact_label: crate::IFCLabel {
+                confidentiality: ConfLevel::Internal,
+                integrity: IntegLevel::Trusted,
+                authority: AuthorityLevel::Directive,
+                provenance: ProvenanceSet::SYSTEM,
+                freshness: Freshness {
+                    observed_at: 1000,
+                    ttl_secs: 0,
+                },
+                derivation: DerivationClass::Deterministic,
+            },
+            subject: "test-helper".to_string(),
+            estimated_cost_micro_usd: 0,
+        };
+        match preflight_action(&term) {
+            PreflightResult::Allowed(bundle) => bundle,
+            other => panic!("test_helpers::allowed_bundle: expected Allowed, got {other:?}"),
+        }
+    }
+}
+
 pub fn preflight_action(term: &ActionTerm) -> PreflightResult {
     // 1. IntegrityGate: artifact integrity must meet the sink minimum.
     let min_integ = sink_min_integrity(term.sink_class);
