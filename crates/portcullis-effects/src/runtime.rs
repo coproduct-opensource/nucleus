@@ -535,7 +535,8 @@ impl NucleusRuntime {
     /// Passing this to a function requiring `Adversarial` input is a type error.
     pub fn read_file(&mut self, path: &Path) -> Result<ReadOutput, RuntimeError> {
         let term = self.build_term(Operation::ReadFiles, SinkClass::AuditLogAppend);
-        let _bundle = self.discharge(&term)?;
+        let bundle = self.discharge(&term)?;
+        let _ = &bundle; // proof consumed — bundle witnesses discharge
 
         let fx = &self.effects;
         let data = fx
@@ -562,7 +563,8 @@ impl NucleusRuntime {
         self.check_path_allowed(path)?;
 
         let term = self.build_term(Operation::WriteFiles, SinkClass::WorkspaceWrite);
-        let _bundle = self.discharge(&term)?;
+        let bundle = self.discharge(&term)?;
+        let _ = &bundle; // proof consumed — bundle witnesses discharge
 
         let fx = &self.effects;
         fx.write(path, content)
@@ -580,7 +582,8 @@ impl NucleusRuntime {
     /// Passing this to a function requiring `Trusted` input is a **compile error**.
     pub fn fetch_url(&mut self, url: &str) -> Result<FetchOutput, RuntimeError> {
         let term = self.build_term(Operation::WebFetch, SinkClass::HTTPEgress);
-        let _bundle = self.discharge(&term)?;
+        let bundle = self.discharge(&term)?;
+        let _ = &bundle; // proof consumed — bundle witnesses discharge
 
         let fx = &self.effects;
         let data = fx.fetch(url).map_err(RuntimeError::from)?;
@@ -602,7 +605,8 @@ impl NucleusRuntime {
     /// 2. Executes the command through `PolicyEnforced`
     pub fn run_shell(&mut self, cmd: &str) -> Result<ShellResult, RuntimeError> {
         let term = self.build_term(Operation::RunBash, SinkClass::BashExec);
-        let _bundle = self.discharge(&term)?;
+        let bundle = self.discharge(&term)?;
+        let _ = &bundle; // proof consumed — bundle witnesses discharge
 
         let fx = &self.effects;
         let output = fx.run(cmd).map_err(RuntimeError::from)?;
@@ -614,7 +618,8 @@ impl NucleusRuntime {
     /// Git commit with full obligation discharge.
     pub fn git_commit(&mut self, message: &str) -> Result<CommitOutput, RuntimeError> {
         let term = self.build_term(Operation::GitCommit, SinkClass::GitCommit);
-        let _bundle = self.discharge(&term)?;
+        let bundle = self.discharge(&term)?;
+        let _ = &bundle; // proof consumed — bundle witnesses discharge
 
         let fx = &self.effects;
         let hash = fx.commit(message).map_err(RuntimeError::from)?;
@@ -626,7 +631,8 @@ impl NucleusRuntime {
     /// Git push with full obligation discharge.
     pub fn git_push(&mut self, remote: &str, branch: &str) -> Result<(), RuntimeError> {
         let term = self.build_term(Operation::GitPush, SinkClass::GitPush);
-        let _bundle = self.discharge(&term)?;
+        let bundle = self.discharge(&term)?;
+        let _ = &bundle; // proof consumed — bundle witnesses discharge
 
         let fx = &self.effects;
         fx.push(remote, branch).map_err(RuntimeError::from)
