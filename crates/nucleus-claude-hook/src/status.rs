@@ -450,6 +450,7 @@ mod tests {
             last_injected_context_key: None,
             web_tainted: false,
             ifc_label_ratchet: None,
+            last_discharge_proof: None,
             web_taint_context_injected: false,
             pending_user_bash: false,
             pending_source_hashes: vec![],

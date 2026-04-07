@@ -1448,7 +1448,9 @@ fn main() {
                 save_session(&input.session_id, &session);
                 HookOutput::ask(format!("nucleus IFC: {reason}"))
             }
-            (Verdict::Allow, PreflightResult::Allowed(_)) => {
+            (Verdict::Allow, PreflightResult::Allowed(bundle)) => {
+                session.last_discharge_proof = Some(format!("{bundle:?}")); // #1376
+
                 // Persist: operation will execute — track in both exposure and flow graph
                 session
                     .allowed_ops
