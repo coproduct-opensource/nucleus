@@ -547,6 +547,11 @@ pub struct ActionTerm {
     /// When non-zero, a budget gate must be wired at the application layer
     /// (in `portcullis-effects`). Passing non-zero cost through `preflight_action`
     /// without a budget gate produces a `Denied` result.
+    ///
+    /// **Known gap (#1362)**: All current callsites pass 0 because no cost
+    /// estimation is wired yet. The `BudgetNotExceeded` obligation is
+    /// structurally sound but operationally dormant until a cost estimator
+    /// is integrated (e.g., LLM token pricing, API call metering).
     pub estimated_cost_micro_usd: u64,
 }
 
