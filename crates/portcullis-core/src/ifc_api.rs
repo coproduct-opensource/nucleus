@@ -49,12 +49,15 @@ impl std::fmt::Debug for Seal {
 impl SessionCleanseToken {
     /// Create a cleanse token with the given authorization reason.
     ///
-    /// This is the **only** way to obtain a `SessionCleanseToken`.
-    /// The reason is recorded for audit purposes.
+    /// Requires a `DischargedBundle` — proof that `preflight_action` passed
+    /// all policy obligations. This prevents downstream code from forging
+    /// cleanse tokens without going through the policy pipeline (#1358).
     ///
-    /// In production, this should only be called after verified human
-    /// authorization (e.g., a human-in-the-loop approval gate).
-    pub fn authorize(reason: impl Into<String>) -> Self {
+    /// The reason is recorded for audit purposes.
+    pub fn authorize(
+        reason: impl Into<String>,
+        _proof: &crate::discharge::DischargedBundle,
+    ) -> Self {
         Self {
             reason: reason.into(),
             _seal: Seal,
@@ -956,8 +959,9 @@ mod tests {
         t.observe(NodeKind::WebContent).unwrap();
         assert_eq!(t.session_taint_ceiling(), DerivationClass::OpaqueExternal);
 
-        // Explicit reset — requires a SessionCleanseToken
-        let token = SessionCleanseToken::authorize("test: reset for verification");
+        // Explicit reset — requires a SessionCleanseToken + DischargedBundle
+        let bundle = crate::discharge::test_helpers::allowed_bundle();
+        let token = SessionCleanseToken::authorize("test: reset for verification", &bundle);
         t.reset_session_ceiling(DerivationClass::Deterministic, &token);
         assert_eq!(t.session_taint_ceiling(), DerivationClass::Deterministic);
         assert!(!t.is_session_tainted());
@@ -971,7 +975,8 @@ mod tests {
         t.observe(NodeKind::ModelPlan).unwrap();
         assert!(t.is_session_tainted());
 
-        let token = SessionCleanseToken::authorize("test: reset taint status");
+        let bundle = crate::discharge::test_helpers::allowed_bundle();
+        let token = SessionCleanseToken::authorize("test: reset taint status", &bundle);
         t.reset_session_ceiling(DerivationClass::Deterministic, &token);
         assert!(!t.is_session_tainted());
     }
