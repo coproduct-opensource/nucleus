@@ -118,6 +118,10 @@ pub(crate) struct SessionState {
     /// that taint through the IFC pipeline.
     #[serde(default)]
     pub(crate) ifc_label_ratchet: Option<portcullis_core::IFCLabel>,
+    /// Debug representation of the last DischargedBundle (#1376).
+    /// Stored as proof that preflight_action passed for the most recent operation.
+    #[serde(default)]
+    pub(crate) last_discharge_proof: Option<String>,
     /// Whether the web taint warning has been injected into additionalContext (#838).
     /// Prevents repeated injection — the model only needs to be told once.
     #[serde(default)]
