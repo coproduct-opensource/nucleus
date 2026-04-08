@@ -93,6 +93,93 @@ pub trait JoinSemilattice: Sized + Clone + PartialEq {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Monotone maps — morphisms in the category of lattices
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A monotone map between two lattices: `a ≤ b ⟹ f(a) ≤ f(b)`.
+///
+/// Monotone maps are the morphisms in **Lat** (the category of lattices).
+/// In nucleus, nearly every transformation is supposed to be monotone:
+/// - Taint propagation: more tainted input → more tainted output
+/// - Delegation narrowing: wider parent → wider child ceiling
+/// - Exposure classification: more operations → more exposure
+/// - Budget consumption: more cost → less remaining budget
+///
+/// This trait makes the property testable via [`verify_monotone`].
+///
+/// # Example
+///
+/// ```rust
+/// use portcullis_core::category::{MonotoneMap, Lattice};
+/// use portcullis_core::CapabilityLevel;
+///
+/// struct Negate;
+/// // CapabilityLevel::complement is antitone, not monotone.
+/// // This trait catches that at test time.
+/// ```
+pub trait MonotoneMap<A: Lattice, B: Lattice> {
+    /// Apply the map.
+    fn apply(&self, x: &A) -> B;
+}
+
+/// A join-preserving map (lattice homomorphism for join):
+/// `f(a ∨ b) = f(a) ∨ f(b)`.
+///
+/// Join-preservation implies monotonicity (in a lattice), so this is
+/// strictly stronger. Useful for taint propagation, which must preserve
+/// the join-semilattice structure.
+pub trait JoinPreserving<A: Lattice, B: Lattice>: MonotoneMap<A, B> {}
+
+/// Verify that a map is monotone over a set of samples.
+///
+/// Checks: for all pairs (a, b) where `a ≤ b`, `f(a) ≤ f(b)`.
+/// Returns a list of violations (empty = monotone on the sample set).
+pub fn verify_monotone<A: Lattice + std::fmt::Debug, B: Lattice + std::fmt::Debug>(
+    f: &dyn MonotoneMap<A, B>,
+    samples: &[A],
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    for (i, a) in samples.iter().enumerate() {
+        for (j, b) in samples.iter().enumerate() {
+            if a.leq(b) {
+                let fa = f.apply(a);
+                let fb = f.apply(b);
+                if !fa.leq(&fb) {
+                    violations.push(format!(
+                        "monotonicity violated: samples[{i}] ≤ samples[{j}] but f(samples[{i}]) > f(samples[{j}]): \
+                         f({a:?}) = {fa:?}, f({b:?}) = {fb:?}"
+                    ));
+                }
+            }
+        }
+    }
+    violations
+}
+
+/// Verify that a map preserves joins over a set of samples.
+///
+/// Checks: `f(a ∨ b) = f(a) ∨ f(b)` for all pairs.
+pub fn verify_join_preserving<A: Lattice + std::fmt::Debug, B: Lattice + std::fmt::Debug>(
+    f: &dyn MonotoneMap<A, B>,
+    samples: &[A],
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    for (i, a) in samples.iter().enumerate() {
+        for (j, b) in samples.iter().enumerate() {
+            let f_join = f.apply(&a.join(b));
+            let join_f = f.apply(a).join(&f.apply(b));
+            if f_join != join_f {
+                violations.push(format!(
+                    "join-preservation violated for samples[{i}], samples[{j}]: \
+                     f(a∨b) = {f_join:?}, f(a)∨f(b) = {join_f:?}"
+                ));
+            }
+        }
+    }
+    violations
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Product lattice — categorical product in Lat
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -890,5 +977,98 @@ mod tests {
     fn meet_all_none_for_empty() {
         let result = super::meet_all::<CapabilityLevel>(std::iter::empty());
         assert!(result.is_none());
+    }
+
+    // ── Monotone map tests ────────────────────────────────────────────
+
+    /// Joining with a fixed label is a monotone endomorphism on IFCLabel.
+    /// This is the core taint propagation invariant: if input A ≤ input B,
+    /// then (A ⊔ taint) ≤ (B ⊔ taint).
+    struct JoinWith(IFCLabel);
+
+    impl super::MonotoneMap<IFCLabel, IFCLabel> for JoinWith {
+        fn apply(&self, x: &IFCLabel) -> IFCLabel {
+            Lattice::join(x, &self.0)
+        }
+    }
+
+    #[test]
+    fn join_with_trusted_is_monotone() {
+        let fresh = Freshness {
+            observed_at: 1000,
+            ttl_secs: 3600,
+        };
+        let samples = vec![
+            IFCLabel {
+                freshness: fresh,
+                ..IFCLabel::bottom()
+            },
+            IFCLabel {
+                freshness: fresh,
+                ..IFCLabel::top()
+            },
+            IFCLabel {
+                freshness: fresh,
+                ..IFCLabel::default()
+            },
+        ];
+        let taint = IFCLabel::web_content(1000);
+        let v = super::verify_monotone(&JoinWith(taint), &samples);
+        assert!(
+            v.is_empty(),
+            "join-with-taint monotonicity violations: {v:?}"
+        );
+    }
+
+    #[test]
+    fn join_with_taint_is_join_preserving() {
+        let fresh = Freshness {
+            observed_at: 1000,
+            ttl_secs: 3600,
+        };
+        let samples = vec![
+            IFCLabel {
+                freshness: fresh,
+                ..IFCLabel::bottom()
+            },
+            IFCLabel {
+                freshness: fresh,
+                ..IFCLabel::top()
+            },
+            IFCLabel {
+                freshness: fresh,
+                ..IFCLabel::default()
+            },
+        ];
+        let taint = IFCLabel::web_content(1000);
+        let v = super::verify_join_preserving(&JoinWith(taint), &samples);
+        assert!(
+            v.is_empty(),
+            "join-with-taint join-preservation violations: {v:?}"
+        );
+    }
+
+    /// CapabilityLevel::meet with a fixed level is monotone (delegation narrowing).
+    struct MeetWithCap(CapabilityLevel);
+
+    impl super::MonotoneMap<CapabilityLevel, CapabilityLevel> for MeetWithCap {
+        fn apply(&self, x: &CapabilityLevel) -> CapabilityLevel {
+            Lattice::meet(x, &self.0)
+        }
+    }
+
+    #[test]
+    fn delegation_narrowing_is_monotone() {
+        let samples = vec![
+            CapabilityLevel::Never,
+            CapabilityLevel::LowRisk,
+            CapabilityLevel::Always,
+        ];
+        // Narrowing to LowRisk: a parent's ceiling constrains children
+        let v = super::verify_monotone(&MeetWithCap(CapabilityLevel::LowRisk), &samples);
+        assert!(
+            v.is_empty(),
+            "delegation narrowing monotonicity violations: {v:?}"
+        );
     }
 }
