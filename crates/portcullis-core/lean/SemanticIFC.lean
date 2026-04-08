@@ -538,6 +538,68 @@ theorem knowledge_meet_is_intersection {Secret Output₁ Output₂ : Type}
     { p | p ∈ allowedKnowledge f ∧ p ∈ allowedKnowledge g } := by
   rfl
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Step 4: Category of IFC-Safe Computations (Mathlib Category instance)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Objects: types (same as Type)
+-- Morphisms: functions that respect a fixed channel's observational
+-- equivalence (IFCSafe functions)
+--
+-- This is a wide subcategory of Type — same objects, restricted morphisms.
+-- We parametrize by a fixed channel to get a concrete category.
+
+/-- The type of IFC-safe morphisms between A and B, given a channel on Secret.
+    A safe morphism is a function that maps observationally equivalent
+    secrets to equal outputs. -/
+structure IFCSafeHom {Secret Output : Type} (c : Channel Secret Output) (A B : Type) where
+  /-- The underlying function. -/
+  toFun : A → B
+  /-- The function respects the channel's observational equivalence. -/
+  safe : ∀ (f : Secret → A), IFCSafe c f → IFCSafe c (toFun ∘ f)
+
+/-- The identity is always IFC-safe: it doesn't change anything. -/
+def IFCSafeHom.id {Secret Output : Type} (c : Channel Secret Output) (A : Type) :
+    IFCSafeHom c A A where
+  toFun := _root_.id
+  safe := fun f hf => by simp [Function.comp, IFCSafe]; exact hf
+
+/-- Composition of IFC-safe morphisms is IFC-safe. -/
+def IFCSafeHom.comp {Secret Output : Type} {c : Channel Secret Output}
+    {A B C : Type}
+    (g : IFCSafeHom c B C) (f : IFCSafeHom c A B) :
+    IFCSafeHom c A C where
+  toFun := g.toFun ∘ f.toFun
+  safe := fun h hh => g.safe (f.toFun ∘ h) (f.safe h hh)
+
+/-- Two IFC-safe morphisms are equal iff their underlying functions are equal. -/
+theorem IFCSafeHom.ext {Secret Output : Type} {c : Channel Secret Output}
+    {A B : Type} {f g : IFCSafeHom c A B}
+    (h : f.toFun = g.toFun) : f = g := by
+  cases f; cases g; simp at h; subst h; rfl
+
+/-- Composition is associative (follows from function composition). -/
+theorem IFCSafeHom.comp_assoc {Secret Output : Type} {c : Channel Secret Output}
+    {A B C D : Type}
+    (h : IFCSafeHom c C D) (g : IFCSafeHom c B C) (f : IFCSafeHom c A B) :
+    h.comp (g.comp f) = (h.comp g).comp f := by
+  apply IFCSafeHom.ext
+  rfl
+
+/-- Left identity: id.comp f = f. -/
+theorem IFCSafeHom.id_comp {Secret Output : Type} {c : Channel Secret Output}
+    {A B : Type} (f : IFCSafeHom c A B) :
+    (IFCSafeHom.id c B).comp f = f := by
+  apply IFCSafeHom.ext
+  rfl
+
+/-- Right identity: f.comp id = f. -/
+theorem IFCSafeHom.comp_id {Secret Output : Type} {c : Channel Secret Output}
+    {A B : Type} (f : IFCSafeHom c A B) :
+    f.comp (IFCSafeHom.id c A) = f := by
+  apply IFCSafeHom.ext
+  rfl
+
 end SemanticIFC
 
 -- ═══════════════════════════════════════════════════════════════════════════
