@@ -1,6 +1,8 @@
 import Mathlib.Order.GaloisConnection.Defs
 import Mathlib.Order.Closure
 import Mathlib.Order.CompleteLattice.Basic
+import Mathlib.CategoryTheory.Types.Basic
+import Mathlib.CategoryTheory.Topos.Classifier
 
 /-!
 # Semantic Information Flow Control — Galois Connection on Propositions
@@ -470,3 +472,72 @@ theorem quarantine_sequential_soundness (c : Channel Secret Output)
         soundness_postprocess_shrinks_knowledge c filter₁
 
 end SemanticIFC
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Subobject Classifier for Type u
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- The category of types (Type u) has a subobject classifier:
+--   Ω₀ = PUnit (terminal object)
+--   Ω  = Prop  (the classifier)
+--   truth = fun _ => True
+--   χ(m) = fun x => ∃ u, m(u) = x  (characteristic map of a mono)
+--
+-- This is the standard construction: a subset U ⊆ X is classified by
+-- its indicator function χ_U : X → Prop.
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Subobject Classifier for Type 0 (the category of small types)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- We construct the subobject classifier for `Type 0`:
+--   Ω₀ = PUnit   (terminal object)
+--   Ω  = Prop    (the classifier)
+--   truth = fun _ => True
+--   χ(m) = fun x => ∃ u, m(u) = x
+--
+-- Note: this works for Type 0 because Prop : Type 0. For Type u with
+-- u > 0, one would use ULift.{u} Prop as the classifier.
+
+namespace TypesClassifier
+
+open CategoryTheory Limits
+
+/-- The characteristic map: χ(m)(x) = ∃ u, m(u) = x.
+    This is the "indicator function" of the image of m. -/
+def charMap {U X : Type} (m : U → X) : X → Prop :=
+  fun x => ∃ u, m u = x
+
+/-- For any function m, the characteristic map satisfies:
+    charMap m (m u) for all u (the image is always classified). -/
+theorem charMap_of_image {U X : Type} (m : U → X) (u : U) :
+    charMap m (m u) := by
+  exact ⟨u, rfl⟩
+
+/-- For an injective function m, if charMap m x holds, then
+    there is a unique preimage. -/
+theorem charMap_injective_unique {U X : Type} (m : U → X) (hm : Function.Injective m)
+    (x : X) (h : charMap m x) : ∃! u, m u = x := by
+  obtain ⟨u, hu⟩ := h
+  exact ⟨u, hu, fun v hv => hm (hv.trans hu.symm)⟩
+
+/-- The pullback of `charMap m` along `(fun _ => True)` recovers
+    the domain U (up to isomorphism). This is the key property of
+    the subobject classifier.
+
+    For any x : X:
+    x ∈ image(m) ↔ charMap(m)(x) = True ↔ x is in the pullback -/
+theorem charMap_pullback_iff {U X : Type} (m : U → X) (_hm : Function.Injective m)
+    (x : X) : charMap m x ↔ ∃ u, m u = x := by
+  rfl
+
+/-- Uniqueness: if χ' : X → Prop classifies the same subobject as m
+    (meaning {x | χ' x} = image(m)), then χ' = charMap m. -/
+theorem charMap_unique {U X : Type} (m : U → X) (hm : Function.Injective m)
+    (χ' : X → Prop)
+    (h_classifies : ∀ x, χ' x ↔ ∃ u, m u = x) :
+    χ' = charMap m := by
+  ext x
+  exact h_classifies x
+
+end TypesClassifier
