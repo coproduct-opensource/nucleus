@@ -1,6 +1,9 @@
 import Mathlib.Order.GaloisConnection.Defs
 import Mathlib.Order.Closure
 import Mathlib.Order.CompleteLattice.Basic
+import Mathlib.CategoryTheory.Types.Basic
+import Mathlib.CategoryTheory.Topos.Classifier
+import Mathlib.CategoryTheory.Limits.Types.Pullbacks
 
 /-!
 # Semantic Information Flow Control — Galois Connection on Propositions
@@ -470,3 +473,209 @@ theorem quarantine_sequential_soundness (c : Channel Secret Output)
         soundness_postprocess_shrinks_knowledge c filter₁
 
 end SemanticIFC
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Subobject Classifier for Type u
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- The category of types (Type u) has a subobject classifier:
+--   Ω₀ = PUnit (terminal object)
+--   Ω  = Prop  (the classifier)
+--   truth = fun _ => True
+--   χ(m) = fun x => ∃ u, m(u) = x  (characteristic map of a mono)
+--
+-- This is the standard construction: a subset U ⊆ X is classified by
+-- its indicator function χ_U : X → Prop.
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Subobject Classifier for Type 0 (the category of small types)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- We construct the subobject classifier for `Type 0`:
+--   Ω₀ = PUnit   (terminal object)
+--   Ω  = Prop    (the classifier)
+--   truth = fun _ => True
+--   χ(m) = fun x => ∃ u, m(u) = x
+--
+-- Note: this works for Type 0 because Prop : Type 0. For Type u with
+-- u > 0, one would use ULift.{u} Prop as the classifier.
+
+namespace TypesClassifier
+
+open CategoryTheory Limits
+
+/-- The characteristic map: χ(m)(x) = ∃ u, m(u) = x.
+    This is the "indicator function" of the image of m. -/
+def charMap {U X : Type} (m : U → X) : X → Prop :=
+  fun x => ∃ u, m u = x
+
+/-- For any function m, the characteristic map satisfies:
+    charMap m (m u) for all u (the image is always classified). -/
+theorem charMap_of_image {U X : Type} (m : U → X) (u : U) :
+    charMap m (m u) := by
+  exact ⟨u, rfl⟩
+
+/-- For an injective function m, if charMap m x holds, then
+    there is a unique preimage. -/
+theorem charMap_injective_unique {U X : Type} (m : U → X) (hm : Function.Injective m)
+    (x : X) (h : charMap m x) : ∃! u, m u = x := by
+  obtain ⟨u, hu⟩ := h
+  exact ⟨u, hu, fun v hv => hm (hv.trans hu.symm)⟩
+
+/-- The pullback of `charMap m` along `(fun _ => True)` recovers
+    the domain U (up to isomorphism). This is the key property of
+    the subobject classifier.
+
+    For any x : X:
+    x ∈ image(m) ↔ charMap(m)(x) = True ↔ x is in the pullback -/
+theorem charMap_pullback_iff {U X : Type} (m : U → X) (_hm : Function.Injective m)
+    (x : X) : charMap m x ↔ ∃ u, m u = x := by
+  rfl
+
+/-- Uniqueness: if χ' : X → Prop classifies the same subobject as m
+    (meaning {x | χ' x} = image(m)), then χ' = charMap m. -/
+theorem charMap_unique {U X : Type} (m : U → X) (hm : Function.Injective m)
+    (χ' : X → Prop)
+    (h_classifies : ∀ x, χ' x ↔ ∃ u, m u = x) :
+    χ' = charMap m := by
+  ext x
+  exact h_classifies x
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- The pullback property (classifier square)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- For the subobject classifier in Type, the pullback square is:
+--
+--     U ----m----> X
+--     |            |
+--     !            charMap m
+--     |            |
+--     v            v
+--     PUnit -true-> Prop
+--
+-- The pullback property says: U is (isomorphic to) the fiber of
+-- charMap(m) over True. We prove this as an explicit equivalence.
+
+/-- The fiber of charMap over True is exactly the image of m.
+    This is the PULLBACK PROPERTY of the subobject classifier:
+    U ≅ { x : X | charMap m x }. -/
+theorem charMap_fiber_equiv {U X : Type} (m : U → X) (hm : Function.Injective m) :
+    ∀ x : X, charMap m x ↔ x ∈ Set.range m := by
+  intro x
+  simp [charMap, Set.mem_range]
+
+/-- The square commutes: composing m with charMap gives the constant True.
+    m ≫ charMap(m) = ! ≫ (fun _ => True)
+    Equivalently: charMap(m)(m(u)) = True for all u. -/
+theorem classifier_square_commutes {U X : Type} (m : U → X) :
+    ∀ u : U, charMap m (m u) := by
+  intro u
+  exact ⟨u, rfl⟩
+
+/-- The universal property: given any χ' : X → Prop that classifies
+    the same subobject (same preimage), χ' must equal charMap m.
+    This is the UNIQUENESS of the characteristic map. -/
+theorem classifier_uniqueness {U X : Type} (m : U → X) (hm : Function.Injective m)
+    (χ' : X → Prop)
+    -- χ' classifies the same subobject: its "true" fiber equals m's image
+    (h_comm : ∀ u, χ' (m u))
+    (h_pb : ∀ x, χ' x → ∃ u, m u = x) :
+    χ' = charMap m := by
+  ext x
+  constructor
+  · intro hx
+    exact h_pb x hx
+  · intro ⟨u, hu⟩
+    rw [← hu]
+    exact h_comm u
+
+/-- **THE CLASSIFIER THEOREM (for Type):**
+    For any injective function m : U → X, charMap m is the UNIQUE
+    function χ : X → Prop such that:
+    1. χ(m(u)) = True for all u (square commutes)
+    2. χ(x) = True → x ∈ image(m) (pullback property)
+
+    This is exactly the subobject classifier property of Prop in
+    the category Type. -/
+theorem subobject_classifier_Type {U X : Type} (m : U → X) (hm : Function.Injective m) :
+    ∃! χ : X → Prop,
+      (∀ u, χ (m u)) ∧ (∀ x, χ x → ∃ u, m u = x) := by
+  refine ⟨charMap m, ⟨classifier_square_commutes m, fun x hx => hx⟩, ?_⟩
+  intro χ' ⟨h_comm, h_pb⟩
+  exact classifier_uniqueness m hm χ' h_comm h_pb
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Connection to SemanticIFC: allowedKnowledge IS the classifier
+-- ═══════════════════════════════════════════════════════════════════════════
+
+/-- **THE BRIDGE THEOREM:**
+    For a channel c : Secret → Output, the allowedKnowledge of c
+    is exactly the set of propositions that factor through c — i.e.,
+    the propositions classified by charMap(c).
+
+    This connects the semantic IFC theory (allowedKnowledge from the
+    Galois correspondence) to the topos theory (charMap from the
+    subobject classifier). They are the same object viewed from
+    different mathematical perspectives. -/
+theorem allowedKnowledge_eq_characteristic
+    {Secret Output : Type}
+    (c : Secret → Output)
+    [DecidableEq Output] :
+    SemanticIFC.allowedKnowledge c = SemanticIFC.characteristic c := by
+  rfl
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- THE FULL MATHLIB IsPullback PROOF
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Using Mathlib's CategoryTheory.Limits.Types.isPullback_iff to prove
+-- that the classifier square is a pullback in the categorical sense.
+
+open CategoryTheory Limits
+
+/-- **THE CATEGORICAL PULLBACK:**
+    The classifier square for an injective function m : U → X in Type
+    is a pullback in the sense of Mathlib's `IsPullback`.
+
+    ```
+        U ----m-----> X
+        |             |
+        !             charMap m
+        |             |
+        v             v
+      PUnit --true--> Prop
+    ```
+
+    This is proved using Mathlib's `isPullback_iff` for Type, which
+    reduces the categorical pullback to three concrete conditions:
+    1. Square commutes
+    2. Joint injectivity
+    3. Joint surjectivity
+-/
+-- Note: This theorem uses explicit universe annotation. In Type (= Type 0),
+-- PUnit.{1} : Type 0 and Prop : Type 0. The charMap produces Prop-valued
+-- outputs, and the truth morphism maps PUnit to True : Prop.
+theorem classifier_isPullback {U X : Type} (m : U → X) (hm : Function.Injective m) :
+    @IsPullback (Type) _ U X PUnit Prop m (fun _ => PUnit.unit) (charMap m) (fun _ => True) := by
+  rw [Types.isPullback_iff]
+  refine ⟨?_, ?_, ?_⟩
+  · -- 1. Square commutes: m ≫ charMap m = ! ≫ (fun _ => True)
+    ext u
+    simp only [CategoryTheory.types_comp, Function.comp, charMap]
+    constructor
+    · intro; trivial
+    · intro; exact ⟨u, rfl⟩
+  · -- 2. Joint injectivity: m(x₁) = m(y₁) ∧ !(x₁) = !(y₁) → x₁ = y₁
+    intro x₁ y₁ ⟨hm_eq, _⟩
+    exact hm hm_eq
+  · -- 3. Joint surjectivity: charMap(m)(x₂) = True → ∃ x₁, m(x₁) = x₂ ∧ !(x₁) = x₃
+    intro x₂ x₃ h_eq
+    -- h_eq : charMap m x₂ = (fun _ => True) x₃, i.e., (∃ u, m u = x₂) = True
+    have h_exists : ∃ u, m u = x₂ := by
+      change (∃ u, m u = x₂) = True at h_eq
+      exact h_eq ▸ trivial
+    obtain ⟨u, hu⟩ := h_exists
+    exact ⟨u, hu, rfl⟩
+
+end TypesClassifier
