@@ -472,6 +472,72 @@ theorem quarantine_sequential_soundness (c : Channel Secret Output)
     _ ⊆ allowedKnowledge c :=
         soundness_postprocess_shrinks_knowledge c filter₁
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Knowledge as a Heyting Algebra
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- The set of all possible Knowledge sets (Set (Secret → Prop)) forms a
+-- complete Boolean algebra (and hence a Heyting algebra) via Mathlib's
+-- Set.instCompleteBooleanAlgebra.
+--
+-- The Heyting implication K₁ ⇨ K₂ means: "if you're allowed to know
+-- everything in K₁, then you're also allowed to know everything in K₂."
+-- This is the internal logic of the topos of declassification policies.
+
+/-- Knowledge (= Set (Secret → Prop)) is a HeytingAlgebra.
+    This is automatic from Mathlib: Set α is a CompleteBooleanAlgebra,
+    which extends HeytingAlgebra. We state it explicitly to document
+    the security interpretation. -/
+example {Secret : Type} : HeytingAlgebra (Knowledge Secret) :=
+  inferInstance
+
+/-- Knowledge is a CompleteLattice — arbitrary meets and joins exist.
+    Meet = intersection (knowledge common to all policies).
+    Join = union (knowledge allowed by any policy). -/
+example {Secret : Type} : CompleteLattice (Knowledge Secret) :=
+  inferInstance
+
+/-- The allowedKnowledge of the identity channel is the maximal knowledge:
+    all propositions are learnable, so all propositions are allowed. -/
+theorem allowedKnowledge_id_eq_univ {Secret : Type} :
+    allowedKnowledge (id : Channel Secret Secret) = Set.univ := by
+  ext p
+  simp [allowedKnowledge, obsEquiv]
+
+/-- The allowedKnowledge of the constant channel contains only propositions
+    that don't vary across secrets (constant propositions). This is the
+    TIGHTEST possible restriction — the constant channel reveals nothing. -/
+theorem allowedKnowledge_const_subset {Secret : Type} {Output : Type} (o : Output) :
+    allowedKnowledge (fun _ : Secret => o) ⊆
+      { p | (∀ s, p s) ∨ (∀ s, ¬p s) } := by
+  intro p hp
+  simp only [allowedKnowledge, obsEquiv, Set.mem_setOf_eq] at hp
+  by_cases h : ∃ s, p s
+  · obtain ⟨s₀, hs₀⟩ := h
+    left
+    intro s
+    exact (hp s₀ s trivial).mp hs₀
+  · push_neg at h
+    right
+    exact h
+
+-- Policy ordering is already proved as soundness_postprocess_shrinks_knowledge:
+-- allowedKnowledge(h ∘ f) ⊆ allowedKnowledge(f)
+-- Post-processing coarsens the equivalence, so more propositions respect it,
+-- but the SET of allowed propositions is defined by the FINER channel.
+
+/-- The collection of allowedKnowledge sets, ordered by ⊆, forms a
+    sub-poset of the Knowledge Heyting algebra. The meet of two policies
+    is their intersection — the propositions allowed by BOTH channels.
+
+    For channels f and g, the meet of their knowledge is:
+    allowedKnowledge(f) ∩ allowedKnowledge(g) -/
+theorem knowledge_meet_is_intersection {Secret Output₁ Output₂ : Type}
+    (f : Channel Secret Output₁) (g : Channel Secret Output₂) :
+    allowedKnowledge f ⊓ allowedKnowledge g =
+    { p | p ∈ allowedKnowledge f ∧ p ∈ allowedKnowledge g } := by
+  rfl
+
 end SemanticIFC
 
 -- ═══════════════════════════════════════════════════════════════════════════
