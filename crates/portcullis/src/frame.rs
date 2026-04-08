@@ -53,17 +53,7 @@ use crate::PermissionLattice;
 
 // Re-export the core algebraic traits from portcullis-core.
 // These are the canonical definitions — all lattice types implement them.
-pub use portcullis_core::category::{BoundedLattice, Lattice};
-
-/// A distributive lattice where meet distributes over join.
-///
-/// # Law
-///
-/// `a ∧ (b ∨ c) = (a ∧ b) ∨ (a ∧ c)`
-///
-/// Note: In a distributive lattice, join also distributes over meet:
-/// `a ∨ (b ∧ c) = (a ∨ b) ∧ (a ∨ c)`
-pub trait DistributiveLattice: Lattice {}
+pub use portcullis_core::category::{BoundedLattice, DistributiveLattice, Lattice};
 
 /// A complete lattice with arbitrary meets and joins.
 ///
