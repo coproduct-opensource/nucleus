@@ -6,14 +6,36 @@
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/coproduct-opensource/nucleus/badge)](https://securityscorecards.dev/viewer/?uri=github.com/coproduct-opensource/nucleus)
 [![Docs](https://img.shields.io/badge/docs-github.io-blue)](https://coproduct-opensource.github.io/nucleus/)
 
-**Open-source security runtime for AI agents.** Detect dangerous permission combinations statically, enforce them at runtime, and produce cryptographically signed audit trails.
+**Open-source toolkit for building IFC-enforced applications.** Two primitives — `join` and `flows_to` — and four algebraic laws that make information flow control composable, provable, and practical.
 
-- **Scan** agent configs before deployment to catch misconfigurations
-- **Enforce** a permission lattice on every tool call in real-time
-- **Prove** which data in an agent's output the AI model never touched ([provenance](#provenance))
-- **Audit** every action with hash-chained, signed receipts
+```rust
+use portcullis_core::flow_algebra::FlowState;
+use portcullis_core::{Operation, SinkClass};
 
-Built on a [formally verified permission lattice](FORMAL_METHODS.md): 165 Lean 4 theorems, 112 Kani BMC proofs, ~2,850 tests.
+let mut state = FlowState::bottom();       // clean session
+state.join_operation(Operation::WebFetch);  // tainted by web content
+assert!(!state.flows_to(SinkClass::GitPush)); // can't push tainted data
+```
+
+### The Flow Algebra
+
+| Law | What it means | What it enables |
+|-----|---------------|-----------------|
+| `a ⊔ b = b ⊔ a` | Join is commutative | Safe parallel execution |
+| `a ⊔ (b ⊔ c) = (a ⊔ b) ⊔ c` | Join is associative | Order-independent ratchet |
+| `a ⊔ a = a` | Join is idempotent | Provably safe caching |
+| `a ≤ a ⊔ b` | Join is monotone | Taint never decreases |
+
+Everything else — taint tracking, policy enforcement, caching, delegation, ZK verification — is derived from these four laws.
+
+### What you can build with Nucleus
+
+- **Secure coding agents** that provably can't exfiltrate data
+- **Multi-agent systems** where children can't escalate beyond parents
+- **Compliance pipelines** with cryptographic noninterference proofs
+- **Any application** where "data X must never reach sink Y" needs to be enforced, not hoped
+
+Built on a [formally verified permission lattice](FORMAL_METHODS.md): 76 Lean 4 theorems (zero `sorry`), Kani BMC proofs, ~2,850 tests.
 
 > **Versioning note:** v1.0 means the **interface contract is stable** (see [`STABILITY.md`](STABILITY.md)), not that the system is "production-secure by default." The lattice is heavily verified; the runtime is tested but not yet battle-hardened.
 

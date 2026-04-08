@@ -82,7 +82,6 @@ pub mod c2pa_assertions;
 pub mod c2pa_manifest;
 #[cfg(feature = "c2pa-manifest")]
 pub mod c2pa_signer;
-pub mod capability_token;
 pub mod capability_traits;
 pub mod category;
 pub mod combinators;
@@ -129,7 +128,6 @@ pub mod registry;
 #[cfg(feature = "envelope")]
 pub mod replay;
 pub mod sanitize;
-pub mod server_registry;
 pub mod storage_lane;
 pub mod structured_prompt;
 pub mod task_shield;

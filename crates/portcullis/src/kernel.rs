@@ -377,6 +377,12 @@ impl std::error::Error for MonotoneViolation {}
 
 /// The kernel decision engine.
 ///
+/// **Deprecated**: Use [`portcullis_core::flow_algebra::FlowState`] +
+/// [`portcullis_core::discharge::preflight_action`] instead. The Kernel
+/// is a legacy decision engine superseded by the Flow Algebra primitives
+/// (`join` + `flows_to`). It remains for backward compatibility with
+/// `nucleus-claude-hook` but will be removed in a future release.
+///
 /// Maintains monotone session state and provides complete mediation
 /// for all agent operations. Every side effect must pass through
 /// [`Kernel::decide`].
