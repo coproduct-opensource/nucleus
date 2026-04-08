@@ -1560,9 +1560,13 @@ impl Freshness {
     /// `self ≤ other` means self is less restrictive (newer, longer TTL).
     /// In the join semilattice, join takes oldest/shortest, so the ordering
     /// goes: newer/longer-TTL ≤ older/shorter-TTL.
+    ///
+    /// `ttl_secs = 0` means "no expiry" — the least restrictive (bottom)
+    /// value for the TTL dimension. So `self.ttl_secs == 0` implies
+    /// `self ≤ other` for the TTL dimension (bottom ≤ anything).
     pub fn leq(self, other: Self) -> bool {
         self.observed_at >= other.observed_at
-            && (other.ttl_secs == 0 || (self.ttl_secs != 0 && self.ttl_secs >= other.ttl_secs))
+            && (self.ttl_secs == 0 || (other.ttl_secs != 0 && self.ttl_secs >= other.ttl_secs))
     }
 
     /// Check if data has expired at a given time.
@@ -1777,12 +1781,17 @@ impl IFCLabel {
     ///
     /// For contravariant dimensions (integrity, authority), bottom = maximum value
     /// so that `join(x, bottom) = x` (joining with bottom doesn't restrict).
+    /// Freshness uses `observed_at = u64::MAX` (newest possible) and `ttl_secs = 0`
+    /// (no expiry) — the least restrictive freshness.
     pub fn bottom() -> Self {
         Self {
             confidentiality: ConfLevel::Public,
             integrity: IntegLevel::Trusted,
             provenance: ProvenanceSet::EMPTY,
-            freshness: Freshness::default(),
+            freshness: Freshness {
+                observed_at: u64::MAX,
+                ttl_secs: 0,
+            },
             authority: AuthorityLevel::Directive,
             derivation: DerivationClass::Deterministic,
         }
