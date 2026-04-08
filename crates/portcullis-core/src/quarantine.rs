@@ -84,6 +84,10 @@ impl Default for QuarantineConfig {
             schema: OutputSchema::FreeText,
             dpi_filters: vec![
                 DpiPattern::Secrets,
+                DpiPattern::HighEntropy {
+                    min_word_len: 16,
+                    threshold_bits: 40, // 4.0 bits/char — random-looking strings
+                },
                 DpiPattern::FilePaths,
                 DpiPattern::Urls,
                 DpiPattern::IpAddresses,
@@ -154,13 +158,19 @@ impl OutputSchema {
 pub enum DpiPattern {
     /// API keys, tokens, passwords (high-entropy strings).
     Secrets,
+    /// High-entropy substrings (catches encoded/obfuscated secrets).
+    /// Triggers when any word has Shannon entropy above the threshold.
+    HighEntropy {
+        min_word_len: usize,
+        threshold_bits: u32,
+    },
     /// File system paths (/home/..., C:\...).
     FilePaths,
     /// URLs (http://, https://, ftp://).
     Urls,
     /// IP addresses (IPv4/IPv6).
     IpAddresses,
-    /// Custom regex pattern.
+    /// Custom substring pattern.
     Custom(String),
 }
 
@@ -170,24 +180,76 @@ impl DpiPattern {
     pub fn matches(&self, text: &str) -> Option<String> {
         match self {
             Self::Secrets => {
-                // High-entropy token patterns: sk-ant-, ghp_, xoxb-, etc.
+                // Known API key prefixes (case-insensitive for robustness)
+                let lower = text.to_lowercase();
                 for prefix in &[
-                    "sk-ant-", "sk-", "ghp_", "gho_", "xoxb-", "xoxp-", "AKIA", "eyJ", // JWT
+                    "sk-ant-",
+                    "sk-",
+                    "ghp_",
+                    "gho_",
+                    "ghs_",
+                    "xoxb-",
+                    "xoxp-",
+                    "xoxa-",
+                    "akia",
+                    "eyj", // JWT (lowercase)
+                    "bearer ",
+                    "token:",
+                    "api_key",
+                    "apikey",
+                    "secret_key",
+                    "password:",
+                    "passwd:",
+                    "auth:",
                 ] {
-                    if text.contains(prefix) {
+                    if lower.contains(prefix) {
                         return Some(format!("secret pattern: {prefix}..."));
+                    }
+                }
+                // Base64-encoded secret detection: look for long base64 strings
+                // (4+ chars of [A-Za-z0-9+/=] without spaces, likely encoded data)
+                for word in text.split_whitespace() {
+                    if word.len() >= 20 && is_likely_base64(word) {
+                        return Some(format!(
+                            "possible base64-encoded secret ({} chars)",
+                            word.len()
+                        ));
+                    }
+                }
+                None
+            }
+            Self::HighEntropy {
+                min_word_len,
+                threshold_bits,
+            } => {
+                for word in text.split_whitespace() {
+                    if word.len() >= *min_word_len {
+                        let entropy = shannon_entropy_bits(word);
+                        if entropy >= *threshold_bits {
+                            return Some(format!(
+                                "high-entropy word ({entropy} bits, threshold {threshold_bits}): \
+                                 {}...",
+                                &word[..word.len().min(12)]
+                            ));
+                        }
                     }
                 }
                 None
             }
             Self::FilePaths => {
-                // Unix/Windows absolute paths
-                if text.contains("/home/")
-                    || text.contains("/Users/")
-                    || text.contains("/etc/")
-                    || text.contains("/var/")
-                    || text.contains("C:\\")
-                    || text.contains("D:\\")
+                // Unix/Windows absolute paths (case-insensitive for Windows)
+                let lower = text.to_lowercase();
+                if lower.contains("/home/")
+                    || lower.contains("/users/")
+                    || lower.contains("/etc/")
+                    || lower.contains("/var/")
+                    || lower.contains("/tmp/")
+                    || lower.contains("/root/")
+                    || lower.contains("/opt/")
+                    || lower.contains("c:\\")
+                    || lower.contains("d:\\")
+                    || lower.contains("c:/")
+                    || lower.contains("d:/")
                 {
                     Some("file path detected".into())
                 } else {
@@ -195,15 +257,20 @@ impl DpiPattern {
                 }
             }
             Self::Urls => {
-                for proto in &["http://", "https://", "ftp://"] {
-                    if text.contains(proto) {
+                let lower = text.to_lowercase();
+                for proto in &["http://", "https://", "ftp://", "file://", "ssh://"] {
+                    if lower.contains(proto) {
                         return Some(format!("URL detected: {proto}..."));
                     }
+                }
+                // Also catch URL-like patterns without protocol
+                if lower.contains("www.") || lower.contains(".com/") || lower.contains(".org/") {
+                    return Some("URL-like pattern detected".into());
                 }
                 None
             }
             Self::IpAddresses => {
-                // Simple IPv4 detection (xxx.xxx.xxx.xxx)
+                // IPv4: xxx.xxx.xxx.xxx
                 let mut i = 0;
                 let bytes = text.as_bytes();
                 while i < bytes.len() {
@@ -226,7 +293,6 @@ impl DpiPattern {
                 None
             }
             Self::Custom(pattern) => {
-                // Simple substring match (regex would require a dependency)
                 if text.contains(pattern.as_str()) {
                     Some(format!("custom pattern matched: {pattern}"))
                 } else {
@@ -235,6 +301,43 @@ impl DpiPattern {
             }
         }
     }
+}
+
+/// Check if a string looks like base64 encoding.
+fn is_likely_base64(s: &str) -> bool {
+    if s.len() < 20 {
+        return false;
+    }
+    let base64_chars = s
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '+' || *c == '/' || *c == '=')
+        .count();
+    // At least 90% of characters are base64 alphabet
+    base64_chars * 10 >= s.len() * 9
+}
+
+/// Compute Shannon entropy of a string in bits (×100 to avoid floats).
+/// Returns integer "centibits" — compare against threshold_bits × 100.
+/// Actually, for simplicity, returns approximate bits per character × 10.
+fn shannon_entropy_bits(s: &str) -> u32 {
+    if s.is_empty() {
+        return 0;
+    }
+    let mut counts = [0u32; 256];
+    for &b in s.as_bytes() {
+        counts[b as usize] += 1;
+    }
+    let len = s.len() as f64;
+    let mut entropy: f64 = 0.0;
+    for &c in &counts {
+        if c > 0 {
+            let p = c as f64 / len;
+            entropy -= p * p.log2();
+        }
+    }
+    // Return bits per character, scaled by 10 for integer comparison
+    // e.g., 4.5 bits/char → 45
+    (entropy * 10.0) as u32
 }
 
 /// Result of a quarantine distillation.
@@ -554,5 +657,120 @@ mod tests {
 
         let err = validate_distillation(output, &config, &input).unwrap_err();
         assert!(matches!(err, DistillError::DpiRejection { .. }));
+    }
+
+    // ── Adversarial DPI bypass tests ──────────────────────────────────
+    //
+    // These test that the DPI catches attempts to exfiltrate secrets
+    // through encoding, obfuscation, or pattern evasion.
+
+    #[test]
+    fn adversarial_base64_encoded_secret() {
+        let config = QuarantineConfig::default();
+        let input = tainted_secret_label();
+        // A base64-encoded API key (long random-looking string)
+        let output =
+            "The encoded value is c2stYW50LWFiYzEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MA==";
+
+        let err = validate_distillation(output, &config, &input).unwrap_err();
+        assert!(
+            matches!(err, DistillError::DpiRejection { .. }),
+            "base64-encoded secret should be caught: {err}"
+        );
+    }
+
+    #[test]
+    fn adversarial_case_insensitive_secret() {
+        let config = QuarantineConfig::default();
+        let input = tainted_secret_label();
+        // Attacker tries uppercase to bypass prefix match
+        let output = "Use the Bearer token SK-ANT-abcdef to authenticate.";
+
+        let err = validate_distillation(output, &config, &input).unwrap_err();
+        assert!(
+            matches!(err, DistillError::DpiRejection { .. }),
+            "case-varied secret should be caught: {err}"
+        );
+    }
+
+    #[test]
+    fn adversarial_high_entropy_string() {
+        let config = QuarantineConfig::default();
+        let input = tainted_secret_label();
+        // High-entropy string that's not a known prefix but looks like a secret
+        let output = "Credentials: x7Kp2mQ9vLwR4nTs5bYcA8eGfJh6dUoI";
+
+        let err = validate_distillation(output, &config, &input).unwrap_err();
+        assert!(
+            matches!(err, DistillError::DpiRejection { .. }),
+            "high-entropy string should be caught by HighEntropy filter: {err}"
+        );
+    }
+
+    #[test]
+    fn adversarial_url_without_protocol() {
+        let config = QuarantineConfig::default();
+        let input = tainted_secret_label();
+        let output = "Send data to www.evil.com/exfil?data=secret";
+
+        let err = validate_distillation(output, &config, &input).unwrap_err();
+        assert!(
+            matches!(err, DistillError::DpiRejection { .. }),
+            "URL without protocol should be caught: {err}"
+        );
+    }
+
+    #[test]
+    fn adversarial_bearer_token() {
+        let config = QuarantineConfig::default();
+        let input = tainted_secret_label();
+        let output = "Include Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0 in headers";
+
+        let err = validate_distillation(output, &config, &input).unwrap_err();
+        assert!(
+            matches!(err, DistillError::DpiRejection { .. }),
+            "bearer token should be caught: {err}"
+        );
+    }
+
+    #[test]
+    fn adversarial_password_field() {
+        let config = QuarantineConfig::default();
+        let input = tainted_secret_label();
+        let output = "Database connection: password:hunter2 for the admin account";
+
+        let err = validate_distillation(output, &config, &input).unwrap_err();
+        assert!(
+            matches!(err, DistillError::DpiRejection { .. }),
+            "password field should be caught: {err}"
+        );
+    }
+
+    #[test]
+    fn adversarial_file_path_with_forward_slash_on_windows() {
+        let config = QuarantineConfig::default();
+        let input = tainted_secret_label();
+        let output = "The config is at C:/Users/admin/secrets.json";
+
+        let err = validate_distillation(output, &config, &input).unwrap_err();
+        assert!(
+            matches!(err, DistillError::DpiRejection { .. }),
+            "Windows path with forward slashes should be caught: {err}"
+        );
+    }
+
+    #[test]
+    fn clean_summary_still_passes_with_stricter_dpi() {
+        // Verify that the strengthened DPI doesn't break legitimate summaries
+        let config = QuarantineConfig::default();
+        let input = tainted_secret_label();
+        let output = "The codebase has 13 capability dimensions forming a Heyting algebra.";
+
+        let result = validate_distillation(output, &config, &input);
+        assert!(
+            result.is_ok(),
+            "clean summary should still pass: {:?}",
+            result.err()
+        );
     }
 }
