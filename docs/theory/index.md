@@ -6,28 +6,35 @@ its verification status (Lean proofs, Kani BMC, or unit tests).
 
 ## Documents
 
+- [Algebraic Structures](algebraic-structures.md) — Unified `Lattice` trait
+  hierarchy: 20 types, `ProductLattice`, `MonotoneMap`, generic verification
+  harnesses, and the relationship between Rust traits and formal proofs.
+
 - [Repair Algebra](repair-algebra.md) — Policy denial as program rewriting:
   retraction, Galois connection, and free-forgetful adjunction between raw
   and checked ActionTerms.
 
-## Planned
+- [IFC Semilattice](ifc-semilattice.md) — The `IFCLabel` join operation as
+  a bounded semilattice with covariant (confidentiality, provenance) and
+  contravariant (integrity, authority) dimensions. Lean proofs in
+  `IFCSemilatticeProofs.lean`. Implements `Lattice` trait.
 
-- **IFC Semilattice** — The `IFCLabel` join operation as a bounded semilattice
-  with covariant (confidentiality, provenance) and contravariant (integrity,
-  authority) dimensions. Lean proofs in `IFCSemilatticeProofs.lean`.
+## Implemented (not yet documented)
 
-- **Belnap Bilattice** — Four-valued policy logic (Allow, Deny, Unknown,
-  Conflict) with truth and knowledge orderings. De Morgan duality between
-  `truth_meet`/`truth_join` and `knowledge_meet`/`knowledge_join`.
+- **Belnap Bilattice** — `Verdict` in `bilattice.rs`. Four-valued policy
+  logic with truth and knowledge orderings. Implements `Lattice` (truth axis)
+  and `BoundedLattice`. De Morgan duality verified by unit tests.
 
-- **Heyting Algebra** — The `CapabilityLattice` as a product of 13 bounded
-  chains. Distributivity, implication (a → b = max{c | c ∧ a ≤ b}), and
-  pseudo-complement. Kani proofs of the adjunction property.
+- **Heyting Algebra** — `CapabilityLattice` in `heyting.rs`. 13-dimensional
+  product of bounded chains. Implements `Lattice`, `BoundedLattice`,
+  `DistributiveLattice`, `HeytingAlgebra`. Adjunction verified by Kani.
 
-- **Labeled Type System** — `Labeled<T, I, C>` as a compile-time approximation
-  of the runtime IFC semilattice. `IntegAtLeast<Floor>` and `ConfAtMost<Ceiling>`
-  as subtyping constraints encoded via trait bounds.
+- **Labeled Type System** — `Labeled<T, I, C>` in `labeled.rs`. Compile-time
+  IFC via phantom types. `IntegAtLeast<Floor>` and `ConfAtMost<Ceiling>` as
+  subtyping constraints.
 
-- **Discharge Witnesses** — `Discharged<O>` as a linear proof token. The sealing
-  pattern (private `Seal` field) as an encoding of the "only the prover can
-  mint proofs" axiom.
+- **Discharge Witnesses** — `Discharged<O>` in `discharge.rs`. Linear proof
+  tokens with private `Seal` field. `RepairHint` for automated self-repair.
+
+- **Galois Connections** — `TrustDomainBridge` in `galois.rs`. Principled
+  trust domain translation with adjunction verification.
