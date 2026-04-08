@@ -258,6 +258,23 @@ impl Lattice for Freshness {
     }
 }
 
+impl BoundedLattice for Freshness {
+    fn top() -> Self {
+        // Most restrictive: observed at epoch, expires immediately
+        Freshness {
+            observed_at: 0,
+            ttl_secs: 1,
+        }
+    }
+    fn bottom() -> Self {
+        // Least restrictive: newest possible observation, no expiry
+        Freshness {
+            observed_at: u64::MAX,
+            ttl_secs: 0,
+        }
+    }
+}
+
 // ── IFCLabel (6-dimensional product lattice) ──────────────────────────
 
 impl Lattice for IFCLabel {
@@ -272,13 +289,14 @@ impl Lattice for IFCLabel {
     }
 }
 
-// NOTE: IFCLabel does NOT implement BoundedLattice. While IFCLabel::top()
-// and IFCLabel::bottom() exist as named constructors, Freshness::leq has
-// a known inconsistency with Freshness::meet around ttl_secs=0 (no-expiry).
-// This means meet(a, top) == a but a.leq(top) can be false, violating the
-// bounded lattice identity law. Until Freshness::leq is fixed, IFCLabel
-// only implements Lattice (meet/join/leq are internally consistent for
-// the non-freshness dimensions, and meet/join are fully correct).
+impl BoundedLattice for IFCLabel {
+    fn top() -> Self {
+        IFCLabel::top()
+    }
+    fn bottom() -> Self {
+        IFCLabel::bottom()
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Semilattice implementations (legacy — kept for backward compatibility)
@@ -557,33 +575,43 @@ mod tests {
     }
 
     #[test]
-    fn ifc_label_lattice_laws() {
-        // Use samples with uniform freshness to avoid the known Freshness::leq
-        // inconsistency around ttl_secs=0 (see NOTE above BoundedLattice comment).
-        // Meet/join are fully correct; only leq has the edge case.
-        let fresh = Freshness {
-            observed_at: 1000,
-            ttl_secs: 3600,
-        };
+    fn freshness_lattice_laws() {
         let samples = vec![
-            IFCLabel {
-                freshness: fresh,
-                ..IFCLabel::bottom()
+            Freshness {
+                observed_at: 0,
+                ttl_secs: 1,
+            }, // top (oldest, shortest)
+            Freshness {
+                observed_at: u64::MAX,
+                ttl_secs: 0,
+            }, // bottom (newest, no expiry)
+            Freshness {
+                observed_at: 1000,
+                ttl_secs: 3600,
             },
-            IFCLabel {
-                freshness: fresh,
-                ..IFCLabel::top()
-            },
-            IFCLabel {
-                freshness: fresh,
-                ..IFCLabel::default()
-            },
-            IFCLabel {
-                freshness: fresh,
-                ..IFCLabel::web_content(1000)
+            Freshness {
+                observed_at: 500,
+                ttl_secs: 0,
+            }, // no expiry, mid observation
+            Freshness {
+                observed_at: 2000,
+                ttl_secs: 60,
             },
         ];
-        let v = verify_lattice_laws(&samples);
+        let v = verify_bounded_lattice_laws(&samples);
+        assert!(v.is_empty(), "Freshness violations: {v:?}");
+    }
+
+    #[test]
+    fn ifc_label_lattice_laws() {
+        let samples = vec![
+            IFCLabel::bottom(),
+            IFCLabel::top(),
+            IFCLabel::default(),
+            IFCLabel::web_content(1000),
+            IFCLabel::user_prompt(1000),
+        ];
+        let v = verify_bounded_lattice_laws(&samples);
         assert!(v.is_empty(), "IFCLabel violations: {v:?}");
     }
 
