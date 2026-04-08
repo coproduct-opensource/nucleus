@@ -1524,6 +1524,100 @@ theorem quarantine_optimality_gap {Secret Output : Type}
     learnable (filter ∘ f) ⊆ learnable f :=
   black_box_security f filter
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- No Free Lunch + Achievability + Computational Bounds
+-- ═══════════════════════════════════════════════════════════════════════════
+
+/-- **NO FREE LUNCH:** any correct policy fails ≥ 1 observation level. -/
+theorem no_free_lunch : ∀ (p : Proposition ThreeSecret),
+    p .A → ¬p .B → ¬forces obsAC p ∨ ¬forces obsBC p :=
+  alignment_tax_ge_one
+
+-- ── Achievability ──────────────────────────────────────────────────────
+
+theorem achievability_max (f : Channel Secret Output) :
+    learnable (id ∘ f) = learnable f := by simp [Function.comp]
+
+theorem achievability_min (f : Channel Secret Output) (o : Output) :
+    learnable ((fun _ => o) ∘ f) ⊆ { p | (∀ s, p s) ∨ (∀ s, ¬p s) } := by
+  intro p ⟨g, hg⟩
+  by_cases h : g o
+  · left; intro s; exact ((hg s).mpr h)
+  · right; intro s hp; exact h ((hg s).mp hp)
+
+def sEquiv (S : Set (Proposition Secret)) (s₁ s₂ : Secret) : Prop :=
+  ∀ p ∈ S, (p s₁ ↔ p s₂)
+
+theorem sEquiv_equiv (S : Set (Proposition Secret)) : Equivalence (sEquiv S) where
+  refl _ _ _ := Iff.rfl
+  symm h p hp := (h p hp).symm
+  trans h₁ h₂ p hp := (h₁ p hp).trans (h₂ p hp)
+
+theorem achievability_lemma [DecidableEq Output]
+    (f : Channel Secret Output) (S : Set (Proposition Secret))
+    (hS : S ⊆ allowedKnowledge f) : S ⊆ learnable f := by
+  intro p hp; rw [learnable_iff_respects_obsEquiv]; exact hS hp
+
+/-- **THE ACHIEVABILITY THEOREM:** learnable = allowedKnowledge. Tight. -/
+theorem achievability [DecidableEq Output] (f : Channel Secret Output) :
+    learnable f = allowedKnowledge f := learnable_eq_allowedKnowledge f
+
+/-- **COMPLETE CHARACTERIZATION:** tightness + soundness + DPI. -/
+theorem complete_characterization [DecidableEq Output]
+    (f : Channel Secret Output) :
+    learnable f = allowedKnowledge f ∧
+    (∀ g : Output → Output, learnable (g ∘ f) ⊆ allowedKnowledge f) ∧
+    (∀ g : Output → Output, learnable (g ∘ f) ⊆ learnable f) :=
+  ⟨achievability f, fun g => soundness_full f g, fun g => black_box_security f g⟩
+
+-- ── Computational Bounds ───────────────────────────────────────────────
+
+abbrev Distinguisher (Output : Type) := Output → Bool
+
+def perfectAdvantage {Secret Output : Type}
+    (f : Channel Secret Output) (d : Distinguisher Output)
+    (p : Proposition Secret) : Prop :=
+  ∀ s, (d (f s) = true) ↔ p s
+
+theorem perfect_distinguisher_implies_learnable
+    {Secret Output : Type} (f : Channel Secret Output)
+    (d : Distinguisher Output) (p : Proposition Secret)
+    (hd : perfectAdvantage f d p) : p ∈ learnable f :=
+  ⟨fun o => d o = true, fun s => (hd s).symm⟩
+
+theorem no_perfect_distinguisher_outside_allowed
+    [DecidableEq Output] {Secret : Type}
+    (f : Channel Secret Output) (p : Proposition Secret)
+    (hp : p ∉ allowedKnowledge f) :
+    ¬∃ d : Distinguisher Output, perfectAdvantage f d p := by
+  intro ⟨d, hd⟩
+  exact hp ((learnable_eq_allowedKnowledge f) ▸
+    perfect_distinguisher_implies_learnable f d p hd)
+
+theorem quarantine_computational_security
+    [DecidableEq Output] {Secret : Type}
+    (f : Channel Secret Output) (filter : Output → Output)
+    (p : Proposition Secret) (hp : p ∉ allowedKnowledge f) :
+    ¬∃ d : Distinguisher Output, perfectAdvantage (filter ∘ f) d p := by
+  intro ⟨d, hd⟩
+  exact hp (soundness_full f filter
+    (perfect_distinguisher_implies_learnable (filter ∘ f) d p hd))
+
+/-- **INFO-THEORETIC → COMPUTATIONAL:** our bounds hold against ALL adversaries. -/
+theorem info_theoretic_implies_computational
+    [DecidableEq Output] {Secret : Type}
+    (f : Channel Secret Output) (p : Proposition Secret) :
+    p ∉ learnable f → ¬∃ d : Distinguisher Output, perfectAdvantage f d p := by
+  intro hnl ⟨d, hd⟩
+  exact hnl (perfect_distinguisher_implies_learnable f d p hd)
+
+/-- Single Boolean classifier impossibility (computational version). -/
+theorem single_distinguisher_impossibility :
+    ¬∃ (d : Distinguisher ThreeSecret),
+      (d .A = true) ∧ (d .B = false) ∧
+      (d .C = d .A) ∧ (d .C = d .B) := by
+  intro ⟨_, _, _, hCA, hCB⟩; simp_all
+
 end SemanticIFC
 
 -- ═══════════════════════════════════════════════════════════════════════════
