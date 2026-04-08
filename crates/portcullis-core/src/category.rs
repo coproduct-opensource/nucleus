@@ -93,6 +93,82 @@ pub trait JoinSemilattice: Sized + Clone + PartialEq {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Product lattice — categorical product in Lat
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The product of two lattices, with pointwise meet/join.
+///
+/// By the universal property of products in **Lat**, the product of
+/// lattices is a lattice. Meet, join, and leq are computed componentwise.
+///
+/// ```text
+/// (a₁, a₂) ∧ (b₁, b₂) = (a₁ ∧ b₁, a₂ ∧ b₂)
+/// (a₁, a₂) ∨ (b₁, b₂) = (a₁ ∨ b₁, a₂ ∨ b₂)
+/// (a₁, a₂) ≤ (b₁, b₂) ⟺ a₁ ≤ b₁ ∧ a₂ ≤ b₂
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ProductLattice<A, B>(pub A, pub B);
+
+impl<A: Lattice, B: Lattice> Lattice for ProductLattice<A, B> {
+    fn meet(&self, other: &Self) -> Self {
+        ProductLattice(self.0.meet(&other.0), self.1.meet(&other.1))
+    }
+    fn join(&self, other: &Self) -> Self {
+        ProductLattice(self.0.join(&other.0), self.1.join(&other.1))
+    }
+    fn leq(&self, other: &Self) -> bool {
+        self.0.leq(&other.0) && self.1.leq(&other.1)
+    }
+}
+
+impl<A: BoundedLattice, B: BoundedLattice> BoundedLattice for ProductLattice<A, B> {
+    fn top() -> Self {
+        ProductLattice(A::top(), B::top())
+    }
+    fn bottom() -> Self {
+        ProductLattice(A::bottom(), B::bottom())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Generic lattice combinators
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Meet of all elements in an iterator (greatest lower bound).
+///
+/// Returns `None` for empty iterators. For bounded lattices, use
+/// `meet_all_bounded` which returns `top()` for empty input.
+pub fn meet_all<L: Lattice>(iter: impl IntoIterator<Item = L>) -> Option<L> {
+    iter.into_iter().reduce(|a, b| a.meet(&b))
+}
+
+/// Join of all elements in an iterator (least upper bound).
+///
+/// Returns `None` for empty iterators. For bounded lattices, use
+/// `join_all_bounded` which returns `bottom()` for empty input.
+pub fn join_all<L: Lattice>(iter: impl IntoIterator<Item = L>) -> Option<L> {
+    iter.into_iter().reduce(|a, b| a.join(&b))
+}
+
+/// Meet of all elements, defaulting to `top()` for empty input.
+///
+/// This is the correct identity for meet: `∧ {} = ⊤`.
+pub fn meet_all_bounded<L: BoundedLattice>(iter: impl IntoIterator<Item = L>) -> L {
+    iter.into_iter()
+        .reduce(|a, b| a.meet(&b))
+        .unwrap_or_else(L::top)
+}
+
+/// Join of all elements, defaulting to `bottom()` for empty input.
+///
+/// This is the correct identity for join: `∨ {} = ⊥`.
+pub fn join_all_bounded<L: BoundedLattice>(iter: impl IntoIterator<Item = L>) -> L {
+    iter.into_iter()
+        .reduce(|a, b| a.join(&b))
+        .unwrap_or_else(L::bottom)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Lattice implementations for core types
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -745,5 +821,74 @@ mod tests {
                 "propagation should preserve join (functoriality)"
             );
         }
+    }
+
+    // ── Product lattice tests ─────────────────────────────────────────
+
+    #[test]
+    fn product_lattice_laws() {
+        use super::ProductLattice;
+        let samples = vec![
+            ProductLattice(ConfLevel::Public, IntegLevel::Trusted),
+            ProductLattice(ConfLevel::Secret, IntegLevel::Adversarial),
+            ProductLattice(ConfLevel::Internal, IntegLevel::Untrusted),
+        ];
+        let v = verify_bounded_lattice_laws(&samples);
+        assert!(v.is_empty(), "ProductLattice violations: {v:?}");
+    }
+
+    #[test]
+    fn product_lattice_pointwise() {
+        use super::ProductLattice;
+        let a = ProductLattice(CapabilityLevel::LowRisk, ConfLevel::Internal);
+        let b = ProductLattice(CapabilityLevel::Always, ConfLevel::Public);
+
+        let met = a.meet(&b);
+        assert_eq!(met.0, CapabilityLevel::LowRisk); // min
+        assert_eq!(met.1, ConfLevel::Public); // min
+
+        let joined = a.join(&b);
+        assert_eq!(joined.0, CapabilityLevel::Always); // max
+        assert_eq!(joined.1, ConfLevel::Internal); // max
+    }
+
+    // ── Generic combinator tests ──────────────────────────────────────
+
+    #[test]
+    fn meet_all_bounded_empty_is_top() {
+        let result = super::meet_all_bounded::<CapabilityLevel>(std::iter::empty());
+        assert_eq!(result, CapabilityLevel::Always);
+    }
+
+    #[test]
+    fn join_all_bounded_empty_is_bottom() {
+        let result = super::join_all_bounded::<CapabilityLevel>(std::iter::empty());
+        assert_eq!(result, CapabilityLevel::Never);
+    }
+
+    #[test]
+    fn meet_all_bounded_reduces() {
+        let levels = vec![
+            CapabilityLevel::Always,
+            CapabilityLevel::LowRisk,
+            CapabilityLevel::Always,
+        ];
+        assert_eq!(super::meet_all_bounded(levels), CapabilityLevel::LowRisk);
+    }
+
+    #[test]
+    fn join_all_bounded_reduces() {
+        let levels = vec![
+            CapabilityLevel::Never,
+            CapabilityLevel::LowRisk,
+            CapabilityLevel::Never,
+        ];
+        assert_eq!(super::join_all_bounded(levels), CapabilityLevel::LowRisk);
+    }
+
+    #[test]
+    fn meet_all_none_for_empty() {
+        let result = super::meet_all::<CapabilityLevel>(std::iter::empty());
+        assert!(result.is_none());
     }
 }
