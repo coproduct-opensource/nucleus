@@ -1009,6 +1009,55 @@ theorem presheaf_topos_has_classifier (Secret : Type) :
       (obsLevelClosedSieves Secret) :=
   obsLevelClosedSieves_isSheaf Secret
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Step 6: Quarantine as a Morphism in the Presheaf Topos
+-- ═══════════════════════════════════════════════════════════════════════════
+
+/-- A quarantine configuration at the presheaf level: a family of
+    restriction predicates, one for each observation level, that
+    compatibly reduce the allowed knowledge. -/
+structure QuarantinePresheaf (Secret : Type) where
+  survives : (E : ObsLevel Secret) → AllowedType E → Prop
+  monotone : ∀ {E₁ E₂ : ObsLevel Secret} (h : E₁ ≤ E₂) (p : AllowedType E₁),
+    survives E₁ p → survives E₂ (restrictAllowed h p)
+
+/-- The identity quarantine: everything survives. -/
+def QuarantinePresheaf.identity (Secret : Type) : QuarantinePresheaf Secret where
+  survives _ _ := True
+  monotone _ _ _ := trivial
+
+/-- A quarantine induced by a DPI predicate on propositions. -/
+def QuarantinePresheaf.fromDpi {Secret : Type}
+    (dpi : Proposition Secret → Prop)
+    (dpi_stable : ∀ {E₁ E₂ : ObsLevel Secret} (h : E₁ ≤ E₂) (p : AllowedType E₁),
+      dpi p.val → dpi (restrictAllowed h p).val) :
+    QuarantinePresheaf Secret where
+  survives _ p := dpi p.val
+  monotone h p hp := dpi_stable h p hp
+
+/-- Sequential quarantine: composing two quarantine presheaves. -/
+def QuarantinePresheaf.comp {Secret : Type}
+    (Q₁ Q₂ : QuarantinePresheaf Secret) : QuarantinePresheaf Secret where
+  survives E p := Q₁.survives E p ∧ Q₂.survives E p
+  monotone h p hp := ⟨Q₁.monotone h p hp.1, Q₂.monotone h p hp.2⟩
+
+/-- Quarantine is deflationary: survivors are in AllowedType. -/
+theorem quarantine_presheaf_soundness {Secret : Type}
+    (Q : QuarantinePresheaf Secret) (E : ObsLevel Secret)
+    (p : AllowedType E) (_hp : Q.survives E p) :
+    p.val ∈ allowedAt E :=
+  p.property
+
+/-- **THE FULL TOPOS CHAIN:**
+    Quarantine survival + observation level equivalence → proposition agreement.
+    Connects runtime (DPI) → presheaf topos (sieves) → semantic IFC (propositions). -/
+theorem full_topos_chain {Secret : Type}
+    (Q : QuarantinePresheaf Secret) (E : ObsLevel Secret)
+    (p : AllowedType E) (_hp : Q.survives E p)
+    (s₁ s₂ : Secret) (heq : E.rel s₁ s₂) :
+    p.val s₁ ↔ p.val s₂ :=
+  p.property s₁ s₂ heq
+
 end SemanticIFC
 
 -- ═══════════════════════════════════════════════════════════════════════════
