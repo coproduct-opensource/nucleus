@@ -1334,6 +1334,136 @@ theorem constant_family_has_gluing {Secret : Type}
       simp only [H0, Set.mem_setOf_eq] at hp; exact hp E) := by
   exact ⟨p, hp, fun _ _ => Iff.rfl⟩
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- CONCRETE H¹ ≠ 0 WITNESS: The Three-Secret Impossibility
+-- ═══════════════════════════════════════════════════════════════════════════
+
+inductive ThreeSecret where
+  | A | B | C
+deriving DecidableEq, Repr
+
+def obsAC : ObsLevel ThreeSecret where
+  rel s₁ s₂ := match s₁, s₂ with
+    | .A, .A => True | .A, .C => True | .C, .A => True
+    | .B, .B => True | .C, .C => True | _, _ => False
+  equiv := {
+    refl := fun s => by cases s <;> simp [ObsLevel.mk]
+    symm := fun {s₁ s₂} h => by cases s₁ <;> cases s₂ <;> simp_all [ObsLevel.mk]
+    trans := fun {s₁ s₂ s₃} h₁ h₂ => by
+      cases s₁ <;> cases s₂ <;> cases s₃ <;> simp_all [ObsLevel.mk] }
+
+def obsBC : ObsLevel ThreeSecret where
+  rel s₁ s₂ := match s₁, s₂ with
+    | .A, .A => True | .B, .B => True | .B, .C => True
+    | .C, .B => True | .C, .C => True | _, _ => False
+  equiv := {
+    refl := fun s => by cases s <;> simp [ObsLevel.mk]
+    symm := fun {s₁ s₂} h => by cases s₁ <;> cases s₂ <;> simp_all [ObsLevel.mk]
+    trans := fun {s₁ s₂ s₃} h₁ h₂ => by
+      cases s₁ <;> cases s₂ <;> cases s₃ <;> simp_all [ObsLevel.mk] }
+
+def propAC : Proposition ThreeSecret :=
+  fun s => match s with | .A => True | .B => False | .C => True
+
+def propBC : Proposition ThreeSecret :=
+  fun s => match s with | .A => True | .B => False | .C => False
+
+theorem propAC_forced : forces obsAC propAC := by
+  intro s₁ s₂ hr; cases s₁ <;> cases s₂ <;> simp_all [propAC, obsAC]
+
+theorem propBC_forced : forces obsBC propBC := by
+  intro s₁ s₂ hr; cases s₁ <;> cases s₂ <;> simp_all [propBC, obsBC]
+
+/-- **THE IMPOSSIBILITY THEOREM:**
+    No policy can simultaneously allow A, deny B, and be forced at
+    both obsAC and obsBC. The observation structure makes this impossible. -/
+theorem no_global_reconciliation :
+    ¬∃ (p : Proposition ThreeSecret),
+      (∀ s₁ s₂, obsAC.rel s₁ s₂ → (p s₁ ↔ p s₂)) ∧
+      (∀ s₁ s₂, obsBC.rel s₁ s₂ → (p s₁ ↔ p s₂)) ∧
+      p .A ∧ ¬p .B := by
+  intro ⟨p, hAC, hBC, hpA, hpB⟩
+  have hpC_true : p .C := by
+    have : obsAC.rel .A .C := by simp [obsAC]
+    exact (hAC .A .C this).mp hpA
+  have hpB_true : p .B := by
+    have : obsBC.rel .C .B := by simp [obsBC]
+    exact (hBC .C .B this).mp hpC_true
+  exact hpB hpB_true
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- The Security Game and Alignment Tax
+-- ═══════════════════════════════════════════════════════════════════════════
+
+structure SecurityGame (Secret : Type) where
+  levels : List (ObsLevel Secret)
+  target : Secret
+  threat : Secret
+
+def SecurityGame.defenderWins {Secret : Type}
+    (game : SecurityGame Secret) (p : Proposition Secret) : Prop :=
+  p game.target ∧ ¬p game.threat ∧ ∀ E ∈ game.levels, forces E p
+
+/-- The adversary always wins the three-secret game. -/
+theorem three_secret_game_impossible :
+    ¬∃ p, SecurityGame.defenderWins
+      { levels := [obsAC, obsBC], target := .A, threat := .B } p := by
+  intro ⟨p, hpA, hpB, hforced⟩
+  have hAC : forces obsAC p := hforced obsAC (by simp)
+  have hBC : forces obsBC p := hforced obsBC (by simp)
+  exact no_global_reconciliation ⟨p, hAC, hBC, hpA, hpB⟩
+
+/-- **THE ALIGNMENT TAX IS NONZERO.** -/
+theorem alignment_tax_nonzero :
+    ¬∃ p : Proposition ThreeSecret,
+      p .A ∧ ¬p .B ∧ forces obsAC p ∧ forces obsBC p := by
+  intro ⟨p, hpA, hpB, hAC, hBC⟩
+  exact no_global_reconciliation ⟨p, hAC, hBC, hpA, hpB⟩
+
+/-- **ALIGNMENT TAX ≥ 1:** Any correct policy must fail at ≥ 1 level. -/
+theorem alignment_tax_ge_one (p : Proposition ThreeSecret)
+    (hpA : p .A) (hpB : ¬p .B) :
+    ¬forces obsAC p ∨ ¬forces obsBC p := by
+  by_contra h
+  push_neg at h
+  exact no_global_reconciliation ⟨p, h.1, h.2, hpA, hpB⟩
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- No Free Lunch for Agent Security
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- The alignment tax theorem generalizes: for ANY set of observation levels
+-- with conflicting identifications, the defender must sacrifice at least
+-- one level. The number of sacrificed levels is the alignment tax.
+--
+-- This parallels:
+-- - Zhang et al. 2025: "No Free Lunch for Privacy-Preserving LLM Inference"
+--   (information-theoretic, mutual information bounds)
+-- - Arrow 1951: impossibility of fair voting (axiomatic)
+-- - Nash 1950: existence of equilibria (fixed-point)
+--
+-- Our contribution: GEOMETRIC (cohomological) characterization that is
+-- compositional and kernel-checked.
+
+-- The adaptive version (different policy per level) creates a different
+-- tradeoff: the defender can be correct at each level, but the adversary
+-- can detect WHICH policy was chosen by examining the output at C.
+-- This information leakage is the adaptive alignment tax.
+
+/-- **NO FREE LUNCH (from alignment_tax_ge_one):**
+    For any policy p on ThreeSecret:
+    - If p allows A and denies B,
+    - Then p fails to be forced at obsAC OR obsBC.
+
+    The alignment tax is the MINIMUM number of observation levels where
+    any correct policy must fail. For the three-secret game: tax ≥ 1.
+
+    This is a no-free-lunch theorem: you cannot have both
+    (correct classification) AND (universal forcing/security). -/
+theorem no_free_lunch : ∀ (p : Proposition ThreeSecret),
+    p .A → ¬p .B → ¬forces obsAC p ∨ ¬forces obsBC p :=
+  alignment_tax_ge_one
+
 end SemanticIFC
 
 -- ═══════════════════════════════════════════════════════════════════════════
