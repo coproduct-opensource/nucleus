@@ -71,12 +71,29 @@ pub trait DistributiveLattice: Lattice {}
 ///
 /// - Every subset has a greatest lower bound (meet)
 /// - Every subset has a least upper bound (join)
+///
+/// Blanket-implemented for all `BoundedLattice` types: `meet_all`
+/// folds via `meet` with `top()` as identity, `join_all` folds via
+/// `join` with `bottom()` as identity. Override if a type has a more
+/// efficient implementation.
 pub trait CompleteLattice: BoundedLattice {
     /// Meet of all elements in an iterator.
     fn meet_all<I: IntoIterator<Item = Self>>(iter: I) -> Self;
 
     /// Join of all elements in an iterator.
     fn join_all<I: IntoIterator<Item = Self>>(iter: I) -> Self;
+}
+
+/// Blanket implementation: any bounded lattice is trivially complete
+/// over finite collections (fold with identity element).
+impl<L: BoundedLattice> CompleteLattice for L {
+    fn meet_all<I: IntoIterator<Item = Self>>(iter: I) -> Self {
+        portcullis_core::category::meet_all_bounded(iter)
+    }
+
+    fn join_all<I: IntoIterator<Item = Self>>(iter: I) -> Self {
+        portcullis_core::category::join_all_bounded(iter)
+    }
 }
 
 /// A frame: a complete lattice where finite meets distribute over arbitrary joins.
@@ -319,19 +336,7 @@ impl BoundedLattice for PermissionLattice {
 
 impl DistributiveLattice for PermissionLattice {}
 
-impl CompleteLattice for PermissionLattice {
-    fn meet_all<I: IntoIterator<Item = Self>>(iter: I) -> Self {
-        iter.into_iter()
-            .reduce(|a, b| a.meet(&b))
-            .unwrap_or_else(Self::top)
-    }
-
-    fn join_all<I: IntoIterator<Item = Self>>(iter: I) -> Self {
-        iter.into_iter()
-            .reduce(|a, b| a.join(&b))
-            .unwrap_or_else(Self::bottom)
-    }
-}
+// CompleteLattice: provided by blanket impl on BoundedLattice
 
 impl Frame for PermissionLattice {}
 
