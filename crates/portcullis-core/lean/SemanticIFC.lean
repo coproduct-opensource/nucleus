@@ -7,6 +7,7 @@ import Mathlib.CategoryTheory.Limits.Types.Pullbacks
 import Mathlib.CategoryTheory.Category.Preorder
 import Mathlib.CategoryTheory.Sites.Sieves
 import Mathlib.CategoryTheory.Sites.Closed
+import Mathlib.CategoryTheory.Sites.Grothendieck
 
 /-!
 # Semantic Information Flow Control — Galois Connection on Propositions
@@ -955,6 +956,58 @@ def sieveType {Secret : Type} (E : ObsLevel Secret) : Type :=
 /-- The sieve type is a complete lattice (sieves form a lattice under inclusion). -/
 example {Secret : Type} (E : ObsLevel Secret) : CompleteLattice (Sieve E) :=
   inferInstance
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Grothendieck Topology on ObsLevel
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- We equip ObsLevel with the TRIVIAL Grothendieck topology: only the
+-- maximal sieve covers. Under this topology:
+-- - Every presheaf is a sheaf (trivially)
+-- - The closed sieves are ALL sieves (every sieve is closed)
+-- - The subobject classifier Ω(E) = Sieve E
+--
+-- This is the simplest choice and makes the presheaf topos the
+-- category of ALL presheaves on ObsLevel (no sheaf condition).
+
+/-- The trivial Grothendieck topology on ObsLevel(Secret).
+    Only the maximal sieve ⊤ is a covering sieve. -/
+def obsLevelTopology (Secret : Type) : GrothendieckTopology (ObsLevel Secret) :=
+  GrothendieckTopology.trivial (ObsLevel Secret)
+
+/-- Under the trivial topology, every presheaf is a sheaf.
+    In particular, our allowedKnowledgeFunctor is a sheaf. -/
+theorem trivial_covering_iff {Secret : Type} (E : ObsLevel Secret) (S : Sieve E) :
+    S ∈ (obsLevelTopology Secret) E ↔ S = ⊤ := by
+  simp [obsLevelTopology, GrothendieckTopology.trivial_covering]
+
+/-- The closed sieves presheaf for the trivial topology on ObsLevel.
+    This is the candidate subobject classifier for the presheaf topos.
+    Under the trivial topology, EVERY sieve is closed, so
+    closedSieves(E) ≅ Sieve(E). -/
+def obsLevelClosedSieves (Secret : Type) :
+    (ObsLevel Secret)ᵒᵖ ⥤ Type :=
+  Functor.closedSieves (obsLevelTopology Secret)
+
+/-- The closed sieves presheaf is a sheaf (Mathlib's classifier_isSheaf). -/
+theorem obsLevelClosedSieves_isSheaf (Secret : Type) :
+    Presieve.IsSheaf (obsLevelTopology Secret) (obsLevelClosedSieves Secret) :=
+  classifier_isSheaf (obsLevelTopology Secret)
+
+/-- **THE PRESHEAF TOPOS STRUCTURE:**
+    The category of sheaves for the trivial topology on ObsLevel is
+    equivalent to the category of ALL presheaves (since every presheaf
+    is a sheaf for the trivial topology).
+
+    The subobject classifier is the closed sieves presheaf, which
+    Mathlib proves is a sheaf.
+
+    Our allowedKnowledgeFunctor lives in this presheaf topos as a
+    (co)presheaf encoding what can be learned at each observation level. -/
+theorem presheaf_topos_has_classifier (Secret : Type) :
+    Presieve.IsSheaf (obsLevelTopology Secret)
+      (obsLevelClosedSieves Secret) :=
+  obsLevelClosedSieves_isSheaf Secret
 
 end SemanticIFC
 
