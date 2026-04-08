@@ -1524,6 +1524,199 @@ theorem quarantine_optimality_gap {Secret Output : Type}
     learnable (filter ∘ f) ⊆ learnable f :=
   black_box_security f filter
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- No Free Lunch + Achievability + Computational Bounds
+-- ═══════════════════════════════════════════════════════════════════════════
+
+/-- **NO FREE LUNCH:** any correct policy fails ≥ 1 observation level. -/
+theorem no_free_lunch : ∀ (p : Proposition ThreeSecret),
+    p .A → ¬p .B → ¬forces obsAC p ∨ ¬forces obsBC p :=
+  alignment_tax_ge_one
+
+-- ── Achievability ──────────────────────────────────────────────────────
+
+theorem achievability_max (f : Channel Secret Output) :
+    learnable (id ∘ f) = learnable f := by simp [Function.comp]
+
+theorem achievability_min (f : Channel Secret Output) (o : Output) :
+    learnable ((fun _ => o) ∘ f) ⊆ { p | (∀ s, p s) ∨ (∀ s, ¬p s) } := by
+  intro p ⟨g, hg⟩
+  by_cases h : g o
+  · left; intro s; exact ((hg s).mpr h)
+  · right; intro s hp; exact h ((hg s).mp hp)
+
+def sEquiv (S : Set (Proposition Secret)) (s₁ s₂ : Secret) : Prop :=
+  ∀ p ∈ S, (p s₁ ↔ p s₂)
+
+theorem sEquiv_equiv (S : Set (Proposition Secret)) : Equivalence (sEquiv S) where
+  refl _ _ _ := Iff.rfl
+  symm h p hp := (h p hp).symm
+  trans h₁ h₂ p hp := (h₁ p hp).trans (h₂ p hp)
+
+theorem achievability_lemma [DecidableEq Output]
+    (f : Channel Secret Output) (S : Set (Proposition Secret))
+    (hS : S ⊆ allowedKnowledge f) : S ⊆ learnable f := by
+  intro p hp; rw [learnable_iff_respects_obsEquiv]; exact hS hp
+
+/-- **THE ACHIEVABILITY THEOREM:** learnable = allowedKnowledge. Tight. -/
+theorem achievability [DecidableEq Output] (f : Channel Secret Output) :
+    learnable f = allowedKnowledge f := learnable_eq_allowedKnowledge f
+
+/-- **COMPLETE CHARACTERIZATION:** tightness + soundness + DPI. -/
+theorem complete_characterization [DecidableEq Output]
+    (f : Channel Secret Output) :
+    learnable f = allowedKnowledge f ∧
+    (∀ g : Output → Output, learnable (g ∘ f) ⊆ allowedKnowledge f) ∧
+    (∀ g : Output → Output, learnable (g ∘ f) ⊆ learnable f) :=
+  ⟨achievability f, fun g => soundness_full f g, fun g => black_box_security f g⟩
+
+-- ── Computational Bounds ───────────────────────────────────────────────
+
+abbrev Distinguisher (Output : Type) := Output → Bool
+
+def perfectAdvantage {Secret Output : Type}
+    (f : Channel Secret Output) (d : Distinguisher Output)
+    (p : Proposition Secret) : Prop :=
+  ∀ s, (d (f s) = true) ↔ p s
+
+theorem perfect_distinguisher_implies_learnable
+    {Secret Output : Type} (f : Channel Secret Output)
+    (d : Distinguisher Output) (p : Proposition Secret)
+    (hd : perfectAdvantage f d p) : p ∈ learnable f :=
+  ⟨fun o => d o = true, fun s => (hd s).symm⟩
+
+theorem no_perfect_distinguisher_outside_allowed
+    [DecidableEq Output] {Secret : Type}
+    (f : Channel Secret Output) (p : Proposition Secret)
+    (hp : p ∉ allowedKnowledge f) :
+    ¬∃ d : Distinguisher Output, perfectAdvantage f d p := by
+  intro ⟨d, hd⟩
+  exact hp ((learnable_eq_allowedKnowledge f) ▸
+    perfect_distinguisher_implies_learnable f d p hd)
+
+theorem quarantine_computational_security
+    [DecidableEq Output] {Secret : Type}
+    (f : Channel Secret Output) (filter : Output → Output)
+    (p : Proposition Secret) (hp : p ∉ allowedKnowledge f) :
+    ¬∃ d : Distinguisher Output, perfectAdvantage (filter ∘ f) d p := by
+  intro ⟨d, hd⟩
+  exact hp (soundness_full f filter
+    (perfect_distinguisher_implies_learnable (filter ∘ f) d p hd))
+
+/-- **INFO-THEORETIC → COMPUTATIONAL:** our bounds hold against ALL adversaries. -/
+theorem info_theoretic_implies_computational
+    [DecidableEq Output] {Secret : Type}
+    (f : Channel Secret Output) (p : Proposition Secret) :
+    p ∉ learnable f → ¬∃ d : Distinguisher Output, perfectAdvantage f d p := by
+  intro hnl ⟨d, hd⟩
+  exact hnl (perfect_distinguisher_implies_learnable f d p hd)
+
+/-- Single Boolean classifier impossibility (computational version). -/
+theorem single_distinguisher_impossibility :
+    ¬∃ (d : Distinguisher ThreeSecret),
+      (d .A = true) ∧ (d .B = false) ∧
+      (d .C = d .A) ∧ (d .C = d .B) := by
+  intro ⟨_, _, _, hCA, hCB⟩; simp_all
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- AllowedKnowledge is a Sub-Heyting-Algebra
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- The set of learnable propositions is closed under ∧, ∨, →, ¬.
+-- This means learnable facts form a COMPLETE LOGICAL SYSTEM:
+-- you can reason about them using intuitionistic logic and stay
+-- within the learnable set. This is the Heyting algebra structure
+-- of the observation's "open sets."
+
+/-- AllowedKnowledge is closed under conjunction:
+    if p and q both respect E-equivalence, so does p ∧ q. -/
+theorem allowedKnowledge_closed_and {Secret Output : Type}
+    (f : Channel Secret Output) (p q : Proposition Secret)
+    (hp : p ∈ allowedKnowledge f) (hq : q ∈ allowedKnowledge f) :
+    (fun s => p s ∧ q s) ∈ allowedKnowledge f := by
+  intro s₁ s₂ heq
+  exact ⟨fun ⟨h1, h2⟩ => ⟨(hp s₁ s₂ heq).mp h1, (hq s₁ s₂ heq).mp h2⟩,
+         fun ⟨h1, h2⟩ => ⟨(hp s₁ s₂ heq).mpr h1, (hq s₁ s₂ heq).mpr h2⟩⟩
+
+/-- AllowedKnowledge is closed under disjunction:
+    if p and q both respect E-equivalence, so does p ∨ q. -/
+theorem allowedKnowledge_closed_or {Secret Output : Type}
+    (f : Channel Secret Output) (p q : Proposition Secret)
+    (hp : p ∈ allowedKnowledge f) (hq : q ∈ allowedKnowledge f) :
+    (fun s => p s ∨ q s) ∈ allowedKnowledge f := by
+  intro s₁ s₂ heq
+  exact ⟨fun h => h.elim (Or.inl ∘ (hp s₁ s₂ heq).mp) (Or.inr ∘ (hq s₁ s₂ heq).mp),
+         fun h => h.elim (Or.inl ∘ (hp s₁ s₂ heq).mpr) (Or.inr ∘ (hq s₁ s₂ heq).mpr)⟩
+
+/-- AllowedKnowledge is closed under implication:
+    if p and q both respect E-equivalence, so does p → q. -/
+theorem allowedKnowledge_closed_imp {Secret Output : Type}
+    (f : Channel Secret Output) (p q : Proposition Secret)
+    (hp : p ∈ allowedKnowledge f) (hq : q ∈ allowedKnowledge f) :
+    (fun s => p s → q s) ∈ allowedKnowledge f := by
+  intro s₁ s₂ heq
+  exact ⟨fun h hp2 => (hq s₁ s₂ heq).mp (h ((hp s₁ s₂ heq).mpr hp2)),
+         fun h hp1 => (hq s₁ s₂ heq).mpr (h ((hp s₁ s₂ heq).mp hp1))⟩
+
+/-- AllowedKnowledge is closed under negation:
+    if p respects E-equivalence, so does ¬p. -/
+theorem allowedKnowledge_closed_neg {Secret Output : Type}
+    (f : Channel Secret Output) (p : Proposition Secret)
+    (hp : p ∈ allowedKnowledge f) :
+    (fun s => ¬p s) ∈ allowedKnowledge f := by
+  intro s₁ s₂ heq
+  exact ⟨fun hn hp2 => hn ((hp s₁ s₂ heq).mpr hp2),
+         fun hn hp1 => hn ((hp s₁ s₂ heq).mp hp1)⟩
+
+/-- AllowedKnowledge contains True (the constant-true proposition). -/
+theorem allowedKnowledge_top {Secret Output : Type}
+    (f : Channel Secret Output) :
+    (fun _ : Secret => True) ∈ allowedKnowledge f := by
+  intro _ _ _; exact ⟨fun _ => trivial, fun _ => trivial⟩
+
+/-- AllowedKnowledge contains False (the constant-false proposition). -/
+theorem allowedKnowledge_bot {Secret Output : Type}
+    (f : Channel Secret Output) :
+    (fun _ : Secret => False) ∈ allowedKnowledge f := by
+  intro _ _ _; exact ⟨False.elim, False.elim⟩
+
+/-- **THE HEYTING ALGEBRA THEOREM:**
+    AllowedKnowledge(f) is a sub-Heyting-algebra of (Secret → Prop):
+    - Closed under ∧ (conjunction)
+    - Closed under ∨ (disjunction)
+    - Closed under → (implication)
+    - Closed under ¬ (negation)
+    - Contains ⊤ (True) and ⊥ (False)
+
+    This means: the set of facts learnable from channel f forms a
+    COMPLETE INTUITIONISTIC LOGICAL SYSTEM. You can reason about
+    learnable facts using ∧, ∨, →, ¬ and the result is always
+    still learnable.
+
+    Combined with complete_characterization: the achievable knowledge
+    isn't just a set — it's a logic. The quarantine compartment
+    restricts the observer to a sub-logic of the full logic of
+    propositions about secrets. -/
+theorem allowedKnowledge_is_heyting_subalgebra {Secret Output : Type}
+    (f : Channel Secret Output) :
+    -- Closed under all Heyting operations + bounded
+    ((fun _ : Secret => True) ∈ allowedKnowledge f) ∧
+    ((fun _ : Secret => False) ∈ allowedKnowledge f) ∧
+    (∀ p q, p ∈ allowedKnowledge f → q ∈ allowedKnowledge f →
+      (fun s => p s ∧ q s) ∈ allowedKnowledge f) ∧
+    (∀ p q, p ∈ allowedKnowledge f → q ∈ allowedKnowledge f →
+      (fun s => p s ∨ q s) ∈ allowedKnowledge f) ∧
+    (∀ p q, p ∈ allowedKnowledge f → q ∈ allowedKnowledge f →
+      (fun s => p s → q s) ∈ allowedKnowledge f) ∧
+    (∀ p, p ∈ allowedKnowledge f →
+      (fun s => ¬p s) ∈ allowedKnowledge f) :=
+  ⟨allowedKnowledge_top f,
+   allowedKnowledge_bot f,
+   fun p q => allowedKnowledge_closed_and f p q,
+   fun p q => allowedKnowledge_closed_or f p q,
+   fun p q => allowedKnowledge_closed_imp f p q,
+   fun p => allowedKnowledge_closed_neg f p⟩
+
 end SemanticIFC
 
 -- ═══════════════════════════════════════════════════════════════════════════
