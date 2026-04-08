@@ -101,6 +101,7 @@ pub mod enterprise;
 #[cfg(feature = "envelope")]
 pub mod envelope;
 pub mod flow;
+pub mod flow_algebra;
 pub mod hash_types;
 pub mod ifc_api;
 pub mod labeled;
