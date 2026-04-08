@@ -78,7 +78,21 @@ impl TimeLattice {
     pub fn leq(&self, other: &Self) -> bool {
         self.valid_from >= other.valid_from && self.valid_until <= other.valid_until
     }
+}
 
+impl crate::frame::Lattice for TimeLattice {
+    fn meet(&self, other: &Self) -> Self {
+        TimeLattice::meet(self, other)
+    }
+    fn join(&self, other: &Self) -> Self {
+        TimeLattice::join(self, other)
+    }
+    fn leq(&self, other: &Self) -> bool {
+        TimeLattice::leq(self, other)
+    }
+}
+
+impl TimeLattice {
     /// Check if the permission is currently valid.
     pub fn is_valid(&self) -> bool {
         let now = Utc::now();

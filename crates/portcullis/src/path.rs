@@ -232,7 +232,21 @@ impl PathLattice {
         let blocked_ok = other.blocked.is_subset(&self.blocked);
         allowed_ok && blocked_ok
     }
+}
 
+impl crate::frame::Lattice for PathLattice {
+    fn meet(&self, other: &Self) -> Self {
+        PathLattice::meet(self, other)
+    }
+    fn join(&self, other: &Self) -> Self {
+        PathLattice::join(self, other)
+    }
+    fn leq(&self, other: &Self) -> bool {
+        PathLattice::leq(self, other)
+    }
+}
+
+impl PathLattice {
     /// Create a path lattice that blocks sensitive files.
     ///
     /// Includes agent configuration files (CLAUDE.md, .claude/) to prevent

@@ -316,7 +316,21 @@ impl CommandLattice {
             .all(|rule| self.blocked_rules.contains(rule));
         allowed_ok && blocked_ok && allowed_rules_ok && blocked_rules_ok
     }
+}
 
+impl crate::frame::Lattice for CommandLattice {
+    fn meet(&self, other: &Self) -> Self {
+        CommandLattice::meet(self, other)
+    }
+    fn join(&self, other: &Self) -> Self {
+        CommandLattice::join(self, other)
+    }
+    fn leq(&self, other: &Self) -> bool {
+        CommandLattice::leq(self, other)
+    }
+}
+
+impl CommandLattice {
     /// Add a command to the allowed list.
     pub fn allow(&mut self, command: impl Into<String>) {
         self.allowed.insert(command.into());
