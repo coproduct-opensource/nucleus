@@ -102,7 +102,21 @@ impl BudgetLattice {
             && self.max_input_tokens <= other.max_input_tokens
             && self.max_output_tokens <= other.max_output_tokens
     }
+}
 
+impl crate::frame::Lattice for BudgetLattice {
+    fn meet(&self, other: &Self) -> Self {
+        BudgetLattice::meet(self, other)
+    }
+    fn join(&self, other: &Self) -> Self {
+        BudgetLattice::join(self, other)
+    }
+    fn leq(&self, other: &Self) -> bool {
+        BudgetLattice::leq(self, other)
+    }
+}
+
+impl BudgetLattice {
     /// Check if there is remaining budget.
     pub fn has_remaining(&self) -> bool {
         self.consumed_usd < self.max_cost_usd

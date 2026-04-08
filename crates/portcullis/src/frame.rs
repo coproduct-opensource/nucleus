@@ -51,41 +51,9 @@ use serde::{Deserialize, Serialize};
 use crate::capability::IncompatibilityConstraint;
 use crate::PermissionLattice;
 
-/// A lattice with meet (∧) and join (∨) operations.
-///
-/// # Laws
-///
-/// For all `a`, `b`, `c`:
-/// - Commutativity: `a ∧ b = b ∧ a`, `a ∨ b = b ∨ a`
-/// - Associativity: `(a ∧ b) ∧ c = a ∧ (b ∧ c)`
-/// - Idempotence: `a ∧ a = a`, `a ∨ a = a`
-/// - Absorption: `a ∧ (a ∨ b) = a`, `a ∨ (a ∧ b) = a`
-pub trait Lattice: Clone + PartialEq {
-    /// Greatest lower bound (meet, ∧).
-    fn meet(&self, other: &Self) -> Self;
-
-    /// Least upper bound (join, ∨).
-    fn join(&self, other: &Self) -> Self;
-
-    /// Partial order: `a ≤ b` iff `a ∧ b = a`.
-    fn leq(&self, other: &Self) -> bool;
-}
-
-/// A bounded lattice with top (⊤) and bottom (⊥) elements.
-///
-/// # Laws
-///
-/// - `a ∧ ⊤ = a` (top is identity for meet)
-/// - `a ∨ ⊥ = a` (bottom is identity for join)
-/// - `a ∧ ⊥ = ⊥` (bottom is annihilator for meet)
-/// - `a ∨ ⊤ = ⊤` (top is annihilator for join)
-pub trait BoundedLattice: Lattice {
-    /// Top element (⊤): greatest element in the lattice.
-    fn top() -> Self;
-
-    /// Bottom element (⊥): least element in the lattice.
-    fn bottom() -> Self;
-}
+// Re-export the core algebraic traits from portcullis-core.
+// These are the canonical definitions — all lattice types implement them.
+pub use portcullis_core::category::{BoundedLattice, Lattice};
 
 /// A distributive lattice where meet distributes over join.
 ///
