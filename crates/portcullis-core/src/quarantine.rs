@@ -324,10 +324,14 @@ pub fn validate_distillation(
         return Err(DistillError::InvalidOutputIntegrity);
     }
 
-    // 2. Check output confidentiality is below input
-    if config.output_confidentiality > input_label.confidentiality {
-        return Err(DistillError::InvalidOutputConfidentiality);
-    }
+    // 2. Compute effective output confidentiality: min(config ceiling, input).
+    // Distillation can lower confidentiality (Secret → Internal) but never raise it.
+    // If the input is already below the config ceiling, output stays at input level.
+    let effective_conf = if input_label.confidentiality < config.output_confidentiality {
+        input_label.confidentiality
+    } else {
+        config.output_confidentiality
+    };
 
     // 3. Token bound (approximate: split on whitespace)
     let token_count = raw_output.split_whitespace().count();
@@ -357,7 +361,7 @@ pub fn validate_distillation(
     // 6. All checks passed — construct the downgraded label
     let distilled_label = IFCLabel {
         integrity: config.output_integrity,
-        confidentiality: config.output_confidentiality,
+        confidentiality: effective_conf,
         // Derivation: distillation is AI-derived (the LLM produced it)
         derivation: DerivationClass::AIDerived,
         // Preserve provenance and authority from input
