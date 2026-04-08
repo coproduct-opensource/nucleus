@@ -678,4 +678,75 @@ theorem classifier_isPullback {U X : Type} (m : U → X) (hm : Function.Injectiv
     obtain ⟨u, hu⟩ := h_exists
     exact ⟨u, hu, rfl⟩
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- HasClassifier (Type 0) — the full subobject classifier instance
+-- ═══════════════════════════════════════════════════════════════════════════
+
+/-- PUnit is terminal in Type: there is a unique function from any type to PUnit. -/
+instance : ∀ X : Type, Unique (X ⟶ PUnit) := fun X =>
+  { default := fun _ => PUnit.unit
+    uniq := fun f => funext fun x => by cases f x; rfl }
+
+/-- PUnit is a terminal object in the category Type. -/
+def punitTerminal : Limits.IsTerminal (PUnit : Type) :=
+  Limits.IsTerminal.ofUnique PUnit
+
+/-- **HasClassifier (Type 0):**
+    The category of small types has a subobject classifier.
+
+    Ω₀ = PUnit (terminal object)
+    Ω  = Prop  (the classifier)
+    truth = fun _ => True
+    χ(m) = charMap m = fun x => ∃ u, m(u) = x
+
+    This is the standard result that Prop classifies subobjects in Set/Type.
+    Proved using Mathlib's Classifier.mkOfTerminalΩ₀ constructor. -/
+noncomputable instance : HasClassifier (Type) :=
+  ⟨⟨Classifier.mkOfTerminalΩ₀
+    PUnit
+    punitTerminal
+    Prop
+    (fun _ => True)
+    (fun m => charMap m)
+    (by -- isPullback for each mono m
+      intro U X m _inst
+      rw [Types.isPullback_iff]
+      refine ⟨?_, ?_, ?_⟩
+      · -- Square commutes
+        ext u
+        simp only [CategoryTheory.types_comp, Function.comp, charMap]
+        constructor
+        · intro; trivial
+        · intro; exact ⟨u, rfl⟩
+      · -- Joint injectivity (from Mono)
+        intro x₁ y₁ ⟨hm_eq, _⟩
+        exact (CategoryTheory.mono_iff_injective m).mp _inst hm_eq
+      · -- Joint surjectivity
+        intro x₂ x₃ h_eq
+        have : ∃ u, m u = x₂ := by
+          change (∃ u, m u = x₂) = True at h_eq
+          exact h_eq ▸ trivial
+        obtain ⟨u, hu⟩ := this
+        exact ⟨u, hu, rfl⟩)
+    (by -- uniqueness: χ' with pullback property implies χ' = charMap m
+      intro U X m _inst χ' hpb
+      ext x
+      rw [Types.isPullback_iff] at hpb
+      obtain ⟨hw, _, hsurj⟩ := hpb
+      constructor
+      · -- χ'(x) → charMap(m)(x)
+        intro hx
+        obtain ⟨u, hu, _⟩ := hsurj x PUnit.unit (by
+          change χ' x = True
+          simp only [eq_iff_iff]
+          exact ⟨fun _ => trivial, fun _ => hx⟩)
+        exact ⟨u, hu⟩
+      · -- charMap(m)(x) → χ'(x)
+        intro ⟨u, hu⟩
+        have := congr_fun hw u
+        simp only [CategoryTheory.types_comp, Function.comp] at this
+        rw [eq_iff_iff] at this
+        rw [← hu]
+        exact this.mpr trivial)⟩⟩
+
 end TypesClassifier
