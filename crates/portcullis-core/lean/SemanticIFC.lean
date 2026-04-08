@@ -677,6 +677,77 @@ theorem quarantine_soundness_nd
       ⊆ allowedKnowledge f := soundness_full f filter
     _ ⊆ ndAllowedKnowledge c := det_allowed_sub_nd_allowed f c h_refines
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Step 5: Receipts as Constructive Witnesses
+-- ═══════════════════════════════════════════════════════════════════════════
+
+/-- A distillation receipt: constructive evidence that content passed
+    the quarantine compartment. Contains the witness — the learned
+    proposition and proof it's in the allowed knowledge. -/
+structure DistillReceipt {Secret Output : Type}
+    (c : Channel Secret Output) (filter : Output → Output) where
+  /-- The proposition that was learned. -/
+  learned_prop : Proposition Secret
+  /-- Constructive proof: the learned proposition is allowed. -/
+  prop_allowed : learned_prop ∈ allowedKnowledge c
+
+/-- A receipt is a constructive witness: we can extract the proof. -/
+theorem receipt_is_constructive {Secret Output : Type}
+    (c : Channel Secret Output) (filter : Output → Output)
+    (r : DistillReceipt c filter) :
+    r.learned_prop ∈ allowedKnowledge c :=
+  r.prop_allowed
+
+/-- Given a receipt, the learned proposition respects observational
+    equivalence — secrets that look the same agree on the learned fact. -/
+theorem receipt_respects_obsEquiv {Secret Output : Type}
+    (c : Channel Secret Output) (filter : Output → Output)
+    (r : DistillReceipt c filter)
+    (s₁ s₂ : Secret) (heq : obsEquiv c s₁ s₂) :
+    r.learned_prop s₁ ↔ r.learned_prop s₂ :=
+  r.prop_allowed s₁ s₂ heq
+
+/-- A receipt chain: sequence of receipts from sequential distillation. -/
+structure ReceiptChain {Secret Output : Type}
+    (c : Channel Secret Output) where
+  receipts : List (Σ (filter : Output → Output), DistillReceipt c filter)
+  all_allowed : ∀ r ∈ receipts, (r.2).learned_prop ∈ allowedKnowledge c
+
+/-- An empty chain is trivially valid. -/
+def ReceiptChain.empty {Secret Output : Type}
+    (c : Channel Secret Output) : ReceiptChain c where
+  receipts := []
+  all_allowed := by simp
+
+/-- Extending a chain preserves validity. -/
+def ReceiptChain.extend {Secret Output : Type}
+    {c : Channel Secret Output}
+    (chain : ReceiptChain c)
+    (filter : Output → Output)
+    (receipt : DistillReceipt c filter) :
+    ReceiptChain c where
+  receipts := ⟨filter, receipt⟩ :: chain.receipts
+  all_allowed := by
+    intro r hr
+    simp [List.mem_cons] at hr
+    cases hr with
+    | inl h => rw [h]; exact receipt.prop_allowed
+    | inr h => exact chain.all_allowed r h
+
+/-- **RECEIPT CHAIN SOUNDNESS:** every proposition learned in the chain
+    is in the allowed knowledge of the original channel.
+    The receipts collectively prove nothing leaked beyond the channel's
+    observational structure. -/
+theorem receipt_chain_soundness {Secret Output : Type}
+    {c : Channel Secret Output}
+    (chain : ReceiptChain c)
+    (p : Proposition Secret)
+    (h : ∃ r ∈ chain.receipts, (r.2).learned_prop = p) :
+    p ∈ allowedKnowledge c := by
+  obtain ⟨r, hr, hrp⟩ := h
+  rw [← hrp]
+  exact chain.all_allowed r hr
+
 end SemanticIFC
 
 -- ═══════════════════════════════════════════════════════════════════════════
