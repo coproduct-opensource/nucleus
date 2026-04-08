@@ -178,6 +178,38 @@ impl Verdict {
     }
 }
 
+// ── Lattice implementation for Verdict ─────────────────────────────────
+//
+// Uses the TRUTH axis for meet/join/leq, since the truth ordering
+// (Deny < Unknown < Allow) is the security-relevant one:
+// - meet = most restrictive (AND)
+// - join = most permissive (OR)
+// - leq = "at most as permissive"
+
+impl crate::category::Lattice for Verdict {
+    fn meet(&self, other: &Self) -> Self {
+        self.truth_meet(*other)
+    }
+    fn join(&self, other: &Self) -> Self {
+        self.truth_join(*other)
+    }
+    fn leq(&self, other: &Self) -> bool {
+        // a ≤ b iff a ∧ b = a (standard lattice definition).
+        // Cannot use truth_rank because Unknown and Conflict are
+        // incomparable on the truth axis.
+        self.truth_meet(*other) == *self
+    }
+}
+
+impl crate::category::BoundedLattice for Verdict {
+    fn top() -> Self {
+        Verdict::Allow
+    }
+    fn bottom() -> Self {
+        Verdict::Deny
+    }
+}
+
 impl core::fmt::Display for Verdict {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -471,5 +503,33 @@ mod tests {
         let result = Verdict::try_from_check_result(CheckResult::RequiresApproval("review".into()));
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "review");
+    }
+
+    // ── Lattice trait tests ───────────────────────────────────────────
+
+    #[test]
+    fn verdict_lattice_laws() {
+        use crate::category::verify_bounded_lattice_laws;
+        let samples = vec![Allow, Deny, Unknown, Conflict];
+        let v = verify_bounded_lattice_laws(&samples);
+        assert!(v.is_empty(), "Verdict lattice violations: {v:?}");
+    }
+
+    // ── into_verdict tests ────────────────────────────────────────────
+
+    #[test]
+    fn into_verdict_preserves_approval_reason() {
+        use super::super::combinators::CheckResult;
+        let (v, reason) = CheckResult::RequiresApproval("review".into()).into_verdict();
+        assert_eq!(v, Unknown);
+        assert_eq!(reason, Some("review".into()));
+    }
+
+    #[test]
+    fn into_verdict_allow_no_reason() {
+        use super::super::combinators::CheckResult;
+        let (v, reason) = CheckResult::Allow.into_verdict();
+        assert_eq!(v, Allow);
+        assert!(reason.is_none());
     }
 }

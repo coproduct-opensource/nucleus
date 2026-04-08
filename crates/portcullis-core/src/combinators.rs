@@ -45,6 +45,42 @@ impl CheckResult {
     pub fn is_deny(&self) -> bool {
         matches!(self, Self::Deny(_))
     }
+
+    /// Convert to a [`Verdict`](crate::bilattice::Verdict) for bilattice composition.
+    ///
+    /// Mapping:
+    /// - `Allow` → `Allow`
+    /// - `Deny(_)` → `Deny`
+    /// - `Abstain` → `Unknown` (no opinion = insufficient information)
+    /// - `RequiresApproval(_)` → `Unknown` with the approval reason preserved
+    ///   in the returned `Option`
+    ///
+    /// Unlike the deprecated `from_check_result_lossy`, this method returns
+    /// the approval reason so callers can handle it before composing verdicts.
+    pub fn into_verdict(self) -> (crate::bilattice::Verdict, Option<String>) {
+        match self {
+            Self::Allow => (crate::bilattice::Verdict::Allow, None),
+            Self::Deny(_) => (crate::bilattice::Verdict::Deny, None),
+            Self::Abstain => (crate::bilattice::Verdict::Unknown, None),
+            Self::RequiresApproval(reason) => (crate::bilattice::Verdict::Unknown, Some(reason)),
+        }
+    }
+
+    /// Combine two check results, taking the most restrictive.
+    ///
+    /// Ordering: `Deny > RequiresApproval > Allow > Abstain`.
+    /// When both deny, the first reason is kept.
+    pub fn meet(&self, other: &Self) -> Self {
+        match (self, other) {
+            (Self::Deny(_), _) => self.clone(),
+            (_, Self::Deny(_)) => other.clone(),
+            (Self::RequiresApproval(_), _) => self.clone(),
+            (_, Self::RequiresApproval(_)) => other.clone(),
+            (Self::Allow, _) => Self::Allow,
+            (_, Self::Allow) => Self::Allow,
+            _ => Self::Abstain,
+        }
+    }
 }
 
 /// A composable policy check.
