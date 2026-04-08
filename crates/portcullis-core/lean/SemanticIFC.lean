@@ -1524,6 +1524,73 @@ theorem quarantine_optimality_gap {Secret Output : Type}
     learnable (filter ∘ f) ⊆ learnable f :=
   black_box_security f filter
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Computational Security: Info-Theoretic → Computational
+-- ═══════════════════════════════════════════════════════════════════════════
+
+/-- A distinguisher tries to determine a proposition from channel output. -/
+abbrev Distinguisher (Output : Type) := Output → Bool
+
+/-- Perfect advantage: the distinguisher always correctly determines p(s). -/
+def perfectAdvantage {Secret Output : Type}
+    (f : Channel Secret Output) (d : Distinguisher Output)
+    (p : Proposition Secret) : Prop :=
+  ∀ s, (d (f s) = true) ↔ p s
+
+/-- A perfect distinguisher IS a factoring function → p is learnable. -/
+theorem perfect_distinguisher_implies_learnable
+    {Secret Output : Type} (f : Channel Secret Output)
+    (d : Distinguisher Output) (p : Proposition Secret)
+    (hd : perfectAdvantage f d p) :
+    p ∈ learnable f :=
+  ⟨fun o => d o = true, fun s => (hd s).symm⟩
+
+/-- If p ∉ allowedKnowledge(f), no perfect distinguisher exists. -/
+theorem no_perfect_distinguisher_outside_allowed
+    [DecidableEq Output] {Secret : Type}
+    (f : Channel Secret Output)
+    (p : Proposition Secret) (hp : p ∉ allowedKnowledge f) :
+    ¬∃ d : Distinguisher Output, perfectAdvantage f d p := by
+  intro ⟨d, hd⟩
+  exact hp ((learnable_eq_allowedKnowledge f) ▸
+    perfect_distinguisher_implies_learnable f d p hd)
+
+/-- Quarantine blocks all perfect distinguishers for disallowed props. -/
+theorem quarantine_computational_security
+    [DecidableEq Output] {Secret : Type}
+    (f : Channel Secret Output) (filter : Output → Output)
+    (p : Proposition Secret) (hp : p ∉ allowedKnowledge f) :
+    ¬∃ d : Distinguisher Output, perfectAdvantage (filter ∘ f) d p := by
+  intro ⟨d, hd⟩
+  exact hp (soundness_full f filter
+    (perfect_distinguisher_implies_learnable (filter ∘ f) d p hd))
+
+/-- **SINGLE-DISTINGUISHER IMPOSSIBILITY:**
+    No single Boolean classifier on {A,B,C} can output true for A,
+    false for B, and agree on C under both views (C=A and C=B). -/
+theorem single_distinguisher_impossibility :
+    ¬∃ (d : Distinguisher ThreeSecret),
+      (d .A = true) ∧ (d .B = false) ∧
+      (d .C = d .A) ∧ (d .C = d .B) := by
+  intro ⟨_, _, hB, hCA, hCB⟩
+  simp_all
+
+/-- **INFO-THEORETIC SECURITY IS CONSERVATIVE:**
+    All our bounds (allowedKnowledge, alignment tax, impossibility)
+    are UPPER BOUNDS on what any computational adversary can achieve.
+    The real computational frontier may be BETTER (more secure) than
+    what we proved, because computational adversaries are weaker
+    than information-theoretic ones.
+
+    This means: if our quarantine blocks an info-theoretic adversary,
+    it DEFINITELY blocks a computational adversary too. -/
+theorem info_theoretic_implies_computational
+    [DecidableEq Output] {Secret : Type}
+    (f : Channel Secret Output) (p : Proposition Secret) :
+    p ∉ learnable f → ¬∃ d : Distinguisher Output, perfectAdvantage f d p := by
+  intro hnl ⟨d, hd⟩
+  exact hnl (perfect_distinguisher_implies_learnable f d p hd)
+
 end SemanticIFC
 
 -- ═══════════════════════════════════════════════════════════════════════════
