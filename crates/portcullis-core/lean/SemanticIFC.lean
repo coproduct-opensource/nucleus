@@ -841,6 +841,64 @@ theorem ObsLevel.le_top {Secret : Type} (E : ObsLevel Secret) :
   rw [h]
   exact E.equiv.refl s₂
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- The Allowed Knowledge Presheaf
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- The functor ObsLevel(Secret)ᵒᵖ ⥤ Type sending each observation level E
+-- to the subtype of propositions respecting E.
+--
+-- This is the central object of the presheaf topos — it encodes
+-- "what can be learned at each observation level" as a single
+-- coherent mathematical object.
+
+open CategoryTheory
+
+/-- The type of propositions allowed at observation level E. -/
+def AllowedType {Secret : Type} (E : ObsLevel Secret) : Type :=
+  { p : Proposition Secret // p ∈ allowedAt E }
+
+/-- The restriction map: when E₁ ≤ E₂ (E₂ refines E₁),
+    every proposition respecting E₁ also respects E₂.
+    This is the functorial "restriction" map of the presheaf. -/
+def restrictAllowed {Secret : Type} {E₁ E₂ : ObsLevel Secret}
+    (h : E₁ ≤ E₂) : AllowedType E₁ → AllowedType E₂ :=
+  fun ⟨p, hp⟩ => ⟨p, allowedAt_monotone h hp⟩
+
+/-- Restriction preserves the underlying proposition. -/
+theorem restrictAllowed_val {Secret : Type} {E₁ E₂ : ObsLevel Secret}
+    (h : E₁ ≤ E₂) (x : AllowedType E₁) :
+    (restrictAllowed h x).val = x.val :=
+  rfl
+
+/-- The allowed knowledge functor: ObsLevel(Secret) ⥤ Type.
+    Covariant: finer observation → larger AllowedType.
+    E₁ ≤ E₂ (E₂ refines E₁) induces AllowedType(E₁) → AllowedType(E₂)
+    via allowedAt_monotone. This is a copresheaf (= presheaf on ObsLevelᵒᵖ). -/
+def allowedKnowledgeFunctor (Secret : Type) : ObsLevel Secret ⥤ Type where
+  obj E := AllowedType E
+  map {E₁ E₂} f := restrictAllowed (leOfHom f)
+  map_id E := by
+    funext x
+    exact Subtype.ext rfl
+  map_comp {E₁ E₂ E₃} f g := by
+    funext x
+    exact Subtype.ext rfl
+
+/-- The allowed knowledge functor maps the bottom observation to a
+    minimal type (only trivially constant propositions). -/
+theorem allowedKnowledgeFunctor_bottom (Secret : Type) :
+    (allowedKnowledgeFunctor Secret).obj (ObsLevel.bottom Secret) =
+    AllowedType (ObsLevel.bottom Secret) := by
+  rfl
+
+/-- The allowed knowledge functor maps the top observation to a
+    maximal type (all propositions). -/
+theorem allowedKnowledgeFunctor_top (Secret : Type) :
+    (allowedKnowledgeFunctor Secret).obj (ObsLevel.top Secret) =
+    AllowedType (ObsLevel.top Secret) := by
+  rfl
+
 end SemanticIFC
 
 -- ═══════════════════════════════════════════════════════════════════════════
