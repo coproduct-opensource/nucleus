@@ -177,4 +177,170 @@ theorem dpi_reduces_learnability
     learnable (filter ∘ f) ⊆ learnable f :=
   learnable_postprocess f filter
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Phase 4: Schema-bounded channels and the Soundness Theorem
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- Task 4.1: Schema-bounded channels
+-- An Enumeration(n) schema restricts output to Fin n.
+-- A MaxChars(k) schema restricts output to bounded strings.
+-- The key insight: restricted output → restricted learnable propositions.
+
+/-- Two secrets are observationally equivalent under channel f iff
+    f maps them to the same output. -/
+def obsEquiv (f : Channel Secret Output) (s₁ s₂ : Secret) : Prop :=
+  f s₁ = f s₂
+
+/-- Observational equivalence is an equivalence relation. -/
+theorem obsEquiv_equiv (f : Channel Secret Output) :
+    Equivalence (obsEquiv f) where
+  refl := fun _ => rfl
+  symm := fun h => h.symm
+  trans := fun h₁ h₂ => h₁.trans h₂
+
+/-- A learnable proposition respects observational equivalence:
+    if two secrets produce the same output, they agree on every
+    learnable proposition.
+
+    This is THE key lemma: learnable propositions cannot distinguish
+    secrets that look the same through the channel. -/
+theorem learnable_respects_obsEquiv (f : Channel Secret Output)
+    (p : Proposition Secret) (hp : p ∈ learnable f)
+    (s₁ s₂ : Secret) (heq : obsEquiv f s₁ s₂) :
+    p s₁ ↔ p s₂ := by
+  obtain ⟨g, hg⟩ := hp
+  simp only [hg]
+  unfold obsEquiv at heq
+  rw [heq]
+
+/-- Learnable propositions are exactly those that respect observational
+    equivalence. (The converse of learnable_respects_obsEquiv, assuming
+    classical logic for the existence of the factoring function.) -/
+theorem learnable_iff_respects_obsEquiv [DecidableEq Output]
+    (f : Channel Secret Output) (p : Proposition Secret) :
+    p ∈ learnable f ↔ ∀ s₁ s₂, obsEquiv f s₁ s₂ → (p s₁ ↔ p s₂) := by
+  constructor
+  · exact fun hp s₁ s₂ heq => learnable_respects_obsEquiv f p hp s₁ s₂ heq
+  · intro hresp
+    -- Construct the factoring function g : Output → Prop
+    -- For each output o, pick any secret s with f(s) = o and define g(o) = p(s)
+    -- This requires choice, but we can use a different construction:
+    -- g(o) = ∃ s, f(s) = o ∧ p(s)
+    refine ⟨fun o => ∃ s, f s = o ∧ p s, fun s => ?_⟩
+    constructor
+    · intro hp
+      exact ⟨s, rfl, hp⟩
+    · intro ⟨s', heq, hp'⟩
+      have : obsEquiv f s' s := by unfold obsEquiv; exact heq
+      exact (hresp s' s this).mp hp'
+
+-- Task 4.2: The quantitative bridge — connecting learnable propositions
+-- to the number of equivalence classes.
+
+/-- The equivalence class of a secret under observational equivalence. -/
+def obsClass (f : Channel Secret Output) (s : Secret) : Set Secret :=
+  { s' | obsEquiv f s s' }
+
+/-- Secrets in the same equivalence class agree on all learnable propositions. -/
+theorem same_class_same_knowledge (f : Channel Secret Output)
+    (p : Proposition Secret) (hp : p ∈ learnable f)
+    (s₁ s₂ : Secret) (h : s₂ ∈ obsClass f s₁) :
+    p s₁ ↔ p s₂ :=
+  learnable_respects_obsEquiv f p hp s₁ s₂ h
+
+-- Task 4.3: DPI monotonicity is already proved (dpi_reduces_learnability).
+
+-- Task 4.4: The Soundness Theorem.
+
+/-- AllowedKnowledge for a channel: the propositions that respect its
+    observational equivalence. This is the maximum set of propositions
+    learnable through f — the "knowledge ceiling." -/
+def allowedKnowledge (f : Channel Secret Output) : Knowledge Secret :=
+  { p | ∀ s₁ s₂, obsEquiv f s₁ s₂ → (p s₁ ↔ p s₂) }
+
+/-- **SOUNDNESS THEOREM (Part 1):**
+    Every learnable proposition is in the allowed knowledge.
+
+    `learnable(f) ⊆ allowedKnowledge(f)`
+
+    This says: the channel cannot leak more than what's allowed by
+    its observational equivalence structure. -/
+theorem soundness_learnable_subset_allowed (f : Channel Secret Output) :
+    learnable f ⊆ allowedKnowledge f := by
+  intro p hp s₁ s₂ heq
+  exact learnable_respects_obsEquiv f p hp s₁ s₂ heq
+
+/-- **SOUNDNESS THEOREM (Part 2):**
+    Post-processing (DPI/schema restriction) can only shrink the
+    allowed knowledge set.
+
+    `allowedKnowledge(h ∘ f) ⊆ allowedKnowledge(f)`
+
+    This says: adding DPI filters or restricting the schema NEVER
+    increases what can be learned — it can only decrease it. -/
+theorem soundness_postprocess_shrinks_knowledge {Output₂ : Type}
+    (f : Channel Secret Output) (h : Output → Output₂) :
+    allowedKnowledge (h ∘ f) ⊆ allowedKnowledge f := by
+  intro p hp s₁ s₂ heq
+  exact hp s₁ s₂ (congrArg h heq)
+
+/-- **SOUNDNESS THEOREM (Part 3, the full statement):**
+    For a quarantine compartment that post-processes channel f through
+    filter h, the learnable propositions are bounded by the allowed
+    knowledge of the FILTERED channel, which is itself bounded by
+    the allowed knowledge of the unfiltered channel.
+
+    `learnable(h ∘ f) ⊆ allowedKnowledge(h ∘ f) ⊆ allowedKnowledge(f)`
+
+    This is the chain that connects the quarantine compartment's
+    runtime behavior to its semantic security guarantee. -/
+theorem soundness_full {Output₂ : Type}
+    (f : Channel Secret Output) (h : Output → Output₂) :
+    learnable (h ∘ f) ⊆ allowedKnowledge f := by
+  intro p hp
+  exact soundness_postprocess_shrinks_knowledge f h
+    (soundness_learnable_subset_allowed (h ∘ f) hp)
+
+/-- **COMPOSITIONALITY:**
+    Sequential distillation (two quarantine compartments in series)
+    has learnable propositions bounded by the first channel's
+    allowed knowledge.
+
+    `learnable(h₂ ∘ h₁ ∘ f) ⊆ allowedKnowledge(f)` -/
+theorem soundness_sequential {O₁ O₂ : Type}
+    (f : Channel Secret Output) (h₁ : Output → O₁) (h₂ : O₁ → O₂) :
+    learnable (h₂ ∘ h₁ ∘ f) ⊆ allowedKnowledge f := by
+  calc learnable (h₂ ∘ h₁ ∘ f)
+      ⊆ learnable (h₁ ∘ f) := learnable_postprocess (h₁ ∘ f) h₂
+    _ ⊆ allowedKnowledge (h₁ ∘ f) := soundness_learnable_subset_allowed (h₁ ∘ f)
+    _ ⊆ allowedKnowledge f := soundness_postprocess_shrinks_knowledge f h₁
+
+/-- **COMPLETENESS (with DecidableEq):**
+    Every proposition in allowedKnowledge is learnable.
+    This makes allowedKnowledge = learnable for channels with
+    decidable output equality.
+
+    `allowedKnowledge(f) ⊆ learnable(f)` (when Output has DecidableEq) -/
+theorem completeness_allowed_subset_learnable [DecidableEq Output]
+    (f : Channel Secret Output) :
+    allowedKnowledge f ⊆ learnable f := by
+  intro p hp
+  rw [learnable_iff_respects_obsEquiv f p]
+  exact hp
+
+/-- **CHARACTERIZATION:**
+    For channels with decidable output equality,
+    learnable(f) = allowedKnowledge(f).
+
+    The learnable propositions are EXACTLY those that respect
+    observational equivalence. This is the tightest possible bound. -/
+theorem learnable_eq_allowedKnowledge [DecidableEq Output]
+    (f : Channel Secret Output) :
+    learnable f = allowedKnowledge f := by
+  ext p
+  exact ⟨
+    fun hp => soundness_learnable_subset_allowed f hp,
+    fun hp => completeness_allowed_subset_learnable f hp
+  ⟩
+
 end SemanticIFC
