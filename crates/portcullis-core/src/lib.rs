@@ -122,6 +122,7 @@ pub mod provenance_node;
 #[cfg(feature = "artifact")]
 pub mod provenance_output;
 pub mod provenance_schema;
+pub mod quarantine;
 pub mod receipt;
 pub mod redaction;
 #[cfg(feature = "artifact")]
