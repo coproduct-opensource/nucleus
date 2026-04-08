@@ -1,7 +1,7 @@
 # Nucleus Makefile
 # Primary build targets for development and CI
 
-.PHONY: all build test clippy fmt rootfs clean help
+.PHONY: all build test clippy fmt rootfs clean help demo
 
 # Default target
 all: build
@@ -60,6 +60,10 @@ rootfs-x86_64:
 cross-build:
 	./scripts/cross-build.sh
 
+# Run the flow algebra demo
+demo:
+	./scripts/demo.sh
+
 # Clean build artifacts
 clean:
 	cargo clean
@@ -87,6 +91,7 @@ help:
 	@echo "  clippy       - Run clippy lints"
 	@echo "  fmt          - Format code"
 	@echo "  fmt-check    - Check code formatting"
+	@echo "  demo         - Run flow algebra demo (taint -> block -> laws)"
 	@echo ""
 	@echo "  rootfs       - Build Firecracker rootfs (run in Lima VM)"
 	@echo "  rootfs-aarch64 - Build rootfs for ARM64"
