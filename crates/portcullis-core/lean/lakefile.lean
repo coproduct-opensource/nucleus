@@ -60,3 +60,7 @@ lean_lib «DerivationProofs» where
 -- IFC semilattice typeclass instances: ConfLevel, IntegLevel, IFCLabel2 (#1123-#1127)
 lean_lib «IFCSemilatticeProofs» where
   roots := #[`IFCSemilatticeProofs]
+
+-- Semantic IFC: Galois connection on propositions, channel model, soundness
+lean_lib «SemanticIFC» where
+  roots := #[`SemanticIFC]
