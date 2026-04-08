@@ -27,8 +27,8 @@ members = [
     "crates/ck-types",                  # Constitutional Kernel: core types, manifests, digests
     "crates/ck-policy",                 # Constitutional Kernel: monotonicity checker
     "crates/ck-kernel",                 # Constitutional Kernel: admission engine + lineage
-    "crates/nucleus-claude-hook",        # Claude Code PreToolUse hook via Nucleus kernel
 ]
+# nucleus-claude-hook moved to nucleus-code (private product repo)
 # exposure-web is WASM-only (wasm32-unknown-unknown); build with: cd crates/exposure-web && trunk build
 # portcullis-python requires Python + maturin; build with: cd crates/portcullis-python && maturin develop
 exclude = [
