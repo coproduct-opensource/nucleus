@@ -4,6 +4,7 @@ import Mathlib.Order.CompleteLattice.Basic
 import Mathlib.CategoryTheory.Types.Basic
 import Mathlib.CategoryTheory.Topos.Classifier
 import Mathlib.CategoryTheory.Limits.Types.Pullbacks
+import Mathlib.CategoryTheory.Category.Preorder
 
 /-!
 # Semantic Information Flow Control — Galois Connection on Propositions
@@ -747,6 +748,98 @@ theorem receipt_chain_soundness {Secret Output : Type}
   obtain ⟨r, hr, hrp⟩ := h
   rw [← hrp]
   exact chain.all_allowed r hr
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Presheaf Topos of Information Flow Policies
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- The category C of "observation levels" — equivalence relations on Secret,
+-- ordered by refinement — is a preorder, hence automatically a SmallCategory
+-- (Mathlib: CategoryTheory.Category.Preorder).
+--
+-- The presheaf category Fun(Cᵒᵖ, Type) is a topos for ANY small category C.
+-- This is the categorical home for our IFC theory.
+--
+-- Objects of this presheaf topos: functors from Cᵒᵖ to Type
+-- A presheaf F assigns to each observation level E a TYPE F(E),
+-- and to each refinement E₁ ≤ E₂ a restriction map F(E₂) → F(E₁).
+--
+-- Our allowedKnowledge is naturally a presheaf:
+-- - At observation level E, it gives the propositions respecting E
+-- - When E₁ refines E₂ (finer), allowedKnowledge(E₁) ⊆ allowedKnowledge(E₂)
+
+/-- An observation level on Secret: an equivalence relation.
+    Coarser relations (fewer equivalence classes) are "less informative."
+    The poset ordering is: E₁ ≤ E₂ iff E₁ is COARSER than E₂
+    (E₂ refines E₁, i.e., E₂-equivalent implies E₁-equivalent). -/
+structure ObsLevel (Secret : Type) where
+  /-- The equivalence relation. -/
+  rel : Secret → Secret → Prop
+  /-- Proof that rel is an equivalence relation. -/
+  equiv : Equivalence rel
+
+/-- Coarser-than ordering: E₁ ≤ E₂ iff E₂ refines E₁. -/
+instance {Secret : Type} : LE (ObsLevel Secret) where
+  le E₁ E₂ := ∀ s₁ s₂, E₂.rel s₁ s₂ → E₁.rel s₁ s₂
+
+/-- The ordering is reflexive and transitive (a preorder). -/
+instance {Secret : Type} : Preorder (ObsLevel Secret) where
+  le_refl E s₁ s₂ h := h
+  le_trans E₁ E₂ E₃ h₁₂ h₂₃ s₁ s₂ h₃ := h₁₂ s₁ s₂ (h₂₃ s₁ s₂ h₃)
+
+-- ObsLevel Secret is now automatically a SmallCategory via Mathlib!
+-- Morphisms are proofs of refinement: (E₁ ⟶ E₂) iff E₂ refines E₁.
+
+/-- The allowed knowledge at a given observation level:
+    propositions that respect the equivalence relation. -/
+def allowedAt {Secret : Type} (E : ObsLevel Secret) : Set (Proposition Secret) :=
+  { p | ∀ s₁ s₂, E.rel s₁ s₂ → (p s₁ ↔ p s₂) }
+
+/-- The observation level induced by a channel. -/
+def channelObs {Secret Output : Type} (f : Channel Secret Output) : ObsLevel Secret where
+  rel := obsEquiv f
+  equiv := obsEquiv_equiv f
+
+/-- allowedAt of a channel's observation level equals allowedKnowledge. -/
+theorem allowedAt_eq_allowedKnowledge {Secret Output : Type} (f : Channel Secret Output) :
+    allowedAt (channelObs f) = allowedKnowledge f := by
+  rfl
+
+/-- Refinement is contravariant for allowed knowledge:
+    if E₁ ≤ E₂ (E₂ refines E₁), then allowedAt(E₁) ⊆ allowedAt(E₂).
+    Finer observation → more propositions can be distinguished. -/
+theorem allowedAt_monotone {Secret : Type} {E₁ E₂ : ObsLevel Secret}
+    (h : E₁ ≤ E₂) : allowedAt E₁ ⊆ allowedAt E₂ := by
+  intro p hp s₁ s₂ h₂
+  exact hp s₁ s₂ (h s₁ s₂ h₂)
+
+/-- The coarsest observation level: all secrets are equivalent.
+    This is the BOTTOM of the observation poset — reveals nothing. -/
+def ObsLevel.bottom (Secret : Type) : ObsLevel Secret where
+  rel _ _ := True
+  equiv := ⟨fun _ => trivial, fun _ => trivial, fun _ _ => trivial⟩
+
+/-- The finest observation level: only equal secrets are equivalent.
+    This is the TOP — reveals everything. -/
+def ObsLevel.top (Secret : Type) : ObsLevel Secret where
+  rel := Eq
+  equiv := eq_equivalence
+
+/-- Bottom is below everything. -/
+theorem ObsLevel.bottom_le {Secret : Type} (E : ObsLevel Secret) :
+    ObsLevel.bottom Secret ≤ E := by
+  intro _ _ _
+  trivial
+
+/-- Everything is below top (finest observation).
+    E ≤ top means: Eq-equiv → E-equiv, i.e., s₁ = s₂ → E.rel s₁ s₂.
+    This holds by reflexivity of E. -/
+theorem ObsLevel.le_top {Secret : Type} (E : ObsLevel Secret) :
+    E ≤ ObsLevel.top Secret := by
+  intro s₁ s₂ h
+  -- h : s₁ = s₂ (from ObsLevel.top.rel = Eq)
+  rw [h]
+  exact E.equiv.refl s₂
 
 end SemanticIFC
 
