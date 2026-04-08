@@ -301,6 +301,15 @@ pub enum DeclassifyReason {
     DeterministicVerification,
     /// Content was sanitized (e.g., HTML escaping, input validation).
     Sanitization,
+    /// Content was distilled through a quarantine compartment with
+    /// schema-bounded output, token limits, and DPI filters.
+    ///
+    /// The string describes the quarantine configuration used
+    /// (schema type, token bound, DPI patterns checked).
+    /// This is a **partial** declassification: Adversarial → Untrusted,
+    /// not Adversarial → Trusted. The output is still treated as
+    /// AI-derived and untrusted, but is no longer adversarial.
+    SchematicDistillation(String),
     /// Testing or development — NOT for production use.
     TestOnly,
 }
@@ -336,10 +345,11 @@ pub fn promote_integrity<T, C: ConfTag>(
     match reason {
         DeclassifyReason::HumanReview
         | DeclassifyReason::DeterministicVerification
-        | DeclassifyReason::Sanitization => Ok(Labeled::new(value.into_inner())),
+        | DeclassifyReason::Sanitization
+        | DeclassifyReason::SchematicDistillation(_) => Ok(Labeled::new(value.into_inner())),
         DeclassifyReason::TestOnly => Err(DeclassifyError::InsufficientReason(
             "TestOnly cannot promote integrity — use HumanReview, \
-             DeterministicVerification, or Sanitization"
+             DeterministicVerification, Sanitization, or SchematicDistillation"
                 .to_string(),
         )),
     }
@@ -362,6 +372,11 @@ pub fn promote_to_trusted<T, C: ConfTag>(
              use HumanReview or DeterministicVerification"
                 .to_string(),
         )),
+        DeclassifyReason::SchematicDistillation(_) => Err(DeclassifyError::InsufficientReason(
+            "schematic distillation promotes to Untrusted, not Trusted; \
+             use HumanReview or DeterministicVerification for Trusted"
+                .to_string(),
+        )),
         DeclassifyReason::TestOnly => Err(DeclassifyError::InsufficientReason(
             "TestOnly cannot promote to Trusted in production".to_string(),
         )),
@@ -376,10 +391,12 @@ pub fn declassify_to_internal<T, I: IntegTag>(
     reason: DeclassifyReason,
 ) -> Result<Labeled<T, I, Internal>, DeclassifyError> {
     match reason {
-        DeclassifyReason::HumanReview => Ok(Labeled::new(value.into_inner())),
+        DeclassifyReason::HumanReview | DeclassifyReason::SchematicDistillation(_) => {
+            Ok(Labeled::new(value.into_inner()))
+        }
         other => Err(DeclassifyError::InsufficientReason(format!(
             "{other:?} is not sufficient to declassify Secret → Internal; \
-             only HumanReview is accepted"
+             use HumanReview or SchematicDistillation"
         ))),
     }
 }
@@ -558,6 +575,38 @@ mod tests {
         let adv: Labeled<String, Adversarial, Public> = Labeled::new("web data".to_string());
         let err = promote_integrity(adv, DeclassifyReason::TestOnly).unwrap_err();
         assert!(matches!(err, DeclassifyError::InsufficientReason(_)));
+    }
+
+    // ── SchematicDistillation ──────────────────────────────────────────
+
+    #[test]
+    fn distillation_promotes_adversarial_to_untrusted() {
+        let adv: Labeled<String, Adversarial, Public> = Labeled::new("tainted summary".into());
+        let config = "schema=SingleLine, max_tokens=500, dpi=4 filters".to_string();
+        let promoted =
+            promote_integrity(adv, DeclassifyReason::SchematicDistillation(config)).unwrap();
+        assert_eq!(promoted.integrity_level(), crate::IntegLevel::Untrusted);
+    }
+
+    #[test]
+    fn distillation_cannot_promote_to_trusted() {
+        let untrusted: Labeled<String, Untrusted, Public> =
+            Labeled::new("distilled summary".into());
+        let config = "schema=SingleLine".to_string();
+        let err = promote_to_trusted(untrusted, DeclassifyReason::SchematicDistillation(config))
+            .unwrap_err();
+        assert!(matches!(err, DeclassifyError::InsufficientReason(_)));
+    }
+
+    #[test]
+    fn distillation_declassifies_secret_to_internal() {
+        let secret: Labeled<String, Trusted, Secret> =
+            Labeled::new("secret content distilled".into());
+        let config = "schema=MaxChars(200), dpi=secrets+paths".to_string();
+        let declassified =
+            declassify_to_internal(secret, DeclassifyReason::SchematicDistillation(config))
+                .unwrap();
+        assert_eq!(declassified.conf_level(), crate::ConfLevel::Internal);
     }
 
     // ── Debug output ────────────────────────────────────────────────────
