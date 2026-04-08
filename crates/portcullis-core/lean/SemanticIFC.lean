@@ -1058,6 +1058,74 @@ theorem full_topos_chain {Secret : Type}
     p.val s₁ ↔ p.val s₂ :=
   p.property s₁ s₂ heq
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Year 1: Non-Trivial Observational Coverage
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- The trivial topology makes every presheaf a sheaf (vacuously). The
+-- observational coverage is a non-trivial Grothendieck topology where
+-- the sheaf condition is genuinely informative.
+
+-- In a preorder category, all hom types are Subsingleton (at most one
+-- morphism between any two objects). This makes sieve manipulation
+-- much simpler: any two morphisms between the same objects are equal.
+
+/-- The observational coverage as a full GrothendieckTopology.
+    A sieve S on E covers iff it contains a morphism from the bottom
+    observation level.
+
+    Pullback stability: in a preorder, pullback of a sieve along f
+    preserves the covering property because all morphisms from bottom
+    to any object are equal (Subsingleton).
+
+    Transitivity: if S covers and R covers everywhere S does, then
+    R covers — because R covers at bottom (from S covering at bottom). -/
+def obsLevelCoverage' (Secret : Type) : GrothendieckTopology (ObsLevel Secret) where
+  sieves E S := S.arrows (homOfLE (ObsLevel.bottom_le E))
+  top_mem' _ := trivial
+  pullback_stable' := by
+    intro X Y S f hS
+    -- f : Y ⟶ X, hS : S.arrows (homOfLE (bottom_le X))
+    -- Need: (S.pullback f).arrows (homOfLE (bottom_le Y))
+    -- Unfolds to: S.arrows (homOfLE (bottom_le Y) ≫ f)
+    -- In a preorder, homOfLE (bottom_le Y) ≫ f = homOfLE (bottom_le X)
+    -- because all morphisms bottom → X are equal (Subsingleton).
+    show S.arrows (homOfLE (ObsLevel.bottom_le Y) ≫ f)
+    have : homOfLE (ObsLevel.bottom_le Y) ≫ f = homOfLE (ObsLevel.bottom_le X) :=
+      Subsingleton.elim _ _
+    rw [this]
+    exact hS
+  transitive' := by
+    intro X S hS R hR
+    -- hS : S.arrows (homOfLE (bottom_le X))
+    -- hR : ∀ ⦃Y⦄ ⦃f : Y ⟶ X⦄, S.arrows f → (R.pullback f).arrows (homOfLE (bottom_le Y))
+    -- Apply hR to hS:
+    have h := hR hS
+    -- h : (R.pullback (homOfLE (bottom_le X))).arrows
+    --       (homOfLE (bottom_le (bottom Secret)))
+    -- This means: R.arrows (homOfLE (bottom_le (bottom Secret)) ≫ homOfLE (bottom_le X))
+    show R.arrows (homOfLE (ObsLevel.bottom_le X))
+    have key : homOfLE (ObsLevel.bottom_le (ObsLevel.bottom Secret)) ≫
+               homOfLE (ObsLevel.bottom_le X) =
+               homOfLE (ObsLevel.bottom_le X) :=
+      Subsingleton.elim _ _
+    rw [← key]
+    exact h
+
+-- The observational coverage is non-trivial: it's strictly between
+-- the trivial topology (⊥, only ⊤ covers) and discrete (⊤, everything covers).
+-- Proof deferred: requires constructing a specific non-⊤ covering sieve.
+
+/-- Under the observational coverage, allowed knowledge is COHERENT:
+    if p ∈ allowedAt(E') and E' ≤ E (E refines E'), then p ∈ allowedAt(E).
+    Finer observations allow MORE propositions — this is the monotonicity
+    that makes the presheaf functorial. -/
+theorem allowed_knowledge_coherent {Secret : Type}
+    (E E' : ObsLevel Secret) (h : E' ≤ E) (p : Proposition Secret)
+    (hp : p ∈ allowedAt E') :
+    p ∈ allowedAt E :=
+  allowedAt_monotone h hp
+
 end SemanticIFC
 
 -- ═══════════════════════════════════════════════════════════════════════════
