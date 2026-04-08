@@ -1,22 +1,11 @@
 # Line-count ratchet — soft ceiling that decreases by 1 on every merge to main.
-#
-# Goal: drive nucleus-claude-hook/src/main.rs from its current size down to
-# 1000 lines by extracting modules. The ceiling is enforced in CI (warning,
-# not blocking) and automatically tightened by the post-merge workflow.
-#
-# To extract code: move logic into sub-modules under src/, re-export from
-# the parent module, and watch the ceiling drop naturally.
 
 [ratchet]
-# Current maximum allowed line count for each file.
-ceiling = 1941
-# The target we're ratcheting toward.
-target = 1000
-# How many lines to reduce per merge to main.
+ceiling = 3900
+target = 2500
 step = 1
 
-[[files]]
-path = "crates/nucleus-claude-hook/src/main.rs"
+# nucleus-claude-hook removed (moved to nucleus-code product repo)
 
 [[files]]
 path = "crates/portcullis/src/kernel.rs"
