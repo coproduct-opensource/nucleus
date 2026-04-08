@@ -127,6 +127,27 @@ impl Default for FlowState {
     }
 }
 
+// ── Lattice implementation ─────────────────────────────────────────────
+//
+// FlowState delegates to IFCLabel's Lattice impl. This enables generic
+// lattice combinators and property tests on session states.
+
+impl crate::category::Lattice for FlowState {
+    fn meet(&self, other: &Self) -> Self {
+        Self {
+            label: crate::category::Lattice::meet(&self.label, &other.label),
+        }
+    }
+    fn join(&self, other: &Self) -> Self {
+        Self {
+            label: crate::category::Lattice::join(&self.label, &other.label),
+        }
+    }
+    fn leq(&self, other: &Self) -> bool {
+        crate::category::Lattice::leq(&self.label, &other.label)
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Sink requirements — what does each sink demand?
 // ═══════════════════════════════════════════════════════════════════════════
@@ -342,5 +363,48 @@ mod tests {
     fn clean_prefix_breaks_at_adversarial() {
         let labels = vec![trusted(), adversarial(), trusted()];
         assert_eq!(FlowState::clean_prefix_of(&labels), 1);
+    }
+
+    // ── Lattice trait ──────────────────────────────────────────────────
+
+    #[test]
+    fn flow_state_lattice_laws() {
+        use crate::category::verify_lattice_laws;
+
+        // Use uniform freshness to avoid the Freshness::leq edge case
+        let fresh = crate::Freshness {
+            observed_at: 1000,
+            ttl_secs: 3600,
+        };
+        let samples = vec![
+            FlowState::from_label(IFCLabel {
+                freshness: fresh,
+                ..trusted()
+            }),
+            FlowState::from_label(IFCLabel {
+                freshness: fresh,
+                ..adversarial()
+            }),
+            FlowState::from_label(IFCLabel {
+                freshness: fresh,
+                ..IFCLabel::default()
+            }),
+        ];
+        let v = verify_lattice_laws(&samples);
+        assert!(v.is_empty(), "FlowState lattice violations: {v:?}");
+    }
+
+    #[test]
+    fn flow_state_meet_is_least_restrictive() {
+        let trusted_state = FlowState::from_label(trusted());
+        let mut tainted_state = FlowState::from_label(trusted());
+        tainted_state.join(adversarial()); // inherent join (mut, IFCLabel)
+
+        // Lattice meet should give us the less restrictive state
+        let met = crate::category::Lattice::meet(&trusted_state, &tainted_state);
+        assert_eq!(
+            met, trusted_state,
+            "meet should recover the less restrictive state"
+        );
     }
 }
