@@ -72,7 +72,7 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::frame::{BoundedLattice, CompleteLattice, DistributiveLattice, Frame, Lattice};
+use crate::frame::{BoundedLattice, DistributiveLattice, Frame, Lattice};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PROGRESS LEVEL — 5-element linear order
@@ -411,19 +411,7 @@ impl BoundedLattice for ProgressLattice {
 
 impl DistributiveLattice for ProgressLattice {}
 
-impl CompleteLattice for ProgressLattice {
-    fn meet_all<I: IntoIterator<Item = Self>>(iter: I) -> Self {
-        iter.into_iter()
-            .reduce(|a, b| a.meet(&b))
-            .unwrap_or_else(Self::top)
-    }
-
-    fn join_all<I: IntoIterator<Item = Self>>(iter: I) -> Self {
-        iter.into_iter()
-            .reduce(|a, b| a.join(&b))
-            .unwrap_or_else(Self::bottom)
-    }
-}
+// CompleteLattice: provided by blanket impl on BoundedLattice
 
 impl Frame for ProgressLattice {}
 
@@ -450,6 +438,7 @@ impl std::fmt::Display for ProgressLattice {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame::CompleteLattice;
 
     // ── Lattice law verification ──────────────────────────────────────
 
