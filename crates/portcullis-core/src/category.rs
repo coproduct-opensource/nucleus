@@ -56,6 +56,20 @@ pub trait BoundedLattice: Lattice {
     fn bottom() -> Self;
 }
 
+/// A distributive lattice where meet distributes over join.
+///
+/// # Law
+///
+/// `a ∧ (b ∨ c) = (a ∧ b) ∨ (a ∧ c)`
+///
+/// Equivalently, join distributes over meet:
+/// `a ∨ (b ∧ c) = (a ∨ b) ∧ (a ∨ c)`
+///
+/// Every total order is a distributive lattice. Products of distributive
+/// lattices are distributive. This is the key property that makes the
+/// Heyting implication `a → b = max{c | c ∧ a ≤ b}` well-defined.
+pub trait DistributiveLattice: Lattice {}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Category trait — objects with associative composition and identity
 // ═══════════════════════════════════════════════════════════════════════════
@@ -444,6 +458,24 @@ impl Lattice for IFCLabel {
 // the non-freshness dimensions, and meet/join are fully correct).
 
 // ═══════════════════════════════════════════════════════════════════════════
+// DistributiveLattice implementations
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Every total order is a distributive lattice. Products of distributive
+// lattices are distributive. All core types satisfy this.
+
+impl DistributiveLattice for CapabilityLevel {} // 3-element chain
+impl DistributiveLattice for CapabilityLattice {} // product of 13 chains
+impl DistributiveLattice for ConfLevel {} // 3-element chain
+impl DistributiveLattice for IntegLevel {} // 3-element chain
+impl DistributiveLattice for AuthorityLevel {} // 4-element chain
+impl DistributiveLattice for DerivationClass {} // 5-element lattice (distributive)
+impl DistributiveLattice for Freshness {} // product of 2 chains
+impl DistributiveLattice for IFCLabel {} // product of distributive lattices
+
+impl<A: DistributiveLattice, B: DistributiveLattice> DistributiveLattice for ProductLattice<A, B> {}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Semilattice implementations (legacy — kept for backward compatibility)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -577,6 +609,36 @@ pub fn verify_bounded_lattice_laws<L: BoundedLattice + std::fmt::Debug>(
         }
     }
 
+    violations
+}
+
+/// Verify distributive lattice law: `a ∧ (b ∨ c) = (a ∧ b) ∨ (a ∧ c)`.
+///
+/// Also checks the dual: `a ∨ (b ∧ c) = (a ∨ b) ∧ (a ∨ c)`.
+pub fn verify_distributive_laws<L: Lattice + std::fmt::Debug>(samples: &[L]) -> Vec<String> {
+    let mut violations = Vec::new();
+    for (i, a) in samples.iter().enumerate() {
+        for (j, b) in samples.iter().enumerate() {
+            for (k, c) in samples.iter().enumerate() {
+                // a ∧ (b ∨ c) = (a ∧ b) ∨ (a ∧ c)
+                let lhs = a.meet(&b.join(c));
+                let rhs = a.meet(b).join(&a.meet(c));
+                if lhs != rhs {
+                    violations.push(format!(
+                        "meet-over-join distributivity failed for samples {i}, {j}, {k}"
+                    ));
+                }
+                // a ∨ (b ∧ c) = (a ∨ b) ∧ (a ∨ c)
+                let lhs2 = a.join(&b.meet(c));
+                let rhs2 = a.join(b).meet(&a.join(c));
+                if lhs2 != rhs2 {
+                    violations.push(format!(
+                        "join-over-meet distributivity failed for samples {i}, {j}, {k}"
+                    ));
+                }
+            }
+        }
+    }
     violations
 }
 
@@ -977,6 +1039,71 @@ mod tests {
     fn meet_all_none_for_empty() {
         let result = super::meet_all::<CapabilityLevel>(std::iter::empty());
         assert!(result.is_none());
+    }
+
+    // ── Distributive lattice tests ────────────────────────────────────
+
+    #[test]
+    fn capability_level_distributive() {
+        let samples = vec![
+            CapabilityLevel::Never,
+            CapabilityLevel::LowRisk,
+            CapabilityLevel::Always,
+        ];
+        let v = super::verify_distributive_laws(&samples);
+        assert!(
+            v.is_empty(),
+            "CapabilityLevel distributivity violations: {v:?}"
+        );
+    }
+
+    #[test]
+    fn conf_level_distributive() {
+        let samples = vec![ConfLevel::Public, ConfLevel::Internal, ConfLevel::Secret];
+        let v = super::verify_distributive_laws(&samples);
+        assert!(v.is_empty(), "ConfLevel distributivity violations: {v:?}");
+    }
+
+    #[test]
+    fn integ_level_distributive() {
+        let samples = vec![
+            IntegLevel::Adversarial,
+            IntegLevel::Untrusted,
+            IntegLevel::Trusted,
+        ];
+        let v = super::verify_distributive_laws(&samples);
+        assert!(v.is_empty(), "IntegLevel distributivity violations: {v:?}");
+    }
+
+    #[test]
+    fn derivation_class_distributive() {
+        let samples = vec![
+            DerivationClass::Deterministic,
+            DerivationClass::AIDerived,
+            DerivationClass::HumanPromoted,
+            DerivationClass::Mixed,
+            DerivationClass::OpaqueExternal,
+        ];
+        let v = super::verify_distributive_laws(&samples);
+        assert!(
+            v.is_empty(),
+            "DerivationClass distributivity violations: {v:?}"
+        );
+    }
+
+    #[test]
+    fn product_lattice_distributive() {
+        use super::ProductLattice;
+        let samples = vec![
+            ProductLattice(ConfLevel::Public, IntegLevel::Trusted),
+            ProductLattice(ConfLevel::Secret, IntegLevel::Adversarial),
+            ProductLattice(ConfLevel::Internal, IntegLevel::Untrusted),
+        ];
+        let v = super::verify_distributive_laws(&samples);
+        assert!(
+            v.is_empty(),
+            "ProductLattice distributivity violations: {v:?}"
+        );
     }
 
     // ── Monotone map tests ────────────────────────────────────────────
