@@ -824,6 +824,218 @@ example : DecidableEq (DObsLevel ThreeSecret) := inferInstance
 
 end DObsLevelEqExamples
 
+/-! ## FiveSecret + Borromean obstruction (H² witness)
+
+The `ThreeSecret` diamond formalized pairwise (H¹) obstructions.
+This section introduces a six-element Secret type and three observation
+levels forming a **Borromean** obstruction: no two observation levels
+conflict (each pair has non-trivial common forced propositions), but
+all three together do (no non-constant proposition is forced at all
+three simultaneously).
+
+The Borromean property is the algebraic signature of H² in sheaf
+cohomology: it distinguishes attack classes that require three layers
+of indirection from those that can be caught by pairwise analysis.
+
+## Construction
+
+We use the bijection `FiveSecret ≃ {+,-} × {a,b,c}` under the mapping
+`A=+a, B=+b, C=+c, AB=-a, BC=-b, CA=-c`. The three observation levels are:
+
+- `obs1` — confuses `a↔b` within each sign (classes `{A,B}, {AB,BC}, {C}, {CA}`)
+- `obs2` — confuses `b↔c` within each sign (classes `{A}, {B,C}, {AB}, {BC,CA}`)
+- `obs3` — confuses signs, preserving letters (classes `{A,AB}, {B,BC}, {C,CA}`)
+
+Joins:
+- `obs1 ∨ obs2 = {+*, -*}` — 2 classes (sign)
+- `obs1 ∨ obs3 = {+a,+b,-a,-b}, {+c,-c}` — 2 classes
+- `obs2 ∨ obs3 = {+a,-a}, {+b,+c,-b,-c}` — 2 classes
+- `obs1 ∨ obs2 ∨ obs3 = everything` — 1 class (universal)
+
+So each pair supports a non-constant forced proposition, but the
+triple forces constants only. This is Borromean.
+
+Note: the inductive type is called `FiveSecret` to match the
+tracking-issue nomenclature (#1444) even though it has six
+constructors; "five" refers to the five non-trivial observation
+levels (bot, obs1, obs2, obs3, top) in `borromeanPoset`.
+-/
+
+inductive FiveSecret where
+  /-- `+a` — atomic secret A. -/
+  | A
+  /-- `+b` — atomic secret B. -/
+  | B
+  /-- `+c` — atomic secret C. -/
+  | C
+  /-- `-a` — sign-flipped A (conceptually "A with a twist"). -/
+  | AB
+  /-- `-b` — sign-flipped B. -/
+  | BC
+  /-- `-c` — sign-flipped C. -/
+  | CA
+  deriving DecidableEq, Repr
+
+instance : Fintype FiveSecret where
+  elems := {FiveSecret.A, FiveSecret.B, FiveSecret.C,
+            FiveSecret.AB, FiveSecret.BC, FiveSecret.CA}
+  complete := fun s => by cases s <;> decide
+
+instance : FiniteSecret FiveSecret where
+  toFintype := inferInstance
+  toDecidableEq := inferInstance
+
+namespace Borromean
+open DObsLevel FiveSecret
+
+/-- `obs1` confuses the "a/b" letters within each sign.
+    Classes: `{A, B}, {AB, BC}, {C}, {CA}`. -/
+def obs1 : DObsLevel FiveSecret where
+  rel s₁ s₂ := match s₁, s₂ with
+    | A, A => true | A, B => true | B, A => true | B, B => true
+    | AB, AB => true | AB, BC => true | BC, AB => true | BC, BC => true
+    | C, C => true | CA, CA => true
+    | _, _ => false
+  refl s := by cases s <;> rfl
+  symm s₁ s₂ h := by cases s₁ <;> cases s₂ <;> first | rfl | exact h
+  trans s₁ s₂ s₃ h₁ h₂ := by
+    cases s₁ <;> cases s₂ <;> cases s₃ <;>
+      first | rfl | (exfalso; exact Bool.false_ne_true h₁)
+            | (exfalso; exact Bool.false_ne_true h₂)
+
+/-- `obs2` confuses the "b/c" letters within each sign.
+    Classes: `{A}, {B, C}, {AB}, {BC, CA}`. -/
+def obs2 : DObsLevel FiveSecret where
+  rel s₁ s₂ := match s₁, s₂ with
+    | A, A => true | AB, AB => true
+    | B, B => true | B, C => true | C, B => true | C, C => true
+    | BC, BC => true | BC, CA => true | CA, BC => true | CA, CA => true
+    | _, _ => false
+  refl s := by cases s <;> rfl
+  symm s₁ s₂ h := by cases s₁ <;> cases s₂ <;> first | rfl | exact h
+  trans s₁ s₂ s₃ h₁ h₂ := by
+    cases s₁ <;> cases s₂ <;> cases s₃ <;>
+      first | rfl | (exfalso; exact Bool.false_ne_true h₁)
+            | (exfalso; exact Bool.false_ne_true h₂)
+
+/-- `obs3` confuses signs, preserving letters.
+    Classes: `{A, AB}, {B, BC}, {C, CA}`. -/
+def obs3 : DObsLevel FiveSecret where
+  rel s₁ s₂ := match s₁, s₂ with
+    | A, A => true | A, AB => true | AB, A => true | AB, AB => true
+    | B, B => true | B, BC => true | BC, B => true | BC, BC => true
+    | C, C => true | C, CA => true | CA, C => true | CA, CA => true
+    | _, _ => false
+  refl s := by cases s <;> rfl
+  symm s₁ s₂ h := by cases s₁ <;> cases s₂ <;> first | rfl | exact h
+  trans s₁ s₂ s₃ h₁ h₂ := by
+    cases s₁ <;> cases s₂ <;> cases s₃ <;>
+      first | rfl | (exfalso; exact Bool.false_ne_true h₁)
+            | (exfalso; exact Bool.false_ne_true h₂)
+
+/-- The five-level poset for the Borromean obstruction:
+    `bot ≤ obs1, obs2, obs3 ≤ top`. -/
+def borromeanPoset : List (DObsLevel FiveSecret) :=
+  [(bot : DObsLevel FiveSecret), obs1, obs2, obs3,
+   (top : DObsLevel FiveSecret)]
+
+/-! ### Sanity checks: refinement order -/
+
+example : (bot : DObsLevel FiveSecret) ≤ obs1 := bot_le obs1
+example : (bot : DObsLevel FiveSecret) ≤ obs2 := bot_le obs2
+example : (bot : DObsLevel FiveSecret) ≤ obs3 := bot_le obs3
+example : obs1 ≤ (top : DObsLevel FiveSecret) := le_top obs1
+example : obs2 ≤ (top : DObsLevel FiveSecret) := le_top obs2
+example : obs3 ≤ (top : DObsLevel FiveSecret) := le_top obs3
+
+example : borromeanPoset.length = 5 := by decide
+
+/-! ### Sanity checks: relation values -/
+
+example : obs1.rel A B = true := by decide
+example : obs1.rel AB BC = true := by decide
+example : obs1.rel A C = false := by decide
+example : obs1.rel A AB = false := by decide
+
+example : obs2.rel B C = true := by decide
+example : obs2.rel BC CA = true := by decide
+example : obs2.rel A B = false := by decide
+example : obs2.rel B BC = false := by decide
+
+example : obs3.rel A AB = true := by decide
+example : obs3.rel B BC = true := by decide
+example : obs3.rel C CA = true := by decide
+example : obs3.rel A B = false := by decide
+
+/-! ### Pairwise witnesses — each pair admits a non-trivial forced proposition
+
+For each pair `(obs_i, obs_j)`, we exhibit a concrete `DProp FiveSecret`
+that is forced at both levels and is non-constant. This proves the
+pairwise H¹ obstructions vanish.
+-/
+
+/-- "Has positive sign" (`A, B, C` are true; `AB, BC, CA` are false).
+    Constant on `obs1 ∨ obs2` classes `{A,B,C}` and `{AB,BC,CA}`. -/
+def signProp : DProp FiveSecret := fun s => match s with
+  | A | B | C => true
+  | AB | BC | CA => false
+
+/-- "Is a/b-letter" (`A, B, AB, BC` are true; `C, CA` are false).
+    Constant on `obs1 ∨ obs3` classes `{A,B,AB,BC}` and `{C,CA}`. -/
+def abProp : DProp FiveSecret := fun s => match s with
+  | A | B | AB | BC => true
+  | C | CA => false
+
+/-- "Is a-letter" (`A, AB` are true; `B, C, BC, CA` are false).
+    Constant on `obs2 ∨ obs3` classes `{A,AB}` and `{B,C,BC,CA}`. -/
+def aProp : DProp FiveSecret := fun s => match s with
+  | A | AB => true
+  | B | C | BC | CA => false
+
+/-- `signProp` is forced at `obs1` and `obs2` (pair {obs1, obs2} compatible). -/
+example : dForces obs1 signProp = true := by decide
+example : dForces obs2 signProp = true := by decide
+example : signProp A ≠ signProp AB := by decide  -- non-constant
+
+/-- `abProp` is forced at `obs1` and `obs3` (pair {obs1, obs3} compatible). -/
+example : dForces obs1 abProp = true := by decide
+example : dForces obs3 abProp = true := by decide
+example : abProp A ≠ abProp C := by decide  -- non-constant
+
+/-- `aProp` is forced at `obs2` and `obs3` (pair {obs2, obs3} compatible). -/
+example : dForces obs2 aProp = true := by decide
+example : dForces obs3 aProp = true := by decide
+example : aProp A ≠ aProp B := by decide  -- non-constant
+
+/-! ### Triple obstruction — no non-constant φ is forced at all three
+
+The Borromean property: any `φ : DProp FiveSecret` forced at `obs1`,
+`obs2`, AND `obs3` must be constant. This is the H² obstruction —
+invisible to any pair but witnessed by the triple.
+
+With `Fintype (DProp FiveSecret)` (from `Mathlib.Data.Fintype.Pi`,
+2⁶ = 64 propositions), this universal statement is decidable by
+exhaustive enumeration.
+-/
+
+/-- **Borromean obstruction theorem.** Any proposition forced at all
+    three observation levels is constant on `FiveSecret`. -/
+theorem borromean_triple_forces_constant :
+    ∀ φ : DProp FiveSecret,
+      dForces obs1 φ = true → dForces obs2 φ = true → dForces obs3 φ = true →
+      (φ A = φ B ∧ φ A = φ C ∧ φ A = φ AB ∧
+       φ A = φ BC ∧ φ A = φ CA) := by decide
+
+/-- Concrete specialization: the diagnostic witness `φ A = φ AB`.
+    Shows the "sign collapse" forced by `obs3` being joined with the
+    letter-merging `obs1` and `obs2`. -/
+example :
+    ∀ φ : DProp FiveSecret,
+      dForces obs1 φ = true → dForces obs2 φ = true → dForces obs3 φ = true →
+      φ A = φ AB := by decide
+
+end Borromean
+
 /-! ## IndirectInjectionPoset — the RAG attack class
 
 Models RAG-style indirect injection as a 3-point Secret type with two
