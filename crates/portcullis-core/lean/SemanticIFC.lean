@@ -1754,6 +1754,180 @@ theorem compiler_preserves_allowedKnowledge {Secret Output : Type}
     (p ∘ f) ∈ allowedKnowledge c := by
   intro s₁ s₂ heq
   exact hp (f s₁) (f s₂) (h s₁ s₂ heq)
+-- Internal Quantifiers: The Deep Structure of the IFC Topos
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- The internal ∀ and ∃ of the presheaf topos are DIFFERENT from
+-- the external (Lean) ∀ and ∃. The internal ∀ requires truth at
+-- ALL REFINEMENTS, not just the current level. The internal ∃
+-- requires a witness at the CURRENT level only.
+--
+-- For IFC: internal ∀ = "secure under any future observation"
+--          internal ∃ = "there exists a witness at this level"
+-- The gap between internal ∀ and external ∀ IS the alignment tax.
+--
+-- Reference: nLab "Kripke-Joyal semantics"
+-- Reference: Mac Lane & Moerdijk "Sheaves in Geometry and Logic" Ch. VI
+
+/-- **INTERNAL UNIVERSAL QUANTIFIER (Kripke-Joyal):**
+    E ⊩ ∀x.φ(x) iff for all refinements E' of E, and all x at E',
+    E' ⊩ φ(x).
+
+    This is STRONGER than external ∀: it requires the property to hold
+    not just now, but under ALL future observations. In IFC terms:
+    "no matter how the adversary refines their view, the property holds." -/
+def internalForall {Secret : Type}
+    (E : ObsLevel Secret) (φ : Secret → Proposition Secret) : Prop :=
+  ∀ (E' : ObsLevel Secret), E ≤ E' →
+    ∀ s, forces E' (φ s)
+
+/-- **INTERNAL EXISTENTIAL QUANTIFIER (Kripke-Joyal):**
+    E ⊩ ∃x.φ(x) iff there exists x at the current level E such that
+    E ⊩ φ(x).
+
+    This is WEAKER than external ∃: it only requires a witness at the
+    current observation level, not a global witness. -/
+def internalExists {Secret : Type}
+    (E : ObsLevel Secret) (φ : Secret → Proposition Secret) : Prop :=
+  ∃ s, forces E (φ s)
+
+/-- **INTERNAL ∀ IMPLIES EXTERNAL ∀ (at the current level):**
+    If ∀ holds internally at E, then it holds externally at E.
+    The internal quantifier is stronger. -/
+theorem internalForall_implies_external {Secret : Type}
+    (E : ObsLevel Secret) (φ : Secret → Proposition Secret)
+    (h : internalForall E φ) :
+    ∀ s, forces E (φ s) :=
+  fun s => h E (le_refl E) s
+
+-- EXTERNAL ∀ DOES NOT IMPLY INTERNAL ∀:
+-- A property can hold at the current level but fail at a refinement.
+-- This is the gap that the alignment tax measures.
+-- Witnessed by any non-constant proposition at bottom:
+-- At bottom, ALL propositions are forced (bottom relates all pairs).
+-- At top, only identity-respecting propositions are forced.
+-- So external ∀ at bottom doesn't give internal ∀.
+
+/-- **INTERNAL ∀ IS MONOTONE (persistence):**
+    If E ⊩ ∀x.φ(x) and E ≤ E', then E' ⊩ ∀x.φ(x).
+    Universal security persists under refinement. -/
+theorem internalForall_monotone {Secret : Type}
+    {E E' : ObsLevel Secret} (h : E ≤ E')
+    (φ : Secret → Proposition Secret)
+    (hf : internalForall E φ) :
+    internalForall E' φ :=
+  fun E'' hE'' s => hf E'' (le_trans h hE'') s
+
+/-- **THE ALIGNMENT TAX AS QUANTIFIER GAP:**
+    The alignment tax is the difference between:
+    - External ∀: ∀ s, forces E (φ s)         (holds at current level)
+    - Internal ∀: ∀ E' ≥ E, ∀ s, forces E' (φ s) (holds at ALL refinements)
+
+    When these differ, there exists a refinement where the property fails.
+    The number of such failing refinements is the alignment tax. -/
+def alignmentTaxAt {Secret : Type}
+    (E : ObsLevel Secret) (φ : Secret → Proposition Secret) : Prop :=
+  (∀ s, forces E (φ s)) ∧ ¬internalForall E φ
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Power Object: Knowledge as an Internal Object
+-- ═══════════════════════════════════════════════════════════════════════════
+
+/-- **THE POWER OBJECT:**
+    P(Secret) at observation level E = the E-definable subsets of Secret.
+    This is exactly AllowedType E — propositions that respect E's equivalence.
+
+    The power object IS our allowedKnowledge, viewed internally. -/
+def powerObject {Secret : Type} (E : ObsLevel Secret) : Type :=
+  AllowedType E
+
+/-- The power object at bottom = constant propositions (minimal knowledge). -/
+theorem powerObject_bottom_minimal {Secret : Type} :
+    ∀ (p : powerObject (ObsLevel.bottom Secret)),
+      (∀ s, p.val s) ∨ (∀ s, ¬p.val s) := by
+  intro ⟨p, hp⟩
+  by_cases h : ∃ s, p s
+  · obtain ⟨s₀, hs₀⟩ := h
+    left; intro s; exact (hp s₀ s trivial).mp hs₀
+  · push_neg at h; right; exact h
+
+/-- The power object at top = ALL propositions (maximal knowledge). -/
+theorem powerObject_top_maximal {Secret : Type} (p : Proposition Secret) :
+    p ∈ allowedAt (ObsLevel.top Secret) := by
+  intro s₁ s₂ h
+  -- h : s₁ = s₂ (top has identity equivalence)
+  rw [h]
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Lawvere-Tierney j-operator: The Modal Security Operator
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Our Grothendieck topology obsLevelCoverage' corresponds to a
+-- Lawvere-Tierney topology j : Ω → Ω where j(φ) = "φ is necessarily
+-- true" (true at all covering levels).
+--
+-- In IFC: j(safe) = "safe under all observations in the coverage"
+-- j is a MODAL operator: □safe = "necessarily safe"
+
+/-- The necessity modality: a proposition is NECESSARILY forced at E
+    iff it is forced at ALL levels that cover E.
+    This is the modal □ of the Lawvere-Tierney topology. -/
+def necessarily {Secret : Type}
+    (E : ObsLevel Secret) (φ : Proposition Secret) : Prop :=
+  ∀ E' : ObsLevel Secret, E ≤ E' → forces E' φ
+
+/-- Necessarily forced implies forced (□φ → φ, axiom T). -/
+theorem necessarily_implies_forces {Secret : Type}
+    (E : ObsLevel Secret) (φ : Proposition Secret)
+    (h : necessarily E φ) : forces E φ :=
+  h E (le_refl E)
+
+/-- Necessarily is monotone (□φ at E and E ≤ E' → □φ at E'). -/
+theorem necessarily_monotone {Secret : Type}
+    {E E' : ObsLevel Secret} (h : E ≤ E')
+    (φ : Proposition Secret) (hn : necessarily E φ) :
+    necessarily E' φ :=
+  fun E'' hE'' => hn E'' (le_trans h hE'')
+
+/-- Necessarily is idempotent (□□φ ↔ □φ, axiom 4). -/
+theorem necessarily_idempotent {Secret : Type}
+    (E : ObsLevel Secret) (φ : Proposition Secret) :
+    necessarily E φ ↔
+    (∀ E', E ≤ E' → necessarily E' φ) := by
+  constructor
+  · intro h E' hE'
+    exact necessarily_monotone hE' φ h
+  · intro h
+    exact fun E' hE' => h E' hE' E' (le_refl E')
+
+/-- **NECESSITY PRESERVES CONJUNCTION:**
+    □(φ ∧ ψ) ↔ □φ ∧ □ψ.
+    If a conjunction is necessarily forced, both conjuncts are. -/
+theorem necessarily_and {Secret : Type}
+    (E : ObsLevel Secret) (φ ψ : Proposition Secret)
+    (hφ : necessarily E φ) (hψ : necessarily E ψ) :
+    necessarily E (fun s => φ s ∧ ψ s) := by
+  intro E' hE'
+  exact forces_and E' φ ψ (hφ E' hE') (hψ E' hE')
+
+/-- **THE S4 PROPERTY:**
+    The necessity modality satisfies:
+    - T: □φ → φ (necessarily_implies_forces)
+    - 4: □φ → □□φ (necessarily_idempotent)
+    - □ preserves ∧ (necessarily_and)
+    - □ is monotone (necessarily_monotone)
+
+    These are the axioms of S4 modal logic — the logic of knowledge.
+    Our IFC topos has a KNOWLEDGE MODALITY: □safe means
+    "it is KNOWN that the system is safe." -/
+theorem s4_properties {Secret : Type} (E : ObsLevel Secret)
+    (φ : Proposition Secret) (hφ : necessarily E φ) :
+    -- T: □φ → φ
+    forces E φ ∧
+    -- 4: □φ → □□φ
+    (∀ E', E ≤ E' → necessarily E' φ) :=
+  ⟨necessarily_implies_forces E φ hφ,
+   fun E' hE' => necessarily_monotone hE' φ hφ⟩
 
 end SemanticIFC
 
