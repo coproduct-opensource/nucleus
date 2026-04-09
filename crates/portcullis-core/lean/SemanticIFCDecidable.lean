@@ -1374,4 +1374,102 @@ example :
 
 end DirectInject
 
+/-! ## Generic allDProps + h0 for any FiniteSecret type (issue #1451)
+
+The existing `h0_compute` and `h1_witnesses` take an `allProps : List (DProp Secret)`
+parameter. This section provides a polymorphic `h0` that takes only the
+poset, dispatching enumeration through the `HasAllDProps` typeclass.
+
+This is Y1.D of the 5-year roadmap: free users of sheaf cohomology from
+having to pass the proposition enumeration manually. For each new
+`FiniteSecret` type, a single `HasAllDProps` instance makes `h0` work.
+
+Implementation note: `Finset.univ.toList` on `DProp Secret = Secret → Bool`
+is noncomputable in Lean 4.28 (even with `Mathlib.Data.Fintype.Pi`), so we
+use typeclass dispatch with per-type computable enumerations instead.
+-/
+
+/-- Typeclass providing the list of all decidable propositions on a type.
+    Implementations should enumerate all `2^|Secret|` functions as a
+    computable `List`, suitable for `decide`/`native_decide` reduction. -/
+class HasAllDProps (Secret : Type) where
+  /-- The enumerated list of all `DProp Secret`. -/
+  allDProps : List (DProp Secret)
+
+/-- `ThreeSecret` enumeration — reuses `ThreeSecretCohomology.allProps`. -/
+instance : HasAllDProps ThreeSecret where
+  allDProps := ThreeSecretCohomology.allProps
+
+/-- `FiveSecret` enumeration — reuses `BorromeanCohomology.allFiveSecretProps`. -/
+instance : HasAllDProps FiveSecret where
+  allDProps := BorromeanCohomology.allFiveSecretProps
+
+/-- `DirectInjectSecret` enumeration — reuses `DirectInject.allDirectInjectProps`. -/
+instance : HasAllDProps DirectInjectSecret where
+  allDProps := DirectInject.allDirectInjectProps
+
+namespace DObsLevel
+variable {Secret : Type} [Fintype Secret] [DecidableEq Secret] [HasAllDProps Secret]
+
+/-- All decidable propositions on `Secret`, via the `HasAllDProps` typeclass. -/
+def allDProps : List (DProp Secret) := HasAllDProps.allDProps
+
+/-- Generic `h0`: takes only the poset, uses `allDProps` from the typeclass.
+    Returns the list of propositions forced at every observation level. -/
+def h0 (poset : List (DObsLevel Secret)) : List (DProp Secret) :=
+  (allDProps : List (DProp Secret)).filter (fun φ => poset.all (fun E => dForces E φ))
+
+/-- The **size** of `h0` — the number of global sections for the poset. -/
+def h0_count (poset : List (DObsLevel Secret)) : Nat :=
+  (h0 poset).length
+
+end DObsLevel
+
+/-! ## Generic h0 examples on three different Secret types
+
+Each example runs `decide` to verify the computed `h0_count` matches the
+expected number of global sections for its poset. -/
+
+namespace GenericH0Examples
+open DObsLevel
+
+/-! ### Example 1: ThreeSecret diamond
+
+The diamond poset has 2 global sections (constants only) — the canonical
+H⁰ = 2 result from the ThreeSecret cohomology section. -/
+
+example : (DObsLevel.allDProps : List (DProp ThreeSecret)).length = 8 := by decide
+
+example : DObsLevel.h0_count ThreeSecretCohomology.diamondPoset = 2 := by decide
+
+/-! ### Example 2: FiveSecret Borromean
+
+The Borromean poset has 2 global sections: since the triple join is
+universal, only constants survive. -/
+
+example : (DObsLevel.allDProps : List (DProp FiveSecret)).length = 64 := by decide
+
+example : DObsLevel.h0_count Borromean.borromeanPoset = 2 := by decide
+
+/-! ### Example 3: DirectInjectSecret direct poset
+
+The direct-injection poset has 2 global sections: `bot` forces constants,
+so the intersection over [bot, top, top] is 2 constants. -/
+
+example : (DObsLevel.allDProps : List (DProp DirectInjectSecret)).length = 4 := by decide
+
+example : DObsLevel.h0_count DirectInject.directPoset = 2 := by decide
+
+/-! ### Consistency with the explicit enumerations
+
+When we use `DObsLevel.h0` on the diamond poset, it gives the same result
+as `h0_compute` with the explicit `ThreeSecretCohomology.allProps`. -/
+
+example :
+    (DObsLevel.h0 ThreeSecretCohomology.diamondPoset).length =
+    (h0_compute ThreeSecretCohomology.diamondPoset
+      ThreeSecretCohomology.allProps).length := by decide
+
+end GenericH0Examples
+
 end SemanticIFCDecidable
