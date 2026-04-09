@@ -64,3 +64,8 @@ lean_lib «IFCSemilatticeProofs» where
 -- Semantic IFC: Galois connection on propositions, channel model, soundness
 lean_lib «SemanticIFC» where
   roots := #[`SemanticIFC]
+
+-- Decidable internal logic: Bool-valued mirrors of Proposition for finite Secret types
+-- (Issue #1428, tracking #1427)
+lean_lib «SemanticIFCDecidable» where
+  roots := #[`SemanticIFCDecidable]
