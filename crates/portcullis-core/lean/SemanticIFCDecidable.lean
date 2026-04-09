@@ -1,4 +1,5 @@
 import Mathlib.Data.Fintype.Basic
+import Mathlib.Data.Fintype.Pi
 import Mathlib.Order.BooleanAlgebra.Defs
 import SemanticIFC
 
@@ -696,5 +697,81 @@ theorem dIfcCharacterization_threeSecret :
   ⟨dIfcNecessary_threeSecret, dIfcSufficient_threeSecret⟩
 
 end ThreeSecretDecidableTheorems
+
+/-! ## Fintype DProp + universal S4 closure theorems
+
+With `Mathlib.Data.Fintype.Pi` imported, `DProp Secret = Secret → Bool`
+inherits a `Fintype` instance automatically when `Secret` is finite.
+This unlocks universally-quantified theorems where the quantifier
+ranges over all decidable propositions on `Secret`.
+
+For `ThreeSecret`, `DProp ThreeSecret` has 2³ = 8 elements, so universal
+S4 closure theorems become decidable by exhaustive enumeration.
+-/
+
+namespace ThreeSecretClosure
+open DObsLevel ThreeSecretObs ThreeSecretExamples ThreeSecret DProp
+
+/-- The 8 propositions on ThreeSecret form a `Fintype` (8 elements). -/
+example : Fintype (DProp ThreeSecret) := inferInstance
+
+/-! ### Universal S4 closure: `dForces` is closed under propositional connectives
+
+For a fixed observation level `E`, the set of forced propositions is
+closed under `and`, `or`, `neg`, and `imp`. These are the decidable
+forms of `forces_and`, `forces_or`, `forces_neg`, and `forces_imp` from
+`SemanticIFC.lean`. Each is universally quantified over all 8 (resp 64)
+propositions on ThreeSecret.
+-/
+
+/-- `and` closure at obsAC. -/
+theorem dForces_and_obsAC :
+    ∀ φ ψ : DProp ThreeSecret,
+      dForces obsAC φ = true → dForces obsAC ψ = true →
+      dForces obsAC (DProp.and φ ψ) = true := by decide
+
+/-- `and` closure at obsBC. -/
+theorem dForces_and_obsBC :
+    ∀ φ ψ : DProp ThreeSecret,
+      dForces obsBC φ = true → dForces obsBC ψ = true →
+      dForces obsBC (DProp.and φ ψ) = true := by decide
+
+/-- `or` closure at obsAC. -/
+theorem dForces_or_obsAC :
+    ∀ φ ψ : DProp ThreeSecret,
+      dForces obsAC φ = true → dForces obsAC ψ = true →
+      dForces obsAC (DProp.or φ ψ) = true := by decide
+
+/-- `or` closure at obsBC. -/
+theorem dForces_or_obsBC :
+    ∀ φ ψ : DProp ThreeSecret,
+      dForces obsBC φ = true → dForces obsBC ψ = true →
+      dForces obsBC (DProp.or φ ψ) = true := by decide
+
+/-- `neg` closure at obsAC. -/
+theorem dForces_neg_obsAC :
+    ∀ φ : DProp ThreeSecret,
+      dForces obsAC φ = true →
+      dForces obsAC (DProp.neg φ) = true := by decide
+
+/-- `neg` closure at obsBC. -/
+theorem dForces_neg_obsBC :
+    ∀ φ : DProp ThreeSecret,
+      dForces obsBC φ = true →
+      dForces obsBC (DProp.neg φ) = true := by decide
+
+/-- `imp` closure at obsAC. -/
+theorem dForces_imp_obsAC :
+    ∀ φ ψ : DProp ThreeSecret,
+      dForces obsAC φ = true → dForces obsAC ψ = true →
+      dForces obsAC (DProp.imp φ ψ) = true := by decide
+
+/-- `imp` closure at obsBC. -/
+theorem dForces_imp_obsBC :
+    ∀ φ ψ : DProp ThreeSecret,
+      dForces obsBC φ = true → dForces obsBC ψ = true →
+      dForces obsBC (DProp.imp φ ψ) = true := by decide
+
+end ThreeSecretClosure
 
 end SemanticIFCDecidable
