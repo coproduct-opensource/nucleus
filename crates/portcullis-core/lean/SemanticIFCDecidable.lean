@@ -526,4 +526,117 @@ example : (h0_compute diamondPoset allProps).length = 2 := by decide
 
 end ThreeSecretCohomology
 
+/-! ## Decidable mirrors of the classical security theorems
+
+Final step in the decidable internal logic roadmap (issue #1432).
+
+The classical theorems `no_global_reconciliation`, `alignment_tax_ge_one`,
+`alignment_tax_nonzero`, and `no_free_lunch` in `SemanticIFC.lean` are all
+existence-statement impossibility results: there does NOT exist a
+proposition satisfying certain forcing requirements. This section provides
+their decidable mirrors using `dForces` and proves them by `decide`.
+
+We also define a runnable `runSecurityGame` that mirrors the classical
+`SecurityGame.defenderWins` but evaluates entirely in `Bool`.
+-/
+
+namespace ThreeSecretDecidableTheorems
+open DObsLevel DProp ThreeSecretObs ThreeSecretExamples
+     ThreeSecretCohomology ThreeSecret
+
+/-- For every proposition `φ` in our explicit list, the conjunction
+    "forced at obsAC AND forced at obsBC AND φ A AND ¬φ B" is `false`.
+    This is the decidable form of `no_global_reconciliation` for the
+    enumerated proposition list. -/
+theorem dNoGlobalReconciliation_threeSecret :
+    ∀ φ ∈ allProps,
+      ¬(dForces obsAC φ = true ∧ dForces obsBC φ = true ∧
+        φ A = true ∧ φ B = false) := by decide
+
+/-- The decidable form of `alignment_tax_ge_one`: any φ satisfying
+    `φ A ∧ ¬φ B` fails to be forced at obsAC OR fails to be forced
+    at obsBC. Proven by exhaustive case check on `allProps`. -/
+theorem dAlignmentTaxGeOne_threeSecret :
+    ∀ φ ∈ allProps,
+      φ A = true → φ B = false →
+      dForces obsAC φ = false ∨ dForces obsBC φ = false := by decide
+
+/-- The alignment tax of the diamond poset is exactly 1, computed
+    mechanically by `h1_witnesses`. -/
+theorem dAlignmentTax_diamond_eq_one :
+    h1_witnesses diamondPoset allProps = 1 := by decide
+
+/-- The decidable form of `no_free_lunch`: same statement as
+    `dAlignmentTaxGeOne_threeSecret` (in the classical case `no_free_lunch`
+    is just an alias). -/
+theorem dNoFreeLunch_threeSecret :
+    ∀ φ ∈ allProps,
+      φ A = true → φ B = false →
+      dForces obsAC φ = false ∨ dForces obsBC φ = false :=
+  dAlignmentTaxGeOne_threeSecret
+
+/-! ### Runnable security game
+
+A `Bool`-valued mirror of `SecurityGame.defenderWins`. Returns `true`
+iff the proposition `φ` allows the target, denies the threat, AND is
+forced at every observation level in the game.
+-/
+
+/-- A decidable security game: explicit list of observation levels,
+    target secret to allow, threat secret to deny. -/
+structure DGame where
+  levels : List (DObsLevel ThreeSecret)
+  target : ThreeSecret
+  threat : ThreeSecret
+
+/-- Does the proposition `φ` win the game? -/
+def DGame.defenderWins (g : DGame) (φ : DProp ThreeSecret) : Bool :=
+  φ g.target && !φ g.threat && g.levels.all (fun E => dForces E φ)
+
+/-- Run a security game against ALL 8 propositions. Returns the winning
+    proposition if one exists, or `none`. For the diamond + (target=A,
+    threat=B) game, this returns `none` (no defender exists). -/
+def runSecurityGame (g : DGame) : Option (DProp ThreeSecret) :=
+  allProps.find? (fun φ => g.defenderWins φ)
+
+/-! ### Five example security games -/
+
+/-- The classic three-secret game on the diamond poset. No defender exists
+    — this is the alignment tax in action. -/
+def diamondGameAB : DGame :=
+  { levels := diamondPoset, target := A, threat := B }
+
+example : runSecurityGame diamondGameAB = none := by decide
+
+/-- A trivial game on the bottom level only. The bottom forces only
+    constant propositions, so no defender can both allow A and deny B. -/
+def trivialGameAB : DGame :=
+  { levels := [(bot : DObsLevel ThreeSecret)], target := A, threat := B }
+
+example : runSecurityGame trivialGameAB = none := by decide
+
+/-- Game on the top level only: top distinguishes everything, so a
+    defender exists (e.g., `isA`). -/
+def topGameAB : DGame :=
+  { levels := [(top : DObsLevel ThreeSecret)], target := A, threat := B }
+
+example : (runSecurityGame topGameAB).isSome = true := by decide
+
+/-- Game on `obsBC` only (where `A` is alone). A defender exists since
+    propositions like `isA` are forced at obsBC. -/
+def obsBCGameAB : DGame :=
+  { levels := [obsBC], target := A, threat := B }
+
+example : (runSecurityGame obsBCGameAB).isSome = true := by decide
+
+/-- Game on `obsAC` only (where `A` and `C` are equivalent). A defender
+    exists — for example `isAorC`, which is forced at obsAC, true on A,
+    and false on B. -/
+def obsACGameAB : DGame :=
+  { levels := [obsAC], target := A, threat := B }
+
+example : (runSecurityGame obsACGameAB).isSome = true := by decide
+
+end ThreeSecretDecidableTheorems
+
 end SemanticIFCDecidable
