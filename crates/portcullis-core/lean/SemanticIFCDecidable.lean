@@ -345,4 +345,97 @@ example : obsBC ≤ (top : DObsLevel ThreeSecret) := le_top obsBC
 
 end ThreeSecretObs
 
+/-! ## Decidable Kripke-Joyal forcing
+
+The classical `forces E φ := φ ∈ allowedAt E` unfolds to
+`∀ s₁ s₂, E.rel s₁ s₂ → (φ s₁ ↔ φ s₂)`. For finite Secret types with
+Bool-valued `rel` and `φ`, this universal quantifier is mechanically
+decidable. We define `dForces` as a `Bool` and prove the bridge to the
+classical version.
+-/
+
+namespace DObsLevel
+
+/-- Decidable Kripke-Joyal forcing: returns `true` iff the proposition
+    respects the equivalence relation (every pair of related secrets
+    receives the same Bool value). -/
+def dForces {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    (E : DObsLevel Secret) (φ : DProp Secret) : Bool :=
+  decide (∀ s₁ s₂ : Secret, E.rel s₁ s₂ = true → φ s₁ = φ s₂)
+
+end DObsLevel
+
+namespace DProp
+
+/-- Bridge lemma: decidable forcing matches classical forcing under coercion. -/
+theorem dForces_iff_forces {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    (E : DObsLevel Secret) (φ : DProp Secret) :
+    DObsLevel.dForces E φ = true ↔ forces E.toObsLevel φ.toProp := by
+  unfold DObsLevel.dForces
+  rw [decide_eq_true_iff]
+  unfold forces allowedAt
+  simp only [Set.mem_setOf_eq, DObsLevel.toObsLevel, DProp.toProp]
+  constructor
+  · intro h s₁ s₂ hr
+    rw [h s₁ s₂ hr]
+  · intro h s₁ s₂ hr
+    have hiff := h s₁ s₂ hr
+    cases hp1 : φ s₁ <;> cases hp2 : φ s₂ <;> simp_all
+
+end DProp
+
+/-! ## ThreeSecret decidable forcing sanity checks
+
+These verify that `dForces` is mechanically decidable for the
+diamond poset's four observation levels and several concrete
+ThreeSecret propositions.
+-/
+
+namespace ThreeSecretDecidable
+open DObsLevel ThreeSecretObs ThreeSecretExamples ThreeSecret
+
+/-! ### dForces examples
+
+`isA` (the proposition "secret is A") is forced at `top` because top
+distinguishes everything, but NOT forced at `obsAC` because obsAC
+treats A and C as equivalent (so `isA` would conflict on the AC class). -/
+
+example : dForces (top : DObsLevel ThreeSecret) isA = true := by decide
+example : dForces (top : DObsLevel ThreeSecret) isB = true := by decide
+example : dForces (top : DObsLevel ThreeSecret) isC = true := by decide
+
+example : dForces (bot : DObsLevel ThreeSecret) isA = false := by decide
+example : dForces obsAC isA = false := by decide
+example : dForces obsBC isA = true := by decide   -- A is alone in obsBC
+example : dForces obsAC isB = true := by decide   -- B is alone in obsAC
+example : dForces obsBC isB = false := by decide
+
+/-- The proposition "isA OR isB" is not forced at obsAC: it's true on
+    A but obsAC treats A and C as equivalent, so the AC class would
+    require it to also hold on C (which is false). -/
+example : dForces obsAC (DProp.or isA isB) = false := by decide
+
+/-- The constantly-true proposition is forced everywhere. -/
+example : dForces (bot : DObsLevel ThreeSecret) DProp.constTrue = true := by decide
+example : dForces obsAC DProp.constTrue = true := by decide
+example : dForces (top : DObsLevel ThreeSecret) DProp.constTrue = true := by decide
+example : dForces obsBC DProp.constTrue = true := by decide
+
+/-! ### Propositional connectives reduce mechanically
+
+For specific concrete propositions and observation levels, the
+connectives `and`, `or`, `neg`, `imp` decide just as their atomic
+inputs do. These are not the universal closure of `forces_and` etc.
+(which would require Fintype on `DProp ThreeSecret`), but they
+demonstrate that the connectives are computable. -/
+
+example : dForces obsAC (DProp.and isB DProp.constTrue) = true := by decide
+example : dForces obsAC (DProp.and isB isB) = true := by decide
+example : dForces obsAC (DProp.and isA isB) = true := by decide  -- both atomic constraints met when A↔C
+example : dForces obsBC (DProp.or isA DProp.constFalse) = true := by decide
+example : dForces (top : DObsLevel ThreeSecret) (DProp.imp isA isC) = true := by decide
+example : dForces (top : DObsLevel ThreeSecret) (DProp.neg DProp.constFalse) = true := by decide
+
+end ThreeSecretDecidable
+
 end SemanticIFCDecidable
