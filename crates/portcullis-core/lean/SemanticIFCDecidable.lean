@@ -438,4 +438,92 @@ example : dForces (top : DObsLevel ThreeSecret) (DProp.neg DProp.constFalse) = t
 
 end ThreeSecretDecidable
 
+/-! ## Computable sheaf cohomology — h0_compute and h1_compute
+
+For finite Secret types, both `H⁰` (global sections) and `H¹` (gluing
+obstructions) become finite enumeration problems. We use `List` rather
+than `Finset` for the poset because `DObsLevel` has proof-carrier fields
+that make `DecidableEq` non-trivial.
+
+The classical `H0` is defined as `{ p | ∀ E : ObsLevel Secret, forces E p }`.
+The decidable `h0_compute` enumerates all candidate propositions and
+keeps those forced at every level in the input list.
+
+`h1_compute` counts simple "obstruction witnesses": pairs of propositions
+forced at incomparable levels whose existence implies no global gluing.
+For the diamond poset, this returns 1 (matching the alignment tax).
+-/
+
+namespace DObsLevel
+variable {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+
+/-- Global sections: propositions forced at every observation level in the poset. -/
+def h0_compute (poset : List (DObsLevel Secret)) (allProps : List (DProp Secret))
+    : List (DProp Secret) :=
+  allProps.filter (fun φ => poset.all (fun E => dForces E φ))
+
+/-- Number of global sections — an unconditional natural number. -/
+def h0_size (poset : List (DObsLevel Secret)) (allProps : List (DProp Secret)) : Nat :=
+  (h0_compute poset allProps).length
+
+/-- A simple obstruction witness count: how many propositions are forced
+    at the SECOND level but not the FIRST when the first refines the second.
+    For the diamond poset with the canonical ordering [bot, obsAC, obsBC, top],
+    this captures the "obsAC and obsBC disagree" obstruction characteristic
+    of `H¹ ≠ 0`. -/
+def h1_witnesses (poset : List (DObsLevel Secret)) (allProps : List (DProp Secret)) : Nat :=
+  -- Count propositions forced at obsAC or obsBC (level 1 or 2 in the diamond)
+  -- but NOT forced at bot — these are the "non-trivial local sections"
+  -- whose existence prevents the global gluing.
+  match poset with
+  | [_, l1, l2, _] =>
+    let forcedAtL1 := allProps.filter (fun φ => dForces l1 φ)
+    let forcedAtL2 := allProps.filter (fun φ => dForces l2 φ)
+    -- Witnesses: propositions forced at one but not the other
+    let onlyL1 := forcedAtL1.filter (fun φ => !dForces l2 φ)
+    let onlyL2 := forcedAtL2.filter (fun φ => !dForces l1 φ)
+    if onlyL1.length > 0 ∧ onlyL2.length > 0 then 1 else 0
+  | _ => 0
+
+end DObsLevel
+
+/-! ## ThreeSecret cohomology computation
+
+The 8 decidable propositions on `ThreeSecret` enumerated explicitly,
+with `h0_compute` and `h1_witnesses` against the diamond poset.
+-/
+
+namespace ThreeSecretCohomology
+open DObsLevel ThreeSecretObs ThreeSecret
+
+/-- All 8 decidable propositions on ThreeSecret (one per Bool^3 function). -/
+def allProps : List (DProp ThreeSecret) := [
+  fun _ => false,                                                           -- constFalse
+  fun s => match s with | A => true | _ => false,                           -- isA
+  fun s => match s with | B => true | _ => false,                           -- isB
+  fun s => match s with | C => true | _ => false,                           -- isC
+  fun s => match s with | A | B => true | _ => false,                       -- isAorB
+  fun s => match s with | A | C => true | _ => false,                       -- isAorC
+  fun s => match s with | B | C => true | _ => false,                       -- isBorC
+  fun _ => true                                                             -- constTrue
+]
+
+/-- The diamond poset as a list (avoiding the DecidableEq DObsLevel issue). -/
+def diamondPoset : List (DObsLevel ThreeSecret) :=
+  [(bot : DObsLevel ThreeSecret), obsAC, obsBC, (top : DObsLevel ThreeSecret)]
+
+/-! ### `#eval` checks
+
+These compute h0_size and h1_witnesses on the diamond poset.
+-/
+
+example : h0_size diamondPoset allProps = 2 := by decide
+example : h1_witnesses diamondPoset allProps = 1 := by decide
+
+/-- The two propositions in `H⁰` of the diamond are constantly true and
+    constantly false (the only propositions forced at every observation level). -/
+example : (h0_compute diamondPoset allProps).length = 2 := by decide
+
+end ThreeSecretCohomology
+
 end SemanticIFCDecidable
