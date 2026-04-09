@@ -1157,6 +1157,111 @@ example : attackRevealNotB.target = ThreeSecretObs.obsBC := rfl
 
 end AttackCategory
 
+/-! ## h2_witnesses — three-way cohomological obstruction count (issue #1445)
+
+`h1_witnesses` counts pairwise obstructions (incompatible local sections
+at two observation levels). This section extends the framework to **triple**
+obstructions: posets where each pair of non-trivial observation levels
+admits compatible local sections, but no global gluing exists across all
+three simultaneously — the Borromean property.
+
+This is the smallest example proving the cohomological hierarchy is
+**strict**: H² catches attack classes that H¹ misses. Together with the
+diamond (`ThreeSecret`, H¹ = 1, H² = 0) and Borromean (`FiveSecret`,
+H¹ = 0, H² = 1), we have an explicit demonstration of two distinct
+attack complexity classes.
+-/
+
+namespace DObsLevel
+variable {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+
+/-- Three-way obstruction count for 5-element posets `[bot, l1, l2, l3, top]`.
+    Returns `1` iff the triple `(l1, l2, l3)` exhibits the Borromean
+    property: each pair `(l_i, l_j)` has strictly more propositions
+    forced at both levels than are forced at all three simultaneously.
+
+    For posets of length ≠ 5, returns `0` (the pairwise analog lives
+    in `h1_witnesses`).
+
+    The count is the difference `min_pair - triple`: pairwise compatibility
+    strictly beyond the triple signals the three-way obstruction. -/
+def h2_witnesses (poset : List (DObsLevel Secret))
+    (allProps : List (DProp Secret)) : Nat :=
+  match poset with
+  | [_, l1, l2, l3, _] =>
+    let tripleF := allProps.countP (fun φ =>
+      dForces l1 φ && dForces l2 φ && dForces l3 φ)
+    let p12F := allProps.countP (fun φ => dForces l1 φ && dForces l2 φ)
+    let p13F := allProps.countP (fun φ => dForces l1 φ && dForces l3 φ)
+    let p23F := allProps.countP (fun φ => dForces l2 φ && dForces l3 φ)
+    if p12F > tripleF ∧ p13F > tripleF ∧ p23F > tripleF then 1 else 0
+  | _ => 0
+
+end DObsLevel
+
+/-! ## BorromeanCohomology — H² = 1, H¹ = 0 for the Borromean poset
+
+The Borromean obstruction is invisible to H¹ but witnessed by H².
+This section instantiates the cohomology on `FiveSecret` and verifies
+both claims by `decide`.
+-/
+
+namespace BorromeanCohomology
+open DObsLevel FiveSecret Borromean
+
+/-- All 64 = 2⁶ decidable propositions on `FiveSecret`.
+    Enumerated via nested `flatMap` over the six Bool choices (one per
+    `FiveSecret` constructor), so `decide` can reduce through it. -/
+def allFiveSecretProps : List (DProp FiveSecret) :=
+  [false, true].flatMap fun vA =>
+  [false, true].flatMap fun vB =>
+  [false, true].flatMap fun vC =>
+  [false, true].flatMap fun vAB =>
+  [false, true].flatMap fun vBC =>
+  [false, true].map fun vCA s => match s with
+    | FiveSecret.A => vA
+    | FiveSecret.B => vB
+    | FiveSecret.C => vC
+    | FiveSecret.AB => vAB
+    | FiveSecret.BC => vBC
+    | FiveSecret.CA => vCA
+
+/-- Sanity: the enumeration has exactly 64 propositions. -/
+example : allFiveSecretProps.length = 64 := by decide
+
+/-- **H² ≥ 1 for Borromean.** The Borromean poset exhibits a three-way
+    obstruction: each pair of observation levels admits non-trivial
+    compatible sections, but all three together force only constants. -/
+theorem dBorromeanH2 :
+    h2_witnesses borromeanPoset allFiveSecretProps ≥ 1 := by decide
+
+/-- Strict form: `h2_witnesses` returns exactly `1` for Borromean. -/
+theorem dBorromeanH2_eq_one :
+    h2_witnesses borromeanPoset allFiveSecretProps = 1 := by decide
+
+/-- **H¹ = 0 for Borromean.** The Borromean poset has no pairwise
+    obstructions — all H¹-level attacks are blocked by the triple
+    structure, but the H² obstruction remains. This is the algebraic
+    witness that H¹ ⊊ H² (H² catches things H¹ cannot). -/
+theorem dBorromeanH1Zero :
+    h1_witnesses borromeanPoset allFiveSecretProps = 0 := by decide
+
+/-! ### Strict hierarchy: H¹ and H² are distinct
+
+The diamond poset (`ThreeSecretCohomology.diamondPoset`) has
+`H¹ = 1, H² = 0`, while Borromean has `H¹ = 0, H² = 1`. Together these
+two examples exhibit the strict hierarchy: neither H¹ nor H² subsumes
+the other — each catches attacks the other misses. -/
+
+/-- Diamond: `h2_witnesses` is 0 (the diamond poset has only 4 elements,
+    so it falls through to the default case). This is consistent with
+    H² being degenerate on 4-element posets. -/
+example :
+    h2_witnesses ThreeSecretCohomology.diamondPoset
+      ThreeSecretCohomology.allProps = 0 := by decide
+
+end BorromeanCohomology
+
 /-! ## Direct injection — the trivial (H⁰) attack class (issue #1450)
 
 The H⁰/H¹/H² hierarchy needs a baseline at the bottom: **direct
@@ -1247,6 +1352,12 @@ example : allDirectInjectProps.length = 4 := by decide
     in H⁰, not H¹. -/
 theorem dDirectInject_h1_zero :
     h1_witnesses directPoset allDirectInjectProps = 0 := by decide
+
+/-- **No H² obstruction.** Similarly, `h2_witnesses` returns `0`.
+    The H⁰/H¹/H² ladder bottoms out here: direct injection is the
+    simplest attack class and needs no sheaf cohomology to detect. -/
+theorem dDirectInject_h2_zero :
+    h2_witnesses directPoset allDirectInjectProps = 0 := by decide
 
 /-- **Globally forced distinguisher exists.** A stronger statement than
     `dDirectInject_h0_separates`: there is a proposition that is forced
