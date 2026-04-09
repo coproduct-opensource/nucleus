@@ -774,6 +774,56 @@ theorem dForces_imp_obsBC :
 
 end ThreeSecretClosure
 
+/-! ## DecidableEq for DObsLevel via proof irrelevance
+
+The `DObsLevel` structure has proof-carrier fields (`refl`, `symm`, `trans`)
+that block automatic `DecidableEq` derivation. But by proof irrelevance:
+two `DObsLevel`s with the same `rel` function are definitionally equal,
+since all proofs of the equivalence laws are subsingletons.
+
+We provide a manual `DecidableEq` instance that checks `rel` equality and
+uses subsingleton elimination for the proof fields. With `Fintype Secret`,
+function equality `Secret → Secret → Bool` is decidable via `Pi.decidableEq`
+(from `Mathlib.Data.Fintype.Pi`).
+-/
+
+namespace DObsLevel
+variable {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+
+instance instDecidableEq : DecidableEq (DObsLevel Secret) := fun E₁ E₂ =>
+  if h : E₁.rel = E₂.rel then
+    isTrue (by
+      cases E₁
+      cases E₂
+      congr)
+  else
+    isFalse (fun heq => h (heq ▸ rfl))
+
+end DObsLevel
+
+/-! ## DObsLevel equality usage
+
+With `DecidableEq (DObsLevel Secret)`, observation levels can be compared
+mechanically. The proof-irrelevance-based instance correctly identifies
+two levels as equal iff their relation functions agree.
+-/
+
+namespace DObsLevelEqExamples
+open DObsLevel ThreeSecretObs ThreeSecret
+
+/-- A `DObsLevel` is equal to itself (via `rfl` — independent of the
+    `DecidableEq` instance, but verifies the structure is well-formed). -/
+example : (bot : DObsLevel ThreeSecret) = (bot : DObsLevel ThreeSecret) := rfl
+example : (top : DObsLevel ThreeSecret) = (top : DObsLevel ThreeSecret) := rfl
+example : ThreeSecretObs.obsAC = ThreeSecretObs.obsAC := rfl
+example : ThreeSecretObs.obsBC = ThreeSecretObs.obsBC := rfl
+
+/-- The `DecidableEq` instance is in scope: this expression type-checks
+    only if the instance has been registered for `DObsLevel ThreeSecret`. -/
+example : DecidableEq (DObsLevel ThreeSecret) := inferInstance
+
+end DObsLevelEqExamples
+
 /-! ## FiveSecret + Borromean obstruction (H² witness)
 
 The `ThreeSecret` diamond formalized pairwise (H¹) obstructions.
