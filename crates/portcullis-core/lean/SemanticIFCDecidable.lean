@@ -1036,4 +1036,125 @@ example :
 
 end Borromean
 
+/-! ## Category of finite attacks (5-year roadmap Y1.A — issue #1448)
+
+An **attack** against a policy `P : DObsLevel Secret` is a triple
+`(input, target, success)` where:
+
+- `input` — a concrete secret the adversary supplies
+- `target` — the observation level the attack aims to bypass
+- `success` — a decidable predicate describing what "successful
+  attack" means (typically: the observer at `target` learns
+  something about `input` beyond what `P` allows)
+
+Attacks form a preorder (thin category): there is a **reduction**
+`A → B` precisely when `A.success` pointwise implies `B.success`.
+This is the discrete analogue of security reductions in cryptography
+— showing that breaking A is at least as hard as breaking B.
+
+This file provides:
+- `Attack P` structure on `ThreeSecret`
+- `Reduction A B` as pointwise `Prop`-valued implication
+- `Reduction.refl` / `Reduction.trans` (the category laws)
+- Three concrete example attacks
+- Two example reductions between them, proven by `decide`
+-/
+
+namespace AttackCategory
+open DObsLevel ThreeSecret ThreeSecretObs ThreeSecretExamples DProp
+
+/-- A finite attack against a policy `P` on `ThreeSecret`. -/
+structure Attack (P : DObsLevel ThreeSecret) where
+  /-- The concrete secret the adversary submits as input. -/
+  input : ThreeSecret
+  /-- The observation level the attack targets (the viewpoint the
+      adversary wants to lift information to). -/
+  target : DObsLevel ThreeSecret
+  /-- The success predicate: when is this attack considered to have
+      succeeded against the policy? -/
+  success : DProp ThreeSecret
+
+/-- Attacks need not compare their policy index for the preorder
+    (success-implication is independent of `P`). -/
+def Reduction {P : DObsLevel ThreeSecret} (A B : Attack P) : Prop :=
+  ∀ s : ThreeSecret, A.success.toProp s → B.success.toProp s
+
+/-- Reflexivity: every attack reduces to itself (identity morphism). -/
+theorem Reduction.refl {P : DObsLevel ThreeSecret} (A : Attack P) :
+    Reduction A A := fun _ h => h
+
+/-- Transitivity: reductions compose (category composition). -/
+theorem Reduction.trans {P : DObsLevel ThreeSecret} {A B C : Attack P}
+    (f : Reduction A B) (g : Reduction B C) : Reduction A C :=
+  fun s h => g s (f s h)
+
+/-! ### Three concrete example attacks
+
+These all target the trivial policy `bot` (everything indistinguishable),
+i.e., any information leak at all is a successful attack. -/
+
+/-- Attack #1: reveal that the secret is exactly `A`. -/
+def attackRevealA : Attack (bot : DObsLevel ThreeSecret) where
+  input := ThreeSecret.A
+  target := (top : DObsLevel ThreeSecret)
+  success := isA
+
+/-- Attack #2: reveal that the secret is in `{A, B}`. -/
+def attackRevealAorB : Attack (bot : DObsLevel ThreeSecret) where
+  input := ThreeSecret.A
+  target := ThreeSecretObs.obsAC
+  success := isAorB
+
+/-- Attack #3: reveal that the secret is NOT `B`. -/
+def attackRevealNotB : Attack (bot : DObsLevel ThreeSecret) where
+  input := ThreeSecret.A
+  target := ThreeSecretObs.obsBC
+  success := notB
+
+/-! ### Reductions between attacks
+
+These are the non-identity morphisms in the attack category.
+Each is proven by `decide` since everything is Bool-level finite.
+-/
+
+/-- Reduction: revealing exactly `A` implies revealing `{A, B}`
+    (the weaker statement is implied by the stronger). -/
+theorem reduction_revealA_to_revealAorB :
+    Reduction attackRevealA attackRevealAorB := by
+  intro s h
+  show isAorB s = true
+  -- h : attackRevealA.success.toProp s = (isA s = true)
+  have hA : isA s = true := h
+  cases s <;> simp_all [isA, isAorB, DProp.or, isB]
+
+/-- Reduction: revealing exactly `A` implies revealing "not B"
+    (again, stronger implies weaker). -/
+theorem reduction_revealA_to_revealNotB :
+    Reduction attackRevealA attackRevealNotB := by
+  intro s h
+  show notB s = true
+  have hA : isA s = true := h
+  cases s <;> simp_all [isA, notB, DProp.neg, isB]
+
+/-! ### Category laws applied to concrete examples -/
+
+/-- Identity morphism on `attackRevealA`. -/
+example : Reduction attackRevealA attackRevealA := Reduction.refl _
+
+/-- Composition of reductions: `revealA → revealAorB → revealAorB` = identity-composed. -/
+example : Reduction attackRevealA attackRevealAorB :=
+  Reduction.trans reduction_revealA_to_revealAorB (Reduction.refl attackRevealAorB)
+
+/-- Sanity: each attack's input is `.A` (we used `.A` as the adversarial submission). -/
+example : attackRevealA.input = ThreeSecret.A := rfl
+example : attackRevealAorB.input = ThreeSecret.A := rfl
+example : attackRevealNotB.input = ThreeSecret.A := rfl
+
+/-- Sanity: the three attacks target three different observation levels. -/
+example : attackRevealA.target = (top : DObsLevel ThreeSecret) := rfl
+example : attackRevealAorB.target = ThreeSecretObs.obsAC := rfl
+example : attackRevealNotB.target = ThreeSecretObs.obsBC := rfl
+
+end AttackCategory
+
 end SemanticIFCDecidable
