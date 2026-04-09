@@ -774,4 +774,127 @@ theorem dForces_imp_obsBC :
 
 end ThreeSecretClosure
 
+/-! ## IndirectInjectionPoset — the RAG attack class
+
+Models RAG-style indirect injection as a 3-point Secret type with two
+intermediate observation levels:
+
+- `obsQuery` — the model observer sees "this looks like a query"; it
+  confuses `TrustedQuery` with `Composed` (the view it actually gets).
+- `obsProvenance` — a provenance tracker sees "this came from an
+  untrusted source"; it confuses `UntrustedDoc` with `Composed`.
+
+Neither observer sees the full picture: one misses the injection
+because it looks like a query, the other misses that the query was
+ever processed at all. The diamond of observation levels is the
+algebraic signature of the RAG confused-deputy attack, and parallels
+the `ThreeSecret` taint-laundering diamond but with the roles of the
+three secrets reinterpreted for retrieval-augmented generation.
+
+This is the second concretely-formalized attack class after the
+diamond/taint-laundering in `ThreeSecretObs` (issue #1441).
+-/
+
+inductive IndirectSecret where
+  /-- A query from an authenticated user. -/
+  | TrustedQuery
+  /-- A retrieved document with potential injection payload. -/
+  | UntrustedDoc
+  /-- The (query, doc) pair the model actually sees. -/
+  | Composed
+  deriving DecidableEq, Repr
+
+instance : Fintype IndirectSecret where
+  elems := {IndirectSecret.TrustedQuery, IndirectSecret.UntrustedDoc, IndirectSecret.Composed}
+  complete := fun s => by cases s <;> decide
+
+instance : FiniteSecret IndirectSecret where
+  toFintype := inferInstance
+  toDecidableEq := inferInstance
+
+namespace IndirectInjection
+open DObsLevel IndirectSecret
+
+/-- Observe only the query: `TrustedQuery` and `Composed` look the same
+    to an observer that sees only the query text (it can't tell whether
+    the query was answered directly or composed with a retrieved doc). -/
+def obsQuery : DObsLevel IndirectSecret where
+  rel s₁ s₂ := match s₁, s₂ with
+    | TrustedQuery, TrustedQuery => true
+    | UntrustedDoc, UntrustedDoc => true
+    | Composed, Composed => true
+    | TrustedQuery, Composed => true
+    | Composed, TrustedQuery => true
+    | _, _ => false
+  refl s := by cases s <;> rfl
+  symm s₁ s₂ h := by cases s₁ <;> cases s₂ <;> first | rfl | exact h
+  trans s₁ s₂ s₃ h₁ h₂ := by
+    cases s₁ <;> cases s₂ <;> cases s₃ <;>
+      first | rfl | (exfalso; exact Bool.false_ne_true h₁)
+            | (exfalso; exact Bool.false_ne_true h₂)
+
+/-- Observe only the document provenance: `UntrustedDoc` and `Composed`
+    look the same to an observer tracking provenance (both involve the
+    untrusted document, regardless of whether it was composed with a
+    query). -/
+def obsProvenance : DObsLevel IndirectSecret where
+  rel s₁ s₂ := match s₁, s₂ with
+    | TrustedQuery, TrustedQuery => true
+    | UntrustedDoc, UntrustedDoc => true
+    | Composed, Composed => true
+    | UntrustedDoc, Composed => true
+    | Composed, UntrustedDoc => true
+    | _, _ => false
+  refl s := by cases s <;> rfl
+  symm s₁ s₂ h := by cases s₁ <;> cases s₂ <;> first | rfl | exact h
+  trans s₁ s₂ s₃ h₁ h₂ := by
+    cases s₁ <;> cases s₂ <;> cases s₃ <;>
+      first | rfl | (exfalso; exact Bool.false_ne_true h₁)
+            | (exfalso; exact Bool.false_ne_true h₂)
+
+/-- The four-point diamond of observation levels for the indirect
+    injection attack class: `bot ≤ obsQuery, obsProvenance ≤ top`. -/
+def indirectPoset : List (DObsLevel IndirectSecret) :=
+  [(bot : DObsLevel IndirectSecret), obsQuery, obsProvenance,
+   (top : DObsLevel IndirectSecret)]
+
+/-! ### Sanity checks
+
+Decidable computations on the four IndirectSecret observation levels.
+Each example runs as a pure `decide` reduction on `Bool` values.
+-/
+
+example : (bot : DObsLevel IndirectSecret).rel TrustedQuery UntrustedDoc = true := by decide
+example : (bot : DObsLevel IndirectSecret).rel UntrustedDoc Composed = true := by decide
+
+example : obsQuery.rel TrustedQuery Composed = true := by decide
+example : obsQuery.rel Composed TrustedQuery = true := by decide
+example : obsQuery.rel TrustedQuery UntrustedDoc = false := by decide
+example : obsQuery.rel UntrustedDoc Composed = false := by decide
+
+example : obsProvenance.rel UntrustedDoc Composed = true := by decide
+example : obsProvenance.rel Composed UntrustedDoc = true := by decide
+example : obsProvenance.rel TrustedQuery UntrustedDoc = false := by decide
+example : obsProvenance.rel TrustedQuery Composed = false := by decide
+
+example : (top : DObsLevel IndirectSecret).rel TrustedQuery TrustedQuery = true := by decide
+example : (top : DObsLevel IndirectSecret).rel TrustedQuery Composed = false := by decide
+
+/-- `obsQuery` and `obsProvenance` distinguish different secrets — they
+    are incomparable in the refinement order (just like `obsAC` and
+    `obsBC` in the ThreeSecret diamond). -/
+example : obsQuery.rel TrustedQuery Composed ≠ obsProvenance.rel TrustedQuery Composed := by decide
+example : obsProvenance.rel UntrustedDoc Composed ≠ obsQuery.rel UntrustedDoc Composed := by decide
+
+/-- Diamond structure: both intermediate levels sit between `bot` and `top`. -/
+example : (bot : DObsLevel IndirectSecret) ≤ obsQuery := bot_le obsQuery
+example : (bot : DObsLevel IndirectSecret) ≤ obsProvenance := bot_le obsProvenance
+example : obsQuery ≤ (top : DObsLevel IndirectSecret) := le_top obsQuery
+example : obsProvenance ≤ (top : DObsLevel IndirectSecret) := le_top obsProvenance
+
+/-- `indirectPoset` has exactly four elements. -/
+example : indirectPoset.length = 4 := by decide
+
+end IndirectInjection
+
 end SemanticIFCDecidable
