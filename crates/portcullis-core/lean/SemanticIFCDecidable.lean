@@ -1838,4 +1838,77 @@ example : alignment_tax DirectInject.directObs = 2 := by decide
 
 end AlignmentTaxExamples
 
+/-! ## Y2.B — Strict hierarchy theorem H¹ ⊊ H² (issue #1453)
+
+Packages the individual cohomological facts from prior PRs into a
+strict hierarchy theorem. Category laws proven structurally.
+-/
+
+namespace StrictHierarchy
+open DObsLevel Borromean BorromeanCohomology ThreeSecretCohomology
+
+theorem diamond_h1_pos : h1_witnesses diamondPoset allProps ≥ 1 := by decide
+theorem diamond_h2_zero : h2_compute diamondPoset allProps = 0 := by decide
+
+theorem borromean_h1_zero :
+    h1_witnesses borromeanPoset allFiveSecretProps = 0 := dBorromeanH1Zero
+
+theorem borromean_h2_pos :
+    h2_witnesses borromeanPoset allFiveSecretProps ≥ 1 := dBorromeanH2
+
+theorem borromean_h2_compute_pos :
+    h2_compute borromeanPoset allFiveSecretProps ≥ 1 := by
+  rw [BorromeanChainComplex.h2_compute_matches_witnesses_borromean]
+  exact dBorromeanH2
+
+theorem hierarchy_strict :
+    ∃ (poset : List (DObsLevel FiveSecret)) (props : List (DProp FiveSecret)),
+      h1_witnesses poset props = 0 ∧ h2_compute poset props ≥ 1 :=
+  ⟨borromeanPoset, allFiveSecretProps, borromean_h1_zero, borromean_h2_compute_pos⟩
+
+theorem hierarchy_strict_dual :
+    ∃ (poset : List (DObsLevel ThreeSecret)) (props : List (DProp ThreeSecret)),
+      h1_witnesses poset props ≥ 1 ∧ h2_compute poset props = 0 :=
+  ⟨diamondPoset, allProps, diamond_h1_pos, diamond_h2_zero⟩
+
+theorem hierarchy_nondegenerate :
+    (∃ (poset : List (DObsLevel FiveSecret)) (props : List (DProp FiveSecret)),
+        h1_witnesses poset props = 0 ∧ h2_compute poset props ≥ 1) ∧
+    (∃ (poset : List (DObsLevel ThreeSecret)) (props : List (DProp ThreeSecret)),
+        h1_witnesses poset props ≥ 1 ∧ h2_compute poset props = 0) :=
+  ⟨hierarchy_strict, hierarchy_strict_dual⟩
+
+def attack_complexity_threeSecret
+    (poset : List (DObsLevel ThreeSecret))
+    (props : List (DProp ThreeSecret)) : Nat :=
+  if h1_witnesses poset props ≥ 1 then 1
+  else if h2_compute poset props ≥ 1 then 2
+  else 0
+
+def attack_complexity_fiveSecret
+    (poset : List (DObsLevel FiveSecret))
+    (props : List (DProp FiveSecret)) : Nat :=
+  if h1_witnesses poset props ≥ 1 then 1
+  else if h2_compute poset props ≥ 1 then 2
+  else 0
+
+theorem diamond_is_h1_class :
+    attack_complexity_threeSecret diamondPoset allProps = 1 := by
+  unfold attack_complexity_threeSecret
+  simp [diamond_h1_pos]
+
+theorem borromean_is_h2_class :
+    attack_complexity_fiveSecret borromeanPoset allFiveSecretProps = 2 := by
+  unfold attack_complexity_fiveSecret
+  have h1 : h1_witnesses borromeanPoset allFiveSecretProps = 0 := borromean_h1_zero
+  have h2 : h2_compute borromeanPoset allFiveSecretProps ≥ 1 := borromean_h2_compute_pos
+  simp [h1, h2]
+
+example : attack_complexity_threeSecret diamondPoset allProps ≠
+          attack_complexity_fiveSecret borromeanPoset allFiveSecretProps := by
+  rw [diamond_is_h1_class, borromean_is_h2_class]
+  decide
+
+end StrictHierarchy
+
 end SemanticIFCDecidable
