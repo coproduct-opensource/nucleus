@@ -1713,6 +1713,59 @@ example : obsProvenance ≤ (top : DObsLevel IndirectSecret) := le_top obsProven
 /-- `indirectPoset` has exactly four elements. -/
 example : indirectPoset.length = 4 := by decide
 
+/-! ### h1_witnesses for IndirectInjection (issue #1442)
+
+The alignment tax for indirect injection is non-zero: the RAG
+confused-deputy diamond has an H¹ obstruction, just like the
+ThreeSecret taint-laundering diamond. This makes it the **second**
+formally-characterized attack class in our cohomological framework.
+-/
+
+/-- All 8 = 2³ decidable propositions on `IndirectSecret`.
+    Enumerated via nested `flatMap` so `decide` can reduce. -/
+def allIndirectProps : List (DProp IndirectSecret) :=
+  [false, true].flatMap fun vTQ =>
+  [false, true].flatMap fun vUD =>
+  [false, true].map fun vC s => match s with
+    | TrustedQuery => vTQ
+    | UntrustedDoc => vUD
+    | Composed => vC
+
+/-- Sanity: there are 8 propositions. -/
+example : allIndirectProps.length = 8 := by decide
+
+/-- **Alignment tax for indirect injection is at least 1.**
+    The RAG confused-deputy diamond has an H¹ obstruction:
+    `obsQuery` and `obsProvenance` each force propositions the
+    other doesn't, witnessing a pairwise incompatibility that
+    prevents global gluing. Proven by `decide` (8 × 2 checks). -/
+theorem dIndirectInjectionAlignmentTax :
+    h1_witnesses indirectPoset allIndirectProps ≥ 1 := by decide
+
+/-- **No global reconciliation for indirect injection.**
+    There is no proposition in the enumeration that is simultaneously:
+    (a) forced at `obsQuery`, (b) forced at `obsProvenance`,
+    (c) `true` on `TrustedQuery`, and (d) `false` on `Composed`.
+    This is the decidable mirror of the classical
+    `no_global_reconciliation` for the RAG diamond. -/
+theorem dNoGlobalReconciliation_indirect :
+    ∀ φ ∈ allIndirectProps,
+      ¬(dForces obsQuery φ = true ∧ dForces obsProvenance φ = true ∧
+        φ TrustedQuery = true ∧ φ Composed = false) := by decide
+
+/-- The indirect injection poset also has `h2_compute = 0` (it's a
+    4-element poset, so no 2-cells, consistent with this being a
+    purely H¹-level attack). -/
+example : h2_compute indirectPoset allIndirectProps = 0 := by decide
+
+/-- `HasAllDProps` instance for `IndirectSecret` using the explicit
+    enumeration above. -/
+instance : HasAllDProps IndirectSecret where
+  allDProps := allIndirectProps
+
+/-- Generic `h0` agrees with the explicit computation. -/
+example : DObsLevel.h0_count indirectPoset = 2 := by decide
+
 end IndirectInjection
 
 end SemanticIFCDecidable
