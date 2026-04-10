@@ -69,3 +69,8 @@ lean_lib «SemanticIFC» where
 -- (Issue #1428, tracking #1427)
 lean_lib «SemanticIFCDecidable» where
   roots := #[`SemanticIFCDecidable]
+
+-- Čech cohomology scaffold for finite posets (Phase 8 Y6.0, issue #1493)
+-- Load-bearing prerequisite for alignment_tax = H¹ theorem (#1479).
+lean_lib «CechCohomology» where
+  roots := #[`CechCohomology]
