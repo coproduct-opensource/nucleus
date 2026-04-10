@@ -412,22 +412,45 @@ open SemanticIFC SemanticIFCDecidable AlexandrovSite
 The refinement relation `P.refines i j` is Bool-valued. We lift it
 to a `Prop`-valued `LE` and prove the preorder laws. -/
 
+/-- Bool tautology: `!b || b = true` for any `b : Bool`. -/
+private theorem Bool.not_or_self (b : Bool) : (!b || b) = true := by
+  cases b <;> rfl
+
+/-- Bool implication transitivity: if `!a || b` and `!b || c`, then `!a || c`. -/
+private theorem Bool.imp_trans {a b c : Bool}
+    (h1 : (!a || b) = true) (h2 : (!b || c) = true) : (!a || c) = true := by
+  cases a <;> cases b <;> cases c <;> simp_all
+
 /-- The refinement preorder on poset indices. `i ≤ j` iff everything
     forced at level `i` is also forced at level `j` (i.e., `j` refines `i`).
 
-    The proofs of le_refl and le_trans are deferred (they require
-    unfolding List.all + Option matching through the forcing proxy,
-    which is mechanical but verbose). The `sorry`s here are the
-    cost of bridging our Bool-valued forcing to Prop-valued preorder. -/
+    Both preorder laws proved structurally:
+    - `le_refl`: `!x || x = true` (Bool tautology)
+    - `le_trans`: `(!a||b) ∧ (!b||c) → (!a||c)` (Bool implication transitivity)
+
+    No `decide`, no `sorry`. -/
 def PosetPreorder {Secret : Type} [Fintype Secret] [DecidableEq Secret]
     (P : IndexedPoset Secret) : Preorder (Fin P.size) where
   le i j := P.refines i.val j.val = true
   le_refl i := by
-    -- Every level refines itself: dForces E φ → dForces E φ
-    sorry
+    -- Need: P.refines i i = true, i.e., allProps.all (fun φ => !dForces E φ || dForces E φ) = true
+    -- This is the Bool tautology !x || x = true applied to each element.
+    show P.refines i.val i.val = true
+    unfold IndexedPoset.refines OrderComplex.refinesAtB
+    simp only [List.getElem?_eq_getElem (h := i.isLt)]
+    exact List.all_eq_true.mpr fun φ _ => Bool.not_or_self (DObsLevel.dForces _ φ)
   le_trans i j k hij hjk := by
-    -- Transitivity of forcing implication
-    sorry
+    -- Need: P.refines i k = true, given P.refines i j and P.refines j k.
+    -- Transitivity of Bool implication: (!a||b) ∧ (!b||c) → (!a||c).
+    show P.refines i.val k.val = true
+    unfold IndexedPoset.refines OrderComplex.refinesAtB at *
+    simp only [List.getElem?_eq_getElem (h := i.isLt),
+               List.getElem?_eq_getElem (h := j.isLt),
+               List.getElem?_eq_getElem (h := k.isLt)] at *
+    exact List.all_eq_true.mpr fun φ hφ =>
+      Bool.imp_trans
+        (List.all_eq_true.mp hij φ hφ)
+        (List.all_eq_true.mp hjk φ hφ)
   lt i j := P.refines i.val j.val = true ∧ ¬(P.refines j.val i.val = true)
   lt_iff_le_not_ge _ _ := Iff.rfl
 
