@@ -74,3 +74,8 @@ lean_lib «SemanticIFCDecidable» where
 -- Load-bearing prerequisite for alignment_tax = H¹ theorem (#1479).
 lean_lib «CechCohomology» where
   roots := #[`CechCohomology]
+
+-- Comparison Theorem: Čech ≅ Topos for finite Alexandrov posets (#1493)
+-- Proof skeleton replacing the comparison axiom.
+lean_lib «ComparisonTheorem» where
+  roots := #[`ComparisonTheorem]
