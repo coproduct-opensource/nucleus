@@ -568,25 +568,43 @@ theorem restrictForced_comp {Secret : Type} [Fintype Secret] [DecidableEq Secret
     restrictForced (Set.Subset.trans hWV hVU) s := by
   rfl
 
-/-! The `rfl` proofs for `restrictForced_id` and `restrictForced_comp`
-demonstrate the key structural property: restriction maps compose
-definitionally. This is the functor law for the forcing presheaf.
+/-! ### Step 6: The forcing presheaf as a Mathlib `CategoryTheory.Functor`
 
-A full `TopCat.Presheaf Type X` instance would package these into a
-`CategoryTheory.Functor` with `obj` and `map`. The type signature:
+We package `ForcedSectionsAt` + `restrictForced` into a genuine
+`CategoryTheory.Functor` from `(Opens X)ᵒᵖ` to `Type`.
 
-```
-def forcingPresheaf (P : IndexedPoset Secret) :
-    TopCat.Presheaf Type ⟨Fin P.size, alexandrovSpace P⟩ where
-  obj U := ForcedSectionsAt P U.unop
-  map f := restrictForced f.unop.le
-  map_id U := funext fun s => restrictForced_id s
-  map_comp f g := funext fun s => restrictForced_comp ...
-```
+In Mathlib's `Opens` category:
+- Morphisms `U ⟶ V` in `Opens X` are `ULift (PLift (U ≤ V))`
+- In `(Opens X)ᵒᵖ`, `f : U ⟶ V` means `V.unop ≤ U.unop` (reversed)
+- `leOfHom f.unop` extracts the `≤` proof
 
-Constructing this fully requires resolving the TopCat bundled-type
-coercions and the Opens-category morphism unwrapping. The structural
-content (section types + restriction maps + functor laws) is complete
-above; the Mathlib packaging is deferred to a focused PR. -/
+The functor maps:
+- `obj U` = `ForcedSectionsAt P U.unop.1` (sections over the open set)
+- `map f` = `restrictForced` (weaken the forcing proof from bigger to smaller)
+
+Functor laws (`map_id`, `map_comp`) hold by `rfl` — the restriction
+is definitionally trivial because `Subtype.val` doesn't change. -/
+
+open CategoryTheory Opposite TopologicalSpace
+
+/-- The **forcing presheaf** on the Alexandrov site as a Mathlib functor.
+
+    This is a genuine `(Opens X)ᵒᵖ ⥤ Type` where X is the Alexandrov
+    topological space on `Fin P.size`. For each open set U (= upper set
+    in the refinement order), `F(U)` is the type of propositions forced
+    at every level in U. Restriction maps weaken the forcing proof.
+
+    Functor laws hold definitionally (by `rfl`). -/
+def forcingPresheaf {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    (P : IndexedPoset Secret) :
+    (Opens (Topology.WithUpperSet (Fin P.size)))ᵒᵖ ⥤ Type where
+  obj U := ForcedSectionsAt P U.unop.1
+  map {U _V} f s :=
+    -- f : U ⟶ V in (Opens X)ᵒᵖ means V.unop ≤ U.unop
+    -- i.e., V.unop.1 ⊆ U.unop.1 as sets
+    -- Restrict: if φ forced on U.unop.1, it's forced on V.unop.1 ⊆ U.unop.1
+    ⟨s.val, fun i hi => s.property i (leOfHom f.unop hi)⟩
+  map_id _ := rfl
+  map_comp _ _ := rfl
 
 end MathLibBridge
