@@ -415,19 +415,36 @@ to a `Prop`-valued `LE` and prove the preorder laws. -/
 /-- The refinement preorder on poset indices. `i ≤ j` iff everything
     forced at level `i` is also forced at level `j` (i.e., `j` refines `i`).
 
-    The proofs of le_refl and le_trans are deferred (they require
-    unfolding List.all + Option matching through the forcing proxy,
-    which is mechanical but verbose). The `sorry`s here are the
-    cost of bridging our Bool-valued forcing to Prop-valued preorder. -/
+    Both preorder laws proved structurally:
+    - `le_refl`: `!x || x = true` (Bool tautology via `Bool.not_or_self`)
+    - `le_trans`: `(!a||b) ∧ (!b||c) → (!a||c)` (Bool implication transitivity)
+
+    No `decide`, no `sorry`. -/
+private theorem Bool.not_or_self' (b : Bool) : (!b || b) = true := by
+  cases b <;> rfl
+
+private theorem Bool.imp_trans' {a b c : Bool}
+    (h1 : (!a || b) = true) (h2 : (!b || c) = true) : (!a || c) = true := by
+  cases a <;> cases b <;> cases c <;> simp_all
+
 def PosetPreorder {Secret : Type} [Fintype Secret] [DecidableEq Secret]
     (P : IndexedPoset Secret) : Preorder (Fin P.size) where
   le i j := P.refines i.val j.val = true
   le_refl i := by
-    -- Every level refines itself: dForces E φ → dForces E φ
-    sorry
+    show P.refines i.val i.val = true
+    unfold IndexedPoset.refines OrderComplex.refinesAtB
+    simp only [List.getElem?_eq_getElem (h := i.isLt)]
+    exact List.all_eq_true.mpr fun φ _ => Bool.not_or_self' (DObsLevel.dForces _ φ)
   le_trans i j k hij hjk := by
-    -- Transitivity of forcing implication
-    sorry
+    show P.refines i.val k.val = true
+    unfold IndexedPoset.refines OrderComplex.refinesAtB at *
+    simp only [List.getElem?_eq_getElem (h := i.isLt),
+               List.getElem?_eq_getElem (h := j.isLt),
+               List.getElem?_eq_getElem (h := k.isLt)] at *
+    exact List.all_eq_true.mpr fun φ hφ =>
+      Bool.imp_trans'
+        (List.all_eq_true.mp hij φ hφ)
+        (List.all_eq_true.mp hjk φ hφ)
   lt i j := P.refines i.val j.val = true ∧ ¬(P.refines j.val i.val = true)
   lt_iff_le_not_ge _ _ := Iff.rfl
 
@@ -496,5 +513,80 @@ example {Secret : Type} [Fintype Secret] [DecidableEq Secret]
     (P : IndexedPoset Secret) :
     TopologicalSpace (Fin P.size) :=
   alexandrovSpace P
+
+/-! ### Step 5: The forcing presheaf as a Mathlib functor
+
+A `TopCat.Presheaf Type X` is a functor `(Opens X)ᵒᵖ ⥤ Type`.
+We define the **forcing presheaf** on the Alexandrov space: for each
+open set `U`, the type of propositions forced at every level in `U`.
+
+The restriction map from `U` to `V ⊆ U` is the subtype coercion:
+if `φ` is forced on all of `U`, it's automatically forced on `V`.
+
+The functor laws (`map_id`, `map_comp`) hold by subtype extensionality
+— the underlying proposition is the same, just the proof of forcing
+is weakened. These are structural proofs, not `decide`.
+
+### Architecture note
+
+The presheaf values in `Type` (the type of forced propositions at each
+open) rather than in a more structured category like `ModuleCat (ZMod 2)`.
+This is the simplest setting that captures the section/restriction
+structure. A future upgrade to module-valued presheaves would enable
+proper derived-functor cohomology via Mathlib's homological algebra. -/
+
+/-- The forcing presheaf section type at an open set `U`:
+    propositions forced at every level whose index belongs to `U`. -/
+def ForcedSectionsAt {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    (P : IndexedPoset Secret) (U : Set (Fin P.size)) : Type :=
+  { φ : DProp Secret //
+    ∀ i : Fin P.size, i ∈ U →
+      match P.levels[i.val]? with
+      | some E => DObsLevel.dForces E φ = true
+      | none => False }
+
+/-- The restriction map: if `V ⊆ U` and `φ` is forced on `U`, then
+    `φ` is forced on `V`. Structural — just weakens the proof. -/
+def restrictForced {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    {P : IndexedPoset Secret} {U V : Set (Fin P.size)} (hVU : V ⊆ U)
+    (s : ForcedSectionsAt P U) : ForcedSectionsAt P V :=
+  ⟨s.val, fun i hi => s.property i (hVU hi)⟩
+
+/-- Restriction is the identity when `V = U`. -/
+theorem restrictForced_id {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    {P : IndexedPoset Secret} {U : Set (Fin P.size)}
+    (s : ForcedSectionsAt P U) :
+    restrictForced (Set.Subset.refl U) s = s := by
+  rfl
+
+/-- Restriction composes: restricting U → V → W = restricting U → W. -/
+theorem restrictForced_comp {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    {P : IndexedPoset Secret} {U V W : Set (Fin P.size)}
+    (hWV : W ⊆ V) (hVU : V ⊆ U)
+    (s : ForcedSectionsAt P U) :
+    restrictForced hWV (restrictForced hVU s) =
+    restrictForced (Set.Subset.trans hWV hVU) s := by
+  rfl
+
+/-! The `rfl` proofs for `restrictForced_id` and `restrictForced_comp`
+demonstrate the key structural property: restriction maps compose
+definitionally. This is the functor law for the forcing presheaf.
+
+A full `TopCat.Presheaf Type X` instance would package these into a
+`CategoryTheory.Functor` with `obj` and `map`. The type signature:
+
+```
+def forcingPresheaf (P : IndexedPoset Secret) :
+    TopCat.Presheaf Type ⟨Fin P.size, alexandrovSpace P⟩ where
+  obj U := ForcedSectionsAt P U.unop
+  map f := restrictForced f.unop.le
+  map_id U := funext fun s => restrictForced_id s
+  map_comp f g := funext fun s => restrictForced_comp ...
+```
+
+Constructing this fully requires resolving the TopCat bundled-type
+coercions and the Opens-category morphism unwrapping. The structural
+content (section types + restriction maps + functor laws) is complete
+above; the Mathlib packaging is deferred to a focused PR. -/
 
 end MathLibBridge
