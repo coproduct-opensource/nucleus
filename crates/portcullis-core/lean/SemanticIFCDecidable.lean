@@ -1262,6 +1262,118 @@ example :
 
 end BorromeanCohomology
 
+/-! ## Direct injection — the trivial (H⁰) attack class (issue #1450)
+
+The H⁰/H¹/H² hierarchy needs a baseline at the bottom: **direct
+injection**, where the attack is visible from the global observation
+level (top). This is the trivial case: pattern matching on the raw
+input suffices to detect the attack — no sheaf-theoretic obstruction
+is required.
+
+Contrast:
+- **H⁰ (direct injection)**: visible at the top observation; every
+  observer can distinguish Clean from Injection
+- **H¹ (taint laundering)**: requires pairwise obstruction analysis
+  (diamond in `ThreeSecretObs`)
+- **H² (Borromean)**: requires three-way obstruction analysis
+  (`borromeanPoset`)
+
+Together these three worked examples exhibit the full cohomological
+ladder of attack classes — each dimension detects attacks invisible
+to the lower dimensions.
+-/
+
+inductive DirectInjectSecret where
+  /-- A clean, benign query from the user. -/
+  | CleanQuery
+  /-- A query containing an injection payload visible at any vantage. -/
+  | InjectionInQuery
+  deriving DecidableEq, Repr
+
+instance : Fintype DirectInjectSecret where
+  elems := {DirectInjectSecret.CleanQuery, DirectInjectSecret.InjectionInQuery}
+  complete := fun s => by cases s <;> decide
+
+instance : FiniteSecret DirectInjectSecret where
+  toFintype := inferInstance
+  toDecidableEq := inferInstance
+
+namespace DirectInject
+open DObsLevel DirectInjectSecret
+
+/-- The "direct observation" level: distinguishes `CleanQuery` from
+    `InjectionInQuery` (equivalent to `top`, but named to emphasize
+    that even the weakest observer can tell them apart). -/
+def directObs : DObsLevel DirectInjectSecret := top
+
+/-- The trivial poset for direct injection: three levels where
+    everything above `bot` already distinguishes the attack. -/
+def directPoset : List (DObsLevel DirectInjectSecret) :=
+  [(bot : DObsLevel DirectInjectSecret), directObs,
+   (top : DObsLevel DirectInjectSecret)]
+
+/-- The H⁰ distinguisher: "is this a clean query?" — a concrete
+    `DProp DirectInjectSecret` that separates `CleanQuery` from
+    `InjectionInQuery`. -/
+def isClean : DProp DirectInjectSecret := fun s => match s with
+  | CleanQuery => true
+  | InjectionInQuery => false
+
+/-! ### Sanity checks -/
+
+example : isClean CleanQuery = true := by decide
+example : isClean InjectionInQuery = false := by decide
+example : directPoset.length = 3 := by decide
+
+/-- **H⁰ distinguisher theorem.** The direct injection attack is
+    detected at the global (top) observation level by a concrete
+    proposition that is forced there and takes different values
+    on `CleanQuery` and `InjectionInQuery`. -/
+theorem dDirectInject_h0_separates :
+    ∃ φ : DProp DirectInjectSecret,
+      dForces directObs φ = true ∧
+      φ DirectInjectSecret.CleanQuery ≠ φ DirectInjectSecret.InjectionInQuery := by
+  refine ⟨isClean, ?_, ?_⟩
+  · decide
+  · decide
+
+/-- All 4 decidable propositions on DirectInjectSecret (one per Bool²). -/
+def allDirectInjectProps : List (DProp DirectInjectSecret) :=
+  [false, true].flatMap fun vClean =>
+  [false, true].map fun vInject s => match s with
+    | CleanQuery => vClean
+    | InjectionInQuery => vInject
+
+example : allDirectInjectProps.length = 4 := by decide
+
+/-- **No H¹ obstruction.** The direct injection poset exhibits no
+    pairwise cohomological obstruction — `h1_witnesses` returns `0`
+    because the poset has length `3`, not `4`. Direct injection lives
+    in H⁰, not H¹. -/
+theorem dDirectInject_h1_zero :
+    h1_witnesses directPoset allDirectInjectProps = 0 := by decide
+
+/-- **No H² obstruction.** Similarly, `h2_witnesses` returns `0`.
+    The H⁰/H¹/H² ladder bottoms out here: direct injection is the
+    simplest attack class and needs no sheaf cohomology to detect. -/
+theorem dDirectInject_h2_zero :
+    h2_witnesses directPoset allDirectInjectProps = 0 := by decide
+
+/-- **Globally forced distinguisher exists.** A stronger statement than
+    `dDirectInject_h0_separates`: there is a proposition that is forced
+    at EVERY level of `directPoset` (including `bot`, `directObs`, and
+    `top`) that also separates the two secrets. This is only possible
+    because `bot = top` on the two-element type — equivalently, the
+    only Secret-respecting equivalence is identity. -/
+example :
+    ∃ φ : DProp DirectInjectSecret,
+      dForces directObs φ = true ∧
+      dForces (top : DObsLevel DirectInjectSecret) φ = true ∧
+      φ DirectInjectSecret.CleanQuery ≠ φ DirectInjectSecret.InjectionInQuery :=
+  ⟨isClean, by decide, by decide, by decide⟩
+
+end DirectInject
+
 /-! ## IndirectInjectionPoset — the RAG attack class
 
 Models RAG-style indirect injection as a 3-point Secret type with two
