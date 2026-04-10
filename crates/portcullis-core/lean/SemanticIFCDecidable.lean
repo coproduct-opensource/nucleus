@@ -1592,4 +1592,128 @@ example :
 
 end BorromeanChainComplex
 
+/-! ## Y2.B — Strict hierarchy theorem H¹ ⊊ H² (issue #1453)
+
+Phase 4, Year 2 of the 5-year roadmap. Packages the individual
+cohomological facts from prior PRs (#1469 h2_witnesses, #1472 h2_compute,
+and existing `ThreeSecretCohomology` work) into a **strict hierarchy
+theorem**: no single cohomological degree classifies all attack classes.
+
+The individual `by decide` component theorems already exist. This
+module adds the structural packaging — existential witnesses and an
+`attack_complexity` invariant — with proofs that are pure structural
+logic (existential introduction, `simp`, `omega`).
+-/
+
+namespace StrictHierarchy
+open DObsLevel Borromean BorromeanCohomology ThreeSecretCohomology
+
+/-! ### Direction 1: diamond H¹ positive, H² zero -/
+
+/-- Diamond has `H¹ ≥ 1`. -/
+theorem diamond_h1_pos : h1_witnesses diamondPoset allProps ≥ 1 := by decide
+
+/-- Diamond has `H² = 0` — re-export from #1472 (Y2.A). -/
+theorem diamond_h2_zero : h2_compute diamondPoset allProps = 0 := by decide
+
+/-! ### Direction 2: Borromean H² positive, H¹ zero -/
+
+/-- Borromean has `H¹ = 0` — re-export from #1469. -/
+theorem borromean_h1_zero :
+    h1_witnesses borromeanPoset allFiveSecretProps = 0 :=
+  dBorromeanH1Zero
+
+/-- Borromean has `H² ≥ 1` via the witness count — re-export from #1469. -/
+theorem borromean_h2_pos :
+    h2_witnesses borromeanPoset allFiveSecretProps ≥ 1 :=
+  dBorromeanH2
+
+/-- Borromean also has `h2_compute ≥ 1` (chain-complex version).
+    Structural: rewrite along the h2_compute = h2_witnesses equality
+    from Y2.A, then apply the witness-count positivity. -/
+theorem borromean_h2_compute_pos :
+    h2_compute borromeanPoset allFiveSecretProps ≥ 1 := by
+  rw [BorromeanChainComplex.h2_compute_matches_witnesses_borromean]
+  exact dBorromeanH2
+
+/-! ### The strict hierarchy theorem
+
+Pure structural packaging — no new `decide` invocations, only
+existential introduction from the directional facts above. -/
+
+/-- **Strict hierarchy theorem.** There exist a poset and enumeration
+    where `H¹ = 0` but `H² ≥ 1` — i.e. H² catches obstructions
+    invisible to H¹. Witnessed by the Borromean poset. -/
+theorem hierarchy_strict :
+    ∃ (poset : List (DObsLevel FiveSecret)) (props : List (DProp FiveSecret)),
+      h1_witnesses poset props = 0 ∧ h2_compute poset props ≥ 1 :=
+  ⟨borromeanPoset, allFiveSecretProps, borromean_h1_zero, borromean_h2_compute_pos⟩
+
+/-- **Dual hierarchy theorem.** Symmetrically: there exist a poset and
+    enumeration for which `H¹ ≥ 1` but `H² = 0`. Witnessed by the
+    diamond. -/
+theorem hierarchy_strict_dual :
+    ∃ (poset : List (DObsLevel ThreeSecret)) (props : List (DProp ThreeSecret)),
+      h1_witnesses poset props ≥ 1 ∧ h2_compute poset props = 0 :=
+  ⟨diamondPoset, allProps, diamond_h1_pos, diamond_h2_zero⟩
+
+/-- **Combined non-degeneracy:** the two hierarchy directions together
+    exhibit the full non-degeneracy of the H⁰/H¹/H² ladder. -/
+theorem hierarchy_nondegenerate :
+    (∃ (poset : List (DObsLevel FiveSecret)) (props : List (DProp FiveSecret)),
+        h1_witnesses poset props = 0 ∧ h2_compute poset props ≥ 1) ∧
+    (∃ (poset : List (DObsLevel ThreeSecret)) (props : List (DProp ThreeSecret)),
+        h1_witnesses poset props ≥ 1 ∧ h2_compute poset props = 0) :=
+  ⟨hierarchy_strict, hierarchy_strict_dual⟩
+
+/-! ### Attack complexity degree
+
+Structural invariant: the minimum cohomological dimension at which a
+poset exhibits an obstruction. Diamond → `1`, Borromean → `2`.
+Different values ⇒ structurally distinct attack families. -/
+
+/-- The attack-complexity degree for ThreeSecret posets. -/
+def attack_complexity_threeSecret
+    (poset : List (DObsLevel ThreeSecret))
+    (props : List (DProp ThreeSecret)) : Nat :=
+  if h1_witnesses poset props ≥ 1 then 1
+  else if h2_compute poset props ≥ 1 then 2
+  else 0
+
+/-- The attack-complexity degree for FiveSecret posets. -/
+def attack_complexity_fiveSecret
+    (poset : List (DObsLevel FiveSecret))
+    (props : List (DProp FiveSecret)) : Nat :=
+  if h1_witnesses poset props ≥ 1 then 1
+  else if h2_compute poset props ≥ 1 then 2
+  else 0
+
+/-- Diamond is an H¹-class attack. -/
+theorem diamond_is_h1_class :
+    attack_complexity_threeSecret diamondPoset allProps = 1 := by
+  unfold attack_complexity_threeSecret
+  simp [diamond_h1_pos]
+
+/-- Borromean is an H²-class attack.
+    Structural proof: the first `if` branch fails because
+    `h1_witnesses = 0`, the second branch succeeds because
+    `h2_compute ≥ 1`. -/
+theorem borromean_is_h2_class :
+    attack_complexity_fiveSecret borromeanPoset allFiveSecretProps = 2 := by
+  unfold attack_complexity_fiveSecret
+  have h1 : h1_witnesses borromeanPoset allFiveSecretProps = 0 := borromean_h1_zero
+  have h2 : h2_compute borromeanPoset allFiveSecretProps ≥ 1 := borromean_h2_compute_pos
+  simp [h1, h2]
+
+/-- **Attack-complexity non-degeneracy.** Diamond and Borromean live
+    in different attack-complexity classes — `1` vs `2`. This is the
+    structural statement that the cohomological ladder is non-trivial:
+    no single dimension subsumes the others. -/
+example : attack_complexity_threeSecret diamondPoset allProps ≠
+          attack_complexity_fiveSecret borromeanPoset allFiveSecretProps := by
+  rw [diamond_is_h1_class, borromean_is_h2_class]
+  decide
+
+end StrictHierarchy
+
 end SemanticIFCDecidable
