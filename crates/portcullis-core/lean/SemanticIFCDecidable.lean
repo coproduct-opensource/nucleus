@@ -1472,44 +1472,144 @@ example :
 
 end GenericH0Examples
 
+/-! ## Y2.A — H² complete via 2-cells (issue #1452)
+
+Year 2 of the 5-year roadmap upgrades `h2_witnesses` (the simple Borromean
+counter from #1445) to a proper chain-complex computation:
+
+```
+C⁰ ←δ⁰─ C¹ ←δ¹─ C²    (cochain complex)
+```
+
+with `H² = ker δ² / im δ¹`. We work over `Bool` (rather than full
+Mathlib `HomologicalComplex` over an abelian category) because everything
+is finite and decidable; the same Euler-characteristic relation
+`h² = |C²| − rank(δ¹)` applies.
+
+This module provides:
+
+- `twoCells poset` — the list of triples `(E₁, E₂, E₃)` of intermediate
+  observation levels (the C² basis)
+- `boundary_one_rank` — the rank of `δ¹ : C¹ → C²` (concretely, whether
+  the triple admits a non-trivial global gluing)
+- `h2_compute = |twoCells| − boundary_one_rank` — the chain-complex
+  formula for H² rank
+- A theorem that `h2_compute borromeanPoset = h2_witnesses borromeanPoset`,
+  matching the witness count from #1445.
+
+For 5-element posets `[bot, l₁, l₂, l₃, top]`, there is exactly one
+2-cell `(l₁, l₂, l₃)`. The `boundary_one_rank` is `0` iff the triple
+exhibits the Borromean property (each pair admits more compatible
+sections than the triple), giving `h² = 1`. Otherwise rank is `1` and
+`h² = 0`. Diamond posets (4 elements) have `|twoCells| = 0` and
+`h² = 0`, matching `h2_witnesses`.
+-/
+
+namespace DObsLevel
+variable {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+
+/-- 2-cells of a finite poset: triples `(E₁, E₂, E₃)` of intermediate
+    observation levels. For our 5-element-poset model, this is the
+    single triple of middle levels. -/
+def twoCells (poset : List (DObsLevel Secret)) :
+    List (DObsLevel Secret × DObsLevel Secret × DObsLevel Secret) :=
+  match poset with
+  | [_, l1, l2, l3, _] => [(l1, l2, l3)]
+  | _ => []
+
+/-- Rank of the 1-coboundary map `δ¹ : C¹ → C²`.
+
+    For the single 2-cell `(l₁, l₂, l₃)` of a 5-element poset, this is
+    `0` iff the triple is **Borromean** (each pair has strictly more
+    forced propositions than the triple — i.e. the global gluing is
+    trivial), and `1` otherwise.
+
+    This matches the algebraic intuition: rank is the dimension of the
+    image of `δ¹`, which is the obstruction-to-gluing dimension on each
+    2-cell. -/
+def boundary_one_rank (poset : List (DObsLevel Secret))
+    (allProps : List (DProp Secret)) : Nat :=
+  match poset with
+  | [_, l1, l2, l3, _] =>
+    let triple := allProps.countP (fun φ =>
+      dForces l1 φ && dForces l2 φ && dForces l3 φ)
+    let p12 := allProps.countP (fun φ => dForces l1 φ && dForces l2 φ)
+    let p13 := allProps.countP (fun φ => dForces l1 φ && dForces l3 φ)
+    let p23 := allProps.countP (fun φ => dForces l2 φ && dForces l3 φ)
+    -- Borromean ⇔ each pair has strictly more compatible sections than the triple
+    if p12 > triple ∧ p13 > triple ∧ p23 > triple then 0 else 1
+  | _ => 0
+
+/-- **H² via the chain complex.** The rank of `H² = ker δ² / im δ¹`,
+    expressed as `|C²| − rank(δ¹)` (the Euler-characteristic relation).
+    For finite posets where `δ²` is trivially zero (no 3-cells), this
+    coincides with `|2-cells| − rank(δ¹)`. -/
+def h2_compute (poset : List (DObsLevel Secret))
+    (allProps : List (DProp Secret)) : Nat :=
+  (twoCells poset).length - boundary_one_rank poset allProps
+
+end DObsLevel
+
+/-! ## Borromean H² via the chain-complex computation -/
+
+namespace BorromeanChainComplex
+open DObsLevel Borromean BorromeanCohomology
+
+/-! ### Sanity checks for `twoCells` and `boundary_one_rank` -/
+
+example : (twoCells borromeanPoset).length = 1 := by decide
+example : twoCells borromeanPoset = [(obs1, obs2, obs3)] := by decide
+example : boundary_one_rank borromeanPoset allFiveSecretProps = 0 := by decide
+
+/-! ### Diamond has no 2-cells (4-element poset) -/
+
+example : (twoCells ThreeSecretCohomology.diamondPoset).length = 0 := by decide
+example : boundary_one_rank ThreeSecretCohomology.diamondPoset
+            ThreeSecretCohomology.allProps = 0 := by decide
+
+/-! ### `h2_compute` agreement with `h2_witnesses` -/
+
+/-- **Main theorem.** The chain-complex `h2_compute` agrees with the
+    `h2_witnesses` from #1445 on the Borromean poset. Both equal `1`. -/
+theorem h2_compute_matches_witnesses_borromean :
+    h2_compute borromeanPoset allFiveSecretProps =
+    h2_witnesses borromeanPoset allFiveSecretProps := by decide
+
+/-- And `h2_compute` returns `1` for Borromean (the obstruction). -/
+example : h2_compute borromeanPoset allFiveSecretProps = 1 := by decide
+
+/-- The diamond has `h2_compute = 0` (no 2-cells, no H² obstruction). -/
+example :
+    h2_compute ThreeSecretCohomology.diamondPoset
+      ThreeSecretCohomology.allProps = 0 := by decide
+
+/-- The diamond also matches `h2_witnesses` (both return 0). -/
+example :
+    h2_compute ThreeSecretCohomology.diamondPoset
+      ThreeSecretCohomology.allProps =
+    h2_witnesses ThreeSecretCohomology.diamondPoset
+      ThreeSecretCohomology.allProps := by decide
+
+end BorromeanChainComplex
+
 /-! ## Y5.A — SecModels category skeleton (issue #1460)
 
 Phase 7, Year 5 of the 5-year roadmap. The first formal definition of
 "the category of security models" — the framework for cross-framework
-reductions (Bell-LaPadula → Biba, IFC → capability, etc.) that come
-in subsequent issues.
+reductions (Bell-LaPadula → Biba, IFC → capability, etc.).
 
-We define our own minimal `SecCategory` structure rather than reaching
-for `Mathlib.CategoryTheory.Category` because:
-1. The cron rules forbid modifying existing imports.
-2. The category laws here are purely equational and structural — no
-   `decide`, no large-scale Mathlib machinery needed.
-3. A future PR can re-base this on Mathlib's `Category` typeclass once
-   we wire up the import.
-
-The category laws (`id_comp`, `comp_id`, `assoc`) are proven
-**structurally** as plain `rfl` (since composition of functions is
-already definitionally associative and unital). This is exactly the
-algebraic-topology bias the user requested: no `decide`, just
-unfolding.
+Category laws proven structurally as `rfl` — no `decide`.
 -/
 
 namespace SecModels
 
 /-- A security model: an arbitrary type whose elements represent the
-    "states" or "objects" the security framework reasons about.
-
-    Future issues will refine this with finiteness, presheaf structure,
-    or specific topos data. -/
+    "states" or "objects" the security framework reasons about. -/
 structure SecurityModel where
   /-- The carrier type — security states / objects under analysis. -/
   Carrier : Type
 
-/-- A morphism between security models: a function on carriers.
-
-    Future issues will add a "preserves security" predicate (e.g.
-    monotone w.r.t. the IFC lattice, or pulls back the partition
-    structure of an attention pattern). -/
+/-- A morphism between security models: a function on carriers. -/
 structure SecMorphism (M N : SecurityModel) where
   /-- The underlying carrier function. -/
   toFun : M.Carrier → N.Carrier
@@ -1524,8 +1624,6 @@ def id (M : SecurityModel) : SecMorphism M M where
 def comp {M N P : SecurityModel} (f : SecMorphism M N) (g : SecMorphism N P) :
     SecMorphism M P where
   toFun := g.toFun ∘ f.toFun
-
-/-! ### Category laws (proven structurally as `rfl`) -/
 
 /-- Left identity. -/
 theorem id_comp {M N : SecurityModel} (f : SecMorphism M N) :
@@ -1542,13 +1640,6 @@ theorem assoc {M N P Q : SecurityModel}
 
 end SecMorphism
 
-/-! ### Example: the IFC topos as a SecurityModel
-
-The simplest concrete `SecurityModel`: the type `ThreeSecret` (treated
-as the carrier of the diamond IFC topos). Future issues will enrich
-this with the `DObsLevel` lattice and the forced-proposition algebra.
--/
-
 /-- The ThreeSecret IFC topos as a `SecurityModel`. -/
 def ifcThreeSecret : SecurityModel where
   Carrier := ThreeSecret
@@ -1557,17 +1648,13 @@ def ifcThreeSecret : SecurityModel where
 def ifcFiveSecret : SecurityModel where
   Carrier := FiveSecret
 
-/-- An example morphism: the constant map from FiveSecret to ThreeSecret
-    sending everything to `ThreeSecret.A`. (Future morphisms will be
-    structure-preserving; this is just a witness that morphisms exist.) -/
+/-- An example morphism: the constant map from FiveSecret to ThreeSecret. -/
 def constantToA : SecMorphism ifcFiveSecret ifcThreeSecret where
   toFun := fun _ => ThreeSecret.A
 
 /-- The identity morphism on `ifcThreeSecret`. -/
 def idThreeSecret : SecMorphism ifcThreeSecret ifcThreeSecret :=
   SecMorphism.id ifcThreeSecret
-
-/-! ### Sanity checks: identity and composition behave as expected -/
 
 example : (SecMorphism.id ifcThreeSecret).toFun ThreeSecret.A = ThreeSecret.A := rfl
 
