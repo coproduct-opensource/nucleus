@@ -2601,4 +2601,152 @@ example : (uniformAttention 3).toDObsLevel.rel ⟨0, by decide⟩ ⟨1, by decid
 
 end AttentionTopos
 
+/-! ## Y3.C — Faithfulness of F on a finite test family (issue #1456)
+
+The Float-based `AttentionPattern.toDObsLevel` has sorry's because
+`Float` lacks `LawfulBEq` (NaN breaks reflexivity). To prove
+faithfulness, we define a **discrete-weight** attention pattern using
+`Fin m` weights, which has proper `DecidableEq` and no sorry's.
+
+This demonstrates the mathematical content (distinct attention
+patterns yield distinct observation levels) without the Float issue.
+-/
+
+namespace Faithfulness
+
+/-- An attention pattern with discrete (Fin m) weights.
+    Isomorphic to `Fin n → Fin n → Fin m` — a matrix of discrete values.
+    Has proper `DecidableEq` since all components are `Fin`. -/
+structure DiscretePattern (n m : Nat) where
+  weights : Fin n → Fin n → Fin m
+  deriving DecidableEq
+
+/-- Row equality: two tokens have identical attention distributions. -/
+def DiscretePattern.rowsEq {n m : Nat} (A : DiscretePattern n m) (i j : Fin n) : Bool :=
+  (List.finRange n).all fun k => A.weights i k == A.weights j k
+
+/-- Map a discrete attention pattern to a `DObsLevel`.
+    Two tokens are equivalent iff their attention rows are identical.
+
+    Unlike the Float version, all three equivalence-relation laws
+    are provable structurally — no sorry needed. -/
+def DiscretePattern.toDObsLevel {n m : Nat} (A : DiscretePattern n m) :
+    DObsLevel (Fin n) where
+  rel i j := A.rowsEq i j
+  refl i := by
+    simp only [rowsEq]
+    exact List.all_eq_true.mpr fun k _ => by simp [BEq.beq]
+  symm i j h := by
+    simp only [rowsEq] at *
+    exact List.all_eq_true.mpr fun k hk => by
+      have := List.all_eq_true.mp h k hk
+      simp [BEq.beq] at this ⊢; exact this.symm
+  trans i j k hij hjk := by
+    simp only [rowsEq] at *
+    exact List.all_eq_true.mpr fun col hcol => by
+      have h1 := List.all_eq_true.mp hij col hcol
+      have h2 := List.all_eq_true.mp hjk col hcol
+      simp [BEq.beq] at h1 h2 ⊢; exact h1.trans h2
+
+/-- Equivalence of discrete patterns: two patterns are equivalent iff
+    they induce the same observation level (same row-equivalence relation). -/
+def DiscretePattern.equiv {n m : Nat} (A B : DiscretePattern n m) : Prop :=
+  A.toDObsLevel = B.toDObsLevel
+
+instance {n : Nat} [DecidableEq (Fin n → Fin n → Bool)] : DecidableEq (DObsLevel (Fin n)) :=
+  fun a b =>
+    if h : a.rel = b.rel then
+      isTrue (by
+        cases a; cases b
+        simp only [DObsLevel.mk.injEq] at *
+        exact h)
+    else
+      isFalse (fun heq => h (by cases heq; rfl))
+
+/-! ### Test family: 4 discrete attention patterns on 3 tokens with 3 weight levels.
+
+Each pattern represents a different "attention strategy":
+- `pat_identity`: diagonal attention (each token attends to itself)
+- `pat_uniform`: uniform attention (every token attends equally)
+- `pat_pair01`: tokens 0,1 share a row; token 2 distinct
+- `pat_pair02`: tokens 0,2 share a row; token 1 distinct
+
+All four patterns produce DISTINCT DObsLevels, so F is injective
+on this family. pat_pair01 and pat_pair02 demonstrate that different
+equivalence structures (0~1 vs 0~2) are distinguishable by F. -/
+
+/-- Identity: token i attends to token j with weight `if i=j then 2 else 0`. -/
+def pat_identity : DiscretePattern 3 3 where
+  weights := fun i j => if i = j then ⟨2, by omega⟩ else ⟨0, by omega⟩
+
+/-- Uniform: all weights = 1. All tokens have identical rows. -/
+def pat_uniform : DiscretePattern 3 3 where
+  weights := fun _ _ => ⟨1, by omega⟩
+
+/-- Pair 0~1: tokens 0 and 1 have identical rows [2,0,1];
+    token 2 has a different row [1,1,1]. -/
+def pat_pair01 : DiscretePattern 3 3 where
+  weights := fun i j =>
+    if i.val < 2 then  -- tokens 0 and 1 share this row
+      if j.val = 0 then ⟨2, by omega⟩
+      else if j.val = 2 then ⟨1, by omega⟩
+      else ⟨0, by omega⟩
+    else  -- token 2
+      ⟨1, by omega⟩
+
+/-- Pair 0~2: tokens 0 and 2 have identical rows [1,0,2];
+    token 1 has a different row [0,2,1]. -/
+def pat_pair02 : DiscretePattern 3 3 where
+  weights := fun i j =>
+    if i.val = 0 || i.val = 2 then  -- tokens 0 and 2 share this row
+      if j.val = 0 then ⟨1, by omega⟩
+      else if j.val = 2 then ⟨2, by omega⟩
+      else ⟨0, by omega⟩
+    else  -- token 1
+      if j.val = 1 then ⟨2, by omega⟩
+      else if j.val = 2 then ⟨1, by omega⟩
+      else ⟨0, by omega⟩
+
+/-- The test family as a list. -/
+def testFamily : List (DiscretePattern 3 3) :=
+  [pat_identity, pat_uniform, pat_pair01, pat_pair02]
+
+/-- Sanity: the test family has 4 elements. -/
+example : testFamily.length = 4 := rfl
+
+/-- Identity: all tokens distinct (diagonal attention → top observation level). -/
+example : pat_identity.toDObsLevel.rel ⟨0, by omega⟩ ⟨1, by omega⟩ = false := by decide
+
+/-- Uniform: all tokens equivalent (uniform attention → bottom observation level). -/
+example : pat_uniform.toDObsLevel.rel ⟨0, by omega⟩ ⟨1, by omega⟩ = true := by decide
+
+/-- Pair01: tokens 0 and 1 equivalent, token 2 distinct. -/
+example : pat_pair01.toDObsLevel.rel ⟨0, by omega⟩ ⟨1, by omega⟩ = true := by decide
+example : pat_pair01.toDObsLevel.rel ⟨0, by omega⟩ ⟨2, by omega⟩ = false := by decide
+
+/-- Pair02: tokens 0 and 2 equivalent, token 1 distinct. -/
+example : pat_pair02.toDObsLevel.rel ⟨0, by omega⟩ ⟨2, by omega⟩ = true := by decide
+example : pat_pair02.toDObsLevel.rel ⟨0, by omega⟩ ⟨1, by omega⟩ = false := by decide
+
+/-- **All four patterns produce distinct observation levels.**
+    This is the concrete faithfulness result: F is injective on testFamily. -/
+theorem testFamily_all_distinct :
+    testFamily.Pairwise (fun A B => A.toDObsLevel ≠ B.toDObsLevel) := by
+  decide
+
+/-- **Faithfulness of F on the test family:** distinct patterns
+    map to distinct DObsLevels. F is injective on testFamily. -/
+theorem F_faithful_testFamily :
+    ∀ A ∈ testFamily, ∀ B ∈ testFamily,
+      A.toDObsLevel = B.toDObsLevel → A = B := by
+  decide
+
+/-- **F is injective on the test family** (equivalent formulation). -/
+theorem F_injective_testFamily :
+    Function.Injective (fun i : Fin testFamily.length =>
+      (testFamily[i]).toDObsLevel) := by
+  decide
+
+end Faithfulness
+
 end SemanticIFCDecidable
