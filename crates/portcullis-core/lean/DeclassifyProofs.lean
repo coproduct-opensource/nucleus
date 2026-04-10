@@ -151,7 +151,6 @@ theorem expiry_monotonic (valid_until t1 t2 : Nat) (h1 : t1 ≤ t2) (h2 : isExpi
 theorem eventually_expires (valid_until : Nat) :
     isExpired valid_until (valid_until + 1) = true := by
   simp [isExpired]
-  omega
 
 -- ── Theorem T3: Token-scoped raise_integ preserves safety ────────────
 -- A token wrapping raise_integ inherits the "cannot decrease" property.
