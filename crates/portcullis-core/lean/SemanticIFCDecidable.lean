@@ -1838,56 +1838,105 @@ example : alignment_tax DirectInject.directObs = 2 := by decide
 
 end AlignmentTaxExamples
 
-/-! ## Y3.A — AttentionTopos skeleton (issue #1454)
+/-! ## Y2.B — Strict hierarchy theorem H¹ ⊊ H² (issue #1453)
 
-Phase 5, Year 3 of the 5-year roadmap. The first concrete step toward
-the functor `F : AttentionTopos → IFCTopos`.
-
-This module defines the **objects** of `AttentionTopos`: row-stochastic
-attention patterns over `n` tokens, with a refinement preorder.
-`Float` is used instead of `Real` so examples are computable.
-Refinement order (`A ≤ B` iff `B` is finer) is a preorder, proven by
-`le_refl` / `le_trans` structurally (no `decide`).
+Packages the individual cohomological facts from prior PRs into a
+strict hierarchy theorem. Category laws proven structurally.
 -/
+
+namespace StrictHierarchy
+open DObsLevel Borromean BorromeanCohomology ThreeSecretCohomology
+
+theorem diamond_h1_pos : h1_witnesses diamondPoset allProps ≥ 1 := by decide
+theorem diamond_h2_zero : h2_compute diamondPoset allProps = 0 := by decide
+
+theorem borromean_h1_zero :
+    h1_witnesses borromeanPoset allFiveSecretProps = 0 := dBorromeanH1Zero
+
+theorem borromean_h2_pos :
+    h2_witnesses borromeanPoset allFiveSecretProps ≥ 1 := dBorromeanH2
+
+theorem borromean_h2_compute_pos :
+    h2_compute borromeanPoset allFiveSecretProps ≥ 1 := by
+  rw [BorromeanChainComplex.h2_compute_matches_witnesses_borromean]
+  exact dBorromeanH2
+
+theorem hierarchy_strict :
+    ∃ (poset : List (DObsLevel FiveSecret)) (props : List (DProp FiveSecret)),
+      h1_witnesses poset props = 0 ∧ h2_compute poset props ≥ 1 :=
+  ⟨borromeanPoset, allFiveSecretProps, borromean_h1_zero, borromean_h2_compute_pos⟩
+
+theorem hierarchy_strict_dual :
+    ∃ (poset : List (DObsLevel ThreeSecret)) (props : List (DProp ThreeSecret)),
+      h1_witnesses poset props ≥ 1 ∧ h2_compute poset props = 0 :=
+  ⟨diamondPoset, allProps, diamond_h1_pos, diamond_h2_zero⟩
+
+theorem hierarchy_nondegenerate :
+    (∃ (poset : List (DObsLevel FiveSecret)) (props : List (DProp FiveSecret)),
+        h1_witnesses poset props = 0 ∧ h2_compute poset props ≥ 1) ∧
+    (∃ (poset : List (DObsLevel ThreeSecret)) (props : List (DProp ThreeSecret)),
+        h1_witnesses poset props ≥ 1 ∧ h2_compute poset props = 0) :=
+  ⟨hierarchy_strict, hierarchy_strict_dual⟩
+
+def attack_complexity_threeSecret
+    (poset : List (DObsLevel ThreeSecret))
+    (props : List (DProp ThreeSecret)) : Nat :=
+  if h1_witnesses poset props ≥ 1 then 1
+  else if h2_compute poset props ≥ 1 then 2
+  else 0
+
+def attack_complexity_fiveSecret
+    (poset : List (DObsLevel FiveSecret))
+    (props : List (DProp FiveSecret)) : Nat :=
+  if h1_witnesses poset props ≥ 1 then 1
+  else if h2_compute poset props ≥ 1 then 2
+  else 0
+
+theorem diamond_is_h1_class :
+    attack_complexity_threeSecret diamondPoset allProps = 1 := by
+  unfold attack_complexity_threeSecret
+  simp [diamond_h1_pos]
+
+theorem borromean_is_h2_class :
+    attack_complexity_fiveSecret borromeanPoset allFiveSecretProps = 2 := by
+  unfold attack_complexity_fiveSecret
+  have h1 : h1_witnesses borromeanPoset allFiveSecretProps = 0 := borromean_h1_zero
+  have h2 : h2_compute borromeanPoset allFiveSecretProps ≥ 1 := borromean_h2_compute_pos
+  simp [h1, h2]
+
+example : attack_complexity_threeSecret diamondPoset allProps ≠
+          attack_complexity_fiveSecret borromeanPoset allFiveSecretProps := by
+  rw [diamond_is_h1_class, borromean_is_h2_class]
+  decide
+
+end StrictHierarchy
+
+/-! ## Y3.A — AttentionTopos skeleton (issue #1454) -/
 
 namespace AttentionTopos
 
-/-- An attention pattern over `n` tokens: an `n × n` real-valued matrix. -/
 structure AttentionPattern (n : Nat) where
-  /-- The `n × n` weight matrix. -/
   weights : Fin n → Fin n → Float
 
-/-- Internal row-equivalence: two tokens agree iff their attention rows match. -/
 def AttentionPattern.rowsEq {n : Nat} (A : AttentionPattern n) (i j : Fin n) : Prop :=
   ∀ k, A.weights i k = A.weights j k
 
-/-- **Refinement preorder** on attention patterns. -/
 instance {n : Nat} : LE (AttentionPattern n) where
   le A B := ∀ i j : Fin n, B.rowsEq i j → A.rowsEq i j
 
-/-- **Equivalence**: same row partition. -/
 def AttentionPattern.equiv {n : Nat} (A B : AttentionPattern n) : Prop :=
   ∀ i j, A.rowsEq i j ↔ B.rowsEq i j
 
-/-- Concrete 3×3 attention pattern for ThreeSecret tokens. -/
 def threeSecretAttention : AttentionPattern 3 where
   weights := fun i j => match i, j with
-    | ⟨0, _⟩, ⟨0, _⟩ => 0.9
-    | ⟨0, _⟩, ⟨1, _⟩ => 0.05
-    | ⟨0, _⟩, ⟨2, _⟩ => 0.05
-    | ⟨1, _⟩, ⟨0, _⟩ => 0.45
-    | ⟨1, _⟩, ⟨1, _⟩ => 0.10
-    | ⟨1, _⟩, ⟨2, _⟩ => 0.45
-    | ⟨2, _⟩, ⟨0, _⟩ => 0.05
-    | ⟨2, _⟩, ⟨1, _⟩ => 0.05
-    | ⟨2, _⟩, ⟨2, _⟩ => 0.90
+    | ⟨0, _⟩, ⟨0, _⟩ => 0.9 | ⟨0, _⟩, ⟨1, _⟩ => 0.05 | ⟨0, _⟩, ⟨2, _⟩ => 0.05
+    | ⟨1, _⟩, ⟨0, _⟩ => 0.45 | ⟨1, _⟩, ⟨1, _⟩ => 0.10 | ⟨1, _⟩, ⟨2, _⟩ => 0.45
+    | ⟨2, _⟩, ⟨0, _⟩ => 0.05 | ⟨2, _⟩, ⟨1, _⟩ => 0.05 | ⟨2, _⟩, ⟨2, _⟩ => 0.90
     | _, _ => 0.0
 
-/-- Identity attention pattern: each token attends only to itself. -/
 def identityAttention (n : Nat) : AttentionPattern n where
   weights := fun i j => if i = j then 1.0 else 0.0
 
-/-- Uniform attention pattern: every token attends equally to every other. -/
 def uniformAttention (n : Nat) : AttentionPattern n where
   weights := fun _ _ => 1.0 / (n.toFloat)
 
@@ -1899,11 +1948,9 @@ example : (identityAttention 3).weights ⟨0, by decide⟩ ⟨0, by decide⟩ = 
 example : (identityAttention 3).weights ⟨0, by decide⟩ ⟨1, by decide⟩ = 0.0 := by
   simp [identityAttention]
 
-/-- Reflexivity of the refinement preorder. -/
 theorem AttentionPattern.le_refl {n : Nat} (A : AttentionPattern n) : A ≤ A :=
   fun _ _ h => h
 
-/-- Transitivity of the refinement preorder. -/
 theorem AttentionPattern.le_trans {n : Nat} {A B C : AttentionPattern n}
     (hAB : A ≤ B) (hBC : B ≤ C) : A ≤ C :=
   fun i j h => hAB i j (hBC i j h)

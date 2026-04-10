@@ -15,7 +15,7 @@ Correspondence is enforced by compile-time `include_str!` assertions in
 Aeneas-generated), these are hand-written models — Aeneas does not yet
 translate `bool`-field structs or 13-variant enums.
 
-## Properties proved (all kernel-checked, no sorry)
+## Properties proved (all kernel-checked, no proof holes)
 
 - **Monotonicity**: exposure count never decreases under `union`
 - **Idempotency**: `union(s, s) = s`

@@ -6,7 +6,7 @@ a child delegation can never exceed its parent's permissions on any
 dimension. This is the core safety property of the delegation plane.
 
 Hand-written Lean models mirroring `portcullis-core/src/delegation.rs`.
-All proofs fully checked by Lean 4, no sorry.
+All proofs fully checked by Lean 4, no proof holes.
 
 ## Properties proved
 
