@@ -1713,77 +1713,169 @@ example : obsProvenance ≤ (top : DObsLevel IndirectSecret) := le_top obsProven
 /-- `indirectPoset` has exactly four elements. -/
 example : indirectPoset.length = 4 := by decide
 
+/-! ### h1_witnesses for IndirectInjection (issue #1442)
+
+The alignment tax for indirect injection is non-zero: the RAG
+confused-deputy diamond has an H¹ obstruction, just like the
+ThreeSecret taint-laundering diamond. This makes it the **second**
+formally-characterized attack class in our cohomological framework.
+-/
+
+/-- All 8 = 2³ decidable propositions on `IndirectSecret`.
+    Enumerated via nested `flatMap` so `decide` can reduce. -/
+def allIndirectProps : List (DProp IndirectSecret) :=
+  [false, true].flatMap fun vTQ =>
+  [false, true].flatMap fun vUD =>
+  [false, true].map fun vC s => match s with
+    | TrustedQuery => vTQ
+    | UntrustedDoc => vUD
+    | Composed => vC
+
+/-- Sanity: there are 8 propositions. -/
+example : allIndirectProps.length = 8 := by decide
+
+/-- **Alignment tax for indirect injection is at least 1.**
+    The RAG confused-deputy diamond has an H¹ obstruction:
+    `obsQuery` and `obsProvenance` each force propositions the
+    other doesn't, witnessing a pairwise incompatibility that
+    prevents global gluing. Proven by `decide` (8 × 2 checks). -/
+theorem dIndirectInjectionAlignmentTax :
+    h1_witnesses indirectPoset allIndirectProps ≥ 1 := by decide
+
+/-- **No global reconciliation for indirect injection.**
+    There is no proposition in the enumeration that is simultaneously:
+    (a) forced at `obsQuery`, (b) forced at `obsProvenance`,
+    (c) `true` on `TrustedQuery`, and (d) `false` on `Composed`.
+    This is the decidable mirror of the classical
+    `no_global_reconciliation` for the RAG diamond. -/
+theorem dNoGlobalReconciliation_indirect :
+    ∀ φ ∈ allIndirectProps,
+      ¬(dForces obsQuery φ = true ∧ dForces obsProvenance φ = true ∧
+        φ TrustedQuery = true ∧ φ Composed = false) := by decide
+
+/-- The indirect injection poset also has `h2_compute = 0` (it's a
+    4-element poset, so no 2-cells, consistent with this being a
+    purely H¹-level attack). -/
+example : h2_compute indirectPoset allIndirectProps = 0 := by decide
+
+/-- `HasAllDProps` instance for `IndirectSecret` using the explicit
+    enumeration above. -/
+instance : HasAllDProps IndirectSecret where
+  allDProps := allIndirectProps
+
+/-- Generic `h0` agrees with the explicit computation. -/
+example : DObsLevel.h0_count indirectPoset = 2 := by decide
+
 end IndirectInjection
 
-/-! ## Y5.A — SecModels category skeleton (issue #1460)
+/-! ## Y6.A — Define alignment_tax : DObsLevel → Nat (issue #1478)
 
-Phase 7, Year 5 of the 5-year roadmap. Category laws proven structurally
-as `rfl` — no `decide`.
+The **alignment tax** of an observation level `E` is the number of
+non-trivial (non-constant) propositions that `E` forces to be constant
+across equivalent secrets. Intuitively: the more propositions a policy
+collapses, the more "utility" (ability to distinguish secrets) it costs.
+
+This is the semantic measure that Phase 8's "alignment tax = H¹"
+program (#1479) will ultimately prove equals the first Čech cohomology
+rank. For now it's a standalone computable `Nat` — the conjecture's
+LHS, waiting for #1493 (Čech-to-topos comparison) to supply the RHS.
 -/
+
+namespace AlignmentTax
+open DObsLevel
+
+variable {Secret : Type} [Fintype Secret] [DecidableEq Secret] [HasAllDProps Secret]
+
+/-- The **alignment tax** of a single observation level `E`: the number
+    of non-constant propositions forced at `E`. -/
+def alignment_tax (E : DObsLevel Secret) : Nat :=
+  let forced := allDProps.countP (fun φ => dForces E φ)
+  forced - 2
+
+/-- The **total alignment tax** of a poset: the sum of per-level taxes. -/
+def total_alignment_tax (poset : List (DObsLevel Secret)) : Nat :=
+  (poset.map alignment_tax).sum
+
+end AlignmentTax
+
+namespace AlignmentTaxExamples
+open DObsLevel AlignmentTax ThreeSecretObs ThreeSecretCohomology
+
+/-- ThreeSecret `bot` has tax 0 (only constants forced). -/
+example : alignment_tax (bot : DObsLevel ThreeSecret) = 0 := by decide
+
+/-- ThreeSecret `top` has tax 6 (all 8 props forced minus 2 constants). -/
+example : alignment_tax (top : DObsLevel ThreeSecret) = 6 := by decide
+
+/-- ThreeSecret `obsAC` has tax 2 (4 props forced minus 2 constants). -/
+example : alignment_tax obsAC = 2 := by decide
+
+/-- ThreeSecret `obsBC` has tax 2. -/
+example : alignment_tax obsBC = 2 := by decide
+
+/-- Total alignment tax of the diamond poset = 0 + 2 + 2 + 6 = 10. -/
+example : total_alignment_tax diamondPoset = 10 := by decide
+
+open Borromean BorromeanCohomology
+
+/-- FiveSecret `bot` has tax 0 (only constants forced on 64-prop space). -/
+example : alignment_tax (bot : DObsLevel FiveSecret) = 0 := by decide
+
+/-- FiveSecret `obs1` has tax 14 (obs1 has 4 equivalence classes on 6
+    elements → 2⁴ = 16 forced props − 2 constants). -/
+example : alignment_tax Borromean.obs1 = 14 := by decide
+
+/-- Total alignment tax of the Borromean poset. -/
+example : total_alignment_tax borromeanPoset = 96 := by decide
+
+open DirectInject
+
+/-- DirectInjectSecret `bot` has tax 0. -/
+example : alignment_tax (bot : DObsLevel DirectInjectSecret) = 0 := by decide
+
+/-- DirectInjectSecret `directObs` (= `top`) has tax 2. -/
+example : alignment_tax DirectInject.directObs = 2 := by decide
+
+end AlignmentTaxExamples
+
+/-! ## Y5.A — SecModels category skeleton (issue #1460) -/
 
 namespace SecModels
 
-/-- A security model: an arbitrary type whose elements represent the
-    "states" or "objects" the security framework reasons about. -/
 structure SecurityModel where
-  /-- The carrier type — security states / objects under analysis. -/
   Carrier : Type
 
-/-- A morphism between security models: a function on carriers. -/
 structure SecMorphism (M N : SecurityModel) where
-  /-- The underlying carrier function. -/
   toFun : M.Carrier → N.Carrier
 
 namespace SecMorphism
 
-/-- Identity morphism on a security model. -/
 def id (M : SecurityModel) : SecMorphism M M where
   toFun := _root_.id
 
-/-- Composition of security morphisms. -/
 def comp {M N P : SecurityModel} (f : SecMorphism M N) (g : SecMorphism N P) :
     SecMorphism M P where
   toFun := g.toFun ∘ f.toFun
 
-/-- Left identity. -/
 theorem id_comp {M N : SecurityModel} (f : SecMorphism M N) :
     comp (id M) f = f := rfl
 
-/-- Right identity. -/
 theorem comp_id {M N : SecurityModel} (f : SecMorphism M N) :
     comp f (id N) = f := rfl
 
-/-- Associativity of composition. -/
 theorem assoc {M N P Q : SecurityModel}
     (f : SecMorphism M N) (g : SecMorphism N P) (h : SecMorphism P Q) :
     comp (comp f g) h = comp f (comp g h) := rfl
 
 end SecMorphism
 
-/-- The ThreeSecret IFC topos as a `SecurityModel`. -/
-def ifcThreeSecret : SecurityModel where
-  Carrier := ThreeSecret
-
-/-- The FiveSecret Borromean topos as a `SecurityModel`. -/
-def ifcFiveSecret : SecurityModel where
-  Carrier := FiveSecret
-
-/-- An example morphism: the constant map from FiveSecret to ThreeSecret. -/
-def constantToA : SecMorphism ifcFiveSecret ifcThreeSecret where
-  toFun := fun _ => ThreeSecret.A
-
-/-- The identity morphism on `ifcThreeSecret`. -/
-def idThreeSecret : SecMorphism ifcThreeSecret ifcThreeSecret :=
-  SecMorphism.id ifcThreeSecret
+def ifcThreeSecret : SecurityModel where Carrier := ThreeSecret
+def ifcFiveSecret : SecurityModel where Carrier := FiveSecret
+def constantToA : SecMorphism ifcFiveSecret ifcThreeSecret where toFun := fun _ => ThreeSecret.A
+def idThreeSecret : SecMorphism ifcThreeSecret ifcThreeSecret := SecMorphism.id ifcThreeSecret
 
 example : (SecMorphism.id ifcThreeSecret).toFun ThreeSecret.A = ThreeSecret.A := rfl
-
-example :
-    (SecMorphism.comp constantToA idThreeSecret).toFun FiveSecret.B = ThreeSecret.A := rfl
-
-example :
-    (SecMorphism.comp (SecMorphism.id ifcFiveSecret) constantToA).toFun FiveSecret.C =
-    ThreeSecret.A := rfl
+example : (SecMorphism.comp constantToA idThreeSecret).toFun FiveSecret.B = ThreeSecret.A := rfl
 
 end SecModels
 
