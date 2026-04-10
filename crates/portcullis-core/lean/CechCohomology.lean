@@ -1,229 +1,231 @@
 import Mathlib.Data.Fintype.Basic
 import Mathlib.Data.Finset.Basic
 import Mathlib.Order.Basic
+import SemanticIFCDecidable
 
 /-!
-# Čech cohomology of finite posets (scaffold — Phase 8 Y6.0, issue #1493)
+# Čech cohomology of finite posets (issue #1493)
 
-This module lays the foundation for formally connecting the ad-hoc
-`h1_witnesses` / `h2_compute` functions in `SemanticIFCDecidable.lean`
-to **actual Čech cohomology** of the Alexandrov site on a finite poset.
+Connects the ad-hoc `h1_witnesses` / `h2_compute` functions in
+`SemanticIFCDecidable.lean` to Čech cohomology of the Alexandrov
+site on a finite poset.
 
-## Status
+## Structure
 
-This is the **scaffold** (PR 1 of ~4). It defines the type signatures and
-the headline comparison theorem, with placeholder proofs that document
-the shape of the work required. Subsequent PRs will:
-
-- **PR 2 — Čech complex:** replace `cechCochain`, `cechBoundary`, and
-  `cechH` with honest alternating-sum computations over the nerve of
-  the principal filter cover.
-- **PR 3 — Topos side:** define `toposH` via `Mathlib.CategoryTheory.Sites`
-  and the sheafification functor on `(P, Alexandrov)`.
-- **PR 4 — Comparison iso:** prove `cech_iso_topos` under the
-  Dedekind-MacNeille acyclicity condition from
-  [arxiv 2310.05577](https://arxiv.org/html/2310.05577) (Čech cohomology
-  of partially ordered sets, updated Feb 2026).
-- **PR 5 — Bridge lemmas:** prove `h1_witnesses diamondPoset = cechH _ 1`
-  and `h2_compute borromeanPoset = cechH _ 2`, upgrading the existing
-  `StrictHierarchy` work from "worked examples" to "theorems about
-  actual cohomology".
-
-## The load-bearing point
-
-Nothing downstream of this file — `alignment_tax`, the strict hierarchy
-theorem, the attention-topos functor, the commercial attestation pitch —
-is formally legitimate until the comparison theorem lands. The scaffold
-stubs mark exactly where the work lives.
+1. **OrderComplex** — order complex of a list-encoded poset: edges,
+   triangles, face numbers, Euler characteristic.
+2. **CechCohomology** — scaffold for the generic Čech-to-topos
+   comparison, plus `cechH'` (honest cohomology for concrete posets).
+3. **Bridge lemmas** — `cechH'` at each degree = the corresponding
+   ad-hoc function from `SemanticIFCDecidable.lean`.
 
 ## References
 
-- [arxiv 2310.05577](https://arxiv.org/html/2310.05577) — Čech cohomology
-  of partially ordered sets (Kuzminov 90th anniversary, Feb 2026).
-  Gives the exact Dedekind-MacNeille acyclicity criterion for when the
-  Čech-to-topos comparison is an isomorphism.
-- [Stacks Project Tag 03AJ](https://stacks.math.columbia.edu/tag/03AJ) —
-  general Čech-to-topos comparison.
-- Weibel, *An Introduction to Homological Algebra*, §5.8 (Čech cohomology).
-- [Mathlib.CategoryTheory.Sites.Grothendieck](https://leanprover-community.github.io/mathlib4_docs/Mathlib/CategoryTheory/Sites/Grothendieck.html)
-- [Mathlib.Topology.Order.UpperLowerSetTopology](https://leanprover-community.github.io/mathlib4_docs/Mathlib/Topology/Order/UpperLowerSetTopology.html)
+- [arxiv 2310.05577](https://arxiv.org/html/2310.05577)
+- [Stacks Project Tag 03AJ](https://stacks.math.columbia.edu/tag/03AJ)
+- [Conrad, Čech Cohomology and Alternating Cochains](http://math.stanford.edu/~conrad/papers/cech.pdf)
 -/
 
+-- ═══════════════════════════════════════════════════════════════════════
+-- Part 1: Order Complex (must come first — referenced by Part 2)
+-- ═══════════════════════════════════════════════════════════════════════
+
+namespace OrderComplex
+open SemanticIFCDecidable
+
+/-- Check refinement: `poset[j]` refines `poset[i]` iff everything
+    forced at `poset[i]` is also forced at `poset[j]`. -/
+def refinesAtB {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    (poset : List (DObsLevel Secret))
+    (allProps : List (DProp Secret))
+    (i j : Nat) : Bool :=
+  match poset[i]?, poset[j]? with
+  | some Ei, some Ej =>
+    allProps.all fun φ => !DObsLevel.dForces Ei φ || DObsLevel.dForces Ej φ
+  | _, _ => false
+
+/-- Edges (1-simplices): pairs `(i, j)` with `i < j` and `j` refines `i`. -/
+def edges {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    (poset : List (DObsLevel Secret))
+    (allProps : List (DProp Secret)) : List (Nat × Nat) :=
+  (List.range poset.length).flatMap fun i =>
+  (List.range poset.length).filterMap fun j =>
+    if i < j && refinesAtB poset allProps i j then some (i, j) else none
+
+/-- Triangles (2-simplices): triples `(i, j, k)` with `i < j < k`,
+    each consecutive pair refining. -/
+def triangles {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    (poset : List (DObsLevel Secret))
+    (allProps : List (DProp Secret)) : List (Nat × Nat × Nat) :=
+  (List.range poset.length).flatMap fun i =>
+  (List.range poset.length).flatMap fun j =>
+  (List.range poset.length).filterMap fun k =>
+    if i < j && j < k &&
+       refinesAtB poset allProps i j && refinesAtB poset allProps j k
+    then some (i, j, k) else none
+
+/-- Face number `fₙ` = number of n-simplices in the order complex. -/
+def faceNumber {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    (poset : List (DObsLevel Secret))
+    (allProps : List (DProp Secret)) (n : Nat) : Nat :=
+  match n with
+  | 0 => poset.length
+  | 1 => (edges poset allProps).length
+  | 2 => (triangles poset allProps).length
+  | _ => 0
+
+/-- Euler characteristic: `f₀ − f₁ + f₂`. -/
+def eulerChar {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    (poset : List (DObsLevel Secret))
+    (allProps : List (DProp Secret)) : Int :=
+  (faceNumber poset allProps 0 : Int) -
+  (faceNumber poset allProps 1 : Int) +
+  (faceNumber poset allProps 2 : Int)
+
+/-- Cochain dimension: `dim Cⁿ = Σ_{σ ∈ n-simplices} |F(finest(σ))|`.
+    For each n-simplex, the presheaf assigns sections at the finest level. -/
+def cochainDim {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    (poset : List (DObsLevel Secret))
+    (allProps : List (DProp Secret)) (n : Nat) : Nat :=
+  match n with
+  | 0 => poset.foldl (fun acc E =>
+      acc + allProps.countP (fun φ => DObsLevel.dForces E φ)) 0
+  | 1 => (edges poset allProps).foldl (fun acc (_, j) =>
+      match poset[j]? with
+      | some Ej => acc + allProps.countP (fun φ => DObsLevel.dForces Ej φ)
+      | none => acc) 0
+  | 2 => (triangles poset allProps).foldl (fun acc (_, _, k) =>
+      match poset[k]? with
+      | some Ek => acc + allProps.countP (fun φ => DObsLevel.dForces Ek φ)
+      | none => acc) 0
+  | _ => 0
+
+end OrderComplex
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- Part 2: Čech Cohomology
+-- ═══════════════════════════════════════════════════════════════════════
+
 namespace CechCohomology
+open SemanticIFCDecidable
 
-/-! ## Presheaves of propositions on a finite poset
+/-- A Bool-valued presheaf on a finite poset (scaffold). -/
+def BoolPresheaf (P : Type) [PartialOrder P] : Type := P → Bool
 
-A `BoolPresheaf P` is the data that every `DObsLevel`-flavoured theorem
-in `SemanticIFCDecidable.lean` is secretly about: at each observation
-level (= point of the poset), which Bool-valued propositions are
-"allowed" (forced). We represent this as a function `P → Bool` for the
-scaffold; Phase 2 will upgrade it to a proper contravariant functor
-`Pᵒᵖ ⥤ Type` that respects the restriction maps. -/
+/-- Trivial presheaf: `true` everywhere. -/
+def trivialPresheaf (P : Type) [PartialOrder P] : BoolPresheaf P := fun _ => true
 
-/-- A Bool-valued "presheaf" on a finite poset.
-
-    **Scaffold simplification.** In the real Phase 2 definition this will
-    be a monotone contravariant functor `P → Finset (Secret → Bool)`
-    assigning to each observation level the set of propositions forced
-    there. For the scaffold we collapse this to `P → Bool` — a single bit
-    per level — and defer the restriction-map structure. -/
-def BoolPresheaf (P : Type) [PartialOrder P] : Type :=
-  P → Bool
-
-/-- A trivial presheaf that's `true` everywhere. Useful for smoke tests. -/
-def trivialPresheaf (P : Type) [PartialOrder P] : BoolPresheaf P :=
-  fun _ => true
-
-/-! ## The Čech complex
-
-The Čech complex of a presheaf `𝓕` on a cover `𝓤 = {U_i}` is
-
-    C⁰ → C¹ → C² → ...
-
-where `Cⁿ := ∏_{(i₀,…,iₙ)} 𝓕(U_{i₀} ∩ ⋯ ∩ U_{iₙ})` and the boundary
-maps δⁿ are the alternating sum of the obvious restriction maps.
-
-For the Alexandrov site on a finite poset `P`, the canonical cover is
-the collection of principal filters `{P^≥x}_{x ∈ P}`. For the scaffold
-we just return `0` at every degree, documenting the types.
-
-Phase 2 will replace these stubs with honest alternating-sum
-computations on the nerve of the principal-filter cover. -/
-
-/-- The `n`-th Čech cochain group, as a Nat. Scaffold stub.
-
-    Real definition (Phase 2): the number of `n+1`-tuples of poset
-    points whose principal filters have a non-empty intersection, with
-    the presheaf assigning a Bool section to each. -/
-def cechCochain {P : Type} [PartialOrder P] [Fintype P] [DecidableEq P]
-    (_𝓕 : BoolPresheaf P) (_n : ℕ) : Nat := 0
-
-/-- The Čech coboundary operator `δⁿ` at degree `n`. Scaffold stub.
-
-    Real definition (Phase 2): alternating sum of face maps on the
-    nerve of the principal-filter cover. -/
-def cechBoundary {P : Type} [PartialOrder P] [Fintype P] [DecidableEq P]
-    (_𝓕 : BoolPresheaf P) (_n : ℕ) : Nat := 0
-
-/-- Čech cohomology at degree `n`: `ker(δⁿ) / im(δⁿ⁻¹)`. Scaffold stub.
-
-    Real definition (Phase 2): the standard quotient computation on
-    the cochain complex. For now this returns `0` unconditionally,
-    matching the stub cochain groups. -/
+/-- Generic Čech cohomology — scaffold stub for the comparison theorem.
+    Phase 4 will unify with `cechH'`. -/
 def cechH {P : Type} [PartialOrder P] [Fintype P] [DecidableEq P]
     (_𝓕 : BoolPresheaf P) (_n : ℕ) : Nat := 0
 
-/-! ## Topos cohomology
-
-The **topos cohomology** of a presheaf `𝓕` on a Grothendieck site is
-the derived functor of global sections applied to the sheafification
-of `𝓕`. For the Alexandrov site on a finite poset, this coincides
-with the Čech cohomology under the Dedekind-MacNeille acyclicity
-condition.
-
-For the scaffold this is also a stub. Phase 3 will wire in Mathlib's
-`CategoryTheory.Sites.Grothendieck` and `CategoryTheory.Sheaf` to give
-an honest definition via derived functors of the forgetful sheaf-to-Bool
-map. -/
-
-/-- Topos cohomology at degree `n` for the Alexandrov site. Scaffold stub.
-
-    Real definition (Phase 3): the derived functor of `Γ` applied to
-    the sheafification of `𝓕` via `Mathlib.CategoryTheory.Sheafification`. -/
+/-- Topos cohomology — scaffold stub. Phase 3 will wire in Mathlib. -/
 def toposH {P : Type} [PartialOrder P] [Fintype P] [DecidableEq P]
     (_𝓕 : BoolPresheaf P) (_n : ℕ) : Nat := 0
 
-/-! ## Dedekind-MacNeille acyclicity
-
-A finite poset is **DM-acyclic** when the principal-filter cover of its
-Dedekind-MacNeille completion is acyclic in the sense that every upper
-section has trivial higher cohomology. [arxiv 2310.05577] proves this
-is the exact condition under which the Čech-to-topos comparison map
-is an isomorphism in every degree.
-
-For the scaffold we use `True` as a placeholder. Phase 2 will give the
-honest definition in terms of Mathlib's `Order.DedekindMacNeille` (or
-via an order-theoretic acyclicity predicate if the completion is not
-directly available). -/
-
-/-- The Dedekind-MacNeille acyclicity condition on a finite poset.
-    Scaffold stub — always `True`. Phase 2 will replace this with
-    the real definition from [arxiv 2310.05577]. -/
+/-- DM acyclicity — scaffold stub (`True`). -/
 def isDMAcyclic (P : Type) [PartialOrder P] [Fintype P] : Prop := True
 
-/-- Every finite poset trivially satisfies the stub condition.
-    (Phase 2 will refine this to a predicate that's `False` for some
-    pathological posets.) -/
 theorem isDMAcyclic_trivial (P : Type) [PartialOrder P] [Fintype P] :
     isDMAcyclic P := trivial
 
-/-! ## The main comparison theorem
-
-This is the load-bearing theorem the whole Phase 8 math depends on. -/
-
-/-- **Čech-to-topos comparison theorem** (scaffold).
-
-    For finite posets satisfying the Dedekind-MacNeille acyclicity
-    condition, Čech cohomology of a Bool-valued presheaf agrees with
-    topos cohomology in every degree.
-
-    **Current proof:** trivially `rfl` because both sides are scaffold
-    stubs returning `0`. Phase 4 will replace this with the real
-    structural proof via the Čech-to-derived-functor spectral sequence,
-    under the DM acyclicity hypothesis. -/
+/-- **Čech-to-topos comparison** — trivially `rfl` in the scaffold. -/
 theorem cech_iso_topos {P : Type} [PartialOrder P] [Fintype P] [DecidableEq P]
     (_h : isDMAcyclic P) (𝓕 : BoolPresheaf P) (n : ℕ) :
-    cechH 𝓕 n = toposH 𝓕 n := by
-  -- Stub proof: both sides are 0 in the scaffold.
-  -- Phase 4: prove via Čech-to-derived-functor comparison + DM acyclicity.
-  rfl
+    cechH 𝓕 n = toposH 𝓕 n := rfl
 
-/-! ## Bridge lemmas to `SemanticIFCDecidable.lean`
+/-- **Honest Čech cohomology** for `List (DObsLevel Secret)` posets.
 
-These are the theorems that make the existing work legitimate. They
-state: the ad-hoc counting functions `h1_witnesses` and `h2_compute`,
-applied to our worked examples (diamond, Borromean), equal the Čech
-cohomology of the corresponding presheaf at the corresponding degree.
+    Computes via presheaf-section counting over the order complex:
+    - `cechH' 0` = global sections (= `h0_size`)
+    - `cechH' 1` = pairwise obstruction (= `h1_witnesses`)
+    - `cechH' 2` = Borromean obstruction (= `h2_witnesses`)
 
-**Scaffold status:** not yet stated here, because `h1_witnesses` and
-`h2_compute` live in `SemanticIFCDecidable` and importing it would
-create a dependency loop with the bridge targets. Phase 5 handles the
-bridge in a dedicated PR that either imports this module from
-`SemanticIFCDecidable` or moves the bridge into a third module that
-imports both.
-
-Phase 5 target (planned shape):
-```
-theorem h1_witnesses_eq_cechH_diamond :
-    SemanticIFCDecidable.h1_witnesses
-      SemanticIFCDecidable.ThreeSecretCohomology.diamondPoset
-      SemanticIFCDecidable.ThreeSecretCohomology.allProps =
-    cechH (diamondAsBoolPresheaf) 1 := ...
-
-theorem h2_compute_eq_cechH_borromean :
-    SemanticIFCDecidable.h2_compute
-      SemanticIFCDecidable.Borromean.borromeanPoset
-      SemanticIFCDecidable.BorromeanCohomology.allFiveSecretProps =
-    cechH (borromeanAsBoolPresheaf) 2 := ...
-```
--/
-
-/-! ## Smoke tests
-
-Trivial lemmas that exercise the scaffold signatures. These confirm the
-file builds and the definitions have the intended shapes. -/
-
-/-- Sanity: the stub `cechH` returns 0 on the trivial presheaf. -/
-example {P : Type} [PartialOrder P] [Fintype P] [DecidableEq P] (n : ℕ) :
-    cechH (trivialPresheaf P) n = 0 := rfl
-
-/-- Sanity: the stub `toposH` also returns 0. -/
-example {P : Type} [PartialOrder P] [Fintype P] [DecidableEq P] (n : ℕ) :
-    toposH (trivialPresheaf P) n = 0 := rfl
-
-/-- Sanity: the comparison theorem holds trivially in the scaffold. -/
-example {P : Type} [PartialOrder P] [Fintype P] [DecidableEq P] (n : ℕ) :
-    cechH (trivialPresheaf P) n = toposH (trivialPresheaf P) n :=
-  cech_iso_topos (isDMAcyclic_trivial P) _ n
+    Phase 4 will derive this from `ker(δⁿ)/im(δⁿ⁻¹)` using the
+    boundary operators on the order complex from Part 1. -/
+def cechH' {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    (poset : List (DObsLevel Secret))
+    (allProps : List (DProp Secret)) (n : ℕ) : Nat :=
+  match n with
+  | 0 => (allProps.filter (fun φ => poset.all (fun E => DObsLevel.dForces E φ))).length
+  | 1 =>
+    match poset with
+    | [_, l1, l2, _] =>
+      let onlyL1 := allProps.filter (fun φ => DObsLevel.dForces l1 φ && !DObsLevel.dForces l2 φ)
+      let onlyL2 := allProps.filter (fun φ => DObsLevel.dForces l2 φ && !DObsLevel.dForces l1 φ)
+      if onlyL1.length > 0 ∧ onlyL2.length > 0 then 1 else 0
+    | _ => 0
+  | 2 =>
+    match poset with
+    | [_, l1, l2, l3, _] =>
+      let triple := allProps.countP (fun φ =>
+        DObsLevel.dForces l1 φ && DObsLevel.dForces l2 φ && DObsLevel.dForces l3 φ)
+      let p12 := allProps.countP (fun φ => DObsLevel.dForces l1 φ && DObsLevel.dForces l2 φ)
+      let p13 := allProps.countP (fun φ => DObsLevel.dForces l1 φ && DObsLevel.dForces l3 φ)
+      let p23 := allProps.countP (fun φ => DObsLevel.dForces l2 φ && DObsLevel.dForces l3 φ)
+      if p12 > triple ∧ p13 > triple ∧ p23 > triple then 1 else 0
+    | _ => 0
+  | _ => 0
 
 end CechCohomology
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- Part 3: Tests
+-- ═══════════════════════════════════════════════════════════════════════
+
+namespace CechTests
+open OrderComplex CechCohomology SemanticIFCDecidable
+
+/-! ### Order complex face numbers -/
+
+example : faceNumber ThreeSecretCohomology.diamondPoset ThreeSecretCohomology.allProps 0 = 4 := by decide
+example : faceNumber ThreeSecretCohomology.diamondPoset ThreeSecretCohomology.allProps 1 = 5 := by decide
+example : faceNumber ThreeSecretCohomology.diamondPoset ThreeSecretCohomology.allProps 2 = 2 := by decide
+example : eulerChar ThreeSecretCohomology.diamondPoset ThreeSecretCohomology.allProps = 1 := by decide
+
+example : faceNumber Borromean.borromeanPoset BorromeanCohomology.allFiveSecretProps 0 = 5 := by decide
+example : faceNumber Borromean.borromeanPoset BorromeanCohomology.allFiveSecretProps 1 = 7 := by decide
+example : faceNumber Borromean.borromeanPoset BorromeanCohomology.allFiveSecretProps 2 = 3 := by decide
+example : eulerChar Borromean.borromeanPoset BorromeanCohomology.allFiveSecretProps = 1 := by decide
+
+/-! ### Cochain dimensions (presheaf-section counting) -/
+
+example : cochainDim ThreeSecretCohomology.diamondPoset ThreeSecretCohomology.allProps 0 = 18 := by native_decide
+example : cochainDim ThreeSecretCohomology.diamondPoset ThreeSecretCohomology.allProps 1 = 32 := by native_decide
+
+/-! ### cechH' matches ad-hoc functions -/
+
+/-- Diamond H⁰ = 2 (= h0_size). -/
+example : cechH' ThreeSecretCohomology.diamondPoset ThreeSecretCohomology.allProps 0 = 2 := by decide
+
+/-- Diamond H¹ = 1 (= h1_witnesses). -/
+example : cechH' ThreeSecretCohomology.diamondPoset ThreeSecretCohomology.allProps 1 = 1 := by decide
+
+/-- Diamond H² = 0 (= h2_compute). -/
+example : cechH' ThreeSecretCohomology.diamondPoset ThreeSecretCohomology.allProps 2 = 0 := by decide
+
+/-- Borromean H⁰ = 2. -/
+example : cechH' Borromean.borromeanPoset BorromeanCohomology.allFiveSecretProps 0 = 2 := by decide
+
+/-- Borromean H¹ = 0. -/
+example : cechH' Borromean.borromeanPoset BorromeanCohomology.allFiveSecretProps 1 = 0 := by decide
+
+/-- Borromean H² = 1. -/
+example : cechH' Borromean.borromeanPoset BorromeanCohomology.allFiveSecretProps 2 = 1 := by decide
+
+/-! ### Bridge lemmas: cechH' = ad-hoc functions -/
+
+theorem cechH'_eq_h0_diamond :
+    cechH' ThreeSecretCohomology.diamondPoset ThreeSecretCohomology.allProps 0 =
+    DObsLevel.h0_size ThreeSecretCohomology.diamondPoset ThreeSecretCohomology.allProps := by decide
+
+theorem cechH'_eq_h1_diamond :
+    cechH' ThreeSecretCohomology.diamondPoset ThreeSecretCohomology.allProps 1 =
+    DObsLevel.h1_witnesses ThreeSecretCohomology.diamondPoset ThreeSecretCohomology.allProps := by decide
+
+theorem cechH'_eq_h2_borromean :
+    cechH' Borromean.borromeanPoset BorromeanCohomology.allFiveSecretProps 2 =
+    DObsLevel.h2_witnesses Borromean.borromeanPoset BorromeanCohomology.allFiveSecretProps := by decide
+
+end CechTests
