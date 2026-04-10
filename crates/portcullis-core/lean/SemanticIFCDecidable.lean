@@ -2493,4 +2493,50 @@ example : (SecMorphism.comp constantToA idThreeSecret).toFun FiveSecret.B = Thre
 
 end SecModels
 
+/-! ## Y3.A — AttentionTopos skeleton (issue #1454) -/
+
+namespace AttentionTopos
+
+structure AttentionPattern (n : Nat) where
+  weights : Fin n → Fin n → Float
+
+def AttentionPattern.rowsEq {n : Nat} (A : AttentionPattern n) (i j : Fin n) : Prop :=
+  ∀ k, A.weights i k = A.weights j k
+
+instance {n : Nat} : LE (AttentionPattern n) where
+  le A B := ∀ i j : Fin n, B.rowsEq i j → A.rowsEq i j
+
+def AttentionPattern.equiv {n : Nat} (A B : AttentionPattern n) : Prop :=
+  ∀ i j, A.rowsEq i j ↔ B.rowsEq i j
+
+def threeSecretAttention : AttentionPattern 3 where
+  weights := fun i j => match i, j with
+    | ⟨0, _⟩, ⟨0, _⟩ => 0.9 | ⟨0, _⟩, ⟨1, _⟩ => 0.05 | ⟨0, _⟩, ⟨2, _⟩ => 0.05
+    | ⟨1, _⟩, ⟨0, _⟩ => 0.45 | ⟨1, _⟩, ⟨1, _⟩ => 0.10 | ⟨1, _⟩, ⟨2, _⟩ => 0.45
+    | ⟨2, _⟩, ⟨0, _⟩ => 0.05 | ⟨2, _⟩, ⟨1, _⟩ => 0.05 | ⟨2, _⟩, ⟨2, _⟩ => 0.90
+    | _, _ => 0.0
+
+def identityAttention (n : Nat) : AttentionPattern n where
+  weights := fun i j => if i = j then 1.0 else 0.0
+
+def uniformAttention (n : Nat) : AttentionPattern n where
+  weights := fun _ _ => 1.0 / (n.toFloat)
+
+example : threeSecretAttention.weights ⟨0, by decide⟩ ⟨0, by decide⟩ = 0.9 := rfl
+
+example : (identityAttention 3).weights ⟨0, by decide⟩ ⟨0, by decide⟩ = 1.0 := by
+  simp [identityAttention]
+
+example : (identityAttention 3).weights ⟨0, by decide⟩ ⟨1, by decide⟩ = 0.0 := by
+  simp [identityAttention]
+
+theorem AttentionPattern.le_refl {n : Nat} (A : AttentionPattern n) : A ≤ A :=
+  fun _ _ h => h
+
+theorem AttentionPattern.le_trans {n : Nat} {A B C : AttentionPattern n}
+    (hAB : A ≤ B) (hBC : B ≤ C) : A ≤ C :=
+  fun i j h => hAB i j (hBC i j h)
+
+end AttentionTopos
+
 end SemanticIFCDecidable
