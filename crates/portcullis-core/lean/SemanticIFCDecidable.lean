@@ -1592,73 +1592,285 @@ example :
 
 end BorromeanChainComplex
 
+/-! ## IndirectInjectionPoset — the RAG attack class
+
+Models RAG-style indirect injection as a 3-point Secret type with two
+intermediate observation levels:
+
+- `obsQuery` — the model observer sees "this looks like a query"; it
+  confuses `TrustedQuery` with `Composed` (the view it actually gets).
+- `obsProvenance` — a provenance tracker sees "this came from an
+  untrusted source"; it confuses `UntrustedDoc` with `Composed`.
+
+Neither observer sees the full picture: one misses the injection
+because it looks like a query, the other misses that the query was
+ever processed at all. The diamond of observation levels is the
+algebraic signature of the RAG confused-deputy attack, and parallels
+the `ThreeSecret` taint-laundering diamond but with the roles of the
+three secrets reinterpreted for retrieval-augmented generation.
+
+This is the second concretely-formalized attack class after the
+diamond/taint-laundering in `ThreeSecretObs` (issue #1441).
+-/
+
+inductive IndirectSecret where
+  /-- A query from an authenticated user. -/
+  | TrustedQuery
+  /-- A retrieved document with potential injection payload. -/
+  | UntrustedDoc
+  /-- The (query, doc) pair the model actually sees. -/
+  | Composed
+  deriving DecidableEq, Repr
+
+instance : Fintype IndirectSecret where
+  elems := {IndirectSecret.TrustedQuery, IndirectSecret.UntrustedDoc, IndirectSecret.Composed}
+  complete := fun s => by cases s <;> decide
+
+instance : FiniteSecret IndirectSecret where
+  toFintype := inferInstance
+  toDecidableEq := inferInstance
+
+namespace IndirectInjection
+open DObsLevel IndirectSecret
+
+/-- Observe only the query: `TrustedQuery` and `Composed` look the same
+    to an observer that sees only the query text (it can't tell whether
+    the query was answered directly or composed with a retrieved doc). -/
+def obsQuery : DObsLevel IndirectSecret where
+  rel s₁ s₂ := match s₁, s₂ with
+    | TrustedQuery, TrustedQuery => true
+    | UntrustedDoc, UntrustedDoc => true
+    | Composed, Composed => true
+    | TrustedQuery, Composed => true
+    | Composed, TrustedQuery => true
+    | _, _ => false
+  refl s := by cases s <;> rfl
+  symm s₁ s₂ h := by cases s₁ <;> cases s₂ <;> first | rfl | exact h
+  trans s₁ s₂ s₃ h₁ h₂ := by
+    cases s₁ <;> cases s₂ <;> cases s₃ <;>
+      first | rfl | (exfalso; exact Bool.false_ne_true h₁)
+            | (exfalso; exact Bool.false_ne_true h₂)
+
+/-- Observe only the document provenance: `UntrustedDoc` and `Composed`
+    look the same to an observer tracking provenance (both involve the
+    untrusted document, regardless of whether it was composed with a
+    query). -/
+def obsProvenance : DObsLevel IndirectSecret where
+  rel s₁ s₂ := match s₁, s₂ with
+    | TrustedQuery, TrustedQuery => true
+    | UntrustedDoc, UntrustedDoc => true
+    | Composed, Composed => true
+    | UntrustedDoc, Composed => true
+    | Composed, UntrustedDoc => true
+    | _, _ => false
+  refl s := by cases s <;> rfl
+  symm s₁ s₂ h := by cases s₁ <;> cases s₂ <;> first | rfl | exact h
+  trans s₁ s₂ s₃ h₁ h₂ := by
+    cases s₁ <;> cases s₂ <;> cases s₃ <;>
+      first | rfl | (exfalso; exact Bool.false_ne_true h₁)
+            | (exfalso; exact Bool.false_ne_true h₂)
+
+/-- The four-point diamond of observation levels for the indirect
+    injection attack class: `bot ≤ obsQuery, obsProvenance ≤ top`. -/
+def indirectPoset : List (DObsLevel IndirectSecret) :=
+  [(bot : DObsLevel IndirectSecret), obsQuery, obsProvenance,
+   (top : DObsLevel IndirectSecret)]
+
+/-! ### Sanity checks
+
+Decidable computations on the four IndirectSecret observation levels.
+Each example runs as a pure `decide` reduction on `Bool` values.
+-/
+
+example : (bot : DObsLevel IndirectSecret).rel TrustedQuery UntrustedDoc = true := by decide
+example : (bot : DObsLevel IndirectSecret).rel UntrustedDoc Composed = true := by decide
+
+example : obsQuery.rel TrustedQuery Composed = true := by decide
+example : obsQuery.rel Composed TrustedQuery = true := by decide
+example : obsQuery.rel TrustedQuery UntrustedDoc = false := by decide
+example : obsQuery.rel UntrustedDoc Composed = false := by decide
+
+example : obsProvenance.rel UntrustedDoc Composed = true := by decide
+example : obsProvenance.rel Composed UntrustedDoc = true := by decide
+example : obsProvenance.rel TrustedQuery UntrustedDoc = false := by decide
+example : obsProvenance.rel TrustedQuery Composed = false := by decide
+
+example : (top : DObsLevel IndirectSecret).rel TrustedQuery TrustedQuery = true := by decide
+example : (top : DObsLevel IndirectSecret).rel TrustedQuery Composed = false := by decide
+
+/-- `obsQuery` and `obsProvenance` distinguish different secrets — they
+    are incomparable in the refinement order (just like `obsAC` and
+    `obsBC` in the ThreeSecret diamond). -/
+example : obsQuery.rel TrustedQuery Composed ≠ obsProvenance.rel TrustedQuery Composed := by decide
+example : obsProvenance.rel UntrustedDoc Composed ≠ obsQuery.rel UntrustedDoc Composed := by decide
+
+/-- Diamond structure: both intermediate levels sit between `bot` and `top`. -/
+example : (bot : DObsLevel IndirectSecret) ≤ obsQuery := bot_le obsQuery
+example : (bot : DObsLevel IndirectSecret) ≤ obsProvenance := bot_le obsProvenance
+example : obsQuery ≤ (top : DObsLevel IndirectSecret) := le_top obsQuery
+example : obsProvenance ≤ (top : DObsLevel IndirectSecret) := le_top obsProvenance
+
+/-- `indirectPoset` has exactly four elements. -/
+example : indirectPoset.length = 4 := by decide
+
+/-! ### h1_witnesses for IndirectInjection (issue #1442)
+
+The alignment tax for indirect injection is non-zero: the RAG
+confused-deputy diamond has an H¹ obstruction, just like the
+ThreeSecret taint-laundering diamond. This makes it the **second**
+formally-characterized attack class in our cohomological framework.
+-/
+
+/-- All 8 = 2³ decidable propositions on `IndirectSecret`.
+    Enumerated via nested `flatMap` so `decide` can reduce. -/
+def allIndirectProps : List (DProp IndirectSecret) :=
+  [false, true].flatMap fun vTQ =>
+  [false, true].flatMap fun vUD =>
+  [false, true].map fun vC s => match s with
+    | TrustedQuery => vTQ
+    | UntrustedDoc => vUD
+    | Composed => vC
+
+/-- Sanity: there are 8 propositions. -/
+example : allIndirectProps.length = 8 := by decide
+
+/-- **Alignment tax for indirect injection is at least 1.**
+    The RAG confused-deputy diamond has an H¹ obstruction:
+    `obsQuery` and `obsProvenance` each force propositions the
+    other doesn't, witnessing a pairwise incompatibility that
+    prevents global gluing. Proven by `decide` (8 × 2 checks). -/
+theorem dIndirectInjectionAlignmentTax :
+    h1_witnesses indirectPoset allIndirectProps ≥ 1 := by decide
+
+/-- **No global reconciliation for indirect injection.**
+    There is no proposition in the enumeration that is simultaneously:
+    (a) forced at `obsQuery`, (b) forced at `obsProvenance`,
+    (c) `true` on `TrustedQuery`, and (d) `false` on `Composed`.
+    This is the decidable mirror of the classical
+    `no_global_reconciliation` for the RAG diamond. -/
+theorem dNoGlobalReconciliation_indirect :
+    ∀ φ ∈ allIndirectProps,
+      ¬(dForces obsQuery φ = true ∧ dForces obsProvenance φ = true ∧
+        φ TrustedQuery = true ∧ φ Composed = false) := by decide
+
+/-- The indirect injection poset also has `h2_compute = 0` (it's a
+    4-element poset, so no 2-cells, consistent with this being a
+    purely H¹-level attack). -/
+example : h2_compute indirectPoset allIndirectProps = 0 := by decide
+
+/-- `HasAllDProps` instance for `IndirectSecret` using the explicit
+    enumeration above. -/
+instance : HasAllDProps IndirectSecret where
+  allDProps := allIndirectProps
+
+/-- Generic `h0` agrees with the explicit computation. -/
+example : DObsLevel.h0_count indirectPoset = 2 := by decide
+
+end IndirectInjection
+
+/-! ## Y6.A — Define alignment_tax : DObsLevel → Nat (issue #1478)
+
+The **alignment tax** of an observation level `E` is the number of
+non-trivial (non-constant) propositions that `E` forces to be constant
+across equivalent secrets. Intuitively: the more propositions a policy
+collapses, the more "utility" (ability to distinguish secrets) it costs.
+
+This is the semantic measure that Phase 8's "alignment tax = H¹"
+program (#1479) will ultimately prove equals the first Čech cohomology
+rank. For now it's a standalone computable `Nat` — the conjecture's
+LHS, waiting for #1493 (Čech-to-topos comparison) to supply the RHS.
+-/
+
+namespace AlignmentTax
+open DObsLevel
+
+variable {Secret : Type} [Fintype Secret] [DecidableEq Secret] [HasAllDProps Secret]
+
+/-- The **alignment tax** of a single observation level `E`: the number
+    of non-constant propositions forced at `E`. -/
+def alignment_tax (E : DObsLevel Secret) : Nat :=
+  let forced := allDProps.countP (fun φ => dForces E φ)
+  forced - 2
+
+/-- The **total alignment tax** of a poset: the sum of per-level taxes. -/
+def total_alignment_tax (poset : List (DObsLevel Secret)) : Nat :=
+  (poset.map alignment_tax).sum
+
+end AlignmentTax
+
+namespace AlignmentTaxExamples
+open DObsLevel AlignmentTax ThreeSecretObs ThreeSecretCohomology
+
+/-- ThreeSecret `bot` has tax 0 (only constants forced). -/
+example : alignment_tax (bot : DObsLevel ThreeSecret) = 0 := by decide
+
+/-- ThreeSecret `top` has tax 6 (all 8 props forced minus 2 constants). -/
+example : alignment_tax (top : DObsLevel ThreeSecret) = 6 := by decide
+
+/-- ThreeSecret `obsAC` has tax 2 (4 props forced minus 2 constants). -/
+example : alignment_tax obsAC = 2 := by decide
+
+/-- ThreeSecret `obsBC` has tax 2. -/
+example : alignment_tax obsBC = 2 := by decide
+
+/-- Total alignment tax of the diamond poset = 0 + 2 + 2 + 6 = 10. -/
+example : total_alignment_tax diamondPoset = 10 := by decide
+
+open Borromean BorromeanCohomology
+
+/-- FiveSecret `bot` has tax 0 (only constants forced on 64-prop space). -/
+example : alignment_tax (bot : DObsLevel FiveSecret) = 0 := by decide
+
+/-- FiveSecret `obs1` has tax 14 (obs1 has 4 equivalence classes on 6
+    elements → 2⁴ = 16 forced props − 2 constants). -/
+example : alignment_tax Borromean.obs1 = 14 := by decide
+
+/-- Total alignment tax of the Borromean poset. -/
+example : total_alignment_tax borromeanPoset = 96 := by decide
+
+open DirectInject
+
+/-- DirectInjectSecret `bot` has tax 0. -/
+example : alignment_tax (bot : DObsLevel DirectInjectSecret) = 0 := by decide
+
+/-- DirectInjectSecret `directObs` (= `top`) has tax 2. -/
+example : alignment_tax DirectInject.directObs = 2 := by decide
+
+end AlignmentTaxExamples
+
 /-! ## Y2.B — Strict hierarchy theorem H¹ ⊊ H² (issue #1453)
 
-Phase 4, Year 2 of the 5-year roadmap. Packages the individual
-cohomological facts from prior PRs (#1469 h2_witnesses, #1472 h2_compute,
-and existing `ThreeSecretCohomology` work) into a **strict hierarchy
-theorem**: no single cohomological degree classifies all attack classes.
-
-The individual `by decide` component theorems already exist. This
-module adds the structural packaging — existential witnesses and an
-`attack_complexity` invariant — with proofs that are pure structural
-logic (existential introduction, `simp`, `omega`).
+Packages the individual cohomological facts from prior PRs into a
+strict hierarchy theorem. Category laws proven structurally.
 -/
 
 namespace StrictHierarchy
 open DObsLevel Borromean BorromeanCohomology ThreeSecretCohomology
 
-/-! ### Direction 1: diamond H¹ positive, H² zero -/
-
-/-- Diamond has `H¹ ≥ 1`. -/
 theorem diamond_h1_pos : h1_witnesses diamondPoset allProps ≥ 1 := by decide
-
-/-- Diamond has `H² = 0` — re-export from #1472 (Y2.A). -/
 theorem diamond_h2_zero : h2_compute diamondPoset allProps = 0 := by decide
 
-/-! ### Direction 2: Borromean H² positive, H¹ zero -/
-
-/-- Borromean has `H¹ = 0` — re-export from #1469. -/
 theorem borromean_h1_zero :
-    h1_witnesses borromeanPoset allFiveSecretProps = 0 :=
-  dBorromeanH1Zero
+    h1_witnesses borromeanPoset allFiveSecretProps = 0 := dBorromeanH1Zero
 
-/-- Borromean has `H² ≥ 1` via the witness count — re-export from #1469. -/
 theorem borromean_h2_pos :
-    h2_witnesses borromeanPoset allFiveSecretProps ≥ 1 :=
-  dBorromeanH2
+    h2_witnesses borromeanPoset allFiveSecretProps ≥ 1 := dBorromeanH2
 
-/-- Borromean also has `h2_compute ≥ 1` (chain-complex version).
-    Structural: rewrite along the h2_compute = h2_witnesses equality
-    from Y2.A, then apply the witness-count positivity. -/
 theorem borromean_h2_compute_pos :
     h2_compute borromeanPoset allFiveSecretProps ≥ 1 := by
   rw [BorromeanChainComplex.h2_compute_matches_witnesses_borromean]
   exact dBorromeanH2
 
-/-! ### The strict hierarchy theorem
-
-Pure structural packaging — no new `decide` invocations, only
-existential introduction from the directional facts above. -/
-
-/-- **Strict hierarchy theorem.** There exist a poset and enumeration
-    where `H¹ = 0` but `H² ≥ 1` — i.e. H² catches obstructions
-    invisible to H¹. Witnessed by the Borromean poset. -/
 theorem hierarchy_strict :
     ∃ (poset : List (DObsLevel FiveSecret)) (props : List (DProp FiveSecret)),
       h1_witnesses poset props = 0 ∧ h2_compute poset props ≥ 1 :=
   ⟨borromeanPoset, allFiveSecretProps, borromean_h1_zero, borromean_h2_compute_pos⟩
 
-/-- **Dual hierarchy theorem.** Symmetrically: there exist a poset and
-    enumeration for which `H¹ ≥ 1` but `H² = 0`. Witnessed by the
-    diamond. -/
 theorem hierarchy_strict_dual :
     ∃ (poset : List (DObsLevel ThreeSecret)) (props : List (DProp ThreeSecret)),
       h1_witnesses poset props ≥ 1 ∧ h2_compute poset props = 0 :=
   ⟨diamondPoset, allProps, diamond_h1_pos, diamond_h2_zero⟩
 
-/-- **Combined non-degeneracy:** the two hierarchy directions together
-    exhibit the full non-degeneracy of the H⁰/H¹/H² ladder. -/
 theorem hierarchy_nondegenerate :
     (∃ (poset : List (DObsLevel FiveSecret)) (props : List (DProp FiveSecret)),
         h1_witnesses poset props = 0 ∧ h2_compute poset props ≥ 1) ∧
@@ -1666,13 +1878,6 @@ theorem hierarchy_nondegenerate :
         h1_witnesses poset props ≥ 1 ∧ h2_compute poset props = 0) :=
   ⟨hierarchy_strict, hierarchy_strict_dual⟩
 
-/-! ### Attack complexity degree
-
-Structural invariant: the minimum cohomological dimension at which a
-poset exhibits an obstruction. Diamond → `1`, Borromean → `2`.
-Different values ⇒ structurally distinct attack families. -/
-
-/-- The attack-complexity degree for ThreeSecret posets. -/
 def attack_complexity_threeSecret
     (poset : List (DObsLevel ThreeSecret))
     (props : List (DProp ThreeSecret)) : Nat :=
@@ -1680,7 +1885,6 @@ def attack_complexity_threeSecret
   else if h2_compute poset props ≥ 1 then 2
   else 0
 
-/-- The attack-complexity degree for FiveSecret posets. -/
 def attack_complexity_fiveSecret
     (poset : List (DObsLevel FiveSecret))
     (props : List (DProp FiveSecret)) : Nat :=
@@ -1688,16 +1892,11 @@ def attack_complexity_fiveSecret
   else if h2_compute poset props ≥ 1 then 2
   else 0
 
-/-- Diamond is an H¹-class attack. -/
 theorem diamond_is_h1_class :
     attack_complexity_threeSecret diamondPoset allProps = 1 := by
   unfold attack_complexity_threeSecret
   simp [diamond_h1_pos]
 
-/-- Borromean is an H²-class attack.
-    Structural proof: the first `if` branch fails because
-    `h1_witnesses = 0`, the second branch succeeds because
-    `h2_compute ≥ 1`. -/
 theorem borromean_is_h2_class :
     attack_complexity_fiveSecret borromeanPoset allFiveSecretProps = 2 := by
   unfold attack_complexity_fiveSecret
@@ -1705,10 +1904,6 @@ theorem borromean_is_h2_class :
   have h2 : h2_compute borromeanPoset allFiveSecretProps ≥ 1 := borromean_h2_compute_pos
   simp [h1, h2]
 
-/-- **Attack-complexity non-degeneracy.** Diamond and Borromean live
-    in different attack-complexity classes — `1` vs `2`. This is the
-    structural statement that the cohomological ladder is non-trivial:
-    no single dimension subsumes the others. -/
 example : attack_complexity_threeSecret diamondPoset allProps ≠
           attack_complexity_fiveSecret borromeanPoset allFiveSecretProps := by
   rw [diamond_is_h1_class, borromean_is_h2_class]
