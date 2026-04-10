@@ -1,6 +1,7 @@
 import Mathlib.Data.Fintype.Basic
 import Mathlib.Data.Finset.Basic
 import Mathlib.Order.Basic
+import SemanticIFCDecidable
 
 /-!
 # Čech cohomology of finite posets (scaffold — Phase 8 Y6.0, issue #1493)
@@ -227,3 +228,142 @@ example {P : Type} [PartialOrder P] [Fintype P] [DecidableEq P] (n : ℕ) :
   cech_iso_topos (isDMAcyclic_trivial P) _ n
 
 end CechCohomology
+
+/-! ## Order complex of a finite poset (Phase 2 content for #1493)
+
+The **order complex** Δ(P) of a finite poset P is the abstract
+simplicial complex whose n-simplices are the strictly increasing
+chains p₀ < p₁ < ... < pₙ in P. Its simplicial cohomology is the
+Čech cohomology of the Alexandrov site.
+
+For List-encoded posets (as used in `SemanticIFCDecidable.lean`), we
+define the order complex concretely via index chains and compute
+the face numbers (number of n-simplices). Future work connects these
+to the Čech boundary operators.
+
+This is the first non-stub content toward the honest Čech complex.
+-/
+
+namespace OrderComplex
+
+/-- Check refinement via index-based comparison on a list-encoded poset.
+    `refinesAtB poset allProps i j` returns `true` iff `poset[j]` refines
+    `poset[i]` — i.e. everything forced at `poset[i]` is also forced at
+    `poset[j]` (the finer level forces more). This means `poset[i] ≤ poset[j]`
+    in the coarseness preorder.
+
+    Uses the forcing-based proxy for ≤ since `DObsLevel` lacks a computable
+    `DecidableLE` in general. -/
+def refinesAtB {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    (poset : List (SemanticIFCDecidable.DObsLevel Secret))
+    (allProps : List (SemanticIFCDecidable.DProp Secret))
+    (i j : Nat) : Bool :=
+  match poset[i]?, poset[j]? with
+  | some Ei, some Ej =>
+    -- "j refines i" = everything forced at Ei is also forced at Ej
+    allProps.all fun φ =>
+      !SemanticIFCDecidable.DObsLevel.dForces Ei φ ||
+       SemanticIFCDecidable.DObsLevel.dForces Ej φ
+  | _, _ => false
+
+/-- **Edges** of the order complex: pairs `(i, j)` with `i < j` where
+    `poset[j]` refines `poset[i]` (i.e. `j` is finer than `i`). These
+    are the 1-simplices of Δ(P).
+
+    For the diamond `[bot, obsAC, obsBC, top]`, the edges are:
+    `(0,1), (0,2), (0,3), (1,3), (2,3)` — bot < obsAC, bot < obsBC,
+    bot < top, obsAC < top, obsBC < top. -/
+def edges {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    (poset : List (SemanticIFCDecidable.DObsLevel Secret))
+    (allProps : List (SemanticIFCDecidable.DProp Secret)) :
+    List (Nat × Nat) :=
+  (List.range poset.length).flatMap fun i =>
+  (List.range poset.length).filterMap fun j =>
+    if i < j && refinesAtB poset allProps i j then some (i, j) else none
+
+/-- **Triangles** of the order complex: triples `(i, j, k)` with
+    `i < j < k` where each consecutive pair refines. These are the
+    2-simplices of Δ(P).
+
+    For the diamond: `(0,1,3), (0,2,3)` — the two maximal chains
+    through the diamond. -/
+def triangles {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    (poset : List (SemanticIFCDecidable.DObsLevel Secret))
+    (allProps : List (SemanticIFCDecidable.DProp Secret)) :
+    List (Nat × Nat × Nat) :=
+  (List.range poset.length).flatMap fun i =>
+  (List.range poset.length).flatMap fun j =>
+  (List.range poset.length).filterMap fun k =>
+    if i < j && j < k &&
+       refinesAtB poset allProps i j &&
+       refinesAtB poset allProps j k
+    then some (i, j, k) else none
+
+/-- The **face numbers** of the order complex: `faceNumber P n` is the
+    number of `n`-simplices. `f₀ = vertices, f₁ = edges, f₂ = triangles`.
+    These are the dimensions of the Čech cochain groups `Cⁿ`. -/
+def faceNumber {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    (poset : List (SemanticIFCDecidable.DObsLevel Secret))
+    (allProps : List (SemanticIFCDecidable.DProp Secret))
+    (n : Nat) : Nat :=
+  match n with
+  | 0 => poset.length
+  | 1 => (edges poset allProps).length
+  | 2 => (triangles poset allProps).length
+  | _ => 0  -- higher simplices: future work
+
+/-- The **Euler characteristic** of the order complex: `Σ (-1)ⁿ fₙ`.
+    For a connected poset this equals 1 + (f₁ - f₂ + ...) adjustments.
+    The key relation to cohomology: `χ = Σ (-1)ⁿ hⁿ` (when defined
+    over the right coefficient field). -/
+def eulerChar {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    (poset : List (SemanticIFCDecidable.DObsLevel Secret))
+    (allProps : List (SemanticIFCDecidable.DProp Secret)) : Int :=
+  (faceNumber poset allProps 0 : Int) -
+  (faceNumber poset allProps 1 : Int) +
+  (faceNumber poset allProps 2 : Int)
+
+end OrderComplex
+
+/-! ## Order complex smoke tests on concrete posets -/
+
+namespace OrderComplexExamples
+open OrderComplex SemanticIFCDecidable
+
+/-! ### Diamond (ThreeSecret) -/
+
+/-- Diamond has 4 vertices. -/
+example : faceNumber ThreeSecretCohomology.diamondPoset
+    ThreeSecretCohomology.allProps 0 = 4 := by decide
+
+/-- Diamond edge count (f₁). -/
+example : faceNumber ThreeSecretCohomology.diamondPoset
+    ThreeSecretCohomology.allProps 1 = 5 := by decide
+
+/-- Diamond triangle count (f₂). -/
+example : faceNumber ThreeSecretCohomology.diamondPoset
+    ThreeSecretCohomology.allProps 2 = 2 := by decide
+
+/-- Diamond Euler characteristic: f₀ − f₁ + f₂ = 4 − 5 + 2 = 1. -/
+example : eulerChar ThreeSecretCohomology.diamondPoset
+    ThreeSecretCohomology.allProps = 1 := by decide
+
+/-! ### Borromean (FiveSecret) -/
+
+/-- Borromean has 5 vertices. -/
+example : faceNumber Borromean.borromeanPoset
+    BorromeanCohomology.allFiveSecretProps 0 = 5 := by decide
+
+/-- Borromean edge count (f₁). -/
+example : faceNumber Borromean.borromeanPoset
+    BorromeanCohomology.allFiveSecretProps 1 = 7 := by decide
+
+/-- Borromean triangle count (f₂). -/
+example : faceNumber Borromean.borromeanPoset
+    BorromeanCohomology.allFiveSecretProps 2 = 3 := by decide
+
+/-- Borromean Euler characteristic. -/
+example : eulerChar Borromean.borromeanPoset
+    BorromeanCohomology.allFiveSecretProps = 1 := by decide
+
+end OrderComplexExamples
