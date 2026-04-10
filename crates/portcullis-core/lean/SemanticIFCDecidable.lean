@@ -1768,4 +1768,74 @@ example : DObsLevel.h0_count indirectPoset = 2 := by decide
 
 end IndirectInjection
 
+/-! ## Y6.A — Define alignment_tax : DObsLevel → Nat (issue #1478)
+
+The **alignment tax** of an observation level `E` is the number of
+non-trivial (non-constant) propositions that `E` forces to be constant
+across equivalent secrets. Intuitively: the more propositions a policy
+collapses, the more "utility" (ability to distinguish secrets) it costs.
+
+This is the semantic measure that Phase 8's "alignment tax = H¹"
+program (#1479) will ultimately prove equals the first Čech cohomology
+rank. For now it's a standalone computable `Nat` — the conjecture's
+LHS, waiting for #1493 (Čech-to-topos comparison) to supply the RHS.
+-/
+
+namespace AlignmentTax
+open DObsLevel
+
+variable {Secret : Type} [Fintype Secret] [DecidableEq Secret] [HasAllDProps Secret]
+
+/-- The **alignment tax** of a single observation level `E`: the number
+    of non-constant propositions forced at `E`. -/
+def alignment_tax (E : DObsLevel Secret) : Nat :=
+  let forced := allDProps.countP (fun φ => dForces E φ)
+  forced - 2
+
+/-- The **total alignment tax** of a poset: the sum of per-level taxes. -/
+def total_alignment_tax (poset : List (DObsLevel Secret)) : Nat :=
+  (poset.map alignment_tax).sum
+
+end AlignmentTax
+
+namespace AlignmentTaxExamples
+open DObsLevel AlignmentTax ThreeSecretObs ThreeSecretCohomology
+
+/-- ThreeSecret `bot` has tax 0 (only constants forced). -/
+example : alignment_tax (bot : DObsLevel ThreeSecret) = 0 := by decide
+
+/-- ThreeSecret `top` has tax 6 (all 8 props forced minus 2 constants). -/
+example : alignment_tax (top : DObsLevel ThreeSecret) = 6 := by decide
+
+/-- ThreeSecret `obsAC` has tax 2 (4 props forced minus 2 constants). -/
+example : alignment_tax obsAC = 2 := by decide
+
+/-- ThreeSecret `obsBC` has tax 2. -/
+example : alignment_tax obsBC = 2 := by decide
+
+/-- Total alignment tax of the diamond poset = 0 + 2 + 2 + 6 = 10. -/
+example : total_alignment_tax diamondPoset = 10 := by decide
+
+open Borromean BorromeanCohomology
+
+/-- FiveSecret `bot` has tax 0 (only constants forced on 64-prop space). -/
+example : alignment_tax (bot : DObsLevel FiveSecret) = 0 := by decide
+
+/-- FiveSecret `obs1` has tax 14 (obs1 has 4 equivalence classes on 6
+    elements → 2⁴ = 16 forced props − 2 constants). -/
+example : alignment_tax Borromean.obs1 = 14 := by decide
+
+/-- Total alignment tax of the Borromean poset. -/
+example : total_alignment_tax borromeanPoset = 96 := by decide
+
+open DirectInject
+
+/-- DirectInjectSecret `bot` has tax 0. -/
+example : alignment_tax (bot : DObsLevel DirectInjectSecret) = 0 := by decide
+
+/-- DirectInjectSecret `directObs` (= `top`) has tax 2. -/
+example : alignment_tax DirectInject.directObs = 2 := by decide
+
+end AlignmentTaxExamples
+
 end SemanticIFCDecidable
