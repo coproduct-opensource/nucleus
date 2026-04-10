@@ -1592,74 +1592,161 @@ example :
 
 end BorromeanChainComplex
 
+/-! ## IndirectInjectionPoset — the RAG attack class
+
+Models RAG-style indirect injection as a 3-point Secret type with two
+intermediate observation levels:
+
+- `obsQuery` — the model observer sees "this looks like a query"; it
+  confuses `TrustedQuery` with `Composed` (the view it actually gets).
+- `obsProvenance` — a provenance tracker sees "this came from an
+  untrusted source"; it confuses `UntrustedDoc` with `Composed`.
+
+Neither observer sees the full picture: one misses the injection
+because it looks like a query, the other misses that the query was
+ever processed at all. The diamond of observation levels is the
+algebraic signature of the RAG confused-deputy attack, and parallels
+the `ThreeSecret` taint-laundering diamond but with the roles of the
+three secrets reinterpreted for retrieval-augmented generation.
+
+This is the second concretely-formalized attack class after the
+diamond/taint-laundering in `ThreeSecretObs` (issue #1441).
+-/
+
+inductive IndirectSecret where
+  /-- A query from an authenticated user. -/
+  | TrustedQuery
+  /-- A retrieved document with potential injection payload. -/
+  | UntrustedDoc
+  /-- The (query, doc) pair the model actually sees. -/
+  | Composed
+  deriving DecidableEq, Repr
+
+instance : Fintype IndirectSecret where
+  elems := {IndirectSecret.TrustedQuery, IndirectSecret.UntrustedDoc, IndirectSecret.Composed}
+  complete := fun s => by cases s <;> decide
+
+instance : FiniteSecret IndirectSecret where
+  toFintype := inferInstance
+  toDecidableEq := inferInstance
+
+namespace IndirectInjection
+open DObsLevel IndirectSecret
+
+/-- Observe only the query: `TrustedQuery` and `Composed` look the same
+    to an observer that sees only the query text (it can't tell whether
+    the query was answered directly or composed with a retrieved doc). -/
+def obsQuery : DObsLevel IndirectSecret where
+  rel s₁ s₂ := match s₁, s₂ with
+    | TrustedQuery, TrustedQuery => true
+    | UntrustedDoc, UntrustedDoc => true
+    | Composed, Composed => true
+    | TrustedQuery, Composed => true
+    | Composed, TrustedQuery => true
+    | _, _ => false
+  refl s := by cases s <;> rfl
+  symm s₁ s₂ h := by cases s₁ <;> cases s₂ <;> first | rfl | exact h
+  trans s₁ s₂ s₃ h₁ h₂ := by
+    cases s₁ <;> cases s₂ <;> cases s₃ <;>
+      first | rfl | (exfalso; exact Bool.false_ne_true h₁)
+            | (exfalso; exact Bool.false_ne_true h₂)
+
+/-- Observe only the document provenance: `UntrustedDoc` and `Composed`
+    look the same to an observer tracking provenance (both involve the
+    untrusted document, regardless of whether it was composed with a
+    query). -/
+def obsProvenance : DObsLevel IndirectSecret where
+  rel s₁ s₂ := match s₁, s₂ with
+    | TrustedQuery, TrustedQuery => true
+    | UntrustedDoc, UntrustedDoc => true
+    | Composed, Composed => true
+    | UntrustedDoc, Composed => true
+    | Composed, UntrustedDoc => true
+    | _, _ => false
+  refl s := by cases s <;> rfl
+  symm s₁ s₂ h := by cases s₁ <;> cases s₂ <;> first | rfl | exact h
+  trans s₁ s₂ s₃ h₁ h₂ := by
+    cases s₁ <;> cases s₂ <;> cases s₃ <;>
+      first | rfl | (exfalso; exact Bool.false_ne_true h₁)
+            | (exfalso; exact Bool.false_ne_true h₂)
+
+/-- The four-point diamond of observation levels for the indirect
+    injection attack class: `bot ≤ obsQuery, obsProvenance ≤ top`. -/
+def indirectPoset : List (DObsLevel IndirectSecret) :=
+  [(bot : DObsLevel IndirectSecret), obsQuery, obsProvenance,
+   (top : DObsLevel IndirectSecret)]
+
+/-! ### Sanity checks
+
+Decidable computations on the four IndirectSecret observation levels.
+Each example runs as a pure `decide` reduction on `Bool` values.
+-/
+
+example : (bot : DObsLevel IndirectSecret).rel TrustedQuery UntrustedDoc = true := by decide
+example : (bot : DObsLevel IndirectSecret).rel UntrustedDoc Composed = true := by decide
+
+example : obsQuery.rel TrustedQuery Composed = true := by decide
+example : obsQuery.rel Composed TrustedQuery = true := by decide
+example : obsQuery.rel TrustedQuery UntrustedDoc = false := by decide
+example : obsQuery.rel UntrustedDoc Composed = false := by decide
+
+example : obsProvenance.rel UntrustedDoc Composed = true := by decide
+example : obsProvenance.rel Composed UntrustedDoc = true := by decide
+example : obsProvenance.rel TrustedQuery UntrustedDoc = false := by decide
+example : obsProvenance.rel TrustedQuery Composed = false := by decide
+
+example : (top : DObsLevel IndirectSecret).rel TrustedQuery TrustedQuery = true := by decide
+example : (top : DObsLevel IndirectSecret).rel TrustedQuery Composed = false := by decide
+
+/-- `obsQuery` and `obsProvenance` distinguish different secrets — they
+    are incomparable in the refinement order (just like `obsAC` and
+    `obsBC` in the ThreeSecret diamond). -/
+example : obsQuery.rel TrustedQuery Composed ≠ obsProvenance.rel TrustedQuery Composed := by decide
+example : obsProvenance.rel UntrustedDoc Composed ≠ obsQuery.rel UntrustedDoc Composed := by decide
+
+/-- Diamond structure: both intermediate levels sit between `bot` and `top`. -/
+example : (bot : DObsLevel IndirectSecret) ≤ obsQuery := bot_le obsQuery
+example : (bot : DObsLevel IndirectSecret) ≤ obsProvenance := bot_le obsProvenance
+example : obsQuery ≤ (top : DObsLevel IndirectSecret) := le_top obsQuery
+example : obsProvenance ≤ (top : DObsLevel IndirectSecret) := le_top obsProvenance
+
+/-- `indirectPoset` has exactly four elements. -/
+example : indirectPoset.length = 4 := by decide
+
+end IndirectInjection
+
 /-! ## Y3.A — AttentionTopos skeleton (issue #1454)
 
 Phase 5, Year 3 of the 5-year roadmap. The first concrete step toward
-the functor `F : AttentionTopos → IFCTopos` (which would prove that
-sheaf cohomology of attention patterns *is* the IFC alignment tax).
+the functor `F : AttentionTopos → IFCTopos`.
 
 This module defines the **objects** of `AttentionTopos`: row-stochastic
-attention patterns over `n` tokens, with a refinement preorder. Future
-issues (#1455 functor F, #1456 faithfulness) build on this skeleton.
+attention patterns over `n` tokens, with a refinement preorder.
 
-We use `Float` for the weights (not `Real`) because:
-1. `Float` is computable, so examples can be `#eval`-ed,
-2. The future functor `F` will pull back to a Bool-valued
-   `DObsLevel`, which only depends on the *partition* induced by the
-   weights — the exact real values don't matter,
-3. Stochasticity proofs are deferred (commented as a future obligation).
-
-## Refinement order
-
-`A₁ ≤ A₂` iff `A₂` distinguishes more token pairs than `A₁` does.
-Concretely: for each pair `(i, j)`, if `A₁` puts them in the same
-"attention class" (the row distributions match), then `A₂` must too.
-This makes `≤` a **preorder** (reflexive + transitive); it is
-intentionally NOT a partial order, because two patterns with the
-same partition are equivalent but not equal.
+`Float` is used instead of `Real` so examples are computable and the
+future functor `F` can extract partition structure directly. Stochasticity
+constraints are deferred. Refinement order (`A ≤ B` iff `B` is finer) is a
+preorder, proven by `le_refl` / `le_trans` structurally (no `decide`).
 -/
 
 namespace AttentionTopos
 
-/-- An attention pattern over `n` tokens: an `n × n` real-valued matrix.
-
-    Stochasticity (rows non-negative and summing to 1) is a future
-    obligation; for the topos skeleton we just need the partition
-    structure that the weight matrix induces.
-
-    We use `Float` rather than `Real` so examples are computable
-    and `#eval`-able. The future functor `F : AttentionTopos →
-    IFCTopos` only uses the induced partition, not the exact reals. -/
+/-- An attention pattern over `n` tokens: an `n × n` real-valued matrix. -/
 structure AttentionPattern (n : Nat) where
-  /-- The `n × n` weight matrix. `weights i j` is the attention from
-      token `i` to token `j`. -/
+  /-- The `n × n` weight matrix. -/
   weights : Fin n → Fin n → Float
-  -- Future obligations (deferred to a later issue):
-  -- weights_nonneg : ∀ i j, 0 ≤ weights i j
-  -- weights_row_sum : ∀ i, (∑ j, weights i j) = 1.0
 
-/-- Internal row-equivalence: two tokens `i` and `j` of the same
-    attention pattern are equivalent iff they have identical row
-    distributions (i.e., the pattern cannot distinguish them). -/
+/-- Internal row-equivalence: two tokens agree iff their attention rows match. -/
 def AttentionPattern.rowsEq {n : Nat} (A : AttentionPattern n) (i j : Fin n) : Prop :=
   ∀ k, A.weights i k = A.weights j k
 
-/-- **Refinement preorder** on attention patterns. `A ≤ B` means `B`
-    is **finer**: every equivalence under `B` is also an equivalence
-    under `A`. Equivalently, `A`'s partition is coarser (fewer classes).
-
-    This matches the issue spec: "`A₁ ≤ A₂` if `A₂` is a finer
-    partition of attention mass than `A₁`". -/
+/-- **Refinement preorder** on attention patterns. -/
 instance {n : Nat} : LE (AttentionPattern n) where
   le A B := ∀ i j : Fin n, B.rowsEq i j → A.rowsEq i j
 
-/-- **Equivalence**: two attention patterns are equivalent iff they
-    induce the same row partition. This will become the topos
-    quotient relation in a later issue. -/
+/-- **Equivalence**: same row partition. -/
 def AttentionPattern.equiv {n : Nat} (A B : AttentionPattern n) : Prop :=
   ∀ i j, A.rowsEq i j ↔ B.rowsEq i j
-
-/-! ### Example: a 3×3 attention pattern for `ThreeSecret` tokens -/
 
 /-- Concrete 3×3 attention pattern for ThreeSecret tokens. -/
 def threeSecretAttention : AttentionPattern 3 where
@@ -1675,18 +1762,13 @@ def threeSecretAttention : AttentionPattern 3 where
     | ⟨2, _⟩, ⟨2, _⟩ => 0.90
     | _, _ => 0.0
 
-/-- Identity attention pattern: each token attends only to itself
-    (the "fully refined" extreme of the preorder). -/
+/-- Identity attention pattern: each token attends only to itself. -/
 def identityAttention (n : Nat) : AttentionPattern n where
   weights := fun i j => if i = j then 1.0 else 0.0
 
-/-- Uniform attention pattern: every token attends equally to every
-    other token (the "fully coarse" extreme — induces the trivial
-    partition). -/
+/-- Uniform attention pattern: every token attends equally to every other. -/
 def uniformAttention (n : Nat) : AttentionPattern n where
   weights := fun _ _ => 1.0 / (n.toFloat)
-
-/-! ### Sanity checks -/
 
 example : threeSecretAttention.weights ⟨0, by decide⟩ ⟨0, by decide⟩ = 0.9 := rfl
 
