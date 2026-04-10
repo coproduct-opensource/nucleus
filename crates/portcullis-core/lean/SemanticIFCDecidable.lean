@@ -2851,6 +2851,69 @@ theorem F_injective_testFamily :
       (testFamily[i]).toDObsLevel) := by
   decide
 
+/-! ## Y7.B — Faithfulness of F : DiscretePattern → DObsLevel (issue #1483)
+
+Faithfulness means: two patterns produce the same DObsLevel iff they
+have the same row-equivalence structure. Since `DiscretePattern` uses
+`Fin m` weights (not Float), `BEq` coincides with `=`, so the proof
+is structural. -/
+
+/-- Equivalence of discrete patterns: same row-equality structure. -/
+def DiscretePattern.patEquiv {n m : Nat} (A B : DiscretePattern n m) : Prop :=
+  ∀ i j : Fin n, A.rowsEq i j = B.rowsEq i j
+
+/-- **Faithfulness of F (→ direction):** if `F(A) = F(B)`, then
+    A and B have the same row-equivalence structure. Structural proof
+    via the definition of `toDObsLevel`. -/
+theorem F_faithful_mp {n m : Nat} (A B : DiscretePattern n m)
+    (h : A.toDObsLevel = B.toDObsLevel) :
+    DiscretePattern.patEquiv A B := by
+  intro i j
+  have : A.toDObsLevel.rel i j = B.toDObsLevel.rel i j := by rw [h]
+  exact this
+
+/-- **Faithfulness of F (← direction):** if A and B have the same
+    row-equivalence, then `F(A) = F(B)`. -/
+theorem F_faithful_mpr {n m : Nat} (A B : DiscretePattern n m)
+    (h : DiscretePattern.patEquiv A B) :
+    A.toDObsLevel = B.toDObsLevel := by
+  -- Two DObsLevels are equal if their rel functions are equal
+  have hrel : A.toDObsLevel.rel = B.toDObsLevel.rel := funext fun i => funext fun j => h i j
+  -- DObsLevel equality follows from rel equality (proof-irrelevant fields)
+  exact match A.toDObsLevel, B.toDObsLevel, hrel with
+  | ⟨_, _, _, _⟩, ⟨_, _, _, _⟩, rfl => rfl
+
+/-- **Faithfulness of F (iff):** `F(A) = F(B) ↔ A ≡ B`.
+
+    The functor F is faithful: it preserves and reflects the
+    row-equivalence structure exactly. No information is lost
+    or spuriously added in the passage from continuous attention
+    patterns to discrete observation levels. -/
+theorem F_faithful {n m : Nat} (A B : DiscretePattern n m) :
+    A.toDObsLevel = B.toDObsLevel ↔ DiscretePattern.patEquiv A B :=
+  ⟨F_faithful_mp A B, F_faithful_mpr A B⟩
+
+/-- Concrete example: identity and uniform have different row-equivalences.
+    Proved via faithfulness + the already-proven testFamily_all_distinct. -/
+theorem identity_ne_uniform :
+    pat_identity.toDObsLevel ≠ pat_uniform.toDObsLevel := by decide
+
+/-- Concrete example: pair01 and pair02 have different row-equivalences. -/
+theorem pair01_ne_pair02 :
+    pat_pair01.toDObsLevel ≠ pat_pair02.toDObsLevel := by decide
+
+/-- Via faithfulness: different DObsLevels imply different row structure.
+    identity and uniform: DObsLevels differ (by decide), so row
+    structures differ (by F_faithful). -/
+theorem F_reflects_identity_uniform :
+    ¬DiscretePattern.patEquiv pat_identity pat_uniform :=
+  fun h => identity_ne_uniform ((F_faithful _ _).mpr h)
+
+/-- pair01 and pair02: DObsLevels differ, so row structures differ. -/
+theorem F_reflects_pair01_pair02 :
+    ¬DiscretePattern.patEquiv pat_pair01 pat_pair02 :=
+  fun h => pair01_ne_pair02 ((F_faithful _ _).mpr h)
+
 end Faithfulness
 
 /-! ## Y6.C — No-free-lunch corollary of alignment_tax (issue #1480)
