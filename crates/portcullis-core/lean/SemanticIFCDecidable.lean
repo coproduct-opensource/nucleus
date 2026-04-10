@@ -2412,76 +2412,28 @@ example : h1_witnesses BellLaPadula.blpPoset BellLaPadula.allBLPProps =
 
 end Biba
 
-/-! ## Y5.D — Functor BLP → Biba: the first cross-framework reduction (#1463)
-
-The **duality** between Bell-LaPadula (confidentiality) and Biba
-(integrity) is well-known informally: "flip the lattice." Here we
-formalize this as a **structure-preserving map** between the two
-models' carrier types, and prove it induces a DObsLevel pullback
-that preserves the cohomological invariants.
-
-This is the first formally-verified **cross-framework security
-reduction** in any proof assistant.
-
-### The reduction
-
-BLP classifies by confidentiality: `Unclassified < Secret < TopSecret`.
-Biba classifies by integrity: `LowIntegrity < Verified < TrustedKernel`.
-
-The duality reverses the order:
-- `Unclassified` (least confidential) ↔ `TrustedKernel` (most trusted)
-- `Secret` ↔ `Verified`
-- `TopSecret` (most confidential) ↔ `LowIntegrity` (least trusted)
-
-This is NOT arbitrary — it reflects the real-world observation that
-high-confidentiality data (TopSecret) often comes from low-integrity
-sources (adversarial intelligence), while low-confidentiality data
-(Unclassified public records) is high-integrity (trusted).
-
-### What's proved
-
-1. The carrier map `blpToBiba` is a bijection
-2. The pullback of Biba's observation levels along `blpToBiba` produces
-   observation levels with the same forcing structure as BLP's
-3. The H¹ alignment tax is preserved: `h1(BLP) = h1(Biba)` (already
-   proved in #1461/#1462, re-stated here via the functor)
-4. The functor is its own inverse (`blpToBiba ∘ bibaToBLP = id`)
-
-All proofs are structural (`rfl`, `cases`, `decide` for sanity checks).
--/
+/-! ## Y5.D — Functor BLP → Biba: first cross-framework reduction (#1463) -/
 
 namespace CrossFrameworkReduction
 open DObsLevel BLPLevel BibaLevel BellLaPadula Biba
 
-/-- The **BLP → Biba duality map**: reverses the classification order.
-    Least confidential ↔ Most trusted, Most confidential ↔ Least trusted. -/
 def blpToBiba : BLPLevel → BibaLevel
   | .Unclassified => .TrustedKernel
   | .Secret => .Verified
   | .TopSecret => .LowIntegrity
 
-/-- The inverse: Biba → BLP. -/
 def bibaToBLP : BibaLevel → BLPLevel
   | .TrustedKernel => .Unclassified
   | .Verified => .Secret
   | .LowIntegrity => .TopSecret
 
-/-- The maps are mutually inverse (structural proof). -/
 theorem blpToBiba_bibaToBLP : ∀ b : BibaLevel, blpToBiba (bibaToBLP b) = b := by
   intro b; cases b <;> rfl
 
 theorem bibaToBLP_blpToBiba : ∀ a : BLPLevel, bibaToBLP (blpToBiba a) = a := by
   intro a; cases a <;> rfl
 
-/-! ### DObsLevel pullback along the carrier map
-
-Given a function `f : A → B` and a `DObsLevel B`, the **pullback**
-is the `DObsLevel A` where `a₁ ~ a₂ iff f(a₁) ~ f(a₂)`. This is the
-standard contravariant functoriality of equivalence relations. -/
-
-/-- Pull back a `DObsLevel` along a carrier map. Structural definition:
-    the relation, reflexivity, symmetry, and transitivity all transfer
-    directly from the target. -/
+/-- Pull back a DObsLevel along a carrier map. Structural. -/
 def DObsLevel.pullbackAlong {A B : Type} [DecidableEq A] [DecidableEq B]
     (f : A → B) (E : DObsLevel B) : DObsLevel A where
   rel a₁ a₂ := E.rel (f a₁) (f a₂)
@@ -2489,70 +2441,27 @@ def DObsLevel.pullbackAlong {A B : Type} [DecidableEq A] [DecidableEq B]
   symm a₁ a₂ h := E.symm (f a₁) (f a₂) h
   trans a₁ a₂ a₃ h₁ h₂ := E.trans (f a₁) (f a₂) (f a₃) h₁ h₂
 
-/-! ### The pullback preserves the diamond structure
-
-Pulling Biba's observation levels back along `blpToBiba` produces
-observation levels on `BLPLevel` with the same forcing behavior as
-BLP's own observation levels. -/
-
-/-- Pulling `obsVerifiedRead` back along `blpToBiba` equates
-    `Unclassified ~ Secret` (because TrustedKernel ~ Verified in
-    obsVerifiedRead), matching BLP's obsSecretRead. -/
 example : (DObsLevel.pullbackAlong blpToBiba obsVerifiedRead).rel
     Unclassified Secret = true := by decide
 example : (DObsLevel.pullbackAlong blpToBiba obsVerifiedRead).rel
     Secret TopSecret = false := by decide
-
-/-- Pulling `obsVerifiedWrite` back along `blpToBiba` equates
-    `Secret ~ TopSecret` (because Verified ~ LowIntegrity in
-    obsVerifiedWrite), matching BLP's obsSecretWrite. -/
 example : (DObsLevel.pullbackAlong blpToBiba obsVerifiedWrite).rel
     Secret TopSecret = true := by decide
 example : (DObsLevel.pullbackAlong blpToBiba obsVerifiedWrite).rel
     Unclassified Secret = false := by decide
 
-/-! ### The functor preserves H¹
-
-The pulled-back Biba poset has the same h1_witnesses as the original
-BLP poset. This is the formal statement: "BLP's alignment tax equals
-Biba's alignment tax, witnessed by the duality functor." -/
-
-/-- The pulled-back Biba poset on BLPLevel. -/
 def pulledBackBibaPoset : List (DObsLevel BLPLevel) :=
   [(bot : DObsLevel BLPLevel),
    DObsLevel.pullbackAlong blpToBiba obsVerifiedRead,
    DObsLevel.pullbackAlong blpToBiba obsVerifiedWrite,
    (top : DObsLevel BLPLevel)]
 
-/-- **The functor preserves H¹.** The pulled-back Biba poset on BLPLevel
-    has alignment tax ≥ 1, just like the native BLP poset. -/
 theorem pullback_preserves_h1 :
     h1_witnesses pulledBackBibaPoset BellLaPadula.allBLPProps ≥ 1 := by decide
 
-/-- **Functorial H¹ equality.** The pulled-back Biba poset has the same
-    H¹ as the native BLP poset (both = 1). This is the cohomological
-    content of the cross-framework reduction: the duality functor
-    preserves the obstruction structure. -/
 theorem functorial_h1_equality :
     h1_witnesses pulledBackBibaPoset BellLaPadula.allBLPProps =
     h1_witnesses blpPoset BellLaPadula.allBLPProps := by decide
-
-/-! ### Summary: the cross-framework reduction
-
-The `blpToBiba` / `bibaToBLP` pair forms a bijection between BLPLevel
-and BibaLevel. The pullback of Biba's DObsLevel structure along this
-bijection produces a diamond on BLPLevel with the same H¹ as BLP's
-native diamond.
-
-This means: any security guarantee proved about BLP's cohomological
-structure **transfers to Biba** via the functor, and vice versa.
-Concretely: "BLP has alignment tax 1" and "Biba has alignment tax 1"
-are not independent facts — they are the SAME fact, viewed through
-dual lenses.
-
-This is the first formally-verified cross-framework security reduction
-in any proof assistant.
--/
 
 end CrossFrameworkReduction
 
