@@ -2214,6 +2214,257 @@ example : DObsLevel.h0_count privEscPoset = 2 := by decide
 
 end PrivEsc
 
+/-! ## Y5.B — Bell-LaPadula as a security model (issue #1461)
+
+The Bell-LaPadula model (BLP, 1973): foundational confidentiality model.
+Simple security (no read up) + *-property (no write down).
+
+Previously [formalized in Coq](https://hal.science/hal-02545660v1/document)
+(2020) but never in Lean — this is the first Lean 4 BLP formalization.
+-/
+
+inductive BLPLevel where
+  | Unclassified | Secret | TopSecret
+  deriving DecidableEq, Repr
+
+instance : Fintype BLPLevel where
+  elems := {BLPLevel.Unclassified, BLPLevel.Secret, BLPLevel.TopSecret}
+  complete := fun s => by cases s <;> decide
+
+instance : FiniteSecret BLPLevel where
+  toFintype := inferInstance
+  toDecidableEq := inferInstance
+
+namespace BellLaPadula
+open DObsLevel BLPLevel
+
+/-- "No read up" observer at Secret clearance: Unclassified ~ Secret
+    (both readable), TopSecret is distinct (not readable). -/
+def obsSecretRead : DObsLevel BLPLevel where
+  rel s₁ s₂ := match s₁, s₂ with
+    | Unclassified, Unclassified => true | Unclassified, Secret => true
+    | Secret, Unclassified => true | Secret, Secret => true
+    | TopSecret, TopSecret => true | _, _ => false
+  refl s := by cases s <;> rfl
+  symm s₁ s₂ h := by cases s₁ <;> cases s₂ <;> first | rfl | exact h
+  trans s₁ s₂ s₃ h₁ h₂ := by
+    cases s₁ <;> cases s₂ <;> cases s₃ <;>
+      first | rfl | (exfalso; exact Bool.false_ne_true h₁)
+            | (exfalso; exact Bool.false_ne_true h₂)
+
+/-- "No write down" observer at Secret clearance: Secret ~ TopSecret
+    (both writable), Unclassified is distinct (cannot write down). -/
+def obsSecretWrite : DObsLevel BLPLevel where
+  rel s₁ s₂ := match s₁, s₂ with
+    | Unclassified, Unclassified => true | Secret, Secret => true
+    | Secret, TopSecret => true | TopSecret, Secret => true
+    | TopSecret, TopSecret => true | _, _ => false
+  refl s := by cases s <;> rfl
+  symm s₁ s₂ h := by cases s₁ <;> cases s₂ <;> first | rfl | exact h
+  trans s₁ s₂ s₃ h₁ h₂ := by
+    cases s₁ <;> cases s₂ <;> cases s₃ <;>
+      first | rfl | (exfalso; exact Bool.false_ne_true h₁)
+            | (exfalso; exact Bool.false_ne_true h₂)
+
+def blpPoset : List (DObsLevel BLPLevel) :=
+  [(bot : DObsLevel BLPLevel), obsSecretRead, obsSecretWrite,
+   (top : DObsLevel BLPLevel)]
+
+def allBLPProps : List (DProp BLPLevel) :=
+  [false, true].flatMap fun vU =>
+  [false, true].flatMap fun vS =>
+  [false, true].map fun vT s => match s with
+    | Unclassified => vU | Secret => vS | TopSecret => vT
+
+example : allBLPProps.length = 8 := by decide
+example : blpPoset.length = 4 := by decide
+
+example : obsSecretRead.rel Unclassified Secret = true := by decide
+example : obsSecretRead.rel Secret TopSecret = false := by decide
+example : obsSecretWrite.rel Secret TopSecret = true := by decide
+example : obsSecretWrite.rel Unclassified Secret = false := by decide
+
+example : (bot : DObsLevel BLPLevel) ≤ obsSecretRead := bot_le obsSecretRead
+example : obsSecretRead ≤ (top : DObsLevel BLPLevel) := le_top obsSecretRead
+example : (bot : DObsLevel BLPLevel) ≤ obsSecretWrite := bot_le obsSecretWrite
+example : obsSecretWrite ≤ (top : DObsLevel BLPLevel) := le_top obsSecretWrite
+
+/-- **BLP alignment tax ≥ 1**: the read/write asymmetry creates an H¹
+    obstruction. A proposition separating accessible from inaccessible
+    levels IS forced at obsSecretRead but NOT at obsSecretWrite. -/
+theorem blp_alignment_tax :
+    h1_witnesses blpPoset allBLPProps ≥ 1 := by decide
+
+def isAccessibleAtSecret : DProp BLPLevel := fun s => match s with
+  | Unclassified | Secret => true | TopSecret => false
+
+example : dForces obsSecretRead isAccessibleAtSecret = true := by decide
+example : dForces obsSecretWrite isAccessibleAtSecret = false := by decide
+
+instance : HasAllDProps BLPLevel where allDProps := allBLPProps
+
+example : DObsLevel.h0_count blpPoset = 2 := by decide
+example : BoundaryMaps.h1_compute blpPoset allBLPProps ≥ 1 := by native_decide
+
+end BellLaPadula
+
+/-! ## Y5.C — Biba (integrity) as a security model (issue #1462)
+
+The **Biba model** (1977): the dual of Bell-LaPadula, enforcing
+integrity instead of confidentiality:
+- **No read down**: don't read from less-trusted sources
+- **No write up**: don't corrupt more-trusted objects
+
+Same 3-level lattice structure, dual observation levels. Together
+with BLP, enables the cross-framework reduction functor (#1463).
+-/
+
+inductive BibaLevel where
+  | LowIntegrity | Verified | TrustedKernel
+  deriving DecidableEq, Repr
+
+instance : Fintype BibaLevel where
+  elems := {BibaLevel.LowIntegrity, BibaLevel.Verified, BibaLevel.TrustedKernel}
+  complete := fun s => by cases s <;> decide
+
+instance : FiniteSecret BibaLevel where
+  toFintype := inferInstance
+  toDecidableEq := inferInstance
+
+namespace Biba
+open DObsLevel BibaLevel
+
+/-- "No read down" observer at Verified integrity: Verified ~ TrustedKernel
+    (both readable), LowIntegrity is distinct (don't read from untrusted). -/
+def obsVerifiedRead : DObsLevel BibaLevel where
+  rel s₁ s₂ := match s₁, s₂ with
+    | LowIntegrity, LowIntegrity => true
+    | Verified, Verified => true | Verified, TrustedKernel => true
+    | TrustedKernel, Verified => true | TrustedKernel, TrustedKernel => true
+    | _, _ => false
+  refl s := by cases s <;> rfl
+  symm s₁ s₂ h := by cases s₁ <;> cases s₂ <;> first | rfl | exact h
+  trans s₁ s₂ s₃ h₁ h₂ := by
+    cases s₁ <;> cases s₂ <;> cases s₃ <;>
+      first | rfl | (exfalso; exact Bool.false_ne_true h₁)
+            | (exfalso; exact Bool.false_ne_true h₂)
+
+/-- "No write up" observer at Verified integrity: LowIntegrity ~ Verified
+    (both writable), TrustedKernel is distinct (don't corrupt kernel). -/
+def obsVerifiedWrite : DObsLevel BibaLevel where
+  rel s₁ s₂ := match s₁, s₂ with
+    | LowIntegrity, LowIntegrity => true
+    | LowIntegrity, Verified => true | Verified, LowIntegrity => true
+    | Verified, Verified => true
+    | TrustedKernel, TrustedKernel => true | _, _ => false
+  refl s := by cases s <;> rfl
+  symm s₁ s₂ h := by cases s₁ <;> cases s₂ <;> first | rfl | exact h
+  trans s₁ s₂ s₃ h₁ h₂ := by
+    cases s₁ <;> cases s₂ <;> cases s₃ <;>
+      first | rfl | (exfalso; exact Bool.false_ne_true h₁)
+            | (exfalso; exact Bool.false_ne_true h₂)
+
+def bibaPoset : List (DObsLevel BibaLevel) :=
+  [(bot : DObsLevel BibaLevel), obsVerifiedRead, obsVerifiedWrite,
+   (top : DObsLevel BibaLevel)]
+
+def allBibaProps : List (DProp BibaLevel) :=
+  [false, true].flatMap fun vL =>
+  [false, true].flatMap fun vV =>
+  [false, true].map fun vT s => match s with
+    | LowIntegrity => vL | Verified => vV | TrustedKernel => vT
+
+example : allBibaProps.length = 8 := by decide
+example : bibaPoset.length = 4 := by decide
+
+example : obsVerifiedRead.rel Verified TrustedKernel = true := by decide
+example : obsVerifiedRead.rel LowIntegrity Verified = false := by decide
+example : obsVerifiedWrite.rel LowIntegrity Verified = true := by decide
+example : obsVerifiedWrite.rel Verified TrustedKernel = false := by decide
+
+/-- **Biba alignment tax ≥ 1**: the read/write integrity asymmetry
+    creates an H¹ obstruction, dual to Bell-LaPadula's. -/
+theorem biba_alignment_tax :
+    h1_witnesses bibaPoset allBibaProps ≥ 1 := by decide
+
+instance : HasAllDProps BibaLevel where allDProps := allBibaProps
+
+example : DObsLevel.h0_count bibaPoset = 2 := by decide
+
+/-! ### BLP-Biba duality
+
+BLP and Biba have isomorphic diamond structures — the same H¹
+obstruction arises from dual security properties. This is the
+observation that enables the cross-framework reduction (#1463):
+a functor from the BLP poset to the Biba poset that preserves
+the cohomological invariants.
+
+| Property | BLP | Biba |
+|---|---|---|
+| "No ↑" | Read (simple security) | Write (no write up) |
+| "No ↓" | Write (*-property) | Read (no read down) |
+| H¹ | 1 | 1 |
+| Diamond | obsSecretRead / obsSecretWrite | obsVerifiedRead / obsVerifiedWrite |
+-/
+
+example : h1_witnesses BellLaPadula.blpPoset BellLaPadula.allBLPProps =
+          h1_witnesses bibaPoset allBibaProps := by decide
+
+end Biba
+
+/-! ## Y5.D — Functor BLP → Biba: first cross-framework reduction (#1463) -/
+
+namespace CrossFrameworkReduction
+open DObsLevel BLPLevel BibaLevel BellLaPadula Biba
+
+def blpToBiba : BLPLevel → BibaLevel
+  | .Unclassified => .TrustedKernel
+  | .Secret => .Verified
+  | .TopSecret => .LowIntegrity
+
+def bibaToBLP : BibaLevel → BLPLevel
+  | .TrustedKernel => .Unclassified
+  | .Verified => .Secret
+  | .LowIntegrity => .TopSecret
+
+theorem blpToBiba_bibaToBLP : ∀ b : BibaLevel, blpToBiba (bibaToBLP b) = b := by
+  intro b; cases b <;> rfl
+
+theorem bibaToBLP_blpToBiba : ∀ a : BLPLevel, bibaToBLP (blpToBiba a) = a := by
+  intro a; cases a <;> rfl
+
+/-- Pull back a DObsLevel along a carrier map. Structural. -/
+def DObsLevel.pullbackAlong {A B : Type} [DecidableEq A] [DecidableEq B]
+    (f : A → B) (E : DObsLevel B) : DObsLevel A where
+  rel a₁ a₂ := E.rel (f a₁) (f a₂)
+  refl a := E.refl (f a)
+  symm a₁ a₂ h := E.symm (f a₁) (f a₂) h
+  trans a₁ a₂ a₃ h₁ h₂ := E.trans (f a₁) (f a₂) (f a₃) h₁ h₂
+
+example : (DObsLevel.pullbackAlong blpToBiba obsVerifiedRead).rel
+    Unclassified Secret = true := by decide
+example : (DObsLevel.pullbackAlong blpToBiba obsVerifiedRead).rel
+    Secret TopSecret = false := by decide
+example : (DObsLevel.pullbackAlong blpToBiba obsVerifiedWrite).rel
+    Secret TopSecret = true := by decide
+example : (DObsLevel.pullbackAlong blpToBiba obsVerifiedWrite).rel
+    Unclassified Secret = false := by decide
+
+def pulledBackBibaPoset : List (DObsLevel BLPLevel) :=
+  [(bot : DObsLevel BLPLevel),
+   DObsLevel.pullbackAlong blpToBiba obsVerifiedRead,
+   DObsLevel.pullbackAlong blpToBiba obsVerifiedWrite,
+   (top : DObsLevel BLPLevel)]
+
+theorem pullback_preserves_h1 :
+    h1_witnesses pulledBackBibaPoset BellLaPadula.allBLPProps ≥ 1 := by decide
+
+theorem functorial_h1_equality :
+    h1_witnesses pulledBackBibaPoset BellLaPadula.allBLPProps =
+    h1_witnesses blpPoset BellLaPadula.allBLPProps := by decide
+
+end CrossFrameworkReduction
+
 /-! ## Y3.A — AttentionTopos skeleton (issue #1454) -/
 
 namespace AttentionTopos
