@@ -1472,4 +1472,125 @@ example :
 
 end GenericH0Examples
 
+/-! ## Y3.A — AttentionTopos skeleton (issue #1454)
+
+Phase 5, Year 3 of the 5-year roadmap. The first concrete step toward
+the functor `F : AttentionTopos → IFCTopos` (which would prove that
+sheaf cohomology of attention patterns *is* the IFC alignment tax).
+
+This module defines the **objects** of `AttentionTopos`: row-stochastic
+attention patterns over `n` tokens, with a refinement preorder. Future
+issues (#1455 functor F, #1456 faithfulness) build on this skeleton.
+
+We use `Float` for the weights (not `Real`) because:
+1. `Float` is computable, so examples can be `#eval`-ed,
+2. The future functor `F` will pull back to a Bool-valued
+   `DObsLevel`, which only depends on the *partition* induced by the
+   weights — the exact real values don't matter,
+3. Stochasticity proofs are deferred (commented as a future obligation).
+
+## Refinement order
+
+`A₁ ≤ A₂` iff `A₂` distinguishes more token pairs than `A₁` does.
+Concretely: for each pair `(i, j)`, if `A₁` puts them in the same
+"attention class" (the row distributions match), then `A₂` must too.
+This makes `≤` a **preorder** (reflexive + transitive); it is
+intentionally NOT a partial order, because two patterns with the
+same partition are equivalent but not equal.
+-/
+
+namespace AttentionTopos
+
+/-- An attention pattern over `n` tokens: an `n × n` real-valued matrix.
+
+    Stochasticity (rows non-negative and summing to 1) is a future
+    obligation; for the topos skeleton we just need the partition
+    structure that the weight matrix induces.
+
+    We use `Float` rather than `Real` so examples are computable
+    and `#eval`-able. The future functor `F : AttentionTopos →
+    IFCTopos` only uses the induced partition, not the exact reals. -/
+structure AttentionPattern (n : Nat) where
+  /-- The `n × n` weight matrix. `weights i j` is the attention from
+      token `i` to token `j`. -/
+  weights : Fin n → Fin n → Float
+  -- Future obligations (deferred to a later issue):
+  -- weights_nonneg : ∀ i j, 0 ≤ weights i j
+  -- weights_row_sum : ∀ i, (∑ j, weights i j) = 1.0
+
+/-- Internal row-equivalence: two tokens `i` and `j` of the same
+    attention pattern are equivalent iff they have identical row
+    distributions (i.e., the pattern cannot distinguish them). -/
+def AttentionPattern.rowsEq {n : Nat} (A : AttentionPattern n) (i j : Fin n) : Prop :=
+  ∀ k, A.weights i k = A.weights j k
+
+/-- **Refinement preorder** on attention patterns. `A ≤ B` means `B`
+    is **finer**: every equivalence under `B` is also an equivalence
+    under `A`. Equivalently, `A`'s partition is coarser (fewer classes).
+
+    This matches the issue spec: "`A₁ ≤ A₂` if `A₂` is a finer
+    partition of attention mass than `A₁`". -/
+instance {n : Nat} : LE (AttentionPattern n) where
+  le A B := ∀ i j : Fin n, B.rowsEq i j → A.rowsEq i j
+
+/-- **Equivalence**: two attention patterns are equivalent iff they
+    induce the same row partition. This will become the topos
+    quotient relation in a later issue. -/
+def AttentionPattern.equiv {n : Nat} (A B : AttentionPattern n) : Prop :=
+  ∀ i j, A.rowsEq i j ↔ B.rowsEq i j
+
+/-! ### Example: a 3×3 attention pattern for `ThreeSecret` tokens
+
+A toy attention matrix where token A attends primarily to itself,
+token B attends to both A and C equally, and token C attends primarily
+to itself. The "equivalent rows" structure (which token-pairs the
+pattern *cannot* distinguish) is what feeds into the future functor
+`F : AttentionTopos → DObsLevel ThreeSecret`. -/
+
+/-- Concrete 3×3 attention pattern for ThreeSecret tokens. -/
+def threeSecretAttention : AttentionPattern 3 where
+  weights := fun i j => match i, j with
+    | ⟨0, _⟩, ⟨0, _⟩ => 0.9
+    | ⟨0, _⟩, ⟨1, _⟩ => 0.05
+    | ⟨0, _⟩, ⟨2, _⟩ => 0.05
+    | ⟨1, _⟩, ⟨0, _⟩ => 0.45
+    | ⟨1, _⟩, ⟨1, _⟩ => 0.10
+    | ⟨1, _⟩, ⟨2, _⟩ => 0.45
+    | ⟨2, _⟩, ⟨0, _⟩ => 0.05
+    | ⟨2, _⟩, ⟨1, _⟩ => 0.05
+    | ⟨2, _⟩, ⟨2, _⟩ => 0.90
+    | _, _ => 0.0
+
+/-- Identity attention pattern: each token attends only to itself
+    (the "fully refined" extreme of the preorder). -/
+def identityAttention (n : Nat) : AttentionPattern n where
+  weights := fun i j => if i = j then 1.0 else 0.0
+
+/-- Uniform attention pattern: every token attends equally to every
+    other token (the "fully coarse" extreme — induces the trivial
+    partition). -/
+def uniformAttention (n : Nat) : AttentionPattern n where
+  weights := fun _ _ => 1.0 / (n.toFloat)
+
+/-! ### Sanity checks -/
+
+example : threeSecretAttention.weights ⟨0, by decide⟩ ⟨0, by decide⟩ = 0.9 := rfl
+
+example : (identityAttention 3).weights ⟨0, by decide⟩ ⟨0, by decide⟩ = 1.0 := by
+  simp [identityAttention]
+
+example : (identityAttention 3).weights ⟨0, by decide⟩ ⟨1, by decide⟩ = 0.0 := by
+  simp [identityAttention]
+
+/-- Reflexivity of the refinement preorder. -/
+theorem AttentionPattern.le_refl {n : Nat} (A : AttentionPattern n) : A ≤ A :=
+  fun _ _ h => h
+
+/-- Transitivity of the refinement preorder. -/
+theorem AttentionPattern.le_trans {n : Nat} {A B C : AttentionPattern n}
+    (hAB : A ≤ B) (hBC : B ≤ C) : A ≤ C :=
+  fun i j h => hAB i j (hBC i j h)
+
+end AttentionTopos
+
 end SemanticIFCDecidable
