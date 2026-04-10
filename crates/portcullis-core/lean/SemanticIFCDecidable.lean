@@ -2667,6 +2667,42 @@ example : (uniformAttention 3).toDObsLevel.rel ⟨0, by decide⟩ ⟨1, by decid
     equivalent. The functor maps attention-pattern structure to IFC
     observation-level structure. -/
 
+/-! ## Y7.A — Concrete functor F : AttentionPattern → DObsLevel (issue #1482)
+
+The object map of the functor F, mapping attention patterns to IFC
+observation levels. `F(A)` groups tokens by attention-row equality.
+
+The Float-based version (`AttentionPattern.toDObsLevel`) has 3 sorry's
+due to Float lacking `LawfulBEq`. The `DiscretePattern.toDObsLevel`
+(issue #1456) provides a zero-sorry alternative for verification.
+
+See also: `Faithfulness.DiscretePattern.toDObsLevel` below for the
+zero-sorry version that works with `decide`. -/
+
+/-- The functor F on objects: maps an attention pattern to the
+    DObsLevel induced by row equality. -/
+def F {n : Nat} : AttentionPattern n → DObsLevel (Fin n) :=
+  AttentionPattern.toDObsLevel
+
+/-- F maps identity attention to the discrete (top) observation level:
+    each token is in its own equivalence class. -/
+theorem F_identity_discrete :
+    (F (identityAttention 3)).rel ⟨0, by decide⟩ ⟨1, by decide⟩ = false := by
+  native_decide
+
+/-- F maps uniform attention to the indiscrete (bottom-like) level:
+    all tokens are equivalent. -/
+theorem F_uniform_indiscrete :
+    (F (uniformAttention 3)).rel ⟨0, by decide⟩ ⟨1, by decide⟩ = true := by
+  native_decide
+
+/-- F is monotone (Bool version): if B's row-BEq-equality implies A's
+    on all pairs, then F(B).rel implies F(A).rel. -/
+theorem F_monotone {n : Nat} {A B : AttentionPattern n}
+    (h : ∀ i j : Fin n, B.rowsEqB i j = true → A.rowsEqB i j = true) :
+    ∀ i j : Fin n, (F B).rel i j = true → (F A).rel i j = true :=
+  fun i j hB => h i j hB
+
 end AttentionTopos
 
 /-! ## Y3.C — Faithfulness of F on a finite test family (issue #1456)
