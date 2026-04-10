@@ -2092,4 +2092,126 @@ theorem h1_compute_detects_indirect :
 
 end BoundaryMaps
 
+/-! ## Y1.B — Privilege escalation as 4th attack class (issue #1449)
+
+The fourth concrete attack class in the cohomological framework.
+Models tool privilege escalation: a tool call can be interpreted as
+either a user-level request (low privilege) or an admin-level request
+(elevated privilege) depending on which observer you ask.
+
+The diamond: obsUser sees UserToken ~ ToolCall (both look like user
+requests), obsAdmin sees AdminToken ~ ToolCall (both look like admin
+operations). Neither observer sees the full picture — the ToolCall is
+the confused deputy that bridges the privilege boundary.
+
+This parallels the ThreeSecret taint-laundering diamond and the
+IndirectSecret RAG diamond, adding a third independent H¹-class
+attack to the taxonomy.
+-/
+
+inductive PrivEscSecret where
+  /-- Low-privilege user identity. -/
+  | UserToken
+  /-- Elevated / admin identity. -/
+  | AdminToken
+  /-- A tool call that uses whichever privilege is available. -/
+  | ToolCall
+  deriving DecidableEq, Repr
+
+instance : Fintype PrivEscSecret where
+  elems := {PrivEscSecret.UserToken, PrivEscSecret.AdminToken, PrivEscSecret.ToolCall}
+  complete := fun s => by cases s <;> decide
+
+instance : FiniteSecret PrivEscSecret where
+  toFintype := inferInstance
+  toDecidableEq := inferInstance
+
+namespace PrivEsc
+open DObsLevel PrivEscSecret
+
+/-- Observe only the user-facing identity: `UserToken` and `ToolCall`
+    look the same (both appear as user-initiated requests). -/
+def obsUser : DObsLevel PrivEscSecret where
+  rel s₁ s₂ := match s₁, s₂ with
+    | UserToken, UserToken => true
+    | AdminToken, AdminToken => true
+    | ToolCall, ToolCall => true
+    | UserToken, ToolCall => true
+    | ToolCall, UserToken => true
+    | _, _ => false
+  refl s := by cases s <;> rfl
+  symm s₁ s₂ h := by cases s₁ <;> cases s₂ <;> first | rfl | exact h
+  trans s₁ s₂ s₃ h₁ h₂ := by
+    cases s₁ <;> cases s₂ <;> cases s₃ <;>
+      first | rfl | (exfalso; exact Bool.false_ne_true h₁)
+            | (exfalso; exact Bool.false_ne_true h₂)
+
+/-- Observe only the privileged identity: `AdminToken` and `ToolCall`
+    look the same (both appear as admin-level operations). -/
+def obsAdmin : DObsLevel PrivEscSecret where
+  rel s₁ s₂ := match s₁, s₂ with
+    | UserToken, UserToken => true
+    | AdminToken, AdminToken => true
+    | ToolCall, ToolCall => true
+    | AdminToken, ToolCall => true
+    | ToolCall, AdminToken => true
+    | _, _ => false
+  refl s := by cases s <;> rfl
+  symm s₁ s₂ h := by cases s₁ <;> cases s₂ <;> first | rfl | exact h
+  trans s₁ s₂ s₃ h₁ h₂ := by
+    cases s₁ <;> cases s₂ <;> cases s₃ <;>
+      first | rfl | (exfalso; exact Bool.false_ne_true h₁)
+            | (exfalso; exact Bool.false_ne_true h₂)
+
+/-- The 4-point diamond for privilege escalation. -/
+def privEscPoset : List (DObsLevel PrivEscSecret) :=
+  [(bot : DObsLevel PrivEscSecret), obsUser, obsAdmin,
+   (top : DObsLevel PrivEscSecret)]
+
+/-- All 8 = 2³ decidable propositions on PrivEscSecret. -/
+def allPrivEscProps : List (DProp PrivEscSecret) :=
+  [false, true].flatMap fun vU =>
+  [false, true].flatMap fun vA =>
+  [false, true].map fun vT s => match s with
+    | UserToken => vU
+    | AdminToken => vA
+    | ToolCall => vT
+
+/-! ### Sanity checks -/
+
+example : allPrivEscProps.length = 8 := by decide
+example : privEscPoset.length = 4 := by decide
+
+example : obsUser.rel UserToken ToolCall = true := by decide
+example : obsUser.rel UserToken AdminToken = false := by decide
+example : obsAdmin.rel AdminToken ToolCall = true := by decide
+example : obsAdmin.rel UserToken AdminToken = false := by decide
+
+example : (bot : DObsLevel PrivEscSecret) ≤ obsUser := bot_le obsUser
+example : (bot : DObsLevel PrivEscSecret) ≤ obsAdmin := bot_le obsAdmin
+example : obsUser ≤ (top : DObsLevel PrivEscSecret) := le_top obsUser
+example : obsAdmin ≤ (top : DObsLevel PrivEscSecret) := le_top obsAdmin
+
+/-! ### The alignment tax is non-zero (H¹ ≥ 1) -/
+
+/-- **Privilege escalation has alignment tax ≥ 1.** The obsUser and
+    obsAdmin observers disagree: ToolCall looks like a user request to
+    one and an admin operation to the other. No global reconciliation
+    is possible — exactly the H¹ obstruction pattern. -/
+theorem dPrivEsc_alignment_tax :
+    h1_witnesses privEscPoset allPrivEscProps ≥ 1 := by decide
+
+/-- The privilege escalation attack is detected by the boundary-map
+    computation too. -/
+example : BoundaryMaps.h1_compute privEscPoset allPrivEscProps ≥ 1 := by native_decide
+
+/-- HasAllDProps instance for the generic h0 framework. -/
+instance : HasAllDProps PrivEscSecret where
+  allDProps := allPrivEscProps
+
+/-- Global sections = 2 (only constants). -/
+example : DObsLevel.h0_count privEscPoset = 2 := by decide
+
+end PrivEsc
+
 end SemanticIFCDecidable
