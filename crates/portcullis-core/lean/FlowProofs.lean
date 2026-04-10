@@ -21,7 +21,7 @@ added to the Rust enum will NOT cause a Lean build failure.
 - **Confidentiality monotonicity**: joining with secret data produces secret output
 - **Quotient soundness**: `ifc_to_exposure` is a monotone homomorphism
 
-All proofs discharge via `decide` over finite types. No sorry, no SMT.
+All proofs discharge via `decide` over finite types. No proof holes, no SMT.
 -/
 
 namespace FlowProofs
