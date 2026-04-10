@@ -7,7 +7,7 @@ Proves that label propagation through the causal DAG preserves
 information flow invariants. Hand-written Lean models mirroring
 `portcullis-core/src/flow.rs` and `portcullis/src/flow_graph.rs`.
 
-No sorry. No SMT. All proofs fully checked by Lean 4.
+No proof holes. No SMT. All proofs fully checked by Lean 4.
 -/
 
 namespace FlowGraphProofs

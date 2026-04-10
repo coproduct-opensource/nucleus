@@ -12,7 +12,7 @@ Hand-written Lean model mirroring `portcullis-core/src/lib.rs:959`.
 NOT Aeneas-generated — Aeneas cannot translate `==` on enums or the
 `should_gate` function (which uses `bool` fields and `Option` returns).
 
-## What's proved (all kernel-checked, no sorry)
+## What's proved (all kernel-checked, no proof holes)
 
 - **Never always denies**: regardless of exposure or operation
 - **LowRisk always requires approval**: regardless of exposure or operation
