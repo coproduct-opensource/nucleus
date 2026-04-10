@@ -16,7 +16,7 @@ the nucleus-claude-hook for research/draft/execute/breakglass modes.
 5. **Research blocks writes**: `meet(perms, research_ceiling).write_files = ⊥`
 
 All proofs discharge via `decide`/`simp` over the 3-element CapabilityLevel type.
-No sorry. No SMT oracle.
+No proof holes. No SMT oracle.
 -/
 
 open portcullis_core
