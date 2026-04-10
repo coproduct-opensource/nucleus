@@ -64,43 +64,48 @@ def narrow (parent child : Constraints) : Option Constraints :=
 -- ═══════════════════════════════════════════════════════════════════════
 
 theorem narrow_scope_le_parent (p c : Constraints)
-    (h : narrow p c = some r) :
+    {r : Constraints} (h : narrow p c = some r) :
     r.scope_size ≤ p.scope_size := by
-  simp [narrow] at h
-  split at h <;> simp_all
-  omega
+  simp only [narrow] at h
+  split at h
+  · simp only [Option.some.injEq] at h; subst h; simp only [Nat.min_def]; split <;> omega
+  · simp at h
 
 theorem narrow_depth_le_parent (p c : Constraints)
-    (h : narrow p c = some r) :
+    {r : Constraints} (h : narrow p c = some r) :
     r.max_depth ≤ p.max_depth := by
-  simp [narrow] at h
-  split at h <;> simp_all
-  omega
+  simp only [narrow] at h
+  split at h
+  · simp only [Option.some.injEq] at h; subst h; simp only [Nat.min_def]; split <;> omega
+  · simp at h
 
 theorem narrow_expiry_le_parent (p c : Constraints)
-    (h : narrow p c = some r) :
+    {r : Constraints} (h : narrow p c = some r) :
     r.expires_at ≤ p.expires_at := by
-  simp [narrow] at h
-  split at h <;> simp_all
-  omega
+  simp only [narrow] at h
+  split at h
+  · simp only [Option.some.injEq] at h; subst h; simp only [Nat.min_def]; split <;> omega
+  · simp at h
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- Theorem D2: Narrowing is also ≤ child on every dimension
 -- ═══════════════════════════════════════════════════════════════════════
 
 theorem narrow_scope_le_child (p c : Constraints)
-    (h : narrow p c = some r) :
+    {r : Constraints} (h : narrow p c = some r) :
     r.scope_size ≤ c.scope_size := by
-  simp [narrow] at h
-  split at h <;> simp_all
-  omega
+  simp only [narrow] at h
+  split at h
+  · simp only [Option.some.injEq] at h; subst h; simp only [Nat.min_def]; split <;> omega
+  · simp at h
 
 theorem narrow_depth_le_child (p c : Constraints)
-    (h : narrow p c = some r) :
+    {r : Constraints} (h : narrow p c = some r) :
     r.max_depth ≤ c.max_depth := by
-  simp [narrow] at h
-  split at h <;> simp_all
-  omega
+  simp only [narrow] at h
+  split at h
+  · simp only [Option.some.injEq] at h; subst h; simp only [Nat.min_def]; split <;> omega
+  · simp at h
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- Theorem D3: Scope intersection is commutative
