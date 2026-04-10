@@ -2465,6 +2465,34 @@ theorem functorial_h1_equality :
 
 end CrossFrameworkReduction
 
+/-! ## Y5.A — SecModels category skeleton (issue #1460) -/
+
+namespace SecModels
+
+structure SecurityModel where Carrier : Type
+structure SecMorphism (M N : SecurityModel) where toFun : M.Carrier → N.Carrier
+
+namespace SecMorphism
+def id (M : SecurityModel) : SecMorphism M M where toFun := _root_.id
+def comp {M N P : SecurityModel} (f : SecMorphism M N) (g : SecMorphism N P) :
+    SecMorphism M P where toFun := g.toFun ∘ f.toFun
+theorem id_comp {M N : SecurityModel} (f : SecMorphism M N) : comp (id M) f = f := rfl
+theorem comp_id {M N : SecurityModel} (f : SecMorphism M N) : comp f (id N) = f := rfl
+theorem assoc {M N P Q : SecurityModel}
+    (f : SecMorphism M N) (g : SecMorphism N P) (h : SecMorphism P Q) :
+    comp (comp f g) h = comp f (comp g h) := rfl
+end SecMorphism
+
+def ifcThreeSecret : SecurityModel where Carrier := ThreeSecret
+def ifcFiveSecret : SecurityModel where Carrier := FiveSecret
+def constantToA : SecMorphism ifcFiveSecret ifcThreeSecret where toFun := fun _ => ThreeSecret.A
+def idThreeSecret : SecMorphism ifcThreeSecret ifcThreeSecret := SecMorphism.id ifcThreeSecret
+
+example : (SecMorphism.id ifcThreeSecret).toFun ThreeSecret.A = ThreeSecret.A := rfl
+example : (SecMorphism.comp constantToA idThreeSecret).toFun FiveSecret.B = ThreeSecret.A := rfl
+
+end SecModels
+
 /-! ## Y3.A — AttentionTopos skeleton (issue #1454) -/
 
 namespace AttentionTopos
