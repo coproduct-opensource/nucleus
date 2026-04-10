@@ -2412,4 +2412,57 @@ example : h1_witnesses BellLaPadula.blpPoset BellLaPadula.allBLPProps =
 
 end Biba
 
+/-! ## Y5.D — Functor BLP → Biba: first cross-framework reduction (#1463) -/
+
+namespace CrossFrameworkReduction
+open DObsLevel BLPLevel BibaLevel BellLaPadula Biba
+
+def blpToBiba : BLPLevel → BibaLevel
+  | .Unclassified => .TrustedKernel
+  | .Secret => .Verified
+  | .TopSecret => .LowIntegrity
+
+def bibaToBLP : BibaLevel → BLPLevel
+  | .TrustedKernel => .Unclassified
+  | .Verified => .Secret
+  | .LowIntegrity => .TopSecret
+
+theorem blpToBiba_bibaToBLP : ∀ b : BibaLevel, blpToBiba (bibaToBLP b) = b := by
+  intro b; cases b <;> rfl
+
+theorem bibaToBLP_blpToBiba : ∀ a : BLPLevel, bibaToBLP (blpToBiba a) = a := by
+  intro a; cases a <;> rfl
+
+/-- Pull back a DObsLevel along a carrier map. Structural. -/
+def DObsLevel.pullbackAlong {A B : Type} [DecidableEq A] [DecidableEq B]
+    (f : A → B) (E : DObsLevel B) : DObsLevel A where
+  rel a₁ a₂ := E.rel (f a₁) (f a₂)
+  refl a := E.refl (f a)
+  symm a₁ a₂ h := E.symm (f a₁) (f a₂) h
+  trans a₁ a₂ a₃ h₁ h₂ := E.trans (f a₁) (f a₂) (f a₃) h₁ h₂
+
+example : (DObsLevel.pullbackAlong blpToBiba obsVerifiedRead).rel
+    Unclassified Secret = true := by decide
+example : (DObsLevel.pullbackAlong blpToBiba obsVerifiedRead).rel
+    Secret TopSecret = false := by decide
+example : (DObsLevel.pullbackAlong blpToBiba obsVerifiedWrite).rel
+    Secret TopSecret = true := by decide
+example : (DObsLevel.pullbackAlong blpToBiba obsVerifiedWrite).rel
+    Unclassified Secret = false := by decide
+
+def pulledBackBibaPoset : List (DObsLevel BLPLevel) :=
+  [(bot : DObsLevel BLPLevel),
+   DObsLevel.pullbackAlong blpToBiba obsVerifiedRead,
+   DObsLevel.pullbackAlong blpToBiba obsVerifiedWrite,
+   (top : DObsLevel BLPLevel)]
+
+theorem pullback_preserves_h1 :
+    h1_witnesses pulledBackBibaPoset BellLaPadula.allBLPProps ≥ 1 := by decide
+
+theorem functorial_h1_equality :
+    h1_witnesses pulledBackBibaPoset BellLaPadula.allBLPProps =
+    h1_witnesses blpPoset BellLaPadula.allBLPProps := by decide
+
+end CrossFrameworkReduction
+
 end SemanticIFCDecidable
