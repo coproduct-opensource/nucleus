@@ -11,7 +11,7 @@ Proves that declassification rules cannot escalate privileges:
 - Applying a rule twice is idempotent
 
 Hand-written Lean models mirroring `portcullis-core/src/declassify.rs`.
-All proofs fully checked, no sorry.
+All proofs fully checked, no proof holes.
 -/
 
 namespace DeclassifyProofs
