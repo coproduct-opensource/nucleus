@@ -2491,6 +2491,74 @@ def idThreeSecret : SecMorphism ifcThreeSecret ifcThreeSecret := SecMorphism.id 
 example : (SecMorphism.id ifcThreeSecret).toFun ThreeSecret.A = ThreeSecret.A := rfl
 example : (SecMorphism.comp constantToA idThreeSecret).toFun FiveSecret.B = ThreeSecret.A := rfl
 
+/-! ## Y6.D — alignment_tax is functorial under SecModel morphisms (issue #1481) -/
+
+open AlignmentTax DObsLevel
+
+/-- Pull back a DObsLevel along a SecMorphism: two elements of `M`
+    are equivalent iff their images under `F` are equivalent in `N`. -/
+def DObsLevel.pullback {M N : SecurityModel}
+    (F : SecMorphism M N) (E : DObsLevel N.Carrier) : DObsLevel M.Carrier where
+  rel a b := E.rel (F.toFun a) (F.toFun b)
+  refl a := E.refl (F.toFun a)
+  symm a b h := E.symm (F.toFun a) (F.toFun b) h
+  trans a b c hab hbc := E.trans (F.toFun a) (F.toFun b) (F.toFun c) hab hbc
+
+/-- Pullback preserves identity: pulling back along id is identity. -/
+theorem DObsLevel.pullback_id {M : SecurityModel}
+    (E : DObsLevel M.Carrier) :
+    DObsLevel.pullback (SecMorphism.id M) E = E := by
+  simp [pullback, SecMorphism.id]
+
+/-- Pullback respects composition: pulling back along `g ∘ f` is the
+    same as pulling back along `g` then `f`. -/
+theorem DObsLevel.pullback_comp {M N P : SecurityModel}
+    (f : SecMorphism M N) (g : SecMorphism N P)
+    (E : DObsLevel P.Carrier) :
+    DObsLevel.pullback f (DObsLevel.pullback g E) =
+    DObsLevel.pullback (SecMorphism.comp f g) E := by
+  simp [pullback, SecMorphism.comp, Function.comp]
+
+/-- Example: pulling back `obsAC` along `constantToA` gives the coarsest
+    level (everything mapped to A, so all elements are equivalent). -/
+example : (DObsLevel.pullback constantToA
+    (ThreeSecretObs.obsAC : DObsLevel ThreeSecret)).rel
+    FiveSecret.A FiveSecret.B = true := by decide
+
+/-! Functoriality of dForces through pullback: if `ψ` is forced at
+`pullback F E`, this is because `ψ` respects the pullback equivalence.
+The pullback can force props not definable on N — alignment_tax can INCREASE. -/
+
+/-- The pullback of obsAC along constantToA. constantToA maps all of
+    FiveSecret to ThreeSecret.A, collapsing all distinctions. -/
+def pullback_obsAC_via_constantToA : DObsLevel FiveSecret :=
+  DObsLevel.pullback constantToA (ThreeSecretObs.obsAC : DObsLevel ThreeSecret)
+
+/-- Pullback along constantToA collapses all FiveSecret elements to A,
+    making everything equivalent. Only constant props are forced → tax = 0. -/
+example : alignment_tax pullback_obsAC_via_constantToA = 0 := by decide
+
+/-- obsAC has tax = 2 on ThreeSecret. -/
+example : alignment_tax (ThreeSecretObs.obsAC : DObsLevel ThreeSecret) = 2 := by decide
+
+/-- **Alignment tax decreases under pullback** for this example:
+    pullback(constantToA, obsAC) has tax 0 ≤ 2 = tax(obsAC).
+
+    constantToA is non-injective (maps all 5 secrets to A), so
+    the pullback collapses all distinctions, reducing tax. -/
+theorem pullback_decreases_tax_example :
+    alignment_tax pullback_obsAC_via_constantToA ≤
+    alignment_tax (ThreeSecretObs.obsAC : DObsLevel ThreeSecret) := by
+  decide
+
+/-- For the IDENTITY morphism, alignment tax is preserved. -/
+theorem alignment_tax_pullback_id {M : SecurityModel}
+    [Fintype M.Carrier] [DecidableEq M.Carrier] [HasAllDProps M.Carrier]
+    (E : DObsLevel M.Carrier) :
+    alignment_tax (DObsLevel.pullback (SecMorphism.id M) E) =
+    alignment_tax E := by
+  simp [DObsLevel.pullback, SecMorphism.id, alignment_tax]
+
 end SecModels
 
 /-! ## Y3.A — AttentionTopos skeleton (issue #1454) -/
