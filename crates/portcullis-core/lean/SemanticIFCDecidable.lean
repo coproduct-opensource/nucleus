@@ -1472,4 +1472,112 @@ example :
 
 end GenericH0Examples
 
+/-! ## Y5.A — SecModels category skeleton (issue #1460)
+
+Phase 7, Year 5 of the 5-year roadmap. The first formal definition of
+"the category of security models" — the framework for cross-framework
+reductions (Bell-LaPadula → Biba, IFC → capability, etc.) that come
+in subsequent issues.
+
+We define our own minimal `SecCategory` structure rather than reaching
+for `Mathlib.CategoryTheory.Category` because:
+1. The cron rules forbid modifying existing imports.
+2. The category laws here are purely equational and structural — no
+   `decide`, no large-scale Mathlib machinery needed.
+3. A future PR can re-base this on Mathlib's `Category` typeclass once
+   we wire up the import.
+
+The category laws (`id_comp`, `comp_id`, `assoc`) are proven
+**structurally** as plain `rfl` (since composition of functions is
+already definitionally associative and unital). This is exactly the
+algebraic-topology bias the user requested: no `decide`, just
+unfolding.
+-/
+
+namespace SecModels
+
+/-- A security model: an arbitrary type whose elements represent the
+    "states" or "objects" the security framework reasons about.
+
+    Future issues will refine this with finiteness, presheaf structure,
+    or specific topos data. -/
+structure SecurityModel where
+  /-- The carrier type — security states / objects under analysis. -/
+  Carrier : Type
+
+/-- A morphism between security models: a function on carriers.
+
+    Future issues will add a "preserves security" predicate (e.g.
+    monotone w.r.t. the IFC lattice, or pulls back the partition
+    structure of an attention pattern). -/
+structure SecMorphism (M N : SecurityModel) where
+  /-- The underlying carrier function. -/
+  toFun : M.Carrier → N.Carrier
+
+namespace SecMorphism
+
+/-- Identity morphism on a security model. -/
+def id (M : SecurityModel) : SecMorphism M M where
+  toFun := _root_.id
+
+/-- Composition of security morphisms. -/
+def comp {M N P : SecurityModel} (f : SecMorphism M N) (g : SecMorphism N P) :
+    SecMorphism M P where
+  toFun := g.toFun ∘ f.toFun
+
+/-! ### Category laws (proven structurally as `rfl`) -/
+
+/-- Left identity. -/
+theorem id_comp {M N : SecurityModel} (f : SecMorphism M N) :
+    comp (id M) f = f := rfl
+
+/-- Right identity. -/
+theorem comp_id {M N : SecurityModel} (f : SecMorphism M N) :
+    comp f (id N) = f := rfl
+
+/-- Associativity of composition. -/
+theorem assoc {M N P Q : SecurityModel}
+    (f : SecMorphism M N) (g : SecMorphism N P) (h : SecMorphism P Q) :
+    comp (comp f g) h = comp f (comp g h) := rfl
+
+end SecMorphism
+
+/-! ### Example: the IFC topos as a SecurityModel
+
+The simplest concrete `SecurityModel`: the type `ThreeSecret` (treated
+as the carrier of the diamond IFC topos). Future issues will enrich
+this with the `DObsLevel` lattice and the forced-proposition algebra.
+-/
+
+/-- The ThreeSecret IFC topos as a `SecurityModel`. -/
+def ifcThreeSecret : SecurityModel where
+  Carrier := ThreeSecret
+
+/-- The FiveSecret Borromean topos as a `SecurityModel`. -/
+def ifcFiveSecret : SecurityModel where
+  Carrier := FiveSecret
+
+/-- An example morphism: the constant map from FiveSecret to ThreeSecret
+    sending everything to `ThreeSecret.A`. (Future morphisms will be
+    structure-preserving; this is just a witness that morphisms exist.) -/
+def constantToA : SecMorphism ifcFiveSecret ifcThreeSecret where
+  toFun := fun _ => ThreeSecret.A
+
+/-- The identity morphism on `ifcThreeSecret`. -/
+def idThreeSecret : SecMorphism ifcThreeSecret ifcThreeSecret :=
+  SecMorphism.id ifcThreeSecret
+
+/-! ### Sanity checks: identity and composition behave as expected -/
+
+example : (SecMorphism.id ifcThreeSecret).toFun ThreeSecret.A = ThreeSecret.A := rfl
+
+example :
+    (SecMorphism.comp constantToA idThreeSecret).toFun FiveSecret.B = ThreeSecret.A := rfl
+
+example :
+    (SecMorphism.comp (SecMorphism.id ifcFiveSecret) constantToA).toFun FiveSecret.C =
+    ThreeSecret.A := rfl
+
+end SecModels
+
 end SemanticIFCDecidable
