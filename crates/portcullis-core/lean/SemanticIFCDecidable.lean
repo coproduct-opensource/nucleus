@@ -3140,4 +3140,106 @@ example : alignment_tax (ThreeSecretObs.obsAC : DObsLevel ThreeSecret) ≤
 
 end DetectionBound
 
+/-! ## Y8.C — Lagois connection composition of compartments (issue #1488)
+
+A Lagois connection between two observation levels provides a
+structure-preserving bridge for cross-compartment information flow.
+
+Following [Secure Information Flow Connections, SCP 2022]:
+two DObsLevel lattices can exchange information via a pair of
+monotone maps (α_up, γ_down) satisfying a roundtrip condition.
+
+This enables multi-organization security composition: compartments
+with different observation structures communicate without leaking. -/
+
+namespace LagoisConnection
+open DObsLevel
+
+/-- A Lagois connection between two DObsLevel lattices on the same
+    carrier type. Consists of a lower-adjoint-like map `up` and an
+    upper-adjoint-like map `down` satisfying monotonicity and roundtrip.
+
+    Reference: [Secure Information Flow Connections](https://doi.org/10.1016/j.scico.2022.102878) -/
+structure LagoisConn {α : Type} (E F : DObsLevel α) where
+  /-- Lower-adjoint-like map: sends E-classes to F-classes. -/
+  up : α → α
+  /-- Upper-adjoint-like map: sends F-classes to E-classes. -/
+  down : α → α
+  /-- up preserves E-equivalence into F-equivalence. -/
+  up_mono : ∀ a b, E.rel a b = true → F.rel (up a) (up b) = true
+  /-- down preserves F-equivalence into E-equivalence. -/
+  down_mono : ∀ a b, F.rel a b = true → E.rel (down a) (down b) = true
+  /-- Roundtrip: going up then down lands in the same E-class. -/
+  roundtrip : ∀ a, E.rel a (down (up a)) = true
+
+/-- The identity Lagois connection: E to itself. -/
+def LagoisConn.id {α : Type} (E : DObsLevel α) : LagoisConn E E where
+  up := _root_.id
+  down := _root_.id
+  up_mono _ _ h := h
+  down_mono _ _ h := h
+  roundtrip a := E.refl a
+
+/-- Composition of Lagois connections: if E → F and F → G, then E → G. -/
+def LagoisConn.comp {α : Type} {E F G : DObsLevel α}
+    (ef : LagoisConn E F) (fg : LagoisConn F G) : LagoisConn E G where
+  up := fg.up ∘ ef.up
+  down := ef.down ∘ fg.down
+  up_mono a b h := fg.up_mono _ _ (ef.up_mono a b h)
+  down_mono a b h := ef.down_mono _ _ (fg.down_mono a b h)
+  roundtrip a := by
+    -- Need: E.rel a (ef.down (fg.down (fg.up (ef.up a))))
+    -- From ef.roundtrip: E.rel a (ef.down (ef.up a))
+    -- From fg.roundtrip: F.rel (ef.up a) (fg.down (fg.up (ef.up a)))
+    -- From ef.down_mono: E.rel (ef.down (ef.up a)) (ef.down (fg.down (fg.up (ef.up a))))
+    -- From E.trans: E.rel a (ef.down (fg.down (fg.up (ef.up a))))
+    exact E.trans a (ef.down (ef.up a)) (ef.down (fg.down (fg.up (ef.up a))))
+      (ef.roundtrip a)
+      (ef.down_mono (ef.up a) (fg.down (fg.up (ef.up a))) (fg.roundtrip (ef.up a)))
+
+/-- Lagois connection preserves noninterference (forward direction):
+    if φ is forced at F, then φ ∘ up is forced at E.
+
+    Proof: E.rel s₁ s₂ → (up_mono) F.rel (up s₁) (up s₂) → (h) φ(up s₁) = φ(up s₂). -/
+theorem lagois_preserves_forcing_up {α : Type} [Fintype α] [DecidableEq α]
+    {E F : DObsLevel α} (conn : LagoisConn E F)
+    (φ : α → Bool) (h : dForces F φ = true) :
+    dForces E (φ ∘ conn.up) = true := by
+  unfold dForces at *
+  rw [decide_eq_true_iff] at *
+  intro s₁ s₂ hE
+  exact h (conn.up s₁) (conn.up s₂) (conn.up_mono s₁ s₂ hE)
+
+/-- Lagois connection preserves noninterference (backward direction):
+    if φ is forced at E, then φ ∘ down is forced at F. -/
+theorem lagois_preserves_forcing_down {α : Type} [Fintype α] [DecidableEq α]
+    {E F : DObsLevel α} (conn : LagoisConn E F)
+    (φ : α → Bool) (h : dForces E φ = true) :
+    dForces F (φ ∘ conn.down) = true := by
+  unfold dForces at *
+  rw [decide_eq_true_iff] at *
+  intro s₁ s₂ hF
+  exact h (conn.down s₁) (conn.down s₂) (conn.down_mono s₁ s₂ hF)
+
+/-! ### Concrete example on ThreeSecret -/
+
+open ThreeSecretObs
+
+/-- A Lagois connection from obsAC to bot using constant down.
+    up = id (bot accepts everything).
+    Example: the identity Lagois connection on obsAC. -/
+def acSelfConn : LagoisConn obsAC obsAC := LagoisConn.id obsAC
+
+/-- Composition of two identity connections = identity on up/down. -/
+example : (LagoisConn.comp acSelfConn acSelfConn).up = acSelfConn.up := rfl
+example : (LagoisConn.comp acSelfConn acSelfConn).down = acSelfConn.down := rfl
+
+/-- Identity composition: comp id ef = ef on the roundtrip property. -/
+theorem id_comp_roundtrip {α : Type} {E F : DObsLevel α}
+    (ef : LagoisConn E F) (a : α) :
+    (LagoisConn.comp (LagoisConn.id E) ef).roundtrip a = ef.roundtrip a := by
+  rfl
+
+end LagoisConnection
+
 end SemanticIFCDecidable
