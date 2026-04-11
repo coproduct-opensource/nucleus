@@ -1404,50 +1404,44 @@ theorem no_exclusive_means_uniform {Secret : Type} [Fintype Secret] [DecidableEq
           rw [hfi, hfj_false]; rfl⟩⟩⟩
   exact absurd h_excl (by simp [h])
 
-/-- **Forward direction (by contrapositive)**: if H¹ > 0, then
-    exclusive observations must exist.
+/-! Forward direction = contrapositive + no_exclusive_means_uniform (PROVED)
++ uniform_implies_h1_zero (acyclicity — 1 sorry). -/
 
-    Proof: contrapositive. If no exclusive obs, then by
-    `no_exclusive_means_uniform`, all levels force the same props.
-    With uniform section spaces, the Čech complex has H¹ = 0.
+/-- The acyclicity lemma: if all levels force the same propositions,
+    then H¹ = 0. This is the constant-presheaf acyclicity theorem
+    for finite coverings. -/
+theorem uniform_implies_h1_zero {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    (P : IndexedPoset Secret) (indices : List Nat)
+    (h_uniform : ∀ i ∈ indices, ∀ j ∈ indices, ∀ p : Nat,
+      p < P.allProps.length →
+      (match P.levels[i]? with
+       | some E => DObsLevel.dForces E (P.allProps[p]!)
+       | none => false) = true →
+      (match P.levels[j]? with
+       | some E => DObsLevel.dForces E (P.allProps[p]!)
+       | none => false) = true) :
+    reducedCechDim P indices 1 = 0 := by
+  sorry -- GF(2) acyclicity: constant presheaf on connected covering
 
-    The final step (uniform sections → H¹ = 0) requires showing
-    the coboundary matrix has full rank when all vertex sections
-    agree. This is the constant-presheaf acyclicity lemma. -/
 theorem h1_pos_implies_exclusive {Secret : Type} [Fintype Secret] [DecidableEq Secret]
     (P : IndexedPoset Secret) (indices : List Nat)
     (h : reducedCechDim P indices 1 > 0) :
     hasExclusiveObsB P indices = true := by
-  -- Contrapositive: assume ¬exclusive, show H¹ = 0
   by_contra h_no_excl
   have h_false : hasExclusiveObsB P indices = false := by
     cases hb : hasExclusiveObsB P indices with
     | false => rfl
     | true => exact absurd hb h_no_excl
-  -- By no_exclusive_means_uniform, all sections are identical
-  have _h_uniform := no_exclusive_means_uniform P indices h_false
-  -- Uniform sections → constant presheaf → H¹ = 0
-  -- This requires: rank(δ⁰) = dim(C¹) - dim(global_sections)
-  -- when all vertex section spaces are equal.
-  -- The algebraic argument: with equal sections, δ⁰ is the standard
-  -- coboundary of a constant sheaf on a finite covering, which has
-  -- H¹ = 0 iff the covering nerve is connected. For reduced coverings
-  -- with ≥ 2 levels sharing a common refinement (top), this holds.
-  sorry -- constant-presheaf acyclicity on connected coverings
+  have h_uniform := no_exclusive_means_uniform P indices h_false
+  have h_zero := uniform_implies_h1_zero P indices h_uniform
+  omega -- H¹ > 0 contradicts H¹ = 0
 
-/-- **Backward direction**: if exclusive observations exist, they
-    create a non-trivial element in H¹.
+/-- **Backward direction**: exclusive observations → H¹ > 0.
 
-    Proof sketch: an exclusive prop p (forced at i, not at j) means:
-    - p ∈ simplexSections [i] but p ∉ simplexSections [j]
-    - The C⁰ basis element (i, p) is NOT a global section
-    - δ⁰(i, p) contributes to C¹ at edges containing i
-    - This creates a coboundary in C¹ that reduces rank(δ⁰)
-    - But the dimension of C⁰ doesn't decrease as much
-    - Net effect: dim(ker δ⁰) > rank(augmentation), so H¹ > 0
-
-    The full algebraic argument requires showing the exclusive prop
-    creates a non-trivial class in ker(δ¹)/im(δ⁰). -/
+    The exclusive prop creates a non-trivial element in H¹.
+    Structurally: the exclusive prop is a local section at one
+    vertex that cannot extend to a global section (it fails at
+    another vertex), creating a non-trivial class in ker/im. -/
 theorem exclusive_implies_h1_pos {Secret : Type} [Fintype Secret] [DecidableEq Secret]
     (P : IndexedPoset Secret) (indices : List Nat)
     (h : hasExclusiveObsB P indices = true) :
