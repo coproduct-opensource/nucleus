@@ -1441,12 +1441,34 @@ theorem h1_pos_implies_exclusive {Secret : Type} [Fintype Secret] [DecidableEq S
     The exclusive prop creates a non-trivial element in H¹.
     Structurally: the exclusive prop is a local section at one
     vertex that cannot extend to a global section (it fails at
-    another vertex), creating a non-trivial class in ker/im. -/
+    another vertex), creating a non-trivial class in ker/im.
+
+    Key rank lemma: if exclusive obs exist, dim C⁰ > dim globals.
+    Exclusive prop p (forced at i, not j) is in C⁰ at vertex i but
+    NOT a global section → C⁰ strictly larger than augmentation image. -/
+theorem c0_exceeds_globals_of_exclusive {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    (P : IndexedPoset Secret) (indices : List Nat)
+    (h : hasExclusiveObsB P indices = true) :
+    (reducedC0 P indices).length >
+    (LaudalReduced.reducedGlobalSections P indices).length := by
+  sorry -- requires: exclusive prop creates a C⁰ element not in globals
+
+/-- **Backward direction**: exclusive observations → H¹ > 0.
+
+    The algebraic argument:
+    1. Exclusive obs → C⁰ > globals (c0_exceeds_globals_of_exclusive)
+    2. ker δ⁰ ⊇ globals (global sections are always cocycles)
+    3. But ker δ⁰ might equal globals (if δ⁰ is "well-behaved")
+    4. The exclusive prop creates additional kernel elements beyond
+       globals, which contribute to H¹ = ker δ¹ / im δ⁰.
+
+    Full algebraic proof requires rank-nullity on GF(2) matrices.
+    For concrete types, verified by native_decide. -/
 theorem exclusive_implies_h1_pos {Secret : Type} [Fintype Secret] [DecidableEq Secret]
     (P : IndexedPoset Secret) (indices : List Nat)
     (h : hasExclusiveObsB P indices = true) :
     reducedCechDim P indices 1 > 0 := by
-  sorry -- exclusive prop → non-trivial cohomology class
+  sorry -- requires: c0_exceeds_globals + rank-nullity on GF(2)
 
 /-! ## The complete theorem (combining both directions) -/
 
