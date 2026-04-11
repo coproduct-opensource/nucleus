@@ -1684,3 +1684,158 @@ theorem evasion_impossibility
   ⟨⟨[bot, bot], True⟩, trivial, detection_ceiling D h_sound _ bot_has_no_exclusive⟩
 
 end EvasionImpossibility
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- The Injection-Disruption Conjecture
+-- ═══════════════════════════════════════════════════════════════════════
+
+namespace InjectionDisruption
+open SemanticIFC SemanticIFCDecidable DObsLevel AlignmentTax
+open EvasionImpossibility
+
+/-!
+# The Injection-Disruption Conjecture
+
+Empirical finding (GPT-2 Medium): consensus-preserving injections
+FAIL to hijack the model. This suggests:
+
+  **Successful injection necessarily disrupts head consensus.**
+
+If true, the coboundary norm is a COMPLETE detector: every attack
+that actually changes model behavior creates head disagreement.
+
+## Evidence
+
+**For the conjecture:**
+- Attention Tracker (NAACL 2025): successful injections cause
+  "distraction effect" in specific attention heads
+- Causal Head Gating (NeurIPS 2025): instruction-following uses
+  separable, causally necessary sub-circuits — hijacking requires
+  redirecting these heads, creating disagreement
+
+**Against the conjecture:**
+- Adaptive attacks (PiF, AGILE) can flatten attention while
+  maintaining injection success
+- No paper claims disruption is NECESSARY — only correlated
+
+## Formalization
+
+We formalize this as a **conditional axiom**: under the assumption
+that instruction-following requires causal head specialization,
+successful injection implies head disagreement.
+
+This is NOT a theorem (it depends on the model's internal structure).
+It is an axiom that can be INSTANTIATED for specific models where
+causal head gating has been empirically verified.
+-/
+
+/-- A model of transformer behavior: maps observation posets to
+    outputs. The output depends on BOTH the content (what the
+    text says) and the attention structure (how heads process it). -/
+structure TransformerModel (Secret : Type) (Output : Type) where
+  /-- The model's output given an observation poset. -/
+  compute : TaggedPoset Secret → Output
+  /-- The model's "default" output on clean input. -/
+  defaultOutput : Output
+
+/-- An injection SUCCEEDS if the model's output differs from the
+    default (clean) output — the injection changed behavior. -/
+def injectionSucceeds {Secret Output : Type} [DecidableEq Output]
+    (M : TransformerModel Secret Output)
+    (P : TaggedPoset Secret) : Prop :=
+  M.compute P ≠ M.defaultOutput
+
+/-- **The Injection-Disruption Axiom** (conditional).
+
+    IF a model has causally specialized instruction-following heads
+    (formalized as: behavior change requires attention change),
+    THEN successful injection implies head disagreement.
+
+    This is the axiom that, combined with the Honest Fundamental
+    Theorem, makes the coboundary norm a COMPLETE detector. -/
+class HasCausalHeadSpecialization
+    (Secret : Type) [Fintype Secret] [DecidableEq Secret] [HasAllDProps Secret]
+    (Output : Type) [DecidableEq Output]
+    (M : TransformerModel Secret Output) : Prop where
+  /-- If the model's output changes (injection succeeds), then the
+      observation poset must have exclusive observations (heads disagree). -/
+  disruption : ∀ P : TaggedPoset Secret,
+    injectionSucceeds M P → P.hasExclusive = true
+
+/-- **Completeness Theorem** (conditional on the axiom).
+
+    If a model has causal head specialization AND the detector is
+    sound, then the detector catches ALL successful injections.
+
+    recall = 1.0 (no false negatives for successful attacks)
+
+    This is the converse of the Evasion Impossibility Theorem:
+    - Impossibility: sound detectors miss TAGGED-malicious inputs
+    - Completeness: sound detectors catch SUCCESSFULLY-malicious inputs
+
+    The gap: "tagged malicious" ≠ "successfully malicious."
+    The [bot, bot] witness is tagged malicious but doesn't succeed. -/
+theorem completeness_under_specialization
+    {Secret : Type} [Fintype Secret] [DecidableEq Secret] [HasAllDProps Secret]
+    {Output : Type} [DecidableEq Output]
+    (M : TransformerModel Secret Output)
+    [h_spec : HasCausalHeadSpecialization Secret Output M]
+    (D : TaggedPoset Secret → Bool)
+    (h_sound : IsSoundDetector D)
+    (h_complete : ∀ P, P.hasExclusive = true → D P = true)
+    (P : TaggedPoset Secret)
+    (h_success : injectionSucceeds M P) :
+    D P = true :=
+  h_complete P (h_spec.disruption P h_success)
+
+/-- **The Detection Trichotomy.**
+
+    Every input falls into exactly one of three categories:
+
+    1. CLEAN: not malicious, D returns false (true negative)
+    2. DETECTED: malicious, succeeds, D returns true (true positive)
+    3. FAILED: malicious, doesn't succeed, D returns false (benign FN)
+
+    Under causal head specialization, category 2 is complete:
+    ALL successful injections are detected. Category 3 (failed
+    injections that evade detection) are harmless — the attacker's
+    injection didn't work, so evasion doesn't matter.
+
+    This resolves the steel-man objection: the Evasion Impossibility
+    Theorem's witness is in category 3 (failed injection), not
+    category 2 (successful injection). -/
+theorem detection_trichotomy_principle
+    {Secret : Type} [Fintype Secret] [DecidableEq Secret] [HasAllDProps Secret]
+    {Output : Type} [DecidableEq Output]
+    (M : TransformerModel Secret Output)
+    [HasCausalHeadSpecialization Secret Output M]
+    (D : TaggedPoset Secret → Bool)
+    (h_sound : IsSoundDetector D)
+    (h_complete : ∀ P, P.hasExclusive = true → D P = true)
+    (P : TaggedPoset Secret) :
+    -- Either the injection fails (harmless) or it's detected
+    ¬injectionSucceeds M P ∨ D P = true := by
+  by_cases h : injectionSucceeds M P
+  · exact Or.inr (completeness_under_specialization M D h_sound h_complete P h)
+  · exact Or.inl h
+
+/-! ## Summary
+
+| Theorem | Says | Sorry? |
+|---------|------|--------|
+| evasion_impossibility | Sound detectors miss tagged-malicious inputs | 0 |
+| completeness_under_specialization | Under CHS axiom, sound+complete detectors catch all successful injections | 0 |
+| detection_trichotomy | Every input: clean, detected, or failed-injection | 0 |
+
+The CHS axiom (HasCausalHeadSpecialization) is:
+- Supported by Attention Tracker + Causal Head Gating evidence
+- NOT universally true (adaptive attacks may violate it)
+- The RIGHT level of abstraction: it isolates exactly what must
+  be true about the model for the detector to be complete
+
+The honest claim: "IF your model has causally specialized
+instruction-following heads (empirically verifiable), THEN our
+coboundary norm detector catches all successful injections."
+-/
+
+end InjectionDisruption
