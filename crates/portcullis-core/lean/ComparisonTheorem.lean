@@ -1627,3 +1627,60 @@ framework is strictly more powerful than pairwise consistency checks.
 -/
 
 end BorromeanH2
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- The Evasion Impossibility Theorem
+-- ═══════════════════════════════════════════════════════════════════════
+
+namespace EvasionImpossibility
+open SemanticIFC SemanticIFCDecidable DObsLevel AlignmentTax ThreeSecretObs
+
+/-- An observation poset tagged with semantic malice (independent of attention). -/
+structure TaggedPoset (Secret : Type) where
+  obsLevels : List (DObsLevel Secret)
+  isMalicious : Prop
+
+/-- Does the poset have exclusive observations (head disagreement)? -/
+def TaggedPoset.hasExclusive {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    [HasAllDProps Secret] (P : TaggedPoset Secret) : Bool :=
+  P.obsLevels.any fun E₁ =>
+    P.obsLevels.any fun E₂ =>
+      (allDProps (Secret := Secret)).any fun φ =>
+        DObsLevel.dForces E₁ φ && !DObsLevel.dForces E₂ φ
+
+/-- A detector is sound if it only triggers on head disagreement. -/
+def IsSoundDetector {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    [HasAllDProps Secret] (D : TaggedPoset Secret → Bool) : Prop :=
+  ∀ P, D P = true → P.hasExclusive = true
+
+/-- **Evasion witness**: [bot, bot] has no exclusive observations. -/
+theorem bot_has_no_exclusive :
+    (⟨[bot, bot], True⟩ : TaggedPoset ThreeSecret).hasExclusive = false := by
+  native_decide
+
+/-- **Detection ceiling**: any sound detector returns false on
+    consensus-preserving inputs, regardless of malice. -/
+theorem detection_ceiling
+    {Secret : Type} [Fintype Secret] [DecidableEq Secret] [HasAllDProps Secret]
+    (D : TaggedPoset Secret → Bool) (h_sound : IsSoundDetector D)
+    (P : TaggedPoset Secret) (h_consensus : P.hasExclusive = false) :
+    D P = false := by
+  -- If D P were true, soundness gives hasExclusive = true, contradicting h_consensus
+  cases hD : D P with
+  | false => rfl
+  | true =>
+    have := h_sound P hD
+    rw [h_consensus] at this
+    exact absurd this (by decide)
+
+/-- **The Evasion Impossibility Theorem (ThreeSecret).**
+
+    For ANY sound detector, there exists a malicious input it misses.
+    Proof: exhibit [bot, bot] tagged as malicious. Sound detectors
+    cannot trigger (bot has no exclusive obs). Zero sorry. -/
+theorem evasion_impossibility
+    (D : TaggedPoset ThreeSecret → Bool) (h_sound : IsSoundDetector D) :
+    ∃ P : TaggedPoset ThreeSecret, P.isMalicious ∧ D P = false :=
+  ⟨⟨[bot, bot], True⟩, trivial, detection_ceiling D h_sound _ bot_has_no_exclusive⟩
+
+end EvasionImpossibility
