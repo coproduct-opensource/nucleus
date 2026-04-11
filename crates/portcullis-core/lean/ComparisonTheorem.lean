@@ -1352,36 +1352,107 @@ have different images, creating a non-trivial cokernel = H¹ > 0.
 This requires: the exclusive prop φ creates a linearly independent
 element in ker(δ⁰) that is not in im(ε). -/
 
-/-- **Forward direction (structural sketch)**: if H¹ > 0, then the
-    reduced Čech complex has dim(ker δ⁰) > dim(im ε), which means
-    there exist local sections not coming from global sections.
-    Each such local section witnesses a prop forced at one level
-    but not another. -/
+/-! ### The key algebraic lemma
+
+The forward direction is proved by contrapositive: if no exclusive
+observations exist, all section spaces are equal, making the Čech
+complex that of a constant presheaf on a connected covering → H¹ = 0.
+
+The backward direction: an exclusive prop creates a C⁰ element that
+is NOT a global section, hence a non-trivial element in C⁰ / im(ε).
+Since δ⁰ maps C⁰ to C¹ and the chain complex condition holds,
+this non-trivial C⁰ element contributes to a non-trivial H¹.
+
+Both directions require detailed reasoning about the GF(2) rank of
+the coboundary matrices. For the general proof, we factor out the
+key lemma: "no exclusive obs → all simplex sections equal." -/
+
+/-- **Key lemma**: if no exclusive observations exist, then every
+    prop forced at ANY level in the covering is forced at ALL levels.
+
+    This is the structural content: no exclusive obs means the
+    forcing relation is uniform across all covered levels. -/
+theorem no_exclusive_means_uniform {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    (P : IndexedPoset Secret) (indices : List Nat)
+    (h : hasExclusiveObsB P indices = false) :
+    ∀ i ∈ indices, ∀ j ∈ indices, ∀ p : Nat,
+      p < P.allProps.length →
+      (match P.levels[i]? with
+       | some E => DObsLevel.dForces E (P.allProps[p]!)
+       | none => false) = true →
+      (match P.levels[j]? with
+       | some E => DObsLevel.dForces E (P.allProps[p]!)
+       | none => false) = true := by
+  intro i hi j hj p hp hfi
+  -- By contrapositive: if dForces E_j p = false, then
+  -- hasExclusiveObsB would be true (contradiction with h)
+  -- Contrapositive: if dForces E_j p ≠ true, then hasExclusiveObsB = true
+  by_contra hfj
+  -- hfj : ¬(match ... = true)
+  -- The match expression is Bool-valued, so ¬(b = true) → b = false
+  have hfj_false : (match P.levels[j]? with
+       | some E => DObsLevel.dForces E (P.allProps[p]!)
+       | none => false) = false := Bool.eq_false_iff.mpr hfj
+  -- Construct the witness for hasExclusiveObsB
+  have h_excl : hasExclusiveObsB P indices = true := by
+    simp only [hasExclusiveObsB]
+    exact List.any_eq_true.mpr ⟨i, hi,
+      List.any_eq_true.mpr ⟨j, hj,
+        List.any_eq_true.mpr ⟨p, List.mem_range.mpr hp, by
+          show ((match P.levels[i]? with | some E => DObsLevel.dForces E (P.allProps[p]!) | none => false) &&
+               !(match P.levels[j]? with | some E => DObsLevel.dForces E (P.allProps[p]!) | none => false)) = true
+          rw [hfi, hfj_false]; rfl⟩⟩⟩
+  exact absurd h_excl (by simp [h])
+
+/-- **Forward direction (by contrapositive)**: if H¹ > 0, then
+    exclusive observations must exist.
+
+    Proof: contrapositive. If no exclusive obs, then by
+    `no_exclusive_means_uniform`, all levels force the same props.
+    With uniform section spaces, the Čech complex has H¹ = 0.
+
+    The final step (uniform sections → H¹ = 0) requires showing
+    the coboundary matrix has full rank when all vertex sections
+    agree. This is the constant-presheaf acyclicity lemma. -/
 theorem h1_pos_implies_exclusive {Secret : Type} [Fintype Secret] [DecidableEq Secret]
     (P : IndexedPoset Secret) (indices : List Nat)
     (h : reducedCechDim P indices 1 > 0) :
     hasExclusiveObsB P indices = true := by
-  -- H¹ > 0 means dim(ker δ¹) - dim(im δ⁰) > 0
-  -- → dim(C¹) > dim(im δ⁰) + dim(im δ¹)
-  -- → C¹ has elements not in im(δ⁰), i.e., 1-cocycles ≠ coboundaries
-  -- → ∃ edge (i,j) with a prop forced at j but not at i (or vice versa)
-  -- → hasExclusiveObsB = true
-  sorry
+  -- Contrapositive: assume ¬exclusive, show H¹ = 0
+  by_contra h_no_excl
+  have h_false : hasExclusiveObsB P indices = false := by
+    cases hb : hasExclusiveObsB P indices with
+    | false => rfl
+    | true => exact absurd hb h_no_excl
+  -- By no_exclusive_means_uniform, all sections are identical
+  have _h_uniform := no_exclusive_means_uniform P indices h_false
+  -- Uniform sections → constant presheaf → H¹ = 0
+  -- This requires: rank(δ⁰) = dim(C¹) - dim(global_sections)
+  -- when all vertex section spaces are equal.
+  -- The algebraic argument: with equal sections, δ⁰ is the standard
+  -- coboundary of a constant sheaf on a finite covering, which has
+  -- H¹ = 0 iff the covering nerve is connected. For reduced coverings
+  -- with ≥ 2 levels sharing a common refinement (top), this holds.
+  sorry -- constant-presheaf acyclicity on connected coverings
 
-/-- **Backward direction (structural sketch)**: if exclusive
-    observations exist, they create a non-trivial element in
-    the Čech cohomology. -/
+/-- **Backward direction**: if exclusive observations exist, they
+    create a non-trivial element in H¹.
+
+    Proof sketch: an exclusive prop p (forced at i, not at j) means:
+    - p ∈ simplexSections [i] but p ∉ simplexSections [j]
+    - The C⁰ basis element (i, p) is NOT a global section
+    - δ⁰(i, p) contributes to C¹ at edges containing i
+    - This creates a coboundary in C¹ that reduces rank(δ⁰)
+    - But the dimension of C⁰ doesn't decrease as much
+    - Net effect: dim(ker δ⁰) > rank(augmentation), so H¹ > 0
+
+    The full algebraic argument requires showing the exclusive prop
+    creates a non-trivial class in ker(δ¹)/im(δ⁰). -/
 theorem exclusive_implies_h1_pos {Secret : Type} [Fintype Secret] [DecidableEq Secret]
     (P : IndexedPoset Secret) (indices : List Nat)
     (h : hasExclusiveObsB P indices = true) :
     reducedCechDim P indices 1 > 0 := by
-  -- hasExclusiveObsB = true means ∃ i,j,φ with dForces Eᵢ φ ≠ dForces Eⱼ φ
-  -- → the C⁰ basis element (i, φ) maps via δ⁰ to a non-trivial C¹ element
-  -- → this C¹ element is in ker(δ¹) (it's a coboundary, hence a cocycle)
-  -- → but NOT every cocycle is a coboundary (the exclusive prop ensures
-  --    the element (j, φ) is NOT in the image of the global-to-local map)
-  -- → H¹ = dim(ker δ¹ / im δ⁰) > 0
-  sorry
+  sorry -- exclusive prop → non-trivial cohomology class
 
 /-! ## The complete theorem (combining both directions) -/
 
