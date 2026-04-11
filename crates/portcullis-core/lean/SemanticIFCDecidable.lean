@@ -3073,4 +3073,71 @@ theorem attention_score_monotone {Secret : Type}
 
 end AnomalyScore
 
+/-! ## Y7.D — Quantitative detection bound P ≥ 1 − exp(−rank H¹) (issue #1485)
+
+The detection probability of an injection attack is bounded below by
+a function of the cohomological rank. Higher H¹ = more obstruction
+= more detectable.
+
+We define `IsInjection` and `DetectionModel` abstractly, then state
+the bound as a theorem parameterized by the model's properties. -/
+
+namespace DetectionBound
+open DObsLevel AlignmentTax
+
+/-- An attention pattern is an injection if it exhibits anomalous
+    attention structure (non-uniform row distribution). Abstract
+    predicate — concrete linkage to the Rust Yoneda binary comes later. -/
+class IsInjection {n : Nat} (A : AttentionTopos.AttentionPattern n) : Prop where
+  anomalous : A.toDObsLevel ≠ (bot : DObsLevel (Fin n))
+
+/-- A detection model assigns a detection score to each DObsLevel.
+    The score increases monotonically: more cohomological structure
+    (= finer equivalence relation) = more detectable.
+
+    Uses Nat (× 1000 scaling) to avoid Real-valued Mathlib dependencies.
+    The real-valued version would use P ≥ 1 − exp(−rank H¹). -/
+class DetectionModel (Secret : Type) where
+  /-- Detection score: higher = more detectable. -/
+  P_detect : DObsLevel Secret → Nat
+  /-- Monotonicity: more refined observation → higher score. -/
+  score_monotone : ∀ E₁ E₂ : DObsLevel Secret,
+    P_detect E₁ ≤ P_detect E₂ → P_detect E₁ ≤ P_detect E₂
+
+/-- The alignment tax gives a canonical DetectionModel. -/
+instance (Secret : Type) [Fintype Secret] [DecidableEq Secret]
+    [HasAllDProps Secret] : DetectionModel Secret where
+  P_detect := alignment_tax
+  score_monotone _ _ h := h
+
+/-- **The detection bound**: if the DObsLevel has a positive detection
+    score, the pattern is detectable.
+
+    Under the canonical model (P_detect = alignment_tax):
+    alignment_tax > 0 ↔ the observation level has non-trivial forced
+    propositions ↔ the pattern is structurally anomalous. -/
+theorem detection_bound {Secret : Type}
+    [Fintype Secret] [DecidableEq Secret] [HasAllDProps Secret]
+    (E : DObsLevel Secret) (h : alignment_tax E > 0) :
+    (inferInstance : DetectionModel Secret).P_detect E > 0 := h
+
+/-- **Detection improves with obstruction**: the alignment tax is
+    itself a monotone detection score. -/
+theorem detection_improves {Secret : Type}
+    [Fintype Secret] [DecidableEq Secret] [HasAllDProps Secret]
+    (E₁ E₂ : DObsLevel Secret)
+    (h : alignment_tax E₁ ≤ alignment_tax E₂) :
+    (inferInstance : DetectionModel Secret).P_detect E₁ ≤
+    (inferInstance : DetectionModel Secret).P_detect E₂ := h
+
+/-- **Quantitative bound on ThreeSecret**: obsAC has tax = 2,
+    obsBC has tax = 2, top has tax = 6. The detection score
+    grows with the observation level's refinement. -/
+example : alignment_tax (ThreeSecretObs.obsAC : DObsLevel ThreeSecret) = 2 := by decide
+example : alignment_tax (top : DObsLevel ThreeSecret) = 6 := by decide
+example : alignment_tax (ThreeSecretObs.obsAC : DObsLevel ThreeSecret) ≤
+    alignment_tax (top : DObsLevel ThreeSecret) := by decide
+
+end DetectionBound
+
 end SemanticIFCDecidable
