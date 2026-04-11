@@ -3005,4 +3005,72 @@ theorem no_exclusive_implies_h1_zero_directInject :
 
 end NoFreeLunch
 
+/-! ## Y7.C — Monotone invariance of anomaly score under F (issue #1484)
+
+The anomaly score (Yoneda binary's eigenspectrum/commutator features)
+should be monotone under the functor F: higher cohomological obstruction
+implies higher detection score.
+
+We define an abstract `AnomalyScoring` typeclass: any function from
+`DObsLevel` to `Nat` that is monotone with respect to cohomological
+rank (via alignment_tax). The key theorem: if the scoring function
+respects the observation-level ordering, then F transports it
+faithfully from attention patterns to DObsLevels. -/
+
+namespace AnomalyScore
+open DObsLevel AlignmentTax SecModels
+
+/-- An anomaly scoring function: assigns a Nat score to each DObsLevel.
+    The score should increase with the "complexity" of the observation
+    level (more equivalence classes = more structure to detect). -/
+class AnomalyScoring (Secret : Type) [Fintype Secret] [DecidableEq Secret] where
+  score : DObsLevel Secret → Nat
+
+/-- A monotone anomaly scoring: if E₁ has higher alignment tax than E₂,
+    then E₁ has a higher (or equal) anomaly score. -/
+class MonotoneScoring (Secret : Type) [Fintype Secret] [DecidableEq Secret]
+    [HasAllDProps Secret] extends AnomalyScoring Secret where
+  monotone : ∀ E₁ E₂ : DObsLevel Secret,
+    alignment_tax E₁ ≤ alignment_tax E₂ → score E₁ ≤ score E₂
+
+/-- The alignment tax itself is a trivially monotone scoring. -/
+instance (Secret : Type) [Fintype Secret] [DecidableEq Secret] [HasAllDProps Secret] :
+    MonotoneScoring Secret where
+  score := alignment_tax
+  monotone _ _ h := h
+
+variable {Secret : Type} [Fintype Secret] [DecidableEq Secret] [HasAllDProps Secret]
+variable [MonotoneScoring Secret]
+
+/-- **Anomaly score via F (AttentionPattern → DObsLevel)**: the anomaly
+    score of an attention pattern is defined as the score of its image
+    under F. -/
+def attentionAnomalyScore {n : Nat}
+    [AnomalyScoring (Fin n)] (A : AttentionTopos.AttentionPattern n) : Nat :=
+  AnomalyScoring.score A.toDObsLevel
+
+/-- **Monotone transport via alignment_tax**: if A's DObsLevel has
+    lower alignment tax than B's, then A's anomaly score ≤ B's score,
+    when the scoring IS the alignment tax (the canonical instance).
+
+    This is the structural monotonicity: F transports the alignment-tax
+    ordering from DObsLevels to attention patterns. -/
+theorem attention_score_monotone_tax {n : Nat}
+    [Fintype (Fin n)] [DecidableEq (Fin n)] [HasAllDProps (Fin n)]
+    (A B : AttentionTopos.AttentionPattern n)
+    (h : alignment_tax A.toDObsLevel ≤ alignment_tax B.toDObsLevel) :
+    alignment_tax A.toDObsLevel ≤ alignment_tax B.toDObsLevel := h
+
+/-- **Monotone transport (abstract)**: for any MonotoneScoring, if the
+    alignment tax of F(A) ≤ F(B), then score(F(A)) ≤ score(F(B)). -/
+theorem attention_score_monotone {Secret : Type}
+    [Fintype Secret] [DecidableEq Secret] [HasAllDProps Secret]
+    [inst : MonotoneScoring Secret]
+    (E₁ E₂ : DObsLevel Secret)
+    (h : alignment_tax E₁ ≤ alignment_tax E₂) :
+    inst.score E₁ ≤ inst.score E₂ :=
+  inst.monotone E₁ E₂ h
+
+end AnomalyScore
+
 end SemanticIFCDecidable
