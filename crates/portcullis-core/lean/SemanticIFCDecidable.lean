@@ -3242,4 +3242,136 @@ theorem id_comp_roundtrip {α : Type} {E F : DObsLevel α}
 
 end LagoisConnection
 
+/-! ## Y8.B — Scale beyond finite Secret types (issue #1487)
+
+Extend the IFC framework to countable and continuous Secret types.
+
+- **Countable**: a DObsLevel on a countable type is a compatible family
+  of DObsLevels on finite approximations, ordered by inclusion.
+- **Continuous**: abstract stub using a kernel function. -/
+
+namespace CountableIFC
+
+/-- A countable secret type with a directed system of finite
+    approximations. -/
+class CountableSecret (S : Type) where
+  /-- Finite approximation at stage n. -/
+  approx : Nat → Finset S
+  /-- Approximations are nested. -/
+  mono : ∀ n, approx n ⊆ approx (n + 1)
+  /-- Every element appears eventually. -/
+  exhaustive : ∀ s : S, ∃ n, s ∈ approx n
+
+/-- A DObsLevel on a countable type: a compatible directed system of
+    DObsLevels on the finite approximations. -/
+structure CountableDObsLevel (S : Type) [CountableSecret S] where
+  /-- DObsLevel at each finite stage. -/
+  levelAt : ∀ n, DObsLevel (CountableSecret.approx (S := S) n)
+  /-- Compatibility: restriction from stage n+1 to stage n agrees. -/
+  compat : ∀ n (s₁ s₂ : CountableSecret.approx (S := S) n),
+    (levelAt n).rel s₁ s₂ =
+    (levelAt (n + 1)).rel
+      ⟨s₁.val, CountableSecret.mono n s₁.property⟩
+      ⟨s₂.val, CountableSecret.mono n s₂.property⟩
+
+/-- The colimit relation: s₁ ~ s₂ iff they are equivalent at some
+    (hence all sufficiently large) stage. -/
+def CountableDObsLevel.colimitRel {S : Type} [CountableSecret S]
+    (E : CountableDObsLevel S) (s₁ s₂ : S) : Prop :=
+  ∃ (n : Nat) (h₁ : s₁ ∈ CountableSecret.approx n) (h₂ : s₂ ∈ CountableSecret.approx n),
+    (E.levelAt n).rel ⟨s₁, h₁⟩ ⟨s₂, h₂⟩ = true
+
+/-- The colimit relation is reflexive (structurally, from per-stage reflexivity). -/
+theorem CountableDObsLevel.colimit_refl {S : Type} [CountableSecret S]
+    (E : CountableDObsLevel S) (s : S) :
+    E.colimitRel s s := by
+  obtain ⟨n, hn⟩ := CountableSecret.exhaustive s
+  exact ⟨n, hn, hn, (E.levelAt n).refl ⟨s, hn⟩⟩
+
+/-- The colimit relation is symmetric (from per-stage symmetry). -/
+theorem CountableDObsLevel.colimit_symm {S : Type} [CountableSecret S]
+    (E : CountableDObsLevel S) (s₁ s₂ : S)
+    (h : E.colimitRel s₁ s₂) :
+    E.colimitRel s₂ s₁ := by
+  obtain ⟨n, h₁, h₂, hrel⟩ := h
+  exact ⟨n, h₂, h₁, (E.levelAt n).symm ⟨s₁, h₁⟩ ⟨s₂, h₂⟩ hrel⟩
+
+/-- Nat as a countable secret type: approx n = {0, ..., n}. -/
+instance : CountableSecret Nat where
+  approx n := Finset.range (n + 1)
+  mono n x hx := Finset.mem_range.mpr (by rw [Finset.mem_range] at hx; omega)
+  exhaustive s := ⟨s, Finset.mem_range.mpr (by omega)⟩
+
+/-- The trivial (bottom) countable DObsLevel on Nat: all elements
+    are equivalent at every stage. -/
+def natBot : CountableDObsLevel Nat where
+  levelAt _ := {
+    rel := fun _ _ => true
+    refl := fun _ => rfl
+    symm := fun _ _ _ => rfl
+    trans := fun _ _ _ _ _ => rfl
+  }
+  compat _ _ _ := rfl
+
+/-- The discrete (top) countable DObsLevel on Nat: elements are
+    equivalent iff they are equal. -/
+def natTop : CountableDObsLevel Nat where
+  levelAt _ := {
+    rel := fun s₁ s₂ => s₁.val == s₂.val
+    refl := fun s => by simp [BEq.beq]
+    symm := fun s₁ s₂ h => by simp [BEq.beq] at *; exact h.symm
+    trans := fun s₁ s₂ s₃ h₁ h₂ => by simp [BEq.beq] at *; exact h₁.trans h₂
+  }
+  compat n s₁ s₂ := by
+    show (s₁.val == s₂.val) = (s₁.val == s₂.val)
+    rfl
+
+/-- natBot colimit: everything is related. -/
+theorem natBot_total (s₁ s₂ : Nat) : natBot.colimitRel s₁ s₂ :=
+  ⟨max s₁ s₂,
+   Finset.mem_range.mpr (by omega),
+   Finset.mem_range.mpr (by omega),
+   rfl⟩
+
+/-- natTop colimit: only equal elements are related. -/
+theorem natTop_equiv_iff (s₁ s₂ : Nat) :
+    natTop.colimitRel s₁ s₂ ↔ s₁ = s₂ := by
+  constructor
+  · rintro ⟨n, h₁, h₂, hrel⟩
+    simp [natTop, BEq.beq] at hrel
+    exact hrel
+  · rintro rfl
+    exact CountableDObsLevel.colimit_refl natTop s₁
+
+/-! ### Continuous Secret types (abstract stub) -/
+
+/-- A continuous secret type with a kernel-based equivalence.
+
+    Two elements are equivalent iff they have the same kernel value.
+    Concrete instances would use measure-theoretic equivalence
+    (Radon-Nikodym), but the typeclass is agnostic. -/
+class ContinuousSecret (S : Type) where
+  /-- The kernel type. -/
+  Kernel : Type
+  /-- The kernel function. -/
+  kernel : S → Kernel
+  /-- Decidable equality on kernels (for computation). -/
+  [kernelDecEq : DecidableEq Kernel]
+
+/-- Build a DObsLevel from a ContinuousSecret. -/
+def ContinuousSecret.toDObsLevel {S : Type} [inst : ContinuousSecret S] :
+    DObsLevel S where
+  rel s₁ s₂ := @decide (inst.kernel s₁ = inst.kernel s₂) (inst.kernelDecEq _ _)
+  refl s := by simp [decide_eq_true_iff]
+  symm s₁ s₂ h := by simp [decide_eq_true_iff] at *; exact h.symm
+  trans s₁ s₂ s₃ h₁ h₂ := by simp [decide_eq_true_iff] at *; exact h₁.trans h₂
+
+/-- Example: Float as a continuous secret with Nat kernel (rounding). -/
+instance : ContinuousSecret Float where
+  Kernel := Nat
+  kernel f := f.toUInt64.toNat
+  kernelDecEq := inferInstance
+
+end CountableIFC
+
 end SemanticIFCDecidable
