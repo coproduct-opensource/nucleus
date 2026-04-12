@@ -1441,12 +1441,34 @@ theorem h1_pos_implies_exclusive {Secret : Type} [Fintype Secret] [DecidableEq S
     The exclusive prop creates a non-trivial element in H¹.
     Structurally: the exclusive prop is a local section at one
     vertex that cannot extend to a global section (it fails at
-    another vertex), creating a non-trivial class in ker/im. -/
+    another vertex), creating a non-trivial class in ker/im.
+
+    Key rank lemma: if exclusive obs exist, dim C⁰ > dim globals.
+    Exclusive prop p (forced at i, not j) is in C⁰ at vertex i but
+    NOT a global section → C⁰ strictly larger than augmentation image. -/
+theorem c0_exceeds_globals_of_exclusive {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    (P : IndexedPoset Secret) (indices : List Nat)
+    (h : hasExclusiveObsB P indices = true) :
+    (reducedC0 P indices).length >
+    (LaudalReduced.reducedGlobalSections P indices).length := by
+  sorry -- requires: exclusive prop creates a C⁰ element not in globals
+
+/-- **Backward direction**: exclusive observations → H¹ > 0.
+
+    The algebraic argument:
+    1. Exclusive obs → C⁰ > globals (c0_exceeds_globals_of_exclusive)
+    2. ker δ⁰ ⊇ globals (global sections are always cocycles)
+    3. But ker δ⁰ might equal globals (if δ⁰ is "well-behaved")
+    4. The exclusive prop creates additional kernel elements beyond
+       globals, which contribute to H¹ = ker δ¹ / im δ⁰.
+
+    Full algebraic proof requires rank-nullity on GF(2) matrices.
+    For concrete types, verified by native_decide. -/
 theorem exclusive_implies_h1_pos {Secret : Type} [Fintype Secret] [DecidableEq Secret]
     (P : IndexedPoset Secret) (indices : List Nat)
     (h : hasExclusiveObsB P indices = true) :
     reducedCechDim P indices 1 > 0 := by
-  sorry -- exclusive prop → non-trivial cohomology class
+  sorry -- requires: c0_exceeds_globals + rank-nullity on GF(2)
 
 /-! ## The complete theorem (combining both directions) -/
 
@@ -1627,3 +1649,215 @@ framework is strictly more powerful than pairwise consistency checks.
 -/
 
 end BorromeanH2
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- The Evasion Impossibility Theorem
+-- ═══════════════════════════════════════════════════════════════════════
+
+namespace EvasionImpossibility
+open SemanticIFC SemanticIFCDecidable DObsLevel AlignmentTax ThreeSecretObs
+
+/-- An observation poset tagged with semantic malice (independent of attention). -/
+structure TaggedPoset (Secret : Type) where
+  obsLevels : List (DObsLevel Secret)
+  isMalicious : Prop
+
+/-- Does the poset have exclusive observations (head disagreement)? -/
+def TaggedPoset.hasExclusive {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    [HasAllDProps Secret] (P : TaggedPoset Secret) : Bool :=
+  P.obsLevels.any fun E₁ =>
+    P.obsLevels.any fun E₂ =>
+      (allDProps (Secret := Secret)).any fun φ =>
+        DObsLevel.dForces E₁ φ && !DObsLevel.dForces E₂ φ
+
+/-- A detector is sound if it only triggers on head disagreement. -/
+def IsSoundDetector {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    [HasAllDProps Secret] (D : TaggedPoset Secret → Bool) : Prop :=
+  ∀ P, D P = true → P.hasExclusive = true
+
+/-- **Evasion witness**: [bot, bot] has no exclusive observations. -/
+theorem bot_has_no_exclusive :
+    (⟨[bot, bot], True⟩ : TaggedPoset ThreeSecret).hasExclusive = false := by
+  native_decide
+
+/-- **Detection ceiling**: any sound detector returns false on
+    consensus-preserving inputs, regardless of malice. -/
+theorem detection_ceiling
+    {Secret : Type} [Fintype Secret] [DecidableEq Secret] [HasAllDProps Secret]
+    (D : TaggedPoset Secret → Bool) (h_sound : IsSoundDetector D)
+    (P : TaggedPoset Secret) (h_consensus : P.hasExclusive = false) :
+    D P = false := by
+  -- If D P were true, soundness gives hasExclusive = true, contradicting h_consensus
+  cases hD : D P with
+  | false => rfl
+  | true =>
+    have := h_sound P hD
+    rw [h_consensus] at this
+    exact absurd this (by decide)
+
+/-- **The Evasion Impossibility Theorem (ThreeSecret).**
+
+    For ANY sound detector, there exists a malicious input it misses.
+    Proof: exhibit [bot, bot] tagged as malicious. Sound detectors
+    cannot trigger (bot has no exclusive obs). Zero sorry. -/
+theorem evasion_impossibility
+    (D : TaggedPoset ThreeSecret → Bool) (h_sound : IsSoundDetector D) :
+    ∃ P : TaggedPoset ThreeSecret, P.isMalicious ∧ D P = false :=
+  ⟨⟨[bot, bot], True⟩, trivial, detection_ceiling D h_sound _ bot_has_no_exclusive⟩
+
+end EvasionImpossibility
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- The Injection-Disruption Conjecture
+-- ═══════════════════════════════════════════════════════════════════════
+
+namespace InjectionDisruption
+open SemanticIFC SemanticIFCDecidable DObsLevel AlignmentTax
+open EvasionImpossibility
+
+/-!
+# The Injection-Disruption Conjecture
+
+Empirical finding (GPT-2 Medium): consensus-preserving injections
+FAIL to hijack the model. This suggests:
+
+  **Successful injection necessarily disrupts head consensus.**
+
+If true, the coboundary norm is a COMPLETE detector: every attack
+that actually changes model behavior creates head disagreement.
+
+## Evidence
+
+**For the conjecture:**
+- Attention Tracker (NAACL 2025): successful injections cause
+  "distraction effect" in specific attention heads
+- Causal Head Gating (NeurIPS 2025): instruction-following uses
+  separable, causally necessary sub-circuits — hijacking requires
+  redirecting these heads, creating disagreement
+
+**Against the conjecture:**
+- Adaptive attacks (PiF, AGILE) can flatten attention while
+  maintaining injection success
+- No paper claims disruption is NECESSARY — only correlated
+
+## Formalization
+
+We formalize this as a **conditional axiom**: under the assumption
+that instruction-following requires causal head specialization,
+successful injection implies head disagreement.
+
+This is NOT a theorem (it depends on the model's internal structure).
+It is an axiom that can be INSTANTIATED for specific models where
+causal head gating has been empirically verified.
+-/
+
+/-- A model of transformer behavior: maps observation posets to
+    outputs. The output depends on BOTH the content (what the
+    text says) and the attention structure (how heads process it). -/
+structure TransformerModel (Secret : Type) (Output : Type) where
+  /-- The model's output given an observation poset. -/
+  compute : TaggedPoset Secret → Output
+  /-- The model's "default" output on clean input. -/
+  defaultOutput : Output
+
+/-- An injection SUCCEEDS if the model's output differs from the
+    default (clean) output — the injection changed behavior. -/
+def injectionSucceeds {Secret Output : Type} [DecidableEq Output]
+    (M : TransformerModel Secret Output)
+    (P : TaggedPoset Secret) : Prop :=
+  M.compute P ≠ M.defaultOutput
+
+/-- **The Injection-Disruption Axiom** (conditional).
+
+    IF a model has causally specialized instruction-following heads
+    (formalized as: behavior change requires attention change),
+    THEN successful injection implies head disagreement.
+
+    This is the axiom that, combined with the Honest Fundamental
+    Theorem, makes the coboundary norm a COMPLETE detector. -/
+class HasCausalHeadSpecialization
+    (Secret : Type) [Fintype Secret] [DecidableEq Secret] [HasAllDProps Secret]
+    (Output : Type) [DecidableEq Output]
+    (M : TransformerModel Secret Output) : Prop where
+  /-- If the model's output changes (injection succeeds), then the
+      observation poset must have exclusive observations (heads disagree). -/
+  disruption : ∀ P : TaggedPoset Secret,
+    injectionSucceeds M P → P.hasExclusive = true
+
+/-- **Completeness Theorem** (conditional on the axiom).
+
+    If a model has causal head specialization AND the detector is
+    sound, then the detector catches ALL successful injections.
+
+    recall = 1.0 (no false negatives for successful attacks)
+
+    This is the converse of the Evasion Impossibility Theorem:
+    - Impossibility: sound detectors miss TAGGED-malicious inputs
+    - Completeness: sound detectors catch SUCCESSFULLY-malicious inputs
+
+    The gap: "tagged malicious" ≠ "successfully malicious."
+    The [bot, bot] witness is tagged malicious but doesn't succeed. -/
+theorem completeness_under_specialization
+    {Secret : Type} [Fintype Secret] [DecidableEq Secret] [HasAllDProps Secret]
+    {Output : Type} [DecidableEq Output]
+    (M : TransformerModel Secret Output)
+    [h_spec : HasCausalHeadSpecialization Secret Output M]
+    (D : TaggedPoset Secret → Bool)
+    (h_sound : IsSoundDetector D)
+    (h_complete : ∀ P, P.hasExclusive = true → D P = true)
+    (P : TaggedPoset Secret)
+    (h_success : injectionSucceeds M P) :
+    D P = true :=
+  h_complete P (h_spec.disruption P h_success)
+
+/-- **The Detection Trichotomy.**
+
+    Every input falls into exactly one of three categories:
+
+    1. CLEAN: not malicious, D returns false (true negative)
+    2. DETECTED: malicious, succeeds, D returns true (true positive)
+    3. FAILED: malicious, doesn't succeed, D returns false (benign FN)
+
+    Under causal head specialization, category 2 is complete:
+    ALL successful injections are detected. Category 3 (failed
+    injections that evade detection) are harmless — the attacker's
+    injection didn't work, so evasion doesn't matter.
+
+    This resolves the steel-man objection: the Evasion Impossibility
+    Theorem's witness is in category 3 (failed injection), not
+    category 2 (successful injection). -/
+theorem detection_trichotomy_principle
+    {Secret : Type} [Fintype Secret] [DecidableEq Secret] [HasAllDProps Secret]
+    {Output : Type} [DecidableEq Output]
+    (M : TransformerModel Secret Output)
+    [HasCausalHeadSpecialization Secret Output M]
+    (D : TaggedPoset Secret → Bool)
+    (h_sound : IsSoundDetector D)
+    (h_complete : ∀ P, P.hasExclusive = true → D P = true)
+    (P : TaggedPoset Secret) :
+    -- Either the injection fails (harmless) or it's detected
+    ¬injectionSucceeds M P ∨ D P = true := by
+  by_cases h : injectionSucceeds M P
+  · exact Or.inr (completeness_under_specialization M D h_sound h_complete P h)
+  · exact Or.inl h
+
+/-! ## Summary
+
+| Theorem | Says | Sorry? |
+|---------|------|--------|
+| evasion_impossibility | Sound detectors miss tagged-malicious inputs | 0 |
+| completeness_under_specialization | Under CHS axiom, sound+complete detectors catch all successful injections | 0 |
+| detection_trichotomy | Every input: clean, detected, or failed-injection | 0 |
+
+The CHS axiom (HasCausalHeadSpecialization) is:
+- Supported by Attention Tracker + Causal Head Gating evidence
+- NOT universally true (adaptive attacks may violate it)
+- The RIGHT level of abstraction: it isolates exactly what must
+  be true about the model for the detector to be complete
+
+The honest claim: "IF your model has causally specialized
+instruction-following heads (empirically verifiable), THEN our
+coboundary norm detector catches all successful injections."
+-/
+
+end InjectionDisruption
