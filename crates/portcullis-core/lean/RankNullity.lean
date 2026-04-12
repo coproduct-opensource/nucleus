@@ -29,10 +29,61 @@ namespace PortcullisCore.RankNullity
 theorem gaussRankBool_nil : gaussRankBool [] = 0 := by
   rfl
 
+/-- Filter with `· ≠ x` strictly shrinks a list that contains `x`. -/
+private theorem length_filter_ne_lt {α : Type*} [DecidableEq α]
+    (l : List α) {x : α} (hx : x ∈ l) :
+    (l.filter (· ≠ x)).length < l.length := by
+  induction l with
+  | nil => exact (List.not_mem_nil hx).elim
+  | cons hd tl ih =>
+    by_cases heq : hd = x
+    · subst heq
+      simp [List.filter_cons]
+      -- filter keeps others with length ≤ tl.length, + 0 for hd
+      exact Nat.lt_succ_of_le (List.length_filter_le _ _)
+    · rcases List.mem_cons.mp hx with rfl | htl
+      · exact absurd rfl heq
+      · have hlt := ih htl
+        simp [List.filter_cons, heq]
+        omega
+
+/-- Gaussian elimination invariant: rank ≤ starting rank + row count. -/
+private theorem go_le_rows (M : List (List Bool)) (col r fuel : Nat) :
+    gaussRankBool.go M col r fuel ≤ r + M.length := by
+  induction fuel generalizing M col r with
+  | zero =>
+    unfold gaussRankBool.go
+    omega
+  | succ k ih =>
+    unfold gaussRankBool.go
+    cases hfind : M.find? (fun row => row.getD col false) with
+    | none =>
+      simp only
+      by_cases hlt : col + 1 < (M.head?.map List.length |>.getD 0)
+      · simp [hlt]
+        exact ih M (col + 1) r
+      · simp [hlt]
+    | some pivot =>
+      simp only
+      have hmem : pivot ∈ M := List.mem_of_find?_eq_some hfind
+      have hshrink : (M.filter (· ≠ pivot)).length < M.length :=
+        length_filter_ne_lt M hmem
+      have h_map_len : ((M.filter (· ≠ pivot)).map
+          (fun row => if row.getD col false then xorRows row pivot else row)).length
+          = (M.filter (· ≠ pivot)).length := List.length_map _
+      have h_ih := ih
+          ((M.filter (· ≠ pivot)).map
+            (fun row => if row.getD col false then xorRows row pivot else row))
+          (col + 1) (r + 1)
+      rw [h_map_len] at h_ih
+      omega
+
 /-- Rank is at most the number of rows. -/
 theorem gaussRankBool_le_rows (M : List (List Bool)) :
     gaussRankBool M ≤ M.length := by
-  sorry
+  unfold gaussRankBool
+  have := go_le_rows M 0 0 (M.length + (M.head?.map List.length |>.getD 0))
+  omega
 
 /-- Auxiliary: Gaussian elimination on a matrix of all-empty rows preserves rank. -/
 private theorem go_empty_rows (M : List (List Bool))
