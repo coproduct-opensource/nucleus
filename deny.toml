@@ -7,19 +7,15 @@ ignore = [
   # credential assertions, not RSA key operations.
   "RUSTSEC-2023-0071",
 
-  # proc-macro-error unmaintained — no security impact.
-  # Transitive via c2pa-rs → iref → static-regular-grammar.
-  "RUSTSEC-2024-0370",
-
   # tracing-subscriber ANSI escape — transitive via risc0-zkvm → ark-relations.
   # Feature-gated behind `zkvm`, not in default build.
   "RUSTSEC-2025-0055",
 
-  # bincode unmaintained — transitive via risc0-zkvm. Feature-gated.
-  "RUSTSEC-2025-0141",
-
-  # derivative unmaintained — transitive via risc0-zkvm → ark-crypto-primitives.
-  "RUSTSEC-2024-0388",
+  # rand unsoundness via custom logger calling rand::rng() (Stacked Borrows).
+  # Direct deps bumped to patched versions; only remaining usage is transitive
+  # rand 0.8.5 via rust_decimal/ruint — upstream has not released a patched
+  # version. Not exploitable here: no custom logger in these deps calls rand::rng().
+  "RUSTSEC-2026-0097",
 ]
 # These are informational; scope to workspace dependencies.
 unmaintained = "workspace"
