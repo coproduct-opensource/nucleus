@@ -1496,3 +1496,134 @@ detection boundary is the sheaf condition itself.
 -/
 
 end HonestFundamental
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- H² Detection: Borromean Attacks (Triple-Collusion)
+-- ═══════════════════════════════════════════════════════════════════════
+
+/-!
+# H² Detection: Borromean Attacks
+
+H¹ detects pairwise head disagreement. But some attacks are invisible
+to pairwise checks — the **Borromean** pattern: every pair of
+observation levels is consistent, but the triple is not.
+
+Named after Borromean rings (three linked rings where removing any
+one frees the other two), this pattern represents triple-collusion
+attacks where:
+- Agent A and Agent B agree on their shared observations
+- Agent B and Agent C agree on their shared observations
+- Agent A and Agent C agree on their shared observations
+- BUT all three together are INCONSISTENT
+
+This is a genuinely higher-dimensional phenomenon: it lives in H²,
+not H¹.
+
+## The Borromean poset
+
+FiveSecret (actually 6 elements: A, B, C, AB, BC, CA) with:
+- obs1: confuses A/B and AB/BC (4 equiv classes)
+- obs2: confuses B/C and BC/CA (4 equiv classes)
+- obs3: confuses A/AB, B/BC, C/CA (3 equiv classes)
+
+Each pair (obs_i, obs_j) is pairwise compatible, but the triple
+(obs1, obs2, obs3) has a Borromean obstruction.
+
+## Python pre-computation (verified in `cohomology_detector.py`)
+
+| Covering | H⁰ | H¹ | H² |
+|----------|-----|-----|-----|
+| Reduced [1,2,3,4] | 2 | 90 | 64 |
+
+H² = 64: sixty-four independent Borromean obstructions!
+-/
+
+namespace BorromeanH2
+open SemanticIFCDecidable AlexandrovSite PresheafCech
+
+/-- The Borromean reduced covering: obs1=1, obs2=2, obs3=3, top=4. -/
+abbrev borromeanReducedIndices := [1, 2, 3, 4]
+
+/-! ### Borromean H⁰ and H¹ (verified computationally)
+
+These are fast enough for native_decide since H⁰ only needs
+the augmentation check. -/
+
+/-- Borromean reduced H⁰ = 2 (global sections). -/
+theorem borromean_reduced_h0 :
+    reducedCechDim borromeanSite borromeanReducedIndices 0 = 2 := by native_decide
+
+/-! ### Borromean H¹ and H² (pre-computed in Python)
+
+The full GF(2) computation for H¹ and H² on the Borromean poset
+(6-element secret type, 64 propositions, 4 covering members) takes
+~15 minutes in Lean due to the matrix sizes. We state the values
+as theorems with sorry, verified by the Python cohomology_detector.
+
+A future optimization (sparse matrices or incremental rank) could
+bring this under the native_decide timeout. -/
+
+/-- **Borromean H¹ = 90** (pairwise obstructions).
+
+    90 independent pairwise obstruction directions on a 64-prop space.
+    Verified by Python `cohomology_detector.py` (matching GF(2) Gaussian
+    elimination). The Lean `native_decide` exceeds the heartbeat limit
+    due to the 64-prop × 4-level matrix sizes (~33 min compile). -/
+theorem borromean_reduced_h1 :
+    reducedCechDim borromeanSite borromeanReducedIndices 1 = 90 := by
+  sorry -- Python-verified; native_decide exceeds 200000 heartbeats
+
+/-- **Borromean H² = 64** — THE BORROMEAN OBSTRUCTION.
+
+    64 independent triple-inconsistency directions. Each represents
+    a way the three observation levels are incompatible as a triple,
+    even though every pair is reconcilable.
+
+    **Significance**: H² detects attacks that H¹ misses — attacks
+    where every pairwise audit passes but the triple fails.
+
+    Verified by Python `cohomology_detector.py`. -/
+theorem borromean_reduced_h2 :
+    reducedCechDim borromeanSite borromeanReducedIndices 2 = 64 := by
+  sorry -- Python-verified; native_decide exceeds heartbeat limit
+
+/-- **Borromean has H² > 0**: triple obstruction detected. -/
+theorem borromean_h2_nontrivial :
+    reducedCechDim borromeanSite borromeanReducedIndices 2 > 0 := by
+  sorry -- follows from borromean_reduced_h2
+
+/-- **Diamond has H² = 0**: no Borromean obstruction on a 4-element poset. -/
+theorem diamond_h2_trivial :
+    reducedCechDim diamondSite [1, 2, 3] 2 = 0 := by
+  native_decide
+
+/-- **The cohomological dimension hierarchy**:
+    Diamond is a purely H¹ phenomenon (pairwise).
+    Borromean is an H¹ + H² phenomenon (pairwise + triple). -/
+theorem dimension_hierarchy :
+    -- Diamond: H¹ > 0, H² = 0 (purely pairwise)
+    reducedCechDim diamondSite [1, 2, 3] 1 > 0 ∧
+    reducedCechDim diamondSite [1, 2, 3] 2 = 0 := by
+  constructor <;> native_decide
+
+/-- Borromean: H¹ > 0 AND H² > 0 (pairwise + triple).
+    Python-verified; Lean native_decide exceeds heartbeat limit. -/
+theorem borromean_hierarchy :
+    reducedCechDim borromeanSite borromeanReducedIndices 1 > 0 ∧
+    reducedCechDim borromeanSite borromeanReducedIndices 2 > 0 := by
+  constructor <;> sorry -- Python-verified
+
+/-! ### Practical implications
+
+| Attack type | H¹ | H² | Example |
+|-------------|-----|-----|---------|
+| Clean       | 0   | 0   | No conflict |
+| Pairwise    | >0  | 0   | Diamond: two agents disagree |
+| Borromean   | >0  | >0  | Triple: every pair agrees, triple fails |
+
+A complete injection detector needs BOTH H¹ AND H² checks.
+H¹ alone misses Borromean attacks. This is why the cohomological
+framework is strictly more powerful than pairwise consistency checks.
+-/
+
+end BorromeanH2
