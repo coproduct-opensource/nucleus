@@ -64,9 +64,45 @@ theorem gaussRankBool_empty_rows (M : List (List Bool))
   unfold gaussRankBool
   exact go_empty_rows M h 0 0 _
 
+/-- A row of all-false entries returns `false` at any index via `getD`. -/
+private theorem getD_false_of_all_false (row : List Bool)
+    (h : ∀ b ∈ row, b = false) (col : Nat) :
+    row.getD col false = false := by
+  induction row generalizing col with
+  | nil => rfl
+  | cons hd tl ih =>
+    cases col with
+    | zero => exact h hd List.mem_cons_self
+    | succ n =>
+      have h' : ∀ b ∈ tl, b = false :=
+        fun b hb => h b (List.mem_cons_of_mem _ hb)
+      exact ih h' n
+
+/-- Gaussian elimination on an all-false matrix keeps rank at its input. -/
+private theorem go_zero_matrix (M : List (List Bool))
+    (h : ∀ row ∈ M, ∀ b ∈ row, b = false) (col r fuel : Nat) :
+    gaussRankBool.go M col r fuel = r := by
+  induction fuel generalizing M col r with
+  | zero => rfl
+  | succ k ih =>
+    unfold gaussRankBool.go
+    have hfind : M.find? (fun row => row.getD col false) = none := by
+      apply List.find?_eq_none.mpr
+      intro row hrow hcontra
+      have hrf : row.getD col false = false :=
+        getD_false_of_all_false row (h row hrow) col
+      rw [hrf] at hcontra
+      exact Bool.false_ne_true hcontra
+    rw [hfind]
+    by_cases hlt : col + 1 < (M.head?.map List.length |>.getD 0)
+    · simp [hlt]
+      exact ih M h (col + 1) r
+    · simp [hlt]
+
 /-- A matrix whose entries are all `false` has rank zero. -/
 theorem gaussRankBool_zero_matrix (M : List (List Bool))
     (h : ∀ row ∈ M, ∀ b ∈ row, b = false) : gaussRankBool M = 0 := by
-  sorry
+  unfold gaussRankBool
+  exact go_zero_matrix M h 0 0 _
 
 end PortcullisCore.RankNullity
