@@ -79,3 +79,7 @@ lean_lib «CechCohomology» where
 -- Proof skeleton replacing the comparison axiom.
 lean_lib «ComparisonTheorem» where
   roots := #[`ComparisonTheorem]
+
+-- GF(2) rank-nullity scaffold supporting Honest Fundamental Theorem.
+lean_lib «RankNullity» where
+  roots := #[`RankNullity]
