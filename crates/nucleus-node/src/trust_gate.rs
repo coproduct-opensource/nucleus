@@ -61,7 +61,7 @@ impl Default for TrustGateConfig {
             enforce: false,                   // Log-only by default
             default_bracket: "C".to_string(), // Adequate — tenant profile
             receipt_secret: None,
-            executor_signing_key: Arc::new(SigningKey::generate(&mut rand::rngs::OsRng)),
+            executor_signing_key: Arc::new(SigningKey::generate(&mut rand_core::OsRng)),
             executor_id: format!("nucleus-executor/{}", uuid_hex()),
         }
     }
@@ -93,7 +93,7 @@ impl TrustGateConfig {
         let executor_id = std::env::var("TRUST_EXECUTOR_ID")
             .unwrap_or_else(|_| format!("nucleus-executor/{}", uuid_hex()));
 
-        let executor_signing_key = Arc::new(SigningKey::generate(&mut rand::rngs::OsRng));
+        let executor_signing_key = Arc::new(SigningKey::generate(&mut rand_core::OsRng));
 
         Self {
             trust_api_url: std::env::var("TRUST_API_URL").unwrap_or_default(),
