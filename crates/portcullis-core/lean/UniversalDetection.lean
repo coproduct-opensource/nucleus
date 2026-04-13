@@ -1,6 +1,8 @@
 import Mathlib.Data.Finset.Basic
 import Mathlib.Data.Fintype.Basic
 import Mathlib.Data.Finset.Card
+import Mathlib.Data.Fintype.Card
+import Mathlib.Logic.Function.Basic
 
 /-! # Universal Detection Impossibility
 
@@ -332,5 +334,38 @@ theorem BoundedDetector.false_negatives_bound {S : Type} [Fintype S]
     (mixedMalicious M D.observationEq).card ≤
       (falseNegatives D.toDetector M).card :=
   false_negatives_lower_bound _ D.observable h_sound
+
+/-- **Pigeonhole**: a bounded detector with `k`-bit observation budget on
+    a system space of size `> 2^k` must collapse two distinct inputs to
+    the same observation. -/
+theorem BoundedDetector.pigeonhole {S : Type} [Fintype S] [DecidableEq S]
+    {k : Nat} (D : BoundedDetector S k) (h : 2 ^ k < Fintype.card S) :
+    ∃ s t : S, s ≠ t ∧ D.observe s = D.observe t := by
+  by_contra h_no
+  push_neg at h_no
+  have h_inj : Function.Injective D.observe := by
+    intro s t hst
+    by_contra h_ne
+    exact h_no s t h_ne hst
+  have h_le : Fintype.card S ≤ Fintype.card (Fin (2 ^ k)) :=
+    Fintype.card_le_of_injective _ h_inj
+  rw [Fintype.card_fin] at h_le
+  omega
+
+/-- **Constructive corollary**: if a bounded detector pigeonholes two
+    inputs `s ≠ t` with different `M`-values, both are evasion witnesses.
+    `s` (if malicious) is a false negative; symmetrically for `t`. -/
+theorem BoundedDetector.evasion_of_pigeonhole {S : Type} [Fintype S]
+    [DecidableEq S] {k : Nat} (D : BoundedDetector S k)
+    {M : S → Prop} [DecidablePred M] (h_sound : Sound M D.toDetector)
+    {s t : S} (hM : M s) (hNotM : ¬ M t)
+    (hobs : D.observe s = D.observe t) :
+    D.toDetector s = false := by
+  have hDt : D.toDetector t = false := by
+    cases hDt : D.toDetector t with
+    | false => rfl
+    | true => exact absurd (h_sound t hDt) hNotM
+  have hObsEq : D.observationEq s t := hobs
+  rw [D.observable s t hObsEq, hDt]
 
 end PortcullisCore.UniversalDetection
