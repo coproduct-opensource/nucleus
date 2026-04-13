@@ -8,6 +8,7 @@ import Mathlib.Algebra.Category.ModuleCat.Basic
 import Mathlib.Data.ZMod.Defs
 import SemanticIFCDecidable
 import CechCohomology
+import RankNullity
 
 /-!
 # The Comparison Theorem: Čech ≅ Topos for Finite Alexandrov Posets
@@ -1407,6 +1408,32 @@ theorem no_exclusive_means_uniform {Secret : Type} [Fintype Secret] [DecidableEq
 /-! Forward direction = contrapositive + no_exclusive_means_uniform (PROVED)
 + uniform_implies_h1_zero (acyclicity — 1 sorry). -/
 
+/-- Edge case: if the reduced 1-simplex list is empty, `Ȟ¹ = 0` trivially.
+    Both boundary matrices degenerate (δ⁰ is empty; δ¹ has all-empty rows),
+    so `gaussRankBool` returns 0 on each. -/
+theorem reducedCechDim_of_c1_empty {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    (P : IndexedPoset Secret) (indices : List Nat)
+    (h : reducedC1 P indices = []) :
+    reducedCechDim P indices 1 = 0 := by
+  have hd0 : reducedDelta0 P indices = [] := by
+    unfold reducedDelta0
+    rw [h]
+    rfl
+  have hd1_empty_rows : ∀ row ∈ reducedDelta1 P indices, row = [] := by
+    intro row hrow
+    unfold reducedDelta1 at hrow
+    rw [h] at hrow
+    rcases List.mem_map.mp hrow with ⟨_, _, hrow_eq⟩
+    simp at hrow_eq
+    exact hrow_eq
+  show ((reducedC1 P indices).length - gf2Rank (reducedDelta1 P indices))
+        - gf2Rank (reducedDelta0 P indices) = 0
+  rw [h, hd0]
+  unfold gf2Rank
+  rw [PortcullisCore.RankNullity.gaussRankBool_empty_rows _ hd1_empty_rows,
+      PortcullisCore.RankNullity.gaussRankBool_nil]
+  rfl
+
 /-- The acyclicity lemma: if all levels force the same propositions,
     then H¹ = 0. This is the constant-presheaf acyclicity theorem
     for finite coverings. -/
@@ -1421,7 +1448,13 @@ theorem uniform_implies_h1_zero {Secret : Type} [Fintype Secret] [DecidableEq Se
        | some E => DObsLevel.dForces E (P.allProps[p]!)
        | none => false) = true) :
     reducedCechDim P indices 1 = 0 := by
-  sorry -- GF(2) acyclicity: constant presheaf on connected covering
+  -- Case split on whether the 1-simplex list is degenerate.
+  -- Empty case: dispatched by `reducedCechDim_of_c1_empty` (Step 5).
+  -- Nonempty case: classical Čech acyclicity for constant presheaf on the
+  -- full simplex of the covering nerve. Remaining structural content.
+  by_cases hC1 : reducedC1 P indices = []
+  · exact reducedCechDim_of_c1_empty P indices hC1
+  · sorry -- nonempty C¹ under uniform: Čech acyclicity of full simplex
 
 theorem h1_pos_implies_exclusive {Secret : Type} [Fintype Secret] [DecidableEq Secret]
     (P : IndexedPoset Secret) (indices : List Nat)

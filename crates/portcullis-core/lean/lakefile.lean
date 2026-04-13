@@ -79,3 +79,11 @@ lean_lib «CechCohomology» where
 -- Proof skeleton replacing the comparison axiom.
 lean_lib «ComparisonTheorem» where
   roots := #[`ComparisonTheorem]
+
+-- GF(2) rank-nullity scaffold supporting Honest Fundamental Theorem.
+lean_lib «RankNullity» where
+  roots := #[`RankNullity]
+
+-- Simplex acyclicity: cone construction for H¹ = 0 under uniform presheaf.
+lean_lib «SimplexAcyclic» where
+  roots := #[`SimplexAcyclic]
