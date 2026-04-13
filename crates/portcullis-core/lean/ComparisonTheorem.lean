@@ -728,6 +728,15 @@ theorem delta_sq_zero_01_reduced_directInject :
                   (reducedDelta0 directInjectSite [1, 2])) = true := by
   native_decide
 
+/-- **Reduced chain complex δ¹ ∘ δ⁰ = 0** (Borromean, full reduced covering).
+    Matrix multiplication on the 90×104 boundary matrices is compile-time
+    tractable even though the rank computation is not. -/
+theorem delta_sq_zero_01_reduced_borromean :
+    isZeroMatrix
+      (matMulBool (reducedDelta1 borromeanSite [1, 2, 3, 4])
+                  (reducedDelta0 borromeanSite [1, 2, 3, 4])) = true := by
+  native_decide
+
 /-! ## Summary: Two Čech Complexes, Two Stories
 
 ### Standard Covering (includes ⊥)
