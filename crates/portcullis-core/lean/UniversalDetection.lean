@@ -104,4 +104,72 @@ theorem detector_separates_malicious_of_complete {S : Type}
     universal_detection_impossibility D h_obs h_sound h_evade
   exact Bool.false_ne_true (hDm ▸ h_no_fn m hM)
 
+/-! ## Reverse direction: perfect detector when no evasion exists
+
+The impossibility theorem by itself tells us *when* detection fails but
+doesn't address the case where the equivalence is fine enough. The
+following converse shows that when no non-trivial evasion is witnessed
+by the equivalence, a **perfect** detector exists (sound AND complete).
+This turns the impossibility into a clean dichotomy. -/
+
+/-- **Perfect detector existence**: if the observability equivalence is
+    symmetric and admits no non-trivial evasion, then the decidable
+    membership function of `M` is a perfect (sound + complete) detector
+    respecting the equivalence.
+
+    Informally: when `~` separates malicious from benign, the `decide M`
+    detector works. Combined with `universal_detection_impossibility`,
+    this proves that equivalence coarseness is the *sole* obstruction to
+    perfect detection in the observable setting. -/
+theorem perfect_detector_of_no_evasion {S : Type}
+    (M : S → Prop) [DecidablePred M] (eq : S → S → Prop)
+    (h_sym : ∀ s t, eq s t → eq t s)
+    (h : ¬ NonTrivialEvasion M eq) :
+    ∃ D : Detector S, Observable eq D ∧ Sound M D ∧ (∀ s, M s → D s = true) := by
+  refine ⟨fun s => decide (M s), ?_, ?_, ?_⟩
+  · -- Observability: decide respects eq because eq preserves M-membership
+    -- in both directions (using symmetry + no evasion).
+    intro s t h_eq
+    by_cases hMs : M s
+    · by_cases hMt : M t
+      · simp [hMs, hMt]
+      · exact absurd ⟨s, t, hMs, hMt, h_eq⟩ h
+    · by_cases hMt : M t
+      · exact absurd ⟨t, s, hMt, hMs, h_sym s t h_eq⟩ h
+      · simp [hMs, hMt]
+  · -- Soundness of decide
+    intro s h_dec
+    exact of_decide_eq_true h_dec
+  · -- Completeness of decide
+    intro s hM
+    exact decide_eq_true hM
+
+/-- **Detection Dichotomy**: for any decidable malicious class and any
+    symmetric observability equivalence, exactly one of the following
+    holds.
+
+    * The equivalence admits a non-trivial evasion pair, and *every*
+      observable sound detector has a false negative.
+    * The equivalence admits no evasion, and a perfect (sound + complete)
+      detector exists — concretely, the decidable membership function.
+
+    This is the precise sense in which "observability equivalence
+    coarseness is the obstruction to detection." There is no middle ground:
+    the equivalence is either fine enough to detect perfectly or coarse
+    enough to force impossibility. -/
+theorem detection_dichotomy {S : Type}
+    (M : S → Prop) [DecidablePred M] (eq : S → S → Prop)
+    (h_sym : ∀ s t, eq s t → eq t s) :
+    (NonTrivialEvasion M eq ∧
+      ∀ D : Detector S, Observable eq D → Sound M D →
+        ∃ s, M s ∧ D s = false)
+    ∨
+    (¬ NonTrivialEvasion M eq ∧
+      ∃ D : Detector S, Observable eq D ∧ Sound M D ∧ (∀ s, M s → D s = true)) := by
+  by_cases h : NonTrivialEvasion M eq
+  · refine Or.inl ⟨h, ?_⟩
+    intro D h_obs h_sound
+    exact universal_detection_impossibility D h_obs h_sound h
+  · exact Or.inr ⟨h, perfect_detector_of_no_evasion M eq h_sym h⟩
+
 end PortcullisCore.UniversalDetection
