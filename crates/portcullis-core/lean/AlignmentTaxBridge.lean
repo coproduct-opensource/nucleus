@@ -60,6 +60,7 @@ open SemanticIFCDecidable.BoundaryMaps
 open AlexandrovSite
 open PresheafCech
 open BridgeTheorem
+open HonestFundamental
 
 namespace PortcullisCore.AlignmentTaxBridge
 
@@ -138,6 +139,34 @@ theorem operationalAlignmentTax_le_c1 (P : IndexedPoset Secret) (indices : List 
   apply Nat.find_le
   exact ⟨canonicalRealiser P indices, by unfold canonicalRealiser; simp,
          canonicalRealiser_realises P indices⟩
+
+/-- **Base case of the bridge**: when `reducedC1 = []`, the operational tax
+    vanishes. The empty list is a realising set trivially.
+
+    Combined with `reducedCechDim_of_c1_empty`, this closes the bridge equation
+    on degenerate inputs: `operationalAlignmentTax = 0 = alignmentTaxH1`. -/
+theorem operationalAlignmentTax_of_c1_empty
+    (P : IndexedPoset Secret) (indices : List Nat)
+    (h : reducedC1 P indices = []) :
+    operationalAlignmentTax P indices = 0 := by
+  classical
+  have h_le : operationalAlignmentTax P indices ≤ 0 := by
+    unfold operationalAlignmentTax
+    apply Nat.find_le
+    refine ⟨[], ?_, ?_⟩
+    · simp
+    · intro c hc; rw [h] at hc; exact absurd hc (List.not_mem_nil)
+  omega
+
+/-- **Bridge theorem, degenerate case**: when the 1-simplex list is empty,
+    operational tax = 0 = `alignmentTaxH1`. -/
+theorem alignmentTax_eq_h1_of_c1_empty
+    (P : IndexedPoset Secret) (indices : List Nat)
+    (h : reducedC1 P indices = []) :
+    operationalAlignmentTax P indices = alignmentTaxH1 P indices := by
+  rw [operationalAlignmentTax_of_c1_empty P indices h]
+  rw [show alignmentTaxH1 P indices = reducedCechDim P indices 1 from rfl]
+  exact (reducedCechDim_of_c1_empty P indices h).symm
 
 /-- **Bridge theorem (upper bound)**: operational tax ≤ rank H¹.
 
