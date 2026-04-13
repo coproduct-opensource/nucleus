@@ -4,6 +4,14 @@ Interactive demonstrations of the nucleus formal framework.
 
 ## Available notebooks
 
+### [`lean_in_colab.ipynb`](lean_in_colab.ipynb)
+
+**Actually runs the Lean 4 formalization in Colab.** Installs `elan`,
+clones the repo, fetches cached Mathlib oleans, and builds
+`AlignmentTaxBridge` — the file containing the Alignment Tax Theorem.
+
+Runtime: ~5-10 minutes. Anyone with a browser can verify the proofs.
+
 ### [`alignment_tax_demo.ipynb`](alignment_tax_demo.ipynb)
 
 Demonstrates the **Alignment Tax Theorem** (`alignmentTaxH1_eq_operational` in `AlignmentTaxBridge.lean`):
