@@ -74,69 +74,96 @@ structure DeclassEdge where
   prop    : Nat   -- proposition being declassified
   deriving DecidableEq, Repr
 
-/-- **Operational alignment tax**: the minimum number of declassification
-    edges that must be added to the policy to realise all local sections
-    globally.
+/-- A **realising set** of declassification edges: an `L` that makes every
+    cocycle become a coboundary after adding indicator rows for `L` to `δ⁰`.
 
-    This definition is a *predicate* over possible declassification sets,
-    not yet a computable minimum. The bridge theorem will equate the least
-    such cardinality with `alignmentTaxH1`.
+    Structurally: `L` realises iff the augmented 0-chain space covers every
+    element of `reducedC1`. This is the combinatorial reflection of "every
+    local section glues globally once policy is relaxed by `L`".
 
-    The precise notion of "realise all local sections" is parameterised by
-    the IFC sheaf structure — under the reduced Čech encoding it becomes
-    "every cocycle becomes a coboundary after declassification". -/
+    An edge `⟨i, j, p⟩` is said to *cover* the 1-simplex entry `(a, b, q)`
+    when the proposition matches (`p = q`) and the endpoints coincide
+    (`(i, j) = (a, b)` or `(i, j) = (b, a)`). -/
+def Covers (e : DeclassEdge) (c : Nat × Nat × Nat) : Prop :=
+  e.prop = c.2.2 ∧
+    ((e.fromIdx = c.1 ∧ e.toIdx = c.2.1) ∨
+     (e.fromIdx = c.2.1 ∧ e.toIdx = c.1))
+
+instance (e : DeclassEdge) (c : Nat × Nat × Nat) : Decidable (Covers e c) := by
+  unfold Covers; infer_instance
+
+/-- `L` realises: every C¹ entry is covered by some edge in `L`. -/
 def Realises (P : IndexedPoset Secret) (indices : List Nat)
     (L : List DeclassEdge) : Prop :=
-  -- Structural reflection: a declassification set realises full capability
-  -- iff augmenting the 0-chain space with indicators for `L` surjects onto
-  -- the cocycle space. Equivalent to: `rank(δ⁰ ⊕ L-indicators) = |C¹| - rank(δ¹)`.
-  ∀ c : Nat × Nat × Nat, c ∈ reducedC1 P indices →
-    ∃ e ∈ L, e.prop = c.2.2 ∧ (e.fromIdx = c.1 ∨ e.toIdx = c.2.1)
+  ∀ c ∈ reducedC1 P indices, ∃ e ∈ L, Covers e c
 
-/-- **Operational alignment tax** as the infimum over realising sets. -/
-def operationalAlignmentTax (P : IndexedPoset Secret) (indices : List Nat) : Nat :=
-  -- As a sorry-valued definition, stated via minimum cardinality over realisers.
-  -- In practice it is computed via the H¹ basis (the bridge theorem).
-  0  -- placeholder; the bridge theorem redefines this via H¹.
+/-- The canonical realiser: one edge per 1-simplex. Always realises. -/
+def canonicalRealiser (P : IndexedPoset Secret) (indices : List Nat) :
+    List DeclassEdge :=
+  (reducedC1 P indices).map (fun c => ⟨c.1, c.2.1, c.2.2⟩)
 
-/-- **Existence of a realising set** (any sufficiently large set realises). -/
-theorem exists_realising_set (P : IndexedPoset Secret) (indices : List Nat) :
-    ∃ L : List DeclassEdge, Realises P indices L := by
-  -- Take the trivial declassification: one edge per C¹ entry.
-  refine ⟨(reducedC1 P indices).map (fun c => ⟨c.1, c.2.1, c.2.2⟩), ?_⟩
+/-- The canonical realiser realises. -/
+theorem canonicalRealiser_realises
+    (P : IndexedPoset Secret) (indices : List Nat) :
+    Realises P indices (canonicalRealiser P indices) := by
   intro c hc
-  refine ⟨⟨c.1, c.2.1, c.2.2⟩, ?_, rfl, Or.inl rfl⟩
-  exact List.mem_map.mpr ⟨c, hc, rfl⟩
+  refine ⟨⟨c.1, c.2.1, c.2.2⟩, ?_, ?_⟩
+  · exact List.mem_map.mpr ⟨c, hc, rfl⟩
+  · exact ⟨rfl, Or.inl ⟨rfl, rfl⟩⟩
+
+/-- **Existence of a realising set** (constructive witness). -/
+theorem exists_realising_set (P : IndexedPoset Secret) (indices : List Nat) :
+    ∃ L : List DeclassEdge, Realises P indices L :=
+  ⟨canonicalRealiser P indices, canonicalRealiser_realises P indices⟩
+
+/-- **Operational alignment tax**: the minimum cardinality of a realising set.
+
+    Defined classically via `Nat.find` (non-computable); used for stating
+    the bridge theorem abstractly. Concrete computation uses the canonical
+    realiser as an upper-bound witness. -/
+noncomputable def operationalAlignmentTax
+    (P : IndexedPoset Secret) (indices : List Nat) : Nat := by
+  classical
+  exact Nat.find (p := fun n => ∃ L : List DeclassEdge,
+    L.length ≤ n ∧ Realises P indices L)
+    ⟨(reducedC1 P indices).length, canonicalRealiser P indices,
+      by unfold canonicalRealiser; simp, canonicalRealiser_realises P indices⟩
+
+/-- **Upper bound on the operational tax**: bounded by `|C¹|` via the
+    canonical realiser. -/
+theorem operationalAlignmentTax_le_c1 (P : IndexedPoset Secret) (indices : List Nat) :
+    operationalAlignmentTax P indices ≤ (reducedC1 P indices).length := by
+  classical
+  unfold operationalAlignmentTax
+  apply Nat.find_le
+  exact ⟨canonicalRealiser P indices, by unfold canonicalRealiser; simp,
+         canonicalRealiser_realises P indices⟩
 
 /-- **Bridge theorem (upper bound)**: operational tax ≤ rank H¹.
 
     Strategy: exhibit a declassification set of size `rank H¹` built from a
-    basis of reducedCechDim cocycle classes. Each basis element specifies
-    an obstruction; the corresponding edge resolves it. -/
+    basis of the reduced Čech H¹ quotient space. Each basis element specifies
+    an independent obstruction; the corresponding edge resolves it. -/
 theorem operationalTax_le_h1 (P : IndexedPoset Secret) (indices : List Nat) :
     operationalAlignmentTax P indices ≤ alignmentTaxH1 P indices := by
-  -- Placeholder definition of operationalAlignmentTax makes this vacuous.
-  -- Real statement: a basis of H¹ cocycles gives a realising set of that size.
-  simp [operationalAlignmentTax]
+  sorry -- basis of H¹ cocycles induces a realising set of size = rank H¹
 
 /-- **Bridge theorem (lower bound)**: operational tax ≥ rank H¹.
 
-    Strategy: any realising set must, by rank-nullity (`RankNullity.lean`),
-    augment the coboundary rank by at least `rank H¹`. Each declassification
-    contributes at most one to the coboundary rank, so ≥ `rank H¹` edges are
-    required. -/
+    Strategy: any realising set induces an augmentation of `δ⁰` whose rank
+    increase is at most `|L|`. To kill all `rank H¹` obstruction classes
+    the augmentation must have rank increase ≥ `rank H¹` (rank-nullity,
+    from `RankNullity.lean`). -/
 theorem operationalTax_ge_h1 (P : IndexedPoset Secret) (indices : List Nat) :
     operationalAlignmentTax P indices ≥ alignmentTaxH1 P indices := by
-  sorry -- rank-nullity argument: every H¹ class must be killed by some edge
+  sorry -- rank-nullity argument via gaussRankBool_le_rows on augmented δ⁰
 
 /-- **The Alignment Tax Theorem**: operational = structural.
 
-    Combines the two inequalities. This is the machine-checked statement
-    that "the cohomological invariant is the actual cost". -/
+    Conjecturally closes the holy grail: the cohomological rank exactly
+    equals the operational cost of realising capability under policy. -/
 theorem alignmentTax_eq_h1 (P : IndexedPoset Secret) (indices : List Nat) :
-    operationalAlignmentTax P indices = alignmentTaxH1 P indices := by
-  apply Nat.le_antisymm
-  · exact operationalTax_le_h1 P indices
-  · exact operationalTax_ge_h1 P indices
+    operationalAlignmentTax P indices = alignmentTaxH1 P indices :=
+  Nat.le_antisymm (operationalTax_le_h1 P indices) (operationalTax_ge_h1 P indices)
 
 end PortcullisCore.AlignmentTaxBridge
