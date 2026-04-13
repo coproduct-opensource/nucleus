@@ -1,3 +1,9 @@
+import Mathlib.Data.Finset.Basic
+import Mathlib.Data.Fintype.Basic
+import Mathlib.Data.Finset.Card
+import Mathlib.Data.Fintype.Card
+import Mathlib.Logic.Function.Basic
+
 /-! # Universal Detection Impossibility
 
 The `evasion_impossibility` theorem in `ComparisonTheorem.lean` is specific
@@ -210,5 +216,156 @@ theorem observable_of_blind_spot {S : Type} {D : Detector S} {B : S → Prop}
     Observable (fun s t => B s ∧ B t) D := by
   intro s t ⟨hs, ht⟩
   rw [h_blind s hs, h_blind t ht]
+
+/-! ## Quantitative content: a lower bound on false negatives
+
+The existential impossibility result only guarantees that *some* malicious
+input evades the detector. The following theorem sharpens this to a
+*cardinal* lower bound: the number of false negatives of a sound
+observable detector is at least the number of malicious inputs that
+share an equivalence class with any benign input.
+
+This turns a qualitative impossibility into a measurable safety gap. -/
+
+section Quantitative
+variable {S : Type} [Fintype S] [DecidableEq S]
+variable {M : S → Prop} [DecidablePred M]
+variable {eq : S → S → Prop} [DecidableRel eq]
+
+/-- The set of malicious inputs that share an equivalence class with
+    at least one benign input. By observability + soundness these inputs
+    are forced to be false negatives. -/
+def mixedMalicious (M : S → Prop) (eq : S → S → Prop) [DecidablePred M]
+    [DecidableRel eq] : Finset S :=
+  Finset.univ.filter (fun s => M s ∧ ∃ t, eq s t ∧ ¬ M t)
+
+/-- The set of inputs on which a detector commits a false negative. -/
+def falseNegatives (D : Detector S) (M : S → Prop) [DecidablePred M] :
+    Finset S :=
+  Finset.univ.filter (fun s => M s ∧ D s = false)
+
+/-- **Quantitative false-negative lower bound**.
+
+    Every sound observable detector has at least `|mixedMalicious|` false
+    negatives — one per malicious input sharing a class with a benign input.
+    Proof: for any such `s` with witness `t` (benign and `eq s t`),
+    soundness forces `D t = false` and observability propagates to `D s`. -/
+theorem false_negatives_lower_bound (D : Detector S)
+    (h_obs : Observable eq D) (h_sound : Sound M D) :
+    (mixedMalicious M eq).card ≤ (falseNegatives D M).card := by
+  apply Finset.card_le_card
+  intro s hs
+  simp only [mixedMalicious, Finset.mem_filter, Finset.mem_univ, true_and] at hs
+  simp only [falseNegatives, Finset.mem_filter, Finset.mem_univ, true_and]
+  obtain ⟨hM, t, hst, hNotMt⟩ := hs
+  refine ⟨hM, ?_⟩
+  -- Soundness + ¬M t gives D t = false
+  have hDt : D t = false := by
+    cases hDt : D t with
+    | false => rfl
+    | true => exact absurd (h_sound t hDt) hNotMt
+  -- Observability + eq s t + D t = false gives D s = false
+  rw [h_obs s t hst, hDt]
+
+end Quantitative
+
+/-! ## Computational content: bounded-budget detectors
+
+The framework above is purely set-theoretic. To address objections about
+oracle-style detectors not capturing the AI-safety setting, we introduce
+`BoundedDetector`: a detector that factors through a finite observation
+space of size at most `2^k`. This models any detector with a fixed
+"observation budget" — one that reads at most `k` bits of structure
+from each input.
+
+Bounded detectors automatically induce an equivalence relation (same
+observations ⇒ same output), so the existential and quantitative results
+above apply directly. The cardinality of the observation space gives a
+*structural* upper bound on the number of distinguishable equivalence
+classes, which in turn lower-bounds false-negative rates via pigeonhole. -/
+
+/-- A **k-bit detector**: factors through a finite observation space of
+    size at most `2^k`. Captures any detector with bounded read budget. -/
+structure BoundedDetector (S : Type) (k : Nat) where
+  observe : S → Fin (2 ^ k)
+  decision : Fin (2 ^ k) → Bool
+
+/-- Forget the structure: a bounded detector is a detector. -/
+def BoundedDetector.toDetector {S : Type} {k : Nat}
+    (D : BoundedDetector S k) : Detector S :=
+  fun s => D.decision (D.observe s)
+
+/-- The observability equivalence induced by a bounded detector:
+    inputs are equivalent if they produce the same observation. -/
+def BoundedDetector.observationEq {S : Type} {k : Nat}
+    (D : BoundedDetector S k) : S → S → Prop :=
+  fun s t => D.observe s = D.observe t
+
+instance BoundedDetector.observationEq_decidable {S : Type} {k : Nat}
+    (D : BoundedDetector S k) : DecidableRel D.observationEq :=
+  fun s t => decEq (D.observe s) (D.observe t)
+
+/-- The induced equivalence is symmetric. -/
+theorem BoundedDetector.observationEq_symm {S : Type} {k : Nat}
+    (D : BoundedDetector S k) {s t : S} :
+    D.observationEq s t → D.observationEq t s :=
+  Eq.symm
+
+/-- **Bounded detectors are observable** under their own induced equivalence.
+    This is the key structural fact: any detector that factors through a
+    bounded observation space respects the equivalence "same observation". -/
+theorem BoundedDetector.observable {S : Type} {k : Nat}
+    (D : BoundedDetector S k) :
+    Observable D.observationEq D.toDetector := by
+  intro s t hst
+  simp [BoundedDetector.toDetector, BoundedDetector.observationEq] at hst ⊢
+  rw [hst]
+
+/-- **Bounded-detector quantitative impossibility**: for any sound bounded
+    detector, the false-negative count is bounded below by the number of
+    malicious inputs sharing observations with benign inputs.
+
+    This pairs the quantitative impossibility theorem with explicit
+    computational content (bounded observation budget). -/
+theorem BoundedDetector.false_negatives_bound {S : Type} [Fintype S]
+    [DecidableEq S] {k : Nat} (D : BoundedDetector S k)
+    {M : S → Prop} [DecidablePred M]
+    (h_sound : Sound M D.toDetector) :
+    (mixedMalicious M D.observationEq).card ≤
+      (falseNegatives D.toDetector M).card :=
+  false_negatives_lower_bound _ D.observable h_sound
+
+/-- **Pigeonhole**: a bounded detector with `k`-bit observation budget on
+    a system space of size `> 2^k` must collapse two distinct inputs to
+    the same observation. -/
+theorem BoundedDetector.pigeonhole {S : Type} [Fintype S] [DecidableEq S]
+    {k : Nat} (D : BoundedDetector S k) (h : 2 ^ k < Fintype.card S) :
+    ∃ s t : S, s ≠ t ∧ D.observe s = D.observe t := by
+  by_contra h_no
+  push_neg at h_no
+  have h_inj : Function.Injective D.observe := by
+    intro s t hst
+    by_contra h_ne
+    exact h_no s t h_ne hst
+  have h_le : Fintype.card S ≤ Fintype.card (Fin (2 ^ k)) :=
+    Fintype.card_le_of_injective _ h_inj
+  rw [Fintype.card_fin] at h_le
+  omega
+
+/-- **Constructive corollary**: if a bounded detector pigeonholes two
+    inputs `s ≠ t` with different `M`-values, both are evasion witnesses.
+    `s` (if malicious) is a false negative; symmetrically for `t`. -/
+theorem BoundedDetector.evasion_of_pigeonhole {S : Type} [Fintype S]
+    [DecidableEq S] {k : Nat} (D : BoundedDetector S k)
+    {M : S → Prop} [DecidablePred M] (h_sound : Sound M D.toDetector)
+    {s t : S} (hM : M s) (hNotM : ¬ M t)
+    (hobs : D.observe s = D.observe t) :
+    D.toDetector s = false := by
+  have hDt : D.toDetector t = false := by
+    cases hDt : D.toDetector t with
+    | false => rfl
+    | true => exact absurd (h_sound t hDt) hNotM
+  have hObsEq : D.observationEq s t := hobs
+  rw [D.observable s t hObsEq, hDt]
 
 end PortcullisCore.UniversalDetection

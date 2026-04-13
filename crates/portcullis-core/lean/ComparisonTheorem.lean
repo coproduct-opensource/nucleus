@@ -1769,6 +1769,122 @@ theorem evasion_impossibility
     ∃ P : TaggedPoset ThreeSecret, P.isMalicious ∧ D P = false :=
   ⟨⟨[bot, bot], True⟩, trivial, detection_ceiling D h_sound _ bot_has_no_exclusive⟩
 
+/-! ### Strengthened evasion impossibility
+
+The original `evasion_impossibility` has a legitimate steelman objection:
+the `isMalicious : Prop` field is free — anyone can tag any record with
+`isMalicious := True`, so the theorem reduces to "detectors fail on
+records someone labelled malicious." That's a statement about record
+construction, not a threat model.
+
+The strengthened version below forces the evasion to be a genuine
+*observational collision*: the theorem requires exhibiting BOTH a
+malicious `P` AND a benign `Q` with identical `obsLevels`, on which any
+observable sound detector must return the same (false) answer. This
+closes the "stuff anything in `isMalicious`" loophole: the malicious tag
+means nothing unless a benign counterpart exists in the same observation
+class. -/
+
+/-- A detector is **observable** if it depends only on the `obsLevels`
+    projection of its input (not on the `isMalicious` tag or any other
+    hidden data). -/
+def IsObservableDetector {Secret : Type} [Fintype Secret] [DecidableEq Secret]
+    [HasAllDProps Secret] (D : TaggedPoset Secret → Bool) : Prop :=
+  ∀ P Q : TaggedPoset Secret, P.obsLevels = Q.obsLevels → D P = D Q
+
+/-- **Strengthened Evasion Impossibility (ThreeSecret)**.
+
+    For any detector that is **both sound and observable**, there exist
+    a malicious `P` and a benign `Q` sharing the same observation levels,
+    on which the detector returns false — a *genuine* false negative in
+    the sense that `Q` witnesses the label's decoupling from observable
+    content.
+
+    This version is immune to the "free `isMalicious`" objection because
+    it explicitly requires the benign counterpart `Q`: the malicious tag
+    doesn't stand alone, it must be observationally indistinguishable
+    from an explicit non-malicious instance. -/
+theorem evasion_impossibility_observable
+    (D : TaggedPoset ThreeSecret → Bool)
+    (h_sound : IsSoundDetector D)
+    (h_obs : IsObservableDetector D) :
+    ∃ P Q : TaggedPoset ThreeSecret,
+      P.isMalicious ∧ ¬ Q.isMalicious ∧
+      P.obsLevels = Q.obsLevels ∧
+      D P = false := by
+  refine ⟨⟨[bot, bot], True⟩, ⟨[bot, bot], False⟩, trivial, id, rfl, ?_⟩
+  exact detection_ceiling D h_sound _ bot_has_no_exclusive
+
+/-- **Corollary**: observable sound detectors also miss benign inputs
+    in the same class — their verdict is forced to `false` regardless of
+    the underlying malice. This makes the asymmetry between detection
+    power and malice content explicit. -/
+theorem observable_detector_forced_on_consensus
+    (D : TaggedPoset ThreeSecret → Bool)
+    (h_sound : IsSoundDetector D)
+    (h_obs : IsObservableDetector D) :
+    D ⟨[bot, bot], True⟩ = false ∧ D ⟨[bot, bot], False⟩ = false := by
+  have hF : D ⟨[bot, bot], False⟩ = false :=
+    detection_ceiling D h_sound _ bot_has_no_exclusive
+  have hT_eq_F : D ⟨[bot, bot], True⟩ = D ⟨[bot, bot], False⟩ :=
+    h_obs _ _ rfl
+  exact ⟨hT_eq_F.trans hF, hF⟩
+
+/-! ### Non-degenerate evasion witnesses
+
+The original `evasion_impossibility` uses `[bot, bot]` — a pathological
+choice (two copies of the "forces everything" level) vulnerable to the
+objection that the witness is unrealistic. The following theorems exhibit
+alternative evasion witnesses using **non-bot** observation levels,
+demonstrating that the impossibility does NOT hinge on the degenerate
+`bot` construction. Each is verified by `native_decide`.
+
+Conceptual reading: real-world "consensus-preserving" attacks in
+multi-agent systems (e.g. two fully-informed agents colluding on a
+shared plan, or two intermediate-level observers agreeing) produce the
+same obstruction as `[bot, bot]`. -/
+
+/-- `[top, top]` has no exclusive observations: two fully-informed
+    observers force identical proposition sets. Models two cooperating
+    adversaries with shared complete information. -/
+theorem top_top_no_exclusive :
+    (⟨[top, top], True⟩ : TaggedPoset ThreeSecret).hasExclusive = false := by
+  native_decide
+
+/-- `[obsAC, obsAC]` has no exclusive observations: two intermediate-level
+    observers in agreement. Models repeated queries by the same agent
+    class, or consensus between peers. -/
+theorem obsAC_obsAC_no_exclusive :
+    (⟨[obsAC, obsAC], True⟩ : TaggedPoset ThreeSecret).hasExclusive = false := by
+  native_decide
+
+/-- `[obsBC, obsBC]` has no exclusive observations: symmetric to the above. -/
+theorem obsBC_obsBC_no_exclusive :
+    (⟨[obsBC, obsBC], True⟩ : TaggedPoset ThreeSecret).hasExclusive = false := by
+  native_decide
+
+/-- **Non-degenerate evasion**: using `[top, top]` as the malicious witness
+    (two fully-informed agents) instead of `[bot, bot]`. Every sound
+    detector misses this consensus-preserving attack.
+
+    This rebuts the steelman objection that the original theorem only
+    works for pathological inputs — the same impossibility holds for the
+    maximally-informed case, which is a far more realistic attack model
+    (collusion between agents with shared complete context). -/
+theorem evasion_impossibility_top
+    (D : TaggedPoset ThreeSecret → Bool) (h_sound : IsSoundDetector D) :
+    ∃ P : TaggedPoset ThreeSecret, P.isMalicious ∧ D P = false :=
+  ⟨⟨[top, top], True⟩, trivial,
+    detection_ceiling D h_sound _ top_top_no_exclusive⟩
+
+/-- **Non-degenerate evasion**: using `[obsAC, obsAC]` — two intermediate-level
+    observers in agreement. A realistic multi-agent consensus. -/
+theorem evasion_impossibility_obsAC
+    (D : TaggedPoset ThreeSecret → Bool) (h_sound : IsSoundDetector D) :
+    ∃ P : TaggedPoset ThreeSecret, P.isMalicious ∧ D P = false :=
+  ⟨⟨[obsAC, obsAC], True⟩, trivial,
+    detection_ceiling D h_sound _ obsAC_obsAC_no_exclusive⟩
+
 end EvasionImpossibility
 
 -- ═══════════════════════════════════════════════════════════════════════
