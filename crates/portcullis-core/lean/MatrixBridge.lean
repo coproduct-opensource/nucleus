@@ -68,17 +68,24 @@ theorem rowSpanRank_eq_matrix_rank (M : List (List Bool)) (n m : Nat) :
     rowSpanRank M n m = (toMatrix M n m).rank := rfl
 
 /-- Sub-lemma B (the loop invariant): at every recursive step of
-    `gaussRankBool.go`, the rank counter equals the dimension of the
-    row span restricted to columns processed so far.
-
-    Stated abstractly here; the formal version threads the invariant
-    through the `go` recursion. -/
+    `gaussRankBool.go`, the rank counter is bounded by start rank plus
+    row-span dimension. The induction-on-fuel skeleton with the base case
+    proved; the successor case awaits the find?/elimination analysis. -/
 theorem gaussRankBool_go_invariant
     (rows : List (List Bool)) (col r fuel : Nat)
     (n m : Nat) (h_n : rows.length = n) (h_m : ∀ row ∈ rows, row.length = m) :
     SemanticIFCDecidable.BoundaryMaps.gaussRankBool.go rows col r fuel ≤
       r + (rowSpanRank rows n m) := by
-  sorry  -- induction on fuel, case split on find?, track row-space dim
+  induction fuel generalizing rows col r with
+  | zero =>
+    -- Base: fuel = 0 returns rank counter directly.
+    show SemanticIFCDecidable.BoundaryMaps.gaussRankBool.go rows col r 0 ≤
+      r + rowSpanRank rows n m
+    have : SemanticIFCDecidable.BoundaryMaps.gaussRankBool.go rows col r 0 = r := rfl
+    rw [this]
+    exact Nat.le_add_right r _
+  | succ k ih =>
+    sorry  -- inductive: case split on find?, bound new rank via ih
 
 /-- Sub-lemma C: the converse — the loop invariant is tight at termination.
     When fuel runs out (or all columns processed), the rank counter
