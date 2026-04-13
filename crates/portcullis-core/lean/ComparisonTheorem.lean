@@ -1448,7 +1448,13 @@ theorem uniform_implies_h1_zero {Secret : Type} [Fintype Secret] [DecidableEq Se
        | some E => DObsLevel.dForces E (P.allProps[p]!)
        | none => false) = true) :
     reducedCechDim P indices 1 = 0 := by
-  sorry -- GF(2) acyclicity: constant presheaf on connected covering
+  -- Case split on whether the 1-simplex list is degenerate.
+  -- Empty case: dispatched by `reducedCechDim_of_c1_empty` (Step 5).
+  -- Nonempty case: classical Čech acyclicity for constant presheaf on the
+  -- full simplex of the covering nerve. Remaining structural content.
+  by_cases hC1 : reducedC1 P indices = []
+  · exact reducedCechDim_of_c1_empty P indices hC1
+  · sorry -- nonempty C¹ under uniform: Čech acyclicity of full simplex
 
 theorem h1_pos_implies_exclusive {Secret : Type} [Fintype Secret] [DecidableEq Secret]
     (P : IndexedPoset Secret) (indices : List Nat)
