@@ -91,3 +91,7 @@ lean_lib «SimplexAcyclic» where
 -- Alignment Tax bridge: operational declassification count = rank H¹.
 lean_lib «AlignmentTaxBridge» where
   roots := #[`AlignmentTaxBridge]
+
+-- Universal Detection Impossibility: abstract Rice-style theorem.
+lean_lib «UniversalDetection» where
+  roots := #[`UniversalDetection]
