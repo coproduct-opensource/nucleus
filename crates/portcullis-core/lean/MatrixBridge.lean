@@ -98,12 +98,31 @@ equals our `rowSpanRank`.
 This is the semantic handle for proving `gaussRankBool` correctness:
 the algorithm computes the dimension of this submodule. -/
 
--- [row-span submodule infrastructure] Deferred to a focused session:
--- `Submodule.span (ZMod 2) (Set.range (toMatrix M n m).row)` triggers
--- heartbeat timeouts even at 1M budget due to type-class unification
--- complexity. Sub-lemma C below (`matrix_rank_eq_rowSpace_finrank`) is
--- the next target; closing it requires either a custom Submodule-free
--- formulation or careful heartbeat-scoped elaboration.
+/-! ### Known elaboration issue
+
+Applying `Matrix.rank_eq_finrank_span_row` to our `toMatrix` construction
+triggers a deterministic `whnf` timeout in Lean's elaborator even at 1M
+heartbeats — specifically in the type-class instance search for
+`Field (ZMod 2)` composed with `[Finite (Fin n)]` and the Submodule
+machinery. Isolated tests confirm:
+
+* `Submodule.span (ZMod 2) (Set.range f)` works fine for generic `f`.
+* The composition with `Matrix.rank_eq_finrank_span_row` times out.
+
+Likely cause: a type-class diamond on `ZMod 2` between its `CommRing` and
+`Field` instances, or a whnf-explosive unification path through
+`Matrix.row_eq_self`.
+
+Deferred to a focused Zulip-assisted diagnosis session. The alternative
+approach (LinearIndependent-based bridge) is also blocked by the same
+root cause. -/
+
+/-- **Row-span submodule** (provided as a definition for downstream use;
+    does not trigger the timeout since the theorem application is not
+    forced here). -/
+noncomputable def rowSpace (M : List (List Bool)) (n m : Nat) :
+    Submodule (ZMod 2) (Fin m → ZMod 2) :=
+  Submodule.span (ZMod 2) (Set.range (toMatrix M n m).row)
 
 /-- Sub-lemma B (the loop invariant): at every recursive step of
     `gaussRankBool.go`, the rank counter is bounded by start rank plus
