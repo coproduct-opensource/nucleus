@@ -52,21 +52,57 @@ def toMatrix (M : List (List Bool)) (n m : Nat) :
 def matWidth (M : List (List Bool)) : Nat :=
   (M.head?.map List.length).getD 0
 
-/-- **Bridge theorem (sorry'd)**: the computational `gaussRankBool` agrees
-    with Mathlib's `Matrix.rank` on the converted matrix.
+/-! ### Bridge theorem proof skeleton
 
-    Proof outline (deferred): show by induction on fuel that
-    `gaussRankBool.go` correctly counts pivots, and pivots count
-    linearly independent rows (= row-rank = matrix rank).
+The bridge `gaussRankBool M = (toMatrix M).rank` is decomposed into
+explicit sub-lemmas, each one a tractable focused-session target. -/
 
-    This is the standard correctness theorem for Gaussian elimination,
-    formalized in any finite-field setting. Closing it makes the holy
-    grail unconditional. -/
+/-- Row-span dimension of a List-encoded matrix. The semantic invariant
+    `gaussRankBool.go` is supposed to track. -/
+noncomputable def rowSpanRank (M : List (List Bool)) (n m : Nat) : Nat :=
+  (toMatrix M n m).rank
+
+/-- Sub-lemma A: the row-span dimension equals Mathlib's `Matrix.rank`.
+    True by definition above; included for symmetry. -/
+theorem rowSpanRank_eq_matrix_rank (M : List (List Bool)) (n m : Nat) :
+    rowSpanRank M n m = (toMatrix M n m).rank := rfl
+
+/-- Sub-lemma B (the loop invariant): at every recursive step of
+    `gaussRankBool.go`, the rank counter equals the dimension of the
+    row span restricted to columns processed so far.
+
+    Stated abstractly here; the formal version threads the invariant
+    through the `go` recursion. -/
+theorem gaussRankBool_go_invariant
+    (rows : List (List Bool)) (col r fuel : Nat)
+    (n m : Nat) (h_n : rows.length = n) (h_m : ∀ row ∈ rows, row.length = m) :
+    SemanticIFCDecidable.BoundaryMaps.gaussRankBool.go rows col r fuel ≤
+      r + (rowSpanRank rows n m) := by
+  sorry  -- induction on fuel, case split on find?, track row-space dim
+
+/-- Sub-lemma C: the converse — the loop invariant is tight at termination.
+    When fuel runs out (or all columns processed), the rank counter
+    *equals* the row-span dimension. -/
+theorem gaussRankBool_go_tight
+    (rows : List (List Bool)) (n m : Nat)
+    (h_n : rows.length = n) (h_m : ∀ row ∈ rows, row.length = m)
+    (h_fuel : n + m ≤ n + m) :  -- placeholder for sufficient fuel
+    SemanticIFCDecidable.BoundaryMaps.gaussRankBool.go rows 0 0 (n + m) =
+      rowSpanRank rows n m := by
+  sorry  -- combines `_invariant` (≤) and a matching ≥ argument
+
+/-- **Bridge theorem**: `gaussRankBool` agrees with `Matrix.rank`.
+
+    Direct corollary of `gaussRankBool_go_tight` once the bridge fuel
+    suffices. The proof unfolds `gaussRankBool` to `gaussRankBool.go`
+    and applies the tight invariant. -/
 theorem gaussRankBool_eq_matrix_rank
     (M : List (List Bool)) (n m : Nat)
     (h_n : M.length = n) (h_m : ∀ row ∈ M, row.length = m) :
     SemanticIFCDecidable.BoundaryMaps.gaussRankBool M =
       (toMatrix M n m).rank := by
+  -- TODO: unfold gaussRankBool, apply gaussRankBool_go_tight, rewrite via
+  -- rowSpanRank_eq_matrix_rank.
   sorry
 
 /-! ## Derivations of the three structural axioms
