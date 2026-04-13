@@ -87,3 +87,7 @@ lean_lib «RankNullity» where
 -- Simplex acyclicity: cone construction for H¹ = 0 under uniform presheaf.
 lean_lib «SimplexAcyclic» where
   roots := #[`SimplexAcyclic]
+
+-- Alignment Tax bridge: operational declassification count = rank H¹.
+lean_lib «AlignmentTaxBridge» where
+  roots := #[`AlignmentTaxBridge]
