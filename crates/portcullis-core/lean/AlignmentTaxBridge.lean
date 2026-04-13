@@ -1,4 +1,5 @@
 import ComparisonTheorem
+import RankNullity
 
 /-! # Alignment Tax = rank H¹: the operational–structural bridge
 
@@ -194,5 +195,81 @@ theorem operationalTax_ge_h1 (P : IndexedPoset Secret) (indices : List Nat) :
 theorem alignmentTax_eq_h1 (P : IndexedPoset Secret) (indices : List Nat) :
     operationalAlignmentTax P indices = alignmentTaxH1 P indices :=
   Nat.le_antisymm (operationalTax_le_h1 P indices) (operationalTax_ge_h1 P indices)
+
+/-! ## Cohomological-rank semantics for `Realises`
+
+The original `Realises` predicate above (every C¹ entry covered) is the
+*combinatorial* version. It's correct as an existence witness but loose:
+it requires `|L| ≥ |C¹|` rather than `|L| ≥ rank H¹`. The genuine
+bridge theorem needs the *cohomological* version below: `L` realises
+iff augmenting `δ⁰` with `L`'s indicator rows kills H¹.
+
+Under this stronger predicate, `operationalTax_ge_h1` follows from rank
+subadditivity (`gaussRankBool_append_le`): augmenting δ⁰ by `|L|` rows
+increases its rank by at most `|L|`, so to push H¹ to 0 one needs
+`|L| ≥ rank H¹`. -/
+
+/-- The C¹-indicator row of a declassification edge.
+
+    For an edge `(f, t, p)`, the row has `true` exactly at C¹ entries
+    `(i, j, q)` matching the edge in either direction (i.e., `q = p`
+    and `{i, j} = {f, t}`), `false` elsewhere. This is the cohomological
+    "kill the obstruction at `(f, t, p)`" generator. -/
+def declassRow (P : IndexedPoset Secret) (indices : List Nat)
+    (e : DeclassEdge) : List Bool :=
+  (reducedC1 P indices).map fun c =>
+    decide (e.prop = c.2.2 ∧
+      ((e.fromIdx = c.1 ∧ e.toIdx = c.2.1) ∨
+       (e.fromIdx = c.2.1 ∧ e.toIdx = c.1)))
+
+/-- The augmented coboundary matrix: original `δ⁰` with one new row per
+    declassification edge. -/
+def augmentedDelta0 (P : IndexedPoset Secret) (indices : List Nat)
+    (L : List DeclassEdge) : List (List Bool) :=
+  reducedDelta0 P indices ++ L.map (declassRow P indices)
+
+/-- **Cohomological realising condition**: `L` realises iff the augmented
+    `δ⁰` together with `δ¹` spans all of C¹, i.e. the augmented complex
+    has H¹ = 0. -/
+def RealisesH1 (P : IndexedPoset Secret) (indices : List Nat)
+    (L : List DeclassEdge) : Prop :=
+  (reducedC1 P indices).length ≤
+    gaussRankBool (augmentedDelta0 P indices L) +
+    gaussRankBool (reducedDelta1 P indices)
+
+/-- **Lower bound on realising sets** — the holy-grail core lemma.
+
+    Any cohomologically-realising declassification set has cardinality at
+    least `alignmentTaxH1 P indices = rank H¹`. The proof uses rank
+    subadditivity of `gaussRankBool` under row append (from `RankNullity`).
+
+    Once this lands, it implies `operationalTax ≥ rank H¹` for any
+    operationalAlignmentTax defined as `min |L|` over realising sets — i.e.
+    the lower bound of the Alignment Tax Theorem. -/
+theorem realising_set_size_ge_h1
+    (P : IndexedPoset Secret) (indices : List Nat) (L : List DeclassEdge)
+    (h : RealisesH1 P indices L) :
+    alignmentTaxH1 P indices ≤ L.length := by
+  -- Rank subadditivity: augmented rank ≤ original + |L|.
+  have h_aug : gaussRankBool (augmentedDelta0 P indices L) ≤
+      gaussRankBool (reducedDelta0 P indices) + L.length := by
+    unfold augmentedDelta0
+    have := PortcullisCore.RankNullity.gaussRankBool_append_le
+              (reducedDelta0 P indices) (L.map (declassRow P indices))
+    simpa using this
+  -- Realising: augmented rank + rank δ¹ ≥ |C¹|.
+  -- Substitute: rank δ⁰ + |L| + rank δ¹ ≥ |C¹|, i.e. |L| ≥ alignmentTaxH1.
+  unfold alignmentTaxH1
+  show ((reducedC1 P indices).length - gaussRankBool (reducedDelta1 P indices)
+        - gaussRankBool (reducedDelta0 P indices)) ≤ L.length
+  unfold RealisesH1 at h
+  -- Combine h and h_aug: substitute the augmented-rank bound.
+  have h_combined :
+      (reducedC1 P indices).length ≤
+        gaussRankBool (reducedDelta0 P indices) + L.length +
+        gaussRankBool (reducedDelta1 P indices) := by
+    have := Nat.add_le_add_right h_aug (gaussRankBool (reducedDelta1 P indices))
+    omega
+  omega
 
 end PortcullisCore.AlignmentTaxBridge

@@ -156,4 +156,32 @@ theorem gaussRankBool_zero_matrix (M : List (List Bool))
   unfold gaussRankBool
   exact go_zero_matrix M h 0 0 _
 
+/-! ## Rank subadditivity under row concatenation
+
+The following lemma is the structural input to the *holy grail* Alignment
+Tax Theorem: appending `k` rows to a matrix increases its GF(2) rank by
+at most `k`.
+
+Classical linear algebra: `rank(A ++ B) ≤ rank(A) + rank(B) ≤ rank(A) +
+(#rows of B)`. For `gaussRankBool` on `List (List Bool)` the identity is
+intuitively "each appended row adds at most one new pivot".
+
+Proof strategy (follow-up PR): induction on `N`, using the "add-one-row
+increases rank by at most 1" lemma as the inductive step. The add-one
+step unfolds `gaussRankBool.go` on the augmented matrix and tracks the
+rank through the elimination phase. -/
+
+/-- **Rank subadditivity**: appending `k` rows to a matrix increases its
+    GF(2) rank by at most `k`. Stated as a sorry here; the proof is the
+    structural content of the next PR in the holy-grail sprint. -/
+theorem gaussRankBool_append_le (M N : List (List Bool)) :
+    gaussRankBool (M ++ N) ≤ gaussRankBool M + N.length := by
+  sorry
+
+/-- **Corollary**: appending a fixed list of rows is rank-subadditive. -/
+theorem gaussRankBool_append_rows_le_succ (M : List (List Bool)) (r : List Bool) :
+    gaussRankBool (M ++ [r]) ≤ gaussRankBool M + 1 := by
+  have h := gaussRankBool_append_le M [r]
+  simpa using h
+
 end PortcullisCore.RankNullity
