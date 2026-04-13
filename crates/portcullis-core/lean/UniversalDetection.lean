@@ -267,4 +267,70 @@ theorem false_negatives_lower_bound (D : Detector S)
 
 end Quantitative
 
+/-! ## Computational content: bounded-budget detectors
+
+The framework above is purely set-theoretic. To address objections about
+oracle-style detectors not capturing the AI-safety setting, we introduce
+`BoundedDetector`: a detector that factors through a finite observation
+space of size at most `2^k`. This models any detector with a fixed
+"observation budget" — one that reads at most `k` bits of structure
+from each input.
+
+Bounded detectors automatically induce an equivalence relation (same
+observations ⇒ same output), so the existential and quantitative results
+above apply directly. The cardinality of the observation space gives a
+*structural* upper bound on the number of distinguishable equivalence
+classes, which in turn lower-bounds false-negative rates via pigeonhole. -/
+
+/-- A **k-bit detector**: factors through a finite observation space of
+    size at most `2^k`. Captures any detector with bounded read budget. -/
+structure BoundedDetector (S : Type) (k : Nat) where
+  observe : S → Fin (2 ^ k)
+  decision : Fin (2 ^ k) → Bool
+
+/-- Forget the structure: a bounded detector is a detector. -/
+def BoundedDetector.toDetector {S : Type} {k : Nat}
+    (D : BoundedDetector S k) : Detector S :=
+  fun s => D.decision (D.observe s)
+
+/-- The observability equivalence induced by a bounded detector:
+    inputs are equivalent if they produce the same observation. -/
+def BoundedDetector.observationEq {S : Type} {k : Nat}
+    (D : BoundedDetector S k) : S → S → Prop :=
+  fun s t => D.observe s = D.observe t
+
+instance BoundedDetector.observationEq_decidable {S : Type} {k : Nat}
+    (D : BoundedDetector S k) : DecidableRel D.observationEq :=
+  fun s t => decEq (D.observe s) (D.observe t)
+
+/-- The induced equivalence is symmetric. -/
+theorem BoundedDetector.observationEq_symm {S : Type} {k : Nat}
+    (D : BoundedDetector S k) {s t : S} :
+    D.observationEq s t → D.observationEq t s :=
+  Eq.symm
+
+/-- **Bounded detectors are observable** under their own induced equivalence.
+    This is the key structural fact: any detector that factors through a
+    bounded observation space respects the equivalence "same observation". -/
+theorem BoundedDetector.observable {S : Type} {k : Nat}
+    (D : BoundedDetector S k) :
+    Observable D.observationEq D.toDetector := by
+  intro s t hst
+  simp [BoundedDetector.toDetector, BoundedDetector.observationEq] at hst ⊢
+  rw [hst]
+
+/-- **Bounded-detector quantitative impossibility**: for any sound bounded
+    detector, the false-negative count is bounded below by the number of
+    malicious inputs sharing observations with benign inputs.
+
+    This pairs the quantitative impossibility theorem with explicit
+    computational content (bounded observation budget). -/
+theorem BoundedDetector.false_negatives_bound {S : Type} [Fintype S]
+    [DecidableEq S] {k : Nat} (D : BoundedDetector S k)
+    {M : S → Prop} [DecidablePred M]
+    (h_sound : Sound M D.toDetector) :
+    (mixedMalicious M D.observationEq).card ≤
+      (falseNegatives D.toDetector M).card :=
+  false_negatives_lower_bound _ D.observable h_sound
+
 end PortcullisCore.UniversalDetection
