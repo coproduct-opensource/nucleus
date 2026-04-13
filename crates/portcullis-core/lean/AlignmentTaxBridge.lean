@@ -7,7 +7,7 @@ import RankNullity
 structural / Čech-cohomological invariant). That identity is a **definition**,
 not a theorem.
 
-The **holy-grail conjecture** from `project_alignment_tax_conjecture.md`
+The **main theorem** from `project_alignment_tax_conjecture.md`
 asserts a non-trivial bridge between two *independently motivated* notions:
 
 * **Operational** (this file's `operationalAlignmentTax`):
@@ -23,9 +23,10 @@ The conjecture is that these coincide:
 
     operationalAlignmentTax = rank H¹
 
-This is the Rice's-theorem / Shannon-bound for AI security: it pins the
-tax exactly, proving that each independent cohomology class corresponds
-to exactly one mandatory declassification and vice-versa.
+This is a quantitative information-theoretic bound for AI security —
+an analog of a Shannon limit rather than a Rice-style undecidability
+result. It pins the tax exactly, proving that each independent
+cohomology class corresponds to exactly one mandatory declassification.
 
 ## Proof strategy
 
@@ -190,7 +191,7 @@ theorem operationalTax_ge_h1 (P : IndexedPoset Secret) (indices : List Nat) :
 
 /-- **The Alignment Tax Theorem**: operational = structural.
 
-    Conjecturally closes the holy grail: the cohomological rank exactly
+    Conjecturally closes the main theorem: the cohomological rank exactly
     equals the operational cost of realising capability under policy. -/
 theorem alignmentTax_eq_h1 (P : IndexedPoset Secret) (indices : List Nat) :
     operationalAlignmentTax P indices = alignmentTaxH1 P indices :=
@@ -237,7 +238,7 @@ def RealisesH1 (P : IndexedPoset Secret) (indices : List Nat)
     gaussRankBool (augmentedDelta0 P indices L) +
     gaussRankBool (reducedDelta1 P indices)
 
-/-- **Lower bound on realising sets** — the holy-grail core lemma.
+/-- **Lower bound on realising sets** — the main-theorem core lemma.
 
     Any cohomologically-realising declassification set has cardinality at
     least `alignmentTaxH1 P indices = rank H¹`. The proof uses rank
@@ -275,7 +276,7 @@ theorem realising_set_size_ge_h1
 /-! ## Operational alignment tax under the cohomological predicate
 
 Repeat the operational-min construction with the corrected `RealisesH1`
-predicate. This gives the holy-grail-shaped operational invariant. -/
+predicate. This gives the main-theorem-shaped operational invariant. -/
 
 /-- The trivially full edge list realises `RealisesH1` because once C¹
     is fully covered by indicator rows, augmented δ⁰ has rank ≥ |C¹|. -/
@@ -300,7 +301,7 @@ noncomputable def operationalAlignmentTaxH1
         -- request, and use the trivial lower bound on `gaussRankBool`.
         sorry⟩
 
-/-- **Holy-grail lower bound** on the H¹-flavoured operational tax.
+/-- **Main Theorem lower bound** on the H¹-flavoured operational tax.
 
     Direct corollary of `realising_set_size_ge_h1`: every realising set
     is at least `rank H¹` in size, so the minimum is too. -/
@@ -318,7 +319,7 @@ theorem operationalAlignmentTaxH1_ge (P : IndexedPoset Secret) (indices : List N
   have h_lower := realising_set_size_ge_h1 P indices L hL_h1
   omega
 
-/-! ## Upper bound and the holy-grail equality
+/-! ## Upper bound and the main-theorem equality
 
 The lower bound says any cohomologically-realising L has |L| ≥ rank H¹.
 The upper bound says there *exists* such an L of size exactly rank H¹ —
@@ -344,7 +345,7 @@ theorem h1_basis_realiser_exists
       L.length = alignmentTaxH1 P indices ∧ RealisesH1 P indices L := by
   sorry
 
-/-- **Holy-grail upper bound**: operational tax ≤ rank H¹.
+/-- **Main Theorem upper bound**: operational tax ≤ rank H¹.
 
     Direct from `h1_basis_realiser_exists`: a transversal of size
     `alignmentTaxH1` realises, so the minimum is at most that. -/
@@ -356,13 +357,13 @@ theorem operationalAlignmentTaxH1_le (P : IndexedPoset Secret) (indices : List N
   apply Nat.find_le
   exact ⟨L, by omega, hL_real⟩
 
-/-- **🏆 The Alignment Tax Theorem 🏆**
+/-- **The Alignment Tax Theorem**
 
     `operationalAlignmentTaxH1 = alignmentTaxH1`
 
     The minimum number of declassification edges required to globally
     realise a task under an IFC policy equals the rank of the first
-    Čech cohomology group of the IFC sheaf — the "holy-grail conjecture"
+    Čech cohomology group of the IFC sheaf — the "main theorem"
     from `project_alignment_tax_conjecture.md`.
 
     Proved (modulo three structural sorries — all classical-LA facts

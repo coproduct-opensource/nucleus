@@ -1,6 +1,7 @@
 import Mathlib.Data.Matrix.Basic
 import Mathlib.LinearAlgebra.Matrix.Rank
 import Mathlib.LinearAlgebra.Dimension.Finrank
+import Mathlib.LinearAlgebra.Span.Basic
 import Mathlib.Data.ZMod.Basic
 import RankNullity
 
@@ -21,7 +22,7 @@ unconditionally.
    * `fullDeclassList_realises` (standard basis spans full)
    * `h1_basis_realiser_exists` (quotient-basis transversal)
 
-This collapses the holy-grail's three open axioms to *one* (the bridge
+This collapses the main theorem's three open axioms to *one* (the bridge
 theorem itself), which is the standard correctness statement for
 Gaussian elimination over GF(2).
 
@@ -42,8 +43,12 @@ namespace PortcullisCore.MatrixBridge
   | true => 1
 
 /-- Convert a `List (List Bool)` matrix (assumed uniform) to a Mathlib
-    `Matrix` over `ZMod 2`. The dimensions are taken explicitly. -/
-def toMatrix (M : List (List Bool)) (n m : Nat) :
+    `Matrix` over `ZMod 2`. The dimensions are taken explicitly.
+
+    Marked irreducible to prevent Lean's elaborator from unfolding this
+    into list operations during type-class search — doing so causes
+    heartbeat timeouts on downstream Submodule/span manipulations. -/
+@[irreducible] def toMatrix (M : List (List Bool)) (n m : Nat) :
     Matrix (Fin n) (Fin m) (ZMod 2) :=
   fun i j =>
     boolToZMod ((M[i.val]?.bind (fun row => row[j.val]?)).getD false)
@@ -82,6 +87,23 @@ theorem rowSpanRank_le_cols (M : List (List Bool)) (n m : Nat) :
   have h := Matrix.rank_le_card_width (toMatrix M n m)
   simp [Fintype.card_fin] at h
   exact h
+
+/-! ### Row-space semantics via Mathlib
+
+`rowSpace M n m` is the submodule of `Fin m → ZMod 2` spanned by the
+rows of the converted matrix. Via `Matrix.rank_eq_finrank_span_row`
+(applicable since ZMod 2 is a Field), this submodule's dimension
+equals our `rowSpanRank`.
+
+This is the semantic handle for proving `gaussRankBool` correctness:
+the algorithm computes the dimension of this submodule. -/
+
+-- [row-span submodule infrastructure] Deferred to a focused session:
+-- `Submodule.span (ZMod 2) (Set.range (toMatrix M n m).row)` triggers
+-- heartbeat timeouts even at 1M budget due to type-class unification
+-- complexity. Sub-lemma C below (`matrix_rank_eq_rowSpace_finrank`) is
+-- the next target; closing it requires either a custom Submodule-free
+-- formulation or careful heartbeat-scoped elaboration.
 
 /-- Sub-lemma B (the loop invariant): at every recursive step of
     `gaussRankBool.go`, the rank counter is bounded by start rank plus

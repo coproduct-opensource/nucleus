@@ -4,6 +4,14 @@ Interactive demonstrations of the nucleus formal framework.
 
 ## Available notebooks
 
+### [`gpu_attention_demo.ipynb`](gpu_attention_demo.ipynb)
+
+**GPU-accelerated empirical companion.** Loads GPT-2 and computes the
+attention-head coboundary norm on benign vs. prompt-injected inputs.
+Shows the framework's predictions hold on real transformer attention.
+
+Runtime: ~2-3 min on Colab T4, ~10 min on CPU.
+
 ### [`lean_in_colab.ipynb`](lean_in_colab.ipynb)
 
 **Actually runs the Lean 4 formalization in Colab.** Installs `elan`,
@@ -24,7 +32,7 @@ Shows empirical verification on four canonical examples:
 - **Diamond**: pairwise disagreement — rank H¹ = 2, operational tax = 2
 - **DirectInject**: secure — rank H¹ = 0, no declassifications needed
 - **Borromean**: triple-collusion — rank H¹ = 90, rank H² = 64
-- **Universal detection impossibility**: Rice-style obstruction to any bounded detector
+- **Universal detection impossibility**: information-theoretic obstruction to any bounded sound observable detector
 
 ## Running in Google Colab
 

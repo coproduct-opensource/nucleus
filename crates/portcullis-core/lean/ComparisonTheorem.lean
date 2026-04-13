@@ -1577,7 +1577,8 @@ The theorem explains EVERY row:
 
 The false negative is NOT a bug — it's a fundamental limit. When an
 injection doesn't create attention-head disagreement, NO cohomological
-detector can find it. This is the "Rice's theorem" aspect: the
+detector can find it. This is an information-theoretic limit — a data
+processing inequality — not a Rice-style undecidability result: the
 detection boundary is the sheaf condition itself.
 -/
 

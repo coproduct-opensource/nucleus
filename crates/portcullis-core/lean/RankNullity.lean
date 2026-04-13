@@ -158,7 +158,7 @@ theorem gaussRankBool_zero_matrix (M : List (List Bool))
 
 /-! ## Rank subadditivity under row concatenation
 
-The following lemma is the structural input to the *holy grail* Alignment
+The following lemma is the structural input to the *main theorem* Alignment
 Tax Theorem: appending `k` rows to a matrix increases its GF(2) rank by
 at most `k`.
 
@@ -173,7 +173,7 @@ rank through the elimination phase. -/
 
 /-- **Rank subadditivity**: appending `k` rows to a matrix increases its
     GF(2) rank by at most `k`. Stated as a sorry here; the proof is the
-    structural content of the next PR in the holy-grail sprint. -/
+    structural content of the next PR in the main theorem sprint. -/
 theorem gaussRankBool_append_le (M N : List (List Bool)) :
     gaussRankBool (M ++ N) ≤ gaussRankBool M + N.length := by
   sorry
