@@ -67,6 +67,22 @@ noncomputable def rowSpanRank (M : List (List Bool)) (n m : Nat) : Nat :=
 theorem rowSpanRank_eq_matrix_rank (M : List (List Bool)) (n m : Nat) :
     rowSpanRank M n m = (toMatrix M n m).rank := rfl
 
+/-- **Row-count upper bound** (Mathlib application): rank ≤ n (row count). -/
+theorem rowSpanRank_le_rows (M : List (List Bool)) (n m : Nat) :
+    rowSpanRank M n m ≤ n := by
+  unfold rowSpanRank
+  have h := Matrix.rank_le_card_height (toMatrix M n m)
+  simp [Fintype.card_fin] at h
+  exact h
+
+/-- **Column-count upper bound** (Mathlib application): rank ≤ m (column count). -/
+theorem rowSpanRank_le_cols (M : List (List Bool)) (n m : Nat) :
+    rowSpanRank M n m ≤ m := by
+  unfold rowSpanRank
+  have h := Matrix.rank_le_card_width (toMatrix M n m)
+  simp [Fintype.card_fin] at h
+  exact h
+
 /-- Sub-lemma B (the loop invariant): at every recursive step of
     `gaussRankBool.go`, the rank counter is bounded by start rank plus
     row-span dimension. The induction-on-fuel skeleton with the base case
