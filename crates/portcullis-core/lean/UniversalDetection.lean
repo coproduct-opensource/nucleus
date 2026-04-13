@@ -1,3 +1,7 @@
+import Mathlib.Data.Finset.Basic
+import Mathlib.Data.Fintype.Basic
+import Mathlib.Data.Finset.Card
+
 /-! # Universal Detection Impossibility
 
 The `evasion_impossibility` theorem in `ComparisonTheorem.lean` is specific
@@ -210,5 +214,57 @@ theorem observable_of_blind_spot {S : Type} {D : Detector S} {B : S → Prop}
     Observable (fun s t => B s ∧ B t) D := by
   intro s t ⟨hs, ht⟩
   rw [h_blind s hs, h_blind t ht]
+
+/-! ## Quantitative content: a lower bound on false negatives
+
+The existential impossibility result only guarantees that *some* malicious
+input evades the detector. The following theorem sharpens this to a
+*cardinal* lower bound: the number of false negatives of a sound
+observable detector is at least the number of malicious inputs that
+share an equivalence class with any benign input.
+
+This turns a qualitative impossibility into a measurable safety gap. -/
+
+section Quantitative
+variable {S : Type} [Fintype S] [DecidableEq S]
+variable {M : S → Prop} [DecidablePred M]
+variable {eq : S → S → Prop} [DecidableRel eq]
+
+/-- The set of malicious inputs that share an equivalence class with
+    at least one benign input. By observability + soundness these inputs
+    are forced to be false negatives. -/
+def mixedMalicious (M : S → Prop) (eq : S → S → Prop) [DecidablePred M]
+    [DecidableRel eq] : Finset S :=
+  Finset.univ.filter (fun s => M s ∧ ∃ t, eq s t ∧ ¬ M t)
+
+/-- The set of inputs on which a detector commits a false negative. -/
+def falseNegatives (D : Detector S) (M : S → Prop) [DecidablePred M] :
+    Finset S :=
+  Finset.univ.filter (fun s => M s ∧ D s = false)
+
+/-- **Quantitative false-negative lower bound**.
+
+    Every sound observable detector has at least `|mixedMalicious|` false
+    negatives — one per malicious input sharing a class with a benign input.
+    Proof: for any such `s` with witness `t` (benign and `eq s t`),
+    soundness forces `D t = false` and observability propagates to `D s`. -/
+theorem false_negatives_lower_bound (D : Detector S)
+    (h_obs : Observable eq D) (h_sound : Sound M D) :
+    (mixedMalicious M eq).card ≤ (falseNegatives D M).card := by
+  apply Finset.card_le_card
+  intro s hs
+  simp only [mixedMalicious, Finset.mem_filter, Finset.mem_univ, true_and] at hs
+  simp only [falseNegatives, Finset.mem_filter, Finset.mem_univ, true_and]
+  obtain ⟨hM, t, hst, hNotMt⟩ := hs
+  refine ⟨hM, ?_⟩
+  -- Soundness + ¬M t gives D t = false
+  have hDt : D t = false := by
+    cases hDt : D t with
+    | false => rfl
+    | true => exact absurd (h_sound t hDt) hNotMt
+  -- Observability + eq s t + D t = false gives D s = false
+  rw [h_obs s t hst, hDt]
+
+end Quantitative
 
 end PortcullisCore.UniversalDetection
