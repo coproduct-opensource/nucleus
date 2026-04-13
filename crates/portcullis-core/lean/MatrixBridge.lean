@@ -98,6 +98,18 @@ theorem gaussRankBool_go_tight
       rowSpanRank rows n m := by
   sorry  -- combines `_invariant` (≤) and a matching ≥ argument
 
+/-- **Bridge for the empty matrix**: trivially zero on both sides. -/
+theorem gaussRankBool_eq_matrix_rank_nil :
+    SemanticIFCDecidable.BoundaryMaps.gaussRankBool ([] : List (List Bool)) =
+      (toMatrix [] 0 0).rank := by
+  rw [show SemanticIFCDecidable.BoundaryMaps.gaussRankBool [] = 0 from rfl]
+  -- The matrix (Fin 0 → Fin 0 → ZMod 2) has empty row index type;
+  -- its rank is 0 by the rank-≤-row-count bound applied to a 0-row matrix.
+  have h_le : (toMatrix [] 0 0).rank ≤ Fintype.card (Fin 0) :=
+    Matrix.rank_le_card_height _
+  rw [Fintype.card_fin] at h_le
+  omega
+
 /-- **Bridge theorem**: `gaussRankBool` agrees with `Matrix.rank`.
 
     Direct corollary of `gaussRankBool_go_tight` once the bridge fuel
