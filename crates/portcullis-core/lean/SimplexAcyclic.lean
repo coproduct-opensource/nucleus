@@ -71,6 +71,32 @@ def coneMap2 (i₀ : Nat) (c2entry : Nat × Nat × Nat × Nat) :
   else if k = i₀ then some (i, j, p)
   else none
 
+/-- **Characterization**: `coneMap1` returns `some` iff the cone vertex is
+    incident to the 1-simplex. Foundational small lemma for the cone
+    construction — every downstream homotopy identity case-splits on this. -/
+theorem coneMap1_isSome (i₀ : Nat) (c1entry : Nat × Nat × Nat) :
+    (coneMap1 i₀ c1entry).isSome ↔ c1entry.1 = i₀ ∨ c1entry.2.1 = i₀ := by
+  obtain ⟨i, j, p⟩ := c1entry
+  unfold coneMap1
+  by_cases h : i = i₀ ∨ j = i₀
+  · simp [h]
+  · simp [h]
+
+/-- **Characterization**: `coneMap2` returns `some` iff the cone vertex is
+    incident to the 2-simplex. -/
+theorem coneMap2_isSome (i₀ : Nat) (c2entry : Nat × Nat × Nat × Nat) :
+    (coneMap2 i₀ c2entry).isSome ↔
+      c2entry.1 = i₀ ∨ c2entry.2.1 = i₀ ∨ c2entry.2.2.1 = i₀ := by
+  obtain ⟨i, j, k, p⟩ := c2entry
+  unfold coneMap2
+  by_cases hi : i = i₀
+  · simp [hi]
+  by_cases hj : j = i₀
+  · simp [hi, hj]
+  by_cases hk : k = i₀
+  · simp [hi, hj, hk]
+  simp [hi, hj, hk]
+
 /-- **Target theorem** (nonempty C¹ case of `uniform_implies_h1_zero`).
 
     Under the uniform hypothesis and for a nonempty `indices`, the
