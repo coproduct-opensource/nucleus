@@ -172,4 +172,43 @@ theorem detection_dichotomy {S : Type}
     exact universal_detection_impossibility D h_obs h_sound h
   · exact Or.inr ⟨h, perfect_detector_of_no_evasion M eq h_sym h⟩
 
+/-! ## Blind-spot corollary: the easy mode for concrete detectors
+
+In practice, real detectors rarely satisfy full `Observable` under a named
+equivalence — the equivalence would have to witness identical output on
+every class. A weaker and more common structural property is that the
+detector is *forced* to output `false` on a specific subset (the "blind
+spot"), e.g. because soundness rules out the positive answer there.
+
+The following corollary captures this setting directly without going
+through the equivalence-relation machinery. It's strictly weaker than
+`universal_detection_impossibility` but matches the shape of the
+existing `EvasionImpossibility.evasion_impossibility` and similar
+concrete arguments verbatim. -/
+
+/-- **Blind spot**: a detector that is forced to output `false` on any
+    element of a subset `B` (e.g. consensus-preserving inputs). -/
+def HasBlindSpot {S : Type} (D : Detector S) (B : S → Prop) : Prop :=
+  ∀ s, B s → D s = false
+
+/-- **Blind-spot evasion**: any malicious element in a detector's blind
+    spot is a false negative. Trivial but clean: folds the existential
+    construction used throughout the library into one primitive. -/
+theorem blind_spot_evasion {S : Type} {M : S → Prop} {B : S → Prop}
+    (D : Detector S) (h_blind : HasBlindSpot D B)
+    {m : S} (hM : M m) (hB : B m) :
+    ∃ s, M s ∧ D s = false :=
+  ⟨m, hM, h_blind m hB⟩
+
+/-- **Induced observability**: a blind spot induces an `Observable` property
+    under the equivalence "both in the blind spot". This is how
+    blind-spot-style impossibility proofs relate to the abstract
+    dichotomy: the detector *is* observable on the blind-spot × blind-spot
+    region because both sides are forced to `false`. -/
+theorem observable_of_blind_spot {S : Type} {D : Detector S} {B : S → Prop}
+    (h_blind : HasBlindSpot D B) :
+    Observable (fun s t => B s ∧ B t) D := by
+  intro s t ⟨hs, ht⟩
+  rw [h_blind s hs, h_blind t ht]
+
 end PortcullisCore.UniversalDetection
