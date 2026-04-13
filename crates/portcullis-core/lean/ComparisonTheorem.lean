@@ -706,6 +706,37 @@ theorem directInject_reduced_h0 :
 theorem directInject_reduced_h1 :
     reducedCechDim directInjectSite [1, 2] 1 = 0 := by native_decide
 
+/-! ### Chain complex condition for the *reduced* Čech complex
+
+The reduced boundary maps `reducedDelta0`, `reducedDelta1` form a chain
+complex over GF(2): `δ¹ ∘ δ⁰ = 0`. Verified instance-wise on diamond
+and DirectInject; the general statement is the standard combinatorial
+identity "every (k-2)-simplex of a fixed k-simplex lies on exactly two
+faces", to be proved by case analysis in a follow-up. -/
+
+/-- **Reduced chain complex δ¹ ∘ δ⁰ = 0** (diamond). -/
+theorem delta_sq_zero_01_reduced_diamond :
+    isZeroMatrix
+      (matMulBool (reducedDelta1 diamondSite [1, 2, 3])
+                  (reducedDelta0 diamondSite [1, 2, 3])) = true := by
+  native_decide
+
+/-- **Reduced chain complex δ¹ ∘ δ⁰ = 0** (DirectInject). -/
+theorem delta_sq_zero_01_reduced_directInject :
+    isZeroMatrix
+      (matMulBool (reducedDelta1 directInjectSite [1, 2])
+                  (reducedDelta0 directInjectSite [1, 2])) = true := by
+  native_decide
+
+/-- **Reduced chain complex δ¹ ∘ δ⁰ = 0** (Borromean, full reduced covering).
+    Matrix multiplication on the 90×104 boundary matrices is compile-time
+    tractable even though the rank computation is not. -/
+theorem delta_sq_zero_01_reduced_borromean :
+    isZeroMatrix
+      (matMulBool (reducedDelta1 borromeanSite [1, 2, 3, 4])
+                  (reducedDelta0 borromeanSite [1, 2, 3, 4])) = true := by
+  native_decide
+
 /-! ## Summary: Two Čech Complexes, Two Stories
 
 ### Standard Covering (includes ⊥)
