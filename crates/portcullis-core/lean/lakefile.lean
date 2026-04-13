@@ -99,3 +99,7 @@ lean_lib «UniversalDetection» where
 -- Mathlib bridge: gaussRankBool ↔ Matrix.rank for unconditional closure.
 lean_lib «MatrixBridge» where
   roots := #[`MatrixBridge]
+
+-- Multi-agent cohomology: lifting IFC sheaf to communication graphs.
+lean_lib «MultiAgentCohomology» where
+  roots := #[`MultiAgentCohomology]
