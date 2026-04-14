@@ -130,18 +130,3 @@ lean_lib «HigherObstruction» where
 -- Euler characteristic: single-invariant collapse + Möbius combinatorial bridge.
 lean_lib «EulerCharacteristic» where
   roots := #[`EulerCharacteristic]
--- Alignment sample complexity: Fano-analog lower bound for fine-tuning.
-lean_lib «AlignmentSampleComplexity» where
-  roots := #[`AlignmentSampleComplexity]
-
--- Compositional alignment: Mayer-Vietoris-analog for spec composition.
-lean_lib «CompositionalAlignment» where
-  roots := #[`CompositionalAlignment]
-
--- PAC / VC-dimension bridge: classical learning-theory equivalence for rank H¹.
-lean_lib «PACVCBridge» where
-  roots := #[`PACVCBridge]
-
--- Universality theorem: rank H¹ is a complete invariant for alignment specs.
-lean_lib «UniversalityTheorem» where
-  roots := #[`UniversalityTheorem]
