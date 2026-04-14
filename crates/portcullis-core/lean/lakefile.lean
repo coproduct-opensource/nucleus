@@ -136,3 +136,6 @@ lean_lib «EntropicCocycle» where
 -- Quantum extension: von Neumann cocycle + Born-rule quadratic sample bound.
 lean_lib «QuantumExtension» where
   roots := #[`QuantumExtension]
+-- Alignment sample complexity: Fano-analog lower bound for fine-tuning.
+lean_lib «AlignmentSampleComplexity» where
+  roots := #[`AlignmentSampleComplexity]
