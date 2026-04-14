@@ -165,14 +165,17 @@ code(
     "    return rank\n",
     "\n",
     "# --- sanity check against known Lean values ---\n",
-    "# Diamond poset: alignmentTaxH1 = 2 (proved in ComparisonTheorem.lean).\n",
-    "# We don't rebuild the full diamond here; instead we verify the Gaussian\n",
-    "# routine on a small known matrix.\n",
-    "test = [[1,1,0,1],[0,1,1,0],[1,0,1,1]]\n",
-    "assert gauss_rank_gf2(test) == 3, 'GF(2) rank sanity check failed'\n",
+    "# Three independent rows → rank 3 over GF(2).\n",
+    "assert gauss_rank_gf2([[1,0,0],[0,1,0],[0,0,1]]) == 3, 'rank(I_3) should be 3'\n",
+    "# Three dependent rows over GF(2): r3 = r1 XOR r2.\n",
+    "assert gauss_rank_gf2([[1,1,0,1],[0,1,1,0],[1,0,1,1]]) == 2, 'r3=r1+r2 so rank=2'\n",
+    "# Duplicate rows collapse to rank 1.\n",
     "assert gauss_rank_gf2([[1,1],[1,1]]) == 1, 'rank(dup rows)=1'\n",
+    "# All-zero matrix has rank 0.\n",
     "assert gauss_rank_gf2([[0,0,0]]) == 0, 'rank(zero row)=0'\n",
-    "print('✓ gauss_rank_gf2 passes known-value tests')\n",
+    "# Empty matrix has rank 0.\n",
+    "assert gauss_rank_gf2([]) == 0, 'rank(empty)=0'\n",
+    "print('✓ gauss_rank_gf2 passes 5 known-value tests')\n",
 )
 
 # --- Attention → IFC poset ---
