@@ -140,3 +140,7 @@ lean_lib «AlignmentSampleComplexity» where
 -- Compositional alignment: Mayer-Vietoris-analog for spec composition.
 lean_lib «CompositionalAlignment» where
   roots := #[`CompositionalAlignment]
+
+-- PAC / VC-dimension bridge: classical learning-theory equivalence for rank H¹.
+lean_lib «PACVCBridge» where
+  roots := #[`PACVCBridge]
