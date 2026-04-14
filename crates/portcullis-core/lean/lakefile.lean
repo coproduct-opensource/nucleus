@@ -149,3 +149,7 @@ lean_lib «UniversalityTheorem» where
 -- Higher obstruction theory: H² and Grothendieck spectral sequence analog.
 lean_lib «HigherObstruction» where
   roots := #[`HigherObstruction]
+
+-- Euler characteristic: single-invariant collapse + Möbius combinatorial bridge.
+lean_lib «EulerCharacteristic» where
+  roots := #[`EulerCharacteristic]
