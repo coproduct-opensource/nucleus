@@ -222,6 +222,28 @@ theorem diamond_borromean_euler_separation :
        (reducedCechDim borromeanSite [1, 2, 3, 4] 1 : Int) +
        (reducedCechDim borromeanSite [1, 2, 3, 4] 2 : Int)) := by
   rw [diamond_euler_char, borromean_euler_char]
+/-- **directInject H⁰**: 4 trivial sections on the acyclic poset. -/
+theorem directInject_h0_is_four :
+    reducedCechDim directInjectSite [1, 2] 0 = 4 :=
+  PresheafCech.directInject_reduced_h0
+
+/-- **directInject H²** vanishes: the simplest acyclic IFC poset has no
+    higher-degree obstructions either. Proved by `native_decide`. -/
+theorem directInject_h2_is_zero :
+    reducedCechDim directInjectSite [1, 2] 2 = 0 := by
+  native_decide
+
+/-- **directInject Euler characteristic**: χ = 4 − 0 + 0 = 4. Because
+    `directInject` has *more* trivial sections (H⁰=4) than either
+    diamond (H⁰=2) or borromean (H⁰=2), its Euler is positive and
+    differs from both. Completes the H⁰/H¹/H²/χ table across three
+    concrete posets. -/
+theorem directInject_euler_char :
+    (reducedCechDim directInjectSite [1, 2] 0 : Int) -
+      (reducedCechDim directInjectSite [1, 2] 1 : Int) +
+      (reducedCechDim directInjectSite [1, 2] 2 : Int) = 4 := by
+  rw [directInject_h0_is_four, PresheafCech.directInject_reduced_h1,
+      directInject_h2_is_zero]
   decide
 
 /- **Arc status (honest)**: this file now contains a concrete
