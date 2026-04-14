@@ -368,4 +368,48 @@ theorem BoundedDetector.evasion_of_pigeonhole {S : Type} [Fintype S]
   have hObsEq : D.observationEq s t := hobs
   rw [D.observable s t hObsEq, hDt]
 
+/-! ## Detector capacity: flagged classes must be pure-malicious
+
+A sound bounded detector D with k-bit observation can only flag an
+observation class if *every* input in that class is malicious. Benign
+contamination in a class forces the whole class to be unflagged.
+
+This sharpens the detection story: a k-bit detector has at most 2^k
+distinct observation classes, each of which is "flag-eligible" only if
+it contains no benign inputs. The number of flag-eligible classes is
+bounded by 2^k, giving a budget-based capacity statement.
+
+Note: this does not give a bound on `|malicious elements flagged|` —
+adversarial class-size distributions make no such element-level bound
+universal. It does give a bound on the *number of distinct observation
+signatures* a detector can distinguish as attacks. -/
+
+/-- **Flagged-class purity**: if a bounded detector flags any input in
+    observation class `c`, then every input in `c` is malicious. -/
+theorem BoundedDetector.flagged_class_pure {S : Type}
+    [Fintype S] [DecidableEq S] {k : Nat} (D : BoundedDetector S k)
+    {M : S → Prop} (h_sound : Sound M D.toDetector)
+    {s t : S} (h_obs_eq : D.observe s = D.observe t)
+    (h_flagged : D.toDetector s = true) :
+    M t := by
+  -- observability + soundness: D t = D s = true, so sound gives M t.
+  have hDt : D.toDetector t = true := by
+    have : D.observationEq s t := h_obs_eq
+    rw [← D.observable s t this]
+    exact h_flagged
+  exact h_sound t hDt
+
+/-- **Budget bound**: at most `2^k` distinct observation signatures can
+    be flagged by any `k`-bit detector (since the observation space has
+    exactly `2^k` elements). Each signature that IS flagged must be
+    "pure-malicious" by `flagged_class_pure`. -/
+theorem BoundedDetector.flagged_signatures_le_budget {S : Type}
+    [Fintype S] [DecidableEq S] {k : Nat} (D : BoundedDetector S k) :
+    (Finset.univ.filter (fun c : Fin (2 ^ k) =>
+      ∃ s : S, D.observe s = c ∧ D.toDetector s = true)).card ≤ 2 ^ k := by
+  have h := Finset.card_filter_le (Finset.univ : Finset (Fin (2 ^ k)))
+             (fun c => ∃ s : S, D.observe s = c ∧ D.toDetector s = true)
+  rw [Finset.card_univ, Fintype.card_fin] at h
+  exact h
+
 end PortcullisCore.UniversalDetection
