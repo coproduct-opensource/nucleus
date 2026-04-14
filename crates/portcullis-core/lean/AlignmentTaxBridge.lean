@@ -54,6 +54,35 @@ List-based `gaussRankBool` encoding.
 ## Current status
 
 This file states the bridge. Proving it is the research frontier.
+
+## Foundation audit (honest scoping)
+
+All four open `sorry`s in this file (`operationalTax_le_h1`,
+`operationalTax_ge_h1`, the two `fullDeclassList`-realising witnesses
+inside `operationalAlignmentTaxH1`, and `h1_basis_realiser_exists`)
+chain back to **one** structural fact in `RankNullity.lean`:
+
+  `gaussRankBool_append_le : gaussRankBool (M ++ N) ≤
+                             gaussRankBool M + N.length`
+
+That lemma is classical GF(2) linear algebra but not cleanly provable
+against the fuel-bounded `gaussRankBool.go` recursion. The `MatrixBridge`
+module tried a Mathlib `Matrix.rank` bridge and hit a Lean elaboration
+heartbeat (Zulip-level blocker).
+
+Everything built on top of this bridge — `AlignmentSampleComplexity`,
+`CompositionalAlignment`, `PACVCBridge`, `UniversalityTheorem`,
+`HigherObstruction`, `EntropicCocycle`, `QuantumExtension`,
+`PersistentAlignment`, `LipschitzEquivariance` — has this single open
+structural dependency. Downstream modules' own `sorry`s are
+scaffolding stubs (placeholder definitions like `h2Obstruction = 0`)
+that make their theorems trivial until the real definitions land.
+
+**Consequence for claim strength**: the cohomological-alignment-cost
+arc is one proved lower bound (`realising_set_size_ge_h1`, which
+uses the open `gaussRankBool_append_le`) plus a tight-realiser
+conjecture. Treat all "Alignment Tax Theorem" claims elsewhere in
+this codebase as conditional on those two structural facts.
 -/
 
 open SemanticIFCDecidable
