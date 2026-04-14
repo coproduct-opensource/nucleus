@@ -148,6 +148,36 @@ theorem borromean_rank_pos :
   rw [borromean_rank_is_ninety]
   decide
 
+/-- **Concrete H² obstruction** (borromean): reduced Čech H² of the
+    Borromean IFC poset is exactly 64. This is the first concrete witness
+    that **higher-order obstructions exist** — the `HigherObstruction`
+    module's `h2Obstruction` placeholder (currently stubbed at 0) is
+    strictly conservative; real IFC posets can have rank H² » 0.
+
+    Reference: `BorromeanH2.borromean_reduced_h2` in
+    `ComparisonTheorem.lean`, proved by `native_decide`. -/
+theorem borromean_h2_is_sixty_four :
+    reducedCechDim borromeanSite [1, 2, 3, 4] 2 = 64 :=
+  BorromeanH2.borromean_reduced_h2
+
+/-- **Diamond has no H² obstruction**: diamond is DM-acyclic so higher
+    cohomology vanishes. The trivial side of the higher-obstruction
+    landscape. -/
+theorem diamond_h2_is_zero :
+    reducedCechDim diamondSite [1, 2, 3] 2 = 0 :=
+  PresheafCech.diamond_reduced_h2
+
+/-- **H² separation**: borromean and diamond are distinguished by their
+    H² obstruction count — 64 vs 0 — in addition to their H¹ count
+    (90 vs 2). Both H¹ and H² are informative discriminators of IFC
+    structure. The cohomological tower is not degenerate at any degree
+    on realistic IFC posets. -/
+theorem borromean_diamond_h2_separation :
+    reducedCechDim borromeanSite [1, 2, 3, 4] 2 ≠
+      reducedCechDim diamondSite [1, 2, 3] 2 := by
+  rw [borromean_h2_is_sixty_four, diamond_h2_is_zero]
+  decide
+
 /- **Arc status (honest)**: this file now contains a concrete
    realiser proof — the FIRST instance where the upper-bound side
    of the alignment-tax conjecture is verified WITHOUT depending on
