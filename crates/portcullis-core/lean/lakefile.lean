@@ -133,3 +133,6 @@ lean_lib «EulerCharacteristic» where
 -- Entropic cocycle: Shannon-entropy-valued H¹ class (Baudot-Bennequin analog).
 lean_lib «EntropicCocycle» where
   roots := #[`EntropicCocycle]
+-- Alignment sample complexity: Fano-analog lower bound for fine-tuning.
+lean_lib «AlignmentSampleComplexity» where
+  roots := #[`AlignmentSampleComplexity]
