@@ -72,16 +72,21 @@ namespace PortcullisCore.HigherObstruction
 
 variable {Secret : Type} [Fintype Secret] [DecidableEq Secret]
 
-/-- **H² obstruction dimension**: placeholder for rank of reduced
-    Čech H² of the attention sheaf. Currently stubbed as `0` pending
-    the `CechCohomology` module extension to degree 2 — the module
-    today formalizes degree 1 only, and lifting to degree 2 is a
-    structural extension (cocycle/coboundary at one level up,
-    same GF(2) row-reduction machinery).
+/-- **H² obstruction dimension**: rank of reduced Čech H² of the
+    attention sheaf. Wired to the real `reducedCechDim … 2` invariant
+    (previously a `0` placeholder pending the `CechCohomology`
+    extension).
 
     **Interpretation**: counts independent obstructions to gluing
-    compatible aligning sets into a single aligning set. -/
-def h2Obstruction (_P : IndexedPoset Secret) (_indices : List Nat) : Nat := 0
+    compatible aligning sets into a single aligning set.
+
+    **Concrete values** (from `AlignmentTaxConcrete.lean`):
+    - diamond: 0 (acyclic poset, no gluing obstruction)
+    - borromean: 64 (link complexity creates real H² obstructions)
+    - directInject: 0 (trivial acyclic case)
+    -/
+def h2Obstruction (P : IndexedPoset Secret) (indices : List Nat) : Nat :=
+  reducedCechDim P indices 2
 
 /-- **Aligning-set gluing**: the union of two aligning sets also
     aligns the union spec. This is the question H² controls. -/
@@ -130,8 +135,39 @@ theorem spectral_sequence_cost_bound
     cost (specUnion S₁ S₂ h_model) ≤
       cost S₁ + cost S₂ + h2Obstruction S₁.model S₁.covering := by
   have h := compositional_cost_subadditive S₁ S₂ h_model
-  unfold h2Obstruction
   omega
+
+/-! ## Concrete non-vacuity: h2Obstruction evaluates to real values
+
+With `h2Obstruction` wired to `reducedCechDim … 2`, we can evaluate
+it on the concrete IFC posets already in the codebase. These three
+theorems pin down that the invariant takes genuinely different
+values across the diamond / borromean / directInject landscape. -/
+
+/-- `h2Obstruction` on the diamond site is 0 (DM-acyclic, no gluing
+    obstruction). -/
+theorem h2Obstruction_diamond :
+    h2Obstruction diamondSite [1, 2, 3] = 0 := by
+  unfold h2Obstruction
+  exact PresheafCech.diamond_reduced_h2
+
+/-- `h2Obstruction` on the borromean site is 64 — non-vacuous
+    higher-order obstruction. The borromean-link topology creates
+    real gluing obstructions that the degree-1 theory cannot see. -/
+theorem h2Obstruction_borromean :
+    h2Obstruction borromeanSite [1, 2, 3, 4] = 64 := by
+  unfold h2Obstruction
+  exact BorromeanH2.borromean_reduced_h2
+
+/-- **Non-vacuity of the higher-obstruction theory**: `h2Obstruction`
+    discriminates between IFC posets. The `HigherObstruction` module
+    is not a stub — it classifies real structural differences in the
+    gluing behavior of IFC sheaves. -/
+theorem h2Obstruction_discriminates :
+    h2Obstruction diamondSite [1, 2, 3] ≠
+      h2Obstruction borromeanSite [1, 2, 3, 4] := by
+  rw [h2Obstruction_diamond, h2Obstruction_borromean]
+  decide
 
 /- **Derived-tower existence**: the full sequence `H⁰, H¹, H², …`
     gives a progressively refined accounting of alignment cost.
