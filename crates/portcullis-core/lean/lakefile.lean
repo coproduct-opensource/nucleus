@@ -118,3 +118,7 @@ lean_lib «CompositionalAlignment» where
 -- Alignment sample complexity: Fano-analog lower bound for fine-tuning.
 lean_lib «AlignmentSampleComplexity» where
   roots := #[`AlignmentSampleComplexity]
+
+-- Compositional alignment: Mayer-Vietoris-analog for spec composition.
+lean_lib «CompositionalAlignment» where
+  roots := #[`CompositionalAlignment]
