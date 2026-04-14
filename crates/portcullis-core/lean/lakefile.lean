@@ -144,3 +144,7 @@ lean_lib «CompositionalAlignment» where
 -- PAC / VC-dimension bridge: classical learning-theory equivalence for rank H¹.
 lean_lib «PACVCBridge» where
   roots := #[`PACVCBridge]
+
+-- Universality theorem: rank H¹ is a complete invariant for alignment specs.
+lean_lib «UniversalityTheorem» where
+  roots := #[`UniversalityTheorem]
