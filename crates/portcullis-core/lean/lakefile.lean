@@ -136,38 +136,10 @@ lean_lib «EntropicCocycle» where
 -- Quantum extension: von Neumann cocycle + Born-rule quadratic sample bound.
 lean_lib «QuantumExtension» where
   roots := #[`QuantumExtension]
--- Alignment sample complexity: Fano-analog lower bound for fine-tuning.
-lean_lib «AlignmentSampleComplexity» where
-  roots := #[`AlignmentSampleComplexity]
-
--- Compositional alignment: Mayer-Vietoris-analog for spec composition.
-lean_lib «CompositionalAlignment» where
-  roots := #[`CompositionalAlignment]
-
--- PAC / VC-dimension bridge: classical learning-theory equivalence for rank H¹.
-lean_lib «PACVCBridge» where
-  roots := #[`PACVCBridge]
-
--- Universality theorem: rank H¹ is a complete invariant for alignment specs.
-lean_lib «UniversalityTheorem» where
-  roots := #[`UniversalityTheorem]
-
--- Higher obstruction theory: H² and Grothendieck spectral sequence analog.
-lean_lib «HigherObstruction» where
-  roots := #[`HigherObstruction]
-
--- Euler characteristic: single-invariant collapse + Möbius combinatorial bridge.
-lean_lib «EulerCharacteristic» where
-  roots := #[`EulerCharacteristic]
-
--- Entropic cocycle: Shannon-entropy-valued H¹ class (Baudot-Bennequin analog).
-lean_lib «EntropicCocycle» where
-  roots := #[`EntropicCocycle]
-
--- Quantum extension: von Neumann cocycle + Born-rule quadratic sample bound.
-lean_lib «QuantumExtension» where
-  roots := #[`QuantumExtension]
-
 -- Persistent alignment: barcode-valued cost over training filtrations.
 lean_lib «PersistentAlignment» where
   roots := #[`PersistentAlignment]
+
+-- Lipschitz-equivariance: certified robustness radius from rank H¹.
+lean_lib «LipschitzEquivariance» where
+  roots := #[`LipschitzEquivariance]
