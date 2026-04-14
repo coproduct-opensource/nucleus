@@ -171,3 +171,7 @@ lean_lib «QuantumExtension» where
 -- Persistent alignment: barcode-valued cost over training filtrations.
 lean_lib «PersistentAlignment» where
   roots := #[`PersistentAlignment]
+
+-- Lipschitz-equivariance: certified robustness radius from rank H¹.
+lean_lib «LipschitzEquivariance» where
+  roots := #[`LipschitzEquivariance]
