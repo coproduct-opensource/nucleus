@@ -148,3 +148,7 @@ lean_lib «PACVCBridge» where
 -- Universality theorem: rank H¹ is a complete invariant for alignment specs.
 lean_lib «UniversalityTheorem» where
   roots := #[`UniversalityTheorem]
+
+-- Higher obstruction theory: H² and Grothendieck spectral sequence analog.
+lean_lib «HigherObstruction» where
+  roots := #[`HigherObstruction]
