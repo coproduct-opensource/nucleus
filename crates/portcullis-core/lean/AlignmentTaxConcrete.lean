@@ -123,16 +123,46 @@ theorem diamond_operational_tax_le_two_corollary :
   obtain ⟨L, hL_len, hL_real⟩ := diamond_concrete_realiser
   exact ⟨L, by omega, hL_real⟩
 
+/-- **Non-vacuity smoke test #4**: rank H¹ of the Borromean IFC poset
+    is exactly 90 on the reduced indices `[1, 2, 3, 4]`. Already proved
+    in `ComparisonTheorem.lean` as `borromean_reduced_h1` via
+    `native_decide`; restated here as the Borromean anchor. -/
+theorem borromean_rank_is_ninety :
+    alignmentTaxH1 borromeanSite [1, 2, 3, 4] = 90 :=
+  BorromeanH2.borromean_reduced_h1
+
+/-- **Scale surprise**: the Borromean site exhibits alignment tax
+    45× larger than the diamond site. The invariant is not only
+    non-vacuous but discriminates at multiple orders of magnitude —
+    small posets give small tax (2), larger linked-ring posets give
+    large tax (90). -/
+theorem borromean_diamond_scale_ratio :
+    alignmentTaxH1 borromeanSite [1, 2, 3, 4] =
+      45 * alignmentTaxH1 diamondSite [1, 2, 3] := by
+  rw [borromean_rank_is_ninety, diamond_rank_is_two]
+
+/-- **Borromean alignment tax is positive** — another concrete
+    non-vacuity witness on a structurally richer poset. -/
+theorem borromean_rank_pos :
+    0 < alignmentTaxH1 borromeanSite [1, 2, 3, 4] := by
+  rw [borromean_rank_is_ninety]
+  decide
+
 /- **Arc status (honest)**: this file now contains a concrete
    realiser proof — the FIRST instance where the upper-bound side
    of the alignment-tax conjecture is verified WITHOUT depending on
    the abstract `gaussRankBool_append_le` sorry.
 
-   The lower-bound side (no L of length < 2 realises) still requires
-   the abstract `realising_set_size_ge_h1` lemma, which uses the
-   open structural sorry. So the FULL equality
-   `operationalAlignmentTaxH1 diamondSite [1,2,3] = 2` is still
-   conditional on closing the foundation. But the concrete witness
-   is real. -/
+   Additional non-vacuity anchors:
+   - `diamond_rank_is_two`: alignmentTaxH1 = 2 on a 4-level IFC poset
+   - `borromean_rank_is_ninety`: alignmentTaxH1 = 90 on 5-level linked rings
+   - `directInject_rank_is_zero`: alignmentTaxH1 = 0 on an acyclic poset
+
+   The invariant discriminates across two orders of magnitude
+   (0, 2, 90) on three structurally-distinct concrete IFC posets.
+
+   The lower-bound side of the tax theorem (no smaller realiser
+   exists) still requires `realising_set_size_ge_h1`, which uses the
+   open foundation sorry. Full equality remains conditional. -/
 
 end PortcullisCore.AlignmentTaxConcrete
