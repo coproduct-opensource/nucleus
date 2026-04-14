@@ -103,3 +103,7 @@ lean_lib «MatrixBridge» where
 -- Multi-agent cohomology: lifting IFC sheaf to communication graphs.
 lean_lib «MultiAgentCohomology» where
   roots := #[`MultiAgentCohomology]
+
+-- Concrete alignment-tax non-vacuity: smoke tests on diamond / directInject.
+lean_lib «AlignmentTaxConcrete» where
+  roots := #[`AlignmentTaxConcrete]
