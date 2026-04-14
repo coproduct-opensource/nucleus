@@ -178,6 +178,52 @@ theorem borromean_diamond_h2_separation :
   rw [borromean_h2_is_sixty_four, diamond_h2_is_zero]
   decide
 
+/-- **Concrete Euler characteristic** of the diamond IFC poset.
+
+    The alignment-tax Euler characteristic collapses the full derived
+    tower into a single integer:
+
+      χ = rank H⁰ − rank H¹ + rank H² − …
+
+    For diamond: χ = 2 − 2 + 0 = 0. The cohomological complex is
+    acyclic-in-alternation — an integer-valued trivial invariant. -/
+theorem diamond_euler_char :
+    (reducedCechDim diamondSite [1, 2, 3] 0 : Int) -
+      (reducedCechDim diamondSite [1, 2, 3] 1 : Int) +
+      (reducedCechDim diamondSite [1, 2, 3] 2 : Int) = 0 := by
+  rw [PresheafCech.diamond_reduced_h0, PresheafCech.diamond_reduced_h1,
+      PresheafCech.diamond_reduced_h2]
+  decide
+
+/-- **Concrete Euler characteristic** of the borromean IFC poset.
+
+    χ = 2 − 90 + 64 = −24. The negativity tells us that H¹ *dominates*
+    both lower (H⁰) and higher (H²) cohomology — i.e., the alignment-tax
+    obstructions outweigh both trivial sections and higher gluings. The
+    balance of obstructions is **asymmetric** on borromean. -/
+theorem borromean_euler_char :
+    (reducedCechDim borromeanSite [1, 2, 3, 4] 0 : Int) -
+      (reducedCechDim borromeanSite [1, 2, 3, 4] 1 : Int) +
+      (reducedCechDim borromeanSite [1, 2, 3, 4] 2 : Int) = -24 := by
+  rw [BorromeanH2.borromean_reduced_h0, BorromeanH2.borromean_reduced_h1,
+      BorromeanH2.borromean_reduced_h2]
+  decide
+
+/-- **Euler-characteristic separation**: diamond and borromean are
+    distinguished by Euler characteristic (0 vs −24), a *single integer*
+    that combines all cohomology degrees. Each cohomology degree
+    discriminates separately (H⁰ equal, H¹ 2 vs 90, H² 0 vs 64) but
+    Euler provides a succinct compressed invariant. -/
+theorem diamond_borromean_euler_separation :
+    ((reducedCechDim diamondSite [1, 2, 3] 0 : Int) -
+       (reducedCechDim diamondSite [1, 2, 3] 1 : Int) +
+       (reducedCechDim diamondSite [1, 2, 3] 2 : Int)) ≠
+    ((reducedCechDim borromeanSite [1, 2, 3, 4] 0 : Int) -
+       (reducedCechDim borromeanSite [1, 2, 3, 4] 1 : Int) +
+       (reducedCechDim borromeanSite [1, 2, 3, 4] 2 : Int)) := by
+  rw [diamond_euler_char, borromean_euler_char]
+  decide
+
 /- **Arc status (honest)**: this file now contains a concrete
    realiser proof — the FIRST instance where the upper-bound side
    of the alignment-tax conjecture is verified WITHOUT depending on
