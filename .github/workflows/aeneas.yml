@@ -50,7 +50,7 @@ jobs:
       # Without this, Charon recompiles the portcullis_core crate and its
       # dependencies from scratch every run (~5-10 min).
       - name: Rust / cargo cache (Charon target dir)
-        uses: Swatinem/rust-cache@98c8021b550208e51a6a1635b0f6e6f1c3cfc7e0 # v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2.9.1
         with:
           workspaces: crates/portcullis-core
           key: charon-${{ env.CHARON_NIGHTLY }}-${{ env.AENEAS_RELEASE }}
