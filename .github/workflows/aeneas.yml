@@ -129,9 +129,18 @@ jobs:
           path: |
             crates/portcullis-core/lean/.lake
             ~/.elan
-          key: lean-aeneas-${{ runner.os }}-${{ hashFiles('crates/portcullis-core/lean/lean-toolchain', 'crates/portcullis-core/lean/lakefile.lean') }}
+            ~/.cache/mathlib
+          # Include lake-manifest.json so dep commit bumps invalidate the cache.
+          key: lean-aeneas-${{ runner.os }}-${{ hashFiles('crates/portcullis-core/lean/lean-toolchain', 'crates/portcullis-core/lean/lakefile.lean', 'crates/portcullis-core/lean/lake-manifest.json') }}
           restore-keys: |
             lean-aeneas-${{ runner.os }}-
+
+      # Fetch prebuilt Mathlib .olean artifacts from Azure. Without this step
+      # a cold cache triggers a ~1 hour full Mathlib compile; with it, the
+      # Mathlib layer downloads in ~5 minutes.
+      - name: Fetch Mathlib cache (prebuilt oleans)
+        working-directory: crates/portcullis-core/lean
+        run: lake exe cache get || true
 
       - name: lake build (type-check proofs)
         working-directory: crates/portcullis-core/lean
