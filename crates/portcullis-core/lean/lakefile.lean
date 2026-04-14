@@ -159,3 +159,7 @@ lean_lib «HigherObstruction» where
 -- Euler characteristic: single-invariant collapse + Möbius combinatorial bridge.
 lean_lib «EulerCharacteristic» where
   roots := #[`EulerCharacteristic]
+
+-- Entropic cocycle: Shannon-entropy-valued H¹ class (Baudot-Bennequin analog).
+lean_lib «EntropicCocycle» where
+  roots := #[`EntropicCocycle]
