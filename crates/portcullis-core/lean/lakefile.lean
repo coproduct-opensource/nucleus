@@ -107,3 +107,7 @@ lean_lib «MultiAgentCohomology» where
 -- Concrete alignment-tax non-vacuity: smoke tests on diamond / directInject.
 lean_lib «AlignmentTaxConcrete» where
   roots := #[`AlignmentTaxConcrete]
+
+-- Alignment sample complexity: Fano-analog lower bound for fine-tuning.
+lean_lib «AlignmentSampleComplexity» where
+  roots := #[`AlignmentSampleComplexity]
