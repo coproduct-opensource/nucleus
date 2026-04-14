@@ -136,3 +136,10 @@ lean_lib «EntropicCocycle» where
 -- Quantum extension: von Neumann cocycle + Born-rule quadratic sample bound.
 lean_lib «QuantumExtension» where
   roots := #[`QuantumExtension]
+-- Persistent alignment: barcode-valued cost over training filtrations.
+lean_lib «PersistentAlignment» where
+  roots := #[`PersistentAlignment]
+
+-- Lipschitz-equivariance: certified robustness radius from rank H¹.
+lean_lib «LipschitzEquivariance» where
+  roots := #[`LipschitzEquivariance]
