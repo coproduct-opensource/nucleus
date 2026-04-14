@@ -163,3 +163,7 @@ lean_lib «EulerCharacteristic» where
 -- Entropic cocycle: Shannon-entropy-valued H¹ class (Baudot-Bennequin analog).
 lean_lib «EntropicCocycle» where
   roots := #[`EntropicCocycle]
+
+-- Quantum extension: von Neumann cocycle + Born-rule quadratic sample bound.
+lean_lib «QuantumExtension» where
+  roots := #[`QuantumExtension]
