@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 ctf-engine = { path = "../ctf-engine" }
-rmcp = { version = "1.3", features = ["server", "transport-io", "macros"] }
+rmcp = { version = "1.4", features = ["server", "transport-io", "macros"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = "1.2"
