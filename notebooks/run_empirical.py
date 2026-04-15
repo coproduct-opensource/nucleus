@@ -402,13 +402,60 @@ def phase_3_tier_b(extract_fn, benign, injected, theta):
     }
 
 
+def phase_5_theta_sweep(extract_fn, benign, injected, thetas):
+    """Sensitivity sweep over the refinement threshold θ.
+
+    Runs the Phase-2 correlation test at each θ in the sweep and
+    reports AUROC stability. A "cherry-picked-hyperparameter" concern
+    is rebutted if AUROC variation across θ is small (e.g., range < 0.05).
+
+    Output lets reviewers evaluate whether our θ=0.1 default
+    matters. The stability-over-range is the actual scientific claim
+    ("rank H¹ detects injection across refinement thresholds"), not a
+    single-θ AUROC number.
+    """
+    print('\n== Phase 5: θ sensitivity sweep ==', file=sys.stderr)
+    from sklearn.metrics import roc_auc_score
+    labels = [0] * len(benign) + [1] * len(injected)
+    results = []
+    for theta in thetas:
+        scores = [reduced_cech_h1(extract_fn(t), theta) for t in benign + injected]
+        try:
+            auc = roc_auc_score(labels, scores)
+        except Exception:
+            auc = 0.5
+        mean_benign = float(np.mean(scores[:len(benign)])) if benign else 0
+        mean_injected = float(np.mean(scores[len(benign):])) if injected else 0
+        results.append({
+            'theta': theta, 'auc': auc,
+            'mean_benign_rank': mean_benign,
+            'mean_injected_rank': mean_injected,
+        })
+        print(f"  theta={theta:.3f}  AUROC={auc:.3f}  "
+              f"mean(b)={mean_benign:.2f}  mean(i)={mean_injected:.2f}",
+              file=sys.stderr)
+    aucs = [r['auc'] for r in results]
+    return {
+        'n_points': len(thetas),
+        'thetas': list(thetas),
+        'per_theta': results,
+        'auc_range': float(max(aucs) - min(aucs)),
+        'auc_std': float(np.std(aucs)),
+        'auc_best': float(max(aucs)),
+        'theta_best': thetas[aucs.index(max(aucs))],
+    }
+
+
 # ----- CLI -----
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--phase', type=str, default='1,2,3',
                     help='Comma-separated phases to run (1=scaffold, 2=correlation, '
-                         '3=Tier-B, 4=layer-attribution). Default: 1,2,3.')
+                         '3=Tier-B, 4=layer-attribution, 5=theta-sweep). Default: 1,2,3.')
+    ap.add_argument('--theta-sweep', type=str,
+                    default='0.05,0.1,0.2,0.4',
+                    help='Comma-separated θ values for phase-5 sweep. Default: 0.05,0.1,0.2,0.4.')
     ap.add_argument('--n', type=int, default=None,
                     help='Cap on prompts per class (default: whole default corpus).')
     ap.add_argument('--benign', type=Path, default=None,
@@ -468,6 +515,10 @@ def main():
     if '4' in phases:
         out['results']['phase_4'] = phase_4_layer_attribution(
             extract_fn, benign, injected, args.theta, model_cfg)
+    if '5' in phases:
+        thetas = [float(x) for x in args.theta_sweep.split(',')]
+        out['results']['phase_5'] = phase_5_theta_sweep(
+            extract_fn, benign, injected, thetas)
 
     out['wall_seconds'] = round(time.time() - t0, 2)
     print('\n=== FINAL RESULTS (JSON) ===', file=sys.stderr)
