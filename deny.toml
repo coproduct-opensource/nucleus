@@ -16,6 +16,13 @@ ignore = [
   # rand 0.8.5 via rust_decimal/ruint — upstream has not released a patched
   # version. Not exploitable here: no custom logger in these deps calls rand::rng().
   "RUSTSEC-2026-0097",
+
+  # rustls-webpki 0.101.x URI name-constraint / wildcard-name vulns (2026-04-14).
+  # Transitive via aws-smithy-http-client 1.1.12 → rustls 0.21 → rustls-webpki 0.101.
+  # AWS SDK fix path: BehaviorVersion v2025_01_17+ (hyper 1.x + rustls 0.23).
+  # Tracked separately; AWS path does not process attacker-controlled certs.
+  "RUSTSEC-2026-0098",
+  "RUSTSEC-2026-0099",
 ]
 # These are informational; scope to workspace dependencies.
 unmaintained = "workspace"
