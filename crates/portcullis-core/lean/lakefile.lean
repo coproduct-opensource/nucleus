@@ -2,8 +2,14 @@ import Lake
 open Lake DSL
 
 package «portcullisCore» where
+  -- Release mode compiles tactic C code with -O3 (vs default debug). Faster
+  -- native-decide / algorithm-heavy proofs at the cost of slower initial build.
+  buildType := .release
   leanOptions := #[
-    ⟨`autoImplicit, false⟩
+    ⟨`autoImplicit, false⟩,
+    -- Raise default heartbeat budget so individual theorems needn't override.
+    -- Individual declarations can still bump higher with `set_option`.
+    ⟨`maxHeartbeats, (400000 : Nat)⟩
   ]
 
 -- Aeneas standard library (provides Result monad, scalar types, etc.)
@@ -107,6 +113,10 @@ lean_lib «MultiAgentCohomology» where
 -- Concrete alignment-tax non-vacuity: smoke tests on diamond / directInject.
 lean_lib «AlignmentTaxConcrete» where
   roots := #[`AlignmentTaxConcrete]
+
+-- Braid-group cohomology speculation: divisibility checks + research targets.
+lean_lib «BraidCohomology» where
+  roots := #[`BraidCohomology]
 
 -- Alignment sample complexity: Fano-analog lower bound for fine-tuning.
 lean_lib «AlignmentSampleComplexity» where
