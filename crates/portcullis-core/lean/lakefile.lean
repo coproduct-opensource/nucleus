@@ -118,6 +118,10 @@ lean_lib «AlignmentTaxConcrete» where
 lean_lib «BraidCohomology» where
   roots := #[`BraidCohomology]
 
+-- AugmentedBorromean: adds missing obs_ac, empirically tests S₃ symmetry.
+lean_lib «AugmentedBorromean» where
+  roots := #[`AugmentedBorromean]
+
 -- Alignment sample complexity: Fano-analog lower bound for fine-tuning.
 lean_lib «AlignmentSampleComplexity» where
   roots := #[`AlignmentSampleComplexity]
