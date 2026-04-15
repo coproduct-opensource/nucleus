@@ -86,36 +86,81 @@ def gauss_rank_gf2(rows):
     return rank
 
 
-def attention_to_c1(attn, theta=0.1):
-    """Build reduced C¹, δ⁰, δ¹ matrices. Memory-efficient."""
+def attention_to_c1(attn, theta=0.1, activity='std', top_k=20):
+    """Build reduced C¹, δ⁰, δ¹ matrices. Scalable to GPT-2 small (144 nodes).
+
+    Refinement rule:
+      node j refines node i  iff  layer(j) > layer(i) AND j is in TOP-K active
+
+    Activity signal (`activity` param):
+      - 'std'  (default): per-head attention standard deviation
+      - 'max': per-head attention max (degenerate on softmax — always ≈ 1)
+      - 'entropy': per-head Shannon entropy (bits)
+
+    `top_k` (default 20): cap on the active node set. Without a cap, real
+    GPT-2 attention has hundreds of nodes above any reasonable threshold,
+    making |C¹| explode (O(n²) pairs × seq) and δ¹ computation infeasible
+    in pure Python (O(n³) triples).
+
+    `theta` is kept as a soft floor below which nodes are excluded even
+    if in the top-K (set theta=0 to disable the floor entirely).
+    """
     n_layers, n_heads, seq, _ = attn.shape
     nodes = [(l, h) for l in range(n_layers) for h in range(n_heads)]
-    max_attn = attn.reshape(len(nodes), -1).max(axis=1)
+    n_nodes = len(nodes)
+    flat = attn.reshape(n_nodes, -1)
+    if activity == 'std':
+        signal = flat.std(axis=1)
+    elif activity == 'max':
+        signal = flat.max(axis=1)  # degenerate on softmax models
+    elif activity == 'entropy':
+        import numpy as _np
+        p = flat / (flat.sum(axis=1, keepdims=True) + 1e-12)
+        signal = -(_np.where(p > 0, p * _np.log2(p + 1e-12), 0)).sum(axis=1)
+    else:
+        raise ValueError(f"unknown activity='{activity}'")
+
+    # Top-K active node selection (with theta floor).
+    above_floor = [i for i in range(n_nodes) if signal[i] > theta]
+    above_floor.sort(key=lambda i: signal[i], reverse=True)
+    active_nodes = set(above_floor[:top_k])
+
+    # Refinement pairs: (i, j) with i ≺ j (layer_i < layer_j, j in active set).
     refines = set()
-    for i, (la, _) in enumerate(nodes):
-        if max_attn[i] <= theta:
-            continue
-        for j, (lb, _) in enumerate(nodes):
-            if la > lb:
+    for j in active_nodes:
+        lj = nodes[j][0]
+        for i in range(n_nodes):
+            if nodes[i][0] < lj:
                 refines.add((i, j))
 
-    c1 = []
-    c1_idx = {}
-    for i in range(len(nodes)):
-        for j in range(i + 1, len(nodes)):
-            if (j, i) in refines or (i, j) in refines:
-                for p in range(seq):
-                    c1_idx[(i, j, p)] = len(c1)
-                    c1.append((i, j, p))
+    # Build the set of *active* unordered pairs with at least one refinement arrow.
+    active_pairs = set()
+    for (i, j) in refines:
+        active_pairs.add((min(i, j), max(i, j)))
+
+    # C¹: (i, j, p) for each active pair × prop.
+    c1, c1_idx = [], {}
+    for (i, j) in sorted(active_pairs):
+        for p in range(seq):
+            c1_idx[(i, j, p)] = len(c1)
+            c1.append((i, j, p))
     n_c1 = len(c1)
 
+    # δ⁰ sparsely: each node touches only pairs containing it.
+    # `node_neighbors[n]` = list of other nodes paired with n.
+    node_neighbors = {n: [] for n in range(n_nodes)}
+    for (i, j) in active_pairs:
+        node_neighbors[i].append(j)
+        node_neighbors[j].append(i)
+
     delta0 = []
-    for node_idx in range(len(nodes)):
+    for node_idx in range(n_nodes):
+        neighbors = node_neighbors[node_idx]
+        if not neighbors:
+            continue
         for prop in range(seq):
             row_cols = []
-            for other in range(len(nodes)):
-                if other == node_idx:
-                    continue
+            for other in neighbors:
                 a, b = (node_idx, other) if node_idx < other else (other, node_idx)
                 if (a, b, prop) in c1_idx:
                     row_cols.append(c1_idx[(a, b, prop)])
@@ -125,20 +170,32 @@ def attention_to_c1(attn, theta=0.1):
                     row[c] = 1
                 delta0.append(row)
 
+    # δ¹: only over triples where ALL THREE sides are active pairs.
+    # Build adjacency among active pairs: for each pair (i,j), find k s.t.
+    # both (i,k) and (j,k) are also active pairs.
+    active_pair_set = active_pairs
     delta1 = []
-    for i in range(len(nodes)):
-        for j in range(i + 1, len(nodes)):
-            for k in range(j + 1, len(nodes)):
+    sorted_pairs = sorted(active_pairs)
+    for idx, (i, j) in enumerate(sorted_pairs):
+        # Candidate k: common neighbors of i and j that form active pairs.
+        ni = set(node_neighbors[i])
+        nj = set(node_neighbors[j])
+        common = (ni & nj) - {i, j}
+        for k in common:
+            # Want i < j < k or similar; enforce canonical ordering.
+            triple = tuple(sorted((i, j, k)))
+            a, b, c = triple
+            if ((a, b) in active_pair_set and (a, c) in active_pair_set
+                    and (b, c) in active_pair_set):
+                # Only emit once per triple ordering.
+                if (i, j) != (a, b):
+                    continue
                 for p in range(seq):
-                    positions = []
-                    for (a, b) in [(i, j), (i, k), (j, k)]:
-                        if (a, b, p) in c1_idx:
-                            positions.append(c1_idx[(a, b, p)])
-                    if positions:
-                        row = [0] * n_c1
-                        for c in positions:
-                            row[c] = 1
-                        delta1.append(row)
+                    positions = [c1_idx[(a, b, p)], c1_idx[(a, c, p)], c1_idx[(b, c, p)]]
+                    row = [0] * n_c1
+                    for pos in positions:
+                        row[pos] = 1
+                    delta1.append(row)
     return c1, delta0, delta1
 
 
