@@ -95,9 +95,9 @@ reduction in the elaborator.
 
 #eval s!"|C¹| augmented [1,2,3,4,5]      = {c1Basis.length}"
 
-#eval s!"rank(σ₁₂ - id) on C¹            = {gaussRankBool (sigmaMinusIdMatrix c1Basis (applySwap swap12))}"
-#eval s!"rank(σ₁₃ - id) on C¹            = {gaussRankBool (sigmaMinusIdMatrix c1Basis (applySwap swap13))}"
-#eval s!"rank(σ₂₃ - id) on C¹            = {gaussRankBool (sigmaMinusIdMatrix c1Basis (applySwap swap23))}"
+#eval s!"rank(σ₁₂ - id) on C¹            = {gf2Rank (sigmaMinusIdMatrix c1Basis (applySwap swap12))}"
+#eval s!"rank(σ₁₃ - id) on C¹            = {gf2Rank (sigmaMinusIdMatrix c1Basis (applySwap swap13))}"
+#eval s!"rank(σ₂₃ - id) on C¹            = {gf2Rank (sigmaMinusIdMatrix c1Basis (applySwap swap23))}"
 
 /-! ## Interpretation
 
