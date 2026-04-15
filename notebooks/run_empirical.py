@@ -306,6 +306,71 @@ def phase_2_correlation(extract_fn, benign, injected, theta):
     }
 
 
+def phase_4_layer_attribution(extract_fn, benign, injected, theta, model_cfg):
+    """Per-(layer, head) rank H¹ attribution map.
+
+    For each (layer, head), compute leave-one-out drop in rank H¹ when that
+    head is masked to uniform attention. Aggregate across benign and injected
+    classes to find **injection-specific** heads: those whose contribution to
+    rank H¹ is systematically larger on injected prompts.
+
+    Prior art:
+      - Gurnee et al. 2024 (arxiv 2601.04398): Attention Head Intervention
+      - Suppressing 32 toxicity heads → 34-51% reduction (Lin et al. 2025)
+      - Deeper heads 3× more impactful than early layers (consensus)
+
+    Our contribution: cohomological attribution (rank H¹ drop) instead of
+    behavioral attribution (task loss drop). If both attributions converge
+    on the same heads, that's independent evidence for the cohomology-of-
+    injection hypothesis.
+    """
+    print('\n== Phase 4: per-layer H¹ attribution ==', file=sys.stderr)
+    n_layers, n_heads = model_cfg
+
+    def contribution_map(text):
+        attn = extract_fn(text)
+        seq = attn.shape[-1]
+        baseline = reduced_cech_h1(attn, theta)
+        contribs = np.zeros((n_layers, n_heads))
+        for l in range(n_layers):
+            for h in range(n_heads):
+                masked = attn.copy()
+                masked[l, h] = np.full((seq, seq), 1.0 / seq)
+                contribs[l, h] = baseline - reduced_cech_h1(masked, theta)
+        return contribs
+
+    benign_maps = np.stack([contribution_map(t) for t in benign])
+    injected_maps = np.stack([contribution_map(t) for t in injected])
+    benign_mean = benign_maps.mean(axis=0)
+    injected_mean = injected_maps.mean(axis=0)
+    differential = injected_mean - benign_mean
+
+    # Rank heads by differential contribution
+    flat = [(differential[l, h], l, h)
+            for l in range(n_layers) for h in range(n_heads)]
+    flat.sort(reverse=True)
+    top_10 = [{'layer': l, 'head': h, 'diff': float(d)} for d, l, h in flat[:10]]
+
+    # Stratify by layer depth (early vs deep)
+    third = n_layers // 3
+    early_contrib = float(injected_mean[:third].sum())
+    mid_contrib = float(injected_mean[third:2 * third].sum())
+    deep_contrib = float(injected_mean[2 * third:].sum())
+    return {
+        'n_layers': n_layers, 'n_heads': n_heads,
+        'benign_total': float(benign_mean.sum()),
+        'injected_total': float(injected_mean.sum()),
+        'differential_total': float(differential.sum()),
+        'top_10_heads_by_differential': top_10,
+        'early_layer_contribution': early_contrib,
+        'mid_layer_contribution': mid_contrib,
+        'deep_layer_contribution': deep_contrib,
+        # Flattened maps for downstream analysis
+        'benign_map': benign_mean.tolist(),
+        'injected_map': injected_mean.tolist(),
+    }
+
+
 def phase_3_tier_b(extract_fn, benign, injected, theta):
     """Mayer-Vietoris subadditivity on composed prompts."""
     print('\n== Phase 3: Tier B Mayer-Vietoris ==', file=sys.stderr)
@@ -342,7 +407,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--phase', type=str, default='1,2,3',
-                    help='Comma-separated phases to run (1, 2, 3). Default: all.')
+                    help='Comma-separated phases to run (1=scaffold, 2=correlation, '
+                         '3=Tier-B, 4=layer-attribution). Default: 1,2,3.')
     ap.add_argument('--n', type=int, default=None,
                     help='Cap on prompts per class (default: whole default corpus).')
     ap.add_argument('--benign', type=Path, default=None,
@@ -384,7 +450,8 @@ def main():
     print(f'n_benign={len(benign)} n_injected={len(injected)}', file=sys.stderr)
 
     phases = set(args.phase.split(','))
-    extract_fn, _, _ = load_model(device, args.max_len)
+    extract_fn, _, model = load_model(device, args.max_len)
+    model_cfg = (model.config.n_layer, model.config.n_head)
 
     t0 = time.time()
     out = {'config': vars(args) | {'device': device}, 'results': {}}
@@ -398,6 +465,9 @@ def main():
     if '3' in phases:
         out['results']['phase_3'] = phase_3_tier_b(
             extract_fn, benign, injected, args.theta)
+    if '4' in phases:
+        out['results']['phase_4'] = phase_4_layer_attribution(
+            extract_fn, benign, injected, args.theta, model_cfg)
 
     out['wall_seconds'] = round(time.time() - t0, 2)
     print('\n=== FINAL RESULTS (JSON) ===', file=sys.stderr)
