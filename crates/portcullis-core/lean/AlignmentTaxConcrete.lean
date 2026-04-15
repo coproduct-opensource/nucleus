@@ -222,6 +222,8 @@ theorem diamond_borromean_euler_separation :
        (reducedCechDim borromeanSite [1, 2, 3, 4] 1 : Int) +
        (reducedCechDim borromeanSite [1, 2, 3, 4] 2 : Int)) := by
   rw [diamond_euler_char, borromean_euler_char]
+  decide
+
 /-- **directInject H⁰**: 4 trivial sections on the acyclic poset. -/
 theorem directInject_h0_is_four :
     reducedCechDim directInjectSite [1, 2] 0 = 4 :=
