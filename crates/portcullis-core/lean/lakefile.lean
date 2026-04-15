@@ -122,6 +122,10 @@ lean_lib «BraidCohomology» where
 lean_lib «AugmentedBorromean» where
   roots := #[`AugmentedBorromean]
 
+-- Braid empirical: S₃ symmetry + Brunnian drop tests via native_decide.
+lean_lib «BraidEmpirical» where
+  roots := #[`BraidEmpirical]
+
 -- Alignment sample complexity: Fano-analog lower bound for fine-tuning.
 lean_lib «AlignmentSampleComplexity» where
   roots := #[`AlignmentSampleComplexity]
