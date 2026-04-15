@@ -125,6 +125,52 @@ Each value is computed by `native_decide` at build time. Slow
 #eval s!"H¹ [1,2,4,5]   drop obs_ac    = {reducedCechDim augmentedBorromeanSite [1,2,4,5]   1}"
 #eval s!"H¹ [1,2,3,5]   drop obs3      = {reducedCechDim augmentedBorromeanSite [1,2,3,5]   1}"
 
+/-! ## Degree-2 extension: is S₃ a symmetry of the full tower, or H¹-specific?
+
+If the S₃ action on letter-confusers is genuinely cohomological, it must
+act on **every** cohomology degree. Running the same drop-one test at H²:
+
+- Three letter drops EQUAL at H² → S₃ is a real tower-level symmetry;
+  strong positive result beyond the H¹-only coincidence reading.
+- Three letter drops UNEQUAL at H² → H¹ equality was degree-specific;
+  downgrades the previous result to "H¹ numerology, not structural."
+-/
+
+#eval s!"H² [1,2,3,4,5] full           = {reducedCechDim augmentedBorromeanSite [1,2,3,4,5] 2}"
+#eval s!"H² [2,3,4,5]   drop obs1      = {reducedCechDim augmentedBorromeanSite [2,3,4,5]   2}"
+#eval s!"H² [1,3,4,5]   drop obs2      = {reducedCechDim augmentedBorromeanSite [1,3,4,5]   2}"
+#eval s!"H² [1,2,4,5]   drop obs_ac    = {reducedCechDim augmentedBorromeanSite [1,2,4,5]   2}"
+#eval s!"H² [1,2,3,5]   drop obs3      = {reducedCechDim augmentedBorromeanSite [1,2,3,5]   2}"
+
+/-! ## S₄ discriminator: H² on drop-two coverings
+
+If S₄ acts on {obs1, obs2, obs_ac, obs3} transitively (true S₄ symmetry),
+all C(4,2) = 6 two-observation drops must give equal H².
+
+If only S₃ on letters × Z/2 on sign (semidirect, NOT full S₄), the six
+pairs split 3+3: letter-pairs vs letter-sign-pairs.
+-/
+
+#eval s!"H² [1,2,5]   keep obs1+obs2    = {reducedCechDim augmentedBorromeanSite [1,2,5] 2}"
+#eval s!"H² [1,3,5]   keep obs1+obs_ac  = {reducedCechDim augmentedBorromeanSite [1,3,5] 2}"
+#eval s!"H² [2,3,5]   keep obs2+obs_ac  = {reducedCechDim augmentedBorromeanSite [2,3,5] 2}"
+#eval s!"H² [1,4,5]   keep obs1+obs3    = {reducedCechDim augmentedBorromeanSite [1,4,5] 2}"
+#eval s!"H² [2,4,5]   keep obs2+obs3    = {reducedCechDim augmentedBorromeanSite [2,4,5] 2}"
+#eval s!"H² [3,4,5]   keep obs_ac+obs3  = {reducedCechDim augmentedBorromeanSite [3,4,5] 2}"
+
+/-! ## H³ and Euler characteristic
+
+χ = Σ (−1)ⁱ rank Hⁱ.  So far: rank H⁰ = ? ; H¹ = 138 ; H² = 256.
+Compute H³ and assemble.
+-/
+
+#eval s!"H⁰ [1,2,3,4,5] full           = {reducedCechDim augmentedBorromeanSite [1,2,3,4,5] 0}"
+#eval s!"H³ [1,2,3,4,5] full           = {reducedCechDim augmentedBorromeanSite [1,2,3,4,5] 3}"
+#eval s!"H³ [2,3,4,5]   drop obs1      = {reducedCechDim augmentedBorromeanSite [2,3,4,5]   3}"
+#eval s!"H³ [1,3,4,5]   drop obs2      = {reducedCechDim augmentedBorromeanSite [1,3,4,5]   3}"
+#eval s!"H³ [1,2,4,5]   drop obs_ac    = {reducedCechDim augmentedBorromeanSite [1,2,4,5]   3}"
+#eval s!"H³ [1,2,3,5]   drop obs3      = {reducedCechDim augmentedBorromeanSite [1,2,3,5]   3}"
+
 /-! ## Expected outcomes
 
 1. **All three "drop letter-confuser" give equal H¹** → S₃ symmetry
