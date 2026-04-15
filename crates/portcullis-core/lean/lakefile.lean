@@ -122,6 +122,10 @@ lean_lib «BraidCohomology» where
 lean_lib «AugmentedBorromean» where
   roots := #[`AugmentedBorromean]
 
+-- AugmentedBorromeanActions: explicit S₃ permutation matrices on C¹, rank tests.
+lean_lib «AugmentedBorromeanActions» where
+  roots := #[`AugmentedBorromeanActions]
+
 -- Braid empirical: S₃ symmetry + Brunnian drop tests via native_decide.
 lean_lib «BraidEmpirical» where
   roots := #[`BraidEmpirical]
