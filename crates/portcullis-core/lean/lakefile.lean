@@ -136,11 +136,15 @@ lean_lib «DiamondActions» where
 
 -- RealWorldActions: Z/2 action tests on BLP, Biba, PrivEsc, Indirect posets.
 lean_lib «RealWorldActions» where
-  roots := #[`DiamondActions]
+  roots := #[`RealWorldActions]
 
 -- Braid empirical: S₃ symmetry + Brunnian drop tests via native_decide.
 lean_lib «BraidEmpirical» where
   roots := #[`BraidEmpirical]
+
+-- Braid analysis: structural explanation of BraidEmpirical's 36/44 asymmetry.
+lean_lib «BraidAnalysis» where
+  roots := #[`BraidAnalysis]
 
 -- Alignment sample complexity: Fano-analog lower bound for fine-tuning.
 lean_lib «AlignmentSampleComplexity» where
