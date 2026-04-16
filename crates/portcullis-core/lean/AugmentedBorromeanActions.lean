@@ -223,6 +223,44 @@ def h2DescentMatrix (σ : Cell2 → Cell2) : List (List Bool) :=
 #eval s!"dim H²^σ₂₄ (letter-sign)   = {(reducedC2 augmentedBorromeanSite [1,2,3,4,5]).length - gf2Rank (h2DescentMatrix (applySwap2 swap24))}"
 #eval s!"dim H²^σ₃₄ (letter-sign)   = {(reducedC2 augmentedBorromeanSite [1,2,3,4,5]).length - gf2Rank (h2DescentMatrix (applySwap2 swap34))}"
 
+/-! ## Falsification tests: non-transposition fixed subspaces
+
+The decompositions
+- H¹ ≅ 22·trivial ⊕ 58·standard  (S₃ over GF(2))
+- H² ≅ 128·trivial ⊕ 64·D^(3,1)  (S₄ over GF(2))
+predict specific fixed-dim values for other conjugacy classes.
+
+**3-cycle (1 2 3)**: the standard 2-dim irrep has no 1-eigenvalue
+(char poly x²+x+1 irreducible over GF(2)), so 3-cycles fix only
+the trivial summand.
+- dim H¹^{(123)} predicted = 22
+- dim H²^{(123)} predicted = 128
+
+**Double transposition (1 2)(3 4)** in S₄: lies in the Klein-4
+normal subgroup V ⊲ S₄, which is the kernel of S₄ → S₃. Since
+D^(3,1) factors through this quotient, V acts trivially on it.
+- dim H²^{(12)(34)} predicted = 256 (all of H²)
+
+Any miss falsifies the corresponding decomposition.
+-/
+
+def cycle123 : Nat → Nat
+  | 1 => 2
+  | 2 => 3
+  | 3 => 1
+  | n => n
+
+def dtrans1234 : Nat → Nat
+  | 1 => 2
+  | 2 => 1
+  | 3 => 4
+  | 4 => 3
+  | n => n
+
+#eval s!"dim H¹^(123) predicted 22       = {640 - gf2Rank (h1DescentMatrix (applySwap cycle123))}"
+#eval s!"dim H²^(123) predicted 128      = {(reducedC2 augmentedBorromeanSite [1,2,3,4,5]).length - gf2Rank (h2DescentMatrix (applySwap2 cycle123))}"
+#eval s!"dim H²^(12)(34) predicted 256   = {(reducedC2 augmentedBorromeanSite [1,2,3,4,5]).length - gf2Rank (h2DescentMatrix (applySwap2 dtrans1234))}"
+
 /-! ## Interpretation
 
 For each σ = (i j):
