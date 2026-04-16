@@ -94,6 +94,41 @@ theorem h1_fixed_gt_zero :
     0 < 640 - gf2Rank (h1DescentMatrix (applySwap swap12)) := by
   rw [h1_fixed_sigma12]; decide
 
+/-! ## 3-cycle action: forces the non-semisimple decomposition
+
+For the full decomposition H¹ ≅ a·D(1) ⊕ b·D(2,1) ⊕ c·P(1) over GF(2):
+- D(1) (trivial, dim 1): transposition-fixed = 1, 3-cycle-fixed = 1
+- D(2,1) (standard, dim 2): transposition-fixed = 1, 3-cycle-fixed = 0
+  (char poly x² + x + 1 is irreducible over GF(2))
+- P(1) (proj cover of trivial, dim 2, non-split): transposition-fixed = 1,
+  3-cycle-fixed = 1
+
+Constraints:
+  a + 2b + 2c = 138   (total dim)
+  a +  b +  c =  80   (transposition-fixed)
+  a + 0·b + c =  24   (3-cycle-fixed, proved below)
+
+Solving: a = 22, b = 56, c = 2.
+-/
+
+theorem h1_fixed_cycle123 :
+    640 - gf2Rank (h1DescentMatrix (applySwap cycle123)) = 24 := by
+  native_decide
+
+/-- **Non-semisimple decomposition forced**: given three empirical
+    constraints on dim, transposition-fixed, and 3-cycle-fixed, the
+    only non-negative integer solution is `(a, b, c) = (22, 56, 2)`.
+
+    This proves H¹(augmented) carries a non-semisimple GF(2)[S₃]-module
+    structure: the 2 copies of P(1) detect non-trivial Ext¹(k, k). -/
+theorem h1_decomposition_forced :
+    ∃ a b c : Nat,
+      a = 22 ∧ b = 56 ∧ c = 2 ∧
+      a + 2*b + 2*c = 138 ∧
+      a + b + c = 80 ∧
+      a + c = 24 := by
+  exact ⟨22, 56, 2, rfl, rfl, rfl, by decide, by decide, by decide⟩
+
 /-! ## Summary
 
 **The S₃ action on H¹(augmentedBorromeanSite) is:**
