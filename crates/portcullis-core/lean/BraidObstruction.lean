@@ -48,12 +48,38 @@ coefficients, then the S₃ rack linearizes to an invertible R with
 eigenvalues `{1, ω, ω²}` (ω = primitive cube root in GF(4)). The
 braid relation is automatic from the rack axioms.
 
+## GF(4) scalar extension: also blocked on Čech cochains
+
+Over GF(4), the cocycle-twisted rack r_f(x,y) = (ω^{f(x,y)} · (x▷y), x)
+gives an **invertible, order-3** R-matrix on ORDERED pairs (9×9, rank 9).
+Genuine braid generator on raw cochains.
+
+However, Čech cohomology uses SYMMETRIC cochains (alternating = symmetric
+in char 2). The R-matrix restricted to the symmetric quotient (3×3) has
+rank 2, det = 0 — **SINGULAR**. Does not descend.
+
+### Structural resolution
+
+The braid/symmetric-group distinction IS the alternation condition:
+- S₃ action: survives symmetrization (permutes unordered pairs)
+- B₃ action: killed by symmetrization (rack has order 3 ≠ 2 on pairs)
+
+The involution condition σ² = 1 of symmetric-group generators is
+precisely what's needed for the action to respect the relation
+f(i,j) = f(j,i). A non-involutive generator maps some ordered pairs
+(i,j) and (j,i) to DIFFERENT outputs, which the symmetric quotient
+collapses — destroying invertibility.
+
+This is a **theorem-level obstruction**, not a search failure:
+no set-theoretic rack-based R-matrix can descend to a non-involutive
+action on Čech symmetric cochains, regardless of the coefficient field.
+
 ## What this does NOT disprove
 
 - The S₃ action on H¹ is still real (22·D(1) ⊕ 56·D(2,1) ⊕ 2·P(1)).
 - The S₄ action on H² is still real (128·D(4) ⊕ 64·D(3,1)).
-- The braid conjecture is not refuted — only the GF(2) set-theoretic
-  path is closed. A GF(4) or genuinely-linear approach remains open.
+- A genuinely linear (non-rack) R-matrix MIGHT still exist, but has
+  no natural candidate and would not arise from index permutations.
 
 ## Search result (computational)
 
