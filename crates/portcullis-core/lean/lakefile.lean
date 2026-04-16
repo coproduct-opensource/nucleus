@@ -126,6 +126,14 @@ lean_lib «AugmentedBorromean» where
 lean_lib «AugmentedBorromeanActions» where
   roots := #[`AugmentedBorromeanActions]
 
+-- BraidObstruction: char-2 obstruction to braid-group lift via set-theoretic rack.
+lean_lib «BraidObstruction» where
+  roots := #[`BraidObstruction]
+
+-- DiamondActions: Z/2 action test on diamondSite's H¹ = 2.
+lean_lib «DiamondActions» where
+  roots := #[`DiamondActions]
+
 -- Braid empirical: S₃ symmetry + Brunnian drop tests via native_decide.
 lean_lib «BraidEmpirical» where
   roots := #[`BraidEmpirical]
