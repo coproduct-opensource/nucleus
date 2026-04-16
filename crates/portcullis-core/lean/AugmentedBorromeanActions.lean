@@ -99,6 +99,130 @@ reduction in the elaborator.
 #eval s!"rank(σ₁₃ - id) on C¹            = {gf2Rank (sigmaMinusIdMatrix c1Basis (applySwap swap13))}"
 #eval s!"rank(σ₂₃ - id) on C¹            = {gf2Rank (sigmaMinusIdMatrix c1Basis (applySwap swap23))}"
 
+/-! ## H¹-descent: rank of induced σ_* on H¹
+
+Given chain involution σ on C¹ commuting with δ⁰, δ¹, the induced
+map σ_* on H¹ = ker δ¹ / im δ⁰ has fixed subspace
+
+    dim H¹^σ = |C¹| - rank(M)
+
+where `M` is the block matrix
+
+      ⎡ D₁      0  ⎤  — (|C²| rows)
+      ⎣ σ̃      D₀ ⎦  — (|C¹| rows)
+
+acting on `C¹ ⊕ C⁰` with `σ̃ = σ - id`. (Derivation: the kernel of
+`M` is `{(c, v) : D₁ c = 0 ∧ σ̃ c = D₀ v}`; projecting to the
+c-coordinate gives `{c ∈ Z¹ : σ̃ c ∈ B¹}`, whose quotient by `B¹`
+is `H¹^σ`. Counting dimensions gives the formula.)
+
+From this: `rank σ_* = dim H¹ - dim H¹^σ = 138 - (640 - rank M)`.
+-/
+
+/-- Build the block matrix described above. -/
+def h1DescentMatrix (σ : Cell → Cell) : List (List Bool) :=
+  let b0 := reducedC0 augmentedBorromeanSite [1, 2, 3, 4, 5]
+  let b1 := c1Basis
+  let n0 := b0.length
+  let n1 := b1.length
+  let d1 := reducedDelta1 augmentedBorromeanSite [1, 2, 3, 4, 5]
+  let d0 := reducedDelta0 augmentedBorromeanSite [1, 2, 3, 4, 5]
+  let σMinusId := sigmaMinusIdMatrix b1 σ
+  -- Top block: d1 rows padded with n0 zeros on the right
+  let topBlock := d1.map fun row => row ++ List.replicate n0 false
+  -- Bottom block: [σ̃ | d0], where d0 row b has n0 entries
+  let bottomBlock := (List.range n1).map fun idx =>
+    let σRow := σMinusId[idx]!
+    let d0Row := d0[idx]!
+    σRow ++ d0Row
+  topBlock ++ bottomBlock
+
+#eval s!"|C⁰| augmented [1,2,3,4,5]      = {(reducedC0 augmentedBorromeanSite [1,2,3,4,5]).length}"
+#eval s!"|C²| augmented [1,2,3,4,5]      = {(reducedC2 augmentedBorromeanSite [1,2,3,4,5]).length}"
+
+#eval s!"dim H¹^σ₁₂ = 640 - rank(M) = {640 - gf2Rank (h1DescentMatrix (applySwap swap12))}"
+#eval s!"dim H¹^σ₁₃ = 640 - rank(M) = {640 - gf2Rank (h1DescentMatrix (applySwap swap13))}"
+#eval s!"dim H¹^σ₂₃ = 640 - rank(M) = {640 - gf2Rank (h1DescentMatrix (applySwap swap23))}"
+
+/-! ## H²-descent: rank of induced σ_* on H² for all 6 S₄ transpositions
+
+With δ² absent in the current framework (`reducedCechDim` treats
+C³ = 0), we have `H² = C² / B²` where `B² = im δ¹`. The fixed
+subspace under σ acting on C² is
+
+    dim H²^σ = |C²| - rank(M'')
+
+with `M'' = [σ̃_{C²} | D₁]` acting on `C² ⊕ C¹ → C²`. Derivation
+mirrors H¹: kernel `{(w, c) : σ̃(w) = D₁ c}` projects to `{w ∈ C² :
+σ̃(w) ∈ B²}`; quotient by `B²` is `H²^σ`.
+
+Testing all 6 S₄ transpositions discriminates the symmetry type:
+- All 6 equal → full S₄ acts on H²
+- Split 3 letter-letter vs 3 letter-sign → only S₃ × Z/2
+-/
+
+/-- C² basis cell: `(i, j, k, p)` with `i < j < k`. -/
+abbrev Cell2 := Nat × Nat × Nat × Nat
+
+/-- Boolean equality on `Cell2`. -/
+def cellEq2 (x y : Cell2) : Bool :=
+  x.1 == y.1 && x.2.1 == y.2.1 && x.2.2.1 == y.2.2.1 && x.2.2.2 == y.2.2.2
+
+/-- Sort three Nats ascending. -/
+def sort3 (a b c : Nat) : Nat × Nat × Nat :=
+  let (a', b') := if a ≤ b then (a, b) else (b, a)
+  if c ≤ a' then (c, a', b')
+  else if c ≤ b' then (a', c, b')
+  else (a', b', c)
+
+/-- Apply a swap to a C² cell, re-sorting the index triple. -/
+def applySwap2 (f : Nat → Nat) : Cell2 → Cell2
+  | (i, j, k, p) =>
+    let (a, b, c) := sort3 (f i) (f j) (f k)
+    (a, b, c, p)
+
+def c2Basis : List Cell2 :=
+  reducedC2 augmentedBorromeanSite [1, 2, 3, 4, 5]
+
+/-- `(σ - id)` matrix on C². Symmetric (σ² = id). -/
+def sigmaMinusIdMatrix2 (σ : Cell2 → Cell2) : List (List Bool) :=
+  c2Basis.map fun b =>
+    let σb := σ b
+    c2Basis.map fun x => cellEq2 x b != cellEq2 x σb
+
+/-- Additional S₄ transpositions involving index 4 (sign-confuser). -/
+def swap14 : Nat → Nat
+  | 1 => 4
+  | 4 => 1
+  | n => n
+
+def swap24 : Nat → Nat
+  | 2 => 4
+  | 4 => 2
+  | n => n
+
+def swap34 : Nat → Nat
+  | 3 => 4
+  | 4 => 3
+  | n => n
+
+/-- Build the H²-descent block matrix `[σ̃ | D₁]`. -/
+def h2DescentMatrix (σ : Cell2 → Cell2) : List (List Bool) :=
+  let n2 := c2Basis.length
+  let d1 := reducedDelta1 augmentedBorromeanSite [1, 2, 3, 4, 5]
+  let σMinusId := sigmaMinusIdMatrix2 σ
+  (List.range n2).map fun idx =>
+    let σRow := σMinusId[idx]!
+    let d1Row := d1[idx]!
+    σRow ++ d1Row
+
+#eval s!"dim H²^σ₁₂ (letter-letter) = {(reducedC2 augmentedBorromeanSite [1,2,3,4,5]).length - gf2Rank (h2DescentMatrix (applySwap2 swap12))}"
+#eval s!"dim H²^σ₁₃ (letter-letter) = {(reducedC2 augmentedBorromeanSite [1,2,3,4,5]).length - gf2Rank (h2DescentMatrix (applySwap2 swap13))}"
+#eval s!"dim H²^σ₂₃ (letter-letter) = {(reducedC2 augmentedBorromeanSite [1,2,3,4,5]).length - gf2Rank (h2DescentMatrix (applySwap2 swap23))}"
+#eval s!"dim H²^σ₁₄ (letter-sign)   = {(reducedC2 augmentedBorromeanSite [1,2,3,4,5]).length - gf2Rank (h2DescentMatrix (applySwap2 swap14))}"
+#eval s!"dim H²^σ₂₄ (letter-sign)   = {(reducedC2 augmentedBorromeanSite [1,2,3,4,5]).length - gf2Rank (h2DescentMatrix (applySwap2 swap24))}"
+#eval s!"dim H²^σ₃₄ (letter-sign)   = {(reducedC2 augmentedBorromeanSite [1,2,3,4,5]).length - gf2Rank (h2DescentMatrix (applySwap2 swap34))}"
+
 /-! ## Interpretation
 
 For each σ = (i j):
