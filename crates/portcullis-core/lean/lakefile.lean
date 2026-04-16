@@ -126,6 +126,10 @@ lean_lib «AugmentedBorromean» where
 lean_lib «AugmentedBorromeanActions» where
   roots := #[`AugmentedBorromeanActions]
 
+-- AugmentedBorromeanTheorems: formal theorems for the S₃ action values.
+lean_lib «AugmentedBorromeanTheorems» where
+  roots := #[`AugmentedBorromeanTheorems]
+
 -- BraidObstruction: char-2 obstruction to braid-group lift via set-theoretic rack.
 lean_lib «BraidObstruction» where
   roots := #[`BraidObstruction]
