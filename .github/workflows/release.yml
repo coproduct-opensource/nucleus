@@ -47,7 +47,7 @@ jobs:
           tar -C "$RELEASE_DIR" -czf "dist/nucleus-audit-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-audit
           tar -C "$RELEASE_DIR" -czf "dist/nucleus-claude-hook-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-claude-hook
       - name: Upload artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: nucleus-node-${{ matrix.target }}
           path: dist/*.tar.gz
@@ -97,12 +97,12 @@ jobs:
           tar -C target/${{ matrix.target }}/release -czf "dist/nucleus-claude-hook-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-claude-hook
           tar -C target/${{ matrix.target }}/release -czf "dist/nucleus-tool-proxy-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-tool-proxy
       - name: Upload packaged artifacts
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: nucleus-binaries-${{ matrix.target }}
           path: dist/*.tar.gz
       - name: Upload guest binaries for rootfs build
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: guest-binaries-${{ matrix.arch }}
           path: |
@@ -154,7 +154,7 @@ jobs:
           mkdir -p dist
           gzip -9 -c build/firecracker/${{ matrix.arch }}/rootfs.ext4 > "dist/nucleus-rootfs-${VERSION}-${{ matrix.arch }}.ext4.gz"
       - name: Upload rootfs artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: rootfs-${{ matrix.arch }}
           path: dist/*.ext4.gz
@@ -174,7 +174,7 @@ jobs:
           cp scripts/lima/nucleus-aarch64.yaml "dist/nucleus-lima-${VERSION}-aarch64.yaml"
           cp scripts/lima/nucleus-x86_64.yaml "dist/nucleus-lima-${VERSION}-x86_64.yaml"
       - name: Upload Lima templates
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: lima-templates
           path: dist/*.yaml
