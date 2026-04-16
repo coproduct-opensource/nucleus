@@ -134,6 +134,10 @@ lean_lib «BraidObstruction» where
 lean_lib «DiamondActions» where
   roots := #[`DiamondActions]
 
+-- RealWorldActions: Z/2 action tests on BLP, Biba, PrivEsc, Indirect posets.
+lean_lib «RealWorldActions» where
+  roots := #[`RealWorldActions]
+
 -- Braid empirical: S₃ symmetry + Brunnian drop tests via native_decide.
 lean_lib «BraidEmpirical» where
   roots := #[`BraidEmpirical]
