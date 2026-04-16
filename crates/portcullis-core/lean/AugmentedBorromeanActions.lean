@@ -99,6 +99,51 @@ reduction in the elaborator.
 #eval s!"rank(σ₁₃ - id) on C¹            = {gf2Rank (sigmaMinusIdMatrix c1Basis (applySwap swap13))}"
 #eval s!"rank(σ₂₃ - id) on C¹            = {gf2Rank (sigmaMinusIdMatrix c1Basis (applySwap swap23))}"
 
+/-! ## H¹-descent: rank of induced σ_* on H¹
+
+Given chain involution σ on C¹ commuting with δ⁰, δ¹, the induced
+map σ_* on H¹ = ker δ¹ / im δ⁰ has fixed subspace
+
+    dim H¹^σ = |C¹| - rank(M)
+
+where `M` is the block matrix
+
+      ⎡ D₁      0  ⎤  — (|C²| rows)
+      ⎣ σ̃      D₀ ⎦  — (|C¹| rows)
+
+acting on `C¹ ⊕ C⁰` with `σ̃ = σ - id`. (Derivation: the kernel of
+`M` is `{(c, v) : D₁ c = 0 ∧ σ̃ c = D₀ v}`; projecting to the
+c-coordinate gives `{c ∈ Z¹ : σ̃ c ∈ B¹}`, whose quotient by `B¹`
+is `H¹^σ`. Counting dimensions gives the formula.)
+
+From this: `rank σ_* = dim H¹ - dim H¹^σ = 138 - (640 - rank M)`.
+-/
+
+/-- Build the block matrix described above. -/
+def h1DescentMatrix (σ : Cell → Cell) : List (List Bool) :=
+  let b0 := reducedC0 augmentedBorromeanSite [1, 2, 3, 4, 5]
+  let b1 := c1Basis
+  let n0 := b0.length
+  let n1 := b1.length
+  let d1 := reducedDelta1 augmentedBorromeanSite [1, 2, 3, 4, 5]
+  let d0 := reducedDelta0 augmentedBorromeanSite [1, 2, 3, 4, 5]
+  let σMinusId := sigmaMinusIdMatrix b1 σ
+  -- Top block: d1 rows padded with n0 zeros on the right
+  let topBlock := d1.map fun row => row ++ List.replicate n0 false
+  -- Bottom block: [σ̃ | d0], where d0 row b has n0 entries
+  let bottomBlock := (List.range n1).map fun idx =>
+    let σRow := σMinusId[idx]!
+    let d0Row := d0[idx]!
+    σRow ++ d0Row
+  topBlock ++ bottomBlock
+
+#eval s!"|C⁰| augmented [1,2,3,4,5]      = {(reducedC0 augmentedBorromeanSite [1,2,3,4,5]).length}"
+#eval s!"|C²| augmented [1,2,3,4,5]      = {(reducedC2 augmentedBorromeanSite [1,2,3,4,5]).length}"
+
+#eval s!"dim H¹^σ₁₂ = 640 - rank(M) = {640 - gf2Rank (h1DescentMatrix (applySwap swap12))}"
+#eval s!"dim H¹^σ₁₃ = 640 - rank(M) = {640 - gf2Rank (h1DescentMatrix (applySwap swap13))}"
+#eval s!"dim H¹^σ₂₃ = 640 - rank(M) = {640 - gf2Rank (h1DescentMatrix (applySwap swap23))}"
+
 /-! ## Interpretation
 
 For each σ = (i j):
