@@ -30,7 +30,7 @@ serde = { version = "1", features = ["derive"], optional = true }
 toml = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-wasmtime = { version = "43", optional = true }
+wasmtime = { version = "44", optional = true }
 c2pa = { workspace = true, optional = true }
 risc0-zkvm = { workspace = true, optional = true }
 
