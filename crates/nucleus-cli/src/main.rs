@@ -27,6 +27,7 @@ mod constants;
 mod doctor;
 mod guard;
 mod keychain;
+mod lineage;
 mod lockdown;
 mod manifest;
 mod node;
@@ -107,6 +108,9 @@ enum Commands {
 
     /// Interact with a running nucleus-node (test utilities)
     Node(node::NodeArgs),
+
+    /// Walk the data-lineage DAG for a SPIFFE call ID
+    Lineage(lineage::LineageArgs),
 }
 
 fn init_logging(verbose: bool) {
@@ -153,5 +157,6 @@ async fn main() -> Result<()> {
         Commands::Replay(args) => replay::execute(args),
         Commands::Token(args) => token::execute(args),
         Commands::Node(args) => node::execute(args).await,
+        Commands::Lineage(args) => lineage::execute(args),
     }
 }
