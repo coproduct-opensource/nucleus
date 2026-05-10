@@ -71,7 +71,13 @@ jobs:
           toolchain: nightly
           cache: true
       - name: install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        # Pin version, but DROP --locked so cargo resolves a rustix newer
+        # than the 0.36.5 cargo-fuzz bundles (0.36.5 uses rustc-internal
+        # attributes that current nightly rejects). Every cargo-fuzz from
+        # 0.11.x through 0.13.1 ships the same broken rustix pin in its
+        # Cargo.lock, so bumping version alone is insufficient — we have
+        # to let cargo do fresh resolution.
+        run: cargo install cargo-fuzz --version 0.13.1
       - name: run fuzz targets
         run: |
           cd fuzz

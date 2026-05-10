@@ -560,21 +560,19 @@ fn extract_git_destinations(args: &[&str]) -> Vec<EgressDestination> {
                 }
             }
         }
-        "remote" => {
-            // git remote add <name> <url>
-            if args.get(1) == Some(&"add") || args.get(1) == Some(&"set-url") {
-                for arg in &args[2..] {
-                    if arg.starts_with('-') {
-                        continue;
-                    }
-                    if arg.contains("://") || arg.contains('@') {
-                        if let Some((host, port)) = extract_host_from_url(arg) {
-                            dests.push(EgressDestination {
-                                host,
-                                port,
-                                command: "git remote".to_string(),
-                            });
-                        }
+        // git remote add <name> <url>  /  git remote set-url <name> <url>
+        "remote" if args.get(1) == Some(&"add") || args.get(1) == Some(&"set-url") => {
+            for arg in &args[2..] {
+                if arg.starts_with('-') {
+                    continue;
+                }
+                if arg.contains("://") || arg.contains('@') {
+                    if let Some((host, port)) = extract_host_from_url(arg) {
+                        dests.push(EgressDestination {
+                            host,
+                            port,
+                            command: "git remote".to_string(),
+                        });
                     }
                 }
             }
