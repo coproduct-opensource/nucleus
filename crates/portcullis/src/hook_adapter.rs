@@ -233,11 +233,7 @@ fn has_network_command(cmd: &str) -> bool {
             "curl" | "wget" | "fetch" | "ssh" | "scp" | "rsync" | "sftp" | "nc" | "ncat"
             | "netcat" | "socat" | "telnet" | "ftp" => return true,
             // docker push/pull talk to registries
-            "docker" => {
-                if trimmed.contains("push") || trimmed.contains("pull") {
-                    return true;
-                }
-            }
+            "docker" if trimmed.contains("push") || trimmed.contains("pull") => return true,
             _ => {}
         }
     }
