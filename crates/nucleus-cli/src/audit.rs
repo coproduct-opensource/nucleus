@@ -632,7 +632,7 @@ fn format_text(findings: &[Finding], suggestion: Option<&ProfileSuggestion>) -> 
 
         // Sort by severity (critical first)
         let mut sorted: Vec<&Finding> = findings.iter().collect();
-        sorted.sort_by(|a, b| b.severity.cmp(&a.severity));
+        sorted.sort_by_key(|f| std::cmp::Reverse(f.severity));
 
         for (i, finding) in sorted.iter().enumerate() {
             let marker = match finding.severity {

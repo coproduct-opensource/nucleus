@@ -858,7 +858,7 @@ fn print_summary(path: &Path) -> Result<(), AuditError> {
 
     println!("By event type:");
     let mut events: Vec<_> = by_event.into_iter().collect();
-    events.sort_by(|a, b| b.1.cmp(&a.1));
+    events.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
     for (event, count) in &events {
         println!("  {:<30} {}", event, count);
     }
@@ -866,7 +866,7 @@ fn print_summary(path: &Path) -> Result<(), AuditError> {
 
     println!("By actor:");
     let mut actors: Vec<_> = by_actor.into_iter().collect();
-    actors.sort_by(|a, b| b.1.cmp(&a.1));
+    actors.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
     for (actor, count) in &actors {
         println!("  {:<30} {}", actor, count);
     }
@@ -874,7 +874,7 @@ fn print_summary(path: &Path) -> Result<(), AuditError> {
 
     println!("By result:");
     let mut results: Vec<_> = by_result.into_iter().collect();
-    results.sort_by(|a, b| b.1.cmp(&a.1));
+    results.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
     for (result, count) in &results {
         println!("  {:<30} {}", result, count);
     }
