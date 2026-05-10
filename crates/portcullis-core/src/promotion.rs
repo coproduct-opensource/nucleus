@@ -218,18 +218,19 @@ pub fn promote(
     // Because ValidatedWitness can only be constructed via validate(),
     // the witness is guaranteed to have a valid chain and passing
     // validations — no runtime re-check needed.
+    // Non-deterministic classes without a witness are evacuated. Deterministic
+    // and HumanPromoted are handled above (early returns); other arms are no-ops.
     match envelope.derivation_class {
-        DerivationClass::AIDerived | DerivationClass::Mixed | DerivationClass::OpaqueExternal => {
-            if witness.is_none() {
-                return Err(PromotionError::AirlockEvacuated {
-                    reason: format!(
-                        "{:?} content requires a ValidatedWitness for promotion",
-                        envelope.derivation_class
-                    ),
-                });
-            }
+        DerivationClass::AIDerived | DerivationClass::Mixed | DerivationClass::OpaqueExternal
+            if witness.is_none() =>
+        {
+            return Err(PromotionError::AirlockEvacuated {
+                reason: format!(
+                    "{:?} content requires a ValidatedWitness for promotion",
+                    envelope.derivation_class
+                ),
+            });
         }
-        // Deterministic and HumanPromoted are handled above (early returns).
         _ => {}
     }
 
