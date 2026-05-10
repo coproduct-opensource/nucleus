@@ -65,11 +65,8 @@ pub trait IdentityFetcher: Send + Sync {
     /// Mint a JWT-SVID with the given subject SPIFFE ID and audience. The
     /// returned string is a compact JWS (three base64url segments separated
     /// by `.`).
-    fn fetch_jwt_svid(
-        &self,
-        subject: &CallSpiffeId,
-        audience: &str,
-    ) -> Result<String, IssuerError>;
+    fn fetch_jwt_svid(&self, subject: &CallSpiffeId, audience: &str)
+        -> Result<String, IssuerError>;
 
     /// Optional kind hint; defaults to `None`. Issuers may attach this to
     /// the `nucleus_kind` claim.
@@ -108,10 +105,7 @@ pub struct LocalIssuer {
 impl LocalIssuer {
     /// Construct with a fresh random Ed25519 keypair.
     pub fn random() -> Result<Self, IssuerError> {
-        Self::random_with(
-            "nucleus-local://demo".to_string(),
-            Duration::from_secs(300),
-        )
+        Self::random_with("nucleus-local://demo".to_string(), Duration::from_secs(300))
     }
 
     /// Construct with a fresh random keypair and explicit issuer/lifetime.
@@ -287,10 +281,7 @@ mod tests {
         let issuer =
             LocalIssuer::from_signing_key(sk.clone(), "iss".into(), Duration::from_secs(60))
                 .unwrap();
-        assert_eq!(
-            issuer.verifying_key_bytes(),
-            sk.verifying_key().to_bytes()
-        );
+        assert_eq!(issuer.verifying_key_bytes(), sk.verifying_key().to_bytes());
     }
 
     #[test]

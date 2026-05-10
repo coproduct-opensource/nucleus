@@ -95,12 +95,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("step 1 ✔ Bash → {} ({} bytes)", bash_id, bash_stdout.len());
 
     // ── Step 2: Write ─────────────────────────────────────────────────
-    let tmp = std::env::temp_dir().join(format!("nucleus-lineage-demo-{}.txt", uuid::Uuid::new_v4()));
+    let tmp =
+        std::env::temp_dir().join(format!("nucleus-lineage-demo-{}.txt", uuid::Uuid::new_v4()));
     std::fs::write(&tmp, &bash_stdout)?;
     let written_bytes = std::fs::read(&tmp)?;
     let write_id = bash_id.derive_tool("Write", Some(&written_bytes))?;
-    let _write_jwt =
-        issuer.fetch_jwt_svid_with_kind(&write_id, "tool/Write", Some("tool_call"))?;
+    let _write_jwt = issuer.fetch_jwt_svid_with_kind(&write_id, "tool/Write", Some("tool_call"))?;
     sink.emit(
         LineageEdge::from_parent(
             write_id.clone(),
@@ -125,8 +125,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         MOCK_LLM_AUDIENCE
     };
-    let prompt_jwt =
-        issuer.fetch_jwt_svid_with_kind(&prompt_id, aud, Some("llm_call"))?;
+    let prompt_jwt = issuer.fetch_jwt_svid_with_kind(&prompt_id, aud, Some("llm_call"))?;
     sink.emit(
         LineageEdge::from_parent(
             prompt_id.clone(),

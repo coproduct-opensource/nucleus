@@ -316,18 +316,25 @@ mod tests {
         assert!(!walk.is_empty(), "descendants walk must not be empty");
         let kinds: Vec<_> = walk
             .iter()
-            .map(|e| matches!(e.kind, EdgeKind::ToolCall { .. } | EdgeKind::ArtifactProduced))
+            .map(|e| {
+                matches!(
+                    e.kind,
+                    EdgeKind::ToolCall { .. } | EdgeKind::ArtifactProduced
+                )
+            })
             .collect();
-        assert!(kinds.iter().all(|x| *x), "walked edges should be tool/artifact, got {:?}", walk.iter().map(|e| &e.kind).collect::<Vec<_>>());
+        assert!(
+            kinds.iter().all(|x| *x),
+            "walked edges should be tool/artifact, got {:?}",
+            walk.iter().map(|e| &e.kind).collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn unknown_id_returns_empty_walk() {
         let (_leaf, edges) = three_step_chain();
         let g = LineageGraph::build(&edges);
-        let unknown = pod()
-            .derive_tool("NotInGraph", Some(b"x"))
-            .unwrap();
+        let unknown = pod().derive_tool("NotInGraph", Some(b"x")).unwrap();
         assert!(g.walk_ancestors(&unknown, 0).is_empty());
     }
 

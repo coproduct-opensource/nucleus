@@ -82,11 +82,7 @@ impl LineageSink for InMemorySink {
     }
 
     fn iter(&self) -> Result<Vec<LineageEdge>, SinkError> {
-        Ok(self
-            .edges
-            .read()
-            .map_err(|_| SinkError::Poisoned)?
-            .clone())
+        Ok(self.edges.read().map_err(|_| SinkError::Poisoned)?.clone())
     }
 }
 
@@ -106,10 +102,7 @@ pub struct JsonlSink {
 impl JsonlSink {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, SinkError> {
         let path = path.into();
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
         Ok(Self {
             path,
             writer: Mutex::new(BufWriter::new(file)),
@@ -187,7 +180,9 @@ mod tests {
             let s = sink.clone();
             let parent = p.clone();
             handles.push(std::thread::spawn(move || {
-                let child = parent.derive_artifact(format!("payload {i}").as_bytes()).unwrap();
+                let child = parent
+                    .derive_artifact(format!("payload {i}").as_bytes())
+                    .unwrap();
                 s.emit(LineageEdge::from_parent(
                     child,
                     parent,

@@ -72,7 +72,7 @@ impl CallSpiffeId {
                 .ok_or_else(|| IdError::InvalidCallUuid(suffix.to_string(), uuid_error()))?;
             Uuid::parse_str(uuid_part)
                 .map_err(|e| IdError::InvalidCallUuid(uuid_part.to_string(), e))?;
-            if let Some(hash_seg) = suffix.split('/').last() {
+            if let Some(hash_seg) = suffix.split('/').next_back() {
                 if let Some(hex) = hash_seg.strip_prefix("sha256:") {
                     let valid = hex.len() == 64
                         && hex
@@ -295,10 +295,9 @@ mod tests {
     fn derive_tool_with_content_is_content_addressed() {
         let p = pod();
         let a1 = p.derive_tool("Bash", Some(b"hello")).unwrap();
-        assert!(a1.as_str().ends_with(&format!(
-            "/sha256:{}",
-            hex_lower(&sha256(b"hello"))
-        )));
+        assert!(a1
+            .as_str()
+            .ends_with(&format!("/sha256:{}", hex_lower(&sha256(b"hello")))));
         let hash = a1.content_hash_hex().unwrap();
         assert_eq!(hash.len(), 64);
         assert_eq!(hash, hex_lower(&sha256(b"hello")));
