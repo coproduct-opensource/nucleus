@@ -9,6 +9,13 @@ repository = "https://github.com/coproduct-opensource/nucleus"
 keywords = ["spiffe", "lineage", "provenance", "ifc", "agents"]
 categories = ["development-tools", "cryptography"]
 
+[features]
+default = []
+# Demo-only in-process Ed25519 JWT-SVID issuer. NOT FOR PRODUCTION USE.
+# Production callers should write a SPIFFE-Workload-API-backed
+# `IdentityFetcher` impl and never enable this feature in release builds.
+dev = ["dep:jsonwebtoken", "dep:ed25519-dalek", "dep:rand"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -17,14 +24,22 @@ hex = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
-jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"] }
-ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
-rand = "0.8"
+tracing = { workspace = true }
+# base64 is used by the always-on `proof` module to wire-encode signature
+# bytes; not gated.
 base64 = "0.22"
+# Crypto deps below are gated behind `dev` (demo issuer only).
+jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"], optional = true }
+ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"], optional = true }
+rand = { version = "0.8", optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 ureq = { workspace = true, features = ["json"] }
+
+[[example]]
+name = "three_step_demo"
+required-features = ["dev"]
 
 [lints]
 workspace = true
