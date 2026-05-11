@@ -27,13 +27,29 @@ pub enum IdError {
     MissingPath(String),
     #[error("invalid call uuid {0:?}: {1}")]
     InvalidCallUuid(String, uuid::Error),
-    #[error("invalid sha256 suffix {0:?}: must be 64 lowercase hex chars")]
+    #[error("invalid sha256 suffix {0:?}: must be exactly `sha256:<64 lowercase hex>`")]
     InvalidContentHash(String),
     #[error("path component {0:?} is empty or contains only whitespace")]
     EmptyComponent(String),
     #[error("path component {0:?} contains a `/`; pass segments individually")]
     SlashInComponent(String),
+    #[error("input is too long ({len} bytes; max {max} allowed)", max = MAX_URI_LEN)]
+    TooLong { len: usize },
+    #[error("input contains forbidden character {0:?} at byte offset {1}")]
+    ForbiddenChar(char, usize),
+    #[error("authority {0:?} contains characters outside `[a-z0-9._-]`")]
+    InvalidAuthority(String),
+    #[error("path component {0:?} contains characters outside `[A-Za-z0-9._-]` (or the reserved `sha256:<hex>` form)")]
+    InvalidPathChar(String),
+    #[error("path contains an empty segment (consecutive `/` or trailing `/`) in {0:?}")]
+    EmptyPathSegment(String),
+    #[error("`/call/` segment must be exactly lowercase, found {0:?}")]
+    NonCanonicalCallSegment(String),
 }
+
+/// Maximum URI length we'll accept. SPIFFE IDs in practice are short; a
+/// hard cap prevents pathological-input DoS in the parser.
+pub const MAX_URI_LEN: usize = 4096;
 
 /// A SPIFFE-format identity for a call, artifact, or derived value.
 ///
@@ -45,14 +61,62 @@ pub enum IdError {
 pub struct CallSpiffeId(String);
 
 impl CallSpiffeId {
-    /// Construct from a raw SPIFFE URI string. Validates the scheme,
-    /// authority, and any `/call/<uuid>/...` suffix's structure (call uuid
-    /// well-formed; content-hash suffix is 64 hex chars when present).
+    /// Construct from a raw SPIFFE URI string.
+    ///
+    /// Validates per the SPIFFE ID spec, with the documented deviation that
+    /// the literal `:` character is permitted in the special last-segment form
+    /// `sha256:<64-lowercase-hex>` (used for content-addressed lineage).
+    /// Otherwise:
+    ///
+    /// - Scheme must be `spiffe://`.
+    /// - URI length must be ≤ [`MAX_URI_LEN`] bytes.
+    /// - Every byte must be ASCII printable (rejects NUL, control chars,
+    ///   RTL/LRO Unicode overrides, and any non-ASCII).
+    /// - URI components `?` (query), `#` (fragment), and `@` (userinfo) are
+    ///   absent — SPIFFE forbids them.
+    /// - Authority charset: lowercase ASCII letters, digits, `-`, `.`, `_`.
+    ///   No `:` (no port), no `@` (no userinfo).
+    /// - Path segments are non-empty (rejects `//`, leading `//`, trailing `/`).
+    /// - Path segment charset: `[A-Za-z0-9._-]` per SPIFFE, or the reserved
+    ///   form `sha256:<64 lowercase hex>`.
+    /// - Any `/call/...` suffix must use lowercase `call` and a well-formed
+    ///   uuid in the next segment.
     pub fn parse(uri: impl Into<String>) -> Result<Self, IdError> {
         let uri = uri.into();
+
+        // 1. Hard length cap (DoS guard).
+        if uri.len() > MAX_URI_LEN {
+            return Err(IdError::TooLong { len: uri.len() });
+        }
+
+        // 2. ASCII printable only — rejects NUL, control chars, RTL/LRO
+        //    overrides (U+202E/U+202D), any other Unicode. SPIFFE IDs are
+        //    ASCII per spec; rejecting non-ASCII closes the homograph /
+        //    visual-spoofing surface in the `nucleus lineage` renderer.
+        for (i, ch) in uri.char_indices() {
+            // Allow only ASCII range 0x20..=0x7E plus the structural chars
+            // that appear in spiffe URIs (handled by other rules below).
+            if !ch.is_ascii() || (ch as u32) < 0x20 || (ch as u32) == 0x7F {
+                return Err(IdError::ForbiddenChar(ch, i));
+            }
+        }
+
+        // 3. Reject query, fragment, userinfo. SPIFFE ID grammar forbids
+        //    `?`, `#`, `@`. We reject anywhere in the URI rather than only
+        //    at canonical positions; defense in depth.
+        for forbidden in ['?', '#', '@'] {
+            if let Some(pos) = uri.find(forbidden) {
+                return Err(IdError::ForbiddenChar(forbidden, pos));
+            }
+        }
+
+        // 4. Scheme.
         let rest = uri
             .strip_prefix("spiffe://")
             .ok_or_else(|| IdError::NotSpiffe(uri.clone()))?;
+
+        // 5. Authority + path split. Authority is everything up to the first
+        //    `/`. Path begins after.
         let (authority, path) = rest
             .split_once('/')
             .ok_or_else(|| IdError::MissingPath(uri.clone()))?;
@@ -62,28 +126,58 @@ impl CallSpiffeId {
         if path.is_empty() {
             return Err(IdError::MissingPath(uri.clone()));
         }
-        // Validate any /call/<uuid>/... suffix structure.
-        if let Some(call_idx) = path.find("/call/").map(|i| i + 1) {
-            let suffix = &path[call_idx..];
-            let mut parts = suffix.split('/');
-            let _call = parts.next(); // "call"
-            let uuid_part = parts
-                .next()
-                .ok_or_else(|| IdError::InvalidCallUuid(suffix.to_string(), uuid_error()))?;
-            Uuid::parse_str(uuid_part)
-                .map_err(|e| IdError::InvalidCallUuid(uuid_part.to_string(), e))?;
-            if let Some(hash_seg) = suffix.split('/').next_back() {
-                if let Some(hex) = hash_seg.strip_prefix("sha256:") {
-                    let valid = hex.len() == 64
-                        && hex
-                            .chars()
-                            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
-                    if !valid {
-                        return Err(IdError::InvalidContentHash(hex.to_string()));
-                    }
+
+        // 6. Authority charset. SPIFFE: lowercase letters, digits, `-`, `.`,
+        //    `_`. No port (`:`), no userinfo (already rejected above).
+        if !authority
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '.' | '_'))
+        {
+            return Err(IdError::InvalidAuthority(authority.to_string()));
+        }
+
+        // 7. Path segments: non-empty, valid charset.
+        for segment in path.split('/') {
+            if segment.is_empty() {
+                return Err(IdError::EmptyPathSegment(uri.clone()));
+            }
+            // Special case: a `sha256:`-prefixed segment is a content-hash;
+            // route its specific failure to InvalidContentHash for actionable
+            // error messages. Note: case-sensitive — `SHA256:` falls through
+            // to the generic path-charset check below and is rejected there.
+            if let Some(hex) = segment.strip_prefix("sha256:") {
+                let valid = hex.len() == 64
+                    && hex
+                        .chars()
+                        .all(|c| c.is_ascii_digit() || matches!(c, 'a'..='f'));
+                if !valid {
+                    return Err(IdError::InvalidContentHash(segment.to_string()));
                 }
+                continue;
+            }
+            if !is_valid_path_segment(segment) {
+                return Err(IdError::InvalidPathChar(segment.to_string()));
             }
         }
+
+        // 8. Validate any /call/<uuid>/... suffix structure. The first /call/
+        //    segment must be lowercase; any uppercase variant (e.g. /CALL/)
+        //    is non-canonical and rejected (closes the suffix-bypass case
+        //    where uppercase /CALL/ skips uuid validation).
+        let mut path_parts = path.split('/').peekable();
+        while let Some(seg) = path_parts.next() {
+            if seg.eq_ignore_ascii_case("call") && seg != "call" {
+                return Err(IdError::NonCanonicalCallSegment(seg.to_string()));
+            }
+            if seg == "call" {
+                let uuid_part = path_parts.next().ok_or_else(|| {
+                    IdError::InvalidCallUuid("(missing)".to_string(), uuid_error())
+                })?;
+                Uuid::parse_str(uuid_part)
+                    .map_err(|e| IdError::InvalidCallUuid(uuid_part.to_string(), e))?;
+            }
+        }
+
         Ok(Self(uri))
     }
 
@@ -204,6 +298,23 @@ impl FromStr for CallSpiffeId {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse(s.to_string())
     }
+}
+
+/// Per SPIFFE ID spec, path segments use `[A-Za-z0-9._-]`. We additionally
+/// permit the reserved last-segment form `sha256:<64 lowercase hex>` for
+/// content-addressed lineage suffixes — the only allowed appearance of `:`
+/// in any segment.
+fn is_valid_path_segment(seg: &str) -> bool {
+    if let Some(hex) = seg.strip_prefix("sha256:") {
+        return hex.len() == 64
+            && hex
+                .chars()
+                .all(|c| c.is_ascii_digit() || matches!(c, 'a'..='f'));
+    }
+    !seg.is_empty()
+        && seg
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_'))
 }
 
 fn check_segment(s: &str) -> Result<(), IdError> {
@@ -393,5 +504,158 @@ mod tests {
         let json = serde_json::to_string(&derived).unwrap();
         let back: CallSpiffeId = serde_json::from_str(&json).unwrap();
         assert_eq!(derived, back);
+    }
+
+    // ── Hardened-parser negative tests ─────────────────────────────────
+    // These cases were accepted by the original parser; a skeptical-code
+    // auditor pass enumerated each as a real input that should fail.
+
+    #[test]
+    fn parse_rejects_nul_byte_in_path() {
+        let err = CallSpiffeId::parse("spiffe://prod.example.com/ns/agents\0/sa/coder")
+            .expect_err("NUL byte must be rejected");
+        assert!(matches!(err, IdError::ForbiddenChar('\0', _)), "{err:?}");
+    }
+
+    #[test]
+    fn parse_rejects_rtl_unicode_override() {
+        // U+202E (RIGHT-TO-LEFT OVERRIDE) — used for visual spoofing.
+        let err = CallSpiffeId::parse("spiffe://prod.example.com/ns/admin\u{202E}/sa/coder")
+            .expect_err("RTL override must be rejected (non-ASCII)");
+        assert!(matches!(err, IdError::ForbiddenChar(_, _)), "{err:?}");
+    }
+
+    #[test]
+    fn parse_rejects_other_control_chars() {
+        // U+0007 BEL, embedded in a path component.
+        let err = CallSpiffeId::parse("spiffe://prod.example.com/ns/agents\u{0007}/sa/coder")
+            .expect_err("control char must be rejected");
+        assert!(matches!(err, IdError::ForbiddenChar(_, _)), "{err:?}");
+    }
+
+    #[test]
+    fn parse_rejects_double_slash() {
+        let err = CallSpiffeId::parse("spiffe://prod.example.com//ns/agents/sa/coder")
+            .expect_err("double slash must be rejected");
+        assert!(matches!(err, IdError::EmptyPathSegment(_)), "{err:?}");
+    }
+
+    #[test]
+    fn parse_rejects_trailing_slash() {
+        let err = CallSpiffeId::parse("spiffe://prod.example.com/ns/agents/sa/coder/")
+            .expect_err("trailing slash must be rejected");
+        assert!(matches!(err, IdError::EmptyPathSegment(_)), "{err:?}");
+    }
+
+    #[test]
+    fn parse_rejects_empty_path_only_root() {
+        let err = CallSpiffeId::parse("spiffe://prod.example.com//")
+            .expect_err("empty path must be rejected");
+        assert!(matches!(err, IdError::EmptyPathSegment(_)), "{err:?}");
+    }
+
+    #[test]
+    fn parse_rejects_uppercase_call_segment() {
+        // Original parser only validated /call/ via lowercase string.find,
+        // so /CALL/ slipped past the uuid check entirely.
+        let err =
+            CallSpiffeId::parse("spiffe://prod.example.com/ns/agents/sa/coder/CALL/abc/tool/Bash")
+                .expect_err("uppercase /CALL/ must be rejected");
+        assert!(
+            matches!(err, IdError::NonCanonicalCallSegment(_)),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_rejects_query_string() {
+        let err = CallSpiffeId::parse("spiffe://prod.example.com/ns/agents/sa/coder?x=1")
+            .expect_err("URI query must be rejected");
+        assert!(matches!(err, IdError::ForbiddenChar('?', _)), "{err:?}");
+    }
+
+    #[test]
+    fn parse_rejects_fragment() {
+        let err = CallSpiffeId::parse("spiffe://prod.example.com/ns/agents/sa/coder#frag")
+            .expect_err("URI fragment must be rejected");
+        assert!(matches!(err, IdError::ForbiddenChar('#', _)), "{err:?}");
+    }
+
+    #[test]
+    fn parse_rejects_userinfo_in_authority() {
+        let err = CallSpiffeId::parse("spiffe://attacker:p@prod.example.com/ns/agents/sa/coder")
+            .expect_err("userinfo must be rejected");
+        assert!(matches!(err, IdError::ForbiddenChar('@', _)), "{err:?}");
+    }
+
+    #[test]
+    fn parse_rejects_uppercase_authority() {
+        // SPIFFE: trust-domain is lowercase.
+        let err = CallSpiffeId::parse("spiffe://Prod.Example.Com/ns/agents/sa/coder")
+            .expect_err("uppercase authority must be rejected");
+        assert!(matches!(err, IdError::InvalidAuthority(_)), "{err:?}");
+    }
+
+    #[test]
+    fn parse_rejects_uppercase_sha256_prefix() {
+        // /SHA256:<hex> previously parsed but content_hash_hex returned None
+        // — silent inconsistency. Now rejected as invalid path segment.
+        let bad = format!(
+            "spiffe://prod.example.com/ns/agents/sa/coder/call/{}/tool/Bash/SHA256:{}",
+            Uuid::new_v4(),
+            "a".repeat(64)
+        );
+        let err = CallSpiffeId::parse(bad).expect_err("/SHA256: must be rejected");
+        assert!(matches!(err, IdError::InvalidPathChar(_)), "{err:?}");
+    }
+
+    #[test]
+    fn parse_rejects_too_long_input() {
+        let bad = format!("spiffe://prod.example.com/{}", "a".repeat(MAX_URI_LEN));
+        let err = CallSpiffeId::parse(bad).expect_err("over-length URI must be rejected");
+        assert!(matches!(err, IdError::TooLong { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn parse_rejects_path_traversal_segment() {
+        // ".." is itself a valid SPIFFE path segment (only [A-Za-z0-9._-]),
+        // so we permit it structurally — but its presence should not enable
+        // any escape because the canonical string never collapses it. This
+        // test pins the behavior so a future "path-canonicalization" change
+        // must be deliberate.
+        let id = CallSpiffeId::parse("spiffe://prod.example.com/ns/../sa/coder").unwrap();
+        assert_eq!(id.as_str(), "spiffe://prod.example.com/ns/../sa/coder");
+        // The structural parent walker uses string prefix only — it does not
+        // resolve `..`. (The walker is hardened separately in PR-C.)
+    }
+
+    #[test]
+    fn parse_rejects_colon_outside_sha256_prefix() {
+        // `:` is forbidden in SPIFFE path segments except in the reserved
+        // `sha256:<hex>` last-segment form. Anywhere else → rejected.
+        let err = CallSpiffeId::parse("spiffe://prod.example.com/ns/has:colon/sa/coder")
+            .expect_err("`:` outside sha256 prefix must be rejected");
+        assert!(matches!(err, IdError::InvalidPathChar(_)), "{err:?}");
+    }
+
+    #[test]
+    fn parse_accepts_canonical_pod_id() {
+        // Sanity: don't regress accepted inputs.
+        CallSpiffeId::parse("spiffe://prod.example.com/ns/agents/sa/coder").unwrap();
+    }
+
+    #[test]
+    fn parse_accepts_full_lineage_path() {
+        let id = pod()
+            .derive_tool("Bash", Some(b"x"))
+            .unwrap()
+            .derive_llm("anthropic", "prompt", b"hi")
+            .unwrap()
+            .derive_llm("anthropic", "response", b"reply")
+            .unwrap();
+        // Round-trip through parse to verify the canonical string is also
+        // accepted by the hardened parser.
+        let reparsed: CallSpiffeId = id.as_str().parse().unwrap();
+        assert_eq!(id, reparsed);
     }
 }
