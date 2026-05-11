@@ -70,3 +70,21 @@ pub trait IdentityFetcher: Send + Sync {
         self.fetch_jwt_svid(subject, audience)
     }
 }
+
+/// Sign canonical edge bytes to produce a [`crate::Proof`].
+///
+/// Separated from [`IdentityFetcher`] because edge signing and JWT-SVID
+/// minting can have distinct lifecycles — e.g., an issuer may want to sign
+/// edges with a long-lived key while minting JWT-SVIDs with a per-call key.
+/// The default impl on [`IdentityFetcher`] is intentionally absent so each
+/// issuer makes the choice deliberately.
+pub trait EdgeSigner: Send + Sync {
+    /// JWS algorithm identifier this signer uses (e.g., "EdDSA").
+    fn alg(&self) -> &str;
+
+    /// JWS key id this signer uses; resolves to a verifying key in the JWKS.
+    fn kid(&self) -> &str;
+
+    /// Sign the given canonical bytes. Returns the raw signature bytes.
+    fn sign(&self, canonical_bytes: &[u8]) -> Result<Vec<u8>, IssuerError>;
+}

@@ -15,13 +15,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::pkcs8::EncodePrivateKey;
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::id::CallSpiffeId;
-use crate::issuer::{IdentityFetcher, IssuerError, SvidClaims};
+use crate::issuer::{EdgeSigner, IdentityFetcher, IssuerError, SvidClaims};
 
 /// One-time guard so we only `tracing::warn!` once per process about
 /// LocalIssuer being demo-only.
@@ -125,6 +125,33 @@ impl LocalIssuer {
     pub fn signing_key(&self) -> &SigningKey {
         &self.signing_key
     }
+
+    /// Publish a single-key JWKS (JSON Web Key Set) suitable for serializing
+    /// to disk or to an HTTPS endpoint. The verifier (in any process) loads
+    /// this, looks up the key by `kid`, and verifies signatures against it.
+    ///
+    /// The format follows RFC 7517 + RFC 8037 (Ed25519 OKP):
+    ///
+    /// ```text
+    /// {
+    ///   "keys": [
+    ///     { "kty": "OKP", "crv": "Ed25519", "kid": "<kid>", "x": "<base64url>", "alg": "EdDSA", "use": "sig" }
+    ///   ]
+    /// }
+    /// ```
+    pub fn publish_jwks(&self) -> serde_json::Value {
+        let x = URL_SAFE_NO_PAD.encode(self.verifying_key.as_bytes());
+        serde_json::json!({
+            "keys": [{
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "kid": self.key_id,
+                "x": x,
+                "alg": "EdDSA",
+                "use": "sig",
+            }]
+        })
+    }
 }
 
 impl IdentityFetcher for LocalIssuer {
@@ -160,6 +187,21 @@ impl IdentityFetcher for LocalIssuer {
         let token = jsonwebtoken::encode(&header, &claims, &self.encoding_key)
             .map_err(|e| IssuerError::Backend(e.to_string()))?;
         Ok(token)
+    }
+}
+
+impl EdgeSigner for LocalIssuer {
+    fn alg(&self) -> &str {
+        "EdDSA"
+    }
+
+    fn kid(&self) -> &str {
+        &self.key_id
+    }
+
+    fn sign(&self, canonical_bytes: &[u8]) -> Result<Vec<u8>, IssuerError> {
+        let sig = self.signing_key.sign(canonical_bytes);
+        Ok(sig.to_bytes().to_vec())
     }
 }
 
