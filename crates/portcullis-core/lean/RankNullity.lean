@@ -158,22 +158,42 @@ theorem gaussRankBool_zero_matrix (M : List (List Bool))
 
 /-! ## Rank subadditivity under row concatenation
 
-The following lemma is the structural input to the *holy grail* Alignment
-Tax Theorem: appending `k` rows to a matrix increases its GF(2) rank by
-at most `k`.
+### Foundation audit (honest scoping)
+
+The tight subadditivity statement below — `gaussRankBool (M ++ N) ≤
+gaussRankBool M + N.length` — is the **single load-bearing structural
+sorry** for the entire Alignment-Tax / H¹-cost chain. Every open
+sorry downstream in `AlignmentTaxBridge.lean`
+(`h1_basis_realiser_exists`, `fullDeclassList`-realising existence,
+both copies of the `Nat.find` witness) reduces to this one fact.
 
 Classical linear algebra: `rank(A ++ B) ≤ rank(A) + rank(B) ≤ rank(A) +
 (#rows of B)`. For `gaussRankBool` on `List (List Bool)` the identity is
 intuitively "each appended row adds at most one new pivot".
 
-Proof strategy (follow-up PR): induction on `N`, using the "add-one-row
-increases rank by at most 1" lemma as the inductive step. The add-one
-step unfolds `gaussRankBool.go` on the augmented matrix and tracks the
-rank through the elimination phase. -/
+**Why it's hard here**: `gaussRankBool` is a fuel-bounded recursive
+algorithm whose recursion processes all rows together. It doesn't
+admit a clean inductive proof separating "M's contribution" from
+"N's contribution". The natural workaround is to bridge to Mathlib's
+`Matrix.rank` (file `MatrixBridge.lean`), but that path hit a Lean
+elaboration-heartbeat timeout (tracked as a Zulip-level blocker).
 
-/-- **Rank subadditivity**: appending `k` rows to a matrix increases its
-    GF(2) rank by at most `k`. Stated as a sorry here; the proof is the
-    structural content of the next PR in the holy-grail sprint. -/
+**Weak version** (`gaussRankBool_append_le_length`, proved below):
+the trivial consequence of `gaussRankBool_le_rows`. Not enough to
+close the downstream chain but a useful honest dependency.
+-/
+
+/-- **Weak rank subadditivity** (provable, trivial): the rank of any
+    matrix is bounded by its row count. Not strong enough for the
+    alignment tax theorem but records the honest guaranteed bound. -/
+theorem gaussRankBool_append_le_length (M N : List (List Bool)) :
+    gaussRankBool (M ++ N) ≤ M.length + N.length := by
+  have h := gaussRankBool_le_rows (M ++ N)
+  simpa [List.length_append] using h
+
+/-- **Rank subadditivity** (tight — sorry): appending `k` rows to a
+    matrix increases its GF(2) rank by at most `k`. The single open
+    structural lemma for the alignment-tax chain. -/
 theorem gaussRankBool_append_le (M N : List (List Bool)) :
     gaussRankBool (M ++ N) ≤ gaussRankBool M + N.length := by
   sorry
