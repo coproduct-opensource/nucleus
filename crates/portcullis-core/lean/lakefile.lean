@@ -2,8 +2,14 @@ import Lake
 open Lake DSL
 
 package «portcullisCore» where
+  -- Release mode compiles tactic C code with -O3 (vs default debug). Faster
+  -- native-decide / algorithm-heavy proofs at the cost of slower initial build.
+  buildType := .release
   leanOptions := #[
-    ⟨`autoImplicit, false⟩
+    ⟨`autoImplicit, false⟩,
+    -- Raise default heartbeat budget so individual theorems needn't override.
+    -- Individual declarations can still bump higher with `set_option`.
+    ⟨`maxHeartbeats, (400000 : Nat)⟩
   ]
 
 -- Aeneas standard library (provides Result monad, scalar types, etc.)
@@ -103,3 +109,79 @@ lean_lib «MatrixBridge» where
 -- Multi-agent cohomology: lifting IFC sheaf to communication graphs.
 lean_lib «MultiAgentCohomology» where
   roots := #[`MultiAgentCohomology]
+
+-- Concrete alignment-tax non-vacuity: smoke tests on diamond / directInject.
+lean_lib «AlignmentTaxConcrete» where
+  roots := #[`AlignmentTaxConcrete]
+
+-- Braid-group cohomology speculation: divisibility checks + research targets.
+lean_lib «BraidCohomology» where
+  roots := #[`BraidCohomology]
+
+-- AugmentedBorromean: adds missing obs_ac, empirically tests S₃ symmetry.
+lean_lib «AugmentedBorromean» where
+  roots := #[`AugmentedBorromean]
+
+-- AugmentedBorromeanActions: explicit S₃ permutation matrices on C¹, rank tests.
+lean_lib «AugmentedBorromeanActions» where
+  roots := #[`AugmentedBorromeanActions]
+
+-- AugmentedBorromeanTheorems: formal theorems for the S₃ action values.
+lean_lib «AugmentedBorromeanTheorems» where
+  roots := #[`AugmentedBorromeanTheorems]
+
+-- BraidObstruction: char-2 obstruction to braid-group lift via set-theoretic rack.
+lean_lib «BraidObstruction» where
+  roots := #[`BraidObstruction]
+
+-- DiamondActions: Z/2 action test on diamondSite's H¹ = 2.
+lean_lib «DiamondActions» where
+  roots := #[`DiamondActions]
+
+-- RealWorldActions: Z/2 action tests on BLP, Biba, PrivEsc, Indirect posets.
+lean_lib «RealWorldActions» where
+  roots := #[`RealWorldActions]
+
+-- Braid empirical: S₃ symmetry + Brunnian drop tests via native_decide.
+lean_lib «BraidEmpirical» where
+  roots := #[`BraidEmpirical]
+
+-- Braid analysis: structural explanation of BraidEmpirical's 36/44 asymmetry.
+lean_lib «BraidAnalysis» where
+  roots := #[`BraidAnalysis]
+
+-- Alignment sample complexity: Fano-analog lower bound for fine-tuning.
+lean_lib «AlignmentSampleComplexity» where
+  roots := #[`AlignmentSampleComplexity]
+
+-- Compositional alignment: Mayer-Vietoris-analog for spec composition.
+lean_lib «CompositionalAlignment» where
+  roots := #[`CompositionalAlignment]
+-- PAC / VC-dimension bridge: classical learning-theory equivalence for rank H¹.
+lean_lib «PACVCBridge» where
+  roots := #[`PACVCBridge]
+
+-- Universality theorem: rank H¹ is a complete invariant for alignment specs.
+lean_lib «UniversalityTheorem» where
+  roots := #[`UniversalityTheorem]
+
+-- Higher obstruction theory: H² and Grothendieck spectral sequence analog.
+lean_lib «HigherObstruction» where
+  roots := #[`HigherObstruction]
+
+-- Euler characteristic: single-invariant collapse + Möbius combinatorial bridge.
+lean_lib «EulerCharacteristic» where
+  roots := #[`EulerCharacteristic]
+-- Entropic cocycle: Shannon-entropy-valued H¹ class (Baudot-Bennequin analog).
+lean_lib «EntropicCocycle» where
+  roots := #[`EntropicCocycle]
+-- Quantum extension: von Neumann cocycle + Born-rule quadratic sample bound.
+lean_lib «QuantumExtension» where
+  roots := #[`QuantumExtension]
+-- Persistent alignment: barcode-valued cost over training filtrations.
+lean_lib «PersistentAlignment» where
+  roots := #[`PersistentAlignment]
+
+-- Lipschitz-equivariance: certified robustness radius from rank H¹.
+lean_lib «LipschitzEquivariance» where
+  roots := #[`LipschitzEquivariance]
