@@ -4203,11 +4203,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0529410abe238729a60b108898784df8984c87f6054c9c4fcacc47e4803c1ce1"
 dependencies = [
  "base64",
+ "ed25519-dalek",
  "getrandom 0.2.17",
+ "hmac 0.12.1",
  "js-sys",
+ "p256 0.13.2",
+ "p384",
  "pem",
+ "rand 0.8.5",
+ "rsa",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "signature 2.2.0",
  "simple_asn1",
 ]
@@ -4790,6 +4797,7 @@ dependencies = [
  "hex",
  "hmac 0.13.0",
  "nucleus-client",
+ "nucleus-lineage",
  "nucleus-proto",
  "nucleus-spec",
  "portcullis",
@@ -4879,6 +4887,25 @@ name = "nucleus-ifc"
 version = "1.0.0"
 dependencies = [
  "portcullis-core",
+]
+
+[[package]]
+name = "nucleus-lineage"
+version = "1.0.0"
+dependencies = [
+ "base64",
+ "chrono",
+ "ed25519-dalek",
+ "hex",
+ "jsonwebtoken",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.18",
+ "ureq",
+ "uuid",
 ]
 
 [[package]]
