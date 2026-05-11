@@ -79,9 +79,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # Pinned to 0.31 because tracing-opentelemetry 0.32.1 (latest) still depends on
 # opentelemetry ^0.31; bumping to 0.32 here introduces a Tracer-trait mismatch.
 # Revisit when tracing-opentelemetry releases a 0.32-compatible version.
-opentelemetry = "0.31"
-opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic", "http-proto", "trace"] }
+opentelemetry = "0.32"
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "http-proto", "trace"] }
 tracing-opentelemetry = "0.32"
 
 # Crypto/signing
