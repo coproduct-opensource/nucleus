@@ -134,15 +134,11 @@ fn handle_help_input(app: &mut App, key: KeyCode) {
 
 fn handle_matrix_input(app: &mut App, key: KeyCode) {
     match key {
-        KeyCode::Up | KeyCode::Char('k') => {
-            if app.matrix_selected_row > 0 {
-                app.matrix_selected_row -= 1;
-            }
+        KeyCode::Up | KeyCode::Char('k') if app.matrix_selected_row > 0 => {
+            app.matrix_selected_row -= 1;
         }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if app.matrix_selected_row < 10 {
-                app.matrix_selected_row += 1;
-            }
+        KeyCode::Down | KeyCode::Char('j') if app.matrix_selected_row < 10 => {
+            app.matrix_selected_row += 1;
         }
         KeyCode::Char('m') => app.screen = Screen::Meet,
         KeyCode::Char('h') => app.screen = Screen::Hasse,
@@ -159,14 +155,12 @@ fn handle_hasse_input(app: &mut App, key: KeyCode) {
         KeyCode::Up | KeyCode::Char('k') => app.hasse_state.prev_node(),
         KeyCode::Down | KeyCode::Char('j') => app.hasse_state.next_node(),
         KeyCode::Char('m') => app.hasse_state.toggle_meet_mode(),
-        KeyCode::Enter | KeyCode::Char(' ') => {
-            if app.hasse_state.meet_mode {
-                // Compute meet between first and second selected nodes
-                if let Some(_result) = app.hasse_state.select_meet_second() {
-                    // Could show result in a popup or switch to Meet screen
-                    app.screen = Screen::Meet;
-                }
-            }
+        // Compute meet between first and second selected nodes; result is shown
+        // by switching to the Meet screen.
+        KeyCode::Enter | KeyCode::Char(' ')
+            if app.hasse_state.meet_mode && app.hasse_state.select_meet_second().is_some() =>
+        {
+            app.screen = Screen::Meet;
         }
         KeyCode::Esc | KeyCode::Backspace => {
             if app.hasse_state.meet_mode {

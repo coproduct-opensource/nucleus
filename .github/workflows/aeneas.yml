@@ -46,8 +46,28 @@ jobs:
           toolchain: ${{ env.CHARON_NIGHTLY }}
           components: rustc-dev,llvm-tools-preview,rust-src
 
+      # --- Cache cargo registry + target for Charon's MIR extraction ---
+      # Without this, Charon recompiles the portcullis_core crate and its
+      # dependencies from scratch every run (~5-10 min).
+      - name: Rust / cargo cache (Charon target dir)
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2.9.1
+        with:
+          workspaces: crates/portcullis-core
+          key: charon-${{ env.CHARON_NIGHTLY }}-${{ env.AENEAS_RELEASE }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # --- Cache the Aeneas pre-built binary tarball by release tag ---
+      # The tarball is ~100 MB. Without caching, every run re-downloads it.
+      - name: Cache Aeneas binary
+        id: cache-aeneas-bin
+        uses: actions/cache@v5
+        with:
+          path: /tmp/aeneas-bin
+          key: aeneas-bin-${{ runner.os }}-${{ env.AENEAS_RELEASE }}
+
       # --- Download pre-built Aeneas + Charon (no OCaml build required) ---
       - name: Download Aeneas pre-built binaries
+        if: steps.cache-aeneas-bin.outputs.cache-hit != 'true'
         run: |
           gh release download "$AENEAS_RELEASE" \
             --repo AeneasVerif/aeneas \
@@ -55,9 +75,11 @@ jobs:
             --dir /tmp
           mkdir -p /tmp/aeneas-bin
           tar xzf /tmp/aeneas-linux-x86_64.tar.gz -C /tmp/aeneas-bin
-          echo "/tmp/aeneas-bin" >> "$GITHUB_PATH"
         env:
           GH_TOKEN: ${{ github.token }}
+
+      - name: Add Aeneas to PATH
+        run: echo "/tmp/aeneas-bin" >> "$GITHUB_PATH"
 
       - name: Verify tools
         run: |
@@ -129,9 +151,18 @@ jobs:
           path: |
             crates/portcullis-core/lean/.lake
             ~/.elan
-          key: lean-aeneas-${{ runner.os }}-${{ hashFiles('crates/portcullis-core/lean/lean-toolchain', 'crates/portcullis-core/lean/lakefile.lean') }}
+            ~/.cache/mathlib
+          # Include lake-manifest.json so dep commit bumps invalidate the cache.
+          key: lean-aeneas-${{ runner.os }}-${{ hashFiles('crates/portcullis-core/lean/lean-toolchain', 'crates/portcullis-core/lean/lakefile.lean', 'crates/portcullis-core/lean/lake-manifest.json') }}
           restore-keys: |
             lean-aeneas-${{ runner.os }}-
+
+      # Fetch prebuilt Mathlib .olean artifacts from Azure. Without this step
+      # a cold cache triggers a ~1 hour full Mathlib compile; with it, the
+      # Mathlib layer downloads in ~5 minutes.
+      - name: Fetch Mathlib cache (prebuilt oleans)
+        working-directory: crates/portcullis-core/lean
+        run: lake exe cache get || true
 
       - name: lake build (type-check proofs)
         working-directory: crates/portcullis-core/lean

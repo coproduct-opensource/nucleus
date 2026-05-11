@@ -21,6 +21,7 @@ portcullis = { path = "../portcullis", features = ["spec"] }
 nucleus-spec = { path = "../nucleus-spec" }
 nucleus-client = { path = "../nucleus-client" }
 nucleus-proto = { path = "../nucleus-proto" }
+nucleus-lineage = { path = "../nucleus-lineage" }
 
 # gRPC client
 tonic = { workspace = true }
