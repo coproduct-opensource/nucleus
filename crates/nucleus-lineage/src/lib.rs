@@ -5,9 +5,9 @@
 //! the lineage; an optional content-hash suffix makes IDs content-addressed
 //! (identical data → identical ID, regardless of derivation path).
 //!
-//! Lineage edges form an append-only DAG persisted via the [`LineageSink`]
-//! trait. The `nucleus lineage` CLI walks this DAG to answer "where did
-//! this data come from".
+//! Lineage edges form a DAG persisted via the [`LineageSink`] trait.
+//! The `nucleus lineage` CLI walks this DAG to answer "where did this data
+//! come from".
 //!
 //! # Path scheme
 //!
@@ -19,16 +19,28 @@
 //!   /call/<uuid>/derived/sha256:<hex>                           ← downstream artifact
 //! ```
 //!
-//! The trust-domain authority and `/ns/<ns>/sa/<sa>` prefix are owned by the
-//! orchestrator (typically nucleus-node); this crate only manipulates the
-//! `/call/...` suffix.
+//! # Cargo features
+//!
+//! - `dev` *(non-default)* — enables the in-process [`LocalIssuer`]
+//!   demo JWT-SVID minter. Pulls in `jsonwebtoken`, `ed25519-dalek`, `rand`,
+//!   `base64`. **Do not enable in production.**
+//!
+//! [`LocalIssuer`]: crate::local_issuer::LocalIssuer
 
 pub mod edge;
 pub mod id;
 pub mod issuer;
+pub mod proof;
 pub mod sink;
 
+#[cfg(feature = "dev")]
+pub mod local_issuer;
+
 pub use edge::{EdgeKind, LineageEdge};
-pub use id::{CallSpiffeId, IdError};
-pub use issuer::{IdentityFetcher, IssuerError, LocalIssuer, SvidClaims};
+pub use id::{CallSpiffeId, IdError, MAX_URI_LEN};
+pub use issuer::{IdentityFetcher, IssuerError, SvidClaims};
+pub use proof::{canonical_edge_bytes, Proof};
 pub use sink::{InMemorySink, JsonlSink, LineageSink, SinkError};
+
+#[cfg(feature = "dev")]
+pub use local_issuer::LocalIssuer;

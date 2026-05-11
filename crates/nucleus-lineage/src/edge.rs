@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::id::CallSpiffeId;
+use crate::proof::Proof;
 
 /// What kind of derivation this edge represents.
 ///
@@ -58,6 +59,14 @@ pub struct LineageEdge {
     /// Kept lexicographically sorted via BTreeMap for stable serialization.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attrs: BTreeMap<String, String>,
+    /// Cryptographic proof signed over the edge's canonical bytes (see
+    /// [`crate::proof::canonical_edge_bytes`]). `None` for legacy / unsigned
+    /// edges. Edges produced by this crate's current emitters are unsigned;
+    /// signing lands when an [`crate::IdentityFetcher`] impl gains an
+    /// `sign_edge` method (PR-D). Verifiers should reject `None` in strict
+    /// mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof: Option<Proof>,
 }
 
 impl LineageEdge {
@@ -70,6 +79,7 @@ impl LineageEdge {
             content_hash_hex: None,
             ts: Utc::now(),
             attrs: BTreeMap::new(),
+            proof: None,
         }
     }
 
@@ -82,6 +92,7 @@ impl LineageEdge {
             content_hash_hex: None,
             ts: Utc::now(),
             attrs: BTreeMap::new(),
+            proof: None,
         }
     }
 
@@ -94,6 +105,12 @@ impl LineageEdge {
     /// Builder: attach a single attribute.
     pub fn with_attr(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.attrs.insert(key.into(), value.into());
+        self
+    }
+
+    /// Builder: attach a cryptographic proof.
+    pub fn with_proof(mut self, proof: Proof) -> Self {
+        self.proof = Some(proof);
         self
     }
 }
@@ -168,6 +185,7 @@ mod tests {
             content_hash_hex: None,
             ts: Utc::now(),
             attrs: BTreeMap::new(),
+            proof: None,
         };
         assert_eq!(edge.parents.len(), 2);
         assert!(matches!(edge.kind, EdgeKind::Merge));
