@@ -117,6 +117,9 @@ pub struct WebFetchParams {
 /// MCP server with session-scoped uninhabitable_state guard and schema pinning.
 pub struct NucleusMcpServer {
     state: Arc<AppState>,
+    // rmcp 1.6's `#[tool_router]` macro stopped reading this field directly;
+    // it's still required for the macro's `Self::tool_router()` ctor to bind.
+    #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
     /// Session-scoped exposure-tracking guard (graded monad).
     guard: Arc<GradedExposureGuard>,

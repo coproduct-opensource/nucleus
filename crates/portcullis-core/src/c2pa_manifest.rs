@@ -19,7 +19,7 @@
 //! // Sign with your signer implementation and embed into asset
 //! ```
 
-use c2pa::Builder;
+use c2pa::{Builder, Context};
 
 use crate::c2pa_assertions::{
     AiTransparencyAssertion, C2paActionsAssertion, WitnessDigestAssertion,
@@ -84,7 +84,11 @@ impl<'a> C2paManifestBuilder<'a> {
         let manifest_json = serde_json::to_string(&manifest_def)
             .map_err(|e| C2paManifestError::SerializationError(e.to_string()))?;
 
-        let mut builder = Builder::from_json(&manifest_json)
+        // c2pa 0.82 deprecated `Builder::from_json` in favor of an explicit
+        // Context (instead of thread-local settings). We pass a default
+        // Context and the same manifest JSON via `with_definition`.
+        let mut builder = Builder::from_context(Context::new())
+            .with_definition(&manifest_json)
             .map_err(|e| C2paManifestError::BuilderError(e.to_string()))?;
 
         // 1. c2pa.actions — per-field derivation actions
