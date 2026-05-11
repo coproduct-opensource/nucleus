@@ -614,7 +614,10 @@ fn build_local_pod_spec(
     let credentials = if env.is_empty() {
         None
     } else {
-        Some(CredentialsSpec { env })
+        Some(CredentialsSpec {
+            env,
+            ..Default::default()
+        })
     };
 
     Ok(SpecPodSpec::new(PodSpecInner {

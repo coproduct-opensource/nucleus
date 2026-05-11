@@ -46,6 +46,39 @@ Full inventory: 165 Lean 4 theorems (zero `sorry`), 112 Kani BMC proofs, 297 Ver
 | `a ⊔ a = a` | Join is idempotent | Provably safe caching |
 | `a ≤ a ⊔ b` | Join is monotone | Taint never decreases |
 
+## Per-Call SPIFFE Provenance
+
+Every tool call gets a SPIFFE identity. Every byte of output has a verifiable provenance chain back to its sources.
+
+`nucleus-lineage` extends [SPIFFE](https://spiffe.io/) workload identity from the *pod* level down to the *individual call* level. Each tool invocation, LLM call, or derived artifact mints a child SPIFFE ID whose path encodes its lineage and whose suffix is a content hash:
+
+```
+spiffe://<trust>/ns/<ns>/sa/<sa>                                   ← pod (root)
+  /call/<uuid>/tool/<tool>                                         ← tool call
+  /call/<uuid>/llm/<provider>/prompt/sha256:<hex>                  ← LLM input
+  /call/<uuid>/llm/<provider>/response/sha256:<hex>                ← LLM output
+  /call/<uuid>/derived/sha256:<hex>                                ← downstream artifact
+```
+
+Identical content → identical content-hash suffix, regardless of derivation path. The full path doubles as a human-readable witness; the JWT-SVIDs minted at boundaries are cryptographic witnesses of the same chain.
+
+Try it end-to-end (Bash → Write → mock-LLM with JWT verification):
+
+```bash
+cargo run -p nucleus-lineage --example three_step_demo
+nucleus lineage <leaf-spiffe-id> --log ./nucleus-lineage.jsonl
+```
+
+Output formats: `--format tree` (default), `json`, or `dot` (for Graphviz).
+
+| What it gives you | What it doesn't |
+|---|---|
+| Cryptographically-signed identity per call (Ed25519 JWT-SVIDs) | Replace IFC labeling — composes with portcullis, doesn't replace it |
+| Content-addressed lineage that survives across pods and providers | Echo-back from external relying parties (e.g. Anthropic records `sub`, doesn't return it on responses) |
+| `nucleus lineage` walks the full DAG (ancestors or descendants) | A SPIRE Workload API client by default — the demo uses a `LocalIssuer`; production wiring lives in `nucleus-identity`'s `spire` feature |
+
+Categorically: per-call SPIFFE IDs lift the workload category to a bicategory where morphisms (calls) carry identities, making end-to-end IFC sheaves measurable rather than only inferable. See [`crates/nucleus-lineage/README.md`](crates/nucleus-lineage/README.md) for the longer story.
+
 ## How Nucleus Stops Real Exploits
 
 | CVE | Attack | Why it worked | Nucleus defense |
@@ -79,6 +112,7 @@ Agent → MCP → tool-proxy (inside VM) → portcullis check → OS operation
 │  Commands × Budget × Time + DPI              │
 ├──────────────────────────────────────────────┤
 │  nucleus-identity (SPIFFE + mTLS)            │
+│  nucleus-lineage  (per-call SPIFFE DAG)      │
 ├──────────────────────────────────────────────┤
 │  Firecracker microVM / seccomp / netns       │
 └──────────────────────────────────────────────┘
@@ -113,6 +147,7 @@ Agent → MCP → tool-proxy (inside VM) → portcullis check → OS operation
 | [**nucleus-tool-proxy**](crates/nucleus-tool-proxy/) | MCP tool proxy (permission enforcement gateway) |
 | [**nucleus-mcp**](crates/nucleus-mcp/) | MCP server bridging to tool-proxy |
 | [**nucleus-identity**](crates/nucleus-identity/) | SPIFFE workload identity, mTLS, certificate management |
+| [**nucleus-lineage**](crates/nucleus-lineage/) | Per-call SPIFFE-derived data lineage: `CallSpiffeId`, `LineageEdge`, `IdentityFetcher` |
 | [**nucleus-ifc**](crates/nucleus-ifc/) | Standalone IFC library for AI agents |
 | [**nucleus-memory**](crates/nucleus-memory/) | Governed memory with per-entry IFC labels |
 | [**nucleus-spec**](crates/nucleus-spec/) | PodSpec definitions (policy, network, credentials) |

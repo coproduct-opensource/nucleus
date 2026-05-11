@@ -396,21 +396,44 @@ pub struct CgroupSetting {
 
 /// Credentials to inject into a pod.
 ///
-/// Credentials are passed securely to the pod's workload as environment variables.
-/// Values are stored in memory-mapped tmpfs and never written to persistent storage.
+/// Two delivery modes, both vendor-agnostic:
 ///
-/// SECURITY NOTE: This struct implements a custom `Debug` that redacts secret values.
+/// 1. `env` — long-lived secrets passed as environment variables. Suitable for
+///    development loops and providers that do not support OIDC token exchange.
+///    Values are stored in memory-mapped tmpfs and never written to persistent
+///    storage.
+///
+/// 2. `workload_identity` — short-lived OIDC tokens (typically JWT-SVIDs from a
+///    SPIFFE workload API or Kubernetes projected service-account tokens) fetched
+///    at pod start and refreshed before expiry. The pod sees only a file path via
+///    an env var; no static secret material crosses the boundary. Works with any
+///    relying party that accepts OIDC token exchange (Anthropic, OpenAI, GCP,
+///    AWS, …); nucleus only knows about the token-exchange dance.
+///
+/// SECURITY NOTE: This struct implements a custom `Debug` that redacts secret
+/// values for the `env` map. `workload_identity` entries contain no secret
+/// material so they debug normally.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct CredentialsSpec {
     /// Environment variables containing credentials.
     /// Keys are the variable names (e.g., `LLM_API_TOKEN`), values are the secrets.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+
+    /// OIDC workload-identity token bindings.
+    ///
+    /// Each entry causes the pod runtime to fetch a short-lived JWT before the
+    /// workload starts, write it to `token_path` on a memory-backed tmpfs, and
+    /// refresh it before expiry. The application reads the file path from the
+    /// `env_var` environment variable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workload_identity: Vec<WorkloadIdentitySpec>,
 }
 
 impl std::fmt::Debug for CredentialsSpec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Redact all credential values for safe debug output
+        // Redact env values for safe debug output. Workload-identity entries
+        // contain no secret material (just an audience and a file path).
         let redacted: BTreeMap<&str, &str> = self
             .env
             .keys()
@@ -418,6 +441,7 @@ impl std::fmt::Debug for CredentialsSpec {
             .collect();
         f.debug_struct("CredentialsSpec")
             .field("env", &redacted)
+            .field("workload_identity", &self.workload_identity)
             .finish()
     }
 }
@@ -434,9 +458,15 @@ impl CredentialsSpec {
         self
     }
 
+    /// Add a workload-identity binding.
+    pub fn with_workload_identity(mut self, spec: WorkloadIdentitySpec) -> Self {
+        self.workload_identity.push(spec);
+        self
+    }
+
     /// Check if credentials are empty.
     pub fn is_empty(&self) -> bool {
-        self.env.is_empty()
+        self.env.is_empty() && self.workload_identity.is_empty()
     }
 
     /// Get a redacted representation for logging.
@@ -445,6 +475,88 @@ impl CredentialsSpec {
             .keys()
             .map(|k| (k.as_str(), "[REDACTED]"))
             .collect()
+    }
+}
+
+/// A single OIDC workload-identity binding.
+///
+/// At pod start, the runtime fetches a JWT from `source` with the configured
+/// `audience`, writes it to `token_path` on a memory-backed tmpfs, and refreshes
+/// before expiry per `refresh`. The workload reads the file path via `env_var`.
+///
+/// This type is provider-agnostic. The orchestrator (or operator) chooses the
+/// `audience` value for whichever relying party the workload calls.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkloadIdentitySpec {
+    /// Logical name (e.g. "anthropic", "openai-prod"). Used in audit records.
+    pub name: String,
+
+    /// OIDC audience to request. Provider-defined; nucleus does not validate.
+    /// Examples: `https://api.anthropic.com`, `https://api.openai.com`.
+    pub audience: String,
+
+    /// Environment variable the application reads to find the token file.
+    /// Convention: `<PROVIDER>_IDENTITY_TOKEN_FILE`.
+    pub env_var: String,
+
+    /// Where the token is written inside the pod. MUST be on a memory-backed
+    /// mount; the runtime is responsible for enforcing this.
+    pub token_path: PathBuf,
+
+    /// Refresh policy. Defaults to refreshing at 50% of token lifetime.
+    #[serde(default)]
+    pub refresh: RefreshPolicy,
+
+    /// Where the JWT comes from. Defaults to the local SPIFFE Workload API.
+    #[serde(default)]
+    pub source: IdentitySource,
+}
+
+/// Token refresh policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RefreshPolicy {
+    /// Refresh when the token has consumed `fraction` of its lifetime.
+    /// Value is in basis points (0–10000) so the type stays `Eq`.
+    LifetimeFraction { basis_points: u16 },
+    /// Refresh at a fixed cadence regardless of token lifetime.
+    FixedInterval { seconds: u64 },
+}
+
+impl Default for RefreshPolicy {
+    fn default() -> Self {
+        // 5000 bp = 50% of token lifetime.
+        Self::LifetimeFraction { basis_points: 5000 }
+    }
+}
+
+/// Source of the workload identity token.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum IdentitySource {
+    /// Fetch from the local SPIFFE Workload API (e.g. SPIRE Agent socket).
+    /// `socket_path` defaults to the SPIFFE-standard well-known location when
+    /// `None` (the runtime resolves it).
+    Spiffe {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        socket_path: Option<PathBuf>,
+    },
+    /// Fetch a Kubernetes projected service-account token via the kubelet.
+    KubernetesProjected {
+        /// Audience to request from the kubelet (separate from the relying
+        /// party's audience; some setups require an intermediate audience).
+        kubelet_audience: String,
+        /// Requested token lifetime in seconds.
+        expiration_seconds: u64,
+    },
+    /// Read a pre-provisioned static JWT from disk. For testing or for issuers
+    /// that do not support online refresh.
+    StaticFile { path: PathBuf },
+}
+
+impl Default for IdentitySource {
+    fn default() -> Self {
+        Self::Spiffe { socket_path: None }
     }
 }
 
@@ -720,6 +832,191 @@ mod tests {
         // YAML should contain the actual value (for transmission to nucleus-node)
         assert!(yaml.contains("test-token"));
         assert!(yaml.contains("LLM_API_TOKEN"));
+    }
+
+    fn sample_workload_identity() -> WorkloadIdentitySpec {
+        WorkloadIdentitySpec {
+            name: "anthropic".to_string(),
+            audience: "https://api.anthropic.com".to_string(),
+            env_var: "LLM_IDENTITY_TOKEN_FILE".to_string(),
+            token_path: PathBuf::from("/var/run/secrets/llm/token"),
+            refresh: RefreshPolicy::default(),
+            source: IdentitySource::default(),
+        }
+    }
+
+    #[test]
+    fn test_workload_identity_default_refresh_is_half_lifetime() {
+        match RefreshPolicy::default() {
+            RefreshPolicy::LifetimeFraction { basis_points } => {
+                assert_eq!(basis_points, 5000, "default should be 50% of lifetime");
+            }
+            other => panic!("expected LifetimeFraction default, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_workload_identity_default_source_is_spiffe() {
+        match IdentitySource::default() {
+            IdentitySource::Spiffe { socket_path } => {
+                assert!(
+                    socket_path.is_none(),
+                    "default SPIFFE source should defer socket resolution to runtime"
+                );
+            }
+            other => panic!("expected Spiffe default, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_credentials_spec_with_workload_identity_not_empty() {
+        let creds = CredentialsSpec::new().with_workload_identity(sample_workload_identity());
+        assert!(
+            !creds.is_empty(),
+            "spec with workload identity must not be empty"
+        );
+        assert_eq!(creds.workload_identity.len(), 1);
+        assert_eq!(creds.workload_identity[0].name, "anthropic");
+    }
+
+    #[test]
+    fn test_credentials_spec_workload_identity_yaml_roundtrip() {
+        let creds = CredentialsSpec::new().with_workload_identity(sample_workload_identity());
+
+        let yaml = serde_yaml::to_string(&creds).expect("should serialize");
+        let parsed: CredentialsSpec = serde_yaml::from_str(&yaml).expect("should parse");
+
+        assert_eq!(parsed.workload_identity.len(), 1);
+        assert_eq!(parsed.workload_identity[0], sample_workload_identity());
+    }
+
+    #[test]
+    fn test_credentials_spec_workload_identity_omitted_when_empty() {
+        // Backwards compat: existing CredentialsSpec YAML without
+        // workload_identity should serialize without the field.
+        let creds = CredentialsSpec::new().with_env("LLM_API_TOKEN", "x");
+        let yaml = serde_yaml::to_string(&creds).expect("should serialize");
+        assert!(
+            !yaml.contains("workload_identity"),
+            "empty workload_identity should be skipped: {yaml}"
+        );
+    }
+
+    #[test]
+    fn test_credentials_spec_legacy_yaml_still_parses() {
+        // YAML written before this field existed must continue to parse.
+        let yaml = "env:\n  LLM_API_TOKEN: secret\n";
+        let creds: CredentialsSpec = serde_yaml::from_str(yaml).expect("legacy YAML must parse");
+        assert_eq!(creds.env.get("LLM_API_TOKEN"), Some(&"secret".to_string()));
+        assert!(creds.workload_identity.is_empty());
+    }
+
+    #[test]
+    fn test_pod_spec_with_workload_identity_parses() {
+        let yaml = r#"
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: test-pod
+spec:
+  work_dir: /tmp
+  timeout_seconds: 300
+  policy:
+    type: profile
+    name: default
+  credentials:
+    workload_identity:
+      - name: llm-provider
+        audience: https://api.anthropic.com
+        env_var: LLM_IDENTITY_TOKEN_FILE
+        token_path: /var/run/secrets/llm/token
+        source:
+          type: spiffe
+"#;
+
+        let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
+        let creds = spec
+            .spec
+            .credentials
+            .expect("credentials should be present");
+        assert_eq!(creds.workload_identity.len(), 1);
+        let wi = &creds.workload_identity[0];
+        assert_eq!(wi.name, "llm-provider");
+        assert_eq!(wi.audience, "https://api.anthropic.com");
+        assert_eq!(wi.env_var, "LLM_IDENTITY_TOKEN_FILE");
+        assert_eq!(wi.token_path, PathBuf::from("/var/run/secrets/llm/token"));
+        assert!(matches!(wi.source, IdentitySource::Spiffe { .. }));
+    }
+
+    #[test]
+    fn test_workload_identity_kubernetes_projected_source_parses() {
+        let yaml = r#"
+name: oidc
+audience: https://api.anthropic.com
+env_var: LLM_IDENTITY_TOKEN_FILE
+token_path: /var/run/secrets/llm/token
+source:
+  type: kubernetes_projected
+  kubelet_audience: sts.amazonaws.com
+  expiration_seconds: 3600
+"#;
+        let wi: WorkloadIdentitySpec = serde_yaml::from_str(yaml).expect("should parse");
+        match wi.source {
+            IdentitySource::KubernetesProjected {
+                kubelet_audience,
+                expiration_seconds,
+            } => {
+                assert_eq!(kubelet_audience, "sts.amazonaws.com");
+                assert_eq!(expiration_seconds, 3600);
+            }
+            other => panic!("expected KubernetesProjected, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_workload_identity_static_file_source_parses() {
+        let yaml = r#"
+name: testing
+audience: https://api.anthropic.com
+env_var: LLM_IDENTITY_TOKEN_FILE
+token_path: /var/run/secrets/llm/token
+source:
+  type: static_file
+  path: /etc/test/jwt
+"#;
+        let wi: WorkloadIdentitySpec = serde_yaml::from_str(yaml).expect("should parse");
+        match wi.source {
+            IdentitySource::StaticFile { path } => {
+                assert_eq!(path, PathBuf::from("/etc/test/jwt"));
+            }
+            other => panic!("expected StaticFile, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_workload_identity_does_not_leak_secrets_in_debug() {
+        // Tokens live on disk, not in the spec — but the spec's debug output
+        // must remain free of any path that could be confused with a secret.
+        // This test pins behavior: WorkloadIdentitySpec contains no field
+        // that requires redaction, so its Debug is allowed to show audience
+        // and paths verbatim. If a secret-bearing field is ever added, this
+        // test should be updated to assert redaction.
+        let wi = sample_workload_identity();
+        let dbg = format!("{:?}", wi);
+        assert!(dbg.contains("anthropic"));
+        assert!(dbg.contains("https://api.anthropic.com"));
+    }
+
+    #[test]
+    fn test_credentials_spec_debug_includes_workload_identity_summary() {
+        let creds = CredentialsSpec::new()
+            .with_env("LLM_API_TOKEN", "supersecret")
+            .with_workload_identity(sample_workload_identity());
+        let dbg = format!("{:?}", creds);
+        assert!(!dbg.contains("supersecret"), "env values must be redacted");
+        assert!(dbg.contains("[REDACTED]"));
+        assert!(dbg.contains("workload_identity"));
+        assert!(dbg.contains("anthropic"));
     }
 
     #[test]
