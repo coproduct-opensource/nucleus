@@ -480,9 +480,17 @@ impl CredentialsSpec {
 
 /// A single OIDC workload-identity binding.
 ///
-/// At pod start, the runtime fetches a JWT from `source` with the configured
-/// `audience`, writes it to `token_path` on a memory-backed tmpfs, and refreshes
-/// before expiry per `refresh`. The workload reads the file path via `env_var`.
+/// **Status: draft RFC, no runtime consumer in this repo today.** This type
+/// parses and serializes; nothing in `nucleus`, `nucleus-tool-proxy`,
+/// `nucleus-node`, or `nucleus-mcp` reads `credentials.workload_identity` yet.
+/// A `PodSpec` that sets this field will start the pod normally — but no token
+/// file appears, no env var is set, and no audit record is emitted. Wait for
+/// the runtime PR before depending on the documented behavior below.
+///
+/// **Intended (not yet implemented) behavior:** at pod start, the runtime
+/// fetches a JWT from `source` with the configured `audience`, writes it to
+/// `token_path` on a memory-backed tmpfs, and refreshes before expiry per
+/// `refresh`. The workload reads the file path via `env_var`.
 ///
 /// This type is provider-agnostic. The orchestrator (or operator) chooses the
 /// `audience` value for whichever relying party the workload calls.
@@ -491,7 +499,10 @@ pub struct WorkloadIdentitySpec {
     /// Logical name (e.g. "anthropic", "openai-prod"). Used in audit records.
     pub name: String,
 
-    /// OIDC audience to request. Provider-defined; nucleus does not validate.
+    /// OIDC audience to request. Provider-defined; **nucleus does not yet
+    /// validate** that this is a well-formed URL or coordinate against an
+    /// allow-list. A typo here will silently produce a JWT no relying party
+    /// accepts. Validation is tracked for the runtime PR.
     /// Examples: `https://api.anthropic.com`, `https://api.openai.com`.
     pub audience: String,
 
@@ -549,8 +560,11 @@ pub enum IdentitySource {
         /// Requested token lifetime in seconds.
         expiration_seconds: u64,
     },
-    /// Read a pre-provisioned static JWT from disk. For testing or for issuers
-    /// that do not support online refresh.
+    /// Read a pre-provisioned static JWT from disk. For **testing** or for
+    /// issuers that do not support online refresh. Production deployments
+    /// should not use this variant: the (planned) runtime will not validate
+    /// the JWT's signature or expiry before serving it, and there is no
+    /// path-canonicalization or symlink restriction.
     StaticFile { path: PathBuf },
 }
 
