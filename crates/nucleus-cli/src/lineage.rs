@@ -9,7 +9,10 @@ use clap::{Args, ValueEnum};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use nucleus_lineage::{CallSpiffeId, JsonlSink, LineageEdge, LineageSink};
+use nucleus_lineage::{
+    edge_content_hash, verify_proof, CallSpiffeId, JsonlSink, Jwks, LineageEdge, LineageSink,
+    VerifyError,
+};
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
 pub enum LineageFormat {
@@ -52,6 +55,20 @@ pub struct LineageArgs {
     /// `--allow-forged` to walk them anyway.
     #[arg(long)]
     pub allow_forged: bool,
+
+    /// Path to a JWKS (JSON Web Key Set) file with verifying keys for the
+    /// issuers that signed edges in this log. When provided, every edge's
+    /// cryptographic `proof` is verified before the edge is included in the
+    /// walk; failures are dropped with a stderr warning.
+    #[arg(long)]
+    pub jwks: Option<PathBuf>,
+
+    /// Reject edges that lack a cryptographic `proof`. Requires `--jwks`.
+    /// Without this flag, unsigned edges still walk normally (structural
+    /// check only); with it, only signed edges that verify against the JWKS
+    /// are kept.
+    #[arg(long)]
+    pub require_signed: bool,
 }
 
 pub fn execute(args: LineageArgs) -> Result<()> {
@@ -68,6 +85,40 @@ pub fn execute(args: LineageArgs) -> Result<()> {
         return Err(anyhow!(
             "no lineage edges in {} (is the log path correct?)",
             args.log.display()
+        ));
+    }
+
+    if args.require_signed && args.jwks.is_none() {
+        return Err(anyhow!(
+            "--require-signed needs --jwks <path> to know which keys to trust"
+        ));
+    }
+
+    let jwks: Option<Jwks> = match &args.jwks {
+        Some(path) => {
+            let bytes = std::fs::read(path)
+                .with_context(|| format!("reading JWKS file {}", path.display()))?;
+            Some(Jwks::parse(&bytes).with_context(|| {
+                format!(
+                    "parsing JWKS at {} (must be a JSON Web Key Set)",
+                    path.display()
+                )
+            })?)
+        }
+        None => None,
+    };
+
+    // Verify signatures BEFORE building the graph so the walker never sees
+    // rejected edges. Hash-chain order is sink-iteration order (oldest first).
+    let edges = if let Some(ref jwks) = jwks {
+        filter_verified(edges, jwks, args.require_signed)
+    } else {
+        edges
+    };
+
+    if edges.is_empty() {
+        return Err(anyhow!(
+            "no edges survived verification (check --jwks, or pass --allow-forged / drop --require-signed)"
         ));
     }
 
@@ -256,6 +307,41 @@ fn spiffe_authority(s: &str) -> &str {
     s.strip_prefix("spiffe://")
         .and_then(|rest| rest.split_once('/').map(|(auth, _)| auth))
         .unwrap_or("")
+}
+
+/// Verify each edge's `proof` against `jwks` in chain order. Edges that
+/// fail verification (or, when `require_signed`, edges with no `proof` at
+/// all) are dropped with a `stderr` warning.
+///
+/// Hash chain: each edge is verified with `prev_hash` set to the SHA-256
+/// of the previous **kept** edge's canonical bytes. Dropped edges break
+/// the chain — anything downstream of a dropped edge will fail with
+/// `BrokenChain` and is also dropped, which is the correct semantic for
+/// a tamper-evident log.
+fn filter_verified(edges: Vec<LineageEdge>, jwks: &Jwks, require_signed: bool) -> Vec<LineageEdge> {
+    let mut prev_hash: Option<[u8; 32]> = None;
+    let mut out = Vec::with_capacity(edges.len());
+    for edge in edges {
+        match verify_proof(&edge, prev_hash.as_ref(), jwks) {
+            Ok(()) => {
+                prev_hash = Some(edge_content_hash(&edge, prev_hash.as_ref()));
+                out.push(edge);
+            }
+            Err(VerifyError::Unsigned) if !require_signed => {
+                // Pass through unsigned edges in non-strict mode but DON'T
+                // advance the hash chain — an unsigned edge can't anchor the
+                // chain for subsequent signed edges.
+                out.push(edge);
+            }
+            Err(e) => {
+                eprintln!(
+                    "warning: dropping edge with proof error ({}): child={}",
+                    e, edge.child
+                );
+            }
+        }
+    }
+    out
 }
 
 // ────────────────────────────────────────────────────────────────────────
