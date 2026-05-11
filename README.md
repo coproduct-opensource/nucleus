@@ -17,12 +17,12 @@ assert!(!state.flows_to(SinkClass::GitPush));  // can't push tainted data
 ## Quick Start
 
 ```bash
-cargo install --git https://github.com/coproduct-opensource/nucleus nucleus-claude-hook
-nucleus-claude-hook --setup    # wires into your AI coding assistant
-nucleus-claude-hook --smoke-test
+cargo install --git https://github.com/coproduct-opensource/nucleus nucleus-cli
+nucleus audit                       # scan agent configs (Tier 0, no runtime)
+nucleus run --local "your task"     # run with enforced permissions (Tier 1)
 ```
 
-Every tool call now flows through the permission kernel. The hook tracks data provenance and blocks dangerous combinations — like writing code derived from untrusted web content.
+Every tool call flows through the permission kernel. `nucleus run` tracks data provenance and blocks dangerous combinations — like writing code derived from untrusted web content. The hook for AI coding assistants previously bundled here (`nucleus-claude-hook`) is now part of [nucleus-code](https://github.com/coproduct-opensource/nucleus-code), the private orchestrator built on this runtime.
 
 ## What Gets Proved
 
@@ -46,9 +46,9 @@ Full inventory: 165 Lean 4 theorems (zero `sorry`), 112 Kani BMC proofs, 297 Ver
 | `a ⊔ a = a` | Join is idempotent | Provably safe caching |
 | `a ≤ a ⊔ b` | Join is monotone | Taint never decreases |
 
-## Per-Call SPIFFE Provenance
+## Per-Call SPIFFE Provenance (preview)
 
-Every tool call gets a SPIFFE identity. Every byte of output has a verifiable provenance chain back to its sources.
+> **Status:** alpha. The crate ships a per-call SPIFFE-ID derivation library, an in-process Ed25519 demo issuer, an append-mode JSONL log, and a `nucleus lineage` walker. The demo is not yet wired into the runtime, edges are not yet signed, and no SPIRE-backed `IdentityFetcher` impl exists in this repo. See [`crates/nucleus-lineage/README.md`](crates/nucleus-lineage/README.md) for the honest scope and [the audit findings](#known-gaps) for what's still missing.
 
 `nucleus-lineage` extends [SPIFFE](https://spiffe.io/) workload identity from the *pod* level down to the *individual call* level. Each tool invocation, LLM call, or derived artifact mints a child SPIFFE ID whose path encodes its lineage and whose suffix is a content hash:
 
@@ -60,9 +60,9 @@ spiffe://<trust>/ns/<ns>/sa/<sa>                                   ← pod (root
   /call/<uuid>/derived/sha256:<hex>                                ← downstream artifact
 ```
 
-Identical content → identical content-hash suffix, regardless of derivation path. The full path doubles as a human-readable witness; the JWT-SVIDs minted at boundaries are cryptographic witnesses of the same chain.
+Identical content → identical content-hash suffix, regardless of derivation path. The full path is a human-readable witness of the derivation chain.
 
-Try it end-to-end (Bash → Write → mock-LLM with JWT verification):
+Try it end-to-end (Bash → Write → mock-LLM with self-loop JWT verification — the mock LLM uses the same in-process key the issuer minted with, so this proves the JWT format, not cross-trust federation):
 
 ```bash
 cargo run -p nucleus-lineage --example three_step_demo
@@ -71,13 +71,14 @@ nucleus lineage <leaf-spiffe-id> --log ./nucleus-lineage.jsonl
 
 Output formats: `--format tree` (default), `json`, or `dot` (for Graphviz).
 
-| What it gives you | What it doesn't |
+| Today | Roadmap |
 |---|---|
-| Cryptographically-signed identity per call (Ed25519 JWT-SVIDs) | Replace IFC labeling — composes with portcullis, doesn't replace it |
-| Content-addressed lineage that survives across pods and providers | Echo-back from external relying parties (e.g. Anthropic records `sub`, doesn't return it on responses) |
-| `nucleus lineage` walks the full DAG (ancestors or descendants) | A SPIRE Workload API client by default — the demo uses a `LocalIssuer`; production wiring lives in `nucleus-identity`'s `spire` feature |
+| SPIFFE-format ID per call, content-addressed | Edge signing + hash chain so the JSONL log is tamper-evident |
+| `LocalIssuer` (in-process Ed25519, demo-only) | SPIRE Workload API `IdentityFetcher` impl |
+| `nucleus lineage` walker (graph traversal) | Walker verifies edge signatures + JWKS-backed federation |
+| Composes with portcullis IFC labels (does not replace them) | `nucleus-tool-proxy` auto-emits edges per HTTP handler |
 
-Categorically: per-call SPIFFE IDs lift the workload category to a bicategory where morphisms (calls) carry identities, making end-to-end IFC sheaves measurable rather than only inferable. See [`crates/nucleus-lineage/README.md`](crates/nucleus-lineage/README.md) for the longer story.
+Treat the categorical framing — "per-call SPIFFE IDs lift the workload category to a bicategory; cocycle condition becomes verifiable" — as a roadmap, not as currently load-bearing. See [`crates/nucleus-lineage/README.md`](crates/nucleus-lineage/README.md) for the longer story and the explicit limitations.
 
 ## How Nucleus Stops Real Exploits
 
@@ -121,13 +122,12 @@ Agent → MCP → tool-proxy (inside VM) → portcullis check → OS operation
 ## Crates
 
 <details>
-<summary>User-facing tools (5 crates)</summary>
+<summary>User-facing tools (4 crates)</summary>
 
 | Crate | Purpose |
 |-------|---------|
-| [**nucleus-claude-hook**](crates/nucleus-claude-hook/) | Hook for AI coding assistants: IFC kernel, compartments, provenance |
+| [**nucleus-cli**](crates/nucleus-cli/) | Run AI agents under enforced permissions; ships the `nucleus` binary |
 | [**nucleus-audit**](crates/nucleus-audit/) | Scan agent configs, verify audit trails, inspect provenance |
-| [**nucleus-cli**](crates/nucleus-cli/) | Run AI agents under enforced permissions |
 | [**nucleus-sdk**](crates/nucleus-sdk/) | Rust SDK for building sandboxed AI agents |
 | [**exposure-playground**](crates/exposure-playground/) | Interactive TUI for exploring the permission lattice |
 
