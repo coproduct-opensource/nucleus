@@ -104,6 +104,9 @@ fn resolve_mode(mode: &Option<String>, agent_safe: Option<bool>) -> Result<bool,
 
 #[derive(Clone)]
 pub struct VaultCtfMcp {
+    // rmcp 1.6's `#[tool_router]` macro stopped reading this field directly;
+    // it's still required for the macro's `Self::tool_router()` ctor to bind.
+    #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
 }
 

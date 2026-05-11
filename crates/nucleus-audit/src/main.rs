@@ -1685,7 +1685,11 @@ struct C2paVerifyInfo {
 
 #[cfg(feature = "c2pa-verify")]
 fn verify_c2pa_sidecar(output_path: &Path) -> Result<C2paVerifyInfo, String> {
-    let reader: c2pa::Reader = c2pa::Reader::from_file(output_path).map_err(|e| format!("{e}"))?;
+    // c2pa 0.82 deprecated `Reader::from_file` in favor of an explicit
+    // Context (instead of thread-local settings).
+    let reader: c2pa::Reader = c2pa::Reader::from_context(c2pa::Context::new())
+        .with_file(output_path)
+        .map_err(|e| format!("{e}"))?;
 
     let validation_state = format!("{:?}", reader.validation_state());
 
