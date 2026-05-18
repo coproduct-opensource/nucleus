@@ -36,7 +36,7 @@ base64 = "0.22"
 ed25519-dalek = "2"
 # JWT signing/encoding crate — only needed by the dev LocalIssuer.
 jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"], optional = true }
-rand = { version = "0.8", optional = true }
+rand = { version = "0.10", optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
