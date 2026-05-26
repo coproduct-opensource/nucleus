@@ -26,6 +26,10 @@ pub fn build_app(state: AppState) -> Router {
         .route("/v1/jobs", post(routes::submit_job))
         .route("/v1/jobs/{job_id}", get(routes::get_job))
         .route("/v1/jobs/{job_id}/bundle", get(routes::get_bundle))
+        .route(
+            "/v1/jobs/{job_id}/events/stream",
+            get(routes::stream_job_events),
+        )
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,

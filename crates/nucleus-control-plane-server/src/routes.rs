@@ -1,18 +1,26 @@
 //! Route handlers. Each handler returns `Result<T, ApiError>` so
 //! [`ApiError::into_response`] handles the error wire format uniformly.
 
+use std::convert::Infallible;
+use std::time::Duration;
+
 use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, StatusCode},
-    response::IntoResponse,
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse,
+    },
     Json,
 };
 use chrono::Utc;
+use futures_util::Stream;
 use nucleus_control_plane::{execute_job, JobId, JobOutcome, JobSpec, JobState};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::ApiError;
+use crate::events::JobEvent;
 use crate::state::AppState;
 
 /// Response body for a successful `POST /v1/jobs`. Mirrors
@@ -94,9 +102,10 @@ pub async fn submit_job(
     }
 
     let now = Utc::now();
+    let queued = JobState::Queued { submitted_at: now };
     let job_id = state
         .jobs
-        .insert(JobState::Queued { submitted_at: now })
+        .insert(queued.clone())
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     if let Some(key) = idem_key {
         state
@@ -104,6 +113,14 @@ pub async fn submit_job(
             .record_idempotency(key, job_id.clone())
             .map_err(|e| ApiError::Internal(e.to_string()))?;
     }
+    // Publish the initial queued event so a subscriber attaching right
+    // away catches the lifecycle from the start.
+    state.events.publish(
+        &job_id,
+        JobEvent::StateChanged {
+            state: queued.clone(),
+        },
+    );
 
     spawn_job(state.clone(), job_id.clone(), spec);
 
@@ -153,12 +170,24 @@ fn spawn_job(state: AppState, job_id: JobId, spec: JobSpec) {
             },
         };
 
-        if let Err(e) = state.jobs.update(&job_id, new_state) {
+        if let Err(e) = state.jobs.update(&job_id, new_state.clone()) {
             tracing::error!(
                 target: "nucleus_control_plane_server",
                 "failed to persist final job state for {job_id}: {e}"
             );
         }
+        // Publish the terminal event, then a closing marker, then drop
+        // the broker channel so the SSE handler exits cleanly.
+        state
+            .events
+            .publish(&job_id, JobEvent::StateChanged { state: new_state });
+        state.events.publish(
+            &job_id,
+            JobEvent::Closing {
+                reason: "terminal_state",
+            },
+        );
+        state.events.close(&job_id);
     });
 }
 
@@ -179,16 +208,17 @@ fn run_job_blocking(
     let session_root = state.new_session_pod();
 
     // Mark as Running so polling clients see progress.
+    let running = JobState::Running {
+        started_at,
+        session_root: session_root.to_string(),
+    };
     state
         .jobs
-        .update(
-            job_id,
-            JobState::Running {
-                started_at,
-                session_root: session_root.to_string(),
-            },
-        )
+        .update(job_id, running.clone())
         .map_err(|e| e.to_string())?;
+    state
+        .events
+        .publish(job_id, JobEvent::StateChanged { state: running });
 
     let runner = state
         .runners
@@ -231,6 +261,102 @@ pub async fn get_job(
     let id = JobId::from_raw(job_id);
     let state = state.jobs.get(&id).map_err(|_| ApiError::NotFound)?;
     Ok(Json(state))
+}
+
+/// `GET /v1/jobs/{id}/events/stream` — Server-Sent Events stream of
+/// lifecycle transitions for the job.
+///
+/// Flow:
+/// 1. Validate the job exists (404 if not).
+/// 2. Emit the current state as the first `state_changed` event so a
+///    late subscriber catches up. If the current state is terminal,
+///    also emit `closing` and end the stream — no further events
+///    will ever fire for this job.
+/// 3. Otherwise, subscribe to the broker and forward future events.
+///    Keep-alive comments every 15s to prevent intermediary timeouts.
+///
+/// Lagged receivers (broker channel backlog overflow) are handled by
+/// re-emitting the current state from the registry and continuing.
+/// Events deliberately don't carry monotonic IDs in v1 — `Last-Event-ID`
+/// resumption is a v2 surface that needs a persistent event log.
+pub async fn stream_job_events(
+    State(state): State<AppState>,
+    Path(job_id): Path<String>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    let id = JobId::from_raw(job_id);
+    let current = state.jobs.get(&id).map_err(|_| ApiError::NotFound)?;
+    let stream = build_event_stream(state, id, current);
+    Ok(Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    ))
+}
+
+fn build_event_stream(
+    state: AppState,
+    job_id: JobId,
+    current: JobState,
+) -> impl Stream<Item = Result<Event, Infallible>> {
+    async_stream::stream! {
+        // 1) Emit the current state as the first event (catch-up).
+        let initial = JobEvent::StateChanged { state: current.clone() };
+        yield Ok(event_for(&initial));
+
+        // If the job is already terminal, close immediately.
+        if matches!(current, JobState::Completed { .. } | JobState::Failed { .. }) {
+            yield Ok(event_for(&JobEvent::Closing { reason: "already_terminal" }));
+            return;
+        }
+
+        // 2) Subscribe to live events. If the broker has no channel
+        //    (job completed between the registry read and subscribe),
+        //    bail with a closing event.
+        let mut rx = match state.events.subscribe(&job_id) {
+            Some(rx) => rx,
+            None => {
+                yield Ok(event_for(&JobEvent::Closing { reason: "no_active_stream" }));
+                return;
+            }
+        };
+
+        // 3) Forward events.
+        use tokio::sync::broadcast::error::RecvError;
+        loop {
+            match rx.recv().await {
+                Ok(evt) => {
+                    let is_closing = matches!(evt, JobEvent::Closing { .. });
+                    yield Ok(event_for(&evt));
+                    if is_closing {
+                        return;
+                    }
+                }
+                Err(RecvError::Closed) => {
+                    yield Ok(event_for(&JobEvent::Closing { reason: "broker_closed" }));
+                    return;
+                }
+                Err(RecvError::Lagged(_skipped)) => {
+                    // Re-fetch state and emit a state_changed so the client
+                    // catches up. Skipped events are typically intermediate
+                    // states; the registry holds the most recent.
+                    if let Ok(latest) = state.jobs.get(&job_id) {
+                        yield Ok(event_for(&JobEvent::StateChanged { state: latest.clone() }));
+                        if matches!(latest, JobState::Completed { .. } | JobState::Failed { .. }) {
+                            yield Ok(event_for(&JobEvent::Closing { reason: "terminal_after_lag" }));
+                            return;
+                        }
+                    } else {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn event_for(evt: &JobEvent) -> Event {
+    let data = serde_json::to_string(evt).unwrap_or_else(|_| "{}".to_string());
+    Event::default().event(evt.name()).data(data)
 }
 
 /// `GET /v1/jobs/{id}/bundle` — the verified provenance bundle.

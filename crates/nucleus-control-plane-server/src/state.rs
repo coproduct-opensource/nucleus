@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use nucleus_lineage::{CallSpiffeId, LineageSink, LocalIssuer};
 
+use crate::events::JobEventBroker;
 use crate::registry::{InMemoryRegistry, JobRegistry, RunnerRegistry};
 
 /// Cloneable handle to the server's shared state. Routes receive this
@@ -33,6 +34,8 @@ pub struct AppState {
     pub namespace: String,
     /// SPIFFE service-account segment for new pods.
     pub service_account: String,
+    /// Per-job event broker driving the SSE stream endpoint.
+    pub events: Arc<JobEventBroker>,
 }
 
 impl AppState {
@@ -73,5 +76,6 @@ pub fn build_demo_state(
         trust_domain: trust_domain.into(),
         namespace: namespace.into(),
         service_account: service_account.into(),
+        events: Arc::new(JobEventBroker::new()),
     })
 }

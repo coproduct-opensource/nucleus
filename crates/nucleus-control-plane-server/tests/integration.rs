@@ -265,6 +265,173 @@ async fn idempotency_key_collapses_duplicate_submissions() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sse_streams_lifecycle_to_completion() {
+    use futures_util::StreamExt;
+
+    let state = fresh_state();
+    let app = build_app(state);
+
+    // Submit a job and grab its id.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/jobs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&sample_spec()).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let job_id = read_json(resp.into_body()).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Connect to the SSE stream.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::GET)
+                .uri(format!("/v1/jobs/{job_id}/events/stream"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("text/event-stream")
+    );
+
+    // Drain the stream, parsing event lines until we see a `closing` event
+    // or we exceed a soft cap. We expect at minimum a final
+    // state=completed and then a closing event.
+    let mut body_stream = resp.into_body().into_data_stream();
+    let mut buf = Vec::new();
+    let mut saw_completed = false;
+    let mut saw_closing = false;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while tokio::time::Instant::now() < deadline {
+        let chunk =
+            tokio::time::timeout(std::time::Duration::from_millis(200), body_stream.next()).await;
+        let next = match chunk {
+            Ok(Some(Ok(bytes))) => bytes,
+            Ok(Some(Err(e))) => panic!("body error: {e}"),
+            Ok(None) => break,
+            Err(_) => continue, // timeout — wait for more
+        };
+        buf.extend_from_slice(&next);
+        let s = String::from_utf8_lossy(&buf).into_owned();
+        if s.contains("\"state\":\"completed\"") {
+            saw_completed = true;
+        }
+        if s.contains("event: closing") {
+            saw_closing = true;
+            break;
+        }
+    }
+    assert!(
+        saw_completed,
+        "expected a completed state_changed event; got:\n{}",
+        String::from_utf8_lossy(&buf)
+    );
+    assert!(
+        saw_closing,
+        "expected a closing event; got:\n{}",
+        String::from_utf8_lossy(&buf)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sse_for_unknown_job_returns_404() {
+    let app = build_app(fresh_state());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/jobs/job-nonexistent/events/stream")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sse_late_subscriber_to_completed_job_gets_catchup_and_closes() {
+    use futures_util::StreamExt;
+    use nucleus_control_plane::JobOutcome;
+
+    // Hand-craft a registry state where the job is already completed,
+    // then subscribe to SSE — the handler must emit the terminal state
+    // + a closing event and end the stream without hanging.
+    let state = fresh_state();
+    let sink = nucleus_lineage::InMemorySink::new();
+    let issuer = nucleus_lineage::LocalIssuer::random().unwrap();
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+
+    // Build a real completed bundle so the state shape is honest.
+    let bundle = nucleus_control_plane::execute_job(
+        &sample_spec(),
+        &nucleus_lineage::CallSpiffeId::pod("late.nucleus.local", "agents", "sub").unwrap(),
+        &MockJobRunner,
+        &sink,
+        &issuer,
+        jwks,
+        Vec::new(),
+    )
+    .unwrap();
+
+    let now = chrono::Utc::now();
+    let id = state
+        .jobs
+        .insert(JobState::Completed {
+            started_at: now,
+            completed_at: now,
+            outcome: JobOutcome {
+                bundle,
+                delivered: true,
+            },
+        })
+        .unwrap();
+
+    let app = build_app(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/v1/jobs/{id}/events/stream"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let mut body_stream = resp.into_body().into_data_stream();
+    let mut buf = Vec::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(std::time::Duration::from_millis(100), body_stream.next()).await
+        {
+            Ok(Some(Ok(bytes))) => buf.extend_from_slice(&bytes),
+            Ok(_) => break, // stream ended
+            Err(_) => continue,
+        }
+    }
+    let s = String::from_utf8_lossy(&buf);
+    assert!(
+        s.contains("\"state\":\"completed\"") && s.contains("event: closing"),
+        "late subscriber must get terminal state + closing; got:\n{s}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn idempotency_key_with_different_body_creates_new_job() {
     let state = fresh_state();
     let app = build_app(state);

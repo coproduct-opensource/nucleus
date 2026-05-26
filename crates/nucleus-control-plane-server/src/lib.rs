@@ -35,6 +35,7 @@
 
 pub mod app;
 pub mod error;
+pub mod events;
 pub mod registry;
 pub mod routes;
 pub mod state;
