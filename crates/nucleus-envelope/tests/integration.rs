@@ -505,6 +505,218 @@ fn _keep_canonical_edge_bytes_in_scope() {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// v2.3a — C2SP dual-protocol cosignature verification
+
+/// Producer attaches BOTH a nucleus-native cosig (signs canonical_sth_bytes)
+/// AND a C2SP cosig (signs the tlog-checkpoint body). Verifier with the
+/// right witness keys + a configured C2SP origin counts both as
+/// distinct trusted witnesses.
+#[test]
+fn v2_3_dual_protocol_cosignatures_both_count_with_origin_configured() {
+    let dir = tempdir().unwrap();
+    let inner = InMemorySink::new();
+    let producer = Ed25519Witness::from_seed([200u8; 32]);
+    let producer_pub = producer.verifying_key_bytes();
+    let sink = MerkleSink::new(
+        inner,
+        producer,
+        MerkleConfig::new(dir.path()).with_interval(1000),
+    )
+    .unwrap();
+    let issuer = LocalIssuer::random().unwrap();
+    let p = pod();
+    sink.emit(signed_edge(
+        &issuer,
+        LineageEdge::pod_admit(p.clone()),
+        None,
+    ))
+    .unwrap();
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+
+    // Build the bundle without cosigs first to extract the STH.
+    let bundle_no_cosig = nucleus_envelope::BundleBuilder::new(p.clone())
+        .payload(serde_json::json!({}))
+        .sink(&sink)
+        .jwks(jwks.clone())
+        .with_merkle_prover(&sink)
+        .build()
+        .unwrap();
+    let sth = bundle_no_cosig
+        .envelope
+        .merkle_anchor
+        .as_ref()
+        .unwrap()
+        .sth
+        .clone();
+
+    // Two witnesses with different seeds — one will produce a nucleus-
+    // kind cosig, the other a C2SP-kind cosig over the same STH.
+    let w_nucleus = InProcessWitness::from_seed([211u8; 32]);
+    let w_c2sp = InProcessWitness::from_seed([222u8; 32]);
+    let origin = "nucleus.example.com/log42";
+    let cosig_n = w_nucleus.cosign(&sth).unwrap();
+    let cosig_c = w_c2sp.cosign_c2sp(&sth, origin).unwrap();
+    assert_eq!(cosig_n.kind, nucleus_lineage::CosignatureKind::Nucleus);
+    assert_eq!(cosig_c.kind, nucleus_lineage::CosignatureKind::C2sp);
+
+    // Attach both to the bundle's STH and re-emit as a new bundle.
+    let mut bundle = bundle_no_cosig;
+    let anchor = bundle.envelope.merkle_anchor.as_mut().unwrap();
+    anchor.sth.cosignatures.push(cosig_n);
+    anchor.sth.cosignatures.push(cosig_c);
+
+    // Trust anchor with BOTH witness pubkeys + origin configured.
+    let trust = TrustAnchor::from_jwks(jwks)
+        .with_witness_pubkey(producer_pub)
+        .with_trusted_witness(w_nucleus.verifying_key_bytes())
+        .with_trusted_witness(w_c2sp.verifying_key_bytes())
+        .with_c2sp_origin(origin)
+        .cosignature_threshold(2);
+    let report = verify_bundle(&bundle, &trust).expect("both cosigs must count");
+    assert_eq!(report.cosignatures_verified, 2);
+}
+
+/// Without `with_c2sp_origin`, a C2SP cosig is silently uncountable —
+/// the verifier can't reconstruct the signed bytes. Threshold of 1
+/// fails when only a C2SP cosig is present.
+#[test]
+fn v2_3_c2sp_cosig_uncountable_without_origin() {
+    let dir = tempdir().unwrap();
+    let inner = InMemorySink::new();
+    let producer = Ed25519Witness::from_seed([233u8; 32]);
+    let producer_pub = producer.verifying_key_bytes();
+    let sink = MerkleSink::new(
+        inner,
+        producer,
+        MerkleConfig::new(dir.path()).with_interval(1000),
+    )
+    .unwrap();
+    let issuer = LocalIssuer::random().unwrap();
+    let p = pod();
+    sink.emit(signed_edge(
+        &issuer,
+        LineageEdge::pod_admit(p.clone()),
+        None,
+    ))
+    .unwrap();
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+    let bundle_no_cosig = nucleus_envelope::BundleBuilder::new(p.clone())
+        .payload(serde_json::json!({}))
+        .sink(&sink)
+        .jwks(jwks.clone())
+        .with_merkle_prover(&sink)
+        .build()
+        .unwrap();
+    let sth = bundle_no_cosig
+        .envelope
+        .merkle_anchor
+        .as_ref()
+        .unwrap()
+        .sth
+        .clone();
+
+    let w_c2sp = InProcessWitness::from_seed([244u8; 32]);
+    let cosig_c = w_c2sp
+        .cosign_c2sp(&sth, "nucleus.example.com/log99")
+        .unwrap();
+    let mut bundle = bundle_no_cosig;
+    bundle
+        .envelope
+        .merkle_anchor
+        .as_mut()
+        .unwrap()
+        .sth
+        .cosignatures
+        .push(cosig_c);
+
+    // Trust anchor lists the C2SP witness as trusted but DOES NOT
+    // configure with_c2sp_origin → the cosig is uncountable.
+    let trust = TrustAnchor::from_jwks(jwks)
+        .with_witness_pubkey(producer_pub)
+        .with_trusted_witness(w_c2sp.verifying_key_bytes())
+        .cosignature_threshold(1);
+    let err = verify_bundle(&bundle, &trust)
+        .expect_err("C2SP cosig must not count without origin configured");
+    assert!(matches!(
+        err,
+        VerifyBundleError::InsufficientCosignatures {
+            verified: 0,
+            required: 1
+        }
+    ));
+}
+
+/// Wrong origin → C2SP cosig signs DIFFERENT bytes than what the
+/// verifier reconstructs, so the signature fails to verify. The cosig
+/// isn't counted; threshold fails.
+#[test]
+fn v2_3_c2sp_cosig_fails_on_origin_mismatch() {
+    let dir = tempdir().unwrap();
+    let inner = InMemorySink::new();
+    let producer = Ed25519Witness::from_seed([1u8; 32]);
+    let producer_pub = producer.verifying_key_bytes();
+    let sink = MerkleSink::new(
+        inner,
+        producer,
+        MerkleConfig::new(dir.path()).with_interval(1000),
+    )
+    .unwrap();
+    let issuer = LocalIssuer::random().unwrap();
+    let p = pod();
+    sink.emit(signed_edge(
+        &issuer,
+        LineageEdge::pod_admit(p.clone()),
+        None,
+    ))
+    .unwrap();
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+    let bundle_no_cosig = nucleus_envelope::BundleBuilder::new(p.clone())
+        .payload(serde_json::json!({}))
+        .sink(&sink)
+        .jwks(jwks.clone())
+        .with_merkle_prover(&sink)
+        .build()
+        .unwrap();
+    let sth = bundle_no_cosig
+        .envelope
+        .merkle_anchor
+        .as_ref()
+        .unwrap()
+        .sth
+        .clone();
+
+    let w_c2sp = InProcessWitness::from_seed([2u8; 32]);
+    // Witness signed under one origin...
+    let cosig_c = w_c2sp
+        .cosign_c2sp(&sth, "produced.example.com/log")
+        .unwrap();
+    let mut bundle = bundle_no_cosig;
+    bundle
+        .envelope
+        .merkle_anchor
+        .as_mut()
+        .unwrap()
+        .sth
+        .cosignatures
+        .push(cosig_c);
+
+    // ...but the verifier asks for a DIFFERENT origin.
+    let trust = TrustAnchor::from_jwks(jwks)
+        .with_witness_pubkey(producer_pub)
+        .with_trusted_witness(w_c2sp.verifying_key_bytes())
+        .with_c2sp_origin("verifier.example.com/log") // mismatch
+        .cosignature_threshold(1);
+    let err = verify_bundle(&bundle, &trust).expect_err("origin mismatch must fail");
+    assert!(matches!(
+        err,
+        VerifyBundleError::InsufficientCosignatures {
+            verified: 0,
+            required: 1
+        }
+    ));
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // v2.2 — payload binding (detached DSSE signature)
 
 /// End-to-end happy path: producer signs the binding with the same
@@ -1044,6 +1256,7 @@ fn v2_1_cosignature_dos_bound() {
             witness_kid: format!("garbage-{i}"),
             signature: vec![0u8; 64],
             timestamp_ms: 1_700_000_000_000,
+            kind: nucleus_lineage::CosignatureKind::Nucleus,
         });
     }
     let trust = TrustAnchor::from_jwks(jwks).with_witness_pubkey(producer_pub);

@@ -37,21 +37,54 @@ use crate::checkpoint::{
 };
 
 /// An additional signature on a [`SignedTreeHead`] from an external
-/// witness. `signature` is Ed25519 over the same
-/// [`canonical_sth_bytes`] the producer's primary signature covers.
+/// witness. The `kind` field selects which byte sequence the
+/// `signature` covers:
+///
+/// - [`CosignatureKind::Nucleus`] (default, backwards-compat): signs
+///   [`canonical_sth_bytes`] — the 48-byte tuple `(tree_size,
+///   timestamp_ms, root_hash)`. The original v2.1 nucleus-native
+///   protocol.
+/// - [`CosignatureKind::C2sp`] (v2.3): signs the C2SP **tlog-checkpoint
+///   body** built via
+///   [`crate::signed_note::format_checkpoint_body`] — the same bytes
+///   the external `tlog-witness` ecosystem (ArmoredWitness, Sigstore)
+///   uses. The `signature` value is still Ed25519 over those bytes;
+///   only the bytes-being-signed differ.
+///
+/// Cosignatures from a single STH MAY mix kinds; the verifier checks
+/// each one against the appropriate byte sequence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cosignature {
     /// Stable identifier for the witness's key (matches
-    /// `Ed25519Witness::kid` for in-process witnesses; arbitrary
-    /// string for HTTP-backed witnesses).
+    /// `Ed25519Witness::kid` for in-process witnesses; key_name for
+    /// C2SP witnesses).
     pub witness_kid: String,
-    /// Ed25519 signature over the producer's canonical STH bytes.
+    /// Ed25519 signature over the bytes selected by `kind`.
     #[serde(with = "base64_bytes")]
     pub signature: Vec<u8>,
     /// Wall-clock POSIX milliseconds at which the witness countersigned.
-    /// Metadata only in v2.1 — NOT covered by `signature`. v2.2 will
-    /// bind this into the signed bytes per C2SP `tlog-witness`.
+    /// Metadata only — NOT covered by `signature` in either kind today.
+    /// v2.4 may bind this per C2SP `tlog-witness` once we add the full
+    /// cosignature-with-timestamp signed-bytes prefix.
     pub timestamp_ms: u64,
+    /// **v2.3.** Which byte sequence `signature` covers. Defaults to
+    /// `Nucleus` for backwards-compat with v2.1 cosignatures that
+    /// were emitted before this field existed.
+    #[serde(default)]
+    pub kind: CosignatureKind,
+}
+
+/// Which protocol's signed-bytes the [`Cosignature::signature`] covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CosignatureKind {
+    /// Nucleus-native: signature is Ed25519 over
+    /// [`canonical_sth_bytes`]. v2.1 default.
+    #[default]
+    Nucleus,
+    /// C2SP-native: signature is Ed25519 over the C2SP tlog-checkpoint
+    /// body bytes. v2.3 federation path.
+    C2sp,
 }
 
 /// An external witness — anything that can be asked to countersign a
@@ -116,6 +149,41 @@ impl WitnessClient for InProcessWitness {
             witness_kid: self.inner.kid().to_string(),
             signature,
             timestamp_ms,
+            kind: CosignatureKind::Nucleus,
+        })
+    }
+}
+
+impl InProcessWitness {
+    /// **v2.3.** Produce a C2SP-protocol cosignature: signs the
+    /// tlog-checkpoint body bytes rather than `canonical_sth_bytes`.
+    /// Used when federating with the external transparency.dev /
+    /// ArmoredWitness / Sigstore ecosystem.
+    ///
+    /// `origin` is the log identifier the C2SP checkpoint declares
+    /// (e.g. `"nucleus.example.com/log42"`). Must match between
+    /// producer and verifier — if a verifier expects origin X but
+    /// the cosignature was produced over a checkpoint with origin Y,
+    /// verification fails (bytes differ).
+    pub fn cosign_c2sp(
+        &self,
+        sth: &SignedTreeHead,
+        origin: &str,
+    ) -> Result<Cosignature, WitnessError> {
+        let root = hex_decode_32(&sth.root_hash_hex)
+            .ok_or_else(|| WitnessError::Backend("malformed root_hash_hex in STH".into()))?;
+        let body = crate::signed_note::checkpoint_signed_bytes(origin, sth.tree_size, &root)
+            .map_err(|e| WitnessError::Backend(format!("checkpoint body: {e}")))?;
+        let timestamp_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| WitnessError::Clock)?
+            .as_millis() as u64;
+        let signature = self.inner.sign_message(&body).to_vec();
+        Ok(Cosignature {
+            witness_kid: self.inner.kid().to_string(),
+            signature,
+            timestamp_ms,
+            kind: CosignatureKind::C2sp,
         })
     }
 }

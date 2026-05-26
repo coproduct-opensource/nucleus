@@ -39,6 +39,7 @@ pub mod issuer;
 pub mod merkle;
 pub mod proof;
 pub mod prover;
+pub mod signed_note;
 pub mod sink;
 pub mod verify;
 
@@ -55,13 +56,18 @@ pub use checkpoint::{
 };
 #[cfg(feature = "http")]
 pub use cosign::HttpWitnessClient;
-pub use cosign::{Cosignature, InProcessWitness, WitnessClient};
+pub use cosign::{Cosignature, CosignatureKind, InProcessWitness, WitnessClient};
 pub use edge::{EdgeKind, LineageEdge};
 pub use id::{CallSpiffeId, IdError, MAX_URI_LEN};
 pub use issuer::{EdgeSigner, IdentityFetcher, IssuerError, SvidClaims};
 pub use merkle::{read_checkpoints, verify_log, MerkleConfig, MerkleError, MerkleSink};
 pub use proof::{canonical_edge_bytes, edge_content_hash, Proof};
 pub use prover::MerkleProver;
+pub use signed_note::{
+    checkpoint_signed_bytes, ed25519_key_id, format_checkpoint_body, format_signature_line,
+    parse_signature_line, ParsedSignatureLine, SignedNoteError, SIG_LINE_PREFIX,
+    SIG_TYPE_COSIGNATURE, SIG_TYPE_ED25519,
+};
 pub use sink::{InMemorySink, JsonlSink, LineageSink, SinkError};
 pub use verify::{verify_chain, verify_proof, Jwk, Jwks, StaticKeyResolver, VerifyError};
 

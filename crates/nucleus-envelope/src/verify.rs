@@ -79,6 +79,13 @@ pub struct TrustAnchor {
     /// lack a [`crate::PayloadBinding`]. Default `false` for
     /// backwards-compat with v1/v2/v2.1 bundles.
     require_payload_binding: bool,
+    /// **v2.3 C2SP federation.** Log origin string used when
+    /// reconstructing the C2SP tlog-checkpoint body bytes for
+    /// `CosignatureKind::C2sp` cosignatures. Without this set, C2SP
+    /// cosignatures cannot be verified — they're silently uncountable.
+    /// Operators federating with the external C2SP ecosystem must
+    /// call [`Self::with_c2sp_origin`].
+    c2sp_origin: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +113,7 @@ impl TrustAnchor {
             cosignature_threshold: 0,
             sth_max_age: None,
             require_payload_binding: false,
+            c2sp_origin: None,
         }
     }
 
@@ -123,6 +131,7 @@ impl TrustAnchor {
             cosignature_threshold: 0,
             sth_max_age: None,
             require_payload_binding: false,
+            c2sp_origin: None,
         }
     }
 
@@ -202,6 +211,19 @@ impl TrustAnchor {
     /// envelope chain that authenticates the payload bytes.
     pub fn require_payload_binding(mut self) -> Self {
         self.require_payload_binding = true;
+        self
+    }
+
+    /// **v2.3 C2SP federation.** Set the log origin string that
+    /// C2SP-protocol cosignatures will be verified against. Required
+    /// for any [`nucleus_lineage::CosignatureKind::C2sp`] cosignatures
+    /// to contribute to the federation threshold; without it, C2SP
+    /// cosignatures are silently uncountable.
+    ///
+    /// The origin must match exactly what the producer used to format
+    /// the checkpoint body (e.g. `"nucleus.example.com/log42"`).
+    pub fn with_c2sp_origin(mut self, origin: impl Into<String>) -> Self {
+        self.c2sp_origin = Some(origin.into());
         self
     }
 }
@@ -748,38 +770,57 @@ fn verify_merkle_anchor(
         }
     }
 
-    // v2.1 witness federation: count DISTINCT trusted-witness keys
-    // whose cosignatures verified. This is the load-bearing fix for
-    // audit CRIT-2: counting "cosignatures" would let a producer
-    // attach multiple cosigs from a single compromised witness; we
-    // count witness IDENTITIES instead. Cosignatures from witnesses
-    // not in the trusted set are silently ignored (background noise,
-    // not errors).
+    // v2.1 witness federation, extended for v2.3 dual-protocol
+    // (Nucleus vs C2SP). For each cosignature, reconstruct the
+    // bytes-being-signed per the cosignature's `kind` and try each
+    // trusted-witness key not yet matched. Distinct-witness counting
+    // (audit-3 CRIT-2 fix) is preserved.
     let mut matched_witnesses: HashSet<[u8; 32]> = HashSet::new();
     if !anchor.sth.cosignatures.is_empty() {
         use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-        let canonical = nucleus_lineage::canonical_sth_bytes(
+        let nucleus_canonical = nucleus_lineage::canonical_sth_bytes(
             anchor.sth.tree_size,
             anchor.sth.timestamp_ms,
             &root_arr,
         );
+        // C2SP cosignatures sign the tlog-checkpoint body bytes. We
+        // build this on demand only when a C2SP-kind cosig is found,
+        // using the trust anchor's expected origin string. If a
+        // C2SP cosig is present but the trust anchor doesn't specify
+        // an origin, we can't reconstruct the signed bytes — the
+        // cosig is silently uncountable. Operators federating with
+        // C2SP witnesses must call `with_c2sp_origin(...)`.
+        let c2sp_body: Option<Vec<u8>> = match &trust.c2sp_origin {
+            Some(origin) => {
+                nucleus_lineage::checkpoint_signed_bytes(origin, anchor.sth.tree_size, &root_arr)
+                    .ok()
+            }
+            None => None,
+        };
+
         for cosig in &anchor.sth.cosignatures {
             if cosig.signature.len() != 64 {
-                continue; // malformed cosig length — skip silently (audit MED-2: surface in v2.2)
+                continue;
             }
             let mut sig_arr = [0u8; 64];
             sig_arr.copy_from_slice(&cosig.signature);
             let sig = Signature::from_bytes(&sig_arr);
-            // For each trusted witness NOT YET MATCHED, check whether
-            // this cosig verifies. Match by key, not by kid string.
+            // Pick the bytes this cosig claims to cover.
+            let signed_bytes: &[u8] = match cosig.kind {
+                nucleus_lineage::CosignatureKind::Nucleus => &nucleus_canonical,
+                nucleus_lineage::CosignatureKind::C2sp => match c2sp_body.as_deref() {
+                    Some(b) => b,
+                    None => continue, // can't verify C2SP without origin
+                },
+            };
             for trusted in &trust.trusted_witnesses {
                 if matched_witnesses.contains(trusted) {
-                    continue; // this witness already counted; don't try again
+                    continue;
                 }
                 if let Ok(vk) = VerifyingKey::from_bytes(trusted) {
-                    if vk.verify(&canonical, &sig).is_ok() {
+                    if vk.verify(signed_bytes, &sig).is_ok() {
                         matched_witnesses.insert(*trusted);
-                        break; // this cosig matched; move to the next cosig
+                        break;
                     }
                 }
             }
