@@ -386,6 +386,7 @@ async fn sse_late_subscriber_to_completed_job_gets_catchup_and_closes() {
         jwks,
         Vec::new(),
         None,
+        None,
     )
     .unwrap();
 
@@ -530,6 +531,56 @@ async fn concurrent_jobs_produce_independently_verifying_bundles() {
             );
         }
     }
+}
+
+/// v2.2 regression: every bundle the control-plane server produces
+/// must carry a PayloadBinding signed by the same key that signs edges.
+/// Pinning here ensures a future refactor that drops `Some(issuer)` from
+/// `execute_job` in routes.rs is caught.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn server_bundles_carry_payload_binding() {
+    let state = fresh_state();
+    let app = build_app(state.clone());
+    let jwks: Jwks = serde_json::from_value(state.issuer.publish_jwks()).unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/jobs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&sample_spec()).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let job_id = read_json(resp.into_body()).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let _ = poll_until_completed(app.clone(), &job_id, 100).await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/v1/jobs/{job_id}/bundle"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bundle: Bundle = serde_json::from_value(read_json(resp.into_body()).await).unwrap();
+
+    assert!(
+        bundle.binding.is_some(),
+        "server bundles MUST carry a v2.2 PayloadBinding"
+    );
+
+    let trust = TrustAnchor::from_jwks(jwks).require_payload_binding();
+    let report = verify_bundle(&bundle, &trust)
+        .expect("server bundle must verify with require_payload_binding");
+    assert!(report.payload_binding_verified);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

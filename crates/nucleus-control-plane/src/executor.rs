@@ -65,9 +65,16 @@ pub enum ExecuteJobError {
 /// anchor (witness-signed root + per-edge inclusion proofs); callers
 /// with the witness pubkey can then prove tree-inclusion offline. If
 /// `None`, a v1 chain-only bundle is built.
-// 8 args is at the threshold; if a future slice adds one more, refactor
-// into a builder pattern. Keeping this as a free function for now so
-// callers don't have to chain methods just to start a job.
+///
+/// If `binding_signer` is `Some`, the bundle gets a v2.2 [`PayloadBinding`]
+/// signed by that key — closes the payload-tampering gap. Most callers
+/// re-use the same `EdgeSigner` they pass as `issuer`; the binding's
+/// `keyid` looks up into the trust anchor's JWKS the same way edge
+/// signatures do.
+///
+/// [`PayloadBinding`]: nucleus_envelope::PayloadBinding
+// 9 args is past the threshold; an ExecuteJobOptions refactor is in
+// the backlog. Keeping flat for now so the public API stays simple.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_job(
     spec: &JobSpec,
@@ -78,6 +85,7 @@ pub fn execute_job(
     jwks: Jwks,
     checkpoints: Vec<SignedTreeHead>,
     merkle_prover: Option<&dyn MerkleProver>,
+    binding_signer: Option<&dyn EdgeSigner>,
 ) -> Result<Bundle, ExecuteJobError> {
     let writer = SessionWriter::new(sink, issuer);
 
@@ -96,6 +104,9 @@ pub fn execute_job(
         .require_signed();
     if let Some(prover) = merkle_prover {
         builder = builder.with_merkle_prover(prover);
+    }
+    if let Some(signer) = binding_signer {
+        builder = builder.with_binding_signer(signer);
     }
     let bundle = builder.build()?;
 
@@ -148,6 +159,7 @@ mod tests {
             jwks.clone(),
             Vec::new(),
             None,
+            None,
         )
         .expect("mock job must succeed end-to-end");
 
@@ -194,6 +206,7 @@ mod tests {
             jwks,
             Vec::new(),
             None,
+            None,
         )
         .expect_err("URL input must error");
         assert!(matches!(
@@ -221,6 +234,7 @@ mod tests {
             &issuer,
             jwks,
             Vec::new(),
+            None,
             None,
         )
         .expect_err("non-pod session root must be rejected");

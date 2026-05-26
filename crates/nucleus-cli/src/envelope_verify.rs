@@ -58,6 +58,13 @@ pub struct EnvelopeVerifyArgs {
     #[arg(long, default_value_t = 0)]
     pub cosignature_threshold: usize,
 
+    /// **v2.2 payload binding.** Require the bundle to carry a
+    /// [`nucleus_envelope::PayloadBinding`] signed by a key in the
+    /// trust JWKS. Without this, bundles without bindings still verify
+    /// at chain/anchor level (backwards-compat).
+    #[arg(long)]
+    pub require_binding: bool,
+
     /// Accept envelopes with zero edges. Off by default — an empty
     /// envelope authenticates nothing and is forgeable against any pod.
     #[arg(long)]
@@ -120,6 +127,9 @@ pub fn execute(args: EnvelopeVerifyArgs) -> Result<()> {
     if args.cosignature_threshold > 0 {
         anchor = anchor.cosignature_threshold(args.cosignature_threshold);
     }
+    if args.require_binding {
+        anchor = anchor.require_payload_binding();
+    }
 
     let report =
         verify_bundle(&bundle, &anchor).map_err(|e| anyhow!("verification failed: {e}"))?;
@@ -149,9 +159,16 @@ fn emit_human_report(bundle: &Bundle, report: &VerificationReport) {
     } else {
         "absent"
     };
+    let binding = if report.payload_binding_verified {
+        "verified"
+    } else if bundle.binding.is_some() {
+        "present-but-unchecked"
+    } else {
+        "absent"
+    };
     println!(
         "ok ({mode}): session_root={} trust_domain={} edges={} issuers={} checkpoints={} \
-         head_edge_hash={} merkle={} cosignatures={}",
+         head_edge_hash={} merkle={} cosignatures={} binding={}",
         bundle.envelope.session_root,
         report.trust_domain,
         report.edge_count,
@@ -164,6 +181,7 @@ fn emit_human_report(bundle: &Bundle, report: &VerificationReport) {
         },
         merkle,
         report.cosignatures_verified,
+        binding,
     );
     if !report.kids.is_empty() {
         println!("kids:");
@@ -191,6 +209,7 @@ fn emit_json_report(bundle: &Bundle, report: &VerificationReport) -> Result<()> 
         "merkle_verified": report.merkle_verified,
         "cosignatures_verified": report.cosignatures_verified,
         "matched_witness_pubkeys_hex": report.matched_witness_pubkeys_hex,
+        "payload_binding_verified": report.payload_binding_verified,
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())

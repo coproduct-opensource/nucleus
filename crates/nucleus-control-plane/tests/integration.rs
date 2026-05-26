@@ -42,6 +42,7 @@ fn mock_job_through_jsonl_sink_round_trips_and_verifies() {
         jwks.clone(),
         Vec::new(),
         None,
+        None,
     )
     .expect("mock job must succeed");
 
@@ -88,6 +89,7 @@ fn local_path_input_is_read_into_the_lineage() {
         &issuer,
         jwks,
         Vec::new(),
+        None,
         None,
     )
     .unwrap();

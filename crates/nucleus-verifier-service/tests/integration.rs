@@ -46,6 +46,7 @@ fn build_signed_bundle() -> (Bundle, Jwks, LocalIssuer) {
         jwks.clone(),
         Vec::new(),
         None,
+        None,
     )
     .unwrap();
     (bundle, jwks, issuer)

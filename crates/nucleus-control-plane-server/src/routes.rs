@@ -274,15 +274,20 @@ fn run_job_blocking(
     let jwks: nucleus_lineage::Jwks =
         serde_json::from_value(state.issuer.publish_jwks()).map_err(|e| e.to_string())?;
 
+    // The issuer that signs edges is also the binding signer — a v2.2
+    // PayloadBinding's `keyid` looks up into the same JWKS as edge
+    // signatures, so re-using the key keeps the trust topology flat.
+    let issuer_ref: &dyn nucleus_lineage::EdgeSigner = state.issuer.as_ref();
     let bundle = execute_job(
         spec,
         &session_root,
         runner,
         state.sink.as_ref(),
-        state.issuer.as_ref(),
+        issuer_ref,
         jwks,
         Vec::new(),
         state.merkle_prover.as_deref(),
+        Some(issuer_ref),
     )
     .map_err(|e| e.to_string())?;
 

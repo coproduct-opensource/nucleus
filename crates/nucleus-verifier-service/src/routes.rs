@@ -46,6 +46,10 @@ pub struct VerifyRequest {
     /// cosignatures required. Default 0 (federation optional).
     #[serde(default)]
     pub cosignature_threshold: usize,
+    /// **v2.2 payload binding.** When true, reject bundles without a
+    /// PayloadBinding. Default false (backwards-compat).
+    #[serde(default)]
+    pub require_payload_binding: bool,
     /// Accept envelopes with zero edges. Off by default — empty
     /// envelopes authenticate nothing.
     #[serde(default)]
@@ -86,6 +90,9 @@ pub struct ReportPayload {
     /// **v2.1.1.** Hex-encoded public keys of the witnesses whose
     /// cosignatures verified — auditable diversity check.
     pub matched_witness_pubkeys_hex: Vec<String>,
+    /// **v2.2.** `true` if the bundle carried a PayloadBinding AND
+    /// it verified against the trust JWKS — proves payload integrity.
+    pub payload_binding_verified: bool,
 }
 
 /// `POST /v1/verify` — run [`verify_bundle`] against the caller-supplied
@@ -142,6 +149,9 @@ pub async fn verify(
     if req.cosignature_threshold > 0 {
         anchor = anchor.cosignature_threshold(req.cosignature_threshold);
     }
+    if req.require_payload_binding {
+        anchor = anchor.require_payload_binding();
+    }
 
     let report = verify_bundle(&req.bundle, &anchor)
         .map_err(|e| VerifyApiError::VerificationFailed(e.to_string()))?;
@@ -166,6 +176,7 @@ pub async fn verify(
             merkle_verified: report.merkle_verified,
             cosignatures_verified: report.cosignatures_verified,
             matched_witness_pubkeys_hex: report.matched_witness_pubkeys_hex,
+            payload_binding_verified: report.payload_binding_verified,
         },
     }))
 }
