@@ -470,12 +470,13 @@ pub use self::http::HttpWitnessClient;
 
 #[cfg(feature = "http")]
 mod c2sp_http {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use reqwest::blocking::Client;
 
     use super::{Cosignature, CosignatureKind, Ed25519Witness, SignedTreeHead, WitnessError};
+    use crate::prover::MerkleProver;
     use crate::signed_note::{
         checkpoint_signed_bytes, ed25519_key_id, format_signature_line, parse_signature_line,
         SIG_LINE_PREFIX, SIG_TYPE_ED25519,
@@ -486,6 +487,11 @@ mod c2sp_http {
     /// response is small (a few hundred bytes per signature line); 8
     /// KiB comfortably covers up to ~50 cosigs per response.
     const MAX_RESPONSE_BYTES: usize = 8 * 1024;
+    /// **v2.3c.** Spec cap: "The client MUST NOT send more than 63
+    /// consistency proof lines." Tracked here as a defensive check so a
+    /// bug in `prove_consistency_from` can't generate a request the
+    /// witness will reject for being oversized.
+    const MAX_CONSISTENCY_PROOF_LINES: usize = 63;
 
     /// HTTP client that speaks the C2SP `POST /add-checkpoint` protocol.
     ///
@@ -494,14 +500,25 @@ mod c2sp_http {
     /// the request body (a real C2SP witness rejects requests whose
     /// checkpoint isn't signed by a key it trusts for that origin).
     ///
-    /// Each invocation of `cosign(sth)` builds and POSTs a fresh
-    /// request. Consistency-proof carrying is NOT yet implemented —
-    /// every request sends `old 0` (initial submission). A C2SP
-    /// witness that has seen this log before will reject with 409
-    /// Conflict; the response body carries the actual last size, but
-    /// today's client surfaces that as a Backend error. v2.3c will
-    /// add a stateful client that tracks the last-seen size and
-    /// builds a proper consistency proof.
+    /// **v2.3c stateful federation.** The client tracks the witness's
+    /// last-cosigned tree size in `last_known_size: Mutex<Option<u64>>`:
+    ///
+    /// - `None`  → first submission ever; sends `old 0` with NO proof.
+    /// - `Some(n)` with `n > 0` and a [`MerkleProver`] attached via
+    ///   [`Self::with_consistency_prover`] → sends `old n` followed by
+    ///   the RFC 6962 §2.1.2 consistency proof from `n` to the STH's
+    ///   tree_size, encoded as base64 lines.
+    /// - On HTTP 200 OK, state advances to the STH's `tree_size`.
+    /// - On HTTP 409 Conflict (Content-Type: `text/x.tlog.size`), state
+    ///   is updated to the witness-reported size and the request is
+    ///   retried ONCE with a fresh consistency proof. A second 409
+    ///   surfaces as [`WitnessError::Conflict`] — no infinite loops.
+    ///
+    /// **Operator note**: without a consistency-prover attached, the
+    /// client always sends `old 0`. The witness will reject the second
+    /// and subsequent submissions with 409. Use this mode only for
+    /// witness bring-up / testing. For production federation, attach a
+    /// prover via [`Self::with_consistency_prover`].
     pub struct C2spHttpWitnessClient {
         base_url: String,
         origin: String,
@@ -509,6 +526,15 @@ mod c2sp_http {
         producer_key_name: String,
         client: Client,
         expected_witness_name: Option<String>,
+        /// **v2.3c.** Witness's last-cosigned tree size, per its 409
+        /// signals or per our own bookkeeping on successful POSTs.
+        /// `None` means "haven't talked to this witness yet" — sends
+        /// `old 0` with no consistency proof.
+        last_known_size: Mutex<Option<u64>>,
+        /// **v2.3c.** Optional MerkleProver used to compute RFC 6962
+        /// consistency proofs when `last_known_size > 0`. If absent,
+        /// the client always sends `old 0` regardless of state.
+        consistency_prover: Option<Arc<dyn MerkleProver>>,
     }
 
     impl C2spHttpWitnessClient {
@@ -535,6 +561,8 @@ mod c2sp_http {
                 producer_key_name: producer_key_name.into(),
                 client,
                 expected_witness_name: None,
+                last_known_size: Mutex::new(None),
+                consistency_prover: None,
             })
         }
 
@@ -557,6 +585,31 @@ mod c2sp_http {
             self
         }
 
+        /// **v2.3c.** Attach a [`MerkleProver`] for computing RFC 6962
+        /// consistency proofs. Required for production federation
+        /// against a witness that has seen prior checkpoints — without
+        /// a prover, the client sends `old 0` on every request and the
+        /// witness returns 409 Conflict on all but the first submission.
+        ///
+        /// Production callers typically pass the same `MerkleSink` they
+        /// gave the `BundleBuilder::with_merkle_prover` call. The proof
+        /// must be computed against the SAME tree state the producer
+        /// sealed for this STH, so callers MUST attach the prover
+        /// BEFORE calling `cosign_many`.
+        pub fn with_consistency_prover(mut self, prover: Arc<dyn MerkleProver>) -> Self {
+            self.consistency_prover = Some(prover);
+            self
+        }
+
+        /// **v2.3c.** Seed the client's `last_known_size` from
+        /// out-of-band state — e.g., a producer that persists witness
+        /// state across process restarts can call this to skip the
+        /// first 409 handshake on resume.
+        pub fn with_initial_known_size(self, size: u64) -> Self {
+            *self.last_known_size.lock().unwrap() = Some(size);
+            self
+        }
+
         fn endpoint(&self) -> String {
             let trimmed = self.base_url.trim_end_matches('/');
             format!("{trimmed}/add-checkpoint")
@@ -566,12 +619,18 @@ mod c2sp_http {
         /// `prev_tree_size` is the size the witness last cosigned for
         /// this origin (or 0 for the first submission).
         ///
-        /// Today's caller always passes 0; v2.3c will track this state.
+        /// **v2.3c**: if `prev_tree_size > 0` and a consistency prover
+        /// is attached, computes the RFC 6962 consistency proof from
+        /// `prev_tree_size` to `sth.tree_size` and emits one base64 line
+        /// per proof hash between the `old` line and the blank
+        /// separator. Per spec, at most 63 proof lines.
         fn build_request_body(
             &self,
             sth: &SignedTreeHead,
             prev_tree_size: u64,
         ) -> Result<Vec<u8>, WitnessError> {
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+
             let root = hex_decode_32(&sth.root_hash_hex)
                 .ok_or_else(|| WitnessError::Backend("malformed root_hash_hex in STH".into()))?;
             let checkpoint_body = checkpoint_signed_bytes(&self.origin, sth.tree_size, &root)
@@ -582,14 +641,60 @@ mod c2sp_http {
             let sig_line = format_signature_line(&self.producer_key_name, &key_id, &producer_sig)
                 .map_err(|e| WitnessError::Backend(format!("producer sig line: {e}")))?;
 
-            // C2SP tlog-witness add-checkpoint body:
-            //   "old <prev_size>\n"   (no consistency proof in v2.3b)
+            // **v2.3c consistency proof** when prev_size > 0 AND a
+            // prover is attached. Without a prover at prev_size > 0, we
+            // still send `old <prev_size>` and zero proof lines — the
+            // witness will reject (since spec requires the proof) but
+            // the operator gets a clear backend error mentioning the
+            // missing proof. With prev_size == 0, never emit proof
+            // lines regardless of prover (spec: first submission has
+            // no proof).
+            let mut proof_lines: Vec<String> = Vec::new();
+            if prev_tree_size > 0 {
+                if let Some(prover) = &self.consistency_prover {
+                    let proof = prover
+                        .prove_consistency_from(prev_tree_size)
+                        .map_err(|e| WitnessError::Backend(format!("consistency proof: {e}")))?;
+                    let raw = proof.as_bytes();
+                    // ct-merkle ConsistencyProof.as_bytes() is the
+                    // concatenation of 32-byte SHA-256 hashes; split.
+                    if raw.len() % 32 != 0 {
+                        return Err(WitnessError::Backend(format!(
+                            "consistency proof byte length {} not a multiple of 32",
+                            raw.len()
+                        )));
+                    }
+                    let hash_count = raw.len() / 32;
+                    if hash_count > MAX_CONSISTENCY_PROOF_LINES {
+                        return Err(WitnessError::Backend(format!(
+                            "consistency proof has {hash_count} hashes; spec caps at \
+                             {MAX_CONSISTENCY_PROOF_LINES}",
+                        )));
+                    }
+                    proof_lines.reserve(hash_count);
+                    for chunk in raw.chunks_exact(32) {
+                        proof_lines.push(STANDARD.encode(chunk));
+                    }
+                }
+                // else: prev_size > 0 but no prover; emit no proof
+                // lines. Spec-non-conforming but produces a clear
+                // witness-reject for operator diagnosis.
+            }
+
+            // C2SP tlog-witness add-checkpoint body (per
+            // tlog-witness.md):
+            //   "old <prev_size>\n"
+            //   <0..63 base64 consistency-proof lines, each \n-term>
             //   "\n"                  (blank line separator)
             //   <checkpoint body>     (already ends in \n per spec)
             //   "\n"                  (signed-note body/sig separator)
             //   <producer signature line>\n
-            let mut body = Vec::with_capacity(checkpoint_body.len() + 256);
+            let mut body = Vec::with_capacity(checkpoint_body.len() + 256 + proof_lines.len() * 48);
             body.extend_from_slice(format!("old {prev_tree_size}\n").as_bytes());
+            for line in &proof_lines {
+                body.extend_from_slice(line.as_bytes());
+                body.push(b'\n');
+            }
             body.push(b'\n');
             body.extend_from_slice(&checkpoint_body);
             body.push(b'\n');
@@ -632,8 +737,49 @@ mod c2sp_http {
         /// service (which proxies many witness keys) should use this
         /// rather than [`WitnessClient::cosign`], which returns only
         /// the first cosig.
+        ///
+        /// **v2.3c stateful federation.** Uses the tracked
+        /// `last_known_size` to build the `old <prev_size>` line +
+        /// consistency proof. On HTTP 200, advances state to
+        /// `sth.tree_size`. On HTTP 409 Conflict carrying the witness's
+        /// actual last-known size, updates state and retries ONCE with
+        /// a fresh proof. A second 409 surfaces as
+        /// [`WitnessError::Conflict`] (no retry loop).
         pub fn cosign_many(&self, sth: &SignedTreeHead) -> Result<Vec<Cosignature>, WitnessError> {
-            let body = self.build_request_body(sth, 0)?;
+            // First attempt: use whatever state we have. `None` →
+            // first-submission `old 0`.
+            let prev = self.last_known_size.lock().unwrap().unwrap_or(0);
+            match self.attempt_cosign(sth, prev) {
+                Ok(cosigs) => {
+                    *self.last_known_size.lock().unwrap() = Some(sth.tree_size);
+                    Ok(cosigs)
+                }
+                Err(WitnessError::Conflict { last_known_size }) => {
+                    // **v2.3c retry-once.** Witness's state diverged
+                    // from ours; update and retry with a proof from
+                    // the witness-reported size.
+                    *self.last_known_size.lock().unwrap() = Some(last_known_size);
+                    match self.attempt_cosign(sth, last_known_size) {
+                        Ok(cosigs) => {
+                            *self.last_known_size.lock().unwrap() = Some(sth.tree_size);
+                            Ok(cosigs)
+                        }
+                        Err(e) => Err(e),
+                    }
+                }
+                Err(e) => Err(e),
+            }
+        }
+
+        /// Single POST attempt — no retries. Extracted from
+        /// `cosign_many` so the state-update + retry-once dance lives
+        /// in exactly one place.
+        fn attempt_cosign(
+            &self,
+            sth: &SignedTreeHead,
+            prev_tree_size: u64,
+        ) -> Result<Vec<Cosignature>, WitnessError> {
+            let body = self.build_request_body(sth, prev_tree_size)?;
             let url = self.endpoint();
             let response = self
                 .client

@@ -45,7 +45,7 @@ pub mod verify;
 
 // Re-export ct-merkle types we expose at the API boundary so downstream
 // crates (nucleus-envelope) don't need to depend on ct-merkle directly.
-pub use ct_merkle::{InclusionProof, InclusionVerifError, RootHash};
+pub use ct_merkle::{ConsistencyProof, InclusionProof, InclusionVerifError, RootHash};
 
 #[cfg(feature = "dev")]
 pub mod local_issuer;

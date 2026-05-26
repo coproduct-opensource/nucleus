@@ -5,7 +5,7 @@
 //! callers from the concrete `MerkleSink<S, W>` type so they don't
 //! need to know which witness or inner sink backs the proofs.
 
-use ct_merkle::{InclusionProof, RootHash};
+use ct_merkle::{ConsistencyProof, InclusionProof, RootHash};
 use sha2::Sha256;
 
 use crate::checkpoint::{SignedTreeHead, TreeWitness, WitnessError};
@@ -59,6 +59,27 @@ pub trait MerkleProver: Send + Sync {
     /// Current `RootHash` (for tests / debug). Most callers should
     /// use [`Self::seal_current_root`] to bind a witness signature.
     fn current_root(&self) -> Result<RootHash<Sha256>, MerkleError>;
+
+    /// **v2.3c.** Compute an RFC 6962 §2.1.2 Merkle consistency proof
+    /// from `old_size` to the current tree size. Required by C2SP
+    /// `tlog-witness` `POST /add-checkpoint` when the producer has
+    /// previously cosigned with a witness — the request body carries
+    /// `old <prev_size>` followed by the consistency proof lines.
+    ///
+    /// Default impl returns `Err(MerkleError::ConsistencyOutOfRange)`
+    /// (with `reason: "prover does not implement consistency proofs"`)
+    /// — single-purpose provers can opt out, but [`MerkleSink`] supplies
+    /// a real implementation.
+    fn prove_consistency_from(
+        &self,
+        old_size: u64,
+    ) -> Result<ConsistencyProof<Sha256>, MerkleError> {
+        Err(MerkleError::ConsistencyOutOfRange {
+            old_size,
+            current_size: 0,
+            reason: "prover does not implement consistency proofs",
+        })
+    }
 }
 
 impl<S, W> MerkleProver for MerkleSink<S, W>
@@ -97,6 +118,13 @@ where
 
     fn current_root(&self) -> Result<RootHash<Sha256>, MerkleError> {
         Self::current_root(self)
+    }
+
+    fn prove_consistency_from(
+        &self,
+        old_size: u64,
+    ) -> Result<ConsistencyProof<Sha256>, MerkleError> {
+        Self::prove_consistency_from(self, old_size)
     }
 }
 

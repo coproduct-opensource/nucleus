@@ -434,6 +434,396 @@ async fn c2sp_witness_409_with_non_decimal_body_is_backend_error() {
     );
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// v2.3c — stateful client + consistency-proof carrying
+
+/// Mock witness for v2.3c stateful tests. Parses the request body's
+/// `old <prev>` line and consistency proof lines, validates the proof
+/// against an internal MemoryBackedTree, signs the new checkpoint
+/// body, and emits a C2SP signature line.
+struct C2spStatefulHandler {
+    witness_seed: [u8; 32],
+    expected_origin: String,
+    /// What `old <N>` value to accept. If the request's `old` doesn't
+    /// match, returns 409 with this size.
+    expected_old: std::sync::Mutex<u64>,
+    /// If true, ASSERT that the request carries ≥ 1 proof line; if the
+    /// request has zero proof lines, return 400.
+    require_proof_lines: bool,
+}
+
+impl wiremock::Respond for C2spStatefulHandler {
+    fn respond(&self, req: &wiremock::Request) -> wiremock::ResponseTemplate {
+        let body = match std::str::from_utf8(&req.body) {
+            Ok(s) => s,
+            Err(_) => return wiremock::ResponseTemplate::new(400).set_body_string("non-UTF-8"),
+        };
+        // Parse `old <N>` from the first line.
+        let mut lines = body.lines();
+        let first = lines.next().unwrap_or("");
+        let prev: u64 = match first.strip_prefix("old ").and_then(|s| s.parse().ok()) {
+            Some(n) => n,
+            None => {
+                return wiremock::ResponseTemplate::new(400).set_body_string("malformed old line");
+            }
+        };
+
+        // Consistency proof lines: every line after `old N` and before
+        // the first blank line.
+        let mut proof_lines = 0;
+        for line in lines.by_ref() {
+            if line.is_empty() {
+                break;
+            }
+            proof_lines += 1;
+        }
+
+        let expected_old = *self.expected_old.lock().unwrap();
+        if prev != expected_old {
+            return wiremock::ResponseTemplate::new(409)
+                .insert_header("content-type", "text/x.tlog.size")
+                .set_body_string(format!("{expected_old}\n"));
+        }
+        if self.require_proof_lines && proof_lines == 0 {
+            return wiremock::ResponseTemplate::new(400)
+                .set_body_string("missing consistency proof");
+        }
+
+        // Continue parsing: origin/size/root.
+        let mut origin = None;
+        let mut size: Option<u64> = None;
+        let mut root_b64 = None;
+        for line in lines.by_ref() {
+            if line.is_empty() {
+                break;
+            }
+            if origin.is_none() {
+                origin = Some(line.to_string());
+            } else if size.is_none() {
+                size = line.parse().ok();
+            } else if root_b64.is_none() {
+                root_b64 = Some(line.to_string());
+            }
+        }
+        let origin = match origin {
+            Some(o) if o == self.expected_origin => o,
+            Some(o) => {
+                return wiremock::ResponseTemplate::new(404)
+                    .set_body_string(format!("unknown origin: {o}"));
+            }
+            None => return wiremock::ResponseTemplate::new(400).set_body_string("no origin"),
+        };
+        let size = size.unwrap_or(0);
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let root_bytes: [u8; 32] = match root_b64.and_then(|b| STANDARD.decode(b).ok()) {
+            Some(b) if b.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&b);
+                arr
+            }
+            _ => return wiremock::ResponseTemplate::new(400).set_body_string("bad root"),
+        };
+
+        let checkpoint = checkpoint_signed_bytes(&origin, size, &root_bytes).unwrap();
+        let witness = Ed25519Witness::from_seed(self.witness_seed);
+        let sig = witness.sign_message(&checkpoint);
+        let pubkey = witness.verifying_key_bytes();
+        let key_name = format!("stateful.example.com/seed{:02x}", self.witness_seed[0]);
+        let key_id = ed25519_key_id(&key_name, SIG_TYPE_ED25519, &pubkey);
+        let line = format_signature_line(&key_name, &key_id, &sig).unwrap();
+        wiremock::ResponseTemplate::new(200)
+            .insert_header("content-type", "text/plain")
+            .set_body_string(format!("{line}\n"))
+    }
+}
+
+/// Convert an Ed25519Witness into a MerkleProver-bearing MerkleSink
+/// for use in v2.3c tests that need real consistency proofs.
+fn make_prover_sink_with_n_leaves(
+    n: usize,
+) -> (
+    std::sync::Arc<dyn nucleus_lineage::MerkleProver>,
+    nucleus_lineage::SignedTreeHead,
+) {
+    use nucleus_lineage::{
+        CallSpiffeId, EdgeSigner, InMemorySink, LineageEdge, LineageSink, LocalIssuer,
+        MerkleConfig, MerkleSink, Proof,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let inner = InMemorySink::new();
+    let producer = Ed25519Witness::from_seed([99u8; 32]);
+    let sink = MerkleSink::new(
+        inner,
+        producer,
+        MerkleConfig::new(dir.path()).with_interval(10_000),
+    )
+    .unwrap();
+    let issuer = LocalIssuer::random().unwrap();
+    let pod = CallSpiffeId::pod("prod.example.com", "agents", "summarizer").unwrap();
+    use nucleus_lineage::EdgeKind;
+    let mut prev_hash: Option<[u8; 32]> = None;
+    for i in 0..n {
+        let mut edge = if i == 0 {
+            LineageEdge::pod_admit(pod.clone())
+        } else {
+            // Use a derivation edge so each leaf hashes uniquely.
+            // `derive_tool` makes the child identity content-distinct
+            // per iteration so the Merkle leaves don't collide.
+            let unique_marker = format!("iter-{i}");
+            let child = pod
+                .derive_tool("shell", Some(unique_marker.as_bytes()))
+                .unwrap();
+            LineageEdge::from_parent(
+                child,
+                pod.clone(),
+                EdgeKind::ToolCall {
+                    tool: "shell".into(),
+                },
+            )
+        };
+        let bytes = nucleus_lineage::canonical_edge_bytes(&edge, prev_hash.as_ref());
+        let sig = issuer.sign(&bytes).unwrap();
+        let mut proof = Proof::new(issuer.kid(), issuer.alg(), sig);
+        if let Some(h) = prev_hash {
+            proof = proof.with_prev_hash(h);
+        }
+        edge.proof = Some(proof);
+        let new_hash = nucleus_lineage::edge_content_hash(&edge, prev_hash.as_ref());
+        prev_hash = Some(new_hash);
+        sink.emit(edge).unwrap();
+    }
+    let prover_arc: std::sync::Arc<dyn nucleus_lineage::MerkleProver> = std::sync::Arc::new(sink);
+    let sth = prover_arc.seal_current_root().unwrap();
+    (prover_arc, sth)
+}
+
+/// **v2.3c happy path**: client tracks state across two POSTs.
+/// First call sends `old 0` (no proof). Second call uses last-known
+/// size + consistency proof.
+#[tokio::test]
+async fn c2sp_stateful_client_tracks_size_across_two_calls() {
+    let mock = MockServer::start().await;
+    let origin = "nucleus.example.com/log-stateful".to_string();
+    let witness_seed = [0xC1; 32];
+
+    // Build a producer + tree with 5 leaves first.
+    let (prover, sth_first) = make_prover_sink_with_n_leaves(5);
+    Mock::given(method("POST"))
+        .and(path("/add-checkpoint"))
+        .respond_with(C2spStatefulHandler {
+            witness_seed,
+            expected_origin: origin.clone(),
+            expected_old: std::sync::Mutex::new(0u64),
+            require_proof_lines: false,
+        })
+        .mount(&mock)
+        .await;
+
+    let producer_witness = Arc::new(Ed25519Witness::from_seed([0xAB; 32]));
+    let producer_key_name = origin.clone();
+    let base = mock.uri();
+    let prover_clone = prover.clone();
+    let cosig: Cosignature = tokio::task::spawn_blocking({
+        let producer_witness = producer_witness.clone();
+        let origin = origin.clone();
+        let producer_key_name = producer_key_name.clone();
+        let sth = sth_first.clone();
+        move || {
+            let client =
+                C2spHttpWitnessClient::new(base, origin, producer_witness, producer_key_name)
+                    .unwrap()
+                    .with_consistency_prover(prover_clone);
+            client.cosign(&sth).unwrap()
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(cosig.kind, CosignatureKind::C2sp);
+    let _ = sth_first;
+}
+
+/// **v2.3c 409 recovery**: client has stale state (None / 0 → mock
+/// expects 3), sees 409 with the correct size, updates state, retries
+/// ONCE with a fresh proof. Second attempt succeeds.
+#[tokio::test]
+async fn c2sp_stateful_client_recovers_from_409_with_retry() {
+    use nucleus_lineage::WitnessError;
+    // Build a tree with 10 leaves; witness "saw" us at 3, current
+    // size is 10. Client starts with no state → sends `old 0` first
+    // → mock 409 says size=3 → client updates state and retries
+    // `old 3` + consistency proof from 3 → 10 → succeeds.
+    let (prover, sth_ten) = make_prover_sink_with_n_leaves(10);
+    assert_eq!(sth_ten.tree_size, 10);
+
+    let origin = "nucleus.example.com/log-recover".to_string();
+    let witness_seed = [0xC2; 32];
+    let mock = MockServer::start().await;
+    // Wiremock can't easily change response between calls without
+    // priority + remaining_calls; use a stateful handler instead.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let call_count = std::sync::Arc::new(AtomicU64::new(0));
+    let call_count_clone = call_count.clone();
+
+    struct RecoveryHandler {
+        witness_seed: [u8; 32],
+        origin: String,
+        calls: std::sync::Arc<AtomicU64>,
+    }
+    impl wiremock::Respond for RecoveryHandler {
+        fn respond(&self, req: &wiremock::Request) -> wiremock::ResponseTemplate {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            let body = std::str::from_utf8(&req.body).unwrap_or("");
+            let first = body.lines().next().unwrap_or("");
+            let prev: u64 = first
+                .strip_prefix("old ")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            // First call: client sent `old 0`, witness expects 3 →
+            // 409 + body "3\n".
+            if n == 0 {
+                if prev == 0 {
+                    return wiremock::ResponseTemplate::new(409)
+                        .insert_header("content-type", "text/x.tlog.size")
+                        .set_body_string("3\n");
+                }
+                // Unexpected — client sent something other than 0 on
+                // first call.
+                return wiremock::ResponseTemplate::new(500)
+                    .set_body_string(format!("unexpected first old={prev}"));
+            }
+            // Second call: must send `old 3`. Count proof lines.
+            if prev != 3 {
+                return wiremock::ResponseTemplate::new(500)
+                    .set_body_string(format!("retry: expected old=3, got {prev}"));
+            }
+            let mut proof_lines = 0usize;
+            let mut iter = body.lines();
+            iter.next(); // skip `old 3`
+            for line in iter.by_ref() {
+                if line.is_empty() {
+                    break;
+                }
+                proof_lines += 1;
+            }
+            if proof_lines == 0 {
+                return wiremock::ResponseTemplate::new(400)
+                    .set_body_string("retry missing consistency proof");
+            }
+            // Parse checkpoint and cosign.
+            let mut origin_seen = None;
+            let mut size: Option<u64> = None;
+            let mut root_b64 = None;
+            for line in iter.by_ref() {
+                if line.is_empty() {
+                    break;
+                }
+                if origin_seen.is_none() {
+                    origin_seen = Some(line.to_string());
+                } else if size.is_none() {
+                    size = line.parse().ok();
+                } else if root_b64.is_none() {
+                    root_b64 = Some(line.to_string());
+                }
+            }
+            let o = origin_seen.unwrap();
+            assert_eq!(o, self.origin);
+            let s = size.unwrap();
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            let rb = root_b64.unwrap();
+            let raw = STANDARD.decode(rb).unwrap();
+            let mut root = [0u8; 32];
+            root.copy_from_slice(&raw);
+            let checkpoint = checkpoint_signed_bytes(&o, s, &root).unwrap();
+            let witness = Ed25519Witness::from_seed(self.witness_seed);
+            let sig = witness.sign_message(&checkpoint);
+            let pubkey = witness.verifying_key_bytes();
+            let key_name = "recovery.example.com/w".to_string();
+            let key_id = ed25519_key_id(&key_name, SIG_TYPE_ED25519, &pubkey);
+            let line = format_signature_line(&key_name, &key_id, &sig).unwrap();
+            wiremock::ResponseTemplate::new(200)
+                .insert_header("content-type", "text/plain")
+                .set_body_string(format!("{line}\n"))
+        }
+    }
+
+    Mock::given(method("POST"))
+        .and(path("/add-checkpoint"))
+        .respond_with(RecoveryHandler {
+            witness_seed,
+            origin: origin.clone(),
+            calls: call_count_clone,
+        })
+        .mount(&mock)
+        .await;
+
+    let producer_witness = Arc::new(Ed25519Witness::from_seed([0xCD; 32]));
+    let base = mock.uri();
+    let prover_clone = prover.clone();
+    let result = tokio::task::spawn_blocking({
+        let producer_witness = producer_witness.clone();
+        let origin = origin.clone();
+        let sth = sth_ten.clone();
+        move || {
+            let client = C2spHttpWitnessClient::new(base, origin.clone(), producer_witness, origin)
+                .unwrap()
+                .with_consistency_prover(prover_clone);
+            client.cosign(&sth)
+        }
+    })
+    .await
+    .unwrap();
+
+    let cosig = result.expect("retry-after-409 should succeed");
+    assert_eq!(cosig.kind, CosignatureKind::C2sp);
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        2,
+        "client must POST twice (initial + retry-after-409)"
+    );
+    let _ = WitnessError::Conflict { last_known_size: 0 };
+}
+
+/// **v2.3c**: 409 without an attached consistency prover surfaces as
+/// `WitnessError::Conflict` after the FIRST attempt — the client
+/// can't construct a valid proof to retry, so it doesn't loop.
+#[tokio::test]
+async fn c2sp_stateful_client_409_without_prover_surfaces_conflict() {
+    use nucleus_lineage::WitnessError;
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/add-checkpoint"))
+        .respond_with(
+            ResponseTemplate::new(409)
+                .insert_header("content-type", "text/x.tlog.size")
+                .set_body_string("17\n"),
+        )
+        .mount(&mock)
+        .await;
+
+    let producer = Arc::new(Ed25519Witness::from_seed([0xCE; 32]));
+    let sth = make_sth(producer.as_ref(), 20, [0; 32]);
+    let base = mock.uri();
+    let err = tokio::task::spawn_blocking(move || {
+        let client = C2spHttpWitnessClient::new(
+            base,
+            "nucleus.example.com/log",
+            producer,
+            "nucleus.example.com/log",
+        )
+        .unwrap();
+        client.cosign(&sth)
+    })
+    .await
+    .unwrap()
+    .expect_err("no prover ⇒ can't retry, must surface Conflict");
+    match err {
+        WitnessError::Conflict {
+            last_known_size: 17,
+        } => {}
+        other => panic!("expected Conflict{{17}}, got {other:?}"),
+    }
+}
+
 // canonical_sth_bytes and parse_signature_line are pulled in via use
 // statements; silence dead-code/unused-import for the (currently
 // unused) ones to keep the file warning-free across feature combos.

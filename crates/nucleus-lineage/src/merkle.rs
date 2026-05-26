@@ -81,6 +81,18 @@ pub enum MerkleError {
     /// edges actually persisted to the underlying sink.
     #[error("checkpoint references tree_size {tree_size} but log only has {edges} edges")]
     CheckpointAheadOfLog { tree_size: u64, edges: u64 },
+    /// **v2.3c.** `prove_consistency_from(old)` called with an `old`
+    /// outside the valid range (0 or ≥ current size). Caller should
+    /// adjust: 0 means first-submission (no proof to send); ≥ current
+    /// means there's nothing to prove.
+    #[error(
+        "consistency proof out of range: old_size={old_size}, current_size={current_size}: {reason}"
+    )]
+    ConsistencyOutOfRange {
+        old_size: u64,
+        current_size: u64,
+        reason: &'static str,
+    },
 }
 
 /// Knobs for [`MerkleSink`]. Defaults: every 16 edges, dir `./checkpoints`.
@@ -225,6 +237,40 @@ where
     pub fn current_root(&self) -> Result<RootHash<Sha256>, MerkleError> {
         let st = self.state.lock().map_err(|_| MerkleError::Poisoned)?;
         Ok(st.tree.root())
+    }
+
+    /// **v2.3c.** Compute an RFC 6962 §2.1.2 Merkle consistency proof
+    /// from `old_size` to the current tree size. Used by external
+    /// witnesses (C2SP `tlog-witness`) to verify the producer's claim
+    /// "the new root extends the root I cosigned at old_size" without
+    /// having to store the full intermediate state.
+    ///
+    /// Returns `Err(MerkleError::ConsistencyOutOfRange)` if `old_size`
+    /// is 0 (witnesses signal "first submission" by sending `old 0`
+    /// with NO proof lines — no proof to compute) or `old_size >=
+    /// current_size` (no extension to prove).
+    pub fn prove_consistency_from(
+        &self,
+        old_size: u64,
+    ) -> Result<ct_merkle::ConsistencyProof<Sha256>, MerkleError> {
+        let st = self.state.lock().map_err(|_| MerkleError::Poisoned)?;
+        let current = st.tree.len();
+        if old_size == 0 {
+            return Err(MerkleError::ConsistencyOutOfRange {
+                old_size,
+                current_size: current,
+                reason: "old_size=0 means first-submission; send `old 0` with no proof lines",
+            });
+        }
+        if old_size >= current {
+            return Err(MerkleError::ConsistencyOutOfRange {
+                old_size,
+                current_size: current,
+                reason: "old_size must be strictly less than current_size",
+            });
+        }
+        let num_additions = (current - old_size) as usize;
+        Ok(st.tree.prove_consistency(num_additions))
     }
 
     /// **Atomic** prove-and-seal: gather inclusion proofs for every
