@@ -274,29 +274,39 @@ impl<'a> BundleBuilder<'a> {
             }
         }
 
-        // v2: if a Merkle prover was supplied, seal the current root
-        // and gather inclusion proofs for every session edge.
-        // CRITICAL ORDERING: gather inclusion proofs *first* against
-        // the prover's current tree state, then seal the root. Both
-        // happen under the same prover state (the prover's mutex), so
-        // sealing observes exactly the tree state used to generate
-        // the proofs.
+        // v2: if a Merkle prover was supplied, gather inclusion proofs
+        // and seal the root ATOMICALLY (one prover-lock acquisition).
+        //
+        // CRIT-1 from the second skeptical audit: the non-atomic path
+        // (prove_for_hash + seal_current_root in sequence) leaks a race
+        // where concurrent emit advances the tree between the two calls,
+        // producing proofs that don't verify against the sealed root.
+        // `MerkleProver::prove_for_hashes_and_seal` collapses both into
+        // one critical section.
         let merkle_anchor = if let Some(prover) = self.merkle_prover {
-            let mut proofs = Vec::with_capacity(subgraph.edges.len());
-            for (index, edge) in subgraph.edges.iter().enumerate() {
-                let leaf_hash = edge_content_hash(edge, None);
-                let (leaf_index, proof) = prover
-                    .prove_for_hash(&leaf_hash)
-                    .map_err(|e| BundleError::MerkleAnchorSeal(e.to_string()))?
-                    .ok_or(BundleError::MerkleProverMissingLeaf { index })?;
-                proofs.push(EdgeInclusionProof {
+            let leaf_hashes: Vec<[u8; 32]> = subgraph
+                .edges
+                .iter()
+                .map(|e| edge_content_hash(e, None))
+                .collect();
+            let (mut sth, raw_proofs) =
+                prover
+                    .prove_for_hashes_and_seal(&leaf_hashes)
+                    .map_err(|e| {
+                        // Distinguish "leaf not in tree" (sink/prover mismatch)
+                        // from genuine seal failures. The atomic call wraps
+                        // missing-leaf errors as MerkleError::Witness today;
+                        // surface a clearer message either way.
+                        BundleError::MerkleAnchorSeal(e.to_string())
+                    })?;
+            let inclusion_proofs = raw_proofs
+                .into_iter()
+                .map(|(leaf_index, proof)| EdgeInclusionProof {
                     leaf_index,
                     audit_path_hex: hex::encode(proof.as_bytes()),
-                });
-            }
-            let mut sth = prover
-                .seal_current_root()
-                .map_err(|e| BundleError::MerkleAnchorSeal(e.to_string()))?;
+                })
+                .collect();
+
             // v2.1 witness federation: ask each external witness to
             // countersign the sealed STH. Failures are surfaced as
             // BundleError::Cosign so a missing witness doesn't silently
@@ -309,7 +319,7 @@ impl<'a> BundleBuilder<'a> {
             }
             Some(MerkleAnchor {
                 sth,
-                inclusion_proofs: proofs,
+                inclusion_proofs,
             })
         } else {
             None

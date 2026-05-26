@@ -160,7 +160,9 @@ where
         for (i, edge) in existing.into_iter().enumerate() {
             let h = edge_content_hash(&edge, None);
             tree.push(h.to_vec());
-            leaf_index_by_hash.insert(h, i as u64);
+            // First-write semantics on duplicates — same as the live
+            // emit path.
+            leaf_index_by_hash.entry(h).or_insert(i as u64);
         }
         // First checkpoint is emitted once we've added `checkpoint_interval`
         // new edges, regardless of where we started.
@@ -225,6 +227,56 @@ where
         Ok(st.tree.root())
     }
 
+    /// **Atomic** prove-and-seal: gather inclusion proofs for every
+    /// leaf in `leaf_hashes` and sign the current root via the
+    /// witness, all under one mutex acquisition. Concurrent
+    /// `LineageSink::emit` callers block until this returns, so the
+    /// sealed STH's `tree_size` matches the tree state the proofs
+    /// were generated against.
+    ///
+    /// This is the load-bearing call for v2 envelope builders. The
+    /// non-atomic [`Self::prove_inclusion_by_hash`] + [`Self::current_root`]
+    /// path leaks a race window where the tree advances between the
+    /// two calls, producing inclusion proofs that don't verify
+    /// against the later root.
+    pub fn atomic_prove_and_seal(
+        &self,
+        leaf_hashes: &[[u8; 32]],
+    ) -> Result<(SignedTreeHead, Vec<(u64, InclusionProof<Sha256>)>), MerkleError> {
+        let st = self.state.lock().map_err(|_| MerkleError::Poisoned)?;
+        // Gather proofs first.
+        let mut proofs = Vec::with_capacity(leaf_hashes.len());
+        for hash in leaf_hashes {
+            let &leaf_index = st.leaf_index_by_hash.get(hash).ok_or_else(|| {
+                MerkleError::Witness(WitnessError::Backend(format!(
+                    "leaf hash {} not in Merkle tree",
+                    hex::encode(hash)
+                )))
+            })?;
+            let proof = st.tree.prove_inclusion(leaf_index as usize);
+            proofs.push((leaf_index, proof));
+        }
+        // Sign the root the proofs are anchored to. Both this and
+        // the `prove_inclusion` calls above see the same `st.tree`
+        // because we never released the lock.
+        let root = st.tree.root();
+        let tree_size = root.num_leaves();
+        let mut root_bytes = [0u8; 32];
+        root_bytes.copy_from_slice(root.as_bytes().as_slice());
+        // Drop the lock guard explicitly before calling sign_sth so
+        // a witness backend that does I/O (future HTTP/KMS-backed
+        // witnesses) doesn't hold the mutex over a network call. The
+        // tree state we just captured is what gets signed — sign_sth
+        // takes (tree_size, root) by value, so we're safe from any
+        // post-lock-release mutation.
+        drop(st);
+        let sth = self
+            .witness
+            .sign_sth(tree_size, &root_bytes)
+            .map_err(MerkleError::Witness)?;
+        Ok((sth, proofs))
+    }
+
     /// Force a checkpoint to be written immediately, regardless of
     /// `checkpoint_interval` progress. Useful at shutdown to seal the
     /// log.
@@ -252,11 +304,16 @@ where
         // 2) Append the leaf hash to our in-memory Merkle tree and
         // record the leaf-index → hash map so inclusion proofs can be
         // generated later by content hash without a linear scan.
+        // FIRST-WRITE semantics on duplicates (audit MED-1): if the
+        // same content hash is emitted twice, the map keeps the FIRST
+        // index — matching the chain's "first occurrence" preference
+        // and preventing a silent index drift if the same edge is
+        // replayed.
         let leaf = edge_content_hash(&edge, None);
         let mut st = self.state.lock().map_err(|_| SinkError::Poisoned)?;
         let leaf_index = st.tree.len();
         st.tree.push(leaf.to_vec());
-        st.leaf_index_by_hash.insert(leaf, leaf_index);
+        st.leaf_index_by_hash.entry(leaf).or_insert(leaf_index);
 
         // 3) Cut a checkpoint if we've crossed the interval.
         if st.tree.len() >= st.next_checkpoint_at {

@@ -79,10 +79,13 @@ pub struct ReportPayload {
     /// claim this service makes; downstream consumers should require
     /// it when accepting bundles from untrusted producers.
     pub merkle_verified: bool,
-    /// **v2.1.** Number of cosignatures on the Merkle anchor's STH
-    /// that verified against a key in `trusted_witnesses_hex`. ≥ the
-    /// requested `cosignature_threshold` when the response is 200.
+    /// **v2.1.** Number of DISTINCT trusted witnesses whose
+    /// cosignatures verified. ≥ the requested `cosignature_threshold`
+    /// when the response is 200.
     pub cosignatures_verified: usize,
+    /// **v2.1.1.** Hex-encoded public keys of the witnesses whose
+    /// cosignatures verified — auditable diversity check.
+    pub matched_witness_pubkeys_hex: Vec<String>,
 }
 
 /// `POST /v1/verify` — run [`verify_bundle`] against the caller-supplied
@@ -162,6 +165,7 @@ pub async fn verify(
             schema_version: req.bundle.envelope.meta.schema_version,
             merkle_verified: report.merkle_verified,
             cosignatures_verified: report.cosignatures_verified,
+            matched_witness_pubkeys_hex: report.matched_witness_pubkeys_hex,
         },
     }))
 }

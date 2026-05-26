@@ -190,6 +190,7 @@ fn emit_json_report(bundle: &Bundle, report: &VerificationReport) -> Result<()> 
         "schema_version": bundle.envelope.meta.schema_version,
         "merkle_verified": report.merkle_verified,
         "cosignatures_verified": report.cosignatures_verified,
+        "matched_witness_pubkeys_hex": report.matched_witness_pubkeys_hex,
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())

@@ -681,6 +681,277 @@ fn v2_1_untrusted_witness_cosignature_does_not_count() {
                      // The key assertion: cosignatures.len() == 2 but only 1 counts.
 }
 
+/// **CRIT-2 from the third skeptical audit.** A single compromised
+/// witness must NOT meet threshold N by signing N times. The fix:
+/// the verifier counts DISTINCT witness identities, not cosigs.
+/// Without this test the regression is silent and devastating.
+#[test]
+fn v2_1_one_witness_with_two_cosigs_does_not_meet_threshold_two() {
+    let dir = tempdir().unwrap();
+    let inner = InMemorySink::new();
+    let producer = Ed25519Witness::from_seed([60u8; 32]);
+    let producer_pub = producer.verifying_key_bytes();
+    let sink = MerkleSink::new(
+        inner,
+        producer,
+        MerkleConfig::new(dir.path()).with_interval(1000),
+    )
+    .unwrap();
+    let issuer = LocalIssuer::random().unwrap();
+    let p = pod();
+    let e1 = signed_edge(&issuer, LineageEdge::pod_admit(p.clone()), None);
+    sink.emit(e1).unwrap();
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+
+    // Single witness, signs twice — both cosignatures embedded.
+    let w = InProcessWitness::from_seed([42u8; 32]);
+    let bundle = nucleus_envelope::BundleBuilder::new(p)
+        .payload(serde_json::json!({}))
+        .sink(&sink)
+        .jwks(jwks.clone())
+        .with_merkle_prover(&sink)
+        .with_cosignatures(vec![&w, &w])
+        .build()
+        .unwrap();
+    assert_eq!(
+        bundle
+            .envelope
+            .merkle_anchor
+            .as_ref()
+            .unwrap()
+            .sth
+            .cosignatures
+            .len(),
+        2,
+        "producer attaches both cosignatures"
+    );
+
+    // Trust anchor with threshold=2 — one witness can't satisfy it.
+    let trust = TrustAnchor::from_jwks(jwks)
+        .with_witness_pubkey(producer_pub)
+        .with_trusted_witness(w.verifying_key_bytes())
+        .cosignature_threshold(2);
+    let err = verify_bundle(&bundle, &trust)
+        .expect_err("one witness must not satisfy threshold=2 by signing twice");
+    assert!(
+        matches!(
+            err,
+            VerifyBundleError::InsufficientCosignatures {
+                verified: 1,
+                required: 2
+            }
+        ),
+        "got {err:?}"
+    );
+}
+
+/// **CRIT-2 follow-on.** Duplicate `with_trusted_witness` calls with
+/// the same key should be no-ops, NOT inflate the trusted set so that
+/// a single matched cosig appears to satisfy threshold=2.
+#[test]
+fn v2_1_duplicate_trusted_witness_is_noop() {
+    let dir = tempdir().unwrap();
+    let inner = InMemorySink::new();
+    let producer = Ed25519Witness::from_seed([70u8; 32]);
+    let producer_pub = producer.verifying_key_bytes();
+    let sink = MerkleSink::new(
+        inner,
+        producer,
+        MerkleConfig::new(dir.path()).with_interval(1000),
+    )
+    .unwrap();
+    let issuer = LocalIssuer::random().unwrap();
+    let p = pod();
+    sink.emit(signed_edge(
+        &issuer,
+        LineageEdge::pod_admit(p.clone()),
+        None,
+    ))
+    .unwrap();
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+    let w = InProcessWitness::from_seed([71u8; 32]);
+    let bundle = nucleus_envelope::BundleBuilder::new(p)
+        .payload(serde_json::json!({}))
+        .sink(&sink)
+        .jwks(jwks.clone())
+        .with_merkle_prover(&sink)
+        .with_cosignatures(vec![&w])
+        .build()
+        .unwrap();
+    // Trust anchor adds the SAME key twice; should not inflate count.
+    let trust = TrustAnchor::from_jwks(jwks)
+        .with_witness_pubkey(producer_pub)
+        .with_trusted_witness(w.verifying_key_bytes())
+        .with_trusted_witness(w.verifying_key_bytes())
+        .cosignature_threshold(2);
+    let err = verify_bundle(&bundle, &trust)
+        .expect_err("duplicate trusted key must NOT count as 2 witnesses");
+    assert!(matches!(
+        err,
+        VerifyBundleError::InsufficientCosignatures { verified: 1, .. }
+    ));
+}
+
+/// **CRIT-3.** A bundle with an enormous `cosignatures` list must be
+/// rejected before the verifier burns CPU on Ed25519.
+#[test]
+fn v2_1_cosignature_dos_bound() {
+    use nucleus_lineage::Cosignature;
+
+    let dir = tempdir().unwrap();
+    let inner = InMemorySink::new();
+    let producer = Ed25519Witness::from_seed([80u8; 32]);
+    let producer_pub = producer.verifying_key_bytes();
+    let sink = MerkleSink::new(
+        inner,
+        producer,
+        MerkleConfig::new(dir.path()).with_interval(1000),
+    )
+    .unwrap();
+    let issuer = LocalIssuer::random().unwrap();
+    let p = pod();
+    sink.emit(signed_edge(
+        &issuer,
+        LineageEdge::pod_admit(p.clone()),
+        None,
+    ))
+    .unwrap();
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+    let mut bundle = nucleus_envelope::BundleBuilder::new(p)
+        .payload(serde_json::json!({}))
+        .sink(&sink)
+        .jwks(jwks.clone())
+        .with_merkle_prover(&sink)
+        .build()
+        .unwrap();
+    // Inject 100 garbage cosignatures (well past the 64 cap).
+    let anchor = bundle.envelope.merkle_anchor.as_mut().unwrap();
+    for i in 0..100 {
+        anchor.sth.cosignatures.push(Cosignature {
+            witness_kid: format!("garbage-{i}"),
+            signature: vec![0u8; 64],
+            timestamp_ms: 1_700_000_000_000,
+        });
+    }
+    let trust = TrustAnchor::from_jwks(jwks).with_witness_pubkey(producer_pub);
+    let err = verify_bundle(&bundle, &trust).expect_err("over-cap cosig list must be rejected");
+    assert!(
+        matches!(
+            err,
+            VerifyBundleError::CosignatureListTooLarge { got: 100, max: 64 }
+        ),
+        "got {err:?}"
+    );
+}
+
+/// **HIGH-2.** STH older than `sth_max_age` is rejected. Builds a
+/// bundle, then rewrites the STH timestamp to 10 days ago. The
+/// signature verification of the STH against the witness key would
+/// fail (because tree_size + timestamp + root is signed), so we
+/// can't just rewrite the timestamp on a real producer's STH —
+/// the freshness check has to fire BEFORE signature verify for a
+/// genuine stale STH. The test asserts the staleness path with a
+/// fresh-but-stamped-old STH constructed via a producer that signs
+/// at a stamped-past time.
+#[test]
+fn v2_1_sth_max_age_rejects_stale_anchor() {
+    // We use a custom witness path: forge an STH whose timestamp_ms
+    // is in the past, but sign it correctly with the producer key.
+    use nucleus_lineage::canonical_sth_bytes;
+    let dir = tempdir().unwrap();
+    let inner = InMemorySink::new();
+    let producer = Ed25519Witness::from_seed([90u8; 32]);
+    let producer_pub = producer.verifying_key_bytes();
+    let sink = MerkleSink::new(
+        inner,
+        producer,
+        MerkleConfig::new(dir.path()).with_interval(1000),
+    )
+    .unwrap();
+    let issuer = LocalIssuer::random().unwrap();
+    let p = pod();
+    sink.emit(signed_edge(
+        &issuer,
+        LineageEdge::pod_admit(p.clone()),
+        None,
+    ))
+    .unwrap();
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+    let mut bundle = nucleus_envelope::BundleBuilder::new(p)
+        .payload(serde_json::json!({}))
+        .sink(&sink)
+        .jwks(jwks.clone())
+        .with_merkle_prover(&sink)
+        .build()
+        .unwrap();
+
+    // Re-sign the STH with a timestamp 10 days in the past.
+    let stale_ts = chrono::Utc::now().timestamp_millis() as u64 - 10 * 24 * 60 * 60 * 1000;
+    let anchor = bundle.envelope.merkle_anchor.as_mut().unwrap();
+    let root_bytes: [u8; 32] = hex::decode(&anchor.sth.root_hash_hex)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let stale_canonical = canonical_sth_bytes(anchor.sth.tree_size, stale_ts, &root_bytes);
+    // Sign with the same producer key the original STH was signed by.
+    let producer2 = Ed25519Witness::from_seed([90u8; 32]); // same seed = same key
+    anchor.sth.timestamp_ms = stale_ts;
+    anchor.sth.witness_sig = producer2.sign_message(&stale_canonical).to_vec();
+
+    // With max_age = 1 hour, this stale STH is rejected.
+    let trust = TrustAnchor::from_jwks(jwks)
+        .with_witness_pubkey(producer_pub)
+        .sth_max_age(std::time::Duration::from_secs(3600));
+    let err = verify_bundle(&bundle, &trust).expect_err("stale STH must be rejected");
+    assert!(
+        matches!(err, VerifyBundleError::StaleSth { .. }),
+        "got {err:?}"
+    );
+}
+
+/// **Audit MED-3.** Self-check mode on a v2 bundle MUST NOT touch
+/// the Merkle-anchor path — the producer can't validate its own claim
+/// against itself. Pin the documented behavior.
+#[test]
+fn v2_self_check_on_anchored_bundle_skips_anchor_check() {
+    let dir = tempdir().unwrap();
+    let inner = InMemorySink::new();
+    let producer = Ed25519Witness::from_seed([100u8; 32]);
+    let sink = MerkleSink::new(
+        inner,
+        producer,
+        MerkleConfig::new(dir.path()).with_interval(1000),
+    )
+    .unwrap();
+    let issuer = LocalIssuer::random().unwrap();
+    let p = pod();
+    sink.emit(signed_edge(
+        &issuer,
+        LineageEdge::pod_admit(p.clone()),
+        None,
+    ))
+    .unwrap();
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+    let bundle = nucleus_envelope::BundleBuilder::new(p)
+        .payload(serde_json::json!({}))
+        .sink(&sink)
+        .jwks(jwks)
+        .with_merkle_prover(&sink)
+        .build()
+        .unwrap();
+    assert!(bundle.envelope.merkle_anchor.is_some());
+
+    let report =
+        verify_bundle(&bundle, &TrustAnchor::self_check_only()).expect("self-check accepts");
+    assert!(report.trust_mode_self_check_only);
+    assert!(
+        !report.merkle_verified,
+        "self-check MUST report merkle_verified=false even with an anchor present"
+    );
+    assert_eq!(report.cosignatures_verified, 0);
+    assert!(report.matched_witness_pubkeys_hex.is_empty());
+}
+
 #[test]
 fn v2_1_zero_threshold_is_default_and_accepts_no_cosignatures() {
     // A bundle without external cosignatures still verifies cleanly
