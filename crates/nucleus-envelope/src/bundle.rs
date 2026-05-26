@@ -2,13 +2,17 @@
 
 use chrono::{DateTime, Utc};
 use nucleus_lineage::{
-    edge_content_hash, CallSpiffeId, IdError, Jwks, LineageEdge, LineageSink, MerkleProver,
-    SignedTreeHead, WitnessClient,
+    edge_content_hash, CallSpiffeId, EdgeSigner, IdError, IssuerError, Jwks, LineageEdge,
+    LineageSink, MerkleProver, SignedTreeHead, WitnessClient,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::binding::{
+    payload_hash, signed_bytes as binding_signed_bytes, BindingError, PayloadBinding,
+    NUCLEUS_BUNDLE_PAYLOAD_TYPE,
+};
 use crate::extract;
 
 /// Errors a [`BundleBuilder`] may surface.
@@ -48,6 +52,12 @@ pub enum BundleError {
     /// An external witness refused to countersign the sealed STH.
     #[error("witness cosignature failed: {0}")]
     Cosign(String),
+    /// Computing or signing the payload binding failed.
+    #[error("payload binding: {0}")]
+    Binding(#[from] BindingError),
+    /// The binding signer's `sign` method returned an error.
+    #[error("payload binding signer: {0}")]
+    BindingSigner(#[from] IssuerError),
 }
 
 /// A portable, self-contained provenance bundle.
@@ -65,6 +75,14 @@ pub struct Bundle {
     pub payload: Value,
     /// Provenance envelope covering the payload's session.
     pub envelope: Envelope,
+    /// **v2.2 payload binding.** Detached DSSE-style signature that
+    /// ties the `payload` bytes to the envelope's chain head (and
+    /// Merkle root, when v2). Present when the producer called
+    /// [`BundleBuilder::with_binding_signer`]; absent for older v1/v2
+    /// bundles. Verifiers MAY require it via
+    /// `TrustAnchor::require_payload_binding`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<PayloadBinding>,
 }
 
 /// The provenance certificate accompanying a [`Bundle::payload`].
@@ -172,6 +190,10 @@ pub struct BundleBuilder<'a> {
     /// invoked once after the STH is sealed; results land in
     /// `sth.cosignatures`. Ignored if `merkle_prover` is `None`.
     cosignatories: Vec<&'a dyn WitnessClient>,
+    /// Optional binding signer (v2.2). When supplied, the builder
+    /// produces a [`PayloadBinding`] that authenticates the payload
+    /// bytes against the envelope head + Merkle root (if v2).
+    binding_signer: Option<&'a dyn EdgeSigner>,
 }
 
 impl<'a> BundleBuilder<'a> {
@@ -187,6 +209,7 @@ impl<'a> BundleBuilder<'a> {
             require_signed: false,
             merkle_prover: None,
             cosignatories: Vec::new(),
+            binding_signer: None,
         }
     }
 
@@ -258,6 +281,18 @@ impl<'a> BundleBuilder<'a> {
         self
     }
 
+    /// **v2.2 payload binding.** Attach a signer that will produce a
+    /// [`PayloadBinding`] over the payload + envelope head (+ Merkle
+    /// root, when v2). Verifiers with the corresponding kid in their
+    /// trust JWKS can detect payload-only tampering — closes the v1
+    /// documented limitation. The signer's `kid` becomes the binding's
+    /// `keyid`; in practice, callers re-use the same `EdgeSigner` that
+    /// produced the per-edge proofs.
+    pub fn with_binding_signer(mut self, signer: &'a dyn EdgeSigner) -> Self {
+        self.binding_signer = Some(signer);
+        self
+    }
+
     /// Assemble the [`Bundle`].
     pub fn build(self) -> Result<Bundle, BundleError> {
         let payload = self.payload.ok_or(BundleError::MissingField("payload"))?;
@@ -325,18 +360,67 @@ impl<'a> BundleBuilder<'a> {
             None
         };
 
+        let envelope = Envelope {
+            session_root: subgraph.root,
+            edges: subgraph.edges,
+            jwks,
+            checkpoints: self.checkpoints,
+            merkle_anchor,
+            meta: EnvelopeMeta::now(),
+        };
+
+        // v2.2 payload binding (optional). The binding signature
+        // covers (sha256(payload) || envelope_head_hash || merkle_root)
+        // via DSSE PAE so a downstream verifier can detect payload
+        // tampering even when every per-edge signature still checks.
+        let binding = if let Some(signer) = self.binding_signer {
+            let payload_h = payload_hash(&payload)?;
+            let head_hash = compute_envelope_head_hash(&envelope.edges);
+            let merkle_root_bytes: Option<[u8; 32]> =
+                envelope.merkle_anchor.as_ref().and_then(|a| {
+                    hex::decode(&a.sth.root_hash_hex)
+                        .ok()
+                        .and_then(|v| <[u8; 32]>::try_from(v.as_slice()).ok())
+                });
+            let to_sign = binding_signed_bytes(
+                NUCLEUS_BUNDLE_PAYLOAD_TYPE,
+                &payload_h,
+                &head_hash,
+                merkle_root_bytes.as_ref(),
+            );
+            let signature = signer.sign(&to_sign)?;
+            Some(PayloadBinding {
+                payload_type: NUCLEUS_BUNDLE_PAYLOAD_TYPE.to_string(),
+                payload_hash_hex: hex::encode(payload_h),
+                envelope_head_hash_hex: hex::encode(head_hash),
+                merkle_root_hex: merkle_root_bytes.map(hex::encode),
+                keyid: signer.kid().to_string(),
+                signature,
+            })
+        } else {
+            None
+        };
+
         Ok(Bundle {
             payload,
-            envelope: Envelope {
-                session_root: subgraph.root,
-                edges: subgraph.edges,
-                jwks,
-                checkpoints: self.checkpoints,
-                merkle_anchor,
-                meta: EnvelopeMeta::now(),
-            },
+            envelope,
+            binding,
         })
     }
+}
+
+/// Compute the SHA-256 of the head (last) edge's canonical bytes,
+/// chained from index 0. Mirrors what `verify_bundle`'s
+/// `head_edge_hash_hex` reports. Returns all-zeros for empty input.
+pub(crate) fn compute_envelope_head_hash(edges: &[LineageEdge]) -> [u8; 32] {
+    let mut prev: Option<[u8; 32]> = None;
+    let mut last = [0u8; 32];
+    for edge in edges {
+        let h = nucleus_lineage::edge_content_hash(edge, prev.as_ref());
+        last = h;
+        prev = Some(h);
+    }
+    last
 }
 
 #[cfg(test)]

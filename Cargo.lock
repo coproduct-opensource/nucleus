@@ -4921,6 +4921,7 @@ dependencies = [
 name = "nucleus-envelope"
 version = "1.0.0"
 dependencies = [
+ "base64",
  "chrono",
  "ed25519-dalek",
  "hex",

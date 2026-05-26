@@ -505,6 +505,219 @@ fn _keep_canonical_edge_bytes_in_scope() {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// v2.2 — payload binding (detached DSSE signature)
+
+/// End-to-end happy path: producer signs the binding with the same
+/// issuer that signs edges; verifier checks against the same JWKS.
+#[test]
+fn v2_2_payload_binding_roundtrip() {
+    let issuer = LocalIssuer::random().unwrap();
+    let sink = InMemorySink::new();
+    populate_session(&sink, &issuer);
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+
+    let bundle = BundleBuilder::new(pod())
+        .payload(serde_json::json!({"stats": {"x": 1}, "summary": "hi"}))
+        .sink(&sink)
+        .jwks(jwks.clone())
+        .with_binding_signer(&issuer)
+        .build()
+        .unwrap();
+    assert!(bundle.binding.is_some(), "binding must be attached");
+
+    let trust = TrustAnchor::from_jwks(jwks);
+    let report = verify_bundle(&bundle, &trust).expect("binding must verify");
+    assert!(report.payload_binding_verified);
+}
+
+/// **The v1→v2.2 gap closure.** With the binding, payload tampering
+/// is now detected — closes the documented limitation pinned in
+/// `v1_envelope_does_not_bind_payload_documented_limitation`.
+#[test]
+fn v2_2_payload_tamper_breaks_binding() {
+    let issuer = LocalIssuer::random().unwrap();
+    let sink = InMemorySink::new();
+    populate_session(&sink, &issuer);
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+
+    let mut bundle = BundleBuilder::new(pod())
+        .payload(serde_json::json!({"summary": "original"}))
+        .sink(&sink)
+        .jwks(jwks.clone())
+        .with_binding_signer(&issuer)
+        .build()
+        .unwrap();
+
+    // Same payload tamper the v1 test pinned as "verifies cleanly."
+    // With binding required, it must now fail.
+    bundle.payload = serde_json::json!({"summary": "tampered"});
+
+    let trust = TrustAnchor::from_jwks(jwks);
+    let err =
+        verify_bundle(&bundle, &trust).expect_err("payload tamper must fail binding verification");
+    assert!(
+        matches!(err, VerifyBundleError::BadPayloadBinding { .. }),
+        "got {err:?}"
+    );
+}
+
+/// Tampering an edge invalidates BOTH the chain AND the binding's
+/// envelope_head_hash — defense in depth. Chain check fires first;
+/// pin via match.
+#[test]
+fn v2_2_envelope_tamper_breaks_binding_or_chain() {
+    let issuer = LocalIssuer::random().unwrap();
+    let sink = InMemorySink::new();
+    populate_session(&sink, &issuer);
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+
+    let mut bundle = BundleBuilder::new(pod())
+        .payload(serde_json::json!({}))
+        .sink(&sink)
+        .jwks(jwks.clone())
+        .with_binding_signer(&issuer)
+        .build()
+        .unwrap();
+
+    // Tamper with a non-canonical attr (does NOT break chain signature
+    // because attrs aren't covered by canonical_edge_bytes) — but DOES
+    // shift the chain order? No, attrs aren't signed. Use a child swap
+    // that breaks both layers.
+    bundle.envelope.edges[1].child = pod().derive_tool("Bash", Some(b"diff")).unwrap();
+
+    let trust = TrustAnchor::from_jwks(jwks);
+    let err = verify_bundle(&bundle, &trust).expect_err("envelope tamper must fail");
+    // Chain check fires before binding check; either error is correct.
+    assert!(
+        matches!(
+            err,
+            VerifyBundleError::Chain { .. } | VerifyBundleError::BadPayloadBinding { .. }
+        ),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn v2_2_require_binding_rejects_unbound_bundle() {
+    let issuer = LocalIssuer::random().unwrap();
+    let sink = InMemorySink::new();
+    populate_session(&sink, &issuer);
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+
+    let bundle = BundleBuilder::new(pod())
+        .payload(serde_json::json!({}))
+        .sink(&sink)
+        .jwks(jwks.clone())
+        .build()
+        .unwrap();
+    assert!(bundle.binding.is_none());
+
+    let trust = TrustAnchor::from_jwks(jwks).require_payload_binding();
+    let err = verify_bundle(&bundle, &trust).expect_err("require_payload_binding must reject");
+    assert!(matches!(err, VerifyBundleError::MissingPayloadBinding));
+}
+
+/// Binding signed by a key NOT in the trust anchor's JWKS must fail.
+/// (Producer issuer ≠ verifier-trusted issuer.)
+#[test]
+fn v2_2_wrong_signing_key_fails_binding() {
+    let producer = LocalIssuer::random().unwrap();
+    let attacker = LocalIssuer::random().unwrap();
+    let sink = InMemorySink::new();
+    populate_session(&sink, &producer);
+    let producer_jwks: Jwks = serde_json::from_value(producer.publish_jwks()).unwrap();
+
+    // Bundle signed by ATTACKER but embeds PRODUCER's JWKS to look
+    // legit; trust anchor uses PRODUCER's JWKS (out-of-band).
+    let bundle = BundleBuilder::new(pod())
+        .payload(serde_json::json!({}))
+        .sink(&sink)
+        .jwks(producer_jwks.clone())
+        .with_binding_signer(&attacker)
+        .build()
+        .unwrap();
+
+    let trust = TrustAnchor::from_jwks(producer_jwks);
+    let err =
+        verify_bundle(&bundle, &trust).expect_err("binding signed by non-trusted key must fail");
+    assert!(matches!(err, VerifyBundleError::BadPayloadBinding { .. }));
+}
+
+#[test]
+fn v2_2_bundle_with_merkle_anchor_binds_root() {
+    use nucleus_lineage::{Ed25519Witness, MerkleConfig, MerkleSink};
+
+    let dir = tempdir().unwrap();
+    let inner = InMemorySink::new();
+    let witness = Ed25519Witness::from_seed([200u8; 32]);
+    let witness_pub = witness.verifying_key_bytes();
+    let sink = MerkleSink::new(
+        inner,
+        witness,
+        MerkleConfig::new(dir.path()).with_interval(1000),
+    )
+    .unwrap();
+    let issuer = LocalIssuer::random().unwrap();
+    let p = pod();
+
+    let e1 = signed_edge(&issuer, LineageEdge::pod_admit(p.clone()), None);
+    sink.emit(e1).unwrap();
+
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+    let bundle = BundleBuilder::new(p)
+        .payload(serde_json::json!({"v2_2": true}))
+        .sink(&sink)
+        .jwks(jwks.clone())
+        .with_merkle_prover(&sink)
+        .with_binding_signer(&issuer)
+        .build()
+        .unwrap();
+    let binding = bundle.binding.as_ref().unwrap();
+    assert!(
+        binding.merkle_root_hex.is_some(),
+        "v2 binding must include merkle_root_hex"
+    );
+    assert_eq!(
+        binding.merkle_root_hex.as_deref(),
+        Some(
+            bundle
+                .envelope
+                .merkle_anchor
+                .as_ref()
+                .unwrap()
+                .sth
+                .root_hash_hex
+                .as_str()
+        )
+    );
+
+    let trust = TrustAnchor::from_jwks(jwks).with_witness_pubkey(witness_pub);
+    let report = verify_bundle(&bundle, &trust).expect("v2 + binding must verify");
+    assert!(report.merkle_verified);
+    assert!(report.payload_binding_verified);
+}
+
+/// A bundle without a binding still verifies cleanly when the trust
+/// anchor doesn't require one — backwards compat for v1/v2/v2.1.
+#[test]
+fn v2_2_unbound_bundle_verifies_when_not_required() {
+    let issuer = LocalIssuer::random().unwrap();
+    let sink = InMemorySink::new();
+    populate_session(&sink, &issuer);
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+    let bundle = BundleBuilder::new(pod())
+        .payload(serde_json::json!({}))
+        .sink(&sink)
+        .jwks(jwks.clone())
+        .build()
+        .unwrap();
+
+    let trust = TrustAnchor::from_jwks(jwks); // no require_payload_binding
+    let report = verify_bundle(&bundle, &trust).expect("unbound bundle accepted");
+    assert!(!report.payload_binding_verified);
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // v2.1 — external witness federation (split-view defense)
 
 /// Build a Merkle-anchored bundle countersigned by N external

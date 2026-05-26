@@ -62,10 +62,15 @@
 //! let json = serde_json::to_string(&bundle)?;
 //! ```
 
+pub mod binding;
 pub mod bundle;
 pub mod extract;
 pub mod verify;
 
+pub use binding::{
+    payload_hash, signed_bytes as binding_signed_bytes, BindingError, PayloadBinding,
+    NUCLEUS_BUNDLE_PAYLOAD_TYPE,
+};
 pub use bundle::{
     Bundle, BundleBuilder, BundleError, EdgeInclusionProof, Envelope, EnvelopeMeta, MerkleAnchor,
 };

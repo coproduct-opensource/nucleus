@@ -75,6 +75,10 @@ pub struct TrustAnchor {
     /// than this is rejected; when `None`, no freshness check is
     /// performed (default — backwards-compat).
     sth_max_age: Option<Duration>,
+    /// **v2.2 payload binding.** When `true`, reject bundles that
+    /// lack a [`crate::PayloadBinding`]. Default `false` for
+    /// backwards-compat with v1/v2/v2.1 bundles.
+    require_payload_binding: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,6 +105,7 @@ impl TrustAnchor {
             trusted_witnesses: Vec::new(),
             cosignature_threshold: 0,
             sth_max_age: None,
+            require_payload_binding: false,
         }
     }
 
@@ -117,6 +122,7 @@ impl TrustAnchor {
             trusted_witnesses: Vec::new(),
             cosignature_threshold: 0,
             sth_max_age: None,
+            require_payload_binding: false,
         }
     }
 
@@ -185,6 +191,17 @@ impl TrustAnchor {
     /// a witness pubkey, this knob is unused (no anchor verification).
     pub fn sth_max_age(mut self, max_age: Duration) -> Self {
         self.sth_max_age = Some(max_age);
+        self
+    }
+
+    /// **v2.2 payload binding.** When set, [`verify_bundle`] rejects
+    /// any bundle that lacks a [`crate::PayloadBinding`]. Default off
+    /// (backwards-compat with v1/v2/v2.1 bundles); production
+    /// deployments accepting bundles from untrusted producers should
+    /// turn this on, since the binding is the only thing in the
+    /// envelope chain that authenticates the payload bytes.
+    pub fn require_payload_binding(mut self) -> Self {
+        self.require_payload_binding = true;
         self
     }
 }
@@ -270,6 +287,17 @@ pub enum VerifyBundleError {
     /// `sth_max_age` allows.
     #[error("Merkle anchor STH is too old: age {age_ms}ms exceeds max {max_age_ms}ms")]
     StaleSth { age_ms: u64, max_age_ms: u64 },
+    /// `require_payload_binding` was set but the bundle has no
+    /// `binding`.
+    #[error(
+        "payload binding required but bundle has none (call TrustAnchor::require_payload_binding only \
+         on producers known to emit bindings)"
+    )]
+    MissingPayloadBinding,
+    /// The payload binding's signature did not verify, or one of its
+    /// content hashes diverged from the recomputed values.
+    #[error("payload binding verification failed: {detail}")]
+    BadPayloadBinding { detail: String },
 }
 
 /// Result of a successful [`verify_bundle`] call.
@@ -311,6 +339,11 @@ pub struct VerificationReport {
     /// actual quorum identity so downstream consumers can check
     /// witness diversity rather than just trusting the count.
     pub matched_witness_pubkeys_hex: Vec<String>,
+    /// **v2.2.** `true` if the bundle carried a [`crate::PayloadBinding`]
+    /// AND it verified against the trust anchor's JWKS. Confirms the
+    /// payload-to-envelope binding: a tampered payload would have
+    /// failed signature verification.
+    pub payload_binding_verified: bool,
 }
 
 /// Verify a [`Bundle`] against an explicit [`TrustAnchor`].
@@ -376,6 +409,7 @@ pub fn verify_bundle(
                 merkle_verified: false,
                 cosignatures_verified: 0,
                 matched_witness_pubkeys_hex: Vec::new(),
+                payload_binding_verified: false,
             });
         }
         return Err(VerifyBundleError::EmptyEnvelope);
@@ -467,6 +501,22 @@ pub fn verify_bundle(
 
     let head_edge_hash_hex = compute_head_edge_hash_hex(&env.edges);
 
+    // 8) v2.2 payload binding (optional). Self-check mode does NOT
+    //    verify the binding — same rationale as the Merkle anchor:
+    //    the binding signer is the producer; checking it against
+    //    itself proves nothing. Out-of-band mode verifies against
+    //    the trust anchor's JWKS.
+    let payload_binding_verified = match (&bundle.binding, trust.require_payload_binding) {
+        (Some(binding), _) if !trust.is_self_check_only() => {
+            verify_payload_binding(bundle, binding, &head_edge_hash_hex, trust)?;
+            true
+        }
+        (None, true) => {
+            return Err(VerifyBundleError::MissingPayloadBinding);
+        }
+        _ => false,
+    };
+
     Ok(VerificationReport {
         edge_count: env.edges.len(),
         kids,
@@ -477,7 +527,124 @@ pub fn verify_bundle(
         merkle_verified,
         cosignatures_verified,
         matched_witness_pubkeys_hex,
+        payload_binding_verified,
     })
+}
+
+/// Verify the v2.2 payload binding: recompute payload hash + envelope
+/// head hash, cross-check the binding's claimed Merkle root against
+/// the envelope's anchor, look up the signing key in the trust
+/// anchor's JWKS, verify the Ed25519 signature over the DSSE PAE.
+fn verify_payload_binding(
+    bundle: &Bundle,
+    binding: &crate::PayloadBinding,
+    envelope_head_hash_hex: &str,
+    trust: &TrustAnchor,
+) -> Result<(), VerifyBundleError> {
+    use crate::binding::{payload_hash, signed_bytes};
+    use ed25519_dalek::{Signature, Verifier};
+
+    // 1) Recompute payload hash and check it.
+    let p_hash =
+        payload_hash(&bundle.payload).map_err(|e| VerifyBundleError::BadPayloadBinding {
+            detail: format!("payload hash: {e}"),
+        })?;
+    let p_hash_hex = hex::encode(p_hash);
+    if p_hash_hex != binding.payload_hash_hex {
+        return Err(VerifyBundleError::BadPayloadBinding {
+            detail: format!(
+                "payload hash mismatch: recomputed {p_hash_hex}, binding claims {}",
+                binding.payload_hash_hex
+            ),
+        });
+    }
+
+    // 2) Envelope head must match the head we computed during chain
+    //    verification. Pin via string equality (both 64-char hex).
+    if envelope_head_hash_hex != binding.envelope_head_hash_hex {
+        return Err(VerifyBundleError::BadPayloadBinding {
+            detail: format!(
+                "envelope head mismatch: recomputed {envelope_head_hash_hex}, binding claims {}",
+                binding.envelope_head_hash_hex
+            ),
+        });
+    }
+
+    // 3) Merkle root agreement. If the bundle has an anchor, the
+    //    binding MUST cover the same root; conversely, a binding
+    //    claiming a Merkle root without an anchor present is malformed.
+    let envelope_root = bundle
+        .envelope
+        .merkle_anchor
+        .as_ref()
+        .map(|a| a.sth.root_hash_hex.clone());
+    match (&envelope_root, &binding.merkle_root_hex) {
+        (Some(env_root), Some(binding_root)) => {
+            if env_root != binding_root {
+                return Err(VerifyBundleError::BadPayloadBinding {
+                    detail: format!(
+                        "merkle root mismatch: anchor {env_root}, binding {binding_root}"
+                    ),
+                });
+            }
+        }
+        (Some(_), None) => {
+            return Err(VerifyBundleError::BadPayloadBinding {
+                detail: "envelope has a Merkle anchor but binding omits merkle_root_hex".into(),
+            });
+        }
+        (None, Some(_)) => {
+            return Err(VerifyBundleError::BadPayloadBinding {
+                detail: "binding includes merkle_root_hex but envelope has no anchor".into(),
+            });
+        }
+        (None, None) => {} // v1/v2.1 bundle without anchor — fine
+    }
+
+    // 4) Look up the signing key in the trust anchor's JWKS (NOT the
+    //    envelope's embedded one). This is the same out-of-band trust
+    //    discipline as edge verification.
+    let vk = trust.jwks.verifying_key(&binding.keyid).map_err(|_| {
+        VerifyBundleError::BadPayloadBinding {
+            detail: format!("keyid {:?} not in trust anchor JWKS", binding.keyid),
+        }
+    })?;
+
+    // 5) Recompute the signed bytes and verify.
+    let envelope_head_bytes: [u8; 32] = hex::decode(envelope_head_hash_hex)
+        .ok()
+        .and_then(|v| v.try_into().ok())
+        .ok_or_else(|| VerifyBundleError::BadPayloadBinding {
+            detail: "envelope head hash is not 32 hex bytes".into(),
+        })?;
+    let merkle_root_bytes: Option<[u8; 32]> = binding.merkle_root_hex.as_ref().and_then(|s| {
+        hex::decode(s)
+            .ok()
+            .and_then(|v| <[u8; 32]>::try_from(v.as_slice()).ok())
+    });
+    let to_verify = signed_bytes(
+        &binding.payload_type,
+        &p_hash,
+        &envelope_head_bytes,
+        merkle_root_bytes.as_ref(),
+    );
+
+    if binding.signature.len() != 64 {
+        return Err(VerifyBundleError::BadPayloadBinding {
+            detail: format!(
+                "signature length {} != 64 (Ed25519)",
+                binding.signature.len()
+            ),
+        });
+    }
+    let mut sig_arr = [0u8; 64];
+    sig_arr.copy_from_slice(&binding.signature);
+    let sig = Signature::from_bytes(&sig_arr);
+    vk.verify(&to_verify, &sig)
+        .map_err(|_| VerifyBundleError::BadPayloadBinding {
+            detail: "Ed25519 signature did not verify against trust JWKS key".into(),
+        })?;
+    Ok(())
 }
 
 /// Verify the Merkle anchor: STH signature + each inclusion proof,
