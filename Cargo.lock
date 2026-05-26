@@ -4853,6 +4853,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-envelope"
+version = "1.0.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "nucleus-lineage",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "nucleus-guest-init"
 version = "1.0.0"
 dependencies = [

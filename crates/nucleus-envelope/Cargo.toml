@@ -1,0 +1,26 @@
+[package]
+name = "nucleus-envelope"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Portable provenance bundle: agent payload + IFC lineage envelope"
+repository = "https://github.com/coproduct-opensource/nucleus"
+keywords = ["lineage", "provenance", "ifc", "audit", "transparency"]
+categories = ["development-tools", "cryptography"]
+
+[dependencies]
+nucleus-lineage = { path = "../nucleus-lineage" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+sha2 = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+nucleus-lineage = { path = "../nucleus-lineage", features = ["dev"] }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
