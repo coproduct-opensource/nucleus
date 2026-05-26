@@ -1,0 +1,37 @@
+# Fly.io deployment manifest for nucleus-verifier-service.
+#
+# Public verifier-as-a-service: anyone can POST a bundle and get a
+# verification report. Per workspace CLAUDE.md conventions:
+#   - HTTPS on the edge (Fly handles TLS termination)
+#   - min_machines_running > 0 so the public endpoint is always warm
+#   - per-tenant Flycast not used (this IS the public surface)
+
+app = "nucleus-verifier"
+primary_region = "iad"   # set by deploy operator; iad placeholder
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # tracing-subscriber EnvFilter for the binary
+  RUST_LOG = "nucleus_verifier_service=info,info"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    method = "GET"
+    path = "/healthz"
+    grace_period = "10s"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256

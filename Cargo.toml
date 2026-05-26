@@ -31,6 +31,7 @@ members = [
     "crates/nucleus-envelope",           # Portable provenance bundle: payload + IFC envelope
     "crates/nucleus-control-plane",      # Job orchestrator: typed JobSpec → agent → Bundle
     "crates/nucleus-control-plane-server", # REST API server wrapping nucleus-control-plane
+    "crates/nucleus-verifier-service",   # Public verifier-as-a-service for provenance bundles
 ]
 # nucleus-claude-hook moved to nucleus-code (private product repo)
 # exposure-web is WASM-only (wasm32-unknown-unknown); build with: cd crates/exposure-web && trunk build

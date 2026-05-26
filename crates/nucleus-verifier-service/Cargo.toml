@@ -1,0 +1,38 @@
+[package]
+name = "nucleus-verifier-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Public verifier-as-a-service for nucleus provenance bundles"
+repository = "https://github.com/coproduct-opensource/nucleus"
+keywords = ["verifier", "provenance", "ifc", "transparency", "audit"]
+categories = ["web-programming::http-server"]
+
+[[bin]]
+name = "nucleus-verifier-service"
+path = "src/main.rs"
+
+[dependencies]
+nucleus-envelope = { path = "../nucleus-envelope" }
+nucleus-lineage = { path = "../nucleus-lineage" }
+axum = { version = "0.8", features = ["macros", "json"] }
+tokio = { workspace = true, features = ["full"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "timeout", "cors", "limit"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+nucleus-lineage = { path = "../nucleus-lineage", features = ["dev"] }
+nucleus-control-plane = { path = "../nucleus-control-plane" }
+
+[lints]
+workspace = true
