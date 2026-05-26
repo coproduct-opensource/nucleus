@@ -25,6 +25,8 @@ mod audit;
 mod config;
 mod constants;
 mod doctor;
+mod envelope;
+mod envelope_verify;
 mod guard;
 mod keychain;
 mod lineage;
@@ -115,6 +117,12 @@ enum Commands {
 
     /// Verify Merkle integrity of a lineage log against signed checkpoints
     LineageVerifyChain(lineage_verify::VerifyChainArgs),
+
+    /// Extract a portable provenance bundle (payload + IFC envelope) for a session
+    Envelope(envelope::EnvelopeArgs),
+
+    /// Verify a provenance bundle standalone
+    EnvelopeVerify(envelope_verify::EnvelopeVerifyArgs),
 }
 
 fn init_logging(verbose: bool) {
@@ -163,5 +171,7 @@ async fn main() -> Result<()> {
         Commands::Node(args) => node::execute(args).await,
         Commands::Lineage(args) => lineage::execute(args),
         Commands::LineageVerifyChain(args) => lineage_verify::execute(args),
+        Commands::Envelope(args) => envelope::execute(args),
+        Commands::EnvelopeVerify(args) => envelope_verify::execute(args),
     }
 }

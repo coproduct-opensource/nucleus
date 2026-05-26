@@ -22,6 +22,7 @@ nucleus-spec = { path = "../nucleus-spec" }
 nucleus-client = { path = "../nucleus-client" }
 nucleus-proto = { path = "../nucleus-proto" }
 nucleus-lineage = { path = "../nucleus-lineage" }
+nucleus-envelope = { path = "../nucleus-envelope" }
 
 # gRPC client
 tonic = { workspace = true }

@@ -4810,6 +4810,7 @@ dependencies = [
  "hex",
  "hmac 0.13.0",
  "nucleus-client",
+ "nucleus-envelope",
  "nucleus-lineage",
  "nucleus-proto",
  "nucleus-spec",
