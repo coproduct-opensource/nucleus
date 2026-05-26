@@ -15,7 +15,7 @@ default = []
 # PRODUCTION USE. Production callers should write a SPIFFE-Workload-API-
 # backed `IdentityFetcher` impl and never enable this feature in release
 # builds. Verification (always-on) does NOT need this feature.
-dev = ["dep:jsonwebtoken", "dep:rand", "ed25519-dalek/pkcs8", "ed25519-dalek/rand_core"]
+dev = ["dep:jsonwebtoken", "dep:rand", "ed25519-dalek/alloc", "ed25519-dalek/pkcs8", "ed25519-dalek/rand_core"]
 
 [dependencies]
 serde = { workspace = true }
@@ -33,7 +33,7 @@ base64 = "0.22"
 # signatures). The `dev` feature additionally enables `pkcs8` + `rand_core`
 # for the in-process LocalIssuer signer. Production code that only verifies
 # pulls a small surface.
-ed25519-dalek = "2"
+ed25519-dalek = "=3.0.0-pre.7"
 # JWT signing/encoding crate — only needed by the dev LocalIssuer.
 jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"], optional = true }
 rand = { version = "0.10", optional = true }
