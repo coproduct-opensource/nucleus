@@ -20,7 +20,7 @@ nucleus-control-plane = { path = "../nucleus-control-plane" }
 axum = { version = "0.8", features = ["macros", "json"] }
 tokio = { workspace = true, features = ["full"] }
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["trace", "timeout"] }
+tower-http = { version = "0.6", features = ["trace", "timeout", "limit"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -34,6 +34,7 @@ chrono = { workspace = true, features = ["serde"] }
 async-stream = "0.3"
 futures-util = "0.3"
 uuid = { workspace = true, features = ["v4", "serde"] }
+rand = "0.8"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

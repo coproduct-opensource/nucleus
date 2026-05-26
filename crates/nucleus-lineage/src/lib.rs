@@ -37,8 +37,13 @@ pub mod id;
 pub mod issuer;
 pub mod merkle;
 pub mod proof;
+pub mod prover;
 pub mod sink;
 pub mod verify;
+
+// Re-export ct-merkle types we expose at the API boundary so downstream
+// crates (nucleus-envelope) don't need to depend on ct-merkle directly.
+pub use ct_merkle::{InclusionProof, InclusionVerifError, RootHash};
 
 #[cfg(feature = "dev")]
 pub mod local_issuer;
@@ -52,6 +57,7 @@ pub use id::{CallSpiffeId, IdError, MAX_URI_LEN};
 pub use issuer::{EdgeSigner, IdentityFetcher, IssuerError, SvidClaims};
 pub use merkle::{read_checkpoints, verify_log, MerkleConfig, MerkleError, MerkleSink};
 pub use proof::{canonical_edge_bytes, edge_content_hash, Proof};
+pub use prover::MerkleProver;
 pub use sink::{InMemorySink, JsonlSink, LineageSink, SinkError};
 pub use verify::{verify_chain, verify_proof, Jwk, Jwks, StaticKeyResolver, VerifyError};
 

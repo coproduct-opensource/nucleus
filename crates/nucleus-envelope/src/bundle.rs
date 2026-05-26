@@ -1,7 +1,10 @@
 //! [`Bundle`] and [`Envelope`] — the on-wire types and their builder.
 
 use chrono::{DateTime, Utc};
-use nucleus_lineage::{CallSpiffeId, IdError, Jwks, LineageEdge, LineageSink, SignedTreeHead};
+use nucleus_lineage::{
+    edge_content_hash, CallSpiffeId, IdError, Jwks, LineageEdge, LineageSink, MerkleProver,
+    SignedTreeHead,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -30,6 +33,18 @@ pub enum BundleError {
     /// time so producers learn early, instead of at the verifier.
     #[error("edge #{index} has no proof; require_signed() rejects mixed logs")]
     UnsignedEdge { index: usize },
+    /// `with_merkle_prover()` was set but the prover could not locate
+    /// the leaf for edge #{index} (its content hash was not emitted
+    /// into the Merkle tree). Indicates a sink/prover mismatch — the
+    /// edges in the regular sink don't match what the Merkle tree
+    /// committed to.
+    #[error(
+        "edge #{index} content_hash not found in Merkle prover; sink and prover are out of sync"
+    )]
+    MerkleProverMissingLeaf { index: usize },
+    /// Sealing the current root via the witness failed.
+    #[error("Merkle anchor seal failed: {0}")]
+    MerkleAnchorSeal(String),
 }
 
 /// A portable, self-contained provenance bundle.
@@ -64,11 +79,50 @@ pub struct Envelope {
     pub jwks: Jwks,
     /// Signed tree heads contemporaneous with this session (zero or more).
     /// In v1 these are *time attestations* — full Merkle inclusion proof
-    /// binding `edges` to a `root_hash` is a v2 follow-up.
+    /// binding `edges` to a `root_hash` is via [`Self::merkle_anchor`].
     #[serde(default)]
     pub checkpoints: Vec<SignedTreeHead>,
+    /// **v2 trust extension**: signed tree head + per-edge inclusion
+    /// proofs that bind every entry in `edges` to a Merkle root the
+    /// witness has signed. When `Some`, a verifier with a trust anchor
+    /// that includes the witness pubkey can cryptographically check
+    /// that these specific edges are committed in the witness's log.
+    ///
+    /// Absent (`None`) means the bundle was produced without a
+    /// Merkle-backed sink — `verify_bundle` will fall back to the v1
+    /// chain-only check and the trust mode reports that.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merkle_anchor: Option<MerkleAnchor>,
     /// Envelope metadata (creation time, schema version, …).
     pub meta: EnvelopeMeta,
+}
+
+/// Cryptographic binding between session edges and a witness-signed
+/// Merkle root. The presence of this field upgrades the bundle from
+/// "chain-only" integrity to "chain + transparency-log inclusion."
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MerkleAnchor {
+    /// Signed tree head the inclusion proofs are anchored to. Its
+    /// signature is verified against the trust anchor's witness
+    /// pubkey; its `root_hash_hex` is the root that every inclusion
+    /// proof must reproduce when fed its corresponding leaf.
+    pub sth: SignedTreeHead,
+    /// One inclusion proof per edge in `Envelope::edges`, in the same
+    /// order. `inclusion_proofs[i]` proves that `edge_content_hash`
+    /// of `edges[i]` sits at `leaf_index` in the tree whose root is
+    /// `sth.root_hash_hex`.
+    pub inclusion_proofs: Vec<EdgeInclusionProof>,
+}
+
+/// One RFC 6962 inclusion proof, wire-encoded as the leaf index plus
+/// the audit path (concatenated 32-byte SHA-256 nodes, hex).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeInclusionProof {
+    /// Index of this edge's leaf in the witness's Merkle tree.
+    pub leaf_index: u64,
+    /// RFC 6962 audit path: concatenated sibling-node hashes from
+    /// leaf to root, hex-encoded. Each 32 bytes = 64 hex chars.
+    pub audit_path_hex: String,
 }
 
 /// Metadata about the envelope itself (not about the payload it covers).
@@ -106,6 +160,10 @@ pub struct BundleBuilder<'a> {
     checkpoints: Vec<SignedTreeHead>,
     allow_empty: bool,
     require_signed: bool,
+    /// Optional Merkle prover. When supplied, the builder seals the
+    /// current Merkle root via the prover's witness and emits a
+    /// per-edge inclusion proof, producing a v2 bundle.
+    merkle_prover: Option<&'a dyn MerkleProver>,
 }
 
 impl<'a> BundleBuilder<'a> {
@@ -119,6 +177,7 @@ impl<'a> BundleBuilder<'a> {
             checkpoints: Vec::new(),
             allow_empty: false,
             require_signed: false,
+            merkle_prover: None,
         }
     }
 
@@ -165,6 +224,16 @@ impl<'a> BundleBuilder<'a> {
         self
     }
 
+    /// Attach a Merkle prover. The builder will seal the prover's
+    /// current root via its witness and emit per-edge inclusion
+    /// proofs. The resulting bundle's [`Envelope::merkle_anchor`] is
+    /// `Some`; a verifier with the witness pubkey in its trust anchor
+    /// will check both per-edge signatures AND tree-inclusion.
+    pub fn with_merkle_prover(mut self, prover: &'a dyn MerkleProver) -> Self {
+        self.merkle_prover = Some(prover);
+        self
+    }
+
     /// Assemble the [`Bundle`].
     pub fn build(self) -> Result<Bundle, BundleError> {
         let payload = self.payload.ok_or(BundleError::MissingField("payload"))?;
@@ -181,6 +250,37 @@ impl<'a> BundleBuilder<'a> {
             }
         }
 
+        // v2: if a Merkle prover was supplied, seal the current root
+        // and gather inclusion proofs for every session edge.
+        // CRITICAL ORDERING: gather inclusion proofs *first* against
+        // the prover's current tree state, then seal the root. Both
+        // happen under the same prover state (the prover's mutex), so
+        // sealing observes exactly the tree state used to generate
+        // the proofs.
+        let merkle_anchor = if let Some(prover) = self.merkle_prover {
+            let mut proofs = Vec::with_capacity(subgraph.edges.len());
+            for (index, edge) in subgraph.edges.iter().enumerate() {
+                let leaf_hash = edge_content_hash(edge, None);
+                let (leaf_index, proof) = prover
+                    .prove_for_hash(&leaf_hash)
+                    .map_err(|e| BundleError::MerkleAnchorSeal(e.to_string()))?
+                    .ok_or(BundleError::MerkleProverMissingLeaf { index })?;
+                proofs.push(EdgeInclusionProof {
+                    leaf_index,
+                    audit_path_hex: hex::encode(proof.as_bytes()),
+                });
+            }
+            let sth = prover
+                .seal_current_root()
+                .map_err(|e| BundleError::MerkleAnchorSeal(e.to_string()))?;
+            Some(MerkleAnchor {
+                sth,
+                inclusion_proofs: proofs,
+            })
+        } else {
+            None
+        };
+
         Ok(Bundle {
             payload,
             envelope: Envelope {
@@ -188,6 +288,7 @@ impl<'a> BundleBuilder<'a> {
                 edges: subgraph.edges,
                 jwks,
                 checkpoints: self.checkpoints,
+                merkle_anchor,
                 meta: EnvelopeMeta::now(),
             },
         })

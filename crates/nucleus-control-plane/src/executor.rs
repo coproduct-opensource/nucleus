@@ -20,7 +20,8 @@
 
 use nucleus_envelope::{verify_bundle, Bundle, BundleBuilder, TrustAnchor, VerifyBundleError};
 use nucleus_lineage::{
-    CallSpiffeId, EdgeSigner, Jwks, LineageEdge, LineageSink, SignedTreeHead, SinkError,
+    CallSpiffeId, EdgeSigner, Jwks, LineageEdge, LineageSink, MerkleProver, SignedTreeHead,
+    SinkError,
 };
 use thiserror::Error;
 
@@ -59,6 +60,15 @@ pub enum ExecuteJobError {
 /// expected to derive `jwks` from `issuer.publish_jwks()` or equivalent.
 /// `checkpoints` is the (possibly empty) set of contemporaneous signed
 /// tree heads to attach as time attestations.
+///
+/// If `merkle_prover` is `Some`, a v2 bundle is built with a Merkle
+/// anchor (witness-signed root + per-edge inclusion proofs); callers
+/// with the witness pubkey can then prove tree-inclusion offline. If
+/// `None`, a v1 chain-only bundle is built.
+// 8 args is at the threshold; if a future slice adds one more, refactor
+// into a builder pattern. Keeping this as a free function for now so
+// callers don't have to chain methods just to start a job.
+#[allow(clippy::too_many_arguments)]
 pub fn execute_job(
     spec: &JobSpec,
     session_root: &CallSpiffeId,
@@ -67,6 +77,7 @@ pub fn execute_job(
     issuer: &dyn EdgeSigner,
     jwks: Jwks,
     checkpoints: Vec<SignedTreeHead>,
+    merkle_prover: Option<&dyn MerkleProver>,
 ) -> Result<Bundle, ExecuteJobError> {
     let writer = SessionWriter::new(sink, issuer);
 
@@ -77,13 +88,16 @@ pub fn execute_job(
     let payload = runner.run(spec, session_root, &writer)?;
 
     // 3) Assemble.
-    let bundle = BundleBuilder::new(session_root.clone())
+    let mut builder = BundleBuilder::new(session_root.clone())
         .payload(payload)
         .sink(sink)
         .jwks(jwks)
         .checkpoints(checkpoints)
-        .require_signed()
-        .build()?;
+        .require_signed();
+    if let Some(prover) = merkle_prover {
+        builder = builder.with_merkle_prover(prover);
+    }
+    let bundle = builder.build()?;
 
     // 4) Self-check.
     verify_bundle(&bundle, &TrustAnchor::self_check_only())?;
@@ -133,6 +147,7 @@ mod tests {
             &issuer,
             jwks.clone(),
             Vec::new(),
+            None,
         )
         .expect("mock job must succeed end-to-end");
 
@@ -178,6 +193,7 @@ mod tests {
             &issuer,
             jwks,
             Vec::new(),
+            None,
         )
         .expect_err("URL input must error");
         assert!(matches!(
@@ -205,6 +221,7 @@ mod tests {
             &issuer,
             jwks,
             Vec::new(),
+            None,
         )
         .expect_err("non-pod session root must be rejected");
         assert!(

@@ -33,6 +33,7 @@
 //! ct-merkle crate then prepends the RFC 6962 leaf-prefix `0x00` and
 //! hashes again to produce the leaf-node value in the tree.
 
+use std::collections::HashMap;
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -40,6 +41,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ct_merkle::mem_backed_tree::MemoryBackedTree;
+use ct_merkle::{InclusionProof, RootHash};
 use sha2::Sha256;
 use thiserror::Error;
 
@@ -114,6 +116,13 @@ impl MerkleConfig {
 struct State {
     tree: MemoryBackedTree<Sha256, Vec<u8>>,
     next_checkpoint_at: u64,
+    /// Map from each leaf's 32-byte content hash to its leaf index in
+    /// the tree. Populated on every emit (and during replay in `new()`)
+    /// so [`MerkleSink::prove_inclusion_by_hash`] can locate a leaf
+    /// without a linear scan. Since each leaf is `edge_content_hash`
+    /// of a unique [`LineageEdge`] and content hashes are
+    /// collision-resistant, two distinct edges cannot share an index.
+    leaf_index_by_hash: HashMap<[u8; 32], u64>,
 }
 
 /// A [`LineageSink`] wrapper that maintains a Merkle tree of edges and
@@ -145,11 +154,13 @@ where
     /// emits extend the same Merkle history.
     pub fn new(inner: S, witness: W, config: MerkleConfig) -> Result<Self, MerkleError> {
         let mut tree = MemoryBackedTree::<Sha256, Vec<u8>>::new();
+        let mut leaf_index_by_hash = HashMap::new();
         let existing = inner.iter()?;
         let initial_size = existing.len() as u64;
-        for edge in existing {
+        for (i, edge) in existing.into_iter().enumerate() {
             let h = edge_content_hash(&edge, None);
             tree.push(h.to_vec());
+            leaf_index_by_hash.insert(h, i as u64);
         }
         // First checkpoint is emitted once we've added `checkpoint_interval`
         // new edges, regardless of where we started.
@@ -162,6 +173,7 @@ where
             state: Mutex::new(State {
                 tree,
                 next_checkpoint_at,
+                leaf_index_by_hash,
             }),
         })
     }
@@ -179,6 +191,38 @@ where
     /// The witness used to sign checkpoints.
     pub fn witness(&self) -> &W {
         &self.witness
+    }
+
+    /// Produce a Merkle inclusion proof for the leaf whose content
+    /// hash is `leaf_hash`. Returns `Ok(None)` if no such leaf has been
+    /// emitted into this tree.
+    ///
+    /// Companion to [`SignedTreeHead::root_hash_hex`]: the returned
+    /// proof verifies against the root of the tree AT THE CURRENT
+    /// `tree_size`. If a downstream consumer wants the proof anchored
+    /// to a specific STH, they must call [`Self::force_checkpoint`]
+    /// just before, so the STH's tree_size equals the tree state used
+    /// to generate the proof.
+    pub fn prove_inclusion_by_hash(
+        &self,
+        leaf_hash: &[u8; 32],
+    ) -> Result<Option<(u64, InclusionProof<Sha256>)>, MerkleError> {
+        let st = self.state.lock().map_err(|_| MerkleError::Poisoned)?;
+        let Some(&leaf_index) = st.leaf_index_by_hash.get(leaf_hash) else {
+            return Ok(None);
+        };
+        // `prove_inclusion` panics if the index is out of range; we
+        // just inserted it so the invariant holds.
+        let proof = st.tree.prove_inclusion(leaf_index as usize);
+        Ok(Some((leaf_index, proof)))
+    }
+
+    /// Current Merkle root + leaf count. Useful for callers that want
+    /// to anchor inclusion proofs to a freshly-cut STH without
+    /// emitting a checkpoint file.
+    pub fn current_root(&self) -> Result<RootHash<Sha256>, MerkleError> {
+        let st = self.state.lock().map_err(|_| MerkleError::Poisoned)?;
+        Ok(st.tree.root())
     }
 
     /// Force a checkpoint to be written immediately, regardless of
@@ -205,10 +249,14 @@ where
         // fails, the durable log of edges is intact and recoverable.
         self.inner.emit(edge.clone())?;
 
-        // 2) Append the leaf hash to our in-memory Merkle tree.
+        // 2) Append the leaf hash to our in-memory Merkle tree and
+        // record the leaf-index → hash map so inclusion proofs can be
+        // generated later by content hash without a linear scan.
         let leaf = edge_content_hash(&edge, None);
         let mut st = self.state.lock().map_err(|_| SinkError::Poisoned)?;
+        let leaf_index = st.tree.len();
         st.tree.push(leaf.to_vec());
+        st.leaf_index_by_hash.insert(leaf, leaf_index);
 
         // 3) Cut a checkpoint if we've crossed the interval.
         if st.tree.len() >= st.next_checkpoint_at {

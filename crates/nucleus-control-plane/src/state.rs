@@ -56,10 +56,14 @@ pub enum JobState {
         session_root: String,
     },
     /// Job finished successfully. The bundle is in [`JobOutcome::bundle`].
+    ///
+    /// `outcome` is boxed so this variant doesn't dominate the enum
+    /// size — a real Bundle is several KB once Merkle inclusion proofs
+    /// are attached, and the other variants are <100 bytes.
     Completed {
         started_at: DateTime<Utc>,
         completed_at: DateTime<Utc>,
-        outcome: JobOutcome,
+        outcome: Box<JobOutcome>,
     },
     /// Job failed. `reason` is a human-readable error string; structured
     /// errors flow through the [`crate::executor::ExecuteJobError`] type

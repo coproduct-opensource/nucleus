@@ -23,7 +23,11 @@
 //!   claim to be. The [`VerificationReport`] flags this mode so downstream
 //!   code can refuse to treat it as a provenance claim.
 
-use nucleus_lineage::{verify_chain, Jwks, LineageEdge, VerifyError};
+use nucleus_lineage::{
+    edge_content_hash, verify_chain, Ed25519Witness, InclusionProof, Jwks, LineageEdge, RootHash,
+    VerifyError,
+};
+use sha2::Sha256;
 use thiserror::Error;
 
 use crate::bundle::{Bundle, ENVELOPE_SCHEMA_VERSION};
@@ -38,6 +42,14 @@ pub struct TrustAnchor {
     /// "ok" as a provenance claim. Opt-in only for callers that
     /// deliberately want "no-claim made" bundles (e.g. dry-run checks).
     allow_empty: bool,
+    /// **v2 trust extension.** Ed25519 verifying-key bytes for the
+    /// transparency-log witness that signed any
+    /// [`crate::MerkleAnchor::sth`] on the bundle. When `None`, a
+    /// bundle's Merkle anchor is left UNCHECKED and the verification
+    /// report records `merkle_verified = false`. When `Some`, an
+    /// envelope without a Merkle anchor still verifies (chain-only),
+    /// but a present anchor MUST validate.
+    witness_pubkey: Option<[u8; 32]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +72,7 @@ impl TrustAnchor {
             jwks,
             mode: TrustMode::OutOfBand,
             allow_empty: false,
+            witness_pubkey: None,
         }
     }
 
@@ -72,6 +85,7 @@ impl TrustAnchor {
             jwks: Jwks { keys: vec![] }, // unused; verify_bundle reads bundle.envelope.jwks
             mode: TrustMode::SelfCheckOnly,
             allow_empty: false,
+            witness_pubkey: None,
         }
     }
 
@@ -85,6 +99,20 @@ impl TrustAnchor {
     /// True if this anchor is opt-in self-check (not a provenance claim).
     pub fn is_self_check_only(&self) -> bool {
         self.mode == TrustMode::SelfCheckOnly
+    }
+
+    /// **v2 trust extension.** Attach the Ed25519 verifying-key bytes
+    /// for the transparency-log witness whose STH the bundle's Merkle
+    /// anchor was signed by. Callers obtain this key OUT-OF-BAND, the
+    /// same as JWKS material.
+    ///
+    /// When set: a bundle with `merkle_anchor: Some(_)` MUST validate
+    /// against this key (STH signature + per-edge inclusion proofs).
+    /// When unset: a Merkle anchor present in the bundle is left
+    /// unchecked; the report records `merkle_verified = false`.
+    pub fn with_witness_pubkey(mut self, key_bytes: [u8; 32]) -> Self {
+        self.witness_pubkey = Some(key_bytes);
+        self
     }
 }
 
@@ -130,6 +158,25 @@ pub enum VerifyBundleError {
         #[source]
         source: VerifyError,
     },
+    /// Bundle carries a `merkle_anchor` but no `witness_pubkey` was
+    /// supplied in the trust anchor.
+    #[error(
+        "bundle has a merkle_anchor but trust anchor has no witness_pubkey \
+         (call TrustAnchor::with_witness_pubkey to verify it)"
+    )]
+    MissingWitnessKey,
+    /// The witness signature on the Merkle anchor's STH did not verify.
+    #[error("Merkle anchor STH signature verification failed: {0}")]
+    MerkleAnchorBadSignature(String),
+    /// Number of inclusion proofs doesn't match the number of envelope
+    /// edges. The anchor commits to a specific edge ordering; any
+    /// mismatch indicates tampering or builder bug.
+    #[error("Merkle anchor has {got} inclusion proofs but envelope has {expected} edges")]
+    MerkleAnchorLengthMismatch { got: usize, expected: usize },
+    /// An inclusion proof failed to reconstruct the signed root from
+    /// its leaf. `index` is the edge index in `envelope.edges`.
+    #[error("edge #{index} inclusion proof failed against signed root: {detail}")]
+    MerkleAnchorInclusionFailed { index: usize, detail: String },
 }
 
 /// Result of a successful [`verify_bundle`] call.
@@ -154,6 +201,11 @@ pub struct VerificationReport {
     /// Downstream code MUST refuse to treat this as a provenance claim
     /// without further out-of-band evidence.
     pub trust_mode_self_check_only: bool,
+    /// `true` if the bundle's `merkle_anchor` was present AND verified
+    /// against the trust anchor's witness pubkey. Strongest claim a
+    /// v2 bundle can produce — "this exact session is committed in
+    /// the witness's log under a signed root."
+    pub merkle_verified: bool,
 }
 
 /// Verify a [`Bundle`] against an explicit [`TrustAnchor`].
@@ -216,6 +268,7 @@ pub fn verify_bundle(
                 head_edge_hash_hex: String::new(),
                 checkpoint_count: env.checkpoints.len(),
                 trust_mode_self_check_only: trust.is_self_check_only(),
+                merkle_verified: false,
             });
         }
         return Err(VerifyBundleError::EmptyEnvelope);
@@ -272,7 +325,28 @@ pub fn verify_bundle(
     verify_chain(&env.edges, verifying_jwks)
         .map_err(|(index, source)| VerifyBundleError::Chain { index, source })?;
 
-    // 7) Report.
+    // 7) v2: Merkle anchor verification (binds session edges to a
+    //    witness-signed root). Only attempted if the bundle carries
+    //    an anchor; a bundle without one is a v1 bundle and is
+    //    accepted at the chain-only level.
+    //
+    // Self-check mode SKIPS the anchor: self-check means "trust the
+    // producer's own claim," and the Merkle anchor IS the producer's
+    // claim. The producer can't validate the anchor against itself
+    // without already trusting itself. Downstream verifiers with the
+    // out-of-band witness pubkey are the ones who actually exercise
+    // the anchor — and they must use `TrustAnchor::from_jwks(...)` +
+    // `with_witness_pubkey(...)`.
+    let merkle_verified = if trust.is_self_check_only() {
+        false
+    } else if let Some(anchor) = &env.merkle_anchor {
+        verify_merkle_anchor(env.edges.as_slice(), anchor, trust)?;
+        true
+    } else {
+        false
+    };
+
+    // 8) Report.
     let mut kids: Vec<String> = env
         .edges
         .iter()
@@ -290,7 +364,81 @@ pub fn verify_bundle(
         head_edge_hash_hex,
         checkpoint_count: env.checkpoints.len(),
         trust_mode_self_check_only: trust.is_self_check_only(),
+        merkle_verified,
     })
+}
+
+/// Verify the Merkle anchor: STH signature + each inclusion proof.
+fn verify_merkle_anchor(
+    edges: &[LineageEdge],
+    anchor: &crate::bundle::MerkleAnchor,
+    trust: &TrustAnchor,
+) -> Result<(), VerifyBundleError> {
+    // Caller must supply the witness pubkey out-of-band — same trust
+    // discipline as the JWKS. The bundle's *anchor* is producer-
+    // controlled, so without an OOB witness key the anchor is just
+    // self-claim, not provenance.
+    let witness_bytes = trust
+        .witness_pubkey
+        .ok_or(VerifyBundleError::MissingWitnessKey)?;
+    let witness = Ed25519Witness::verify_only(witness_bytes)
+        .map_err(|e| VerifyBundleError::MerkleAnchorBadSignature(e.to_string()))?;
+    anchor
+        .sth
+        .verify(&witness)
+        .map_err(|e| VerifyBundleError::MerkleAnchorBadSignature(e.to_string()))?;
+
+    if anchor.inclusion_proofs.len() != edges.len() {
+        return Err(VerifyBundleError::MerkleAnchorLengthMismatch {
+            got: anchor.inclusion_proofs.len(),
+            expected: edges.len(),
+        });
+    }
+
+    // Reconstruct the signed RootHash for ct-merkle verification.
+    let root_bytes_vec = hex::decode(&anchor.sth.root_hash_hex).map_err(|e| {
+        VerifyBundleError::MerkleAnchorBadSignature(format!("malformed root_hash_hex: {e}"))
+    })?;
+    if root_bytes_vec.len() != 32 {
+        return Err(VerifyBundleError::MerkleAnchorBadSignature(
+            "root_hash_hex must be exactly 32 bytes".into(),
+        ));
+    }
+    let mut root_arr = [0u8; 32];
+    root_arr.copy_from_slice(&root_bytes_vec);
+    // `digest::Output<Sha256>` is `hybrid_array::Array<u8, U32>` in
+    // digest 0.11 (the version ct-merkle 0.3 uses). The `From<[u8; 32]>`
+    // impl gives us the conversion.
+    let digest_output: sha2::digest::Output<Sha256> = root_arr.into();
+    let root: RootHash<Sha256> = RootHash::new(digest_output, anchor.sth.tree_size);
+
+    for (index, (edge, inc)) in edges.iter().zip(&anchor.inclusion_proofs).enumerate() {
+        // The leaves the MerkleSink committed to are the edges'
+        // canonical content hashes with `prev_hash = None` — pinning
+        // this here matches the producer-side `MerkleSink::emit` leaf
+        // encoding at crates/nucleus-lineage/src/merkle.rs.
+        let leaf_hash = edge_content_hash(edge, None);
+        let leaf_bytes: Vec<u8> = leaf_hash.to_vec();
+        let path_bytes = hex::decode(&inc.audit_path_hex).map_err(|e| {
+            VerifyBundleError::MerkleAnchorInclusionFailed {
+                index,
+                detail: format!("audit_path_hex decode: {e}"),
+            }
+        })?;
+        let proof: InclusionProof<Sha256> =
+            InclusionProof::try_from_bytes(path_bytes).map_err(|e| {
+                VerifyBundleError::MerkleAnchorInclusionFailed {
+                    index,
+                    detail: format!("audit_path malformed: {e:?}"),
+                }
+            })?;
+        root.verify_inclusion(&leaf_bytes, inc.leaf_index, &proof)
+            .map_err(|e| VerifyBundleError::MerkleAnchorInclusionFailed {
+                index,
+                detail: format!("ct-merkle: {e:?}"),
+            })?;
+    }
+    Ok(())
 }
 
 /// Walk the chain to compute the hash of the head (last) edge so it can

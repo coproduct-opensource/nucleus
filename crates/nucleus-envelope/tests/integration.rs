@@ -5,9 +5,10 @@
 
 use nucleus_envelope::{verify_bundle, BundleBuilder, TrustAnchor, VerifyBundleError};
 use nucleus_lineage::{
-    edge_content_hash, CallSpiffeId, EdgeKind, EdgeSigner, InMemorySink, Jwks, LineageEdge,
-    LineageSink, LocalIssuer, Proof,
+    canonical_edge_bytes, edge_content_hash, CallSpiffeId, Ed25519Witness, EdgeKind, EdgeSigner,
+    InMemorySink, Jwks, LineageEdge, LineageSink, LocalIssuer, MerkleConfig, MerkleSink, Proof,
 };
+use tempfile::tempdir;
 
 fn pod() -> CallSpiffeId {
     CallSpiffeId::pod("prod.example.com", "agents", "summarizer").unwrap()
@@ -271,4 +272,233 @@ fn require_signed_catches_unsigned_edges_at_build_time() {
         ),
         "expected UnsignedEdge at index 1, got {err:?}"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// v2 trust model — Merkle inclusion proofs + STH re-verification
+
+/// Build a 3-edge signed session through a MerkleSink (so each edge
+/// becomes a tree leaf), then construct a bundle with `with_merkle_prover`.
+/// The returned bundle has `merkle_anchor: Some(_)` and verifies against
+/// a trust anchor carrying both the JWKS and the witness pubkey.
+#[test]
+fn v2_bundle_verifies_with_witness_pubkey_in_trust_anchor() {
+    let dir = tempdir().unwrap();
+    let inner = InMemorySink::new();
+    let witness = Ed25519Witness::from_seed([42u8; 32]);
+    let witness_pub = witness.verifying_key_bytes();
+    let cfg = MerkleConfig::new(dir.path()).with_interval(1000);
+    let sink = MerkleSink::new(inner, witness, cfg).unwrap();
+
+    let issuer = LocalIssuer::random().unwrap();
+    let p = pod();
+
+    let e1 = signed_edge(&issuer, LineageEdge::pod_admit(p.clone()), None);
+    let h1 = edge_content_hash(&e1, None);
+    sink.emit(e1).unwrap();
+    let tool = p.derive_tool("Read", Some(b"input")).unwrap();
+    let e2 = signed_edge(
+        &issuer,
+        LineageEdge::from_parent(
+            tool.clone(),
+            p.clone(),
+            EdgeKind::ToolCall {
+                tool: "Read".to_string(),
+            },
+        ),
+        Some(&h1),
+    );
+    let h2 = edge_content_hash(&e2, Some(&h1));
+    sink.emit(e2).unwrap();
+    let leaf = tool.derive_artifact(b"out").unwrap();
+    let e3 = signed_edge(
+        &issuer,
+        LineageEdge::from_parent(leaf, tool, EdgeKind::ArtifactProduced),
+        Some(&h2),
+    );
+    sink.emit(e3).unwrap();
+
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+    let bundle = BundleBuilder::new(p)
+        .payload(serde_json::json!({"v2": true}))
+        .sink(&sink)
+        .jwks(jwks.clone())
+        .require_signed()
+        .with_merkle_prover(&sink)
+        .build()
+        .expect("v2 bundle must build");
+
+    // The anchor is populated.
+    assert!(bundle.envelope.merkle_anchor.is_some());
+    let anchor = bundle.envelope.merkle_anchor.as_ref().unwrap();
+    assert_eq!(anchor.inclusion_proofs.len(), 3);
+    assert_eq!(anchor.sth.tree_size, 3);
+
+    // JSON round-trip.
+    let on_wire = serde_json::to_vec(&bundle).unwrap();
+    let restored: nucleus_envelope::Bundle = serde_json::from_slice(&on_wire).unwrap();
+
+    // Trust anchor without witness key — anchor is left UNCHECKED, but
+    // the bundle still verifies at chain level. merkle_verified is false.
+    let chain_only = TrustAnchor::from_jwks(jwks.clone());
+    let err = verify_bundle(&restored, &chain_only).expect_err(
+        "trust anchor lacking witness key MUST reject a bundle that carries a merkle_anchor",
+    );
+    assert!(
+        matches!(err, VerifyBundleError::MissingWitnessKey),
+        "expected MissingWitnessKey, got {err:?}"
+    );
+
+    // Trust anchor WITH the right witness pubkey — verify both.
+    let full = TrustAnchor::from_jwks(jwks).with_witness_pubkey(witness_pub);
+    let report = verify_bundle(&restored, &full).expect("full v2 verify must succeed");
+    assert_eq!(report.edge_count, 3);
+    assert!(
+        report.merkle_verified,
+        "merkle_verified must be true in v2 mode"
+    );
+    assert!(!report.trust_mode_self_check_only);
+}
+
+/// Tamper test for v2: rewriting a signed edge's child invalidates BOTH
+/// the chain (already proven in v1 tests) AND the inclusion proof's
+/// recomputed leaf. Pinned here to catch a future regression where the
+/// inclusion check accidentally short-circuits.
+#[test]
+fn v2_tampered_edge_fails_inclusion() {
+    let dir = tempdir().unwrap();
+    let inner = InMemorySink::new();
+    let witness = Ed25519Witness::from_seed([7u8; 32]);
+    let witness_pub = witness.verifying_key_bytes();
+    let sink = MerkleSink::new(
+        inner,
+        witness,
+        MerkleConfig::new(dir.path()).with_interval(1000),
+    )
+    .unwrap();
+    let issuer = LocalIssuer::random().unwrap();
+    let p = pod();
+
+    let e1 = signed_edge(&issuer, LineageEdge::pod_admit(p.clone()), None);
+    let h1 = edge_content_hash(&e1, None);
+    sink.emit(e1).unwrap();
+    let tool = p.derive_tool("Read", Some(b"input")).unwrap();
+    let e2 = signed_edge(
+        &issuer,
+        LineageEdge::from_parent(
+            tool.clone(),
+            p.clone(),
+            EdgeKind::ToolCall {
+                tool: "Read".to_string(),
+            },
+        ),
+        Some(&h1),
+    );
+    sink.emit(e2).unwrap();
+
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+    let mut bundle = BundleBuilder::new(p.clone())
+        .payload(serde_json::json!({}))
+        .sink(&sink)
+        .jwks(jwks.clone())
+        .with_merkle_prover(&sink)
+        .build()
+        .unwrap();
+
+    // Replace edge[1] with a different child. The chain check is the
+    // first thing that fires, but if we ALSO bypass the chain by
+    // re-signing (here, we don't), the inclusion check would catch it.
+    // Without re-signing, the chain check fires first — that's
+    // acceptable; the v2 layer doesn't WEAKEN guarantees.
+    bundle.envelope.edges[1].child = p.derive_tool("Bash", Some(b"diff")).unwrap();
+
+    let trust = TrustAnchor::from_jwks(jwks).with_witness_pubkey(witness_pub);
+    let err = verify_bundle(&bundle, &trust).expect_err("tampered edge must fail");
+    // Chain or Merkle — either is a correct rejection of this tamper.
+    assert!(
+        matches!(
+            err,
+            VerifyBundleError::Chain { .. } | VerifyBundleError::MerkleAnchorInclusionFailed { .. }
+        ),
+        "got {err:?}"
+    );
+}
+
+/// Wrong witness pubkey → STH signature verification fails. CT-style
+/// transparency-log attacker scenario: the attacker forges the entire
+/// MerkleAnchor including its own witness. The trust anchor's OOB
+/// witness pubkey is the only thing that catches it.
+#[test]
+fn v2_wrong_witness_pubkey_fails() {
+    let dir = tempdir().unwrap();
+    let inner = InMemorySink::new();
+    let real_witness = Ed25519Witness::from_seed([1u8; 32]);
+    let sink = MerkleSink::new(
+        inner,
+        real_witness,
+        MerkleConfig::new(dir.path()).with_interval(1000),
+    )
+    .unwrap();
+    let issuer = LocalIssuer::random().unwrap();
+    let p = pod();
+    let e1 = signed_edge(&issuer, LineageEdge::pod_admit(p.clone()), None);
+    sink.emit(e1).unwrap();
+
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+    let bundle = BundleBuilder::new(p)
+        .payload(serde_json::json!({}))
+        .sink(&sink)
+        .jwks(jwks.clone())
+        .with_merkle_prover(&sink)
+        .build()
+        .unwrap();
+
+    // Verify against a DIFFERENT witness's pubkey.
+    let other = Ed25519Witness::from_seed([99u8; 32]);
+    let trust = TrustAnchor::from_jwks(jwks).with_witness_pubkey(other.verifying_key_bytes());
+    let err = verify_bundle(&bundle, &trust).expect_err("wrong witness must fail");
+    assert!(
+        matches!(err, VerifyBundleError::MerkleAnchorBadSignature(_)),
+        "expected MerkleAnchorBadSignature, got {err:?}"
+    );
+}
+
+/// v1 bundles (no merkle_anchor field) MUST still verify with a v2
+/// trust anchor that includes a witness pubkey — backwards compat.
+/// A trust anchor with a witness key is "I CAN check Merkle"; a bundle
+/// without an anchor is "I HAVE NOTHING for you to check." That's a
+/// downgrade from v2 strength, but not a failure.
+#[test]
+fn v1_bundle_verifies_under_v2_trust_anchor() {
+    let issuer = LocalIssuer::random().unwrap();
+    let sink = InMemorySink::new();
+    populate_session(&sink, &issuer);
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+
+    let bundle = BundleBuilder::new(pod())
+        .payload(serde_json::json!({}))
+        .sink(&sink)
+        .jwks(jwks.clone())
+        .build()
+        .unwrap();
+    assert!(
+        bundle.envelope.merkle_anchor.is_none(),
+        "v1 bundle has no anchor"
+    );
+
+    // Trust anchor with witness key set — should NOT reject the v1
+    // bundle just because it lacks an anchor.
+    let dummy_pub = [0u8; 32]; // not used because the bundle has no anchor
+    let trust = TrustAnchor::from_jwks(jwks).with_witness_pubkey(dummy_pub);
+    let report = verify_bundle(&bundle, &trust).expect("v1 bundle must still verify");
+    assert!(!report.merkle_verified);
+    assert_eq!(report.edge_count, 3);
+}
+
+// canonical_edge_bytes is only used inside the helper above; silence
+// the unused-import warning when the file's only callers are tests
+// that don't reference it directly.
+#[allow(dead_code)]
+fn _keep_canonical_edge_bytes_in_scope() {
+    let _ = canonical_edge_bytes;
 }

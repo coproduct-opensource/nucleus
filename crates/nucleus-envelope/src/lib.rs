@@ -66,6 +66,8 @@ pub mod bundle;
 pub mod extract;
 pub mod verify;
 
-pub use bundle::{Bundle, BundleBuilder, BundleError, Envelope, EnvelopeMeta};
+pub use bundle::{
+    Bundle, BundleBuilder, BundleError, EdgeInclusionProof, Envelope, EnvelopeMeta, MerkleAnchor,
+};
 pub use extract::{extract_session_subgraph, SessionSubgraph};
 pub use verify::{verify_bundle, TrustAnchor, VerificationReport, VerifyBundleError};

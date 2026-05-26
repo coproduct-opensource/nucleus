@@ -38,6 +38,14 @@ pub struct EnvelopeVerifyArgs {
     #[arg(long, conflicts_with = "trust_jwks")]
     pub self_check: bool,
 
+    /// **v2 trust extension.** Path to a file containing the witness's
+    /// 32-byte Ed25519 public key (hex or base64, auto-detected). When
+    /// the bundle carries a `merkle_anchor`, this key is REQUIRED — the
+    /// verifier rejects bundles whose anchor it can't validate. When
+    /// the bundle has no anchor, this flag is ignored.
+    #[arg(long)]
+    pub witness_pub: Option<PathBuf>,
+
     /// Accept envelopes with zero edges. Off by default — an empty
     /// envelope authenticates nothing and is forgeable against any pod.
     #[arg(long)]
@@ -82,6 +90,14 @@ pub fn execute(args: EnvelopeVerifyArgs) -> Result<()> {
     } else {
         anchor
     };
+    let anchor = match &args.witness_pub {
+        Some(path) => {
+            let key = read_witness_pubkey(path)
+                .with_context(|| format!("reading witness pubkey from {}", path.display()))?;
+            anchor.with_witness_pubkey(key)
+        }
+        None => anchor,
+    };
 
     let report =
         verify_bundle(&bundle, &anchor).map_err(|e| anyhow!("verification failed: {e}"))?;
@@ -104,9 +120,16 @@ fn emit_human_report(bundle: &Bundle, report: &VerificationReport) {
     } else {
         "trusted JWKS"
     };
+    let merkle = if report.merkle_verified {
+        "verified"
+    } else if bundle.envelope.merkle_anchor.is_some() {
+        "present-but-unchecked"
+    } else {
+        "absent"
+    };
     println!(
         "ok ({mode}): session_root={} trust_domain={} edges={} issuers={} checkpoints={} \
-         head_edge_hash={}",
+         head_edge_hash={} merkle={}",
         bundle.envelope.session_root,
         report.trust_domain,
         report.edge_count,
@@ -117,6 +140,7 @@ fn emit_human_report(bundle: &Bundle, report: &VerificationReport) {
         } else {
             &report.head_edge_hash_hex
         },
+        merkle,
     );
     if !report.kids.is_empty() {
         println!("kids:");
@@ -141,9 +165,37 @@ fn emit_json_report(bundle: &Bundle, report: &VerificationReport) -> Result<()> 
         "checkpoint_count": report.checkpoint_count,
         "head_edge_hash_hex": report.head_edge_hash_hex,
         "schema_version": bundle.envelope.meta.schema_version,
+        "merkle_verified": report.merkle_verified,
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
+}
+
+/// Parse a witness pubkey file. Auto-detects hex (64 chars) and
+/// base64 (44/43 chars) encodings; both decode to exactly 32 bytes.
+/// Same shape as `lineage_verify::read_witness_pubkey`.
+fn read_witness_pubkey(path: &std::path::Path) -> Result<[u8; 32]> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let raw = std::fs::read_to_string(path)?;
+    let trimmed = raw.trim();
+    if let Ok(b) = hex::decode(trimmed) {
+        if b.len() == 32 {
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&b);
+            return Ok(out);
+        }
+    }
+    if let Ok(b) = STANDARD.decode(trimmed) {
+        if b.len() == 32 {
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&b);
+            return Ok(out);
+        }
+    }
+    Err(anyhow!(
+        "witness pubkey file at {} did not parse as a 32-byte hex or base64 Ed25519 public key",
+        path.display()
+    ))
 }
 
 fn read_bundle_bytes(source: &str) -> Result<Vec<u8>> {

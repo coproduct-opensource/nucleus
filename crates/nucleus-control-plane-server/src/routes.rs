@@ -184,7 +184,7 @@ fn spawn_job(state: AppState, job_id: JobId, spec: JobSpec) {
             Ok(Ok(outcome)) => JobState::Completed {
                 started_at: outcome.started_at,
                 completed_at: Utc::now(),
-                outcome: outcome.outcome,
+                outcome: Box::new(outcome.outcome),
             },
             Ok(Err(e)) => JobState::Failed {
                 started_at: None,
@@ -282,6 +282,7 @@ fn run_job_blocking(
         state.issuer.as_ref(),
         jwks,
         Vec::new(),
+        state.merkle_prover.as_deref(),
     )
     .map_err(|e| e.to_string())?;
 

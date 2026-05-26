@@ -27,6 +27,16 @@ pub struct VerifyRequest {
     /// mode, which proves internal consistency only, not provenance.
     #[serde(default)]
     pub trust_jwks: Option<Jwks>,
+    /// **v2 trust extension** (RFC 6962 / CT-style transparency-log
+    /// witness): 32-byte Ed25519 verifying key of the witness that
+    /// signed any `merkle_anchor.sth` in the bundle. Hex-encoded
+    /// without the `0x` prefix.
+    ///
+    /// When omitted, bundles carrying a `merkle_anchor` are rejected
+    /// (the verifier won't silently downgrade the producer's claim).
+    /// When the bundle has no `merkle_anchor`, this field is ignored.
+    #[serde(default)]
+    pub trust_witness_pubkey_hex: Option<String>,
     /// Accept envelopes with zero edges. Off by default — empty
     /// envelopes authenticate nothing.
     #[serde(default)]
@@ -55,6 +65,11 @@ pub struct ReportPayload {
     pub checkpoint_count: usize,
     pub head_edge_hash_hex: String,
     pub schema_version: u32,
+    /// `true` if the bundle's Merkle anchor was present and verified
+    /// against `trust_witness_pubkey_hex`. The strongest provenance
+    /// claim this service makes; downstream consumers should require
+    /// it when accepting bundles from untrusted producers.
+    pub merkle_verified: bool,
 }
 
 /// `POST /v1/verify` — run [`verify_bundle`] against the caller-supplied
@@ -70,6 +85,26 @@ pub async fn verify(
         anchor.allow_empty()
     } else {
         anchor
+    };
+    // Plumb the optional witness pubkey into the trust anchor. We
+    // decode it here so a malformed hex string surfaces as 400 before
+    // we even attempt verification.
+    let anchor = match req.trust_witness_pubkey_hex {
+        Some(hex_str) => {
+            let bytes = hex::decode(hex_str.trim()).map_err(|e| {
+                VerifyApiError::BadRequest(format!("trust_witness_pubkey_hex invalid: {e}"))
+            })?;
+            if bytes.len() != 32 {
+                return Err(VerifyApiError::BadRequest(format!(
+                    "trust_witness_pubkey_hex must decode to 32 bytes, got {}",
+                    bytes.len()
+                )));
+            }
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            anchor.with_witness_pubkey(arr)
+        }
+        None => anchor,
     };
 
     let report = verify_bundle(&req.bundle, &anchor)
@@ -92,6 +127,7 @@ pub async fn verify(
             checkpoint_count: report.checkpoint_count,
             head_edge_hash_hex: report.head_edge_hash_hex,
             schema_version: req.bundle.envelope.meta.schema_version,
+            merkle_verified: report.merkle_verified,
         },
     }))
 }

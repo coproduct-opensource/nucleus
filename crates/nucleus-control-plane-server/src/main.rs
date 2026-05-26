@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use nucleus_control_plane::MockJobRunner;
 use nucleus_control_plane_server::{build_app, registry::RunnerRegistry, state::build_demo_state};
-use nucleus_lineage::JsonlSink;
+use nucleus_lineage::{Ed25519Witness, JsonlSink, MerkleConfig, MerkleSink, TreeWitness};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[derive(Parser, Debug)]
@@ -48,6 +48,32 @@ struct Cli {
     /// SPIFFE service-account segment.
     #[arg(long, default_value = "control-plane", env = "NUCLEUS_SA")]
     service_account: String,
+    /// Directory to write signed tree heads (RFC 6962 checkpoints) into.
+    /// The Merkle tree commits every emitted edge; checkpoints are the
+    /// witness-signed snapshots a verifier can use to anchor inclusion
+    /// proofs.
+    #[arg(
+        long,
+        default_value = "./nucleus-lineage-checkpoints",
+        env = "NUCLEUS_CHECKPOINT_DIR"
+    )]
+    checkpoint_dir: std::path::PathBuf,
+    /// How often (in emitted edges) to write a signed checkpoint to
+    /// `checkpoint_dir`. Smaller = more file writes; larger = longer
+    /// gap between time attestations. Production typically picks
+    /// 100-10000 per the RFC 6962 v2 §3 guidance.
+    #[arg(long, default_value_t = 64, env = "NUCLEUS_CHECKPOINT_INTERVAL")]
+    checkpoint_interval: u64,
+    /// Where to publish the Merkle witness's 32-byte Ed25519 verifying
+    /// key (hex-encoded). Clients fetch this OOB and pass it to
+    /// `nucleus envelope-verify --witness-pub`. Set alongside the
+    /// JWKS path.
+    #[arg(
+        long,
+        default_value = "./nucleus-witness.pub.hex",
+        env = "NUCLEUS_WITNESS_PUB_OUT"
+    )]
+    witness_pub_out: std::path::PathBuf,
 }
 
 #[tokio::main]
@@ -64,9 +90,18 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    let sink = Arc::new(
-        JsonlSink::open(&cli.log)
-            .with_context(|| format!("opening lineage log {}", cli.log.display()))?,
+    // The on-disk JSONL log holds raw lineage edges; MerkleSink wraps
+    // it to also maintain a Merkle tree + signed tree heads. The same
+    // Arc<MerkleSink> serves as both LineageSink (for emission) and
+    // MerkleProver (for inclusion-proof generation at bundle build).
+    let jsonl = JsonlSink::open(&cli.log)
+        .with_context(|| format!("opening lineage log {}", cli.log.display()))?;
+    let witness = Ed25519Witness::from_seed(rand_seed());
+    let witness_pubkey = witness.verifying_key_bytes();
+    let merkle_cfg = MerkleConfig::new(&cli.checkpoint_dir).with_interval(cli.checkpoint_interval);
+    let merkle_sink = Arc::new(
+        MerkleSink::new(jsonl, witness, merkle_cfg)
+            .with_context(|| "opening MerkleSink — check checkpoint_dir permissions")?,
     );
 
     // Register the mock driver. Real drivers (claude-code, openhands)
@@ -74,13 +109,33 @@ async fn main() -> Result<()> {
     // one — keeping nucleus vendor-neutral.
     let runners = RunnerRegistry::new().register("mock", Box::new(MockJobRunner));
 
-    let state = build_demo_state(
+    // Build the basic state via the demo factory, then plug in the
+    // Merkle-aware sink + prover.
+    let mut state = build_demo_state(
         runners,
-        sink,
+        merkle_sink.clone(),
         cli.trust_domain.clone(),
         cli.namespace.clone(),
         cli.service_account.clone(),
     )?;
+    state.merkle_prover = Some(merkle_sink.clone());
+    state.witness_pubkey = Some(witness_pubkey);
+
+    // Publish the witness pubkey (hex) so clients can pass it to
+    // `nucleus envelope-verify --witness-pub`.
+    let witness_hex = hex::encode(witness_pubkey);
+    std::fs::write(&cli.witness_pub_out, &witness_hex).with_context(|| {
+        format!(
+            "writing witness pubkey to {}",
+            cli.witness_pub_out.display()
+        )
+    })?;
+    tracing::info!(
+        "published witness pubkey ({} hex chars, kid={}) → {}",
+        witness_hex.len(),
+        merkle_sink.witness().kid(),
+        cli.witness_pub_out.display()
+    );
 
     // Publish the issuer's JWKS so clients have an out-of-band trust
     // anchor file they can pass to `nucleus envelope-verify --trust-jwks`.
@@ -110,6 +165,18 @@ async fn main() -> Result<()> {
 /// Wait for SIGINT (Ctrl-C) or SIGTERM (k8s/Fly rolling deploys).
 /// `axum::serve` uses this to stop accepting new connections and let
 /// in-flight ones finish.
+/// Generate a 32-byte seed from the OS RNG for the in-process Ed25519
+/// witness. For real deployments, callers should swap to a Workload-API
+/// or KMS-backed `TreeWitness` so the witness key is not in process
+/// memory. The seed is dropped at the end of this function (the key
+/// material lives inside the SigningKey).
+fn rand_seed() -> [u8; 32] {
+    use rand::RngCore;
+    let mut seed = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut seed);
+    seed
+}
+
 async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()

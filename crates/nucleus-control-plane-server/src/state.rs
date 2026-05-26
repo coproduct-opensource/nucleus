@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use nucleus_lineage::{CallSpiffeId, LineageSink, LocalIssuer};
+use nucleus_lineage::{CallSpiffeId, LineageSink, LocalIssuer, MerkleProver};
 
 use crate::events::JobEventBroker;
 use crate::registry::{InMemoryRegistry, JobRegistry, RunnerRegistry};
@@ -36,6 +36,16 @@ pub struct AppState {
     pub service_account: String,
     /// Per-job event broker driving the SSE stream endpoint.
     pub events: Arc<JobEventBroker>,
+    /// Optional Merkle inclusion-proof generator. When set, every job's
+    /// bundle gains a `merkle_anchor` that binds its edges to a witness-
+    /// signed root — clients with the witness pubkey can prove tree-
+    /// inclusion offline. When `None`, bundles are v1 (chain-only).
+    pub merkle_prover: Option<Arc<dyn MerkleProver>>,
+    /// The witness verifying-key bytes corresponding to `merkle_prover`.
+    /// `Some` iff `merkle_prover.is_some()`. Exposed on the API so the
+    /// server can publish it alongside the JWKS — clients use it for
+    /// `nucleus envelope-verify --witness-pub`.
+    pub witness_pubkey: Option<[u8; 32]>,
 }
 
 impl AppState {
@@ -85,5 +95,7 @@ pub fn build_demo_state(
         namespace: namespace.into(),
         service_account: service_account.into(),
         events: Arc::new(JobEventBroker::new()),
+        merkle_prover: None,
+        witness_pubkey: None,
     })
 }

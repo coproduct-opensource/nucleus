@@ -385,6 +385,7 @@ async fn sse_late_subscriber_to_completed_job_gets_catchup_and_closes() {
         &issuer,
         jwks,
         Vec::new(),
+        None,
     )
     .unwrap();
 
@@ -394,10 +395,10 @@ async fn sse_late_subscriber_to_completed_job_gets_catchup_and_closes() {
         .insert(JobState::Completed {
             started_at: now,
             completed_at: now,
-            outcome: JobOutcome {
+            outcome: Box::new(JobOutcome {
                 bundle,
                 delivered: true,
-            },
+            }),
         })
         .unwrap();
 
