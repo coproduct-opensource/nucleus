@@ -3,12 +3,15 @@
 use std::time::Duration;
 
 use axum::{
-    http::StatusCode,
+    http::{header, Method, StatusCode},
     routing::{get, post},
     Router,
 };
 use tower_http::{
-    cors::CorsLayer, limit::RequestBodyLimitLayer, timeout::TimeoutLayer, trace::TraceLayer,
+    cors::{Any, CorsLayer},
+    limit::RequestBodyLimitLayer,
+    timeout::TimeoutLayer,
+    trace::TraceLayer,
 };
 
 use crate::routes;
@@ -19,12 +22,24 @@ use crate::routes;
 /// payloads.
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
-/// Build the router. Layered with:
-/// - permissive CORS so browsers can verify from any origin
-/// - request-body size limit (anti-DoS)
-/// - per-request timeout
-/// - tracing
+/// Build the router.
+///
+/// Middleware:
+/// - **CORS**: allows POST/GET from any origin BUT does NOT advertise
+///   `Access-Control-Allow-Credentials: true`. `CorsLayer::permissive()`
+///   is the canonical CSRF amplifier (Allow-Origin: * + credentials =
+///   any attacker page can read responses with the victim's cookies if
+///   any are ever introduced). The verifier is a public, no-auth
+///   surface, so we want public CORS but explicitly no credentials.
+/// - **Body limit**: 2 MiB cap rejects pathological payloads.
+/// - **Timeout**: 30s per request.
+/// - **Tracing**: spans per request.
 pub fn build_app() -> Router {
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([header::CONTENT_TYPE]);
+
     Router::new()
         .route("/", get(routes::root))
         .route("/healthz", get(routes::healthz))
@@ -35,5 +50,5 @@ pub fn build_app() -> Router {
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(30),
         ))
-        .layer(CorsLayer::permissive())
+        .layer(cors)
 }

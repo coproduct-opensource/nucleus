@@ -39,22 +39,30 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Construct a fresh pod SPIFFE id for a new job session. Format:
-    /// `spiffe://<trust>/ns/<ns>/sa/<sa>/call/<uuid>/job`. The trailing
-    /// `/call/<uuid>/job` makes each session structurally distinct so
-    /// concurrent jobs don't share a SPIFFE root.
+    /// Construct a fresh pod SPIFFE id for a new job session — UNIQUE
+    /// PER CALL. The service account segment carries a UUID suffix
+    /// (`<sa>-<uuid>`) so two concurrent jobs never share a session
+    /// root.
     ///
-    /// NOTE: this returns a child id (has `/call/` suffix), NOT a pure
-    /// pod id. v1 envelope verification requires session_root to be pod-
-    /// shaped, so callers must use the parent (`.parent()`) as the
-    /// session root. The child id is what the runner derives from.
+    /// Why per-session uniqueness matters: the envelope extractor
+    /// (`extract_session_subgraph`) filters edges by SPIFFE URI prefix
+    /// over a shared sink. If every job shared the same pod URI,
+    /// concurrent jobs' edges would all match each other's prefix
+    /// filter and bundle envelopes would cross-contaminate. The chain
+    /// check would then fail because each job's signed `prev_hash`
+    /// values reflect that job's emission order, not the interleaved
+    /// global order.
+    ///
+    /// The returned id is pod-shaped (no `/call/` suffix), so the
+    /// envelope verifier's `is_pod()` check passes. The unique SA
+    /// segment is a structural property of the id; the `trust_domain`
+    /// and `namespace` remain the deployment's identity.
     pub fn new_session_pod(&self) -> CallSpiffeId {
-        // A pure pod id without a per-session uuid suffix. Concurrent
-        // sessions all share the same pod root and rely on the
-        // `/call/<uuid>` segments their edges add to disambiguate.
-        // This matches the existing three_step_demo.rs convention.
-        CallSpiffeId::pod(&self.trust_domain, &self.namespace, &self.service_account)
-            .expect("trust_domain/namespace/sa configured at startup must produce a valid pod id")
+        let unique_sa = format!("{}-{}", self.service_account, uuid::Uuid::new_v4());
+        CallSpiffeId::pod(&self.trust_domain, &self.namespace, &unique_sa).expect(
+            "trust_domain/namespace + per-session SA must produce a valid pod id; \
+             check that trust_domain/namespace/service_account args satisfy SPIFFE charset",
+        )
     }
 }
 

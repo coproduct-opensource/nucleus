@@ -33,6 +33,7 @@ hex = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 async-stream = "0.3"
 futures-util = "0.3"
+uuid = { workspace = true, features = ["v4", "serde"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

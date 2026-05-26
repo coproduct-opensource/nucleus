@@ -61,58 +61,86 @@ pub async fn submit_job(
         return Err(ApiError::UnknownDriver(spec.agent_driver.name.clone()));
     }
 
-    // Idempotency: collapse `Idempotency-Key` + body hash → JobId.
-    // We hash the body so a key reused with a *different* spec is
-    // treated as a fresh submission (the industry pattern; reusing a
-    // key with a different body is almost always a client bug).
-    let idem_key = headers
-        .get("idempotency-key")
-        .and_then(|v| v.to_str().ok())
-        .map(|k| {
-            let mut h = Sha256::new();
-            h.update(k.as_bytes());
-            h.update(b"\0");
-            h.update(serde_json::to_vec(&spec).unwrap_or_default());
-            format!("{k}:{}", hex::encode(h.finalize()))
-        });
-
-    if let Some(ref key) = idem_key {
-        if let Some(existing) = state
-            .jobs
-            .find_by_idempotency_key(key)
-            .map_err(|e| ApiError::Internal(e.to_string()))?
-        {
-            let current = state
-                .jobs
-                .get(&existing)
-                .map_err(|e| ApiError::Internal(e.to_string()))?;
-            let response = JobSubmissionResponse {
-                job_id: existing.clone(),
-                status_url: format!("/v1/jobs/{}", existing),
-                state: current,
-            };
-            let location = response.status_url.clone();
-            return Ok((
-                StatusCode::OK, // repeat submission → 200, not 202
-                [(header::LOCATION, location)],
-                Json(response),
-            )
-                .into_response());
+    // Reject input-ref variants that need an allow-list before we let
+    // them onto a network-reachable surface. The MockJobRunner already
+    // refuses Url, but other drivers might happily fetch it (SSRF) or
+    // read arbitrary local paths (e.g. /etc/shadow). Until per-driver
+    // capabilities exist, the API layer rejects both. A deployment
+    // that needs them can build a custom server with its own router.
+    match &spec.input_ref {
+        nucleus_control_plane::InputRef::Inline { .. } => {}
+        nucleus_control_plane::InputRef::Url { .. } => {
+            return Err(ApiError::BadRequest(
+                "InputRef::Url is not permitted on the public control-plane (SSRF surface); \
+                 use InputRef::Inline or run a driver-specific server"
+                    .into(),
+            ));
+        }
+        nucleus_control_plane::InputRef::LocalPath { .. } => {
+            return Err(ApiError::BadRequest(
+                "InputRef::LocalPath is not permitted on the public control-plane (arbitrary \
+                 file-read surface); inline the content via InputRef::Inline"
+                    .into(),
+            ));
         }
     }
 
+    // Compute the idempotency hash up front. Serialization failure on
+    // a fully-typed `JobSpec` is essentially unreachable (`serde_json`
+    // on this Serialize impl only fails on I/O, which doesn't apply),
+    // but if it does fail we propagate as Internal rather than silently
+    // collapsing every "failed" submission onto the empty-hash bucket.
+    let idem_key = match headers.get("idempotency-key").and_then(|v| v.to_str().ok()) {
+        Some(k) => {
+            let spec_bytes = serde_json::to_vec(&spec)
+                .map_err(|e| ApiError::Internal(format!("idempotency hash: {e}")))?;
+            let mut h = Sha256::new();
+            h.update(k.as_bytes());
+            h.update(b"\0");
+            h.update(&spec_bytes);
+            Some(format!("{k}:{}", hex::encode(h.finalize())))
+        }
+        None => None,
+    };
+
     let now = Utc::now();
     let queued = JobState::Queued { submitted_at: now };
-    let job_id = state
-        .jobs
-        .insert(queued.clone())
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
-    if let Some(key) = idem_key {
-        state
+
+    let (job_id, freshly_inserted) = match idem_key {
+        Some(key) => state
             .jobs
-            .record_idempotency(key, job_id.clone())
+            .insert_with_idempotency(key, queued.clone())
+            .map_err(|e| ApiError::Internal(e.to_string()))?,
+        None => {
+            let id = state
+                .jobs
+                .insert(queued.clone())
+                .map_err(|e| ApiError::Internal(e.to_string()))?;
+            (id, true)
+        }
+    };
+
+    if !freshly_inserted {
+        // Repeat submission with the same Idempotency-Key + body — no
+        // re-execution. Return the existing job's state with 200.
+        let current = state
+            .jobs
+            .get(&job_id)
             .map_err(|e| ApiError::Internal(e.to_string()))?;
+        let response = JobSubmissionResponse {
+            job_id: job_id.clone(),
+            status_url: format!("/v1/jobs/{}", job_id),
+            state: current,
+        };
+        let location = response.status_url.clone();
+        return Ok((
+            StatusCode::OK,
+            [(header::LOCATION, location)],
+            Json(response),
+        )
+            .into_response());
     }
+
     // Publish the initial queued event so a subscriber attaching right
     // away catches the lifecycle from the start.
     state.events.publish(
@@ -127,7 +155,7 @@ pub async fn submit_job(
     let response = JobSubmissionResponse {
         job_id: job_id.clone(),
         status_url: format!("/v1/jobs/{}", job_id),
-        state: JobState::Queued { submitted_at: now },
+        state: queued,
     };
     let location = response.status_url.clone();
     Ok((
@@ -170,17 +198,35 @@ fn spawn_job(state: AppState, job_id: JobId, spec: JobSpec) {
             },
         };
 
-        if let Err(e) = state.jobs.update(&job_id, new_state.clone()) {
-            tracing::error!(
-                target: "nucleus_control_plane_server",
-                "failed to persist final job state for {job_id}: {e}"
-            );
-        }
-        // Publish the terminal event, then a closing marker, then drop
-        // the broker channel so the SSE handler exits cleanly.
-        state
-            .events
-            .publish(&job_id, JobEvent::StateChanged { state: new_state });
+        // If the registry write fails, the SSE stream MUST NOT advertise
+        // a state the registry doesn't hold. Convert the failure into a
+        // Failed terminal so subscribers see a coherent (state, polling)
+        // pair instead of a divergent one.
+        let published_state = match state.jobs.update(&job_id, new_state.clone()) {
+            Ok(()) => new_state,
+            Err(e) => {
+                tracing::error!(
+                    target: "nucleus_control_plane_server",
+                    "failed to persist final job state for {job_id}: {e}"
+                );
+                let synthesized = JobState::Failed {
+                    started_at: None,
+                    failed_at: Utc::now(),
+                    reason: format!("registry update failed: {e}"),
+                };
+                // Best-effort retry — same registry, but now writing a
+                // Failed state. If that also fails, the SSE Closing
+                // event documents the divergence.
+                let _ = state.jobs.update(&job_id, synthesized.clone());
+                synthesized
+            }
+        };
+        state.events.publish(
+            &job_id,
+            JobEvent::StateChanged {
+                state: published_state,
+            },
+        );
         state.events.publish(
             &job_id,
             JobEvent::Closing {

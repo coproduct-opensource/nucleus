@@ -11,11 +11,20 @@
 //! [`AgentDriverRef::name`]: nucleus_control_plane::AgentDriverRef::name
 //! [`JobRunner`]: nucleus_control_plane::JobRunner
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::RwLock;
 
 use nucleus_control_plane::{JobId, JobRunner, JobState};
 use thiserror::Error;
+
+/// Soft cap on the in-memory job registry. Once exceeded, the oldest
+/// jobs are evicted FIFO. Industry-typical idempotency retention is
+/// 24h–30d; here we cap by count for the MVP. Production deployments
+/// should swap to a backed store with TTL.
+const REGISTRY_MAX_JOBS: usize = 10_000;
+/// Same cap on the idempotency index. Bounding both maps prevents
+/// unbounded memory growth from random-key flooding.
+const REGISTRY_MAX_IDEMPOTENCY: usize = 10_000;
 
 /// Errors raised by the registry layer.
 #[derive(Debug, Error)]
@@ -36,9 +45,18 @@ pub trait JobRegistry: Send + Sync {
     fn get(&self, id: &JobId) -> Result<JobState, JobRegistryError>;
     /// Look up a JobId by its idempotency key, if one has been recorded.
     fn find_by_idempotency_key(&self, key: &str) -> Result<Option<JobId>, JobRegistryError>;
-    /// Associate an idempotency key with a JobId. Subsequent calls with
-    /// the same key return the same JobId via `find_by_idempotency_key`.
-    fn record_idempotency(&self, key: String, id: JobId) -> Result<(), JobRegistryError>;
+    /// Atomically: if `key` already maps to a JobId, return
+    /// `(existing_id, false)`; otherwise insert `initial` as a new job,
+    /// record `(key → new_id)`, and return `(new_id, true)`.
+    ///
+    /// This single-lock operation defends against the lookup-then-insert
+    /// race where two concurrent submissions with the same Idempotency-Key
+    /// both miss the lookup and both create jobs.
+    fn insert_with_idempotency(
+        &self,
+        key: String,
+        initial: JobState,
+    ) -> Result<(JobId, bool), JobRegistryError>;
 }
 
 /// Process-local registry. Edges (jobs) keyed by [`JobId`]; idempotency
@@ -51,7 +69,37 @@ pub struct InMemoryRegistry {
 #[derive(Default)]
 struct RegistryInner {
     jobs: HashMap<JobId, JobState>,
+    /// FIFO insertion order for eviction when `jobs` exceeds the cap.
+    job_insertion_order: VecDeque<JobId>,
     idempotency: HashMap<String, JobId>,
+    /// FIFO insertion order for eviction when `idempotency` exceeds the cap.
+    idempotency_insertion_order: VecDeque<String>,
+}
+
+impl RegistryInner {
+    fn insert_job(&mut self, id: JobId, state: JobState) {
+        self.jobs.insert(id.clone(), state);
+        self.job_insertion_order.push_back(id);
+        while self.jobs.len() > REGISTRY_MAX_JOBS {
+            if let Some(oldest) = self.job_insertion_order.pop_front() {
+                self.jobs.remove(&oldest);
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn insert_idempotency(&mut self, key: String, id: JobId) {
+        self.idempotency.insert(key.clone(), id);
+        self.idempotency_insertion_order.push_back(key);
+        while self.idempotency.len() > REGISTRY_MAX_IDEMPOTENCY {
+            if let Some(oldest) = self.idempotency_insertion_order.pop_front() {
+                self.idempotency.remove(&oldest);
+            } else {
+                break;
+            }
+        }
+    }
 }
 
 impl InMemoryRegistry {
@@ -72,7 +120,7 @@ impl JobRegistry for InMemoryRegistry {
     fn insert(&self, initial: JobState) -> Result<JobId, JobRegistryError> {
         let id = JobId::new();
         let mut inner = self.inner.write().map_err(|_| JobRegistryError::Poisoned)?;
-        inner.jobs.insert(id.clone(), initial);
+        inner.insert_job(id.clone(), initial);
         Ok(id)
     }
 
@@ -81,6 +129,8 @@ impl JobRegistry for InMemoryRegistry {
         if !inner.jobs.contains_key(id) {
             return Err(JobRegistryError::NotFound(id.clone()));
         }
+        // Replace in-place; don't touch insertion-order queue so the
+        // eviction policy keeps treating this as the same job.
         inner.jobs.insert(id.clone(), state);
         Ok(())
     }
@@ -99,10 +149,19 @@ impl JobRegistry for InMemoryRegistry {
         Ok(inner.idempotency.get(key).cloned())
     }
 
-    fn record_idempotency(&self, key: String, id: JobId) -> Result<(), JobRegistryError> {
+    fn insert_with_idempotency(
+        &self,
+        key: String,
+        initial: JobState,
+    ) -> Result<(JobId, bool), JobRegistryError> {
         let mut inner = self.inner.write().map_err(|_| JobRegistryError::Poisoned)?;
-        inner.idempotency.insert(key, id);
-        Ok(())
+        if let Some(existing) = inner.idempotency.get(&key) {
+            return Ok((existing.clone(), false));
+        }
+        let id = JobId::new();
+        inner.insert_job(id.clone(), initial);
+        inner.insert_idempotency(key, id.clone());
+        Ok((id, true))
     }
 }
 
@@ -169,16 +228,27 @@ mod tests {
     }
 
     #[test]
-    fn idempotency_round_trips() {
+    fn insert_with_idempotency_returns_existing_on_repeat() {
         let reg = InMemoryRegistry::new();
-        let id = reg
-            .insert(JobState::Queued {
-                submitted_at: Utc::now(),
-            })
+        let (id1, inserted1) = reg
+            .insert_with_idempotency(
+                "key-1".to_string(),
+                JobState::Queued {
+                    submitted_at: Utc::now(),
+                },
+            )
             .unwrap();
-        reg.record_idempotency("key-1".to_string(), id.clone())
+        assert!(inserted1);
+        let (id2, inserted2) = reg
+            .insert_with_idempotency(
+                "key-1".to_string(),
+                JobState::Queued {
+                    submitted_at: Utc::now(),
+                },
+            )
             .unwrap();
-        assert_eq!(reg.find_by_idempotency_key("key-1").unwrap(), Some(id));
-        assert_eq!(reg.find_by_idempotency_key("missing").unwrap(), None);
+        assert!(!inserted2);
+        assert_eq!(id1, id2, "same key must return same id atomically");
+        assert_eq!(reg.find_by_idempotency_key("key-1").unwrap(), Some(id1));
     }
 }

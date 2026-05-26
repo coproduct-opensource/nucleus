@@ -14,8 +14,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release --bin nucleus-verifier-service && \
     cp /work/target/release/nucleus-verifier-service /usr/local/bin/nucleus-verifier-service
 
-FROM gcr.io/distroless/cc-debian12
+FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=build /usr/local/bin/nucleus-verifier-service /usr/local/bin/nucleus-verifier-service
 EXPOSE 8080
 ENV NUCLEUS_VERIFIER_BIND=0.0.0.0:8080
+USER nonroot:nonroot
 ENTRYPOINT ["/usr/local/bin/nucleus-verifier-service"]

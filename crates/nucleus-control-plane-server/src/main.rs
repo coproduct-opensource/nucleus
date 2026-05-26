@@ -100,6 +100,35 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("binding {}", cli.bind))?;
     tracing::info!("nucleus-control-plane-server listening on {}", cli.bind);
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    tracing::info!("shutdown complete");
     Ok(())
+}
+
+/// Wait for SIGINT (Ctrl-C) or SIGTERM (k8s/Fly rolling deploys).
+/// `axum::serve` uses this to stop accepting new connections and let
+/// in-flight ones finish.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install SIGINT handler");
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+    tracing::info!("shutdown signal received");
 }

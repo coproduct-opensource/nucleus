@@ -13,8 +13,9 @@ primary_region = "iad"   # set by deploy operator; iad placeholder
   dockerfile = "Dockerfile"
 
 [env]
-  # tracing-subscriber EnvFilter for the binary
-  RUST_LOG = "nucleus_verifier_service=info,info"
+  # tracing-subscriber EnvFilter for the binary. Crate at info, workspace
+  # default at warn so we don't drown in hyper/tower noise.
+  RUST_LOG = "nucleus_verifier_service=info,warn"
 
 [http_service]
   internal_port = 8080

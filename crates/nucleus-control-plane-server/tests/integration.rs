@@ -431,6 +431,153 @@ async fn sse_late_subscriber_to_completed_job_gets_catchup_and_closes() {
     );
 }
 
+/// CRIT-1 regression. Concurrent jobs MUST produce independently
+/// verifiable bundles. Earlier code shared one SPIFFE pod URI across
+/// every job, which made `extract_session_subgraph` (URI-prefix filter
+/// on a shared sink) sweep up every concurrent job's edges. The
+/// resulting bundles failed chain verification because `prev_hash`
+/// values were signed against per-job emission order, not the
+/// interleaved global order.
+///
+/// Fix: `AppState::new_session_pod` mints a per-session unique SA
+/// segment (`<sa>-<uuid>`). This test runs N jobs in parallel and
+/// asserts every bundle verifies, plus that no two bundles share
+/// any edges.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_jobs_produce_independently_verifying_bundles() {
+    use std::collections::HashSet;
+
+    let state = fresh_state();
+    let app = build_app(state.clone());
+    let jwks: Jwks = serde_json::from_value(state.issuer.publish_jwks()).unwrap();
+
+    const N: usize = 8;
+    let mut handles = Vec::with_capacity(N);
+    for i in 0..N {
+        let app = app.clone();
+        let spec = JobSpec {
+            input_ref: InputRef::Inline {
+                content: serde_json::json!({"i": i}),
+            },
+            task: format!("task-{i}"),
+            ..sample_spec()
+        };
+        handles.push(tokio::spawn(async move {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/v1/jobs")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(serde_json::to_vec(&spec).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::ACCEPTED);
+            let body = read_json(resp.into_body()).await;
+            body["job_id"].as_str().unwrap().to_string()
+        }));
+    }
+    let job_ids: Vec<String> = futures_util::future::join_all(handles)
+        .await
+        .into_iter()
+        .map(|j| j.unwrap())
+        .collect();
+
+    // Wait for all jobs to complete, then fetch every bundle.
+    for id in &job_ids {
+        let _ = poll_until_completed(app.clone(), id, 200).await;
+    }
+
+    let mut bundles = Vec::with_capacity(N);
+    for id in &job_ids {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("/v1/jobs/{id}/bundle"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "bundle fetch for {id}");
+        let bundle: Bundle = serde_json::from_value(read_json(resp.into_body()).await).unwrap();
+        bundles.push(bundle);
+    }
+
+    // Every bundle independently verifies against the shared trust JWKS.
+    let trusted = TrustAnchor::from_jwks(jwks);
+    for (i, bundle) in bundles.iter().enumerate() {
+        verify_bundle(bundle, &trusted)
+            .unwrap_or_else(|e| panic!("bundle {i} for job {} failed verify: {e}", job_ids[i]));
+        assert_eq!(bundle.envelope.edges.len(), 5);
+    }
+
+    // No two bundles share any edge child. (If session roots were
+    // shared, every bundle would contain every other bundle's edges.)
+    let mut all_children: HashSet<String> = HashSet::new();
+    for bundle in &bundles {
+        for edge in &bundle.envelope.edges {
+            assert!(
+                all_children.insert(edge.child.to_string()),
+                "edge child {} appeared in more than one bundle — sessions are leaking",
+                edge.child
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rejects_inputref_url_at_api_boundary() {
+    let app = build_app(fresh_state());
+    let mut spec = sample_spec();
+    spec.input_ref = InputRef::Url {
+        url: "https://example.com/data".to_string(),
+    };
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/jobs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&spec).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = read_json(resp.into_body()).await;
+    assert!(
+        body["message"].as_str().unwrap().contains("SSRF"),
+        "expected SSRF-flagged rejection, got: {body}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rejects_inputref_localpath_at_api_boundary() {
+    let app = build_app(fresh_state());
+    let mut spec = sample_spec();
+    spec.input_ref = InputRef::LocalPath {
+        path: std::path::PathBuf::from("/etc/passwd"),
+    };
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/jobs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&spec).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn idempotency_key_with_different_body_creates_new_job() {
     let state = fresh_state();
