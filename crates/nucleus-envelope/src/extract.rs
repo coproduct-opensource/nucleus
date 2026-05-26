@@ -2,50 +2,43 @@
 
 use nucleus_lineage::{CallSpiffeId, LineageEdge, LineageSink, SinkError};
 
-/// A session's lineage edges, in chain order.
+/// A session's lineage edges, in **sink emission order**.
 ///
-/// "Chain order" means: ascending by edge timestamp, with ties broken by
-/// the order they were emitted into the source sink. This ordering must
-/// match the order [`nucleus_lineage::verify_chain`] expects — each edge's
-/// `proof.prev_hash` is computed from the previous edge in the slice.
+/// The hash chain in `proof.prev_hash` was computed in the order edges
+/// were emitted into the source sink — wall-clock `ts` is *not* the
+/// chain order. Reordering by `ts` (e.g. to repair clock skew) breaks
+/// chain verification because each `prev_hash` was signed against the
+/// previous edge as-emitted, not the previous edge as-time-stamped.
+///
+/// Therefore this struct preserves the underlying sink's `iter()` order,
+/// filtering only on session membership.
 #[derive(Debug, Clone)]
 pub struct SessionSubgraph {
     /// The pod / session-root SPIFFE id that defines membership.
     pub root: CallSpiffeId,
-    /// Edges belonging to this session, in chain order.
+    /// Edges belonging to this session, in sink emission order.
     pub edges: Vec<LineageEdge>,
 }
 
 /// Pull every edge under `root` from `sink`.
 ///
-/// Membership rule: an edge is in the session iff its `child` equals
-/// `root` (the pod-admit edge) OR its `child` URI begins with
-/// `root_uri + "/"`. This relies on the SPIFFE structural derivation rule
-/// — `pod.derive_tool(...)` and friends always produce a child whose URI
-/// is `pod_uri + "/call/..."`. Edges produced by foreign pods (different
-/// URI prefix) are excluded.
+/// Membership rule (this extractor): an edge is in the session iff its
+/// `child` equals `root` OR its `child` URI begins with `root_uri + "/"`.
+/// Foreign parents on `Merge` edges are NOT filtered here — verification
+/// catches them at [`crate::verify_bundle`] time so the producer learns
+/// "your envelope is structurally inconsistent" rather than silently
+/// dropping edges. See `verify::tests::rejects_foreign_parent_via_merge`.
 ///
-/// Edges are returned in chain order: ascending `ts`, with ties broken by
-/// insertion order from the underlying sink. The hash chain in
-/// `proof.prev_hash` was computed in emission order, so chain verification
-/// requires preserving it.
+/// Edges are returned in sink emission order. Do not re-sort.
 pub fn extract_session_subgraph(
     root: &CallSpiffeId,
     sink: &dyn LineageSink,
 ) -> Result<SessionSubgraph, SinkError> {
-    let mut indexed: Vec<(usize, LineageEdge)> = sink
+    let edges = sink
         .iter()?
         .into_iter()
-        .enumerate()
-        .filter(|(_, e)| is_under_root(&e.child, root))
+        .filter(|e| is_under_root(&e.child, root))
         .collect();
-
-    // Sort by (timestamp, original-insertion-index). The original index is
-    // the tiebreaker so two edges with identical timestamps preserve the
-    // hash-chain order the sink emitted them in.
-    indexed.sort_by(|(ai, a), (bi, b)| a.ts.cmp(&b.ts).then_with(|| ai.cmp(bi)));
-
-    let edges = indexed.into_iter().map(|(_, e)| e).collect();
 
     Ok(SessionSubgraph {
         root: root.clone(),

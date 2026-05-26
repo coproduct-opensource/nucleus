@@ -132,9 +132,12 @@ fn init_logging(verbose: bool) {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("nucleus=info,warn"))
     };
 
+    // Route tracing to stderr so subcommands that emit machine-readable
+    // output on stdout (e.g. `nucleus envelope --out -`) aren't polluted
+    // by INFO lines.
     tracing_subscriber::registry()
         .with(filter)
-        .with(fmt::layer())
+        .with(fmt::layer().with_writer(std::io::stderr))
         .init();
 }
 

@@ -13,7 +13,7 @@ use clap::Args;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-use nucleus_envelope::BundleBuilder;
+use nucleus_envelope::{verify_bundle, BundleBuilder, TrustAnchor};
 use nucleus_lineage::{read_checkpoints, CallSpiffeId, JsonlSink, Jwks, SignedTreeHead};
 
 #[derive(Args, Debug)]
@@ -55,9 +55,24 @@ pub struct EnvelopeArgs {
     pub out: String,
 
     /// Build a bundle even if the session has zero edges. Off by default
-    /// because empty envelopes are almost always programmer error.
+    /// because empty envelopes are almost always programmer error AND
+    /// the verifier rejects them by default.
     #[arg(long)]
     pub allow_empty: bool,
+
+    /// Require every edge in the session subgraph to be cryptographically
+    /// signed. Fails at build time if any edge lacks a proof, instead of
+    /// letting the verifier discover the gap later.
+    #[arg(long)]
+    pub require_signed: bool,
+
+    /// Skip the self-consistency check that runs after building. On by
+    /// default — every freshly-built bundle is run through
+    /// `verify_bundle` in self-check mode to confirm the producer's
+    /// JWKS actually covers every edge. Without this, a mistyped JWKS
+    /// path silently produces a bundle that will fail at consumer time.
+    #[arg(long)]
+    pub skip_self_check: bool,
 }
 
 pub fn execute(args: EnvelopeArgs) -> Result<()> {
@@ -90,10 +105,29 @@ pub fn execute(args: EnvelopeArgs) -> Result<()> {
     if args.allow_empty {
         builder = builder.allow_empty();
     }
+    if args.require_signed {
+        builder = builder.require_signed();
+    }
 
     let bundle = builder
         .build()
         .with_context(|| format!("assembling bundle for {}", session_root))?;
+
+    if !args.skip_self_check {
+        // Self-check: verify the bundle against its OWN embedded JWKS so
+        // we catch "your JWKS doesn't cover any kid in this log" at
+        // build time. This is integrity-against-itself, not provenance,
+        // but it's free defensive validation. allow_empty is plumbed
+        // through so the check doesn't reject opt-in empty bundles.
+        let mut anchor = TrustAnchor::self_check_only();
+        if args.allow_empty {
+            anchor = anchor.allow_empty();
+        }
+        verify_bundle(&bundle, &anchor).context(
+            "self-check after build failed; the bundle would not have verified at consumer time. \
+             Pass --skip-self-check to suppress this check.",
+        )?;
+    }
 
     write_bundle(&bundle, &args.out)?;
     Ok(())

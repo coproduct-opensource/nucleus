@@ -25,6 +25,11 @@ pub enum BundleError {
     /// Required builder field was not set before `build()`.
     #[error("missing required builder field: {0}")]
     MissingField(&'static str),
+    /// Builder was configured with `require_signed()` but at least one
+    /// session edge lacked a cryptographic `proof`. Surfaced at build
+    /// time so producers learn early, instead of at the verifier.
+    #[error("edge #{index} has no proof; require_signed() rejects mixed logs")]
+    UnsignedEdge { index: usize },
 }
 
 /// A portable, self-contained provenance bundle.
@@ -100,6 +105,7 @@ pub struct BundleBuilder<'a> {
     jwks: Option<Jwks>,
     checkpoints: Vec<SignedTreeHead>,
     allow_empty: bool,
+    require_signed: bool,
 }
 
 impl<'a> BundleBuilder<'a> {
@@ -112,6 +118,7 @@ impl<'a> BundleBuilder<'a> {
             jwks: None,
             checkpoints: Vec::new(),
             allow_empty: false,
+            require_signed: false,
         }
     }
 
@@ -141,10 +148,20 @@ impl<'a> BundleBuilder<'a> {
         self
     }
 
-    /// Allow building a bundle whose envelope contains zero session edges.
-    /// Off by default — empty envelopes are almost always programmer error.
+    /// Allow building a bundle whose envelope contains zero session
+    /// edges. Off by default. The verifier will *also* reject empty
+    /// envelopes unless [`crate::TrustAnchor::allow_empty`] is set —
+    /// the builder permission does not override the verifier's.
     pub fn allow_empty(mut self) -> Self {
         self.allow_empty = true;
+        self
+    }
+
+    /// Refuse to build if any edge in the session subgraph lacks a
+    /// cryptographic `proof`. Surfaces the failure at packaging time
+    /// rather than letting the verifier discover it later.
+    pub fn require_signed(mut self) -> Self {
+        self.require_signed = true;
         self
     }
 
@@ -157,6 +174,11 @@ impl<'a> BundleBuilder<'a> {
         let subgraph = extract::extract_session_subgraph(&self.session_root, sink)?;
         if subgraph.edges.is_empty() && !self.allow_empty {
             return Err(BundleError::EmptySession(self.session_root.to_string()));
+        }
+        if self.require_signed {
+            if let Some(index) = subgraph.edges.iter().position(|e| e.proof.is_none()) {
+                return Err(BundleError::UnsignedEdge { index });
+            }
         }
 
         Ok(Bundle {

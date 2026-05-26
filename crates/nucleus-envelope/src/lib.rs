@@ -6,9 +6,22 @@
 //! carries the signed IFC lineage subgraph proving how the payload was
 //! produced.
 //!
-//! The envelope is self-contained: a verifier needs only the bundle bytes
-//! and the embedded JWKS / witness key material to re-validate every claim,
-//! without access to nucleus's running state.
+//! # Trust model — read this before pitching to anyone
+//!
+//! The bundle is **portable** (anyone can carry the bytes), but it is
+//! **not self-anchoring**. The JWKS embedded in the envelope is
+//! producer-supplied material; a forger fabricating a whole bundle
+//! controls it. Therefore [`verify_bundle`] requires a [`TrustAnchor`]
+//! the verifier obtained out-of-band (file under `chmod 400`, OIDC
+//! discovery, signed operator bundle). The trust anchor's JWKS — not
+//! the embedded one — is what every signature is checked against.
+//!
+//! [`TrustAnchor::self_check_only`] exists as an explicit opt-in to
+//! "verify the envelope against the JWKS it carries." That proves the
+//! bundle is internally consistent (no later mutation could go
+//! undetected) but does **not** prove the producer is who they claim.
+//! The [`VerificationReport`] flags this mode so downstream code can
+//! refuse to treat it as a provenance claim.
 //!
 //! # Composition layers
 //!
@@ -55,4 +68,4 @@ pub mod verify;
 
 pub use bundle::{Bundle, BundleBuilder, BundleError, Envelope, EnvelopeMeta};
 pub use extract::{extract_session_subgraph, SessionSubgraph};
-pub use verify::{verify_bundle, VerificationReport, VerifyBundleError};
+pub use verify::{verify_bundle, TrustAnchor, VerificationReport, VerifyBundleError};
