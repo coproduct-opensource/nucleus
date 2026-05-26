@@ -37,6 +37,15 @@ pub struct VerifyRequest {
     /// When the bundle has no `merkle_anchor`, this field is ignored.
     #[serde(default)]
     pub trust_witness_pubkey_hex: Option<String>,
+    /// **v2.1 witness federation.** Optional list of trusted external
+    /// witness verifying keys (each 32 bytes, hex-encoded). Cosignatures
+    /// from witnesses NOT in this set are ignored.
+    #[serde(default)]
+    pub trusted_witnesses_hex: Vec<String>,
+    /// **v2.1 witness federation.** Minimum number of trusted-witness
+    /// cosignatures required. Default 0 (federation optional).
+    #[serde(default)]
+    pub cosignature_threshold: usize,
     /// Accept envelopes with zero edges. Off by default — empty
     /// envelopes authenticate nothing.
     #[serde(default)]
@@ -70,6 +79,10 @@ pub struct ReportPayload {
     /// claim this service makes; downstream consumers should require
     /// it when accepting bundles from untrusted producers.
     pub merkle_verified: bool,
+    /// **v2.1.** Number of cosignatures on the Merkle anchor's STH
+    /// that verified against a key in `trusted_witnesses_hex`. ≥ the
+    /// requested `cosignature_threshold` when the response is 200.
+    pub cosignatures_verified: usize,
 }
 
 /// `POST /v1/verify` — run [`verify_bundle`] against the caller-supplied
@@ -106,6 +119,26 @@ pub async fn verify(
         }
         None => anchor,
     };
+    // v2.1: plumb federation parameters. Trusted witness keys are
+    // decoded at the API edge so malformed inputs surface as 400.
+    let mut anchor = anchor;
+    for hex_str in &req.trusted_witnesses_hex {
+        let bytes = hex::decode(hex_str.trim()).map_err(|e| {
+            VerifyApiError::BadRequest(format!("trusted_witnesses_hex entry invalid: {e}"))
+        })?;
+        if bytes.len() != 32 {
+            return Err(VerifyApiError::BadRequest(format!(
+                "trusted_witnesses_hex entries must decode to 32 bytes, got {}",
+                bytes.len()
+            )));
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        anchor = anchor.with_trusted_witness(arr);
+    }
+    if req.cosignature_threshold > 0 {
+        anchor = anchor.cosignature_threshold(req.cosignature_threshold);
+    }
 
     let report = verify_bundle(&req.bundle, &anchor)
         .map_err(|e| VerifyApiError::VerificationFailed(e.to_string()))?;
@@ -128,6 +161,7 @@ pub async fn verify(
             head_edge_hash_hex: report.head_edge_hash_hex,
             schema_version: req.bundle.envelope.meta.schema_version,
             merkle_verified: report.merkle_verified,
+            cosignatures_verified: report.cosignatures_verified,
         },
     }))
 }

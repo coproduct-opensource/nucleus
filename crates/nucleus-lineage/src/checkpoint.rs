@@ -76,6 +76,16 @@ pub struct SignedTreeHead {
     /// Ed25519 signature over [`canonical_sth_bytes`], base64-encoded.
     #[serde(with = "base64_bytes")]
     pub witness_sig: Vec<u8>,
+    /// **v2.1 witness federation.** Zero or more countersignatures
+    /// from external witnesses, each signing the same canonical bytes
+    /// covered by `witness_sig`. Verifiers configured with a list of
+    /// trusted witnesses + a threshold reject STHs that don't meet
+    /// the cosignature quorum. See [`crate::cosign::Cosignature`].
+    ///
+    /// Forward-compat: missing in v2.0 envelopes; default empty so
+    /// older readers parse v2.1 STHs without code changes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cosignatures: Vec<crate::cosign::Cosignature>,
 }
 
 impl SignedTreeHead {
@@ -185,6 +195,14 @@ impl Ed25519Witness {
     pub fn verifying_key_bytes(&self) -> [u8; 32] {
         self.verifying_key.to_bytes()
     }
+
+    /// Sign arbitrary bytes with the witness's signing key. Used by
+    /// `crate::cosign::InProcessWitness` to produce countersignatures
+    /// over a producer's canonical STH bytes; not intended for general
+    ///-purpose signing.
+    pub fn sign_message(&self, message: &[u8]) -> [u8; 64] {
+        self.signing_key.sign(message).to_bytes()
+    }
 }
 
 impl TreeWitness for Ed25519Witness {
@@ -209,6 +227,7 @@ impl TreeWitness for Ed25519Witness {
             root_hash_hex: hex::encode(root_hash),
             witness_kid: self.kid.clone(),
             witness_sig: sig.to_bytes().to_vec(),
+            cosignatures: Vec::new(),
         })
     }
 

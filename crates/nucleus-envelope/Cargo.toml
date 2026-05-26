@@ -11,6 +11,7 @@ categories = ["development-tools", "cryptography"]
 
 [dependencies]
 nucleus-lineage = { path = "../nucleus-lineage" }
+ed25519-dalek = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

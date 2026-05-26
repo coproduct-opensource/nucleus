@@ -50,6 +50,16 @@ pub struct TrustAnchor {
     /// envelope without a Merkle anchor still verifies (chain-only),
     /// but a present anchor MUST validate.
     witness_pubkey: Option<[u8; 32]>,
+    /// **v2.1 witness federation.** Ed25519 verifying-key bytes for
+    /// external witnesses the verifier trusts. Cosignatures on the
+    /// STH from witnesses NOT in this set are ignored; the verifier
+    /// counts only matches.
+    trusted_witnesses: Vec<[u8; 32]>,
+    /// **v2.1 witness federation.** Minimum number of trusted-witness
+    /// cosignatures required for verification to succeed when the
+    /// bundle has a Merkle anchor. Default 0 (federation optional);
+    /// set to N to require N-of-trusted countersignatures.
+    cosignature_threshold: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +83,8 @@ impl TrustAnchor {
             mode: TrustMode::OutOfBand,
             allow_empty: false,
             witness_pubkey: None,
+            trusted_witnesses: Vec::new(),
+            cosignature_threshold: 0,
         }
     }
 
@@ -86,6 +98,8 @@ impl TrustAnchor {
             mode: TrustMode::SelfCheckOnly,
             allow_empty: false,
             witness_pubkey: None,
+            trusted_witnesses: Vec::new(),
+            cosignature_threshold: 0,
         }
     }
 
@@ -112,6 +126,30 @@ impl TrustAnchor {
     /// unchecked; the report records `merkle_verified = false`.
     pub fn with_witness_pubkey(mut self, key_bytes: [u8; 32]) -> Self {
         self.witness_pubkey = Some(key_bytes);
+        self
+    }
+
+    /// **v2.1 witness federation.** Add an Ed25519 verifying-key for
+    /// an external witness the verifier trusts. Cosignatures on the
+    /// STH from this witness will count toward
+    /// [`Self::cosignature_threshold`]. Cosignatures from witnesses
+    /// NOT in this set are ignored (not an error — they're just
+    /// extra material).
+    ///
+    /// Call once per trusted witness; the trust anchor accumulates.
+    pub fn with_trusted_witness(mut self, key_bytes: [u8; 32]) -> Self {
+        self.trusted_witnesses.push(key_bytes);
+        self
+    }
+
+    /// **v2.1 witness federation.** Require at least `n` countersignatures
+    /// from witnesses in the trusted set before a Merkle-anchored
+    /// bundle is accepted. Default 0 (federation optional).
+    ///
+    /// Has no effect on bundles without a Merkle anchor (chain-only
+    /// v1 bundles).
+    pub fn cosignature_threshold(mut self, n: usize) -> Self {
+        self.cosignature_threshold = n;
         self
     }
 }
@@ -177,6 +215,12 @@ pub enum VerifyBundleError {
     /// its leaf. `index` is the edge index in `envelope.edges`.
     #[error("edge #{index} inclusion proof failed against signed root: {detail}")]
     MerkleAnchorInclusionFailed { index: usize, detail: String },
+    /// Fewer trusted-witness cosignatures verified than the configured
+    /// threshold demands.
+    #[error(
+        "witness-federation threshold not met: {verified} cosignatures verified, threshold {required}"
+    )]
+    InsufficientCosignatures { verified: usize, required: usize },
 }
 
 /// Result of a successful [`verify_bundle`] call.
@@ -206,6 +250,11 @@ pub struct VerificationReport {
     /// v2 bundle can produce — "this exact session is committed in
     /// the witness's log under a signed root."
     pub merkle_verified: bool,
+    /// **v2.1 witness federation.** Number of cosignatures on the STH
+    /// that verified against a key in [`TrustAnchor::with_trusted_witness`].
+    /// Zero when federation isn't in use; otherwise reports the
+    /// achieved quorum (≥ threshold when verification succeeds).
+    pub cosignatures_verified: usize,
 }
 
 /// Verify a [`Bundle`] against an explicit [`TrustAnchor`].
@@ -269,6 +318,7 @@ pub fn verify_bundle(
                 checkpoint_count: env.checkpoints.len(),
                 trust_mode_self_check_only: trust.is_self_check_only(),
                 merkle_verified: false,
+                cosignatures_verified: 0,
             });
         }
         return Err(VerifyBundleError::EmptyEnvelope);
@@ -337,13 +387,13 @@ pub fn verify_bundle(
     // out-of-band witness pubkey are the ones who actually exercise
     // the anchor — and they must use `TrustAnchor::from_jwks(...)` +
     // `with_witness_pubkey(...)`.
-    let merkle_verified = if trust.is_self_check_only() {
-        false
+    let (merkle_verified, cosignatures_verified) = if trust.is_self_check_only() {
+        (false, 0)
     } else if let Some(anchor) = &env.merkle_anchor {
-        verify_merkle_anchor(env.edges.as_slice(), anchor, trust)?;
-        true
+        let cosig_count = verify_merkle_anchor(env.edges.as_slice(), anchor, trust)?;
+        (true, cosig_count)
     } else {
-        false
+        (false, 0)
     };
 
     // 8) Report.
@@ -365,15 +415,19 @@ pub fn verify_bundle(
         checkpoint_count: env.checkpoints.len(),
         trust_mode_self_check_only: trust.is_self_check_only(),
         merkle_verified,
+        cosignatures_verified,
     })
 }
 
-/// Verify the Merkle anchor: STH signature + each inclusion proof.
+/// Verify the Merkle anchor: STH signature + each inclusion proof,
+/// plus the v2.1 witness-federation threshold check. Returns the
+/// number of trusted-witness cosignatures that verified, so the
+/// caller can surface it in the report.
 fn verify_merkle_anchor(
     edges: &[LineageEdge],
     anchor: &crate::bundle::MerkleAnchor,
     trust: &TrustAnchor,
-) -> Result<(), VerifyBundleError> {
+) -> Result<usize, VerifyBundleError> {
     // Caller must supply the witness pubkey out-of-band — same trust
     // discipline as the JWKS. The bundle's *anchor* is producer-
     // controlled, so without an OOB witness key the anchor is just
@@ -438,7 +492,46 @@ fn verify_merkle_anchor(
                 detail: format!("ct-merkle: {e:?}"),
             })?;
     }
-    Ok(())
+
+    // v2.1 witness federation: count cosignatures that verify against
+    // a trusted-witness key. Cosignatures from unknown witnesses are
+    // ignored — they're not errors, they're just not counted.
+    let mut cosignatures_verified = 0usize;
+    if !anchor.sth.cosignatures.is_empty() {
+        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+        let canonical = nucleus_lineage::canonical_sth_bytes(
+            anchor.sth.tree_size,
+            anchor.sth.timestamp_ms,
+            &root_arr,
+        );
+        for cosig in &anchor.sth.cosignatures {
+            if cosig.signature.len() != 64 {
+                continue; // malformed cosig length — skip
+            }
+            let mut sig_arr = [0u8; 64];
+            sig_arr.copy_from_slice(&cosig.signature);
+            let sig = Signature::from_bytes(&sig_arr);
+            // For each trusted witness, check whether this cosig
+            // verifies. Match by key, not by kid string — the kid is
+            // attacker-controlled metadata; the key is the trust anchor.
+            for trusted in &trust.trusted_witnesses {
+                if let Ok(vk) = VerifyingKey::from_bytes(trusted) {
+                    if vk.verify(&canonical, &sig).is_ok() {
+                        cosignatures_verified += 1;
+                        break; // count each cosig at most once
+                    }
+                }
+            }
+        }
+    }
+
+    if cosignatures_verified < trust.cosignature_threshold {
+        return Err(VerifyBundleError::InsufficientCosignatures {
+            verified: cosignatures_verified,
+            required: trust.cosignature_threshold,
+        });
+    }
+    Ok(cosignatures_verified)
 }
 
 /// Walk the chain to compute the hash of the head (last) edge so it can

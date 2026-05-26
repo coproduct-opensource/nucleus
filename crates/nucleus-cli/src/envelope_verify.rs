@@ -46,6 +46,18 @@ pub struct EnvelopeVerifyArgs {
     #[arg(long)]
     pub witness_pub: Option<PathBuf>,
 
+    /// **v2.1 witness federation.** Path to a file containing an
+    /// external witness's Ed25519 public key (hex or base64). Repeat
+    /// for each trusted witness. Cosignatures on the STH from witnesses
+    /// in this set count toward `--cosignature-threshold`.
+    #[arg(long = "trusted-witness", value_name = "PATH")]
+    pub trusted_witness: Vec<PathBuf>,
+
+    /// **v2.1 witness federation.** Minimum number of cosignatures from
+    /// trusted witnesses required. Default 0 (federation optional).
+    #[arg(long, default_value_t = 0)]
+    pub cosignature_threshold: usize,
+
     /// Accept envelopes with zero edges. Off by default — an empty
     /// envelope authenticates nothing and is forgeable against any pod.
     #[arg(long)]
@@ -98,6 +110,16 @@ pub fn execute(args: EnvelopeVerifyArgs) -> Result<()> {
         }
         None => anchor,
     };
+    // v2.1 federation: add each trusted witness + threshold.
+    let mut anchor = anchor;
+    for path in &args.trusted_witness {
+        let key = read_witness_pubkey(path)
+            .with_context(|| format!("reading trusted-witness pubkey from {}", path.display()))?;
+        anchor = anchor.with_trusted_witness(key);
+    }
+    if args.cosignature_threshold > 0 {
+        anchor = anchor.cosignature_threshold(args.cosignature_threshold);
+    }
 
     let report =
         verify_bundle(&bundle, &anchor).map_err(|e| anyhow!("verification failed: {e}"))?;
@@ -129,7 +151,7 @@ fn emit_human_report(bundle: &Bundle, report: &VerificationReport) {
     };
     println!(
         "ok ({mode}): session_root={} trust_domain={} edges={} issuers={} checkpoints={} \
-         head_edge_hash={} merkle={}",
+         head_edge_hash={} merkle={} cosignatures={}",
         bundle.envelope.session_root,
         report.trust_domain,
         report.edge_count,
@@ -141,6 +163,7 @@ fn emit_human_report(bundle: &Bundle, report: &VerificationReport) {
             &report.head_edge_hash_hex
         },
         merkle,
+        report.cosignatures_verified,
     );
     if !report.kids.is_empty() {
         println!("kids:");
@@ -166,6 +189,7 @@ fn emit_json_report(bundle: &Bundle, report: &VerificationReport) -> Result<()> 
         "head_edge_hash_hex": report.head_edge_hash_hex,
         "schema_version": bundle.envelope.meta.schema_version,
         "merkle_verified": report.merkle_verified,
+        "cosignatures_verified": report.cosignatures_verified,
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())

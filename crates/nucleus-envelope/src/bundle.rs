@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use nucleus_lineage::{
     edge_content_hash, CallSpiffeId, IdError, Jwks, LineageEdge, LineageSink, MerkleProver,
-    SignedTreeHead,
+    SignedTreeHead, WitnessClient,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -45,6 +45,9 @@ pub enum BundleError {
     /// Sealing the current root via the witness failed.
     #[error("Merkle anchor seal failed: {0}")]
     MerkleAnchorSeal(String),
+    /// An external witness refused to countersign the sealed STH.
+    #[error("witness cosignature failed: {0}")]
+    Cosign(String),
 }
 
 /// A portable, self-contained provenance bundle.
@@ -164,6 +167,11 @@ pub struct BundleBuilder<'a> {
     /// current Merkle root via the prover's witness and emits a
     /// per-edge inclusion proof, producing a v2 bundle.
     merkle_prover: Option<&'a dyn MerkleProver>,
+    /// Optional external witnesses to countersign the sealed STH
+    /// (v2.1 federation). Each witness's [`WitnessClient::cosign`] is
+    /// invoked once after the STH is sealed; results land in
+    /// `sth.cosignatures`. Ignored if `merkle_prover` is `None`.
+    cosignatories: Vec<&'a dyn WitnessClient>,
 }
 
 impl<'a> BundleBuilder<'a> {
@@ -178,6 +186,7 @@ impl<'a> BundleBuilder<'a> {
             allow_empty: false,
             require_signed: false,
             merkle_prover: None,
+            cosignatories: Vec::new(),
         }
     }
 
@@ -234,6 +243,21 @@ impl<'a> BundleBuilder<'a> {
         self
     }
 
+    /// Attach a set of external [`WitnessClient`]s that will be asked
+    /// to countersign the sealed STH (v2.1 witness federation). The
+    /// resulting STH carries one [`Cosignature`] per witness; a
+    /// verifier configured with a trusted-witness set + threshold
+    /// rejects bundles below threshold.
+    ///
+    /// No-op when no Merkle prover is attached — cosignatures need
+    /// something to sign over.
+    ///
+    /// [`Cosignature`]: nucleus_lineage::Cosignature
+    pub fn with_cosignatures(mut self, witnesses: Vec<&'a dyn WitnessClient>) -> Self {
+        self.cosignatories = witnesses;
+        self
+    }
+
     /// Assemble the [`Bundle`].
     pub fn build(self) -> Result<Bundle, BundleError> {
         let payload = self.payload.ok_or(BundleError::MissingField("payload"))?;
@@ -270,9 +294,19 @@ impl<'a> BundleBuilder<'a> {
                     audit_path_hex: hex::encode(proof.as_bytes()),
                 });
             }
-            let sth = prover
+            let mut sth = prover
                 .seal_current_root()
                 .map_err(|e| BundleError::MerkleAnchorSeal(e.to_string()))?;
+            // v2.1 witness federation: ask each external witness to
+            // countersign the sealed STH. Failures are surfaced as
+            // BundleError::Cosign so a missing witness doesn't silently
+            // ship a partial bundle.
+            for witness in &self.cosignatories {
+                let cosig = witness
+                    .cosign(&sth)
+                    .map_err(|e| BundleError::Cosign(e.to_string()))?;
+                sth.cosignatures.push(cosig);
+            }
             Some(MerkleAnchor {
                 sth,
                 inclusion_proofs: proofs,

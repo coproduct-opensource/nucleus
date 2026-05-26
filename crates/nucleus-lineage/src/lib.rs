@@ -32,6 +32,7 @@
 //! [`LocalIssuer`]: crate::local_issuer::LocalIssuer
 
 pub mod checkpoint;
+pub mod cosign;
 pub mod edge;
 pub mod id;
 pub mod issuer;
@@ -52,6 +53,7 @@ pub use checkpoint::{
     canonical_sth_bytes, Ed25519Witness, SignedTreeHead, TreeWitness, VerifyOnlyWitness,
     WitnessError,
 };
+pub use cosign::{Cosignature, InProcessWitness, WitnessClient};
 pub use edge::{EdgeKind, LineageEdge};
 pub use id::{CallSpiffeId, IdError, MAX_URI_LEN};
 pub use issuer::{EdgeSigner, IdentityFetcher, IssuerError, SvidClaims};

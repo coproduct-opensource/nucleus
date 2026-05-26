@@ -4922,6 +4922,7 @@ name = "nucleus-envelope"
 version = "1.0.0"
 dependencies = [
  "chrono",
+ "ed25519-dalek",
  "hex",
  "nucleus-lineage",
  "serde",
