@@ -62,7 +62,12 @@ pub struct EnvelopeVerifyArgs {
     /// [`nucleus_envelope::PayloadBinding`] signed by a key in the
     /// trust JWKS. Without this, bundles without bindings still verify
     /// at chain/anchor level (backwards-compat).
-    #[arg(long)]
+    ///
+    /// Mutually exclusive with `--self-check`: self-check mode does
+    /// not verify bindings (the producer can't validate its own
+    /// claim against itself), so `--self-check --require-binding`
+    /// would silently produce the wrong answer. Per audit HIGH-4.
+    #[arg(long, conflicts_with = "self_check")]
     pub require_binding: bool,
 
     /// Accept envelopes with zero edges. Off by default — an empty

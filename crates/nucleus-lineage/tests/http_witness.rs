@@ -151,6 +151,114 @@ async fn http_witness_pinned_kid_rejects_mismatched_response() {
     assert!(err.to_string().contains("expected"), "got: {err}");
 }
 
+/// **CRIT-1 from audit on slice C.** A hostile witness returning a
+/// gigantic response body must be rejected before the producer
+/// allocates that memory. Cap is enforced via Content-Length and
+/// post-read length check.
+#[tokio::test]
+async fn http_witness_rejects_oversized_response_body() {
+    let mock = MockServer::start().await;
+    // 1 MiB body — well past the 8 KiB cap.
+    let big = serde_json::to_string(&serde_json::json!({
+        "witness_kid": "x",
+        "signature": "AA",
+        "timestamp_ms": 1,
+        "junk": "X".repeat(1024 * 1024),
+    }))
+    .unwrap();
+    Mock::given(method("POST"))
+        .and(path("/v2.1/cosign"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(big.into_bytes(), "application/json"))
+        .mount(&mock)
+        .await;
+
+    let producer = Ed25519Witness::from_seed([66u8; 32]);
+    let sth = producer.sign_sth(1, &[0u8; 32]).unwrap();
+    let base = mock.uri();
+    let sth_clone = sth.clone();
+    let err = tokio::task::spawn_blocking(move || {
+        let client = HttpWitnessClient::new(base).unwrap();
+        client.cosign(&sth_clone)
+    })
+    .await
+    .unwrap()
+    .expect_err("oversized body must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Content-Length") || msg.contains("byte body"),
+        "expected size-cap error, got: {msg}"
+    );
+}
+
+/// **MED-5 from audit.** A witness returning 200 OK with an empty `{}`
+/// body must produce a clean error path, not a panic or a silent
+/// "zero cosignature." Pins the serde behavior — required fields on
+/// Cosignature catch this.
+#[tokio::test]
+async fn http_witness_rejects_empty_cosignature_body() {
+    let mock = MockServer::start().await;
+    // `set_body_raw` sets BOTH body and Content-Type in one shot,
+    // overriding the default text/plain that set_body_string would
+    // pick. We need the Content-Type to pass so the deserialize
+    // step is what fails on `{}`.
+    Mock::given(method("POST"))
+        .and(path("/v2.1/cosign"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(b"{}".to_vec(), "application/json"))
+        .mount(&mock)
+        .await;
+
+    let producer = Ed25519Witness::from_seed([77u8; 32]);
+    let sth = producer.sign_sth(1, &[0u8; 32]).unwrap();
+    let base = mock.uri();
+    let sth_clone = sth.clone();
+    let err = tokio::task::spawn_blocking(move || {
+        let client = HttpWitnessClient::new(base).unwrap();
+        client.cosign(&sth_clone)
+    })
+    .await
+    .unwrap()
+    .expect_err("empty body must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("malformed Cosignature JSON"),
+        "expected serde error, got: {msg}"
+    );
+}
+
+/// **MED-6 from audit.** A witness returning HTML with a body that
+/// happens to parse as JSON must be rejected at the Content-Type
+/// check.
+#[tokio::test]
+async fn http_witness_rejects_non_json_content_type() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v2.1/cosign"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(r#"{"witness_kid":"x","signature":"AA","timestamp_ms":1}"#)
+                .insert_header("content-type", "text/html"),
+        )
+        .mount(&mock)
+        .await;
+
+    let producer = Ed25519Witness::from_seed([88u8; 32]);
+    let sth = producer.sign_sth(1, &[0u8; 32]).unwrap();
+    let base = mock.uri();
+    let sth_clone = sth.clone();
+    let err = tokio::task::spawn_blocking(move || {
+        let client = HttpWitnessClient::new(base).unwrap();
+        client.cosign(&sth_clone)
+    })
+    .await
+    .unwrap()
+    .expect_err("non-JSON Content-Type must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("non-JSON Content-Type"),
+        "expected content-type error, got: {msg}"
+    );
+}
+
 #[tokio::test]
 async fn http_witness_timeout_surfaces_as_backend_error() {
     let mock = MockServer::start().await;

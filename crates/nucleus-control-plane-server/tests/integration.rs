@@ -537,11 +537,18 @@ async fn concurrent_jobs_produce_independently_verifying_bundles() {
 /// must carry a PayloadBinding signed by the same key that signs edges.
 /// Pinning here ensures a future refactor that drops `Some(issuer)` from
 /// `execute_job` in routes.rs is caught.
+///
+/// Beefed up per audit HIGH-1/HIGH-2: pin the kid identity (so a
+/// future side-channel binding key gets caught) AND demonstrate that
+/// payload tampering breaks verification through the API surface
+/// (the v1→v2.2 gap-closure claim, demonstrated end-to-end, not just
+/// at the library boundary).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn server_bundles_carry_payload_binding() {
     let state = fresh_state();
     let app = build_app(state.clone());
     let jwks: Jwks = serde_json::from_value(state.issuer.publish_jwks()).unwrap();
+    let issuer_kid = nucleus_lineage::EdgeSigner::kid(state.issuer.as_ref()).to_string();
 
     let resp = app
         .clone()
@@ -572,15 +579,53 @@ async fn server_bundles_carry_payload_binding() {
         .unwrap();
     let bundle: Bundle = serde_json::from_value(read_json(resp.into_body()).await).unwrap();
 
-    assert!(
-        bundle.binding.is_some(),
-        "server bundles MUST carry a v2.2 PayloadBinding"
+    let binding = bundle
+        .binding
+        .as_ref()
+        .expect("server bundles MUST carry a v2.2 PayloadBinding");
+
+    // HIGH-1: the binding's keyid MUST equal the edge issuer's kid,
+    // so JWKS lookup at the verifier resolves to the same key.
+    // Without this, a future refactor introducing a side-channel
+    // binding key (and forgetting to embed its JWK) would still pass
+    // the require_payload_binding test as long as the OOB jwks
+    // contained the side-channel key.
+    assert_eq!(
+        binding.keyid, issuer_kid,
+        "binding.keyid must match the edge issuer's kid"
     );
 
-    let trust = TrustAnchor::from_jwks(jwks).require_payload_binding();
+    // HIGH-1: if a Merkle anchor is present, the binding's
+    // merkle_root_hex must equal the anchor's sth.root_hash_hex
+    // byte-for-byte. Pins the v2.2+v2 combined path.
+    if let Some(anchor) = &bundle.envelope.merkle_anchor {
+        assert_eq!(
+            binding.merkle_root_hex.as_deref(),
+            Some(anchor.sth.root_hash_hex.as_str()),
+            "binding merkle_root_hex must equal envelope.merkle_anchor.sth.root_hash_hex"
+        );
+    }
+
+    let trust = TrustAnchor::from_jwks(jwks.clone()).require_payload_binding();
     let report = verify_bundle(&bundle, &trust)
         .expect("server bundle must verify with require_payload_binding");
     assert!(report.payload_binding_verified);
+
+    // HIGH-2: demonstrate the v1→v2.2 gap closure end-to-end.
+    // Mutate the payload and re-verify with require_payload_binding;
+    // verification MUST fail. This was the documented v1 limitation
+    // that v2.2 closes.
+    let mut tampered = bundle.clone();
+    tampered.payload = serde_json::json!({"task": "TAMPERED"});
+    let err = verify_bundle(&tampered, &trust)
+        .expect_err("payload tamper must fail when require_payload_binding is set");
+    assert!(
+        matches!(
+            err,
+            nucleus_envelope::VerifyBundleError::BadPayloadBinding { .. }
+        ),
+        "expected BadPayloadBinding, got {err:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

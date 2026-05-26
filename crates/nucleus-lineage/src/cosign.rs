@@ -163,6 +163,32 @@ mod base64_bytes {
 // / Sigstore ecosystem requires a C2SP signed-note layer — tracked as
 // v2.3. Today's HttpWitnessClient lets two nucleus deployments
 // federate with each other via simple HTTP.
+//
+// # Threat model
+//
+// Cosignature bytes are integrity-protected by the witness's Ed25519
+// signature over the producer's canonical STH bytes — an active MITM
+// cannot forge a cosignature without the witness's signing key. What
+// a MITM CAN do is:
+//
+// - **Drop responses** → producer's `BundleBuilder` ships fewer
+//   cosignatures than expected; a verifier with
+//   `cosignature_threshold(N)` rejects. Effectively a DoS.
+// - **Replay a stale cosig** → harmless: each cosignature signs the
+//   exact (tree_size, producer_ts, root_hash) tuple, so a stale cosig
+//   doesn't apply to a new STH.
+//
+// Operate over TLS (`https://...`) or on a trusted network. The
+// rustls feature is enabled in this crate's `http` build.
+//
+// # Concurrency cost
+//
+// `BundleBuilder` invokes each `WitnessClient::cosign` SEQUENTIALLY
+// from a blocking thread. With N witnesses and `DEFAULT_TIMEOUT_MS`
+// = 10s, worst-case bundle build stalls for N × 10s. The trait is
+// sync; a future v2.3 will switch to `async fn cosign` and `join_all`
+// the fanout. For now: keep witness counts small (≤ 5) and timeouts
+// tight (`with_timeout` to override).
 
 #[cfg(feature = "http")]
 mod http {
@@ -176,6 +202,13 @@ mod http {
     /// typically respond in milliseconds; 10s gives plenty of slack
     /// for slow links without holding bundle assembly forever.
     const DEFAULT_TIMEOUT_MS: u64 = 10_000;
+    /// **CRIT-1 from the audit on slice C.** A `Cosignature` is ~150
+    /// bytes JSON-encoded. Cap response bodies at 8 KiB so a hostile
+    /// witness cannot OOM the producer by streaming back gigabytes.
+    /// Applied via both `Content-Length` pre-check AND post-read body
+    /// length check (a lying `Content-Length: 0` with chunked transfer
+    /// is still bounded by the buffered read).
+    const MAX_COSIG_RESPONSE_BYTES: usize = 8 * 1024;
 
     /// Nucleus-native HTTP witness client. POSTs the [`SignedTreeHead`]
     /// to a configurable endpoint as JSON; expects a JSON
@@ -216,10 +249,16 @@ mod http {
         }
 
         /// Pin the expected witness `kid`. When set, `cosign` rejects
-        /// responses whose `witness_kid` doesn't match — catches a
-        /// mis-pointed `base_url` early. The verifier-side
-        /// `TrustAnchor::with_trusted_witness` is the load-bearing
-        /// integrity check; this is a sanity guard.
+        /// responses whose `witness_kid` doesn't match.
+        ///
+        /// **This is a misconfiguration check (catches a mis-pointed
+        /// `base_url`), NOT a trust check.** A hostile witness can
+        /// return any kid string it wants — the kid is producer-
+        /// controlled metadata. The load-bearing trust authority lives
+        /// on the verifier side via
+        /// [`crate::cosign::WitnessClient`]'s consumers configuring
+        /// `TrustAnchor::with_trusted_witness` (in nucleus-envelope)
+        /// with the witness's OOB-known verifying key bytes.
         pub fn with_expected_kid(mut self, kid: impl Into<String>) -> Self {
             self.expected_kid = Some(kid.into());
             self
@@ -242,12 +281,61 @@ mod http {
                 .map_err(|e| WitnessError::Backend(format!("POST {url}: {e}")))?;
             let status = response.status();
             if !status.is_success() {
-                let body = response.text().unwrap_or_default();
+                // Bound the error-body excerpt so a server returning a
+                // multi-MB error page can't bloat the producer's logs.
+                let body_cap = 1024;
+                let body = response
+                    .text()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(body_cap)
+                    .collect::<String>();
                 return Err(WitnessError::Backend(format!(
                     "witness at {url} returned {status}: {body}"
                 )));
             }
-            let cosig: Cosignature = response.json().map_err(|e| {
+            // CRIT-1: bound the response body BEFORE buffering it.
+            // A hostile witness returning gigabytes of JSON cannot
+            // force the producer to allocate that much memory.
+            if let Some(declared) = response.content_length() {
+                if declared > MAX_COSIG_RESPONSE_BYTES as u64 {
+                    return Err(WitnessError::Backend(format!(
+                        "witness at {url} declared Content-Length {declared} > {MAX_COSIG_RESPONSE_BYTES}"
+                    )));
+                }
+            }
+            // MED-6: validate Content-Type so a witness returning HTML
+            // that happens to parse as JSON doesn't silently slip
+            // through. We accept any `application/json[; charset=...]`.
+            let content_type = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            if !content_type
+                .split(';')
+                .next()
+                .map(|t| t.trim().eq_ignore_ascii_case("application/json"))
+                .unwrap_or(false)
+            {
+                return Err(WitnessError::Backend(format!(
+                    "witness at {url} returned non-JSON Content-Type: {content_type:?}"
+                )));
+            }
+            // Even with a Content-Length cap, a chunked-encoding response
+            // can lie. `bytes()` accumulates into memory but we check
+            // length again after reading.
+            let body_bytes = response
+                .bytes()
+                .map_err(|e| WitnessError::Backend(format!("reading body from {url}: {e}")))?;
+            if body_bytes.len() > MAX_COSIG_RESPONSE_BYTES {
+                return Err(WitnessError::Backend(format!(
+                    "witness at {url} returned {}-byte body > {MAX_COSIG_RESPONSE_BYTES}",
+                    body_bytes.len()
+                )));
+            }
+            let cosig: Cosignature = serde_json::from_slice(&body_bytes).map_err(|e| {
                 WitnessError::Backend(format!("malformed Cosignature JSON from {url}: {e}"))
             })?;
             if let Some(expected) = &self.expected_kid {

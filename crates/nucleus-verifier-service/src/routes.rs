@@ -100,6 +100,16 @@ pub struct ReportPayload {
 pub async fn verify(
     Json(req): Json<VerifyRequest>,
 ) -> Result<Json<VerifyResponse>, VerifyApiError> {
+    // Audit HIGH-4: a verifier requesting require_payload_binding=true
+    // alongside the self-check path would silently produce a wrong
+    // answer (self-check skips binding verification by design). Reject
+    // at the API edge.
+    if req.trust_jwks.is_none() && req.require_payload_binding {
+        return Err(VerifyApiError::BadRequest(
+            "require_payload_binding requires trust_jwks (self-check mode does not verify bindings)"
+                .into(),
+        ));
+    }
     let anchor = match req.trust_jwks {
         Some(jwks) => TrustAnchor::from_jwks(jwks),
         None => TrustAnchor::self_check_only(),
