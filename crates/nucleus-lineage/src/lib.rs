@@ -55,7 +55,7 @@ pub use checkpoint::{
     WitnessError,
 };
 #[cfg(feature = "http")]
-pub use cosign::HttpWitnessClient;
+pub use cosign::{C2spHttpWitnessClient, HttpWitnessClient};
 pub use cosign::{Cosignature, CosignatureKind, InProcessWitness, WitnessClient};
 pub use edge::{EdgeKind, LineageEdge};
 pub use id::{CallSpiffeId, IdError, MAX_URI_LEN};

@@ -422,6 +422,283 @@ mod http {
 #[cfg(feature = "http")]
 pub use self::http::HttpWitnessClient;
 
+// ─────────────────────────────────────────────────────────────────────
+// v2.3b — C2SP-compliant HTTP witness (POST /add-checkpoint per
+// https://github.com/C2SP/C2SP/blob/main/tlog-witness.md).
+//
+// Wire shape (feature = "http"):
+//
+//   POST <base_url>/add-checkpoint
+//   Content-Type: text/plain (UTF-8 line-oriented body)
+//   Body:
+//     old <prev_tree_size_decimal>\n
+//     <0..63 base64 consistency-proof lines, each \n-terminated>
+//     \n                                  ← blank line
+//     <checkpoint body lines>             ← origin / size / base64(root)
+//     \n                                  ← signed-note body/sig separator
+//     — <producer_key_name> <base64(key_id_4 || producer_sig)>\n
+//
+//   Response 200 OK
+//   Content-Type: text/plain
+//   Body: one or more cosignature lines `— <key_name> <base64>\n`
+//
+// Each response line maps to one `Cosignature { kind: C2sp, ... }`
+// where `witness_kid` is the response's `key_name` and `signature`
+// is the bytes AFTER the 4-byte key_id (i.e. the raw Ed25519 sig).
+//
+// Compared to the nucleus-native HttpWitnessClient earlier in this
+// module, the C2SP client is what federates with the external
+// ArmoredWitness / Sigstore / transparency.dev ecosystem.
+
+#[cfg(feature = "http")]
+mod c2sp_http {
+    use std::sync::Arc;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use reqwest::blocking::Client;
+
+    use super::{Cosignature, CosignatureKind, Ed25519Witness, SignedTreeHead, WitnessError};
+    use crate::signed_note::{
+        checkpoint_signed_bytes, ed25519_key_id, format_signature_line, parse_signature_line,
+        SIG_LINE_PREFIX, SIG_TYPE_ED25519,
+    };
+
+    const DEFAULT_TIMEOUT_MS: u64 = 10_000;
+    /// Same DoS bound as the nucleus-native HttpWitnessClient. A C2SP
+    /// response is small (a few hundred bytes per signature line); 8
+    /// KiB comfortably covers up to ~50 cosigs per response.
+    const MAX_RESPONSE_BYTES: usize = 8 * 1024;
+
+    /// HTTP client that speaks the C2SP `POST /add-checkpoint` protocol.
+    ///
+    /// Construction takes the producer's signing witness so the client
+    /// can compute the C2SP-style producer signature line that goes in
+    /// the request body (a real C2SP witness rejects requests whose
+    /// checkpoint isn't signed by a key it trusts for that origin).
+    ///
+    /// Each invocation of `cosign(sth)` builds and POSTs a fresh
+    /// request. Consistency-proof carrying is NOT yet implemented —
+    /// every request sends `old 0` (initial submission). A C2SP
+    /// witness that has seen this log before will reject with 409
+    /// Conflict; the response body carries the actual last size, but
+    /// today's client surfaces that as a Backend error. v2.3c will
+    /// add a stateful client that tracks the last-seen size and
+    /// builds a proper consistency proof.
+    pub struct C2spHttpWitnessClient {
+        base_url: String,
+        origin: String,
+        producer: Arc<Ed25519Witness>,
+        producer_key_name: String,
+        client: Client,
+        expected_witness_name: Option<String>,
+    }
+
+    impl C2spHttpWitnessClient {
+        /// `base_url` is the witness's submission prefix (the
+        /// `/add-checkpoint` path is appended). `origin` is the
+        /// schema-less URL identifying this log to the witness (e.g.
+        /// `nucleus.example.com/log42`). `producer` signs the
+        /// checkpoint body for the request; `producer_key_name`
+        /// becomes the C2SP key_name in the producer's signature line.
+        pub fn new(
+            base_url: impl Into<String>,
+            origin: impl Into<String>,
+            producer: Arc<Ed25519Witness>,
+            producer_key_name: impl Into<String>,
+        ) -> Result<Self, WitnessError> {
+            let client = Client::builder()
+                .timeout(Duration::from_millis(DEFAULT_TIMEOUT_MS))
+                .build()
+                .map_err(|e| WitnessError::Backend(format!("reqwest client build: {e}")))?;
+            Ok(Self {
+                base_url: base_url.into(),
+                origin: origin.into(),
+                producer,
+                producer_key_name: producer_key_name.into(),
+                client,
+                expected_witness_name: None,
+            })
+        }
+
+        /// Override the default 10s request timeout.
+        pub fn with_timeout(mut self, timeout: Duration) -> Result<Self, WitnessError> {
+            self.client = Client::builder()
+                .timeout(timeout)
+                .build()
+                .map_err(|e| WitnessError::Backend(format!("reqwest client build: {e}")))?;
+            Ok(self)
+        }
+
+        /// **Misconfiguration check** (NOT a trust check). When set,
+        /// `cosign_many` rejects responses where the FIRST cosig line's
+        /// `key_name` doesn't match. Useful for catching mis-pointed
+        /// `base_url`s in dev. The load-bearing trust authority is
+        /// `TrustAnchor::with_trusted_witness` on the verifier side.
+        pub fn with_expected_witness_name(mut self, name: impl Into<String>) -> Self {
+            self.expected_witness_name = Some(name.into());
+            self
+        }
+
+        fn endpoint(&self) -> String {
+            let trimmed = self.base_url.trim_end_matches('/');
+            format!("{trimmed}/add-checkpoint")
+        }
+
+        /// Build the `POST /add-checkpoint` request body for `sth`.
+        /// `prev_tree_size` is the size the witness last cosigned for
+        /// this origin (or 0 for the first submission).
+        ///
+        /// Today's caller always passes 0; v2.3c will track this state.
+        fn build_request_body(
+            &self,
+            sth: &SignedTreeHead,
+            prev_tree_size: u64,
+        ) -> Result<Vec<u8>, WitnessError> {
+            let root = hex_decode_32(&sth.root_hash_hex)
+                .ok_or_else(|| WitnessError::Backend("malformed root_hash_hex in STH".into()))?;
+            let checkpoint_body = checkpoint_signed_bytes(&self.origin, sth.tree_size, &root)
+                .map_err(|e| WitnessError::Backend(format!("checkpoint body: {e}")))?;
+            let producer_sig = self.producer.sign_message(&checkpoint_body);
+            let producer_pub = self.producer.verifying_key_bytes();
+            let key_id = ed25519_key_id(&self.producer_key_name, SIG_TYPE_ED25519, &producer_pub);
+            let sig_line = format_signature_line(&self.producer_key_name, &key_id, &producer_sig);
+
+            // C2SP tlog-witness add-checkpoint body:
+            //   "old <prev_size>\n"   (no consistency proof in v2.3b)
+            //   "\n"                  (blank line separator)
+            //   <checkpoint body>     (already ends in \n per spec)
+            //   "\n"                  (signed-note body/sig separator)
+            //   <producer signature line>\n
+            let mut body = Vec::with_capacity(checkpoint_body.len() + 256);
+            body.extend_from_slice(format!("old {prev_tree_size}\n").as_bytes());
+            body.push(b'\n');
+            body.extend_from_slice(&checkpoint_body);
+            body.push(b'\n');
+            body.extend_from_slice(sig_line.as_bytes());
+            body.push(b'\n');
+            Ok(body)
+        }
+
+        /// Parse a response body into Cosignatures. Each line starting
+        /// with the em-dash signature prefix becomes one Cosignature
+        /// of kind C2sp. Other lines (e.g. blank lines, comments) are
+        /// silently skipped.
+        fn parse_response(&self, body: &[u8]) -> Result<Vec<Cosignature>, WitnessError> {
+            let text = std::str::from_utf8(body).map_err(|e| {
+                WitnessError::Backend(format!("witness response is not UTF-8: {e}"))
+            })?;
+            let timestamp_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| WitnessError::Clock)?
+                .as_millis() as u64;
+            let mut out = Vec::new();
+            for line in text.lines() {
+                if !line.starts_with(SIG_LINE_PREFIX) {
+                    continue;
+                }
+                let parsed = parse_signature_line(line)
+                    .map_err(|e| WitnessError::Backend(format!("malformed cosig line: {e}")))?;
+                out.push(Cosignature {
+                    witness_kid: parsed.key_name,
+                    signature: parsed.signature,
+                    timestamp_ms,
+                    kind: CosignatureKind::C2sp,
+                });
+            }
+            Ok(out)
+        }
+
+        /// Call the witness and return ALL cosignatures it returned.
+        /// Production callers federating with an aggregator witness
+        /// service (which proxies many witness keys) should use this
+        /// rather than [`WitnessClient::cosign`], which returns only
+        /// the first cosig.
+        pub fn cosign_many(&self, sth: &SignedTreeHead) -> Result<Vec<Cosignature>, WitnessError> {
+            let body = self.build_request_body(sth, 0)?;
+            let url = self.endpoint();
+            let response = self
+                .client
+                .post(&url)
+                .header(reqwest::header::CONTENT_TYPE, "text/plain")
+                .body(body)
+                .send()
+                .map_err(|e| WitnessError::Backend(format!("POST {url}: {e}")))?;
+            let status = response.status();
+            if !status.is_success() {
+                let body_cap = 1024;
+                let body_excerpt = response
+                    .text()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(body_cap)
+                    .collect::<String>();
+                return Err(WitnessError::Backend(format!(
+                    "C2SP witness at {url} returned {status}: {body_excerpt}"
+                )));
+            }
+            if let Some(len) = response.content_length() {
+                if len > MAX_RESPONSE_BYTES as u64 {
+                    return Err(WitnessError::Backend(format!(
+                        "C2SP witness at {url} declared Content-Length {len} > {MAX_RESPONSE_BYTES}"
+                    )));
+                }
+            }
+            let body_bytes = response
+                .bytes()
+                .map_err(|e| WitnessError::Backend(format!("reading body from {url}: {e}")))?;
+            if body_bytes.len() > MAX_RESPONSE_BYTES {
+                return Err(WitnessError::Backend(format!(
+                    "C2SP witness at {url} returned {}-byte body > {MAX_RESPONSE_BYTES}",
+                    body_bytes.len()
+                )));
+            }
+            let cosigs = self.parse_response(&body_bytes)?;
+            if cosigs.is_empty() {
+                return Err(WitnessError::Backend(format!(
+                    "C2SP witness at {url} returned 200 OK but body had no signature lines"
+                )));
+            }
+            if let Some(expected) = &self.expected_witness_name {
+                if &cosigs[0].witness_kid != expected {
+                    return Err(WitnessError::Backend(format!(
+                        "C2SP witness at {url} returned key_name {:?}, expected {:?}",
+                        cosigs[0].witness_kid, expected
+                    )));
+                }
+            }
+            Ok(cosigs)
+        }
+    }
+
+    impl super::WitnessClient for C2spHttpWitnessClient {
+        fn cosign(&self, sth: &SignedTreeHead) -> Result<Cosignature, WitnessError> {
+            let cosigs = self.cosign_many(sth)?;
+            // WitnessClient returns one cosignature. A witness service
+            // that aggregates multiple witness keys can return many
+            // lines — to capture them all, callers should use
+            // `cosign_many` directly and push each Cosignature into the
+            // builder's federation list separately.
+            Ok(cosigs
+                .into_iter()
+                .next()
+                .expect("cosign_many returns Err on empty response, so this Vec must be non-empty"))
+        }
+    }
+
+    fn hex_decode_32(hex_str: &str) -> Option<[u8; 32]> {
+        let bytes = hex::decode(hex_str).ok()?;
+        if bytes.len() != 32 {
+            return None;
+        }
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&bytes);
+        Some(out)
+    }
+}
+
+#[cfg(feature = "http")]
+pub use self::c2sp_http::C2spHttpWitnessClient;
+
 #[cfg(test)]
 mod tests {
     use super::*;
