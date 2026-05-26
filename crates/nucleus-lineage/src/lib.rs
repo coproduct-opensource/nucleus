@@ -31,9 +31,11 @@
 //!
 //! [`LocalIssuer`]: crate::local_issuer::LocalIssuer
 
+pub mod checkpoint;
 pub mod edge;
 pub mod id;
 pub mod issuer;
+pub mod merkle;
 pub mod proof;
 pub mod sink;
 pub mod verify;
@@ -41,9 +43,14 @@ pub mod verify;
 #[cfg(feature = "dev")]
 pub mod local_issuer;
 
+pub use checkpoint::{
+    canonical_sth_bytes, Ed25519Witness, SignedTreeHead, TreeWitness, VerifyOnlyWitness,
+    WitnessError,
+};
 pub use edge::{EdgeKind, LineageEdge};
 pub use id::{CallSpiffeId, IdError, MAX_URI_LEN};
 pub use issuer::{EdgeSigner, IdentityFetcher, IssuerError, SvidClaims};
+pub use merkle::{read_checkpoints, verify_log, MerkleConfig, MerkleError, MerkleSink};
 pub use proof::{canonical_edge_bytes, edge_content_hash, Proof};
 pub use sink::{InMemorySink, JsonlSink, LineageSink, SinkError};
 pub use verify::{verify_chain, verify_proof, Jwk, Jwks, StaticKeyResolver, VerifyError};
