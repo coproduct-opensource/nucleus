@@ -4868,6 +4868,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-control-plane-server"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "clap",
+ "hex",
+ "http-body-util",
+ "nucleus-control-plane",
+ "nucleus-envelope",
+ "nucleus-lineage",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber 0.3.23",
+]
+
+[[package]]
 name = "nucleus-envelope"
 version = "1.0.0"
 dependencies = [
@@ -8664,6 +8688,7 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
+ "tracing",
  "url",
 ]
 
