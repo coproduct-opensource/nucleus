@@ -53,6 +53,8 @@ pub use checkpoint::{
     canonical_sth_bytes, Ed25519Witness, SignedTreeHead, TreeWitness, VerifyOnlyWitness,
     WitnessError,
 };
+#[cfg(feature = "http")]
+pub use cosign::HttpWitnessClient;
 pub use cosign::{Cosignature, InProcessWitness, WitnessClient};
 pub use edge::{EdgeKind, LineageEdge};
 pub use id::{CallSpiffeId, IdError, MAX_URI_LEN};

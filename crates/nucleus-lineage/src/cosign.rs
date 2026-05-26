@@ -144,6 +144,128 @@ mod base64_bytes {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// v2.2 HTTP witness — nucleus-native cosign protocol over HTTP/JSON.
+//
+// Wire shape (feature = "http"):
+//
+//   POST <base_url>/v2.1/cosign
+//   Content-Type: application/json
+//   Body: SignedTreeHead JSON
+//
+//   200 OK
+//   Content-Type: application/json
+//   Body: Cosignature JSON
+//
+// This is NOT the C2SP `tlog-witness` `POST /add-checkpoint` protocol
+// (which signs the C2SP signed-note checkpoint format, not our
+// `canonical_sth_bytes`). Federation with the external ArmoredWitness
+// / Sigstore ecosystem requires a C2SP signed-note layer — tracked as
+// v2.3. Today's HttpWitnessClient lets two nucleus deployments
+// federate with each other via simple HTTP.
+
+#[cfg(feature = "http")]
+mod http {
+    use std::time::Duration;
+
+    use reqwest::blocking::Client;
+
+    use super::{Cosignature, SignedTreeHead, WitnessClient, WitnessError};
+
+    /// Default request timeout for a witness HTTP call. Witnesses
+    /// typically respond in milliseconds; 10s gives plenty of slack
+    /// for slow links without holding bundle assembly forever.
+    const DEFAULT_TIMEOUT_MS: u64 = 10_000;
+
+    /// Nucleus-native HTTP witness client. POSTs the [`SignedTreeHead`]
+    /// to a configurable endpoint as JSON; expects a JSON
+    /// [`Cosignature`] back.
+    ///
+    /// Not C2SP-compliant — see module-level docs in `cosign.rs` above.
+    /// Federation with transparency.dev / Sigstore witnesses requires
+    /// the v2.3 signed-note adapter.
+    pub struct HttpWitnessClient {
+        base_url: String,
+        client: Client,
+        expected_kid: Option<String>,
+    }
+
+    impl HttpWitnessClient {
+        /// Construct with a base URL (the `/v2.1/cosign` path is
+        /// appended automatically). Errors if reqwest can't build a
+        /// client with the default TLS backend.
+        pub fn new(base_url: impl Into<String>) -> Result<Self, WitnessError> {
+            let client = Client::builder()
+                .timeout(Duration::from_millis(DEFAULT_TIMEOUT_MS))
+                .build()
+                .map_err(|e| WitnessError::Backend(format!("reqwest client build: {e}")))?;
+            Ok(Self {
+                base_url: base_url.into(),
+                client,
+                expected_kid: None,
+            })
+        }
+
+        /// Override the default request timeout.
+        pub fn with_timeout(mut self, timeout: Duration) -> Result<Self, WitnessError> {
+            self.client = Client::builder()
+                .timeout(timeout)
+                .build()
+                .map_err(|e| WitnessError::Backend(format!("reqwest client build: {e}")))?;
+            Ok(self)
+        }
+
+        /// Pin the expected witness `kid`. When set, `cosign` rejects
+        /// responses whose `witness_kid` doesn't match — catches a
+        /// mis-pointed `base_url` early. The verifier-side
+        /// `TrustAnchor::with_trusted_witness` is the load-bearing
+        /// integrity check; this is a sanity guard.
+        pub fn with_expected_kid(mut self, kid: impl Into<String>) -> Self {
+            self.expected_kid = Some(kid.into());
+            self
+        }
+
+        fn url(&self) -> String {
+            let trimmed = self.base_url.trim_end_matches('/');
+            format!("{trimmed}/v2.1/cosign")
+        }
+    }
+
+    impl WitnessClient for HttpWitnessClient {
+        fn cosign(&self, sth: &SignedTreeHead) -> Result<Cosignature, WitnessError> {
+            let url = self.url();
+            let response = self
+                .client
+                .post(&url)
+                .json(sth)
+                .send()
+                .map_err(|e| WitnessError::Backend(format!("POST {url}: {e}")))?;
+            let status = response.status();
+            if !status.is_success() {
+                let body = response.text().unwrap_or_default();
+                return Err(WitnessError::Backend(format!(
+                    "witness at {url} returned {status}: {body}"
+                )));
+            }
+            let cosig: Cosignature = response.json().map_err(|e| {
+                WitnessError::Backend(format!("malformed Cosignature JSON from {url}: {e}"))
+            })?;
+            if let Some(expected) = &self.expected_kid {
+                if &cosig.witness_kid != expected {
+                    return Err(WitnessError::Backend(format!(
+                        "witness at {url} returned kid {:?}, expected {:?}",
+                        cosig.witness_kid, expected
+                    )));
+                }
+            }
+            Ok(cosig)
+        }
+    }
+}
+
+#[cfg(feature = "http")]
+pub use self::http::HttpWitnessClient;
+
 #[cfg(test)]
 mod tests {
     use super::*;

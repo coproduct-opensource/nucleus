@@ -16,6 +16,10 @@ default = []
 # backed `IdentityFetcher` impl and never enable this feature in release
 # builds. Verification (always-on) does NOT need this feature.
 dev = ["dep:jsonwebtoken", "dep:rand", "ed25519-dalek/pkcs8", "ed25519-dalek/rand_core"]
+# HTTP-backed WitnessClient (nucleus-native cosign protocol — v2.3 will
+# add a C2SP tlog-witness adapter for federation with the external
+# ecosystem). Off by default to keep the lib's dep tree lean.
+http = ["dep:reqwest"]
 
 [dependencies]
 serde = { workspace = true }
@@ -41,10 +45,17 @@ ct-merkle = { version = "0.3", features = ["serde"] }
 # JWT signing/encoding crate — only needed by the dev LocalIssuer.
 jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"], optional = true }
 rand = { version = "0.8", optional = true }
+# Blocking HTTP client for the optional HttpWitnessClient. Default-off;
+# only pulled in when the `http` feature is enabled.
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"], optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 ureq = { workspace = true, features = ["json"] }
+# HTTP mocking for HttpWitnessClient integration tests. `wiremock`'s
+# async runtime requires tokio; we already use it elsewhere.
+wiremock = "0.6"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [[example]]
 name = "three_step_demo"
