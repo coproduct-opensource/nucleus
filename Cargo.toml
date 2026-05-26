@@ -29,6 +29,7 @@ members = [
     "crates/ck-kernel",                 # Constitutional Kernel: admission engine + lineage
     "crates/nucleus-lineage",            # Per-call SPIFFE-derived data lineage
     "crates/nucleus-envelope",           # Portable provenance bundle: payload + IFC envelope
+    "crates/nucleus-control-plane",      # Job orchestrator: typed JobSpec → agent → Bundle
 ]
 # nucleus-claude-hook moved to nucleus-code (private product repo)
 # exposure-web is WASM-only (wasm32-unknown-unknown); build with: cd crates/exposure-web && trunk build

@@ -4854,6 +4854,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-control-plane"
+version = "1.0.0"
+dependencies = [
+ "chrono",
+ "nucleus-envelope",
+ "nucleus-lineage",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "nucleus-envelope"
 version = "1.0.0"
 dependencies = [
