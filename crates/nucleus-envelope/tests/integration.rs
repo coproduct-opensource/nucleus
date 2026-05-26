@@ -576,11 +576,13 @@ fn v2_3_dual_protocol_cosignatures_both_count_with_origin_configured() {
     assert_eq!(report.cosignatures_verified, 2);
 }
 
-/// Without `with_c2sp_origin`, a C2SP cosig is silently uncountable —
-/// the verifier can't reconstruct the signed bytes. Threshold of 1
-/// fails when only a C2SP cosig is present.
+/// **v2.3b HIGH-1**: bundle has C2SP cosigs but trust anchor has no
+/// `with_c2sp_origin` — verifier returns a SPECIFIC `MissingC2spOrigin`
+/// error with the C2SP cosig count, instead of the generic
+/// `InsufficientCosignatures{verified:0}` (which gave operators no
+/// signal that the problem was missing-origin config).
 #[test]
-fn v2_3_c2sp_cosig_uncountable_without_origin() {
+fn v2_3b_missing_c2sp_origin_diagnosed() {
     let dir = tempdir().unwrap();
     let inner = InMemorySink::new();
     let producer = Ed25519Witness::from_seed([233u8; 32]);
@@ -636,21 +638,26 @@ fn v2_3_c2sp_cosig_uncountable_without_origin() {
         .with_trusted_witness(w_c2sp.verifying_key_bytes())
         .cosignature_threshold(1);
     let err = verify_bundle(&bundle, &trust)
-        .expect_err("C2SP cosig must not count without origin configured");
-    assert!(matches!(
-        err,
-        VerifyBundleError::InsufficientCosignatures {
-            verified: 0,
-            required: 1
-        }
-    ));
+        .expect_err("C2SP cosig + no origin must error with MissingC2spOrigin");
+    assert!(
+        matches!(
+            err,
+            VerifyBundleError::MissingC2spOrigin {
+                c2sp_cosig_count: 1
+            }
+        ),
+        "got {err:?}",
+    );
 }
 
-/// Wrong origin → C2SP cosig signs DIFFERENT bytes than what the
-/// verifier reconstructs, so the signature fails to verify. The cosig
-/// isn't counted; threshold fails.
+/// **v2.3b HIGH-2**: wrong origin → C2SP cosig signs DIFFERENT bytes
+/// than what the verifier reconstructs, so the signature fails. The
+/// verifier surfaces this as `c2sp_cosigs_byte_mismatch >= 1` in the
+/// report (when threshold permits) OR as `InsufficientCosignatures`
+/// (when threshold doesn't permit). Either way the operator now has a
+/// signal to re-check origin config.
 #[test]
-fn v2_3_c2sp_cosig_fails_on_origin_mismatch() {
+fn v2_3b_origin_mismatch_surfaces_byte_mismatch_count() {
     let dir = tempdir().unwrap();
     let inner = InMemorySink::new();
     let producer = Ed25519Witness::from_seed([1u8; 32]);
@@ -701,12 +708,14 @@ fn v2_3_c2sp_cosig_fails_on_origin_mismatch() {
         .push(cosig_c);
 
     // ...but the verifier asks for a DIFFERENT origin.
-    let trust = TrustAnchor::from_jwks(jwks)
+    // Threshold-1 fails: the cosig doesn't verify against the wrong
+    // origin's bytes, no trusted witness matches.
+    let trust_strict = TrustAnchor::from_jwks(jwks.clone())
         .with_witness_pubkey(producer_pub)
         .with_trusted_witness(w_c2sp.verifying_key_bytes())
         .with_c2sp_origin("verifier.example.com/log") // mismatch
         .cosignature_threshold(1);
-    let err = verify_bundle(&bundle, &trust).expect_err("origin mismatch must fail");
+    let err = verify_bundle(&bundle, &trust_strict).expect_err("origin mismatch must fail");
     assert!(matches!(
         err,
         VerifyBundleError::InsufficientCosignatures {
@@ -714,6 +723,22 @@ fn v2_3_c2sp_cosig_fails_on_origin_mismatch() {
             required: 1
         }
     ));
+
+    // Same mismatch but threshold-0: verification succeeds and the
+    // report now reveals `c2sp_cosigs_byte_mismatch == 1`, giving
+    // the operator a clear signal to recheck origin config.
+    let trust_lenient = TrustAnchor::from_jwks(jwks)
+        .with_witness_pubkey(producer_pub)
+        .with_trusted_witness(w_c2sp.verifying_key_bytes())
+        .with_c2sp_origin("verifier.example.com/log") // mismatch
+        .cosignature_threshold(0);
+    let report = verify_bundle(&bundle, &trust_lenient)
+        .expect("threshold-0 accepts the bundle; mismatch surfaces in report");
+    assert_eq!(report.cosignatures_verified, 0);
+    assert_eq!(
+        report.c2sp_cosigs_byte_mismatch, 1,
+        "operator-visible diagnostic that the C2SP cosig failed bytes-match"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1416,4 +1441,95 @@ fn v2_1_zero_threshold_is_default_and_accepts_no_cosignatures() {
     let trust = TrustAnchor::from_jwks(jwks).with_witness_pubkey(producer_pub);
     let report = verify_bundle(&bundle, &trust).expect("federation disabled, anchor valid");
     assert_eq!(report.cosignatures_verified, 0);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// v2.3b CRIT-2 — aggregator witness lands ALL cosigs in the bundle
+
+/// CRIT-2: a witness that aggregates multiple proxied keys returns
+/// N cosignatures via `cosign_many`. Before this fix
+/// `BundleBuilder::with_cosignatures` called `cosign` (singular) and
+/// silently dropped N-1 cosigs — making `cosignature_threshold(N)`
+/// unsatisfiable against an aggregator.
+#[test]
+fn v2_3b_bundle_builder_extends_all_cosigs_from_aggregator() {
+    use nucleus_lineage::{Cosignature, SignedTreeHead, WitnessError};
+
+    /// Mock aggregator: proxies three single-key witnesses behind one
+    /// trait impl, returning all three cosignatures on `cosign_many`.
+    struct MockAggregator {
+        witnesses: Vec<InProcessWitness>,
+    }
+    impl WitnessClient for MockAggregator {
+        fn cosign(&self, sth: &SignedTreeHead) -> Result<Cosignature, WitnessError> {
+            // Per trait contract, return the first cosig — but the
+            // BundleBuilder is supposed to call cosign_many instead.
+            self.witnesses[0].cosign(sth)
+        }
+        fn cosign_many(&self, sth: &SignedTreeHead) -> Result<Vec<Cosignature>, WitnessError> {
+            self.witnesses.iter().map(|w| w.cosign(sth)).collect()
+        }
+    }
+
+    let dir = tempdir().unwrap();
+    let inner = InMemorySink::new();
+    let producer = Ed25519Witness::from_seed([88u8; 32]);
+    let producer_pub = producer.verifying_key_bytes();
+    let sink = MerkleSink::new(
+        inner,
+        producer,
+        MerkleConfig::new(dir.path()).with_interval(1000),
+    )
+    .unwrap();
+    let issuer = LocalIssuer::random().unwrap();
+    let p = pod();
+    sink.emit(signed_edge(
+        &issuer,
+        LineageEdge::pod_admit(p.clone()),
+        None,
+    ))
+    .unwrap();
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+
+    let agg = MockAggregator {
+        witnesses: vec![
+            InProcessWitness::from_seed([1u8; 32]),
+            InProcessWitness::from_seed([2u8; 32]),
+            InProcessWitness::from_seed([3u8; 32]),
+        ],
+    };
+    let trusted_pubs: Vec<[u8; 32]> = agg
+        .witnesses
+        .iter()
+        .map(|w| w.verifying_key_bytes())
+        .collect();
+
+    let bundle = nucleus_envelope::BundleBuilder::new(p.clone())
+        .payload(serde_json::json!({}))
+        .sink(&sink)
+        .jwks(jwks.clone())
+        .with_merkle_prover(&sink)
+        .with_cosignatures(vec![&agg])
+        .build()
+        .expect("bundle build with aggregator");
+
+    let anchor = bundle
+        .envelope
+        .merkle_anchor
+        .as_ref()
+        .expect("merkle anchor expected");
+    assert_eq!(
+        anchor.sth.cosignatures.len(),
+        3,
+        "aggregator's three cosigs must all land in the STH"
+    );
+
+    let mut trust = TrustAnchor::from_jwks(jwks).with_witness_pubkey(producer_pub);
+    for k in trusted_pubs {
+        trust = trust.with_trusted_witness(k);
+    }
+    trust = trust.cosignature_threshold(3);
+    let report =
+        verify_bundle(&bundle, &trust).expect("3 distinct trusted witnesses ⇒ threshold met");
+    assert_eq!(report.cosignatures_verified, 3);
 }

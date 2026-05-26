@@ -51,6 +51,17 @@ pub enum WitnessError {
     /// The witness's verifying key bytes were not a valid Ed25519 public key.
     #[error("invalid verifying key")]
     InvalidVerifyingKey,
+    /// **v2.3b HIGH-3 fix.** C2SP `tlog-witness` returned `409 Conflict`
+    /// with the actual last-cosigned tree size in the body. Indicates
+    /// the producer's `old <prev_tree_size>` line didn't match the
+    /// witness's state — a stateful client (v2.3c) should update its
+    /// tracked size and retry. Today's v2.3b client always sends
+    /// `old 0` so this fires on every second submission to a real
+    /// witness.
+    #[error(
+        "C2SP witness rejected with 409 Conflict; witness's last-known tree size is {last_known_size}"
+    )]
+    Conflict { last_known_size: u64 },
 }
 
 /// A signed checkpoint of the lineage Merkle tree.

@@ -110,7 +110,12 @@ impl Respond for C2spWitnessHandler {
         let pubkey = witness.verifying_key_bytes();
         let key_name = format!("witness.example.com/seed{:02x}", self.witness_seed[0]);
         let key_id = ed25519_key_id(&key_name, SIG_TYPE_ED25519, &pubkey);
-        let line = format_signature_line(&key_name, &key_id, &sig);
+        let line = match format_signature_line(&key_name, &key_id, &sig) {
+            Ok(l) => l,
+            Err(e) => {
+                return ResponseTemplate::new(500).set_body_string(format!("sig line error: {e}"));
+            }
+        };
         ResponseTemplate::new(200)
             .set_body_string(format!("{line}\n"))
             .insert_header("content-type", "text/plain")
@@ -279,13 +284,13 @@ async fn c2sp_witness_cosign_many_returns_multiple_lines() {
         let sig = witness1.sign_message(&body_canon);
         let pubkey = witness1.verifying_key_bytes();
         let kid = ed25519_key_id("witness1", SIG_TYPE_ED25519, &pubkey);
-        format_signature_line("witness1", &kid, &sig)
+        format_signature_line("witness1", &kid, &sig).unwrap()
     };
     let line2 = {
         let sig = witness2.sign_message(&body_canon);
         let pubkey = witness2.verifying_key_bytes();
         let kid = ed25519_key_id("witness2", SIG_TYPE_ED25519, &pubkey);
-        format_signature_line("witness2", &kid, &sig)
+        format_signature_line("witness2", &kid, &sig).unwrap()
     };
     let response = format!("{line1}\n{line2}\n");
     Mock::given(method("POST"))
@@ -347,6 +352,84 @@ async fn c2sp_witness_timeout_clean_backend_error() {
     let msg = err.to_string();
     assert!(
         msg.contains("/add-checkpoint") && msg.contains("backend failure"),
+        "got: {msg}"
+    );
+}
+
+/// **v2.3b HIGH-3**: witness returns 409 Conflict with decimal
+/// last-known size in body. Client surfaces as `WitnessError::Conflict`
+/// with the parsed size, NOT a generic Backend error. A v2.3c stateful
+/// client will use this to update its tracked size and retry.
+#[tokio::test]
+async fn c2sp_witness_409_conflict_parses_last_known_size() {
+    use nucleus_lineage::WitnessError;
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/add-checkpoint"))
+        .respond_with(
+            ResponseTemplate::new(409)
+                .insert_header("content-type", "text/x.tlog.size")
+                .set_body_string("42\n"),
+        )
+        .mount(&mock)
+        .await;
+
+    let producer = Arc::new(Ed25519Witness::from_seed([7u8; 32]));
+    let sth = make_sth(producer.as_ref(), 5, [0u8; 32]);
+    let base = mock.uri();
+    let err = tokio::task::spawn_blocking(move || {
+        let client = C2spHttpWitnessClient::new(
+            base,
+            "nucleus.example.com/log",
+            producer,
+            "nucleus.example.com/log",
+        )
+        .unwrap();
+        client.cosign(&sth)
+    })
+    .await
+    .unwrap()
+    .expect_err("409 must surface as Conflict");
+    match err {
+        WitnessError::Conflict { last_known_size } => {
+            assert_eq!(last_known_size, 42);
+        }
+        other => panic!("expected Conflict, got {other:?}"),
+    }
+}
+
+/// 409 with a non-decimal body falls back to the generic Backend
+/// error path (preserves the body excerpt for human diagnosis) — pins
+/// behavior so a future witness implementation can't quietly omit the
+/// size.
+#[tokio::test]
+async fn c2sp_witness_409_with_non_decimal_body_is_backend_error() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/add-checkpoint"))
+        .respond_with(ResponseTemplate::new(409).set_body_string("conflict: try again later"))
+        .mount(&mock)
+        .await;
+
+    let producer = Arc::new(Ed25519Witness::from_seed([8u8; 32]));
+    let sth = make_sth(producer.as_ref(), 5, [0u8; 32]);
+    let base = mock.uri();
+    let err = tokio::task::spawn_blocking(move || {
+        let client = C2spHttpWitnessClient::new(
+            base,
+            "nucleus.example.com/log",
+            producer,
+            "nucleus.example.com/log",
+        )
+        .unwrap();
+        client.cosign(&sth)
+    })
+    .await
+    .unwrap()
+    .expect_err("non-decimal 409 body falls through");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("409") && msg.contains("conflict"),
         "got: {msg}"
     );
 }

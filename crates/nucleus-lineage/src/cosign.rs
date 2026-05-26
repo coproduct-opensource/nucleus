@@ -95,6 +95,24 @@ pub enum CosignatureKind {
 pub trait WitnessClient: Send + Sync {
     /// Countersign `sth` and return the resulting [`Cosignature`].
     fn cosign(&self, sth: &SignedTreeHead) -> Result<Cosignature, WitnessError>;
+
+    /// **v2.3b CRIT-2 fix.** Return ALL cosignatures this witness has
+    /// for `sth`. The default implementation calls [`cosign`] once and
+    /// wraps the result in a `Vec` — correct for single-key witnesses
+    /// like [`InProcessWitness`].
+    ///
+    /// **Aggregator witnesses** (one HTTP endpoint proxying multiple
+    /// witness keys — common pattern for transparency.dev / ArmoredWitness
+    /// distributors) MUST override to return all proxied signatures.
+    /// [`crate::C2spHttpWitnessClient`] does this. Without the override,
+    /// `BundleBuilder::with_cosignatures` would silently retain only
+    /// the first cosignature of an N-cosig response — making
+    /// `cosignature_threshold(N)` unsatisfiable against an aggregator.
+    ///
+    /// [`cosign`]: WitnessClient::cosign
+    fn cosign_many(&self, sth: &SignedTreeHead) -> Result<Vec<Cosignature>, WitnessError> {
+        Ok(vec![self.cosign(sth)?])
+    }
 }
 
 /// In-process witness wrapping an [`Ed25519Witness`]. Production
@@ -561,7 +579,8 @@ mod c2sp_http {
             let producer_sig = self.producer.sign_message(&checkpoint_body);
             let producer_pub = self.producer.verifying_key_bytes();
             let key_id = ed25519_key_id(&self.producer_key_name, SIG_TYPE_ED25519, &producer_pub);
-            let sig_line = format_signature_line(&self.producer_key_name, &key_id, &producer_sig);
+            let sig_line = format_signature_line(&self.producer_key_name, &key_id, &producer_sig)
+                .map_err(|e| WitnessError::Backend(format!("producer sig line: {e}")))?;
 
             // C2SP tlog-witness add-checkpoint body:
             //   "old <prev_size>\n"   (no consistency proof in v2.3b)
@@ -625,13 +644,28 @@ mod c2sp_http {
                 .map_err(|e| WitnessError::Backend(format!("POST {url}: {e}")))?;
             let status = response.status();
             if !status.is_success() {
+                // **v2.3b HIGH-3 fix.** A C2SP witness signals
+                // `old <prev_tree_size>` mismatch via 409 Conflict;
+                // per tlog-witness.md the body is the witness's
+                // actual last-cosigned tree size in decimal
+                // (Content-Type: text/x.tlog.size). Surface as
+                // `WitnessError::Conflict { last_known_size }` so a
+                // stateful client (v2.3c) can update tracked state
+                // and retry programmatically. Note: `text()`
+                // consumes the response, so we read it once and
+                // branch on the parse.
+                let raw = response.text().unwrap_or_default();
+                if status.as_u16() == 409 {
+                    if let Ok(size) = raw.trim().parse::<u64>() {
+                        return Err(WitnessError::Conflict {
+                            last_known_size: size,
+                        });
+                    }
+                    // Non-decimal 409 body falls through to the
+                    // generic backend-error path below.
+                }
                 let body_cap = 1024;
-                let body_excerpt = response
-                    .text()
-                    .unwrap_or_default()
-                    .chars()
-                    .take(body_cap)
-                    .collect::<String>();
+                let body_excerpt: String = raw.chars().take(body_cap).collect();
                 return Err(WitnessError::Backend(format!(
                     "C2SP witness at {url} returned {status}: {body_excerpt}"
                 )));
@@ -658,11 +692,16 @@ mod c2sp_http {
                     "C2SP witness at {url} returned 200 OK but body had no signature lines"
                 )));
             }
+            // **v2.3b HIGH-4 fix.** Check whether the EXPECTED name
+            // appears ANYWHERE in the response (aggregators may put
+            // the trusted witness's cosig in any position; first-only
+            // checking was misleading).
             if let Some(expected) = &self.expected_witness_name {
-                if &cosigs[0].witness_kid != expected {
+                if !cosigs.iter().any(|c| &c.witness_kid == expected) {
+                    let names: Vec<&str> = cosigs.iter().map(|c| c.witness_kid.as_str()).collect();
                     return Err(WitnessError::Backend(format!(
-                        "C2SP witness at {url} returned key_name {:?}, expected {:?}",
-                        cosigs[0].witness_kid, expected
+                        "C2SP witness at {url} returned key_names {:?}, expected one to be {:?}",
+                        names, expected
                     )));
                 }
             }
@@ -673,15 +712,23 @@ mod c2sp_http {
     impl super::WitnessClient for C2spHttpWitnessClient {
         fn cosign(&self, sth: &SignedTreeHead) -> Result<Cosignature, WitnessError> {
             let cosigs = self.cosign_many(sth)?;
-            // WitnessClient returns one cosignature. A witness service
-            // that aggregates multiple witness keys can return many
-            // lines — to capture them all, callers should use
-            // `cosign_many` directly and push each Cosignature into the
-            // builder's federation list separately.
-            Ok(cosigs
-                .into_iter()
-                .next()
-                .expect("cosign_many returns Err on empty response, so this Vec must be non-empty"))
+            // **v2.3b LOW-1 fix.** Don't `.expect` — surface the
+            // invariant breach as a Backend error if `cosign_many`'s
+            // empty-check is ever loosened in a future refactor.
+            cosigs.into_iter().next().ok_or_else(|| {
+                WitnessError::Backend(
+                    "C2spHttpWitnessClient::cosign_many returned empty Vec (invariant breach)"
+                        .into(),
+                )
+            })
+        }
+
+        /// **v2.3b CRIT-2 override.** Aggregator path: return ALL
+        /// cosigs from the response so `BundleBuilder::with_cosignatures`
+        /// federates the full set.
+        fn cosign_many(&self, sth: &SignedTreeHead) -> Result<Vec<Cosignature>, WitnessError> {
+            // Delegate to the inherent method that does the HTTP work.
+            C2spHttpWitnessClient::cosign_many(self, sth)
         }
     }
 

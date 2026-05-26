@@ -346,11 +346,18 @@ impl<'a> BundleBuilder<'a> {
             // countersign the sealed STH. Failures are surfaced as
             // BundleError::Cosign so a missing witness doesn't silently
             // ship a partial bundle.
+            //
+            // **v2.3b CRIT-2 fix.** Call `cosign_many` (not `cosign`)
+            // so aggregator witnesses (one endpoint proxying N witness
+            // keys, common in transparency.dev / ArmoredWitness) deliver
+            // all N cosignatures instead of silently dropping N-1.
+            // Single-key witnesses use the default impl that wraps
+            // `cosign` in a Vec of 1 — no behavior change.
             for witness in &self.cosignatories {
-                let cosig = witness
-                    .cosign(&sth)
+                let cosigs = witness
+                    .cosign_many(&sth)
                     .map_err(|e| BundleError::Cosign(e.to_string()))?;
-                sth.cosignatures.push(cosig);
+                sth.cosignatures.extend(cosigs);
             }
             Some(MerkleAnchor {
                 sth,

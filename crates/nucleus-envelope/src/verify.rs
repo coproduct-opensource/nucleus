@@ -320,6 +320,19 @@ pub enum VerifyBundleError {
     /// content hashes diverged from the recomputed values.
     #[error("payload binding verification failed: {detail}")]
     BadPayloadBinding { detail: String },
+    /// **v2.3b HIGH-1 fix.** Bundle's STH carries one or more
+    /// [`nucleus_lineage::CosignatureKind::C2sp`] cosignatures but the
+    /// [`TrustAnchor`] has no `c2sp_origin` configured — so the
+    /// verifier can't reconstruct the signed bytes for those cosigs.
+    /// Before this fix the verifier silently dropped the cosigs and
+    /// failed with a generic `InsufficientCosignatures{verified:0}`,
+    /// giving operators no signal that the problem was missing
+    /// origin config. Call [`TrustAnchor::with_c2sp_origin`].
+    #[error(
+        "bundle has {c2sp_cosig_count} C2SP-protocol cosignature(s) but trust anchor has no \
+         c2sp_origin — they cannot be verified; call TrustAnchor::with_c2sp_origin"
+    )]
+    MissingC2spOrigin { c2sp_cosig_count: usize },
 }
 
 /// Result of a successful [`verify_bundle`] call.
@@ -366,6 +379,15 @@ pub struct VerificationReport {
     /// payload-to-envelope binding: a tampered payload would have
     /// failed signature verification.
     pub payload_binding_verified: bool,
+    /// **v2.3b HIGH-2 diagnostic.** Count of C2SP-kind cosignatures
+    /// that were valid Ed25519 signatures over reconstructed C2SP
+    /// bytes BUT didn't match any trusted-witness key, OR didn't
+    /// verify against the trust anchor's configured `c2sp_origin`.
+    /// Operators seeing `cosignatures_verified < threshold` AND
+    /// `c2sp_cosigs_byte_mismatch > 0` should re-check their
+    /// `c2sp_origin` config — the producer likely used a different
+    /// origin string than the verifier expects.
+    pub c2sp_cosigs_byte_mismatch: usize,
 }
 
 /// Verify a [`Bundle`] against an explicit [`TrustAnchor`].
@@ -432,6 +454,7 @@ pub fn verify_bundle(
                 cosignatures_verified: 0,
                 matched_witness_pubkeys_hex: Vec::new(),
                 payload_binding_verified: false,
+                c2sp_cosigs_byte_mismatch: 0,
             });
         }
         return Err(VerifyBundleError::EmptyEnvelope);
@@ -500,17 +523,21 @@ pub fn verify_bundle(
     // out-of-band witness pubkey are the ones who actually exercise
     // the anchor — and they must use `TrustAnchor::from_jwks(...)` +
     // `with_witness_pubkey(...)`.
-    let (merkle_verified, cosignatures_verified, matched_witness_pubkeys_hex) =
-        if trust.is_self_check_only() {
-            (false, 0, Vec::new())
-        } else if let Some(anchor) = &env.merkle_anchor {
-            let matched = verify_merkle_anchor(env.edges.as_slice(), anchor, trust)?;
-            let count = matched.len();
-            let hex_keys = matched.iter().map(hex::encode).collect();
-            (true, count, hex_keys)
-        } else {
-            (false, 0, Vec::new())
-        };
+    let (
+        merkle_verified,
+        cosignatures_verified,
+        matched_witness_pubkeys_hex,
+        c2sp_cosigs_byte_mismatch,
+    ) = if trust.is_self_check_only() {
+        (false, 0, Vec::new(), 0)
+    } else if let Some(anchor) = &env.merkle_anchor {
+        let outcome = verify_merkle_anchor(env.edges.as_slice(), anchor, trust)?;
+        let count = outcome.matched_witnesses.len();
+        let hex_keys = outcome.matched_witnesses.iter().map(hex::encode).collect();
+        (true, count, hex_keys, outcome.c2sp_cosigs_byte_mismatch)
+    } else {
+        (false, 0, Vec::new(), 0)
+    };
 
     // 8) Report.
     let mut kids: Vec<String> = env
@@ -550,7 +577,20 @@ pub fn verify_bundle(
         cosignatures_verified,
         matched_witness_pubkeys_hex,
         payload_binding_verified,
+        c2sp_cosigs_byte_mismatch,
     })
+}
+
+/// **v2.3b HIGH-2 diagnostic.** Outcome of the merkle-anchor +
+/// cosignature-federation check. Carries both the matched-witness set
+/// (load-bearing for the threshold gate) and the count of C2SP cosigs
+/// that ran the byte-reconstruction-then-verify path but didn't match
+/// any trusted key — surfaces as `c2sp_cosigs_byte_mismatch` in the
+/// report so an operator who set the wrong `c2sp_origin` sees a
+/// non-zero count instead of just `verified: 0`.
+struct MerkleAnchorOutcome {
+    matched_witnesses: Vec<[u8; 32]>,
+    c2sp_cosigs_byte_mismatch: usize,
 }
 
 /// Verify the v2.2 payload binding: recompute payload hash + envelope
@@ -678,7 +718,7 @@ fn verify_merkle_anchor(
     edges: &[LineageEdge],
     anchor: &crate::bundle::MerkleAnchor,
     trust: &TrustAnchor,
-) -> Result<Vec<[u8; 32]>, VerifyBundleError> {
+) -> Result<MerkleAnchorOutcome, VerifyBundleError> {
     // CRIT-3: cap cosignature count BEFORE any crypto work. Defends
     // the verifier from a hostile bundle ballooning the cosig list
     // to force O(cosigs × trusted) Ed25519 verifications.
@@ -775,7 +815,28 @@ fn verify_merkle_anchor(
     // bytes-being-signed per the cosignature's `kind` and try each
     // trusted-witness key not yet matched. Distinct-witness counting
     // (audit-3 CRIT-2 fix) is preserved.
+    //
+    // **v2.3b HIGH-1 fix.** Fail fast if the bundle has C2SP cosigs
+    // but the trust anchor has no c2sp_origin — gives operators a
+    // specific signal instead of the generic "verified: 0" they got
+    // before. This must happen BEFORE the dispatch loop so a
+    // misconfigured trust anchor returns MissingC2spOrigin even if
+    // every cosig in the bundle is C2SP-kind.
+    let c2sp_cosig_count = anchor
+        .sth
+        .cosignatures
+        .iter()
+        .filter(|c| matches!(c.kind, nucleus_lineage::CosignatureKind::C2sp))
+        .count();
+    if c2sp_cosig_count > 0 && trust.c2sp_origin.is_none() {
+        return Err(VerifyBundleError::MissingC2spOrigin { c2sp_cosig_count });
+    }
+
     let mut matched_witnesses: HashSet<[u8; 32]> = HashSet::new();
+    // **v2.3b HIGH-2 diagnostic.** Track C2SP cosigs that ran the
+    // signature check against the configured origin's body but didn't
+    // match any trusted key. Non-zero = likely origin mismatch.
+    let mut c2sp_cosigs_byte_mismatch: usize = 0;
     if !anchor.sth.cosignatures.is_empty() {
         use ed25519_dalek::{Signature, Verifier, VerifyingKey};
         let nucleus_canonical = nucleus_lineage::canonical_sth_bytes(
@@ -805,14 +866,18 @@ fn verify_merkle_anchor(
             let mut sig_arr = [0u8; 64];
             sig_arr.copy_from_slice(&cosig.signature);
             let sig = Signature::from_bytes(&sig_arr);
-            // Pick the bytes this cosig claims to cover.
+            // Pick the bytes this cosig claims to cover. With the
+            // HIGH-1 check above, a C2SP cosig + no origin is now
+            // impossible at this point — c2sp_body is `Some` whenever
+            // we reach a C2SP cosig.
             let signed_bytes: &[u8] = match cosig.kind {
                 nucleus_lineage::CosignatureKind::Nucleus => &nucleus_canonical,
                 nucleus_lineage::CosignatureKind::C2sp => match c2sp_body.as_deref() {
                     Some(b) => b,
-                    None => continue, // can't verify C2SP without origin
+                    None => continue, // defensive — should be unreachable post-HIGH-1
                 },
             };
+            let mut matched_this_cosig = false;
             for trusted in &trust.trusted_witnesses {
                 if matched_witnesses.contains(trusted) {
                     continue;
@@ -820,9 +885,18 @@ fn verify_merkle_anchor(
                 if let Ok(vk) = VerifyingKey::from_bytes(trusted) {
                     if vk.verify(signed_bytes, &sig).is_ok() {
                         matched_witnesses.insert(*trusted);
+                        matched_this_cosig = true;
                         break;
                     }
                 }
+            }
+            // HIGH-2 diagnostic: a C2SP-kind cosig that didn't match
+            // any trusted key. Most common cause is `c2sp_origin`
+            // string mismatch between producer and verifier; second
+            // is wrong trusted-witness pubkey. Operators see the
+            // count in the report.
+            if !matched_this_cosig && matches!(cosig.kind, nucleus_lineage::CosignatureKind::C2sp) {
+                c2sp_cosigs_byte_mismatch += 1;
             }
         }
     }
@@ -833,7 +907,10 @@ fn verify_merkle_anchor(
             required: trust.cosignature_threshold,
         });
     }
-    Ok(matched_witnesses.into_iter().collect())
+    Ok(MerkleAnchorOutcome {
+        matched_witnesses: matched_witnesses.into_iter().collect(),
+        c2sp_cosigs_byte_mismatch,
+    })
 }
 
 /// Walk the chain to compute the hash of the head (last) edge so it can

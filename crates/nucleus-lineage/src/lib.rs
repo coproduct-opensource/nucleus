@@ -65,8 +65,8 @@ pub use proof::{canonical_edge_bytes, edge_content_hash, Proof};
 pub use prover::MerkleProver;
 pub use signed_note::{
     checkpoint_signed_bytes, ed25519_key_id, format_checkpoint_body, format_signature_line,
-    parse_signature_line, ParsedSignatureLine, SignedNoteError, SIG_LINE_PREFIX,
-    SIG_TYPE_COSIGNATURE, SIG_TYPE_ED25519,
+    parse_signature_line, validate_key_name, validate_origin, ParsedSignatureLine, SignedNoteError,
+    MAX_KEY_NAME_LEN, MAX_ORIGIN_LEN, SIG_LINE_PREFIX, SIG_TYPE_COSIGNATURE, SIG_TYPE_ED25519,
 };
 pub use sink::{InMemorySink, JsonlSink, LineageSink, SinkError};
 pub use verify::{verify_chain, verify_proof, Jwk, Jwks, StaticKeyResolver, VerifyError};
