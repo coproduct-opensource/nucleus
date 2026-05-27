@@ -15,7 +15,7 @@ default = []
 # PRODUCTION USE. Production callers should write a SPIFFE-Workload-API-
 # backed `IdentityFetcher` impl and never enable this feature in release
 # builds. Verification (always-on) does NOT need this feature.
-dev = ["dep:jsonwebtoken", "dep:rand", "ed25519-dalek/pkcs8", "ed25519-dalek/rand_core"]
+dev = ["dep:jsonwebtoken", "dep:rand", "ed25519-dalek/alloc", "ed25519-dalek/pkcs8", "ed25519-dalek/rand_core"]
 
 [dependencies]
 serde = { workspace = true }
@@ -33,14 +33,14 @@ base64 = "0.22"
 # signatures). The `dev` feature additionally enables `pkcs8` + `rand_core`
 # for the in-process LocalIssuer signer. Production code that only verifies
 # pulls a small surface.
-ed25519-dalek = "2"
+ed25519-dalek = "=3.0.0-pre.7"
 # RFC 6962 / RFC 9162-style Merkle tree for the `MerkleSink` checkpointing
 # layer (transparency-log style append-only integrity). serde feature lets
 # us snapshot the tree if a sink ever needs to persist its state.
 ct-merkle = { version = "0.3", features = ["serde"] }
 # JWT signing/encoding crate — only needed by the dev LocalIssuer.
 jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"], optional = true }
-rand = { version = "0.8", optional = true }
+rand = { version = "0.10", optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
