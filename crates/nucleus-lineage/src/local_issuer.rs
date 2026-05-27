@@ -66,7 +66,7 @@ impl LocalIssuer {
 
     /// Construct with a fresh random keypair and explicit issuer/lifetime.
     pub fn random_with(issuer: String, lifetime: Duration) -> Result<Self, IssuerError> {
-        let mut csprng = rand::rngs::OsRng;
+        let mut csprng = rand::rng();
         let signing_key = SigningKey::generate(&mut csprng);
         Self::from_signing_key(signing_key, issuer, lifetime)
     }

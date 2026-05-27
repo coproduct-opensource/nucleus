@@ -25,7 +25,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -248,7 +248,7 @@ impl TreeWitness for Ed25519Witness {
             .map_err(|_| WitnessError::InvalidSignature(self.kid.clone()))?;
         let signature = Signature::from_bytes(&sig_arr);
         self.verifying_key
-            .verify(canonical, &signature)
+            .verify_strict(canonical, &signature)
             .map_err(|_| WitnessError::InvalidSignature(self.kid.clone()))
     }
 }
@@ -283,7 +283,7 @@ impl TreeWitness for VerifyOnlyWitness {
             .map_err(|_| WitnessError::InvalidSignature(self.kid.clone()))?;
         let signature = Signature::from_bytes(&sig_arr);
         self.verifying_key
-            .verify(canonical, &signature)
+            .verify_strict(canonical, &signature)
             .map_err(|_| WitnessError::InvalidSignature(self.kid.clone()))
     }
 }

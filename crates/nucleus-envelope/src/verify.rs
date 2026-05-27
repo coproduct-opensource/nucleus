@@ -604,7 +604,7 @@ fn verify_payload_binding(
     trust: &TrustAnchor,
 ) -> Result<(), VerifyBundleError> {
     use crate::binding::{payload_hash, signed_bytes};
-    use ed25519_dalek::{Signature, Verifier};
+    use ed25519_dalek::Signature;
 
     // 1) Recompute payload hash and check it.
     let p_hash =
@@ -702,7 +702,7 @@ fn verify_payload_binding(
     let mut sig_arr = [0u8; 64];
     sig_arr.copy_from_slice(&binding.signature);
     let sig = Signature::from_bytes(&sig_arr);
-    vk.verify(&to_verify, &sig)
+    vk.verify_strict(&to_verify, &sig)
         .map_err(|_| VerifyBundleError::BadPayloadBinding {
             detail: "Ed25519 signature did not verify against trust JWKS key".into(),
         })?;
@@ -838,7 +838,7 @@ fn verify_merkle_anchor(
     // match any trusted key. Non-zero = likely origin mismatch.
     let mut c2sp_cosigs_byte_mismatch: usize = 0;
     if !anchor.sth.cosignatures.is_empty() {
-        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+        use ed25519_dalek::{Signature, VerifyingKey};
         let nucleus_canonical = nucleus_lineage::canonical_sth_bytes(
             anchor.sth.tree_size,
             anchor.sth.timestamp_ms,
@@ -883,7 +883,7 @@ fn verify_merkle_anchor(
                     continue;
                 }
                 if let Ok(vk) = VerifyingKey::from_bytes(trusted) {
-                    if vk.verify(signed_bytes, &sig).is_ok() {
+                    if vk.verify_strict(signed_bytes, &sig).is_ok() {
                         matched_witnesses.insert(*trusted);
                         matched_this_cosig = true;
                         break;

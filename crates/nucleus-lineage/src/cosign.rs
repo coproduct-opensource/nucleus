@@ -961,7 +961,7 @@ mod tests {
 
         // Cosignature must verify against the witness's public key over
         // the producer's canonical bytes.
-        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+        use ed25519_dalek::{Signature, VerifyingKey};
         let pub_bytes = witness.verifying_key_bytes();
         let vk = VerifyingKey::from_bytes(&pub_bytes).unwrap();
         let mut sig_arr = [0u8; 64];
@@ -972,7 +972,7 @@ mod tests {
             sth.timestamp_ms,
             &hex::decode(&sth.root_hash_hex).unwrap().try_into().unwrap(),
         );
-        vk.verify(&canonical, &sig)
+        vk.verify_strict(&canonical, &sig)
             .expect("cosignature must verify");
     }
 

@@ -15,10 +15,10 @@ default = []
 # PRODUCTION USE. Production callers should write a SPIFFE-Workload-API-
 # backed `IdentityFetcher` impl and never enable this feature in release
 # builds. Verification (always-on) does NOT need this feature.
-dev = ["dep:jsonwebtoken", "dep:rand", "ed25519-dalek/pkcs8", "ed25519-dalek/rand_core"]
-# HTTP-backed WitnessClient (nucleus-native cosign protocol — v2.3 will
-# add a C2SP tlog-witness adapter for federation with the external
-# ecosystem). Off by default to keep the lib's dep tree lean.
+dev = ["dep:jsonwebtoken", "dep:rand", "ed25519-dalek/alloc", "ed25519-dalek/pkcs8", "ed25519-dalek/rand_core"]
+# HTTP-backed WitnessClient (nucleus-native cosign protocol + C2SP
+# tlog-witness adapter for federation with the external ecosystem).
+# Off by default to keep the lib's dep tree lean.
 http = ["dep:reqwest"]
 
 [dependencies]
@@ -37,16 +37,16 @@ base64 = "0.22"
 # signatures). The `dev` feature additionally enables `pkcs8` + `rand_core`
 # for the in-process LocalIssuer signer. Production code that only verifies
 # pulls a small surface.
-ed25519-dalek = "2"
+ed25519-dalek = "=3.0.0-pre.7"
 # RFC 6962 / RFC 9162-style Merkle tree for the `MerkleSink` checkpointing
 # layer (transparency-log style append-only integrity). serde feature lets
 # us snapshot the tree if a sink ever needs to persist its state.
 ct-merkle = { version = "0.3", features = ["serde"] }
 # JWT signing/encoding crate — only needed by the dev LocalIssuer.
 jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"], optional = true }
-rand = { version = "0.8", optional = true }
-# Blocking HTTP client for the optional HttpWitnessClient. Default-off;
-# only pulled in when the `http` feature is enabled.
+rand = { version = "0.10", optional = true }
+# Blocking HTTP client for the optional HttpWitnessClient + C2SP
+# witness adapter. Default-off; only pulled in via `http` feature.
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"], optional = true }
 
 [dev-dependencies]
