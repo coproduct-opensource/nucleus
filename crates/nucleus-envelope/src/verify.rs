@@ -40,6 +40,35 @@ use thiserror::Error;
 /// production federation setup (typical 3-5 trusted witnesses).
 const MAX_COSIGNATURES_PER_STH: usize = 64;
 
+/// **CRIT-3 (#1648) fix.** Defense-in-depth cap on `Envelope.edges`
+/// length at the verifier. Each edge triggers one Ed25519 verify
+/// (~60µs) in `verify_chain` plus O(len(session_root)) string compares
+/// in `is_under_root`. Within the verifier-service's 2 MiB body cap,
+/// an attacker can pack ~10k empty edges → seconds of single-thread
+/// CPU per request, pinning workers. Reject BEFORE crypto work, in
+/// the same spirit as [`MAX_COSIGNATURES_PER_STH`].
+///
+/// 10k edges is generous: a typical agent-run session emits ~20-200
+/// edges (tool calls + LLM responses + artifacts). 10k accommodates
+/// long-running batch jobs while bounding the worst case.
+const MAX_ENVELOPE_EDGES: usize = 10_000;
+
+/// **CRIT-3 (#1648) fix.** Defense-in-depth cap on `Envelope.checkpoints`
+/// length. Each checkpoint carries a `SignedTreeHead` which a future
+/// extension may verify (today: stored but not validated per-element).
+/// 64 is the same bound used for cosignatures — a session that emits
+/// more than ~64 STH-worthy events is a producer bug.
+const MAX_ENVELOPE_CHECKPOINTS: usize = 64;
+
+/// **CRIT-3 (#1648) fix.** Defense-in-depth cap on the audit-path
+/// length of a single `EdgeInclusionProof`. RFC 6962 §2.1.1 inclusion
+/// proofs are ≤ ⌈log₂(tree_size)⌉ hashes. A tree of size 2³⁰ = ~1B
+/// leaves needs 30 hashes; cap at 1024 covers 2¹⁰²⁴ leaves which is
+/// physically impossible — anything larger is a malformed proof
+/// designed to amplify per-proof CPU cost in
+/// `ct_merkle::InclusionProof::try_from_bytes` (hex decode + verify).
+const MAX_INCLUSION_PROOF_AUDIT_PATH_LEN: usize = 1024;
+
 use crate::bundle::{Bundle, ENVELOPE_SCHEMA_VERSION};
 
 /// What the verifier trusts. See module docs for why this is required.
@@ -305,6 +334,17 @@ pub enum VerifyBundleError {
         "Merkle anchor STH has {got} cosignatures (max {max}); likely DoS amplifier in a hostile bundle"
     )]
     CosignatureListTooLarge { got: usize, max: usize },
+    /// **CRIT-3 (#1648) fix.** Bundle's collection size (edges,
+    /// checkpoints, or inclusion-proof audit-path) exceeds the
+    /// verifier's defense-in-depth cap. Discriminator says which
+    /// collection. Rejected BEFORE any crypto work so a hostile bundle
+    /// can't pin a verifier worker for seconds of Ed25519 verifies.
+    #[error("envelope `{what}` length {got} exceeds verifier cap {max} (DoS amplifier)")]
+    EnvelopeTooLarge {
+        what: &'static str,
+        got: usize,
+        max: usize,
+    },
     /// The Merkle anchor's STH is older than the trust anchor's
     /// `sth_max_age` allows.
     #[error("Merkle anchor STH is too old: age {age_ms}ms exceeds max {max_age_ms}ms")]
@@ -419,6 +459,48 @@ pub fn verify_bundle(
     trust: &TrustAnchor,
 ) -> Result<VerificationReport, VerifyBundleError> {
     let env = &bundle.envelope;
+
+    // 0) **CRIT-3 (#1648) DoS caps.** Reject oversized collections
+    //    BEFORE any crypto work — these checks cost O(1). A hostile
+    //    bundle within the verifier-service's 2 MiB body cap can pack
+    //    ~10k empty edges that would otherwise burn seconds of
+    //    per-edge Ed25519 verifies pinning a worker.
+    if env.edges.len() > MAX_ENVELOPE_EDGES {
+        return Err(VerifyBundleError::EnvelopeTooLarge {
+            what: "edges",
+            got: env.edges.len(),
+            max: MAX_ENVELOPE_EDGES,
+        });
+    }
+    if env.checkpoints.len() > MAX_ENVELOPE_CHECKPOINTS {
+        return Err(VerifyBundleError::EnvelopeTooLarge {
+            what: "checkpoints",
+            got: env.checkpoints.len(),
+            max: MAX_ENVELOPE_CHECKPOINTS,
+        });
+    }
+    if let Some(anchor) = &env.merkle_anchor {
+        // Per-proof audit-path bound. Hex-encoded; each tree hash is
+        // 32 bytes = 64 hex chars; cap of 1024 hashes ⇒ ≤ 64 KiB hex
+        // per inclusion proof. Defends against the rare but pathological
+        // case of a malformed audit path designed to amplify the
+        // ct-merkle parse+verify cost.
+        for (i, inc) in anchor.inclusion_proofs.iter().enumerate() {
+            // 64 hex chars per 32-byte hash; integer-divide.
+            let hash_count = inc.audit_path_hex.len() / 64;
+            if hash_count > MAX_INCLUSION_PROOF_AUDIT_PATH_LEN {
+                return Err(VerifyBundleError::EnvelopeTooLarge {
+                    what: "inclusion_proof.audit_path",
+                    got: hash_count,
+                    max: MAX_INCLUSION_PROOF_AUDIT_PATH_LEN,
+                });
+            }
+            // Belt-and-suspenders: drop the index `i` into the error
+            // would be nice but the variant doesn't carry it. Future:
+            // EnvelopeTooLarge { index: Option<usize>, ... }.
+            let _ = i;
+        }
+    }
 
     // 1) Schema.
     if env.meta.schema_version > ENVELOPE_SCHEMA_VERSION {

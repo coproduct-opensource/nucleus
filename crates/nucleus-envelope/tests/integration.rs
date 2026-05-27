@@ -1533,3 +1533,183 @@ fn v2_3b_bundle_builder_extends_all_cosigs_from_aggregator() {
         verify_bundle(&bundle, &trust).expect("3 distinct trusted witnesses ⇒ threshold met");
     assert_eq!(report.cosignatures_verified, 3);
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// CRIT-3 (#1648) — verifier DoS caps on edges / checkpoints / proofs
+
+/// Build a tiny valid bundle, then test-only mutate `envelope.edges`
+/// to exceed `MAX_ENVELOPE_EDGES = 10_000`. The verifier must reject
+/// with `EnvelopeTooLarge { what: "edges", ... }` BEFORE doing any
+/// per-edge Ed25519 verifies. The test runs in <1s because if the cap
+/// were not enforced, the verifier would do ~10001 Ed25519 verifies
+/// (~600ms+ on most hardware).
+#[test]
+fn v2_3c_crit3_rejects_oversized_edges_list_before_crypto() {
+    let dir = tempdir().unwrap();
+    let inner = InMemorySink::new();
+    let producer = Ed25519Witness::from_seed([171u8; 32]);
+    let producer_pub = producer.verifying_key_bytes();
+    let sink = MerkleSink::new(
+        inner,
+        producer,
+        MerkleConfig::new(dir.path()).with_interval(1000),
+    )
+    .unwrap();
+    let issuer = LocalIssuer::random().unwrap();
+    let p = pod();
+    sink.emit(signed_edge(
+        &issuer,
+        LineageEdge::pod_admit(p.clone()),
+        None,
+    ))
+    .unwrap();
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+
+    let bundle = BundleBuilder::new(p.clone())
+        .payload(serde_json::json!({}))
+        .sink(&sink)
+        .jwks(jwks.clone())
+        .with_merkle_prover(&sink)
+        .build()
+        .unwrap();
+
+    // Inflate edges to 10_001 (one over the cap). Each is a clone of
+    // the legitimate pod-admit edge — the verifier must NOT get to
+    // chain verification (which would fail anyway on duplicate
+    // pod-admits) because the cap fires first.
+    let mut tampered = bundle.clone();
+    let template = tampered.envelope.edges[0].clone();
+    tampered.envelope.edges = (0..10_001).map(|_| template.clone()).collect();
+
+    let trust = TrustAnchor::from_jwks(jwks).with_witness_pubkey(producer_pub);
+    let start = std::time::Instant::now();
+    let err = verify_bundle(&tampered, &trust)
+        .expect_err("oversized edges must reject before chain verification");
+    let elapsed = start.elapsed();
+
+    assert!(
+        matches!(
+            err,
+            VerifyBundleError::EnvelopeTooLarge {
+                what: "edges",
+                got: 10_001,
+                max: 10_000
+            }
+        ),
+        "got {err:?}",
+    );
+    assert!(
+        elapsed < std::time::Duration::from_millis(100),
+        "DoS cap must fire fast (no per-edge crypto); took {elapsed:?}",
+    );
+}
+
+/// Same cap, applied to `envelope.checkpoints`. Cap is 64.
+#[test]
+fn v2_3c_crit3_rejects_oversized_checkpoints_list() {
+    let dir = tempdir().unwrap();
+    let inner = InMemorySink::new();
+    let producer = Ed25519Witness::from_seed([172u8; 32]);
+    let producer_pub = producer.verifying_key_bytes();
+    let sink = MerkleSink::new(
+        inner,
+        producer,
+        MerkleConfig::new(dir.path()).with_interval(1000),
+    )
+    .unwrap();
+    let issuer = LocalIssuer::random().unwrap();
+    let p = pod();
+    sink.emit(signed_edge(
+        &issuer,
+        LineageEdge::pod_admit(p.clone()),
+        None,
+    ))
+    .unwrap();
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+
+    let bundle = BundleBuilder::new(p.clone())
+        .payload(serde_json::json!({}))
+        .sink(&sink)
+        .jwks(jwks.clone())
+        .with_merkle_prover(&sink)
+        .build()
+        .unwrap();
+
+    // Inflate checkpoints to 65 (one over the cap).
+    let mut tampered = bundle;
+    let template_sth = tampered
+        .envelope
+        .merkle_anchor
+        .as_ref()
+        .unwrap()
+        .sth
+        .clone();
+    tampered.envelope.checkpoints = (0..65).map(|_| template_sth.clone()).collect();
+
+    let trust = TrustAnchor::from_jwks(jwks).with_witness_pubkey(producer_pub);
+    let err = verify_bundle(&tampered, &trust).expect_err("oversized checkpoints must reject");
+    assert!(
+        matches!(
+            err,
+            VerifyBundleError::EnvelopeTooLarge {
+                what: "checkpoints",
+                got: 65,
+                max: 64
+            }
+        ),
+        "got {err:?}",
+    );
+}
+
+/// Same cap, applied to a single `inclusion_proof.audit_path_hex`.
+/// Cap is 1024 hashes = 65_536 hex chars per proof.
+#[test]
+fn v2_3c_crit3_rejects_oversized_inclusion_proof_audit_path() {
+    let dir = tempdir().unwrap();
+    let inner = InMemorySink::new();
+    let producer = Ed25519Witness::from_seed([173u8; 32]);
+    let producer_pub = producer.verifying_key_bytes();
+    let sink = MerkleSink::new(
+        inner,
+        producer,
+        MerkleConfig::new(dir.path()).with_interval(1000),
+    )
+    .unwrap();
+    let issuer = LocalIssuer::random().unwrap();
+    let p = pod();
+    sink.emit(signed_edge(
+        &issuer,
+        LineageEdge::pod_admit(p.clone()),
+        None,
+    ))
+    .unwrap();
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+
+    let bundle = BundleBuilder::new(p.clone())
+        .payload(serde_json::json!({}))
+        .sink(&sink)
+        .jwks(jwks.clone())
+        .with_merkle_prover(&sink)
+        .build()
+        .unwrap();
+
+    // Inflate the first inclusion proof's audit path to 1025 hashes
+    // (one over the cap). Each hash is 64 hex chars; total 65_600 chars.
+    let mut tampered = bundle;
+    let anchor = tampered.envelope.merkle_anchor.as_mut().unwrap();
+    anchor.inclusion_proofs[0].audit_path_hex = "ab".repeat(32 * 1025);
+
+    let trust = TrustAnchor::from_jwks(jwks).with_witness_pubkey(producer_pub);
+    let err = verify_bundle(&tampered, &trust).expect_err("oversized audit path must reject");
+    assert!(
+        matches!(
+            err,
+            VerifyBundleError::EnvelopeTooLarge {
+                what: "inclusion_proof.audit_path",
+                got: 1025,
+                max: 1024,
+            }
+        ),
+        "got {err:?}",
+    );
+}
