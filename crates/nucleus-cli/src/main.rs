@@ -28,6 +28,7 @@ mod doctor;
 mod guard;
 mod keychain;
 mod lineage;
+mod lineage_verify;
 mod lockdown;
 mod manifest;
 mod node;
@@ -111,6 +112,9 @@ enum Commands {
 
     /// Walk the data-lineage DAG for a SPIFFE call ID
     Lineage(lineage::LineageArgs),
+
+    /// Verify Merkle integrity of a lineage log against signed checkpoints
+    LineageVerifyChain(lineage_verify::VerifyChainArgs),
 }
 
 fn init_logging(verbose: bool) {
@@ -158,5 +162,6 @@ async fn main() -> Result<()> {
         Commands::Token(args) => token::execute(args),
         Commands::Node(args) => node::execute(args).await,
         Commands::Lineage(args) => lineage::execute(args),
+        Commands::LineageVerifyChain(args) => lineage_verify::execute(args),
     }
 }
