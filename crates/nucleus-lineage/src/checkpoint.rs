@@ -82,6 +82,7 @@ pub enum WitnessError {
 /// Wire format is forward-compatible serde JSON — never remove or rename
 /// fields; new fields must be `#[serde(default)]`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SignedTreeHead {
     /// Number of leaves committed at sign time.
     pub tree_size: u64,
@@ -194,7 +195,21 @@ impl Ed25519Witness {
     }
 
     /// Construct from a 32-byte Ed25519 secret-key seed.
+    ///
+    /// # Debug assertion (LOW-2 audit hardening)
+    ///
+    /// In debug builds, panics if `seed` is all-zeros — a classic
+    /// dev/test slip that produces a deterministic but cryptographically
+    /// weak witness. ed25519-dalek itself accepts any 32-byte seed
+    /// without complaint; the debug assert is a guardrail for callers
+    /// who accidentally pass `[0u8; 32]`. Production builds (release
+    /// mode) skip the check for zero overhead.
     pub fn from_seed(seed: [u8; 32]) -> Self {
+        debug_assert!(
+            seed.iter().any(|&b| b != 0),
+            "Ed25519Witness::from_seed: all-zero seed is cryptographically weak; \
+             use a CSPRNG-derived seed in production"
+        );
         Self::new(SigningKey::from_bytes(&seed))
     }
 

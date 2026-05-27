@@ -251,9 +251,44 @@ impl TrustAnchor {
     ///
     /// The origin must match exactly what the producer used to format
     /// the checkpoint body (e.g. `"nucleus.example.com/log42"`).
-    pub fn with_c2sp_origin(mut self, origin: impl Into<String>) -> Self {
-        self.c2sp_origin = Some(origin.into());
-        self
+    ///
+    /// # Panics
+    ///
+    /// **MED-1 (audit) fix.** Panics if `origin` is not a valid C2SP
+    /// origin string (empty, oversized, contains a newline / control
+    /// character / non-printable ASCII byte). Pre-fix the verifier
+    /// would silently drop EVERY C2SP cosig when the trust-anchor's
+    /// origin failed `validate_origin` (typically a copy-paste error
+    /// leaving a trailing `\n`), yielding `cosignatures_verified: 0`
+    /// with no operator signal. Fail fast at config time instead.
+    ///
+    /// Operators who can't fail-fast at config (e.g. CLI flag parsing
+    /// where the user's input is partial) should use
+    /// [`Self::try_with_c2sp_origin`] which returns Result.
+    pub fn with_c2sp_origin(self, origin: impl Into<String>) -> Self {
+        self.try_with_c2sp_origin(origin)
+            .expect("with_c2sp_origin: origin string failed C2SP validate_origin")
+    }
+
+    /// **MED-1 (audit) fix.** Fallible variant of
+    /// [`Self::with_c2sp_origin`]. Validates the origin via
+    /// [`nucleus_lineage::validate_origin`] (rejects newline /
+    /// control chars / non-printable ASCII / empty / oversized)
+    /// BEFORE storing it on the trust anchor. Returns
+    /// [`VerifyBundleError::BadPayloadBinding`] with a `detail` field
+    /// naming the validation failure on rejection.
+    pub fn try_with_c2sp_origin(
+        mut self,
+        origin: impl Into<String>,
+    ) -> Result<Self, VerifyBundleError> {
+        let origin = origin.into();
+        nucleus_lineage::validate_origin(&origin).map_err(|e| {
+            VerifyBundleError::BadPayloadBinding {
+                detail: format!("c2sp_origin failed C2SP validation: {e}"),
+            }
+        })?;
+        self.c2sp_origin = Some(origin);
+        Ok(self)
     }
 }
 
@@ -859,6 +894,39 @@ fn verify_merkle_anchor(
             got: anchor.inclusion_proofs.len(),
             expected: edges.len(),
         });
+    }
+
+    // **MED-4 (audit) fix.** Bound + uniqueness check on leaf_index
+    // BEFORE per-proof crypto work. ct-merkle's `verify_inclusion`
+    // would catch out-of-bounds via reconstruction failure, but the
+    // failure message there is cryptic ("hash mismatch") and doesn't
+    // explain that the producer's index was nonsensical. Worse: a
+    // duplicate (leaf_index, audit_path) pair would verify N times
+    // against the same root if the underlying leaf is identical,
+    // double-counting in any downstream tally. Explicit check here.
+    {
+        let mut seen: std::collections::HashSet<u64> =
+            std::collections::HashSet::with_capacity(anchor.inclusion_proofs.len());
+        for (index, inc) in anchor.inclusion_proofs.iter().enumerate() {
+            if inc.leaf_index >= anchor.sth.tree_size {
+                return Err(VerifyBundleError::MerkleAnchorInclusionFailed {
+                    index,
+                    detail: format!(
+                        "leaf_index {} is out of bounds for tree_size {}",
+                        inc.leaf_index, anchor.sth.tree_size
+                    ),
+                });
+            }
+            if !seen.insert(inc.leaf_index) {
+                return Err(VerifyBundleError::MerkleAnchorInclusionFailed {
+                    index,
+                    detail: format!(
+                        "duplicate leaf_index {} (each edge must occupy a distinct leaf)",
+                        inc.leaf_index
+                    ),
+                });
+            }
+        }
     }
 
     // Reconstruct the signed RootHash for ct-merkle verification.

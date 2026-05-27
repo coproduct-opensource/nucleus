@@ -58,6 +58,17 @@ pub enum BundleError {
     /// The binding signer's `sign` method returned an error.
     #[error("payload binding signer: {0}")]
     BindingSigner(#[from] IssuerError),
+    /// **MED-2 (audit) fix.** A binding signer was attached AND the
+    /// envelope is empty (allow_empty + no edges). A binding over an
+    /// empty envelope binds payload to NOTHING (head_hash would be
+    /// the all-zeros sentinel), which is footgun-shaped: a downstream
+    /// verifier accepting both `allow_empty` and `require_payload_binding`
+    /// would see the signature verify even though the envelope
+    /// authenticates no provenance. Refuse to mint such a binding.
+    #[error(
+        "binding signer + empty envelope: a payload binding requires non-empty edges to bind to"
+    )]
+    BindingOverEmptyEnvelope,
 }
 
 /// A portable, self-contained provenance bundle.
@@ -70,6 +81,7 @@ pub enum BundleError {
 /// Wire format is JSON; field order is stable across serde versions. New
 /// fields must be `#[serde(default)]` to preserve forward compatibility.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Bundle {
     /// Agent payload — opaque JSON.
     pub payload: Value,
@@ -87,6 +99,7 @@ pub struct Bundle {
 
 /// The provenance certificate accompanying a [`Bundle::payload`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Envelope {
     /// Pod / session root SPIFFE id — the URI prefix under which every
     /// edge in this envelope was emitted.
@@ -122,6 +135,7 @@ pub struct Envelope {
 /// Merkle root. The presence of this field upgrades the bundle from
 /// "chain-only" integrity to "chain + transparency-log inclusion."
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MerkleAnchor {
     /// Signed tree head the inclusion proofs are anchored to. Its
     /// signature is verified against the trust anchor's witness
@@ -138,6 +152,7 @@ pub struct MerkleAnchor {
 /// One RFC 6962 inclusion proof, wire-encoded as the leaf index plus
 /// the audit path (concatenated 32-byte SHA-256 nodes, hex).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EdgeInclusionProof {
     /// Index of this edge's leaf in the witness's Merkle tree.
     pub leaf_index: u64,
@@ -148,6 +163,7 @@ pub struct EdgeInclusionProof {
 
 /// Metadata about the envelope itself (not about the payload it covers).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EnvelopeMeta {
     /// Envelope schema version. Bump on any breaking change to the wire
     /// format; verifiers may refuse unknown versions.
@@ -381,6 +397,16 @@ impl<'a> BundleBuilder<'a> {
         // via DSSE PAE so a downstream verifier can detect payload
         // tampering even when every per-edge signature still checks.
         let binding = if let Some(signer) = self.binding_signer {
+            // **MED-2 (audit) fix.** Refuse to mint a binding over an
+            // empty envelope. compute_envelope_head_hash returns
+            // [0u8; 32] for empty input — signing that is a footgun
+            // (binds payload to NOTHING). Empty envelopes can still
+            // be built with allow_empty BUT without a binding signer
+            // attached. Producers that need empty + signed have a
+            // semantic bug.
+            if envelope.edges.is_empty() {
+                return Err(BundleError::BindingOverEmptyEnvelope);
+            }
             let payload_h = payload_hash(&payload)?;
             let head_hash = compute_envelope_head_hash(&envelope.edges);
             let merkle_root_bytes: Option<[u8; 32]> =

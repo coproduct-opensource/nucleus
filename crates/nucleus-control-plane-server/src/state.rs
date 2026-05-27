@@ -3,9 +3,20 @@
 use std::sync::Arc;
 
 use nucleus_lineage::{CallSpiffeId, LineageSink, LocalIssuer, MerkleProver};
+use tokio::sync::Semaphore;
 
 use crate::events::JobEventBroker;
 use crate::registry::{InMemoryRegistry, JobRegistry, RunnerRegistry};
+
+/// **MED-6 (audit) fix.** Maximum concurrent in-flight jobs. Each
+/// job grabs one permit before `spawn_job` and releases on terminal
+/// state. Bounds total `tokio::spawn` + `spawn_blocking` task count
+/// regardless of how many distinct `Idempotency-Key` values the
+/// caller generates — closes the audit-flagged DoS where unbounded
+/// unique keys would queue unlimited blocking tasks. 128 covers
+/// healthy load on a multi-replica deployment with sub-minute jobs
+/// while bounding pathological multi-hour-runaway producers.
+pub const MAX_INFLIGHT_JOBS: usize = 128;
 
 /// Cloneable handle to the server's shared state. Routes receive this
 /// via [`axum::extract::State`].
@@ -46,6 +57,12 @@ pub struct AppState {
     /// server can publish it alongside the JWKS — clients use it for
     /// `nucleus envelope-verify --witness-pub`.
     pub witness_pubkey: Option<[u8; 32]>,
+    /// **MED-6 (audit) fix.** Semaphore bounding concurrent in-flight
+    /// jobs to [`MAX_INFLIGHT_JOBS`]. The submit handler acquires a
+    /// permit via `try_acquire_owned`; on failure returns 503
+    /// `at_capacity`. The permit is held by the spawned task and
+    /// dropped when the terminal state is published.
+    pub job_slots: Arc<Semaphore>,
 }
 
 impl AppState {
@@ -97,5 +114,6 @@ pub fn build_demo_state(
         events: Arc::new(JobEventBroker::new()),
         merkle_prover: None,
         witness_pubkey: None,
+        job_slots: Arc::new(Semaphore::new(MAX_INFLIGHT_JOBS)),
     })
 }

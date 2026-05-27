@@ -148,6 +148,13 @@ pub fn validate_origin(origin: &str) -> Result<(), SignedNoteError> {
             value: origin.to_string(),
         });
     }
+    // **LOW-1 (audit) fix.** signed-note.md treats origin identically
+    // to key_name for the log's primary signature — both must NOT
+    // contain '+' (the vkey separator). Pre-fix the validators were
+    // asymmetric: key_name rejected '+' but origin accepted it. Align.
+    if origin.contains('+') {
+        return Err(SignedNoteError::InvalidKeyName(origin.to_string()));
+    }
     Ok(())
 }
 
@@ -295,7 +302,10 @@ pub fn parse_signature_line(line: &str) -> Result<ParsedSignatureLine, SignedNot
     // Multiple spaces mean a space leaked into the key name (which
     // the spec forbids).
     let trimmed = rest.trim_end_matches('\n');
-    let space_count = trimmed.chars().filter(|c| *c == ' ').count();
+    // **LOW-5 (audit) micro-perf**: byte iteration is O(n) without
+    // UTF-8 boundary scanning. The signature line is ASCII per spec
+    // so byte-level scanning is correct.
+    let space_count = trimmed.bytes().filter(|b| *b == b' ').count();
     if space_count != 1 {
         return Err(SignedNoteError::InvalidKeyName(trimmed.to_string()));
     }

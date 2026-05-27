@@ -22,6 +22,11 @@ pub enum ApiError {
     UnknownDriver(String),
     #[error("internal error: {0}")]
     Internal(String),
+    /// **MED-6 (audit) fix.** Server reached `MAX_INFLIGHT_JOBS` and
+    /// cannot accept a new submission until prior jobs complete. Maps
+    /// to 503 Service Unavailable with `Retry-After: 10`.
+    #[error("server at capacity: {in_flight} jobs in flight, max {max}")]
+    AtCapacity { in_flight: usize, max: usize },
 }
 
 #[derive(Serialize)]
@@ -38,6 +43,7 @@ impl IntoResponse for ApiError {
             ApiError::Conflict { .. } => (StatusCode::CONFLICT, "conflict"),
             ApiError::UnknownDriver(_) => (StatusCode::UNPROCESSABLE_ENTITY, "unknown_driver"),
             ApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
+            ApiError::AtCapacity { .. } => (StatusCode::SERVICE_UNAVAILABLE, "at_capacity"),
         };
         let body = ApiErrorBody {
             error: code,

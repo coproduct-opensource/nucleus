@@ -141,6 +141,23 @@ pub async fn submit_job(
             .into_response());
     }
 
+    // **MED-6 (audit) fix.** Acquire a job-slot permit BEFORE
+    // publishing the queued event or spawning. If the server is at
+    // capacity, surface 503 at_capacity so the caller can retry
+    // later. Held by the spawned task and released when the terminal
+    // state is published. Without this, an attacker generating
+    // distinct Idempotency-Key values per request could queue
+    // unbounded blocking tasks.
+    let permit = match state.job_slots.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            return Err(ApiError::AtCapacity {
+                in_flight: crate::state::MAX_INFLIGHT_JOBS - state.job_slots.available_permits(),
+                max: crate::state::MAX_INFLIGHT_JOBS,
+            });
+        }
+    };
+
     // Publish the initial queued event so a subscriber attaching right
     // away catches the lifecycle from the start.
     state.events.publish(
@@ -150,7 +167,7 @@ pub async fn submit_job(
         },
     );
 
-    spawn_job(state.clone(), job_id.clone(), spec);
+    spawn_job(state.clone(), job_id.clone(), spec, permit);
 
     let response = JobSubmissionResponse {
         job_id: job_id.clone(),
@@ -166,8 +183,18 @@ pub async fn submit_job(
         .into_response())
 }
 
-fn spawn_job(state: AppState, job_id: JobId, spec: JobSpec) {
+fn spawn_job(
+    state: AppState,
+    job_id: JobId,
+    spec: JobSpec,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) {
     tokio::spawn(async move {
+        // **MED-6**: hold the job-slot permit for the lifetime of
+        // this task. Dropped when the function returns (after
+        // publishing the terminal event), which is when the slot
+        // becomes available for a new submission.
+        let _permit = permit;
         // Move the actual execution onto a blocking thread — `execute_job`
         // (and the underlying lineage signer) is CPU-bound and uses
         // synchronous IO on the sink path. Keeping it off the tokio

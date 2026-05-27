@@ -54,6 +54,7 @@ use crate::checkpoint::{
 /// Cosignatures from a single STH MAY mix kinds; the verifier checks
 /// each one against the appropriate byte sequence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Cosignature {
     /// Stable identifier for the witness's key (matches
     /// `Ed25519Witness::kid` for in-process witnesses; key_name for

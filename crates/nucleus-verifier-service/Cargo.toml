@@ -18,7 +18,7 @@ nucleus-envelope = { path = "../nucleus-envelope" }
 nucleus-lineage = { path = "../nucleus-lineage" }
 axum = { version = "0.8", features = ["macros", "json"] }
 tokio = { workspace = true, features = ["full"] }
-tower = { version = "0.5", features = ["util"] }
+tower = { version = "0.5", features = ["util", "limit"] }
 tower-http = { version = "0.6", features = ["trace", "timeout", "cors", "limit"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -30,7 +30,7 @@ clap = { workspace = true }
 hex = { workspace = true }
 
 [dev-dependencies]
-tower = { version = "0.5", features = ["util"] }
+tower = { version = "0.5", features = ["util", "limit"] }
 http-body-util = "0.1"
 nucleus-lineage = { path = "../nucleus-lineage", features = ["dev"] }
 nucleus-control-plane = { path = "../nucleus-control-plane" }
