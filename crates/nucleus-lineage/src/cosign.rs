@@ -794,7 +794,7 @@ mod c2sp_http {
             let mut state = self
                 .state
                 .lock()
-                .map_err(|_| WitnessError::Backend("client state mutex poisoned".into()))?;
+                .map_err(|_| WitnessError::Poisoned("C2spHttpWitnessClient.state"))?;
 
             let prev = state.last_known_size.unwrap_or(0);
             match self.attempt_cosign(sth, prev) {
@@ -844,22 +844,46 @@ mod c2sp_http {
                 // **v2.3b HIGH-3 fix.** A C2SP witness signals
                 // `old <prev_tree_size>` mismatch via 409 Conflict;
                 // per tlog-witness.md the body is the witness's
-                // actual last-cosigned tree size in decimal
-                // (Content-Type: text/x.tlog.size). Surface as
-                // `WitnessError::Conflict { last_known_size }` so a
-                // stateful client (v2.3c) can update tracked state
-                // and retry programmatically. Note: `text()`
-                // consumes the response, so we read it once and
-                // branch on the parse.
+                // actual last-cosigned tree size in decimal,
+                // Content-Type: `text/x.tlog.size`.
+                //
+                // **HIGH-4 (audit) fix.** Liberally accept any 409
+                // whose body parses as decimal as a Conflict (don't
+                // gate on Content-Type — proxies can mangle headers
+                // without invalidating the spec semantics). For
+                // 409s whose body does NOT parse (HTML rate-limit
+                // pages, garbled proxy responses), include the
+                // Content-Type in the surfaced error so operators
+                // can disambiguate "witness misbehavior" from
+                // "intermediary misbehavior". This closes the audit
+                // concern about HTML 409s silently being treated as
+                // generic backend errors — operators now see the
+                // Content-Type hint instead of just a body excerpt.
+                let is_409 = status.as_u16() == 409;
+                let ct = response
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "<missing>".to_string());
                 let raw = response.text().unwrap_or_default();
-                if status.as_u16() == 409 {
+                if is_409 {
                     if let Ok(size) = raw.trim().parse::<u64>() {
                         return Err(WitnessError::Conflict {
                             last_known_size: size,
                         });
                     }
-                    // Non-decimal 409 body falls through to the
-                    // generic backend-error path below.
+                    // 409 with non-decimal body: distinct Backend
+                    // error including Content-Type so operators can
+                    // tell "witness sent garbage" from "proxy
+                    // returned HTML rate-limit page".
+                    let body_cap = 512;
+                    let body_excerpt: String = raw.chars().take(body_cap).collect();
+                    return Err(WitnessError::Backend(format!(
+                        "C2SP witness at {url} returned 409 Conflict with non-decimal body \
+                         (Content-Type: {ct}); spec requires `text/x.tlog.size` + decimal \
+                         tree size. Body excerpt: {body_excerpt}"
+                    )));
                 }
                 let body_cap = 1024;
                 let body_excerpt: String = raw.chars().take(body_cap).collect();

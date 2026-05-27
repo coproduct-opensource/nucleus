@@ -161,6 +161,50 @@ async fn verify_with_wrong_jwks_returns_422() {
     assert_eq!(body["error"], "verification_failed");
 }
 
+/// **HIGH-1 (#1648 / audit) fix.** Verify the cap on
+/// `trusted_witnesses_hex` fires at the route layer with 400, BEFORE
+/// any per-entry hex parse — closing the DoS amplifier of forcing the
+/// verifier to do 64 × N Ed25519 verifies per request.
+#[tokio::test]
+async fn verify_rejects_oversized_trusted_witnesses_hex() {
+    let (bundle, jwks, _issuer) = build_signed_bundle();
+    // 33 entries exceeds MAX_TRUSTED_WITNESSES_PER_REQUEST = 32.
+    let too_many: Vec<String> = (0..33)
+        .map(|i| {
+            let mut bytes = [0u8; 32];
+            bytes[0] = i as u8;
+            hex::encode(bytes)
+        })
+        .collect();
+    let resp = build_app()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/verify")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "bundle": bundle,
+                        "trust_jwks": jwks,
+                        "trusted_witnesses_hex": too_many,
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = read_json(resp.into_body()).await;
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["error"], "bad_request");
+    let msg = body["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("33 entries") && msg.contains("max 32"),
+        "expected cap-rejection message; got {msg:?}",
+    );
+}
+
 #[tokio::test]
 async fn malformed_json_returns_400() {
     let resp = build_app()

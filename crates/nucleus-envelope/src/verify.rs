@@ -420,14 +420,34 @@ pub struct VerificationReport {
     /// failed signature verification.
     pub payload_binding_verified: bool,
     /// **v2.3b HIGH-2 diagnostic.** Count of C2SP-kind cosignatures
-    /// that were valid Ed25519 signatures over reconstructed C2SP
-    /// bytes BUT didn't match any trusted-witness key, OR didn't
-    /// verify against the trust anchor's configured `c2sp_origin`.
-    /// Operators seeing `cosignatures_verified < threshold` AND
-    /// `c2sp_cosigs_byte_mismatch > 0` should re-check their
-    /// `c2sp_origin` config — the producer likely used a different
-    /// origin string than the verifier expects.
+    /// whose 64-byte signature did NOT verify against any trusted
+    /// witness key over the reconstructed C2SP body bytes.
+    ///
+    /// **HIGH-5 (audit) clarification.** This counter conflates three
+    /// causes the verifier cannot distinguish from a single cosig:
+    /// (a) producer used a different `c2sp_origin` string than the
+    /// verifier expects, (b) cosig is from a witness whose pubkey
+    /// isn't in `trusted_witnesses`, (c) cosig is over different STH
+    /// bytes (tree_size / timestamp / root) than the verifier
+    /// reconstructed. Operators seeing `cosignatures_verified < threshold`
+    /// AND `c2sp_cosigs_byte_mismatch > 0` should re-check:
+    /// 1. `c2sp_origin` matches the producer's exactly
+    /// 2. All federated witnesses are in `trusted_witnesses`
+    /// 3. The bundle isn't stale (older STH than current trust set)
+    ///
+    /// The malformed-signature case (cosig.signature.len() != 64) is
+    /// counted separately in [`Self::c2sp_cosigs_malformed_signature`]
+    /// so wire-corruption vs config issues can be told apart.
     pub c2sp_cosigs_byte_mismatch: usize,
+    /// **HIGH-5 (audit) fix.** Count of C2SP-kind cosignatures whose
+    /// raw signature bytes were the wrong length (not 64 bytes).
+    /// Pre-HIGH-5 these were silently skipped with no operator signal;
+    /// now they're separately reported so a hostile or buggy producer
+    /// can be distinguished from honest cosigs over wrong bytes.
+    ///
+    /// Non-zero values indicate either: (a) producer wire-format bug,
+    /// or (b) man-in-the-middle / proxy tampering with cosig bytes.
+    pub c2sp_cosigs_malformed_signature: usize,
 }
 
 /// Verify a [`Bundle`] against an explicit [`TrustAnchor`].
@@ -537,6 +557,7 @@ pub fn verify_bundle(
                 matched_witness_pubkeys_hex: Vec::new(),
                 payload_binding_verified: false,
                 c2sp_cosigs_byte_mismatch: 0,
+                c2sp_cosigs_malformed_signature: 0,
             });
         }
         return Err(VerifyBundleError::EmptyEnvelope);
@@ -610,15 +631,22 @@ pub fn verify_bundle(
         cosignatures_verified,
         matched_witness_pubkeys_hex,
         c2sp_cosigs_byte_mismatch,
+        c2sp_cosigs_malformed_signature,
     ) = if trust.is_self_check_only() {
-        (false, 0, Vec::new(), 0)
+        (false, 0, Vec::new(), 0, 0)
     } else if let Some(anchor) = &env.merkle_anchor {
         let outcome = verify_merkle_anchor(env.edges.as_slice(), anchor, trust)?;
         let count = outcome.matched_witnesses.len();
         let hex_keys = outcome.matched_witnesses.iter().map(hex::encode).collect();
-        (true, count, hex_keys, outcome.c2sp_cosigs_byte_mismatch)
+        (
+            true,
+            count,
+            hex_keys,
+            outcome.c2sp_cosigs_byte_mismatch,
+            outcome.c2sp_cosigs_malformed_signature,
+        )
     } else {
-        (false, 0, Vec::new(), 0)
+        (false, 0, Vec::new(), 0, 0)
     };
 
     // 8) Report.
@@ -660,6 +688,7 @@ pub fn verify_bundle(
         matched_witness_pubkeys_hex,
         payload_binding_verified,
         c2sp_cosigs_byte_mismatch,
+        c2sp_cosigs_malformed_signature,
     })
 }
 
@@ -673,6 +702,7 @@ pub fn verify_bundle(
 struct MerkleAnchorOutcome {
     matched_witnesses: Vec<[u8; 32]>,
     c2sp_cosigs_byte_mismatch: usize,
+    c2sp_cosigs_malformed_signature: usize,
 }
 
 /// Verify the v2.2 payload binding: recompute payload hash + envelope
@@ -919,6 +949,11 @@ fn verify_merkle_anchor(
     // signature check against the configured origin's body but didn't
     // match any trusted key. Non-zero = likely origin mismatch.
     let mut c2sp_cosigs_byte_mismatch: usize = 0;
+    // **HIGH-5 (audit) diagnostic.** C2SP cosigs with non-64-byte
+    // signatures — previously silently skipped. Surfacing means
+    // operators can tell "wire corruption / proxy tampering" from
+    // "config mismatch".
+    let mut c2sp_cosigs_malformed_signature: usize = 0;
     if !anchor.sth.cosignatures.is_empty() {
         use ed25519_dalek::{Signature, VerifyingKey};
         let nucleus_canonical = nucleus_lineage::canonical_sth_bytes(
@@ -943,6 +978,14 @@ fn verify_merkle_anchor(
 
         for cosig in &anchor.sth.cosignatures {
             if cosig.signature.len() != 64 {
+                // **HIGH-5 (audit) fix.** Count instead of silently
+                // dropping. Only count C2SP cosigs (Nucleus-kind
+                // wire bytes are produced by our own code paths and
+                // shouldn't malform; if they do, it's a producer bug
+                // not a federation diagnostic).
+                if matches!(cosig.kind, nucleus_lineage::CosignatureKind::C2sp) {
+                    c2sp_cosigs_malformed_signature += 1;
+                }
                 continue;
             }
             let mut sig_arr = [0u8; 64];
@@ -992,6 +1035,7 @@ fn verify_merkle_anchor(
     Ok(MerkleAnchorOutcome {
         matched_witnesses: matched_witnesses.into_iter().collect(),
         c2sp_cosigs_byte_mismatch,
+        c2sp_cosigs_malformed_signature,
     })
 }
 

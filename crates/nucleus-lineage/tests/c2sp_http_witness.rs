@@ -398,6 +398,51 @@ async fn c2sp_witness_409_conflict_parses_last_known_size() {
     }
 }
 
+/// **HIGH-4 (audit) fix**: a proxy returning 409 with an HTML body
+/// (rate-limit page) must surface a Backend error that INCLUDES the
+/// Content-Type so operators can distinguish "witness misbehavior"
+/// from "intermediary mangled the response". Pre-fix: only the body
+/// excerpt was surfaced, making it hard to diagnose whether the
+/// witness or a CDN/proxy was at fault.
+#[tokio::test]
+async fn c2sp_witness_409_html_body_surfaces_content_type_in_error() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/add-checkpoint"))
+        .respond_with(ResponseTemplate::new(409).set_body_raw(
+            b"<html><body>Rate limited</body></html>".as_slice(),
+            "text/html; charset=utf-8",
+        ))
+        .mount(&mock)
+        .await;
+
+    let producer = Arc::new(Ed25519Witness::from_seed([0xCC; 32]));
+    let sth = make_sth(producer.as_ref(), 5, [0; 32]);
+    let base = mock.uri();
+    let err = tokio::task::spawn_blocking(move || {
+        let client = C2spHttpWitnessClient::new(
+            base,
+            "nucleus.example.com/log",
+            producer,
+            "nucleus.example.com/log",
+        )
+        .unwrap();
+        client.cosign(&sth)
+    })
+    .await
+    .unwrap()
+    .expect_err("HTML 409 body must error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("text/html") && msg.contains("text/x.tlog.size"),
+        "error must mention actual + expected Content-Type for operator diagnosis; got: {msg}"
+    );
+    assert!(
+        msg.contains("Rate limited"),
+        "error must include body excerpt; got: {msg}"
+    );
+}
+
 /// 409 with a non-decimal body falls back to the generic Backend
 /// error path (preserves the body excerpt for human diagnosis) — pins
 /// behavior so a future witness implementation can't quietly omit the

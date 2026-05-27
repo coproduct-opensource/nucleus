@@ -62,6 +62,13 @@ pub enum WitnessError {
         "C2SP witness rejected with 409 Conflict; witness's last-known tree size is {last_known_size}"
     )]
     Conflict { last_known_size: u64 },
+    /// **HIGH-3 (audit) fix.** A `std::sync::Mutex` guarding witness
+    /// or client state was poisoned by a prior panic. Surface as a
+    /// dedicated variant so callers can distinguish "transient
+    /// backend failure" from "internal invariant breach" — the latter
+    /// is non-retryable and signals process-restart territory.
+    #[error("witness mutex poisoned: {0}")]
+    Poisoned(&'static str),
 }
 
 /// A signed checkpoint of the lineage Merkle tree.

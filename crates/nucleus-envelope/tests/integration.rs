@@ -741,6 +741,74 @@ fn v2_3b_origin_mismatch_surfaces_byte_mismatch_count() {
     );
 }
 
+/// **HIGH-5 (audit) fix**: malformed-signature C2SP cosigs are no
+/// longer silently dropped — they're counted in a separate report
+/// field so operators can distinguish "wire-corruption / proxy
+/// tampering" from "config mismatch" (`byte_mismatch`).
+#[test]
+fn v2_3c_high5_malformed_c2sp_cosig_signature_surfaces_diagnostic() {
+    let dir = tempdir().unwrap();
+    let inner = InMemorySink::new();
+    let producer = Ed25519Witness::from_seed([88u8; 32]);
+    let producer_pub = producer.verifying_key_bytes();
+    let sink = MerkleSink::new(
+        inner,
+        producer,
+        MerkleConfig::new(dir.path()).with_interval(1000),
+    )
+    .unwrap();
+    let issuer = LocalIssuer::random().unwrap();
+    let p = pod();
+    sink.emit(signed_edge(
+        &issuer,
+        LineageEdge::pod_admit(p.clone()),
+        None,
+    ))
+    .unwrap();
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+    let bundle_no_cosig = nucleus_envelope::BundleBuilder::new(p.clone())
+        .payload(serde_json::json!({}))
+        .sink(&sink)
+        .jwks(jwks.clone())
+        .with_merkle_prover(&sink)
+        .build()
+        .unwrap();
+
+    let mut bundle = bundle_no_cosig;
+    // Build a C2SP cosig with a deliberately-wrong-length signature
+    // (32 bytes instead of 64). Pre-HIGH-5 this was silently dropped;
+    // now it surfaces as c2sp_cosigs_malformed_signature == 1.
+    let malformed_cosig = nucleus_lineage::Cosignature {
+        witness_kid: "garbled.example.com/w".to_string(),
+        signature: vec![0xAA; 32], // WRONG LENGTH — should be 64
+        timestamp_ms: 1234567890,
+        kind: nucleus_lineage::CosignatureKind::C2sp,
+    };
+    bundle
+        .envelope
+        .merkle_anchor
+        .as_mut()
+        .unwrap()
+        .sth
+        .cosignatures
+        .push(malformed_cosig);
+
+    let trust = TrustAnchor::from_jwks(jwks)
+        .with_witness_pubkey(producer_pub)
+        .with_c2sp_origin("any.example.com/log")
+        .cosignature_threshold(0); // allow the bundle, just check report
+    let report = verify_bundle(&bundle, &trust).expect("threshold-0 accepts");
+    assert_eq!(report.cosignatures_verified, 0);
+    assert_eq!(
+        report.c2sp_cosigs_malformed_signature, 1,
+        "malformed-sig C2SP cosig must be counted in dedicated field"
+    );
+    assert_eq!(
+        report.c2sp_cosigs_byte_mismatch, 0,
+        "malformed-sig must NOT be conflated with byte_mismatch"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // v2.2 — payload binding (detached DSSE signature)
 

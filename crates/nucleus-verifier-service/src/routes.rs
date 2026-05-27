@@ -7,6 +7,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::VerifyApiError;
 
+/// **HIGH-1 (#1648 / audit) fix.** Defense-in-depth cap on the number of
+/// trusted-witness keys a single verify request may declare. Each entry
+/// triggers Ed25519 key parsing + (in the worst case) one verify per
+/// cosig in the bundle. Combined with `MAX_COSIGNATURES_PER_STH = 64`
+/// from nucleus-envelope, an uncapped `trusted_witnesses_hex` lets a
+/// single request force `64 * len(trusted) * (per-cosig dispatch)`
+/// Ed25519 operations — pinning a verifier worker. 32 entries is well
+/// past any production federation (typical 3–5 trusted witnesses).
+const MAX_TRUSTED_WITNESSES_PER_REQUEST: usize = 32;
+
 /// `GET /healthz` — liveness.
 pub async fn healthz() -> &'static str {
     "ok"
@@ -141,6 +151,16 @@ pub async fn verify(
     };
     // v2.1: plumb federation parameters. Trusted witness keys are
     // decoded at the API edge so malformed inputs surface as 400.
+    //
+    // **HIGH-1 fix.** Cap the trusted-witness count BEFORE per-entry
+    // hex decode so a hostile client can't even force the parse work.
+    if req.trusted_witnesses_hex.len() > MAX_TRUSTED_WITNESSES_PER_REQUEST {
+        return Err(VerifyApiError::BadRequest(format!(
+            "trusted_witnesses_hex has {} entries; max {}",
+            req.trusted_witnesses_hex.len(),
+            MAX_TRUSTED_WITNESSES_PER_REQUEST
+        )));
+    }
     let mut anchor = anchor;
     for hex_str in &req.trusted_witnesses_hex {
         let bytes = hex::decode(hex_str.trim()).map_err(|e| {

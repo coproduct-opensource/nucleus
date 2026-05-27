@@ -71,20 +71,46 @@ impl JobEventBroker {
     /// for tests and back-pressure reasoning; production callers can
     /// ignore.
     pub fn publish(&self, job_id: &JobId, event: JobEvent) -> usize {
-        // Get or create channel.
-        let sender = {
-            let read = self.inner.read().expect("broker lock");
-            read.get(job_id).cloned()
+        // **HIGH-2 (audit) fix.** Don't .expect() a poisoned lock —
+        // that panics the SSE worker, cascading every subsequent
+        // publish into a process-level outage. On poison, emit a
+        // tracing::error and degrade to a no-op publish (0 receivers).
+        // Poisoning means a prior holder of this lock panicked while
+        // mutating the broker; the in-flight job loses event delivery
+        // but the worker survives.
+        //
+        // We use `read()` here for the lookup; on poison we recover
+        // the inner value (which is logically consistent — the
+        // broadcast Sender is itself Send+Sync and not corruption-prone).
+        let sender = match self.inner.read() {
+            Ok(g) => g.get(job_id).cloned(),
+            Err(poisoned) => {
+                tracing::error!(
+                    job_id = %job_id,
+                    "JobEventBroker read lock poisoned; recovering and continuing"
+                );
+                poisoned.into_inner().get(job_id).cloned()
+            }
         };
         let sender = match sender {
             Some(s) => s,
-            None => {
-                let mut write = self.inner.write().expect("broker lock");
-                write
+            None => match self.inner.write() {
+                Ok(mut g) => g
                     .entry(job_id.clone())
                     .or_insert_with(|| broadcast::channel(PER_JOB_CHANNEL_CAPACITY).0)
-                    .clone()
-            }
+                    .clone(),
+                Err(poisoned) => {
+                    tracing::error!(
+                        job_id = %job_id,
+                        "JobEventBroker write lock poisoned; recovering and continuing"
+                    );
+                    poisoned
+                        .into_inner()
+                        .entry(job_id.clone())
+                        .or_insert_with(|| broadcast::channel(PER_JOB_CHANNEL_CAPACITY).0)
+                        .clone()
+                }
+            },
         };
         sender.send(event).unwrap_or(0)
     }
@@ -93,15 +119,33 @@ impl JobEventBroker {
     /// exists yet (which is fine for callers to handle: they should
     /// fall back to polling the registry).
     pub fn subscribe(&self, job_id: &JobId) -> Option<broadcast::Receiver<JobEvent>> {
-        let read = self.inner.read().expect("broker lock");
-        read.get(job_id).map(|s| s.subscribe())
+        match self.inner.read() {
+            Ok(g) => g.get(job_id).map(|s| s.subscribe()),
+            Err(poisoned) => {
+                tracing::error!(
+                    job_id = %job_id,
+                    "JobEventBroker read lock poisoned in subscribe; recovering"
+                );
+                poisoned.into_inner().get(job_id).map(|s| s.subscribe())
+            }
+        }
     }
 
     /// Drop the broadcast channel for a job. Call after the terminal
     /// event has been published; the registry retains the final state.
     pub fn close(&self, job_id: &JobId) {
-        let mut write = self.inner.write().expect("broker lock");
-        write.remove(job_id);
+        match self.inner.write() {
+            Ok(mut g) => {
+                g.remove(job_id);
+            }
+            Err(poisoned) => {
+                tracing::error!(
+                    job_id = %job_id,
+                    "JobEventBroker write lock poisoned in close; recovering"
+                );
+                poisoned.into_inner().remove(job_id);
+            }
+        }
     }
 }
 
