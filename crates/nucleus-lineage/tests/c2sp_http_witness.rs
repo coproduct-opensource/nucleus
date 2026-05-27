@@ -824,6 +824,198 @@ async fn c2sp_stateful_client_409_without_prover_surfaces_conflict() {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// CRIT-1 (#1646) — concurrent cosign_many serialization
+
+/// **CRIT-1**: under concurrent `cosign` calls against a single client,
+/// the read-attempt-write sequence must serialize. Before the fix,
+/// two callers could read the same `prev_size`, both succeed at the
+/// witness, and the slower writer would clobber the faster one's
+/// correct new size — causing the NEXT call to send a stale `old N`
+/// and trigger a spurious 409.
+///
+/// This test fires K concurrent `cosign` calls against the same client.
+/// The witness mock COUNTS posts and rejects any unexpected `old` with
+/// 500 (so a race-induced wrong-old would fail the test loudly rather
+/// than silently retrying). Expectation: K posts total, zero 409s,
+/// zero 500s, all K cosigs returned successfully.
+///
+/// Uses synchronous `std::thread` for the parallel cosigns instead of
+/// `tokio::spawn_blocking` because `reqwest::blocking::Client` panics
+/// when its internal runtime is dropped inside an async context.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn c2sp_concurrent_cosigns_serialize_without_spurious_409() {
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    const K: usize = 8;
+
+    let origin = "nucleus.example.com/log-crit1".to_string();
+    let witness_seed = [0xD3; 32];
+    let mock = MockServer::start().await;
+
+    // Witness mock: tracks "current cosigned size", expects monotone
+    // `old` advancement from K concurrent submitters that share a
+    // client (serialization invariant). Returns 500 if a request
+    // arrives with stale `old` — exposes any race.
+    let current_size = std::sync::Arc::new(AtomicU64::new(0));
+    let post_count = std::sync::Arc::new(AtomicUsize::new(0));
+    let unexpected_old_count = std::sync::Arc::new(AtomicUsize::new(0));
+
+    struct ConcurrentHandler {
+        witness_seed: [u8; 32],
+        origin: String,
+        current_size: std::sync::Arc<AtomicU64>,
+        post_count: std::sync::Arc<AtomicUsize>,
+        unexpected_old_count: std::sync::Arc<AtomicUsize>,
+    }
+    impl wiremock::Respond for ConcurrentHandler {
+        fn respond(&self, req: &wiremock::Request) -> wiremock::ResponseTemplate {
+            self.post_count.fetch_add(1, Ordering::SeqCst);
+            let body = std::str::from_utf8(&req.body).unwrap_or("");
+            let first = body.lines().next().unwrap_or("");
+            let prev: u64 = first
+                .strip_prefix("old ")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(u64::MAX);
+
+            let expected = self.current_size.load(Ordering::SeqCst);
+            if prev != expected {
+                // Race exposed: serialization should have ensured
+                // monotone old. Failing loudly instead of just 409ing.
+                self.unexpected_old_count.fetch_add(1, Ordering::SeqCst);
+                return wiremock::ResponseTemplate::new(500).set_body_string(format!(
+                    "race-detected: expected old={expected}, got {prev}"
+                ));
+            }
+
+            // Skip past `old N` and zero+ proof lines to checkpoint.
+            let mut iter = body.lines();
+            iter.next();
+            for line in iter.by_ref() {
+                if line.is_empty() {
+                    break;
+                }
+            }
+            let mut origin_seen = None;
+            let mut size: Option<u64> = None;
+            let mut root_b64 = None;
+            for line in iter.by_ref() {
+                if line.is_empty() {
+                    break;
+                }
+                if origin_seen.is_none() {
+                    origin_seen = Some(line.to_string());
+                } else if size.is_none() {
+                    size = line.parse().ok();
+                } else if root_b64.is_none() {
+                    root_b64 = Some(line.to_string());
+                }
+            }
+            let o = origin_seen.unwrap();
+            if o != self.origin {
+                return wiremock::ResponseTemplate::new(404).set_body_string("origin");
+            }
+            let s = size.unwrap();
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            let rb = root_b64.unwrap();
+            let raw = STANDARD.decode(rb).unwrap();
+            let mut root = [0u8; 32];
+            root.copy_from_slice(&raw);
+            let checkpoint = checkpoint_signed_bytes(&o, s, &root).unwrap();
+            let witness = Ed25519Witness::from_seed(self.witness_seed);
+            let sig = witness.sign_message(&checkpoint);
+            let pubkey = witness.verifying_key_bytes();
+            let key_name = "concurrent.example.com/w".to_string();
+            let key_id = ed25519_key_id(&key_name, SIG_TYPE_ED25519, &pubkey);
+            let line = format_signature_line(&key_name, &key_id, &sig).unwrap();
+            // Advance witness's tracked size — next request's `old`
+            // must match this new value.
+            self.current_size.store(s, Ordering::SeqCst);
+            wiremock::ResponseTemplate::new(200)
+                .insert_header("content-type", "text/plain")
+                .set_body_string(format!("{line}\n"))
+        }
+    }
+
+    Mock::given(method("POST"))
+        .and(path("/add-checkpoint"))
+        .respond_with(ConcurrentHandler {
+            witness_seed,
+            origin: origin.clone(),
+            current_size: current_size.clone(),
+            post_count: post_count.clone(),
+            unexpected_old_count: unexpected_old_count.clone(),
+        })
+        .mount(&mock)
+        .await;
+
+    let base = mock.uri();
+    let origin_clone = origin.clone();
+
+    // All blocking work (client construction + concurrent cosigns +
+    // client drop) lives in one spawn_blocking so reqwest's private
+    // runtime is dropped on a blocking thread, not in async context.
+    // No consistency prover is needed for race testing — the race is
+    // in state update logic, not proof generation.
+    let (all_ok, total_posts, race_count) = tokio::task::spawn_blocking(move || {
+        let producer = Arc::new(Ed25519Witness::from_seed([0xD4; 32]));
+        let client = std::sync::Arc::new(
+            C2spHttpWitnessClient::new(base, origin_clone.clone(), producer.clone(), origin_clone)
+                .unwrap(),
+        );
+
+        // Synthetic STHs at strictly-increasing sizes 5, 6, ..., 5+K-1.
+        // Each is signed by the producer (validation isn't done by
+        // the witness mock, but it's the right shape). The witness
+        // mock will accept them in arrival order if and only if the
+        // `old` value advances monotonically.
+        let sths: Vec<_> = (5..(5 + K as u64))
+            .map(|size| {
+                let root = [(size as u8); 32];
+                producer.sign_sth(size, &root).unwrap()
+            })
+            .collect();
+
+        // Fire K concurrent cosigns via std::thread. They share one
+        // client → serialize at the state mutex. Without the CRIT-1
+        // fix, two threads can read the same prev_size and the
+        // second writer clobbers the first; this manifests as the
+        // mock's race-detector returning 500 with
+        // unexpected_old_count++.
+        let handles: Vec<_> = sths
+            .into_iter()
+            .map(|sth| {
+                let client = client.clone();
+                std::thread::spawn(move || client.cosign(&sth))
+            })
+            .collect();
+
+        let mut all_ok = 0;
+        for h in handles {
+            match h.join().unwrap() {
+                Ok(_) => all_ok += 1,
+                Err(e) => panic!("cosign failed: {e:?}"),
+            }
+        }
+        // Drop the client here on this blocking thread.
+        drop(client);
+        (
+            all_ok,
+            post_count.load(Ordering::SeqCst),
+            unexpected_old_count.load(Ordering::SeqCst),
+        )
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(all_ok, K, "every cosign must succeed");
+    assert_eq!(
+        race_count, 0,
+        "race-detector: no out-of-order `old` values allowed"
+    );
+    assert_eq!(total_posts, K, "K posts (no race-induced 409 retries)");
+}
+
 // canonical_sth_bytes and parse_signature_line are pulled in via use
 // statements; silence dead-code/unused-import for the (currently
 // unused) ones to keep the file warning-free across feature combos.

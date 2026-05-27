@@ -501,18 +501,38 @@ mod c2sp_http {
     /// checkpoint isn't signed by a key it trusts for that origin).
     ///
     /// **v2.3c stateful federation.** The client tracks the witness's
-    /// last-cosigned tree size in `last_known_size: Mutex<Option<u64>>`:
+    /// last-cosigned tree size in `state: Mutex<ClientState>`:
     ///
-    /// - `None`  → first submission ever; sends `old 0` with NO proof.
-    /// - `Some(n)` with `n > 0` and a [`MerkleProver`] attached via
-    ///   [`Self::with_consistency_prover`] → sends `old n` followed by
-    ///   the RFC 6962 §2.1.2 consistency proof from `n` to the STH's
-    ///   tree_size, encoded as base64 lines.
+    /// - `last_known_size: None` → first submission ever; sends `old 0`
+    ///   with NO proof.
+    /// - `last_known_size: Some(n)` with `n > 0` and a [`MerkleProver`]
+    ///   attached via [`Self::with_consistency_prover`] → sends `old n`
+    ///   followed by the RFC 6962 §2.1.2 consistency proof from `n` to
+    ///   the STH's tree_size, encoded as base64 lines.
     /// - On HTTP 200 OK, state advances to the STH's `tree_size`.
     /// - On HTTP 409 Conflict (Content-Type: `text/x.tlog.size`), state
     ///   is updated to the witness-reported size and the request is
     ///   retried ONCE with a fresh consistency proof. A second 409
     ///   surfaces as [`WitnessError::Conflict`] — no infinite loops.
+    ///
+    /// # Concurrency (CRIT-1 fix, issue #1646)
+    ///
+    /// The full attempt+retry-on-409 sequence runs under one
+    /// [`Mutex<ClientState>`] acquisition. Two concurrent `cosign_many`
+    /// calls against the same client serialize end-to-end (each waits
+    /// for the previous one's HTTP round-trip + state update before
+    /// reading state). This prevents the v2.3c race where two threads
+    /// could read the same `prev_size`, both succeed, and the slower
+    /// thread's write would clobber the faster thread's correct new
+    /// size with a stale, smaller one — triggering spurious 409s on
+    /// the next call.
+    ///
+    /// The mutex is `std::sync::Mutex`, NOT `tokio::sync::Mutex`: the
+    /// underlying HTTP transport is `reqwest::blocking`, never `.await`,
+    /// so callers from async contexts must wrap `cosign_many` in
+    /// `tokio::task::spawn_blocking`. For parallel throughput, use
+    /// multiple `C2spHttpWitnessClient` instances pointed at the same
+    /// origin — the witness reconciles via 409.
     ///
     /// **Operator note**: without a consistency-prover attached, the
     /// client always sends `old 0`. The witness will reject the second
@@ -526,15 +546,28 @@ mod c2sp_http {
         producer_key_name: String,
         client: Client,
         expected_witness_name: Option<String>,
-        /// **v2.3c.** Witness's last-cosigned tree size, per its 409
-        /// signals or per our own bookkeeping on successful POSTs.
-        /// `None` means "haven't talked to this witness yet" — sends
-        /// `old 0` with no consistency proof.
-        last_known_size: Mutex<Option<u64>>,
         /// **v2.3c.** Optional MerkleProver used to compute RFC 6962
         /// consistency proofs when `last_known_size > 0`. If absent,
         /// the client always sends `old 0` regardless of state.
         consistency_prover: Option<Arc<dyn MerkleProver>>,
+        /// **CRIT-1 (#1646) fix.** Per-client serialized state: the
+        /// full read-attempt-write-(retry) sequence in `cosign_many`
+        /// holds this lock so concurrent callers can't interleave and
+        /// clobber `last_known_size`. Wrapping ALL state in one
+        /// `Mutex<ClientState>` (vs separate locks per field) closes
+        /// the race-on-multiple-mutex foot-gun.
+        state: Mutex<ClientState>,
+    }
+
+    /// **CRIT-1 (#1646) fix.** All per-client mutable state, locked as
+    /// one unit. Extending this struct with new state requires NO
+    /// additional locks — keep it that way.
+    struct ClientState {
+        /// Witness's last-cosigned tree size, per its 409 signals or
+        /// per our own bookkeeping on successful POSTs. `None` means
+        /// "haven't talked to this witness yet" — sends `old 0` with
+        /// no consistency proof.
+        last_known_size: Option<u64>,
     }
 
     impl C2spHttpWitnessClient {
@@ -561,8 +594,10 @@ mod c2sp_http {
                 producer_key_name: producer_key_name.into(),
                 client,
                 expected_witness_name: None,
-                last_known_size: Mutex::new(None),
                 consistency_prover: None,
+                state: Mutex::new(ClientState {
+                    last_known_size: None,
+                }),
             })
         }
 
@@ -606,7 +641,7 @@ mod c2sp_http {
         /// state across process restarts can call this to skip the
         /// first 409 handshake on resume.
         pub fn with_initial_known_size(self, size: u64) -> Self {
-            *self.last_known_size.lock().unwrap() = Some(size);
+            self.state.lock().unwrap().last_known_size = Some(size);
             self
         }
 
@@ -745,23 +780,39 @@ mod c2sp_http {
         /// actual last-known size, updates state and retries ONCE with
         /// a fresh proof. A second 409 surfaces as
         /// [`WitnessError::Conflict`] (no retry loop).
+        ///
+        /// **CRIT-1 (#1646) fix.** The full sequence runs under one
+        /// `state.lock()` acquisition so concurrent callers cannot
+        /// interleave read-attempt-write and clobber each other's
+        /// `last_known_size`. The lock is a `std::sync::Mutex`, held
+        /// across the synchronous (blocking) HTTP round-trip — never
+        /// across an `.await`. Callers from async contexts MUST wrap
+        /// in `spawn_blocking`.
         pub fn cosign_many(&self, sth: &SignedTreeHead) -> Result<Vec<Cosignature>, WitnessError> {
-            // First attempt: use whatever state we have. `None` →
-            // first-submission `old 0`.
-            let prev = self.last_known_size.lock().unwrap().unwrap_or(0);
+            // Single critical section: read → POST → (on 409) update +
+            // retry → write. Concurrent callers wait FIFO at the lock.
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| WitnessError::Backend("client state mutex poisoned".into()))?;
+
+            let prev = state.last_known_size.unwrap_or(0);
             match self.attempt_cosign(sth, prev) {
                 Ok(cosigs) => {
-                    *self.last_known_size.lock().unwrap() = Some(sth.tree_size);
+                    state.last_known_size = Some(sth.tree_size);
                     Ok(cosigs)
                 }
                 Err(WitnessError::Conflict { last_known_size }) => {
                     // **v2.3c retry-once.** Witness's state diverged
                     // from ours; update and retry with a proof from
-                    // the witness-reported size.
-                    *self.last_known_size.lock().unwrap() = Some(last_known_size);
+                    // the witness-reported size. State is updated
+                    // BEFORE the retry so that even if the retry
+                    // fails, the next call starts from the right
+                    // position.
+                    state.last_known_size = Some(last_known_size);
                     match self.attempt_cosign(sth, last_known_size) {
                         Ok(cosigs) => {
-                            *self.last_known_size.lock().unwrap() = Some(sth.tree_size);
+                            state.last_known_size = Some(sth.tree_size);
                             Ok(cosigs)
                         }
                         Err(e) => Err(e),
