@@ -30,6 +30,30 @@
 //! - The cosignature-specific "header line + timestamp line + body"
 //!   prefix format defined by `tlog-cosignature.md` — we cover the
 //!   plain-note signature path only in v2.3a.
+//!
+//! # Dialect targeted (CRIT-2 / #1647)
+//!
+//! This implementation targets the **Go sumdb dialect** of C2SP
+//! `tlog-checkpoint`, as published by [`transparency-dev/formats`]
+//! and consumed by the ArmoredWitness / Sigstore Rekor / Omniwitness
+//! ecosystem:
+//!
+//! - 32-byte raw SHA-256 root hash (no algorithm prefix byte)
+//! - Standard RFC 4648 base64 (not URL-safe)
+//! - Single `\n` line terminator throughout
+//!
+//! Sigsum-style algorithm-prefixed root encoding is **NOT** supported.
+//!
+//! Interop with the external ecosystem is pinned by KAT vectors in
+//! `tests/c2sp_interop.rs` — most importantly,
+//! `kat_spec_signature_verifies_against_spec_pubkey` which
+//! cryptographically verifies the spec's published example signature
+//! against the spec's published example pubkey over the spec's
+//! published example message. If that test breaks, our wire format
+//! has diverged from the C2SP ecosystem and federation will fail
+//! silently in production.
+//!
+//! [`transparency-dev/formats`]: https://github.com/transparency-dev/formats/blob/main/log/checkpoint_test.go
 
 use sha2::{Digest, Sha256};
 use thiserror::Error;
