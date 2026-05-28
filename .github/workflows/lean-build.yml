@@ -24,38 +24,14 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: Install elan (Lean toolchain manager)
-        run: |
-          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
-            | sh -s -- -y --no-modify-path
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
-
-      - name: Pin toolchain from lean-toolchain
-        working-directory: crates/portcullis-core/lean
-        run: lean --version
-
-      - name: Cache Lake / Mathlib build artifacts
-        uses: actions/cache@v5
+      # Sets up elan, layers the canonical Lake/Mathlib cache, hydrates
+      # prebuilt Mathlib oleans, and runs `lake build PortcullisCoreBridge`.
+      # Replaces ~30 lines of hand-rolled boilerplate; same semantics.
+      - uses: coproduct-opensource/lean-mathlib-cache@6bb3a2b9eb9fe7cf9d36604c0e603d558a4782cf # v1.0.0
         with:
-          path: |
-            crates/portcullis-core/lean/.lake
-            ~/.elan
-            ~/.cache/mathlib
-          # Include lake-manifest.json so dep commit bumps invalidate the cache.
-          key: lean-core-${{ runner.os }}-${{ hashFiles('crates/portcullis-core/lean/lean-toolchain', 'crates/portcullis-core/lean/lakefile.lean', 'crates/portcullis-core/lean/lake-manifest.json') }}
-          restore-keys: |
-            lean-core-${{ runner.os }}-
-
-      # Fetch prebuilt Mathlib .olean artifacts from Azure. Without this step
-      # a cold cache triggers a ~1 hour full Mathlib compile; with it, the
-      # Mathlib layer downloads in ~5 minutes.
-      - name: Fetch Mathlib cache (prebuilt oleans)
-        working-directory: crates/portcullis-core/lean
-        run: lake exe cache get || true
-
-      - name: lake build PortcullisCoreBridge
-        working-directory: crates/portcullis-core/lean
-        run: lake build PortcullisCoreBridge
+          lean-project-dir: crates/portcullis-core/lean
+          build-target: PortcullisCoreBridge
+          cache-key-prefix: lean-core
 
       - name: Reject sorry (proof holes)
         working-directory: crates/portcullis-core/lean
