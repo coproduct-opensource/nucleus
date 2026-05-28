@@ -31,7 +31,7 @@ jobs:
       # Sets up elan, layers the canonical Lake/Mathlib cache, hydrates
       # prebuilt Mathlib oleans, and runs `lake build PortcullisCoreBridge`.
       # Replaces ~30 lines of hand-rolled boilerplate; same semantics.
-      - uses: coproduct-opensource/lean-mathlib-cache@6bb3a2b9eb9fe7cf9d36604c0e603d558a4782cf # v1.0.0
+      - uses: coproduct-opensource/lean-mathlib-cache@9f69375ab6b89d215afa6938964e0200f15cd9ed # v1.0.1
         with:
           lean-project-dir: crates/portcullis-core/lean
           build-target: PortcullisCoreBridge
