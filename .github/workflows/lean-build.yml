@@ -5,12 +5,16 @@ on:
     branches: ["main"]
     paths:
       - "crates/portcullis-core/lean/**"
+      - ".github/workflows/lean-build.yml"
   pull_request:
     paths:
       - "crates/portcullis-core/lean/**"
+      - ".github/workflows/lean-build.yml"
   merge_group:
     paths:
       - "crates/portcullis-core/lean/**"
+      - ".github/workflows/lean-build.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
