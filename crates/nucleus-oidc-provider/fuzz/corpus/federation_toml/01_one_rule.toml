@@ -1,0 +1,6 @@
+[[rule]]
+id = "test"
+subject_prefix = "spiffe://prod/ns/agents/*"
+audience = "https://rp.example/api"
+allowed_grants = ["urn:ietf:params:oauth:grant-type:token-exchange"]
+max_token_lifetime_secs = 3600

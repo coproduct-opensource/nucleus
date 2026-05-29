@@ -1,0 +1,86 @@
+[package]
+name = "nucleus-oidc-provider"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "OIDC OP that mints JWT-SVIDs / OIDC tokens for nucleus pods and exchanges externally-issued SVIDs for audience-bound tokens (RFC 8693). Peer to nucleus-verifier-service."
+repository = "https://github.com/coproduct-opensource/nucleus"  # vendor-allow: project repo URL
+keywords = ["oidc", "oauth", "spiffe", "svid", "identity"]
+categories = ["web-programming::http-server", "cryptography"]
+
+[[bin]]
+name = "nucleus-oidc-provider"
+path = "src/main.rs"
+
+[dependencies]
+# Internal — Jwks / SvidClaims / future JwtIssuer
+nucleus-lineage = { path = "../nucleus-lineage" }
+# Public OIDC primitives — JtiCache, federation traits, key resolution.
+nucleus-oidc-core = { path = "../nucleus-oidc-core" }
+
+# Web framework — mirrors nucleus-verifier-service stack so the
+# concurrency-limit / body-limit / timeout / CORS hardening (audit MED-5)
+# can be lifted verbatim per task #43.
+axum = { workspace = true }
+tower = { version = "0.5", features = ["util", "limit"] }
+tower-http = { version = "0.6", features = ["trace", "timeout", "cors", "limit"] }
+tokio = { workspace = true, features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+
+# Serde
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Errors
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logs
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# CLI
+clap = { workspace = true }
+
+# Crypto — explicit zeroize feature (closes #31 GA-8: never rely on
+# transitive default-features for key-material zeroization).
+ed25519-dalek = { version = "=3.0.0-pre.7", features = ["zeroize", "rand_core", "pkcs8"] }
+
+# Encoding
+hex = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+
+# Federation rule store — TOML on disk.
+toml = { workspace = true }
+
+# File-backed keystore — age v1 format is stable and widely deployed
+# (SOPS, rage). The crate version is pre-1.0 (API still stabilizing)
+# but the on-disk format is fixed at age-encryption.org/v1.
+age = "0.11"
+
+# Zeroize the passphrase wrapper. `zeroize_derive` lets future types
+# in this crate opt in declaratively.
+zeroize = { version = "1.8", features = ["zeroize_derive"] }
+
+# rand for SigningKey::generate; matches nucleus-lineage's pin.
+rand = { version = "0.10", features = ["std", "std_rng"] }
+
+# UUIDv4 for the `jti` claim.
+uuid = { workspace = true }
+
+# Constant-time compare for any future verify-side KID lookup. The
+# JwtIssuer in this crate doesn't compare KIDs (it only embeds the
+# active KID returned by the keystore), but downstream verifiers will.
+subtle = "2"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util", "limit"] }
+http-body-util = "0.1"
+tempfile = "3"
+proptest = "1"
+
+[lints]
+workspace = true

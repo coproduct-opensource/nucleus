@@ -72,7 +72,8 @@ pub use binding::{
     NUCLEUS_BUNDLE_PAYLOAD_TYPE,
 };
 pub use bundle::{
-    Bundle, BundleBuilder, BundleError, EdgeInclusionProof, Envelope, EnvelopeMeta, MerkleAnchor,
+    canonical_bundle_hash, Bundle, BundleBuilder, BundleError, EdgeInclusionProof, Envelope,
+    EnvelopeAttestation, EnvelopeMeta, MerkleAnchor,
 };
 pub use extract::{extract_session_subgraph, SessionSubgraph};
 pub use verify::{verify_bundle, TrustAnchor, VerificationReport, VerifyBundleError};

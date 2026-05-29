@@ -2,7 +2,7 @@
 name = "portcullis"
 version = "1.0.0"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 description = "A quotient lattice for AI agent permissions that prevents the 'uninhabitable state'"
 repository = "https://github.com/coproduct-opensource/nucleus"

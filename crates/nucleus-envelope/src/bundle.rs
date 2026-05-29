@@ -95,6 +95,71 @@ pub struct Bundle {
     /// `TrustAnchor::require_payload_binding`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding: Option<PayloadBinding>,
+    /// **v3 OP attestation.** Optional cryptographic attestation by the
+    /// OIDC OP that the SVIDs cited in this envelope's edges were
+    /// validly issued at session time. Verifiers with the OP's JWKS
+    /// can re-check the signature without trusting the bundle
+    /// producer.
+    ///
+    /// Absent (`None`) preserves v1/v2 wire shape; producer pipelines
+    /// that don't yet integrate the OP keep working unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation: Option<EnvelopeAttestation>,
+}
+
+/// OP-side attestation over a bundle's canonical content hash.
+///
+/// The bundle's `attestation` field is intentionally excluded from the
+/// canonical hash so the attestation can be added or stripped without
+/// invalidating other downstream signatures.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnvelopeAttestation {
+    /// HTTPS URL of the OP that signed this attestation. Matches the
+    /// `iss` claim in the embedded JWS.
+    pub issuer_url: String,
+    /// RFC 7638 thumbprint of the verifying key used to sign. Lets a
+    /// verifier select the right entry from the OP's JWKS even when
+    /// multiple keys (active + grace-window) are present.
+    pub key_thumbprint: String,
+    /// Compact JWS (`header.payload.signature`) — the OP's signature
+    /// over a JSON payload containing `iss`, `iat`, `exp`, `jti`, and
+    /// `bundle_hash` (hex SHA-256 of `canonical_bundle_hash(bundle)`).
+    pub signed_attestation_jws: String,
+}
+
+/// Compute the canonical bundle hash that an [`EnvelopeAttestation`]
+/// signs. Stable across re-serializations because it derives from
+/// already-canonical fields:
+/// - `envelope.session_root` (canonical SPIFFE URI)
+/// - last edge's `proof.edge_content_hash` (chain head, when edges exist)
+/// - SHA-256 of `serde_json::to_vec(&payload)` (the agent's output)
+///
+/// The bundle's own `attestation` field is excluded from the hash so
+/// attaching, replacing, or stripping the attestation doesn't
+/// invalidate downstream signatures.
+pub fn canonical_bundle_hash(bundle: &Bundle) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"nucleus-envelope-attestation-v1\n");
+    h.update(bundle.envelope.session_root.as_str().as_bytes());
+    h.update(b"\n");
+    // Edge count + last edge's prev_hash bind the chain head.
+    h.update((bundle.envelope.edges.len() as u64).to_le_bytes());
+    if let Some(last) = bundle.envelope.edges.last() {
+        if let Some(proof) = &last.proof {
+            if let Some(prev) = &proof.prev_hash {
+                h.update(prev);
+            }
+        }
+    }
+    h.update(b"\n");
+    // Canonicalize the payload via serde_json default ordering.
+    let payload_bytes =
+        serde_json::to_vec(&bundle.payload).unwrap_or_else(|_| b"<unserializable>".to_vec());
+    let payload_hash = Sha256::digest(&payload_bytes);
+    h.update(payload_hash);
+    h.finalize().into()
 }
 
 /// The provenance certificate accompanying a [`Bundle::payload`].
@@ -438,6 +503,7 @@ impl<'a> BundleBuilder<'a> {
             payload,
             envelope,
             binding,
+            attestation: None,
         })
     }
 }
@@ -556,5 +622,108 @@ mod tests {
         assert_eq!(back.envelope.edges.len(), 2);
         assert_eq!(back.envelope.session_root, bundle.envelope.session_root);
         assert_eq!(back.payload, bundle.payload);
+    }
+
+    // ── EnvelopeAttestation (#47) ──────────────────────────────────────
+
+    fn fixture_bundle() -> Bundle {
+        let sink = InMemorySink::new();
+        let p = pod();
+        sink.emit(LineageEdge::pod_admit(p.clone())).unwrap();
+        sink.emit(LineageEdge::from_parent(
+            p.derive_tool("Read", Some(b"x")).unwrap(),
+            p.clone(),
+            EdgeKind::ToolCall {
+                tool: "Read".to_string(),
+            },
+        ))
+        .unwrap();
+        BundleBuilder::new(p)
+            .payload(serde_json::json!({"summary": "hi"}))
+            .sink(&sink)
+            .jwks(Jwks { keys: vec![] })
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn canonical_bundle_hash_is_deterministic() {
+        let b = fixture_bundle();
+        let h1 = canonical_bundle_hash(&b);
+        let h2 = canonical_bundle_hash(&b);
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 32);
+    }
+
+    #[test]
+    fn canonical_bundle_hash_ignores_attestation_field() {
+        let mut a = fixture_bundle();
+        let mut b = fixture_bundle();
+        // Force the test bundles to share the same internal state.
+        b.envelope.edges = a.envelope.edges.clone();
+        b.envelope.session_root = a.envelope.session_root.clone();
+        b.payload = a.payload.clone();
+
+        let h_no_attestation = canonical_bundle_hash(&a);
+
+        // Add an attestation to `a`; hash must NOT change.
+        a.attestation = Some(EnvelopeAttestation {
+            issuer_url: "https://oidc.nucleus.example/".to_string(),
+            key_thumbprint: "kid-abc".to_string(),
+            signed_attestation_jws: "header.payload.sig".to_string(),
+        });
+        let h_with_attestation = canonical_bundle_hash(&a);
+        assert_eq!(h_no_attestation, h_with_attestation);
+
+        // And `b`'s hash equals both.
+        assert_eq!(canonical_bundle_hash(&b), h_no_attestation);
+    }
+
+    #[test]
+    fn canonical_bundle_hash_differs_on_payload_change() {
+        let mut b = fixture_bundle();
+        let h1 = canonical_bundle_hash(&b);
+        b.payload = serde_json::json!({"summary": "DIFFERENT"});
+        let h2 = canonical_bundle_hash(&b);
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn bundle_without_attestation_round_trips_unchanged() {
+        let b = fixture_bundle();
+        let json = serde_json::to_string(&b).unwrap();
+        // Backward-compat: no `attestation` field in the wire JSON when None.
+        assert!(!json.contains("\"attestation\""));
+        let back: Bundle = serde_json::from_str(&json).unwrap();
+        assert!(back.attestation.is_none());
+    }
+
+    #[test]
+    fn bundle_with_attestation_round_trips() {
+        let mut b = fixture_bundle();
+        b.attestation = Some(EnvelopeAttestation {
+            issuer_url: "https://oidc.nucleus.example/".to_string(),
+            key_thumbprint: "kid-xyz".to_string(),
+            signed_attestation_jws: "h.p.s".to_string(),
+        });
+        let json = serde_json::to_string(&b).unwrap();
+        let back: Bundle = serde_json::from_str(&json).unwrap();
+        let a = back.attestation.expect("attestation must round-trip");
+        assert_eq!(a.issuer_url, "https://oidc.nucleus.example/");
+        assert_eq!(a.key_thumbprint, "kid-xyz");
+        assert_eq!(a.signed_attestation_jws, "h.p.s");
+    }
+
+    #[test]
+    fn envelope_attestation_deny_unknown_fields() {
+        // A rogue field on EnvelopeAttestation must fail-loud.
+        let bad = r#"{
+            "issuer_url": "https://oidc.nucleus.example/",
+            "key_thumbprint": "kid-xyz",
+            "signed_attestation_jws": "h.p.s",
+            "rogue_field": "should not parse"
+        }"#;
+        let result: Result<EnvelopeAttestation, _> = serde_json::from_str(bad);
+        assert!(result.is_err(), "unknown field must be rejected");
     }
 }

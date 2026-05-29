@@ -279,6 +279,49 @@ impl CallSpiffeId {
     pub fn is_call(&self) -> bool {
         self.0.contains("/call/")
     }
+
+    /// Render as a WIMSE Workload Identifier per `draft-ietf-wimse-identifier`.
+    ///
+    /// Per AIMS §3 (`draft-klrc-aiagent-auth-00`): "An agent participating
+    /// in this framework MUST be assigned exactly one WIMSE identifier,
+    /// which MAY be a SPIFFE ID." Per the WIMSE identifier draft §3.2:
+    /// "Every SPIFFE-ID is a valid WIMSE Workload Identifier" — so we
+    /// emit the canonical `spiffe://` form unchanged and remain
+    /// conformant by inclusion. Consumers that prefer the explicit
+    /// `wimse://` scheme can post-process the returned string; the
+    /// internal canonical form stays SPIFFE-based to keep existing
+    /// callers, audit logs, and `grep` searches stable.
+    ///
+    /// This method exists primarily for API clarity: a call site that
+    /// reaches for a WIMSE identifier should call `to_wimse_uri()` so
+    /// the WIMSE context is documented at the call site, even though
+    /// the bytes are equal to [`Self::as_str`].
+    pub fn to_wimse_uri(&self) -> &str {
+        &self.0
+    }
+
+    /// Parse a WIMSE Workload Identifier per `draft-ietf-wimse-identifier`.
+    ///
+    /// Accepts BOTH:
+    /// - `spiffe://<trust-domain>/<path>` — the canonical SPIFFE form
+    ///   (delegates to [`Self::parse`]).
+    /// - `wimse://<trust-domain>/<path>` — the explicit WIMSE alias.
+    ///   The scheme is normalized to `spiffe://` before parsing, since
+    ///   the path/authority grammar is identical between the two
+    ///   schemes (per the WIMSE draft).
+    ///
+    /// **Scheme case-sensitivity:** WIMSE / SPIFFE URIs use a lowercase
+    /// scheme. We reject `WIMSE://`, `Spiffe://`, etc. to keep parsing
+    /// canonical (RFC 3986 §3.1 says schemes are case-insensitive in
+    /// principle but case-normalized in canonical form; we enforce the
+    /// canonical form on input rather than normalizing).
+    pub fn from_wimse_uri(uri: &str) -> Result<Self, IdError> {
+        if let Some(rest) = uri.strip_prefix("wimse://") {
+            Self::parse(format!("spiffe://{rest}"))
+        } else {
+            Self::parse(uri.to_string())
+        }
+    }
 }
 
 impl fmt::Display for CallSpiffeId {
@@ -642,6 +685,123 @@ mod tests {
     fn parse_accepts_canonical_pod_id() {
         // Sanity: don't regress accepted inputs.
         CallSpiffeId::parse("spiffe://prod.example.com/ns/agents/sa/coder").unwrap();
+    }
+
+    // ── WIMSE conformance (task #40 / GAP-10) ──────────────────────────
+
+    #[test]
+    fn to_wimse_uri_returns_canonical_spiffe_form() {
+        // Per #30 GAP-10 recommendation: backwards-compat keeps spiffe://
+        // as the canonical wire form. `to_wimse_uri()` is API-level
+        // clarity, not a byte-level transformation.
+        let p = pod();
+        assert_eq!(p.to_wimse_uri(), p.as_str());
+        assert!(p.to_wimse_uri().starts_with("spiffe://"));
+    }
+
+    #[test]
+    fn from_wimse_uri_accepts_spiffe_scheme() {
+        // The canonical input still works.
+        let id =
+            CallSpiffeId::from_wimse_uri("spiffe://prod.example.com/ns/agents/sa/coder").unwrap();
+        assert_eq!(id.as_str(), "spiffe://prod.example.com/ns/agents/sa/coder");
+    }
+
+    #[test]
+    fn from_wimse_uri_accepts_wimse_scheme_and_normalizes() {
+        // `wimse://` is rewritten to `spiffe://` because our internal
+        // canonical form is SPIFFE.
+        let id =
+            CallSpiffeId::from_wimse_uri("wimse://prod.example.com/ns/agents/sa/coder").unwrap();
+        assert_eq!(id.as_str(), "spiffe://prod.example.com/ns/agents/sa/coder");
+    }
+
+    #[test]
+    fn from_wimse_uri_rejects_uppercase_scheme() {
+        // Defensive: only the lowercase canonical forms are accepted.
+        assert!(matches!(
+            CallSpiffeId::from_wimse_uri("WIMSE://prod.example.com/ns/agents/sa/coder"),
+            Err(IdError::NotSpiffe(_))
+        ));
+        assert!(matches!(
+            CallSpiffeId::from_wimse_uri("Spiffe://prod.example.com/ns/agents/sa/coder"),
+            Err(IdError::NotSpiffe(_))
+        ));
+        assert!(matches!(
+            CallSpiffeId::from_wimse_uri("WiMsE://prod.example.com/ns/agents/sa/coder"),
+            Err(IdError::NotSpiffe(_))
+        ));
+    }
+
+    #[test]
+    fn from_wimse_uri_rejects_other_schemes() {
+        assert!(matches!(
+            CallSpiffeId::from_wimse_uri("https://prod.example.com/path"),
+            Err(IdError::NotSpiffe(_))
+        ));
+        assert!(matches!(
+            CallSpiffeId::from_wimse_uri("urn:example:id"),
+            Err(IdError::NotSpiffe(_))
+        ));
+    }
+
+    /// Acceptance property for #40 (a): `from_wimse_uri(to_wimse_uri(id)) == id`
+    /// across pod IDs and content-addressed `/call/...` IDs.
+    #[test]
+    fn wimse_uri_round_trip_property() {
+        let cases = [
+            // Pod ID.
+            pod(),
+            // Single tool-call edge.
+            pod().derive_tool("Bash", Some(b"hello")).unwrap(),
+            // Chained: tool → llm → derived.
+            pod()
+                .derive_tool("Bash", Some(b"x"))
+                .unwrap()
+                .derive_llm("provider-a", "prompt", b"hi")
+                .unwrap()
+                .derive_artifact(b"result")
+                .unwrap(),
+        ];
+        for id in cases {
+            let round_tripped = CallSpiffeId::from_wimse_uri(id.to_wimse_uri()).unwrap();
+            assert_eq!(
+                id,
+                round_tripped,
+                "wimse round-trip must equal original for {:?}",
+                id.as_str()
+            );
+        }
+    }
+
+    /// Cross-scheme: `wimse://X` and `spiffe://X` yield equal `CallSpiffeId`s
+    /// — they share the same internal canonical form.
+    #[test]
+    fn wimse_and_spiffe_schemes_parse_to_equal_ids() {
+        let a =
+            CallSpiffeId::from_wimse_uri("spiffe://prod.example.com/ns/agents/sa/coder").unwrap();
+        let b =
+            CallSpiffeId::from_wimse_uri("wimse://prod.example.com/ns/agents/sa/coder").unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a.as_str(), b.as_str());
+    }
+
+    /// All grammar rules from the SPIFFE parser apply to `wimse://` inputs
+    /// once the scheme is normalized. Sanity-checking a few rejection
+    /// classes (forbidden chars, uppercase authority, query strings)
+    /// pins this behavior.
+    #[test]
+    fn from_wimse_uri_inherits_spiffe_grammar_rejections() {
+        // Query string forbidden — covered by parse() check.
+        assert!(matches!(
+            CallSpiffeId::from_wimse_uri("wimse://prod.example.com/ns/agents/sa/coder?x=1"),
+            Err(IdError::ForbiddenChar('?', _))
+        ));
+        // Uppercase authority forbidden — covered by parse() check.
+        assert!(matches!(
+            CallSpiffeId::from_wimse_uri("wimse://Prod.Example.Com/ns/agents/sa/coder"),
+            Err(IdError::InvalidAuthority(_))
+        ));
     }
 
     #[test]

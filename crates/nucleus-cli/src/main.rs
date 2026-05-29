@@ -28,6 +28,7 @@ mod doctor;
 mod envelope;
 mod envelope_verify;
 mod guard;
+mod identity;
 mod keychain;
 mod lineage;
 mod lineage_verify;
@@ -109,6 +110,9 @@ enum Commands {
     /// Manage attenuation tokens for delegation
     Token(token::TokenArgs),
 
+    /// JWT-SVID inspection + OP token-exchange affordances (#48)
+    Identity(identity::IdentityArgs),
+
     /// Interact with a running nucleus-node (test utilities)
     Node(node::NodeArgs),
 
@@ -171,6 +175,7 @@ async fn main() -> Result<()> {
         Commands::Observe(args) => observe::execute(args),
         Commands::Replay(args) => replay::execute(args),
         Commands::Token(args) => token::execute(args),
+        Commands::Identity(args) => identity::execute(args),
         Commands::Node(args) => node::execute(args).await,
         Commands::Lineage(args) => lineage::execute(args),
         Commands::LineageVerifyChain(args) => lineage_verify::execute(args),

@@ -1,0 +1,71 @@
+# Fly.io deployment for nucleus-oidc-provider.   # vendor-allow: Fly-specific deploy config by design
+#
+# Architecture per `nucleus/CLAUDE.md` Fly.io section:   # vendor-allow: cite project Fly.io guidelines
+# - Service binds 0.0.0.0:8080 so 6PN can reach it via `<app>.internal`.
+# - Public listener: HTTPS termination at the Fly edge.
+# - Critical path: `min_machines_running = 1` (the OP is the
+#   identity root; cold-start latency on token-exchange is unacceptable).
+# - gRPC port reserved at 9080 (HTTP + 1000) per workspace convention,
+#   to be wired when nucleus-oidc-provider grows a tonic surface.
+
+app = "nucleus-oidc-provider"
+primary_region = "iad"
+kill_signal = "SIGTERM"
+kill_timeout = 30
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NUCLEUS_OIDC_BIND = "0.0.0.0:8080"
+  # Issuer URL — operators MUST override per environment. Defaults to a
+  # bogus value so a forgotten override fails-loud at boot.
+  NUCLEUS_OIDC_ISSUER_URL = "https://oidc-MUST-BE-OVERRIDDEN.example/"
+  RUST_LOG = "info,nucleus_oidc_provider=info"
+
+# Public HTTPS surface — discovery doc, JWKS, token-exchange endpoint.
+[http_service]
+  internal_port = 8080
+  force_https = true                   # public listener: TLS terminated at edge
+  auto_stop_machines = "off"           # NEVER stop the OP — critical path
+  auto_start_machines = true
+  min_machines_running = 1             # acceptance (b): always-on
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "15s"
+    method = "GET"
+    timeout = "5s"
+    path = "/healthz"                  # acceptance (d): real health probe
+
+[[services]]
+  # Reserved gRPC surface (HTTP+1000 per workspace convention). Currently
+  # unbound; when we add a tonic surface (token-exchange streaming, etc.)
+  # this slot is ready.
+  protocol = "tcp"
+  internal_port = 9080
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[services.ports]]
+    port = 9080
+    handlers = ["tls"]
+    [services.ports.tls_options]
+      alpn = ["h2"]                    # gRPC requires HTTP/2
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  # Bump to "shared-cpu-2x" / 1gb when integration tests show p99 > 200ms
+  # under target traffic.
+
+# Persistent volume for the FileKeyStore. The keystore.age blob lives
+# at /data/keystore.age inside the VM. age-encrypted at rest; the
+# passphrase comes from a Fly secret (set with `flyctl secrets set
+# NUCLEUS_OIDC_KEYSTORE_PASSPHRASE=...`).
+[mounts]
+  source = "nucleus_oidc_data"
+  destination = "/data"

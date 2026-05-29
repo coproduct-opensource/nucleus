@@ -1,0 +1,28 @@
+[package]
+name = "nucleus-oidc-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Provider-agnostic OIDC primitives — JWKS resolution (RSA + Ed25519/OKP), replay protection, federation-dispatch hooks, and the shared error type. Consumed by per-provider validator crates that register their issuer pattern at startup."
+repository = "https://github.com/coproduct-opensource/nucleus"  # vendor-allow: project repo URL
+keywords = ["oidc", "oauth", "jwks", "jwt", "federation"]
+categories = ["cryptography", "authentication"]
+
+[dependencies]
+async-trait = "0.1"
+base64 = { workspace = true }
+ed25519-dalek = { version = "=3.0.0-pre.7", default-features = false }
+reqwest = { workspace = true, features = ["json", "rustls"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+
+[lints]
+workspace = true
