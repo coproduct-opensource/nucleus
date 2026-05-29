@@ -77,10 +77,15 @@ impl JtiCache {
     /// THEIR OWN entries. Legitimate tokens within their exp window
     /// remain safe.
     pub fn check_and_mark(&self, jti: &str, exp: u64) -> Result<(), OidcError> {
+        // (#55 LOW-5) Fail-loud on a clock that's before unix epoch
+        // rather than silently treating `now = 0`. With `now = 0`,
+        // EVERY entry would store `retention_until = max(exp, FLOOR)`
+        // → cache state degenerates and the eviction policy no longer
+        // protects honest entries. Better to surface the bad clock.
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .map_err(|_| OidcError::JwtValidation("system clock before unix epoch".into()))?;
         let retention_until = exp.max(now.saturating_add(RETENTION_FLOOR_SECS));
         let mut used = self
             .used

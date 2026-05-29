@@ -35,12 +35,24 @@ use super::memory::DEFAULT_GRACE_WINDOW;
 use super::{rfc7638_kid, JwtKeyStore, KeyStoreError, RotateOutcome, SignedBytes, VerifyKey};
 
 /// File-backed, encrypted-at-rest key store.
+/// (#55 LOW-3) Hard cap on the verify-set's grace-window entries. With
+/// rotation cadence < grace window the `previous` map grows linearly
+/// with rotation count; cap at 32 entries and evict the soonest-expiring
+/// when over. Operator misconfiguration (rotation every 1m, grace 1h)
+/// otherwise grows unbounded.
+pub(crate) const MAX_PREVIOUS_ENTRIES: usize = 32;
+
 pub struct FileKeyStore {
     /// Path to the age-encrypted blob.
     path: PathBuf,
     /// Operator passphrase. Wrapped in `Zeroizing` so it scrubs on Drop.
     passphrase: Mutex<Zeroizing>,
     inner: Mutex<Inner>,
+    /// (#55 MED-3) Serializes concurrent rotate() calls so two
+    /// rotations can't race to disk. Held during the full
+    /// generate+persist+swap sequence. Sign() does NOT take this
+    /// lock, so signing latency is not affected by rotation.
+    rotate_lock: Mutex<()>,
     grace_window: Duration,
 }
 
@@ -133,6 +145,7 @@ impl FileKeyStore {
             path,
             passphrase: Mutex::new(zeroizing_passphrase),
             inner: Mutex::new(inner),
+            rotate_lock: Mutex::new(()),
             grace_window,
         })
     }
@@ -256,6 +269,19 @@ impl FileKeyStore {
         }
         fs::rename(&tmp, path)
             .map_err(|e| KeyStoreError::Backend(format!("rename {tmp:?} -> {path:?}: {e}")))?;
+        // (#55 MED-4) Parent-directory fsync after rename so the
+        // rename itself survives a crash. On ext4/data=writeback (or
+        // any filesystem that delays directory-entry writes), the
+        // file's contents are durable but the new path may not be.
+        // Without this, a crash mid-rotation can lose the rotated
+        // key — weakening T01's rotation-bounds-blast-radius claim.
+        if let Some(parent) = path.parent() {
+            // Opening a directory for fsync is a Unix idiom; on Windows
+            // this is a no-op-or-error, so we ignore failure there.
+            if let Ok(dir) = fs::File::open(parent) {
+                let _ = dir.sync_all();
+            }
+        }
         Ok(())
     }
 
@@ -327,26 +353,83 @@ impl JwtKeyStore for FileKeyStore {
     }
 
     fn rotate(&self) -> Result<RotateOutcome, KeyStoreError> {
-        let mut inner = self.inner.lock().map_err(|_| KeyStoreError::Poisoned)?;
+        // (#55 MED-3) Serialize concurrent rotations on a dedicated
+        // mutex so sign() is never blocked by rotate's disk I/O.
+        let _rotate_guard = self
+            .rotate_lock
+            .lock()
+            .map_err(|_| KeyStoreError::Poisoned)?;
+
         let now = SystemTime::now();
-
-        let old_kid = inner.active_kid.clone();
-        let old_verify = VerifyKey {
-            kid: old_kid.clone(),
-            verifying_key: inner.active_signing.verifying_key(),
-            not_before: inner.active_not_before,
-            not_after: now + self.grace_window,
-        };
-        inner.previous.insert(old_kid.clone(), Arc::new(old_verify));
-
         let new_signing = SigningKey::generate(&mut rand::rng());
         let new_kid = rfc7638_kid(&new_signing.verifying_key());
-        inner.active_signing = new_signing;
-        inner.active_kid = new_kid.clone();
-        inner.active_not_before = now;
 
-        Self::sweep_expired(&mut inner);
-        self.persist(&inner)?;
+        // Briefly take the inner lock to snapshot current state — no
+        // disk I/O happens under this lock.
+        let (old_kid, old_verifying, old_not_before, mut next_previous) = {
+            let inner = self.inner.lock().map_err(|_| KeyStoreError::Poisoned)?;
+            (
+                inner.active_kid.clone(),
+                inner.active_signing.verifying_key(),
+                inner.active_not_before,
+                inner.previous.clone(),
+            )
+        };
+
+        // Mutate the snapshot OUTSIDE the lock.
+        let old_verify = Arc::new(VerifyKey {
+            kid: old_kid.clone(),
+            verifying_key: old_verifying,
+            not_before: old_not_before,
+            not_after: now + self.grace_window,
+        });
+        next_previous.insert(old_kid.clone(), old_verify);
+        // Sweep expired.
+        next_previous.retain(|_, vk| vk.not_after > now);
+        // (#55 LOW-3) Cap grace-window entries — evict soonest-expiring
+        // when over MAX_PREVIOUS_ENTRIES.
+        while next_previous.len() > MAX_PREVIOUS_ENTRIES {
+            if let Some(soonest_kid) = next_previous
+                .iter()
+                .min_by_key(|(_, vk)| vk.not_after)
+                .map(|(k, _)| k.clone())
+            {
+                next_previous.remove(&soonest_kid);
+            } else {
+                break;
+            }
+        }
+
+        // Build a temp Inner to persist — uses a duplicate SigningKey
+        // derived from the same bytes so the original `new_signing`
+        // can move into the in-memory swap below.
+        let signing_bytes = new_signing.to_bytes();
+        let persist_inner = Inner {
+            active_signing: SigningKey::from_bytes(&signing_bytes),
+            active_kid: new_kid.clone(),
+            active_not_before: now,
+            previous: next_previous.clone(),
+        };
+
+        // Disk I/O OUTSIDE the inner lock — encrypt+fsync can take
+        // hundreds of ms (age scrypt KDF + fsync) without stalling
+        // concurrent sign() calls.
+        {
+            let pass = self
+                .passphrase
+                .lock()
+                .map_err(|_| KeyStoreError::Poisoned)?;
+            Self::encrypt_and_write(&self.path, &pass.0, &persist_inner, self.grace_window)?;
+        }
+
+        // Atomic in-memory swap (brief inner lock).
+        {
+            let mut inner = self.inner.lock().map_err(|_| KeyStoreError::Poisoned)?;
+            inner.active_signing = new_signing;
+            inner.active_kid = new_kid.clone();
+            inner.active_not_before = now;
+            inner.previous = next_previous;
+        }
 
         Ok(RotateOutcome {
             new_kid,

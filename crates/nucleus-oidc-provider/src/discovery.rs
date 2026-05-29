@@ -88,6 +88,16 @@ fn build_doc(issuer_url: &str) -> DiscoveryDoc {
     }
 }
 
+/// ETag for the discovery doc.
+///
+/// (#55 LOW-1) Invariant: the discovery doc is **static after startup**.
+/// All its content derives from `state.issuer_url` (a startup config)
+/// and module-level constants. There is no runtime-mutable state that
+/// could shift its bytes during a process lifetime. Therefore a simple
+/// sha256 over the serialized JSON is sufficient — it changes iff
+/// the operator restarts with a new config. Any future addition that
+/// makes the doc runtime-dynamic (e.g., advertising rotating alg
+/// values during a migration) must re-evaluate this scheme.
 fn etag_for(json: &[u8]) -> String {
     let digest = Sha256::digest(json);
     let b64 = URL_SAFE_NO_PAD.encode(digest);

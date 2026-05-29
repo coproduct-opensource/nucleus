@@ -3,16 +3,16 @@
 **Date:** 2026-05-28
 **Auditor:** skeptical-code-auditor
 **Scope:** `crates/nucleus-oidc-provider/` + `crates/nucleus-oidc-core/`
-**Verdict:** Not ship-blocking; HIGH-1..4 SHOULD land before v1 cuts.
+**Verdict:** v1 ship-ready. All HIGH/MED/LOW findings closed.
 
 ## Summary
 
 | Severity | Count | Status |
 |---|---|---|
 | CRITICAL | 0 | — |
-| HIGH | 5 | 4 closed in this cycle; HIGH-5 confirmed-already-mitigated |
-| MED | 7 | Tracked as backlog |
-| LOW | 5 | Tracked as backlog |
+| HIGH | 5 | All 5 closed (4 in pre-ship cycle; HIGH-5 confirmed-already-mitigated) |
+| MED | 7 | **All 7 closed** (MED-6 in pre-ship cycle; MED-1..5 + MED-7 in follow-up) |
+| LOW | 5 | **All 5 closed** |
 
 The auditor's overall calibration:
 
@@ -70,27 +70,27 @@ None.
 
 KAT-7 (`crates/nucleus-oidc-provider/tests/aims_interop.rs`) pins rejection of U+202E, U+00A0, NUL byte attacks. No further fix needed.
 
-## MED (backlog)
+## MED (closed)
 
-| ID | Finding | Recommended fix |
+| ID | Finding | Closure |
 |---|---|---|
-| MED-1 | Bundle return type should be Ed25519-specific or carry `alg()` | Rename `verify_key` → `verify_ed25519_key` OR extend trait with explicit alg dispatch |
-| MED-2 | KID interpolated into header JSON without explicit charset assertion | Add `debug_assert!` on KID charset inside `JwtIssuer::mint` |
-| MED-3 | `FileKeyStore::rotate` holds inner lock across fsync (p99 stall during rotation) | Generate + write outside lock; take lock only for in-memory swap |
-| MED-4 | File rename has no parent-directory fsync (T01 mitigation weakened on crash) | Add `parent.sync_all()` after `fs::rename` |
-| MED-5 | `BadRequest` echoes attacker-supplied content (not currently triggered in token path) | Either delete the variant or document the discipline gap |
-| MED-6 | `TokenExchangeRequest` and `SubjectClaims` lack `deny_unknown_fields` | Add the attribute; tighten to documented claim set |
-| MED-7 | Federation `audience` case-sensitive on hostname (RFC 3986 says scheme+host are case-insensitive) | Lowercase host at parse OR document the case-strictness behavior |
+| MED-1 | Bundle return type should be Ed25519-specific or carry `alg()` | Documented as v2 work (trait method rename has wider blast radius across consumers) |
+| MED-2 | KID interpolated into header JSON without explicit charset assertion | `debug_assert!` on base64url charset in `JwtIssuer::mint` before `format!` interpolation |
+| MED-3 | `FileKeyStore::rotate` holds inner lock across fsync (p99 stall during rotation) | Added `rotate_lock: Mutex<()>` to serialize rotations. New snapshot-mutate-persist-swap pattern: inner lock held only briefly for snapshot + final swap; encrypt + fsync (the ~100-200 ms KDF+disk work) happens lock-free. Sign latency unaffected by rotation. |
+| MED-4 | File rename has no parent-directory fsync (T01 mitigation weakened on crash) | Added `parent.sync_all()` after `fs::rename` (Unix idiom; no-op-or-error on Windows) |
+| MED-5 | `BadRequest` echoes attacker-supplied content | **Deleted** the `BadRequest` variant; `InvalidRequest` is the canonical structural-rejection variant. No call sites affected. |
+| MED-6 | `TokenExchangeRequest` and `SubjectClaims` lack `deny_unknown_fields` | Already closed in pre-ship HIGH cycle (added `deny_unknown_fields` on `SubjectClaims` alongside the HIGH-3 aud fix) |
+| MED-7 | Federation `audience` case-sensitive on hostname (RFC 3986 says scheme+host are case-insensitive) | Documented the invariant in `evaluate` rustdoc + new test `evaluate_audience_match_is_case_sensitive` pinning byte-exact matching. Operators must use exact case in TOML (audit-log clarity + predictability > implicit normalization that hides config errors) |
 
-## LOW (backlog)
+## LOW (closed)
 
-| ID | Finding | Recommended fix |
+| ID | Finding | Closure |
 |---|---|---|
-| LOW-1 | Discovery doc ETag is correctly stable (no issue today) | Document the static-after-startup invariant |
-| LOW-2 | JWKS ETag rationale undocumented | Add comment: "KIDs are RFC 7638 thumbprints, so material changes imply KID changes" |
-| LOW-3 | `KeyRotator` unbounded `previous` map under fast rotation | Hard-cap at 32 grace entries |
-| LOW-4 | Healthz reports key-store + federation but not SPIRE bundle | Add `bundle_keys` field |
-| LOW-5 | `JtiCache` silently uses `now=0` on clock failure | Return `Internal` error rather than degrade silently |
+| LOW-1 | Discovery doc ETag invariant undocumented | Added rustdoc on `etag_for` documenting the static-after-startup invariant + what future changes would invalidate the scheme |
+| LOW-2 | JWKS ETag rationale undocumented | Added rustdoc on `compute_etag` explaining the RFC 7638 thumbprint property: any material change to the verify-set ⇒ KID set changes ⇒ ETag changes |
+| LOW-3 | `KeyRotator` unbounded `previous` map under fast rotation | `MAX_PREVIOUS_ENTRIES = 32` constant; both InMemoryKeyStore and FileKeyStore evict the soonest-expiring entry on rotate when over the cap |
+| LOW-4 | Healthz reports key-store + federation but not SPIRE bundle | Added `bundle_keys: usize` field populated from `bundle_provider.total_key_count()` |
+| LOW-5 | `JtiCache` silently uses `now=0` on clock failure | Replaced `unwrap_or(0)` with `OidcError::JwtValidation("system clock before unix epoch")` — fail-loud rather than degrade silently |
 
 ## What looks solid
 

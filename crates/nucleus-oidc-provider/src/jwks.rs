@@ -64,6 +64,13 @@ fn verify_key_to_jwk(vk: &VerifyKey) -> JwkEntry {
 ///
 /// We sort KIDs lexicographically so the hash is independent of the
 /// keystore's internal order (HashMap iteration is non-deterministic).
+///
+/// (#55 LOW-2) Load-bearing invariant: KIDs are RFC 7638 thumbprints
+/// derived from the public-key material. ANY change to a key — new
+/// active, revoked verify-key, expired grace entry — produces a
+/// different set of KIDs and therefore a different ETag. There is no
+/// case where the verify-set's CRYPTOGRAPHIC state changes but the
+/// KID set stays identical, so this ETag tracks material change.
 fn compute_etag(keys: &[std::sync::Arc<VerifyKey>]) -> String {
     let mut kids: Vec<&str> = keys.iter().map(|k| k.kid.as_str()).collect();
     kids.sort();

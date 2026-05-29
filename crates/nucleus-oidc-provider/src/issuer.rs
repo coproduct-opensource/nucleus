@@ -331,6 +331,19 @@ impl JwtIssuer {
 
         let kid = self.keystore.active_kid()?;
 
+        // (#55 MED-2) Defense-in-depth: assert the KID is base64url-safe
+        // before interpolating into header JSON. KIDs are RFC 7638
+        // thumbprints (43 chars from `[A-Za-z0-9_-]`) so the charset
+        // is already constrained at the keystore boundary; this
+        // `debug_assert!` documents the invariant + catches any future
+        // refactor that swaps the KID source for operator-supplied
+        // strings (which would break header parsing or smuggle claims).
+        debug_assert!(
+            kid.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            "kid must be base64url-safe (RFC 7638 thumbprint); got {kid:?}"
+        );
+
         // Header: alg/kid/typ in lexicographic order. Hand-built so the
         // typ value is hard-coded; no library can be tricked into
         // emitting `alg: none` or HS-of-public-key etc.

@@ -43,10 +43,10 @@ pub const OPAQUE_INVALID_TARGET: &str =
 
 #[derive(Debug, Error)]
 pub enum OidcApiError {
-    /// Bad request shape (parsing, missing parameter, malformed value).
-    #[error("invalid request: {0}")]
-    BadRequest(String),
     /// RFC 8693 §2.2.2 `invalid_request` — missing or duplicated parameter.
+    /// (#55 MED-5: the prior `BadRequest` variant was deleted — its
+    /// undisciplined error-description echo violated the constant-time
+    /// discipline. Use `InvalidRequest` for structural rejections.)
     #[error("invalid request: {0}")]
     InvalidRequest(String),
     /// RFC 8693 §2.2.2 `invalid_grant` — subject_token rejected
@@ -116,9 +116,6 @@ impl IntoResponse for OidcApiError {
         // FIXED `error_description` regardless of the inner cause.
         // The inner detail string is for operator-side logs only.
         let (status, code, description) = match &self {
-            OidcApiError::BadRequest(m) => {
-                (StatusCode::BAD_REQUEST, "invalid_request", Some(m.clone()))
-            }
             OidcApiError::InvalidRequest(m) => {
                 (StatusCode::BAD_REQUEST, "invalid_request", Some(m.clone()))
             }

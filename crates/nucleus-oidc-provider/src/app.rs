@@ -141,6 +141,11 @@ struct HealthBody {
     /// Currently-loaded federation rules. 0 means default-deny —
     /// operators should see this in dashboards and load rules.
     federation_rules: usize,
+    /// (#55 LOW-4) Total verifying keys across all trust-domains in
+    /// the SPIRE trust bundle. 0 means the token endpoint will
+    /// reject every subject_token — observable directly rather than
+    /// hidden behind every Deny.
+    bundle_keys: usize,
 }
 
 /// Operator-meaningful health check.
@@ -161,6 +166,7 @@ async fn healthz(axum::extract::State(state): axum::extract::State<AppState>) ->
         .map(|v| v.len())
         .unwrap_or(0);
     let federation_rules = state.federation.rule_count();
+    let bundle_keys = state.bundle_provider.total_key_count();
 
     let ok = !active_kid.is_empty();
     let body = HealthBody {
@@ -168,6 +174,7 @@ async fn healthz(axum::extract::State(state): axum::extract::State<AppState>) ->
         active_kid,
         verify_keys,
         federation_rules,
+        bundle_keys,
     };
     let status = if ok {
         StatusCode::OK

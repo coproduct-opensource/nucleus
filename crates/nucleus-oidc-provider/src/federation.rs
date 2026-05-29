@@ -234,6 +234,14 @@ impl FederationRegistry {
     ///    `Allow` with the rule's lifetime cap.
     /// 3. Selected rule but grant not in allowed list → `Deny(GrantNotAllowed)`.
     /// 4. No rule matched → `Deny(NoMatchingRule)`.
+    ///
+    /// (#55 MED-7) Audience matching is **byte-exact, case-sensitive**.
+    /// RFC 3986 declares scheme + host case-insensitive, but operators
+    /// who write `https://RP.example/api` will see a Deny for workload
+    /// requests of `https://rp.example/api`. This trades operator
+    /// confusion for predictability + audit-log clarity (no implicit
+    /// normalization). Documented in operator runbook §3; pinned by
+    /// test `evaluate_audience_match_is_case_sensitive`.
     pub fn evaluate(&self, subject: &str, audience: &str, grant: &str) -> Decision {
         let rules = self.snapshot();
         for rule in &rules.rule {
@@ -334,6 +342,38 @@ mod tests {
             }
             _ => panic!("expected Allow"),
         }
+    }
+
+    /// (#55 MED-7) Pin the audience case-sensitivity decision: matching
+    /// is byte-exact with no implicit lowercase normalization. Operators
+    /// MUST write the audience in the same case the workload requests.
+    #[test]
+    fn evaluate_audience_match_is_case_sensitive() {
+        let reg = FederationRegistry::new(FederationRules {
+            rule: vec![rule(
+                "r-strict",
+                "spiffe://prod/ns/agents/sa/coder",
+                "https://RP.example/api", // mixed-case host
+                &[GRANT_TX],
+                300,
+            )],
+        });
+        // Exact-case match succeeds.
+        let d = reg.evaluate(
+            "spiffe://prod/ns/agents/sa/coder",
+            "https://RP.example/api",
+            GRANT_TX,
+        );
+        assert!(matches!(d, Decision::Allow { .. }));
+
+        // RFC 3986 would consider these equivalent, but we treat them
+        // as distinct. NoMatchingRule, not GrantNotAllowed.
+        let d = reg.evaluate(
+            "spiffe://prod/ns/agents/sa/coder",
+            "https://rp.example/api", // lowercase host
+            GRANT_TX,
+        );
+        assert!(matches!(d, Decision::Deny(DenyReason::NoMatchingRule)));
     }
 
     #[test]

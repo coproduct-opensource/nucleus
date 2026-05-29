@@ -162,6 +162,23 @@ impl JwtKeyStore for InMemoryKeyStore {
 
         Self::sweep_expired(&mut inner);
 
+        // (#55 LOW-3) Cap grace-window entries — evict soonest-expiring
+        // when over the limit. Defends against operator misconfiguration
+        // (rotation cadence < grace window) growing the verify-set
+        // without bound.
+        while inner.previous.len() > super::file::MAX_PREVIOUS_ENTRIES {
+            if let Some(soonest_kid) = inner
+                .previous
+                .iter()
+                .min_by_key(|(_, vk)| vk.not_after)
+                .map(|(k, _)| k.clone())
+            {
+                inner.previous.remove(&soonest_kid);
+            } else {
+                break;
+            }
+        }
+
         Ok(RotateOutcome {
             new_kid,
             old_kid: Some(old_kid),
