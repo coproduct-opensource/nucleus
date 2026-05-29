@@ -38,6 +38,7 @@ pub fn build_app(state: AppState) -> Router {
         .route("/healthz", get(routes::healthz))
         .route("/v1/jobs", post(routes::submit_job))
         .route("/v1/jobs/{job_id}", get(routes::get_job))
+        .route("/v1/jobs/{job_id}/cancel", post(routes::cancel_job))
         .route("/v1/jobs/{job_id}/bundle", get(routes::get_bundle))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,

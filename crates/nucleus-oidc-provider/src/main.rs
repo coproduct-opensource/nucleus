@@ -12,7 +12,6 @@ use nucleus_oidc_provider::{
     keystore::{InMemoryKeyStore, JwtKeyStore},
     JtiCache,
 };
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[derive(Parser, Debug)]
 #[command(name = "nucleus-oidc-provider", version)]
@@ -33,13 +32,9 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::registry()
-        .with(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("nucleus_oidc_provider=info,info")),
-        )
-        .with(fmt::layer().with_writer(std::io::stderr))
-        .init();
+    // Shared OTel bootstrap — emits to OTEL_EXPORTER_OTLP_ENDPOINT
+    // when set, falls through to stderr-only otherwise.
+    let _otel = nucleus_otel_bootstrap::init("nucleus-oidc-provider")?;
 
     let cli = Cli::parse();
 

@@ -35,8 +35,19 @@
 //! on any failure.
 
 pub mod app;
+pub mod db;
 pub mod error;
+pub mod log;
+pub mod merkle;
+pub mod retention;
 pub mod routes;
+pub mod signing;
+pub mod witness;
 
-pub use app::build_app;
+pub use app::{build_app, with_rate_limit};
+pub use db::{connect_and_migrate, connect_and_migrate_path, VerificationRecord};
 pub use error::VerifyApiError;
+pub use log::{
+    append_entry as log_append_entry, current_sth as log_current_sth, log_size, UnsignedTreeHead,
+};
+pub use signing::{canonical_sth_bytes, VerifierSigner};

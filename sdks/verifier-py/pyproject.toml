@@ -1,0 +1,34 @@
+[build-system]
+requires = ["maturin>=1.13,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "nucleus-verifier"
+version = "0.1.0"
+description = "Verify nucleus provenance bundles in your own Python backend — no trust in any hosted verifier"
+readme = "README.md"
+license = { text = "MIT OR Apache-2.0" }
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Software Development :: Libraries",
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
+]
+
+[project.urls]
+Homepage = "https://github.com/coproduct-opensource/nucleus"
+Repository = "https://github.com/coproduct-opensource/nucleus"
+Documentation = "https://github.com/coproduct-opensource/nucleus/blob/main/sdks/verifier-py/README.md"
+
+[tool.maturin]
+# Build as an ABI3 wheel (Python 3.8+) so one wheel per (OS, arch)
+# covers every supported interpreter. `module-name` matches the
+# pymodule we expose in lib.rs.
+module-name = "nucleus_verifier"
+features = ["pyo3/extension-module"]
+strip = true

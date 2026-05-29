@@ -26,8 +26,20 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+nucleus-otel-bootstrap = { path = "../nucleus-otel-bootstrap" }
 clap = { workspace = true }
 hex = { workspace = true }
+sha2 = { workspace = true }
+chrono = { workspace = true }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "chrono", "macros", "migrate"] }
+ed25519-dalek = { version = "=3.0.0-pre.7", features = ["rand_core"] }
+rand = "0.9"
+base64 = "0.22"
+tower_governor = "0.8"
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
+ct-merkle = { version = "0.3", features = ["serde"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util", "limit"] }

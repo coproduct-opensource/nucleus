@@ -17,6 +17,9 @@ path = "src/main.rs"
 nucleus-lineage = { path = "../nucleus-lineage", features = ["dev"] }
 nucleus-envelope = { path = "../nucleus-envelope" }
 nucleus-control-plane = { path = "../nucleus-control-plane" }
+nucleus-oidc-core = { path = "../nucleus-oidc-core" }
+ed25519-dalek = "=3.0.0-pre.7"
+base64 = "0.22"
 axum = { version = "0.8", features = ["macros", "json"] }
 tokio = { workspace = true, features = ["full"] }
 tower = { version = "0.5", features = ["util"] }
@@ -27,6 +30,12 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+nucleus-otel-bootstrap = { path = "../nucleus-otel-bootstrap" }
+nucleus-proto = { path = "../nucleus-proto" }
+tonic = { workspace = true }
+prost = { workspace = true }
+hmac = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls"] }
 clap = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }

@@ -7,7 +7,14 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use std::sync::Arc;
+
+use metrics_exporter_prometheus::PrometheusHandle;
+use sqlx::SqlitePool;
+
+use crate::merkle::SharedMerkleLog;
 use tower::limit::ConcurrencyLimitLayer;
+use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 use tower_http::{
     cors::{Any, CorsLayer},
     limit::RequestBodyLimitLayer,
@@ -16,6 +23,63 @@ use tower_http::{
 };
 
 use crate::routes;
+use crate::signing::VerifierSigner;
+
+/// Per-IP rate limit applied to every endpoint. Configured around the
+/// most-expensive endpoint (`POST /v1/verify`), which can do up to
+/// thousands of Ed25519 verifies on a single request. tower-governor
+/// gives us a token-bucket per peer IP via `governor::Quota`.
+///
+/// **Default policy**: 1 token regenerated per second, burst capacity
+/// of 60. A client can fire 60 requests immediately, then must space
+/// follow-ups to ~1/sec sustained. Tuned so a developer kicking the
+/// tires never hits the limit but a hostile spammer does.
+///
+/// Operators tuning this for a high-traffic deployment should add a
+/// CDN/WAF in front first (Cloudflare's free tier handles 10k+ req/sec)
+/// and use this as defense-in-depth only.
+const RATE_LIMIT_REPLENISH_SECS: u64 = 1;
+const RATE_LIMIT_BURST_SIZE: u32 = 60;
+
+/// Shared state for verifier-service handlers.
+///
+/// `db` is `None` in legacy stateless mode (the default); when `Some`,
+/// the verify endpoint records every result and the hash-lookup
+/// endpoint reads from it. `signer` is `None` when STH signing is
+/// disabled (chain head is still computed, just unsigned); when
+/// `Some`, the STH endpoint returns a signed tree head and
+/// `/.well-known/jwks.json` publishes the matching public key.
+#[derive(Clone, Default)]
+pub struct AppState {
+    /// Optional persistence pool. When `None`, the service runs in
+    /// the original stateless mode and bundle hash-lookup returns 404
+    /// for every request ("persistence disabled"). When `Some`, the
+    /// pool is shared (cheap Arc-backed clone) across all handlers.
+    pub db: Option<SqlitePool>,
+    /// Optional Ed25519 signer for the verification log's STH.
+    /// `None` means iter-1 behavior (unsigned `root_hash_hex` chain
+    /// head); `Some` flips `signed: true` and adds a base64 signature
+    /// + `kid` to the STH response.
+    pub signer: Option<Arc<VerifierSigner>>,
+    /// Optional Prometheus exporter handle. When `Some`, the
+    /// `/metrics` route renders the registered metrics; counters +
+    /// histograms inside `verify` log via the `metrics` macros.
+    /// `None` means the route returns 503 — metrics are deliberately
+    /// opt-in so the test harness doesn't install a process-global
+    /// recorder.
+    pub metrics: Option<Arc<PrometheusHandle>>,
+    /// **Iter-3 of #69 (#95).** RFC 9162 Merkle tree over the same
+    /// leaves as the chain-hash log. When `Some`, the STH endpoint
+    /// publishes `merkle_root_hex` alongside the chain head, and
+    /// `/v1/log/inclusion-proof` + `/v1/log/consistency-proof` are
+    /// live. When `None`, those endpoints 503 (test path).
+    pub merkle: Option<SharedMerkleLog>,
+    /// **#73 iter-1.** Peer witness federation handle. When `Some`,
+    /// `/v1/witness/peer-sth` accepts cosignatures from configured
+    /// peers and `/v1/witness/peers` exposes the ring. When `None`,
+    /// both endpoints return 503.
+    pub witness: Option<crate::witness::WitnessFederation>,
+}
 
 /// Max request body size in bytes. Provenance bundles are bounded by
 /// the size of the lineage subgraph; a 2 MiB ceiling comfortably covers
@@ -62,7 +126,7 @@ const MAX_CONCURRENT_REQUESTS: usize = 256;
 /// 2. Add per-IP rate limiting at the edge (Cloudflare WAF / nginx
 ///    `limit_req_zone` / `tower-governor` middleware).
 /// 3. Monitor `MAX_CONCURRENT_REQUESTS` saturation as a load signal.
-pub fn build_app() -> Router {
+pub fn build_app(state: AppState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
@@ -70,8 +134,42 @@ pub fn build_app() -> Router {
 
     Router::new()
         .route("/", get(routes::root))
+        .route("/quickstart", get(routes::quickstart))
+        .route("/static/style.css", get(routes::landing_css))
+        .route("/static/quickstart.css", get(routes::quickstart_css))
+        .route("/static/quickstart.js", get(routes::quickstart_js))
+        .route(
+            "/static/wasm/nucleus_verifier_wasm.js",
+            get(routes::wasm_js_shim),
+        )
+        .route(
+            "/static/wasm/nucleus_verifier_wasm_bg.wasm",
+            get(routes::wasm_binary),
+        )
         .route("/healthz", get(routes::healthz))
         .route("/v1/verify", post(routes::verify))
+        .route(
+            "/v1/bundles/{hash}/verify",
+            get(routes::bundle_verify_lookup),
+        )
+        .route("/v1/log/size", get(routes::log_size_endpoint))
+        .route("/v1/log/sth", get(routes::log_sth_endpoint))
+        .route("/v1/log/inclusion-proof", get(routes::log_inclusion_proof))
+        .route(
+            "/v1/log/consistency-proof",
+            get(routes::log_consistency_proof),
+        )
+        .route("/metrics", get(routes::metrics_endpoint))
+        .route(
+            "/v1/witness/peer-sth",
+            post(routes::witness_accept_peer_sth),
+        )
+        .route("/v1/witness/peers", get(routes::witness_list_peers))
+        .route("/.well-known/jwks.json", get(routes::well_known_jwks))
+        .route(
+            "/.well-known/nucleus-verifier-configuration",
+            get(routes::well_known_configuration),
+        )
         .layer(TraceLayer::new_for_http())
         .layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES))
         .layer(ConcurrencyLimitLayer::new(MAX_CONCURRENT_REQUESTS))
@@ -80,4 +178,27 @@ pub fn build_app() -> Router {
             Duration::from_secs(30),
         ))
         .layer(cors)
+        .with_state(state)
+}
+
+/// Wrap a router with per-IP rate limiting. Call this from production
+/// main.rs BEFORE serving — the resulting router MUST be served via
+/// `into_make_service_with_connect_info::<SocketAddr>()` so
+/// tower-governor's default `PeerIpKeyExtractor` can find the
+/// connecting client's IP. Without that connect-info plumbing every
+/// request returns 500.
+///
+/// Returns a router with the same routes, plus a token-bucket
+/// per-peer-IP that allows
+/// [`RATE_LIMIT_BURST_SIZE`] requests immediately and replenishes
+/// one token every [`RATE_LIMIT_REPLENISH_SECS`] seconds.
+pub fn with_rate_limit(router: Router) -> Router {
+    let governor_conf = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(RATE_LIMIT_REPLENISH_SECS)
+            .burst_size(RATE_LIMIT_BURST_SIZE)
+            .finish()
+            .expect("governor config validation passed at build time"),
+    );
+    router.layer(GovernorLayer::new(governor_conf))
 }

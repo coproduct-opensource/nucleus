@@ -64,8 +64,26 @@
 
 pub mod binding;
 pub mod bundle;
+#[cfg(feature = "c2pa")]
+pub mod c2pa_export;
 pub mod extract;
+pub mod interop;
 pub mod verify;
+
+#[cfg(feature = "c2pa")]
+pub use c2pa_export::{C2paExportError, NUCLEUS_C2PA_ASSERTION_LABEL};
+pub use interop::in_toto::{
+    DsseEnvelope, DsseSignature, InTotoError, ResourceDescriptor, Statement,
+    DSSE_INTOTO_PAYLOAD_TYPE, IN_TOTO_STATEMENT_TYPE, NUCLEUS_PREDICATE_TYPE, NUCLEUS_SUBJECT_NAME,
+};
+pub use interop::sigstore::{
+    PublicKeyIdentifier, SigstoreBundle, TimestampVerificationData, VerificationMaterial,
+    SIGSTORE_BUNDLE_V03_MEDIA_TYPE,
+};
+pub use interop::slsa::{
+    BuildDefinition, Builder as SlsaBuilder, Metadata as SlsaMetadata, Provenance, RunDetails,
+    NUCLEUS_BUILD_TYPE, SLSA_PROVENANCE_V1_PREDICATE_TYPE,
+};
 
 pub use binding::{
     payload_hash, signed_bytes as binding_signed_bytes, BindingError, PayloadBinding,

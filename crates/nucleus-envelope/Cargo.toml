@@ -23,6 +23,16 @@ chrono = { workspace = true, features = ["serde"] }
 sha2 = { workspace = true }
 hex = { workspace = true }
 
+# C2PA v2.3 manifest export — gated behind `c2pa` feature. Default-off so
+# the lean dep tree is preserved for callers who don't need EU AI Act
+# Article 50 interop. `rust_native_crypto` swaps OpenSSL for pure-Rust
+# signing to keep our supply chain consistent with the rest of nucleus.
+c2pa = { version = "0.85", default-features = false, features = ["rust_native_crypto"], optional = true }
+
+[features]
+default = []
+c2pa = ["dep:c2pa"]
+
 [dev-dependencies]
 nucleus-lineage = { path = "../nucleus-lineage", features = ["dev"] }
 tempfile = { workspace = true }

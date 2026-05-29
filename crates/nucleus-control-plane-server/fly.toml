@@ -1,0 +1,92 @@
+# Fly.io deployment manifest for nucleus-control-plane-server.
+#
+# Architecture per workspace CLAUDE.md Fly.io section:
+# - Public HTTPS surface for REST job submissions (when exposing to
+#   external callers). Often internal-only — set `force_https = false`
+#   + `[[services]]` with internal port only if you don't need a
+#   public domain.
+# - **Flycast gRPC surface** on port 9080 (HTTP+1000). Internal
+#   callers reach it as `nucleus-control-plane.flycast:9080` via the
+#   6PN WireGuard tunnel — no TLS needed at the listener because the
+#   6PN encrypts in transit.
+# - Auto-stop=suspend for cost when no internal traffic.
+#
+# Required secrets (set via `fly secrets set`):
+#
+#   NUCLEUS_SPIFFE_TRUST_JWKS_PATH       — path to mounted JWKS file
+#   NUCLEUS_SPIFFE_ALLOWED_AUDIENCE      — e.g. "https://control.internal/api"
+#   NUCLEUS_SPIFFE_ALLOWED_SUBJECT_PREFIX
+#                                        — e.g. "spiffe://prod.your.org/ns/agents/sa/"
+#
+# Without these the server starts open (loud warning); production
+# deploys MUST configure them.
+
+app = "nucleus-control-plane"
+primary_region = "iad"
+kill_signal = "SIGTERM"
+kill_timeout = 30
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NUCLEUS_BIND = "0.0.0.0:8080"
+  NUCLEUS_GRPC_BIND = "0.0.0.0:9080"
+  RUST_LOG = "nucleus_control_plane_server=info,warn"
+  NUCLEUS_LINEAGE_LOG = "/data/lineage.jsonl"
+  NUCLEUS_JWKS_OUT = "/data/issuer.jwks.json"
+  NUCLEUS_CHECKPOINT_DIR = "/data/checkpoints"
+  NUCLEUS_WITNESS_PUB_OUT = "/data/witness.pub.hex"
+
+# HTTP surface — REST + SSE.
+[http_service]
+  internal_port = 8080
+  force_https = false                  # internal-by-default
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 200
+    soft_limit = 160
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    method = "GET"
+    path = "/healthz"
+    grace_period = "10s"
+
+# gRPC surface — exposed via Flycast for internal service-to-service
+# (verifier-service, downstream orchestrators). Plain TCP because
+# Fly's 6PN WireGuard tunnel encrypts in transit; no need for TLS
+# overhead at the listener.
+[[services]]
+  protocol = "tcp"
+  internal_port = 9080
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [[services.ports]]
+    port = 9080
+
+  [[services.tcp_checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[mounts]
+  source = "control_plane_data"
+  destination = "/data"
+  auto_extend_size_threshold = 80
+  auto_extend_size_increment = "1GB"
+  auto_extend_size_limit = "50GB"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512

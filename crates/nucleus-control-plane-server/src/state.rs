@@ -5,6 +5,7 @@ use std::sync::Arc;
 use nucleus_lineage::{CallSpiffeId, LineageSink, LocalIssuer, MerkleProver};
 use tokio::sync::Semaphore;
 
+use crate::auth::SpiffeAuthConfig;
 use crate::events::JobEventBroker;
 use crate::registry::{InMemoryRegistry, JobRegistry, RunnerRegistry};
 
@@ -63,6 +64,13 @@ pub struct AppState {
     /// `at_capacity`. The permit is held by the spawned task and
     /// dropped when the terminal state is published.
     pub job_slots: Arc<Semaphore>,
+    /// **Iter-1 of #79.** Optional SPIFFE JWT-SVID Bearer auth.
+    /// When `None`, every endpoint is open (legacy MVP behavior).
+    /// When `Some`, the `RequireSpiffeAuth` extractor on protected
+    /// routes rejects unauthenticated traffic with 401/403. Wired
+    /// into AppState as an `Arc` so it's cheap to clone alongside
+    /// the rest of the state.
+    pub spiffe_auth: Option<Arc<SpiffeAuthConfig>>,
 }
 
 impl AppState {
@@ -115,5 +123,6 @@ pub fn build_demo_state(
         merkle_prover: None,
         witness_pubkey: None,
         job_slots: Arc::new(Semaphore::new(MAX_INFLIGHT_JOBS)),
+        spiffe_auth: None,
     })
 }

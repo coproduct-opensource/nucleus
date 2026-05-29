@@ -22,6 +22,15 @@ pub enum VerifyApiError {
     /// variant is for any manual size validation.
     #[error("payload too large: {0}")]
     PayloadTooLarge(String),
+    /// Bundle hash lookup against a hash that hasn't been submitted.
+    #[error("envelope hash not found: {0}")]
+    NotFound(String),
+    /// Hit a persistence-required endpoint while the service is
+    /// running in stateless mode (no `--db` flag). Surfaces as 503
+    /// rather than 404 to distinguish a misconfigured deployment
+    /// from "hash legitimately absent."
+    #[error("persistence disabled: {0}")]
+    PersistenceDisabled(String),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -42,6 +51,10 @@ impl IntoResponse for VerifyApiError {
             }
             VerifyApiError::PayloadTooLarge(_) => {
                 (StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large")
+            }
+            VerifyApiError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
+            VerifyApiError::PersistenceDisabled(_) => {
+                (StatusCode::SERVICE_UNAVAILABLE, "persistence_disabled")
             }
             VerifyApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         };

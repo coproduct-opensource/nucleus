@@ -10,16 +10,23 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use nucleus_control_plane::MockJobRunner;
-use nucleus_control_plane_server::{build_app, registry::RunnerRegistry, state::build_demo_state};
+use nucleus_control_plane_server::{
+    build_app, registry::RunnerRegistry, resolve_spiffe_auth, state::build_demo_state,
+};
 use nucleus_lineage::{Ed25519Witness, JsonlSink, MerkleConfig, MerkleSink, TreeWitness};
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use nucleus_oidc_core::Jwks;
 
 #[derive(Parser, Debug)]
 #[command(name = "nucleus-control-plane-server", version)]
 struct Cli {
-    /// Bind address (host:port).
+    /// HTTP bind address (host:port).
     #[arg(long, default_value = "127.0.0.1:8080", env = "NUCLEUS_BIND")]
     bind: String,
+    /// gRPC bind address (host:port). Per workspace CLAUDE.md the
+    /// convention is `HTTP port + 1000`. Set to empty string to
+    /// disable the gRPC surface (default: 0.0.0.0:9080).
+    #[arg(long, default_value = "0.0.0.0:9080", env = "NUCLEUS_GRPC_BIND")]
+    grpc_bind: String,
     /// JSONL lineage log file. Created if missing.
     #[arg(
         long,
@@ -74,19 +81,53 @@ struct Cli {
         env = "NUCLEUS_WITNESS_PUB_OUT"
     )]
     witness_pub_out: std::path::PathBuf,
+    /// Path to the trust JWKS file that authorizes inbound JWT-SVIDs.
+    /// Published by the nucleus-oidc-provider OP under
+    /// `/.well-known/jwks.json` — operators mirror it to disk and
+    /// point this flag at it. When unset, SPIFFE auth is disabled
+    /// (legacy MVP behavior — every endpoint open).
+    #[arg(long, env = "NUCLEUS_SPIFFE_TRUST_JWKS_PATH")]
+    spiffe_trust_jwks_path: Option<std::path::PathBuf>,
+    /// Required `aud` value on inbound JWT-SVIDs. Bundles minted by
+    /// the OP for a different audience must not be replayable here —
+    /// the RFC 8693 confused-deputy guard. Set in lockstep with
+    /// `--spiffe-trust-jwks-path`.
+    #[arg(long, env = "NUCLEUS_SPIFFE_ALLOWED_AUDIENCE")]
+    spiffe_allowed_audience: Option<String>,
+    /// Required `sub` prefix. Restricts callers to a specific SPIFFE
+    /// namespace / service account.
+    /// Example: `spiffe://prod.example.com/ns/agents/sa/`. Set in
+    /// lockstep with the other two SPIFFE flags.
+    #[arg(long, env = "NUCLEUS_SPIFFE_ALLOWED_SUBJECT_PREFIX")]
+    spiffe_allowed_subject_prefix: Option<String>,
+}
+
+/// Thin CLI shim around the lib-side [`resolve_spiffe_auth`]. Reads
+/// the JWKS file from disk when configured, then delegates the
+/// partial-config gate to the unit-tested resolver.
+fn cli_spiffe_auth(cli: &Cli) -> Result<Option<nucleus_control_plane_server::SpiffeAuthConfig>> {
+    let trust_jwks = match &cli.spiffe_trust_jwks_path {
+        Some(path) => {
+            let bytes = std::fs::read(path)
+                .with_context(|| format!("reading SPIFFE trust JWKS {}", path.display()))?;
+            let jwks: Jwks = serde_json::from_slice(&bytes)
+                .with_context(|| format!("parsing SPIFFE trust JWKS {}", path.display()))?;
+            Some(jwks)
+        }
+        None => None,
+    };
+    Ok(resolve_spiffe_auth(
+        trust_jwks,
+        cli.spiffe_allowed_audience.clone(),
+        cli.spiffe_allowed_subject_prefix.clone(),
+    )?)
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Route tracing to stderr so any stdout that the server writes
-    // (none today, but the precedent matters) stays clean.
-    tracing_subscriber::registry()
-        .with(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("nucleus=info,info")),
-        )
-        .with(fmt::layer().with_writer(std::io::stderr))
-        .init();
+    // Shared OTel bootstrap — emits to OTEL_EXPORTER_OTLP_ENDPOINT
+    // when set, falls through to stderr-only otherwise.
+    let _otel = nucleus_otel_bootstrap::init("nucleus-control-plane-server")?;
 
     let cli = Cli::parse();
 
@@ -121,6 +162,28 @@ async fn main() -> Result<()> {
     state.merkle_prover = Some(merkle_sink.clone());
     state.witness_pubkey = Some(witness_pubkey);
 
+    // SPIFFE auth wiring. fail-loud on partial config; warn loud when
+    // auth is disabled so operators don't ship demo-mode to prod by
+    // omission.
+    match cli_spiffe_auth(&cli)? {
+        Some(cfg) => {
+            tracing::info!(
+                audience = %cfg.allowed_audience,
+                subject_prefix = %cfg.allowed_subject_prefix,
+                jwks_keys = cfg.trust_jwks.keys.len(),
+                "SPIFFE JWT-SVID auth ENABLED — protected routes require Bearer token"
+            );
+            state.spiffe_auth = Some(Arc::new(cfg));
+        }
+        None => {
+            tracing::warn!(
+                "SPIFFE JWT-SVID auth DISABLED — every endpoint is open. \
+                 Set --spiffe-trust-jwks-path / --spiffe-allowed-audience / \
+                 --spiffe-allowed-subject-prefix in production."
+            );
+        }
+    }
+
     // Publish the witness pubkey (hex) so clients can pass it to
     // `nucleus envelope-verify --witness-pub`.
     let witness_hex = hex::encode(witness_pubkey);
@@ -150,14 +213,57 @@ async fn main() -> Result<()> {
         jwks_bytes.len()
     );
 
-    let app = build_app(state);
+    let app = build_app(state.clone());
     let listener = tokio::net::TcpListener::bind(&cli.bind)
         .await
         .with_context(|| format!("binding {}", cli.bind))?;
-    tracing::info!("nucleus-control-plane-server listening on {}", cli.bind);
+    tracing::info!(
+        "nucleus-control-plane-server HTTP listening on {}",
+        cli.bind
+    );
+
+    // Spawn the gRPC server alongside HTTP (workspace mandate: gRPC
+    // for internal service-to-service). Disabled when --grpc-bind=""
+    // — useful for tests that share the process with a different
+    // gRPC server (e.g. when integrating into a larger orchestrator).
+    let grpc_handle = if cli.grpc_bind.is_empty() {
+        tracing::info!("gRPC surface DISABLED (--grpc-bind is empty)");
+        None
+    } else {
+        let grpc_addr: std::net::SocketAddr = cli
+            .grpc_bind
+            .parse()
+            .with_context(|| format!("parsing --grpc-bind {}", cli.grpc_bind))?;
+        let service = nucleus_control_plane_server::grpc::GrpcJobService::new(state.clone());
+        tracing::info!(
+            "nucleus-control-plane-server gRPC listening on {}",
+            grpc_addr
+        );
+        Some(tokio::spawn(async move {
+            if let Err(e) = tonic::transport::Server::builder()
+                .add_service(
+                    nucleus_proto::control_plane::job_service_server::JobServiceServer::new(
+                        service,
+                    ),
+                )
+                .serve(grpc_addr)
+                .await
+            {
+                tracing::error!(error = %e, "gRPC server stopped with error");
+            }
+        }))
+    };
+
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+
+    // HTTP server has stopped → SIGTERM was delivered. Drop the
+    // gRPC task; tonic's `serve` exits when the future is cancelled.
+    if let Some(h) = grpc_handle {
+        h.abort();
+        let _ = h.await;
+    }
     tracing::info!("shutdown complete");
     Ok(())
 }

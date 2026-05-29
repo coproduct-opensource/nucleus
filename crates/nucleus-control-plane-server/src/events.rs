@@ -42,9 +42,24 @@ pub enum JobEvent {
 
 impl JobEvent {
     /// Stable wire-format name for the `event:` line in the SSE frame.
+    /// State-changed events map to a granular event name per
+    /// JobState variant so clients can listen for a specific
+    /// lifecycle phase (queued/running/completed/failed/cancelled)
+    /// without re-parsing the data payload.
     pub fn name(&self) -> &'static str {
         match self {
-            JobEvent::StateChanged { .. } => "state_changed",
+            JobEvent::StateChanged { state } => match state {
+                nucleus_control_plane::JobState::Queued { .. } => "queued",
+                nucleus_control_plane::JobState::Running { .. } => "running",
+                nucleus_control_plane::JobState::Completed { .. } => "completed",
+                nucleus_control_plane::JobState::Failed { reason, .. } => {
+                    if reason.starts_with("cancelled") {
+                        "cancelled"
+                    } else {
+                        "failed"
+                    }
+                }
+            },
             JobEvent::Closing { .. } => "closing",
         }
     }

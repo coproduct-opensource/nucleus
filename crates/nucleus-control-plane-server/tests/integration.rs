@@ -724,3 +724,173 @@ async fn idempotency_key_with_different_body_creates_new_job() {
         .to_string();
     assert_ne!(id1, id2);
 }
+
+// ─────────────────────────────────────────────────────────────────
+// SPIFFE auth (#79)
+// ─────────────────────────────────────────────────────────────────
+
+mod spiffe_auth {
+    use super::*;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64URL, Engine as _};
+    use ed25519_dalek::{Signer as _, SigningKey, SECRET_KEY_LENGTH};
+    use nucleus_control_plane_server::SpiffeAuthConfig;
+    use nucleus_oidc_core::{Jwk, Jwks as OidcJwks};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct Signer {
+        signing_key: SigningKey,
+        kid: String,
+    }
+
+    impl Signer {
+        fn new() -> Self {
+            Self {
+                signing_key: SigningKey::from_bytes(&[31u8; SECRET_KEY_LENGTH]),
+                kid: "test-kid".to_string(),
+            }
+        }
+        fn jwks(&self) -> OidcJwks {
+            let vk = self.signing_key.verifying_key();
+            OidcJwks {
+                keys: vec![Jwk {
+                    kty: "OKP".to_string(),
+                    kid: self.kid.clone(),
+                    alg: Some("EdDSA".to_string()),
+                    use_: Some("sig".to_string()),
+                    crv: Some("Ed25519".to_string()),
+                    x: Some(B64URL.encode(vk.to_bytes())),
+                    n: None,
+                    e: None,
+                }],
+            }
+        }
+        fn mint(&self, sub: &str, aud: &str) -> String {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let header_json = format!(r#"{{"alg":"EdDSA","kid":"{}"}}"#, self.kid);
+            let payload = serde_json::json!({"sub": sub, "aud": aud, "exp": now + 600, "iat": now});
+            let h = B64URL.encode(header_json.as_bytes());
+            let p = B64URL.encode(payload.to_string().as_bytes());
+            let signed_input = format!("{h}.{p}");
+            let sig = self.signing_key.sign(signed_input.as_bytes());
+            format!("{h}.{p}.{}", B64URL.encode(sig.to_bytes()))
+        }
+    }
+
+    fn auth_enabled_state(signer: &Signer) -> AppState {
+        let rr = RunnerRegistry::new().register("mock", Box::new(MockJobRunner));
+        let sink: Arc<dyn nucleus_lineage::LineageSink> = Arc::new(InMemorySink::new());
+        let mut s = build_demo_state(rr, sink, "test.nucleus.local", "agents", "subject")
+            .expect("build_demo_state");
+        s.spiffe_auth = Some(Arc::new(SpiffeAuthConfig::new(
+            signer.jwks(),
+            "https://control.test/api",
+            "spiffe://test.nucleus.local/ns/agents/sa/",
+        )));
+        s
+    }
+
+    #[tokio::test]
+    async fn submit_without_token_returns_401_when_auth_enabled() {
+        let signer = Signer::new();
+        let state = auth_enabled_state(&signer);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/jobs")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_vec(&sample_spec()).unwrap()))
+            .unwrap();
+        let resp = build_app(state).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn submit_with_malformed_bearer_returns_401() {
+        let signer = Signer::new();
+        let state = auth_enabled_state(&signer);
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/jobs")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::AUTHORIZATION, "Bearer not.a.jwt")
+            .body(Body::from(serde_json::to_vec(&sample_spec()).unwrap()))
+            .unwrap();
+        let resp = build_app(state).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn submit_with_wrong_audience_returns_403() {
+        let signer = Signer::new();
+        let state = auth_enabled_state(&signer);
+        let token = signer.mint(
+            "spiffe://test.nucleus.local/ns/agents/sa/coder",
+            "https://OTHER.test/api",
+        );
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/jobs")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::from(serde_json::to_vec(&sample_spec()).unwrap()))
+            .unwrap();
+        let resp = build_app(state).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn submit_with_wrong_subject_prefix_returns_403() {
+        let signer = Signer::new();
+        let state = auth_enabled_state(&signer);
+        let token = signer.mint(
+            "spiffe://test.nucleus.local/ns/OTHER/sa/coder",
+            "https://control.test/api",
+        );
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/jobs")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::from(serde_json::to_vec(&sample_spec()).unwrap()))
+            .unwrap();
+        let resp = build_app(state).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn submit_with_valid_jwt_svid_returns_202() {
+        let signer = Signer::new();
+        let state = auth_enabled_state(&signer);
+        let token = signer.mint(
+            "spiffe://test.nucleus.local/ns/agents/sa/coder",
+            "https://control.test/api",
+        );
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/jobs")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::from(serde_json::to_vec(&sample_spec()).unwrap()))
+            .unwrap();
+        let resp = build_app(state).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    }
+
+    #[tokio::test]
+    async fn healthz_works_even_with_auth_enabled() {
+        let signer = Signer::new();
+        let state = auth_enabled_state(&signer);
+        let resp = build_app(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+}

@@ -1,0 +1,44 @@
+[package]
+name = "nucleus-verifier-wasm"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+description = "WASM bindings for nucleus-envelope verification — runs in browser/Node, no trust in the verifier service"
+repository = "https://github.com/coproduct-opensource/nucleus"
+publish = false
+
+# cdylib = wasm module; rlib = also a normal Rust lib so we can write
+# Rust integration tests against the same code (wasm-bindgen-test
+# exposes #[wasm_bindgen_test] for browser-targeted tests).
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+nucleus-envelope = { path = "../../crates/nucleus-envelope" }
+nucleus-lineage = { path = "../../crates/nucleus-lineage" }
+wasm-bindgen = "0.2"
+serde-wasm-bindgen = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# `wasmbind` makes chrono::Utc::now() use js-sys::Date::now() — required
+# for any code that hits the clock when targeting wasm32-unknown-unknown.
+# Defensive even though our verify path doesn't itself call now().
+chrono = { version = "0.4", default-features = false, features = ["serde", "wasmbind", "clock"] }
+# `js` feature on getrandom routes it through Crypto.getRandomValues —
+# needed because ed25519-dalek pulls getrandom transitively. Without
+# this, wasm32-unknown-unknown builds fail at link time.
+getrandom = { version = "0.2", features = ["js"] }
+# uuid is transitively required by nucleus-lineage; force the `js`
+# feature so its `compile_error!` for wasm32-unknown-unknown is
+# satisfied. We don't actually call any uuid functions in the verify
+# path, but the feature must be active for the dep tree to resolve.
+uuid = { version = "1", features = ["v4", "js"] }
+hex = "0.4"
+console_error_panic_hook = { version = "0.1", optional = true }
+
+[features]
+default = ["console_error_panic_hook"]
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"

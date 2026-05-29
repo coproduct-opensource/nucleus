@@ -1,0 +1,22 @@
+[package]
+name = "nucleus-otel-bootstrap"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Shared OpenTelemetry OTLP bootstrap helper for nucleus server binaries"
+repository = "https://github.com/coproduct-opensource/nucleus"
+keywords = ["opentelemetry", "tracing", "observability"]
+categories = ["development-tools::profiling"]
+
+[dependencies]
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["registry", "env-filter", "fmt"] }
+tracing-opentelemetry = "0.33"
+opentelemetry = "0.32"
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio", "trace"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "grpc-tonic"] }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

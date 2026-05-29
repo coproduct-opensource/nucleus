@@ -29,6 +29,8 @@ members = [
     "crates/ck-kernel",                 # Constitutional Kernel: admission engine + lineage
     "crates/nucleus-lineage",            # Per-call SPIFFE-derived data lineage
     "crates/nucleus-envelope",           # Portable provenance bundle: payload + IFC envelope
+    "crates/nucleus-envelope-adversarial-corpus", # Adversarial bundles every verifier must reject — CI-gated security promise
+    "crates/nucleus-otel-bootstrap",     # Shared OpenTelemetry OTLP bootstrap for server binaries
     "crates/nucleus-control-plane",      # Job orchestrator: typed JobSpec → agent → Bundle
     "crates/nucleus-control-plane-server", # REST API server wrapping nucleus-control-plane
     "crates/nucleus-verifier-service",   # Public verifier-as-a-service for provenance bundles
@@ -42,6 +44,8 @@ exclude = [
     "crates/exposure-web",       # WASM-only (wasm32-unknown-unknown)
     "crates/portcullis-python",  # Python bindings (requires maturin)
     "crates/portcullis-zkvm-guest", # RISC-V zkVM guest (compiled separately by risc0-build)
+    "sdks/verifier-js",           # WASM-only (wasm32-unknown-unknown); build with: wasm-pack build sdks/verifier-js
+    "sdks/verifier-py",           # Python extension module; build with: maturin develop --release
 ]
 resolver = "2"
 

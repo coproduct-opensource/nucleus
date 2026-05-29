@@ -52,6 +52,7 @@ pub async fn healthz() -> &'static str {
 /// status URL rather than assuming immediate completion.
 pub async fn submit_job(
     State(state): State<AppState>,
+    _: crate::auth::RequireSpiffeAuth,
     headers: HeaderMap,
     Json(spec): Json<JobSpec>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -335,11 +336,69 @@ fn run_job_blocking(
 /// `GET /v1/jobs/{id}` — current state snapshot.
 pub async fn get_job(
     State(state): State<AppState>,
+    _: crate::auth::RequireSpiffeAuth,
     Path(job_id): Path<String>,
 ) -> Result<Json<JobState>, ApiError> {
     let id = JobId::from_raw(job_id);
     let state = state.jobs.get(&id).map_err(|_| ApiError::NotFound)?;
     Ok(Json(state))
+}
+
+/// `POST /v1/jobs/{id}/cancel` — request cancellation.
+///
+/// Idempotent:
+/// - If the job is `Queued` or `Running`, the registry is updated to
+///   `Failed { reason = "cancelled" }` and a `job_state_changed`
+///   event is published to the SSE broker. The endpoint returns 200
+///   with the new state.
+/// - If the job is already `Completed` or `Failed`, the current state
+///   is returned unchanged with 200. Repeated cancel calls are safe.
+/// - If the job is unknown, 404.
+///
+/// **Iter-1 of #78** does NOT terminate in-flight agent execution —
+/// the MockJobRunner is synchronous and the surface for cooperative
+/// cancellation through JobRunner is iter-2 (will plumb a
+/// CancellationToken through the runner trait). When the registry
+/// later observes the runner emitting a terminal Completed state,
+/// the cancellation transition takes precedence (the cancel was
+/// requested first; the runner's response is recorded in lineage
+/// but doesn't unwind the cancel decision).
+pub async fn cancel_job(
+    State(state): State<AppState>,
+    _: crate::auth::RequireSpiffeAuth,
+    Path(job_id): Path<String>,
+) -> Result<Json<JobState>, ApiError> {
+    let id = JobId::from_raw(job_id);
+    let current = state.jobs.get(&id).map_err(|_| ApiError::NotFound)?;
+    let next = match &current {
+        JobState::Queued { .. } | JobState::Running { .. } => {
+            let new_state = JobState::Failed {
+                started_at: match &current {
+                    JobState::Running { started_at, .. } => Some(*started_at),
+                    _ => None,
+                },
+                failed_at: chrono::Utc::now(),
+                reason: "cancelled by client request".to_string(),
+            };
+            state
+                .jobs
+                .update(&id, new_state.clone())
+                .map_err(|_| ApiError::NotFound)?;
+            state.events.publish(
+                &id,
+                crate::events::JobEvent::StateChanged {
+                    state: new_state.clone(),
+                },
+            );
+            tracing::info!(job_id = %id, "job cancelled by client");
+            new_state
+        }
+        JobState::Completed { .. } | JobState::Failed { .. } => {
+            // Idempotent: terminal state already; return unchanged.
+            current.clone()
+        }
+    };
+    Ok(Json(next))
 }
 
 /// `GET /v1/jobs/{id}/events/stream` — Server-Sent Events stream of
@@ -360,6 +419,7 @@ pub async fn get_job(
 /// resumption is a v2 surface that needs a persistent event log.
 pub async fn stream_job_events(
     State(state): State<AppState>,
+    _: crate::auth::RequireSpiffeAuth,
     Path(job_id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
     let id = JobId::from_raw(job_id);
@@ -444,6 +504,7 @@ fn event_for(evt: &JobEvent) -> Event {
 /// 409 with the current state otherwise, 404 if unknown.
 pub async fn get_bundle(
     State(state): State<AppState>,
+    _: crate::auth::RequireSpiffeAuth,
     Path(job_id): Path<String>,
 ) -> Result<Json<nucleus_envelope::Bundle>, ApiError> {
     let id = JobId::from_raw(job_id);

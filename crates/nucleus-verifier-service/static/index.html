@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>nucleus — cryptographically verifiable AI agent outputs</title>
+    <meta
+      name="description"
+      content="A signed certificate for every AI-generated output. Open-source verifier. EU AI Act Article 50 ready."
+    />
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <header>
+      <div class="container">
+        <a class="brand" href="/">nucleus</a>
+        <nav>
+          <a href="/docs/integration-guide-verifier">Docs</a>
+          <a href="/docs/audit-charter">Audits</a>
+          <a href="https://github.com/coproduct-opensource/nucleus">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero container">
+        <h1>
+          A signed certificate for every<br />
+          AI agent output.
+        </h1>
+        <p class="lede">
+          Cryptographic provenance for AI-generated content.
+          Verifiable by you, your customer, or a regulator —
+          without trusting our servers.
+        </p>
+        <div class="actions">
+          <a class="btn btn-primary" href="/docs/integration-guide-verifier"
+            >Start integrating &rarr;</a
+          >
+          <a class="btn" href="https://github.com/coproduct-opensource/nucleus"
+            >View source</a
+          >
+        </div>
+        <p class="callout">
+          <strong>EU AI Act Article 50</strong> takes effect 2026-08-02.
+          Penalties up to &euro;15M or 3% global turnover for ungoverned
+          AI output. We're built for the deadline.
+        </p>
+      </section>
+
+      <section class="container three-col">
+        <article>
+          <h3>Sign at the source</h3>
+          <p>
+            The control plane runs your agent inside a SPIFFE-identified
+            sandbox, signing every lineage edge with Ed25519. The result is
+            a portable, content-addressed bundle &mdash; the agent's output,
+            the chain of computation that produced it, the trust JWKS, all
+            cryptographically bound.
+          </p>
+        </article>
+        <article>
+          <h3>Verify anywhere</h3>
+          <p>
+            Bundles verify in your browser via a 376 KB wasm SDK, in your
+            Python backend via PyO3, or in our public verifier service. The
+            hosted endpoint is convenience &mdash; the SDKs are the
+            trust root. Same Rust verifier, byte-for-byte, across all
+            three surfaces.
+          </p>
+        </article>
+        <article>
+          <h3>Trust the math</h3>
+          <p>
+            Every verification appends to a chain-hashed transparency log
+            with a signed tree head. Skeptical-code audits run quarterly,
+            external cryptographic review biennially, an adversarial
+            corpus gates every pull request. We publish the verdicts.
+          </p>
+        </article>
+      </section>
+
+      <section class="container quickstart">
+        <h2>Quickstart</h2>
+
+        <h3>Verify in 30 seconds (Python)</h3>
+        <pre><code>pip install nucleus-verifier
+python -c "
+import json
+from nucleus_verifier import verify_bundle
+bundle = open('bundle.json').read()
+trust  = json.dumps({'trust_jwks': json.load(open('issuer.jwks.json'))})
+print(verify_bundle(bundle, trust))
+"</code></pre>
+
+        <h3>Verify in the browser (JavaScript)</h3>
+        <pre><code>import init, { verifyBundle } from '@coproduct/verifier';
+await init();
+const report = verifyBundle(bundleJson, trustAnchorJson);
+// → { ok: true, trust_mode: "out_of_band", edge_count: 5, ... }</code></pre>
+
+        <h3>Verify via the hosted endpoint (curl)</h3>
+        <pre><code>curl -sS -X POST https://verifier.coproduct.io/v1/verify \
+  -H "Content-Type: application/json" \
+  -d "$(jq -nc --slurpfile b bundle.json --slurpfile j issuer.jwks.json \
+        '{bundle: $b[0], trust_jwks: $j[0]}')"</code></pre>
+      </section>
+
+      <section class="container">
+        <h2>What's in the box</h2>
+        <ul class="grid">
+          <li>
+            <strong>nucleus-envelope</strong> &mdash; portable provenance
+            bundle format. C2PA v2.3, in-toto, SLSA Provenance v1.1,
+            Sigstore Bundle v0.3 exports built in.
+          </li>
+          <li>
+            <strong>nucleus-control-plane-server</strong> &mdash; REST
+            job API with SPIFFE JWT-SVID auth. Mints bundles you can ship
+            alongside your AI API responses.
+          </li>
+          <li>
+            <strong>nucleus-verifier-service</strong> &mdash; this server.
+            SQLite-backed transparency log, signed tree heads at
+            <a href="/v1/log/sth">/v1/log/sth</a>, JWKS published at
+            <a href="/.well-known/jwks.json">/.well-known/jwks.json</a>.
+          </li>
+          <li>
+            <strong>JS + Python verifier SDKs</strong> &mdash; same Rust
+            verifier compiled to wasm and PyO3. Same math, same
+            guarantees, in your process.
+          </li>
+          <li>
+            <strong>nucleus-oidc-provider</strong> &mdash; OIDC OP with
+            RFC 8693 token exchange and RFC 9068 access tokens. Mints the
+            JWT-SVIDs the control plane authenticates against.
+          </li>
+          <li>
+            <strong>Adversarial corpus</strong> &mdash; 8 hand-crafted
+            bad bundles, CI-gated on every PR. The audit charter's
+            load-bearing proof.
+          </li>
+        </ul>
+      </section>
+
+      <section class="container compliance">
+        <h2>For your compliance review</h2>
+        <p>
+          Five documents cover the regulator-facing surface. A
+          compliance + security + dev review can complete from cold
+          start in about ninety minutes of reading.
+        </p>
+        <ul>
+          <li>
+            <a href="/docs/eu-ai-act-article-50">EU AI Act Article 50</a>
+            &mdash; obligations mapped to bundle fields, satisfies
+            "cryptographic methods" + "logging methods" categories
+          </li>
+          <li>
+            <a href="/docs/verifier-service-threat-model"
+              >Verifier-service threat model</a
+            >
+            &mdash; STRIDE, 8 threats, each with file-line anchored
+            mitigation
+          </li>
+          <li>
+            <a href="/docs/compliance-posture">Compliance posture</a>
+            &mdash; EU AI Act, NIS2, SOC 2, GDPR, NIST AI RMF, ISO 42001
+          </li>
+          <li>
+            <a href="/docs/integration-guide-verifier">Integration guide</a>
+            &mdash; three patterns, Python/Node/shell examples
+          </li>
+          <li>
+            <a href="/docs/audit-charter">Audit charter</a> &mdash;
+            quarterly + biennial cadences, auditor pool, bug bounty
+            roadmap
+          </li>
+        </ul>
+      </section>
+
+      <section class="container endpoints">
+        <h2>Service endpoints (this server)</h2>
+        <dl>
+          <dt><code>POST /v1/verify</code></dt>
+          <dd>Verify a bundle against a trust anchor.</dd>
+          <dt><code>GET /v1/bundles/&#123;hash&#125;/verify</code></dt>
+          <dd>Look up a previously-verified bundle by SHA-256.</dd>
+          <dt><code>GET /v1/log/sth</code></dt>
+          <dd>Latest signed tree head of the transparency log.</dd>
+          <dt><code>GET /v1/log/size</code></dt>
+          <dd>Current entry count.</dd>
+          <dt><code>GET /.well-known/jwks.json</code></dt>
+          <dd>Verifier's STH signing key.</dd>
+          <dt>
+            <code>GET /.well-known/nucleus-verifier-configuration</code>
+          </dt>
+          <dd>RFC 8414-style service description.</dd>
+          <dt><code>GET /healthz</code></dt>
+          <dd>Liveness probe.</dd>
+        </dl>
+      </section>
+    </main>
+
+    <footer>
+      <div class="container">
+        <p>
+          <strong>nucleus</strong> &mdash; open source (MIT) at
+          <a href="https://github.com/coproduct-opensource/nucleus"
+            >coproduct-opensource/nucleus</a
+          >
+        </p>
+        <p>
+          Security disclosures:
+          <a href="mailto:security@coproduct.io">security@coproduct.io</a>
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>

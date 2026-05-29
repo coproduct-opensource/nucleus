@@ -34,13 +34,20 @@
 //! [`TrustAnchor`]: nucleus_envelope::TrustAnchor
 
 pub mod app;
+pub mod auth;
 pub mod error;
 pub mod events;
+pub mod grpc;
 pub mod registry;
 pub mod routes;
 pub mod state;
+pub mod webhook;
 
 pub use app::build_app;
+pub use auth::{
+    resolve_spiffe_auth, verify_jwt_svid, AuthenticatedPrincipal, RequireSpiffeAuth,
+    SpiffeAuthConfig, SpiffeConfigError,
+};
 pub use error::ApiError;
 pub use registry::{InMemoryRegistry, JobRegistry, JobRegistryError, RunnerRegistry};
 pub use state::AppState;

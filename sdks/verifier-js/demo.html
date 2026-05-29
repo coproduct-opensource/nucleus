@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>nucleus-verifier — drop-in browser verifier</title>
+    <style>
+      :root {
+        --bg: #0b0d10;
+        --fg: #e8eaed;
+        --muted: #8a9098;
+        --accent: #6dd0ff;
+        --ok: #4ade80;
+        --fail: #f87171;
+        --border: #1f2329;
+        --code-bg: #11151a;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        background: var(--bg); color: var(--fg);
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+        margin: 0; padding: 0; min-height: 100vh;
+      }
+      main { max-width: 940px; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
+      h1 { font-size: 1.5rem; margin: 0 0 0.25rem; letter-spacing: -0.02em; }
+      .subtitle { color: var(--muted); margin: 0 0 2rem; font-size: 0.9rem; }
+      label { display: block; margin: 1.25rem 0 0.4rem; font-size: 0.85rem; color: var(--muted); }
+      textarea {
+        width: 100%; min-height: 9rem;
+        background: var(--code-bg); color: var(--fg);
+        border: 1px solid var(--border); border-radius: 6px;
+        padding: 0.75rem; font-family: inherit; font-size: 0.85rem; line-height: 1.4;
+        resize: vertical;
+      }
+      textarea:focus { outline: none; border-color: var(--accent); }
+      button {
+        margin-top: 1rem; background: var(--accent); color: #0b0d10;
+        border: 0; border-radius: 6px; padding: 0.6rem 1.1rem;
+        font-family: inherit; font-weight: 600; cursor: pointer; font-size: 0.9rem;
+      }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      #result {
+        margin-top: 1.5rem; padding: 1rem 1.1rem;
+        background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px;
+        white-space: pre-wrap; font-size: 0.85rem; line-height: 1.5; min-height: 3rem;
+      }
+      .ok { color: var(--ok); }
+      .fail { color: var(--fail); }
+      .info { color: var(--muted); }
+      .pill {
+        display: inline-block; padding: 0.15rem 0.5rem; border-radius: 999px;
+        background: var(--border); color: var(--muted); font-size: 0.7rem;
+        margin-left: 0.5rem; vertical-align: middle;
+      }
+      footer { color: var(--muted); margin-top: 3rem; font-size: 0.8rem; }
+      a { color: var(--accent); text-decoration: none; }
+      a:hover { text-decoration: underline; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>
+        nucleus-verifier
+        <span class="pill" id="sdk-version">loading...</span>
+      </h1>
+      <p class="subtitle">
+        Paste a bundle + trust anchor below. Verification runs in this tab,
+        not on any server. The trust JWKS is the producer's published key
+        set; obtain it out of band (not from the bundle).
+      </p>
+
+      <label for="bundle">bundle.json</label>
+      <textarea id="bundle" placeholder='{"payload": ..., "envelope": ...}'></textarea>
+
+      <label for="anchor">trust anchor.json</label>
+      <textarea id="anchor" placeholder='{"trust_jwks": {"keys": [...]}, "allow_empty": false}'></textarea>
+
+      <button id="verify-btn" disabled>verify</button>
+
+      <pre id="result" class="info">SDK loading...</pre>
+
+      <footer>
+        Source: <a href="https://github.com/coproduct-opensource/nucleus">github.com/coproduct-opensource/nucleus</a>
+        &nbsp;·&nbsp; Reproducible build: <code>wasm-pack build --target web --release</code>
+      </footer>
+    </main>
+
+    <script type="module">
+      import init, { verifyBundle, sdkVersion } from "./pkg/nucleus_verifier_wasm.js";
+
+      const result = document.getElementById("result");
+      const btn = document.getElementById("verify-btn");
+      const bundleEl = document.getElementById("bundle");
+      const anchorEl = document.getElementById("anchor");
+      const sdkVersionPill = document.getElementById("sdk-version");
+
+      try {
+        await init();
+        sdkVersionPill.textContent = "v" + sdkVersion();
+        result.textContent = "ready. paste a bundle + anchor, then click verify.";
+        btn.disabled = false;
+      } catch (e) {
+        result.className = "fail";
+        result.textContent = "SDK failed to load: " + e.message;
+      }
+
+      btn.addEventListener("click", () => {
+        result.className = "info";
+        result.textContent = "verifying...";
+        try {
+          const report = verifyBundle(bundleEl.value, anchorEl.value);
+          result.className = "ok";
+          result.textContent =
+            "VERIFIED\n\n" + JSON.stringify(report, null, 2);
+        } catch (e) {
+          result.className = "fail";
+          result.textContent = "REJECTED\n\n" + e.message;
+        }
+      });
+    </script>
+  </body>
+</html>
