@@ -1273,7 +1273,7 @@ mod session_security {
     /// Session identity expiry cannot be bypassed
     #[test]
     fn test_session_expiry_enforced() {
-        let parent = Identity::new("nucleus.local", "agents", "claude");
+        let parent = Identity::new("nucleus.local", "agents", "agent-a");
 
         // Create already-expired session (created 1 hour ago with 30 min TTL)
         let session = SessionIdentity::new(parent.clone(), Duration::from_secs(1800));
@@ -1303,14 +1303,14 @@ mod session_security {
     /// Session identity SPIFFE URI format validation
     #[test]
     fn test_session_spiffe_uri_format() {
-        let parent = Identity::new("nucleus.local", "agents", "claude");
+        let parent = Identity::new("nucleus.local", "agents", "agent-a");
         let session = SessionIdentity::new(parent.clone(), Duration::from_secs(3600));
 
         let uri = session.to_spiffe_uri();
 
         // Should have correct prefix
         assert!(
-            uri.starts_with("spiffe://nucleus.local/ns/agents/sa/claude/session/"),
+            uri.starts_with("spiffe://nucleus.local/ns/agents/sa/agent-a/session/"),
             "Session URI should extend parent URI"
         );
 
@@ -1354,7 +1354,7 @@ mod session_security {
     /// Test that certificate identity maintains uniqueness
     #[test]
     fn test_certificate_identity_uniqueness() {
-        let parent = Identity::new("nucleus.local", "agents", "claude");
+        let parent = Identity::new("nucleus.local", "agents", "agent-a");
 
         let session1 = SessionIdentity::new(parent.clone(), Duration::from_secs(3600));
         let session2 = SessionIdentity::new(parent.clone(), Duration::from_secs(3600));

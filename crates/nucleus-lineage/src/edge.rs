@@ -157,18 +157,18 @@ mod tests {
     #[test]
     fn llm_call_edge_carries_provider_and_direction() {
         let p = pod();
-        let prompt = p.derive_llm("anthropic", "prompt", b"hi").unwrap();
+        let prompt = p.derive_llm("provider-a", "prompt", b"hi").unwrap();
         let edge = LineageEdge::from_parent(
             prompt,
             p,
             EdgeKind::LlmCall {
-                provider: "anthropic".to_string(),
+                provider: "provider-a".to_string(),
                 direction: "prompt".to_string(),
             },
         );
         let json = serde_json::to_string(&edge).unwrap();
         assert!(json.contains("\"kind\":\"llm_call\""));
-        assert!(json.contains("\"provider\":\"anthropic\""));
+        assert!(json.contains("\"provider\":\"provider-a\""));
         assert!(json.contains("\"direction\":\"prompt\""));
     }
 

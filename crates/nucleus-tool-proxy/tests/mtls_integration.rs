@@ -41,7 +41,7 @@ async fn create_test_certs(
         .unwrap();
 
     // Create client certificate
-    let client_identity = Identity::new(trust_domain, "agents", "claude");
+    let client_identity = Identity::new(trust_domain, "agents", "agent-a");
     let client_csr = CsrOptions::new(client_identity.to_spiffe_uri())
         .generate()
         .unwrap();
@@ -265,7 +265,7 @@ async fn test_client_spiffe_id_extraction() {
         assert!(spiffe_id.is_some(), "client cert should have SPIFFE ID");
         assert_eq!(
             spiffe_id.unwrap(),
-            "spiffe://spiffe.nucleus.local/ns/agents/sa/claude"
+            "spiffe://spiffe.nucleus.local/ns/agents/sa/agent-a"
         );
     });
 

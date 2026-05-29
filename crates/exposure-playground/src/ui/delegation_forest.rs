@@ -179,7 +179,7 @@ fn draw_comparison_sidebar(f: &mut Frame, area: Rect) {
         .borders(Borders::ALL)
         .title(" Model Comparison ");
 
-    // Vendor-neutral comparison (this is in nucleus, no Anthropic references)
+    // Vendor-neutral comparison (this is in nucleus, no vendor references)
     let lines = vec![
         Line::from(Span::styled(
             "╔═══════════════════╗",

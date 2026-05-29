@@ -311,8 +311,12 @@ impl NetworkSpec {
                 "api.github.com".into(),
                 "uploads.github.com".into(),
                 "objects.githubusercontent.com".into(),
-                // Anthropic API (for Claude CLI)
-                "api.anthropic.com".into(),
+                // NOTE: nucleus is vendor-neutral per the workspace's
+                // hard rule (see project docs). Downstream consumers
+                // that need LLM-vendor egress (api.<vendor>.com) MUST
+                // extend this `dns_allow` list themselves at PodSpec
+                // assembly time — nucleus does not ship a default
+                // vendor allowlist entry.
             ],
             url_allow: vec![],
             mime_allow: None,
@@ -407,7 +411,7 @@ pub struct CgroupSetting {
 ///    SPIFFE workload API or Kubernetes projected service-account tokens) fetched
 ///    at pod start and refreshed before expiry. The pod sees only a file path via
 ///    an env var; no static secret material crosses the boundary. Works with any
-///    relying party that accepts OIDC token exchange (Anthropic, OpenAI, GCP,
+///    relying party that accepts OIDC token exchange (LLM vendors, cloud IAM,
 ///    AWS, …); nucleus only knows about the token-exchange dance.
 ///
 /// SECURITY NOTE: This struct implements a custom `Debug` that redacts secret
@@ -496,14 +500,14 @@ impl CredentialsSpec {
 /// `audience` value for whichever relying party the workload calls.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkloadIdentitySpec {
-    /// Logical name (e.g. "anthropic", "openai-prod"). Used in audit records.
+    /// Logical name (e.g. "primary-llm", "secondary-llm-prod"). Used in audit records.
     pub name: String,
 
     /// OIDC audience to request. Provider-defined; **nucleus does not yet
     /// validate** that this is a well-formed URL or coordinate against an
     /// allow-list. A typo here will silently produce a JWT no relying party
     /// accepts. Validation is tracked for the runtime PR.
-    /// Examples: `https://api.anthropic.com`, `https://api.openai.com`.
+    /// Examples: `https://api.primary-llm.example`, `https://api.secondary-llm.example`.
     pub audience: String,
 
     /// Environment variable the application reads to find the token file.
@@ -850,8 +854,8 @@ mod tests {
 
     fn sample_workload_identity() -> WorkloadIdentitySpec {
         WorkloadIdentitySpec {
-            name: "anthropic".to_string(),
-            audience: "https://api.anthropic.com".to_string(),
+            name: "primary-llm".to_string(),
+            audience: "https://api.primary-llm.example".to_string(),
             env_var: "LLM_IDENTITY_TOKEN_FILE".to_string(),
             token_path: PathBuf::from("/var/run/secrets/llm/token"),
             refresh: RefreshPolicy::default(),
@@ -890,7 +894,7 @@ mod tests {
             "spec with workload identity must not be empty"
         );
         assert_eq!(creds.workload_identity.len(), 1);
-        assert_eq!(creds.workload_identity[0].name, "anthropic");
+        assert_eq!(creds.workload_identity[0].name, "primary-llm");
     }
 
     #[test]
@@ -941,7 +945,7 @@ spec:
   credentials:
     workload_identity:
       - name: llm-provider
-        audience: https://api.anthropic.com
+        audience: https://api.primary-llm.example
         env_var: LLM_IDENTITY_TOKEN_FILE
         token_path: /var/run/secrets/llm/token
         source:
@@ -956,7 +960,7 @@ spec:
         assert_eq!(creds.workload_identity.len(), 1);
         let wi = &creds.workload_identity[0];
         assert_eq!(wi.name, "llm-provider");
-        assert_eq!(wi.audience, "https://api.anthropic.com");
+        assert_eq!(wi.audience, "https://api.primary-llm.example");
         assert_eq!(wi.env_var, "LLM_IDENTITY_TOKEN_FILE");
         assert_eq!(wi.token_path, PathBuf::from("/var/run/secrets/llm/token"));
         assert!(matches!(wi.source, IdentitySource::Spiffe { .. }));
@@ -966,7 +970,7 @@ spec:
     fn test_workload_identity_kubernetes_projected_source_parses() {
         let yaml = r#"
 name: oidc
-audience: https://api.anthropic.com
+audience: https://api.primary-llm.example
 env_var: LLM_IDENTITY_TOKEN_FILE
 token_path: /var/run/secrets/llm/token
 source:
@@ -991,7 +995,7 @@ source:
     fn test_workload_identity_static_file_source_parses() {
         let yaml = r#"
 name: testing
-audience: https://api.anthropic.com
+audience: https://api.primary-llm.example
 env_var: LLM_IDENTITY_TOKEN_FILE
 token_path: /var/run/secrets/llm/token
 source:
@@ -1017,8 +1021,8 @@ source:
         // test should be updated to assert redaction.
         let wi = sample_workload_identity();
         let dbg = format!("{:?}", wi);
-        assert!(dbg.contains("anthropic"));
-        assert!(dbg.contains("https://api.anthropic.com"));
+        assert!(dbg.contains("primary-llm"));
+        assert!(dbg.contains("https://api.primary-llm.example"));
     }
 
     #[test]
@@ -1030,7 +1034,7 @@ source:
         assert!(!dbg.contains("supersecret"), "env values must be redacted");
         assert!(dbg.contains("[REDACTED]"));
         assert!(dbg.contains("workload_identity"));
-        assert!(dbg.contains("anthropic"));
+        assert!(dbg.contains("primary-llm"));
     }
 
     #[test]
@@ -1262,10 +1266,32 @@ spec:
             spec.dns_allow.contains(&"api.github.com".to_string()),
             "should allow GitHub API"
         );
-        assert!(
-            spec.dns_allow.contains(&"api.anthropic.com".to_string()),
-            "should allow Anthropic API"
-        );
+        // Vendor-neutrality: nucleus no longer ships any LLM-vendor URL
+        // in the package_registries default DNS allow list. Downstream
+        // consumers add their chosen vendor URL at PodSpec assembly time.
+        // Sentinel: only documented package-registry hosts remain in the
+        // default dns_allow. Any addition must be reviewed against the
+        // vendor-neutrality gate at docs/check-public-vendor-neutrality.sh.
+        let allowed_hosts: std::collections::HashSet<&str> = [
+            "crates.io",
+            "static.crates.io",
+            "index.crates.io",
+            "registry.npmjs.org",
+            "pypi.org",
+            "files.pythonhosted.org",
+            "github.com",
+            "api.github.com",
+            "uploads.github.com",
+            "objects.githubusercontent.com",
+        ]
+        .into_iter()
+        .collect();
+        for host in &spec.dns_allow {
+            assert!(
+                allowed_hosts.contains(host.as_str()),
+                "package_registries shipped unexpected host: {host}"
+            );
+        }
     }
 
     #[test]

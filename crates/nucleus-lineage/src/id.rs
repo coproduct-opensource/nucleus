@@ -469,11 +469,11 @@ mod tests {
     #[test]
     fn derive_llm_always_content_addressed() {
         let p = pod();
-        let prompt = p.derive_llm("anthropic", "prompt", b"hi claude").unwrap();
-        assert!(prompt.as_str().contains("/llm/anthropic/prompt/sha256:"));
+        let prompt = p.derive_llm("provider-a", "prompt", b"hi there").unwrap();
+        assert!(prompt.as_str().contains("/llm/provider-a/prompt/sha256:"));
         assert_eq!(
             prompt.content_hash_hex().unwrap(),
-            hex_lower(&sha256(b"hi claude"))
+            hex_lower(&sha256(b"hi there"))
         );
     }
 
@@ -809,9 +809,9 @@ mod tests {
         let id = pod()
             .derive_tool("Bash", Some(b"x"))
             .unwrap()
-            .derive_llm("anthropic", "prompt", b"hi")
+            .derive_llm("provider-a", "prompt", b"hi")
             .unwrap()
-            .derive_llm("anthropic", "response", b"reply")
+            .derive_llm("provider-a", "response", b"reply")
             .unwrap();
         // Round-trip through parse to verify the canonical string is also
         // accepted by the hardened parser.

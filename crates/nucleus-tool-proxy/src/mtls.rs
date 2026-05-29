@@ -404,7 +404,7 @@ mod tests {
         let trust_domain = "test.nucleus.local";
         let ca = SelfSignedCa::new(trust_domain).unwrap();
 
-        let identity = Identity::new(trust_domain, "agents", "claude");
+        let identity = Identity::new(trust_domain, "agents", "agent-a");
         let csr = CsrOptions::new(identity.to_spiffe_uri())
             .generate()
             .unwrap();
@@ -424,7 +424,7 @@ mod tests {
         assert!(spiffe_id.is_some());
         assert_eq!(
             spiffe_id.unwrap(),
-            "spiffe://test.nucleus.local/ns/agents/sa/claude"
+            "spiffe://test.nucleus.local/ns/agents/sa/agent-a"
         );
     }
 
