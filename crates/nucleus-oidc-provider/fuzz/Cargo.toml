@@ -1,0 +1,44 @@
+[package]
+name = "nucleus-oidc-provider-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# This sub-crate is intentionally excluded from the workspace because
+# `cargo fuzz` builds with its own toolchain config and the nightly
+# `-Z` flags would leak into the rest of the workspace.
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+nucleus-oidc-provider = { path = ".." }
+nucleus-oidc-core = { path = "../../nucleus-oidc-core" }
+nucleus-lineage = { path = "../../nucleus-lineage" }
+serde_urlencoded = "0.7"
+serde_json = "1"
+
+[[bin]]
+name = "form_body"
+path = "fuzz_targets/form_body.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "federation_toml"
+path = "fuzz_targets/federation_toml.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "jwk_json"
+path = "fuzz_targets/jwk_json.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "spiffe_uri"
+path = "fuzz_targets/spiffe_uri.rs"
+test = false
+doc = false

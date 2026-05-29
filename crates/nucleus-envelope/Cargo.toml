@@ -1,0 +1,41 @@
+[package]
+name = "nucleus-envelope"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Portable provenance bundle: agent payload + IFC lineage envelope"
+repository = "https://github.com/coproduct-opensource/nucleus"
+keywords = ["lineage", "provenance", "ifc", "audit", "transparency"]
+categories = ["development-tools", "cryptography"]
+
+[dependencies]
+nucleus-lineage = { path = "../nucleus-lineage" }
+# Match nucleus-lineage's pin so the workspace doesn't drag in two
+# `ed25519` / `signature` crate versions transitively. nucleus-node
+# stays on 2.x intentionally (issue #1643 — migrate when 3.0 stable).
+ed25519-dalek = "=3.0.0-pre.7"
+base64 = "0.22"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+sha2 = { workspace = true }
+hex = { workspace = true }
+
+# C2PA v2.3 manifest export — gated behind `c2pa` feature. Default-off so
+# the lean dep tree is preserved for callers who don't need EU AI Act
+# Article 50 interop. `rust_native_crypto` swaps OpenSSL for pure-Rust
+# signing to keep our supply chain consistent with the rest of nucleus.
+c2pa = { version = "0.85", default-features = false, features = ["rust_native_crypto"], optional = true }
+
+[features]
+default = []
+c2pa = ["dep:c2pa"]
+
+[dev-dependencies]
+nucleus-lineage = { path = "../nucleus-lineage", features = ["dev"] }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

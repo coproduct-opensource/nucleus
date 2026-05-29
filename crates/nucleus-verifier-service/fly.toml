@@ -1,0 +1,82 @@
+# Fly.io deployment manifest for nucleus-verifier-service.
+#
+# Public verifier-as-a-service: anyone can POST a bundle and get a
+# verification report. Now also persists every result + maintains the
+# append-only transparency log (#69) and serves a signed STH (#94).
+#
+# Per workspace CLAUDE.md conventions:
+#   - HTTPS on the edge (Fly handles TLS termination)
+#   - min_machines_running = 1 so the public endpoint is always warm
+#   - Persistent volume mounted at /data for sqlite + chain head
+#   - Public surface — Flycast not used
+#
+# Required secrets (set via `fly secrets set` before first deploy):
+#
+#   NUCLEUS_VERIFIER_SIGNING_KEY  hex 32-byte Ed25519 secret. Generates
+#                                 the STH signing key + JWKS `kid`. If
+#                                 unset, the binary generates ephemeral
+#                                 — the `kid` would change on every
+#                                 restart and break every cached client.
+#                                 PRODUCTION DEPLOYS MUST SET THIS.
+#
+# Example bootstrap:
+#
+#   openssl rand -hex 32 | fly secrets set NUCLEUS_VERIFIER_SIGNING_KEY=- --stage
+#   fly volumes create verifier_data --region iad --size 10
+#   fly deploy
+
+app = "nucleus-verifier"
+primary_region = "iad"   # operator may move; iad is the placeholder
+kill_signal = "SIGTERM"
+kill_timeout = 30
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  RUST_LOG = "nucleus_verifier_service=info,warn"
+  # Bind to the volume-mounted path. The binary auto-creates the file +
+  # runs embedded migrations on first connect.
+  NUCLEUS_VERIFIER_DB = "sqlite:/data/verifier.db"
+
+# Public HTTPS surface — POST /v1/verify, GET /v1/bundles/{hash}/verify,
+# GET /v1/log/sth, GET /.well-known/jwks.json, etc.
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"           # public endpoint — never cold
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [http_service.concurrency]
+    # `ConcurrencyLimitLayer(MAX_CONCURRENT_REQUESTS=256)` in axum
+    # bounds in-flight work; Fly's per-machine concurrency tracking
+    # should match so the scheduler routes accurately.
+    type = "connections"
+    hard_limit = 256
+    soft_limit = 200
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    method = "GET"
+    path = "/healthz"
+    grace_period = "10s"
+
+# SQLite database + transparency-log chain live on this volume.
+# Single-volume-per-machine is fine: every read goes to the same writer
+# (the verifier-service), and the log's append semantics need a single
+# physical writer anyway. Multi-region read replication (litestream /
+# LiteFS) is post-MVP.
+[mounts]
+  source = "verifier_data"
+  destination = "/data"
+  auto_extend_size_threshold = 80     # grow when ≥ 80% full
+  auto_extend_size_increment = "1GB"
+  auto_extend_size_limit = "50GB"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512                      # sqlite cache + payload buffers

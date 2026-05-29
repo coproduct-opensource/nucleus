@@ -1,0 +1,127 @@
+/* Quickstart-only styles. Loaded after style.css; extends rather than
+   redefines. */
+
+.quickstart-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+  margin-top: 2rem;
+}
+.qs-col h3 {
+  margin: 0 0 0.5rem;
+}
+
+.dropzone {
+  border: 2px dashed var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  padding: 2rem 1rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  outline: none;
+}
+.dropzone:hover,
+.dropzone:focus-visible {
+  border-color: var(--accent);
+}
+.dropzone.dragover {
+  border-color: var(--accent);
+  background: rgba(109, 208, 255, 0.05);
+}
+.dropzone-default {
+  margin: 0;
+  font-size: 0.95rem;
+}
+.muted {
+  color: var(--fg-muted);
+  font-size: 0.85rem;
+}
+
+details {
+  margin-top: 0.5rem;
+}
+details summary {
+  font-size: 0.85rem;
+  cursor: pointer;
+  color: var(--fg-muted);
+}
+details summary:hover {
+  color: var(--accent);
+}
+
+textarea {
+  width: 100%;
+  min-height: 8rem;
+  background: var(--bg-code);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  line-height: 1.45;
+  resize: vertical;
+  margin-top: 0.5rem;
+}
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.actions-row {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+#result-section {
+  margin-top: 2rem;
+  scroll-margin-top: 1rem;
+}
+#result-section h2 {
+  margin-bottom: 0.5rem;
+}
+.result-body {
+  margin-top: 0;
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+}
+.result-ok {
+  border-left-color: #4ade80;
+}
+.result-ok h2 {
+  color: #4ade80;
+}
+.result-fail {
+  border-left-color: #f87171;
+}
+.result-fail h2 {
+  color: #f87171;
+}
+
+.badge-row {
+  margin-top: 1.75rem;
+}
+.badge-row pre {
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+#sdk-status.info {
+  color: var(--fg-muted);
+}
+#sdk-status.ready {
+  color: var(--accent);
+}
+#sdk-status.error {
+  color: #f87171;
+}
+
+@media (max-width: 720px) {
+  .quickstart-grid {
+    grid-template-columns: 1fr;
+  }
+}

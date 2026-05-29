@@ -1,0 +1,82 @@
+syntax = "proto3";
+
+// Job submission + lookup API for the nucleus control plane.
+//
+// Iter-1 surface deliberately mirrors a subset of the REST API:
+// Submit + Get. Iter-2 will add StreamEvents (matching the SSE
+// endpoint) and Cancel (mirroring POST /v1/jobs/{id}/cancel) so
+// internal callers don't need to maintain two separate clients.
+//
+// Wire convention: internal-only port, no TLS at the listener
+// (Fly.io 6PN encrypts in transit). Per workspace CLAUDE.md the
+// port is HTTP+1000 (default HTTP 8080 → gRPC 9080).
+
+package nucleus.control_plane.v1;
+
+// One agent driver descriptor — name + opaque JSON-encoded config.
+message AgentDriverRef {
+  string name = 1;
+  string version = 2;
+  string config_json = 3;
+}
+
+// What kind of input the agent should run against. Mirrors the
+// `InputRef` Rust enum's Inline variant. Iter-1 only supports Inline.
+message InlineInput {
+  string content_json = 1;
+}
+
+// Submitted job specification (proto3-friendly subset).
+message JobSubmission {
+  // Free-form task description.
+  string task = 1;
+  // Driver to run.
+  AgentDriverRef agent_driver = 2;
+  // Inline input — JSON object, opaque to the control plane.
+  InlineInput inline_input = 3;
+  // Operator-defined policy bucket (e.g. "report-extraction").
+  string policy_profile = 4;
+  // When true, the bundle is delivered in the response (REST has
+  // additional Destination variants; gRPC iter-1 only supports
+  // InResponse so a successful Get returns the bundle inline).
+  bool destination_in_response = 5;
+}
+
+// Returned from Submit.
+message SubmittedJob {
+  string job_id = 1;
+}
+
+// Get request — pure ID lookup.
+message JobIdMessage {
+  string job_id = 1;
+}
+
+// Coarse lifecycle status code.
+enum JobStatusCode {
+  STATUS_UNSPECIFIED = 0;
+  STATUS_QUEUED = 1;
+  STATUS_RUNNING = 2;
+  STATUS_COMPLETED = 3;
+  STATUS_FAILED = 4;
+}
+
+// Get response — coarse status + optional bundle JSON when complete.
+message JobStatus {
+  string job_id = 1;
+  JobStatusCode status = 2;
+  // Present iff status == COMPLETED; JSON-encoded Bundle.
+  string bundle_json = 3;
+  // Present iff status == FAILED; human-readable reason.
+  string failure_reason = 4;
+}
+
+// The service. Identical port should also serve the REST endpoints
+// for ease of deployment in iter-1; internal callers pick the
+// surface they prefer.
+service JobService {
+  // Submit a new job. Returns 200 with the assigned id.
+  rpc Submit(JobSubmission) returns (SubmittedJob);
+  // Look up a job's current status.
+  rpc Get(JobIdMessage) returns (JobStatus);
+}

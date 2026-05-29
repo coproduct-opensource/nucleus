@@ -1,0 +1,110 @@
+name: OIDC gates
+
+# Runs the vendor-neutrality + algorithm-pin checks on every PR that
+# touches the OIDC crates or the gate scripts themselves. The gates are
+# fast (< 5s grep over a small source tree) so we run them unconditionally
+# in the workflow but the workflow itself is path-filtered to skip
+# unrelated PRs.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/nucleus-oidc-provider/**'
+      - 'crates/nucleus-oidc-core/**'
+      - 'ci/no-vendor-strings.sh'
+      - 'ci/alg-pin-check.sh'
+      - '.github/workflows/oidc-gates.yml'
+  pull_request:
+    paths:
+      - 'crates/nucleus-oidc-provider/**'
+      - 'crates/nucleus-oidc-core/**'
+      - 'ci/no-vendor-strings.sh'
+      - 'ci/alg-pin-check.sh'
+      - '.github/workflows/oidc-gates.yml'
+
+# Concurrency: only one in-flight run per branch — cancel older runs
+# when a new push lands.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write   # for the comment-on-failure step
+
+jobs:
+  vendor-neutrality:
+    name: Vendor-neutrality gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run no-vendor-strings.sh
+        id: gate
+        run: |
+          bash ci/no-vendor-strings.sh \
+            crates/nucleus-oidc-provider \
+            crates/nucleus-oidc-core \
+            2>&1 | tee gate-output.txt
+        continue-on-error: false
+      - name: Surface failure as PR comment
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const output = fs.readFileSync('gate-output.txt', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: [
+                '### 🚫 Vendor-neutrality CI gate failed',
+                '',
+                'Per `nucleus/CLAUDE.md`, the OIDC crates must contain no vendor-specific code.',
+                '',
+                '```',
+                output.trim().slice(0, 60000),  // GitHub comment 64KB cap
+                '```',
+                '',
+                'Allow-list a line by appending `vendor-allow: <reason>` in any comment style.',
+              ].join('\n'),
+            });
+
+  algorithm-pin:
+    name: Algorithm-pin gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run alg-pin-check.sh
+        id: gate
+        run: |
+          bash ci/alg-pin-check.sh \
+            crates/nucleus-oidc-provider \
+            crates/nucleus-oidc-core \
+            2>&1 | tee gate-output.txt
+        continue-on-error: false
+      - name: Surface failure as PR comment
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const output = fs.readFileSync('gate-output.txt', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: [
+                '### 🚫 Algorithm-pin CI gate failed',
+                '',
+                'Per `THREAT_MODEL.md` T04, the OP signs/verifies EdDSA exclusively.',
+                'Any HS*/RS*/PS*/ES*/none reference is a regression risk for the algorithm-confusion CVE class (CVE-2026-22817 et al).',
+                '',
+                '```',
+                output.trim().slice(0, 60000),
+                '```',
+                '',
+                'Allow-list a line by appending `alg-pin-allow: <reason>` in any comment style.',
+              ].join('\n'),
+            });

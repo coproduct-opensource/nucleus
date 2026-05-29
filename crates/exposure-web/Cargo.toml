@@ -2,7 +2,7 @@
 name = "exposure-web"
 version = "1.0.0"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 description = "Web-based interactive playground for the uninhabitable state prevention system"
 repository = "https://github.com/coproduct-opensource/nucleus"

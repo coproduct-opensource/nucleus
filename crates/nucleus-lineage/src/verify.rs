@@ -26,7 +26,7 @@
 use std::collections::HashMap;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -181,7 +181,7 @@ pub fn verify_proof(
 
     let vk = jwks.verifying_key(&proof.kid)?;
     let bytes = canonical_edge_bytes(edge, prev_hash);
-    vk.verify(&bytes, &sig)
+    vk.verify_strict(&bytes, &sig)
         .map_err(|_| VerifyError::BadSignature {
             kid: proof.kid.clone(),
         })

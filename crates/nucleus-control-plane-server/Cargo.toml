@@ -1,0 +1,54 @@
+[package]
+name = "nucleus-control-plane-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "REST API server wrapping nucleus-control-plane for job submission and bundle delivery"
+repository = "https://github.com/coproduct-opensource/nucleus"
+keywords = ["control-plane", "rest", "axum", "agents", "provenance"]
+categories = ["web-programming::http-server"]
+
+[[bin]]
+name = "nucleus-control-plane-server"
+path = "src/main.rs"
+
+[dependencies]
+nucleus-lineage = { path = "../nucleus-lineage", features = ["dev"] }
+nucleus-envelope = { path = "../nucleus-envelope" }
+nucleus-control-plane = { path = "../nucleus-control-plane" }
+nucleus-oidc-core = { path = "../nucleus-oidc-core" }
+ed25519-dalek = "=3.0.0-pre.7"
+base64 = "0.22"
+axum = { version = "0.8", features = ["macros", "json"] }
+tokio = { workspace = true, features = ["full"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "timeout", "limit"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+nucleus-otel-bootstrap = { path = "../nucleus-otel-bootstrap" }
+nucleus-proto = { path = "../nucleus-proto" }
+tonic = { workspace = true }
+prost = { workspace = true }
+hmac = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls"] }
+clap = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+async-stream = "0.3"
+futures-util = "0.3"
+uuid = { workspace = true, features = ["v4", "serde"] }
+rand = "0.8"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+futures-util = "0.3"
+
+[lints]
+workspace = true

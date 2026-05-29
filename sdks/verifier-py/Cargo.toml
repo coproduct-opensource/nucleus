@@ -1,0 +1,26 @@
+[package]
+name = "nucleus-verifier-py"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+description = "Python bindings for nucleus-envelope verification — runs in your backend, no trust in the verifier service"
+repository = "https://github.com/coproduct-opensource/nucleus"
+publish = false
+
+# cdylib for the Python extension; rlib so we can write Rust-side
+# unit tests against the same code. abi3 = build a single wheel that
+# works on Python 3.8+, no per-version recompile.
+[lib]
+name = "nucleus_verifier"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+nucleus-envelope = { path = "../../crates/nucleus-envelope" }
+nucleus-lineage = { path = "../../crates/nucleus-lineage" }
+# abi3-py38 = single wheel covers CPython 3.8 through 3.13+; PyO3 0.28+
+# generates 3.8 ABI-stable bindings.
+pyo3 = { version = "0.28", features = ["abi3-py38", "extension-module"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"

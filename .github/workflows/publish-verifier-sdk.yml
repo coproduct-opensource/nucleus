@@ -1,0 +1,95 @@
+# Publish the JS verifier SDK to npm.
+#
+# Triggered MANUALLY (workflow_dispatch) so a published version is
+# always a human-witnessed event. Inputs: the npm-dist-tag to
+# publish under ('latest' for stable, 'next' for prerelease).
+#
+# Required repository secrets:
+#   NPM_TOKEN  — npm automation token with publish access to @coproduct
+#
+# Quality gate before publish:
+#   - wasm-pack test --node passes (catches API regressions before
+#     they ship to consumers)
+#   - clippy + cargo test on the underlying nucleus-envelope crate
+#     pass (the wasm SDK is a thin wrapper; if the inner verifier is
+#     broken, no point publishing)
+
+name: Publish JS verifier SDK
+
+on:
+  workflow_dispatch:
+    inputs:
+      dist_tag:
+        description: "npm dist-tag (latest | next | beta)"
+        required: true
+        default: "next"
+        type: string
+      dry_run:
+        description: "Dry-run only (skip npm publish)"
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # for npm provenance
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.95+ with wasm32 target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95.0"
+          targets: wasm32-unknown-unknown
+          components: clippy
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-publish-sdk-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Lint
+        run: cargo clippy -p nucleus-envelope --lib --all-targets -- -D warnings
+
+      - name: Native tests
+        run: cargo test -p nucleus-envelope --lib
+
+      - name: wasm-bindgen-test (Node)
+        working-directory: sdks/verifier-js
+        run: wasm-pack test --node
+
+      - name: Build wasm bundle for npm
+        working-directory: sdks/verifier-js
+        run: |
+          wasm-pack build --target bundler --release --scope coproduct
+
+      - name: Set up Node.js for publish
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Publish to npm
+        if: ${{ inputs.dry_run == false }}
+        working-directory: sdks/verifier-js/pkg
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public --tag "${{ inputs.dist_tag }}"
+
+      - name: Dry-run npm publish
+        if: ${{ inputs.dry_run == true }}
+        working-directory: sdks/verifier-js/pkg
+        run: |
+          echo "DRY-RUN — would publish:"
+          npm pack --dry-run

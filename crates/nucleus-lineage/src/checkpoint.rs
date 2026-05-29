@@ -25,7 +25,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -51,6 +51,24 @@ pub enum WitnessError {
     /// The witness's verifying key bytes were not a valid Ed25519 public key.
     #[error("invalid verifying key")]
     InvalidVerifyingKey,
+    /// **v2.3b HIGH-3 fix.** C2SP `tlog-witness` returned `409 Conflict`
+    /// with the actual last-cosigned tree size in the body. Indicates
+    /// the producer's `old <prev_tree_size>` line didn't match the
+    /// witness's state — a stateful client (v2.3c) should update its
+    /// tracked size and retry. Today's v2.3b client always sends
+    /// `old 0` so this fires on every second submission to a real
+    /// witness.
+    #[error(
+        "C2SP witness rejected with 409 Conflict; witness's last-known tree size is {last_known_size}"
+    )]
+    Conflict { last_known_size: u64 },
+    /// **HIGH-3 (audit) fix.** A `std::sync::Mutex` guarding witness
+    /// or client state was poisoned by a prior panic. Surface as a
+    /// dedicated variant so callers can distinguish "transient
+    /// backend failure" from "internal invariant breach" — the latter
+    /// is non-retryable and signals process-restart territory.
+    #[error("witness mutex poisoned: {0}")]
+    Poisoned(&'static str),
 }
 
 /// A signed checkpoint of the lineage Merkle tree.
@@ -64,6 +82,7 @@ pub enum WitnessError {
 /// Wire format is forward-compatible serde JSON — never remove or rename
 /// fields; new fields must be `#[serde(default)]`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SignedTreeHead {
     /// Number of leaves committed at sign time.
     pub tree_size: u64,
@@ -76,6 +95,16 @@ pub struct SignedTreeHead {
     /// Ed25519 signature over [`canonical_sth_bytes`], base64-encoded.
     #[serde(with = "base64_bytes")]
     pub witness_sig: Vec<u8>,
+    /// **v2.1 witness federation.** Zero or more countersignatures
+    /// from external witnesses, each signing the same canonical bytes
+    /// covered by `witness_sig`. Verifiers configured with a list of
+    /// trusted witnesses + a threshold reject STHs that don't meet
+    /// the cosignature quorum. See [`crate::cosign::Cosignature`].
+    ///
+    /// Forward-compat: missing in v2.0 envelopes; default empty so
+    /// older readers parse v2.1 STHs without code changes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cosignatures: Vec<crate::cosign::Cosignature>,
 }
 
 impl SignedTreeHead {
@@ -166,7 +195,21 @@ impl Ed25519Witness {
     }
 
     /// Construct from a 32-byte Ed25519 secret-key seed.
+    ///
+    /// # Debug assertion (LOW-2 audit hardening)
+    ///
+    /// In debug builds, panics if `seed` is all-zeros — a classic
+    /// dev/test slip that produces a deterministic but cryptographically
+    /// weak witness. ed25519-dalek itself accepts any 32-byte seed
+    /// without complaint; the debug assert is a guardrail for callers
+    /// who accidentally pass `[0u8; 32]`. Production builds (release
+    /// mode) skip the check for zero overhead.
     pub fn from_seed(seed: [u8; 32]) -> Self {
+        debug_assert!(
+            seed.iter().any(|&b| b != 0),
+            "Ed25519Witness::from_seed: all-zero seed is cryptographically weak; \
+             use a CSPRNG-derived seed in production"
+        );
         Self::new(SigningKey::from_bytes(&seed))
     }
 
@@ -184,6 +227,14 @@ impl Ed25519Witness {
     /// will verify STHs offline.
     pub fn verifying_key_bytes(&self) -> [u8; 32] {
         self.verifying_key.to_bytes()
+    }
+
+    /// Sign arbitrary bytes with the witness's signing key. Used by
+    /// `crate::cosign::InProcessWitness` to produce countersignatures
+    /// over a producer's canonical STH bytes; not intended for general
+    ///-purpose signing.
+    pub fn sign_message(&self, message: &[u8]) -> [u8; 64] {
+        self.signing_key.sign(message).to_bytes()
     }
 }
 
@@ -209,6 +260,7 @@ impl TreeWitness for Ed25519Witness {
             root_hash_hex: hex::encode(root_hash),
             witness_kid: self.kid.clone(),
             witness_sig: sig.to_bytes().to_vec(),
+            cosignatures: Vec::new(),
         })
     }
 
@@ -218,7 +270,7 @@ impl TreeWitness for Ed25519Witness {
             .map_err(|_| WitnessError::InvalidSignature(self.kid.clone()))?;
         let signature = Signature::from_bytes(&sig_arr);
         self.verifying_key
-            .verify(canonical, &signature)
+            .verify_strict(canonical, &signature)
             .map_err(|_| WitnessError::InvalidSignature(self.kid.clone()))
     }
 }
@@ -253,7 +305,7 @@ impl TreeWitness for VerifyOnlyWitness {
             .map_err(|_| WitnessError::InvalidSignature(self.kid.clone()))?;
         let signature = Signature::from_bytes(&sig_arr);
         self.verifying_key
-            .verify(canonical, &signature)
+            .verify_strict(canonical, &signature)
             .map_err(|_| WitnessError::InvalidSignature(self.kid.clone()))
     }
 }

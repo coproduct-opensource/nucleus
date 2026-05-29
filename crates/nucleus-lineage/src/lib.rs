@@ -32,13 +32,20 @@
 //! [`LocalIssuer`]: crate::local_issuer::LocalIssuer
 
 pub mod checkpoint;
+pub mod cosign;
 pub mod edge;
 pub mod id;
 pub mod issuer;
 pub mod merkle;
 pub mod proof;
+pub mod prover;
+pub mod signed_note;
 pub mod sink;
 pub mod verify;
+
+// Re-export ct-merkle types we expose at the API boundary so downstream
+// crates (nucleus-envelope) don't need to depend on ct-merkle directly.
+pub use ct_merkle::{ConsistencyProof, InclusionProof, InclusionVerifError, RootHash};
 
 #[cfg(feature = "dev")]
 pub mod local_issuer;
@@ -47,11 +54,20 @@ pub use checkpoint::{
     canonical_sth_bytes, Ed25519Witness, SignedTreeHead, TreeWitness, VerifyOnlyWitness,
     WitnessError,
 };
+#[cfg(feature = "http")]
+pub use cosign::{C2spHttpWitnessClient, HttpWitnessClient};
+pub use cosign::{Cosignature, CosignatureKind, InProcessWitness, WitnessClient};
 pub use edge::{EdgeKind, LineageEdge};
 pub use id::{CallSpiffeId, IdError, MAX_URI_LEN};
 pub use issuer::{EdgeSigner, IdentityFetcher, IssuerError, SvidClaims};
 pub use merkle::{read_checkpoints, verify_log, MerkleConfig, MerkleError, MerkleSink};
 pub use proof::{canonical_edge_bytes, edge_content_hash, Proof};
+pub use prover::MerkleProver;
+pub use signed_note::{
+    checkpoint_signed_bytes, ed25519_key_id, format_checkpoint_body, format_signature_line,
+    parse_signature_line, validate_key_name, validate_origin, ParsedSignatureLine, SignedNoteError,
+    MAX_KEY_NAME_LEN, MAX_ORIGIN_LEN, SIG_LINE_PREFIX, SIG_TYPE_COSIGNATURE, SIG_TYPE_ED25519,
+};
 pub use sink::{InMemorySink, JsonlSink, LineageSink, SinkError};
 pub use verify::{verify_chain, verify_proof, Jwk, Jwks, StaticKeyResolver, VerifyError};
 

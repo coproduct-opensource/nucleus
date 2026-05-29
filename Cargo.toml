@@ -28,6 +28,14 @@ members = [
     "crates/ck-policy",                 # Constitutional Kernel: monotonicity checker
     "crates/ck-kernel",                 # Constitutional Kernel: admission engine + lineage
     "crates/nucleus-lineage",            # Per-call SPIFFE-derived data lineage
+    "crates/nucleus-envelope",           # Portable provenance bundle: payload + IFC envelope
+    "crates/nucleus-envelope-adversarial-corpus", # Adversarial bundles every verifier must reject — CI-gated security promise
+    "crates/nucleus-otel-bootstrap",     # Shared OpenTelemetry OTLP bootstrap for server binaries
+    "crates/nucleus-control-plane",      # Job orchestrator: typed JobSpec → agent → Bundle
+    "crates/nucleus-control-plane-server", # REST API server wrapping nucleus-control-plane
+    "crates/nucleus-verifier-service",   # Public verifier-as-a-service for provenance bundles
+    "crates/nucleus-oidc-provider",      # OIDC OP: JWT-SVID issuance + RFC 8693 token exchange
+    "crates/nucleus-oidc-core",          # Provider-agnostic OIDC primitives (JWKS, JtiCache, federation)
 ]
 # nucleus-claude-hook moved to nucleus-code (private product repo)
 # exposure-web is WASM-only (wasm32-unknown-unknown); build with: cd crates/exposure-web && trunk build
@@ -36,13 +44,15 @@ exclude = [
     "crates/exposure-web",       # WASM-only (wasm32-unknown-unknown)
     "crates/portcullis-python",  # Python bindings (requires maturin)
     "crates/portcullis-zkvm-guest", # RISC-V zkVM guest (compiled separately by risc0-build)
+    "sdks/verifier-js",           # WASM-only (wasm32-unknown-unknown); build with: wasm-pack build sdks/verifier-js
+    "sdks/verifier-py",           # Python extension module; build with: maturin develop --release
 ]
 resolver = "2"
 
 [workspace.package]
 version = "1.0.0"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 authors = ["Coproduct <hello@coproduct.dev>"]
 

@@ -1,0 +1,3 @@
+# wasm-pack output is a build product, not source.
+/pkg
+/target

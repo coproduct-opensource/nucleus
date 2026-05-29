@@ -1,0 +1,7 @@
+# maturin build output
+/target
+/dist
+*.so
+*.pyd
+*.pyc
+__pycache__/

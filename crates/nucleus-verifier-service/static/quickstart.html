@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>quickstart — nucleus verifier</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <link rel="stylesheet" href="/static/quickstart.css" />
+  </head>
+  <body>
+    <header>
+      <div class="container">
+        <a class="brand" href="/">nucleus</a>
+        <nav>
+          <a href="/">Home</a>
+          <a href="/docs/integration-guide-verifier">Docs</a>
+          <a href="https://github.com/coproduct-opensource/nucleus">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="container hero">
+        <h1>Try it now.</h1>
+        <p class="lede">
+          Drop a bundle. Paste a trust JWKS. The math runs in this tab
+          &mdash; no upload to our server. Same wasm SDK that ships on
+          npm, byte-for-byte.
+        </p>
+        <p id="sdk-status" class="info">SDK loading...</p>
+      </section>
+
+      <section class="container quickstart-grid">
+        <div class="qs-col">
+          <h3>1. Bundle</h3>
+          <div id="bundle-drop" class="dropzone" tabindex="0">
+            <p class="dropzone-default">
+              drop <code>bundle.json</code> here<br />
+              <span class="muted">or click to pick a file</span>
+            </p>
+            <input
+              type="file"
+              id="bundle-file-input"
+              accept="application/json,.json"
+              hidden
+            />
+          </div>
+          <details>
+            <summary>or paste JSON directly</summary>
+            <textarea
+              id="bundle-textarea"
+              placeholder='{"payload":{...},"envelope":{...}}'
+              spellcheck="false"
+            ></textarea>
+          </details>
+        </div>
+
+        <div class="qs-col">
+          <h3>2. Trust anchor</h3>
+          <textarea
+            id="anchor-textarea"
+            placeholder='{"trust_jwks":{"keys":[{"kty":"OKP","crv":"Ed25519","kid":"...","x":"..."}]}}'
+            spellcheck="false"
+          ></textarea>
+          <p class="muted">
+            Get this from your control plane:
+            <code>GET /.well-known/jwks.json</code>. Do <strong>not</strong>
+            use the JWKS embedded in the bundle &mdash; that's
+            producer-controlled.
+          </p>
+        </div>
+      </section>
+
+      <section class="container actions-row">
+        <button id="verify-btn" class="btn btn-primary" disabled>verify</button>
+        <button id="clear-btn" class="btn">clear</button>
+      </section>
+
+      <section id="result-section" class="container" hidden>
+        <h2 id="result-headline"></h2>
+        <pre id="result-body" class="result-body"></pre>
+        <div id="badge-section" class="badge-row" hidden>
+          <h3>Embed a verify badge</h3>
+          <p>
+            Show your verification status next to the AI output. The
+            badge links to a deep view in <code>verifier.coproduct.io</code>.
+          </p>
+          <pre id="badge-snippet"></pre>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="container">
+        <p>
+          Source:
+          <a href="https://github.com/coproduct-opensource/nucleus"
+            >coproduct-opensource/nucleus</a
+          >
+          &nbsp;|&nbsp; Same SDK on
+          <code>@coproduct/verifier</code> (npm) and
+          <code>nucleus-verifier</code> (PyPI).
+        </p>
+        <p>
+          Security disclosures:
+          <a href="mailto:security@coproduct.io">security@coproduct.io</a>
+        </p>
+      </div>
+    </footer>
+
+    <script type="module" src="/static/quickstart.js"></script>
+  </body>
+</html>

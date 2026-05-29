@@ -1,0 +1,29 @@
+[package]
+name = "nucleus-envelope-adversarial-corpus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Hand-crafted bad bundles every nucleus-envelope verifier must reject — the CI-gated security promise"
+repository = "https://github.com/coproduct-opensource/nucleus"
+keywords = ["adversarial", "test-vectors", "kat", "audit", "provenance"]
+categories = ["development-tools", "cryptography"]
+
+# The corpus is a library so external auditors can `cargo run` against
+# our cases AND so the threat-model doc can cite this crate by name.
+[lib]
+name = "nucleus_envelope_adversarial_corpus"
+path = "src/lib.rs"
+
+[dependencies]
+nucleus-envelope = { path = "../nucleus-envelope" }
+nucleus-lineage = { path = "../nucleus-lineage", features = ["dev"] }
+ed25519-dalek = "=3.0.0-pre.7"
+serde_json = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+# tests/ uses the same dev features as the library — no additional deps.
+
+[lints]
+workspace = true

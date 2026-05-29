@@ -1,7 +1,7 @@
 # Nucleus Makefile
 # Primary build targets for development and CI
 
-.PHONY: all build test clippy fmt rootfs clean help demo
+.PHONY: all build test clippy fmt rootfs clean help demo ci-oidc-gates
 
 # Default target
 all: build
@@ -76,6 +76,13 @@ audit:
 # Run cargo-deny checks
 deny:
 	cargo deny check
+
+# OIDC crate gates (#54) — vendor-neutrality + algorithm-pin.
+# Run locally before pushing PRs that touch the OIDC crates so CI
+# matches what you see.
+ci-oidc-gates:
+	bash ci/no-vendor-strings.sh crates/nucleus-oidc-provider crates/nucleus-oidc-core
+	bash ci/alg-pin-check.sh crates/nucleus-oidc-provider crates/nucleus-oidc-core
 
 # Generate documentation
 docs:

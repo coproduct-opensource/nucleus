@@ -25,7 +25,10 @@ mod audit;
 mod config;
 mod constants;
 mod doctor;
+mod envelope;
+mod envelope_verify;
 mod guard;
+mod identity;
 mod keychain;
 mod lineage;
 mod lineage_verify;
@@ -107,6 +110,9 @@ enum Commands {
     /// Manage attenuation tokens for delegation
     Token(token::TokenArgs),
 
+    /// JWT-SVID inspection + OP token-exchange affordances (#48)
+    Identity(identity::IdentityArgs),
+
     /// Interact with a running nucleus-node (test utilities)
     Node(node::NodeArgs),
 
@@ -115,6 +121,12 @@ enum Commands {
 
     /// Verify Merkle integrity of a lineage log against signed checkpoints
     LineageVerifyChain(lineage_verify::VerifyChainArgs),
+
+    /// Extract a portable provenance bundle (payload + IFC envelope) for a session
+    Envelope(envelope::EnvelopeArgs),
+
+    /// Verify a provenance bundle standalone
+    EnvelopeVerify(envelope_verify::EnvelopeVerifyArgs),
 }
 
 fn init_logging(verbose: bool) {
@@ -124,9 +136,12 @@ fn init_logging(verbose: bool) {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("nucleus=info,warn"))
     };
 
+    // Route tracing to stderr so subcommands that emit machine-readable
+    // output on stdout (e.g. `nucleus envelope --out -`) aren't polluted
+    // by INFO lines.
     tracing_subscriber::registry()
         .with(filter)
-        .with(fmt::layer())
+        .with(fmt::layer().with_writer(std::io::stderr))
         .init();
 }
 
@@ -160,8 +175,11 @@ async fn main() -> Result<()> {
         Commands::Observe(args) => observe::execute(args),
         Commands::Replay(args) => replay::execute(args),
         Commands::Token(args) => token::execute(args),
+        Commands::Identity(args) => identity::execute(args),
         Commands::Node(args) => node::execute(args).await,
         Commands::Lineage(args) => lineage::execute(args),
         Commands::LineageVerifyChain(args) => lineage_verify::execute(args),
+        Commands::Envelope(args) => envelope::execute(args),
+        Commands::EnvelopeVerify(args) => envelope_verify::execute(args),
     }
 }
