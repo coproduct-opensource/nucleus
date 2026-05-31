@@ -96,6 +96,7 @@ The conjugation rack is the UNIQUE compatible solution.
 -/
 
 open SemanticIFCDecidable DObsLevel FiveSecret
+open SemanticIFCDecidable.BoundaryMaps
 open AlexandrovSite PresheafCech
 open PortcullisCore.AugmentedBorromean
 
@@ -118,7 +119,7 @@ def rackSquared : List (List Bool) :=
   rackMatrix.map fun row =>
     (List.range 3).map fun j =>
       (List.range 3).foldl (fun acc k =>
-        xor acc (row[k]! && rackMatrix[k]![j]!)) false
+        xor acc (row[k]! && (rackMatrix[k]!)[j]!)) false
 
 example : rackSquared = rackMatrix := by native_decide
 
