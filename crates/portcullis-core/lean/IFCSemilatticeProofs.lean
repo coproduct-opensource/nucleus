@@ -93,7 +93,7 @@ instance : DecidableRel (α := ConfLevel) (· < ·) :=
 instance : Preorder ConfLevel where
   le_refl  a     := Nat.le_refl _
   le_trans _ _ _ := Nat.le_trans
-  lt_iff_le_not_ge _ _ := Nat.lt_iff_le_not_le
+  lt_iff_le_not_ge _ _ := Nat.lt_iff_le_and_not_ge
 
 instance : PartialOrder ConfLevel where
   le_antisymm a b h1 h2 :=
@@ -101,42 +101,36 @@ instance : PartialOrder ConfLevel where
 
 instance : LinearOrder ConfLevel where
   le_total a b := Nat.le_or_ge a.toNat b.toNat
-  decidableLE := inferInstance
-  decidableLT := inferInstance
-  decidableEq := inferInstance
+  toDecidableLE := inferInstance
+  toDecidableLT := inferInstance
+  toDecidableEq := inferInstance
 
 -- ── Inf / Sup instances for ConfLevel ────────────────────────────────
+-- mathlib v4.30: `SemilatticeInf`/`SemilatticeSup` carry their own `inf`/`sup`
+-- field directly; `Min`/`Max` are *derived* from them via `SemilatticeInf.toMin`
+-- / `SemilatticeSup.toMax`. So we supply `inf`/`sup` here and drop the manual
+-- `Min`/`Max` instances.
 
-/-- Covariant inf = min (lower confidentiality wins). -/
-instance : Inf ConfLevel where
-  inf a b := if a.toNat ≤ b.toNat then a else b
-
-/-- Covariant sup = max (higher confidentiality wins). -/
-instance : Sup ConfLevel where
-  sup a b := if a.toNat ≥ b.toNat then a else b
-
-/-- ConfLevel is a SemilatticeInf under covariant ordering. -/
+/-- ConfLevel is a SemilatticeInf under covariant ordering (inf = min). -/
 instance : SemilatticeInf ConfLevel where
+  inf a b := if a.toNat ≤ b.toNat then a else b
   inf_le_left  a b := by cases a <;> cases b <;> decide
   inf_le_right a b := by cases a <;> cases b <;> decide
   le_inf a b c hab hac := by
-    cases a <;> cases b <;> cases c <;> simp_all [LE.le, Inf.inf, toNat]
+    revert hab hac; cases a <;> cases b <;> cases c <;> decide
 
-/-- ConfLevel is a SemilatticeSup under covariant ordering. -/
+/-- ConfLevel is a SemilatticeSup under covariant ordering (sup = max). -/
 instance : SemilatticeSup ConfLevel where
+  sup a b := if a.toNat ≥ b.toNat then a else b
   le_sup_left  a b := by cases a <;> cases b <;> decide
   le_sup_right a b := by cases a <;> cases b <;> decide
   sup_le a b c hac hbc := by
-    cases a <;> cases b <;> cases c <;> simp_all [LE.le, Sup.sup, toNat]
+    revert hac hbc; cases a <;> cases b <;> cases c <;> decide
 
-/-- ConfLevel is a full Lattice. -/
-instance : Lattice ConfLevel where
-  inf_le_left  := SemilatticeInf.inf_le_left
-  inf_le_right := SemilatticeInf.inf_le_right
-  le_inf       := SemilatticeInf.le_inf
-  le_sup_left  := SemilatticeSup.le_sup_left
-  le_sup_right := SemilatticeSup.le_sup_right
-  sup_le       := SemilatticeSup.sup_le
+/-- ConfLevel is a full Lattice (inherits inf/sup from the two semilattices). -/
+instance : Lattice ConfLevel :=
+  { (inferInstance : SemilatticeSup ConfLevel),
+    (inferInstance : SemilatticeInf ConfLevel) with }
 
 -- ── LE / LT for IntegLevel ────────────────────────────────────────────
 -- NB: The NATURAL ordering on IntegLevel is Adversarial < Untrusted < Trusted.
@@ -158,7 +152,7 @@ instance : DecidableRel (α := IntegLevel) (· < ·) :=
 instance : Preorder IntegLevel where
   le_refl  a     := Nat.le_refl _
   le_trans _ _ _ := Nat.le_trans
-  lt_iff_le_not_ge _ _ := Nat.lt_iff_le_not_le
+  lt_iff_le_not_ge _ _ := Nat.lt_iff_le_and_not_ge
 
 instance : PartialOrder IntegLevel where
   le_antisymm a b h1 h2 :=
@@ -166,37 +160,29 @@ instance : PartialOrder IntegLevel where
 
 instance : LinearOrder IntegLevel where
   le_total a b := Nat.le_or_ge a.toNat b.toNat
-  decidableLE := inferInstance
-  decidableLT := inferInstance
-  decidableEq := inferInstance
+  toDecidableLE := inferInstance
+  toDecidableLT := inferInstance
+  toDecidableEq := inferInstance
 
 -- ── SemilatticeInf / SemilatticeSup for IntegLevel ────────────────────
 
-instance : Inf IntegLevel where
-  inf a b := if a.toNat ≤ b.toNat then a else b
-
-instance : Sup IntegLevel where
-  sup a b := if a.toNat ≥ b.toNat then a else b
-
 instance : SemilatticeInf IntegLevel where
+  inf a b := if a.toNat ≤ b.toNat then a else b
   inf_le_left  a b := by cases a <;> cases b <;> decide
   inf_le_right a b := by cases a <;> cases b <;> decide
   le_inf a b c hab hac := by
-    cases a <;> cases b <;> cases c <;> simp_all [LE.le, Inf.inf, toNat]
+    revert hab hac; cases a <;> cases b <;> cases c <;> decide
 
 instance : SemilatticeSup IntegLevel where
+  sup a b := if a.toNat ≥ b.toNat then a else b
   le_sup_left  a b := by cases a <;> cases b <;> decide
   le_sup_right a b := by cases a <;> cases b <;> decide
   sup_le a b c hac hbc := by
-    cases a <;> cases b <;> cases c <;> simp_all [LE.le, Sup.sup, toNat]
+    revert hac hbc; cases a <;> cases b <;> cases c <;> decide
 
-instance : Lattice IntegLevel where
-  inf_le_left  := SemilatticeInf.inf_le_left
-  inf_le_right := SemilatticeInf.inf_le_right
-  le_inf       := SemilatticeInf.le_inf
-  le_sup_left  := SemilatticeSup.le_sup_left
-  le_sup_right := SemilatticeSup.le_sup_right
-  sup_le       := SemilatticeSup.sup_le
+instance : Lattice IntegLevel :=
+  { (inferInstance : SemilatticeSup IntegLevel),
+    (inferInstance : SemilatticeInf IntegLevel) with }
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- Correctness lemmas — key security properties as typeclass theorems
@@ -258,77 +244,72 @@ def IFCLabel2.meet (a b : IFCLabel2) : IFCLabel2 where
   confidentiality := a.confidentiality ⊓ b.confidentiality
   integrity       := a.integrity ⊔ b.integrity
 
-/-- Pointwise ordering: confidentiality covariant, integrity covariant
-    (note: higher IntegLevel = more trusted = BETTER, so ≤ is natural). -/
+/-- IFC information-flow ordering: confidentiality covariant, integrity
+    CONTRAVARIANT (Biba). `a ≤ b` means information may flow `a → b`: `b` is at
+    least as confidential and at most as trusted. Under this order, the IFC
+    `join` (conf ⊔, integ ⊓) is the genuine lattice supremum — combining two
+    sources yields the least upper bound (most secret, least trusted). -/
 instance : LE IFCLabel2 where
-  le a b := a.confidentiality ≤ b.confidentiality ∧ a.integrity ≤ b.integrity
+  le a b := a.confidentiality ≤ b.confidentiality ∧ b.integrity ≤ a.integrity
 
 instance : Preorder IFCLabel2 where
   le_refl  a     := ⟨le_refl _, le_refl _⟩
-  le_trans a b c h1 h2 := ⟨le_trans h1.1 h2.1, le_trans h1.2 h2.2⟩
-  lt_iff_le_not_ge a b := by
-    simp [LT.lt, LE.le]
-    tauto
+  le_trans a b c h1 h2 := ⟨le_trans h1.1 h2.1, le_trans h2.2 h1.2⟩
 
 instance : PartialOrder IFCLabel2 where
   le_antisymm a b h1 h2 := by
     cases a; cases b
-    simp [LE.le] at *
-    exact ⟨le_antisymm h1.1 h2.1, le_antisymm h1.2 h2.2⟩
-
-instance : Inf IFCLabel2 where inf := IFCLabel2.meet
-instance : Sup IFCLabel2 where sup := IFCLabel2.join
+    obtain ⟨hc1, hi1⟩ := h1
+    obtain ⟨hc2, hi2⟩ := h2
+    exact congr_arg₂ IFCLabel2.mk (le_antisymm hc1 hc2) (le_antisymm hi2 hi1)
 
 /-- IFCLabel2 join (sup) forms a SemilatticeSup.
     This is the core claim of aeneas-cat-4 (#1126). -/
 instance : SemilatticeSup IFCLabel2 where
-  le_sup_left a b := by
-    simp [LE.le, Sup.sup, IFCLabel2.join]
-    constructor
-    · exact le_sup_left
-    · exact inf_le_left
-  le_sup_right a b := by
-    simp [LE.le, Sup.sup, IFCLabel2.join]
-    constructor
-    · exact le_sup_right
-    · exact inf_le_right
-  sup_le a b c hac hbc := by
-    simp [LE.le, Sup.sup, IFCLabel2.join] at *
-    exact ⟨sup_le hac.1 hbc.1, le_inf hac.2 hbc.2⟩
+  sup := IFCLabel2.join
+  -- join: conf = sup (covariant), integ = inf (contravariant taint)
+  le_sup_left a b :=
+    ⟨_root_.le_sup_left, _root_.inf_le_left⟩
+  le_sup_right a b :=
+    ⟨_root_.le_sup_right, _root_.inf_le_right⟩
+  sup_le a b c hac hbc :=
+    ⟨_root_.sup_le hac.1 hbc.1, _root_.le_inf hac.2 hbc.2⟩
 
 /-- IFCLabel2 meet (inf) forms a SemilatticeInf. -/
 instance : SemilatticeInf IFCLabel2 where
-  inf_le_left a b := by
-    simp [LE.le, Inf.inf, IFCLabel2.meet]
-    exact ⟨inf_le_left, le_sup_left⟩
-  inf_le_right a b := by
-    simp [LE.le, Inf.inf, IFCLabel2.meet]
-    exact ⟨inf_le_right, le_sup_right⟩
-  le_inf a b c hab hac := by
-    simp [LE.le, Inf.inf, IFCLabel2.meet] at *
-    exact ⟨le_inf hab.1 hac.1, sup_le hab.2 hac.2⟩
+  inf := IFCLabel2.meet
+  -- meet: conf = inf (covariant), integ = sup (contravariant)
+  inf_le_left a b :=
+    ⟨_root_.inf_le_left, _root_.le_sup_left⟩
+  inf_le_right a b :=
+    ⟨_root_.inf_le_right, _root_.le_sup_right⟩
+  le_inf a b c hab hac :=
+    ⟨_root_.le_inf hab.1 hac.1, _root_.sup_le hab.2 hac.2⟩
 
-/-- IFCLabel2 is a full Lattice. -/
-instance : Lattice IFCLabel2 where
-  inf_le_left  := SemilatticeInf.inf_le_left
-  inf_le_right := SemilatticeInf.inf_le_right
-  le_inf       := SemilatticeInf.le_inf
-  le_sup_left  := SemilatticeSup.le_sup_left
-  le_sup_right := SemilatticeSup.le_sup_right
-  sup_le       := SemilatticeSup.sup_le
+/-- IFCLabel2 is a full Lattice (inherits sup from `SemilatticeSup`, inf from
+    `SemilatticeInf`; both share the same `PartialOrder`). -/
+instance : Lattice IFCLabel2 :=
+  { (inferInstance : SemilatticeSup IFCLabel2),
+    (inferInstance : SemilatticeInf IFCLabel2) with }
 
--- Sanity check: The product lattice has a bottom and top element.
+/-- `⊔` on `IFCLabel2` unfolds to `IFCLabel2.join` (the derived `Max`/`sup`). -/
+@[simp] theorem ifc_sup_eq_join (a b : IFCLabel2) : a ⊔ b = IFCLabel2.join a b := rfl
+
+/-- `⊓` on `IFCLabel2` unfolds to `IFCLabel2.meet` (the derived `Min`/`inf`). -/
+@[simp] theorem ifc_inf_eq_meet (a b : IFCLabel2) : a ⊓ b = IFCLabel2.meet a b := rfl
+
+-- Sanity check: the product lattice has a bottom and top element.
+-- Under the IFC order (integrity contravariant), ⊥ is the most-public,
+-- most-trusted label and ⊤ is the most-secret, least-trusted (fully tainted).
 instance : OrderBot IFCLabel2 where
-  bot := { confidentiality := .Public, integrity := .Adversarial }
-  bot_le a := by
-    simp [LE.le]
-    exact ⟨conf_public_is_bot _, integ_adversarial_is_bot _⟩
+  bot := { confidentiality := .Public, integrity := .Trusted }
+  bot_le a :=
+    ⟨conf_public_is_bot _, integ_trusted_is_top _⟩
 
 instance : OrderTop IFCLabel2 where
-  top := { confidentiality := .Secret, integrity := .Trusted }
-  le_top a := by
-    simp [LE.le]
-    exact ⟨conf_secret_is_top _, integ_trusted_is_top _⟩
+  top := { confidentiality := .Secret, integrity := .Adversarial }
+  le_top a :=
+    ⟨conf_secret_is_top _, integ_adversarial_is_bot _⟩
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- aeneas-cat-5: propagate_label preserves joins (functoriality) (#1127)
@@ -354,39 +335,48 @@ def taint_integ (ceil : IntegLevel) (l : IFCLabel2) : IFCLabel2 :=
 /-- `elevate_conf` preserves IFC join (is a SemilatticeSup homomorphism). -/
 theorem elevate_conf_preserves_join (floor : ConfLevel) (a b : IFCLabel2) :
     elevate_conf floor (a ⊔ b) = elevate_conf floor a ⊔ elevate_conf floor b := by
-  simp [elevate_conf, Sup.sup, IFCLabel2.join]
-  exact sup_right_comm a.confidentiality b.confidentiality floor
+  obtain ⟨ac, ai⟩ := a; obtain ⟨bc, bi⟩ := b
+  simp only [elevate_conf, ifc_sup_eq_join, IFCLabel2.join, IFCLabel2.mk.injEq]
+  refine ⟨?_, trivial⟩
+  cases ac <;> cases bc <;> cases floor <;> decide
 
 /-- `taint_integ` preserves IFC join (is a SemilatticeSup homomorphism).
     This formalizes: tainting data with adversarial content distributes
     over label joins. -/
 theorem taint_integ_preserves_join (ceil : IntegLevel) (a b : IFCLabel2) :
     taint_integ ceil (a ⊔ b) = taint_integ ceil a ⊔ taint_integ ceil b := by
-  simp [taint_integ, Sup.sup, IFCLabel2.join]
-  exact inf_left_comm a.integrity b.integrity ceil
+  obtain ⟨ac, ai⟩ := a; obtain ⟨bc, bi⟩ := b
+  simp only [taint_integ, ifc_sup_eq_join, IFCLabel2.join, IFCLabel2.mk.injEq]
+  refine ⟨trivial, ?_⟩
+  cases ai <;> cases bi <;> cases ceil <;> decide
 
 /-- IFCLabel2.join itself is a SemilatticeSup morphism in its first argument.
     That is, fixing b, the map `λ a => a ⊔ b` distributes over ⊔. -/
 theorem ifc_join_left_distributes (b c d : IFCLabel2) :
     (b ⊔ c) ⊔ d = b ⊔ c ⊔ (b ⊔ d) := by
-  simp [Sup.sup, IFCLabel2.join]
-  constructor
-  · -- confidentiality component
-    cases b.confidentiality <;> cases c.confidentiality <;> cases d.confidentiality <;> decide
-  · -- integrity component
-    cases b.integrity <;> cases c.integrity <;> cases d.integrity <;> decide
+  obtain ⟨bc, bi⟩ := b; obtain ⟨cc, ci⟩ := c; obtain ⟨dc, di⟩ := d
+  simp only [ifc_sup_eq_join, IFCLabel2.join, IFCLabel2.mk.injEq]
+  refine ⟨?_, ?_⟩
+  · cases bc <;> cases cc <;> cases dc <;> decide
+  · cases bi <;> cases ci <;> cases di <;> decide
 
 /-- The IFC label join is idempotent in the product lattice. -/
 theorem ifc_join_idempotent (a : IFCLabel2) : a ⊔ a = a := by
-  simp [Sup.sup, IFCLabel2.join, sup_idem, inf_idem]
+  obtain ⟨ac, ai⟩ := a
+  simp only [ifc_sup_eq_join, IFCLabel2.join, IFCLabel2.mk.injEq]
+  exact ⟨sup_idem _, inf_idem _⟩
 
 /-- The IFC label join is commutative in the product lattice. -/
 theorem ifc_join_comm (a b : IFCLabel2) : a ⊔ b = b ⊔ a := by
-  simp [Sup.sup, IFCLabel2.join, sup_comm, inf_comm]
+  obtain ⟨ac, ai⟩ := a; obtain ⟨bc, bi⟩ := b
+  simp only [ifc_sup_eq_join, IFCLabel2.join, IFCLabel2.mk.injEq]
+  exact ⟨sup_comm _ _, inf_comm _ _⟩
 
 /-- The IFC label join is associative in the product lattice. -/
 theorem ifc_join_assoc (a b c : IFCLabel2) : (a ⊔ b) ⊔ c = a ⊔ (b ⊔ c) := by
-  simp [Sup.sup, IFCLabel2.join, sup_assoc, inf_assoc]
+  obtain ⟨ac, ai⟩ := a; obtain ⟨bc, bi⟩ := b; obtain ⟨cc, ci⟩ := c
+  simp only [ifc_sup_eq_join, IFCLabel2.join, IFCLabel2.mk.injEq]
+  exact ⟨sup_assoc _ _ _, inf_assoc _ _ _⟩
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- Security invariant — the Invariant exploit is blocked at the lattice level
@@ -404,6 +394,7 @@ theorem invariant_exploit_propagates_taint :
     combined.integrity = .Adversarial ∧
     -- Confidentiality elevates to Secret
     combined.confidentiality = .Secret := by
+  simp only [ifc_sup_eq_join, IFCLabel2.join]
   decide
 
 end IFCSemilatticeProofs

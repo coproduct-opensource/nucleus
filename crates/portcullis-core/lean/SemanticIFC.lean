@@ -2,7 +2,7 @@ import Mathlib.Order.GaloisConnection.Defs
 import Mathlib.Order.Closure
 import Mathlib.Order.CompleteLattice.Basic
 import Mathlib.CategoryTheory.Types.Basic
-import Mathlib.CategoryTheory.Topos.Classifier
+import Mathlib.CategoryTheory.Subobject.Classifier.Defs
 import Mathlib.CategoryTheory.Limits.Types.Pullbacks
 import Mathlib.CategoryTheory.Category.Preorder
 import Mathlib.CategoryTheory.Sites.Sieves
@@ -880,12 +880,12 @@ theorem restrictAllowed_val {Secret : Type} {E₁ E₂ : ObsLevel Secret}
     via allowedAt_monotone. This is a copresheaf (= presheaf on ObsLevelᵒᵖ). -/
 def allowedKnowledgeFunctor (Secret : Type) : ObsLevel Secret ⥤ Type where
   obj E := AllowedType E
-  map {E₁ E₂} f := restrictAllowed (leOfHom f)
+  map {E₁ E₂} f := TypeCat.ofHom (restrictAllowed (leOfHom f))
   map_id E := by
-    funext x
+    ext x
     exact Subtype.ext rfl
   map_comp {E₁ E₂ E₃} f g := by
-    funext x
+    ext x
     exact Subtype.ext rfl
 
 /-- The allowed knowledge functor maps the bottom observation to a
@@ -987,7 +987,7 @@ theorem trivial_covering_iff {Secret : Type} (E : ObsLevel Secret) (S : Sieve E)
     closedSieves(E) ≅ Sieve(E). -/
 def obsLevelClosedSieves (Secret : Type) :
     (ObsLevel Secret)ᵒᵖ ⥤ Type :=
-  Functor.closedSieves (obsLevelTopology Secret)
+  (Functor.closedSieves (obsLevelTopology Secret)).toFunctor
 
 /-- The closed sieves presheaf is a sheaf (Mathlib's classifier_isSheaf). -/
 theorem obsLevelClosedSieves_isSheaf (Secret : Type) :
@@ -1134,7 +1134,7 @@ theorem allowed_knowledge_coherent {Secret : Type}
     This is the subobject classifier for sheaves on (ObsLevel, obsLevelCoverage'). -/
 def obsClosedSieves' (Secret : Type) :
     (ObsLevel Secret)ᵒᵖ ⥤ Type :=
-  Functor.closedSieves (obsLevelCoverage' Secret)
+  (Functor.closedSieves (obsLevelCoverage' Secret)).toFunctor
 
 /-- The closed sieves presheaf is a sheaf for the observational coverage.
     This is the subobject classifier of the sheaf topos Sh(ObsLevel, obsLevelCoverage'). -/
@@ -2303,26 +2303,29 @@ open CategoryTheory Limits
 -- PUnit.{1} : Type 0 and Prop : Type 0. The charMap produces Prop-valued
 -- outputs, and the truth morphism maps PUnit to True : Prop.
 theorem classifier_isPullback {U X : Type} (m : U → X) (hm : Function.Injective m) :
-    @IsPullback (Type) _ U X PUnit Prop m (fun _ => PUnit.unit) (charMap m) (fun _ => True) := by
+    @IsPullback (Type) _ U X PUnit Prop (TypeCat.ofHom m) (TypeCat.ofHom (fun _ => PUnit.unit))
+      (TypeCat.ofHom (charMap m)) (TypeCat.ofHom (fun _ => True)) := by
   rw [Types.isPullback_iff]
   refine ⟨?_, ?_, ?_⟩
   · -- 1. Square commutes: m ≫ charMap m = ! ≫ (fun _ => True)
     ext u
-    simp only [CategoryTheory.types_comp, Function.comp, charMap]
-    constructor
-    · intro; trivial
-    · intro; exact ⟨u, rfl⟩
+    -- goal is `(m ≫ charMap m) u ↔ (! ≫ True) u`, i.e. `charMap m (m u) ↔ True`
+    simp only [TypeCat.Fun.toFun_apply, CategoryTheory.types_comp_apply,
+      TypeCat.hom_ofHom, TypeCat.ofHom_apply, charMap]
+    exact ⟨fun _ => trivial, fun _ => ⟨u, rfl⟩⟩
   · -- 2. Joint injectivity: m(x₁) = m(y₁) ∧ !(x₁) = !(y₁) → x₁ = y₁
     intro x₁ y₁ ⟨hm_eq, _⟩
+    simp only [TypeCat.ofHom_apply] at hm_eq
     exact hm hm_eq
   · -- 3. Joint surjectivity: charMap(m)(x₂) = True → ∃ x₁, m(x₁) = x₂ ∧ !(x₁) = x₃
     intro x₂ x₃ h_eq
+    simp only [TypeCat.ofHom_apply] at h_eq ⊢
     -- h_eq : charMap m x₂ = (fun _ => True) x₃, i.e., (∃ u, m u = x₂) = True
     have h_exists : ∃ u, m u = x₂ := by
       change (∃ u, m u = x₂) = True at h_eq
       exact h_eq ▸ trivial
     obtain ⟨u, hu⟩ := h_exists
-    exact ⟨u, hu, rfl⟩
+    exact ⟨u, hu, trivial⟩
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- HasClassifier (Type 0) — the full subobject classifier instance
@@ -2330,8 +2333,9 @@ theorem classifier_isPullback {U X : Type} (m : U → X) (hm : Function.Injectiv
 
 /-- PUnit is terminal in Type: there is a unique function from any type to PUnit. -/
 instance : ∀ X : Type, Unique (X ⟶ PUnit) := fun X =>
-  { default := fun _ => PUnit.unit
-    uniq := fun f => funext fun x => by cases f x; rfl }
+  { default := TypeCat.ofHom fun _ => PUnit.unit
+    uniq := fun f => by
+      ext x }
 
 /-- PUnit is a terminal object in the category Type. -/
 def punitTerminal : Limits.IsTerminal (PUnit : Type) :=
@@ -2347,20 +2351,20 @@ def punitTerminal : Limits.IsTerminal (PUnit : Type) :=
 
     This is the standard result that Prop classifies subobjects in Set/Type.
     Proved using Mathlib's Classifier.mkOfTerminalΩ₀ constructor. -/
-noncomputable instance : HasClassifier (Type) :=
-  ⟨⟨Classifier.mkOfTerminalΩ₀
+noncomputable instance : HasSubobjectClassifier (Type) :=
+  ⟨⟨Subobject.Classifier.mkOfTerminalΩ₀
     PUnit
     punitTerminal
     Prop
-    (fun _ => True)
-    (fun m => charMap m)
+    (TypeCat.ofHom (fun _ => True))
+    (fun m => TypeCat.ofHom (charMap ⇑m))
     (by -- isPullback for each mono m
       intro U X m _inst
       rw [Types.isPullback_iff]
       refine ⟨?_, ?_, ?_⟩
       · -- Square commutes
         ext u
-        simp only [CategoryTheory.types_comp, Function.comp, charMap]
+        simp only [CategoryTheory.types_comp_apply, TypeCat.ofHom_apply, charMap]
         constructor
         · intro; trivial
         · intro; exact ⟨u, rfl⟩
@@ -2369,6 +2373,7 @@ noncomputable instance : HasClassifier (Type) :=
         exact (CategoryTheory.mono_iff_injective m).mp _inst hm_eq
       · -- Joint surjectivity
         intro x₂ x₃ h_eq
+        simp only [TypeCat.ofHom_apply] at h_eq
         have : ∃ u, m u = x₂ := by
           change (∃ u, m u = x₂) = True at h_eq
           exact h_eq ▸ trivial
@@ -2377,6 +2382,7 @@ noncomputable instance : HasClassifier (Type) :=
     (by -- uniqueness: χ' with pullback property implies χ' = charMap m
       intro U X m _inst χ' hpb
       ext x
+      simp only [TypeCat.ofHom_apply]
       rw [Types.isPullback_iff] at hpb
       obtain ⟨hw, _, hsurj⟩ := hpb
       constructor
@@ -2389,8 +2395,8 @@ noncomputable instance : HasClassifier (Type) :=
         exact ⟨u, hu⟩
       · -- charMap(m)(x) → χ'(x)
         intro ⟨u, hu⟩
-        have := congr_fun hw u
-        simp only [CategoryTheory.types_comp, Function.comp] at this
+        have := CategoryTheory.types_congr_hom hw u
+        simp only [CategoryTheory.types_comp_apply, TypeCat.ofHom_apply] at this
         rw [eq_iff_iff] at this
         rw [← hu]
         exact this.mpr trivial)⟩⟩
