@@ -1,0 +1,58 @@
+name: Manifest Guards
+
+# Fast, repo-wide guards that gate every PR independently of the heavy Test
+# Suite (fmt / clippy / build / test / fuzz). Two proof obligations:
+#
+#   1. cargo-metadata smoke — the WHOLE workspace parses: no duplicate
+#      [dependencies] tables, no malformed manifests, no broken path deps.
+#      Asserts exit 0 AND empty stderr (Cargo prints manifest warnings there).
+#      Unlike oidc-gates.yml (which is path-scoped to the OIDC crates), this
+#      runs on every PR so a manifest regression anywhere is caught.
+#
+#   2. vendor neutrality — public nucleus source stays free of vendor-specific
+#      identifiers (claude / anthropic / openai / ...). Delegates to
+#      ci/no-vendor-strings.sh so the allowlist logic (`# vendor-allow:`) has a
+#      single source of truth. Scoped to the same crates oidc-gates enforces;
+#      a future change can widen SCAN_PATHS once a tree-wide allowlist baseline
+#      is curated (a naive tree-wide scan floods on boundary-describing docs).
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  manifest-guards:
+    name: Manifest Guards
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          cache: true
+
+      - name: Cargo metadata smoke (whole workspace parses, empty stderr)
+        run: |
+          set -euo pipefail
+          if ! cargo metadata --format-version 1 --no-deps >/dev/null 2>meta.err; then
+            echo "::error::cargo metadata failed — manifest corruption, duplicate table, or bad path dep"
+            cat meta.err >&2
+            exit 1
+          fi
+          if [ -s meta.err ]; then
+            echo "::error::cargo metadata emitted warnings/errors on stderr"
+            cat meta.err >&2
+            exit 1
+          fi
+          echo "cargo metadata OK (empty stderr)"
+
+      - name: Vendor neutrality (no claude/anthropic/openai in source)
+        run: bash ci/no-vendor-strings.sh
