@@ -118,12 +118,54 @@ pub struct PermissionLattice {
     pub created_by: String,
 }
 
+/// Parse a UUID from a string WITHOUT risking a panic on hostile input.
+///
+/// The `uuid` crate's own `Deserialize`/error path panics (it slices the
+/// offending string at a non-char-boundary while formatting its
+/// `InvalidUuid` message) when handed a **non-ASCII** string. Because
+/// `PermissionLattice` is deserialized from untrusted config — and is a
+/// libFuzzer target (`fuzz/fuzz_targets/permission_serde.rs`) — that crash
+/// is reachable from arbitrary bytes. A valid UUID is always ASCII, so we
+/// reject non-ASCII up front and return a clean error instead of letting it
+/// reach uuid's panicking formatter. (No upstream fix as of uuid 1.23.2.)
+#[cfg(feature = "serde")]
+fn parse_uuid_guarded(s: &str) -> Result<Uuid, String> {
+    if !s.is_ascii() {
+        return Err("invalid UUID: contains non-ASCII characters".to_string());
+    }
+    Uuid::try_parse(s).map_err(|e| e.to_string())
+}
+
+#[cfg(feature = "serde")]
+fn de_uuid<'de, D>(deserializer: D) -> Result<Uuid, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    parse_uuid_guarded(&s).map_err(serde::de::Error::custom)
+}
+
+#[cfg(feature = "serde")]
+fn de_opt_uuid<'de, D>(deserializer: D) -> Result<Option<Uuid>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Option::<String>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(s) => parse_uuid_guarded(&s)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+    }
+}
+
 /// Raw deserialization helper that preserves all fields.
 #[cfg(feature = "serde")]
 #[derive(Deserialize)]
 struct RawPermissionLattice {
+    #[serde(deserialize_with = "de_uuid")]
     id: Uuid,
     description: String,
+    #[serde(default, deserialize_with = "de_opt_uuid")]
     derived_from: Option<Uuid>,
     capabilities: CapabilityLattice,
     #[serde(default)]
@@ -1377,6 +1419,50 @@ impl Default for EffectivePermissions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: a non-ASCII `id` used to PANIC uuid's error formatter
+    /// (slice at a non-char-boundary) while deserializing `PermissionLattice`
+    /// — a libFuzzer-reachable crash via `permission_serde`. It must now
+    /// return a clean `Err`, never panic. Exercises the exact fuzz path
+    /// (`serde_json::from_str::<PermissionLattice>`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn deserialize_rejects_hostile_uuid_without_panicking() {
+        let base = serde_json::to_value(PermissionLattice::default()).unwrap();
+
+        // Non-ASCII id (the crashing class): U+2028 is multi-byte.
+        let mut bad = base.clone();
+        bad["id"] = serde_json::Value::String("\u{2028}-not-a-uuid".to_string());
+        let s = serde_json::to_string(&bad).unwrap();
+        assert!(
+            serde_json::from_str::<PermissionLattice>(&s).is_err(),
+            "non-ASCII id must error cleanly, not panic"
+        );
+
+        // ASCII-but-invalid id: still a clean error.
+        let mut bad2 = base.clone();
+        bad2["id"] = serde_json::Value::String("definitely-not-a-uuid".to_string());
+        assert!(
+            serde_json::from_str::<PermissionLattice>(&serde_json::to_string(&bad2).unwrap())
+                .is_err()
+        );
+
+        // A non-ASCII derived_from is also rejected cleanly (Option path).
+        let mut bad3 = base.clone();
+        bad3["derived_from"] = serde_json::Value::String("é-bad".to_string());
+        assert!(
+            serde_json::from_str::<PermissionLattice>(&serde_json::to_string(&bad3).unwrap())
+                .is_err()
+        );
+
+        // A valid uuid still round-trips successfully.
+        let mut good = base;
+        good["id"] = serde_json::Value::String("00000000-0000-0000-0000-000000000001".to_string());
+        assert!(
+            serde_json::from_str::<PermissionLattice>(&serde_json::to_string(&good).unwrap())
+                .is_ok()
+        );
+    }
 
     #[test]
     fn test_meet_is_commutative() {
