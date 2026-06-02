@@ -1,0 +1,110 @@
+# IFC-verdict provenance attestation for the nucleus config scan.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# STATUS: PENDING CI — this workflow has NOT been executed at the time the
+# accompanying PR was opened. It cannot run locally: `actions/attest` requires
+# a GitHub OIDC token (`id-token: write`) and the Sigstore/Fulcio signing
+# fabric that is only available inside GitHub Actions. Do NOT interpret the
+# presence of this file as evidence that a signed attestation was produced.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# What it does (once it runs in CI):
+#   1. Builds nucleus-audit and scans the example PodSpecs, emitting SARIF.
+#   2. Derives an IFC-verdict summary from the SARIF property bags
+#      (`results[].properties.flowRole`) produced by Part A of this change:
+#      counts by flow role + an overall pass/fail (fail iff any SARIF result
+#      has level "error").
+#   3. Emits a CUSTOM in-toto attestation (predicateType =
+#      `https://nucleus.coproduct.dev/attestations/ifc-verdict/v0`) binding
+#      that summary to the SARIF artifact, signed with the workflow's OIDC
+#      identity via `actions/attest` (NOT attest-build-provenance).
+#
+# HONESTY: the IFC verdict summary is a roll-up of CAPABILITY-CLASS labels
+# (see crates/nucleus-audit/src/sarif.rs). It is NOT a machine-checked
+# `flows_to` lattice verdict and does NOT assert runtime enforcement.
+#
+# Vendor-neutral: no LLM/provider coupling. The scanner is deterministic and
+# requires no model.
+
+name: Scan IFC Attestation (PENDING CI)
+
+on:
+  # Manual-only until validated in CI. No automatic triggers so this cannot
+  # silently claim to have run on every push.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan-and-attest:
+    name: Scan + IFC-verdict attestation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required by actions/attest for OIDC-based signing.
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          cache: true
+
+      - name: Build nucleus-audit
+        run: cargo build -p nucleus-audit --release
+
+      - name: Scan example PodSpecs to SARIF
+        run: |
+          set -uo pipefail
+          # Aggregate scan over the safe examples; non-zero exit is tolerated
+          # because we want the SARIF regardless of verdict.
+          target/release/nucleus-audit scan \
+            --pod-spec examples/podspecs/safe-pr-fixer.yaml \
+            --mcp-config examples/mcp-configs/safe-local.json \
+            --format sarif > nucleus-scan.sarif || true
+          test -s nucleus-scan.sarif
+
+      - name: Derive IFC-verdict predicate from SARIF
+        id: predicate
+        run: |
+          set -euo pipefail
+          # Roll up the capability-class IFC labels (results[].properties.flowRole)
+          # into counts, and compute overall pass/fail (fail iff any result is an
+          # "error"-level finding). Pure jq over the SARIF — no model involved.
+          jq -n --slurpfile s nucleus-scan.sarif '
+            ($s[0].runs[0].results // []) as $r
+            | {
+                predicateType: "https://nucleus.coproduct.dev/attestations/ifc-verdict/v0",
+                predicate: {
+                  tool: $s[0].runs[0].tool.driver.name,
+                  toolVersion: $s[0].runs[0].tool.driver.semanticVersion,
+                  # HONEST: capability-class roll-up, NOT a proven flows_to verdict.
+                  labelKind: "capability-class",
+                  disclaimer: "Counts roll up category-derived capability-class IFC labels. NOT a machine-checked flows_to verdict; no runtime enforcement asserted.",
+                  totalResults: ($r | length),
+                  flowRoleCounts: (
+                    $r
+                    | map(.properties.flowRole // "unlabeled")
+                    | group_by(.)
+                    | map({ key: .[0], value: length })
+                    | from_entries
+                  ),
+                  errorCount: ($r | map(select(.level == "error")) | length),
+                  overall: (if ($r | map(select(.level == "error")) | length) > 0 then "fail" else "pass" end)
+                }
+              }
+          ' > ifc-verdict.predicate.json
+          cat ifc-verdict.predicate.json
+          echo "predicate-path=ifc-verdict.predicate.json" >> "$GITHUB_OUTPUT"
+
+      # Custom in-toto attestation (NOT attest-build-provenance). Binds the IFC
+      # verdict predicate to the SARIF artifact and signs it with the workflow's
+      # OIDC identity. PENDING CI — not executed at PR time.
+      - name: Attest IFC verdict
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: nucleus-scan.sarif
+          predicate-type: https://nucleus.coproduct.dev/attestations/ifc-verdict/v0
+          predicate-path: ${{ steps.predicate.outputs.predicate-path }}
