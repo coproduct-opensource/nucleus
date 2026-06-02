@@ -47,6 +47,10 @@ jobs:
           LLBC=$(find . -maxdepth 2 -name 'portcullis_core.llbc' -newermt '-1 hour' | head -1)
           echo "fresh llbc: $LLBC ($(stat -c%s "$LLBC" 2>/dev/null) bytes)"
           aeneas -backend lean -split-files "$LLBC" -dest /tmp/out 2>&1 | tee /tmp/aeneas.log | tail -40 || true
+          echo "PROBE-VERDICT-IFC-TYPES:"; grep -rhoiE 'IFCLabel|ExposureSet|IntegLevel|NodeKind|FlowNode|AuthLevel' /tmp/out 2>/dev/null | sort | uniq -c || echo "  NONE — IFC types did not translate"
+          echo "PROBE-VERDICT-BASELINE:"; grep -rhoiE 'CapabilityLattice|CapabilityLevel' /tmp/out 2>/dev/null | sort | uniq -c || echo "  NONE"
+          echo "PROBE-VERDICT-FILES:"; ls /tmp/out 2>/dev/null | tr '\n' ' '; echo
+          echo "PROBE-VERDICT-AENEAS-TAIL:"; tail -6 /tmp/aeneas.log 2>/dev/null
           {
             echo "## Aeneas IFC Translation Probe — release \`$AENEAS_TAG\`"
             echo "fresh llbc: \`$LLBC\` ($(stat -c%s "$LLBC" 2>/dev/null) bytes)"
