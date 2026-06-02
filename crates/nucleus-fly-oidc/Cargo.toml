@@ -1,0 +1,29 @@
+[package]
+name = "nucleus-fly-oidc"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Fly.io Machine OIDC token validation and SPIFFE ID derivation for the Nucleus substrate"
+repository = "https://github.com/coproduct-opensource/nucleus"  # vendor-allow: project repo URL
+keywords = ["oidc", "fly", "jwt", "spiffe", "federation"]
+categories = ["authentication"]
+
+[lints]
+workspace = true
+
+[dependencies]
+jsonwebtoken = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["net", "io-util"] }
+tracing = { workspace = true }
+base64 = { workspace = true }
+nucleus-lineage = { path = "../nucleus-lineage" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }

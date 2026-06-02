@@ -1,0 +1,40 @@
+[package]
+name = "nucleus-github-oidc"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Validate GitHub Actions OIDC tokens. Maps the verified workflow identity (repo + ref + actor) to a SPIFFE caller id. Built on nucleus-oidc-core."
+repository = "https://github.com/coproduct-opensource/nucleus"  # vendor-allow: project repo URL
+keywords = ["oidc", "github", "jwt", "spiffe", "federation"]
+categories = ["authentication"]
+
+[lints]
+workspace = true
+
+[dependencies]
+base64 = { workspace = true }
+jsonwebtoken = { workspace = true }
+nucleus-lineage = { path = "../nucleus-lineage" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+nucleus-oidc-core = { path = "../nucleus-oidc-core" }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# `rt-multi-thread` for the example's `#[tokio::main]`; `reqwest` for the live
+# token request. Both are dev-only so the default workspace build stays green.
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "net", "io-util"] }
+reqwest = { workspace = true }
+serde = { workspace = true }
+# Workspace reqwest uses `rustls-no-provider`; tests/examples that build a
+# reqwest Client must install a crypto provider first (workspace convention:
+# `rustls::crypto::ring`). Never actually exercised here (mock is plain HTTP),
+# but required at Client-build time.
+rustls = { workspace = true }
+
+[[example]]
+name = "keyless_oidc_prototype"
+# Lives behind `--example` so it never builds in the default workspace pass.
