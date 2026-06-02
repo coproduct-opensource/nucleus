@@ -1,0 +1,16 @@
+{
+  "allow_empty": false,
+  "cosignature_threshold": 0,
+  "trust_jwks": {
+    "keys": [
+      {
+        "alg": "EdDSA",
+        "crv": "Ed25519",
+        "kid": "0XLRa1I622CSeni9",
+        "kty": "OKP",
+        "use": "sig",
+        "x": "JpvG_RLe8o5IU8ArVr2DglJa1oVgTEinUgssgLfQlcM"
+      }
+    ]
+  }
+}

@@ -3,120 +3,141 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>nucleus-verifier — drop-in browser verifier</title>
+    <title>nucleus — verify an agent's execution lineage in your browser</title>
     <style>
       :root {
-        --bg: #0b0d10;
-        --fg: #e8eaed;
-        --muted: #8a9098;
-        --accent: #6dd0ff;
-        --ok: #4ade80;
-        --fail: #f87171;
-        --border: #1f2329;
-        --code-bg: #11151a;
+        --bg: #0b0d10; --fg: #e8eaed; --muted: #8a9098; --accent: #6dd0ff;
+        --ok: #4ade80; --fail: #f87171; --border: #1f2329; --code-bg: #11151a;
+        --warn-bg: #14110a; --warn-border: #3a2f10;
       }
       * { box-sizing: border-box; }
       html, body {
         background: var(--bg); color: var(--fg);
         font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
-        margin: 0; padding: 0; min-height: 100vh;
+        margin: 0; padding: 0; min-height: 100vh; line-height: 1.5;
       }
-      main { max-width: 940px; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
+      main { max-width: 980px; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
       h1 { font-size: 1.5rem; margin: 0 0 0.25rem; letter-spacing: -0.02em; }
-      .subtitle { color: var(--muted); margin: 0 0 2rem; font-size: 0.9rem; }
-      label { display: block; margin: 1.25rem 0 0.4rem; font-size: 0.85rem; color: var(--muted); }
-      textarea {
-        width: 100%; min-height: 9rem;
-        background: var(--code-bg); color: var(--fg);
-        border: 1px solid var(--border); border-radius: 6px;
-        padding: 0.75rem; font-family: inherit; font-size: 0.85rem; line-height: 1.4;
-        resize: vertical;
-      }
-      textarea:focus { outline: none; border-color: var(--accent); }
-      button {
-        margin-top: 1rem; background: var(--accent); color: #0b0d10;
-        border: 0; border-radius: 6px; padding: 0.6rem 1.1rem;
-        font-family: inherit; font-weight: 600; cursor: pointer; font-size: 0.9rem;
-      }
-      button:disabled { opacity: 0.5; cursor: not-allowed; }
-      #result {
-        margin-top: 1.5rem; padding: 1rem 1.1rem;
-        background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px;
-        white-space: pre-wrap; font-size: 0.85rem; line-height: 1.5; min-height: 3rem;
-      }
-      .ok { color: var(--ok); }
-      .fail { color: var(--fail); }
-      .info { color: var(--muted); }
+      h2 { font-size: 1rem; margin: 2rem 0 0.5rem; color: var(--fg); }
+      .subtitle { color: var(--muted); margin: 0 0 1.5rem; font-size: 0.9rem; max-width: 70ch; }
       .pill {
         display: inline-block; padding: 0.15rem 0.5rem; border-radius: 999px;
         background: var(--border); color: var(--muted); font-size: 0.7rem;
-        margin-left: 0.5rem; vertical-align: middle;
+        margin-left: 0.4rem; vertical-align: middle;
       }
-      footer { color: var(--muted); margin-top: 3rem; font-size: 0.8rem; }
-      a { color: var(--accent); text-decoration: none; }
-      a:hover { text-decoration: underline; }
+      .callout {
+        background: var(--warn-bg); border: 1px solid var(--warn-border);
+        border-radius: 8px; padding: 0.9rem 1.1rem; margin: 1.25rem 0;
+        font-size: 0.85rem; color: #d9c98c;
+      }
+      .callout b { color: #f0e3a8; }
+      label { display: block; margin: 1.1rem 0 0.4rem; font-size: 0.8rem; color: var(--muted); }
+      textarea {
+        width: 100%; min-height: 9rem; background: var(--code-bg); color: var(--fg);
+        border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem;
+        font-family: inherit; font-size: 0.8rem; line-height: 1.45; resize: vertical;
+      }
+      textarea:focus { outline: none; border-color: var(--accent); }
+      .controls { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; margin-top: 1rem; }
+      button {
+        background: var(--accent); color: #0b0d10; border: 0; border-radius: 6px;
+        padding: 0.55rem 1rem; font-family: inherit; font-weight: 600; cursor: pointer; font-size: 0.85rem;
+      }
+      button.secondary { background: transparent; color: var(--fail); border: 1px solid var(--border); font-weight: 500; }
+      button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); font-weight: 500; }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      select {
+        background: var(--code-bg); color: var(--fg); border: 1px solid var(--border);
+        border-radius: 6px; padding: 0.4rem 0.6rem; font-family: inherit; font-size: 0.8rem;
+      }
+      .note { min-height: 1.2rem; margin: 0.75rem 0 0; font-size: 0.82rem; }
+      .note.ok { color: var(--ok); } .note.fail { color: var(--fail); }
+      #result {
+        margin-top: 1rem; padding: 1rem 1.1rem; background: var(--code-bg);
+        border: 1px solid var(--border); border-radius: 6px; white-space: pre-wrap;
+        font-size: 0.82rem; min-height: 3rem;
+      }
+      #result.ok { color: var(--ok); border-color: #1c3b29; }
+      #result.fail { color: var(--fail); border-color: #3b1c1c; }
+      #result.info { color: var(--muted); }
+      .scope { margin-top: 2rem; font-size: 0.83rem; color: var(--muted); }
+      .scope .yes { color: var(--ok); } .scope .no { color: var(--fail); }
+      footer { color: var(--muted); margin-top: 2.5rem; font-size: 0.78rem; border-top: 1px solid var(--border); padding-top: 1rem; }
+      a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+      code { background: var(--code-bg); padding: 0.1rem 0.3rem; border-radius: 4px; }
     </style>
   </head>
   <body>
     <main>
       <h1>
-        nucleus-verifier
-        <span class="pill" id="sdk-version">loading...</span>
+        verify it yourself
+        <span class="pill" id="sdk-version">loading…</span>
+        <span class="pill" id="schema-version"></span>
       </h1>
       <p class="subtitle">
-        Paste a bundle + trust anchor below. Verification runs in this tab,
-        not on any server. The trust JWKS is the producer's published key
-        set; obtain it out of band (not from the bundle).
+        This page checks a nucleus agent's execution lineage — a hash-chained,
+        Ed25519-signed edge log with a witness-cosigned Merkle anchor — entirely
+        in your browser, against a trust anchor <em>you</em> pin. The verifier is
+        the project's Rust code compiled to WebAssembly. Nothing is trusted but
+        the hash function and the keys in your anchor; everything else is
+        recomputed here, not believed.
       </p>
 
-      <label for="bundle">bundle.json</label>
-      <textarea id="bundle" placeholder='{"payload": ..., "envelope": ...}'></textarea>
+      <div class="callout">
+        <b>Don't trust this page — prove it.</b> Open DevTools → Network, toggle
+        <b>Offline</b>, then click Verify. It still works: there is no server
+        round-trip. The bundle below is real (generated and self-verified by
+        <code>examples/emit_demo_bundle.rs</code>), not a screenshot.
+      </div>
 
-      <label for="anchor">trust anchor.json</label>
-      <textarea id="anchor" placeholder='{"trust_jwks": {"keys": [...]}, "allow_empty": false}'></textarea>
+      <label for="fixture-select">fixture</label>
+      <select id="fixture-select">
+        <option value="cosigned">cosigned — Merkle anchor + transparency-log witness</option>
+        <option value="basic">basic — signed edge chain only</option>
+      </select>
 
-      <button id="verify-btn" disabled>verify</button>
+      <label for="bundle">bundle.json &nbsp;<span class="info">(the agent's signed execution lineage)</span></label>
+      <textarea id="bundle" spellcheck="false">loading real fixture…</textarea>
 
-      <pre id="result" class="info">SDK loading...</pre>
+      <label for="anchor">trust-anchor.json &nbsp;<span class="info">(the keys you pin — obtained out of band, not from the bundle)</span></label>
+      <textarea id="anchor" spellcheck="false"></textarea>
+
+      <div class="controls">
+        <button id="verify-btn" disabled>Verify</button>
+        <button id="tamper-edge" class="secondary" disabled>Flip a byte in an edge signature</button>
+        <button id="tamper-witness" class="secondary" disabled>Break the witness cosignature</button>
+        <button id="reset-btn" class="ghost" disabled>Reset</button>
+      </div>
+      <p id="tamper-note" class="note"></p>
+
+      <pre id="result" class="info">loading verifier…</pre>
+
+      <div class="scope">
+        <h2>What this proves — and what it doesn't</h2>
+        <p>
+          <span class="yes">✓ Proves:</span> the lineage is internally consistent
+          and tamper-evident (hash chain + Merkle inclusion), and was signed by the
+          keys + cosigned by the witness in <em>your</em> trust anchor — i.e.
+          integrity and authenticity of the record.
+        </p>
+        <p>
+          <span class="no">✗ Does NOT prove:</span> that the agent behaved well,
+          that information-flow policy held, or that any computation was correct.
+          Tamper-evidence is not good behavior. The IFC enforcement and its
+          machine-checked noninterference theorem are separate guarantees; this
+          verifier does not evaluate them.
+        </p>
+      </div>
 
       <footer>
-        Source: <a href="https://github.com/coproduct-opensource/nucleus">github.com/coproduct-opensource/nucleus</a>
-        &nbsp;·&nbsp; Reproducible build: <code>wasm-pack build --target web --release</code>
+        Source &amp; reproducible build:
+        <a href="https://github.com/coproduct-opensource/nucleus/tree/main/sdks/verifier-js">sdks/verifier-js</a>
+        — rebuild the WASM with <code>wasm-pack build --target web --release</code> and diff it.
+        The fixtures are emitted by
+        <code>cargo run -p nucleus-envelope --example emit_demo_bundle</code>.
+        No analytics, no third-party requests.
       </footer>
     </main>
-
-    <script type="module">
-      import init, { verifyBundle, sdkVersion } from "./pkg/nucleus_verifier_wasm.js";
-
-      const result = document.getElementById("result");
-      const btn = document.getElementById("verify-btn");
-      const bundleEl = document.getElementById("bundle");
-      const anchorEl = document.getElementById("anchor");
-      const sdkVersionPill = document.getElementById("sdk-version");
-
-      try {
-        await init();
-        sdkVersionPill.textContent = "v" + sdkVersion();
-        result.textContent = "ready. paste a bundle + anchor, then click verify.";
-        btn.disabled = false;
-      } catch (e) {
-        result.className = "fail";
-        result.textContent = "SDK failed to load: " + e.message;
-      }
-
-      btn.addEventListener("click", () => {
-        result.className = "info";
-        result.textContent = "verifying...";
-        try {
-          const report = verifyBundle(bundleEl.value, anchorEl.value);
-          result.className = "ok";
-          result.textContent =
-            "VERIFIED\n\n" + JSON.stringify(report, null, 2);
-        } catch (e) {
-          result.className = "fail";
-          result.textContent = "REJECTED\n\n" + e.message;
-        }
-      });
-    </script>
+    <script type="module" src="./demo.js"></script>
   </body>
 </html>
