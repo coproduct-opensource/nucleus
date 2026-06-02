@@ -175,3 +175,39 @@ cd pkg && npm publish --access public --tag next
 
 The maintainer's local credentials sign the publish; never check the
 npm token in.
+
+## In-browser tamper demo (`demo.html`)
+
+A self-contained, install-nothing page that verifies a **real** agent
+execution-lineage bundle entirely in your browser — then lets you corrupt it
+and watch the local verifier reject it. The verifier is this crate compiled to
+WASM; the bundle + trust anchor are generated and self-verified (including a
+tamper-rejection assertion) by
+`crates/nucleus-envelope/examples/emit_demo_bundle.rs` — no fake data.
+
+Run it locally:
+
+```sh
+# 1. real fixtures -> sdks/verifier-js/demo-fixtures/
+cargo run -p nucleus-envelope --example emit_demo_bundle
+
+# 2. build the WASM verifier -> sdks/verifier-js/pkg/
+wasm-pack build sdks/verifier-js --target web --release
+
+# 3. serve (file:// can't fetch the wasm/fixtures) and open /demo.html
+python3 -m http.server -d sdks/verifier-js 8000
+# -> http://localhost:8000/demo.html
+```
+
+To prove there is no server round-trip: open DevTools → Network, toggle
+**Offline**, then click Verify — it still works.
+
+Hosted: the CI `Docs` workflow builds the WASM + fixtures and publishes the demo
+at `/verify/` on the docs site (only when the `DOCS_DEPLOY` repo variable is
+`true`).
+
+**Scope (honest):** the verifier proves the lineage is tamper-evident (hash
+chain + Merkle inclusion) and authentic (signed/cosigned by the keys in *your*
+trust anchor). It does **not** prove the agent behaved well, that
+information-flow policy held, or that any computation was correct — those are
+separate guarantees (see the IFC gateway and the Lean noninterference theorem).

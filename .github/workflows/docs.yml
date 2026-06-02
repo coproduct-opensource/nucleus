@@ -9,6 +9,8 @@ on:
       - "slides/**"
       - "blog/**"
       - "book.toml"
+      - "sdks/verifier-js/**"
+      - "crates/nucleus-envelope/**"
       - ".github/workflows/docs.yml"
 
 permissions:
@@ -42,6 +44,26 @@ jobs:
         run: |
           mkdir -p book/blog
           cp blog/*.md book/blog/
+      # --- In-browser verifier demo, published at /verify/ ---
+      # Real fixtures (generated + self-verified by the example) + the Rust
+      # verifier compiled to WASM. No fake data; reproducible from source.
+      - name: Build verifier WASM + real fixtures
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install wasm-pack --locked --version 0.13.1
+          cargo run -p nucleus-envelope --example emit_demo_bundle -- sdks/verifier-js/demo-fixtures
+          wasm-pack build sdks/verifier-js --target web --release
+      - name: Assemble /verify into the docs site
+        run: |
+          mkdir -p book/verify/pkg book/verify/demo-fixtures
+          cp sdks/verifier-js/demo.html book/verify/index.html
+          cp sdks/verifier-js/demo.js   book/verify/demo.js
+          cp sdks/verifier-js/pkg/nucleus_verifier_wasm.js \
+             sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm \
+             sdks/verifier-js/pkg/*.d.ts \
+             book/verify/pkg/
+          cp sdks/verifier-js/demo-fixtures/*.json book/verify/demo-fixtures/
+          touch book/.nojekyll
       - name: Upload artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:

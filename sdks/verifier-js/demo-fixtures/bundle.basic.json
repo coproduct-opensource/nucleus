@@ -1,0 +1,71 @@
+{
+  "payload": {
+    "stats": {
+      "input_bytes": 11,
+      "output_bytes": 17
+    },
+    "summary": "summarized output"
+  },
+  "envelope": {
+    "session_root": "spiffe://prod.example.com/ns/agents/sa/summarizer",
+    "edges": [
+      {
+        "child": "spiffe://prod.example.com/ns/agents/sa/summarizer",
+        "parents": [],
+        "kind": "pod_admit",
+        "ts": "2026-06-02T22:34:55.102938Z",
+        "proof": {
+          "kid": "0XLRa1I622CSeni9",
+          "alg": "EdDSA",
+          "sig": "0MEr5BEdPOmPdy4DUm4xborKGkwiS83bCHgOevBfPv3MxUMGd5lKuGYooNS7fcxlbWzoUyMoT251qhBlWzA3Aw=="
+        }
+      },
+      {
+        "child": "spiffe://prod.example.com/ns/agents/sa/summarizer/call/09c74409-5e99-455d-82ea-1931129fac43/tool/Read/sha256:f7c39aa7e478d51b7d49669703d94df49f158ea1d73b58760601f9c1857c4bdf",
+        "parents": [
+          "spiffe://prod.example.com/ns/agents/sa/summarizer"
+        ],
+        "kind": "tool_call",
+        "tool": "Read",
+        "ts": "2026-06-02T22:34:55.103236Z",
+        "proof": {
+          "kid": "0XLRa1I622CSeni9",
+          "alg": "EdDSA",
+          "sig": "jK5f9Yw+aBgXdaGHQmpWjbXmaaV7heXYRikv5nwm6FAYSGP4HKVLwRBthBre/YWVPQlcZsWUYOXmIz8pcqMeAw==",
+          "prev_hash": "2cdf4583cbd3b0473ae80d344cea030a1850af02b54d6964358b9d154053f331"
+        }
+      },
+      {
+        "child": "spiffe://prod.example.com/ns/agents/sa/summarizer/call/09c74409-5e99-455d-82ea-1931129fac43/tool/Read/sha256:f7c39aa7e478d51b7d49669703d94df49f158ea1d73b58760601f9c1857c4bdf/call/6e42568b-2e1a-4272-816d-ec5b38535d5b/derived/sha256:c0725d90980c6551fb9cede618e33b0fea19613278df950aee10f72b334572ed",
+        "parents": [
+          "spiffe://prod.example.com/ns/agents/sa/summarizer/call/09c74409-5e99-455d-82ea-1931129fac43/tool/Read/sha256:f7c39aa7e478d51b7d49669703d94df49f158ea1d73b58760601f9c1857c4bdf"
+        ],
+        "kind": "artifact_produced",
+        "ts": "2026-06-02T22:34:55.103531Z",
+        "proof": {
+          "kid": "0XLRa1I622CSeni9",
+          "alg": "EdDSA",
+          "sig": "WNuUfiNtKgm6YYRhZxF0u/Jo/y8MwP5IXFcLkuFR7xE67W8aWpX3KLUit8/Mb53KRmIvsItcBxzpAvVBaC5/Bg==",
+          "prev_hash": "7c47cb4021f1ac5674b38d43ba93b66c25d43b6e6d2de4b62e22d522f34c0b9f"
+        }
+      }
+    ],
+    "jwks": {
+      "keys": [
+        {
+          "kty": "OKP",
+          "crv": "Ed25519",
+          "kid": "0XLRa1I622CSeni9",
+          "x": "JpvG_RLe8o5IU8ArVr2DglJa1oVgTEinUgssgLfQlcM",
+          "alg": "EdDSA",
+          "use": "sig"
+        }
+      ]
+    },
+    "checkpoints": [],
+    "meta": {
+      "schema_version": 1,
+      "created_at": "2026-06-02T22:34:55.103912Z"
+    }
+  }
+}

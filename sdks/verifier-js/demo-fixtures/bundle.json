@@ -1,0 +1,91 @@
+{
+  "payload": {
+    "demo": "agent execution lineage",
+    "v2": true
+  },
+  "envelope": {
+    "session_root": "spiffe://prod.example.com/ns/agents/sa/summarizer",
+    "edges": [
+      {
+        "child": "spiffe://prod.example.com/ns/agents/sa/summarizer",
+        "parents": [],
+        "kind": "pod_admit",
+        "ts": "2026-06-02T22:34:55.138260Z",
+        "proof": {
+          "kid": "JWSz7UcSQxFpS-wn",
+          "alg": "EdDSA",
+          "sig": "5/c/quEQ9Msymny0ztz/pN3MjwaaJvpOGnr8Eg1ZWo+zezOXk4Gt+h7xjCLPSO02SVVFY/MFD4Z5lIw/+IkyBQ=="
+        }
+      },
+      {
+        "child": "spiffe://prod.example.com/ns/agents/sa/summarizer/call/1489a9d6-d2bd-4bca-811c-cdaf0b307d29/tool/Read/sha256:f7c39aa7e478d51b7d49669703d94df49f158ea1d73b58760601f9c1857c4bdf",
+        "parents": [
+          "spiffe://prod.example.com/ns/agents/sa/summarizer"
+        ],
+        "kind": "tool_call",
+        "tool": "Read",
+        "ts": "2026-06-02T22:34:55.138557Z",
+        "proof": {
+          "kid": "JWSz7UcSQxFpS-wn",
+          "alg": "EdDSA",
+          "sig": "vzHVPoXeakbWEEryPGzY4qWNslfFt2x9r4iXY4G62UElf+mZ/r/9SL2NcAA8m9JdFvMgBxBm8FPLc3/jiuO9Bg==",
+          "prev_hash": "113741fa50f4a0191849dbb72a72ba815d9dda5646595b43667df53235fbc67a"
+        }
+      },
+      {
+        "child": "spiffe://prod.example.com/ns/agents/sa/summarizer/call/1489a9d6-d2bd-4bca-811c-cdaf0b307d29/tool/Read/sha256:f7c39aa7e478d51b7d49669703d94df49f158ea1d73b58760601f9c1857c4bdf/call/8abbdaec-9db4-4ae4-91ef-ae35ebf38b1b/derived/sha256:c0725d90980c6551fb9cede618e33b0fea19613278df950aee10f72b334572ed",
+        "parents": [
+          "spiffe://prod.example.com/ns/agents/sa/summarizer/call/1489a9d6-d2bd-4bca-811c-cdaf0b307d29/tool/Read/sha256:f7c39aa7e478d51b7d49669703d94df49f158ea1d73b58760601f9c1857c4bdf"
+        ],
+        "kind": "artifact_produced",
+        "ts": "2026-06-02T22:34:55.138891Z",
+        "proof": {
+          "kid": "JWSz7UcSQxFpS-wn",
+          "alg": "EdDSA",
+          "sig": "Y3ICDWuX03dl/5REcvmLqdEe00eJkrS8iHxQW6+bV6wK2FUnsuBssw3juafGhU3IDUyzoxoH+U/tpC+flwECDw==",
+          "prev_hash": "9b26767046acbcce956e501a294cbce090c51f6971eb079709d27a6d694e0326"
+        }
+      }
+    ],
+    "jwks": {
+      "keys": [
+        {
+          "kty": "OKP",
+          "crv": "Ed25519",
+          "kid": "JWSz7UcSQxFpS-wn",
+          "x": "8bukfUIodlJAArVI4nszL8i8v9tmjOfjJ_1hJlaM2wk",
+          "alg": "EdDSA",
+          "use": "sig"
+        }
+      ]
+    },
+    "checkpoints": [],
+    "merkle_anchor": {
+      "sth": {
+        "tree_size": 3,
+        "timestamp_ms": 1780439695139,
+        "root_hash_hex": "dc27833d299ec13ba623235ffa57c5ca22b28e660389d0ac262fe2ea22dcd67a",
+        "witness_kid": "tgAwbPp2cj_ew5Xl",
+        "witness_sig": "TdXHZkF6Hb0V7me7mZ9884VnrGtEBuizVlOVc7NULy+0D4SFzcZ/V7mWdeJ2ovoGP4bxxpJwiMTvh37eQr+JAQ=="
+      },
+      "inclusion_proofs": [
+        {
+          "leaf_index": 0,
+          "audit_path_hex": "339d80d1c6ec69010ee101882964489d3f47295b4da854aa5616dff9eff7a18498db1d8d55ebba9efc1536990b4b5835d9e543286fc6adc113e5eea40fc7b66e"
+        },
+        {
+          "leaf_index": 1,
+          "audit_path_hex": "a72d9963ee2d7c6870056c0c6f1d7939c1a8970a41514a6373da55391fde7e9398db1d8d55ebba9efc1536990b4b5835d9e543286fc6adc113e5eea40fc7b66e"
+        },
+        {
+          "leaf_index": 2,
+          "audit_path_hex": "6dca290f59f64f236fd93b6755adfe2278accef2578ccbe82e1fd13da3e79298"
+        }
+      ]
+    },
+    "meta": {
+      "schema_version": 1,
+      "created_at": "2026-06-02T22:34:55.139529Z"
+    }
+  }
+}
