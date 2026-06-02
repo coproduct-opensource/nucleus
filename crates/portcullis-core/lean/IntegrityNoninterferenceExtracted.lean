@@ -49,6 +49,10 @@ import PortcullisCoreIFC.Funs
 
 open Aeneas Aeneas.Std Result ControlFlow Error
 
+-- The 9-case `rfl` reductions below unfold the generated `do`/`Result` binds and
+-- reduce concrete `U8` comparisons in the kernel; give them headroom.
+set_option maxHeartbeats 1000000
+
 namespace IntegrityNoninterferenceExtracted
 
 /-- Short alias for the Aeneas-generated integrity enum (from real Rust). -/
@@ -59,24 +63,19 @@ abbrev IL := portcullis_core.extracted.ifc_integrity.IntegLevel
     generated `def` is a literal `match`), establishing the rank values we then
     reason about. -/
 theorem irank_adv :
-    portcullis_core.extracted.ifc_integrity.irank IL.Adversarial = ok 0#u8 := rfl
+    portcullis_core.extracted.ifc_integrity.irank .Adversarial = ok 0#u8 := rfl
 theorem irank_unt :
-    portcullis_core.extracted.ifc_integrity.irank IL.Untrusted = ok 1#u8 := rfl
+    portcullis_core.extracted.ifc_integrity.irank .Untrusted = ok 1#u8 := rfl
 theorem irank_tru :
-    portcullis_core.extracted.ifc_integrity.irank IL.Trusted = ok 2#u8 := rfl
+    portcullis_core.extracted.ifc_integrity.irank .Trusted = ok 2#u8 := rfl
 
-/-- A pure-Lean rank mirroring the generated `irank`'s value (proved equal to
-    the generated def in `rank_eq` below). Used to drive `omega`. -/
+/-- A pure-Lean rank mirroring the generated `irank`'s value (the generated
+    `irank l` reduces to `ok (rankN l)#u8`, see `imeet_ok`/`iflows_to_ok`). Used
+    to drive `omega`. -/
 def rankN : IL → Nat
-  | IL.Adversarial => 0
-  | IL.Untrusted => 1
-  | IL.Trusted => 2
-
-/-- The generated `irank l` is `ok (rankN l)` for every label. Bridges the
-    `Result`/`U8` encoding to a plain `Nat` we can feed to `omega`. -/
-theorem rank_eq (l : IL) :
-    portcullis_core.extracted.ifc_integrity.irank l = ok (UScalar.ofNat .U8 (rankN l)) := by
-  cases l <;> rfl
+  | .Adversarial => 0
+  | .Untrusted => 1
+  | .Trusted => 2
 
 /-- The generated `imeet` always succeeds and returns one of its arguments —
     specifically the one of lesser-or-equal rank (taint pulls trust DOWN).
@@ -85,7 +84,11 @@ theorem rank_eq (l : IL) :
 theorem imeet_ok (a b : IL) :
     portcullis_core.extracted.ifc_integrity.imeet a b
       = ok (if rankN a ≤ rankN b then a else b) := by
-  cases a <;> cases b <;> decide
+  -- Each of the 9 concrete pairs: unfold the generated `do`-binds (`irank` →
+  -- `ok n#u8`, `Result.bind (ok _)` → iota) and reduce the concrete `U8`
+  -- comparison; both sides normalize to the same `ok _`. `rfl` (not `decide`:
+  -- `Result` derives only `Repr, BEq`, not `DecidableEq`).
+  cases a <;> cases b <;> rfl
 
 /-- **Local step antitonicity**, over the GENERATED `imeet`. A single fold step
     can only lower (never raise) the running integrity rank. Order-dual of
@@ -126,7 +129,9 @@ theorem irun_cons_step_antitone (eff src : IL) :
     rankN (match portcullis_core.extracted.ifc_integrity.irun_step eff src with
            | ok r => r | _ => eff) ≤ rankN eff := by
   rw [irun_step_ok]
-  by_cases h : rankN eff ≤ rankN src <;> simp [h] <;> omega
+  -- `match ok X with | ok r => r | _ => eff` reduces (iota) to `X`; `show` forces it.
+  show rankN (if rankN eff ≤ rankN src then eff else src) ≤ rankN eff
+  split <;> omega
 
 /-- **Global composition** over the GENERATED step. Over ANY operation
     sequence, the running effective integrity rank never exceeds the starting
@@ -153,7 +158,10 @@ theorem irun_antitone :
 theorem iflows_to_ok (a ceiling : IL) :
     portcullis_core.extracted.ifc_integrity.iflows_to a ceiling
       = ok (decide (rankN ceiling ≤ rankN a)) := by
-  cases a <;> cases ceiling <;> decide
+  -- As with `imeet_ok`: 9 concrete pairs, both sides reduce to the same
+  -- `ok true` / `ok false` (the generated `i >= i1` Bool matches the decided
+  -- `rankN ceiling ≤ rankN a`). `rfl`, since `Result` lacks `DecidableEq`.
+  cases a <;> cases ceiling <;> rfl
 
 /-- Admission holds iff the generated `iflows_to` returns `ok true`. -/
 def iadmitted (eff req : IL) : Prop :=
@@ -175,11 +183,11 @@ theorem integrity_sink_never_admitted
   unfold iadmitted at h_admit
   rw [iflows_to_ok] at h_admit
   -- h_admit : ok (decide (rankN req ≤ rankN (irun ops eff))) = ok true
-  have h_flow : rankN req ≤ rankN (irun ops eff) := by
-    have : decide (rankN req ≤ rankN (irun ops eff)) = true := by
-      injection h_admit
-    exact of_decide_eq_true this
+  -- `ok.injEq` strips the constructor; `decide_eq_true_eq` strips `decide`.
+  simp only [Result.ok.injEq, decide_eq_true_eq] at h_admit
+  -- h_admit : rankN req ≤ rankN (irun ops eff)
   have h_ratchet : rankN (irun ops eff) ≤ rankN eff := irun_antitone ops eff
+  -- req ≤ irun ≤ eff ≤ L_src < req  ⇒  contradiction.
   omega
 
 /-- **Instantiation: a web-content-tainted session can NEVER git-push**, over
@@ -189,11 +197,11 @@ theorem integrity_sink_never_admitted
     (rank 2; see the Rust parity test `gitpush_requires_trusted`), over ANY
     operation sequence. Non-vacuous: `h_joined = 0 ≤ 0`, `h_blocked = 0 < 2`. -/
 theorem web_tainted_never_git_pushes (ops : List IL) :
-    ¬ iadmitted (irun ops IL.Adversarial) IL.Trusted := by
+    ¬ iadmitted (irun ops .Adversarial) .Trusted := by
   apply integrity_sink_never_admitted
-    (L_src := IL.Adversarial)
-    (eff := IL.Adversarial)
-    (req := IL.Trusted)
+    (L_src := .Adversarial)
+    (eff := .Adversarial)
+    (req := .Trusted)
     (ops := ops)
   · decide
   · decide
