@@ -156,14 +156,14 @@ jobs:
           sed 's/PortcullisCore\.Types/PortcullisCoreIFC.Types/' "$SRC/Funs.lean" > "$DST/Funs.lean"
           echo "generated-ifc/ canonicalized from the fresh extraction; theorem builds against it."
 
-      - name: Show canonical generated def signatures (diagnosis)
+      - name: Dump FULL canonical generated defs (to develop the proof against)
         run: |
-          echo "=== generated Funs.lean defs (the names the theorem must match) ==="
-          grep -nE '^def |^@\[|^abbrev |iflows_to|imeet|irank|irun' \
-            crates/portcullis-core/lean/generated-ifc/PortcullisCoreIFC/Funs.lean | head -50 || true
-          echo "=== generated Types.lean ==="
-          grep -nE '^def |^inductive |^structure |IntegLevel' \
-            crates/portcullis-core/lean/generated-ifc/PortcullisCoreIFC/Types.lean | head -40 || true
+          echo "CANONICAL-TYPES-START"
+          cat crates/portcullis-core/lean/generated-ifc/PortcullisCoreIFC/Types.lean
+          echo "CANONICAL-TYPES-END"
+          echo "CANONICAL-FUNS-START"
+          cat crates/portcullis-core/lean/generated-ifc/PortcullisCoreIFC/Funs.lean
+          echo "CANONICAL-FUNS-END"
 
       # --- Build the theorem + capture the REAL axiom set ---
       - name: Install elan (Lean toolchain)
