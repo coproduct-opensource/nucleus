@@ -1,0 +1,70 @@
+name: Aeneas IFC Translation Probe
+# One-off probe: does the LATEST Aeneas translate the IFC types (IFCLabel /
+# IntegLevel / ExposureSet / NodeKind) to Lean, or only the capability lattice?
+# Uses prebuilt Linux binaries (fast). Verdict -> job summary. Not for merge.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["probe/aeneas-ifc"]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Install Rust nightly for Charon
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: nightly-2026-02-07
+          components: rustc-dev,llvm-tools-preview,rust-src
+      - name: Download LATEST Aeneas prebuilt (charon bundled)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -x
+          TAG=$(gh release list --repo AeneasVerif/aeneas --limit 30 --json tagName,isLatest \
+                 -q '([.[]|select(.isLatest)][0].tagName) // (.[0].tagName)')
+          echo "Aeneas release: $TAG"
+          gh release download "$TAG" --repo AeneasVerif/aeneas \
+            --pattern "aeneas-linux-x86_64.tar.gz" --dir /tmp
+          mkdir -p /tmp/aeneas-bin
+          tar xzf /tmp/aeneas-linux-x86_64.tar.gz -C /tmp/aeneas-bin
+          echo "/tmp/aeneas-bin" >> "$GITHUB_PATH"
+          find /tmp/aeneas-bin -maxdepth 3 -type d -name bin -exec echo {} >> "$GITHUB_PATH" \; || true
+          echo "AENEAS_TAG=$TAG" >> "$GITHUB_ENV"
+      - name: Tool versions
+        run: |
+          (charon version || charon --version) 2>&1 | head -1 || echo "charon?"
+          aeneas -version 2>&1 | head -1 || echo "aeneas?"
+      - name: Charon MIR extraction
+        working-directory: crates/portcullis-core
+        run: charon cargo --preset aeneas
+      - name: Aeneas translate + VERDICT (read llbc at workspace root)
+        run: |
+          rm -rf /tmp/out; mkdir -p /tmp/out
+          LLBC=$(find . -maxdepth 2 -name 'portcullis_core.llbc' -newermt '-1 hour' | head -1)
+          echo "fresh llbc: $LLBC ($(stat -c%s "$LLBC" 2>/dev/null) bytes)"
+          aeneas -backend lean -split-files "$LLBC" -dest /tmp/out 2>&1 | tee /tmp/aeneas.log | tail -40 || true
+          {
+            echo "## Aeneas IFC Translation Probe — release \`$AENEAS_TAG\`"
+            echo "fresh llbc: \`$LLBC\` ($(stat -c%s "$LLBC" 2>/dev/null) bytes)"
+            echo ""
+            echo "### IFC types in GENERATED LEAN (the verdict):"
+            echo '```'
+            grep -rhoiE 'IFCLabel|ExposureSet|IntegLevel|NodeKind|FlowNode|AuthLevel' /tmp/out 2>/dev/null | sort | uniq -c || echo "(none — IFC types did NOT translate)"
+            echo '```'
+            echo "### Capability lattice baseline (sanity — should be present):"
+            echo '```'
+            grep -rhoiE 'CapabilityLattice|CapabilityLevel' /tmp/out 2>/dev/null | sort | uniq -c || echo "(none)"
+            echo '```'
+            echo "### aeneas messages (cannot / unsupported / String / IFC):"
+            echo '```'
+            grep -iE 'cannot|unsupported|String|not supported|IFCLabel|ExposureSet|IntegLevel|error' /tmp/aeneas.log 2>/dev/null | head -30 || echo "(none)"
+            echo '```'
+            echo "### generated files:"
+            echo '```'
+            ls /tmp/out 2>/dev/null | head
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
