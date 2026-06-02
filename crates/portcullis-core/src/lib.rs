@@ -144,6 +144,12 @@ pub mod witness;
 #[cfg(feature = "zkvm")]
 pub mod zkvm_receipt;
 
+/// Aeneas-extractable, subset-safe restatement of the integrity-axis IFC
+/// decision. This is the slice that the machine-checked noninterference
+/// theorem is proven OVER (after Charon→Aeneas→Lean extraction). Bound to
+/// the real `IFCLabel`/`SinkClass` enforcement by exhaustive parity tests.
+pub mod extracted;
+
 /// Tool permission levels in lattice ordering.
 ///
 /// The ordering is: `Never < LowRisk < Always`
