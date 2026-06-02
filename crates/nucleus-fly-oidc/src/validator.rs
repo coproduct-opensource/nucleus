@@ -8,11 +8,11 @@
 use std::collections::HashSet;
 
 use base64::Engine as _;
-use jsonwebtoken::{Algorithm, Validation, decode, decode_header};
+use jsonwebtoken::{decode, decode_header, Algorithm, Validation};
 use nucleus_lineage::CallSpiffeId;
 use serde::Deserialize;
 
-use crate::claims::{FlyClaims, derive_spiffe_id};
+use crate::claims::{derive_spiffe_id, FlyClaims};
 use crate::error::OidcError;
 use crate::jwks::{JtiCache, KeyResolver};
 
@@ -192,7 +192,7 @@ fn peek_issuer(token: &str) -> Result<String, OidcError> {
 mod tests {
     use super::*;
     use crate::jwks::StaticKeyResolver;
-    use jsonwebtoken::{DecodingKey, EncodingKey, Header, encode};
+    use jsonwebtoken::{encode, DecodingKey, EncodingKey, Header};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     const TEST_PRIV: &str = include_str!("../testdata/jwt_test_priv.pem");

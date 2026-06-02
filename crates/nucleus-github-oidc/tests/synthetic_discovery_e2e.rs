@@ -18,7 +18,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use nucleus_github_oidc::{GitHubOidcConfig, GitHubOidcValidator, OidcError};
 use nucleus_oidc_core::DiscoveryKeyResolver;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -44,7 +44,14 @@ fn now() -> i64 {
 /// Shape mirrors a real GitHub OIDC token's claims, but it is locally signed.
 /// The `iss` is the localhost mock issuer (known only after the OS assigns a
 /// port), so the caller passes it in.
-fn mint_with_issuer(issuer: &str, repo: &str, owner: &str, git_ref: &str, aud: &str, jti: &str) -> String {
+fn mint_with_issuer(
+    issuer: &str,
+    repo: &str,
+    owner: &str,
+    git_ref: &str,
+    aud: &str,
+    jti: &str,
+) -> String {
     let n = now();
     let claims = serde_json::json!({
         "iss": issuer,
@@ -75,7 +82,9 @@ fn mint_with_issuer(issuer: &str, repo: &str, owner: &str, git_ref: &str, aud: &
 /// This is a hand-rolled HTTP/1.1 responder (no extra web-framework dep) so
 /// the dev-dependency surface stays small. It serves exactly two routes.
 async fn spawn_synthetic_oidc_issuer() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind localhost");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind localhost");
     let addr = listener.local_addr().expect("local addr");
     let issuer = format!("http://{addr}");
     let discovery = serde_json::json!({

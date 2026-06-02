@@ -12,7 +12,7 @@ use nucleus_lineage::CallSpiffeId;
 use nucleus_oidc_core::{JtiCache, JwkPublicKey, KeyResolver, OidcError};
 use serde::Deserialize;
 
-use crate::claims::{GitHubClaims, derive_spiffe_id};
+use crate::claims::{derive_spiffe_id, GitHubClaims};
 
 /// The canonical GitHub Actions OIDC issuer.
 pub const GITHUB_ISSUER: &str = "https://token.actions.githubusercontent.com";
@@ -209,7 +209,7 @@ fn to_decoding_key(key: &JwkPublicKey) -> Result<DecodingKey, OidcError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jsonwebtoken::{EncodingKey, Header, encode};
+    use jsonwebtoken::{encode, EncodingKey, Header};
     use nucleus_oidc_core::StaticKeyResolver;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -289,12 +289,10 @@ mod tests {
             TEST_KID,
         );
         let identity = validator().validate(&token).await.unwrap();
-        assert!(
-            identity
-                .spiffe_id
-                .as_str()
-                .contains("/ns/github/sa/coproduct-opensource/nucleus-agent-starter/")
-        );
+        assert!(identity
+            .spiffe_id
+            .as_str()
+            .contains("/ns/github/sa/coproduct-opensource/nucleus-agent-starter/"));
         assert_eq!(identity.claims.actor, "octocat");
     }
 

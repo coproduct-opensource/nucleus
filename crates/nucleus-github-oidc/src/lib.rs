@@ -23,9 +23,9 @@
 mod claims;
 mod validator;
 
-pub use claims::{GitHubClaims, derive_spiffe_id};
+pub use claims::{derive_spiffe_id, GitHubClaims};
 pub use validator::{
-    GITHUB_ISSUER, GitHubOidcConfig, GitHubOidcValidator, ValidatedGitHubIdentity,
+    GitHubOidcConfig, GitHubOidcValidator, ValidatedGitHubIdentity, GITHUB_ISSUER,
 };
 
 // Re-export shared OIDC primitives so downstream callers only need one

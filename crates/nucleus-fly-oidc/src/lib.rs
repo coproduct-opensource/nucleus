@@ -26,11 +26,11 @@ mod jwks;
 mod machine;
 mod validator;
 
-pub use claims::{FlyClaims, SubParts, derive_spiffe_id, parse_sub};
+pub use claims::{derive_spiffe_id, parse_sub, FlyClaims, SubParts};
 pub use error::OidcError;
 pub use jwks::{DiscoveryKeyResolver, JtiCache, Jwk, Jwks, KeyResolver, StaticKeyResolver};
 pub use machine::{fetch_machine_oidc_token, obtain_fly_token};
-pub use validator::{FLY_ISSUER_PREFIX, FlyOidcConfig, FlyOidcValidator, ValidatedIdentity};
+pub use validator::{FlyOidcConfig, FlyOidcValidator, ValidatedIdentity, FLY_ISSUER_PREFIX};
 
 pub use jsonwebtoken::Algorithm;
 pub use nucleus_lineage::CallSpiffeId;
