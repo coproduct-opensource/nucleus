@@ -79,6 +79,12 @@ pub struct AppState {
     /// peers and `/v1/witness/peers` exposes the ring. When `None`,
     /// both endpoints return 503.
     pub witness: Option<crate::witness::WitnessFederation>,
+    /// Signed Agent Card published at `/.well-known/agent-card.json`. When
+    /// `Some`, the service serves its own verify-before-you-act identity
+    /// document (an A2A-style card whose detached JWS verifies against the
+    /// operator's out-of-band-resolved key). When `None`, the endpoint
+    /// returns 404 — the service makes no identity claim.
+    pub agent_card: Option<Arc<nucleus_agent_card::SignedAgentCard>>,
 }
 
 /// Max request body size in bytes. Provenance bundles are bounded by
@@ -166,6 +172,10 @@ pub fn build_app(state: AppState) -> Router {
         )
         .route("/v1/witness/peers", get(routes::witness_list_peers))
         .route("/.well-known/jwks.json", get(routes::well_known_jwks))
+        .route(
+            "/.well-known/agent-card.json",
+            get(routes::well_known_agent_card),
+        )
         .route(
             "/.well-known/nucleus-verifier-configuration",
             get(routes::well_known_configuration),
