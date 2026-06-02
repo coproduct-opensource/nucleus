@@ -22,18 +22,15 @@
 //!
 //! Every definition here mirrors a specific clause of the production code:
 //!
-//! - [`IntegLevel`]            mirrors `crate::IntegLevel` (lib.rs:1430-1438)
-//! - [`irank`]                 mirrors the `#[repr(u8)]` discriminants:
-//!                             `Adversarial=0, Untrusted=1, Trusted=2`
-//! - [`imeet`]                 mirrors the integrity clause of
-//!                             `IFCLabel::join` (lib.rs:1745-1749):
-//!                             `if self.integrity <= other.integrity { self }
-//!                              else { other }`
-//! - [`iflows_to`]             mirrors the integrity clause of
-//!                             `IFCLabel::flows_to` (lib.rs:1774):
-//!                             `self.integrity >= target.integrity`
-//! - [`irun_step`]             the per-operation fold step used by the Lean
-//!                             noninterference fold (`= imeet`)
+//! - [`IntegLevel`] mirrors `crate::IntegLevel` (lib.rs:1430-1438)
+//! - [`irank`] mirrors the `#[repr(u8)]` discriminants:
+//!   `Adversarial=0, Untrusted=1, Trusted=2`
+//! - [`imeet`] mirrors the integrity clause of `IFCLabel::join`
+//!   (lib.rs:1745-1749): `if self.integrity <= other.integrity { self } else { other }`
+//! - [`iflows_to`] mirrors the integrity clause of `IFCLabel::flows_to`
+//!   (lib.rs:1774): `self.integrity >= target.integrity`
+//! - [`irun_step`] the per-operation fold step used by the Lean
+//!   noninterference fold (`= imeet`)
 //!
 //! # Why explicit `u8` rank comparison (not derived `Ord`)
 //!
@@ -87,11 +84,7 @@ pub fn irank(l: IntegLevel) -> u8 {
 /// The `<=` is the discriminant order, restated here as `irank(a) <= irank(b)`
 /// so Aeneas translates a concrete body (no opaque `Ord` axiom).
 pub fn imeet(a: IntegLevel, b: IntegLevel) -> IntegLevel {
-    if irank(a) <= irank(b) {
-        a
-    } else {
-        b
-    }
+    if irank(a) <= irank(b) { a } else { b }
 }
 
 /// Integrity flows-to: data labeled `a` may be used where `ceiling` is required
@@ -134,9 +127,10 @@ mod tests {
     /// Build a production `IFCLabel` whose integrity axis is `l` and whose
     /// other axes are fixed so the integrity conjunct is the binding one.
     fn label_with_integrity(l: IntegLevel) -> crate::IFCLabel {
-        let mut lab = crate::IFCLabel::default();
-        lab.integrity = to_real(l);
-        lab
+        crate::IFCLabel {
+            integrity: to_real(l),
+            ..Default::default()
+        }
     }
 
     #[test]
