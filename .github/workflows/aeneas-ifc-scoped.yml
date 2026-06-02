@@ -200,10 +200,16 @@ jobs:
       - name: Reject sorry (proof holes)
         working-directory: crates/portcullis-core/lean
         run: |
-          if grep -rn 'sorry\|admit\b\|native_decide' \
+          # Match `sorry`/`admit` only as actual tactic/term USAGE (preceded by
+          # `:=`, `=>`, `by`, `<;>`, `·`, `;`, or line start), plus `native_decide`
+          # anywhere. The authoritative check is the `#print axioms` audit above
+          # (a real hole shows up as `sorryAx`); this is belt-and-suspenders and
+          # must NOT false-positive on the file's own honest prose discussing
+          # `sorryAx` / "sorry-free" (a plain substring grep does, and did).
+          if grep -rnE '(:=|=>|\bby\b|<;>|·|;|^)[[:space:]]*(sorry|admit)\b|\bnative_decide\b' \
                IntegrityNoninterferenceExtracted.lean \
                generated-ifc/PortcullisCoreIFC/ --include='*.lean'; then
-            echo "ERROR: proof contains sorry/admit/native_decide."
+            echo "ERROR: proof contains a sorry/admit/native_decide tactic."
             exit 1
           fi
-          echo "No sorry/admit/native_decide found."
+          echo "No sorry/admit/native_decide usage found."

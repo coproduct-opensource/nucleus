@@ -1,12 +1,16 @@
 /-
   Integrity Noninterference — proven OVER the Aeneas-EXTRACTED enforcement core.
 
-  **STATUS: DRAFT / build-unverified.** The `#print axioms` commands at the
-  bottom of this file emit the real axiom set to the CI log when the
-  `lean-build` job runs against a v4.30.0-rc2 Mathlib cache. As of commit time
-  that build had NOT been run, so the printed axiom set is UNCONFIRMED — do not
-  read the expected `[propext, Quot.sound, Classical.choice]` as verified until
-  the CI log shows it.
+  **STATUS: VERIFIED.** The `aeneas-ifc-scoped` CI job built this file against a
+  v4.30.0-rc2 Mathlib cache (run 26847262070, 2026-06-02; `lake build
+  PortcullisCoreIFC` 1651 jobs, then this theorem). The `#print axioms` audit at
+  the bottom printed, for BOTH theorems:
+
+      [propext, Classical.choice, Quot.sound]
+
+  No `sorryAx`, no Aeneas `*External` opaque axiom — the `Assert clean axiom set`
+  gate passed. (`Classical.choice` enters via `by_cases`/`omega`; it is part of
+  the trusted Lean/Mathlib kernel set, not a proof hole.)
 
   This is the order-dual integrity-axis noninterference theorem, RE-PROVEN over
   the Aeneas-generated (from real Rust) definitions instead of a hand-written
@@ -222,10 +226,8 @@ end IntegrityNoninterferenceExtracted
   axiom); `generated-ifc/` contains no `FunsExternal_Template.lean`, so there
   are no opaque-function holes to leak in here.
 
-  HONESTY NOTE: at the time this file was committed the build had NOT yet run
-  on a host with a v4.30.0-rc2 Mathlib cache, so the ACTUAL printed axiom set
-  was UNVERIFIED. Do not treat the expected list above as confirmed until the
-  CI log shows it.
+  VERIFIED 2026-06-02 (CI run 26847262070): both theorems printed exactly
+  `[propext, Classical.choice, Quot.sound]` — no `sorryAx`, no `*External`.
 -/
 #print axioms IntegrityNoninterferenceExtracted.integrity_sink_never_admitted
 #print axioms IntegrityNoninterferenceExtracted.web_tainted_never_git_pushes
