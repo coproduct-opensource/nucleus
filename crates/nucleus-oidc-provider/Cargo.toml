@@ -47,7 +47,7 @@ clap = { workspace = true }
 
 # Crypto — explicit zeroize feature (closes #31 GA-8: never rely on
 # transitive default-features for key-material zeroization).
-ed25519-dalek = { version = "=3.0.0-pre.7", features = ["zeroize", "rand_core", "pkcs8"] }
+ed25519-dalek = { version = "=3.0.0-rc.0", features = ["zeroize", "rand_core", "pkcs8"] }
 
 # Encoding
 hex = { workspace = true }

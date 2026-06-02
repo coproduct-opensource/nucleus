@@ -18,7 +18,7 @@ path = "src/lib.rs"
 [dependencies]
 nucleus-envelope = { path = "../nucleus-envelope" }
 nucleus-lineage = { path = "../nucleus-lineage", features = ["dev"] }
-ed25519-dalek = "=3.0.0-pre.7"
+ed25519-dalek = "=3.0.0-rc.0"
 serde_json = { workspace = true }
 hex = { workspace = true }
 

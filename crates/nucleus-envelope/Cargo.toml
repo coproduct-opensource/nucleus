@@ -14,7 +14,7 @@ nucleus-lineage = { path = "../nucleus-lineage" }
 # Match nucleus-lineage's pin so the workspace doesn't drag in two
 # `ed25519` / `signature` crate versions transitively. nucleus-node
 # stays on 2.x intentionally (issue #1643 — migrate when 3.0 stable).
-ed25519-dalek = "=3.0.0-pre.7"
+ed25519-dalek = "=3.0.0-rc.0"
 base64 = "0.22"
 serde = { workspace = true }
 serde_json = { workspace = true }

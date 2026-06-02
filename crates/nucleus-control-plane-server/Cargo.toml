@@ -18,7 +18,7 @@ nucleus-lineage = { path = "../nucleus-lineage", features = ["dev"] }
 nucleus-envelope = { path = "../nucleus-envelope" }
 nucleus-control-plane = { path = "../nucleus-control-plane" }
 nucleus-oidc-core = { path = "../nucleus-oidc-core" }
-ed25519-dalek = "=3.0.0-pre.7"
+ed25519-dalek = "=3.0.0-rc.0"
 base64 = "0.22"
 axum = { version = "0.8", features = ["macros", "json"] }
 tokio = { workspace = true, features = ["full"] }
@@ -43,7 +43,7 @@ chrono = { workspace = true, features = ["serde"] }
 async-stream = "0.3"
 futures-util = "0.3"
 uuid = { workspace = true, features = ["v4", "serde"] }
-rand = "0.8"
+rand = "0.10"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
