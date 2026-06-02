@@ -38,6 +38,7 @@ members = [
     "crates/nucleus-oidc-core",          # Provider-agnostic OIDC primitives (JWKS, JtiCache, federation)
     "crates/nucleus-fly-oidc",           # Per-provider validator: Fly.io machine OIDC → SPIFFE
     "crates/nucleus-github-oidc",        # Per-provider validator: GitHub Actions OIDC → SPIFFE
+    "crates/nucleus-agent-card",         # Verify-before-you-act: signed Agent Card → TrustAnchor
 ]
 # nucleus-claude-hook moved to nucleus-code (private product repo)
 # exposure-web is WASM-only (wasm32-unknown-unknown); build with: cd crates/exposure-web && trunk build

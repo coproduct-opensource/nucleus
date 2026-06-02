@@ -1,0 +1,44 @@
+[package]
+name = "nucleus-agent-card"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Verify-before-you-act identity layer: sign/verify an A2A-style signed Agent Card and derive a TrustAnchor for the bundle verifier"
+repository = "https://github.com/coproduct-opensource/nucleus"
+keywords = ["agent", "identity", "a2a", "did", "provenance"]
+categories = ["authentication", "cryptography"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+thiserror = { workspace = true }
+# RFC 8785 JSON Canonicalization Scheme. Pinned to the latest published
+# release (confirmed on crates.io 2026-06).
+serde_jcs = "0.2.0"
+
+# Path deps. nucleus-identity supplies JsonWebKey + did_crypto::jws_*.
+# nucleus-lineage supplies the Jwks type the card advertises.
+# nucleus-envelope supplies the TrustAnchor the verifier consumes.
+nucleus-identity = { path = "../nucleus-identity" }
+nucleus-lineage = { path = "../nucleus-lineage" }
+nucleus-envelope = { path = "../nucleus-envelope" }
+
+[features]
+default = []
+# Server/dev only: the card-signing path. Pulls in nucleus-identity's
+# signing primitive. NEVER enable in a WASM / browser build — verify is
+# always available without it and is secret-free.
+sign = []
+
+[dev-dependencies]
+# `dev` feature on nucleus-lineage gives the integration test the
+# in-process LocalIssuer + InMemorySink it needs to build a real Bundle.
+nucleus-lineage = { path = "../nucleus-lineage", features = ["dev"] }
+# P-256 keypair generation for the sign/verify unit + integration tests.
+ring = { workspace = true }
+
+[lints]
+workspace = true

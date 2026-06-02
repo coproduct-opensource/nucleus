@@ -242,6 +242,7 @@ async fn fresh_db_state() -> AppState {
         metrics: None,
         merkle: None,
         witness: None,
+        agent_card: None,
     }
 }
 
@@ -558,6 +559,7 @@ async fn signed_state() -> AppState {
         metrics: None,
         merkle: None,
         witness: None,
+        agent_card: None,
     }
 }
 
@@ -717,6 +719,7 @@ async fn unsigned_sth_path_still_works_without_signer() {
         metrics: None,
         merkle: None,
         witness: None,
+        agent_card: None,
     };
     let resp = build_app(state)
         .oneshot(
@@ -777,6 +780,77 @@ async fn well_known_configuration_describes_service_correctly() {
     assert_eq!(body["persistence"]["bundle_lookup_supported"], true);
     assert_eq!(body["persistence"]["transparency_log_supported"], true);
     assert_eq!(body["limits"]["max_bundle_bytes"], 2 * 1024 * 1024);
+}
+
+#[tokio::test]
+async fn well_known_agent_card_returns_404_without_card() {
+    let resp = build_app(AppState::default())
+        .oneshot(
+            Request::builder()
+                .uri("/.well-known/agent-card.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn well_known_agent_card_verifies_against_matching_key() {
+    use nucleus_agent_card::{sign_card, verify_card, AgentCard, SignedAgentCard};
+    use nucleus_identity::JsonWebKey;
+    use ring::rand::SystemRandom;
+    use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+    use std::sync::Arc;
+
+    // Out-of-band card-signing key (resolved by the caller separately).
+    let rng = SystemRandom::new();
+    let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
+    let der = pkcs8.as_ref().to_vec();
+    let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &der, &rng).unwrap();
+    let pk = kp.public_key().as_ref();
+    let resolved_key = JsonWebKey::ec_p256(
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&pk[1..33]),
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&pk[33..65]),
+    );
+
+    // The bundle issuer whose JWKS the card advertises.
+    let issuer = LocalIssuer::random().unwrap();
+    let advertised: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+
+    let card = AgentCard {
+        spiffe_id: "spiffe://test.nucleus.local/ns/verifier/sa/svc".to_string(),
+        did: "did:web:verifier.test.nucleus.local".to_string(),
+        security_schemes: json!({}),
+        supported_envelope_schema_versions: vec!["1".to_string()],
+        jwks_uri: None,
+        trust_jwks: advertised,
+    };
+    let signed = sign_card(card, &der).unwrap();
+
+    let state = AppState {
+        agent_card: Some(Arc::new(signed)),
+        ..AppState::default()
+    };
+
+    let resp = build_app(state)
+        .oneshot(
+            Request::builder()
+                .uri("/.well-known/agent-card.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // The returned card MUST verify against the matching resolved key.
+    let body = read_json(resp.into_body()).await;
+    let returned: SignedAgentCard = serde_json::from_value(body).unwrap();
+    let verified = verify_card(&returned, &resolved_key)
+        .expect("served agent card must verify against the matching out-of-band key");
+    assert_eq!(verified.card.did, "did:web:verifier.test.nucleus.local");
 }
 
 #[tokio::test]

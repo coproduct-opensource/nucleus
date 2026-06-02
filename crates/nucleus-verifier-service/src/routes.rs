@@ -724,6 +724,25 @@ pub async fn well_known_jwks(State(state): State<AppState>) -> Json<serde_json::
     })
 }
 
+/// `GET /.well-known/agent-card.json` — the service's own A2A-style
+/// signed Agent Card (verify-before-you-act identity document).
+///
+/// Returns the [`nucleus_agent_card::SignedAgentCard`] configured in
+/// [`AppState::agent_card`]. The card's detached RFC 7515 JWS-JSON
+/// signature verifies against the operator's out-of-band-resolved key —
+/// NEVER against a key embedded in the card. Returns 404 when no card is
+/// configured (the service makes no identity claim in that mode).
+pub async fn well_known_agent_card(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, VerifyApiError> {
+    let card = state.agent_card.as_ref().ok_or_else(|| {
+        VerifyApiError::NotFound("no agent card configured for this service".into())
+    })?;
+    let value = serde_json::to_value(card.as_ref())
+        .map_err(|e| VerifyApiError::Internal(format!("serialize agent card: {e}")))?;
+    Ok(Json(value))
+}
+
 /// `GET /.well-known/nucleus-verifier-configuration` — service
 /// description document, modeled on RFC 8414 (OAuth Authorization
 /// Server Metadata) and OIDC discovery conventions. SDKs read this

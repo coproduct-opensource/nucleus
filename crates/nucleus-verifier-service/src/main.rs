@@ -121,7 +121,8 @@ async fn main() -> Result<()> {
         signer,
         metrics,
         merkle,
-        witness: None, // iter-1: configurable via CLI in iter-2
+        witness: None,    // iter-1: configurable via CLI in iter-2
+        agent_card: None, // configurable via CLI in a later iteration
     };
 
     // Retention sweeper — spawned only when persistence is enabled.
