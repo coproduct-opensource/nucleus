@@ -1,0 +1,215 @@
+name: Aeneas IFC (scoped extraction + noninterference)
+
+# Scoped Charon→Aeneas extraction of the integrity-axis enforcement slice
+# (crates/portcullis-core/src/extracted/ifc_integrity.rs) plus the Lean
+# noninterference theorem proven OVER the generated defs.
+#
+# WHY A SEPARATE WORKFLOW (not aeneas.yml):
+#   aeneas.yml runs `charon cargo --preset aeneas` whole-crate, then
+#   `aeneas -backend lean` over the entire portcullis_core.llbc. Per ground
+#   truth, whole-crate Aeneas translation CRASHES (OCaml exn in
+#   eval_statement_list) on some unrelated function body, emitting ZERO output.
+#   The standard Aeneas workflow for that situation is to SCOPE the extraction
+#   to a dependency-free subgraph with `--start-from`, so Aeneas only translates
+#   the slice we prove over. This job does exactly that.
+#
+# This job is LINUX-ONLY: the macOS local aeneas build is broken (charon-ml
+# skew), so extraction is reproducible only on CI.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "crates/portcullis-core/src/extracted/**"
+      - "crates/portcullis-core/lean/generated-ifc/**"
+      - "crates/portcullis-core/lean/IntegrityNoninterferenceExtracted.lean"
+      - "crates/portcullis-core/lean/lakefile.lean"
+      - ".github/workflows/aeneas-ifc-scoped.yml"
+  pull_request:
+    paths:
+      - "crates/portcullis-core/src/extracted/**"
+      - "crates/portcullis-core/lean/generated-ifc/**"
+      - "crates/portcullis-core/lean/IntegrityNoninterferenceExtracted.lean"
+      - "crates/portcullis-core/lean/lakefile.lean"
+      - ".github/workflows/aeneas-ifc-scoped.yml"
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Pin to the Aeneas prebuilt nightly that generated the committed generated-ifc/.
+  # Update this AND regenerate generated-ifc/ together.
+  AENEAS_RELEASE: nightly-2026.06.02
+  # Charon needs a specific nightly for rustc-dev components.
+  CHARON_NIGHTLY: nightly-2026-02-07
+  # The scoped extraction roots — name them exactly as Charon sees the paths.
+  EXTRACT_ROOTS: "portcullis_core::extracted::ifc_integrity::iflows_to,portcullis_core::extracted::ifc_integrity::imeet,portcullis_core::extracted::ifc_integrity::irun_step"
+
+jobs:
+  aeneas-ifc-scoped:
+    name: Scoped Aeneas (Rust → Lean 4) + parity tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      # --- Rust nightly for Charon MIR extraction ---
+      - name: Install Rust nightly for Charon
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: ${{ env.CHARON_NIGHTLY }}
+          components: rustc-dev,llvm-tools-preview,rust-src
+
+      - name: Rust / cargo cache (Charon target dir)
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2.9.1
+        with:
+          workspaces: crates/portcullis-core
+          key: charon-ifc-${{ env.CHARON_NIGHTLY }}-${{ env.AENEAS_RELEASE }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # --- Rust parity tests: the extracted slice == the production enforcement ---
+      # These exhaustively assert imeet/iflows_to/irank equal the integrity axis
+      # of the real IFCLabel::join / flows_to and that GitPush requires Trusted.
+      # They close the model<->code gap that the Lean theorem then builds on.
+      - name: Stable toolchain (for cargo test)
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: stable
+
+      - name: Parity tests (extracted slice == production enforcement)
+        run: cargo test -p portcullis-core --lib extracted::ifc_integrity
+
+      # --- Aeneas prebuilt binaries (Charon + Aeneas, no OCaml build) ---
+      - name: Cache Aeneas binary
+        id: cache-aeneas-bin
+        uses: actions/cache@v5
+        with:
+          path: /tmp/aeneas-bin
+          key: aeneas-bin-${{ runner.os }}-${{ env.AENEAS_RELEASE }}
+
+      - name: Download Aeneas pre-built binaries
+        if: steps.cache-aeneas-bin.outputs.cache-hit != 'true'
+        run: |
+          gh release download "$AENEAS_RELEASE" \
+            --repo AeneasVerif/aeneas \
+            --pattern "aeneas-linux-x86_64.tar.gz" \
+            --dir /tmp
+          mkdir -p /tmp/aeneas-bin
+          tar xzf /tmp/aeneas-linux-x86_64.tar.gz -C /tmp/aeneas-bin
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Add Aeneas to PATH
+        run: echo "/tmp/aeneas-bin" >> "$GITHUB_PATH"
+
+      - name: Verify tools
+        run: |
+          which charon && charon version
+          which aeneas && aeneas -version
+
+      # --- SCOPED Charon extraction: only the enforcement subgraph ---
+      # --start-from each root walks ONLY the reachable callees, so the
+      # crashing unrelated function bodies are never translated by Aeneas.
+      - name: Charon scoped MIR extraction
+        working-directory: crates/portcullis-core
+        run: |
+          STARTS=""
+          IFS=',' read -ra ROOTS <<< "$EXTRACT_ROOTS"
+          for r in "${ROOTS[@]}"; do
+            STARTS="$STARTS --start-from $r"
+          done
+          echo "Charon scoped roots:$STARTS"
+          # shellcheck disable=SC2086
+          charon cargo --preset aeneas $STARTS
+
+      - name: Aeneas Lean 4 translation (scoped slice)
+        run: |
+          mkdir -p crates/portcullis-core/lean/ci-generated-ifc
+          aeneas -backend lean -split-files portcullis_core.llbc \
+            -dest crates/portcullis-core/lean/ci-generated-ifc
+
+      # --- Canonicalize: build the theorem against the FRESH extraction ---
+      # The freshly-generated scoped slice IS the canonical Aeneas output of the
+      # current pinned toolchain (charon 0.1.210 / aeneas nightly-2026.06.02), so
+      # we install it as generated-ifc/ and build the theorem against it. Drift vs
+      # the previously-committed copy is a reproducibility note (logged as a
+      # warning), NOT a validity failure — the committed copy is genuine Aeneas
+      # output too; we simply prefer the current toolchain's output. The ONE
+      # disclosed hand-edit is retargeting the Funs.lean import
+      # (PortcullisCore.Types -> PortcullisCoreIFC.Types).
+      - name: Canonicalize generated-ifc from the fresh extraction
+        run: |
+          DST=crates/portcullis-core/lean/generated-ifc/PortcullisCoreIFC
+          SRC=crates/portcullis-core/lean/ci-generated-ifc
+          for f in Types.lean Funs.lean; do
+            if [ ! -f "$SRC/$f" ]; then
+              echo "ERROR: Aeneas did not emit $f (scoped extraction failed)"; exit 1
+            fi
+            if ! diff -q "$DST/$f" "$SRC/$f" > /dev/null 2>&1; then
+              echo "::warning::generated $f drifted from the committed copy — building against the fresh canonical extraction"
+            fi
+          done
+          cp "$SRC/Types.lean" "$DST/Types.lean"
+          sed 's/PortcullisCore\.Types/PortcullisCoreIFC.Types/' "$SRC/Funs.lean" > "$DST/Funs.lean"
+          echo "generated-ifc/ canonicalized from the fresh extraction; theorem builds against it."
+
+      - name: Dump FULL canonical generated defs (to develop the proof against)
+        run: |
+          echo "CANONICAL-TYPES-START"
+          cat crates/portcullis-core/lean/generated-ifc/PortcullisCoreIFC/Types.lean
+          echo "CANONICAL-TYPES-END"
+          echo "CANONICAL-FUNS-START"
+          cat crates/portcullis-core/lean/generated-ifc/PortcullisCoreIFC/Funs.lean
+          echo "CANONICAL-FUNS-END"
+
+      # --- Build the theorem + capture the REAL axiom set ---
+      - name: Install elan (Lean toolchain)
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --no-modify-path
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - uses: coproduct-opensource/lean-mathlib-cache@9f69375ab6b89d215afa6938964e0200f15cd9ed # v1.0.1
+        with:
+          lean-project-dir: crates/portcullis-core/lean
+          build-target: PortcullisCoreIFC
+          cache-key-prefix: lean-ifc
+
+      - name: lake build (extracted core + theorem)
+        working-directory: crates/portcullis-core/lean
+        run: |
+          lake build PortcullisCoreIFC
+          lake build IntegrityNoninterferenceExtracted 2>&1 | tee /tmp/lake-ifc.log
+
+      # The #print axioms commands are in the .lean file; their output lands in
+      # the build log above. Surface it explicitly and fail on a dirty axiom set.
+      - name: Assert clean axiom set (no sorryAx / opaque axioms)
+        working-directory: crates/portcullis-core/lean
+        run: |
+          echo "=== #print axioms output (from build log) ==="
+          grep -nE "axioms|sorryAx|propext|Quot\.sound|Classical\.choice|External" /tmp/lake-ifc.log || true
+          if grep -qE "sorryAx|External" /tmp/lake-ifc.log; then
+            echo "ERROR: dirty axiom set — sorryAx or an opaque *External axiom is on the proof's critical path."
+            exit 1
+          fi
+          echo "No sorryAx / opaque-External axiom detected in the axiom audit."
+
+      - name: Reject sorry (proof holes)
+        working-directory: crates/portcullis-core/lean
+        run: |
+          # Match `sorry`/`admit` only as actual tactic/term USAGE (preceded by
+          # `:=`, `=>`, `by`, `<;>`, `·`, `;`, or line start), plus `native_decide`
+          # anywhere. The authoritative check is the `#print axioms` audit above
+          # (a real hole shows up as `sorryAx`); this is belt-and-suspenders and
+          # must NOT false-positive on the file's own honest prose discussing
+          # `sorryAx` / "sorry-free" (a plain substring grep does, and did).
+          if grep -rnE '(:=|=>|\bby\b|<;>|·|;|^)[[:space:]]*(sorry|admit)\b|\bnative_decide\b' \
+               IntegrityNoninterferenceExtracted.lean \
+               generated-ifc/PortcullisCoreIFC/ --include='*.lean'; then
+            echo "ERROR: proof contains a sorry/admit/native_decide tactic."
+            exit 1
+          fi
+          echo "No sorry/admit/native_decide usage found."

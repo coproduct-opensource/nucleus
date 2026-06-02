@@ -31,6 +31,19 @@ lean_lib «PortcullisCore» where
 lean_lib «PortcullisCoreBridge» where
   roots := #[`PortcullisCoreBridge]
 
+-- Aeneas-generated integrity-axis enforcement core (from real Rust:
+-- crates/portcullis-core/src/extracted/ifc_integrity.rs). The function
+-- bodies are UNMODIFIED Aeneas output (only the inter-module import path in
+-- Funs.lean was retargeted from PortcullisCore.Types to PortcullisCoreIFC.Types
+-- so this lib does not collide with the «PortcullisCore» lib).
+lean_lib «PortcullisCoreIFC» where
+  roots := #[`PortcullisCoreIFC.Types, `PortcullisCoreIFC.Funs]
+  srcDir := "generated-ifc"
+
+-- Noninterference theorem proven OVER the Aeneas-generated IFC core above.
+lean_lib «IntegrityNoninterferenceExtracted» where
+  roots := #[`IntegrityNoninterferenceExtracted]
+
 -- Exposure tracker proofs (uninhabitable state detector)
 lean_lib «ExposureProofs» where
   roots := #[`ExposureProofs]
