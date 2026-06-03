@@ -2,7 +2,7 @@
 
 A buildable, tested prototype that takes a **GitHub Actions OIDC JWT**, validates
 it through the **real** `nucleus-github-oidc` validator (RS256 signature via
-JWKS, issuer/audience/exp/nbf, repo/org allowlist, replay), and derives the
+JWKS, issuer/audience/exp, repo/org allowlist, replay), and derives the
 **SPIFFE caller id** — with **no long-lived secret anywhere**.
 
 This is an *honest spike* (the zk-spike rule): a live GitHub OIDC token can
