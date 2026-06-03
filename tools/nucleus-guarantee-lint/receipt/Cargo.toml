@@ -1,0 +1,33 @@
+# PURE receipt logic — NO rustc dependency, so it builds as a normal rlib/bin on the
+# pinned nightly (or any stable/nightly) and is unit-testable WITHOUT cargo-dylint or the
+# rustc-dev sysroot. The cdylib lint crate (../) depends on this for receipt construction;
+# this crate never depends back on the lint.
+[package]
+name = "nucleus_guarantee_receipt"
+version = "0.1.0"
+authors = ["Nucleus Platform"]
+description = "Per-hash ed25519-signed Aeneas-eligibility guarantee receipts (v0 screen result). NOT a proof."
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "verify-guarantee-receipt"
+path = "src/bin/verify_guarantee_receipt.rs"
+
+# Projects a receipt dir -> CSV for olog ingestion (olog has no JSON source kind).
+[[bin]]
+name = "receipts-to-csv"
+path = "src/bin/receipts_to_csv.rs"
+
+[dependencies]
+# ed25519-dalek 2.x (latest 2.x). sha2 0.10. serde_jcs = RFC 8785 (JCS) canonical JSON.
+# `rand_core` feature enables SigningKey::generate (used only in tests, but it's a
+# crate-level feature). `std` for std error types.
+ed25519-dalek = { version = "2.2", default-features = false, features = ["std", "rand_core"] }
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_jcs = "0.1"
+hex = "0.4"
+# rand_core 0.6 matches ed25519-dalek 2.x's re-exported rand_core (SigningKey::generate).
+rand_core = { version = "0.6", features = ["getrandom"] }

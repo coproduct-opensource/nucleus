@@ -12,7 +12,11 @@ edition = "2024"
 publish = false
 
 [lib]
-# Mandatory: Dylint loads a dynamic library (Research 1, §2).
+# Mandatory and ONLY this: Dylint loads a dynamic library (Research 1, §2). A crate that
+# links rustc_driver via `#![feature(rustc_private)]` CANNOT also emit an `rlib`/`bin`
+# (the sysroot crates ship dylib-only -> "X only shows up once"). So the PURE receipt
+# logic + the verify bin + the receipt unit tests all live in the sibling `receipt`
+# crate, which has NO rustc dependency and IS rlib/bin-buildable on stable-or-nightly.
 crate-type = ["cdylib"]
 
 [dependencies]
@@ -20,12 +24,18 @@ crate-type = ["cdylib"]
 # The rev and the nightly are mutually consistent — they are what `cargo dylint new` emits.
 clippy_utils = { git = "https://github.com/rust-lang/rust-clippy", rev = "f6d310692116e9a527ce6d0b3526c965d9c5d7b9" }
 dylint_linting = "6.0.1"
+# Pure receipt logic (hash / canonicalize / sign / verify) — NO rustc dependency.
+nucleus_guarantee_receipt = { path = "receipt" }
+serde = { version = "1", features = ["derive"] }
+hex = "0.4"
 
 [dev-dependencies]
 dylint_testing = "6.0.1"
 
-# Standalone crate — explicitly NOT part of any parent workspace.
+# A self-contained two-crate workspace, explicitly NOT part of any PARENT workspace.
+# `receipt` is the pure (no-rustc) member that hosts the verifier bin + receipt tests.
 [workspace]
+members = ["receipt"]
 
 [package.metadata.rust-analyzer]
 rustc_private = true

@@ -1,0 +1,5 @@
+/target
+/receipt/target
+# Generated receipts + per-run sample artifacts (contain freshly-generated keys/sigs).
+/receipt/testdata
+**/guarantee-receipts/

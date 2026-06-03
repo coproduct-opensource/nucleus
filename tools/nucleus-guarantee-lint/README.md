@@ -47,14 +47,79 @@ does **not** cover them — see the `// TODO(deny-set)` markers in `src/lib.rs`:
 - non-`Vec` std collections (`HashMap`, `BTreeMap`, …) — only `Vec` ships an Aeneas model
 - iterator-combinator chains (`.map`/`.filter`/`.collect`) (aeneas#1053/#1043/#464)
 
-## Future hook: signed per-hash guarantee receipt (NOT in this scaffold)
+## Signed per-hash guarantee receipts (IMPLEMENTED — v0)
 
-This crate is the **screen only**. A future pass would, for each function that passes,
-compute a stable digest and emit a *signed per-hash guarantee receipt* binding
-`hash(StableMIR body OR rustfmt-normalized source) + toolchain + profile`. The receipt
-would certify only "passed the screen under `<toolchain, profile>`" — never "is
-extractable" and never "is correct". See the `// TODO(guarantee-receipt)` block in
-`src/lib.rs`.
+When configured (see below), the lint emits a **signed per-hash GUARANTEE RECEIPT** for
+each screened function. The pure receipt logic (hash / canonicalize / sign / verify)
+lives in the sibling crate [`receipt/`](receipt/) (`nucleus_guarantee_receipt`), which has
+**no rustc dependency** and is unit-testable without the compiler.
+
+### A receipt is a SCREEN RESULT, NOT a proof
+
+> A guarantee receipt attests **exactly one thing**: that the `aeneas_eligible` *screen*
+> produced a particular `result` for a particular function, at one exact
+> `(normalized_source, toolchain, profile_id)` triple, identified by `anchor_hash`. It is
+> **NOT** a proof that the function is extractable, **NOT** a proof that any extracted
+> model is correct, and **NOT** a guarantee of anything beyond "the screen returned this
+> result for this hash". A `result = "clean"` receipt is the output of a
+> **necessary-condition** screen — the unscreened deny-set rows (floats, nested loops,
+> non-`Vec` collections, iterator combinators) are carried as `"not_screened"`, never
+> `"pass"`. **Change the source → the hash changes → the receipt is void (fail-closed).**
+> The guarantee is **toolchain-relative**: it holds only for the exact rustc recorded in
+> `toolchain`.
+
+### Receipt JSON (schema_version = 0)
+
+Canonicalized with RFC 8785 / JCS (sorted keys, no insignificant whitespace) and
+ed25519-signed over those canonical bytes:
+
+```json
+{"anchor_hash":"…hex sha256…","guarantees":{"no_async":"pass","no_closures":"pass","no_dyn_in_sig":"pass","no_ffi_call":"pass","no_floats":"not_screened","no_inline_asm":"pass","no_iterator_combinators":"not_screened","no_nested_loops":"not_screened","no_non_vec_collections":"not_screened","no_raw_ptr":"pass","no_unsafe":"pass"},"ineligible_reasons":[],"item_kind":"fn","item_path":"crate::clean_add","profile_id":"aeneas-eligible-v1","result":"clean","schema_version":0,"toolchain":"nightly-2026-04-16"}
+```
+
+`anchor_hash = SHA-256( b"nucleus.guarantee-receipt.v0" ‖ normalized_source ‖ toolchain ‖ profile_id )`,
+lowercase hex.
+
+- **v0 `normalized_source`** = the raw source snippet of the function from its HIR span
+  (`clippy_utils::source::snippet_opt`). This is **whitespace- and comment-sensitive**:
+  reformatting voids the receipt. **v1 TODO**: switch to a reformat-robust anchor
+  (rustfmt-normalized source, or a StableMIR-body hash).
+- **`toolchain`** is read from `RUSTUP_TOOLCHAIN` (falls back to the pinned
+  `nightly-2026-04-16`).
+- **`profile_id`** is the constant `aeneas-eligible-v1`.
+
+Written to `<receipt_dir>/<anchor_hash>.json` and `<receipt_dir>/<anchor_hash>.sig`
+(signature as lowercase hex).
+
+### Config (`dylint.toml`)
+
+See [`dylint.toml.example`](dylint.toml.example). In a *linted* workspace's root:
+
+```toml
+[nucleus_guarantee_lint]
+emit_receipts = true
+receipt_dir = "target/guarantee-receipts"
+signing_key_path = "secrets/guarantee-witness.key"   # 32-byte ed25519 secret, raw OR hex
+```
+
+**Fail-loud honesty:** if `emit_receipts = true` but the key is empty/missing/invalid,
+the pass ABORTS with an error. It never substitutes a zero/fake key.
+
+### Verifying a receipt (holder side)
+
+```sh
+# Build the verifier (pure crate — no rustc-dev / dylint needed):
+cargo build -p nucleus_guarantee_receipt --bin verify-guarantee-receipt
+
+# Verify signature against the witness PUBLIC key (hex or file):
+verify-guarantee-receipt --json <h>.json --sig <h>.sig --pubkey-hex <64hex>
+
+# Optionally bind-check the anchor to a source file (fail-closed if it differs):
+verify-guarantee-receipt --json <h>.json --sig <h>.sig --pubkey-hex <64hex> --source fn.txt
+```
+
+Or call `nucleus_guarantee_receipt::verify_receipt(json, sig, &pubkey)` / the
+fail-closed `verify_receipt_bound_to(...)` directly.
 
 ## Version pins (a lockstep triple)
 
@@ -78,13 +143,32 @@ cargo install cargo-dylint dylint-link
 rustup toolchain install nightly-2026-04-16 \
   --component rustc-dev --component llvm-tools-preview
 
-# Build the cdylib and run the UI test (from this crate root):
-cargo build
-cargo test            # runs the dylint_testing UI snapshot test
+# Build the cdylib (the lint pass):
+cargo build -p nucleus_guarantee_lint
+
+# Run the dylint_testing UI snapshot test (needs the macOS DYLD env below):
+cargo test -p nucleus_guarantee_lint --test ui
 
 # Run the lint against a target project:
 cargo dylint --lib nucleus_guarantee_lint
 ```
+
+### Receipt crate (PURE — no rustc/dylint needed)
+
+The `receipt/` member builds and tests as a normal crate (no `rustc-dev`, no
+`cargo-dylint`, no `DYLD_*`):
+
+```sh
+cd receipt
+cargo test                                   # 11 unit + 2 integration tests
+cargo build --bin verify-guarantee-receipt   # holder-side verifier
+cargo run --example emit_sample_receipt -- testdata/sample   # demo: emit + sign a receipt
+```
+
+(It is a separate crate because a `#![feature(rustc_private)]` cdylib that links
+`rustc_driver` **cannot** also emit an `rlib`/`bin` — the sysroot crates ship dylib-only,
+producing `error: X only shows up once`. Splitting the pure logic out keeps it
+rlib/bin-buildable AND unit-testable without the compiler.)
 
 ### macOS: `DYLD_FALLBACK_LIBRARY_PATH` (verified blocker + fix)
 
