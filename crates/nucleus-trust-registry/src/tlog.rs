@@ -84,7 +84,11 @@ pub fn binding_leaf(
 fn canonical_json(bundle_bytes: &[u8]) -> Result<Vec<u8>, RegistryError> {
     let value: serde_json::Value = serde_json::from_slice(bundle_bytes)
         .map_err(|e| RegistryError::Bundle(format!("bundle is not valid json: {e}")))?;
-    serde_json::to_vec(&value).map_err(|e| RegistryError::Bundle(format!("re-serialize: {e}")))
+    // RFC 8785 JCS: lexicographic key sort applied during serialization,
+    // independent of serde_json's Map type — so the binding leaf is stable even
+    // when the `preserve_order` feature is unified on across the workspace
+    // (serde_json's default Map ordering is NOT a canonicalization guarantee).
+    serde_jcs::to_vec(&value).map_err(|e| RegistryError::Bundle(format!("canonicalize (JCS): {e}")))
 }
 
 /// One appended binding's record: its leaf index + the leaf hash. Used to
