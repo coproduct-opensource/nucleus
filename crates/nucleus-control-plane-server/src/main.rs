@@ -277,9 +277,11 @@ async fn main() -> Result<()> {
 /// memory. The seed is dropped at the end of this function (the key
 /// material lives inside the SigningKey).
 fn rand_seed() -> [u8; 32] {
-    use rand::RngCore;
+    // rand 0.10: `RngCore` trait renamed to `Rng` (carries `fill_bytes`);
+    // `thread_rng()` removed in favor of `rng()`.
+    use rand::Rng;
     let mut seed = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut seed);
+    rand::rng().fill_bytes(&mut seed);
     seed
 }
 
