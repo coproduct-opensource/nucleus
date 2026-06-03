@@ -1,0 +1,17 @@
+# Enrollment metadata for the SPIFFE trust domain `ci.example.org`.
+#
+# All three SPIFFE-federation parameters (trust_domain, bundle_endpoint_url,
+# profile) are REQUIRED — the SPIFFE Federation spec states the binding
+# "cannot be securely inferred", so none of them is defaulted, and the
+# endpoint host MUST NOT be merely the trust-domain name.
+#
+# `owner_id` is the GitHub NUMERIC org/user id. It is the squat-proof pin:
+# the OIDC proof-of-control must carry a matching `repository_owner_id`. A
+# renamed/re-registered GitHub org keeps a different numeric id, so the
+# rename cannot take over this enrollment.
+
+trust_domain = "ci.example.org"
+owner_github_org = "coproduct-opensource"
+owner_id = 12345
+bundle_endpoint_url = "https://bundles.example.net/ci/bundle.json"
+profile = "https_web"

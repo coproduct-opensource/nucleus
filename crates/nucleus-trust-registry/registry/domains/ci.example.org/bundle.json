@@ -1,0 +1,14 @@
+{
+  "spiffe_sequence": 1,
+  "spiffe_refresh_hint": 120,
+  "keys": [
+    {
+      "kty": "EC",
+      "crv": "P-256",
+      "use": "jwt-svid",
+      "kid": "ci-jwt-svid-1",
+      "x": "o_us8s1Exq9ffrJ36EcTntB0wqapDQL93EHltWrjYjs",
+      "y": "Yt-UIDWHh7vERD0V9VtX9XMHdnk6XtjDPdy_t4cxsxk"
+    }
+  ]
+}
