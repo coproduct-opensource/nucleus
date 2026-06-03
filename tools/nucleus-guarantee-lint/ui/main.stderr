@@ -1,0 +1,82 @@
+warning: not Aeneas-extractable: this function contains an `unsafe` function signature
+  --> $DIR/main.rs:30:1
+   |
+LL | / unsafe fn ineligible_unsafe_fn() -> u64 {
+LL | |     0
+LL | | }
+   | |_^
+   |
+   = help: this is a NECESSARY-CONDITION screen, not a proof of extractability or correctness; rewrite within the Aeneas subset, or accept that this item is outside the verified surface
+   = note: `#[warn(aeneas_eligible)]` on by default
+
+warning: not Aeneas-extractable: this function contains a user-written `unsafe { }` block
+  --> $DIR/main.rs:36:5
+   |
+LL |     unsafe { 0 }
+   |     ^^^^^^^^^^^^
+   |
+   = help: this is a NECESSARY-CONDITION screen, not a proof of extractability or correctness; rewrite within the Aeneas subset, or accept that this item is outside the verified surface
+
+warning: not Aeneas-extractable: this function contains an `async` function signature
+  --> $DIR/main.rs:40:1
+   |
+LL | / async fn ineligible_async() -> u64 {
+LL | |     0
+LL | | }
+   | |_^
+   |
+   = help: this is a NECESSARY-CONDITION screen, not a proof of extractability or correctness; rewrite within the Aeneas subset, or accept that this item is outside the verified surface
+
+warning: not Aeneas-extractable: this function contains an `async` block
+  --> $DIR/main.rs:40:36
+   |
+LL |   async fn ineligible_async() -> u64 {
+   |  ____________________________________^
+LL | |     0
+LL | | }
+   | |_^
+   |
+   = help: this is a NECESSARY-CONDITION screen, not a proof of extractability or correctness; rewrite within the Aeneas subset, or accept that this item is outside the verified surface
+
+warning: not Aeneas-extractable: this function contains a closure
+  --> $DIR/main.rs:46:13
+   |
+LL |     let f = |x: u64| x + 1;
+   |             ^^^^^^^^^^^^^^
+   |
+   = help: this is a NECESSARY-CONDITION screen, not a proof of extractability or correctness; rewrite within the Aeneas subset, or accept that this item is outside the verified surface
+
+warning: not Aeneas-extractable: this function contains a `dyn Trait` trait object in the signature
+  --> $DIR/main.rs:51:23
+   |
+LL | fn ineligible_dyn(x: &dyn std::fmt::Debug) {}
+   |                       ^^^^^^^^^^^^^^^^^^^
+   |
+   = help: this is a NECESSARY-CONDITION screen, not a proof of extractability or correctness; rewrite within the Aeneas subset, or accept that this item is outside the verified surface
+
+warning: not Aeneas-extractable: this function contains a user-written `unsafe { }` block
+  --> $DIR/main.rs:55:5
+   |
+LL |     unsafe { abs(-1) }
+   |     ^^^^^^^^^^^^^^^^^^
+   |
+   = help: this is a NECESSARY-CONDITION screen, not a proof of extractability or correctness; rewrite within the Aeneas subset, or accept that this item is outside the verified surface
+
+warning: not Aeneas-extractable: this function contains a call to an FFI / `extern` foreign item
+  --> $DIR/main.rs:55:14
+   |
+LL |     unsafe { abs(-1) }
+   |              ^^^^^^^
+   |
+   = help: this is a NECESSARY-CONDITION screen, not a proof of extractability or correctness; rewrite within the Aeneas subset, or accept that this item is outside the verified surface
+
+warning: not Aeneas-extractable: this function contains a raw pointer (`*const`/`*mut`) in the signature
+  --> $DIR/main.rs:59:26
+   |
+LL | fn ineligible_raw_ptr(p: *const u64) -> u64 {
+   |                          ^^^^^^^^^^
+   |
+   = help: this is a NECESSARY-CONDITION screen, not a proof of extractability or correctness; rewrite within the Aeneas subset, or accept that this item is outside the verified surface
+
+warning: 9 warnings emitted
+
