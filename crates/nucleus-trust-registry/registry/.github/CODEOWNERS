@@ -1,0 +1,14 @@
+# Path-scoped CODEOWNERS for the trust registry.
+#
+# Each enrolled domain's directory is owned by the GitHub identity that
+# enrolled it, so a PR touching another domain's directory requires that
+# domain owner's review. The registry maintainer owns the shared
+# structure (the gate workflow, this file). This is defense-in-depth on
+# top of the OIDC proof-of-control + diff-scoping enforced by
+# `nucleus-trust-registry verify-pr`.
+
+# Registry maintainer owns the shared surface (fail-closed default).
+*                                           @nucleus-registry-maintainers
+
+# Per-domain ownership (one block per enrolled domain).
+/domains/ci.example.org/                    @coproduct-opensource

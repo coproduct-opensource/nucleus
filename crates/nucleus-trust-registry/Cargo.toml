@@ -1,0 +1,42 @@
+[package]
+name = "nucleus-trust-registry"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Lets Encrypt for agents: PR-rooted, GitHub-OIDC-attested, transparency-logged SPIFFE federation enrollment. Non-custodial verifier."
+repository = "https://github.com/coproduct-opensource/nucleus"  # vendor-allow: project repo URL
+keywords = ["spiffe", "federation", "transparency-log", "oidc", "registry"]
+categories = ["authentication", "cryptography"]
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "nucleus-trust-registry"
+path = "src/main.rs"
+
+[dependencies]
+nucleus-oidc-core = { path = "../nucleus-oidc-core" }
+nucleus-lineage = { path = "../nucleus-lineage" }
+nucleus-witness = { path = "../nucleus-witness" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# RFC 8785 JCS — deterministic key sorting. MUST NOT rely on serde_json's Map
+# ordering, which flips to insertion-order under the `preserve_order` feature
+# (unified across the workspace) and would break the binding-leaf canonicalization.
+serde_jcs = "0.2.0"
+toml = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+base64 = "0.22"
+jsonwebtoken = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+clap = { workspace = true }
+ct-merkle = { version = "0.3", features = ["serde"] }
+ed25519-dalek = { version = "=3.0.0-pre.7" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

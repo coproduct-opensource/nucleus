@@ -1,0 +1,90 @@
+# Trust-registry enrollment gate (fail-closed).
+#
+# Runs on PRs that touch `registry/`. The enroller's workflow REQUESTS a
+# GitHub Actions OIDC token (the `id-token: write` permission below) —
+# that request is enroller-side CONFIG. The VERIFIER is the testable Rust
+# binary `nucleus-trust-registry verify-pr`, which:
+#   * scopes the diff to the single claimed domain dir (no diff-smuggling),
+#   * verifies the OIDC proof-of-control against GitHub's live JWKS,
+#     pinning the NUMERIC repository_owner_id (org-rename squat defense),
+#   * rejects silent rotation (a different owner_id for an existing domain).
+#
+# Honest scope: this proves GitHub-ORG control of the enrolling repo, NOT
+# ownership of the SPIFFE trust domain (that is v2 / DNS-01-style).
+name: trust-registry-gate
+
+on:
+  pull_request:
+    paths:
+      - "registry/**"
+
+# Least privilege + the OIDC token request.
+permissions:
+  contents: read
+  id-token: write       # REQUEST a GitHub Actions OIDC proof-of-control token.
+  pull-requests: read
+
+jobs:
+  enrollment-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need the base ref for the diff + incumbent compile.
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build the verifier
+        run: cargo build -p nucleus-trust-registry --bin nucleus-trust-registry --locked
+
+      - name: Compute changed paths
+        id: diff
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.sha }}"
+          git diff --name-only "$base" "$head" > changed_paths.txt
+          echo "changed:"; cat changed_paths.txt
+
+      - name: Determine the single claimed domain
+        id: claim
+        run: |
+          # Every changed path must live under registry/domains/<one>/.
+          domains=$(grep -E '^registry/domains/[^/]+/' changed_paths.txt \
+            | sed -E 's@^registry/domains/([^/]+)/.*@\1@' | sort -u || true)
+          count=$(printf '%s\n' "$domains" | grep -c . || true)
+          if [ "$count" != "1" ]; then
+            echo "::error::a PR must enroll/update exactly one domain; found: [$domains]"
+            exit 1
+          fi
+          echo "domain=$domains" >> "$GITHUB_OUTPUT"
+          echo "claimed domain: $domains"
+
+      - name: Request OIDC proof-of-control token
+        id: oidc
+        # Enroller-side CONFIG: ask GitHub for an OIDC token for our audience.
+        run: |
+          token=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=nucleus-trust-registry" | jq -r '.value')
+          if [ -z "$token" ] || [ "$token" = "null" ]; then
+            echo "::error::failed to obtain OIDC token"; exit 1
+          fi
+          printf '%s' "$token" > oidc_token.txt
+
+      - name: Fetch GitHub Actions OIDC JWKS
+        run: |
+          conf=$(curl -sS https://token.actions.githubusercontent.com/.well-known/openid-configuration)
+          jwks_uri=$(printf '%s' "$conf" | jq -r '.jwks_uri')
+          curl -sS "$jwks_uri" > github_jwks.json
+
+      - name: Verify enrollment (FAIL-CLOSED gate)
+        run: |
+          ./target/debug/nucleus-trust-registry verify-pr \
+            --registry-dir registry \
+            --registry-prefix registry \
+            --claimed-domain "${{ steps.claim.outputs.domain }}" \
+            --changed-paths-file changed_paths.txt \
+            --oidc-token-file oidc_token.txt \
+            --github-jwks-file github_jwks.json
+</content>

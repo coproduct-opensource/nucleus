@@ -7003,6 +7003,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-trust-registry"
+version = "1.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "clap",
+ "ct-merkle",
+ "ed25519-dalek 3.0.0-pre.7",
+ "hex",
+ "jsonwebtoken",
+ "nucleus-lineage",
+ "nucleus-oidc-core",
+ "nucleus-witness",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml 1.1.2+spec-1.1.0",
+ "tracing",
+]
+
+[[package]]
 name = "nucleus-verifier-service"
 version = "1.0.0"
 dependencies = [
