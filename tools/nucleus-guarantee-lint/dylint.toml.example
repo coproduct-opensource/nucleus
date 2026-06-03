@@ -1,0 +1,15 @@
+# Example dylint.toml for enabling per-hash GUARANTEE RECEIPTS.
+#
+# Copy to a LINTED workspace's root (the project you run `cargo dylint` against), NOT this
+# crate's root, and remove the `.example` suffix. The table key is this lint library's
+# crate name.
+#
+# HONESTY / fail-loud: with emit_receipts = true, a missing/invalid signing key is a HARD
+# ERROR — the lint NEVER substitutes a zero/fake key (an unsigned attestation would be
+# dishonest). The signing key is a 32-byte ed25519 SECRET key, raw (32 bytes) or hex
+# (64 chars). Keep it out of version control.
+
+[nucleus_guarantee_lint]
+emit_receipts = true
+receipt_dir = "target/guarantee-receipts"
+signing_key_path = "secrets/guarantee-witness.key"

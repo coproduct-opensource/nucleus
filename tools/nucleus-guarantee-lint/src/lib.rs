@@ -46,8 +46,14 @@ extern crate rustc_ast;
 extern crate rustc_hir;
 extern crate rustc_span;
 
+// The per-hash guarantee receipt (hash / canonicalize / sign / verify) lives in the PURE
+// sibling crate `nucleus_guarantee_receipt` (NO rustc dependency — unit-testable without
+// the compiler, and rlib/bin-buildable, which a rustc_private cdylib is NOT). See its
+// docs for the honesty boundary (a receipt is a SCREEN result, NOT a proof).
 use clippy_utils::diagnostics::span_lint_and_help;
 use clippy_utils::fn_def_id;
+use clippy_utils::source::snippet_opt;
+use nucleus_guarantee_receipt::{PROFILE_ID, Receipt, load_signing_key};
 use rustc_ast::TraitObjectSyntax;
 // `visit_ty_unambig` is provided by the `VisitorExt` extension trait, not `Visitor`
 // itself (Research 2 drift point: the AmbigArg split). It must be in scope to call it.
@@ -59,8 +65,10 @@ use rustc_hir::{
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_span::Span;
 use rustc_span::def_id::LocalDefId;
+use std::cell::RefCell;
+use std::path::PathBuf;
 
-dylint_linting::declare_late_lint! {
+dylint_linting::impl_late_lint! {
     /// ### What it does
     ///
     /// Screens each function for constructs that make it **ineligible** for
@@ -95,7 +103,63 @@ dylint_linting::declare_late_lint! {
     /// ```
     pub AENEAS_ELIGIBLE,
     Warn,
-    "function uses a construct outside the Aeneas-extractable subset (screen, not a proof)"
+    "function uses a construct outside the Aeneas-extractable subset (screen, not a proof)",
+    AeneasEligible::new()
+}
+
+/// Configuration, read from `dylint.toml` under the key `nucleus_guarantee_lint`
+/// (the crate name). Absent ⇒ `Default` ⇒ receipts disabled (the screen still runs).
+///
+/// ```toml
+/// [nucleus_guarantee_lint]
+/// emit_receipts = true
+/// receipt_dir = "target/guarantee-receipts"
+/// signing_key_path = "secrets/guarantee-witness.key"   # 32-byte ed25519, raw OR hex
+/// ```
+///
+/// HONESTY / fail-loud: if `emit_receipts = true` but `signing_key_path` is empty or the
+/// key cannot be loaded as a valid 32-byte ed25519 secret (raw or hex), the lint pass
+/// ABORTS with a hard error. It NEVER substitutes a zero / fake key — an unsigned or
+/// fake-signed receipt would be a dishonest attestation.
+#[derive(Debug, Default, serde::Deserialize)]
+struct Config {
+    #[serde(default)]
+    emit_receipts: bool,
+    #[serde(default)]
+    receipt_dir: String,
+    #[serde(default)]
+    signing_key_path: String,
+}
+
+/// The lint pass. Holds config + a `RefCell` accumulator of receipts gathered during
+/// `check_fn`, flushed (written + signed) once at `check_crate_post`.
+pub struct AeneasEligible {
+    config: Config,
+    pending: RefCell<Vec<Receipt>>,
+}
+
+impl AeneasEligible {
+    pub fn new() -> Self {
+        Self {
+            config: dylint_linting::config_or_default(env!("CARGO_PKG_NAME")),
+            pending: RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl Default for AeneasEligible {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Resolve the toolchain string the screen is running under. The receipt is
+/// TOOLCHAIN-RELATIVE: the guarantee only holds for this exact rustc. Prefer the
+/// `RUSTUP_TOOLCHAIN` env (set by rustup when a `+toolchain` / `rust-toolchain.toml`
+/// is active); fall back to `nightly-2026-04-16` (this crate's pinned channel) so the
+/// receipt is never silently toolchain-less.
+fn resolve_toolchain() -> String {
+    std::env::var("RUSTUP_TOOLCHAIN").unwrap_or_else(|_| "nightly-2026-04-16".to_string())
 }
 
 impl<'tcx> LateLintPass<'tcx> for AeneasEligible {
@@ -111,12 +175,17 @@ impl<'tcx> LateLintPass<'tcx> for AeneasEligible {
         decl: &'tcx FnDecl<'tcx>,
         body: &'tcx rustc_hir::Body<'tcx>,
         span: Span,
-        _def_id: LocalDefId,
+        def_id: LocalDefId,
     ) {
         // Skip closures-as-fn (the enclosing fn's visitor reports them).
         if matches!(kind, FnKind::Closure) {
             return;
         }
+
+        // Per-fn hit collector. Every `report_and_record` both emits the diagnostic
+        // (unchanged behaviour, so the UI snapshot stays green) AND records the canonical
+        // rule name + reason here, which the receipt then summarizes.
+        let hits: RefCell<Vec<Hit>> = RefCell::new(Vec::new());
 
         // --- (a) signature unsafety -------------------------------------------------
         // FnHeader.safety is HeaderSafety post-refactor; prefer header.is_unsafe(),
@@ -124,7 +193,7 @@ impl<'tcx> LateLintPass<'tcx> for AeneasEligible {
         if let Some(header) = kind.header()
             && header.is_unsafe()
         {
-            report(cx, span, "an `unsafe` function signature");
+            report_and_record(cx, &hits, span, "no_unsafe", "an `unsafe` function signature");
             // keep scanning the body for additional, more specific hits
         }
 
@@ -132,34 +201,145 @@ impl<'tcx> LateLintPass<'tcx> for AeneasEligible {
         if let Some(header) = kind.header()
             && header.is_async()
         {
-            report(cx, span, "an `async` function signature");
+            report_and_record(cx, &hits, span, "no_async", "an `async` function signature");
         }
 
         // --- (d) `dyn Trait` / (f) raw pointers in the SIGNATURE --------------------
         // Walk every Ty in inputs + output. We use a Ty-only visitor so we descend
         // into nested generic positions (e.g. `Box<dyn Trait>`, `&*const T`).
         for input in decl.inputs {
-            check_signature_ty(cx, input);
+            check_signature_ty(cx, &hits, input);
         }
         if let rustc_hir::FnRetTy::Return(ret) = decl.output {
-            check_signature_ty(cx, ret);
+            check_signature_ty(cx, &hits, ret);
         }
 
         // --- body walk: (a) unsafe blocks, (b) async blocks, (c) closures,
         //                 (e) FFI calls, (f) inline asm ----------------------------
-        let mut v = BodyScreen { cx };
+        let mut v = BodyScreen { cx, hits: &hits };
         v.visit_body(body);
+
+        // --- receipt emission (only when configured) --------------------------------
+        if self.config.emit_receipts {
+            self.record_receipt(cx, def_id, span, hits.into_inner());
+        }
+    }
+
+    // Crate-end hook: flush all accumulated receipts to disk, signed. LateLintPass
+    // provides `check_crate_post` as the post-traversal crate-end hook.
+    fn check_crate_post(&mut self, _cx: &LateContext<'tcx>) {
+        if !self.config.emit_receipts {
+            return;
+        }
+        if let Err(e) = self.flush_receipts() {
+            // Fail LOUD: a misconfigured signer must not silently drop receipts.
+            panic!("nucleus_guarantee_lint: failed to flush guarantee receipts: {e}");
+        }
     }
 }
 
+impl AeneasEligible {
+    /// Build a receipt for one screened function and stash it in `pending`. Reads the
+    /// v0 `normalized_source` from the function's HIR span (whitespace-sensitive; see
+    /// `receipt` module docs for the v1 TODO).
+    fn record_receipt(
+        &self,
+        cx: &LateContext<'_>,
+        def_id: LocalDefId,
+        span: Span,
+        hits: Vec<Hit>,
+    ) {
+        let item_path = cx.tcx.def_path_str(def_id.to_def_id());
+        let item_kind = cx.tcx.def_descr(def_id.to_def_id()).to_string();
+
+        // v0 normalized_source = the raw source snippet of the fn from its HIR span.
+        // If the snippet is unavailable (macro-generated, no source map), skip the
+        // receipt rather than hash an empty/placeholder string (no fake anchors).
+        let Some(normalized_source) = snippet_opt(cx, span) else {
+            return;
+        };
+
+        let toolchain = resolve_toolchain();
+        let failed_rules: Vec<&str> = {
+            let mut v: Vec<&str> = hits.iter().map(|h| h.rule).collect();
+            v.sort_unstable();
+            v.dedup();
+            v
+        };
+        let reasons: Vec<String> = hits.iter().map(|h| h.reason.clone()).collect();
+
+        let receipt = Receipt::build(
+            item_path,
+            item_kind,
+            &normalized_source,
+            &toolchain,
+            PROFILE_ID,
+            &failed_rules,
+            reasons,
+        );
+        self.pending.borrow_mut().push(receipt);
+    }
+
+    /// Load the signing key (fail-loud on a bad/missing key — NEVER a zero key), then
+    /// write `<receipt_dir>/<anchor_hash>.{json,sig}` for each pending receipt.
+    fn flush_receipts(&self) -> Result<(), String> {
+        let pending = self.pending.borrow();
+        if pending.is_empty() {
+            return Ok(());
+        }
+
+        if self.config.signing_key_path.trim().is_empty() {
+            return Err(
+                "emit_receipts = true but signing_key_path is empty; refusing to emit \
+                 unsigned receipts (set a 32-byte ed25519 key path)"
+                    .to_string(),
+            );
+        }
+        let key_bytes = std::fs::read(&self.config.signing_key_path).map_err(|e| {
+            format!("could not read signing_key_path '{}': {e}", self.config.signing_key_path)
+        })?;
+        let key = load_signing_key(&key_bytes)
+            .map_err(|e| format!("invalid signing key at '{}': {e}", self.config.signing_key_path))?;
+
+        let dir = if self.config.receipt_dir.trim().is_empty() {
+            PathBuf::from("target/guarantee-receipts")
+        } else {
+            PathBuf::from(&self.config.receipt_dir)
+        };
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("could not create receipt_dir '{}': {e}", dir.display()))?;
+
+        for receipt in pending.iter() {
+            let (json, sig) = receipt
+                .sign(&key)
+                .map_err(|e| format!("failed to sign receipt {}: {e}", receipt.anchor_hash))?;
+            let base = dir.join(&receipt.anchor_hash);
+            std::fs::write(base.with_extension("json"), &json)
+                .map_err(|e| format!("write receipt json failed: {e}"))?;
+            // Signature as lowercase hex (matches the hex anchor_hash convention).
+            std::fs::write(base.with_extension("sig"), hex::encode(sig.to_bytes()))
+                .map_err(|e| format!("write receipt sig failed: {e}"))?;
+        }
+        Ok(())
+    }
+}
+
+/// One screen hit: the canonical rule name (one of `receipt::SCREENED_RULES`) plus the
+/// human-readable reason that is also shown in the diagnostic.
+struct Hit {
+    rule: &'static str,
+    reason: String,
+}
+
 /// Walk a single signature `Ty` for `dyn` and raw pointers (Research 2, §d, §f).
-fn check_signature_ty<'tcx>(cx: &LateContext<'tcx>, ty: &'tcx Ty<'tcx>) {
-    let mut v = SigTyScreen { cx };
+fn check_signature_ty<'tcx>(cx: &LateContext<'tcx>, hits: &RefCell<Vec<Hit>>, ty: &'tcx Ty<'tcx>) {
+    let mut v = SigTyScreen { cx, hits };
     v.visit_ty_unambig(ty);
 }
 
 struct SigTyScreen<'a, 'tcx> {
     cx: &'a LateContext<'tcx>,
+    hits: &'a RefCell<Vec<Hit>>,
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for SigTyScreen<'a, 'tcx> {
@@ -171,12 +351,24 @@ impl<'a, 'tcx> Visitor<'tcx> for SigTyScreen<'a, 'tcx> {
                 // On nightly-2026-04-16, TraitObjectSyntax = { Dyn, None } (no DynStar;
                 // Research 2 listed DynStar but it is absent on this pinned channel).
                 if matches!(tagged.tag(), TraitObjectSyntax::Dyn) {
-                    report(self.cx, ty.span, "a `dyn Trait` trait object in the signature");
+                    report_and_record(
+                        self.cx,
+                        self.hits,
+                        ty.span,
+                        "no_dyn_in_sig",
+                        "a `dyn Trait` trait object in the signature",
+                    );
                 }
             }
             // Raw pointer: TyKind::Ptr(MutTy) — distinct from TyKind::Ref (Research 2, §f).
             TyKind::Ptr(_) => {
-                report(self.cx, ty.span, "a raw pointer (`*const`/`*mut`) in the signature");
+                report_and_record(
+                    self.cx,
+                    self.hits,
+                    ty.span,
+                    "no_raw_ptr",
+                    "a raw pointer (`*const`/`*mut`) in the signature",
+                );
             }
             _ => {}
         }
@@ -186,6 +378,7 @@ impl<'a, 'tcx> Visitor<'tcx> for SigTyScreen<'a, 'tcx> {
 
 struct BodyScreen<'a, 'tcx> {
     cx: &'a LateContext<'tcx>,
+    hits: &'a RefCell<Vec<Hit>>,
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for BodyScreen<'a, 'tcx> {
@@ -197,32 +390,56 @@ impl<'a, 'tcx> Visitor<'tcx> for BodyScreen<'a, 'tcx> {
                     block.rules,
                     BlockCheckMode::UnsafeBlock(UnsafeSource::UserProvided)
                 ) {
-                    report(self.cx, expr.span, "a user-written `unsafe { }` block");
+                    report_and_record(
+                        self.cx,
+                        self.hits,
+                        expr.span,
+                        "no_unsafe",
+                        "a user-written `unsafe { }` block",
+                    );
                 }
             }
             // (b)/(c) closures share ExprKind::Closure; ClosureKind distinguishes
             // plain closures from async/gen-block desugarings (Research 2, §b, §c).
             ExprKind::Closure(closure) => match closure.kind {
                 ClosureKind::Closure => {
-                    report(self.cx, expr.span, "a closure");
+                    report_and_record(self.cx, self.hits, expr.span, "no_closures", "a closure");
                 }
                 ClosureKind::Coroutine(CoroutineKind::Desugared(
                     CoroutineDesugaring::Async,
                     _,
                 )) => {
-                    report(self.cx, expr.span, "an `async` block");
+                    report_and_record(self.cx, self.hits, expr.span, "no_async", "an `async` block");
                 }
                 ClosureKind::CoroutineClosure(CoroutineDesugaring::Async) => {
-                    report(self.cx, expr.span, "an `async` closure");
+                    report_and_record(
+                        self.cx,
+                        self.hits,
+                        expr.span,
+                        "no_async",
+                        "an `async` closure",
+                    );
                 }
                 // Other coroutines (gen / async-gen) — default-deny as out-of-subset.
                 _ => {
-                    report(self.cx, expr.span, "a coroutine (gen/async block or closure)");
+                    report_and_record(
+                        self.cx,
+                        self.hits,
+                        expr.span,
+                        "no_closures",
+                        "a coroutine (gen/async block or closure)",
+                    );
                 }
             },
             // (f) inline assembly — no functional model (Research 2, §f).
             ExprKind::InlineAsm(_) => {
-                report(self.cx, expr.span, "inline assembly (`asm!`)");
+                report_and_record(
+                    self.cx,
+                    self.hits,
+                    expr.span,
+                    "no_inline_asm",
+                    "inline assembly (`asm!`)",
+                );
             }
             // (e) FFI / extern call: resolve callee DefId and test is_foreign_item.
             // fn_def_id covers both Call and MethodCall (Research 2, §e).
@@ -230,7 +447,13 @@ impl<'a, 'tcx> Visitor<'tcx> for BodyScreen<'a, 'tcx> {
                 if let Some(did) = fn_def_id(self.cx, expr)
                     && self.cx.tcx.is_foreign_item(did)
                 {
-                    report(self.cx, expr.span, "a call to an FFI / `extern` foreign item");
+                    report_and_record(
+                        self.cx,
+                        self.hits,
+                        expr.span,
+                        "no_ffi_call",
+                        "a call to an FFI / `extern` foreign item",
+                    );
                 }
             }
             _ => {}
@@ -262,25 +485,38 @@ fn report(cx: &LateContext<'_>, span: Span, what: &str) {
     );
 }
 
+/// Emit the diagnostic AND record the canonical `rule` + `reason` for the enclosing fn's
+/// receipt. The diagnostic text is unchanged from `report`, so the UI snapshot stays
+/// byte-identical whether or not receipts are enabled.
+fn report_and_record(
+    cx: &LateContext<'_>,
+    hits: &RefCell<Vec<Hit>>,
+    span: Span,
+    rule: &'static str,
+    what: &str,
+) {
+    report(cx, span, what);
+    hits.borrow_mut().push(Hit {
+        rule,
+        reason: what.to_string(),
+    });
+}
+
 // ============================================================================
-// TODO(guarantee-receipt): future-pass hook — SCREEN ONLY for now.
+// guarantee-receipt: IMPLEMENTED (v0). See the `receipt` module + `check_fn`/
+// `check_crate_post` above. When `emit_receipts = true` in dylint.toml, each screened
+// fn yields a signed per-hash receipt at `<receipt_dir>/<anchor_hash>.{json,sig}`.
 //
-// This scaffold is the SCREEN. A future LateLintPass (or a post-build StableMIR
-// pass) would, for each function that PASSES the screen, compute a stable digest
-// and emit a *signed per-hash guarantee receipt*:
+//     anchor_hash = SHA-256( b"nucleus.guarantee-receipt.v0"
+//                            ‖ normalized_source ‖ toolchain ‖ profile_id )
 //
-//     receipt = sign(
-//         body_hash   = hash(StableMIR body  OR  rustfmt-normalized source),
-//         toolchain   = "nightly-2026-04-16",          // from rust-toolchain.toml
-//         profile     = <aeneas/charon commit + backend + flags>,
-//         screen      = "aeneas_eligible@<this-crate-version>",
-//     )
+// The receipt certifies ONLY "the screen returned this result for this (source,
+// toolchain, profile) hash" — NOT "is extractable" and NOT "is correct" (see the
+// `receipt` module-level HONESTY docs).
 //
-// The receipt must record that it certifies ONLY "passed the screen under <toolchain,
-// profile>", NOT "is extractable" and NOT "is correct". Hashing options (Research 2,
-// "Span + snippet for hashing"): SpanRangeExt::with_source_text for source hashing, or
-// clippy_utils::hash_expr / SpanlessHash for a reformat-robust structural hash; prefer
-// StableMIR for toolchain-stable semantics once that hook is wired.
+// v0 `normalized_source` = the raw HIR-span source snippet (clippy_utils::source::
+// snippet_opt) — WHITESPACE-SENSITIVE. v1 TODO: switch to a reformat-robust anchor
+// (rustfmt-normalized source, or a StableMIR-body hash) for toolchain-stable semantics.
 // ============================================================================
 
 // TODO(deny-set): the following Research-3 deny-set rows are NOT yet screened and are
