@@ -6834,6 +6834,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "ed25519-dalek 3.0.0-pre.7",
+ "jsonwebtoken",
  "reqwest 0.13.3",
  "serde",
  "serde_json",

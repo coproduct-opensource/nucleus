@@ -759,6 +759,7 @@ mod spiffe_auth {
                     use_: Some("sig".to_string()),
                     crv: Some("Ed25519".to_string()),
                     x: Some(B64URL.encode(vk.to_bytes())),
+                    y: None,
                     n: None,
                     e: None,
                 }],

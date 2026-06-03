@@ -418,6 +418,7 @@ mod tests {
                     use_: Some("sig".to_string()),
                     crv: Some("Ed25519".to_string()),
                     x: Some(x_b64),
+                    y: None,
                     n: None,
                     e: None,
                 }],

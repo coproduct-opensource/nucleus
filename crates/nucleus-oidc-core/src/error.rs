@@ -61,4 +61,24 @@ pub enum OidcError {
     /// A registration conflict in the federation registry.
     #[error("federation registry conflict: {0}")]
     FederationConflict(String),
+    /// The token's `sub` was not a well-formed `spiffe://` SPIFFE ID,
+    /// or its trust domain could not be extracted.
+    #[error("malformed SPIFFE ID: {0}")]
+    MalformedSpiffeId(String),
+    /// The SPIFFE ID's trust domain is not in the operator-pinned
+    /// federation set. Fail-closed: a foreign trust domain we do not
+    /// federate with can never authenticate.
+    #[error("trust domain {0:?} is not in the federation set")]
+    TrustDomainNotFederated(String),
+    /// A fetched trust-bundle was rejected as a rollback: its
+    /// `spiffe_sequence` was not strictly greater than the
+    /// last-accepted sequence. (Anti-rollback hardening; see
+    /// `spiffe_federation` module docs.)
+    #[error("trust-bundle rollback rejected: fetched seq {fetched} <= last accepted {last}")]
+    BundleRollback {
+        /// Sequence number on the freshly-fetched bundle.
+        fetched: u64,
+        /// Sequence number of the last bundle we accepted.
+        last: u64,
+    },
 }
