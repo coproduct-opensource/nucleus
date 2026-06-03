@@ -1,0 +1,45 @@
+[package]
+name = "nucleus-witness"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "C2SP tlog-witness server: mints Ed25519 cosignatures over checkpoints with the spec status matrix"
+repository = "https://github.com/coproduct-opensource/nucleus"
+keywords = ["transparency", "witness", "c2sp", "tlog", "cosignature"]
+categories = ["web-programming::http-server", "cryptography"]
+
+[[bin]]
+name = "nucleus-witness"
+path = "src/main.rs"
+
+[dependencies]
+nucleus-lineage = { path = "../nucleus-lineage" }
+axum = { version = "0.8", features = ["macros"] }
+tokio = { workspace = true, features = ["full"] }
+tower-http = { version = "0.6", features = ["trace", "timeout", "limit"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
+base64 = "0.22"
+# RFC 6962 consistency-proof verification on the server side. Same pin
+# as nucleus-lineage / nucleus-verifier-service so the workspace keeps a
+# single ct-merkle version.
+ct-merkle = { version = "0.3", features = ["serde"] }
+# Ed25519 cosignature minting + log-key signature verification. Matches
+# the workspace-wide pin so cargo-deny's duplicate-version ban stays
+# green (nucleus-lineage / nucleus-verifier-service both pin this).
+ed25519-dalek = { version = "=3.0.0-pre.7", features = ["rand_core"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+
+[lints]
+workspace = true

@@ -34,6 +34,7 @@ members = [
     "crates/nucleus-control-plane",      # Job orchestrator: typed JobSpec → agent → Bundle
     "crates/nucleus-control-plane-server", # REST API server wrapping nucleus-control-plane
     "crates/nucleus-verifier-service",   # Public verifier-as-a-service for provenance bundles
+    "crates/nucleus-witness",            # C2SP tlog-witness server: mints cosignatures with the spec status matrix
     "crates/nucleus-oidc-provider",      # OIDC OP: JWT-SVID issuance + RFC 8693 token exchange
     "crates/nucleus-oidc-core",          # Provider-agnostic OIDC primitives (JWKS, JtiCache, federation)
     "crates/nucleus-fly-oidc",           # Per-provider validator: Fly.io machine OIDC → SPIFFE

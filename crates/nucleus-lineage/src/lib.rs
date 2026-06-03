@@ -37,6 +37,7 @@ pub mod edge;
 pub mod id;
 pub mod issuer;
 pub mod merkle;
+pub mod policy;
 pub mod proof;
 pub mod prover;
 pub mod signed_note;
@@ -61,6 +62,7 @@ pub use edge::{EdgeKind, LineageEdge};
 pub use id::{CallSpiffeId, IdError, MAX_URI_LEN};
 pub use issuer::{EdgeSigner, IdentityFetcher, IssuerError, SvidClaims};
 pub use merkle::{read_checkpoints, verify_log, MerkleConfig, MerkleError, MerkleSink};
+pub use policy::{Group, Log, Policy, PolicyError, Threshold, Witness};
 pub use proof::{canonical_edge_bytes, edge_content_hash, Proof};
 pub use prover::MerkleProver;
 pub use signed_note::{
