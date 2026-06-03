@@ -7016,6 +7016,7 @@ dependencies = [
  "nucleus-oidc-core",
  "nucleus-witness",
  "serde",
+ "serde_jcs",
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
