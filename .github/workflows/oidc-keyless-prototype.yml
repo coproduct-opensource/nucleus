@@ -1,0 +1,55 @@
+name: OIDC Keyless Prototype (live E2E)
+
+# GENUINE end-to-end proof for the keyless GitHub Actions OIDC -> SPIFFE path.
+#
+# A live GitHub OIDC token can ONLY be minted inside a job that opted into
+# `permissions: id-token: write`. This workflow requests a real token
+# (audience = nucleus.io, the audience the validator pins) and runs the REAL
+# nucleus-github-oidc validator against GitHub's REAL JWKS via the
+# DiscoveryKeyResolver. The synthetic StaticKeyResolver / localhost-discovery
+# tests prove the logic offline; THIS proves it against live GitHub.
+#
+# Triggered on push to main + manual dispatch only. Deliberately NOT
+# pull_request_target / workflow_run: those run with the base repo's id-token
+# while checking out attacker-controlled head code, which would let a fork PR
+# mint a real OIDC identity.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read       # checkout
+  id-token: write      # opt-in: lets the job FETCH+USE an OIDC token (not repo write)
+
+jobs:
+  keyless-oidc-e2e:
+    name: live keyless OIDC validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Rust toolchain (pinned via rust-toolchain.toml)
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          cache: true
+
+      - name: Confirm the OIDC request env vars are present
+        # Sanity check that id-token: write took effect on this runner. We do
+        # NOT print the request token (it is a short-lived bearer secret).
+        run: |
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "::error::ACTIONS_ID_TOKEN_REQUEST_URL is not set — id-token: write did not take effect"
+            exit 1
+          fi
+          echo "ACTIONS_ID_TOKEN_REQUEST_URL is present (token request endpoint available)."
+
+      - name: Run the keyless OIDC prototype against GitHub's real JWKS
+        # The example reimplements core.getIDToken("nucleus.io"):
+        #   GET ${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=nucleus.io
+        #   Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}
+        # then validates the returned JWT with the REAL GitHubOidcValidator +
+        # DiscoveryKeyResolver (RS256 sig vs GitHub JWKS, iss/aud/exp, allowlist,
+        # replay, SPIFFE derivation). Exits non-zero on any validation failure.
+        run: cargo run -p nucleus-github-oidc --example keyless_oidc_prototype --locked
