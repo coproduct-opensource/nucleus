@@ -14,6 +14,10 @@ categories = ["cryptography", "authentication"]
 async-trait = "0.1"
 base64 = { workspace = true }
 ed25519-dalek = { version = "=3.0.0-pre.7", default-features = false }
+# JWT-SVID signature verification (RS/PS/ES allowlist). Workspace-pinned to
+# the same `rust_crypto` (RustCrypto) backend the rest of the workspace uses,
+# so this adds no new crypto backend to the supply chain.
+jsonwebtoken = { workspace = true }
 reqwest = { workspace = true, features = ["json", "rustls"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

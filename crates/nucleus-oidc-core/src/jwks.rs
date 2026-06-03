@@ -38,12 +38,22 @@ pub struct Jwk {
     /// `use` claim — `"sig"` for signature verification.
     #[serde(default, rename = "use")]
     pub use_: Option<String>,
-    /// OKP curve identifier (`"Ed25519"` is the only one we support).
+    /// Curve identifier. For OKP this is `"Ed25519"`; for EC keys
+    /// (`kty == "EC"`, used by SPIFFE JWT-SVID) this is `"P-256"`,
+    /// `"P-384"`, or `"P-521"`. EC keys are consumed by
+    /// [`crate::spiffe_federation`], not by [`Jwk::public_key`].
     #[serde(default)]
     pub crv: Option<String>,
-    /// OKP public key — 32 base64url-encoded bytes for Ed25519.
+    /// Public key x-coordinate. For OKP this is the 32-byte Ed25519
+    /// public key (base64url); for EC this is the affine x-coordinate
+    /// (base64url), paired with [`Jwk::y`].
     #[serde(default)]
     pub x: Option<String>,
+    /// EC public key affine y-coordinate (base64url). Present only for
+    /// `kty == "EC"`. Unused by [`Jwk::public_key`] (which rejects EC);
+    /// consumed by [`crate::spiffe_federation`] for JWT-SVID verify.
+    #[serde(default)]
+    pub y: Option<String>,
     /// RSA modulus (base64url), present for `kty == "RSA"`.
     #[serde(default)]
     pub n: Option<String>,
@@ -295,6 +305,7 @@ mod tests {
             use_: Some("sig".to_string()),
             crv: None,
             x: None,
+            y: None,
             n: Some("0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx".to_string()),
             e: Some("AQAB".to_string()),
         }
@@ -309,6 +320,7 @@ mod tests {
             crv: Some("Ed25519".to_string()),
             // 32 bytes encoded — RFC 8037 example.
             x: Some("11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo".to_string()),
+            y: None,
             n: None,
             e: None,
         }
@@ -340,6 +352,7 @@ mod tests {
             use_: None,
             crv: None,
             x: None,
+            y: None,
             n: None,
             e: None,
         };

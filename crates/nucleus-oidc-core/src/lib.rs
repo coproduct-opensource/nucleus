@@ -19,6 +19,11 @@
 //! - [`FederationRegistry`] + [`IssuerProvider`] trait + [`peek_jwt_issuer`] —
 //!   the vendor-neutral half of federation dispatch. Per-provider crates
 //!   register their own [`IssuerProvider`] implementations.
+//! - [`spiffe_federation`] — inbound SPIFFE Federation: fetch/refresh
+//!   trust-domain bundles (`https_web` profile) with anti-rollback, and
+//!   validate cross-domain JWT-SVIDs against operator-pinned bundles
+//!   (EC/RSA/PS only; the verifying key is chosen solely from the bundle
+//!   pinned for the token's trust domain).
 //!
 //! # Vendor neutrality
 //!
@@ -32,8 +37,13 @@ pub mod error;
 pub mod federation;
 pub mod jti_cache;
 pub mod jwks;
+pub mod spiffe_federation;
 
 pub use error::OidcError;
 pub use federation::{peek_jwt_issuer, sanitize_scope, FederationRegistry, IssuerProvider};
 pub use jti_cache::JtiCache;
 pub use jwks::{DiscoveryKeyResolver, Jwk, JwkPublicKey, Jwks, KeyResolver, StaticKeyResolver};
+pub use spiffe_federation::{
+    BundleFetcher, FederatesWith, FederationStore, Profile, SpiffeBundle, SpiffeId, ALLOWED_ALGS,
+    DEFAULT_REFRESH_SECS,
+};
