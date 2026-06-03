@@ -52,13 +52,17 @@ impl VerifierSigner {
     /// — use [`Self::from_secret_hex`] in production so the kid
     /// (and therefore the trust anchor) is stable across deploys.
     pub fn random() -> Self {
-        // Use `getrandom` indirectly via rand's OsRng-backed fill to
-        // avoid the rand_core 0.6 ↔ 0.9 `CryptoRng` trait identity
-        // mismatch that breaks `SigningKey::generate(&mut rng)` across
-        // workspace versions. Sampling 32 raw bytes from the OS CSPRNG
-        // and feeding `SigningKey::from_bytes` is equivalent and
-        // version-independent.
-        use rand::RngCore;
+        // Sample 32 raw bytes from the OS CSPRNG and feed
+        // `SigningKey::from_bytes` — equivalent to `generate` but avoids the
+        // cross-version `CryptoRng`/`rand_core` trait-identity mismatch that
+        // breaks `SigningKey::generate(&mut rng)` when multiple rand_core
+        // majors coexist in the workspace.
+        //
+        // rand 0.10 renamed the low-level `RngCore` trait to `Rng` (and the
+        // old high-level `Rng` ext-trait to `RngExt`); `fill_bytes` travels
+        // with the renamed trait. `rand::rng()` is the 0.9+ accessor for the
+        // thread-local CSPRNG (formerly `thread_rng()`).
+        use rand::Rng;
         let mut bytes = [0u8; SECRET_KEY_LENGTH];
         rand::rng().fill_bytes(&mut bytes);
         Self::from_signing_key(SigningKey::from_bytes(&bytes))
