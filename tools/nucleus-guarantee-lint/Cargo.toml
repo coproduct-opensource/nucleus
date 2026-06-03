@@ -1,0 +1,31 @@
+# Version pins are a LOCKSTEP TRIPLE (see Research Report 1, "Dylint authoring SOTA"):
+#   - nightly-2026-04-16          (rust-toolchain.toml)
+#   - clippy_utils rev f6d3106…   (matched to that nightly)
+#   - dylint_linting / dylint_testing 6.0.1  (released 2026-05-26)
+# Do NOT bump any single pin in isolation; regenerate via `cargo dylint new` if upgrading.
+[package]
+name = "nucleus_guarantee_lint"
+version = "0.1.0"
+authors = ["Nucleus Platform"]
+description = "aeneas_eligible: a screen (necessary condition) for Aeneas extraction eligibility. NOT a proof."
+edition = "2024"
+publish = false
+
+[lib]
+# Mandatory: Dylint loads a dynamic library (Research 1, §2).
+crate-type = ["cdylib"]
+
+[dependencies]
+# clippy_utils is a git dep pinned to a rev matched to the nightly above (Research 1, §2).
+# The rev and the nightly are mutually consistent — they are what `cargo dylint new` emits.
+clippy_utils = { git = "https://github.com/rust-lang/rust-clippy", rev = "f6d310692116e9a527ce6d0b3526c965d9c5d7b9" }
+dylint_linting = "6.0.1"
+
+[dev-dependencies]
+dylint_testing = "6.0.1"
+
+# Standalone crate — explicitly NOT part of any parent workspace.
+[workspace]
+
+[package.metadata.rust-analyzer]
+rustc_private = true
