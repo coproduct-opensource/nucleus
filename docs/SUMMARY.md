@@ -8,6 +8,7 @@
   - [Kubernetes](quickstart/kubernetes.md)
   - [Agent Sandbox](quickstart/agent-sandbox.md)
 - [Permissions Guide](permissions.md)
+- [Split-Trust Deployment](split-trust.md)
 - [Architecture](architecture/overview.md)
   - [Security Architecture](architecture/security.md)
   - [Isolation Levels](architecture/isolation-levels.md)
