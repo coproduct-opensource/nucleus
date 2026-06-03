@@ -7039,6 +7039,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-witness"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "clap",
+ "ct-merkle",
+ "ed25519-dalek 3.0.0-pre.7",
+ "hex",
+ "http-body-util",
+ "nucleus-lineage",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber 0.3.23",
+]
+
+[[package]]
 name = "num-bigint"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
