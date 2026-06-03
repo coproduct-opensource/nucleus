@@ -29,6 +29,7 @@ members = [
     "crates/ck-kernel",                 # Constitutional Kernel: admission engine + lineage
     "crates/nucleus-lineage",            # Per-call SPIFFE-derived data lineage
     "crates/nucleus-envelope",           # Portable provenance bundle: payload + IFC envelope
+    "crates/nucleus-bundle-cas",         # Content-addressed bundle transport: BLAKE3 root + iroh-blobs
     "crates/nucleus-envelope-adversarial-corpus", # Adversarial bundles every verifier must reject — CI-gated security promise
     "crates/nucleus-otel-bootstrap",     # Shared OpenTelemetry OTLP bootstrap for server binaries
     "crates/nucleus-control-plane",      # Job orchestrator: typed JobSpec → agent → Bundle

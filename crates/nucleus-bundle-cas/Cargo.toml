@@ -1,0 +1,42 @@
+[package]
+name = "nucleus-bundle-cas"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Content-addressed transport for nucleus provenance bundles (BLAKE3 root + iroh-blobs)"
+repository = "https://github.com/coproduct-opensource/nucleus"
+documentation = "https://docs.rs/nucleus-bundle-cas"
+readme = "README.md"
+keywords = ["provenance", "content-addressed", "blake3", "iroh", "p2p"]
+categories = ["cryptography", "network-programming"]
+
+[dependencies]
+nucleus-envelope = { path = "../nucleus-envelope" }
+
+# Serialization
+serde_json = { workspace = true }
+
+# Content-addressed transport id (BLAKE3 root over the serialized Bundle).
+# Pinned to the latest stable blake3 — this is a TRANSPORT id, distinct from
+# the SHA-256 canonical_bundle_hash in nucleus-envelope.
+blake3 = "1.8.5"
+
+# Peer-to-peer content-addressed blob transfer. iroh/iroh-blobs are pre-1.0
+# (expect churn): iroh-blobs 0.102.0 pins iroh =1.0.0-rc.1, so both move
+# together. The QUIC/TLS stack rides on rustls 0.23 (already in-workspace).
+iroh = "=1.0.0-rc.1"
+iroh-blobs = "=0.102.0"
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# `dev` enables LocalIssuer/InMemorySink for building real signed test bundles.
+nucleus-lineage = { path = "../nucleus-lineage", features = ["dev"] }
+nucleus-envelope = { path = "../nucleus-envelope" }
+
+[lints]
+workspace = true

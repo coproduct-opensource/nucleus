@@ -93,13 +93,7 @@ pub fn execute(args: EnvelopeVerifyArgs) -> Result<()> {
         .with_context(|| format!("parsing bundle JSON from {}", args.bundle))?;
 
     let anchor = match (&args.trust_jwks, args.self_check) {
-        (Some(path), false) => {
-            let jwks_bytes = std::fs::read(path)
-                .with_context(|| format!("reading trust JWKS from {}", path.display()))?;
-            let jwks = Jwks::parse(&jwks_bytes)
-                .with_context(|| format!("parsing JWKS at {}", path.display()))?;
-            TrustAnchor::from_jwks(jwks)
-        }
+        (Some(path), false) => trust_anchor_from_jwks_file(path)?,
         (None, true) => TrustAnchor::self_check_only(),
         (None, false) => {
             return Err(anyhow!(
@@ -136,19 +130,41 @@ pub fn execute(args: EnvelopeVerifyArgs) -> Result<()> {
         anchor = anchor.require_payload_binding();
     }
 
-    let report =
-        verify_bundle(&bundle, &anchor).map_err(|e| anyhow!("verification failed: {e}"))?;
+    verify_and_report(&bundle, &anchor, args.json, args.show_payload)
+}
 
-    if args.json {
-        emit_json_report(&bundle, &report)?;
+/// Run [`verify_bundle`] against `anchor` and emit the report (JSON or
+/// human-readable). Shared by `nucleus envelope-verify` and
+/// `nucleus bundle fetch` so the verify + report path is defined once.
+pub fn verify_and_report(
+    bundle: &Bundle,
+    anchor: &TrustAnchor,
+    json: bool,
+    show_payload: bool,
+) -> Result<()> {
+    let report = verify_bundle(bundle, anchor).map_err(|e| anyhow!("verification failed: {e}"))?;
+
+    if json {
+        emit_json_report(bundle, &report)?;
     } else {
-        emit_human_report(&bundle, &report);
-        if args.show_payload {
+        emit_human_report(bundle, &report);
+        if show_payload {
             println!("---");
             println!("{}", serde_json::to_string_pretty(&bundle.payload)?);
         }
     }
     Ok(())
+}
+
+/// Load a [`TrustAnchor`] from a JWKS file the verifier obtained out-of-band.
+/// This is the production trust path: the embedded JWKS is ignored. Shared
+/// with `nucleus bundle fetch`.
+pub fn trust_anchor_from_jwks_file(path: &std::path::Path) -> Result<TrustAnchor> {
+    let jwks_bytes = std::fs::read(path)
+        .with_context(|| format!("reading trust JWKS from {}", path.display()))?;
+    let jwks =
+        Jwks::parse(&jwks_bytes).with_context(|| format!("parsing JWKS at {}", path.display()))?;
+    Ok(TrustAnchor::from_jwks(jwks))
 }
 
 fn emit_human_report(bundle: &Bundle, report: &VerificationReport) {

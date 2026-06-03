@@ -22,6 +22,7 @@ use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 mod audit;
+mod bundle;
 mod config;
 mod constants;
 mod doctor;
@@ -127,6 +128,9 @@ enum Commands {
 
     /// Verify a provenance bundle standalone
     EnvelopeVerify(envelope_verify::EnvelopeVerifyArgs),
+
+    /// Content-addressed bundle transfer over iroh-blobs (publish/fetch)
+    Bundle(bundle::BundleArgs),
 }
 
 fn init_logging(verbose: bool) {
@@ -181,5 +185,6 @@ async fn main() -> Result<()> {
         Commands::LineageVerifyChain(args) => lineage_verify::execute(args),
         Commands::Envelope(args) => envelope::execute(args),
         Commands::EnvelopeVerify(args) => envelope_verify::execute(args),
+        Commands::Bundle(args) => bundle::execute(args).await,
     }
 }
