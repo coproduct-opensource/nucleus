@@ -1,8 +1,107 @@
-# nucleus-verifier-wasm
+# @coproduct/verify
 
-WASM bindings for verifying [nucleus](https://github.com/coproduct-opensource/nucleus)
+> The one-line, no-infra drop-in for verifying nucleus provenance receipts.
+
+```sh
+npm install @coproduct/verify
+```
+
+```ts
+import { verify } from "@coproduct/verify";
+
+const r = await verify(receipt, trustAnchor);   // auto-inits WASM; no setup
+if (!r.ok) throw new Error(`receipt rejected: ${r.error.message}`);
+console.log("verified locally:", r.report.head_edge_hash_hex);
+```
+
+That is the whole integration. No `init()`, no service to run, no crypto to
+wire. `verify()` runs the audited nucleus envelope verifier (compiled to WASM)
+**in your own Node or browser process** and returns a result you branch on.
+
+### What it checks
+
+A receipt is a portable **bundle** of an agent's execution lineage. `verify()`
+proves two things, locally, against a trust anchor **you pin**:
+
+- **Tamper-evidence** — every edge is hash-chained and the chain is
+  Merkle-anchored (RFC 9162). Reorder, splice, or flip one byte and it fails.
+- **Authenticity** — every edge is Ed25519-signed, and the head is cosigned by
+  the witness key(s) you trust. Signatures must verify against *your* JWKS, not
+  anything embedded in the bundle.
+
+### What it does NOT check (honest scope)
+
+`verify()` is a cryptographic primitive, not a judgement about behaviour. A
+green result means the lineage is **authentic and intact** — it does **not**
+mean:
+
+- the agent *behaved well* or made good decisions;
+- any information-flow (IFC) policy held — that's the IFC gateway + the Lean
+  noninterference theorem, a separate guarantee;
+- any computation was *correct*.
+
+Also: **the trust anchor is yours to supply and pin.** `verify()` does not fetch
+keys, does not phone home, and trusts nothing but the anchor argument you hand
+it. "Fetched and verified" is not "the agent did the right thing."
+
+### Result shape (discriminated union)
+
+A failed verification is a **value**, not a thrown exception — you can't forget
+to handle it. Branch on `.ok`:
+
+```ts
+type VerifyResult =
+  | { ok: true;  report: VerifyReport }
+  | { ok: false; error: VerifyError };   // error.code: "INPUT" | "INIT" | "VERIFICATION"
+```
+
+`VERIFICATION` = the receipt was cryptographically/structurally rejected;
+`INPUT` = the receipt/anchor couldn't be serialised; `INIT` = the WASM verifier
+failed to load. `verify()` accepts either JSON strings or already-parsed
+objects for both arguments. It auto-initialises the WASM exactly once per
+process/page (concurrent calls share one init).
+
+### Node + browser, same import
+
+The package ships the wasm-pack `web` build. In the browser the WASM is fetched
+from the co-located `.wasm`; in Node (>=18) the facade reads the same bytes off
+disk and instantiates them directly — no network either way.
+
+### Metering (DORMANT — documented, not wired)
+
+A **successful** `verify()` is the natural per-verification metering point for a
+future paid tier (e.g. pay-per-verify over [x402](https://www.x402.org/) /
+L402): it is the unit of value the caller actually consumes. This seam is
+**dormant** — `verify()` performs **no payment, keeps no counter, and makes no
+network call**. Turning it on would wrap the `ok: true` branch with an
+x402/L402 settlement step, a deliberate separate go-live decision (like the
+gated npm publish workflow and the `DOCS_DEPLOY` seam). Nothing in this package
+bills you today. See the comment at the top of `index.js`.
+
+### Verify the verifier
+
+```ts
+import { verifierVersion, supportedSchemaVersion } from "@coproduct/verify";
+await verifierVersion();        // semver of the WASM verifier
+await supportedSchemaVersion(); // envelope-schema version this build accepts
+```
+
+### Smoke test (the wedge's core claim)
+
+`npm test` runs a Node test that verifies a **real** fixture bundle and then
+**rejects** a tampered copy (one flipped signature byte) — same fixtures the
+in-browser demo uses, no fake data. Requires `./pkg` (run `npm run build:wasm`
+first; CI builds it before publish).
+
+---
+
+## nucleus-verifier-wasm (the WASM core under the facade)
+
+`@coproduct/verify` is a thin ergonomic facade over **nucleus-verifier-wasm**:
+the WASM bindings for verifying [nucleus](https://github.com/coproduct-opensource/nucleus)
 provenance bundles **in the browser or Node**, with no trust in any
-hosted verifier service.
+hosted verifier service. The facade adds no crypto — only auto-init and the
+typed result. Everything below documents that core.
 
 This is the moat: anyone can verify a bundle without trusting our
 storage, our endpoints, or our operators. The math runs in your
@@ -136,41 +235,51 @@ These tests run against the same wasm artifact npm consumers
 receive, so a passing run is genuine evidence the published SDK
 behaves as documented.
 
-## Publishing to npm
+## Publishing to npm (GATED — operator go-live call)
 
-Publishes are triggered by the GitHub Actions workflow at
-`.github/workflows/publish-verifier-sdk.yml` (workflow_dispatch).
-The workflow:
+Publishes are triggered ONLY by the GitHub Actions workflow at
+`.github/workflows/publish-verifier-sdk.yml` (`workflow_dispatch`), and even
+then only when the repo variable `PUBLISH_VERIFY_SDK == "true"` and
+`dry_run == false`. There is no push trigger and no auto-publish — going live is
+a deliberate operator decision, same posture as `DOCS_DEPLOY`. The workflow:
 
 1. Installs Rust 1.95+ + wasm32-unknown-unknown + wasm-pack.
 2. Runs `cargo clippy -p nucleus-envelope -- -D warnings`.
 3. Runs `cargo test -p nucleus-envelope`.
 4. Runs `wasm-pack test --node` (the suite in `tests/web.rs`).
-5. Runs `wasm-pack build --target bundler --release --scope coproduct`.
-6. Publishes `sdks/verifier-js/pkg/` to npm under
-   `@coproduct/nucleus-verifier-wasm` with the chosen dist-tag.
+5. Runs `wasm-pack build --target web --release` into `pkg/` (gitignored build
+   product — the facade `index.js` auto-inits the `web` build in Node + browser).
+6. Runs the Node smoke test (`npm test`: accept real + reject tampered).
+7. Publishes the `sdks/verifier-js` package as **`@coproduct/verify`** (with npm
+   provenance) under the chosen dist-tag — only if the gate passes.
 
-To dispatch a publish:
+To dispatch a DRY RUN (default — builds + packs, never publishes):
 
 ```sh
-gh workflow run publish-verifier-sdk.yml \
-  -f dist_tag=next \
-  -f dry_run=false
+gh workflow run publish-verifier-sdk.yml -f dist_tag=next -f dry_run=true
+```
+
+To actually publish (operator only): set repo variable
+`PUBLISH_VERIFY_SDK=true`, then:
+
+```sh
+gh workflow run publish-verifier-sdk.yml -f dist_tag=next -f dry_run=false
 ```
 
 `dist_tag=next` is the default — promote a known-good build to
-`latest` later via `npm dist-tag add @coproduct/nucleus-verifier-wasm@VERSION latest`.
+`latest` later via `npm dist-tag add @coproduct/verify@VERSION latest`.
 
-Required secrets:
-- `NPM_TOKEN` — npm automation token with publish access to the
-  `@coproduct` scope.
+Required secrets / variables:
+- `NPM_TOKEN` — npm automation token with publish access to the `@coproduct`
+  scope.
+- `PUBLISH_VERIFY_SDK` (repo variable) — must equal `"true"` to publish.
 
-Local maintainer-driven publishes (without the workflow) work the
-same way:
+Local maintainer-driven publishes (without the workflow) work the same way:
 
 ```sh
-wasm-pack build --target bundler --release --scope coproduct
-cd pkg && npm publish --access public --tag next
+npm run build:wasm                       # wasm-pack build --target web --release
+npm test                                 # accept real + reject tampered
+npm publish --provenance --access public --tag next
 ```
 
 The maintainer's local credentials sign the publish; never check the

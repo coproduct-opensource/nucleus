@@ -1,0 +1,52 @@
+{
+  "name": "@coproduct/verify",
+  "version": "0.1.0",
+  "description": "verify(receipt) — the one-line, no-infra drop-in for nucleus provenance receipts. Tamper-evidence + authenticity against a pinned trust anchor, verified locally in Node or the browser. No crypto reimplemented; thin facade over the audited WASM envelope verifier.",
+  "type": "module",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/coproduct-opensource/nucleus",
+    "directory": "sdks/verifier-js"
+  },
+  "keywords": [
+    "verify",
+    "provenance",
+    "attestation",
+    "tamper-evident",
+    "merkle",
+    "ed25519",
+    "agent",
+    "wasm",
+    "nucleus"
+  ],
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js"
+    }
+  },
+  "main": "./index.js",
+  "module": "./index.js",
+  "types": "./index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "pkg/nucleus_verifier_wasm.js",
+    "pkg/nucleus_verifier_wasm.d.ts",
+    "pkg/nucleus_verifier_wasm_bg.wasm",
+    "pkg/nucleus_verifier_wasm_bg.wasm.d.ts",
+    "README.md"
+  ],
+  "scripts": {
+    "build:wasm": "wasm-pack build --target web --release",
+    "test": "node --test \"test/**/*.test.mjs\"",
+    "test:smoke": "node --test \"test/**/*.test.mjs\""
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
