@@ -23,6 +23,12 @@ nucleus-client = { path = "../nucleus-client" }
 nucleus-proto = { path = "../nucleus-proto" }
 nucleus-lineage = { path = "../nucleus-lineage" }
 nucleus-envelope = { path = "../nucleus-envelope" }
+nucleus-bundle-cas = { path = "../nucleus-bundle-cas" }
+
+# Content-addressed bundle transport (topology #4). iroh/iroh-blobs are
+# pre-1.0; see nucleus-bundle-cas for version pins + rationale.
+iroh = "=1.0.0-rc.1"
+iroh-blobs = "=0.102.0"
 
 # gRPC client
 tonic = { workspace = true }

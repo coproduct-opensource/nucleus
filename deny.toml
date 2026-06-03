@@ -1,3 +1,20 @@
+# Scope the dependency scan to the platforms nucleus actually builds and ships
+# (native CLI + services). Without this, cargo-deny evaluates ALL targets,
+# including wasm32 — which pulls iroh-relay's browser-only WebSocket shim
+# (ws_stream_wasm/pharos/async_io_stream, licensed "Unlicense"). Those crates
+# are NEVER compiled in any native nucleus artifact (they sit under
+# iroh-relay's `cfg(target_family="wasm")` deps), so this is a scope correction,
+# NOT a license-policy relaxation — "Unlicense" is deliberately NOT added to the
+# [licenses] allow-list below. The WASM verifier (sdks/verifier-js) is a
+# separate crate that does not depend on iroh.
+[graph]
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+]
+
 [advisories]
 version = 2
 # See https://github.com/RustSec/advisory-db
