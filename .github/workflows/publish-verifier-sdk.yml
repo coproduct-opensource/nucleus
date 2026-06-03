@@ -1,11 +1,19 @@
-# Publish the JS verifier SDK to npm.
+# Publish the JS verifier SDK (@coproduct/verify) to npm.
 #
-# Triggered MANUALLY (workflow_dispatch) so a published version is
-# always a human-witnessed event. Inputs: the npm-dist-tag to
-# publish under ('latest' for stable, 'next' for prerelease).
+# GATED: triggered MANUALLY (workflow_dispatch) AND additionally guarded by the
+# repo variable PUBLISH_VERIFY_SDK == "true" (same posture as DOCS_DEPLOY).
+# Publishing is the operator's go-live call — this workflow CAN publish but will
+# NOT until both the manual dispatch and the repo variable say so. It never runs
+# on push and never auto-publishes.
+#
+# Inputs: the npm dist-tag ('latest' for stable, 'next' for prerelease) and a
+# dry_run toggle (default true) that builds + `npm pack --dry-run`s without
+# publishing.
 #
 # Required repository secrets:
 #   NPM_TOKEN  — npm automation token with publish access to @coproduct
+# Required repository variable to actually publish:
+#   PUBLISH_VERIFY_SDK == "true"
 #
 # Quality gate before publish:
 #   - wasm-pack test --node passes (catches API regressions before
@@ -13,6 +21,8 @@
 #   - clippy + cargo test on the underlying nucleus-envelope crate
 #     pass (the wasm SDK is a thin wrapper; if the inner verifier is
 #     broken, no point publishing)
+#   - the Node smoke test (accept real + reject tampered) passes against
+#     the freshly-built pkg
 
 name: Publish JS verifier SDK
 
@@ -69,10 +79,12 @@ jobs:
         working-directory: sdks/verifier-js
         run: wasm-pack test --node
 
-      - name: Build wasm bundle for npm
+      - name: Build wasm (web target) into sdks/verifier-js/pkg
         working-directory: sdks/verifier-js
-        run: |
-          wasm-pack build --target bundler --release --scope coproduct
+        # `web` target: the facade (index.js) auto-inits this build in both
+        # Node and the browser. pkg/ is gitignored — it is a build product,
+        # rebuilt here and bundled into the published @coproduct/verify tarball.
+        run: wasm-pack build --target web --release
 
       - name: Set up Node.js for publish
         uses: actions/setup-node@v6
@@ -80,16 +92,23 @@ jobs:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Publish to npm
-        if: ${{ inputs.dry_run == false }}
-        working-directory: sdks/verifier-js/pkg
+      - name: Node smoke test (accept real + reject tampered)
+        working-directory: sdks/verifier-js
+        run: npm test
+
+      - name: Publish @coproduct/verify to npm
+        # Belt-and-braces gate: manual dispatch is required to reach this
+        # workflow at all; the repo variable PUBLISH_VERIFY_SDK must ALSO be
+        # "true", and dry_run must be off. Publishing stays the operator's call.
+        if: ${{ inputs.dry_run == false && vars.PUBLISH_VERIFY_SDK == 'true' }}
+        working-directory: sdks/verifier-js
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public --tag "${{ inputs.dist_tag }}"
+        run: npm publish --provenance --access public --tag "${{ inputs.dist_tag }}"
 
-      - name: Dry-run npm publish
-        if: ${{ inputs.dry_run == true }}
-        working-directory: sdks/verifier-js/pkg
+      - name: Dry-run (build + pack only, never publishes)
+        if: ${{ inputs.dry_run == true || vars.PUBLISH_VERIFY_SDK != 'true' }}
+        working-directory: sdks/verifier-js
         run: |
-          echo "DRY-RUN — would publish:"
+          echo "DRY-RUN (or PUBLISH_VERIFY_SDK != 'true') — not publishing. Would publish:"
           npm pack --dry-run
