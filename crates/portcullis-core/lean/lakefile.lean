@@ -80,6 +80,19 @@ lean_lib «DerivationProofs» where
 lean_lib «IFCSemilatticeProofs» where
   roots := #[`IFCSemilatticeProofs]
 
+-- Register the remaining categorical-proof modules as build targets so the
+-- olog catkb audit can resolve `#print axioms` and run the leanchecker
+-- second-kernel re-check against their built oleans (DoD B4/B5). These hold
+-- PROVEN theorems the KB cites (category / delegation-category / Galois).
+lean_lib «CategoryProofs» where
+  roots := #[`CategoryProofs]
+
+lean_lib «DelegationCategoryProofs» where
+  roots := #[`DelegationCategoryProofs]
+
+lean_lib «GaloisConnectionProofs» where
+  roots := #[`GaloisConnectionProofs]
+
 -- Semantic IFC: Galois connection on propositions, channel model, soundness
 lean_lib «SemanticIFC» where
   roots := #[`SemanticIFC]
