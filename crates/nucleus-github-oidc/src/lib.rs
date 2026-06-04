@@ -21,6 +21,12 @@
 //! ```
 
 mod claims;
+/// Subset-safe, Aeneas-extractable mirrors of the OIDC→SPIFFE derivation
+/// (`sanitize_segment` / `derive_spiffe_id`). The Lean proofs in `lean/` are
+/// stated over the Charon→Aeneas extraction of this module; the production
+/// code in [`claims`] is bound to it by parity proptests. See the module docs
+/// for the trust chain and the (honest) lossiness/collision finding.
+pub mod extracted;
 mod validator;
 
 pub use claims::{derive_spiffe_id, GitHubClaims};

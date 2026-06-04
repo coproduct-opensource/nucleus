@@ -195,6 +195,64 @@ necessary for paths where the type is erased.
 
 ---
 
+### 9. OIDC→SPIFFE charset is enforced — and the derivation is NOT collision-free
+
+**Plain English:** When a GitHub Actions OIDC token is mapped to a Nucleus
+SPIFFE id, every path segment is sanitized to the SPIFFE-legal charset
+`[A-Za-z0-9._-]`. We machine-check that the extracted-from-Rust byte classifier
+admits *exactly* that charset. We ALSO machine-check the honest negative result:
+because sanitization is **lossy**, the derivation is **not injective** —
+distinct OIDC claim-sets can mint the *same* SPIFFE id within one owner/repo.
+That collision is a real authz-confusion surface and is documented, not hidden.
+
+**Formal statement (proven, sorry-free, over the Aeneas-extracted defs):**
+- `is_spiffe_byte_iff` / `is_spiffe_byte_charset` — for every `U8` byte, the
+  generated `is_spiffe_byte` returns `ok true` iff the byte is in
+  `[0-9A-Za-z._-]` (exhaustive over all 256 values).
+- `collapse_lossy_step` — the generated per-byte sanitizer step maps the
+  DISALLOWED byte `/` (0x2F) and the ALLOWED byte `-` (0x2D), from the same
+  state, to the IDENTICAL continuation. This is the merge that destroys
+  injectivity.
+
+**The collision finding (pinned, NOT a proven safety property):** `"a/b"` and
+`"a-b"` both sanitize to `"a-b"`; `"refs/heads/x"` and `"refs-heads-x"` both →
+`"refs-heads-x"`. So two distinct refs/repos can derive the same SPIFFE id. We
+do **not** claim SPIFFE ids are collision-free — the opposite is true and pinned
+as a regression test.
+
+**Trust chain:** production `sanitize_segment` / `derive_spiffe_id`
+(`claims.rs`) ≡ the byte-indexed `extracted/oidc_spiffe.rs` mirror (proven
+byte-identical across random Unicode by the parity proptests) → Lean via Aeneas.
+
+**Proved in:**
+- Lean 4: [`lean/OidcSpiffeProofs.lean`](../crates/nucleus-github-oidc/lean/OidcSpiffeProofs.lean) — `is_spiffe_byte_iff`, `is_spiffe_byte_charset`, `collapse_lossy_step` (each `#print axioms` = `[propext, Classical.choice, Quot.sound]`)
+- Rust parity + collision proptests: [`src/extracted/oidc_spiffe.rs`](../crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs) — `sanitize_bytes_matches_production`, `derive_spiffe_bytes_matches_production`, `is_spiffe_byte_matches_production_charset`, `collision_distinct_refs_same_spiffe_id`, `collision_distinct_repo_segments`
+
+**What it does NOT prove:**
+- NOT that SPIFFE ids are collision-free (they are not — see the finding).
+- NOT "no `--` run" in output (production does not guarantee it; a literal `-`
+  next to a collapsed dash yields `--`).
+- The full end-to-end `sanitize_bytes(x) = sanitize_bytes(y)` collision is
+  proven in the Rust proptest, not yet as a closed Lean theorem: Aeneas's `loop`
+  combinator (`partial_fixpoint`) does not reduce under `simp`/`decide`, so the
+  Lean side proves the per-step root cause (`collapse_lossy_step`) rather than
+  evaluating the whole loop. This gap is disclosed, not papered over with a
+  `sorry`.
+- The owner-binding guard (`repository_owner == org(repository)`) and the final
+  `CallSpiffeId::parse` are equality / parser checks outside the extracted
+  rendered-bytes subgraph.
+
+**Why the collision is acceptable in context:** authorization is decided on the
+*verified claim* (the allow-listed `repository_owner` / `repository`), not on the
+rendered SPIFFE id. The SPIFFE id is a downstream identifier. The finding bounds
+where the lossy id may NOT be used as a sole authz key.
+
+**CI gate:** `Aeneas OIDC→SPIFFE (scoped extraction + derivation properties)`
+job — scoped Charon→Aeneas extraction, Rust parity+collision tests, Lean build,
+and the `Assert clean axiom set` / `Reject sorry` audits. Blocks merge.
+
+---
+
 ## What happens when a proof breaks
 
 1. The `Aeneas (Rust -> Lean 4)` or `Mutation Testing` CI job fails

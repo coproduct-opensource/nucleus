@@ -34,6 +34,10 @@ serde = { workspace = true }
 # `rustls::crypto::ring`). Never actually exercised here (mock is plain HTTP),
 # but required at Client-build time.
 rustls = { workspace = true }
+# Parity proptests binding the production `sanitize_segment`/`derive_spiffe_id`
+# to the Aeneas-extractable `extracted/` mirror (byte-identical across random
+# Unicode), plus the lossiness/collision finding.
+proptest = { workspace = true }
 
 [[example]]
 name = "keyless_oidc_prototype"
