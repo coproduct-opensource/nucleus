@@ -1,0 +1,207 @@
+name: Aeneas OIDC→SPIFFE (scoped extraction + derivation properties)
+
+# Scoped Charon→Aeneas extraction of the OIDC→SPIFFE derivation slice
+# (crates/nucleus-github-oidc/src/extracted/oidc_spiffe.rs) plus the Lean
+# properties proven OVER the generated defs (the SPIFFE charset predicate and
+# the lossy-collapse root of the non-injective SPIFFE-id collision).
+#
+# Sibling to aeneas-ifc-scoped.yml (the portcullis-core integrity-axis target);
+# same prebuilt-binary, scoped-extraction, axiom-audit pattern.
+#
+# This job is LINUX-ONLY for reproducibility parity with the IFC job. (The
+# extraction + proof ALSO build on macOS locally with the same pinned aeneas
+# nightly; see the docs header. CI is the canonical reproducer.)
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "crates/nucleus-github-oidc/src/extracted/**"
+      - "crates/nucleus-github-oidc/lean/generated/**"
+      - "crates/nucleus-github-oidc/lean/OidcSpiffeProofs.lean"
+      - "crates/nucleus-github-oidc/lean/lakefile.lean"
+      - ".github/workflows/aeneas-oidc-spiffe.yml"
+  pull_request:
+    paths:
+      - "crates/nucleus-github-oidc/src/extracted/**"
+      - "crates/nucleus-github-oidc/lean/generated/**"
+      - "crates/nucleus-github-oidc/lean/OidcSpiffeProofs.lean"
+      - "crates/nucleus-github-oidc/lean/lakefile.lean"
+      - ".github/workflows/aeneas-oidc-spiffe.yml"
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Pin to the Aeneas prebuilt nightly that generated the committed generated/.
+  # Update this AND regenerate generated/ together.
+  AENEAS_RELEASE: nightly-2026.05.30
+  # Charon needs a specific nightly for rustc-dev components.
+  CHARON_NIGHTLY: nightly-2026-02-07
+  # The scoped extraction roots — name them exactly as Charon sees the paths.
+  EXTRACT_ROOTS: "nucleus_github_oidc::extracted::oidc_spiffe::sanitize_bytes,nucleus_github_oidc::extracted::oidc_spiffe::derive_spiffe_bytes,nucleus_github_oidc::extracted::oidc_spiffe::is_spiffe_byte"
+
+jobs:
+  aeneas-oidc-spiffe:
+    name: Scoped Aeneas (Rust → Lean 4) + parity tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      # --- Rust nightly for Charon MIR extraction ---
+      - name: Install Rust nightly for Charon
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: ${{ env.CHARON_NIGHTLY }}
+          components: rustc-dev,llvm-tools-preview,rust-src
+
+      - name: Rust / cargo cache (Charon target dir)
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2.9.1
+        with:
+          key: charon-oidc-${{ env.CHARON_NIGHTLY }}-${{ env.AENEAS_RELEASE }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # --- Rust parity tests: the extracted slice ≡ the production derivation ---
+      # These bind the byte-indexed `sanitize_bytes` / `derive_spiffe_bytes`
+      # mirror to the production `sanitize_segment` / `derive_spiffe_id`
+      # (byte-identical across random Unicode), exhaustively check the 256-byte
+      # charset, and pin the lossy-collapse SPIFFE-id COLLISION. They close the
+      # production↔extracted gap the Lean theorems then build on.
+      - name: Stable toolchain (for cargo test)
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: stable
+
+      - name: Parity + collision tests (extracted slice ≡ production derivation)
+        run: cargo test -p nucleus-github-oidc --lib extracted::oidc_spiffe
+
+      # --- Aeneas prebuilt binaries (Charon + Aeneas, no OCaml build) ---
+      - name: Cache Aeneas binary
+        id: cache-aeneas-bin
+        uses: actions/cache@v5
+        with:
+          path: /tmp/aeneas-bin
+          key: aeneas-bin-${{ runner.os }}-${{ env.AENEAS_RELEASE }}
+
+      - name: Download Aeneas pre-built binaries
+        if: steps.cache-aeneas-bin.outputs.cache-hit != 'true'
+        run: |
+          gh release download "$AENEAS_RELEASE" \
+            --repo AeneasVerif/aeneas \
+            --pattern "aeneas-linux-x86_64.tar.gz" \
+            --dir /tmp
+          mkdir -p /tmp/aeneas-bin
+          tar xzf /tmp/aeneas-linux-x86_64.tar.gz -C /tmp/aeneas-bin
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Add Aeneas to PATH
+        run: echo "/tmp/aeneas-bin" >> "$GITHUB_PATH"
+
+      - name: Verify tools
+        run: |
+          which charon && charon version || true
+          which aeneas && aeneas -version || true
+
+      # --- SCOPED Charon extraction: only the derivation subgraph ---
+      - name: Charon scoped MIR extraction
+        working-directory: crates/nucleus-github-oidc
+        run: |
+          STARTS=""
+          IFS=',' read -ra ROOTS <<< "$EXTRACT_ROOTS"
+          for r in "${ROOTS[@]}"; do
+            STARTS="$STARTS --start-from $r"
+          done
+          echo "Charon scoped roots:$STARTS"
+          # shellcheck disable=SC2086
+          charon cargo --preset aeneas $STARTS
+
+      - name: Aeneas Lean 4 translation (scoped slice)
+        run: |
+          mkdir -p crates/nucleus-github-oidc/lean/ci-generated
+          LLBC="$(find crates/nucleus-github-oidc . -maxdepth 2 -name 'nucleus_github_oidc.llbc' -print -quit)"
+          test -n "$LLBC" || { echo "ERROR: charon produced no .llbc"; exit 1; }
+          aeneas -backend lean -split-files "$LLBC" \
+            -dest crates/nucleus-github-oidc/lean/ci-generated
+
+      # --- Canonicalize: build the theorem against the FRESH extraction ---
+      # The freshly-generated scoped slice IS the canonical Aeneas output of the
+      # current pinned toolchain, so we install it as generated/ and build the
+      # theorem against it. Drift vs the previously-committed copy is a
+      # reproducibility note (warning), NOT a validity failure — the committed
+      # copy is genuine Aeneas output too. NO hand-edits: unlike the IFC job, the
+      # import path needs no retargeting (this crate's generated lib namespace is
+      # `NucleusGithubOidc`, already what Funs.lean imports).
+      - name: Canonicalize generated/ from the fresh extraction
+        run: |
+          DST=crates/nucleus-github-oidc/lean/generated/NucleusGithubOidc
+          SRC=crates/nucleus-github-oidc/lean/ci-generated
+          for f in Types.lean Funs.lean; do
+            if [ ! -f "$SRC/$f" ]; then
+              echo "ERROR: Aeneas did not emit $f (scoped extraction failed)"; exit 1
+            fi
+            if ! diff -q "$DST/$f" "$SRC/$f" > /dev/null 2>&1; then
+              echo "::warning::generated $f drifted from the committed copy — building against the fresh canonical extraction"
+            fi
+          done
+          cp "$SRC/Types.lean" "$DST/Types.lean"
+          cp "$SRC/Funs.lean"  "$DST/Funs.lean"
+          echo "generated/ canonicalized from the fresh extraction; theorem builds against it."
+
+      - name: Dump FULL canonical generated defs (to audit the proof against)
+        run: |
+          echo "CANONICAL-TYPES-START"
+          cat crates/nucleus-github-oidc/lean/generated/NucleusGithubOidc/Types.lean
+          echo "CANONICAL-TYPES-END"
+          echo "CANONICAL-FUNS-START"
+          cat crates/nucleus-github-oidc/lean/generated/NucleusGithubOidc/Funs.lean
+          echo "CANONICAL-FUNS-END"
+
+      # --- Build the theorem + capture the REAL axiom set ---
+      - name: Install elan (Lean toolchain)
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --no-modify-path
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - uses: coproduct-opensource/lean-mathlib-cache@9f69375ab6b89d215afa6938964e0200f15cd9ed # v1.0.1
+        with:
+          lean-project-dir: crates/nucleus-github-oidc/lean
+          build-target: NucleusGithubOidc
+          cache-key-prefix: lean-oidc
+
+      - name: lake build (extracted core + theorems)
+        working-directory: crates/nucleus-github-oidc/lean
+        run: |
+          lake build NucleusGithubOidc
+          lake build OidcSpiffeProofs 2>&1 | tee /tmp/lake-oidc.log
+
+      - name: Assert clean axiom set (no sorryAx / opaque axioms)
+        working-directory: crates/nucleus-github-oidc/lean
+        run: |
+          echo "=== #print axioms output (from build log) ==="
+          grep -nE "axioms|sorryAx|propext|Quot\.sound|Classical\.choice|External" /tmp/lake-oidc.log || true
+          if grep -qE "sorryAx|External" /tmp/lake-oidc.log; then
+            echo "ERROR: dirty axiom set — sorryAx or an opaque *External axiom is on the proof's critical path."
+            exit 1
+          fi
+          echo "No sorryAx / opaque-External axiom detected in the axiom audit."
+
+      - name: Reject sorry (proof holes)
+        working-directory: crates/nucleus-github-oidc/lean
+        run: |
+          # Match `sorry`/`admit` as actual tactic/term USAGE (preceded by `:=`,
+          # `=>`, `by`, `<;>`, `·`, `;`, or line start), plus `native_decide`
+          # anywhere. Must NOT false-positive on the file's honest prose about
+          # `sorry`/`sorry-free`/`partial_fixpoint`.
+          if grep -rnE '(:=|=>|\bby\b|<;>|·|;|^)[[:space:]]*(sorry|admit)\b|\bnative_decide\b' \
+               OidcSpiffeProofs.lean \
+               generated/NucleusGithubOidc/ --include='*.lean'; then
+            echo "ERROR: proof contains a sorry/admit/native_decide tactic."
+            exit 1
+          fi
+          echo "No sorry/admit/native_decide usage found."
