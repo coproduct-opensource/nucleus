@@ -87,8 +87,8 @@ struct VerifyReport {
 pub fn verify_bundle_js(bundle_json: &str, trust_anchor_json: &str) -> Result<JsValue, JsError> {
     set_panic_hook();
 
-    let bundle: Bundle =
-        serde_json::from_str(bundle_json).map_err(|e| JsError::new(&format!("bundle JSON: {e}")))?;
+    let bundle: Bundle = serde_json::from_str(bundle_json)
+        .map_err(|e| JsError::new(&format!("bundle JSON: {e}")))?;
     let input: TrustAnchorInput = serde_json::from_str(trust_anchor_json)
         .map_err(|e| JsError::new(&format!("trust anchor JSON: {e}")))?;
 
@@ -252,4 +252,99 @@ pub fn check_verdict_js(
     )
     .ok_or_else(|| JsError::new("unknown declared-input token (recompute fails closed)"))?;
     Ok(decl.decide().allow == claimed_allow)
+}
+
+// ── RECOMPUTE THE CLEARED PRICE (+ Pigou) + settlement + commons routing ──────
+//
+// The recompute extended from the IFC verdict to the *economics*: re-derive the
+// VCG clearing + truthful prices, the Pigouvian-VCG clearing (price incl. the
+// externality charge), the settlement split, and where the externality pool is
+// routed — all running the EXACT proven `nucleus-econ-kernels` functions
+// (parity-pinned to the Lean), in the caller's process. A counterparty verifies
+// the price, the externality charge, the payout, AND that the externality revenue
+// reaches the commons — not a vendor's word for any of it.
+
+/// Re-derive the truthful VCG clearing (winners + Clarke-pivot payments) from a
+/// bid set. Inputs are JSON arrays of `IntegerBid` / `IntegerProposal` + a budget.
+#[wasm_bindgen(js_name = recomputeVcg)]
+pub fn recompute_vcg_js(
+    bids_json: &str,
+    proposals_json: &str,
+    budget_micro_usd: u64,
+) -> Result<JsValue, JsError> {
+    set_panic_hook();
+    let bids: Vec<nucleus_econ_kernels::IntegerBid> =
+        serde_json::from_str(bids_json).map_err(|e| JsError::new(&format!("bids JSON: {e}")))?;
+    let proposals: Vec<nucleus_econ_kernels::IntegerProposal> =
+        serde_json::from_str(proposals_json)
+            .map_err(|e| JsError::new(&format!("proposals JSON: {e}")))?;
+    let clearing = nucleus_econ_kernels::run_vcg(&bids, &proposals, budget_micro_usd)
+        .map_err(|e| JsError::new(&format!("vcg: {e}")))?;
+    serde_wasm_bindgen::to_value(&clearing).map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Re-derive the **Pigouvian-VCG** clearing — the cleared price *including* the
+/// internalised externality charge + the resulting rebate pool. `externalities`
+/// is a JSON array of `ExternalityProfile`; `rates` is `PigouvianRates` JSON.
+#[wasm_bindgen(js_name = recomputeVcgPigou)]
+pub fn recompute_vcg_pigou_js(
+    bids_json: &str,
+    proposals_json: &str,
+    budget_micro_usd: u64,
+    externalities_json: &str,
+    rates_json: &str,
+) -> Result<JsValue, JsError> {
+    set_panic_hook();
+    let bids: Vec<nucleus_econ_kernels::IntegerBid> =
+        serde_json::from_str(bids_json).map_err(|e| JsError::new(&format!("bids JSON: {e}")))?;
+    let proposals: Vec<nucleus_econ_kernels::IntegerProposal> =
+        serde_json::from_str(proposals_json)
+            .map_err(|e| JsError::new(&format!("proposals JSON: {e}")))?;
+    let externalities: Vec<nucleus_externality::ExternalityProfile> =
+        serde_json::from_str(externalities_json)
+            .map_err(|e| JsError::new(&format!("externalities JSON: {e}")))?;
+    let rates: nucleus_econ_kernels::PigouvianRates =
+        serde_json::from_str(rates_json).map_err(|e| JsError::new(&format!("rates JSON: {e}")))?;
+    let clearing = nucleus_econ_kernels::run_vcg_with_externalities(
+        &bids,
+        &proposals,
+        budget_micro_usd,
+        &externalities,
+        &rates,
+    )
+    .map_err(|e| JsError::new(&format!("pigou-vcg: {e}")))?;
+    serde_wasm_bindgen::to_value(&clearing).map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Re-derive the settlement split for a cleared `price_micro` at a delivery score
+/// (basis points): `{ verdict, seller_gross, refund }` with `seller_gross +
+/// refund == price` (the Lean conservation theorem).
+#[wasm_bindgen(js_name = recomputeSettlement)]
+pub fn recompute_settlement_js(price_micro: u64, delivered_bps: u64) -> Result<JsValue, JsError> {
+    set_panic_hook();
+    #[derive(Serialize)]
+    struct SettlementReport {
+        verdict: nucleus_econ_kernels::Verdict,
+        seller_gross: u64,
+        refund: u64,
+    }
+    let report = SettlementReport {
+        verdict: nucleus_econ_kernels::classify(delivered_bps),
+        seller_gross: nucleus_econ_kernels::seller_gross(price_micro, delivered_bps),
+        refund: nucleus_econ_kernels::refund(price_micro, delivered_bps),
+    };
+    serde_wasm_bindgen::to_value(&report).map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Re-derive the externality→commons routing: given the Pigouvian `pool` and a
+/// JSON array of `CommonsShare`, return the allocations. Conservation (no skim) is
+/// guaranteed by the kernel; the caller can sum and check it equals the pool.
+#[wasm_bindgen(js_name = recomputeCommons)]
+pub fn recompute_commons_js(pool_micro: u64, shares_json: &str) -> Result<JsValue, JsError> {
+    set_panic_hook();
+    let shares: Vec<nucleus_econ_kernels::CommonsShare> = serde_json::from_str(shares_json)
+        .map_err(|e| JsError::new(&format!("shares JSON: {e}")))?;
+    let allocations = nucleus_econ_kernels::route_to_commons(pool_micro, &shares)
+        .map_err(|e| JsError::new(&format!("commons: {e}")))?;
+    serde_wasm_bindgen::to_value(&allocations).map_err(|e| JsError::new(&e.to_string()))
 }

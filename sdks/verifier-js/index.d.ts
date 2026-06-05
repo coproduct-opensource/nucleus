@@ -115,3 +115,33 @@ export function checkVerdict(
   claimedAllow: boolean,
   opts?: RecomputeOptions,
 ): Promise<boolean>;
+
+// ── Economic recompute (proven nucleus-econ-kernels; u64 fields are bigint) ────
+
+/** Re-derive the truthful VCG clearing (winners + Clarke-pivot payments). */
+export function recomputeVcg(
+  bids: object[],
+  proposals: object[],
+  budgetMicroUsd: number | bigint,
+): Promise<object>;
+
+/** Re-derive the Pigouvian-VCG clearing — cleared price incl. the externality charge. */
+export function recomputeVcgPigou(
+  bids: object[],
+  proposals: object[],
+  budgetMicroUsd: number | bigint,
+  externalities: object[],
+  rates: object,
+): Promise<object>;
+
+/** Re-derive the settlement split (`seller_gross + refund == price`). */
+export function recomputeSettlement(
+  priceMicro: number | bigint,
+  deliveredBps: number | bigint,
+): Promise<{ verdict: "reverse" | "partial" | "release"; seller_gross: bigint; refund: bigint }>;
+
+/** Re-derive the externality→commons routing (no-skim; sum equals the pool). */
+export function recomputeCommons(
+  poolMicro: number | bigint,
+  shares: object[],
+): Promise<Array<{ destination: string; amount_micro: bigint }>>;

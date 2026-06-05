@@ -75,7 +75,7 @@ impl PigouvianRates {
 ///
 /// Wraps the kernel `Clearing` with the per-bidder Pigouvian
 /// discounts and the resulting rebate pool (T1).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PigouvianClearing {
     /// The underlying VCG clearing — winners, payments,
     /// totals — computed on the *adjusted* bids.

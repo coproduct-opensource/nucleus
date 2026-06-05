@@ -20,6 +20,10 @@ nucleus-lineage = { path = "../../crates/nucleus-lineage" }
 # The IFC decision (wasm-safe, feature-gated) — lets the SDK RE-DERIVE the
 # in-bounds verdict, not just check signatures. Same code the production gate runs.
 nucleus-ifc = { path = "../../crates/nucleus-ifc", features = ["decision"] }
+# Proven clearing/settlement/commons kernels — lets the SDK RE-DERIVE the cleared
+# price (VCG + Pigou), the settlement split, and the externality→commons routing.
+nucleus-econ-kernels = { path = "../../crates/nucleus-econ-kernels" }
+nucleus-externality = { path = "../../crates/nucleus-externality" }
 wasm-bindgen = "0.2"
 serde-wasm-bindgen = "0.6"
 serde = { version = "1", features = ["derive"] }
