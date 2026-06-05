@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 description = "REST API server wrapping nucleus-control-plane for job submission and bundle delivery"
 repository = "https://github.com/coproduct-opensource/nucleus"
+readme = "README.md"
 keywords = ["control-plane", "rest", "axum", "agents", "provenance"]
 categories = ["web-programming::http-server"]
 
