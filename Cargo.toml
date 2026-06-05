@@ -129,7 +129,11 @@ tonic-prost = "0.14"
 
 # Utils
 uuid = { version = "1", features = ["v4"] }
-chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# `wasmbind` makes `Utc::now()` use the browser's `Date.now()` on
+# wasm32-unknown-unknown instead of std time (which panics: "time not implemented
+# on this platform"). It's inert on non-wasm targets. Required by the ctf-engine
+# WASM build (kernel.rs / escalation.rs call Utc::now()).
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "wasmbind"] }
 rust_decimal = "1.42"
 shell-words = "1.1"
 regex = "1.12"

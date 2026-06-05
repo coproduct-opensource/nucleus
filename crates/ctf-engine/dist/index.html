@@ -32,8 +32,8 @@
     <!-- Trunk: build the lib target (not the CLI binary) and copy static assets -->
     
 <script type="module">
-import init, * as bindings from '/ctf-engine-a66d1e7f7a03de63.js';
-const wasm = await init({ module_or_path: '/ctf-engine-a66d1e7f7a03de63_bg.wasm' });
+import init, * as bindings from '/ctf-engine-6afe91452a3e319a.js';
+const wasm = await init({ module_or_path: '/ctf-engine-6afe91452a3e319a_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -443,7 +443,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
         .defense-chip { display: block; margin: 4px 0; width: 100%; }
       }
     </style>
-  <link rel="modulepreload" href="/ctf-engine-a66d1e7f7a03de63.js" crossorigin="anonymous" integrity="sha384-NLn2s3H+I+/ctH3H/4Q6SlJOhj3v+fcBEjc+JsCKN8x+m/3d0Lun8NIIO9uagpEn"><link rel="preload" href="/ctf-engine-a66d1e7f7a03de63_bg.wasm" crossorigin="anonymous" integrity="sha384-5zrJmO05BYmbSOHDZ5aahqzdpceK7L5AzSmdwdupPMTFEE2jOCXJmTimRjhD5+V/" as="fetch" type="application/wasm"></head>
+  <link rel="modulepreload" href="/ctf-engine-6afe91452a3e319a.js" crossorigin="anonymous" integrity="sha384-bMlWi7nRNg/TuSv8QnYg/KXIHa6h5fh1NFB/HT6KibagtrVerOFsgO6bVNGK2zTV"><link rel="preload" href="/ctf-engine-6afe91452a3e319a_bg.wasm" crossorigin="anonymous" integrity="sha384-8UUVAOueS0a92tGZr+jw5o5+Pgha1vrgwi4Fv8XrBIPL7GV54ZPPwB+kNlZJzJrQ" as="fetch" type="application/wasm"></head>
   <body>
 
     <!-- ── Landing Page ──────────────────────────────────────────────── -->
