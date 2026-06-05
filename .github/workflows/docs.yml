@@ -11,6 +11,7 @@ on:
       - "book.toml"
       - "sdks/verifier-js/**"
       - "crates/nucleus-envelope/**"
+      - "crates/ctf-engine/**"
       - ".github/workflows/docs.yml"
 
 permissions:
@@ -64,6 +65,18 @@ jobs:
              book/verify/pkg/
           cp sdks/verifier-js/demo-fixtures/*.json book/verify/demo-fixtures/
           touch book/.nojekyll
+      # --- "The Vault" CTF, published at /vault/ ---
+      # Browser/WASM CTF: try to exfiltrate past a formally-verified permission
+      # lattice. Built with Trunk (wasm_bindgen pinned in Trunk.toml); public-url
+      # must match the deploy subpath so assets resolve.
+      - name: Build The Vault (WASM) + assemble into /vault
+        run: |
+          cargo install trunk --locked
+          cd crates/ctf-engine
+          trunk build --release --public-url /nucleus/vault/
+          cd ../..
+          mkdir -p book/vault
+          cp -r crates/ctf-engine/dist/. book/vault/
       - name: Upload artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
