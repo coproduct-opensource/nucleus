@@ -34,6 +34,7 @@ fn tags(hub: &Hub) -> Vec<&'static str> {
             MarketEvent::Settlement { .. } => "settlement",
             MarketEvent::ReceiptVerified { .. } => "receipt_verified",
             MarketEvent::BalanceUpdate { .. } => "balance_update",
+            MarketEvent::ReceiptAnchored { .. } => "receipt_anchored",
         })
         .collect()
 }

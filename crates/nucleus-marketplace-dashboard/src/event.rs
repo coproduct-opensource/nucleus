@@ -197,6 +197,25 @@ pub enum MarketEvent {
         balance: MicroUsd,
         source: BalanceSource,
     },
+    /// A receipt was anchored on-chain via the ERC-8004 Validation Registry
+    /// (Base Sepolia testnet) — the in-bounds decision is now checkable from
+    /// chain reads. Emitted by the real-settlement path (see
+    /// `examples/marketplace-live`); never present in the simulated feed.
+    ReceiptAnchored {
+        id: u64,
+        ts_unix_ms: i64,
+        agent: AgentId,
+        /// Seq of the [`MarketEvent::Settlement`] this anchor binds (UI join key).
+        for_settlement_id: u64,
+        /// The ERC-8004 `agentId` (Identity Registry tokenId).
+        agent_id: u64,
+        /// `keccak256(receipt)` committed on-chain (hex `0x…`).
+        request_hash: String,
+        /// The `validationResponse` tx hash (hex `0x…`; link to Basescan).
+        validation_tx: String,
+        /// The 0–100 validation score posted (100 = in-bounds).
+        response: u8,
+    },
 }
 
 /// How a [`MarketEvent::ReceiptVerified`] was checked — so the UI never
@@ -222,7 +241,8 @@ impl MarketEvent {
             | MarketEvent::IfcDeny { id, .. }
             | MarketEvent::Settlement { id, .. }
             | MarketEvent::ReceiptVerified { id, .. }
-            | MarketEvent::BalanceUpdate { id, .. } => *id,
+            | MarketEvent::BalanceUpdate { id, .. }
+            | MarketEvent::ReceiptAnchored { id, .. } => *id,
         }
     }
 
@@ -235,7 +255,8 @@ impl MarketEvent {
             | MarketEvent::IfcDeny { agent, .. }
             | MarketEvent::Settlement { agent, .. }
             | MarketEvent::ReceiptVerified { agent, .. }
-            | MarketEvent::BalanceUpdate { agent, .. } => agent,
+            | MarketEvent::BalanceUpdate { agent, .. }
+            | MarketEvent::ReceiptAnchored { agent, .. } => agent,
         }
     }
 
@@ -247,7 +268,9 @@ impl MarketEvent {
             | MarketEvent::Settlement { .. }
             | MarketEvent::BalanceUpdate { .. } => Lane::Commerce,
             MarketEvent::IfcAllow { .. } | MarketEvent::IfcDeny { .. } => Lane::Security,
-            MarketEvent::ReceiptVerified { .. } => Lane::Proof,
+            MarketEvent::ReceiptVerified { .. } | MarketEvent::ReceiptAnchored { .. } => {
+                Lane::Proof
+            }
         }
     }
 
@@ -266,7 +289,8 @@ impl MarketEvent {
             | MarketEvent::IfcDeny { id, ts_unix_ms, .. }
             | MarketEvent::Settlement { id, ts_unix_ms, .. }
             | MarketEvent::ReceiptVerified { id, ts_unix_ms, .. }
-            | MarketEvent::BalanceUpdate { id, ts_unix_ms, .. } => {
+            | MarketEvent::BalanceUpdate { id, ts_unix_ms, .. }
+            | MarketEvent::ReceiptAnchored { id, ts_unix_ms, .. } => {
                 *id = new_id;
                 *ts_unix_ms = ts;
             }

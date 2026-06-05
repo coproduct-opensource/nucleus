@@ -8,10 +8,12 @@
 //! - [`seller`] — the local x402 seller route (with the IFC pre-gate) the
 //!   facilitator pays.
 
+pub mod erc8004;
 pub mod facilitator;
 pub mod seller;
 pub mod signer;
 
+pub use erc8004::{AlloyAnchor, AnchorOutcome, Anchorer};
 pub use facilitator::{decode_settlement, X402Facilitator};
 pub use seller::seller_router;
 pub use signer::{load_keystore_signer, resolve_keystore_password, PasswordSource};

@@ -136,6 +136,19 @@ fn describe(ev: &MarketEvent) -> (String, &'static str, String) {
                 source_label(source)
             ),
         ),
+        MarketEvent::ReceiptAnchored {
+            agent_id,
+            response,
+            validation_tx,
+            ..
+        } => (
+            "anchored ⛓".into(),
+            "chip chip-proof",
+            format!(
+                "ERC-8004 agent #{agent_id}  ·  validation {response}  ·  tx {}",
+                short(validation_tx)
+            ),
+        ),
     }
 }
 

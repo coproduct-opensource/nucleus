@@ -52,6 +52,12 @@ marketplace-live-import:
 marketplace-live-check:
     cd examples/marketplace-live && cargo build --bins && cargo test
 
+# Deploy the ERC-8004 ValidationRegistry to Base Sepolia (one-time; GASFUL — the
+# deployer wallet needs Base Sepolia ETH). Prompts for the keystore password (not
+# on argv). Pin the printed address into `just marketplace-live --validation-registry <addr>`.
+marketplace-live-deploy-validation:
+    cd examples/marketplace-live/contracts && forge create src/ValidationRegistry.sol:ValidationRegistry --rpc-url https://sepolia.base.org --account nucleus-x402 --broadcast
+
 # ── x402 on Base Sepolia (TESTNET only — never mainnet / real funds) ──────────
 
 # Print the Base Sepolia x402 bootstrap config + faucet links (instant).

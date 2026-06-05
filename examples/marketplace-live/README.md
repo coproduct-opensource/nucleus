@@ -46,6 +46,35 @@ Open the dashboard UI against it with `just marketplace-ui` (it proxies `/api` t
 `https://sepolia.basescan.org/tx/<hash>`), and per-agent balances carry the
 green **`testnet`** badge.
 
+## ERC-8004 anchoring (optional)
+
+Anchor each verified receipt on-chain so the in-bounds decision is checkable from
+chain reads. **Identity** (`0x8004A818…BD9e`) and **Reputation** (`0x8004B663…8713`)
+are canonical on Base Sepolia; the **Validation Registry** is not, so we deploy a
+minimal selector-compatible one (`contracts/src/ValidationRegistry.sol`).
+
+> These writes are **gasful** — the wallet needs **Base Sepolia ETH** (not just
+> bUSDC). x402 settlement is gasless; ERC-8004 writes are not.
+
+```bash
+# 1) deploy the ValidationRegistry (one-time; prompts for the keystore password):
+just marketplace-live-deploy-validation        # prints: Deployed to: 0x<addr>
+
+# 2) run with anchoring on (registers each agent on Identity, anchors each
+#    verified receipt on Validation):
+SELLER_ADDRESS=0x<recv> just marketplace-live --validation-registry 0x<addr>
+```
+
+Per verified receipt the anchor task: computes `requestHash = keccak256(receipt)`,
+calls `validationRequest(validator, agentId, requestURI, requestHash)`, then (as
+the validator) `validationResponse(requestHash, 100, …, "clearing/in-bounds")`,
+and emits a `ReceiptAnchored` event → the dashboard shows `anchored ⛓` with the
+on-chain `agentId` + validation tx. Each real txn is then verifiable four ways:
+**dashboard → Basescan settlement → portable receipt → ERC-8004 validation anchor.**
+
+`response = 100` = "the gate allowed this flow and a receipt was issued" — a
+model-level, declared-input in-bounds attestation, not an end-to-end proof.
+
 ## Secure key handling
 
 The signing key lives in a foundry-format encrypted keystore; the decryption
