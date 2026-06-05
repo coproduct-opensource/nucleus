@@ -29,14 +29,19 @@
 // section); callers that want the newtypes can reach them here.
 pub use nucleus_econ_types::{AgentId, AuctionId, MicroUsd, ProposalId};
 
+pub mod commons;
 pub mod extracted;
 pub mod rational;
 pub mod sealed;
+pub mod settlement;
 pub mod tlock;
 pub mod vcg;
 pub mod vcg_combo;
 pub mod vcg_hetero;
 pub mod vcg_pigou;
+
+pub use commons::{route_to_commons, CommonsAllocation, CommonsError, CommonsShare};
+pub use settlement::{classify, refund, seller_gross, Verdict};
 
 pub use rational::Rational;
 pub use sealed::{
