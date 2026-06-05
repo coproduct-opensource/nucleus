@@ -52,8 +52,8 @@
   <!-- Stats boxes -->
   <g transform="translate(200, 430)">
     <rect width="160" height="70" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1"/>
-    <text x="80" y="30" text-anchor="middle" font-family="SF Mono, monospace" font-size="28" font-weight="700" fill="#3fb950">297</text>
-    <text x="80" y="52" text-anchor="middle" font-family="SF Mono, monospace" font-size="13" fill="#8b949e">Verus Proofs</text>
+    <text x="80" y="30" text-anchor="middle" font-family="SF Mono, monospace" font-size="28" font-weight="700" fill="#3fb950">113</text>
+    <text x="80" y="52" text-anchor="middle" font-family="SF Mono, monospace" font-size="13" fill="#8b949e">Kani Proofs</text>
   </g>
   <g transform="translate(380, 430)">
     <rect width="160" height="70" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1"/>
@@ -62,12 +62,12 @@
   </g>
   <g transform="translate(560, 430)">
     <rect width="160" height="70" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1"/>
-    <text x="80" y="30" text-anchor="middle" font-family="SF Mono, monospace" font-size="28" font-weight="700" fill="#d29922">6</text>
-    <text x="80" y="52" text-anchor="middle" font-family="SF Mono, monospace" font-size="13" fill="#8b949e">Real CVEs</text>
+    <text x="80" y="30" text-anchor="middle" font-family="SF Mono, monospace" font-size="28" font-weight="700" fill="#d29922">5</text>
+    <text x="80" y="52" text-anchor="middle" font-family="SF Mono, monospace" font-size="13" fill="#8b949e">Real Exploits</text>
   </g>
   <g transform="translate(740, 430)">
     <rect width="160" height="70" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1"/>
-    <text x="80" y="30" text-anchor="middle" font-family="SF Mono, monospace" font-size="28" font-weight="700" fill="#bc8cff">0ms</text>
+    <text x="80" y="30" text-anchor="middle" font-family="SF Mono, monospace" font-size="28" font-weight="700" fill="#bc8cff">&lt;1ms</text>
     <text x="80" y="52" text-anchor="middle" font-family="SF Mono, monospace" font-size="13" fill="#8b949e">WASM Verdicts</text>
   </g>
   <!-- Bottom bar -->

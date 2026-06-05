@@ -1,7 +1,7 @@
 //! Core CTF engine: mediates tool calls through the portcullis lattice.
 //!
 //! Uses the same `exposure_core` functions that production nucleus uses,
-//! backed by the same Verus SMT proofs.
+//! backed by the same Lean 4 + Kani proofs.
 
 use std::collections::BTreeSet;
 
@@ -178,7 +178,7 @@ impl<'a> CtfEngine<'a> {
                     "Tool '{}' was never granted to this profile. This is the simplest \
                      defense — don't give capabilities you don't need. CVE-2024-37032 \
                      (Ollama path traversal RCE) exploited write access that should never \
-                     have been granted. The Verus proof VC-001 guarantees capabilities are \
+                     have been granted. The Lean 4 + Kani proof VC-001 guarantees capabilities are \
                      monotonic: once set to Never, no sequence of operations can escalate \
                      them back. The attack surface is zero by construction, not by hope.",
                     tc.tool
@@ -215,7 +215,7 @@ impl<'a> CtfEngine<'a> {
                 narrative: format!(
                     "Operation {:?} is permanently disabled in the '{}' profile. The \
                      permission lattice uses a three-valued capability system: Always > \
-                     OnApproval > Never. The Verus proof VC-001 proves the lattice ordering \
+                     OnApproval > Never. The Lean 4 + Kani proof VC-001 proves the lattice ordering \
                      is monotonic — the meet of any two capability levels can only move DOWN \
                      the lattice. Once Never, always Never. No runtime trick, prompt \
                      injection, or confused deputy can reverse this.",
@@ -258,7 +258,7 @@ impl<'a> CtfEngine<'a> {
                          The CommandLattice performs sink analysis on every bash string \
                          BEFORE execution, matching against network utilities (curl, wget, \
                          nc), language-level HTTP clients (python requests, urllib), and \
-                         OS primitives (/dev/tcp). The Verus proof VC-003 guarantees: if \
+                         OS primitives (/dev/tcp). The Lean 4 + Kani proof VC-003 guarantees: if \
                          the command matches any sink pattern, execution is blocked. Blocked \
                          command: '{}'",
                         Self::truncate(command, 60),
@@ -300,7 +300,9 @@ impl<'a> CtfEngine<'a> {
                         operation,
                     ),
                     defense: "Uninhabitable State Guard".into(),
-                    proof: Some("VC-003: sink safety — guard_would_deny proven in Verus".into()),
+                    proof: Some(
+                        "VC-003: sink safety — guard_would_deny proven in Lean 4 + Kani".into(),
+                    ),
                 },
                 decision_source: DecisionSource::UninhabitableGuard,
                 narrative: format!(
@@ -311,7 +313,7 @@ impl<'a> CtfEngine<'a> {
                      attacker-controlled content, then exfiltrated via an MCP tool. The \
                      GradedExposureGuard tracks these three boolean flags and, when all \
                      three become true, dynamically downgrades exfil operations to \
-                     RequiresApproval. The Verus proof VC-003 proves this guard fires if \
+                     RequiresApproval. The Lean 4 + Kani proof VC-003 proves this guard fires if \
                      and only if the state is uninhabitable — no false negatives, no \
                      false positives, mathematically guaranteed.",
                     operation,

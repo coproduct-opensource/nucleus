@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 pub struct Defense {
     pub name: &'static str,
     pub description: &'static str,
-    /// Link to the Verus proof backing this defense (if any).
+    /// Link to the formal proof (Lean 4 + Kani) backing this defense (if any).
     pub proof: Option<&'static str>,
 }
 
@@ -258,7 +258,7 @@ impl Level {
                         This is the simplest defense: don't give capabilities you don't need. \
                         CVE-2024-37032 (Ollama) exploited write access that should never have been granted.",
                     advanced: "The PermissionLattice::read_only() profile sets all non-read \
-                        capabilities to Never. The Verus proof VC-001 (monotonicity) guarantees \
+                        capabilities to Never. The Lean 4 + Kani proof VC-001 (monotonicity) guarantees \
                         that capabilities can only tighten during a session — once set to Never, \
                         a capability cannot be escalated back to Always or OnApproval. This is \
                         proven via the lattice ordering: Never <= OnApproval <= Always, and the \
@@ -326,7 +326,7 @@ impl Level {
                         where a prompt injection in a git commit message triggered unauthorized \
                         bash commands to exfiltrate data.",
                     advanced: "The CommandLattice applies regex-based sink analysis to bash \
-                        command strings before execution. The Verus proof VC-003 (sink safety) \
+                        command strings before execution. The Lean 4 + Kani proof VC-003 (sink safety) \
                         guarantees that if a command matches any exfiltration pattern, the \
                         classify_operation function returns ExfilVector, which triggers the \
                         guard. The pattern set covers: network utilities (curl, wget, nc, ncat), \
@@ -475,7 +475,7 @@ impl Level {
                         description: "After reading private data and ingesting untrusted content, \
                                       ExfilVector operations require human approval.",
                         proof: Some(
-                            "VC-003: sink safety — Verus proof that guard_would_deny \
+                            "VC-003: sink safety — Lean 4 + Kani proof that guard_would_deny \
                                      returns true when exposure is uninhabitable",
                         ),
                     },
@@ -501,7 +501,7 @@ impl Level {
                         Supabase MCP exfiltration — the Cursor agent had all three legs active \
                         but no guard fired.",
                     advanced: "The ExposureGuard evaluates guard_would_deny(exposure_set) \
-                        before each operation classified as ExfilVector. The Verus proof \
+                        before each operation classified as ExfilVector. The Lean 4 + Kani proof \
                         VC-003 proves that guard_would_deny returns true if and only if \
                         exposure_set.is_uninhabitable() — i.e., all three legs are set. \
                         The proof is constructive: it shows that the guard's decision \
