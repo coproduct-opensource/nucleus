@@ -124,8 +124,8 @@ cargo kani --harness proof_normalize_idempotent
 The Lean 4 type-checker proves that `CapabilityLevel` (the 3-element permission type) satisfies the HeytingAlgebra axioms. This means the `meet` operation is mathematically guaranteed to be monotonically decreasing — an agent cannot escalate permissions through any sequence of lattice operations.
 
 ```bash
-cd crates/portcullis-verified/lean
-lake build PortcullisVerified  # kernel-checks all theorems
+cd crates/portcullis-core/lean
+lake build PortcullisCore  # kernel-checks all theorems
 ```
 
 ### Aeneas Pipeline (Rust → Lean 4, machine-translated)
@@ -207,7 +207,7 @@ NemoClaw's YAML policy becomes the *outer* boundary. Nucleus's lattice becomes t
 
 - [Full README](../README.md) — complete documentation
 - [Permission Lattice Theory](../crates/portcullis/README.md) — the math
-- [Lean 4 Proofs](../crates/portcullis-verified/lean/) — kernel-checked theorems
+- [Lean 4 Proofs](../crates/portcullis-core/lean/) — kernel-checked theorems
 - [Aeneas Pipeline](../crates/portcullis-core/) — Rust → Lean 4 translation
 - [Security Policy](../SECURITY.md) — responsible disclosure
 
