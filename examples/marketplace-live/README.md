@@ -75,6 +75,38 @@ on-chain `agentId` + validation tx. Each real txn is then verifiable four ways:
 `response = 100` = "the gate allowed this flow and a receipt was issued" — a
 model-level, declared-input in-bounds attestation, not an end-to-end proof.
 
+## Credible settlement contract (Bet B / B2)
+
+`contracts/src/CredibleSettlement.sol` is the **optimistic credible-clearing
+settlement** contract — it removes the *trusted auctioneer* by letting the
+verified settlement self-execute on-chain. Lifecycle: buyer `openRound` (escrows
+the cleared price) → an untrusted poster `postClearing` (+bond, after the reveal
+deadline) → a challenge window → `settle` (the arbiter supplies `deliveredBps`).
+
+What makes the money path trustworthy: the settlement split (`classify` /
+`sellerGross` / `refund`) and the commons routing (`routeToCommons`) are a
+**byte-for-byte Solidity mirror** of `nucleus-econ-kernels::settlement` /
+`::commons`, which are themselves parity-pinned to `SettlementDecision.lean`. The
+load-bearing invariant `sellerGross + refund == price` holds by construction. A
+valid `challenge()` slashes the poster's bond **to the commons** (anti-grief,
+non-extractive) and safely reverses (buyer refunded) — so cheating is
+unprofitable *without* running VCG on-chain.
+
+Honesty boundary: the *cleared price* is posted optimistically (off-chain
+recompute is the fraud proof; a challenge reverses, it does not yet adjudicate
+poster-vs-challenger — that's B3). `deliveredBps` is an arbiter input — the
+unsolved PoTE seam. See `docs/rfcs/credible-clearing-settlement.md`.
+
+```bash
+# forge-std is not vendored (/lib is gitignored); fetch it once:
+cd contracts && forge install foundry-rs/forge-std --no-git   # or: git clone --depth 1 https://github.com/foundry-rs/forge-std lib/forge-std
+forge test --match-contract CredibleSettlementTest            # 17 tests: parity + lifecycle + fuzz
+```
+
+The `test_parity_*` cases mirror the SAME vectors as the Rust `settlement.rs` /
+`commons.rs` tests — they are what bind the on-chain split to the Lean proof. If
+the Solidity drifts from the proven function, they fail.
+
 ## Secure key handling
 
 The signing key lives in a foundry-format encrypted keystore; the decryption
