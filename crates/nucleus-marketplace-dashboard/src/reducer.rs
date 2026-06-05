@@ -50,6 +50,10 @@ pub struct MarketState {
     /// Cumulative micro-USD settled on-chain (Base Sepolia testnet) — only ever
     /// incremented by a `Confirmed` settlement tagged `OnChainTestnet`.
     pub onchain_settled_micros: i64,
+    /// Cumulative Pigouvian (externality) micro-USD across confirmed settlements.
+    /// `0` while pricing is `FixedPrice`; grows once a Pigouvian/VCG mechanism
+    /// is wired in (see [`crate::clearing`]).
+    pub externality_micros: i64,
     /// Highest event id applied (the snapshot's `Last-Event-ID`).
     pub last_id: u64,
     /// Bounded recent-event ring (newest last).
@@ -100,12 +104,14 @@ impl MarketState {
             MarketEvent::Settlement {
                 agent,
                 amount,
+                externality,
                 outcome,
                 source,
                 ..
             } => {
                 if outcome.is_confirmed() {
                     self.agent_mut(agent).settlements += 1;
+                    self.externality_micros += externality.micros();
                     match source {
                         BalanceSource::Simulated => {
                             self.simulated_settled_micros += amount.micros()
@@ -189,6 +195,8 @@ mod tests {
                 ts_unix_ms: 13,
                 agent: a.clone(),
                 amount: MicroUsd(10_000),
+                cleared_method: crate::event::ClearingMethod::FixedPrice,
+                externality: MicroUsd(0),
                 chain: "eip155:84532".into(),
                 outcome: SettlementOutcome::Confirmed {
                     tx_hash: "0xsimulated0".into(),

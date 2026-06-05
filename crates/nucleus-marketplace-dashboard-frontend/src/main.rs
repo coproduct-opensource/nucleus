@@ -14,7 +14,9 @@ use leptos_use::{
     use_event_source_with_options, ReconnectLimit, UseEventSourceOptions, UseEventSourceReturn,
 };
 
-use nucleus_marketplace_dashboard::{AgentSummary, BalanceSource, Lane, MarketEvent, MarketState};
+use nucleus_marketplace_dashboard::{
+    AgentSummary, BalanceSource, ClearingMethod, Lane, MarketEvent, MarketState,
+};
 
 fn main() {
     console_error_panic_hook::set_once();
@@ -85,6 +87,8 @@ fn describe(ev: &MarketEvent) -> (String, &'static str, String) {
         ),
         MarketEvent::Settlement {
             amount,
+            cleared_method,
+            externality,
             outcome,
             source,
             ..
@@ -96,10 +100,15 @@ fn describe(ev: &MarketEvent) -> (String, &'static str, String) {
                 nucleus_marketplace_dashboard::SettlementOutcome::Timeout => "timeout".into(),
                 nucleus_marketplace_dashboard::SettlementOutcome::Orphaned => "orphaned".into(),
             };
+            let method = match cleared_method {
+                ClearingMethod::FixedPrice => "fixed".to_string(),
+                ClearingMethod::Pigouvian => format!("pigou +{}", usdc(externality.micros())),
+                ClearingMethod::Vcg => format!("vcg +{}", usdc(externality.micros())),
+            };
             (
                 format!("settle {}", usdc(amount.micros())),
                 "chip chip-commerce",
-                format!("{st}  ·  {}", source_label(source)),
+                format!("{st}  ·  {}  ·  {method}", source_label(source)),
             )
         }
         MarketEvent::ReceiptVerified {

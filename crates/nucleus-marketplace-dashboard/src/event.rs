@@ -96,6 +96,20 @@ impl SettlementOutcome {
     }
 }
 
+/// The mechanism that priced a settled call. Carried on the wire so the UI never
+/// implies price discovery that isn't actually running.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClearingMethod {
+    /// Static base price; no externality, no discovery (today's default).
+    #[default]
+    FixedPrice,
+    /// Base price + an internalised externality surcharge (Pigouvian) — future.
+    Pigouvian,
+    /// Truthful clearing of a contended resource (Vickrey–Clarke–Groves) — future.
+    Vcg,
+}
+
 /// One marketplace event. `id` (monotonic seq) and `ts_unix_ms` are stamped by
 /// the [`crate::Hub`] on emit via the injected [`crate::Clock`], so producers
 /// construct events with `0` placeholders and never set wall-clock time directly.
@@ -144,7 +158,16 @@ pub enum MarketEvent {
         id: u64,
         ts_unix_ms: i64,
         agent: AgentId,
+        /// The cleared price actually settled (= base price under `FixedPrice`).
         amount: MicroUsd,
+        /// The mechanism that priced this call. `serde(default)` keeps the wire
+        /// backward-compatible as new mechanisms land.
+        #[serde(default)]
+        cleared_method: ClearingMethod,
+        /// The Pigouvian (externality) component of `amount`; `0` under fixed
+        /// pricing. `serde(default)` for backward compatibility.
+        #[serde(default)]
+        externality: MicroUsd,
         /// CAIP-2 chain id; Base Sepolia is `eip155:84532` — testnet only.
         chain: String,
         outcome: SettlementOutcome,
@@ -312,6 +335,8 @@ mod tests {
             ts_unix_ms: 2,
             agent: AgentId::from("a"),
             amount: MicroUsd(10_000),
+            cleared_method: ClearingMethod::FixedPrice,
+            externality: MicroUsd(0),
             chain: "eip155:84532".into(),
             outcome: SettlementOutcome::Confirmed {
                 tx_hash: "0xabc".into(),
@@ -322,6 +347,17 @@ mod tests {
         assert_eq!(s["type"], "settlement");
         assert_eq!(s["outcome"]["state"], "confirmed");
         assert_eq!(s["source"], "simulated");
+        assert_eq!(s["cleared_method"], "fixed_price");
+
+        // Backward-compat: an old Settlement JSON without the clearing fields
+        // still deserializes (serde defaults), proving the wire stays stable.
+        let legacy = serde_json::json!({
+            "type": "settlement", "id": 1, "ts_unix_ms": 2, "agent": "a",
+            "amount": 10_000, "chain": "eip155:84532",
+            "outcome": {"state": "confirmed", "tx_hash": "0xabc"}, "source": "simulated"
+        });
+        let back: MarketEvent = serde_json::from_value(legacy).unwrap();
+        assert_eq!(back, settled);
 
         // Round-trip every variant shape we just built.
         for ev in [sample("registered"), sample("deny"), settled] {

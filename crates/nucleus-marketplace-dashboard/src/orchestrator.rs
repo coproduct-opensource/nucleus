@@ -14,6 +14,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::AgentLoop;
+use crate::clearing::{Bid, Clearing, FixedPriceClearing};
 use crate::event::{MarketEvent, SettlementOutcome, VerifyMethod};
 use crate::facilitator::{Facilitator, SettleRequest};
 use crate::hub::Hub;
@@ -29,19 +30,30 @@ pub const BASE_SEPOLIA_CAIP2: &str = "eip155:84532";
 pub struct Orchestrator<F: Facilitator> {
     hub: Arc<Hub>,
     facilitator: Arc<F>,
+    clearing: Arc<dyn Clearing>,
     agents: Vec<AgentLoop>,
     chain: String,
 }
 
 impl<F: Facilitator + 'static> Orchestrator<F> {
     /// Build an orchestrator over a hub, a facilitator, and an agent fleet.
+    /// Pricing defaults to [`FixedPriceClearing`]; swap in a Pigouvian/VCG
+    /// mechanism with [`Orchestrator::with_clearing`].
     pub fn new(hub: Arc<Hub>, facilitator: Arc<F>, agents: Vec<AgentLoop>) -> Self {
         Self {
             hub,
             facilitator,
+            clearing: Arc::new(FixedPriceClearing),
             agents,
             chain: BASE_SEPOLIA_CAIP2.to_string(),
         }
+    }
+
+    /// Replace the pricing mechanism (the seam where verified VCG / Pigouvian
+    /// clearing drops in — see [`crate::clearing`]).
+    pub fn with_clearing(mut self, clearing: Arc<dyn Clearing>) -> Self {
+        self.clearing = clearing;
+        self
     }
 
     /// The agent fleet.
@@ -102,12 +114,34 @@ impl<F: Facilitator + 'static> Orchestrator<F> {
             canonical: verdict.canonical(),
         });
 
+        // Price the call through the clearing seam. Under `FixedPriceClearing`
+        // this returns the base price with zero externality; a future
+        // Pigouvian/VCG mechanism prices the externality (declared-input risk)
+        // and clears contended resources. The per-call loop passes a
+        // single-element bid profile (the degenerate no-contention case).
+        let bid = Bid {
+            agent: a.agent.clone(),
+            resource: a.resource.clone(),
+            base_price: a.price,
+            externality_signal: verdict.declared_inputs.len() as u32,
+        };
+        let cleared = self
+            .clearing
+            .clear(std::slice::from_ref(&bid))
+            .into_iter()
+            .next()
+            .unwrap_or(crate::clearing::ClearingOutcome {
+                price: a.price,
+                externality: crate::event::MicroUsd(0),
+                method: crate::event::ClearingMethod::FixedPrice,
+            });
+
         let payment_reference = format!("{}-{}", a.agent.as_str(), attempt);
         let outcome = self
             .facilitator
             .settle(&SettleRequest {
                 agent: a.agent.clone(),
-                amount: a.price,
+                amount: cleared.price,
                 resource: a.resource.clone(),
                 payment_reference: payment_reference.clone(),
             })
@@ -118,7 +152,9 @@ impl<F: Facilitator + 'static> Orchestrator<F> {
             id: 0,
             ts_unix_ms: 0,
             agent: a.agent.clone(),
-            amount: a.price,
+            amount: cleared.price,
+            cleared_method: cleared.method,
+            externality: cleared.externality,
             chain: self.chain.clone(),
             outcome: outcome.clone(),
             source,
