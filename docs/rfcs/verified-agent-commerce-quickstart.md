@@ -117,6 +117,20 @@ log) rather than a proprietary trust score. Lead with *verifiable*, not *trusted
 - **Validate with one design partner before building the polished QuickStart.**
   A micro-SaaS seller already on (or adopting) x402 who has felt a dispute.
 
+## Implementation note: what the receipt actually signs
+
+The first cut (`crates/nucleus-verify-commerce`) surfaced a real subtlety worth
+recording: `nucleus_lineage::canonical_edge_bytes` signs a lineage edge's
+`child`, `kind`, `parents`, **`content_hash_hex`**, `ts`, and `prev_hash` — but
+**not** the edge's free-form `attrs` nor the bundle's `payload`. So putting the
+commerce binding only in the payload would be a *false* guarantee (the bundle
+would still "verify" after the payload was tampered). The receipt issuer instead
+folds the whole binding (resource + caller + payment + body hash) into the
+delivery edge's **content hash**, which is signed; `verify_receipt_bundle`
+re-derives the binding from the payload and checks it equals that signed hash.
+Tampering any field is then detected (regression-tested). This is the kind of
+guarantee that has to be checked, not assumed.
+
 ## Recommendation
 
 Greenlight the QuickStart as a GTM experiment; drop the "bridge" framing. The
