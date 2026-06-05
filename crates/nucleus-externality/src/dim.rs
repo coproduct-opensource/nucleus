@@ -68,6 +68,25 @@ pub enum ResourceDim {
     /// computed deterministically from the clearing time + the
     /// gateway window. Units: micro-seconds.
     AuctionDelay,
+    /// **Freshwater consumed** by the compute that backs this call —
+    /// direct datacenter cooling + the water embedded in the
+    /// electricity drawn (thermoelectric withdrawal). Units:
+    /// micro-litres (so 1 L = 1_000_000). Signed by the same TEE-
+    /// attested compute oracle that reports `GpuSeconds`, multiplied
+    /// by a regional water-usage-effectiveness (WUE) factor.
+    ///
+    /// Priced separately from carbon because water scarcity is
+    /// *local* — a gram of CO₂ has the same social cost wherever it
+    /// is emitted, but a litre drawn from a stressed basin costs far
+    /// more than one from a wet region. The Tier-1 λ is a
+    /// scarcity-weighted shadow price (see
+    /// `docs/rfcs/initial-pigouvian-structure.md`).
+    ///
+    /// Appended at the end of the enum (after `AuctionDelay`) so every
+    /// pre-existing variant keeps its discriminant — `Ord` order is
+    /// unchanged, so prior multi-dimension profile digests / claim
+    /// signatures remain valid (Water simply sorts last).
+    WaterLitresConsumed,
 }
 
 impl ResourceDim {
@@ -83,6 +102,7 @@ impl ResourceDim {
             ResourceDim::KnowledgeSpillover => b"k_spill",
             ResourceDim::FxVolatilityDelta => b"fx_vol",
             ResourceDim::AuctionDelay => b"auc_del",
+            ResourceDim::WaterLitresConsumed => b"water_l",
         }
     }
 
@@ -97,6 +117,7 @@ impl ResourceDim {
             ResourceDim::KnowledgeSpillover,
             ResourceDim::FxVolatilityDelta,
             ResourceDim::AuctionDelay,
+            ResourceDim::WaterLitresConsumed,
         ]
     }
 
@@ -130,7 +151,7 @@ mod tests {
     fn all_includes_every_variant() {
         // Sanity check that `all()` actually enumerates the enum.
         let count = ResourceDim::all().len();
-        assert_eq!(count, 7, "expected 7 dimensions, got {count}");
+        assert_eq!(count, 8, "expected 8 dimensions, got {count}");
     }
 
     #[test]
@@ -178,5 +199,31 @@ mod tests {
         );
         assert_eq!(ResourceDim::FxVolatilityDelta.as_canonical_tag(), b"fx_vol");
         assert_eq!(ResourceDim::AuctionDelay.as_canonical_tag(), b"auc_del");
+        assert_eq!(
+            ResourceDim::WaterLitresConsumed.as_canonical_tag(),
+            b"water_l"
+        );
+    }
+
+    #[test]
+    fn water_is_a_negative_externality() {
+        // Water is a tax dimension (a cost on third parties), not a
+        // positive spillover — it must NOT be flagged positive, or the
+        // rate-setter would pay agents to consume water.
+        assert!(!ResourceDim::WaterLitresConsumed.is_positive_externality());
+    }
+
+    #[test]
+    fn water_sorts_last_so_prior_digests_are_stable() {
+        // Water was appended at the end of the enum specifically so the
+        // derived `Ord` (by discriminant = declaration order) leaves
+        // every pre-existing variant's position unchanged. If a future
+        // edit inserts a variant earlier, this test fails and forces a
+        // PROFILE_DOMAIN / RESOURCE_DIM_DOMAIN bump.
+        let all = ResourceDim::all();
+        assert_eq!(*all.last().unwrap(), ResourceDim::WaterLitresConsumed);
+        for w in all.windows(2) {
+            assert!(w[0] < w[1], "all() must be in strict Ord order");
+        }
     }
 }
