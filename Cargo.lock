@@ -6631,6 +6631,7 @@ name = "nucleus-ifc"
 version = "1.0.0"
 dependencies = [
  "portcullis-core",
+ "serde",
 ]
 
 [[package]]

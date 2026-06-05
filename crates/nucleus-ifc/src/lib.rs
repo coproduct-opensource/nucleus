@@ -47,6 +47,14 @@ pub use portcullis_core::flow::NodeKind;
 pub use portcullis_core::ifc_api::{FlowError, FlowTracker, SafetyCheck};
 pub use portcullis_core::{AuthorityLevel, DerivationClass, IFCLabel, IntegLevel};
 
+// The model-level IFC decision (FlowDeclaration → IfcVerdict) — the single source
+// of truth shared by the production gate (nucleus-verify-commerce) and the
+// `@nucleus/verify` recompute SDK. Behind the `decision` feature (pulls serde).
+#[cfg(feature = "decision")]
+pub mod decision;
+#[cfg(feature = "decision")]
+pub use decision::{DeclaredInput, FlowDeclaration, IfcVerdict};
+
 #[cfg(test)]
 mod tests {
     use super::*;

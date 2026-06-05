@@ -11,6 +11,13 @@ categories = ["development-tools"]
 
 [dependencies]
 portcullis-core = { version = "1.0.0", path = "../portcullis-core" }
+serde = { version = "1", features = ["derive"], optional = true }
+
+[features]
+# The model-level IFC `decision` module (FlowDeclaration → IfcVerdict). Pulls
+# serde; kept optional so the base IFC engine stays dependency-light. Enabled by
+# nucleus-verify-commerce and the wasm recompute SDK so both share one decision.
+decision = ["dep:serde"]
 
 [package.metadata.docs.rs]
 all-features = true

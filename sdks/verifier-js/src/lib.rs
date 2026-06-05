@@ -171,3 +171,85 @@ pub fn supported_envelope_schema_version() -> u32 {
 pub fn sdk_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
+
+// ── RECOMPUTE: re-derive the IFC verdict, don't just trust the signature ──────
+//
+// `verifyBundle` proves a receipt was *signed*; `recomputeVerdict` proves the
+// in-bounds *decision* was correct by re-running the EXACT same gate function
+// (`nucleus_ifc::decision`, shared verbatim with the production seller). This is
+// the structural differentiator: a verdict a counterparty can independently
+// re-derive, not a vendor's signature over the vendor's own claim. Honesty:
+// model-level over the DECLARED inputs (coverage-limited, per-call); fails closed
+// on an unknown input token.
+
+/// Wire shape returned by `recomputeVerdict`.
+#[derive(Debug, Serialize)]
+struct RecomputeReport {
+    /// The independently re-derived decision.
+    allow: bool,
+    /// Audit reason (`"safe"` on allow, the `SafetyCheck` form on deny).
+    reason: String,
+    /// The (sorted, deduped) declared inputs the verdict was derived over.
+    declared_inputs: Vec<String>,
+    /// Canonical binding string (`allow\0inputs`) for comparison to a receipt.
+    canonical: String,
+}
+
+/// Re-derive the IFC verdict from a call's declared inputs, running the same
+/// `FlowDeclaration::decide` the production gate runs.
+///
+/// # Arguments
+/// * `declared_inputs_json` — a JSON array of input tokens, e.g.
+///   `["user_prompt","web_content"]` (the set carried in a receipt's verdict).
+/// * `requires_authority` — whether the action requires `Directive` authority.
+/// * `sink_public` — whether the response is publicly visible (vs. delivered to
+///   the authenticated counterparty).
+///
+/// # Returns
+/// A `RecomputeReport`. Throws (fails closed) if any token is unrecognised.
+#[wasm_bindgen(js_name = recomputeVerdict)]
+pub fn recompute_verdict_js(
+    declared_inputs_json: &str,
+    requires_authority: bool,
+    sink_public: bool,
+) -> Result<JsValue, JsError> {
+    set_panic_hook();
+    let tokens: Vec<String> = serde_json::from_str(declared_inputs_json)
+        .map_err(|e| JsError::new(&format!("declared_inputs JSON: {e}")))?;
+    let decl = nucleus_ifc::decision::FlowDeclaration::from_tokens(
+        tokens.iter().map(String::as_str),
+        requires_authority,
+        sink_public,
+    )
+    .ok_or_else(|| JsError::new("unknown declared-input token (recompute fails closed)"))?;
+    let verdict = decl.decide();
+    let report = RecomputeReport {
+        canonical: verdict.canonical(),
+        allow: verdict.allow,
+        reason: verdict.reason,
+        declared_inputs: verdict.declared_inputs,
+    };
+    serde_wasm_bindgen::to_value(&report).map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Convenience: recompute and compare to a *claimed* verdict (e.g. the one bound
+/// into a receipt). Returns `true` iff the re-derived `allow` + declared set
+/// match. This is the one-liner that turns "trust the receipt" into "verify it".
+#[wasm_bindgen(js_name = checkVerdict)]
+pub fn check_verdict_js(
+    declared_inputs_json: &str,
+    requires_authority: bool,
+    sink_public: bool,
+    claimed_allow: bool,
+) -> Result<bool, JsError> {
+    set_panic_hook();
+    let tokens: Vec<String> = serde_json::from_str(declared_inputs_json)
+        .map_err(|e| JsError::new(&format!("declared_inputs JSON: {e}")))?;
+    let decl = nucleus_ifc::decision::FlowDeclaration::from_tokens(
+        tokens.iter().map(String::as_str),
+        requires_authority,
+        sink_public,
+    )
+    .ok_or_else(|| JsError::new("unknown declared-input token (recompute fails closed)"))?;
+    Ok(decl.decide().allow == claimed_allow)
+}

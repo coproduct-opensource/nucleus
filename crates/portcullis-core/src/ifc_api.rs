@@ -18,6 +18,24 @@
 use crate::flow::{NodeKind, intrinsic_label};
 use crate::{AuthorityLevel, ConfLevel, DerivationClass, IFCLabel, IntegLevel};
 
+/// Unix seconds, wasm-safe. `wasm32-unknown-unknown` has no clock, so it returns
+/// 0 there; this only feeds the label's freshness metadata (not the
+/// exfiltration-safety decision), so a wasm recompute matches native exactly.
+#[inline]
+fn now_unix_secs() -> u64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        0
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // SessionCleanseToken — sealed authorization for ceiling reset (#1233)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -274,10 +292,11 @@ impl FlowTracker {
             }
         }
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        // Wall-clock feeds only the label's freshness metadata, not the
+        // exfiltration-safety decision — so a wasm32 build (no clock) uses 0 and
+        // re-derives the SAME verdict as native (lets `@nucleus/verify` recompute
+        // the gate in-browser with no drift).
+        let now = now_unix_secs();
 
         // Compute label: intrinsic join with parent labels.
         let mut label = intrinsic_label(kind, now);

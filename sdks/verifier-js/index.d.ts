@@ -72,3 +72,46 @@ export function verifierVersion(): Promise<string>;
 
 /** Envelope-schema version this build can verify. Auto-inits. */
 export function supportedSchemaVersion(): Promise<number>;
+
+/** The recomputed IFC verdict — mirrors the Rust `RecomputeReport`. */
+export interface RecomputeReport {
+  /** Whether the action is permitted by the re-derived decision. */
+  allow: boolean;
+  /** Audit reason (`"safe"` on allow; the `SafetyCheck` form on deny). */
+  reason: string;
+  /** The (sorted, deduped) declared inputs the verdict was derived over. */
+  declared_inputs: string[];
+  /** Canonical binding string (`allow\0inputs`) for comparison to a receipt. */
+  canonical: string;
+}
+
+/** Options for the recompute path. */
+export interface RecomputeOptions {
+  /** Whether the action requires `Directive` authority. Default `false`. */
+  requiresAuthority?: boolean;
+  /** Whether the response is publicly visible (vs. counterparty). Default `false`. */
+  sinkPublic?: boolean;
+}
+
+/**
+ * Re-derive the IFC verdict from a call's declared inputs, running the SAME gate
+ * function the production seller runs (no network, no server trust) — proving
+ * the in-bounds *decision* was correct, not just that a receipt was signed.
+ * Fails closed (`{ ok: false }`) on an unknown token.
+ *
+ * SCOPE: model-level over the DECLARED inputs (coverage-limited, per-call).
+ */
+export function recompute(
+  declaredInputs: string[],
+  opts?: RecomputeOptions,
+): Promise<{ ok: true; verdict: RecomputeReport } | VerifyFail>;
+
+/**
+ * Recompute and compare to a claimed verdict. Returns `true` iff the
+ * independently re-derived `allow` matches `claimedAllow`.
+ */
+export function checkVerdict(
+  declaredInputs: string[],
+  claimedAllow: boolean,
+  opts?: RecomputeOptions,
+): Promise<boolean>;

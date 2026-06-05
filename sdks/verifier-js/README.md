@@ -18,6 +18,32 @@ That is the whole integration. No `init()`, no service to run, no crypto to
 wire. `verify()` runs the audited nucleus envelope verifier (compiled to WASM)
 **in your own Node or browser process** and returns a result you branch on.
 
+### `recompute()` — re-derive the decision, don't just trust the signature
+
+`verify()` proves a receipt was *signed*. `recompute()` proves the in-bounds
+**IFC decision was correct** — by re-running the *exact same gate function the
+producer ran* (`nucleus-ifc`, compiled to this WASM), in your process:
+
+```ts
+import { recompute, checkVerdict } from "@coproduct/verify";
+
+// Re-derive the verdict for a call's declared data-flow inputs:
+const r = await recompute(["user_prompt", "web_content"]);
+// r.verdict.allow === false  (adversarial web content reaching an outbound action)
+
+// Or one-line: does the receipt's claimed verdict actually hold?
+const honest = await checkVerdict(receipt.declared_inputs, receipt.allow);
+if (!honest) throw new Error("receipt's IFC verdict does not re-derive");
+```
+
+This is the structural difference from a payment receipt: it is a verdict a
+counterparty **independently re-derives**, not a vendor's signature over the
+vendor's own claim. Because it runs the *same code* as the gate, the recompute
+can never drift from enforcement. Fails closed on an unknown input token.
+
+**Scope (honest):** model-level over the **declared** inputs (coverage-limited,
+per-call) — the same boundary as the gate itself.
+
 ### What it checks
 
 A receipt is a portable **bundle** of an agent's execution lineage. `verify()`
