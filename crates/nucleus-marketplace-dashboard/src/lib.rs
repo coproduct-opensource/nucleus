@@ -32,23 +32,40 @@
 
 #![forbid(unsafe_code)]
 
-pub mod agent;
-pub mod clock;
+// Always compiled — the serde-only wire contract + pure reducer. These are
+// wasm-safe (serde only), so a wasm frontend can depend on this crate with
+// `default-features = false` and share the `MarketEvent` type verbatim.
 pub mod event;
-pub mod facilitator;
-pub mod hub;
-pub mod orchestrator;
 pub mod reducer;
 
+// The async orchestrator core — needs tokio + the IFC gate (`runtime` feature).
+#[cfg(feature = "runtime")]
+pub mod agent;
+#[cfg(feature = "runtime")]
+pub mod clock;
+#[cfg(feature = "runtime")]
+pub mod facilitator;
+#[cfg(feature = "runtime")]
+pub mod hub;
+#[cfg(feature = "runtime")]
+pub mod orchestrator;
+
+// The thin axum SSE edge.
 #[cfg(feature = "server")]
 pub mod http;
 
-pub use agent::AgentLoop;
-pub use clock::{Clock, FixedClock, SystemClock};
 pub use event::{
     AgentId, BalanceSource, Lane, MarketEvent, MicroUsd, SettlementOutcome, VerifyMethod,
 };
-pub use facilitator::{Facilitator, FakeFacilitator, SettleRequest};
-pub use hub::Hub;
-pub use orchestrator::{Orchestrator, BASE_SEPOLIA_CAIP2};
 pub use reducer::{AgentSummary, MarketState, DEFAULT_RECENT_CAP};
+
+#[cfg(feature = "runtime")]
+pub use agent::AgentLoop;
+#[cfg(feature = "runtime")]
+pub use clock::{Clock, FixedClock, SystemClock};
+#[cfg(feature = "runtime")]
+pub use facilitator::{Facilitator, FakeFacilitator, SettleRequest};
+#[cfg(feature = "runtime")]
+pub use hub::Hub;
+#[cfg(feature = "runtime")]
+pub use orchestrator::{Orchestrator, BASE_SEPOLIA_CAIP2};

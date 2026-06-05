@@ -8,27 +8,36 @@ description = "Real-time verified-agent-marketplace dashboard: an axum SSE orche
 
 [features]
 default = ["server"]
-# The thin axum SSE edge + the live binary. The pure decision/event/state core
-# does NOT need this — `cargo test` exercises the whole core with it on but no
-# network is touched (settlement is abstracted behind the `Facilitator` trait,
-# and the real x402/alloy impl lives in a SEPARATE workspace, never here).
-server = ["dep:axum", "dep:tokio-stream", "dep:futures"]
+# The async orchestrator core (clock/facilitator/agent/hub/orchestrator) — needs
+# tokio + the IFC gate. OFF lets the wasm frontend depend on this crate for ONLY
+# the serde-only `event` + `reducer` wire types (no tokio, wasm-safe).
+runtime = ["dep:tokio", "dep:tokio-util", "dep:async-trait", "dep:nucleus-verify-commerce"]
+# The thin axum SSE edge + the live binary (implies the runtime). The real
+# x402/alloy settlement impl lives in a SEPARATE workspace, never here.
+server = ["runtime", "dep:axum", "dep:tokio-stream", "dep:futures", "dep:anyhow"]
 
 [dependencies]
+# Always compiled — the serde-only wire contract + pure reducer (wasm-safe).
 serde = { workspace = true }
 serde_json = { workspace = true }
-async-trait = { workspace = true }
-thiserror = { workspace = true }
-tracing = { workspace = true }
-anyhow = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
-tokio-util = "0.7"
-nucleus-verify-commerce = { path = "../nucleus-verify-commerce" }
 
-# `server` feature only — the SSE edge.
+# `runtime` feature — the async orchestrator core.
+tokio = { workspace = true, features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+    "signal",
+], optional = true }
+tokio-util = { version = "0.7", optional = true }
+async-trait = { workspace = true, optional = true }
+nucleus-verify-commerce = { path = "../nucleus-verify-commerce", optional = true }
+
+# `server` feature — the SSE edge.
 axum = { workspace = true, optional = true }
 tokio-stream = { version = "0.1", features = ["sync"], optional = true }
 futures = { version = "0.3", optional = true }
+anyhow = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

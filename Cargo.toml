@@ -52,6 +52,7 @@ members = [
 # portcullis-python requires Python + maturin; build with: cd crates/portcullis-python && maturin develop
 exclude = [
     "crates/exposure-web",       # WASM-only (wasm32-unknown-unknown)
+    "crates/nucleus-marketplace-dashboard-frontend", # Leptos CSR (wasm32); build with: cd … && trunk build
     "crates/portcullis-python",  # Python bindings (requires maturin)
     "crates/portcullis-zkvm-guest", # RISC-V zkVM guest (compiled separately by risc0-build)
     "sdks/verifier-js",           # WASM-only (wasm32-unknown-unknown); build with: wasm-pack build sdks/verifier-js

@@ -1,0 +1,99 @@
+/* Design tokens borrowed from ctf-engine (The Vault) for visual consistency. */
+:root {
+  --bg: #0b0e14;
+  --surface: #131720;
+  --surface-2: #1b2030;
+  --border: #262c3a;
+  --text: #e6e9ef;
+  --text-2: #aeb6c5;
+  --text-dim: #6b7689;
+  --red: #ff5d5d;
+  --green: #46d39a;
+  --blue: #5aa9ff;
+  --yellow: #ffcb5c;
+  --purple: #b98cff;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+}
+
+.app { max-width: 1180px; margin: 0 auto; padding: 20px 24px 48px; }
+
+.topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.topbar h1 { font-size: 20px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
+.accent { color: var(--green); }
+
+.sim-banner {
+  margin: 12px 0 18px;
+  padding: 8px 12px;
+  border: 1px solid var(--yellow);
+  border-radius: 8px;
+  background: rgba(255, 203, 92, 0.08);
+  color: var(--yellow);
+  font-size: 12.5px;
+  font-family: var(--mono);
+}
+
+/* KPI strip */
+.kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px; }
+.kpi { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+.kpi-val { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.kpi-label { color: var(--text-dim); font-size: 12px; margin-top: 2px; }
+.kpi-ok .kpi-val { color: var(--green); }
+.kpi-deny .kpi-val { color: var(--red); }
+.kpi-proof .kpi-val { color: var(--purple); }
+.kpi-commerce .kpi-val { color: var(--blue); }
+
+.cols { display: grid; grid-template-columns: 1.6fr 1fr; gap: 16px; }
+@media (max-width: 820px) { .cols { grid-template-columns: 1fr; } .kpis { grid-template-columns: repeat(2, 1fr); } }
+
+section.feed, section.agents { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); margin: 0 0 10px; }
+
+.feed ul, .agents ul { list-style: none; margin: 0; padding: 0; max-height: 560px; overflow-y: auto; }
+
+.row { display: grid; grid-template-columns: 4px auto auto 1fr; align-items: center; gap: 10px;
+  padding: 7px 8px; border-radius: 8px; border-bottom: 1px solid var(--border); }
+.row:hover { background: var(--surface-2); }
+
+/* lane spine */
+.lane { width: 4px; height: 22px; border-radius: 2px; display: inline-block; }
+.lane-commerce { background: var(--blue); }
+.lane-security { background: var(--red); }
+.lane-trust { background: var(--text-dim); }
+.lane-proof { background: var(--purple); }
+
+.chip { font-family: var(--mono); font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 999px; white-space: nowrap; }
+.chip-ok { color: var(--green); background: rgba(70, 211, 154, 0.12); }
+.chip-error { color: var(--red); background: rgba(255, 93, 93, 0.14); }
+.chip-warn { color: var(--yellow); background: rgba(255, 203, 92, 0.12); }
+.chip-commerce { color: var(--blue); background: rgba(90, 169, 255, 0.12); }
+.chip-trust { color: var(--text-2); background: rgba(174, 182, 197, 0.10); }
+.chip-proof { color: var(--purple); background: rgba(185, 140, 255, 0.12); }
+
+.agent { font-family: var(--mono); font-size: 12px; color: var(--text-2); }
+.detail { color: var(--text-dim); font-size: 12px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* the deny is the peak — flash + pin highlight */
+.row.peak { background: rgba(255, 93, 93, 0.10); border-left: 0; animation: denyflash 280ms ease-out; }
+@keyframes denyflash {
+  0% { background: rgba(255, 93, 93, 0.42); transform: translateX(-4px); }
+  100% { background: rgba(255, 93, 93, 0.10); transform: translateX(0); }
+}
+
+/* agents panel */
+.agents li { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: center;
+  padding: 8px; border-bottom: 1px solid var(--border); }
+.bal { font-family: var(--mono); font-size: 12px; color: var(--text); }
+.src { font-size: 10px; color: var(--yellow); border: 1px solid var(--yellow); border-radius: 4px; padding: 0 4px; margin-left: 4px; }
+.src.testnet { color: var(--green); border-color: var(--green); }
+.counts { font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+
+.conn .chip { font-size: 12px; }

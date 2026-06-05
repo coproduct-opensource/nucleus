@@ -35,11 +35,24 @@ can watch it happen, live, across a marketplace of agents.
 ## Run the live (SIMULATED) demo
 
 ```bash
-BIND=127.0.0.1:4040 cargo run -p nucleus-marketplace-dashboard --bin marketplace-orchestrator
-# then:
+just marketplace        # orchestrator + SSE API on :4040 (or run the bin directly)
+just marketplace-ui     # Leptos dashboard on :8780, proxying /api → :4040 (other shell)
+# or hit the API directly:
 curl -s http://127.0.0.1:4040/api/snapshot | jq
 curl -N  http://127.0.0.1:4040/api/events
 ```
+
+## Frontend
+
+The dashboard UI is a **Leptos 0.8 CSR** app in the sibling crate
+[`nucleus-marketplace-dashboard-frontend`](../nucleus-marketplace-dashboard-frontend)
+(excluded from the main workspace; built with `trunk`). It folds each SSE event
+through the **same `MarketState::apply` reducer** this crate exposes — the
+`MarketEvent` / `MarketState` types are shared **verbatim** (this crate compiles
+its `event` + `reducer` modules to wasm with `default-features = false`, no
+tokio), so there is no hand-maintained wire contract to drift. It renders a live
+activity feed (the IFC **deny** is the red-flash peak), a KPI strip, and a
+per-agent panel with source-badged balances.
 
 ## Honesty
 

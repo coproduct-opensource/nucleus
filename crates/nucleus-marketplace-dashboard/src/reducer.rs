@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::event::{AgentId, BalanceSource, MarketEvent, MicroUsd};
 
@@ -14,7 +14,7 @@ use crate::event::{AgentId, BalanceSource, MarketEvent, MicroUsd};
 pub const DEFAULT_RECENT_CAP: usize = 200;
 
 /// Per-agent rollup.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AgentSummary {
     /// The resource this agent buys.
     pub resource: String,
@@ -35,7 +35,7 @@ pub struct AgentSummary {
 }
 
 /// The reduced marketplace state — the ground truth a cold client receives.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MarketState {
     /// Per-agent rollups, keyed by agent id.
     pub agents: BTreeMap<String, AgentSummary>,
