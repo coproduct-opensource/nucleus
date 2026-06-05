@@ -18,3 +18,8 @@ rustflags = ["-C", "target-feature=+crt-static"]
 
 # NOTE: Do NOT add [profile.release] with lto=true here!
 # It breaks cargo-fuzz. Use --profile release-rootfs for rootfs builds instead.
+
+# `cargo xtask <command>` → the workspace task runner (crates/xtask).
+# Rust-native replacement for ad-hoc shell scripts; also fronted by `just xtask`.
+[alias]
+xtask = "run --quiet --package xtask --"
