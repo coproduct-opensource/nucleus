@@ -9,6 +9,7 @@ description = "Fly.io Machine OIDC token validation and SPIFFE ID derivation for
 repository = "https://github.com/coproduct-opensource/nucleus"  # vendor-allow: project repo URL
 keywords = ["oidc", "fly", "jwt", "spiffe", "federation"]
 categories = ["authentication"]
+readme = "README.md"
 
 [lints]
 workspace = true
@@ -18,7 +19,7 @@ jsonwebtoken = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["net", "io-util"] }
 tracing = { workspace = true }
