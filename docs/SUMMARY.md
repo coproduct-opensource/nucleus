@@ -21,6 +21,7 @@
 - [RFCs]()
   - [Agent Control Plane on Fly Machines](rfcs/agent-control-plane-on-fly.md)
   - [Verified Agent Commerce (x402 / A2A)](rfcs/verified-agent-commerce-quickstart.md)
+  - [Signed, IFC-Attested Agents](rfcs/signed-ifc-attested-agents.md)
 - [Use Cases](use-cases/README.md)
   - [OpenClaw Hardening](use-cases/openclaw-hardening.md)
   - [Enterprise AI Agents](use-cases/enterprise-ai-agents.md)
