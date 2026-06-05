@@ -3,7 +3,7 @@
 A browser-native capture-the-flag where you try to **exfiltrate a secret past a
 formally-verified permission lattice — and can't.** Each level loads a real
 `portcullis::PermissionLattice` profile and tracks exposure with the same
-`ExposureSet` production nucleus uses; verdicts are backed by Verus SMT proofs.
+`ExposureSet` production nucleus uses; verdicts are backed by Lean 4 + Kani proofs.
 It runs entirely in WASM (the game logic is client-side).
 
 It's the thesis made playable: *agent security is an information-flow problem, and
