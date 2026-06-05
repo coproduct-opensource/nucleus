@@ -7080,6 +7080,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-witness-olog"
+version = "1.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "nucleus-externality",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "num-bigint"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"

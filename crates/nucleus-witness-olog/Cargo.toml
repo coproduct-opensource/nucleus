@@ -1,0 +1,25 @@
+[package]
+name = "nucleus-witness-olog"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Phase 2 contract (P2.1): the Gov functor (admitted witness → olog fact) and the signed, transparency-loggable accumulation manifest. Types + the no-upgrade invariant only — wiring to the real olog/merge-gate archive is P2.2. See docs/rfcs/witness-olog-functor.md."
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+ed25519-dalek = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+# AssuranceRung — the rung Gov must carry through WITHOUT upgrading (the
+# load-bearing honesty invariant).
+nucleus-externality = { path = "../nucleus-externality" }
+
+[dev-dependencies]
+serde_json = { workspace = true }

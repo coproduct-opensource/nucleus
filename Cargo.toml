@@ -49,6 +49,7 @@ members = [
     "crates/nucleus-econ-types",            # Financially load-bearing newtypes (MicroUsd, ids); serde-only
     "crates/nucleus-externality",           # Pigouvian externality envelopes + rate-setter
     "crates/nucleus-econ-kernels",          # PROVEN integer VCG + Pigou + sealed-bid kernels (parity-pinned to Lean)
+    "crates/nucleus-witness-olog",          # Phase 2 (P2.1): Gov functor (admitted witness → olog fact) + signed accumulation manifest
 ]
 # nucleus-claude-hook moved to nucleus-code (private product repo)
 # exposure-web is WASM-only (wasm32-unknown-unknown); build with: cd crates/exposure-web && trunk build
