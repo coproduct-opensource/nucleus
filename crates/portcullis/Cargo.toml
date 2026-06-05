@@ -12,7 +12,12 @@ keywords = ["ai", "security", "permissions", "agents", "lattice"]
 categories = ["authentication", "development-tools"]
 
 [features]
-default = ["serde", "crypto"]
+# `cedar` is default-on (#1634): the kernel consults Cedar in
+# `decide_term_with_flow` when a policy is loaded. With no policy loaded the
+# evaluator is `None` and Cedar is inert, so default-on changes no behavior for
+# sessions that don't opt in. WASM consumers build with `default-features =
+# false` (cedar-policy can't target wasm), so they are unaffected.
+default = ["serde", "crypto", "cedar"]
 serde = ["dep:serde", "dep:serde_json", "rust_decimal/serde", "chrono/serde", "uuid/serde"]
 
 # Ed25519 signing (ring) — disable for WASM targets where ring can't compile

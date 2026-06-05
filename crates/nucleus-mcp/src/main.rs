@@ -562,6 +562,9 @@ fn format_deny_reason(reason: &DenyReason) -> String {
         DenyReason::IfcUnsafe { detail } => {
             format!("information-flow unsafe: {detail}")
         }
+        DenyReason::CedarDenied { detail } => {
+            format!("cedar policy denied: {detail}")
+        }
     }
 }
 

@@ -64,6 +64,14 @@ pub struct CedarResult {
     pub reasons: Vec<String>,
 }
 
+impl CedarResult {
+    /// Whether Cedar permitted the operation. Lets callers (e.g. the kernel)
+    /// branch on the decision without importing `cedar_policy::Decision`.
+    pub fn is_allowed(&self) -> bool {
+        self.decision == Decision::Allow
+    }
+}
+
 impl CedarEvaluator {
     /// Create a new evaluator from Cedar policy source.
     ///

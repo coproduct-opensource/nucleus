@@ -357,6 +357,75 @@ fn test_decide_term_with_flow_allows_input_op_even_when_tainted() {
     );
 }
 
+#[cfg(feature = "cedar")]
+fn cedar_edit_term() -> crate::ActionTerm {
+    let task = crate::TaskRef::new(
+        "pr-1",
+        "x",
+        vec![Operation::EditFiles],
+        vec!["src/auth/".to_string()],
+    );
+    crate::ActionTerm::edit_file(
+        Some(task),
+        "src/auth/session.rs",
+        "@@ -1 +1 @@",
+        vec![trusted_term_input("s")],
+        crate::EffectDisposition::Proposed,
+    )
+}
+
+#[cfg(feature = "cedar")]
+#[test]
+fn test_cedar_denies_operation_not_permitted() {
+    // Cedar permits only read_files; an edit the lattice would allow is denied
+    // by Cedar's default-deny.
+    let mut kernel = Kernel::new(PermissionLattice::safe_pr_fixer());
+    kernel
+        .set_cedar_policy(r#"permit(principal, action == Action::"read_files", resource);"#)
+        .expect("policy parses");
+    let (decision, token) = kernel.decide_term_with_flow(cedar_edit_term(), None);
+    assert!(
+        matches!(
+            decision.verdict,
+            Verdict::Deny(DenyReason::CedarDenied { .. })
+        ),
+        "Cedar must deny an un-permitted op, got {:?}",
+        decision.verdict
+    );
+    assert!(token.is_none());
+}
+
+#[cfg(feature = "cedar")]
+#[test]
+fn test_cedar_permit_all_falls_through_to_normal_decision() {
+    let mut kernel = Kernel::new(PermissionLattice::safe_pr_fixer());
+    kernel
+        .set_cedar_policy("permit(principal, action, resource);")
+        .expect("policy parses");
+    let (decision, _) = kernel.decide_term_with_flow(cedar_edit_term(), None);
+    assert!(
+        decision.verdict.is_allowed(),
+        "permit-all Cedar must fall through to the lattice (allowed), got {:?}",
+        decision.verdict
+    );
+}
+
+#[cfg(feature = "cedar")]
+#[test]
+fn test_no_cedar_policy_is_inert() {
+    // Default-on feature, but no policy loaded ⇒ Cedar does not gate anything.
+    let mut kernel = Kernel::new(PermissionLattice::safe_pr_fixer());
+    let (decision, _) = kernel.decide_term_with_flow(cedar_edit_term(), None);
+    assert!(
+        !matches!(
+            decision.verdict,
+            Verdict::Deny(DenyReason::CedarDenied { .. })
+        ),
+        "no Cedar policy must not produce CedarDenied, got {:?}",
+        decision.verdict
+    );
+}
+
 #[test]
 fn test_decision_with_action_term_serializes() {
     let perms = PermissionLattice::safe_pr_fixer();
