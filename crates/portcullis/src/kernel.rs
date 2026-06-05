@@ -297,6 +297,14 @@ pub enum DenyReason {
         /// Human-readable detail from the failed preflight obligations.
         detail: String,
     },
+    /// Operation denied by information-flow control: the session has ingested
+    /// adversarial (untrusted/web) content, and this is an outbound action that
+    /// could exfiltrate or act on the injected data. This is the lethal-trifecta
+    /// guard wired through the live MCP `FlowTracker` (#1633).
+    IfcUnsafe {
+        /// Human-readable explanation of the unsafe flow.
+        detail: String,
+    },
 }
 
 /// The source of a RequiresApproval verdict.
@@ -1586,6 +1594,65 @@ impl Kernel {
         }
 
         (decision, token)
+    }
+
+    /// [`decide_term`] with an information-flow consult against a live
+    /// [`FlowTracker`] (#1633).
+    ///
+    /// This is the kernel-side enforcement point for the lethal trifecta: when
+    /// `flow` has observed any node with **adversarial** integrity (e.g.
+    /// `web_fetch` ⇒ `NodeKind::WebContent`), the session is tainted, and any
+    /// **outbound action** (write/edit/run/git/PR/spawn/pods — the operations
+    /// `node_kind_for` classifies as [`NodeKind::OutboundAction`]) is denied
+    /// with [`DenyReason::IfcUnsafe`] *before* the normal decision path. A clean
+    /// session, or a non-outbound operation, falls through to [`decide_term`]
+    /// unchanged.
+    ///
+    /// `flow == None` ⇒ behaves exactly like [`decide_term`] (callers without a
+    /// tracker are unaffected — backward compatible).
+    pub fn decide_term_with_flow(
+        &mut self,
+        term: ActionTerm,
+        flow: Option<&portcullis_core::ifc_api::FlowTracker>,
+    ) -> (Decision, Option<DecisionToken>) {
+        use portcullis_core::flow::NodeKind;
+
+        let operation = term.operation();
+        if let Some(flow) = flow {
+            if flow.is_tainted() && Self::node_kind_for(operation) == NodeKind::OutboundAction {
+                let subject = term.subject().to_string();
+                let pre_hash = self.effective.checksum();
+                let pre_exposure_count = self.exposure.count();
+                let contributed_label = exposure_core::classify_operation(operation);
+                let detail = format!(
+                    "session carries adversarial integrity (untrusted/web content was \
+                     observed); outbound operation {operation:?} blocked to prevent \
+                     exfiltration of, or action on, injected content"
+                );
+                tracing::warn!(
+                    ?operation,
+                    subject,
+                    "IFC denied outbound action: session is taint-adversarial"
+                );
+                let (mut decision, token) = self.record_with_exposure(
+                    operation,
+                    &subject,
+                    Verdict::Deny(DenyReason::IfcUnsafe { detail }),
+                    &pre_hash,
+                    pre_exposure_count,
+                    contributed_label,
+                    false,
+                    false,
+                );
+                decision.action_term = Some(term.clone());
+                if let Some(last) = self.trace.last_mut() {
+                    last.action_term = Some(term);
+                }
+                return (decision, token);
+            }
+        }
+
+        self.decide_term(term)
     }
 
     /// Map an Operation to the most appropriate FlowNode kind.
