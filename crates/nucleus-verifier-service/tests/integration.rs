@@ -826,6 +826,7 @@ async fn well_known_agent_card_verifies_against_matching_key() {
         supported_envelope_schema_versions: vec!["1".to_string()],
         jwks_uri: None,
         trust_jwks: advertised,
+        runtime_guarantees: None,
     };
     let signed = sign_card(card, &der).unwrap();
 

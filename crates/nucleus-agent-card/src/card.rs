@@ -51,6 +51,55 @@ pub struct AgentCard {
     /// bundles. Becomes a [`nucleus_envelope::TrustAnchor`] only after the
     /// card is verified.
     pub trust_jwks: nucleus_lineage::Jwks,
+
+    /// Optional declared runtime information-flow-control guarantee profile.
+    /// Covered by the card's JCS signature, so a verifier knows the declaration
+    /// is authentic and untampered. **Attestation, not enforcement** — see
+    /// [`RuntimeGuaranteeProfile`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_guarantees: Option<RuntimeGuaranteeProfile>,
+}
+
+/// A declared runtime information-flow-control (IFC) guarantee profile, carried
+/// inside a signed [`AgentCard`].
+///
+/// # What a verified profile proves — and does not
+///
+/// Because the profile is part of the card's JCS-canonical bytes, the card
+/// signature makes it **authentic and tamper-evident**: a counterparty can
+/// confirm *the agent issued this exact declaration*. It does **NOT** prove the
+/// declared rules are enforced, sound, or sufficient — attestation is not
+/// enforcement. The agent's `nucleus-envelope` receipts are the behavioural
+/// evidence that the declared rules were actually evaluated at runtime; a
+/// verifier checks them post-hoc, client-side. Enforcement remains host-side.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeGuaranteeProfile {
+    /// Profile schema version (e.g. `"1.0"`), versioned independently of the card.
+    pub profile_version: String,
+
+    /// Data-flow source kinds the agent declares it labels/tracks — the
+    /// lethal-trifecta surface (e.g. `"web_content"`, `"secret"`, `"file_read"`).
+    /// Tokens match `nucleus-verify-commerce`'s `DeclaredInput` serde names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tracked_sources: Vec<String>,
+
+    /// Named IFC enforcement rules the agent declares it applies at runtime.
+    pub enforcement_rules: Vec<EnforcementRule>,
+
+    /// Advisory pointer to external policy evidence (e.g. a Microsoft Agent
+    /// Control Specification policy id, or a Sigstore bundle URL). Advisory
+    /// only — a verifier with no out-of-band knowledge cannot confirm it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_reference: Option<String>,
+}
+
+/// One named IFC enforcement rule a [`RuntimeGuaranteeProfile`] declares.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EnforcementRule {
+    /// Stable rule identifier (e.g. `"no_adversarial_to_outbound"`).
+    pub name: String,
+    /// Human-readable description of what the rule denies.
+    pub description: String,
 }
 
 /// One detached RFC 7515 JWS-JSON signature over the JCS-canonicalized
@@ -114,6 +163,7 @@ mod tests {
                     not_after: None,
                 }],
             },
+            runtime_guarantees: None,
         }
     }
 

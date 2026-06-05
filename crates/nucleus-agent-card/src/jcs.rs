@@ -82,6 +82,7 @@ mod tests {
             supported_envelope_schema_versions: vec!["1".to_string()],
             jwks_uri: None,
             trust_jwks: nucleus_lineage::Jwks { keys: vec![] },
+            runtime_guarantees: None,
         };
         let first = canonicalize(&card).unwrap();
         let second = canonicalize(&card.clone()).unwrap();
