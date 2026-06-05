@@ -145,3 +145,39 @@ export function recomputeCommons(
   poolMicro: number | bigint,
   shares: object[],
 ): Promise<Array<{ destination: string; amount_micro: bigint }>>;
+
+/** The assurance rung an externality dimension's measurement reached. Derived
+ *  from what verified; ordered weakest→strongest. */
+export type AssuranceRung =
+  | "self_reported"
+  | "oracle_signed"
+  | "tee_attested"
+  | "multi_source_disputed"
+  | "zk_upper_envelope";
+
+/** Per-dimension verification outcomes fed to {@link recomputeAssuranceRung}. */
+export interface AssuranceLayerOutcome {
+  /** The `ResourceDim` tag this outcome is for (e.g. `"grid_carbon_grams_co2"`). */
+  dimension: string;
+  /** The independent oracle Ed25519 signature verified (fresh, bound). */
+  signature_ok?: boolean;
+  /** A TEE attestation over the oracle key verified. */
+  tee_ok?: boolean;
+  /** ≥2 independent sources corroborated under a staked dispute window. */
+  multi_source_disputed?: boolean;
+  /** A zk upper-envelope proof bounded `units_micro` and verified. */
+  zk_envelope_ok?: boolean;
+}
+
+/**
+ * Surface the assurance rung of an externality profile — each dimension's
+ * DERIVED rung (never self-asserted) plus the profile's overall **weakest-link**
+ * rung (`null` for an empty profile). The anti-greenwashing primitive: a receipt
+ * states its own, checkable assurance level.
+ */
+export function recomputeAssuranceRung(
+  layers: AssuranceLayerOutcome[],
+): Promise<{
+  overall_rung: AssuranceRung | null;
+  dimensions: Array<{ dimension: string; rung: AssuranceRung }>;
+}>;

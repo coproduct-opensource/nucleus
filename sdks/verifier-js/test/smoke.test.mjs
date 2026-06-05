@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-import { verify, VerifyError } from "../index.js";
+import { verify, VerifyError, recomputeAssuranceRung } from "../index.js";
 
 const fixtureDir = new URL("../demo-fixtures/", import.meta.url);
 
@@ -76,4 +76,41 @@ test("malformed receipt surfaces a typed VERIFICATION error, not a throw", async
   assert.equal(r.ok, false);
   assert.ok(r.error instanceof VerifyError);
   assert.equal(r.error.code, "VERIFICATION");
+});
+
+test("assurance rung is derived from what verified (weakest-link overall)", async () => {
+  // Carbon strongly attested (sig+TEE+envelope → zk_upper_envelope); water only
+  // signed (→ oracle_signed). The profile's overall rung is the WEAKEST link.
+  const r = await recomputeAssuranceRung([
+    {
+      dimension: "grid_carbon_grams_co2",
+      signature_ok: true,
+      tee_ok: true,
+      zk_envelope_ok: true,
+    },
+    { dimension: "water_litres_consumed", signature_ok: true },
+  ]);
+  assert.equal(r.dimensions[0].rung, "zk_upper_envelope");
+  assert.equal(r.dimensions[1].rung, "oracle_signed");
+  assert.equal(r.overall_rung, "oracle_signed", "overall = weakest link");
+});
+
+test("unsigned dimension is self_reported no matter what evidence is attached", async () => {
+  const r = await recomputeAssuranceRung([
+    {
+      dimension: "grid_carbon_grams_co2",
+      signature_ok: false,
+      tee_ok: true,
+      multi_source_disputed: true,
+      zk_envelope_ok: true,
+    },
+  ]);
+  assert.equal(r.dimensions[0].rung, "self_reported");
+  assert.equal(r.overall_rung, "self_reported");
+});
+
+test("empty profile has null overall rung", async () => {
+  const r = await recomputeAssuranceRung([]);
+  assert.equal(r.overall_rung, null);
+  assert.deepEqual(r.dimensions, []);
 });

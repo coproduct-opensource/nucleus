@@ -366,3 +366,23 @@ export async function recomputeCommons(poolMicro, shares) {
   const mod = await initWasm();
   return mod.recomputeCommons(big(poolMicro), JSON.stringify(shares));
 }
+
+/**
+ * Surface the **assurance rung** of an externality profile — how much trust each
+ * dimension's `units_micro` demands, and the profile's overall (weakest-link)
+ * rung. The rung is DERIVED from what actually verified (an unsigned dimension is
+ * `self_reported` no matter what evidence is attached); the overall is the
+ * MINIMUM across dimensions. This is the anti-greenwashing primitive: a receipt
+ * states its own, checkable assurance level.
+ *
+ * SCOPE: reports the trust LEVEL of the measurement; it does not itself attest
+ * the physical sensor (the irreducible residue — see the externality-oracle RFC).
+ *
+ * @param {object[]} layers per-dimension verification outcomes:
+ *   `{ dimension, signature_ok, tee_ok, multi_source_disputed, zk_envelope_ok }`.
+ * @returns {Promise<{ overall_rung: string|null, dimensions: {dimension: string, rung: string}[] }>}
+ */
+export async function recomputeAssuranceRung(layers) {
+  const mod = await initWasm();
+  return mod.recomputeAssuranceRung(JSON.stringify(layers));
+}
