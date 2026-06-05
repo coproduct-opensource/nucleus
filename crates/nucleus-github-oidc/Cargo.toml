@@ -9,6 +9,7 @@ description = "Validate GitHub Actions OIDC tokens. Maps the verified workflow i
 repository = "https://github.com/coproduct-opensource/nucleus"  # vendor-allow: project repo URL
 keywords = ["oidc", "github", "jwt", "spiffe", "federation"]
 categories = ["authentication"]
+readme = "README.md"
 
 [lints]
 workspace = true
