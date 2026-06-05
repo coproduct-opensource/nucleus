@@ -6522,6 +6522,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-econ-kernels"
+version = "1.0.0"
+dependencies = [
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "nucleus-econ-types",
+ "nucleus-externality",
+ "proptest",
+ "serde",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "nucleus-econ-types"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nucleus-envelope"
 version = "1.0.0"
 dependencies = [
@@ -6547,6 +6569,22 @@ dependencies = [
  "nucleus-envelope",
  "nucleus-lineage",
  "serde_json",
+]
+
+[[package]]
+name = "nucleus-externality"
+version = "1.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "nucleus-econ-kernels",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc bf48216e90eeea1f36c545b72f8b941aaa89826f96ac6d02b6b64570465392e5 # shrinks to proposal_costs = [21744, 20252, 1], bid_specs = [(3, 98624), (0, 98624), (3, 98624), (1, 91857), (0, 91858)], budget = 21744
+cc afa5b52d843806ba809f73bb77c7c93d3c8183141f3997a20577d62729bb9b8c # shrinks to proposal_costs = [17745, 6702, 47424, 28337], bid_specs = [(4, 127021), (3, 127022), (0, 79543), (0, 79543), (0, 79543), (2, 79544), (1, 1), (5, 11242), (3, 11244)], budget = 127654
