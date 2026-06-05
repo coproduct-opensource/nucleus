@@ -20,7 +20,7 @@ What must be true before Nucleus can be called enterprise-ready. This page conso
 |------|--------|--------|
 | Lean proofs cover the full state space | Done | 165 theorems, zero `sorry`. Unbounded for lattice algebra. |
 | Kani BMC for decision logic | Done | 112 harnesses. Bounded — covers full 3-element, 13-dimension state space for lattice; string/path checks are bounded approximations. |
-| Verus SMT proofs | Done | 297 VCs for exposure monotonicity, trace monotonicity, denial monotonicity, auth boundary, capability coverage, budget monotonicity, delegation ceiling. |
+| Monotonicity & boundary invariants | Done | Proven via Lean 4 + Kani — exposure monotonicity, trace monotonicity, denial monotonicity, auth boundary, capability coverage, budget monotonicity, delegation ceiling. (Verus was evaluated and removed; verification consolidated on Lean 4 + Kani.) |
 | Fuzz targets in CI | Done | 3 targets (command, path, permission serde) with 30s budget each. Required merge check. |
 | Aeneas-generated Lean code is stale | Open | Committed `Types.lean` has 12 `CapabilityLattice` fields; Rust source has 13 (`spawn_agent` added). CI re-extracts and checks, but committed files need updating. |
 | Exposure tracker Lean model is hand-written | Acknowledged | `include_str!` tests enforce structural correspondence. Semantic correspondence is not machine-verified. Aeneas cannot currently translate `ExposureSet`. |
