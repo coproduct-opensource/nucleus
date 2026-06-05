@@ -6980,6 +6980,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-verify-commerce"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "nucleus-witness"
 version = "1.0.0"
 dependencies = [
