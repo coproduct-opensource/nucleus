@@ -7,6 +7,7 @@ license.workspace = true
 description = "Lagrangian permission pricing oracle for multi-dimensional capability constraints"
 repository = "https://github.com/coproduct-opensource/nucleus"
 documentation = "https://docs.rs/nucleus-permission-market"
+readme = "README.md"
 keywords = ["ai", "security", "permissions", "pricing", "lagrange"]
 categories = ["algorithms", "development-tools"]
 
