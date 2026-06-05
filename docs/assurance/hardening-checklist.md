@@ -66,8 +66,8 @@ Status key: `DONE`, `PARTIAL`, `TODO`.
 
 - **No privilege relaxation after creation**
   - Pass: permission state can only tighten or the pod is terminated.
-  - Current: `DONE` (Verus-proven E1-E3 enforcement boundary + runtime debug_assert).
-  - Evidence: `crates/portcullis-verified/src/lib.rs` (E1: exposure monotonicity, E2: trace monotonicity, E3: denial monotonicity), `crates/portcullis/src/guard.rs` (debug_assert in execute_and_record)
+  - Current: `DONE` (Lean 4 + Kani-proven E1-E3 enforcement boundary + runtime debug_assert).
+  - Evidence: `crates/portcullis/src/kani.rs` (E1: exposure monotonicity, E2: trace monotonicity, E3: denial monotonicity), `crates/portcullis-core/lean/` (Lean theorems), `crates/portcullis/src/guard.rs` (debug_assert in execute_and_record)
 - **Network policy drift detection**
   - Pass: host checks iptables drift and fails closed on deviation.
   - Current: `DONE`.
@@ -91,9 +91,9 @@ Status key: `DONE`, `PARTIAL`, `TODO`.
 ## 6) Formal Assurance Gates
 
 - **ν laws proven in CI**
-  - Pass: Verus/Kani proof jobs run in CI and block merges on failure.
-  - Current: `DONE` (297 Verus proofs + 14 Kani harnesses; both are required merge checks on main).
-  - Evidence: `.github/workflows/verus.yml`, `.github/workflows/kani-nightly.yml`, `crates/portcullis-verified/src/lib.rs`, `crates/portcullis/src/kani.rs`
+  - Pass: Lean/Kani proof jobs run in CI and block merges on failure.
+  - Current: `DONE` (113 Kani harnesses + ~277 Lean 4 theorems; both gated on main — Kani via count-regression per-PR + full nightly, Lean via `sorry`-rejection on the Aeneas-bridged core).
+  - Evidence: `.github/workflows/kani-nightly.yml`, `.github/workflows/lean-build.yml`, `.github/workflows/aeneas-ifc-scoped.yml`, `crates/portcullis/src/kani.rs`, `crates/portcullis-core/lean/`
 - **Fuzzing in CI**
   - Pass: cargo-fuzz targets run with time budget; known bypasses blocked.
   - Current: `DONE` (3 fuzz targets × 30s; Fuzz is a required merge check on main).
