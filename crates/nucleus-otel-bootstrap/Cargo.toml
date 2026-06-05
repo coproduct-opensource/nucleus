@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 description = "Shared OpenTelemetry OTLP bootstrap helper for nucleus server binaries"
 repository = "https://github.com/coproduct-opensource/nucleus"
+readme = "README.md"
 keywords = ["opentelemetry", "tracing", "observability"]
 categories = ["development-tools::profiling"]
 
