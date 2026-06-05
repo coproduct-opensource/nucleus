@@ -38,6 +38,20 @@ marketplace bind="127.0.0.1:4040":
 marketplace-ui:
     cd crates/nucleus-marketplace-dashboard-frontend && trunk serve --open
 
+# REAL Base Sepolia settlement (TESTNET; small funds move). Needs a funded
+# keystore + SELLER_ADDRESS. Secrets are NEVER passed on argv. See the README.
+marketplace-live *args:
+    cd examples/marketplace-live && cargo run --quiet --bin marketplace-live -- --testnet {{args}}
+
+# Import a TESTNET keystore + stash its password in the macOS Keychain (no argv).
+marketplace-live-import:
+    cast wallet import nucleus-x402 --interactive
+    security add-generic-password -s nucleus-x402 -a marketplace-keystore -w
+
+# No-funds gate for marketplace-live: build + keystore/decode tests (no network).
+marketplace-live-check:
+    cd examples/marketplace-live && cargo build --bins && cargo test
+
 # ── x402 on Base Sepolia (TESTNET only — never mainnet / real funds) ──────────
 
 # Print the Base Sepolia x402 bootstrap config + faucet links (instant).
