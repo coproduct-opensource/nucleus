@@ -110,6 +110,8 @@ mod tests {
                     x: Some("AAAA_AAAAAA-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string()),
                     alg: Some("EdDSA".to_string()),
                     use_: Some("sig".to_string()),
+                    not_before: None,
+                    not_after: None,
                 }],
             },
         }
