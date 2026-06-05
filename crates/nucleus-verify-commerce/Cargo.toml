@@ -27,6 +27,9 @@ nucleus-agent-card = { path = "../nucleus-agent-card" }
 nucleus-envelope = { path = "../nucleus-envelope" }
 nucleus-identity = { path = "../nucleus-identity" }
 nucleus-lineage = { path = "../nucleus-lineage" }
+# IFC gate: the model-level information-flow decision over declared inputs.
+nucleus-ifc = { path = "../nucleus-ifc" }
+portcullis-core = { path = "../portcullis-core" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

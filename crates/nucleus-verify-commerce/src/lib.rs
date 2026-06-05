@@ -36,10 +36,12 @@ use sha2::{Digest, Sha256};
 
 mod card_verifier;
 mod envelope_receipt;
+pub mod ifc;
 pub mod x402;
 
 pub use card_verifier::AgentCardVerifier;
 pub use envelope_receipt::{verify_receipt_bundle, EnvelopeReceiptIssuer, VerifiedReceipt};
+pub use ifc::{DeclaredInput, FlowDeclaration, IfcVerdict};
 
 /// Identity material lifted from the incoming x402 / A2A request (e.g. a signed
 /// Agent Card or an OIDC token). Opaque here; a [`CallerVerifier`] interprets it.
@@ -135,6 +137,12 @@ pub enum CommerceError {
     /// The handler (paid work) failed.
     #[error("handler failed: {0}")]
     Handler(String),
+    /// The IFC gate denied the paid action — the handler was never invoked.
+    #[error("ifc denied: {}", .verdict.reason)]
+    IfcDenied {
+        /// The denying verdict (carries the declared inputs for coverage audit).
+        verdict: IfcVerdict,
+    },
     /// A backend/transport error (signing, serialization, bundle build).
     #[error("backend error: {0}")]
     Backend(String),
@@ -155,6 +163,10 @@ pub struct ReceiptContext<'a> {
     pub request: &'a CommerceRequest,
     /// The delivered response bytes.
     pub body: &'a [u8],
+    /// The IFC verdict for this call, when served through [`serve_verified_ifc`].
+    /// `None` for the plain [`serve_verified`] path (no IFC gate). When `Some`,
+    /// [`EnvelopeReceiptIssuer`] folds it into the signed receipt binding.
+    pub ifc_verdict: Option<&'a IfcVerdict>,
 }
 
 /// Issues a [`Receipt`] for a served request.
@@ -186,6 +198,54 @@ where
         caller: &caller,
         request,
         body: &body,
+        ifc_verdict: None,
+    })?;
+    Ok((body, receipt))
+}
+
+/// The IFC-gated middleware: verify the caller, run the **model-level IFC
+/// decision** over `flow`, and only then serve — folding the verdict into the
+/// signed receipt.
+///
+/// Ordering is the guarantee: the IFC gate runs strictly between caller
+/// verification and the handler. If [`FlowDeclaration::decide`] denies, the
+/// `handler` is **never invoked** and this returns [`CommerceError::IfcDenied`]
+/// carrying the verdict (no receipt is issued — nothing was served).
+///
+/// On allow, the handler runs once and the [`IfcVerdict`] is passed to the
+/// issuer; [`EnvelopeReceiptIssuer`] binds it into the signed content hash so
+/// the in-bounds decision is independently re-derivable via
+/// [`verify_receipt_bundle`].
+///
+/// See [`ifc`] for the honesty boundary: this enforces the model-level decision
+/// over the caller's *declared* inputs (coverage-limited), per call.
+pub async fn serve_verified_ifc<V, I, H, F>(
+    request: &CommerceRequest,
+    flow: &FlowDeclaration,
+    verifier: &V,
+    issuer: &I,
+    handler: H,
+) -> Result<(Vec<u8>, Receipt), CommerceError>
+where
+    V: CallerVerifier,
+    I: ReceiptIssuer,
+    H: FnOnce(&VerifiedCaller, &CommerceRequest) -> F,
+    F: std::future::Future<Output = Result<Vec<u8>, CommerceError>>,
+{
+    let caller = verifier.verify(&request.caller).await?;
+
+    // IFC gate — strictly before the handler. Deny ⇒ handler never runs.
+    let verdict = flow.decide();
+    if !verdict.is_allow() {
+        return Err(CommerceError::IfcDenied { verdict });
+    }
+
+    let body = handler(&caller, request).await?;
+    let receipt = issuer.issue(&ReceiptContext {
+        caller: &caller,
+        request,
+        body: &body,
+        ifc_verdict: Some(&verdict),
     })?;
     Ok((body, receipt))
 }
@@ -346,5 +406,48 @@ mod tests {
         .await;
 
         assert!(matches!(result, Err(CommerceError::Handler(_))));
+    }
+
+    #[tokio::test]
+    async fn ifc_denied_request_never_reaches_the_handler() {
+        let verifier = AllowlistVerifier::new().allow("buyer-agent", "spiffe://nucleus.io/buyer");
+        let issuer = HashingReceiptIssuer;
+        let req = request("buyer-agent");
+        // Untrusted web content reaching the paid (outbound) action → IFC deny.
+        let flow = FlowDeclaration::new([DeclaredInput::UserPrompt, DeclaredInput::WebContent]);
+
+        let handler_ran = std::cell::Cell::new(false);
+        let result = serve_verified_ifc(&req, &flow, &verifier, &issuer, |_, _| {
+            handler_ran.set(true);
+            async { Ok(Vec::new()) }
+        })
+        .await;
+
+        match result {
+            Err(CommerceError::IfcDenied { verdict }) => assert!(!verdict.is_allow()),
+            other => panic!("expected IfcDenied, got {other:?}"),
+        }
+        assert!(
+            !handler_ran.get(),
+            "handler must NOT run when the IFC gate denies"
+        );
+    }
+
+    #[tokio::test]
+    async fn ifc_allowed_request_serves_and_binds_the_verdict() {
+        let verifier = AllowlistVerifier::new().allow("buyer-agent", "spiffe://nucleus.io/buyer");
+        let issuer = HashingReceiptIssuer; // verdict binding is exercised in envelope_receipt tests
+        let req = request("buyer-agent");
+        let flow = FlowDeclaration::new([DeclaredInput::UserPrompt, DeclaredInput::DatabaseRow]);
+
+        let (body, receipt) = serve_verified_ifc(&req, &flow, &verifier, &issuer, |_, r| {
+            let res = r.resource.clone();
+            async move { Ok(format!("served {res}").into_bytes()) }
+        })
+        .await
+        .expect("clean flow must be served");
+
+        assert_eq!(receipt.body_sha256, body_sha256_hex(&body));
+        assert_eq!(receipt.caller_spiffe_id, "spiffe://nucleus.io/buyer");
     }
 }

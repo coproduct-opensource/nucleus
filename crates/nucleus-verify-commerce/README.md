@@ -37,6 +37,41 @@ dispute-defence artifact.
 All four are real and tested. Verify a receipt bundle with
 `verify_receipt_bundle` (or the public verifier / browser `@coproduct/verify`).
 
+## The IFC gate (`serve_verified_ifc`)
+
+`serve_verified_ifc` adds an **information-flow-control gate** strictly between
+caller verification and the paid handler — making a paid action *contingent on an
+information-flow decision*. The caller hands a `FlowDeclaration` of the inputs the
+handler will be exposed to; the gate runs nucleus's lethal-trifecta lattice
+([`nucleus-ifc`](../nucleus-ifc)) over them, modelling the paid action as an
+outbound sink:
+
+- untrusted content reaching the action (e.g. `WebContent`) → **deny** (integrity);
+- `Secret` data reaching the response → **deny** (confidentiality);
+- internal data to the authenticated buyer → allowed (set `.public_sink()` to
+  forbid that too).
+
+On **deny** the handler is **never invoked** and you get
+`CommerceError::IfcDenied { verdict }`. On **allow**, the `IfcVerdict` is folded
+into the receipt's **signed content hash** (not just the payload), so
+`verify_receipt_bundle` re-derives and checks it — tampering the recorded verdict
+breaks verification.
+
+```rust,ignore
+use nucleus_verify_commerce::{serve_verified_ifc, FlowDeclaration, DeclaredInput};
+
+let flow = FlowDeclaration::new([DeclaredInput::UserPrompt, DeclaredInput::DatabaseRow]);
+let (body, receipt) = serve_verified_ifc(&req, &flow, &verifier, &issuer, handler).await?;
+// A web-content input would have returned CommerceError::IfcDenied before the handler ran.
+```
+
+**Honesty boundary:** this enforces the **model-level** IFC decision over the
+inputs the caller **declares**. It is not an end-to-end proof that exfiltration
+cannot happen — the limiting factor is **coverage** (an undeclared input is one
+the lattice never sees), and the decision is **per-call** (no cross-call taint
+ratchet). The verdict carries the declared input set verbatim so a verifier can
+judge coverage rather than trust a bare "allow".
+
 ## Usage
 
 ```rust
