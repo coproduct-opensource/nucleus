@@ -27,6 +27,17 @@ vault-fresh:
 agent-sign:
     cargo run -q -p nucleus-agent-card --example agent_sign --features sign
 
+# ── Verified agent marketplace dashboard ─────────────────────────────────────
+
+# Run the live (SIMULATED) marketplace orchestrator + SSE API. No real funds.
+marketplace bind="127.0.0.1:4040":
+    BIND={{bind}} cargo run -p nucleus-marketplace-dashboard --bin marketplace-orchestrator
+
+# Serve the Leptos dashboard UI on :8780 (proxies /api → orchestrator on :4040).
+# Run `just marketplace` in another shell first. Needs trunk + wasm32 target.
+marketplace-ui:
+    cd crates/nucleus-marketplace-dashboard-frontend && trunk serve --open
+
 # ── x402 on Base Sepolia (TESTNET only — never mainnet / real funds) ──────────
 
 # Print the Base Sepolia x402 bootstrap config + faucet links (instant).

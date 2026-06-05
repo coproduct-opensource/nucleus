@@ -1,0 +1,11 @@
+# Let Trunk auto-download the wasm-bindgen CLI that matches the wasm-bindgen
+# crate version resolved in this crate's Cargo.lock. Do NOT global-install
+# wasm-bindgen-cli — a schema mismatch is the #1 cause of build failures.
+[build]
+release = true
+
+[serve]
+port = 8780
+# Proxy the SSE + API to the running orchestrator binary during `trunk serve`.
+[[proxy]]
+backend = "http://127.0.0.1:4040/api"

@@ -1,0 +1,29 @@
+[package]
+name = "nucleus-marketplace-dashboard-frontend"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Leptos CSR activity-feed frontend for the nucleus marketplace dashboard. WASM-only; build with trunk."
+publish = false
+
+# Standalone (excluded from the main workspace) so the leptos/wasm dependency
+# tree stays out of the main build + CI. Build from this directory with trunk.
+
+[dependencies]
+leptos = { version = "0.8.19", features = ["csr"] }
+leptos-use = "0.18.3"
+codee = { version = "0.3", features = ["json_serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+gloo-net = { version = "0.6", features = ["http"] }
+console_error_panic_hook = "0.1"
+
+# The shared wire contract + pure reducer — default-features=false pulls ONLY the
+# serde-only `event` + `reducer` modules (no tokio), so it compiles to wasm and
+# the MarketEvent / MarketState types are shared VERBATIM with the backend.
+nucleus-marketplace-dashboard = { path = "../nucleus-marketplace-dashboard", default-features = false }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
