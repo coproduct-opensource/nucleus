@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 description = "Hand-crafted bad bundles every nucleus-envelope verifier must reject — the CI-gated security promise"
 repository = "https://github.com/coproduct-opensource/nucleus"
+readme = "README.md"
 keywords = ["adversarial", "test-vectors", "kat", "audit", "provenance"]
 categories = ["development-tools", "cryptography"]
 
