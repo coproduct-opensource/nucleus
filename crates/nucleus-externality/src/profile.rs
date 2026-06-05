@@ -78,6 +78,24 @@ impl ExternalityProfile {
     pub fn is_empty(&self) -> bool {
         self.dimensions.is_empty()
     }
+
+    /// The profile's overall assurance: the **minimum** rung across its claims —
+    /// a bundle is only as trustworthy as its weakest-attested dimension. The
+    /// caller supplies `rung_of`, which derives each claim's achieved rung from
+    /// its verification outcomes (see [`crate::assess_rung`]); keeping it a
+    /// closure lets the verifier plug in TEE / dispute / envelope checks without
+    /// this crate depending on them.
+    ///
+    /// Returns `None` for an empty profile (no claims → no assurance to report).
+    pub fn min_assurance_rung(
+        &self,
+        rung_of: impl Fn(&crate::dim::ResourceDim, &SignedExternalityClaim) -> crate::AssuranceRung,
+    ) -> Option<crate::AssuranceRung> {
+        self.dimensions
+            .iter()
+            .map(|(dim, claim)| rung_of(dim, claim))
+            .min()
+    }
 }
 
 /// Canonical bytes for the whole profile, used as the digest input
@@ -249,5 +267,43 @@ mod tests {
     #[test]
     fn domain_prefix_is_versioned() {
         assert_eq!(PROFILE_DOMAIN, b"nucleus/externality/profile/v1\0");
+    }
+
+    #[test]
+    fn min_assurance_rung_is_the_weakest_link() {
+        use crate::AssuranceRung;
+        let mut p = ExternalityProfile::new();
+        p.insert(
+            ResourceDim::GpuSeconds,
+            mk_claim(ResourceDim::GpuSeconds, 1_000_000),
+        );
+        p.insert(
+            ResourceDim::GridCarbonGramsCo2,
+            mk_claim(ResourceDim::GridCarbonGramsCo2, 500_000),
+        );
+
+        // Carbon is the strongly-attested one (R4), GPU is only signed (R1):
+        // the profile's overall rung is the MINIMUM = R1.
+        let rung = p
+            .min_assurance_rung(|dim, _claim| match dim {
+                ResourceDim::GridCarbonGramsCo2 => AssuranceRung::ZkUpperEnvelope,
+                _ => AssuranceRung::OracleSigned,
+            })
+            .unwrap();
+        assert_eq!(rung, AssuranceRung::OracleSigned, "weakest link wins");
+
+        // When every claim is strongly attested, the floor rises.
+        let all_strong = p
+            .min_assurance_rung(|_dim, _claim| AssuranceRung::ZkUpperEnvelope)
+            .unwrap();
+        assert_eq!(all_strong, AssuranceRung::ZkUpperEnvelope);
+    }
+
+    #[test]
+    fn min_assurance_rung_none_for_empty_profile() {
+        let p = ExternalityProfile::new();
+        assert!(p
+            .min_assurance_rung(|_, _| crate::AssuranceRung::ZkUpperEnvelope)
+            .is_none());
     }
 }
