@@ -17,12 +17,13 @@ pub use portcullis_core::CapabilityLevel;
 /// The verified type IS the production type — one type, zero translation layers.
 pub use portcullis_core::{default_sink_class, Operation, OperationParseError, SinkClass};
 
-/// Extension operation not covered by Verus proofs.
+/// Extension operation not covered by the core formal proofs.
 ///
-/// The 12 core operations above are frozen — they have 297 Verus verification
-/// conditions proving lattice laws, exposure monotonicity, and session safety.
+/// The 12 core operations above are frozen — they have Kani + Lean proofs of
+/// lattice laws, exposure monotonicity, and session safety.
 /// Extension operations participate in the same product lattice (meet = pointwise min,
-/// join = pointwise max) but are verified only by property tests, not SMT proofs.
+/// join = pointwise max) but are verified only by property tests, not the core
+/// Kani/Lean proofs.
 ///
 /// Lattice laws hold by the universal property of products in **Lat**: if each
 /// factor is a lattice, the product is a lattice. Since `CapabilityLevel` is a
@@ -141,7 +142,7 @@ pub struct CapabilityLattice {
     #[cfg_attr(feature = "serde", serde(default))]
     pub spawn_agent: CapabilityLevel,
 
-    /// Extension capability dimensions (not covered by Verus proofs).
+    /// Extension capability dimensions (not covered by the core formal proofs).
     ///
     /// Meet = pointwise min, join = pointwise max, leq = pointwise ≤.
     /// Unknown extensions default to `Never` (fail-closed).
