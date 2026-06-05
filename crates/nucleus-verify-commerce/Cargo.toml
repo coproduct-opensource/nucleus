@@ -1,0 +1,24 @@
+[package]
+name = "nucleus-verify-commerce"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Seller-side verify→serve→receipt middleware for verified agent commerce on x402 / A2A (scaffold)"
+repository = "https://github.com/coproduct-opensource/nucleus"
+readme = "README.md"
+keywords = ["agent", "x402", "a2a", "provenance", "commerce"]
+categories = ["web-programming", "authentication"]
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+serde = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
