@@ -243,7 +243,7 @@ impl Default for StaticKeyResolver {
 }
 
 #[cfg(test)]
-#[cfg(feature = "dev")]
+#[cfg(feature = "insecure-local-issuer")]
 mod tests {
     use super::*;
     use crate::edge::{EdgeKind, LineageEdge};

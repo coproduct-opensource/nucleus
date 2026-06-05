@@ -21,10 +21,11 @@
 //!
 //! # Cargo features
 //!
-//! - `dev` *(non-default)* — enables the in-process [`LocalIssuer`]
-//!   demo JWT-SVID minter + edge signer. Pulls in `jsonwebtoken`, `rand`, and
-//!   the `pkcs8` + `rand_core` features of `ed25519-dalek`. **Do not enable
-//!   in production.**
+//! - `insecure-local-issuer` *(non-default)* — enables the in-process
+//!   [`LocalIssuer`] demo JWT-SVID minter + edge signer. Pulls in
+//!   `jsonwebtoken`, `rand`, and the `pkcs8` + `rand_core` features of
+//!   `ed25519-dalek`. **Do not enable in production.** (`dev` is a deprecated
+//!   alias kept for one release.)
 //!
 //! Verification (the [`verify`] module) is always available — production
 //! callers reading lineage logs need exactly this surface.
@@ -48,7 +49,7 @@ pub mod verify;
 // crates (nucleus-envelope) don't need to depend on ct-merkle directly.
 pub use ct_merkle::{ConsistencyProof, InclusionProof, InclusionVerifError, RootHash};
 
-#[cfg(feature = "dev")]
+#[cfg(feature = "insecure-local-issuer")]
 pub mod local_issuer;
 
 pub use checkpoint::{
@@ -73,5 +74,5 @@ pub use signed_note::{
 pub use sink::{InMemorySink, JsonlSink, LineageSink, SinkError};
 pub use verify::{verify_chain, verify_proof, Jwk, Jwks, StaticKeyResolver, VerifyError};
 
-#[cfg(feature = "dev")]
+#[cfg(feature = "insecure-local-issuer")]
 pub use local_issuer::LocalIssuer;
