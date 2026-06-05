@@ -32,6 +32,7 @@ use ed25519_dalek::VerifyingKey;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::assurance::{assess_rung, AssuranceRung};
 use crate::claim::{verify_claim, ClaimError, SignedExternalityClaim};
 use crate::dim::ResourceDim;
 
@@ -167,6 +168,31 @@ pub fn verify_vca_claim(
     verify_claim(&vca.claim, oracle_vk, expected_subject, now_unix_micros)
         .map_err(OracleError::Claim)?;
     Ok(())
+}
+
+/// Verify a `VcaExternalityClaim` AND report the [`AssuranceRung`] it achieved.
+///
+/// On success the rung is **derived from what actually verified** (signature +
+/// TEE + zk upper-envelope all passed) — never self-asserted. A bare
+/// [`VcaExternalityClaim`] carries both the TEE quote and the envelope proof, so
+/// a full pass derives [`AssuranceRung::ZkUpperEnvelope`] (R4). Multi-source
+/// dispute (R3) is supplied by the aggregation layer, not a single claim, so it
+/// is `false` here.
+///
+/// Fails closed: any failing layer returns the error (the rung is *not* reported
+/// for an unverified claim — that would be the self-reported floor).
+pub fn verify_vca_claim_rung(
+    vca: &VcaExternalityClaim,
+    oracle_vk: &VerifyingKey,
+    expected_subject: &str,
+    now_unix_micros: u64,
+) -> Result<AssuranceRung, OracleError> {
+    verify_vca_claim(vca, oracle_vk, expected_subject, now_unix_micros)?;
+    // All three layers verified: signature ✓, TEE ✓, zk-envelope ✓.
+    Ok(assess_rung(
+        /* signature_ok */ true, /* tee_ok */ true,
+        /* multi_source_disputed */ false, /* zk_envelope_ok */ true,
+    ))
 }
 
 /// **S4 — Per-dimension oracle key registry.**
@@ -353,6 +379,42 @@ mod tests {
             1_700_000_000_000_001,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn full_vca_derives_rung_r4() {
+        let vca = VcaExternalityClaim {
+            claim: fixture_claim(1_000),
+            tee: fixture_tee(),
+            envelope: fixture_envelope(1_500),
+        };
+        let vk = oracle_sk().verifying_key();
+        let rung = verify_vca_claim_rung(
+            &vca,
+            &vk,
+            "spiffe://nucleus.io/ns/agents/sa/a1",
+            1_700_000_000_000_001,
+        )
+        .unwrap();
+        assert_eq!(rung, AssuranceRung::ZkUpperEnvelope);
+    }
+
+    #[test]
+    fn rung_not_reported_for_failed_verification() {
+        // Over-claim breaks the envelope layer → error, NOT a rung.
+        let vca = VcaExternalityClaim {
+            claim: fixture_claim(2_000),
+            tee: fixture_tee(),
+            envelope: fixture_envelope(1_000),
+        };
+        let vk = oracle_sk().verifying_key();
+        assert!(verify_vca_claim_rung(
+            &vca,
+            &vk,
+            "spiffe://nucleus.io/ns/agents/sa/a1",
+            1_700_000_000_000_001,
+        )
+        .is_err());
     }
 
     #[test]

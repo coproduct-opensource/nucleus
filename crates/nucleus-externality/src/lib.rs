@@ -41,18 +41,20 @@
 
 #![deny(clippy::float_arithmetic)]
 
+mod assurance;
 mod claim;
 mod dim;
 mod oracle;
 mod profile;
 
+pub use assurance::{assess_rung, AssuranceRung};
 pub use claim::{
     canonical_claim_bytes, sign_claim, verify_claim, ClaimError, SignedExternalityClaim,
 };
 pub use dim::{ResourceDim, RESOURCE_DIM_DOMAIN};
 pub use oracle::{
-    verify_vca_claim, OracleError, OracleRegistry, TeeAttestation, TeeVendor, UpperEnvelopeProof,
-    VcaExternalityClaim,
+    verify_vca_claim, verify_vca_claim_rung, OracleError, OracleRegistry, TeeAttestation,
+    TeeVendor, UpperEnvelopeProof, VcaExternalityClaim,
 };
 pub use profile::{
     canonical_externality_bytes, externality_digest, ExternalityProfile, PROFILE_DOMAIN,
