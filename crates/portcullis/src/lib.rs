@@ -93,14 +93,17 @@ mod budget;
 mod capability;
 #[cfg(feature = "cedar")]
 pub mod cedar_bridge;
-#[cfg(feature = "crypto")]
+// Always compiled: the certificate DATA types (LatticeCertificate, SinkScope,
+// VerifiedPermissions, …) and non-crypto logic are ring-free; only the
+// sign/verify/mint/delegate fns inside are `#[cfg(feature = "crypto")]`-gated
+// (ring can't compile to WASM). The kernel needs the types, not the signing.
 pub mod certificate;
 mod command;
 pub mod constraint;
 pub mod uninhabitable_state;
 
 /// Kernel decision engine — complete mediation with monotone session state.
-#[cfg(all(feature = "serde", feature = "crypto"))]
+#[cfg(feature = "serde")]
 pub mod delegation;
 pub mod dropout;
 /// Bash command egress analysis — detect network exfiltration.
@@ -155,7 +158,7 @@ pub mod receipt_sign;
 pub use receipt_sign::{receipt_hash, sign_receipt, verify_receipt};
 #[cfg(feature = "remote-audit")]
 pub mod s3_audit_backend;
-#[cfg(feature = "crypto")]
+#[cfg(feature = "serde")]
 pub mod token;
 #[cfg(feature = "crypto")]
 /// Ed25519 signing and verification for declassification tokens.
@@ -248,11 +251,13 @@ pub use audit::{
     AuditEntry, AuditLog, ChainVerificationError, IdentityAuditSummary, PermissionEvent,
     RetentionPolicy,
 };
-#[cfg(feature = "crypto")]
 pub use certificate::{
-    canonical_permissions_hash, verify_certificate, CertificateDelegationError, CertificateError,
-    LatticeCertificate, SinkScope, VerifiedPermissions,
+    canonical_permissions_hash, CertificateDelegationError, CertificateError, LatticeCertificate,
+    SinkScope, VerifiedPermissions,
 };
+// `verify_certificate` performs Ed25519 verification via `ring` → crypto-only.
+#[cfg(feature = "crypto")]
+pub use certificate::verify_certificate;
 pub use delegation::{
     meet_with_justification, DelegationChain, DelegationLink, MeetJustification, RestrictionDetail,
     RestrictionReason,
@@ -273,7 +278,7 @@ pub use receipt_chain::verify_exported_chain;
 pub use receipt_chain::{
     ChainAppendError, ChainVerifyError, ReceiptChain, VerdictReceipt, VerifyReport,
 };
-#[cfg(feature = "crypto")]
+#[cfg(feature = "serde")]
 pub use token::{AttenuationToken, SessionProvenance, TokenError};
 pub use tool_schema::{ApprovedToolSchema, SchemaError, ToolSchemaRegistry};
 pub use uninhabitable_state::{ConstraintNucleus, CoreExposureRequirement, UninhabitableState};

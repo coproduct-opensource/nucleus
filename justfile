@@ -16,7 +16,7 @@ vault port="8799":
     @( sleep 1 ; command -v open >/dev/null 2>&1 && open "http://127.0.0.1:{{port}}" || command -v xdg-open >/dev/null 2>&1 && xdg-open "http://127.0.0.1:{{port}}" || true ) &
     cd crates/ctf-engine/dist && python3 -m http.server {{port}}
 
-# Rebuild The Vault WASM from source then serve (needs the wasm build fix — see ctf-engine/README).
+# Rebuild The Vault WASM from source then serve (needs trunk + wasm32 target).
 vault-fresh:
     cd crates/ctf-engine && trunk serve --open
 

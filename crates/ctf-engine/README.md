@@ -39,24 +39,22 @@ vault` (pre-built) or `trunk serve` (fresh, once the build below is fixed).
 
 ## Building from source
 
-⚠️ **A fresh `trunk build` / `trunk serve` currently fails.** Honest root cause:
-`portcullis::kernel` is always compiled (`pub mod kernel`, ungated) but imports
-the `crypto`-feature-gated modules `certificate`, `token`, and `delegation`
-(`portcullis/src/kernel.rs`), while this crate depends on portcullis with
-`default-features = false, features = ["serde"]` (no `crypto`) to keep the WASM
-build clean. So `cargo build --target wasm32-unknown-unknown --features wasm`
-errors with `unresolved import crate::certificate / crate::token / delegation`.
+```sh
+cargo install trunk
+rustup target add wasm32-unknown-unknown
+cd crates/ctf-engine && trunk build      # or `just vault-fresh` to build + serve
+```
 
-Fix options (a real portcullis change, not a CTF change — pick one):
-1. **cfg-gate the kernel's crypto deps** — make `kernel`'s `certificate`/`token`/
-   `delegation` uses `#[cfg(feature = "crypto")]`, or split a crypto-free kernel
-   path, so portcullis builds without `crypto`. (Cleanest; keeps the WASM small.)
-2. **Enable `crypto` for the wasm build** in this crate — requires wiring
-   `getrandom`'s `js` feature and confirming ed25519 deps compile to
-   `wasm32-unknown-unknown`. (Heavier WASM; may surface more wasm-compat work.)
+The fresh build works. It was previously broken because `portcullis::kernel` is
+always compiled but used the `crypto`-feature-gated `certificate`/`token`/
+`delegation` modules, while this crate builds portcullis without `crypto` (ring
+can't compile to WASM). Fixed by making those modules' DATA types always-compiled
+and gating only the `ring`-using functions (`mint`/`delegate`/`verify_certificate`,
+`Token::verify`) behind `crypto` — the kernel needs the types, not the signing.
 
-Until that lands, the committed `dist/` is the source of truth for the playable
-build, and `just vault` serves it. **Do not assume `dist/` is in sync with `src/`
-until the fresh build is restored.**
+`Trunk.toml` pins the `wasm_bindgen` CLI to the `wasm-bindgen` crate version in
+`Cargo.lock` (currently `0.2.122`); the bindgen schema must match exactly. Bump
+both in lockstep (`cargo update -p wasm-bindgen` + the `[tools]` pin) on upgrade.
 
-Prereqs once fixed: `cargo install trunk` + `rustup target add wasm32-unknown-unknown`.
+The committed `dist/` is the pre-built artifact `just vault` serves; it is now
+regenerated from source by `trunk build`.

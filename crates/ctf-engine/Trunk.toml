@@ -1,2 +1,8 @@
 [build]
 features = ["wasm"]
+
+# Pin the wasm-bindgen CLI to the wasm-bindgen crate version in Cargo.lock —
+# the bindgen schema must match EXACTLY or `trunk build` fails at the
+# wasm-bindgen step. Bump this in lockstep with `cargo update -p wasm-bindgen`.
+[tools]
+wasm_bindgen = "0.2.122"

@@ -82,7 +82,12 @@
 //! ```
 
 use chrono::{DateTime, Utc};
+// `ring` (Ed25519 sign/verify) can't compile to WASM, so all ring usage is
+// gated behind `crypto`; the certificate DATA types + non-crypto logic below
+// stay always-compiled so the kernel can use them on every target.
+#[cfg(feature = "crypto")]
 use ring::rand::SecureRandom;
+#[cfg(feature = "crypto")]
 use ring::signature::{self, Ed25519KeyPair, KeyPair};
 use sha2::{Digest, Sha256};
 use std::fmt;
@@ -90,7 +95,9 @@ use std::fmt;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::delegation::{meet_with_justification, MeetJustification};
+#[cfg(feature = "crypto")]
+use crate::delegation::meet_with_justification;
+use crate::delegation::MeetJustification;
 use crate::PermissionLattice;
 
 /// Maximum chain depth (configurable at verification time, this is the default).
@@ -561,6 +568,7 @@ impl LatticeCertificate {
     /// * `not_after` — Certificate expiration.
     /// * `signing_key` — The root authority's long-term Ed25519 signing key.
     /// * `rng` — Secure random number generator for ephemeral key generation.
+    #[cfg(feature = "crypto")]
     pub fn mint(
         root_permissions: PermissionLattice,
         root_identity: String,
@@ -618,6 +626,7 @@ impl LatticeCertificate {
     ///   the parent block's expiry.
     /// - [`CertificateDelegationError::ChainTooDeep`] if the chain would exceed
     ///   [`DEFAULT_MAX_CHAIN_DEPTH`].
+    #[cfg(feature = "crypto")]
     pub fn delegate(
         &self,
         requested: &PermissionLattice,
@@ -641,6 +650,7 @@ impl LatticeCertificate {
     /// The `sink_scope` must be a subset of the parent's scope (monotone).
     /// An unrestricted parent allows any child scope; a restricted parent
     /// requires the child to be equally or more restricted.
+    #[cfg(feature = "crypto")]
     pub fn delegate_with_scope(
         &self,
         requested: &PermissionLattice,
@@ -886,6 +896,7 @@ impl LatticeCertificate {
 /// * `root_public_key` — The 32-byte Ed25519 public key of the root authority.
 /// * `now` — Current time for expiry checks.
 /// * `max_chain_depth` — Maximum allowed delegation hops.
+#[cfg(feature = "crypto")]
 pub fn verify_certificate(
     cert: &LatticeCertificate,
     root_public_key: &[u8],

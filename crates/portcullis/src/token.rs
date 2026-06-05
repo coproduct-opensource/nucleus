@@ -81,9 +81,10 @@ use base64::Engine;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "crypto")]
+use crate::certificate::verify_certificate;
 use crate::certificate::{
-    verify_certificate, CertificateError, LatticeCertificate, VerifiedPermissions,
-    DEFAULT_MAX_CHAIN_DEPTH,
+    CertificateError, LatticeCertificate, VerifiedPermissions, DEFAULT_MAX_CHAIN_DEPTH,
 };
 
 /// A compact, self-contained attenuation token for wire transport.
@@ -199,6 +200,10 @@ impl AttenuationToken {
     /// 4. Monotone attenuation (permissions only decrease)
     /// 5. Time expiry checks
     /// 6. Proof-of-possession
+    ///
+    /// Ed25519 verification uses `ring`, which can't compile to WASM, so this
+    /// method is `crypto`-gated. The token DATA type itself is always available.
+    #[cfg(feature = "crypto")]
     pub fn verify(
         &self,
         now: DateTime<Utc>,
@@ -214,6 +219,7 @@ impl AttenuationToken {
     }
 
     /// Verify with default max chain depth.
+    #[cfg(feature = "crypto")]
     pub fn verify_default(&self, now: DateTime<Utc>) -> Result<VerifiedPermissions, TokenError> {
         self.verify(now, DEFAULT_MAX_CHAIN_DEPTH)
     }
