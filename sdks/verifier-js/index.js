@@ -230,3 +230,77 @@ export async function supportedSchemaVersion() {
   const mod = await initWasm();
   return mod.supportedEnvelopeSchemaVersion();
 }
+
+// ── RECOMPUTE: re-derive the decision, don't just check the signature ─────────
+// `verify()` proves a receipt was *signed*; `recompute()` proves the in-bounds
+// IFC *decision* was correct by re-running the EXACT same gate function the
+// production seller runs (nucleus-ifc, compiled to this WASM). This is the
+// structural differentiator: a verdict a counterparty independently re-derives,
+// not a vendor's signature over the vendor's own claim. SCOPE (honest):
+// model-level over the DECLARED inputs (coverage-limited, per-call); fails closed
+// on an unknown input token.
+
+/**
+ * The recomputed IFC verdict. Mirrors the Rust `RecomputeReport`.
+ * @typedef {object} RecomputeReport
+ * @property {boolean} allow
+ * @property {string} reason
+ * @property {string[]} declared_inputs
+ * @property {string} canonical
+ */
+
+/**
+ * Re-derive the IFC verdict for a call's declared inputs by running the same
+ * decision the production gate runs (no network, no trust in any server).
+ *
+ * @param {string[]} declaredInputs
+ *   Input tokens, e.g. `["user_prompt","web_content"]` (the set a receipt binds).
+ * @param {{ requiresAuthority?: boolean, sinkPublic?: boolean }} [opts]
+ * @returns {Promise<{ ok: true, verdict: RecomputeReport } | VerifyFail>}
+ */
+export async function recompute(declaredInputs, opts = {}) {
+  let mod;
+  try {
+    mod = await initWasm();
+  } catch (e) {
+    return { ok: false, error: /** @type {VerifyError} */ (e) };
+  }
+  const { requiresAuthority = false, sinkPublic = false } = opts;
+  try {
+    const verdict = /** @type {RecomputeReport} */ (
+      mod.recomputeVerdict(
+        JSON.stringify(declaredInputs),
+        requiresAuthority,
+        sinkPublic,
+      )
+    );
+    return { ok: true, verdict };
+  } catch (e) {
+    // Unknown token (fails closed) or bad input.
+    return {
+      ok: false,
+      error: new VerifyError("INPUT", e?.message ?? String(e), { cause: e }),
+    };
+  }
+}
+
+/**
+ * Recompute and compare to a *claimed* verdict (e.g. the one a receipt binds).
+ * The one-liner that turns "trust the receipt" into "verify it": returns `true`
+ * iff the independently re-derived `allow` matches `claimedAllow`.
+ *
+ * @param {string[]} declaredInputs
+ * @param {boolean} claimedAllow
+ * @param {{ requiresAuthority?: boolean, sinkPublic?: boolean }} [opts]
+ * @returns {Promise<boolean>}
+ */
+export async function checkVerdict(declaredInputs, claimedAllow, opts = {}) {
+  const mod = await initWasm();
+  const { requiresAuthority = false, sinkPublic = false } = opts;
+  return mod.checkVerdict(
+    JSON.stringify(declaredInputs),
+    requiresAuthority,
+    sinkPublic,
+    claimedAllow,
+  );
+}

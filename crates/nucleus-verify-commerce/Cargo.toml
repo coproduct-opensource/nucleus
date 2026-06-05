@@ -28,7 +28,9 @@ nucleus-envelope = { path = "../nucleus-envelope" }
 nucleus-identity = { path = "../nucleus-identity" }
 nucleus-lineage = { path = "../nucleus-lineage" }
 # IFC gate: the model-level information-flow decision over declared inputs.
-nucleus-ifc = { path = "../nucleus-ifc" }
+# The `decision` feature homes FlowDeclaration/IfcVerdict in nucleus-ifc (wasm-safe,
+# single source) — this crate re-exports them; the recompute SDK shares the code.
+nucleus-ifc = { path = "../nucleus-ifc", features = ["decision"] }
 portcullis-core = { path = "../portcullis-core" }
 
 [dev-dependencies]
