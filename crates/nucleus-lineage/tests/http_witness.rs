@@ -5,7 +5,7 @@
 //!
 //! Requires `--features http,dev`.
 
-#![cfg(all(feature = "http", feature = "dev"))]
+#![cfg(all(feature = "http", feature = "insecure-local-issuer"))]
 
 use std::time::Duration;
 

@@ -36,7 +36,7 @@ sign = []
 [dev-dependencies]
 # `dev` feature on nucleus-lineage gives the integration test the
 # in-process LocalIssuer + InMemorySink it needs to build a real Bundle.
-nucleus-lineage = { path = "../nucleus-lineage", features = ["dev"] }
+nucleus-lineage = { path = "../nucleus-lineage", features = ["insecure-local-issuer"] }
 # P-256 keypair generation for the sign/verify unit + integration tests.
 ring = { workspace = true }
 

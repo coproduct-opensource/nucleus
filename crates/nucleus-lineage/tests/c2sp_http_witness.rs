@@ -9,7 +9,7 @@
 //!
 //! Requires `--features http,dev`.
 
-#![cfg(all(feature = "http", feature = "dev"))]
+#![cfg(all(feature = "http", feature = "insecure-local-issuer"))]
 
 use std::sync::Arc;
 use std::time::Duration;
