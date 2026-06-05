@@ -6668,6 +6668,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-marketplace-dashboard"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "futures",
+ "nucleus-verify-commerce",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tokio-test",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "nucleus-mcp"
 version = "1.0.0"
 dependencies = [
