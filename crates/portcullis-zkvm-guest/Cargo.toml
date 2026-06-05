@@ -4,6 +4,7 @@ version = "1.0.0"
 edition = "2021"
 description = "RISC-V guest program for zkVM-verified WASM parser execution"
 license = "MIT"
+readme = "README.md"
 
 # Guest binary — compiled to RISC-V ELF via risc0-build.
 # Host crates embed the ELF via `risc0_build::embed_methods_recursive()`.
