@@ -79,9 +79,18 @@ is gone.
   Sepolia testnet; native-value escrow for v1. *Not yet:* deciding poster-vs-
   challenger correctness (always reverses on challenge) — that's B3.
 - **B3:** on-chain bid commitment (open submission) + clearing-price
-  adjudication (interactive fraud proof or on-chain commit so a challenge
-  resolves to the *correct* result, not just a reversal) — this is what removes
-  the *coordinator*, not just the *trust*.
+  adjudication so a challenge resolves to the *correct* result, not just a
+  reversal — this is what removes the *coordinator*, not just the *trust*.
+  **Adopt the refereed-delegation tournament** (the **PRT / Dave** family —
+  Cartesi, *peer-reviewed ACM DLT 2025*) rather than designing a bespoke dispute
+  game: bisect the disputed clearing recomputation to a single step and settle it
+  on-chain. Why this exact mechanism: it gives **a single honest challenger a win
+  against an unbounded Sybil adversary**, honest cost only *logarithmic* in
+  adversary loss, **correctness independent of bond calibration**, and finalises
+  in a few challenge periods — i.e. it removes B2's "any challenge just reverses"
+  limitation *and* sidesteps the verifier-independence problem (you need ≥1 honest
+  watcher, not a provably-independent quorum). The recompute we already ship is
+  the referee's per-step check; B3 is wrapping it in the bisection game.
 - **B4 (research):** PoTE — proving the seller actually delivered. Until then, v1
   settles on **clearing-correct + payment**, not on delivery; disputes about
   delivery remain out of scope (pitch to compliance, not as full escrow).

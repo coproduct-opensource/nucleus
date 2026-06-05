@@ -60,24 +60,42 @@ from "the operator" to **"the hardware vendor's attestation + the sensor wire in
 the enclave."** The operator can no longer silently alter the number; they can
 only feed a bad input — which rungs 3–4 attack.
 
-### Rung 3 — multi-source aggregation + staked dispute *(feasible now)*
-Don't trust one sensor. For each dimension, take **N independent sources** and
-aggregate:
+> ⚠️ **TEE is not a hard floor — weight it accordingly.** Remote attestation is
+> physically breakable: *TEE.fail* (Nov 2025) showed a **< $1,000 DDR5 bus
+> interposer defeating attestation and extracting keys from Intel SGX/TDX and
+> AMD SEV-SNP** (physical access + root). R2 *raises the cost* of silently
+> altering a number; it does not make it impossible. Do not treat a TEE quote as
+> equivalent to a proof — it is one (breakable) attestation, which is why R3/R4
+> exist above it.
 
-- **Carbon:** GPU-seconds (TEE compute oracle) × **grid carbon intensity** from
-  ≥2 independent grid-intensity feeds (e.g. WattTime / ElectricityMaps-class
-  providers), region- and time-matched. Disagreement beyond a tolerance → the
-  claim is flagged, not silently averaged.
-- **Water:** the same GPU/energy telemetry × a **regional WUE** factor from a
-  published datacenter-water dataset.
+### Rung 3 — refereed dispute over corroborated sources *(feasible now)*
+The naïve framing of this rung — "take **N independent sources** and trust the
+majority" — is **provably weak**, and the 2024–2026 literature is blunt about why:
+genuine verifier independence is hard to *guarantee* and easy to *fake* (the
+Sybil≡collusion "mirror"; proof-of-personhood systems still drift to oligopoly;
+the **Verifier's Dilemma** shows no pure-strategy equilibrium where a costly
+verifier and a prover are *both* honest). **Counting "independent" feeds is not a
+security argument.**
 
-Wrap the aggregate in an **optimistic-oracle dispute layer** (the **UMA**
-pattern): a reporter posts the value with a **bond**; anyone may dispute within a
-window by posting a counter-bond; a disputed value escalates to a slower,
-higher-assurance resolver and the loser is slashed. This is the *same shape* as
-Bet B's settlement challenge (`CredibleSettlement.sol`) — **reuse it.** Trusted
-surface: **"a majority of independent feeds AND no profitable undisputed lie"** —
-i.e. economic, not blind.
+The sound primitive is a **refereed dispute** whose correctness rests on *a single
+honest challenger*, not on the independence of a quorum:
+
+- Corroborate the measurement from multiple feeds where available (carbon:
+  GPU-seconds × grid-intensity from WattTime / ElectricityMaps-class providers,
+  region- and time-matched; water: GPU/energy × a regional WUE factor) — but treat
+  agreement as a *cheap-path heuristic*, not the guarantee.
+- The guarantee comes from an **optimistic post + permissionless challenge**: a
+  reporter posts the value with a **bond**; **anyone** may dispute within a window;
+  a dispute is settled by a **refereed-delegation tournament** (the **PRT / Dave**
+  family — Cartesi, peer-reviewed ACM DLT 2025) in which **one honest challenger
+  prevails against an unbounded Sybil adversary**, with honest cost only
+  *logarithmic* in adversary loss and correctness *independent* of bond
+  calibration. This is the *same machinery* as Bet B's settlement challenge
+  (`CredibleSettlement.sol`) — **reuse it**, and inherit the single-honest-party
+  security model rather than a fragile "majority of independent feeds."
+
+Trusted surface: **"≥1 honest party is watching, and the censorship window
+holds"** — economic + structural, not an unverifiable independence assumption.
 
 ### Rung 4 — zk upper-envelope proof *(feasible, partial)*
 For dimensions where we only need a *bound* (the Pigouvian charge is conservative
