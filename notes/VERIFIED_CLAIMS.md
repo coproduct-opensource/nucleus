@@ -36,7 +36,7 @@ through machine-checked proof.
 
 ## Relationship to the North Star
 
-These claims operationalize the **Flagship Safety Claim** from [`NORTH_STAR.md`](./NORTH_STAR.md):
+These claims operationalize the **Flagship Safety Claim** from [`NORTH_STAR.md`](../NORTH_STAR.md):
 
 > No external side effect occurs unless it is mediated by Nucleus and authorized by a policy that can only stay the same or tighten during execution.
 

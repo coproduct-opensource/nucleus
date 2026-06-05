@@ -7,7 +7,7 @@
 //!
 //! ## Verified Shared Core
 //!
-//! The Verus proofs in `portcullis-verified` verify executable spec
+//! The Kani proofs in `kani.rs` verify executable spec
 //! functions (`exec_guard_check`, `exec_apply_event`, etc.) that are
 //! structurally identical to these production functions. The CI
 //! conformance tests in `verus_conformance.rs` exhaustively verify

@@ -63,7 +63,9 @@ pub mod sign;
 mod sign_verify_tests;
 
 pub use anchor::trust_anchor_from_card;
-pub use card::{AgentCard, AgentCardSignature, SignedAgentCard};
+pub use card::{
+    AgentCard, AgentCardSignature, EnforcementRule, RuntimeGuaranteeProfile, SignedAgentCard,
+};
 pub use jcs::canonicalize;
 pub use verify::{verify_card, VerifiedCard};
 

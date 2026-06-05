@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 description = "REST API server wrapping nucleus-control-plane for job submission and bundle delivery"
 repository = "https://github.com/coproduct-opensource/nucleus"
+readme = "README.md"
 keywords = ["control-plane", "rest", "axum", "agents", "provenance"]
 categories = ["web-programming::http-server"]
 
@@ -14,7 +15,7 @@ name = "nucleus-control-plane-server"
 path = "src/main.rs"
 
 [dependencies]
-nucleus-lineage = { path = "../nucleus-lineage", features = ["dev"] }
+nucleus-lineage = { path = "../nucleus-lineage", features = ["insecure-local-issuer"] }
 nucleus-envelope = { path = "../nucleus-envelope" }
 nucleus-control-plane = { path = "../nucleus-control-plane" }
 nucleus-oidc-core = { path = "../nucleus-oidc-core" }

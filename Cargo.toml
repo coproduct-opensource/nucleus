@@ -42,6 +42,9 @@ members = [
     "crates/nucleus-github-oidc",        # Per-provider validator: GitHub Actions OIDC → SPIFFE
     "crates/nucleus-agent-card",         # Verify-before-you-act: signed Agent Card → TrustAnchor
     "crates/nucleus-trust-registry",     # "Let's Encrypt for agents": PR-rooted, OIDC-attested, transparency-logged SPIFFE federation enrollment
+    "crates/xtask",                      # Rust-native dev/CI task runner (cargo xtask <cmd>); migrating scripts/*.sh
+    "crates/nucleus-machine",            # MachineDriver: microVM execution-substrate abstraction (mock + Fly skeleton)
+    "crates/nucleus-verify-commerce",    # Seller-side verify→serve→receipt middleware for x402/A2A (scaffold)
 ]
 # nucleus-claude-hook moved to nucleus-code (private product repo)
 # exposure-web is WASM-only (wasm32-unknown-unknown); build with: cd crates/exposure-web && trunk build
@@ -129,7 +132,11 @@ tonic-prost = "0.14"
 
 # Utils
 uuid = { version = "1", features = ["v4"] }
-chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# `wasmbind` makes `Utc::now()` use the browser's `Date.now()` on
+# wasm32-unknown-unknown instead of std time (which panics: "time not implemented
+# on this platform"). It's inert on non-wasm targets. Required by the ctf-engine
+# WASM build (kernel.rs / escalation.rs call Utc::now()).
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "wasmbind"] }
 rust_decimal = "1.42"
 shell-words = "1.1"
 regex = "1.12"

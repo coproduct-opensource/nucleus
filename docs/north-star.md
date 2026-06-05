@@ -56,21 +56,26 @@ The math core is small and sharp:
 Key design choice: **prove properties about the enforcement boundary**, not
 about LLM behavior. The agent is a black box. The kernel is the TCB.
 
-**Current state (March 2026):** 297 Verus proofs verified in CI covering
-lattice laws, uninhabitable state operator, Heyting algebra, modal operators (S4), exposure
-monoid, graded monad laws, Galois connections, fail-closed auth boundary,
-capability coverage theorem, budget monotonicity, and delegation ceiling
-theorem. Phase 0-2 partially complete.
+**Current state:** 113 Kani harnesses + ~277 Lean 4 theorems verify the security
+core in CI, covering lattice laws, uninhabitable state operator, Heyting algebra,
+modal operators (S4), exposure monoid, graded monad laws, Galois connections,
+fail-closed auth boundary, capability coverage theorem, budget monotonicity, and
+delegation ceiling theorem. (Verus was evaluated and removed; verification
+consolidated on Lean 4 + Kani — see the README verification table.) Phase 0-2
+partially complete.
 
 ### Pillar B — Formal Methods as a Product Feature
 
 Proofs are first-class artifacts, not academic exercises:
 
-- **Verus SMT proofs** — machine-checked invariants for the Rust kernel,
-  erased at compile time (zero runtime overhead). CI-gated minimum: 297 proofs.
-- **Lean 4 model** (partial) — hand-written kernel-checked proof of
-  `CapabilityLevel` as a `HeytingAlgebra`; Aeneas pipeline translation
-  for the full portcullis crate is planned but not yet started.
+- **Kani bounded model checking** — 113 machine-checked harnesses over the Rust
+  kernel's decision logic; complete over the finite lattice state space. CI-gated
+  via `kani-nightly.yml`.
+- **Lean 4 model** — ~277 kernel-checked theorems for the security core (capability
+  Heyting algebra, IFC semilattice, taint monotonicity, exposure monoid,
+  delegation); the Aeneas pipeline mechanically translates the core capability
+  types from Rust to Lean so proofs run over generated code. CI-gated via
+  `lean-build.yml` / `aeneas-ifc-scoped.yml`.
 - **Differential testing** (planned) — Cedar pattern: millions of random inputs
   compared between Rust engine and Lean model.
 - **Public Verified Claims page** — each claim maps to a proof artifact and
@@ -204,20 +209,20 @@ or panics. No fail-open. No silent degradation.
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  Verified Core (Verus)              ~10-15K LOC     │
-│  ├── portcullis lattice engine     297 proofs       │
+│  Verified Core (Lean 4 + Kani)      ~10-15K LOC     │
+│  ├── portcullis lattice engine     113 Kani proofs  │
 │  ├── exposure guard + uninhabitable state        proven monotone  │
 │  ├── permission enforcement        fail-closed      │
 │  └── sandbox boundary              proven panics    │
 ├─────────────────────────────────────────────────────┤
 │  Formal Model (Lean 4, hand-written) partial         │
 │  ├── CapabilityLevel HeytingAlgebra Lean 4 proofs   │
-│  ├── Aeneas pipeline (full crate)  not started      │
+│  ├── Aeneas pipeline (core types)  in progress      │
 │  └── graded monad laws             planned          │
 ├─────────────────────────────────────────────────────┤
 │  Differential Testing              planned          │
 │  ├── Rust engine vs Lean model     cargo fuzz       │
-│  └── AutoVerus proof generation    CI-gated         │
+│  └── Lean/Kani proof ratchet       CI-gated         │
 ├─────────────────────────────────────────────────────┤
 │  Runtime (standard Rust)           ~70K LOC         │
 │  ├── gRPC, tokio, tonic            Kani checks      │
@@ -288,9 +293,9 @@ or panics. No fail-open. No silent degradation.
 
 Each rung is shippable independently.
 
-### Rung 1 — Verus SMT Proofs (in progress)
+### Rung 1 — Kani + Lean Proofs (in progress)
 
-- 297 proofs verified in CI (minimum gate)
+- 113 Kani harnesses + ~277 Lean theorems verified in CI (minimum gate)
 - Covers: lattice laws, uninhabitable state operator, Heyting algebra, S4 modal
   operators, exposure monoid, graded monad laws, Galois connections, fail-closed
   auth, capability coverage, budget monotonicity, delegation ceiling
@@ -363,7 +368,7 @@ The exposure lattice has a concrete day-one demo: supply chain safety.
 - Public "Verified Claims" matrix:
   - Claim → Proof artifact → Code hash
 - CI fails if a change violates the proven model
-- Verus proof count is monotonically non-decreasing (ratchet on proof count)
+- Proof count (Kani harnesses + Lean theorems) is monotonically non-decreasing (ratchet)
 
 ### Performance
 

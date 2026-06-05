@@ -6658,6 +6658,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-machine"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "nucleus-mcp"
 version = "1.0.0"
 dependencies = [
@@ -6967,6 +6977,26 @@ dependencies = [
  "tower_governor",
  "tracing",
  "tracing-subscriber 0.3.23",
+]
+
+[[package]]
+name = "nucleus-verify-commerce"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "nucleus-agent-card",
+ "nucleus-envelope",
+ "nucleus-identity",
+ "nucleus-ifc",
+ "nucleus-lineage",
+ "portcullis-core",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
@@ -13065,6 +13095,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7d8a75eaf6557bb84a65ace8609883db44a29951042ada9b393151532e41fcb"
 dependencies = [
  "xml-rs",
+]
+
+[[package]]
+name = "xtask"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde_json",
 ]
 
 [[package]]

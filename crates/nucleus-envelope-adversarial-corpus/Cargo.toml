@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 description = "Hand-crafted bad bundles every nucleus-envelope verifier must reject — the CI-gated security promise"
 repository = "https://github.com/coproduct-opensource/nucleus"
+readme = "README.md"
 keywords = ["adversarial", "test-vectors", "kat", "audit", "provenance"]
 categories = ["development-tools", "cryptography"]
 
@@ -17,7 +18,7 @@ path = "src/lib.rs"
 
 [dependencies]
 nucleus-envelope = { path = "../nucleus-envelope" }
-nucleus-lineage = { path = "../nucleus-lineage", features = ["dev"] }
+nucleus-lineage = { path = "../nucleus-lineage", features = ["insecure-local-issuer"] }
 ed25519-dalek = "=3.0.0-pre.7"
 serde_json = { workspace = true }
 hex = { workspace = true }

@@ -1,4 +1,4 @@
-//! IFC Demo: 4 scenarios showing information flow control for AI agents.
+//! IFC Demo: 5 scenarios showing information flow control for AI agents.
 //!
 //! Run with: cargo run -p nucleus-ifc --example ifc_demo
 
@@ -19,7 +19,48 @@ fn main() {
     // Scenario 4: DeterministicBind (model excluded)
     scenario_deterministic_bind();
 
+    // Scenario 5: Confused deputy (untrusted tool output hijacks authority)
+    scenario_confused_deputy();
+
     println!("\n═══ All scenarios passed ═══");
+}
+
+/// The confused-deputy problem: a privileged program is tricked by an
+/// untrusted caller into misusing its authority. In an agent, the *deputy* is
+/// the agent, the *principal* is the user, and the *attacker* is anyone whose
+/// content the agent processes. Capability/IFC defeats it by eliminating
+/// AMBIENT AUTHORITY — the agent may only act on resources whose ancestry it
+/// is authorized for. An authority-bearing action whose ancestry includes an
+/// untrusted (attacker-influenced) source is refused. Mirrors the 2026
+/// reconciliation-agent incident (a tool output told the agent to "export all
+/// customer records") and the MCP confused-deputy class (CVE-2026-21520).
+fn scenario_confused_deputy() {
+    println!("─── Scenario 5: Confused deputy (tool output hijacks the agent's authority) ───");
+
+    let mut t = FlowTracker::new();
+
+    // The agent's real authority comes from the user's task.
+    let user = t.observe(NodeKind::UserPrompt).unwrap();
+    println!("  UserPrompt observed (Trusted — the agent's legitimate authority)");
+
+    // A poisoned/impersonating MCP server returns output carrying a hidden
+    // instruction: "use your access to export ALL records." An unregistered
+    // Custom node defaults to the most conservative label — adversarial
+    // integrity, no authority — exactly right for an untrusted tool surface.
+    let tool = t.observe(NodeKind::Custom("poisoned_mcp_server")).unwrap();
+    println!("  Poisoned MCP tool output observed (Adversarial — no authority)");
+
+    // The model plans from BOTH → the plan is tainted by the untrusted tool output.
+    let plan = t
+        .observe_with_parents(NodeKind::ModelPlan, &[user, tool])
+        .unwrap();
+    println!("  ModelPlan inherits Adversarial from the poisoned tool output");
+
+    // The agent tries a privileged OutboundAction (exfiltrate) using its authority.
+    let check = t.check_safety(&[plan], true);
+    assert!(check.is_denied());
+    println!("  ✗ OutboundAction DENIED — the deputy cannot exercise authority under");
+    println!("    untrusted direction (no ambient authority → confused deputy ruled out)");
 }
 
 fn scenario_web_injection() {

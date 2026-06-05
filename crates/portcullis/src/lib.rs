@@ -288,6 +288,12 @@ pub use verdict_sink::{ActorIdentity, SinkError, VerdictContext, VerdictOutcome,
 pub use portcullis_core::envelope::{FieldEnvelope, RowEnvelope, SourceRef, TransformRef};
 pub use portcullis_core::witness::{ChainVerifyError as WitnessChainVerifyError, WitnessBundle};
 
+// Re-export the information-flow tracker so downstream runtimes (e.g. the MCP
+// server in nucleus-tool-proxy) can drive `Kernel::decide_term_with_flow`
+// without depending on portcullis-core directly (#1633).
+pub use portcullis_core::flow::NodeKind;
+pub use portcullis_core::ifc_api::{FlowTracker, SafetyCheck};
+
 /// Check if a glob pattern matches a path.
 pub fn glob_match(pattern: &str, path: &str) -> bool {
     path::glob_match(pattern, path)

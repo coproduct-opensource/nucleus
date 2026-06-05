@@ -143,6 +143,8 @@ mod tests {
                 x: Some("AAAA_AAAAAA-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string()),
                 alg: Some("EdDSA".to_string()),
                 use_: Some("sig".to_string()),
+                not_before: None,
+                not_after: None,
             }],
         }
     }
@@ -155,6 +157,7 @@ mod tests {
             supported_envelope_schema_versions: vec!["1".to_string()],
             jwks_uri: None,
             trust_jwks: jwks,
+            runtime_guarantees: None,
         }
     }
 

@@ -45,6 +45,7 @@ fn sample_card() -> AgentCard {
         supported_envelope_schema_versions: vec!["1".to_string()],
         jwks_uri: None,
         trust_jwks: good_jwks(),
+        runtime_guarantees: None,
     }
 }
 
@@ -120,9 +121,73 @@ fn malformed_trust_jwks_is_rejected() {
             x: Some("!!! not base64url !!!".to_string()),
             alg: Some("EdDSA".to_string()),
             use_: Some("sig".to_string()),
+            not_before: None,
+            not_after: None,
         }],
     };
     let signed = sign_card(card, &der).unwrap();
     let err = verify_card(&signed, &pub_jwk).unwrap_err();
     assert!(matches!(err, crate::Error::Verify(_)), "got {err:?}");
+}
+
+fn sample_profile() -> crate::RuntimeGuaranteeProfile {
+    crate::RuntimeGuaranteeProfile {
+        profile_version: "1.0".to_string(),
+        tracked_sources: vec!["web_content".to_string(), "secret".to_string()],
+        enforcement_rules: vec![crate::EnforcementRule {
+            name: "no_adversarial_to_outbound".to_string(),
+            description:
+                "deny outbound actions whose ancestry includes adversarial-integrity content"
+                    .to_string(),
+        }],
+        attestation_reference: None,
+    }
+}
+
+#[test]
+fn sign_and_verify_with_runtime_guarantees_roundtrip() {
+    let (der, pub_jwk) = p256_keypair();
+    let mut card = sample_card();
+    card.runtime_guarantees = Some(sample_profile());
+    let signed = sign_card(card, &der).unwrap();
+    let verified = verify_card(&signed, &pub_jwk).expect("card with profile must verify");
+    let prof = verified
+        .card
+        .runtime_guarantees
+        .as_ref()
+        .expect("profile present");
+    assert_eq!(prof.enforcement_rules[0].name, "no_adversarial_to_outbound");
+}
+
+#[test]
+fn tampering_runtime_guarantees_breaks_signature() {
+    let (der, pub_jwk) = p256_keypair();
+    let mut card = sample_card();
+    card.runtime_guarantees = Some(sample_profile());
+    let mut signed = sign_card(card, &der).unwrap();
+    // Flip a declared rule name AFTER signing → JCS changes → signature must fail.
+    signed
+        .card
+        .runtime_guarantees
+        .as_mut()
+        .unwrap()
+        .enforcement_rules[0]
+        .name = "allow_everything".to_string();
+    assert!(
+        verify_card(&signed, &pub_jwk).is_err(),
+        "a tampered runtime-guarantee profile must fail verification"
+    );
+}
+
+#[test]
+fn backward_compat_card_without_profile_omits_field_and_verifies() {
+    let (der, pub_jwk) = p256_keypair();
+    let card = sample_card(); // runtime_guarantees: None
+    let json = serde_json::to_value(&card).unwrap();
+    assert!(
+        json.get("runtime_guarantees").is_none(),
+        "a None profile must be omitted from the card JSON (backward compatible)"
+    );
+    let signed = sign_card(card, &der).unwrap();
+    assert!(verify_card(&signed, &pub_jwk).is_ok());
 }

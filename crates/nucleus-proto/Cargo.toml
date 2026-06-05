@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 description = "Generated gRPC/Protobuf types for nucleus-node"
 repository = "https://github.com/coproduct-opensource/nucleus"
+readme = "README.md"
 
 [dependencies]
 tonic = { workspace = true }

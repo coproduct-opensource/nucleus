@@ -9,7 +9,7 @@ repository = "https://github.com/coproduct-opensource/nucleus"
 # This crate is the single source of truth for CapabilityLevel.
 # The verification target: Aeneas (Rust MIR → Lean 4) translates this crate
 # into pure functional Lean code, where we prove HeytingAlgebra properties
-# against the same Mathlib instance used by portcullis-verified.
+# against Mathlib (the Lean proofs live in `lean/`).
 #
 # By default this crate is dependency-free for Aeneas translation.
 # The optional `serde` feature enables serialization support when used

@@ -19,9 +19,11 @@
 //!   → return scoped PodSpec
 //! ```
 
+use std::path::Path;
 use std::sync::Arc;
 
 use base64::Engine as _;
+use ed25519_dalek::pkcs8::{DecodePrivateKey as _, EncodePrivateKey as _};
 use ed25519_dalek::{Signer as _, SigningKey};
 use hmac::{digest::KeyInit, Hmac, Mac};
 use nucleus_spec::{PodSpec, PolicySpec};
@@ -82,18 +84,101 @@ fn uuid_hex() -> String {
     hex::encode(&hasher.finalize()[..8])
 }
 
+/// Filename (under `state_dir`) holding the persisted executor signing key.
+const EXECUTOR_KEY_FILE: &str = "executor_signing_key.der";
+
+/// Load the per-executor Ed25519 signing key from `state_dir`, creating and
+/// persisting a fresh one on first run.
+///
+/// Without persistence, every node restart mints a brand-new identity, which
+/// silently invalidates any prior `register_executor_pubkey` enrollment — the
+/// threat-model claim that registration survives an HMAC compromise is only
+/// true if the executor's signing key is stable across restarts (#1630).
+///
+/// The key is stored as PKCS#8 DER (same encoding as
+/// [`nucleus_lineage::LocalIssuer`]) with `0o400` permissions on Unix. A
+/// missing file is created; a present-but-unreadable file is logged and
+/// replaced rather than crashing the node (fail-open on *availability*, not on
+/// identity — a corrupt key was never a valid enrollment anyway).
+pub fn load_or_create_signing_key(state_dir: &Path) -> SigningKey {
+    let path = state_dir.join(EXECUTOR_KEY_FILE);
+
+    if path.exists() {
+        match std::fs::read(&path) {
+            Ok(bytes) => match SigningKey::from_pkcs8_der(&bytes) {
+                Ok(key) => {
+                    debug!(path = %path.display(), "loaded persisted executor signing key");
+                    return key;
+                }
+                Err(e) => warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "executor signing key file is unreadable; regenerating"
+                ),
+            },
+            Err(e) => warn!(
+                path = %path.display(),
+                error = %e,
+                "failed to read executor signing key file; regenerating"
+            ),
+        }
+    }
+
+    let key = SigningKey::generate(&mut rand_core::OsRng);
+    match key.to_pkcs8_der() {
+        Ok(der) => {
+            if let Err(e) = write_key_file(&path, der.as_bytes()) {
+                warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "failed to persist executor signing key; identity will not survive restart"
+                );
+            } else {
+                info!(path = %path.display(), "generated and persisted new executor signing key");
+            }
+        }
+        Err(e) => warn!(error = %e, "failed to PKCS#8-encode executor signing key; not persisting"),
+    }
+    key
+}
+
+/// Write `bytes` to `path`, restricting permissions to owner-read-only (`0o400`)
+/// on Unix so the private key is not world/group readable.
+fn write_key_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o400))?;
+    }
+    Ok(())
+}
+
+/// Derive a stable executor id from the persistent public key, so the id no
+/// longer changes on every restart (closes #1636). Used only when
+/// `TRUST_EXECUTOR_ID` is unset.
+fn executor_id_from_key(key: &SigningKey) -> String {
+    use sha2::Digest as _;
+    let mut h = sha2::Sha256::new();
+    h.update(key.verifying_key().as_bytes());
+    format!("nucleus-executor/{}", hex::encode(&h.finalize()[..8]))
+}
+
 impl TrustGateConfig {
-    /// Create from environment variables.
-    pub fn from_env() -> Self {
+    /// Create from environment variables, persisting the per-executor signing
+    /// key under `state_dir` so the executor's identity survives restarts.
+    pub fn from_env(state_dir: &Path) -> Self {
         let receipt_secret = std::env::var("TRUST_RECEIPT_SECRET")
             .ok()
             .and_then(|s| base64::prelude::BASE64_STANDARD.decode(&s).ok())
             .map(Arc::new);
 
-        let executor_id = std::env::var("TRUST_EXECUTOR_ID")
-            .unwrap_or_else(|_| format!("nucleus-executor/{}", uuid_hex()));
+        let executor_signing_key = load_or_create_signing_key(state_dir);
 
-        let executor_signing_key = Arc::new(SigningKey::generate(&mut rand_core::OsRng));
+        // Prefer an explicit id; otherwise derive a stable one from the
+        // persistent key (not a fresh uuid per process — #1636).
+        let executor_id = std::env::var("TRUST_EXECUTOR_ID")
+            .unwrap_or_else(|_| executor_id_from_key(&executor_signing_key));
 
         Self {
             trust_api_url: std::env::var("TRUST_API_URL").unwrap_or_default(),
@@ -103,7 +188,7 @@ impl TrustGateConfig {
             default_bracket: std::env::var("TRUST_DEFAULT_BRACKET")
                 .unwrap_or_else(|_| "C".to_string()),
             receipt_secret,
-            executor_signing_key,
+            executor_signing_key: Arc::new(executor_signing_key),
             executor_id,
         }
     }
@@ -983,6 +1068,77 @@ mod tests {
         assert!(!config.is_enabled());
         assert!(!config.enforce);
         assert_eq!(config.default_bracket, "C");
+    }
+
+    // ── Executor signing-key persistence (#1630) ──────────────────────────
+
+    #[test]
+    fn test_signing_key_persists_across_calls() {
+        // The core property: a "restart" (a second load from the same
+        // state_dir) must yield the SAME executor identity.
+        let dir = tempfile::tempdir().unwrap();
+        let k1 = load_or_create_signing_key(dir.path());
+        let k2 = load_or_create_signing_key(dir.path());
+        assert_eq!(
+            k1.verifying_key().as_bytes(),
+            k2.verifying_key().as_bytes(),
+            "executor signing key must be stable across restarts"
+        );
+        assert!(dir.path().join(EXECUTOR_KEY_FILE).exists());
+    }
+
+    #[test]
+    fn test_signing_key_distinct_per_state_dir() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let ka = load_or_create_signing_key(a.path());
+        let kb = load_or_create_signing_key(b.path());
+        assert_ne!(
+            ka.verifying_key().as_bytes(),
+            kb.verifying_key().as_bytes(),
+            "separate state dirs must have independent identities"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_persisted_key_is_owner_read_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        load_or_create_signing_key(dir.path());
+        let mode = std::fs::metadata(dir.path().join(EXECUTOR_KEY_FILE))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o400, "private key must be mode 0400");
+    }
+
+    #[test]
+    fn test_corrupt_key_file_regenerates_without_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(EXECUTOR_KEY_FILE), b"not valid pkcs8 der").unwrap();
+        // Must not panic; must produce a usable, persisted key.
+        let k = load_or_create_signing_key(dir.path());
+        let reloaded = load_or_create_signing_key(dir.path());
+        assert_eq!(
+            k.verifying_key().as_bytes(),
+            reloaded.verifying_key().as_bytes(),
+            "after regeneration the new key must itself persist"
+        );
+    }
+
+    #[test]
+    fn test_executor_id_from_key_is_deterministic_and_keyed() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = load_or_create_signing_key(dir.path());
+        let id1 = executor_id_from_key(&key);
+        let id2 = executor_id_from_key(&key);
+        assert_eq!(id1, id2, "id must be a deterministic function of the key");
+        assert!(id1.starts_with("nucleus-executor/"));
+        // A different key yields a different id.
+        let other = tempfile::tempdir().unwrap();
+        let id_other = executor_id_from_key(&load_or_create_signing_key(other.path()));
+        assert_ne!(id1, id_other);
     }
 
     #[test]

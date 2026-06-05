@@ -26,6 +26,7 @@
 use std::collections::HashMap;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use chrono::{DateTime, Utc};
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -57,6 +58,47 @@ pub struct Jwk {
     pub alg: Option<String>,
     #[serde(default, rename = "use")]
     pub use_: Option<String>,
+    /// Optional validity-window start. If present, an edge signed before this
+    /// instant is rejected for this key. Non-standard per RFC 7517 but
+    /// conventional in JWKS-with-overlap rotation deployments: during a
+    /// rotation the issuer publishes the old key with `not_after = now` and the
+    /// new key with `not_before = now`, so edges signed under either key still
+    /// verify for the overlap window. Absent ⇒ no lower bound (legacy keys keep
+    /// verifying exactly as before).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_before: Option<DateTime<Utc>>,
+    /// Optional validity-window end. If present, an edge signed after this
+    /// instant is rejected for this key. Absent ⇒ no upper bound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_after: Option<DateTime<Utc>>,
+}
+
+impl Jwk {
+    /// Check that `at` falls within this key's optional `[not_before, not_after]`
+    /// validity window. Keys with neither bound set always pass (legacy
+    /// behavior). Used by the walker to honor JWKS rotation: a key only
+    /// verifies edges whose timestamp is inside the window it was published for.
+    fn check_validity_window(&self, at: DateTime<Utc>) -> Result<(), VerifyError> {
+        if let Some(nbf) = self.not_before {
+            if at < nbf {
+                return Err(VerifyError::KeyNotYetValid {
+                    kid: self.kid.clone(),
+                    ts: at,
+                    not_before: nbf,
+                });
+            }
+        }
+        if let Some(exp) = self.not_after {
+            if at > exp {
+                return Err(VerifyError::KeyExpired {
+                    kid: self.kid.clone(),
+                    ts: at,
+                    not_after: exp,
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Errors returned by [`verify_proof`].
@@ -80,6 +122,18 @@ pub enum VerifyError {
     BadSignatureLength { got: usize },
     #[error("signature verification failed for kid {kid:?}")]
     BadSignature { kid: String },
+    #[error("JWKS key {kid:?} is not yet valid: edge ts {ts} < not_before {not_before}")]
+    KeyNotYetValid {
+        kid: String,
+        ts: DateTime<Utc>,
+        not_before: DateTime<Utc>,
+    },
+    #[error("JWKS key {kid:?} is expired: edge ts {ts} > not_after {not_after}")]
+    KeyExpired {
+        kid: String,
+        ts: DateTime<Utc>,
+        not_after: DateTime<Utc>,
+    },
     #[error(
         "hash chain broken: edge claims prev_hash={claimed_hex:?} but expected {expected_hex:?}"
     )]
@@ -179,6 +233,12 @@ pub fn verify_proof(
     sig_arr.copy_from_slice(&proof.sig);
     let sig = Signature::from_bytes(&sig_arr);
 
+    // Honor JWKS rotation: if the key carries a validity window, the edge's
+    // timestamp must fall inside it. Keys without a window verify as before.
+    if let Some(jwk) = jwks.keys.iter().find(|k| k.kid == proof.kid) {
+        jwk.check_validity_window(edge.ts)?;
+    }
+
     let vk = jwks.verifying_key(&proof.kid)?;
     let bytes = canonical_edge_bytes(edge, prev_hash);
     vk.verify_strict(&bytes, &sig)
@@ -230,6 +290,8 @@ impl StaticKeyResolver {
                     x: Some(URL_SAFE_NO_PAD.encode(vk.as_bytes())),
                     alg: Some("EdDSA".to_string()),
                     use_: Some("sig".to_string()),
+                    not_before: None,
+                    not_after: None,
                 })
                 .collect(),
         }
@@ -243,7 +305,7 @@ impl Default for StaticKeyResolver {
 }
 
 #[cfg(test)]
-#[cfg(feature = "dev")]
+#[cfg(feature = "insecure-local-issuer")]
 mod tests {
     use super::*;
     use crate::edge::{EdgeKind, LineageEdge};
@@ -313,6 +375,52 @@ mod tests {
         let jwks: Jwks = serde_json::from_value(issuer_b.publish_jwks()).unwrap();
         let err = verify_proof(&edge, None, &jwks).expect_err("unknown kid must fail");
         assert!(matches!(err, VerifyError::UnknownKid { .. }));
+    }
+
+    /// Build a signed edge + a JWKS, then mutate the key's validity window.
+    fn signed_edge_and_jwks() -> (LineageEdge, Jwks) {
+        let issuer = LocalIssuer::random().unwrap();
+        let p = pod();
+        let child = p.derive_artifact(b"x").unwrap();
+        let mut edge = LineageEdge::from_parent(child, p, EdgeKind::ArtifactProduced);
+        edge.proof = Some(sign_edge(&issuer, &edge, None));
+        let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+        (edge, jwks)
+    }
+
+    #[test]
+    fn verify_proof_honors_validity_window_accept() {
+        let (edge, mut jwks) = signed_edge_and_jwks();
+        // Window straddling the edge timestamp → accepted.
+        jwks.keys[0].not_before = Some(edge.ts - chrono::Duration::days(1));
+        jwks.keys[0].not_after = Some(edge.ts + chrono::Duration::days(1));
+        verify_proof(&edge, None, &jwks).expect("edge within window must verify");
+    }
+
+    #[test]
+    fn verify_proof_rejects_expired_key() {
+        let (edge, mut jwks) = signed_edge_and_jwks();
+        // Key retired before the edge was signed → rejected (rotation).
+        jwks.keys[0].not_after = Some(edge.ts - chrono::Duration::seconds(1));
+        let err = verify_proof(&edge, None, &jwks).expect_err("expired key must reject");
+        assert!(matches!(err, VerifyError::KeyExpired { .. }));
+    }
+
+    #[test]
+    fn verify_proof_rejects_not_yet_valid_key() {
+        let (edge, mut jwks) = signed_edge_and_jwks();
+        // Key not active until after the edge was signed → rejected.
+        jwks.keys[0].not_before = Some(edge.ts + chrono::Duration::seconds(1));
+        let err = verify_proof(&edge, None, &jwks).expect_err("not-yet-valid key must reject");
+        assert!(matches!(err, VerifyError::KeyNotYetValid { .. }));
+    }
+
+    #[test]
+    fn verify_proof_no_window_verifies_as_before() {
+        // Absent not_before/not_after ⇒ legacy behavior (always valid).
+        let (edge, jwks) = signed_edge_and_jwks();
+        assert!(jwks.keys[0].not_before.is_none() && jwks.keys[0].not_after.is_none());
+        verify_proof(&edge, None, &jwks).expect("windowless key must verify");
     }
 
     #[test]

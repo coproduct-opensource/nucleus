@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 description = "Job orchestrator: typed JobSpec → agent execution → provenance Bundle"
 repository = "https://github.com/coproduct-opensource/nucleus"
+readme = "README.md"
 keywords = ["control-plane", "orchestrator", "provenance", "ifc", "agents"]
 categories = ["development-tools"]
 
@@ -19,7 +20,7 @@ chrono = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["v4", "serde"] }
 
 [dev-dependencies]
-nucleus-lineage = { path = "../nucleus-lineage", features = ["dev"] }
+nucleus-lineage = { path = "../nucleus-lineage", features = ["insecure-local-issuer"] }
 tempfile = { workspace = true }
 
 [lints]

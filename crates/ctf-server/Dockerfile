@@ -3,7 +3,10 @@
 # The WASM site (crates/ctf-engine/dist/) is built locally with Trunk
 # and committed. This Dockerfile only builds the native API server.
 
-FROM rust:1.88-slim AS builder
+# Builder image must satisfy the workspace `rust-version = 1.95` floor
+# (portcullis et al. reject older toolchains). `rust:1-slim` tracks the
+# latest stable 1.x — bump explicitly if a newer floor is set.
+FROM rust:1-slim AS builder
 WORKDIR /build
 COPY . .
 RUN cargo build --release -p ctf-server

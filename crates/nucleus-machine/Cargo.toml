@@ -1,0 +1,21 @@
+[package]
+name = "nucleus-machine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "MachineDriver: a microVM execution-substrate abstraction for agent runtimes (mock + Fly.io skeleton)"
+repository = "https://github.com/coproduct-opensource/nucleus"
+readme = "README.md"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

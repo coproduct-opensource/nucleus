@@ -95,7 +95,7 @@ Bounded types additionally pass:
 
 The uninhabitable-state constraint is a **kernel operator** (deflationary +
 idempotent) on `PermissionLattice`, not a full frame-theoretic nucleus
-(it does NOT preserve meets — Verus proof: `proof_nucleus_not_meet_preserving`).
+(it does NOT preserve meets — Kani proof: `proof_nucleus_not_meet_preserving` in `crates/portcullis/src/kani.rs`).
 
 ```text
 UninhabitableQuotient::apply : PermissionLattice → PermissionLattice
@@ -123,10 +123,10 @@ let pair = ProductLattice(ConfLevel::Secret, IntegLevel::Trusted);
 
 ## Relationship to Formal Proofs
 
-| Algebraic Structure | Trait | Lean | Kani | Verus |
-|--------------------|----|------|------|-------|
-| IFC semilattice | `Lattice for IFCLabel` | 19 theorems | — | — |
-| Capability Heyting algebra | `Lattice for CapabilityLattice` | 23 theorems | 26 harnesses | — |
-| Exposure monoid | — (not a lattice) | 16 theorems | — | — |
-| Nucleus operator | `Nucleus<PermissionLattice>` | — | — | 297 VCs |
-| Monotone maps | `MonotoneMap<A, B>` | `join_monotone_left` | `proof_derivation_join_monotone` | — |
+| Algebraic Structure | Trait | Lean | Kani |
+|--------------------|----|------|------|
+| IFC semilattice | `Lattice for IFCLabel` | 19 theorems | — |
+| Capability Heyting algebra | `Lattice for CapabilityLattice` | 23 theorems | 26 harnesses |
+| Exposure monoid | — (not a lattice) | 16 theorems | — |
+| Nucleus operator | `Nucleus<PermissionLattice>` | — | `proof_nucleus_not_meet_preserving` |
+| Monotone maps | `MonotoneMap<A, B>` | `join_monotone_left` | `proof_derivation_join_monotone` |

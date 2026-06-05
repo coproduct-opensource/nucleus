@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 description = "Portable provenance bundle: agent payload + IFC lineage envelope"
 repository = "https://github.com/coproduct-opensource/nucleus"
+readme = "README.md"
 keywords = ["lineage", "provenance", "ifc", "audit", "transparency"]
 categories = ["development-tools", "cryptography"]
 
@@ -34,7 +35,7 @@ default = []
 c2pa = ["dep:c2pa"]
 
 [dev-dependencies]
-nucleus-lineage = { path = "../nucleus-lineage", features = ["dev"] }
+nucleus-lineage = { path = "../nucleus-lineage", features = ["insecure-local-issuer"] }
 tempfile = { workspace = true }
 
 [lints]

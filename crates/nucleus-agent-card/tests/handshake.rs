@@ -110,6 +110,7 @@ fn card_for(issuer: &LocalIssuer) -> AgentCard {
         supported_envelope_schema_versions: vec!["1".to_string(), "2".to_string()],
         jwks_uri: Some("https://summarizer.prod.example.com/.well-known/jwks.json".to_string()),
         trust_jwks: jwks,
+        runtime_guarantees: None,
     }
 }
 

@@ -297,6 +297,22 @@ pub enum DenyReason {
         /// Human-readable detail from the failed preflight obligations.
         detail: String,
     },
+    /// Operation denied by information-flow control: the session has ingested
+    /// adversarial (untrusted/web) content, and this is an outbound action that
+    /// could exfiltrate or act on the injected data. This is the lethal-trifecta
+    /// guard wired through the live MCP `FlowTracker` (#1633).
+    IfcUnsafe {
+        /// Human-readable explanation of the unsafe flow.
+        detail: String,
+    },
+    /// Operation denied by the Cedar policy evaluator (#1634). Present only when
+    /// a Cedar policy is loaded; Cedar default-denies operations no `permit`
+    /// rule covers. The variant is always defined (independent of the `cedar`
+    /// feature) so `DenyReason`'s wire format is stable across builds.
+    CedarDenied {
+        /// Cedar's diagnostic reasons (policy ids), joined for display.
+        detail: String,
+    },
 }
 
 /// The source of a RequiresApproval verdict.
@@ -461,6 +477,13 @@ pub struct Kernel {
     /// Loaded from `.nucleus/policy.toml`. When `None`, no admissibility
     /// filtering is applied (all operations pass through to capability checks).
     policy_rules: Option<portcullis_core::policy_rules::PolicyRuleSet>,
+    /// Optional Cedar policy evaluator — when present, `decide_term_with_flow`
+    /// consults Cedar after the IFC check and denies operations Cedar does not
+    /// permit (#1634). `None` ⇒ no Cedar gating (the default until a policy is
+    /// loaded via [`Kernel::set_cedar_policy`]), so flipping the `cedar` feature
+    /// default-on does not change behavior for sessions without a policy.
+    #[cfg(feature = "cedar")]
+    cedar_evaluator: Option<crate::cedar_bridge::CedarEvaluator>,
     /// Optional enterprise allowlist — when present, `decide()` checks the
     /// operation's sink class against the enterprise policy after admissibility
     /// policy checks and before path/command checks.
@@ -559,6 +582,8 @@ impl Kernel {
             declassification_rules: Vec::new(),
             egress_policy: None,
             policy_rules: None,
+            #[cfg(feature = "cedar")]
+            cedar_evaluator: None,
             enterprise: None,
             delegation: None,
             delegation_depth: 0,
@@ -608,6 +633,8 @@ impl Kernel {
             declassification_rules: Vec::new(),
             egress_policy: None,
             policy_rules: None,
+            #[cfg(feature = "cedar")]
+            cedar_evaluator: None,
             enterprise: None,
             delegation: None,
             delegation_depth: 0,
@@ -967,6 +994,8 @@ impl Kernel {
             declassification_rules: Vec::new(),
             egress_policy: None,
             policy_rules: None,
+            #[cfg(feature = "cedar")]
+            cedar_evaluator: None,
             enterprise: None,
             delegation: None,
             delegation_depth: 0,
@@ -1022,6 +1051,8 @@ impl Kernel {
             declassification_rules: Vec::new(),
             egress_policy: None,
             policy_rules: None,
+            #[cfg(feature = "cedar")]
+            cedar_evaluator: None,
             enterprise: None,
             delegation: None,
             delegation_depth: 0,
@@ -1586,6 +1617,126 @@ impl Kernel {
         }
 
         (decision, token)
+    }
+
+    /// [`decide_term`] with an information-flow consult against a live
+    /// [`FlowTracker`] (#1633).
+    ///
+    /// This is the kernel-side enforcement point for the lethal trifecta: when
+    /// `flow` has observed any node with **adversarial** integrity (e.g.
+    /// `web_fetch` ⇒ `NodeKind::WebContent`), the session is tainted, and any
+    /// **outbound action** (write/edit/run/git/PR/spawn/pods — the operations
+    /// `node_kind_for` classifies as [`NodeKind::OutboundAction`]) is denied
+    /// with [`DenyReason::IfcUnsafe`] *before* the normal decision path. A clean
+    /// session, or a non-outbound operation, falls through to [`decide_term`]
+    /// unchanged.
+    ///
+    /// `flow == None` ⇒ behaves exactly like [`decide_term`] (callers without a
+    /// tracker are unaffected — backward compatible).
+    pub fn decide_term_with_flow(
+        &mut self,
+        term: ActionTerm,
+        flow: Option<&portcullis_core::ifc_api::FlowTracker>,
+    ) -> (Decision, Option<DecisionToken>) {
+        use portcullis_core::flow::NodeKind;
+
+        let operation = term.operation();
+        if let Some(flow) = flow {
+            if flow.is_tainted() && Self::node_kind_for(operation) == NodeKind::OutboundAction {
+                let subject = term.subject().to_string();
+                let pre_hash = self.effective.checksum();
+                let pre_exposure_count = self.exposure.count();
+                let contributed_label = exposure_core::classify_operation(operation);
+                let detail = format!(
+                    "session carries adversarial integrity (untrusted/web content was \
+                     observed); outbound operation {operation:?} blocked to prevent \
+                     exfiltration of, or action on, injected content"
+                );
+                tracing::warn!(
+                    ?operation,
+                    subject,
+                    "IFC denied outbound action: session is taint-adversarial"
+                );
+                let (mut decision, token) = self.record_with_exposure(
+                    operation,
+                    &subject,
+                    Verdict::Deny(DenyReason::IfcUnsafe { detail }),
+                    &pre_hash,
+                    pre_exposure_count,
+                    contributed_label,
+                    false,
+                    false,
+                );
+                decision.action_term = Some(term.clone());
+                if let Some(last) = self.trace.last_mut() {
+                    last.action_term = Some(term);
+                }
+                return (decision, token);
+            }
+        }
+
+        // Cedar policy consult (#1634): after the IFC check, if a Cedar policy is
+        // loaded, deny any operation Cedar does not `permit`. Uses the session's
+        // current flow label (integrity/authority/confidentiality) as context.
+        // No policy loaded ⇒ skipped entirely (default-on feature is inert here).
+        #[cfg(feature = "cedar")]
+        if let Some(ref cedar) = self.cedar_evaluator {
+            let label = self.flow_label.unwrap_or_else(|| {
+                portcullis_core::IFCLabel::user_prompt(chrono::Utc::now().timestamp() as u64)
+            });
+            let subject = term.subject().to_string();
+            let result = cedar.evaluate(
+                &self.session_id.to_string(),
+                operation,
+                &subject,
+                label.integrity,
+                label.authority,
+                label.confidentiality,
+            );
+            if !result.is_allowed() {
+                let pre_hash = self.effective.checksum();
+                let pre_exposure_count = self.exposure.count();
+                let contributed_label = exposure_core::classify_operation(operation);
+                let detail = if result.reasons.is_empty() {
+                    "no matching Cedar `permit` rule (default deny)".to_string()
+                } else {
+                    result.reasons.join(", ")
+                };
+                tracing::warn!(?operation, subject, %detail, "Cedar denied operation");
+                let (mut decision, token) = self.record_with_exposure(
+                    operation,
+                    &subject,
+                    Verdict::Deny(DenyReason::CedarDenied { detail }),
+                    &pre_hash,
+                    pre_exposure_count,
+                    contributed_label,
+                    false,
+                    false,
+                );
+                decision.action_term = Some(term.clone());
+                if let Some(last) = self.trace.last_mut() {
+                    last.action_term = Some(term);
+                }
+                return (decision, token);
+            }
+        }
+
+        self.decide_term(term)
+    }
+
+    /// Load a Cedar policy that gates every subsequent decision through
+    /// [`decide_term_with_flow`] (#1634).
+    ///
+    /// Cedar runs *after* the portcullis lattice + IFC checks — an additional,
+    /// human-auditable policy layer, never a replacement. Note Cedar's
+    /// default-deny semantics: once a policy is loaded, operations with no
+    /// matching `permit` rule are denied with [`DenyReason::CedarDenied`].
+    ///
+    /// Returns an error if the policy source fails to parse.
+    #[cfg(feature = "cedar")]
+    pub fn set_cedar_policy(&mut self, policy_src: &str) -> Result<(), String> {
+        self.cedar_evaluator = Some(crate::cedar_bridge::CedarEvaluator::new(policy_src)?);
+        Ok(())
     }
 
     /// Map an Operation to the most appropriate FlowNode kind.

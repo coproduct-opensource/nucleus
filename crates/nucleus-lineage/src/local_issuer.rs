@@ -1,7 +1,8 @@
 //! [`LocalIssuer`] — in-process Ed25519 JWT-SVID issuer for tests and demos.
 //!
-//! **NOT FOR PRODUCTION USE.** This module is gated behind the `dev` cargo
-//! feature (`nucleus-lineage = { features = ["dev"] }`) so production
+//! **NOT FOR PRODUCTION USE.** This module is gated behind the
+//! `insecure-local-issuer` cargo feature
+//! (`nucleus-lineage = { features = ["insecure-local-issuer"] }`) so production
 //! binaries cannot link or re-export it. Constructing an instance also logs
 //! a one-time `tracing::warn!` so any accidental use is immediately visible
 //! in logs.

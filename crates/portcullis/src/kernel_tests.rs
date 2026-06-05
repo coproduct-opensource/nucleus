@@ -262,6 +262,171 @@ fn test_decide_term_denies_when_preflight_rejects() {
 }
 
 #[test]
+fn test_decide_term_with_flow_denies_outbound_when_tainted() {
+    use portcullis_core::flow::NodeKind;
+    use portcullis_core::ifc_api::FlowTracker;
+
+    // An edit that the kernel would normally ALLOW (within task scope), so the
+    // IFC gate — not a capability/scope failure — is what differs.
+    let make_term = || {
+        let task = crate::TaskRef::new(
+            "pr-241",
+            "fix auth regression",
+            vec![Operation::EditFiles],
+            vec!["src/auth/".to_string()],
+        );
+        crate::ActionTerm::edit_file(
+            Some(task),
+            "src/auth/session.rs",
+            "@@ -1 +1 @@",
+            vec![trusted_term_input("session")],
+            crate::EffectDisposition::Proposed,
+        )
+    };
+
+    // Clean session → falls through to the normal decision (allowed).
+    let mut kernel = Kernel::new(PermissionLattice::safe_pr_fixer());
+    let clean = FlowTracker::new();
+    let (decision, token) = kernel.decide_term_with_flow(make_term(), Some(&clean));
+    assert!(
+        decision.verdict.is_allowed(),
+        "clean session must allow the edit, got {:?}",
+        decision.verdict
+    );
+    assert!(token.is_some());
+
+    // Tainted session (web content observed) → outbound action denied IfcUnsafe,
+    // even though capability/scope would otherwise allow it.
+    let mut kernel = Kernel::new(PermissionLattice::safe_pr_fixer());
+    let mut tainted = FlowTracker::new();
+    tainted
+        .observe(NodeKind::WebContent)
+        .expect("observe web content");
+    assert!(tainted.is_tainted());
+    let (decision, token) = kernel.decide_term_with_flow(make_term(), Some(&tainted));
+    assert!(
+        matches!(
+            decision.verdict,
+            Verdict::Deny(DenyReason::IfcUnsafe { .. })
+        ),
+        "tainted session must deny outbound action with IfcUnsafe, got {:?}",
+        decision.verdict
+    );
+    assert!(token.is_none());
+}
+
+#[test]
+fn test_decide_term_with_flow_none_matches_decide_term() {
+    // `flow == None` must behave exactly like `decide_term`.
+    let term = crate::ActionTerm::run_command(
+        None,
+        "cargo test",
+        vec![trusted_term_input("tests")],
+        crate::EffectDisposition::Proposed,
+    );
+    let mut a = Kernel::new(PermissionLattice::safe_pr_fixer());
+    let mut b = Kernel::new(PermissionLattice::safe_pr_fixer());
+    let (d_plain, _) = a.decide_term(term.clone());
+    let (d_flow, _) = b.decide_term_with_flow(term, None);
+    assert_eq!(
+        std::mem::discriminant(&d_plain.verdict),
+        std::mem::discriminant(&d_flow.verdict),
+        "decide_term_with_flow(None) must match decide_term"
+    );
+}
+
+#[test]
+fn test_decide_term_with_flow_allows_input_op_even_when_tainted() {
+    // Input operations (read) are NOT outbound — they must not be IFC-denied
+    // even when the session is tainted (you can keep reading after web fetch).
+    use portcullis_core::flow::NodeKind;
+    use portcullis_core::ifc_api::FlowTracker;
+
+    let mut kernel = Kernel::new(PermissionLattice::safe_pr_fixer());
+    let mut tainted = FlowTracker::new();
+    tainted.observe(NodeKind::WebContent).unwrap();
+    let term = crate::ActionTerm::from_operation(Operation::ReadFiles, "src/auth/session.rs");
+    let (decision, _) = kernel.decide_term_with_flow(term, Some(&tainted));
+    assert!(
+        !matches!(
+            decision.verdict,
+            Verdict::Deny(DenyReason::IfcUnsafe { .. })
+        ),
+        "input op must not be IFC-denied, got {:?}",
+        decision.verdict
+    );
+}
+
+#[cfg(feature = "cedar")]
+fn cedar_edit_term() -> crate::ActionTerm {
+    let task = crate::TaskRef::new(
+        "pr-1",
+        "x",
+        vec![Operation::EditFiles],
+        vec!["src/auth/".to_string()],
+    );
+    crate::ActionTerm::edit_file(
+        Some(task),
+        "src/auth/session.rs",
+        "@@ -1 +1 @@",
+        vec![trusted_term_input("s")],
+        crate::EffectDisposition::Proposed,
+    )
+}
+
+#[cfg(feature = "cedar")]
+#[test]
+fn test_cedar_denies_operation_not_permitted() {
+    // Cedar permits only read_files; an edit the lattice would allow is denied
+    // by Cedar's default-deny.
+    let mut kernel = Kernel::new(PermissionLattice::safe_pr_fixer());
+    kernel
+        .set_cedar_policy(r#"permit(principal, action == Action::"read_files", resource);"#)
+        .expect("policy parses");
+    let (decision, token) = kernel.decide_term_with_flow(cedar_edit_term(), None);
+    assert!(
+        matches!(
+            decision.verdict,
+            Verdict::Deny(DenyReason::CedarDenied { .. })
+        ),
+        "Cedar must deny an un-permitted op, got {:?}",
+        decision.verdict
+    );
+    assert!(token.is_none());
+}
+
+#[cfg(feature = "cedar")]
+#[test]
+fn test_cedar_permit_all_falls_through_to_normal_decision() {
+    let mut kernel = Kernel::new(PermissionLattice::safe_pr_fixer());
+    kernel
+        .set_cedar_policy("permit(principal, action, resource);")
+        .expect("policy parses");
+    let (decision, _) = kernel.decide_term_with_flow(cedar_edit_term(), None);
+    assert!(
+        decision.verdict.is_allowed(),
+        "permit-all Cedar must fall through to the lattice (allowed), got {:?}",
+        decision.verdict
+    );
+}
+
+#[cfg(feature = "cedar")]
+#[test]
+fn test_no_cedar_policy_is_inert() {
+    // Default-on feature, but no policy loaded ⇒ Cedar does not gate anything.
+    let mut kernel = Kernel::new(PermissionLattice::safe_pr_fixer());
+    let (decision, _) = kernel.decide_term_with_flow(cedar_edit_term(), None);
+    assert!(
+        !matches!(
+            decision.verdict,
+            Verdict::Deny(DenyReason::CedarDenied { .. })
+        ),
+        "no Cedar policy must not produce CedarDenied, got {:?}",
+        decision.verdict
+    );
+}
+
+#[test]
 fn test_decision_with_action_term_serializes() {
     let perms = PermissionLattice::safe_pr_fixer();
     let mut kernel = Kernel::new(perms);

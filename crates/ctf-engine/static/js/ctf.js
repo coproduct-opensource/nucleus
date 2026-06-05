@@ -50,6 +50,24 @@
     var allDefenses = new Set();
 
     var levels = JSON.parse(JSON.stringify(ctf.get_levels()));
+    var LEVEL_COUNT = levels.length;
+
+    // Plain-language glossary for the tool chips (hover tooltips). Keep in sync
+    // with the tools surfaced by the engine; unknown tools fall back to a generic hint.
+    var TOOL_GLOSSARY = {
+      read_file: 'Read the contents of a file (e.g. the secret in /vault/).',
+      write_file: 'Write or overwrite a file on disk.',
+      run_bash: 'Run a shell command — the broadest tool; watched for exfil patterns.',
+      web_fetch: 'Fetch a URL. Counts as ingesting untrusted external content.',
+      web_search: 'Search the web. Also treated as untrusted content.',
+      glob: 'List files matching a pattern (read-only discovery).',
+      grep: 'Search file contents for a pattern (read-only).',
+      git_push: 'Push commits to a remote — a network exfiltration vector.',
+      create_pr: 'Open a pull request — another way to send data outward.',
+      approve: 'Approve a pending escalation request (tests self-approval defenses).',
+      delegate: 'Hand a capability to a sub-agent (tests delegation ceilings).',
+      release: 'Release a held capability back (tests ambient-authority removal).'
+    };
 
     // ── Landing page ──────────────────────────────────────────────────
 
@@ -57,16 +75,37 @@
     var landing = document.getElementById('landing');
     var app = document.getElementById('app');
 
-    startBtn.addEventListener('click', function() {
+    function enterApp(n) {
       landing.style.display = 'none';
       app.style.display = 'grid';
-      selectLevel(1);
-    });
+      selectLevel(n || 1);
+    }
+
+    startBtn.addEventListener('click', function() { enterApp(1); });
+
+    // Keep landing/header counts honest by deriving them from the real level data.
+    var statLevels = document.getElementById('stat-levels');
+    if (statLevels) statLevels.textContent = LEVEL_COUNT;
+    var statExploits = document.getElementById('stat-exploits');
+    if (statExploits) {
+      var exploitCount = levels.filter(function(l) { return l.cve; }).length;
+      statExploits.textContent = exploitCount;
+    }
+    var levelTotal = document.getElementById('level-total');
+    if (levelTotal) levelTotal.textContent = LEVEL_COUNT;
+
+    // "Point your own agent at the API" — send people to the integration docs.
+    var apiLink = document.getElementById('api-link');
+    if (apiLink) {
+      apiLink.setAttribute('href', 'https://github.com/coproduct-opensource/nucleus/blob/main/crates/ctf-engine/README.md');
+      apiLink.setAttribute('target', '_blank');
+      apiLink.setAttribute('rel', 'noopener');
+    }
 
     // ── Level selector ────────────────────────────────────────────────
 
     var levelSelector = document.getElementById('level-selector');
-    for (var i = 1; i <= 7; i++) {
+    for (var i = 1; i <= LEVEL_COUNT; i++) {
       var btn = document.createElement('button');
       btn.className = 'level-btn' + (i === 1 ? ' active' : '');
       btn.textContent = i;
@@ -90,7 +129,8 @@
       renderExplainer(meta.explainer);
       var toolsDiv = document.getElementById('tools-available');
       toolsDiv.innerHTML = meta.available_tools.map(function(t) {
-        return '<span class="tool-chip">' + t + '</span>';
+        var hint = TOOL_GLOSSARY[t] || 'A tool the agent can call at this level.';
+        return '<span class="tool-chip" title="' + hint.replace(/"/g, '&quot;') + '">' + t + '</span>';
       }).join('');
       clearResults();
       loadExample(n);
@@ -306,10 +346,8 @@
     var params = new URLSearchParams(window.location.search);
     if (params.has('level')) {
       var lvl = parseInt(params.get('level'), 10);
-      if (lvl >= 1 && lvl <= 7) {
-        landing.style.display = 'none';
-        app.style.display = 'grid';
-        selectLevel(lvl);
+      if (lvl >= 1 && lvl <= LEVEL_COUNT) {
+        enterApp(lvl);
         return;
       }
     }

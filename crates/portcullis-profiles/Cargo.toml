@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 description = "Application-specific task profiles for the portcullis policy engine"
 repository = "https://github.com/coproduct-opensource/nucleus"
+readme = "README.md"
 keywords = ["ai", "security", "policy", "profiles", "agents"]
 categories = ["development-tools"]
 

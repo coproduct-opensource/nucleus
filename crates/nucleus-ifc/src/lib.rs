@@ -4,6 +4,14 @@
 //! through your agent, detect taint from untrusted sources, and block
 //! unsafe actions at the data level — not just the capability level.
 //!
+//! As of #1633 this is wired into the live Rust runtime: the
+//! `nucleus-tool-proxy` MCP server holds a session [`FlowTracker`], observes
+//! the data each tool brings in (`web_fetch` ⇒ `WebContent`, file reads ⇒
+//! `FileRead`), and the kernel consults it via
+//! `Kernel::decide_term_with_flow` — once adversarial (web) content is in the
+//! session, outbound actions are denied with `IfcUnsafe`. This matches the
+//! Python SDK's `observe → check → execute` behavior.
+//!
 //! ## Quick Start
 //!
 //! ```rust

@@ -30,8 +30,40 @@ pub enum EdgeKind {
     /// Two or more parents were merged into one child (e.g. a deterministic
     /// transform that consumed multiple inputs).
     Merge,
+    /// A document was retrieved into the agent's context (web fetch, RAG index
+    /// hit, local file, or memory recall). Captures the *provenance* of
+    /// retrieved content so poisoned sources can be traced after the fact —
+    /// the blind spot exploited by RAG/memory-poisoning attacks (AgentPoison,
+    /// eTAMP) where injected documents silently steer later actions.
+    DocumentRetrieved {
+        /// Where the document came from (URL, index id, file path, memory key).
+        source_url: String,
+        /// Content hash of the retrieved bytes (hex), pinning exactly what was
+        /// ingested so a later poisoning can be matched to this retrieval.
+        content_hash: String,
+        /// When the retrieval happened.
+        retrieval_ts: DateTime<Utc>,
+        /// Trust class of the source.
+        source_class: SourceClass,
+    },
     /// Forward-compatible escape hatch. `name` is the caller-defined kind label.
     Other { name: String },
+}
+
+/// Trust class of a retrieved document's source. Drives downstream policy:
+/// `Web` content is untrusted by default; `Memory`/`RagIndex` may be poisoned
+/// across sessions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceClass {
+    /// Fetched from the open web (untrusted).
+    Web,
+    /// Retrieved from a RAG / vector index.
+    RagIndex,
+    /// Read from a local file.
+    LocalFile,
+    /// Recalled from persistent agent memory (cross-session poisoning surface).
+    Memory,
 }
 
 /// A single immutable lineage record.
@@ -83,6 +115,33 @@ impl LineageEdge {
         }
     }
 
+    /// Construct a document-retrieval edge: `child` retrieved a document from
+    /// `source_url` (content hash `content_hash`, trust class `source_class`).
+    /// `parent` is the retrieving identity (the pod/call doing the fetch).
+    pub fn document_retrieved(
+        child: CallSpiffeId,
+        parent: CallSpiffeId,
+        source_url: impl Into<String>,
+        content_hash: impl Into<String>,
+        source_class: SourceClass,
+    ) -> Self {
+        let content_hash = content_hash.into();
+        Self {
+            child,
+            parents: vec![parent],
+            kind: EdgeKind::DocumentRetrieved {
+                source_url: source_url.into(),
+                content_hash: content_hash.clone(),
+                retrieval_ts: Utc::now(),
+                source_class,
+            },
+            content_hash_hex: Some(content_hash),
+            ts: Utc::now(),
+            attrs: BTreeMap::new(),
+            proof: None,
+        }
+    }
+
     /// Construct a pod-admission edge (no parents).
     pub fn pod_admit(pod: CallSpiffeId) -> Self {
         Self {
@@ -122,6 +181,39 @@ mod tests {
 
     fn pod() -> CallSpiffeId {
         CallSpiffeId::pod("prod.example.com", "agents", "coder").unwrap()
+    }
+
+    #[test]
+    fn document_retrieved_round_trips_and_tags() {
+        let p = pod();
+        let child = p.derive_artifact(b"doc-bytes").unwrap();
+        let edge = LineageEdge::document_retrieved(
+            child,
+            p,
+            "https://docs.example.com/poisoned",
+            "abc123",
+            SourceClass::Web,
+        );
+        // Provenance fields are captured on the variant.
+        match &edge.kind {
+            EdgeKind::DocumentRetrieved {
+                source_url,
+                content_hash,
+                source_class,
+                ..
+            } => {
+                assert_eq!(source_url, "https://docs.example.com/poisoned");
+                assert_eq!(content_hash, "abc123");
+                assert_eq!(*source_class, SourceClass::Web);
+            }
+            other => panic!("expected DocumentRetrieved, got {other:?}"),
+        }
+        // serde round-trip via the JSONL wire format.
+        let json = serde_json::to_string(&edge).unwrap();
+        assert!(json.contains("\"kind\":\"document_retrieved\""));
+        assert!(json.contains("\"source_class\":\"web\""));
+        let back: LineageEdge = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, edge);
     }
 
     #[test]

@@ -1,5 +1,9 @@
 # Nucleus
 
+### Don't trust the agent. Verify it.
+
+*Signed identity, declared guarantees, receipts anyone can check.*
+
 [![CI](https://github.com/coproduct-opensource/nucleus/actions/workflows/ci.yml/badge.svg)](https://github.com/coproduct-opensource/nucleus/actions/workflows/ci.yml)
 [![Security Audit](https://github.com/coproduct-opensource/nucleus/actions/workflows/audit.yml/badge.svg)](https://github.com/coproduct-opensource/nucleus/actions/workflows/audit.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/coproduct-opensource/nucleus/badge)](https://securityscorecards.dev/viewer/?uri=github.com/coproduct-opensource/nucleus)
@@ -9,6 +13,8 @@
 > **Assume the agent is compromised. Constrain what it can do anyway. Prove the constraints hold.**
 
 At its core is a small, dependency-free information-flow algebra. Two primitives — `join` and `flows_to` — enforce information-flow control under four algebraic laws. Once untrusted web content enters a session, it cannot silently reach a privileged sink like `git push`. That property is [machine-checked](FORMAL_METHODS.md), not hoped.
+
+This is the **[lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/)** — private data + untrusted content + an exfiltration sink — made safe by **non-interference**: attacker-tainted data cannot reach a consequential action, so a compromised agent cannot be turned into a *confused deputy*. We don't *detect* the prompt injection; we make its consequence impossible — and prove it. (Detection-based guardrails are probabilistic; this is a structural guarantee.)
 
 ```rust
 let mut state = FlowState::bottom();           // clean session
@@ -39,7 +45,7 @@ just vault    # play "The Vault" in your browser
   ✓ Write ALLOWED — clean ancestry
 ```
 
-**`just vault`** launches [**The Vault**](crates/ctf-engine/README.md) — a browser CTF where you try to exfiltrate a secret past a formally-verified permission lattice (Verus-proof-backed verdicts). Hosted at **https://nucleus-ctf.fly.dev**; point an LLM at its JSON/MCP API and watch it fail too.
+**`just vault`** launches [**The Vault**](crates/ctf-engine/README.md) — a browser CTF where you try to exfiltrate a secret past a formally-verified permission lattice (Lean 4 + Kani-backed verdicts). Hosted at **https://nucleus-ctf.fly.dev**; point an LLM at its JSON/MCP API and watch it fail too.
 
 ---
 

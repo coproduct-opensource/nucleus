@@ -15,7 +15,14 @@ default = []
 # PRODUCTION USE. Production callers should write a SPIFFE-Workload-API-
 # backed `IdentityFetcher` impl and never enable this feature in release
 # builds. Verification (always-on) does NOT need this feature.
-dev = ["dep:jsonwebtoken", "dep:rand", "ed25519-dalek/alloc", "ed25519-dalek/pkcs8", "ed25519-dalek/rand_core"]
+#
+# Named `insecure-local-issuer` so the footgun is visible at every consumer's
+# `[dependencies]` line (the old ergonomic name `dev` invited "just for tests"
+# enablement that could ship). `dev` is kept as a transitional alias for one
+# release — see CHANGELOG; remove after downstreams migrate.
+insecure-local-issuer = ["dep:jsonwebtoken", "dep:rand", "ed25519-dalek/alloc", "ed25519-dalek/pkcs8", "ed25519-dalek/rand_core"]
+# DEPRECATED alias for `insecure-local-issuer`. Remove next release.
+dev = ["insecure-local-issuer"]
 # HTTP-backed WitnessClient (nucleus-native cosign protocol + C2SP
 # tlog-witness adapter for federation with the external ecosystem).
 # Off by default to keep the lib's dep tree lean.
@@ -59,7 +66,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [[example]]
 name = "three_step_demo"
-required-features = ["dev"]
+required-features = ["insecure-local-issuer"]
 
 [lints]
 workspace = true
