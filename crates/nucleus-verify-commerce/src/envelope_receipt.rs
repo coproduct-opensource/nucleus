@@ -18,17 +18,22 @@ use nucleus_lineage::{
     Jwks, LineageEdge, LineageSink, Proof,
 };
 
-use crate::{body_sha256_hex, CommerceError, Receipt, ReceiptContext, ReceiptIssuer};
+use crate::{body_sha256_hex, CommerceError, IfcVerdict, Receipt, ReceiptContext, ReceiptIssuer};
 
 /// Deterministic canonical bytes of the commerce binding. NUL-separated; the
 /// fields never contain NUL. This is what the delivery edge's signed content
 /// hash commits to.
+///
+/// `ifc` is the IFC verdict's [`IfcVerdict::canonical`] form, or `"none"` when
+/// the receipt was issued without the IFC gate. Folding it in here means the
+/// gate decision is covered by the edge signature, not just the payload.
 fn binding_bytes(
     resource: &str,
     caller_spiffe_id: &str,
     payment_scheme: &str,
     payment_reference: &str,
     body_sha256: &str,
+    ifc: &str,
 ) -> Vec<u8> {
     let mut v = Vec::with_capacity(256);
     for f in [
@@ -37,11 +42,20 @@ fn binding_bytes(
         payment_scheme,
         payment_reference,
         body_sha256,
+        ifc,
     ] {
         v.extend_from_slice(f.as_bytes());
         v.push(0);
     }
     v
+}
+
+/// The canonical IFC string for the binding: the verdict's canonical form, or
+/// `"none"` when no IFC gate was applied.
+fn ifc_canonical(verdict: Option<&IfcVerdict>) -> String {
+    verdict
+        .map(IfcVerdict::canonical)
+        .unwrap_or_else(|| "none".to_string())
 }
 
 /// A [`ReceiptIssuer`] that emits a signed `nucleus-envelope` provenance bundle
@@ -98,6 +112,7 @@ impl<'a> EnvelopeReceiptIssuer<'a> {
 impl ReceiptIssuer for EnvelopeReceiptIssuer<'_> {
     fn issue(&self, ctx: &ReceiptContext<'_>) -> Result<Receipt, CommerceError> {
         let body_hash = body_sha256_hex(ctx.body);
+        let ifc = ifc_canonical(ctx.ifc_verdict);
         // The signed commitment: hash of the full canonical binding.
         let binding = binding_bytes(
             &ctx.request.resource,
@@ -105,6 +120,7 @@ impl ReceiptIssuer for EnvelopeReceiptIssuer<'_> {
             &ctx.request.payment.scheme,
             &ctx.request.payment.reference,
             &body_hash,
+            &ifc,
         );
         let binding_hash = body_sha256_hex(&binding);
 
@@ -129,7 +145,14 @@ impl ReceiptIssuer for EnvelopeReceiptIssuer<'_> {
         self.emit_signed(&sink, delivery, Some(h0))?;
 
         // 3) payload = the human-readable binding (re-derived + checked by the
-        //    verifier against the signed content hash).
+        //    verifier against the signed content hash). `ifc_verdict` carries
+        //    the full verdict (incl. declared inputs for coverage audit); its
+        //    canonical projection is what's covered by the signature.
+        let ifc_verdict_json = match ctx.ifc_verdict {
+            Some(v) => serde_json::to_value(v)
+                .map_err(|e| CommerceError::Backend(format!("serializing ifc verdict: {e}")))?,
+            None => serde_json::Value::Null,
+        };
         let payload = serde_json::json!({
             "kind": "verify-commerce-receipt",
             "resource": ctx.request.resource,
@@ -137,6 +160,7 @@ impl ReceiptIssuer for EnvelopeReceiptIssuer<'_> {
             "payment_scheme": ctx.request.payment.scheme,
             "payment_reference": ctx.request.payment.reference,
             "body_sha256": body_hash,
+            "ifc_verdict": ifc_verdict_json,
         });
 
         // 4) build a signed bundle and self-verify it before handing it back.
@@ -176,6 +200,11 @@ pub struct VerifiedReceipt {
     pub payment_reference: String,
     /// SHA-256 (hex) of the delivered bytes.
     pub body_sha256: String,
+    /// The IFC verdict bound into this receipt, if it was served through the
+    /// IFC gate (`serve_verified_ifc`). `None` for receipts issued without the
+    /// gate. When present, its canonical form was covered by the signature and
+    /// checked here.
+    pub ifc_verdict: Option<IfcVerdict>,
 }
 
 /// Verify a receipt bundle and return its trusted commerce binding.
@@ -184,10 +213,11 @@ pub struct VerifiedReceipt {
 /// 1. `nucleus_envelope::verify_bundle` against `anchor` — every edge's
 ///    signature, the hash chain, and the JWKS.
 /// 2. The signed delivery edge's `content_hash_hex` equals the SHA-256 of the
-///    binding re-derived from the bundle's `payload`. Because the content hash
-///    is covered by the edge signature but the payload is not, this is what
-///    actually binds caller + payment + resource + body to the seller's
-///    signature; without it the payload would be free to tamper.
+///    binding re-derived from the bundle's `payload` — caller + payment +
+///    resource + body + the **IFC verdict**. Because the content hash is
+///    covered by the edge signature but the payload is not, this is what
+///    actually binds those fields to the seller's signature; without it the
+///    payload (including the recorded verdict) would be free to tamper.
 pub fn verify_receipt_bundle(
     bundle: &Bundle,
     anchor: &TrustAnchor,
@@ -208,12 +238,21 @@ pub fn verify_receipt_bundle(
     let payment_reference = field("payment_reference")?;
     let body_sha256 = field("body_sha256")?;
 
+    // Recover the IFC verdict (absent / null ⇒ no gate ⇒ canonical "none").
+    let ifc_verdict: Option<IfcVerdict> = match p.get("ifc_verdict") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| {
+            CommerceError::Unverified(format!("malformed ifc_verdict in receipt: {e}"))
+        })?),
+    };
+
     let expected = body_sha256_hex(&binding_bytes(
         &resource,
         &caller_spiffe_id,
         &payment_scheme,
         &payment_reference,
         &body_sha256,
+        &ifc_canonical(ifc_verdict.as_ref()),
     ));
 
     let signed_binding = bundle
@@ -238,6 +277,7 @@ pub fn verify_receipt_bundle(
         payment_scheme,
         payment_reference,
         body_sha256,
+        ifc_verdict,
     })
 }
 
@@ -280,6 +320,7 @@ mod tests {
                 caller: &caller,
                 request: &request,
                 body,
+                ifc_verdict: None,
             })
             .unwrap()
     }
@@ -340,5 +381,67 @@ mod tests {
             verify_receipt_bundle(&bundle, &TrustAnchor::from_jwks(other_jwks)),
             Err(CommerceError::Unverified(_))
         ));
+    }
+
+    #[test]
+    fn ifc_verdict_is_bound_into_the_signature_and_recovered() {
+        use crate::{DeclaredInput, FlowDeclaration};
+        let signer = LocalIssuer::random().unwrap();
+        let jwks: Jwks = serde_json::from_value(signer.publish_jwks()).unwrap();
+        let issuer = EnvelopeReceiptIssuer::new(seller_root(), &signer, jwks.clone());
+        let request = req();
+        let caller = caller();
+        let verdict =
+            FlowDeclaration::new([DeclaredInput::UserPrompt, DeclaredInput::DatabaseRow]).decide();
+        assert!(verdict.is_allow());
+
+        let receipt = issuer
+            .issue(&ReceiptContext {
+                caller: &caller,
+                request: &request,
+                body: b"ok",
+                ifc_verdict: Some(&verdict),
+            })
+            .unwrap();
+
+        let bundle: Bundle = serde_json::from_value(receipt.bundle.clone().unwrap()).unwrap();
+        let verified = verify_receipt_bundle(&bundle, &TrustAnchor::from_jwks(jwks)).unwrap();
+        assert_eq!(verified.ifc_verdict.as_ref(), Some(&verdict));
+    }
+
+    #[test]
+    fn tampering_the_recorded_ifc_verdict_is_detected() {
+        use crate::{DeclaredInput, FlowDeclaration};
+        let signer = LocalIssuer::random().unwrap();
+        let jwks: Jwks = serde_json::from_value(signer.publish_jwks()).unwrap();
+        let issuer = EnvelopeReceiptIssuer::new(seller_root(), &signer, jwks.clone());
+        let request = req();
+        let caller = caller();
+        // A real DENY verdict (web content → outbound).
+        let verdict =
+            FlowDeclaration::new([DeclaredInput::UserPrompt, DeclaredInput::WebContent]).decide();
+        assert!(!verdict.is_allow());
+
+        let receipt = issuer
+            .issue(&ReceiptContext {
+                caller: &caller,
+                request: &request,
+                body: b"ok",
+                ifc_verdict: Some(&verdict),
+            })
+            .unwrap();
+
+        // Attacker flips the recorded verdict to "allow" in the payload.
+        let mut bundle: Bundle = serde_json::from_value(receipt.bundle.clone().unwrap()).unwrap();
+        bundle.payload["ifc_verdict"]["allow"] = serde_json::json!(true);
+        // …and drops the untrusted declared input to make it look clean.
+        bundle.payload["ifc_verdict"]["declared_inputs"] = serde_json::json!(["user_prompt"]);
+        assert!(
+            matches!(
+                verify_receipt_bundle(&bundle, &TrustAnchor::from_jwks(jwks)),
+                Err(CommerceError::Unverified(_))
+            ),
+            "a flipped IFC verdict must break the signed binding"
+        );
     }
 }
