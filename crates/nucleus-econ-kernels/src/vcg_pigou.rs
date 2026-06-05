@@ -48,6 +48,50 @@ use thiserror::Error;
 
 use crate::vcg::{run_vcg, Clearing, IntegerBid, IntegerProposal, VcgError};
 
+// ── Tier-1 published λ defaults (governance parameters) ─────────────────
+//
+// These are PUBLISHED GOVERNANCE PARAMETERS, not constants of nature.
+// They are versioned, sourced, and meant to be overridden by a
+// governance process — but a sane, defensible default lets the
+// marketplace price the two externalities we can actually *measure and
+// source today*: carbon and water. Everything else ships at λ = 0
+// (declared-but-not-priced) until its measurement + rate is justified.
+//
+// Unit discipline (matches `effective_minus_pigou_micro`):
+//   contrib_µ$ = λ · units_micro / 1_000_000
+// so for a dimension whose `units_micro` is "micro-X" (X × 1e6), the
+// contribution per *whole X* is exactly λ µ$. Pick λ = (social cost in
+// µ$ per whole unit X).
+
+/// **Social Cost of Carbon**, as λ for [`ResourceDim::GridCarbonGramsCo2`].
+///
+/// `units_micro` for that dim is micro-grams CO₂e, so contribution per
+/// **gram** is exactly `λ` µ$. We set λ = 190 µ$/g = **$190 / tonne CO₂**.
+///
+/// Source: U.S. EPA (2023) *Report on the Social Cost of Greenhouse
+/// Gases*, central estimate ≈ $190/t CO₂ at a 2% near-term Ramsey
+/// discount rate; corroborated by Rennert et al., *Nature* 610 (2022)
+/// ≈ $185/t. This is deliberately mid-range: the IWG (2021) interim
+/// figure was $51/t, recent literature spans $100–$300/t. λ is a
+/// published parameter precisely so this can be retuned without a code
+/// change beyond this line.
+pub const LAMBDA_CARBON_SCC_MICRO_USD_PER_GRAM: u64 = 190;
+
+/// **Water scarcity shadow price**, as λ for
+/// [`ResourceDim::WaterLitresConsumed`].
+///
+/// `units_micro` for that dim is micro-litres, so contribution per
+/// **litre** is exactly `λ` µ$. We set λ = 2_000 µ$/L = **$2 / m³**.
+///
+/// Source: scarcity-weighted marginal water values in the World Bank
+/// *High and Dry* (2016) range and AWARE characterisation factors
+/// (Boulay et al., *Int. J. LCA* 2018) place stressed-basin shadow
+/// prices around $1–$3/m³, well above the ~$0.1–0.5/m³ utility tariff
+/// (which prices delivery, not scarcity). $2/m³ is a conservative
+/// mid-point. Water is priced SEPARATELY from carbon because its
+/// social cost is *local* — see `ResourceDim::WaterLitresConsumed`.
+pub const LAMBDA_WATER_SHADOW_MICRO_USD_PER_LITRE: u64 = 2_000;
+
 /// Per-dimension Pigouvian rate vector. `λ_k` in micro-USD per
 /// micro-unit of `ResourceDim` consumption.
 ///
@@ -63,6 +107,39 @@ impl PigouvianRates {
     /// running plain `run_vcg`.
     pub fn zero() -> Self {
         Self::default()
+    }
+
+    /// **Tier-1 published defaults** — the launch Pigouvian structure.
+    ///
+    /// Prices ONLY the two externalities the marketplace can measure
+    /// and source today, each from a published shadow price:
+    ///
+    /// - [`ResourceDim::GridCarbonGramsCo2`] → the Social Cost of
+    ///   Carbon ([`LAMBDA_CARBON_SCC_MICRO_USD_PER_GRAM`], $190/t).
+    /// - [`ResourceDim::WaterLitresConsumed`] → a water scarcity
+    ///   shadow price ([`LAMBDA_WATER_SHADOW_MICRO_USD_PER_LITRE`],
+    ///   $2/m³).
+    ///
+    /// Every other dimension is left at λ = 0 (declared-but-not-priced).
+    /// In particular [`ResourceDim::GpuSeconds`] is **0 on purpose**:
+    /// GPU-seconds are the *measured input* the carbon/water oracles
+    /// multiply by grid intensity / WUE to derive the co2 and water
+    /// figures — pricing GPU-seconds directly would double-charge the
+    /// same physical externality. See
+    /// `docs/rfcs/initial-pigouvian-structure.md` for the tier roadmap
+    /// (Tier-2 congestion dims, Tier-3 the knowledge-spillover subsidy)
+    /// and the governance process for activating them.
+    pub fn tier1_defaults() -> Self {
+        let mut rates = HashMap::new();
+        rates.insert(
+            ResourceDim::GridCarbonGramsCo2,
+            LAMBDA_CARBON_SCC_MICRO_USD_PER_GRAM,
+        );
+        rates.insert(
+            ResourceDim::WaterLitresConsumed,
+            LAMBDA_WATER_SHADOW_MICRO_USD_PER_LITRE,
+        );
+        Self { rates }
     }
 
     /// Rate for the given dimension. Returns 0 if not present.
@@ -469,6 +546,69 @@ mod tests {
         // Pool = 100 · 1_000_000 / 1_000_000 = 100.
         assert_eq!(c.rebate_pool_micro_usd, 100);
         assert!(!c.clearing.winners.is_empty());
+    }
+
+    // ── Tier-1 published λ defaults ────────────────────────────────────
+
+    #[test]
+    fn tier1_prices_carbon_at_scc() {
+        // 1 tonne CO₂ = 1_000_000 g = 1_000_000_000_000 micro-grams.
+        // Expected tax = $190 = 190_000_000 µ$.
+        let r = PigouvianRates::tier1_defaults();
+        let one_tonne_micro_grams = 1_000_000_000_000u64;
+        let p = profile(&[(ResourceDim::GridCarbonGramsCo2, one_tonne_micro_grams)]);
+        let raw = 500_000_000u64; // $500 bid, big enough not to floor
+        let adjusted = effective_minus_pigou_micro(raw, &p, &r);
+        assert_eq!(raw - adjusted, 190_000_000, "1 t CO₂ should tax $190");
+    }
+
+    #[test]
+    fn tier1_prices_water_at_shadow_price() {
+        // 1 m³ = 1_000 L = 1_000_000_000 micro-litres.
+        // Expected tax = $2 = 2_000_000 µ$.
+        let r = PigouvianRates::tier1_defaults();
+        let one_cubic_metre_micro_litres = 1_000_000_000u64;
+        let p = profile(&[(
+            ResourceDim::WaterLitresConsumed,
+            one_cubic_metre_micro_litres,
+        )]);
+        let raw = 500_000_000u64;
+        let adjusted = effective_minus_pigou_micro(raw, &p, &r);
+        assert_eq!(raw - adjusted, 2_000_000, "1 m³ water should tax $2");
+    }
+
+    #[test]
+    fn tier1_does_not_double_charge_gpu_seconds() {
+        // GPU-seconds is the measured INPUT to the carbon/water oracles,
+        // so its own λ must be 0 — otherwise the same physical
+        // externality is charged twice.
+        let r = PigouvianRates::tier1_defaults();
+        assert_eq!(r.lambda(ResourceDim::GpuSeconds), 0);
+        let p = profile(&[(ResourceDim::GpuSeconds, 5_000_000_000)]);
+        let raw = 1_000_000u64;
+        assert_eq!(
+            effective_minus_pigou_micro(raw, &p, &r),
+            raw,
+            "GPU-seconds alone must not be taxed under Tier-1"
+        );
+    }
+
+    #[test]
+    fn tier1_only_prices_carbon_and_water() {
+        // Exactly the two Tier-1 dimensions carry a non-zero rate; every
+        // other declared dimension ships at λ = 0.
+        let r = PigouvianRates::tier1_defaults();
+        for d in ResourceDim::all() {
+            let expected_nonzero = matches!(
+                d,
+                ResourceDim::GridCarbonGramsCo2 | ResourceDim::WaterLitresConsumed
+            );
+            assert_eq!(
+                r.lambda(*d) != 0,
+                expected_nonzero,
+                "{d:?} rate non-zero flag wrong under Tier-1"
+            );
+        }
     }
 
     #[test]

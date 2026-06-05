@@ -60,7 +60,7 @@ pub use vcg_hetero::{
 };
 pub use vcg_pigou::{
     effective_minus_pigou_micro, run_vcg_with_externalities, PigouvianClearing, PigouvianError,
-    PigouvianRates,
+    PigouvianRates, LAMBDA_CARBON_SCC_MICRO_USD_PER_GRAM, LAMBDA_WATER_SHADOW_MICRO_USD_PER_LITRE,
 };
 
 // A6 (docs/CLOSE-TO-HIGHEST.md): the welfare-overflow Kani harness
