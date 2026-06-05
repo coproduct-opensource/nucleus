@@ -1,10 +1,13 @@
 # RFC: Verified Agent Commerce — a drop-in trust + receipt layer for x402 / A2A
 
-> Status: **Draft / exploratory.** Describes a target integration and GTM motion;
-> not yet implemented as a single packaged artifact. It composes crates that
-> already exist (`nucleus-agent-card`, `nucleus-envelope`,
-> `nucleus-verifier-service`, `nucleus-fly-oidc` / `nucleus-github-oidc`,
-> `portcullis`). No new payment rail is built — x402 stays x402.
+> Status: **Implemented (v1) — GTM exploratory.** The seller-side library now
+> ships as [`crates/nucleus-verify-commerce`](../../crates/nucleus-verify-commerce)
+> (real Agent-Card verification, signed `nucleus-envelope` receipts,
+> `verify_receipt_bundle`, an x402 `X-PAYMENT` helper, and a runnable
+> `quickstart` example). It composes existing crates (`nucleus-agent-card`,
+> `nucleus-envelope`, `nucleus-verifier-service`, `nucleus-fly-oidc` /
+> `nucleus-github-oidc`, `portcullis`); no new payment rail is built — x402 stays
+> x402. The GTM motion (packaging, design partner) is the exploratory part.
 
 ## Thesis
 
