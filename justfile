@@ -20,6 +20,28 @@ vault port="8799":
 vault-fresh:
     cd crates/ctf-engine && trunk serve --open
 
+# ── x402 on Base Sepolia (TESTNET only — never mainnet / real funds) ──────────
+
+# Print the Base Sepolia x402 bootstrap config + faucet links (instant).
+x402-info:
+    @echo "x402 bootstrap — Base Sepolia TESTNET (chain eip155:84532)"
+    @echo "  facilitator : https://facilitator.x402.rs   (or https://x402.org/facilitator)"
+    @echo "  test ETH    : https://www.alchemy.com/faucets/base-sepolia"
+    @echo "  test USDC   : https://faucet.circle.com   (select Base Sepolia)"
+    @echo ""
+    @echo "Seller (30s):  export SELLER_ADDRESS=0x<your base-sepolia address> && just x402-seller"
+    @echo "Pay it:        export X402_PRIVATE_KEY=0x<TESTNET key w/ bUSDC>      && just x402-pay"
+    @echo ""
+    @echo "The paid route is also IFC-gated + receipted by nucleus-verify-commerce."
+
+# Run an x402 seller on Base Sepolia (needs SELLER_ADDRESS). Paid route is IFC-gated.
+x402-seller:
+    cd examples/x402-sepolia && cargo run --quiet --bin seller
+
+# Pay an x402 endpoint on Base Sepolia (needs X402_PRIVATE_KEY; TESTNET only).
+x402-pay url="http://127.0.0.1:4021/paid":
+    cd examples/x402-sepolia && TARGET_URL={{url}} cargo run --quiet --bin buyer
+
 # ── Everyday ─────────────────────────────────────────────────────────────────
 
 # Rust-native task runner. `just xtask <command>` (e.g. `just xtask scripts`).
