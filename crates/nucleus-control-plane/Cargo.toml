@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 description = "Job orchestrator: typed JobSpec → agent execution → provenance Bundle"
 repository = "https://github.com/coproduct-opensource/nucleus"
+readme = "README.md"
 keywords = ["control-plane", "orchestrator", "provenance", "ifc", "agents"]
 categories = ["development-tools"]
 
