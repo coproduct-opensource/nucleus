@@ -17,7 +17,10 @@ use wasm_bindgen_test::*;
 #[wasm_bindgen_test]
 fn sdk_version_returns_non_empty_string() {
     let v = sdk_version();
-    assert!(!v.is_empty(), "sdk_version must return a populated version string");
+    assert!(
+        !v.is_empty(),
+        "sdk_version must return a populated version string"
+    );
 }
 
 #[wasm_bindgen_test]

@@ -304,3 +304,65 @@ export async function checkVerdict(declaredInputs, claimedAllow, opts = {}) {
     claimedAllow,
   );
 }
+
+// ── RECOMPUTE THE ECONOMICS: cleared price (VCG + Pigou), settlement, commons ──
+// All run the EXACT proven `nucleus-econ-kernels` functions in-process — a
+// counterparty re-derives the price, the externality charge, the payout split,
+// and where the externality revenue is routed, trusting no server. `u64` fields
+// cross the wasm boundary as BigInt.
+
+const big = (x) => (typeof x === "bigint" ? x : BigInt(x));
+
+/**
+ * Re-derive the truthful VCG clearing (winners + Clarke-pivot payments).
+ * @param {object[]} bids `IntegerBid[]` `{bidder, proposal_id, effective_value_micro_usd}`
+ * @param {object[]} proposals `IntegerProposal[]` `{id, cost_micro_usd}`
+ * @param {number|bigint} budgetMicroUsd
+ * @returns {Promise<object>} the `Clearing` (winners/losers/totals).
+ */
+export async function recomputeVcg(bids, proposals, budgetMicroUsd) {
+  const mod = await initWasm();
+  return mod.recomputeVcg(JSON.stringify(bids), JSON.stringify(proposals), big(budgetMicroUsd));
+}
+
+/**
+ * Re-derive the Pigouvian-VCG clearing — the cleared price INCLUDING the
+ * internalised externality charge + the resulting rebate pool.
+ * @param {object[]} bids @param {object[]} proposals @param {number|bigint} budgetMicroUsd
+ * @param {object[]} externalities `ExternalityProfile[]` (signed claims per resource dim)
+ * @param {object} rates `PigouvianRates` `{lambdas:{<dim>:<u64>}}`
+ * @returns {Promise<object>} the `PigouvianClearing` `{clearing, rebate_pool_micro_usd}`.
+ */
+export async function recomputeVcgPigou(bids, proposals, budgetMicroUsd, externalities, rates) {
+  const mod = await initWasm();
+  return mod.recomputeVcgPigou(
+    JSON.stringify(bids),
+    JSON.stringify(proposals),
+    big(budgetMicroUsd),
+    JSON.stringify(externalities),
+    JSON.stringify(rates),
+  );
+}
+
+/**
+ * Re-derive the settlement split for a cleared price at a delivery score (bps):
+ * `{ verdict, seller_gross, refund }` with `seller_gross + refund == price`.
+ * @param {number|bigint} priceMicro @param {number|bigint} deliveredBps
+ * @returns {Promise<{verdict:"reverse"|"partial"|"release", seller_gross:bigint, refund:bigint}>}
+ */
+export async function recomputeSettlement(priceMicro, deliveredBps) {
+  const mod = await initWasm();
+  return mod.recomputeSettlement(big(priceMicro), big(deliveredBps));
+}
+
+/**
+ * Re-derive the externality→commons routing (no-skim conservation; sum equals
+ * the pool). The social-good audit: watch the money fund the fix.
+ * @param {number|bigint} poolMicro
+ * @param {object[]} shares `CommonsShare[]` `{destination, bps}` (must sum to 10000)
+ * @returns {Promise<object[]>} `CommonsAllocation[]` `{destination, amount_micro}`.
+ */
+export async function recomputeCommons(poolMicro, shares) {
+  const mod = await initWasm();
+  return mod.recomputeCommons(big(poolMicro), JSON.stringify(shares));
+}
