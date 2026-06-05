@@ -49,6 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         supported_envelope_schema_versions: vec!["1".to_string()],
         jwks_uri: None,
         trust_jwks: buyer_trust_jwks,
+        runtime_guarantees: None,
     };
     let signed_card = sign_card(buyer_card, pkcs8.as_ref())?;
 

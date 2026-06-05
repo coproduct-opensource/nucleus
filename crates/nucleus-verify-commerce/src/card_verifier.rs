@@ -78,6 +78,7 @@ mod tests {
             supported_envelope_schema_versions: vec!["1".to_string()],
             jwks_uri: None,
             trust_jwks: jwks,
+            runtime_guarantees: None,
         }
     }
 
