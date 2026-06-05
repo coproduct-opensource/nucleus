@@ -91,7 +91,7 @@ nucleus shell --profile web_research --dir examples/ctf-exfil \
 | 5 | **Network policy** | DNS/URL allowlists, default-deny egress (Firecracker) |
 | 6 | **Audit trail** | Every tool call logged with hash chain for forensics |
 
-Nucleus ensures that **even if layers 1-3 fail, layer 4 catches it.** The uninhabitable state guard's monotonicity is formally proven: once an operation is denied, it stays denied for the rest of the session (proofs E1-E3 in `portcullis-verified`).
+Nucleus ensures that **even if layers 1-3 fail, layer 4 catches it.** The uninhabitable state guard's monotonicity is formally proven: once an operation is denied, it stays denied for the rest of the session (monotonicity proofs E1-E3, machine-checked by Kani in `portcullis`).
 
 ## Running All Rounds
 
