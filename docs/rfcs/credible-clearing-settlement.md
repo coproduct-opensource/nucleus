@@ -56,21 +56,32 @@ is gone.
 | Sealed-bid commitment-set root | ✅ `sealed.rs` |
 | Timelock reveal | ✅ `tlock.rs` (drand) |
 | On-chain payment | ✅ x402 (EVM) / Aiken `settlement.ak` seam (Cardano) |
-| **Optimistic settlement contract** (commit-root → reveal → fraud-proof → settle) | ⛳ **net-new — the load-bearing build** |
-| **On-chain bid commitment** (anti-censorship commit phase) | ⛳ net-new |
-| **Bond / challenge / slash** mechanism | ⛳ net-new |
-| **Proof-of-Task-Execution** (did the seller *deliver*?) | ❌ unsolved — stays a named seam |
+| **Optimistic settlement contract** (commit-root → reveal → post+bond → challenge → settle) | ✅ **shipped (B2)** — `examples/marketplace-live/contracts/src/CredibleSettlement.sol` |
+| **Bond / challenge / slash** mechanism | ✅ shipped (B2) — slashed bond routed to commons (anti-grief) |
+| On-chain settlement split runs the **exact proven function** | ✅ shipped — Solidity mirror of `settlement.rs`/`commons.rs`, parity-tested (`test/CredibleSettlement.t.sol`) |
+| **On-chain bid commitment** (anti-censorship commit phase) | ⛳ net-new (B3) |
+| **Clearing-price adjudication** (decide poster-vs-challenger, not just reverse) | ⛳ net-new (B3) — needs interactive proofs / on-chain commit |
+| **Proof-of-Task-Execution** (did the seller *deliver*?) | ❌ unsolved — `deliveredBps` is an arbiter input |
 
 ## Phasing
 
 - **B1 (ready):** port `SettlementDecision` to OSS Rust + a parity test (mirror the
   VCG parity pattern); extend `@coproduct/verify` recompute to the clearing price
   (now possible — the proven kernel is in OSS).
-- **B2:** an EVM **settlement contract** (or Aiken `settlement.ak`): commit root →
-  timelock reveal → optimistic post+bond → recompute fraud proof → settle
-  (release/reverse). Base Sepolia testnet.
-- **B3:** on-chain bid commitment (open submission) + the bond/challenge/slash
-  loop — this is what removes the *coordinator*, not just the *trust*.
+- **B2 (shipped):** an EVM **settlement contract**
+  (`CredibleSettlement.sol`): commit root → timelock reveal → optimistic
+  post+bond → challenge window → settle (release/partial/reverse). The
+  settlement split + commons routing run the **exact** proven functions on-chain
+  (a byte-for-byte Solidity mirror of `settlement.rs`/`commons.rs`, bound by a
+  Foundry parity test against the same vectors as the Rust/Lean tests). A valid
+  `challenge()` slashes the poster's bond **to the commons** and safely reverses
+  (buyer refunded) — cheating is unprofitable without any on-chain VCG. Base
+  Sepolia testnet; native-value escrow for v1. *Not yet:* deciding poster-vs-
+  challenger correctness (always reverses on challenge) — that's B3.
+- **B3:** on-chain bid commitment (open submission) + clearing-price
+  adjudication (interactive fraud proof or on-chain commit so a challenge
+  resolves to the *correct* result, not just a reversal) — this is what removes
+  the *coordinator*, not just the *trust*.
 - **B4 (research):** PoTE — proving the seller actually delivered. Until then, v1
   settles on **clearing-correct + payment**, not on delivery; disputes about
   delivery remain out of scope (pitch to compliance, not as full escrow).
