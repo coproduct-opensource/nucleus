@@ -43,6 +43,7 @@ members = [
     "crates/nucleus-agent-card",         # Verify-before-you-act: signed Agent Card → TrustAnchor
     "crates/nucleus-trust-registry",     # "Let's Encrypt for agents": PR-rooted, OIDC-attested, transparency-logged SPIFFE federation enrollment
     "crates/xtask",                      # Rust-native dev/CI task runner (cargo xtask <cmd>); migrating scripts/*.sh
+    "crates/nucleus-machine",            # MachineDriver: microVM execution-substrate abstraction (mock + Fly skeleton)
 ]
 # nucleus-claude-hook moved to nucleus-code (private product repo)
 # exposure-web is WASM-only (wasm32-unknown-unknown); build with: cd crates/exposure-web && trunk build
