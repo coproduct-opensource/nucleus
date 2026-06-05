@@ -42,6 +42,8 @@ pub mod reducer;
 #[cfg(feature = "runtime")]
 pub mod agent;
 #[cfg(feature = "runtime")]
+pub mod clearing;
+#[cfg(feature = "runtime")]
 pub mod clock;
 #[cfg(feature = "runtime")]
 pub mod facilitator;
@@ -55,12 +57,15 @@ pub mod orchestrator;
 pub mod http;
 
 pub use event::{
-    AgentId, BalanceSource, Lane, MarketEvent, MicroUsd, SettlementOutcome, VerifyMethod,
+    AgentId, BalanceSource, ClearingMethod, Lane, MarketEvent, MicroUsd, SettlementOutcome,
+    VerifyMethod,
 };
 pub use reducer::{AgentSummary, MarketState, DEFAULT_RECENT_CAP};
 
 #[cfg(feature = "runtime")]
 pub use agent::AgentLoop;
+#[cfg(feature = "runtime")]
+pub use clearing::{Bid, Clearing, ClearingOutcome, FixedPriceClearing};
 #[cfg(feature = "runtime")]
 pub use clock::{Clock, FixedClock, SystemClock};
 #[cfg(feature = "runtime")]
