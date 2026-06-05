@@ -38,8 +38,12 @@ x402-info:
     @echo ""
     @echo "Seller (30s):  export SELLER_ADDRESS=0x<your base-sepolia address> && just x402-seller"
     @echo "Pay it:        export X402_PRIVATE_KEY=0x<TESTNET key w/ bUSDC>      && just x402-pay"
+    @echo "See it deny:   just x402-deny    # IFC gate refuses an unsafe flow (403) BEFORE payment"
     @echo ""
-    @echo "The paid route is also IFC-gated + receipted by nucleus-verify-commerce."
+    @echo "GET /paid        safe flow   → IFC ALLOW → pay → result + receipt"
+    @echo "GET /paid-unsafe unsafe flow → IFC DENY  → 403, you are NOT charged"
+    @echo ""
+    @echo "Both routes are IFC-gated + receipted by nucleus-verify-commerce."
 
 # Run an x402 seller on Base Sepolia (needs SELLER_ADDRESS). Paid route is IFC-gated.
 x402-seller:
@@ -47,6 +51,11 @@ x402-seller:
 
 # Pay an x402 endpoint on Base Sepolia (needs X402_PRIVATE_KEY; TESTNET only).
 x402-pay url="http://127.0.0.1:4021/paid":
+    cd examples/x402-sepolia && TARGET_URL={{url}} cargo run --quiet --bin buyer
+
+# Hit the IFC-UNSAFE route: the gate DENIES (403) before payment — you are NOT
+# charged. Shows the nucleus IFC gate refusing a lethal-trifecta flow up front.
+x402-deny url="http://127.0.0.1:4021/paid-unsafe":
     cd examples/x402-sepolia && TARGET_URL={{url}} cargo run --quiet --bin buyer
 
 # ── Everyday ─────────────────────────────────────────────────────────────────
