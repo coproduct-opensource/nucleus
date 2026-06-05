@@ -63,12 +63,13 @@ pub struct LineageArgs {
     #[arg(long)]
     pub jwks: Option<PathBuf>,
 
-    /// Reject edges that lack a cryptographic `proof`. Requires `--jwks`.
-    /// Without this flag, unsigned edges still walk normally (structural
-    /// check only); with it, only signed edges that verify against the JWKS
-    /// are kept.
+    /// Walk unsigned / unverifiable edges (INSECURE). By default the walker
+    /// **requires** every edge to carry a `proof` that verifies against
+    /// `--jwks`; unsigned or failing edges are dropped. This flag opts out and
+    /// trusts whatever is on disk — an attacker who can append to the JSONL log
+    /// can then inject arbitrary edges. Use only for local debugging.
     #[arg(long)]
-    pub require_signed: bool,
+    pub allow_unsigned: bool,
 }
 
 pub fn execute(args: LineageArgs) -> Result<()> {
@@ -88,9 +89,13 @@ pub fn execute(args: LineageArgs) -> Result<()> {
         ));
     }
 
-    if args.require_signed && args.jwks.is_none() {
+    // Secure default: verification is required. The operator must either supply
+    // a JWKS to verify against, or explicitly opt into walking unverified edges.
+    if !args.allow_unsigned && args.jwks.is_none() {
         return Err(anyhow!(
-            "--require-signed needs --jwks <path> to know which keys to trust"
+            "lineage verification is required by default: pass --jwks <path> to \
+             verify edge signatures, or --allow-unsigned to walk unverified edges \
+             (INSECURE — trusts whatever is on disk)"
         ));
     }
 
@@ -108,17 +113,29 @@ pub fn execute(args: LineageArgs) -> Result<()> {
         None => None,
     };
 
+    if args.allow_unsigned {
+        // Loud on stderr AND stdout so the warning is visible even when the
+        // operator is reading `nucleus lineage tree` piped to a file.
+        eprintln!(
+            "⚠️  --allow-unsigned: walking UNVERIFIED lineage. Edges without a \
+             valid proof are trusted as-is — do not rely on this output for \
+             provenance decisions."
+        );
+        println!("# WARNING: unsigned/unverified edges included (--allow-unsigned)");
+    }
+
     // Verify signatures BEFORE building the graph so the walker never sees
     // rejected edges. Hash-chain order is sink-iteration order (oldest first).
-    let edges = if let Some(ref jwks) = jwks {
-        filter_verified(edges, jwks, args.require_signed)
-    } else {
-        edges
+    let edges = match &jwks {
+        Some(jwks) => filter_verified(edges, jwks, args.allow_unsigned),
+        // Only reachable with --allow-unsigned (validated above).
+        None => edges,
     };
 
     if edges.is_empty() {
         return Err(anyhow!(
-            "no edges survived verification (check --jwks, or pass --allow-forged / drop --require-signed)"
+            "no edges survived verification (check --jwks, or pass --allow-unsigned \
+             to walk unverified edges)"
         ));
     }
 
@@ -310,15 +327,16 @@ fn spiffe_authority(s: &str) -> &str {
 }
 
 /// Verify each edge's `proof` against `jwks` in chain order. Edges that
-/// fail verification (or, when `require_signed`, edges with no `proof` at
-/// all) are dropped with a `stderr` warning.
+/// fail verification are dropped with a `stderr` warning. Edges with no
+/// `proof` at all are dropped too, unless `allow_unsigned` is set (in which
+/// case they pass through but do not anchor the hash chain).
 ///
 /// Hash chain: each edge is verified with `prev_hash` set to the SHA-256
 /// of the previous **kept** edge's canonical bytes. Dropped edges break
 /// the chain — anything downstream of a dropped edge will fail with
 /// `BrokenChain` and is also dropped, which is the correct semantic for
 /// a tamper-evident log.
-fn filter_verified(edges: Vec<LineageEdge>, jwks: &Jwks, require_signed: bool) -> Vec<LineageEdge> {
+fn filter_verified(edges: Vec<LineageEdge>, jwks: &Jwks, allow_unsigned: bool) -> Vec<LineageEdge> {
     let mut prev_hash: Option<[u8; 32]> = None;
     let mut out = Vec::with_capacity(edges.len());
     for edge in edges {
@@ -327,7 +345,7 @@ fn filter_verified(edges: Vec<LineageEdge>, jwks: &Jwks, require_signed: bool) -
                 prev_hash = Some(edge_content_hash(&edge, prev_hash.as_ref()));
                 out.push(edge);
             }
-            Err(VerifyError::Unsigned) if !require_signed => {
+            Err(VerifyError::Unsigned) if allow_unsigned => {
                 // Pass through unsigned edges in non-strict mode but DON'T
                 // advance the hash chain — an unsigned edge can't anchor the
                 // chain for subsequent signed edges.
@@ -554,6 +572,30 @@ mod tests {
         // strict mode prevents this two-step poisoning.
         let permissive_walk = g.walk_ancestors(&attacker_artifact, 0, true);
         assert_eq!(permissive_walk.len(), 2);
+    }
+
+    /// HIGH-2 (#1632): the walker requires signed edges by default. An edge
+    /// with no `proof` is dropped unless `allow_unsigned` is set.
+    #[test]
+    fn filter_verified_drops_unsigned_unless_allowed() {
+        let edge = LineageEdge::pod_admit(pod());
+        assert!(edge.proof.is_none(), "fixture edge should be unsigned");
+        let jwks = Jwks::parse(br#"{"keys":[]}"#).expect("empty jwks parses");
+
+        // Secure default: unsigned edge is dropped.
+        let strict = filter_verified(vec![edge.clone()], &jwks, false);
+        assert!(
+            strict.is_empty(),
+            "unsigned edge must be dropped when allow_unsigned = false"
+        );
+
+        // Opt-out: unsigned edge passes through.
+        let permissive = filter_verified(vec![edge], &jwks, true);
+        assert_eq!(
+            permissive.len(),
+            1,
+            "unsigned edge must pass through when allow_unsigned = true"
+        );
     }
 
     #[test]
