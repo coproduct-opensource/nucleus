@@ -437,6 +437,11 @@ fn format_kind(edge: &LineageEdge) -> String {
         } => format!("[llm/{}/{}]", provider, direction),
         nucleus_lineage::EdgeKind::ArtifactProduced => "[artifact]".to_string(),
         nucleus_lineage::EdgeKind::Merge => "[merge]".to_string(),
+        nucleus_lineage::EdgeKind::DocumentRetrieved {
+            source_url,
+            source_class,
+            ..
+        } => format!("[doc/{:?}/{}]", source_class, source_url),
         nucleus_lineage::EdgeKind::Other { name } => format!("[{}]", name),
     }
 }
