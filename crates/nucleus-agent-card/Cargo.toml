@@ -34,6 +34,12 @@ default = []
 # always available without it and is secret-free.
 sign = []
 
+# The `agent-sign` example calls sign_card, so it only builds with `sign`
+# (keeps default builds + CI free of the signing path).
+[[example]]
+name = "agent_sign"
+required-features = ["sign"]
+
 [dev-dependencies]
 # `dev` feature on nucleus-lineage gives the integration test the
 # in-process LocalIssuer + InMemorySink it needs to build a real Bundle.

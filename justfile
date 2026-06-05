@@ -20,6 +20,13 @@ vault port="8799":
 vault-fresh:
     cd crates/ctf-engine && trunk serve --open
 
+# ── Signed, IFC-attested agents ──────────────────────────────────────────────
+
+# Sign an Agent Card that declares an IFC runtime-guarantee profile, then verify
+# it (incl. tamper-detection). Ephemeral key; production uses OIDC-keyless.
+agent-sign:
+    cargo run -q -p nucleus-agent-card --example agent_sign --features sign
+
 # ── x402 on Base Sepolia (TESTNET only — never mainnet / real funds) ──────────
 
 # Print the Base Sepolia x402 bootstrap config + faucet links (instant).
