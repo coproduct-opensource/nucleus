@@ -26,12 +26,12 @@ fn main() {
     let level = parse_arg(&args, "--level")
         .and_then(|s| s.parse::<u8>().ok())
         .unwrap_or_else(|| {
-            eprintln!("Error: --level <1-7> is required");
+            eprintln!("Error: --level <1-8> is required");
             std::process::exit(1);
         });
 
-    if !(1..=7).contains(&level) {
-        eprintln!("Error: level must be 1-7");
+    if !(1..=8).contains(&level) {
+        eprintln!("Error: level must be 1-8");
         std::process::exit(1);
     }
 
@@ -91,13 +91,13 @@ fn print_usage() {
     eprintln!("Can your AI agent break out of a formally verified sandbox?");
     eprintln!();
     eprintln!("USAGE:");
-    eprintln!("  ctf-cli --level <1-7> --attack-file <path>");
-    eprintln!("  ctf-cli --level <1-7> --attack '<json>'");
-    eprintln!("  echo '<json>' | ctf-cli --level <1-7>");
+    eprintln!("  ctf-cli --level <1-8> --attack-file <path>");
+    eprintln!("  ctf-cli --level <1-8> --attack '<json>'");
+    eprintln!("  echo '<json>' | ctf-cli --level <1-8>");
     eprintln!("  ctf-cli --list-levels");
     eprintln!();
     eprintln!("OPTIONS:");
-    eprintln!("  --level <N>          Level to attack (1-7)");
+    eprintln!("  --level <N>          Level to attack (1-8)");
     eprintln!("  --attack-file <path> JSON file with tool call array");
     eprintln!("  --attack <json>      Inline JSON tool call array");
     eprintln!("  --list-levels        Show all levels and their defenses");
@@ -112,7 +112,7 @@ fn print_usage() {
 }
 
 fn list_levels() {
-    for n in 1..=7u8 {
+    for n in 1..=8u8 {
         let lvl = Level::new(n);
         let meta = lvl.meta();
         eprintln!("Level {}: {}", n, meta.name);

@@ -38,7 +38,7 @@ pub fn start() {
 /// Get metadata for all levels as JSON.
 #[wasm_bindgen]
 pub fn get_levels() -> JsValue {
-    let metas: Vec<LevelMeta> = (1..=7).map(|n| Level::new(n).meta()).collect();
+    let metas: Vec<LevelMeta> = (1..=8).map(|n| Level::new(n).meta()).collect();
     serde_wasm_bindgen::to_value(&metas).unwrap_or(JsValue::NULL)
 }
 
