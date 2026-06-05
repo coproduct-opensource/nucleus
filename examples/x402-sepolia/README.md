@@ -30,6 +30,15 @@ just x402-pay        # → 200, result + allow verdict, ~0.01 USDC settles
 just x402-deny       # → 403 ifc_denied, you are NOT charged
 ```
 
+Or run the whole contrast in one shot (starts the seller, runs both buyer
+paths, and — if `cast` is installed — prints the on-chain balance delta):
+
+```bash
+export SELLER_ADDRESS=0x<your base-sepolia address>
+export X402_PRIVATE_KEY=0x<testnet private key>
+just x402-demo
+```
+
 ## Two routes: allow vs. deny
 
 The IFC gate runs **in front of** the x402 payment layer, so the data-flow

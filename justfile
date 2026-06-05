@@ -58,6 +58,32 @@ x402-pay url="http://127.0.0.1:4021/paid":
 x402-deny url="http://127.0.0.1:4021/paid-unsafe":
     cd examples/x402-sepolia && TARGET_URL={{url}} cargo run --quiet --bin buyer
 
+# One-shot contrast: starts the seller, runs BOTH buyer paths (pay-allow + deny),
+# proves the on-chain balance delta (if `cast` is present), then stops the seller.
+# Needs SELLER_ADDRESS + X402_PRIVATE_KEY (TESTNET only — never mainnet/real funds).
+x402-demo:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${SELLER_ADDRESS:?set SELLER_ADDRESS (your Base Sepolia receiving address)}"
+    : "${X402_PRIVATE_KEY:?set X402_PRIVATE_KEY (a TESTNET key holding Base Sepolia USDC)}"
+    RPC="https://sepolia.base.org"; USDC="0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+    cd examples/x402-sepolia
+    echo "building seller + buyer…"; cargo build --quiet --bin seller --bin buyer
+    BIND=127.0.0.1:4021 ./target/debug/seller >/tmp/x402-demo-seller.log 2>&1 &
+    SELLER_PID=$!; trap 'kill $SELLER_PID 2>/dev/null || true' EXIT
+    for _ in $(seq 1 40); do curl -fsS -o /dev/null "http://127.0.0.1:4021/paid-unsafe" 2>/dev/null && break || true; sleep 0.25; done
+    bal() { cast call "$USDC" "balanceOf(address)(uint256)" "$1" --rpc-url "$RPC" 2>/dev/null | sed 's/ .*//'; }
+    HAVE_CAST=0; command -v cast >/dev/null 2>&1 && HAVE_CAST=1
+    if [ "$HAVE_CAST" = 1 ]; then BUYER=$(cast wallet address --private-key "$X402_PRIVATE_KEY"); B0=$(bal "$BUYER"); fi
+    echo; echo "── 1) SAFE flow: GET /paid  (gate ALLOWS → buyer pays → 200) ─────────────"
+    TARGET_URL=http://127.0.0.1:4021/paid ./target/debug/buyer
+    if [ "$HAVE_CAST" = 1 ]; then B1=$(bal "$BUYER"); fi
+    echo; echo "── 2) UNSAFE flow: GET /paid-unsafe  (gate DENIES → 403, NOT charged) ────"
+    TARGET_URL=http://127.0.0.1:4021/paid-unsafe ./target/debug/buyer
+    if [ "$HAVE_CAST" = 1 ]; then B2=$(bal "$BUYER"); echo; \
+      python3 -c "print(f'on-chain buyer USDC:  start={int(\"$B0\")/1e6:.6f}  after pay={int(\"$B1\")/1e6:.6f} (Δ {(int(\"$B1\")-int(\"$B0\"))/1e6:+.6f})  after deny={int(\"$B2\")/1e6:.6f} (Δ {(int(\"$B2\")-int(\"$B1\"))/1e6:+.6f})')"; fi
+    echo; echo "same gate, same price, opposite outcome — decided by the declared data-flow."
+
 # ── Everyday ─────────────────────────────────────────────────────────────────
 
 # Rust-native task runner. `just xtask <command>` (e.g. `just xtask scripts`).
