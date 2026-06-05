@@ -7,6 +7,7 @@ license.workspace = true
 authors.workspace = true
 description = "Verify-before-you-act identity layer: sign/verify an A2A-style signed Agent Card and derive a TrustAnchor for the bundle verifier"
 repository = "https://github.com/coproduct-opensource/nucleus"
+readme = "README.md"
 keywords = ["agent", "identity", "a2a", "did", "provenance"]
 categories = ["authentication", "cryptography"]
 
