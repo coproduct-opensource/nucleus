@@ -46,6 +46,9 @@ members = [
     "crates/nucleus-machine",            # MachineDriver: microVM execution-substrate abstraction (mock + Fly skeleton)
     "crates/nucleus-verify-commerce",    # Seller-side verify→serve→receipt middleware for x402/A2A (scaffold)
     "crates/nucleus-marketplace-dashboard", # Real-time verified-agent-marketplace: axum SSE orchestrator over the IFC gate (network-free core)
+    "crates/nucleus-econ-types",            # Financially load-bearing newtypes (MicroUsd, ids); serde-only
+    "crates/nucleus-externality",           # Pigouvian externality envelopes + rate-setter
+    "crates/nucleus-econ-kernels",          # PROVEN integer VCG + Pigou + sealed-bid kernels (parity-pinned to Lean)
 ]
 # nucleus-claude-hook moved to nucleus-code (private product repo)
 # exposure-web is WASM-only (wasm32-unknown-unknown); build with: cd crates/exposure-web && trunk build
@@ -145,6 +148,10 @@ regex = "1.12"
 
 # Encoding
 base64 = "0.22"
+
+# Ed25519 (externality envelopes + econ-kernel sealed-bid tests). Matches the
+# dalek 2.x already in the lock via nucleus-lineage / nucleus-envelope.
+ed25519-dalek = "2"
 
 # Testing
 tempfile = "3"

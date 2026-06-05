@@ -1,0 +1,32 @@
+[package]
+name = "nucleus-econ-kernels"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Integer-only economic kernels (VCG, Ring 0 budget, Lagrangian) lifted from sibling repos with per-file provenance comments. No f64 — see docs/ECON-PRECISION.md."
+
+[lints.rust]
+# A6: the welfare-overflow Kani harness is gated on `cfg(kani)`,
+# which non-kani builds wouldn't otherwise recognise. Mirrors the
+# portcullis-core pattern at /Users/bcrisp/coproduct/nucleus/crates/portcullis-core.
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(kani)'] }
+
+[lints.clippy]
+# Inherited from the workspace lints in the root Cargo.toml; restated
+# here because mixing per-crate lint overrides with `workspace = true`
+# inheritance isn't supported.
+type_complexity = "allow"
+
+[dependencies]
+serde = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+nucleus-externality = { path = "../nucleus-externality" }
+nucleus-econ-types = { path = "../nucleus-econ-types" }
+
+[dev-dependencies]
+proptest = { workspace = true }
+ed25519-dalek = { workspace = true }
