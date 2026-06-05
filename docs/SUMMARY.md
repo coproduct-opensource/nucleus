@@ -18,6 +18,8 @@
 - [Assurance](assurance/formal-methods.md)
   - [Verified Claims](verified-claims.md)
   - [Hardening Checklist](assurance/hardening-checklist.md)
+- [RFCs]()
+  - [Agent Control Plane on Fly Machines](rfcs/agent-control-plane-on-fly.md)
 - [Use Cases](use-cases/README.md)
   - [OpenClaw Hardening](use-cases/openclaw-hardening.md)
   - [Enterprise AI Agents](use-cases/enterprise-ai-agents.md)
