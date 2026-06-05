@@ -45,6 +45,7 @@ members = [
     "crates/xtask",                      # Rust-native dev/CI task runner (cargo xtask <cmd>); migrating scripts/*.sh
     "crates/nucleus-machine",            # MachineDriver: microVM execution-substrate abstraction (mock + Fly skeleton)
     "crates/nucleus-verify-commerce",    # Seller-side verify→serve→receipt middleware for x402/A2A (scaffold)
+    "crates/nucleus-marketplace-dashboard", # Real-time verified-agent-marketplace: axum SSE orchestrator over the IFC gate (network-free core)
 ]
 # nucleus-claude-hook moved to nucleus-code (private product repo)
 # exposure-web is WASM-only (wasm32-unknown-unknown); build with: cd crates/exposure-web && trunk build

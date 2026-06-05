@@ -1,0 +1,39 @@
+[package]
+name = "nucleus-marketplace-dashboard"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+license = "MIT"
+description = "Real-time verified-agent-marketplace dashboard: an axum SSE orchestrator that runs N agent loops through the nucleus IFC gate, emitting allow/deny/settlement/receipt events. Network-free, deterministic core; real Base Sepolia settlement lives in a separate example workspace."
+
+[features]
+default = ["server"]
+# The thin axum SSE edge + the live binary. The pure decision/event/state core
+# does NOT need this — `cargo test` exercises the whole core with it on but no
+# network is touched (settlement is abstracted behind the `Facilitator` trait,
+# and the real x402/alloy impl lives in a SEPARATE workspace, never here).
+server = ["dep:axum", "dep:tokio-stream", "dep:futures"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+tokio-util = "0.7"
+nucleus-verify-commerce = { path = "../nucleus-verify-commerce" }
+
+# `server` feature only — the SSE edge.
+axum = { workspace = true, optional = true }
+tokio-stream = { version = "0.1", features = ["sync"], optional = true }
+futures = { version = "0.3", optional = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+
+[[bin]]
+name = "marketplace-orchestrator"
+path = "src/bin/orchestrator.rs"
+required-features = ["server"]
