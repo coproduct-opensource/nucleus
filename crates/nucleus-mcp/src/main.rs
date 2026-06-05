@@ -559,6 +559,9 @@ fn format_deny_reason(reason: &DenyReason) -> String {
         } => {
             format!("sink scope denied ({dimension}): {detail}")
         }
+        DenyReason::IfcUnsafe { detail } => {
+            format!("information-flow unsafe: {detail}")
+        }
     }
 }
 

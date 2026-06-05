@@ -15,7 +15,9 @@ use std::sync::Arc;
 use portcullis::action_term::ActionTerm;
 use portcullis::kernel::{Kernel, Verdict};
 use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome, VerdictSink};
-use portcullis::{CapabilityLevel, GradedExposureGuard, Operation, ToolCallGuard};
+use portcullis::{
+    CapabilityLevel, FlowTracker, GradedExposureGuard, NodeKind, Operation, ToolCallGuard,
+};
 use rmcp::{
     handler::server::router::tool::ToolRouter, handler::server::wrapper::Parameters, model::*,
     tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt,
@@ -127,6 +129,13 @@ pub struct NucleusMcpServer {
     sink: Arc<dyn VerdictSink>,
     /// Kernel decision engine for complete mediation.
     kernel: Arc<tokio::sync::Mutex<Kernel>>,
+    /// Session-scoped information-flow tracker (#1633). Tool entry points
+    /// `observe` the data they bring in (`web_fetch` ⇒ `WebContent`,
+    /// `read`/`glob`/`grep` ⇒ `FileRead`); the kernel consults it via
+    /// `decide_term_with_flow` so that once adversarial (web) content is in the
+    /// session, outbound actions are denied with `IfcUnsafe` — the lethal
+    /// trifecta, enforced in the live Rust runtime (parity with the Python SDK).
+    flow_tracker: Arc<tokio::sync::Mutex<FlowTracker>>,
 }
 
 /// Convert a tool-level error into a CallToolResult error.
@@ -159,6 +168,21 @@ impl NucleusMcpServer {
             guard,
             sink,
             kernel,
+            flow_tracker: Arc::new(tokio::sync::Mutex::new(FlowTracker::new())),
+        }
+    }
+
+    /// Observe a data-ingest node in the session flow tracker (#1633).
+    ///
+    /// Called by input tool entry points after a successful fetch/read so the
+    /// kernel's `decide_term_with_flow` consult sees the taint on subsequent
+    /// outbound actions. Best-effort: observation failure is logged, never
+    /// fatal (a missed observation fails *open* for that one node, but the
+    /// session ceiling from other nodes still applies).
+    async fn observe_flow(&self, kind: NodeKind) {
+        let mut flow = self.flow_tracker.lock().await;
+        if let Err(e) = flow.observe(kind) {
+            warn!(?kind, error = %e, "flow-tracker observe failed");
         }
     }
 
@@ -174,7 +198,12 @@ impl NucleusMcpServer {
     ) -> Result<portcullis::kernel::DecisionToken, CallToolResult> {
         let term = build_action_term(operation, subject);
         let mut kernel = self.kernel.lock().await;
-        let (decision, token) = kernel.decide_term(term);
+        // Consult the session information-flow tracker (#1633): once the
+        // session has ingested adversarial (web) content, outbound operations
+        // are denied with `IfcUnsafe` before the normal decision path.
+        let flow = self.flow_tracker.lock().await;
+        let (decision, token) = kernel.decide_term_with_flow(term, Some(&flow));
+        drop(flow);
         match decision.verdict {
             Verdict::Allow => Ok(token.expect("Allow verdict always produces token")),
             Verdict::Deny(ref reason) => {
@@ -268,6 +297,10 @@ impl NucleusMcpServer {
         }) {
             Ok(contents) => {
                 self.record_verdict(Operation::ReadFiles, &params.path, VerdictOutcome::Allow);
+                // IFC: a file read brings data into the session (Trusted
+                // integrity — does not by itself taint, but contributes to the
+                // confidentiality ceiling). (#1633)
+                self.observe_flow(NodeKind::FileRead).await;
                 Ok(CallToolResult::success(vec![Content::text(contents)]))
             }
             Err(e) => {
@@ -544,6 +577,7 @@ impl NucleusMcpServer {
         }) {
             Ok(paths) => {
                 self.record_verdict(Operation::GlobSearch, &subject, VerdictOutcome::Allow);
+                self.observe_flow(NodeKind::FileRead).await; // (#1633)
                 Ok(CallToolResult::success(vec![Content::text(
                     paths.join("\n"),
                 )]))
@@ -731,6 +765,7 @@ impl NucleusMcpServer {
         }) {
             Ok(matches) => {
                 self.record_verdict(Operation::GrepSearch, &subject, VerdictOutcome::Allow);
+                self.observe_flow(NodeKind::FileRead).await; // (#1633)
                 Ok(CallToolResult::success(vec![Content::text(matches)]))
             }
             Err(e) => {
@@ -938,6 +973,10 @@ impl NucleusMcpServer {
         match self.guard.execute_and_record(proof, || fetch_result) {
             Ok(response) => {
                 self.record_verdict(Operation::WebFetch, &subject, VerdictOutcome::Allow);
+                // IFC: web content is adversarial-integrity — observing it
+                // taints the session, so subsequent outbound actions are denied
+                // with `IfcUnsafe` (lethal-trifecta guard). (#1633)
+                self.observe_flow(NodeKind::WebContent).await;
                 Ok(CallToolResult::success(vec![Content::text(response)]))
             }
             Err(e) => {
