@@ -561,7 +561,7 @@ async fn main() -> Result<(), ApiError> {
         container_network: args.container_network.clone(),
         container_pool,
         docker,
-        trust_gate: trust_gate::TrustGateConfig::from_env(),
+        trust_gate: trust_gate::TrustGateConfig::from_env(&args.state_dir),
         http_client: reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .build()
