@@ -348,3 +348,70 @@ pub fn recompute_commons_js(pool_micro: u64, shares_json: &str) -> Result<JsValu
         .map_err(|e| JsError::new(&format!("commons: {e}")))?;
     serde_wasm_bindgen::to_value(&allocations).map_err(|e| JsError::new(&e.to_string()))
 }
+
+/// Surface the **assurance rung** of an externality profile — *how much trust*
+/// each dimension's `units_micro` demands, and the profile's overall
+/// (weakest-link) rung. `layers_json` is a JSON array of per-dimension
+/// verification outcomes:
+/// `[{ dimension, signature_ok, tee_ok, multi_source_disputed, zk_envelope_ok }]`.
+///
+/// Returns `{ overall_rung, dimensions: [{ dimension, rung }] }`, where each
+/// `rung` is DERIVED from what actually verified (never self-asserted — an
+/// unsigned dimension is `self_reported` no matter what else is attached) and
+/// `overall_rung` is the **minimum** across dimensions (a profile is only as
+/// trustworthy as its weakest-attested dimension). `overall_rung` is `null` for
+/// an empty profile. This is the anti-greenwashing primitive: the receipt states
+/// its own assurance level, checkable by anyone.
+#[wasm_bindgen(js_name = recomputeAssuranceRung)]
+pub fn recompute_assurance_rung_js(layers_json: &str) -> Result<JsValue, JsError> {
+    set_panic_hook();
+
+    #[derive(Deserialize)]
+    struct LayerOutcome {
+        dimension: String,
+        #[serde(default)]
+        signature_ok: bool,
+        #[serde(default)]
+        tee_ok: bool,
+        #[serde(default)]
+        multi_source_disputed: bool,
+        #[serde(default)]
+        zk_envelope_ok: bool,
+    }
+    #[derive(Serialize)]
+    struct DimRung {
+        dimension: String,
+        rung: nucleus_externality::AssuranceRung,
+    }
+    #[derive(Serialize)]
+    struct Report {
+        overall_rung: Option<nucleus_externality::AssuranceRung>,
+        dimensions: Vec<DimRung>,
+    }
+
+    let layers: Vec<LayerOutcome> = serde_json::from_str(layers_json)
+        .map_err(|e| JsError::new(&format!("layers JSON: {e}")))?;
+    let dimensions: Vec<DimRung> = layers
+        .iter()
+        .map(|l| DimRung {
+            dimension: l.dimension.clone(),
+            rung: nucleus_externality::assess_rung(
+                l.signature_ok,
+                l.tee_ok,
+                l.multi_source_disputed,
+                l.zk_envelope_ok,
+            ),
+        })
+        .collect();
+    // Weakest link = the rung a consumer of the receipt should actually trust.
+    let overall_rung = dimensions.iter().map(|d| d.rung).min();
+    // Serialize `None` as JSON `null` (not the default `undefined`) so the empty
+    // profile honours the typed `overall_rung: AssuranceRung | null` contract.
+    let serializer = serde_wasm_bindgen::Serializer::new().serialize_missing_as_null(true);
+    Report {
+        overall_rung,
+        dimensions,
+    }
+    .serialize(&serializer)
+    .map_err(|e| JsError::new(&e.to_string()))
+}
