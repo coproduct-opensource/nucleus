@@ -120,6 +120,8 @@ fn malformed_trust_jwks_is_rejected() {
             x: Some("!!! not base64url !!!".to_string()),
             alg: Some("EdDSA".to_string()),
             use_: Some("sig".to_string()),
+            not_before: None,
+            not_after: None,
         }],
     };
     let signed = sign_card(card, &der).unwrap();
