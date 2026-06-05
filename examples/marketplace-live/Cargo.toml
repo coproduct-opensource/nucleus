@@ -1,0 +1,54 @@
+[package]
+name = "marketplace-live"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "REAL Base Sepolia (testnet) settlement for the nucleus marketplace dashboard: X402Facilitator + keystore-backed signer. Spends small testnet funds."
+
+# Standalone workspace — keeps the heavy alloy / x402 dependency tree out of the
+# main nucleus workspace + CI. Build from this directory.
+[workspace]
+
+[[bin]]
+name = "marketplace-live"
+path = "src/bin/marketplace_live.rs"
+
+[dependencies]
+# x402 rail (Base Sepolia testnet) — pins match examples/x402-sepolia.
+x402-axum = "1.5"
+x402-reqwest = "1.5"
+x402-chain-eip155 = { version = "1.5", features = ["server", "client"] }
+x402-types = "1.5"
+
+# alloy: read path (provider + IERC20 balanceOf) + the local keystore signer.
+alloy = { version = "2.0", features = ["providers", "contract", "sol-types", "network"] }
+alloy-primitives = "1"
+alloy-signer-local = { version = "2.0", features = ["keystore"] }
+
+# Secure password supply for the keystore — never on argv/env-by-default.
+# (macOS Keychain is read via the `security` CLI — no extra crate/feature matrix.)
+rpassword = "7.5"
+zeroize = "1"
+
+axum = "0.8"
+# MUST equal x402-reqwest's reqwest (0.13) so the Client type matches with_payments().
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset", "json"] }
+reqwest-middleware = "0.5"
+base64 = "0.22"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync"] }
+tokio-util = "0.7"
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+
+# The nucleus trust layer (path deps into the main workspace crates).
+nucleus-verify-commerce = { path = "../../crates/nucleus-verify-commerce" }
+nucleus-marketplace-dashboard = { path = "../../crates/nucleus-marketplace-dashboard", features = ["server"] }
+
+[dev-dependencies]
+tempfile = "3"
+# Matches the rand version alloy-signer-local/eth-keystore use (0.8), so the
+# `Rng + CryptoRng` bound on `new_keystore` is satisfied in the round-trip test.
+rand = "0.8"
