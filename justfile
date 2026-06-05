@@ -22,6 +22,10 @@ vault-fresh:
 
 # ── Everyday ─────────────────────────────────────────────────────────────────
 
+# Rust-native task runner. `just xtask <command>` (e.g. `just xtask scripts`).
+xtask *args:
+    cargo xtask {{args}}
+
 # Run the test suite.
 test:
     cargo test --all-features
