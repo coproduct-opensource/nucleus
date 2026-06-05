@@ -95,9 +95,9 @@ use std::fmt;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::delegation::MeetJustification;
 #[cfg(feature = "crypto")]
 use crate::delegation::meet_with_justification;
+use crate::delegation::MeetJustification;
 use crate::PermissionLattice;
 
 /// Maximum chain depth (configurable at verification time, this is the default).

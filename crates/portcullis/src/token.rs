@@ -81,11 +81,11 @@ use base64::Engine;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "crypto")]
+use crate::certificate::verify_certificate;
 use crate::certificate::{
     CertificateError, LatticeCertificate, VerifiedPermissions, DEFAULT_MAX_CHAIN_DEPTH,
 };
-#[cfg(feature = "crypto")]
-use crate::certificate::verify_certificate;
 
 /// A compact, self-contained attenuation token for wire transport.
 ///
