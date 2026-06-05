@@ -20,6 +20,29 @@ On top of that core, Nucleus adds three newer pillars — a **Constitutional Ker
 
 ---
 
+## See it in 90 seconds
+
+Two runnable hooks, nothing to configure ([`just`](https://github.com/casey/just), or run the commands directly):
+
+```sh
+just demo     # 30s, in your terminal — information-flow control, 4 scenarios
+just vault    # play "The Vault" in your browser
+```
+
+**`just demo`** (`cargo run -p nucleus-ifc --example ifc_demo`) — a prompt-injection write is **denied by adversarial *ancestry***, not by a classifier guessing at strings; a clean flow is allowed; a compartment transition clears taint; a deterministic bind excludes the model from the trust decision:
+
+```
+─ Scenario 1: Web injection blocked ─
+  ModelPlan inherits Adversarial from WebContent
+  ✗ Write DENIED — adversarial ancestry detected
+─ Scenario 2: Clean workflow allowed ─
+  ✓ Write ALLOWED — clean ancestry
+```
+
+**`just vault`** launches [**The Vault**](crates/ctf-engine/README.md) — a browser CTF where you try to exfiltrate a secret past a formally-verified permission lattice (Verus-proof-backed verdicts). Hosted at **https://nucleus-ctf.fly.dev**; point an LLM at its JSON/MCP API and watch it fail too.
+
+---
+
 ## Quick Start
 
 ```bash
