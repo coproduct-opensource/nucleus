@@ -4,6 +4,7 @@ description = "Constitutional Kernel — admission engine and lineage store"
 version.workspace = true
 edition.workspace = true
 license = "MIT"
+readme = "README.md"
 
 [dependencies]
 ck-types = { path = "../ck-types" }
