@@ -13083,6 +13083,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
+ "serde_json",
 ]
 
 [[package]]

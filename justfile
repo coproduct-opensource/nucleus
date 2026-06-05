@@ -26,6 +26,10 @@ vault-fresh:
 xtask *args:
     cargo xtask {{args}}
 
+# Build every workspace crate standalone to catch isolation/feature breakages.
+check-isolation:
+    cargo xtask check-isolation
+
 # Run the test suite.
 test:
     cargo test --all-features
