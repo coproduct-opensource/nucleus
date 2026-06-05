@@ -6658,6 +6658,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-machine"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "nucleus-mcp"
 version = "1.0.0"
 dependencies = [
