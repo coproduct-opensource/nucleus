@@ -132,6 +132,7 @@ fn kind_tag(kind: &EdgeKind) -> &'static str {
         EdgeKind::LlmCall { .. } => "llm_call",
         EdgeKind::ArtifactProduced => "artifact_produced",
         EdgeKind::Merge => "merge",
+        EdgeKind::DocumentRetrieved { .. } => "document_retrieved",
         EdgeKind::Other { .. } => "other",
     }
 }

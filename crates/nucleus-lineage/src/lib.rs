@@ -59,7 +59,7 @@ pub use checkpoint::{
 #[cfg(feature = "http")]
 pub use cosign::{C2spHttpWitnessClient, HttpWitnessClient};
 pub use cosign::{Cosignature, CosignatureKind, InProcessWitness, WitnessClient};
-pub use edge::{EdgeKind, LineageEdge};
+pub use edge::{EdgeKind, LineageEdge, SourceClass};
 pub use id::{CallSpiffeId, IdError, MAX_URI_LEN};
 pub use issuer::{EdgeSigner, IdentityFetcher, IssuerError, SvidClaims};
 pub use merkle::{read_checkpoints, verify_log, MerkleConfig, MerkleError, MerkleSink};
