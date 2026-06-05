@@ -32,6 +32,12 @@ pub struct AgentSummary {
     pub balance: Option<MicroUsd>,
     /// Provenance of `balance` (so the UI badges Simulated vs OnChainTestnet).
     pub balance_source: Option<BalanceSource>,
+    /// ERC-8004 `agentId` (Identity Registry tokenId), once registered on-chain.
+    pub agent_id: Option<u64>,
+    /// Receipts anchored on-chain (ERC-8004 Validation Registry) for this agent.
+    pub anchored: u64,
+    /// Latest on-chain validation score (0–100; 100 = in-bounds).
+    pub last_validation: Option<u8>,
 }
 
 /// The reduced marketplace state — the ground truth a cold client receives.
@@ -45,6 +51,8 @@ pub struct MarketState {
     pub deny_count: u64,
     /// Total receipts that verified.
     pub receipts_verified: u64,
+    /// Total receipts anchored on-chain (ERC-8004 Validation Registry).
+    pub receipts_anchored: u64,
     /// Cumulative micro-USD settled via the SIMULATED facilitator.
     pub simulated_settled_micros: i64,
     /// Cumulative micro-USD settled on-chain (Base Sepolia testnet) — only ever
@@ -136,6 +144,18 @@ impl MarketState {
                 let a = self.agent_mut(agent);
                 a.balance = Some(*balance);
                 a.balance_source = Some(*source);
+            }
+            MarketEvent::ReceiptAnchored {
+                agent,
+                agent_id,
+                response,
+                ..
+            } => {
+                self.receipts_anchored += 1;
+                let a = self.agent_mut(agent);
+                a.agent_id = Some(*agent_id);
+                a.anchored += 1;
+                a.last_validation = Some(*response);
             }
         }
 

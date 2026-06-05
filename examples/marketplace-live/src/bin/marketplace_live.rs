@@ -19,9 +19,10 @@ use anyhow::{anyhow, Context};
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
 
-use marketplace_live::{seller_router, signer, X402Facilitator};
+use marketplace_live::erc8004::IDENTITY_REGISTRY_BASE_SEPOLIA;
+use marketplace_live::{seller_router, signer, AlloyAnchor, Anchorer, X402Facilitator};
 use nucleus_marketplace_dashboard::{
-    http, AgentId, AgentLoop, Facilitator, Hub, MicroUsd, Orchestrator, SystemClock,
+    http, AgentId, AgentLoop, Facilitator, Hub, MarketEvent, MicroUsd, Orchestrator, SystemClock,
 };
 use nucleus_verify_commerce::{DeclaredInput, FlowDeclaration};
 
@@ -59,6 +60,15 @@ struct Args {
     /// faucet wallet can't be drained.
     #[arg(long, default_value_t = 20)]
     max_settlements: u64,
+    /// ERC-8004 ValidationRegistry address (self-deployed on Base Sepolia). When
+    /// set, enables on-chain anchoring: agents are registered on the canonical
+    /// Identity Registry and each verified receipt is anchored on the Validation
+    /// Registry. These writes are GASFUL — the wallet also needs Base Sepolia ETH.
+    #[arg(long)]
+    validation_registry: Option<String>,
+    /// Base URI for agent registration files (the on-chain agentURI per agent).
+    #[arg(long, default_value = "https://marketplace.local/agents")]
+    agent_uri_base: String,
 }
 
 fn expand_tilde(path: &str) -> String {
@@ -130,6 +140,8 @@ async fn main() -> anyhow::Result<()> {
     eprintln!("loading keystore {} …", args.keystore);
     let signer = signer::load_keystore_signer(expand_tilde(&args.keystore))?;
     let payer = signer.address();
+    // Same key signs x402 (gasless) and ERC-8004 writes (gasful); clone for the anchorer.
+    let anchor_signer = signer.clone();
 
     let seller_base = format!("http://{}", args.bind);
     let facilitator = Arc::new(X402Facilitator::new(
@@ -201,11 +213,83 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let orchestrator = Arc::new(Orchestrator::new(
-        Arc::clone(&hub),
-        facilitator,
-        conservative_fleet(price),
-    ));
+    let fleet = conservative_fleet(price);
+
+    // ERC-8004 anchoring (opt-in via --validation-registry). Registers each agent
+    // on the canonical Identity Registry, then anchors each verified receipt on
+    // the Validation Registry. GASFUL — needs Base Sepolia ETH.
+    if let Some(vr) = &args.validation_registry {
+        let validation: Address = vr.trim().parse().context("parsing --validation-registry")?;
+        let anchorer = Arc::new(AlloyAnchor::new(
+            anchor_signer,
+            &args.rpc,
+            IDENTITY_REGISTRY_BASE_SEPOLIA,
+            validation,
+        )?);
+        eprintln!("ERC-8004 anchoring ENABLED");
+        eprintln!("  Identity   : {IDENTITY_REGISTRY_BASE_SEPOLIA}");
+        eprintln!("  Validation : {validation}");
+        let mut ids = std::collections::HashMap::new();
+        for a in &fleet {
+            let uri = format!(
+                "{}/{}",
+                args.agent_uri_base.trim_end_matches('/'),
+                a.agent.as_str()
+            );
+            let id = anchorer
+                .register_agent(&uri)
+                .await
+                .with_context(|| format!("ERC-8004 register for {}", a.agent.as_str()))?;
+            eprintln!("  registered {} → agentId {id}", a.agent.as_str());
+            ids.insert(a.agent.as_str().to_string(), id);
+        }
+        let ids = Arc::new(ids);
+        let base = format!("http://{}", args.bind);
+        tokio::spawn({
+            let hub = Arc::clone(&hub);
+            let anchorer = Arc::clone(&anchorer);
+            let ids = Arc::clone(&ids);
+            let cancel = cancel.clone();
+            async move {
+                let mut rx = hub.subscribe();
+                loop {
+                    tokio::select! {
+                        _ = cancel.cancelled() => break,
+                        ev = rx.recv() => match ev {
+                            Ok(MarketEvent::ReceiptVerified { for_settlement_id, agent, verified, .. }) if verified => {
+                                let Some(&agent_id) = ids.get(agent.as_str()) else { continue };
+                                let Some(receipt) = hub.receipt(for_settlement_id) else { continue };
+                                let json = serde_json::to_string(&receipt).unwrap_or_default();
+                                let uri = format!("{base}/api/receipt/{for_settlement_id}");
+                                match anchorer.anchor(agent_id, &uri, &json, true).await {
+                                    Ok(out) => {
+                                        hub.emit(MarketEvent::ReceiptAnchored {
+                                            id: 0,
+                                            ts_unix_ms: 0,
+                                            agent,
+                                            for_settlement_id,
+                                            agent_id,
+                                            request_hash: out.request_hash,
+                                            validation_tx: out.validation_tx,
+                                            response: out.response,
+                                        });
+                                    }
+                                    Err(e) => eprintln!("anchor failed (settlement {for_settlement_id}): {e:#}"),
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                            Err(_) => {} // lagged — recover on the next event
+                        }
+                    }
+                }
+            }
+        });
+    } else {
+        eprintln!("ERC-8004 anchoring disabled (no --validation-registry)");
+    }
+
+    let orchestrator = Arc::new(Orchestrator::new(Arc::clone(&hub), facilitator, fleet));
     let run = tokio::spawn({
         let orch = Arc::clone(&orchestrator);
         let cancel = cancel.clone();
