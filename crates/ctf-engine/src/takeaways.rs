@@ -62,7 +62,8 @@ pub fn build_takeaways(defenses: &[String]) -> Vec<String> {
 
     takeaways.push(
         "These 6 defense layers are production code from Nucleus — an open-source, \
-         formally verified secure runtime for AI agents. 297 Verus SMT proofs. MIT \
+         formally verified secure runtime for AI agents. 113 Kani proofs and ~277 \
+         Lean 4 theorems. MIT \
          licensed. https://github.com/coproduct-opensource/nucleus"
             .into(),
     );

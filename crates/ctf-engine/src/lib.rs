@@ -5,7 +5,7 @@
 //!
 //! Each level uses a real portcullis `PermissionLattice` profile and
 //! tracks exposure via the same `ExposureSet` that production nucleus
-//! uses. Verdicts are backed by Verus SMT proofs.
+//! uses. Verdicts are backed by Lean 4 + Kani proofs.
 
 mod engine;
 mod level;

@@ -52,7 +52,7 @@ pub enum Verdict {
         reason: String,
         /// Which defense layer blocked it.
         defense: String,
-        /// Verus proof reference (if any).
+        /// Formal proof reference (Lean 4 + Kani), if any.
         proof: Option<String>,
     },
     /// Tool call requires human approval (uninhabitable state triggered).
