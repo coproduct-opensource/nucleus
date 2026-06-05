@@ -679,7 +679,7 @@ impl ToolCallGuard for RuntimeStateGuard {
 /// carries as its grade. When the join reaches `{PrivateData, UntrustedContent,
 /// ExfilVector}`, the uninhabitable_state is complete.
 ///
-/// These 3 core labels are FROZEN — they have Verus proofs covering
+/// These 3 core labels are FROZEN — they have Kani + Lean proofs covering
 /// monotonicity, session safety, and irreversibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
