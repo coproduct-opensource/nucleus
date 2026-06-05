@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Seller-side verify→serve→receipt middleware for verified agent commerce on x402 / A2A (scaffold)"
+description = "Seller-side verify→serve→receipt middleware for verified agent commerce on x402 / A2A"
 repository = "https://github.com/coproduct-opensource/nucleus"
 readme = "README.md"
 keywords = ["agent", "x402", "a2a", "provenance", "commerce"]
@@ -16,9 +16,24 @@ workspace = true
 
 [dependencies]
 async-trait = { workspace = true }
+base64 = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 
+# Verifiable core (already shipped) that this middleware composes.
+nucleus-agent-card = { path = "../nucleus-agent-card" }
+nucleus-envelope = { path = "../nucleus-envelope" }
+nucleus-identity = { path = "../nucleus-identity" }
+nucleus-lineage = { path = "../nucleus-lineage" }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
+# Real key material for the agent-card sign↔verify round-trip + a real
+# Ed25519 edge signer / JWKS for the envelope-bundle receipt. The
+# `insecure-local-issuer` signer is TEST-ONLY (never enabled in the lib's own
+# deps); a production seller injects a real EdgeSigner.
+nucleus-agent-card = { path = "../nucleus-agent-card", features = ["sign"] }
+nucleus-lineage = { path = "../nucleus-lineage", features = ["insecure-local-issuer"] }
+ring = { workspace = true }

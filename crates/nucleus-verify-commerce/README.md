@@ -5,10 +5,7 @@ on x402 / A2A.
 
 [![docs.rs](https://img.shields.io/docsrs/nucleus-verify-commerce)](https://docs.rs/nucleus-verify-commerce)
 
-> **Status: scaffold.** The orchestration + in-memory implementations are real
-> and tested; the production implementations that wire the existing nucleus
-> crates are honest `NotWired` skeletons. See
-> [`docs/rfcs/verified-agent-commerce-quickstart.md`](../../docs/rfcs/verified-agent-commerce-quickstart.md).
+See [`docs/rfcs/verified-agent-commerce-quickstart.md`](../../docs/rfcs/verified-agent-commerce-quickstart.md).
 
 ## Why
 
@@ -26,9 +23,19 @@ request ─▶ verify caller ─▶ serve paid work ─▶ issue receipt ─▶ 
 ```
 
 The handler runs **only after** verification succeeds, so an unverified caller
-never reaches the paid work. The receipt binds the verified caller + payment
-reference + a hash of the delivered bytes, so the buyer can verify-then-settle
-and the seller has a dispute-defence artifact.
+never reaches the paid work. The receipt binds the verified caller + payment +
+delivered-bytes hash, so the buyer can verify-then-settle and the seller has a
+dispute-defence artifact.
+
+## Implementations
+
+| Trait | In-memory (dev / minimal) | Production |
+|---|---|---|
+| `CallerVerifier` | `AllowlistVerifier` | **`AgentCardVerifier`** — verifies a signed [Agent Card](../nucleus-agent-card) against an out-of-band-resolved key |
+| `ReceiptIssuer` | `HashingReceiptIssuer` | **`EnvelopeReceiptIssuer`** — emits a signed [`nucleus-envelope`](../nucleus-envelope) provenance bundle |
+
+All four are real and tested. Verify a receipt bundle with
+`verify_receipt_bundle` (or the public verifier / browser `@coproduct/verify`).
 
 ## Usage
 
@@ -42,11 +49,11 @@ use nucleus_verify_commerce::{
 let verifier = AllowlistVerifier::new().allow("buyer-agent", "spiffe://nucleus.io/buyer");
 let issuer = HashingReceiptIssuer;
 
-let req = CommerceRequest {
-    resource: "/v1/summarize".into(),
-    caller: CallerClaims { agent_id: "buyer-agent".into(), credential: "…".into() },
-    payment: PaymentProof { scheme: "x402".into(), reference: "0xpay123".into() },
-};
+let req = CommerceRequest::new(
+    "/v1/summarize",
+    CallerClaims { agent_id: "buyer-agent".into(), credential: "…".into() },
+    PaymentProof { scheme: "x402".into(), reference: "0xpay123".into() },
+);
 
 let (body, receipt) = serve_verified(&req, &verifier, &issuer, |caller, r| {
     let r = r.resource.clone();
@@ -57,15 +64,29 @@ let (body, receipt) = serve_verified(&req, &verifier, &issuer, |caller, r| {
 # }
 ```
 
-## Implementations
+Full end-to-end (signed card → verify → serve → signed receipt → independent
+verification):
 
-| Trait | In-memory (real, tested) | Production (skeleton) |
-|---|---|---|
-| `CallerVerifier` | `AllowlistVerifier` | `AgentCardVerifier` → `nucleus-agent-card` + `nucleus-*-oidc` |
-| `ReceiptIssuer` | `HashingReceiptIssuer` | `EnvelopeReceiptIssuer` → `nucleus-envelope` + `nucleus-verifier-service` |
+```bash
+cargo run -p nucleus-verify-commerce --example quickstart
+```
 
-The production skeletons return `CommerceError::NotWired` rather than faking a
-result. Wiring them to the already-shipped crates is the next step behind the RFC.
+## What is cryptographically bound
+
+`nucleus_lineage::canonical_edge_bytes` signs a lineage edge's `child`, `kind`,
+`parents`, **`content_hash_hex`**, `ts`, and `prev_hash` — but **not** the edge's
+free-form `attrs` nor the bundle's `payload`. So `EnvelopeReceiptIssuer` folds
+the whole commerce binding (resource + caller + payment + body hash) into the
+delivery edge's **content hash**, which is signed. `verify_receipt_bundle`
+re-derives the binding from the bundle's payload and checks it equals that signed
+content hash — so tampering any field (caller, payment, resource, body) is
+detected. (Putting the binding only in the payload would be a false guarantee.)
+
+## x402 transport
+
+`x402::parse_payment_header` decodes a base64 `X-PAYMENT` header into a
+`PaymentProof`. Exact field names track the x402 spec version, so it is tolerant
+and documented; a deployment can always construct `PaymentProof` directly.
 
 ## License
 

@@ -17,23 +17,29 @@
 //!
 //! See `docs/rfcs/verified-agent-commerce-quickstart.md`.
 //!
-//! # Status: scaffold (honest)
+//! # Implementations
 //!
-//! The orchestration ([`serve_verified`]) and in-memory implementations
-//! ([`AllowlistVerifier`], [`HashingReceiptIssuer`]) are implemented and tested,
-//! so the seam and control flow are real. The production implementations that
-//! wire the existing nucleus crates are **documented skeletons** that return
-//! [`CommerceError::NotWired`] rather than faking a result:
+//! Two flavours of each trait, both real and tested:
 //!
-//! - [`AgentCardVerifier`] — will verify a signed Agent Card / OIDC token via
-//!   `nucleus-agent-card` + `nucleus-fly-oidc` / `nucleus-github-oidc` and derive
-//!   the trust anchor.
-//! - [`EnvelopeReceiptIssuer`] — will emit a `nucleus-envelope` provenance
-//!   `Bundle` and append it to `nucleus-verifier-service`'s transparency log.
+//! - [`AllowlistVerifier`] / [`HashingReceiptIssuer`] — in-memory, dependency-
+//!   light; for tests, local dev, and minimal deployments.
+//! - [`AgentCardVerifier`] — verifies a signed [A2A-style Agent
+//!   Card](nucleus_agent_card) against an **out-of-band-resolved** key.
+//! - [`EnvelopeReceiptIssuer`] — emits a real [`nucleus_envelope`] provenance
+//!   `Bundle` (signed by a seller-provided [`EdgeSigner`](nucleus_lineage::EdgeSigner))
+//!   that any party can check with `nucleus_envelope::verify_bundle` or the
+//!   public verifier — the verify-then-pay artifact.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+mod card_verifier;
+mod envelope_receipt;
+pub mod x402;
+
+pub use card_verifier::AgentCardVerifier;
+pub use envelope_receipt::{verify_receipt_bundle, EnvelopeReceiptIssuer, VerifiedReceipt};
 
 /// Identity material lifted from the incoming x402 / A2A request (e.g. a signed
 /// Agent Card or an OIDC token). Opaque here; a [`CallerVerifier`] interprets it.
@@ -67,6 +73,26 @@ pub struct CommerceRequest {
     pub payment: PaymentProof,
 }
 
+impl CommerceRequest {
+    /// Construct directly from parts.
+    pub fn new(resource: impl Into<String>, caller: CallerClaims, payment: PaymentProof) -> Self {
+        Self {
+            resource: resource.into(),
+            caller,
+            payment,
+        }
+    }
+
+    /// Deserialize a request from JSON bytes (the crate's own wire form). A
+    /// deployment maps its transport (x402 `X-PAYMENT` header + an identity
+    /// header) onto this type; see the [`x402`] module for the payment-header
+    /// helper.
+    pub fn from_json(bytes: &[u8]) -> Result<Self, CommerceError> {
+        serde_json::from_slice(bytes)
+            .map_err(|e| CommerceError::Backend(format!("malformed commerce request: {e}")))
+    }
+}
+
 /// A caller whose identity material passed verification.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerifiedCaller {
@@ -77,11 +103,15 @@ pub struct VerifiedCaller {
 /// A portable, independently-checkable record that a verified caller paid for,
 /// and was delivered, a specific result.
 ///
-/// This scaffold's receipt is a minimal binding; the production
-/// [`EnvelopeReceiptIssuer`] will emit a full `nucleus-envelope` bundle with a
-/// signed lineage envelope. Timestamps are intentionally absent — the issuer (or
-/// the transparency log) stamps time; the binding here is deterministic.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The flat fields are the human-readable binding. When produced by
+/// [`EnvelopeReceiptIssuer`], `bundle` carries a full signed
+/// [`nucleus_envelope`] provenance bundle that any party can verify
+/// out-of-band (e.g. `nucleus_envelope::verify_bundle` or the public verifier);
+/// [`HashingReceiptIssuer`] leaves it `None`.
+///
+/// Timestamps are intentionally absent — the issuer / transparency log stamps
+/// time; the binding here is deterministic.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Receipt {
     /// Resource that was delivered.
     pub resource: String,
@@ -91,6 +121,9 @@ pub struct Receipt {
     pub payment_reference: String,
     /// SHA-256 (hex) of the delivered response bytes.
     pub body_sha256: String,
+    /// Optional full signed provenance bundle (set by [`EnvelopeReceiptIssuer`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<serde_json::Value>,
 }
 
 /// Errors surfaced by the verify→serve→receipt pipeline.
@@ -102,10 +135,7 @@ pub enum CommerceError {
     /// The handler (paid work) failed.
     #[error("handler failed: {0}")]
     Handler(String),
-    /// A production implementation whose backing crate is not wired yet.
-    #[error("not wired: {0}")]
-    NotWired(&'static str),
-    /// A backend/transport error.
+    /// A backend/transport error (signing, serialization, bundle build).
     #[error("backend error: {0}")]
     Backend(String),
 }
@@ -221,70 +251,8 @@ impl ReceiptIssuer for HashingReceiptIssuer {
             caller_spiffe_id: ctx.caller.spiffe_id.clone(),
             payment_reference: ctx.request.payment.reference.clone(),
             body_sha256: body_sha256_hex(ctx.body),
+            bundle: None,
         })
-    }
-}
-
-// ── Production skeletons (honest: NotWired) ───────────────────────────────────
-
-const AGENT_CARD_TODO: &str =
-    "AgentCardVerifier: wire nucleus-agent-card::verify_card + OIDC key resolution \
-     (see docs/rfcs/verified-agent-commerce-quickstart.md)";
-
-const ENVELOPE_TODO: &str = "EnvelopeReceiptIssuer: emit a nucleus-envelope Bundle + append to \
-     nucleus-verifier-service transparency log";
-
-/// Production [`CallerVerifier`] skeleton: will verify a signed Agent Card or
-/// OIDC token and derive the trust anchor via `nucleus-agent-card` +
-/// `nucleus-fly-oidc` / `nucleus-github-oidc`. Not wired yet — returns
-/// [`CommerceError::NotWired`] rather than faking verification.
-pub struct AgentCardVerifier {
-    _private: (),
-}
-
-impl AgentCardVerifier {
-    /// Construct the (not-yet-wired) production verifier.
-    pub fn new() -> Self {
-        Self { _private: () }
-    }
-}
-
-impl Default for AgentCardVerifier {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[async_trait]
-impl CallerVerifier for AgentCardVerifier {
-    async fn verify(&self, _claims: &CallerClaims) -> Result<VerifiedCaller, CommerceError> {
-        Err(CommerceError::NotWired(AGENT_CARD_TODO))
-    }
-}
-
-/// Production [`ReceiptIssuer`] skeleton: will emit a `nucleus-envelope` bundle
-/// and append it to the transparency log. Not wired yet — returns
-/// [`CommerceError::NotWired`] rather than faking a receipt.
-pub struct EnvelopeReceiptIssuer {
-    _private: (),
-}
-
-impl EnvelopeReceiptIssuer {
-    /// Construct the (not-yet-wired) production issuer.
-    pub fn new() -> Self {
-        Self { _private: () }
-    }
-}
-
-impl Default for EnvelopeReceiptIssuer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ReceiptIssuer for EnvelopeReceiptIssuer {
-    fn issue(&self, _ctx: &ReceiptContext<'_>) -> Result<Receipt, CommerceError> {
-        Err(CommerceError::NotWired(ENVELOPE_TODO))
     }
 }
 
@@ -315,6 +283,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn request_round_trips_through_json() {
+        let req = request("buyer-agent");
+        let bytes = serde_json::to_vec(&req).unwrap();
+        let back = CommerceRequest::from_json(&bytes).unwrap();
+        assert_eq!(back.resource, req.resource);
+        assert_eq!(back.caller.agent_id, "buyer-agent");
+        assert_eq!(back.payment.reference, "0xpay123");
+    }
+
     #[tokio::test]
     async fn verified_caller_is_served_and_gets_a_bound_receipt() {
         let verifier = AllowlistVerifier::new().allow("buyer-agent", "spiffe://nucleus.io/buyer");
@@ -333,6 +311,7 @@ mod tests {
         assert_eq!(receipt.resource, "/v1/summarize");
         assert_eq!(receipt.payment_reference, "0xpay123");
         assert_eq!(receipt.body_sha256, body_sha256_hex(&body));
+        assert!(receipt.bundle.is_none());
     }
 
     #[tokio::test]
@@ -367,26 +346,5 @@ mod tests {
         .await;
 
         assert!(matches!(result, Err(CommerceError::Handler(_))));
-    }
-
-    #[tokio::test]
-    async fn production_skeletons_are_honestly_unwired() {
-        let v = AgentCardVerifier::new();
-        assert!(matches!(
-            v.verify(&request("x").caller).await,
-            Err(CommerceError::NotWired(_))
-        ));
-
-        let i = EnvelopeReceiptIssuer::new();
-        let req = request("x");
-        let caller = VerifiedCaller {
-            spiffe_id: "spiffe://nucleus.io/x".into(),
-        };
-        let ctx = ReceiptContext {
-            caller: &caller,
-            request: &req,
-            body: b"hi",
-        };
-        assert!(matches!(i.issue(&ctx), Err(CommerceError::NotWired(_))));
     }
 }
