@@ -6684,6 +6684,7 @@ version = "1.0.0"
 dependencies = [
  "portcullis-core",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
