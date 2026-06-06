@@ -51,6 +51,7 @@ members = [
     "crates/nucleus-econ-kernels",          # PROVEN integer VCG + Pigou + sealed-bid kernels (parity-pinned to Lean)
     "crates/nucleus-recompute",             # verify_receipt: re-derive every cleared number from declared inputs via the proven kernels
     "crates/nucleus-witness-olog",          # Phase 2 (P2.1): Gov functor (admitted witness → olog fact) + signed accumulation manifest
+    "crates/nucleus-creditworthiness",      # Agent credit file: recompute-verified history → bond-substituting reputation (financial active, externality reserved)
 ]
 # nucleus-claude-hook moved to nucleus-code (private product repo)
 # exposure-web is WASM-only (wasm32-unknown-unknown); build with: cd crates/exposure-web && trunk build

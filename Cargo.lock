@@ -6535,6 +6535,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-creditworthiness"
+version = "1.0.0"
+dependencies = [
+ "nucleus-witness-olog",
+ "proptest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nucleus-econ-kernels"
 version = "1.0.0"
 dependencies = [
