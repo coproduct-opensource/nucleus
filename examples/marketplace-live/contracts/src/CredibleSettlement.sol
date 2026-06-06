@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {CommitSet} from "./CommitSet.sol";
+
 /// @title CredibleSettlement — optimistic credible-clearing settlement (Bet B, B2)
 /// @notice Removes the *trusted auctioneer* from an off-chain VCG/Pigou auction:
 /// the verified settlement **self-executes on-chain** so no one must be trusted to
@@ -55,7 +57,7 @@ contract CredibleSettlement {
         address seller; // paid `sellerGross` on delivery
         address arbiter; // supplies `deliveredBps` (the PoTE oracle seam)
         uint256 price; // escrowed cleared price (native wei, testnet)
-        bytes32 commitmentSetRoot; // anchored sealed-bid set (completeness)
+        bytes32 commitmentSetRoot; // anchored sealed-bid set; ENFORCED at postClearing (G5)
         uint64 revealDeadline; // bids open (off-chain drand timelock) after this
         address poster; // posted the optimistic clearing claim
         uint256 bond; // poster's bond, slashed to commons on a valid challenge
@@ -102,6 +104,9 @@ contract CredibleSettlement {
     error ZeroPrice();
     error InsufficientBond();
     error TransferFailed();
+    /// The revealed commitment set does not reproduce the `commitmentSetRoot`
+    /// anchored at `openRound` — an OMITted, FABRICATEd, or altered bid (G5).
+    error CommitmentSetMismatch();
 
     /// @param destinations commons payout addresses (carbon removal, affected-party, verifier commons, …)
     /// @param bps          their basis-point shares; MUST sum to exactly 10_000
@@ -182,12 +187,21 @@ contract CredibleSettlement {
         emit RoundOpened(roundId, msg.sender, seller, msg.value, commitmentSetRoot, revealDeadline);
     }
 
-    /// Anyone (an untrusted "sequencer") posts the revealed bids + claimed clearing,
-    /// bonding `msg.value`. Allowed only after the reveal deadline. Opens a
-    /// challenge window of `challengeWindowSecs`.
+    /// Anyone (an untrusted "sequencer") posts the revealed bid commitments +
+    /// claimed clearing, bonding `msg.value`. Allowed only after the reveal
+    /// deadline. Opens a challenge window of `challengeWindowSecs`.
+    ///
+    /// COMPLETENESS (gap G5): `revealedCommitments` must be the FULL sealed-bid
+    /// set, in strictly-ascending order. The contract recomputes
+    /// `CommitSet.root(revealedCommitments)` and requires it to equal the
+    /// `commitmentSetRoot` anchored at `openRound` — so a poster cannot OMIT a
+    /// committed bid (to suppress competition) or FABRICATE one (to inflate the
+    /// price): either changes the root and reverts here. This is the on-chain
+    /// half; the off-chain SDK runs the SAME fold to detect it before posting.
+    /// The cleared *price* stays optimistic (bond + challenge) — see `challenge`.
     function postClearing(
         bytes32 roundId,
-        bytes32 revealedBidsHash,
+        bytes32[] calldata revealedCommitments,
         uint256 clearedPriceMicro,
         uint64 challengeWindowSecs
     ) external payable {
@@ -195,13 +209,17 @@ contract CredibleSettlement {
         if (r.phase != Phase.Open) revert WrongPhase();
         if (block.timestamp < r.revealDeadline) revert RevealNotReached();
         if (msg.value == 0) revert InsufficientBond();
+        // OMIT / FABRICATE / tamper closure: the revealed set must reproduce the
+        // anchored root exactly.
+        bytes32 setRoot = CommitSet.root(revealedCommitments);
+        if (setRoot != r.commitmentSetRoot) revert CommitmentSetMismatch();
         r.poster = msg.sender;
         r.bond = msg.value;
-        r.revealedBidsHash = revealedBidsHash;
+        r.revealedBidsHash = setRoot;
         r.clearedPriceMicro = clearedPriceMicro;
         r.challengeDeadline = uint64(block.timestamp) + challengeWindowSecs;
         r.phase = Phase.Posted;
-        emit ClearingPosted(roundId, msg.sender, revealedBidsHash, clearedPriceMicro, msg.value, r.challengeDeadline);
+        emit ClearingPosted(roundId, msg.sender, setRoot, clearedPriceMicro, msg.value, r.challengeDeadline);
     }
 
     /// A watcher who ran the off-chain recompute and found the posted clearing

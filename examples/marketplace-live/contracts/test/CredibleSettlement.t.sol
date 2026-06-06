@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {CredibleSettlement} from "../src/CredibleSettlement.sol";
+import {CommitSet} from "../src/CommitSet.sol";
 
 /// Parity + lifecycle tests for the optimistic credible-clearing settlement.
 ///
@@ -126,17 +127,28 @@ contract CredibleSettlementTest is Test {
 
     // ── Lifecycle: happy path (release) self-executes the proven split ─────────
 
+    // The canonical sealed-bid commitment set, strictly ascending (as CommitSet
+    // requires). _open anchors CommitSet.root(_bids()); _post reveals _bids().
+    function _bids() internal pure returns (bytes32[] memory s) {
+        s = new bytes32[](3);
+        s[0] = bytes32(uint256(0x11));
+        s[1] = bytes32(uint256(0x22));
+        s[2] = bytes32(uint256(0x33));
+    }
+
     function _open(bytes32 id, uint256 price) internal {
         vm.deal(BUYER, price);
         vm.prank(BUYER);
-        settlement.openRound{value: price}(id, SELLER, ARBITER, keccak256("root"), uint64(block.timestamp + 100));
+        settlement.openRound{value: price}(
+            id, SELLER, ARBITER, CommitSet.root(_bids()), uint64(block.timestamp + 100)
+        );
     }
 
     function _post(bytes32 id, uint256 bond, uint256 priceMicro) internal {
         vm.warp(block.timestamp + 101); // past reveal deadline
         vm.deal(POSTER, bond);
         vm.prank(POSTER);
-        settlement.postClearing{value: bond}(id, keccak256("bids"), priceMicro, 50);
+        settlement.postClearing{value: bond}(id, _bids(), priceMicro, 50);
     }
 
     function test_lifecycle_release_pays_seller_in_full() public {
@@ -239,7 +251,93 @@ contract CredibleSettlementTest is Test {
         vm.deal(POSTER, 0.1 ether);
         vm.expectRevert(CredibleSettlement.RevealNotReached.selector);
         vm.prank(POSTER);
-        settlement.postClearing{value: 0.1 ether}(id, keccak256("bids"), 1_000_000, 50);
+        settlement.postClearing{value: 0.1 ether}(id, _bids(), 1_000_000, 50);
+    }
+
+    // ── G5: on-chain completeness — OMIT / FABRICATE / tamper each caught ──────
+
+    // The honest, complete set posts fine (and the lifecycle tests above all post
+    // via _post(_bids()), so the happy path is covered). These assert each way of
+    // corrupting the revealed set is rejected by the anchored commitmentSetRoot.
+
+    function _postSet(bytes32 id, bytes32[] memory set) internal {
+        vm.warp(block.timestamp + 101); // past reveal deadline
+        vm.deal(POSTER, 0.1 ether);
+        vm.prank(POSTER);
+        settlement.postClearing{value: 0.1 ether}(id, set, 1_000_000, 50);
+    }
+
+    function test_post_omit_bid_reverts() public {
+        bytes32 id = keccak256("g5-omit");
+        _open(id, 1 ether);
+        // Drop the last committed bid (suppress competition). Root no longer matches.
+        bytes32[] memory omitted = new bytes32[](2);
+        omitted[0] = bytes32(uint256(0x11));
+        omitted[1] = bytes32(uint256(0x22));
+        vm.expectRevert(CredibleSettlement.CommitmentSetMismatch.selector);
+        _postSet(id, omitted);
+    }
+
+    function test_post_fabricate_bid_reverts() public {
+        bytes32 id = keccak256("g5-fab");
+        _open(id, 1 ether);
+        // Inject a bid that was never committed (inflate the price). Root mismatch.
+        bytes32[] memory fabricated = new bytes32[](4);
+        fabricated[0] = bytes32(uint256(0x11));
+        fabricated[1] = bytes32(uint256(0x22));
+        fabricated[2] = bytes32(uint256(0x33));
+        fabricated[3] = bytes32(uint256(0x44));
+        vm.expectRevert(CredibleSettlement.CommitmentSetMismatch.selector);
+        _postSet(id, fabricated);
+    }
+
+    function test_post_altered_bid_reverts() public {
+        bytes32 id = keccak256("g5-alter");
+        _open(id, 1 ether);
+        // Swap one commitment for a different value (same count). Root mismatch.
+        bytes32[] memory altered = new bytes32[](3);
+        altered[0] = bytes32(uint256(0x11));
+        altered[1] = bytes32(uint256(0x22));
+        altered[2] = bytes32(uint256(0x99));
+        vm.expectRevert(CredibleSettlement.CommitmentSetMismatch.selector);
+        _postSet(id, altered);
+    }
+
+    function test_post_unsorted_set_reverts() public {
+        bytes32 id = keccak256("g5-unsorted");
+        _open(id, 1 ether);
+        // Correct members, non-canonical (descending) order → CommitSet rejects.
+        bytes32[] memory unsorted = new bytes32[](3);
+        unsorted[0] = bytes32(uint256(0x33));
+        unsorted[1] = bytes32(uint256(0x22));
+        unsorted[2] = bytes32(uint256(0x11));
+        vm.expectRevert(CommitSet.UnsortedOrDuplicate.selector);
+        _postSet(id, unsorted);
+    }
+
+    function test_post_duplicate_in_set_reverts() public {
+        bytes32 id = keccak256("g5-dup");
+        _open(id, 1 ether);
+        bytes32[] memory dup = new bytes32[](3);
+        dup[0] = bytes32(uint256(0x11));
+        dup[1] = bytes32(uint256(0x11)); // duplicate (not strictly ascending)
+        dup[2] = bytes32(uint256(0x33));
+        vm.expectRevert(CommitSet.UnsortedOrDuplicate.selector);
+        _postSet(id, dup);
+    }
+
+    function test_post_complete_set_succeeds_then_settles() public {
+        // The full, canonical set posts, and the round settles normally — proving
+        // the completeness gate is not over-strict (MISPRICE is the only remaining
+        // seam, handled optimistically by challenge()).
+        bytes32 id = keccak256("g5-ok");
+        _open(id, 1 ether);
+        _postSet(id, _bids());
+        assertEq(uint8(settlement.phaseOf(id)), uint8(CredibleSettlement.Phase.Posted));
+        vm.warp(block.timestamp + 51);
+        vm.prank(ARBITER);
+        settlement.settle(id, 10_000);
+        assertEq(SELLER.balance, 1 ether, "complete honest set settles in full");
     }
 
     // Fuzz: conservation must hold on-chain for arbitrary price × delivery.
