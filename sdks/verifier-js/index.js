@@ -436,3 +436,41 @@ export async function recomputeDeters(bondMicro, reputationMicro, maxDefectionGa
   const mod = await initWasm();
   return mod.recomputeDeters(big(bondMicro), big(reputationMicro), big(maxDefectionGainMicro));
 }
+
+// ── CREDITWORTHINESS: an agent's whole history → its required bond ─────────────
+// recomputeRequiredBond takes a bare reputation number; these take the agent's
+// RECEIPTS and run the whole pipeline — recompute each, fold the honest ones up
+// (a caught lie burns standing), price the bond — in-process, no server trust.
+
+/**
+ * Re-derive an agent's bond-substituting reputation (micro) from its clearing
+ * receipts. Each is recomputed against the proven kernels: a Match builds
+ * standing, a Mismatch (a caught defection) burns it, an Invalid receipt is
+ * ignored. Returns the financial-dimension reputation (the reserved Pigouvian
+ * dimension is dormant). No server trust.
+ * @param {object[]|string} receipts a `ClearingReceipt[]` (array or JSON string)
+ * @returns {Promise<bigint>} reputation in micro-units
+ */
+export async function creditReputationFromReceipts(receipts) {
+  const mod = await initWasm();
+  return mod.creditReputationFromReceipts(
+    typeof receipts === "string" ? receipts : JSON.stringify(receipts),
+  );
+}
+
+/**
+ * Re-derive the minimum bond an agent must post to deter a defection worth
+ * `maxDefectionGainMicro`, given the reputation its receipts earn it — the
+ * flywheel end-to-end (receipt → recompute → credit file → bond), in-process,
+ * trusting no server. More verified clean history ⇒ a lower bond.
+ * @param {object[]|string} receipts a `ClearingReceipt[]` (array or JSON string)
+ * @param {number|bigint} maxDefectionGainMicro
+ * @returns {Promise<bigint>} the minimum bond in micro-units
+ */
+export async function requiredBondFromReceipts(receipts, maxDefectionGainMicro) {
+  const mod = await initWasm();
+  return mod.requiredBondFromReceipts(
+    typeof receipts === "string" ? receipts : JSON.stringify(receipts),
+    big(maxDefectionGainMicro),
+  );
+}

@@ -495,3 +495,44 @@ pub fn recompute_deters_js(
         max_defection_gain_micro,
     )
 }
+
+// ── CREDITWORTHINESS: an agent's whole history → its required bond ─────────────
+// `recomputeRequiredBond` above takes a bare `reputation_micro`. These close the
+// loop: hand the SDK an agent's clearing RECEIPTS and it (1) recomputes each one
+// against the proven kernels, (2) folds the honest ones up — a caught lie BURNS
+// standing instead of building it — and (3) prices the bond. The full
+// receipt→recompute→credit-file→bond pipeline, in-browser, trusting no server.
+
+/// Re-derive an agent's bond-substituting **reputation** (micro-USD) from its
+/// clearing receipts: each is recomputed; a Match builds standing, a Mismatch (a
+/// caught defection — the recompute is the fraud proof) burns it, an Invalid
+/// receipt is ignored. Returns the financial-dimension reputation (the reserved
+/// Pigouvian dimension is dormant). `receipts_json` is a JSON array of
+/// `ClearingReceipt`.
+#[wasm_bindgen(js_name = creditReputationFromReceipts)]
+pub fn credit_reputation_from_receipts_js(receipts_json: &str) -> Result<u64, JsError> {
+    set_panic_hook();
+    let receipts: Vec<nucleus_recompute::ClearingReceipt> = serde_json::from_str(receipts_json)
+        .map_err(|e| JsError::new(&format!("receipts JSON: {e}")))?;
+    Ok(nucleus_creditworthiness::mint::credit_file_from_receipts(&receipts).reputation_micro())
+}
+
+/// Re-derive the **minimum bond** an agent must post to deter a one-shot
+/// defection worth `max_defection_gain_micro`, GIVEN the reputation its receipts
+/// earn it. The flywheel end-to-end: more recompute-verified clean history ⇒ a
+/// lower bond — computed in your process, no server trust. `receipts_json` is a
+/// JSON array of `ClearingReceipt`. Composes the proven `required_bond`.
+#[wasm_bindgen(js_name = requiredBondFromReceipts)]
+pub fn required_bond_from_receipts_js(
+    receipts_json: &str,
+    max_defection_gain_micro: u64,
+) -> Result<u64, JsError> {
+    set_panic_hook();
+    let receipts: Vec<nucleus_recompute::ClearingReceipt> = serde_json::from_str(receipts_json)
+        .map_err(|e| JsError::new(&format!("receipts JSON: {e}")))?;
+    Ok(
+        nucleus_creditworthiness::mint::credit_file_from_receipts(&receipts)
+            .required_bond(max_defection_gain_micro)
+            .0,
+    )
+}

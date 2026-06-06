@@ -439,6 +439,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-creditworthiness"
+version = "1.0.0"
+dependencies = [
+ "hex",
+ "nucleus-recompute",
+ "nucleus-witness-olog",
+ "serde",
+]
+
+[[package]]
 name = "nucleus-econ-kernels"
 version = "1.0.0"
 dependencies = [
@@ -530,6 +540,7 @@ dependencies = [
  "console_error_panic_hook",
  "getrandom 0.2.17",
  "hex",
+ "nucleus-creditworthiness",
  "nucleus-econ-kernels",
  "nucleus-envelope",
  "nucleus-externality",
