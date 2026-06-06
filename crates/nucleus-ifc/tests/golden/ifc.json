@@ -1,0 +1,53 @@
+{
+  "_doc": "Golden IFC decision vectors — pins FlowDeclaration::decide() (the model-level lethal-trifecta gate) so the Rust decision matches these exact allow/deny verdicts. The SAME inputs feed the WASM recomputeVerdict binding. declared_inputs is sorted by DeclaredInput declaration order (NOT alphabetical) + deduped. Verdicts mirror the in-crate unit tests; editing decision.rs to diverge turns CI red.",
+  "vectors": [
+    {
+      "_name": "clean flow: trusted prompt + internal row to counterparty",
+      "inputs": ["user_prompt", "database_row"],
+      "requires_authority": false,
+      "sink_public": false,
+      "allow": true,
+      "declared_inputs": ["user_prompt", "database_row"]
+    },
+    {
+      "_name": "adversarial ancestry: web content taints the outbound action",
+      "inputs": ["user_prompt", "web_content"],
+      "requires_authority": false,
+      "sink_public": false,
+      "allow": false,
+      "declared_inputs": ["user_prompt", "web_content"]
+    },
+    {
+      "_name": "secret to a counterparty sink is denied",
+      "inputs": ["secret"],
+      "requires_authority": false,
+      "sink_public": false,
+      "allow": false,
+      "declared_inputs": ["secret"]
+    },
+    {
+      "_name": "private row to an internal (non-public) sink is allowed",
+      "inputs": ["database_row"],
+      "requires_authority": false,
+      "sink_public": false,
+      "allow": true,
+      "declared_inputs": ["database_row"]
+    },
+    {
+      "_name": "same private row to a PUBLIC sink is denied (confidentiality)",
+      "inputs": ["database_row"],
+      "requires_authority": false,
+      "sink_public": true,
+      "allow": false,
+      "declared_inputs": ["database_row"]
+    },
+    {
+      "_name": "declared set is sorted + deduped (order-independent verdict)",
+      "inputs": ["web_content", "user_prompt", "web_content"],
+      "requires_authority": false,
+      "sink_public": false,
+      "allow": false,
+      "declared_inputs": ["user_prompt", "web_content"]
+    }
+  ]
+}

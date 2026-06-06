@@ -13,6 +13,12 @@ categories = ["development-tools"]
 portcullis-core = { version = "1.0.0", path = "../portcullis-core" }
 serde = { version = "1", features = ["derive"], optional = true }
 
+[dev-dependencies]
+# Golden-vector reader (tests/golden.rs, gated on `decision`): reads the IFC
+# decision vectors shared with the WASM recomputeVerdict binding.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
 [features]
 # The model-level IFC `decision` module (FlowDeclaration → IfcVerdict). Pulls
 # serde; kept optional so the base IFC engine stays dependency-light. Enabled by
