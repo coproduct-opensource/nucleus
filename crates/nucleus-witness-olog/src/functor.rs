@@ -17,8 +17,12 @@
 //! A functor preserves identity and composition: `Gov(g ∘ f) = Gov(g) ∘ Gov(f)`.
 //! Concretely, a *pipeline* of admitted tasks (a chain of lineage edges) maps to a
 //! *composed* fact — proven work composes, instead of piling up as unrelated
-//! receipts. The full proof is the Lean goal in the RFC; here we encode the
-//! per-object behaviour and the no-upgrade invariant as tests.
+//! receipts. The functor laws are **PROVED sorry-free** (over the assurance
+//! composition) in `nucleus-econ-kernels/lean/Nucleus/WitnessOlog.lean`
+//! (`gov_is_functor`, axioms `[propext, Quot.sound]`); here we encode the
+//! per-object behaviour and the no-upgrade invariant as tests. (Functoriality
+//! over the full lineage DAG + real olog instance digests remains future work,
+//! tracked with the olog Lean `sorry` budget.)
 
 use nucleus_externality::AssuranceRung;
 use serde::{Deserialize, Serialize};
@@ -109,8 +113,9 @@ pub struct OlogFact {
 ///    strengthens it (trust in, trust out).
 /// 2. **Determinism:** equal inputs map to equal facts (so anyone can recompute
 ///    the accumulation from the witness archive).
-/// 3. **Functoriality (the Lean goal):** identity and composition preserved over
-///    [`LineageEdge`]s, so proven pipelines compose. Stated here; proved in Lean.
+/// 3. **Functoriality (PROVED):** identity and composition preserved over
+///    [`LineageEdge`]s, so proven pipelines compose. Proved sorry-free over the
+///    assurance composition in `lean/Nucleus/WitnessOlog.lean` (`gov_is_functor`).
 pub trait Gov {
     fn map_witness(&self, node: &WitnessNode) -> OlogFact;
 }

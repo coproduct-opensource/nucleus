@@ -48,8 +48,10 @@
 //! - **Not Sybil-proof** — no slashing rule can be (arXiv:2509.18338, Prop 6).
 //!   Slashing-on-objective-fault closes the *subjective-fault* gap that forced
 //!   restaking to a token; residual Sybil/grief exposure is real and named.
-//! - The fork-cost incentive ships as a Rust property test + a **MODELED** Lean
-//!   statement ([`FORK_COST_THEOREM_MODELED`]) — a stated goal, not a proof.
+//! - The fork-cost incentive ships as a Rust property test + a **PROVED**,
+//!   sorry-free Lean theorem
+//!   (`nucleus-econ-kernels/lean/Nucleus/WitnessOlog.lean::ForkCost.staying_dominates`,
+//!   axioms `[propext, Quot.sound]`-only) — see [`FORK_COST_THEOREM_MODELED`].
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
@@ -73,17 +75,20 @@ pub const SIGNED_RECOMPUTE_DOMAIN: &[u8] = b"nucleus/witness-olog/recompute/v1\0
 pub const OWNERSHIP_DOMAIN: &[u8] = b"nucleus/witness-olog/ownership/v1\0";
 pub const ROOT_ATTESTATION_DOMAIN: &[u8] = b"nucleus/witness-olog/root-attestation/v1\0";
 
-/// A **MODELED** Lean statement of the fork-cost incentive — a stated goal, NOT a
-/// discharged proof (the olog Lean core is theorem-incomplete; tiered honestly per
-/// `CATEGORICAL-LANDSCAPE.md`).
+/// The fork-cost incentive, now **DISCHARGED sorry-free** in
+/// `nucleus-econ-kernels/lean/Nucleus/WitnessOlog.lean` (`ForkCost.staying_dominates`),
+/// `#print axioms`-verified to `[propext, Quot.sound]` only. This constant carries
+/// the Lean statement it mirrors. (Name retained for export stability — it is no
+/// longer "modeled"; it is proven.)
 pub const FORK_COST_THEOREM_MODELED: &str = "\
-theorem staying_is_dominant_when_forfeiture_dominates_gain
-    (forfeiture max_defection_gain : Nat)
-    (h : max_defection_gain ≤ forfeiture) :
-    -- abandoning the canonical ledger forfeits `forfeiture`; the best a defector
-    -- gains is `max_defection_gain`; so staying's net payoff ≥ forking's.
-    -- Statement only (MODELED); discharge is future work.
-    True := by trivial";
+-- forkPayoff g b = g - b   (defection gain minus forfeited bonded standing)
+-- stayPayoff   = 0         (honest flow cancels out of the decision)
+theorem staying_dominates (g b : Int) (hbg : g ≤ b) :
+    forkPayoff g b ≤ stayPayoff := by
+  unfold forkPayoff stayPayoff
+  omega
+-- PROVED sorry-free; axioms [propext, Quot.sound]. Tightness: forking pays
+-- strictly more iff b < g (forking_pays_when_understaked), so g ≤ b is exact.";
 
 /// An amount of an EXISTING asset in micro-units (e.g. micro-USD). Accounting
 /// only — the asset is custodied on-chain and OUT OF SCOPE (non-custodial).

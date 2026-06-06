@@ -118,7 +118,8 @@ with no human on the verifiable core.
 | Assurance rung carried on a claim | ✅ `nucleus-externality` (O1, #1752) |
 | **`Gov : 𝓦 → 𝓞` functor** (witness → olog instance) | ⛳ **net-new — the bridge** |
 | **Accumulation manifest + transparency log** | ⛳ net-new |
-| **Functoriality proof** (`Gov` preserves id + composition) | ⛳ net-new (Lean goal) |
+| **Functoriality proof** (`Gov` preserves id + composition) | ✅ PROVED sorry-free (assurance core) — `lean/Nucleus/WitnessOlog.lean::gov_is_functor`; full-DAG version ⛳ |
+| **Fork-cost incentive** (`g ≤ b ⇒ staying dominant`, + tightness) | ✅ PROVED sorry-free — `WitnessOlog.lean::ForkCost.staying_dominates` |
 | **`@coproduct/verify` KB query** ("is task X proven, at what rung?") | ⛳ net-new |
 
 ## Phasing
@@ -137,16 +138,28 @@ with no human on the verifiable core.
   proven, by whom, at what rung/tier?" — answerable from the transparency log
   with no server trust, the same way recompute is.
 
-## The theorem to aim for (named, not yet done)
+## The theorem (PROVED — assurance core)
 
 > **`Gov` is a functor:** `Gov(id_W) = id_{Gov W}` and
 > `Gov(g ∘ f) = Gov(g) ∘ Gov(f)` for composable admitted lineage edges `f, g`.
 
-Proving this (Lean, sorry-free, axiom-audited) is what turns "proofs compose" from
-a slogan into a guarantee. Until it's discharged it ships as a `MODELED` claim,
-flagged honestly. It is the categorical heart of Phase 2: with it, the audited
-record of everything proven is not just a list — it's a **category of proven
-work**, and you can compose within it.
+**Discharged sorry-free** in
+`crates/nucleus-econ-kernels/lean/Nucleus/WitnessOlog.lean` (`gov_is_functor`),
+`#print axioms`-verified to `[propext, Quot.sound]` only — the same minimal
+footprint as the IFC non-interference proof. The composition is the **weakest-link
+assurance** (`min`, with a neutral no-op identity), whose unit + associativity laws
+are themselves proven (`stepComp_assoc` etc.), and `Gov` is proven to carry
+assurance through unchanged (`gov_no_upgrade`). This is what turns "proofs compose"
+from a slogan into a guarantee: the audited record of everything proven is not just
+a list — it's a **category of proven work**.
+
+**Scope (honest):** the discharged theorem is over the *assurance composition*
+(objects abstracted to a one-object category whose morphisms are weakest-link
+assurance steps). It proves the compositional core + the no-upgrade invariant.
+Functoriality over the *full* lineage DAG with real olog instance digests is the
+remaining work (tracked with the olog Lean `sorry` budget) — that part is still
+`MODELED`. The **fork-cost** theorem (`ForkCost.staying_dominates`, + a tightness
+theorem) is fully discharged with no scope caveat.
 
 ## Honesty boundary
 
