@@ -30,3 +30,6 @@ nucleus-econ-types = { path = "../nucleus-econ-types" }
 [dev-dependencies]
 proptest = { workspace = true }
 ed25519-dalek = { workspace = true }
+# Golden-vector parity reader: loads tests/golden/*.json (the single source) and
+# asserts the Rust kernels match — one of the readers of the same bytes.
+serde_json = { workspace = true }
