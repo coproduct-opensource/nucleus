@@ -21,9 +21,11 @@ verdict_ctor() { case "$1" in 0) echo Reverse;; 1) echo Partial;; 2) echo Releas
   echo "  JSON is the single source shared with the Rust / Solidity / WASM readers."
   echo "-/"
   echo "import Nucleus.Auctions.SettlementDecision"
+  echo "import Nucleus.Commons"
   echo ""
   echo "namespace Nucleus.Golden"
   echo "open Nucleus.Auctions.SettlementDecision"
+  echo "open Nucleus.Commons"
   echo ""
   echo "-- settlement.json (4-language seal: this Lean reader + Rust + Solidity + WASM)"
   jq -r '.vectors[] |
@@ -32,9 +34,16 @@ verdict_ctor() { case "$1" in 0) echo Reverse;; 1) echo Partial;; 2) echo Releas
     "example : refund \(.price_micro) \(.delivered_bps) = \(.refund) := by decide"' \
     "$gdir/settlement.json"
   echo ""
-  echo "-- NOTE: commons/vcg Lean-vector decide-checks land in G3b (Commons.lean is in"
-  echo "-- the queued G2a PR; vcg's Lean is property-level). Both are covered by the Rust"
-  echo "-- golden reader today + (commons) the routed_conserves theorem."
+  echo "-- commons.json (no-skim routing, dust to first): Lean Commons.routed + Rust + WASM."
+  echo "-- bps list is shared across vectors (from .shares); routed_conserves PROVES the"
+  echo "-- sum == pool for all inputs — these decide the exact per-share split."
+  bps="$(jq -r '[.shares[].bps] | join(", ")' "$gdir/commons.json")"
+  jq -r --arg bps "$bps" '.vectors[] |
+    "example : routed \(.pool_micro) [\($bps)] = [\(.allocations | join(", "))] := by decide"' \
+    "$gdir/commons.json"
+  echo ""
+  echo "-- NOTE: vcg's Lean is property-level (truthfulness/IR/budget), not per-vector;"
+  echo "-- VCG vectors are sealed Rust↔WASM (see PROOFS.md + vcg.json _doc)."
   echo "end Nucleus.Golden"
 } > "$out.tmp"
 
