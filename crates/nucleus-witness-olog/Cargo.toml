@@ -24,6 +24,11 @@ nucleus-externality = { path = "../nucleus-externality" }
 # conservation), never to an operator. The bonding layer reuses this so the
 # no-skim guarantee is shared, not re-implemented.
 nucleus-econ-kernels = { path = "../nucleus-econ-kernels" }
+# RFC 6962 / RFC 9162-style Merkle inclusion + consistency VERIFICATION for the
+# relying-party trust-pinning layer (light client: verify a fact against a pinned
+# root, no full tree). Same crate nucleus-lineage uses; carries no signature dep
+# (so no ed25519-dalek version clash — checkpoints are signed with our own dalek).
+ct-merkle = { version = "0.3", features = ["serde"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }
