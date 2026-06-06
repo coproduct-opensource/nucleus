@@ -35,7 +35,8 @@ pub use bond::{
     SlashOutcome, BOND_BPS_SCALE, BOND_DOMAIN, FORK_COST_THEOREM_MODELED,
 };
 pub use functor::{
-    AdmissionVerdict, Gov, LineageEdge, NoUpgradeGov, OlogFact, Tier, WitnessDigest, WitnessNode,
+    accumulate, AdmissionVerdict, FakeWitnessSource, Gov, LineageEdge, NoUpgradeGov, OlogFact,
+    Tier, WitnessDigest, WitnessNode, WitnessSource,
 };
 pub use manifest::{
     canonical_manifest_bytes, manifest_from_fact, sign_manifest, verify_manifest,
