@@ -1,0 +1,64 @@
+name: Dependency Hygiene Gates
+
+# Closes gap G1 (chariot punch-list): two SAFE, non-breaking dependency gates.
+#
+#  1. Version-duplication ceiling — caps the number of distinct versions of
+#     security-critical crates (ed25519-dalek, sha2) at a documented baseline so
+#     NEW drift fails CI. A ratchet, not a single-version claim: the dalek 2→3
+#     unification is deliberately HELD for a separate tested pass. Lowering a
+#     ceiling (paying down the debt) is itself enforced — a crate that drops
+#     below its ceiling fails until the ceiling is tightened.
+#
+#  2. WASM closure — asserts the recompute SDK's (nucleus-verifier-wasm) wasm32
+#     dependency closure contains no native-only crate (`ring`), which would
+#     break the in-browser recompute that is the whole point of the SDK.
+#
+# Both run today GREEN (see scripts); they exist to catch regressions.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**/Cargo.toml"
+      - "sdks/**/Cargo.toml"
+      - "scripts/check-dep-ceiling.sh"
+      - "scripts/check-wasm-closure.sh"
+      - ".github/workflows/dep-hygiene.yml"
+  pull_request:
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**/Cargo.toml"
+      - "sdks/**/Cargo.toml"
+      - "scripts/check-dep-ceiling.sh"
+      - "scripts/check-wasm-closure.sh"
+      - ".github/workflows/dep-hygiene.yml"
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dep-hygiene:
+    name: version ceiling + wasm closure
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install Rust (with wasm32 target for the closure resolve)
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2.9.1
+
+      - name: Version-duplication ceiling (ed25519-dalek, sha2)
+        run: bash scripts/check-dep-ceiling.sh
+
+      - name: WASM closure (no native-only crates in the recompute SDK)
+        run: bash scripts/check-wasm-closure.sh
