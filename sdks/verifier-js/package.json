@@ -1,7 +1,8 @@
 {
-  "name": "@coproduct/verify",
+  "name": "@coproduct_inc/verifier-wasm",
   "version": "0.1.0",
-  "description": "verify(receipt) — the one-line, no-infra drop-in for nucleus provenance receipts. Tamper-evidence + authenticity against a pinned trust anchor, verified locally in Node or the browser. No crypto reimplemented; thin facade over the audited WASM envelope verifier.",
+  "private": true,
+  "description": "Public open-source WASM envelope verifier + recompute/creditworthiness bindings. NOT published standalone — this is the build source behind the live verifier-service /quickstart, and its capabilities are folded into the published @coproduct_inc/verify. (Was @coproduct/verify, an unowned npm scope.)",
   "type": "module",
   "license": "MIT OR Apache-2.0",
   "repository": {
