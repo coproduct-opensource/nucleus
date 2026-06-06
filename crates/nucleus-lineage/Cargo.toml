@@ -50,7 +50,7 @@ ed25519-dalek = "=3.0.0-pre.7"
 # us snapshot the tree if a sink ever needs to persist its state.
 ct-merkle = { version = "0.3", features = ["serde"] }
 # JWT signing/encoding crate — only needed by the dev LocalIssuer.
-jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"], optional = true }
+jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "aws_lc_rs"], optional = true }
 rand = { version = "0.10", optional = true }
 # Blocking HTTP client for the optional HttpWitnessClient + C2SP
 # witness adapter. Default-off; only pulled in via `http` feature.

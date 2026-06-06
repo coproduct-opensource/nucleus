@@ -89,9 +89,12 @@ c2pa = "0.85"
 thiserror = "2.0"
 anyhow = "1.0"
 
-# JWT / OIDC (per-provider validators). `rust_crypto` matches nucleus-lineage's
-# jsonwebtoken pin so the workspace doesn't drag in a second crypto backend.
-jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"] }
+# JWT / OIDC (per-provider validators). The `aws_lc_rs` backend (already in the
+# tree via rustls/reqwest) is used instead of `rust_crypto` so jsonwebtoken does
+# NOT drag in a second ed25519-dalek (v2) / sha2 (0.10) line — letting the whole
+# workspace converge on ed25519-dalek 3 + sha2 0.11. Supports the full alg set
+# (RS/PS/ES/EdDSA) we verify. See docs/PROOFS.md and scripts/check-dep-ceiling.sh.
+jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "aws_lc_rs"] }
 async-trait = "0.1"
 
 # Async runtime
@@ -150,9 +153,12 @@ regex = "1.12"
 # Encoding
 base64 = "0.22"
 
-# Ed25519 (externality envelopes + econ-kernel sealed-bid tests). Matches the
-# dalek 2.x already in the lock via nucleus-lineage / nucleus-envelope.
-ed25519-dalek = "2"
+# Ed25519 (externality envelopes + econ-kernel sealed-bid tests). Pinned to the
+# exact prerelease iroh requires (=3.0.0-pre.7) so the WHOLE workspace resolves a
+# SINGLE ed25519-dalek — first-party crates, iroh, and (with the aws_lc_rs JWT
+# backend) jsonwebtoken no longer split across v2/v3. rc.0 is the newer published
+# release but iroh pins =3.0.0-pre.7 exactly, so pre.7 is the unifying version.
+ed25519-dalek = "=3.0.0-pre.7"
 
 # Testing
 tempfile = "3"
