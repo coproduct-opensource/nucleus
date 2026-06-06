@@ -148,6 +148,71 @@ impl Gov for NoUpgradeGov {
     }
 }
 
+// ── P2.2: reading admitted witnesses (the source `Gov` folds over) ───────────
+
+/// A read-only source of admitted witnesses + their lineage — the contract
+/// [`Gov`] folds over to accumulate facts. Defined in OSS so the witness→olog
+/// mapping stays independently **recomputable**: an archive (e.g. merge-gate's
+/// content-addressed store) implements this trait, and any relying party can
+/// re-derive the same facts from the same source. (P2.2.)
+///
+/// Returns owned `Vec`s for the scaffold; a streaming variant for very large
+/// archives is a later refinement.
+pub trait WitnessSource {
+    /// The admitted witness nodes, in a deterministic order.
+    fn admitted(&self) -> Vec<WitnessNode>;
+    /// The admitted lineage edges (parent → child) among those nodes.
+    fn lineage(&self) -> Vec<LineageEdge>;
+}
+
+/// Fold `gov` over every admitted witness, producing one [`OlogFact`] per node
+/// (in source order) — the accumulation step where proof-of-work becomes a
+/// categorical fact. By the no-upgrade invariant, every produced fact carries its
+/// witness's rung/tier unchanged.
+pub fn accumulate<G: Gov, S: WitnessSource>(gov: &G, source: &S) -> Vec<OlogFact> {
+    source
+        .admitted()
+        .iter()
+        .map(|n| gov.map_witness(n))
+        .collect()
+}
+
+/// An in-memory [`WitnessSource`] for tests and the Fake-backed demo path (no
+/// real archive). Mirrors the `FakeFacilitator` honesty pattern — clearly not the
+/// production store; the real one is merge-gate's archive (P2.2 step 4).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct FakeWitnessSource {
+    pub nodes: Vec<WitnessNode>,
+    pub edges: Vec<LineageEdge>,
+}
+
+impl FakeWitnessSource {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add an admitted node (builder style).
+    pub fn with_node(mut self, n: WitnessNode) -> Self {
+        self.nodes.push(n);
+        self
+    }
+
+    /// Add a lineage edge (builder style).
+    pub fn with_edge(mut self, e: LineageEdge) -> Self {
+        self.edges.push(e);
+        self
+    }
+}
+
+impl WitnessSource for FakeWitnessSource {
+    fn admitted(&self) -> Vec<WitnessNode> {
+        self.nodes.clone()
+    }
+    fn lineage(&self) -> Vec<LineageEdge> {
+        self.edges.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,5 +273,29 @@ mod tests {
         let g = NoUpgradeGov;
         let n = node(AssuranceRung::ZkUpperEnvelope, Tier::Proven);
         assert_eq!(g.map_witness(&n).task_spec_hash, n.task_spec_hash);
+    }
+
+    #[test]
+    fn accumulate_folds_gov_over_the_source_preserving_rung() {
+        let mut a = node(AssuranceRung::OracleSigned, Tier::Modeled);
+        let mut b = node(AssuranceRung::ZkUpperEnvelope, Tier::Proven);
+        a.digest = WitnessDigest([1u8; 32]);
+        b.digest = WitnessDigest([2u8; 32]);
+        let src = FakeWitnessSource::new()
+            .with_node(a.clone())
+            .with_node(b.clone());
+        let facts = accumulate(&NoUpgradeGov, &src);
+        assert_eq!(facts.len(), 2, "one fact per admitted witness, in order");
+        // No-upgrade carries through the accumulation, per node.
+        assert_eq!(facts[0].rung, a.rung);
+        assert_eq!(facts[1].rung, b.rung);
+        assert_eq!(facts[0].tier, a.tier);
+        // Distinct witnesses → distinct accumulated facts.
+        assert_ne!(facts[0].instance_digest, facts[1].instance_digest);
+    }
+
+    #[test]
+    fn empty_source_accumulates_to_nothing() {
+        assert!(accumulate(&NoUpgradeGov, &FakeWitnessSource::new()).is_empty());
     }
 }
