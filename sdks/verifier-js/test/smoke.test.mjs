@@ -13,7 +13,13 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-import { verify, VerifyError, recomputeAssuranceRung } from "../index.js";
+import {
+  verify,
+  VerifyError,
+  recomputeAssuranceRung,
+  recomputeRequiredBond,
+  recomputeDeters,
+} from "../index.js";
 
 const fixtureDir = new URL("../demo-fixtures/", import.meta.url);
 
@@ -113,4 +119,22 @@ test("empty profile has null overall rung", async () => {
   const r = await recomputeAssuranceRung([]);
   assert.equal(r.overall_rung, null);
   assert.deepEqual(r.dimensions, []);
+});
+
+test("recomputeRequiredBond: reputation substitutes for capital (the flywheel)", async () => {
+  // More reputation ⇒ no more bond; positive reputation strictly less.
+  assert.equal(await recomputeRequiredBond(1_000n, 0n), 1_000n); // fresh: full bond (no Sybil discount)
+  assert.equal(await recomputeRequiredBond(1_000n, 200n), 800n); // 200 reputation → 800 bond
+  assert.equal(await recomputeRequiredBond(1_000n, 1_000n), 0n); // reputation alone covers it
+  const r600 = await recomputeRequiredBond(1_000n, 600n);
+  const r200 = await recomputeRequiredBond(1_000n, 200n);
+  assert.ok(r600 <= r200, "antitone in reputation");
+});
+
+test("recomputeDeters: bond + reputation must cover the defection gain", async () => {
+  assert.equal(await recomputeDeters(300n, 200n, 1_000n), false); // 500 < 1000 — not deterred
+  assert.equal(await recomputeDeters(800n, 200n, 1_000n), true); // 1000 >= 1000 — at the floor
+  // Posting exactly the required bond always deters.
+  const rb = await recomputeRequiredBond(1_000n, 200n);
+  assert.equal(await recomputeDeters(rb, 200n, 1_000n), true);
 });

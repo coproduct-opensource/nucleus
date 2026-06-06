@@ -415,3 +415,36 @@ pub fn recompute_assurance_rung_js(layers_json: &str) -> Result<JsValue, JsError
     .serialize(&serializer)
     .map_err(|e| JsError::new(&e.to_string()))
 }
+
+// ── Reputation→capital standing (the flywheel, made actionable) ──────────────
+
+/// Re-derive the **minimum bond** a counterparty should require of an agent, given
+/// the agent's worst-case one-shot defection exposure and its (verified) reputation
+/// value at risk. Runs the PROVEN `nucleus-witness-olog::required_bond`
+/// (`ReputationCapital.lean`: antitone in reputation, `sybil_no_discount`, floored
+/// by `under_collateralized_not_deterred`). u64 µ-amounts in/out.
+///
+/// This is the flywheel made actionable: more verifiable clean history ⇒ a lower
+/// bond the agent must lock — recomputable by anyone, no server trust.
+#[wasm_bindgen(js_name = recomputeRequiredBond)]
+pub fn recompute_required_bond_js(max_defection_gain_micro: u64, reputation_micro: u64) -> u64 {
+    set_panic_hook();
+    nucleus_witness_olog::required_bond(max_defection_gain_micro, reputation_micro).0
+}
+
+/// Re-derive whether a posted `bond` plus `reputation_micro` (reputation value at
+/// risk) deters a one-shot defection worth `max_defection_gain_micro`. Runs the
+/// proven `nucleus-witness-olog::deters` (`gain ≤ bond + rep`).
+#[wasm_bindgen(js_name = recomputeDeters)]
+pub fn recompute_deters_js(
+    bond_micro: u64,
+    reputation_micro: u64,
+    max_defection_gain_micro: u64,
+) -> bool {
+    set_panic_hook();
+    nucleus_witness_olog::deters(
+        nucleus_witness_olog::AmountMicro(bond_micro),
+        reputation_micro,
+        max_defection_gain_micro,
+    )
+}

@@ -386,3 +386,36 @@ export async function recomputeAssuranceRung(layers) {
   const mod = await initWasm();
   return mod.recomputeAssuranceRung(JSON.stringify(layers));
 }
+
+/**
+ * Re-derive the **minimum bond** a counterparty should require of an agent, given
+ * its worst-case one-shot defection exposure and its (verified) reputation value
+ * at risk. The flywheel made actionable: more verifiable clean history ⇒ a lower
+ * bond to lock — recomputable by anyone, no server trust. Runs the proven
+ * `required_bond` (antitone in reputation; a fresh identity pays the full bond;
+ * floored so you can't under-collateralize).
+ *
+ * SCOPE: the capital arithmetic only — it does not attest that `reputationMicro`
+ * is real (that's the recompute+pinning layer re-deriving the agent's history).
+ *
+ * @param {number|bigint} maxDefectionGainMicro
+ * @param {number|bigint} reputationMicro
+ * @returns {Promise<bigint>} the minimum bond in micro-units.
+ */
+export async function recomputeRequiredBond(maxDefectionGainMicro, reputationMicro) {
+  const mod = await initWasm();
+  return mod.recomputeRequiredBond(big(maxDefectionGainMicro), big(reputationMicro));
+}
+
+/**
+ * Re-derive whether `bondMicro` + `reputationMicro` deters a one-shot defection
+ * worth `maxDefectionGainMicro` (proven `deters`: `gain ≤ bond + rep`).
+ * @param {number|bigint} bondMicro
+ * @param {number|bigint} reputationMicro
+ * @param {number|bigint} maxDefectionGainMicro
+ * @returns {Promise<boolean>}
+ */
+export async function recomputeDeters(bondMicro, reputationMicro, maxDefectionGainMicro) {
+  const mod = await initWasm();
+  return mod.recomputeDeters(big(bondMicro), big(reputationMicro), big(maxDefectionGainMicro));
+}
