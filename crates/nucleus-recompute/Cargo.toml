@@ -1,0 +1,19 @@
+[package]
+name = "nucleus-recompute"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "verify_receipt — re-derive every cleared number (settlement / commons / VCG) from a receipt's DECLARED inputs using the proven nucleus-econ-kernels, and compare to the claimed outputs. The money-path-runs-the-proven-function check, runnable by anyone."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+nucleus-econ-kernels = { path = "../nucleus-econ-kernels" }
+
+[lints]
+workspace = true

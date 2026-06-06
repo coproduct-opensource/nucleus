@@ -6901,6 +6901,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-recompute"
+version = "1.0.0"
+dependencies = [
+ "hex",
+ "nucleus-econ-kernels",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "nucleus-sdk"
 version = "1.0.0"
 dependencies = [
