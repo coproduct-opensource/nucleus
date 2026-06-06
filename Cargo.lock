@@ -6553,6 +6553,7 @@ dependencies = [
 name = "nucleus-econ-types"
 version = "1.0.0"
 dependencies = [
+ "proptest",
  "serde",
  "serde_json",
 ]
