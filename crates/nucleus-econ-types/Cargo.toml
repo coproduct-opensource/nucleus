@@ -15,3 +15,6 @@ serde = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+# Property-based proof of the algebraic laws (commutative monoid, checked/
+# saturating agreement, total round-trips) in `tests::laws`.
+proptest = { workspace = true }

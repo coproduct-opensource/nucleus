@@ -56,6 +56,16 @@ use serde::{Deserialize, Serialize};
 /// # Serde
 ///
 /// `#[serde(transparent)]` — the wire shape is the bare integer.
+///
+/// # Algebra
+///
+/// Under [`saturating_add`](MicroUsd::saturating_add) with [`ZERO`](MicroUsd::ZERO)
+/// as the identity, `MicroUsd` is a **commutative monoid** (associative,
+/// commutative, two-sided identity) — the structure the welfare/payment
+/// accumulators rely on. [`checked_add`](MicroUsd::checked_add) is the same
+/// operation made total via `Option`, agreeing with `saturating_add` on every
+/// input that doesn't overflow and returning `None` *exactly* when it would.
+/// These laws are machine-checked over random inputs in `tests::laws`.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
 )]
@@ -401,5 +411,115 @@ mod tests {
         assert_eq!(p.to_string(), "p1");
         assert_eq!("p1".parse::<ProposalId>().unwrap(), p);
         assert_eq!(p.as_ref(), "p1");
+    }
+}
+
+/// Property-based proof of the algebraic laws the money type must obey. The
+/// example tests above pin specific edge cases; these check the *laws* hold for
+/// arbitrary inputs (the SOTA discipline for newtype arithmetic — a single
+/// off-by-one in a saturating combinator would surface as a shrunk counter-
+/// example rather than slipping past hand-picked cases).
+#[cfg(test)]
+mod laws {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn m(x: u64) -> MicroUsd {
+        MicroUsd::new(x)
+    }
+
+    proptest! {
+        // ── (MicroUsd, saturating_add, ZERO) is a commutative monoid ──────────
+
+        #[test]
+        fn sat_add_identity(a in any::<u64>()) {
+            prop_assert_eq!(m(a).saturating_add(MicroUsd::ZERO), m(a));
+            prop_assert_eq!(MicroUsd::ZERO.saturating_add(m(a)), m(a));
+        }
+
+        #[test]
+        fn sat_add_commutative(a in any::<u64>(), b in any::<u64>()) {
+            prop_assert_eq!(m(a).saturating_add(m(b)), m(b).saturating_add(m(a)));
+        }
+
+        #[test]
+        fn sat_add_associative(a in any::<u64>(), b in any::<u64>(), c in any::<u64>()) {
+            let left = m(a).saturating_add(m(b)).saturating_add(m(c));
+            let right = m(a).saturating_add(m(b).saturating_add(m(c)));
+            prop_assert_eq!(left, right);
+        }
+
+        // ── checked vs saturating agree off-overflow; checked is exact ────────
+
+        #[test]
+        fn checked_add_agrees_with_saturating_off_overflow(a in any::<u64>(), b in any::<u64>()) {
+            match m(a).checked_add(m(b)) {
+                // No overflow ⇒ same value as saturating_add.
+                Some(sum) => prop_assert_eq!(sum, m(a).saturating_add(m(b))),
+                // Overflow ⇒ saturating clamps at MAX, and the sum really would overflow.
+                None => {
+                    prop_assert_eq!(m(a).saturating_add(m(b)), MicroUsd::MAX);
+                    prop_assert!(a.checked_add(b).is_none());
+                }
+            }
+        }
+
+        #[test]
+        fn checked_sub_is_exact_inverse(a in any::<u64>(), b in any::<u64>()) {
+            match m(a).checked_sub(m(b)) {
+                Some(diff) => {
+                    prop_assert!(b <= a);
+                    // a - b + b == a (no underflow path).
+                    prop_assert_eq!(diff.checked_add(m(b)), Some(m(a)));
+                }
+                None => prop_assert!(b > a),
+            }
+        }
+
+        #[test]
+        fn saturating_sub_floors_at_zero(a in any::<u64>(), b in any::<u64>()) {
+            let d = m(a).saturating_sub(m(b));
+            if b >= a {
+                prop_assert_eq!(d, MicroUsd::ZERO);
+            } else {
+                prop_assert_eq!(d, m(a - b));
+            }
+        }
+
+        // ── saturating_from_u128 clamps; exact in range ───────────────────────
+
+        #[test]
+        fn saturating_from_u128_clamps(v in any::<u128>()) {
+            let got = MicroUsd::saturating_from_u128(v);
+            if v > u64::MAX as u128 {
+                prop_assert_eq!(got, MicroUsd::MAX);
+            } else {
+                prop_assert_eq!(got.get() as u128, v);
+            }
+        }
+
+        // ── total round-trips (the wire-compat invariants, over all inputs) ───
+
+        #[test]
+        fn serde_round_trips(a in any::<u64>()) {
+            let json = serde_json::to_string(&m(a)).unwrap();
+            prop_assert_eq!(json, a.to_string()); // transparent: bare integer
+            prop_assert_eq!(serde_json::from_str::<MicroUsd>(&a.to_string()).unwrap(), m(a));
+        }
+
+        #[test]
+        fn display_fromstr_round_trips(a in any::<u64>()) {
+            prop_assert_eq!(m(a).to_string().parse::<MicroUsd>().unwrap(), m(a));
+        }
+
+        #[test]
+        fn string_id_round_trips(s in ".*") {
+            // FromStr is Infallible and Display is the inner string, so the
+            // round-trip is total over ANY string — no id can fail to parse.
+            let id = AuctionId::new(s.clone());
+            prop_assert_eq!(id.to_string(), s.clone());
+            let parsed = s.parse::<AuctionId>().unwrap();
+            prop_assert_eq!(parsed.as_str(), s.as_str());
+        }
     }
 }
