@@ -500,6 +500,72 @@ mod tests {
     }
 
     #[test]
+    fn digest_is_invariant_under_resigning() {
+        // The witness's content-address IDENTITY excludes `signatures` (that is
+        // the whole point of `signing_payload`): re-signing, adding a cosignature,
+        // or reordering signatures must NOT change `digest()`. Otherwise the same
+        // logical witness would get a new identity every time it's countersigned,
+        // breaking dedup, the archive's content-addressing, and any anchored
+        // reference to it.
+        let base = test_bundle();
+        let original = base.digest();
+
+        let mut more_sigs = base.clone();
+        more_sigs.signatures.push(BundleSignature {
+            signer: "second-witness".into(),
+            algorithm: "ed25519".into(),
+            signature: "cafebabe".into(),
+            role: None,
+        });
+        assert_eq!(
+            more_sigs.digest(),
+            original,
+            "adding a cosignature changed identity"
+        );
+
+        let mut different_sig = base.clone();
+        different_sig.signatures[0].signature = "deadc0de".into();
+        assert_eq!(
+            different_sig.digest(),
+            original,
+            "re-signing changed identity"
+        );
+
+        let mut no_sigs = base.clone();
+        no_sigs.signatures.clear();
+        assert_eq!(
+            no_sigs.digest(),
+            original,
+            "clearing signatures changed identity"
+        );
+    }
+
+    #[test]
+    fn digest_is_content_sensitive() {
+        // The flip side: changing any CONTENT field MUST change the identity, so a
+        // witness can't be silently swapped under a fixed address. (`digest()`
+        // binds the artifact, not just the commit — see the struct docs.)
+        let base = test_bundle();
+        let original = base.digest();
+
+        let mut changed_candidate = base.clone();
+        changed_candidate.candidate_digest = ArtifactDigest::from_bytes(b"a different candidate");
+        assert_ne!(
+            changed_candidate.digest(),
+            original,
+            "candidate change not bound"
+        );
+
+        let mut changed_version = base.clone();
+        changed_version.bundle_version += 1;
+        assert_ne!(
+            changed_version.digest(),
+            original,
+            "version change not bound"
+        );
+    }
+
+    #[test]
     fn test_bundle_structurally_complete() {
         let b = test_bundle();
         assert!(b.is_structurally_complete().is_ok());
