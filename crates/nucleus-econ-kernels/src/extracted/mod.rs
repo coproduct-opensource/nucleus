@@ -39,5 +39,7 @@
 //! `typenum`) — a whole-crate `charon cargo` would fail on those. If you add a
 //! root here, add a matching `--start-from` in `scripts/aeneas-extract.sh`.
 
+pub mod commons_aeneas;
 pub mod pigou_aeneas;
+pub mod settlement_aeneas;
 pub mod vcg_aeneas;
