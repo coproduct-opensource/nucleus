@@ -5,6 +5,7 @@ import Nucleus.Auctions.IntegerVcgTruthful
 import Nucleus.Auctions.PigouvianVcg
 import Nucleus.Auctions.PigouvianVcgMultiDim
 import Nucleus.Auctions.PigouvianVcgSequential
+import Nucleus.Auctions.Sealed
 import Nucleus.Auctions.SettlementDecision
 import Nucleus.Auctions.VcgPigouTruthful
 import Nucleus.Auctions.VcgRevenueNonMonotone
