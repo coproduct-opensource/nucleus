@@ -11,3 +11,5 @@ ck-types = { path = "../ck-types" }
 
 [dev-dependencies]
 pretty_assertions = "1"
+# Preorder laws (reflexive + transitive) of the amendment relation.
+proptest = { workspace = true }

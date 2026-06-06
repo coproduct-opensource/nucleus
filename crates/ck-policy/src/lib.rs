@@ -263,4 +263,74 @@ mod tests {
             v.diff
         );
     }
+
+    // ── The amendment relation is a PREORDER (reflexive + transitive) ──────
+    //
+    // The example tests above check individual invariants on fixed manifests.
+    // These prove the order-theoretic laws of `check_monotonicity` itself over
+    // arbitrary capability sets — the laws a constitutional kernel's safety across
+    // an amendment CHAIN depends on:
+    //   * reflexive  — a manifest is always a valid amendment of itself.
+    //   * transitive — if B is a valid amendment of A and C of B, then C is a
+    //     valid amendment of A. Without this, an attacker could escalate
+    //     GRADUALLY: A⊒B and B⊒C each pass while A⊒C would not (boiling-frog).
+    use proptest::prelude::*;
+
+    /// `base_manifest()` with its capability `filesystem_read` set to `caps`
+    /// (every other field held equal, so only the capability invariant varies).
+    fn manifest_with_caps(caps: BTreeSet<String>) -> PolicyManifest {
+        let mut m = base_manifest();
+        m.capabilities.filesystem_read = caps;
+        m
+    }
+
+    fn as_set(items: &[String], keep: &[bool]) -> BTreeSet<String> {
+        items
+            .iter()
+            .zip(keep)
+            .filter(|(_, k)| **k)
+            .map(|(s, _)| s.clone())
+            .collect()
+    }
+
+    proptest! {
+        /// Reflexivity: any manifest is a valid amendment of itself.
+        #[test]
+        fn amendment_is_reflexive(items in proptest::collection::vec("[a-z/]{1,4}", 0..6)) {
+            let m = manifest_with_caps(items.into_iter().collect());
+            prop_assert!(check_monotonicity(&m, &m).passed, "reflexivity failed");
+        }
+
+        /// Transitivity: build C ⊆ B ⊆ A by construction; each step is a valid
+        /// amendment, and the composed A⊒C must be too (no gradual escalation).
+        #[test]
+        fn amendment_is_transitive(
+            (items, keep_b, keep_c) in proptest::collection::vec("[a-z/]{1,4}", 0..6)
+                .prop_flat_map(|items| {
+                    let n = items.len();
+                    (
+                        Just(items),
+                        proptest::collection::vec(any::<bool>(), n),
+                        proptest::collection::vec(any::<bool>(), n),
+                    )
+                }),
+        ) {
+            let a: BTreeSet<String> = items.iter().cloned().collect();
+            let b = as_set(&items, &keep_b);
+            // C kept only where it's ALSO in B ⇒ C ⊆ B ⊆ A by construction.
+            let cc: Vec<bool> = keep_b.iter().zip(&keep_c).map(|(b, c)| *b && *c).collect();
+            let c = as_set(&items, &cc);
+
+            let ma = manifest_with_caps(a);
+            let mb = manifest_with_caps(b);
+            let mc = manifest_with_caps(c);
+
+            prop_assert!(check_monotonicity(&ma, &mb).passed, "step A⊒B failed");
+            prop_assert!(check_monotonicity(&mb, &mc).passed, "step B⊒C failed");
+            prop_assert!(
+                check_monotonicity(&ma, &mc).passed,
+                "TRANSITIVITY: A⊒B and B⊒C passed but A⊒C did not"
+            );
+        }
+    }
 }
