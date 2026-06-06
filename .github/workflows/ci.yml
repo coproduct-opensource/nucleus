@@ -57,6 +57,13 @@ jobs:
         run: wasm-pack build sdks/verifier-js --target web --release
       - name: cargo test
         run: cargo test --all-features
+      # Node tests run the WASM bindings against the cross-language golden seal
+      # (settlement + commons) and the accept/reject smoke fixtures — per-PR, not
+      # just on publish, so a binding-layer drift from the proven kernels is caught
+      # here. Node is preinstalled on the ubuntu runner.
+      - name: Node tests (golden seal + smoke) against built wasm
+        working-directory: sdks/verifier-js
+        run: npm test
 
   owasp-gauntlet:
     name: OWASP LLM Security Gauntlet

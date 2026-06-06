@@ -4,9 +4,11 @@
   JSON is the single source shared with the Rust / Solidity / WASM readers.
 -/
 import Nucleus.Auctions.SettlementDecision
+import Nucleus.Commons
 
 namespace Nucleus.Golden
 open Nucleus.Auctions.SettlementDecision
+open Nucleus.Commons
 
 -- settlement.json (4-language seal: this Lean reader + Rust + Solidity + WASM)
 example : classify 0 = Verdict.Reverse := by decide
@@ -28,7 +30,13 @@ example : classify 5000 = Verdict.Partial := by decide
 example : sellerGross 7654321 5000 = 3827160 := by decide
 example : refund 7654321 5000 = 3827161 := by decide
 
--- NOTE: commons/vcg Lean-vector decide-checks land in G3b (Commons.lean is in
--- the queued G2a PR; vcg's Lean is property-level). Both are covered by the Rust
--- golden reader today + (commons) the routed_conserves theorem.
+-- commons.json (no-skim routing, dust to first): Lean Commons.routed + Rust + WASM.
+-- bps list is shared across vectors (from .shares); routed_conserves PROVES the
+-- sum == pool for all inputs — these decide the exact per-share split.
+example : routed 1000000 [6000, 2500, 1500] = [600000, 250000, 150000] := by decide
+example : routed 7 [6000, 2500, 1500] = [5, 1, 1] := by decide
+example : routed 9999999 [6000, 2500, 1500] = [6000001, 2499999, 1499999] := by decide
+
+-- NOTE: vcg's Lean is property-level (truthfulness/IR/budget), not per-vector;
+-- VCG vectors are sealed Rust↔WASM (see PROOFS.md + vcg.json _doc).
 end Nucleus.Golden
