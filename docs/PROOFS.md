@@ -116,6 +116,8 @@ The deepest gap is between a *proven Lean model* and the *running Rust*. Two way
 
 So **settlement + commons are extraction-closable** (turning two TESTED rows into PROVEN-about-the-real-code), while **VCG-with-hashmap and crypto stay TESTED + MODELED** — and that boundary is a property of the tool, not a shortcut.
 
+**Three rungs, and where settlement/commons sit today.** The bridge from a proven Lean def to the running Rust has rungs of increasing strength: (1) **golden vectors** — Lean `decide` == Rust on *fixed* inputs (§2); (2) **hand-transcribed Aeneas-subset mirror + differential proptest** — a Rust mirror byte-faithful (by review) to the Lean def, bound to the production kernel over *randomized* inputs (`crates/nucleus-econ-kernels/src/extracted/*_aeneas.rs` + `tests/*_parity.rs`); (3) **Charon-extracted Lean** — the model is *generated from* the Rust and the theorem is proven over it (the strongest; live for IFC). Settlement and commons now sit at rung (2) for `classify`/`seller_gross`/`refund`/`route_to_commons` (alongside pigou/vcg), **plus** the 4-language golden seal at rung (1). They are still at rung (2), not (3): rung (3) needs the Charon/Aeneas Linux toolchain run against `nucleus-econ-kernels` (the pipeline exists for `portcullis-core`; extending it to the econ crate is a Linux-CI bootstrap, not a code change) — so the mirror is honestly TESTED, not yet PROVEN-over-extracted.
+
 Integration cost is bounded: use pre-built Aeneas/Charon binaries + the sibling `aeneas-ci@v1` action, scope Charon with `--start-from`, never build OCaml (see `aeneas.yml` for the established pattern).
 
 ---
