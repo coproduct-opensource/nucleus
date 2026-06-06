@@ -154,6 +154,7 @@ pub fn build_app(state: AppState) -> Router {
         )
         .route("/healthz", get(routes::healthz))
         .route("/v1/verify", post(routes::verify))
+        .route("/v1/credit", post(routes::credit))
         .route(
             "/v1/bundles/{hash}/verify",
             get(routes::bundle_verify_lookup),

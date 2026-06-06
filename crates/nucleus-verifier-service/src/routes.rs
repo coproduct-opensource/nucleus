@@ -868,3 +868,98 @@ pub async fn bundle_verify_lookup(
         report,
     }))
 }
+
+// ── POST /v1/credit — price an agent's creditworthiness from its receipts ──────
+
+/// Request body for [`credit`].
+#[derive(Debug, Deserialize)]
+pub struct CreditRequest {
+    /// The agent's clearing receipts — any mix of settlement / commons / VCG.
+    pub receipts: Vec<nucleus_recompute::ClearingReceipt>,
+    /// The worst-case one-shot defection gain to deter, micro-USD.
+    pub max_defection_gain_micro: u64,
+}
+
+/// Response for [`credit`].
+#[derive(Debug, Serialize)]
+pub struct CreditResponse {
+    /// Bond-substituting reputation derived from the receipts (financial
+    /// dimension; the reserved Pigouvian dimension is dormant), micro-USD.
+    pub reputation_micro: u64,
+    /// How many receipts contributed an event (`Invalid` receipts are skipped).
+    pub event_count: u64,
+    /// The minimum bond the agent must post to deter `max_defection_gain_micro`,
+    /// given its reputation — the proven `required_bond`, in micro-USD.
+    pub required_bond_micro: u64,
+    /// The defection gain the bond was priced against (echoed for auditability).
+    pub max_defection_gain_micro: u64,
+}
+
+/// `POST /v1/credit` — derive an agent's creditworthiness from its receipts.
+///
+/// Recomputes each receipt against the proven kernels, folds the honest ones
+/// into a credit file (a Match builds standing, a Mismatch — a caught defection
+/// — burns it, an Invalid receipt is skipped), and returns its bond-substituting
+/// reputation plus the minimum bond for the declared defection gain.
+///
+/// **Honest scope:** stateless + a convenience. This endpoint trusts no number
+/// it does not itself recompute — and the SAME result is reproducible
+/// client-side with `@coproduct/verify`
+/// (`creditReputationFromReceipts` / `requiredBondFromReceipts`), so the service
+/// is never the trust root. Malformed JSON is rejected by the extractor (400).
+pub async fn credit(Json(req): Json<CreditRequest>) -> Json<CreditResponse> {
+    let file = nucleus_creditworthiness::mint::credit_file_from_receipts(&req.receipts);
+    Json(CreditResponse {
+        reputation_micro: file.reputation_micro(),
+        event_count: file.event_count(),
+        required_bond_micro: file.required_bond(req.max_defection_gain_micro).0,
+        max_defection_gain_micro: req.max_defection_gain_micro,
+    })
+}
+
+#[cfg(test)]
+mod credit_tests {
+    use super::*;
+
+    fn honest_settlement(
+        price_micro: u64,
+        delivered_bps: u64,
+    ) -> nucleus_recompute::ClearingReceipt {
+        use nucleus_econ_kernels::{classify, refund, seller_gross};
+        nucleus_recompute::ClearingReceipt::Settlement(nucleus_recompute::SettlementClaim {
+            price_micro,
+            delivered_bps,
+            verdict: classify(delivered_bps),
+            seller_gross: seller_gross(price_micro, delivered_bps),
+            refund: refund(price_micro, delivered_bps),
+        })
+    }
+
+    #[tokio::test]
+    async fn credit_endpoint_prices_the_bond_from_history() {
+        let req = CreditRequest {
+            receipts: vec![
+                honest_settlement(400_000, 10_000),
+                honest_settlement(300_000, 10_000),
+            ],
+            max_defection_gain_micro: 1_000_000,
+        };
+        let Json(resp) = credit(Json(req)).await;
+        assert_eq!(resp.reputation_micro, 700_000);
+        assert_eq!(resp.event_count, 2);
+        // 1M gain − 700k verified reputation = 300k bond.
+        assert_eq!(resp.required_bond_micro, 300_000);
+        assert_eq!(resp.max_defection_gain_micro, 1_000_000);
+    }
+
+    #[tokio::test]
+    async fn a_fresh_agent_pays_the_full_bond() {
+        let req = CreditRequest {
+            receipts: vec![],
+            max_defection_gain_micro: 1_000_000,
+        };
+        let Json(resp) = credit(Json(req)).await;
+        assert_eq!(resp.reputation_micro, 0);
+        assert_eq!(resp.required_bond_micro, 1_000_000);
+    }
+}

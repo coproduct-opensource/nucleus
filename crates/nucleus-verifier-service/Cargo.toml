@@ -18,6 +18,12 @@ path = "src/main.rs"
 nucleus-envelope = { path = "../nucleus-envelope" }
 nucleus-lineage = { path = "../nucleus-lineage" }
 nucleus-agent-card = { path = "../nucleus-agent-card" }
+# Creditworthiness: price an agent's bond from its receipts (POST /v1/credit).
+# `nucleus-recompute` supplies the ClearingReceipt request type; the credit file
+# folds them (recompute each, honest builds standing, a caught lie burns it) and
+# composes the proven required_bond. Stateless + recomputable client-side.
+nucleus-recompute = { path = "../nucleus-recompute" }
+nucleus-creditworthiness = { path = "../nucleus-creditworthiness" }
 axum = { version = "0.8", features = ["macros", "json"] }
 tokio = { workspace = true, features = ["full"] }
 tower = { version = "0.5", features = ["util", "limit"] }
@@ -52,6 +58,9 @@ nucleus-control-plane = { path = "../nucleus-control-plane" }
 nucleus-agent-card = { path = "../nucleus-agent-card", features = ["sign"] }
 nucleus-identity = { path = "../nucleus-identity" }
 ring = { workspace = true }
+# Build genuinely-honest receipts in the /v1/credit test (so a Match is real,
+# not asserted) via the same proven kernels recompute checks against.
+nucleus-econ-kernels = { path = "../nucleus-econ-kernels" }
 
 [lints]
 workspace = true
