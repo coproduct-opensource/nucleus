@@ -31,6 +31,11 @@ nucleus-externality = { path = "../../crates/nucleus-externality" }
 # agent's defection exposure + its verified reputation (the proven
 # reputation↔capital substitution). No new trust — pure proven arithmetic.
 nucleus-witness-olog = { path = "../../crates/nucleus-witness-olog" }
+# Creditworthiness: fold an agent's recompute-verified receipts into a credit
+# file (honest builds standing, a caught lie burns it) and price its bond — the
+# whole receipt→recompute→credit-file→bond flywheel, in-browser. Default
+# features include the `recompute` mint bridge.
+nucleus-creditworthiness = { path = "../../crates/nucleus-creditworthiness" }
 wasm-bindgen = "0.2"
 serde-wasm-bindgen = "0.6"
 serde = { version = "1", features = ["derive"] }

@@ -201,3 +201,23 @@ export function recomputeDeters(
   reputationMicro: number | bigint,
   maxDefectionGainMicro: number | bigint,
 ): Promise<boolean>;
+
+/**
+ * Re-derive an agent's bond-substituting reputation (micro) from its clearing
+ * receipts: each is recomputed; a Match builds standing, a Mismatch (caught
+ * defection) burns it, an Invalid receipt is ignored. Financial dimension only
+ * (the reserved Pigouvian dimension is dormant). No server trust.
+ */
+export function creditReputationFromReceipts(
+  receipts: object[] | string,
+): Promise<bigint>;
+
+/**
+ * Re-derive the minimum bond an agent must post to deter a defection worth
+ * `maxDefectionGainMicro`, given the reputation its receipts earn — the flywheel
+ * end-to-end (receipt → recompute → credit file → bond), in-process, no trust.
+ */
+export function requiredBondFromReceipts(
+  receipts: object[] | string,
+  maxDefectionGainMicro: number | bigint,
+): Promise<bigint>;

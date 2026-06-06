@@ -1,0 +1,37 @@
+[package]
+name = "nucleus-creditworthiness"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Agent credit file: aggregate recompute-verified history into bond-substituting reputation. A multi-dimensional, order-independent (recompute-stable) vector — financial-default dimension active, Pigouvian externality dimension reserved-but-dormant — composing the proven nucleus-witness-olog::required_bond kernel."
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+# The PROVEN kernel: required_bond / deters / AmountMicro. Reputation
+# substitutes for capital down to a Sybil-proof floor, value-identical to Lean
+# `requiredBond` (`[propext, Quot.sound]`-only). We COMPOSE it — the money path
+# never re-implements the proven function.
+nucleus-witness-olog = { path = "../nucleus-witness-olog" }
+# `recompute` feature: mint CreditEvents straight from recompute-verified
+# clearing receipts (the receipt→recompute→CreditEvent→CreditFile→bond pipeline).
+nucleus-recompute = { path = "../nucleus-recompute", optional = true }
+hex = { workspace = true, optional = true }
+
+[features]
+default = ["recompute"]
+# The `mint` bridge: derive CreditEvents from recompute-verified ClearingReceipts.
+# On by default (the pipeline is the point); opt out with `default-features =
+# false` for the lean core (e.g. a wasm consumer that supplies its own events).
+recompute = ["dep:nucleus-recompute", "dep:hex"]
+
+[dev-dependencies]
+serde_json = { workspace = true }
+proptest = { workspace = true }
+# Used only by the `mint` tests to construct genuinely-honest receipts (so a
+# Match is real, not asserted) via the same proven kernels recompute uses.
+nucleus-econ-kernels = { path = "../nucleus-econ-kernels" }
