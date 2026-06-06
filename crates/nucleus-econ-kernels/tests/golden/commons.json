@@ -1,0 +1,13 @@
+{
+  "_doc": "Golden commons-routing vectors — pins route_to_commons (no-skim, dust to first) across Lean (Commons.routed), Rust (commons.rs), and WASM. shares.bps must sum to 10000; allocations sum to exactly the pool.",
+  "shares": [
+    { "destination": "carbon-removal", "bps": 6000 },
+    { "destination": "affected-party", "bps": 2500 },
+    { "destination": "verifier-commons", "bps": 1500 }
+  ],
+  "vectors": [
+    { "pool_micro": 1000000, "allocations": [600000, 250000, 150000] },
+    { "pool_micro": 7,       "allocations": [5, 1, 1] },
+    { "pool_micro": 9999999, "allocations": [6000001, 2499999, 1499999] }
+  ]
+}

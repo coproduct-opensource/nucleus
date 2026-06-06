@@ -1,0 +1,11 @@
+{
+  "_doc": "Golden settlement vectors — the SINGLE SOURCE pinning the settlement split across Lean (SettlementDecision.sellerGross/refund), Rust (settlement.rs), Solidity (CredibleSettlement.sol), and WASM (@coproduct/verify). Editing any implementation to diverge from these turns CI red. verdict: 0=reverse 1=partial 2=release.",
+  "vectors": [
+    { "price_micro": 1000000, "delivered_bps": 0,     "verdict": 0, "seller_gross": 0,       "refund": 1000000 },
+    { "price_micro": 1000000, "delivered_bps": 2500,  "verdict": 1, "seller_gross": 250000,  "refund": 750000 },
+    { "price_micro": 1000000, "delivered_bps": 9999,  "verdict": 1, "seller_gross": 999900,  "refund": 100 },
+    { "price_micro": 1000000, "delivered_bps": 10000, "verdict": 2, "seller_gross": 1000000, "refund": 0 },
+    { "price_micro": 1000000, "delivered_bps": 25000, "verdict": 2, "seller_gross": 1000000, "refund": 0 },
+    { "price_micro": 7654321, "delivered_bps": 5000,  "verdict": 1, "seller_gross": 3827160, "refund": 3827161 }
+  ]
+}

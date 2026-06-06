@@ -1,0 +1,66 @@
+name: Econ Lean Proofs + Golden Seal
+
+# Closes gap G3 (chariot punch-list): the mathlib-free economic Lean proofs were
+# never built in CI, and the "golden-vector-pinned across languages" claim was
+# prose. This job (a) builds the econ Lean tree (fails on any `sorry` / failing
+# `decide`), (b) bans `sorry` / `native_decide` in the sources, and (c) asserts the
+# generated Lean golden checks are in sync with the JSON single-source.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "crates/nucleus-econ-kernels/lean/**"
+      - "crates/nucleus-econ-kernels/tests/golden/**"
+      - "scripts/gen-golden-lean.sh"
+      - ".github/workflows/econ-lean.yml"
+  pull_request:
+    paths:
+      - "crates/nucleus-econ-kernels/lean/**"
+      - "crates/nucleus-econ-kernels/tests/golden/**"
+      - "scripts/gen-golden-lean.sh"
+      - ".github/workflows/econ-lean.yml"
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  econ-lean:
+    name: lake build Nucleus (econ proofs + golden seal)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      # Mathlib-free project: lean-action installs elan + the pinned toolchain
+      # (lean-toolchain) and runs `lake build`. No mathlib cache needed.
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: crates/nucleus-econ-kernels/lean
+          use-mathlib-cache: false
+          build: true
+          test: false
+
+      - name: Ban sorry / native_decide in econ Lean
+        run: |
+          # Match the tactic/term forms (`:= sorry`, `:= by sorry`, a lone `sorry`,
+          # or `native_decide`) — NOT the word "sorry" in "0 sorry" doc comments.
+          if grep -rnE \
+               '(:=[[:space:]]*by[[:space:]]+sorry|:=[[:space:]]*sorry|^[[:space:]]*sorry$|native_decide)' \
+               --include='*.lean' crates/nucleus-econ-kernels/lean/Nucleus; then
+            echo "ERROR: econ Lean uses 'sorry' (proof hole) or 'native_decide' (banned)."
+            exit 1
+          fi
+          echo "No sorry / native_decide — econ proofs are complete and kernel-checked."
+
+      - name: Golden-vector sync (regenerate Golden.lean from JSON, assert no drift)
+        run: |
+          bash scripts/gen-golden-lean.sh
+          if ! git diff --exit-code crates/nucleus-econ-kernels/lean/Nucleus/Golden.lean; then
+            echo "ERROR: Golden.lean is stale vs tests/golden/*.json."
+            echo "Run: bash scripts/gen-golden-lean.sh && commit the result."
+            exit 1
+          fi
+          echo "Golden.lean is in sync with the JSON single-source."

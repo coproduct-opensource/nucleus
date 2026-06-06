@@ -1,0 +1,27 @@
+{
+  "_doc": "Golden VCG vectors — pins run_vcg (winners + Clarke-pivot payments) across Rust (vcg.rs) and WASM (@coproduct/verify recomputeVcg). Lean carries the VCG properties (truthfulness/IR/budget) rather than per-vector evaluation, so VCG is Rust↔WASM golden + Lean-property-proven (see PROOFS.md).",
+  "vectors": [
+    {
+      "_name": "single bidder pays zero (no externality on others)",
+      "bids": [ { "bidder": "alice", "proposal_id": "p1", "effective_value_micro_usd": 15000000 } ],
+      "proposals": [ { "id": "p1", "cost_micro_usd": 10000000 } ],
+      "budget_micro_usd": 100000000,
+      "winners": [ { "bidder": "alice", "proposal_id": "p1", "vcg_payment_micro_usd": 0 } ],
+      "total_payments_micro_usd": 0
+    },
+    {
+      "_name": "displacement: winner pays the displaced second value",
+      "bids": [
+        { "bidder": "alice", "proposal_id": "high", "effective_value_micro_usd": 70000000 },
+        { "bidder": "bob",   "proposal_id": "low",  "effective_value_micro_usd": 65000000 }
+      ],
+      "proposals": [
+        { "id": "high", "cost_micro_usd": 60000000 },
+        { "id": "low",  "cost_micro_usd": 60000000 }
+      ],
+      "budget_micro_usd": 100000000,
+      "winners": [ { "bidder": "alice", "proposal_id": "high", "vcg_payment_micro_usd": 65000000 } ],
+      "total_payments_micro_usd": 65000000
+    }
+  ]
+}
