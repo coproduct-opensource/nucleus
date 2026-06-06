@@ -34,14 +34,28 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      # Mathlib-free project: lean-action installs elan + the pinned toolchain
-      # (lean-toolchain) and runs `lake build`. No mathlib cache needed.
-      - uses: leanprover/lean-action@v1
+      # Mathlib-free project: install elan directly (the repo's established
+      # pattern — see aeneas.yml / aeneas-ifc-scoped.yml) and run `lake build`.
+      # No mathlib cache fetch needed; the whole tree builds in seconds.
+      - name: Install elan (Lean toolchain)
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --no-modify-path
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Cache Lake build artifacts
+        uses: actions/cache@v5
         with:
-          lake-package-directory: crates/nucleus-econ-kernels/lean
-          use-mathlib-cache: false
-          build: true
-          test: false
+          path: |
+            crates/nucleus-econ-kernels/lean/.lake
+            ~/.elan
+          key: lean-econ-${{ runner.os }}-${{ hashFiles('crates/nucleus-econ-kernels/lean/lean-toolchain', 'crates/nucleus-econ-kernels/lean/lakefile.lean') }}
+          restore-keys: |
+            lean-econ-${{ runner.os }}-
+
+      - name: lake build Nucleus (econ proofs + golden seal)
+        working-directory: crates/nucleus-econ-kernels/lean
+        run: lake build
 
       - name: Ban sorry / native_decide in econ Lean
         run: |
