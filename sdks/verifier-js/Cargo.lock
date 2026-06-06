@@ -511,6 +511,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-recompute"
+version = "1.0.0"
+dependencies = [
+ "hex",
+ "nucleus-econ-kernels",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
 name = "nucleus-verifier-wasm"
 version = "0.1.0"
 dependencies = [
@@ -523,6 +535,7 @@ dependencies = [
  "nucleus-externality",
  "nucleus-ifc",
  "nucleus-lineage",
+ "nucleus-recompute",
  "nucleus-witness-olog",
  "serde",
  "serde-wasm-bindgen",

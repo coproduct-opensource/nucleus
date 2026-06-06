@@ -349,6 +349,53 @@ pub fn recompute_commons_js(pool_micro: u64, shares_json: &str) -> Result<JsValu
     serde_wasm_bindgen::to_value(&allocations).map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// Re-derive a **clearing receipt**: given a `ClearingReceipt` JSON (the declared
+/// inputs + claimed outputs of a settlement / commons / VCG outcome), re-run the
+/// PROVEN kernels on the inputs and report whether every claimed number matches.
+/// This is `nucleus-recompute::verify_receipt` in the browser — the keystone
+/// "verify, don't trust" check a relying party who never saw the auction can run.
+///
+/// Returns `{ outcome: "match" }`, `{ outcome: "mismatch", field, claimed,
+/// recomputed }` (a MISPRICE / skimmed split / fabricated payment), or
+/// `{ outcome: "invalid", reason }` (malformed inputs the kernel rejects).
+#[wasm_bindgen(js_name = recomputeReceipt)]
+pub fn recompute_receipt_js(receipt_json: &str) -> Result<JsValue, JsError> {
+    set_panic_hook();
+    let receipt: nucleus_recompute::ClearingReceipt = serde_json::from_str(receipt_json)
+        .map_err(|e| JsError::new(&format!("receipt JSON: {e}")))?;
+
+    // RecomputeOutcome isn't Serialize (its Mismatch.field is &'static str); mirror
+    // it into a wire shape with a stable `outcome` tag.
+    #[derive(Serialize)]
+    #[serde(tag = "outcome", rename_all = "snake_case")]
+    enum OutcomeWire {
+        Match,
+        Mismatch {
+            field: String,
+            claimed: String,
+            recomputed: String,
+        },
+        Invalid {
+            reason: String,
+        },
+    }
+
+    let wire = match nucleus_recompute::verify_receipt(&receipt) {
+        nucleus_recompute::RecomputeOutcome::Match => OutcomeWire::Match,
+        nucleus_recompute::RecomputeOutcome::Mismatch {
+            field,
+            claimed,
+            recomputed,
+        } => OutcomeWire::Mismatch {
+            field: field.to_string(),
+            claimed,
+            recomputed,
+        },
+        nucleus_recompute::RecomputeOutcome::Invalid(reason) => OutcomeWire::Invalid { reason },
+    };
+    serde_wasm_bindgen::to_value(&wire).map_err(|e| JsError::new(&e.to_string()))
+}
+
 /// Surface the **assurance rung** of an externality profile — *how much trust*
 /// each dimension's `units_micro` demands, and the profile's overall
 /// (weakest-link) rung. `layers_json` is a JSON array of per-dimension

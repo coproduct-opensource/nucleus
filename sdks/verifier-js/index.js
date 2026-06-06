@@ -368,6 +368,23 @@ export async function recomputeCommons(poolMicro, shares) {
 }
 
 /**
+ * Re-derive a whole **clearing receipt** — its declared inputs + claimed outputs
+ * for a settlement / commons / VCG outcome — against the proven kernels. The
+ * keystone "verify, don't trust" check: a relying party who never saw the auction
+ * confirms every claimed number by recomputing it.
+ * @param {object} receipt a `ClearingReceipt` `{kind:"settlement"|"commons"|"vcg", ...}`
+ * @returns {Promise<object>} `{outcome:"match"}` |
+ *   `{outcome:"mismatch", field, claimed, recomputed}` |
+ *   `{outcome:"invalid", reason}`.
+ */
+export async function recomputeReceipt(receipt) {
+  const mod = await initWasm();
+  return mod.recomputeReceipt(
+    typeof receipt === "string" ? receipt : JSON.stringify(receipt),
+  );
+}
+
+/**
  * Surface the **assurance rung** of an externality profile — how much trust each
  * dimension's `units_micro` demands, and the profile's overall (weakest-link)
  * rung. The rung is DERIVED from what actually verified (an unsigned dimension is

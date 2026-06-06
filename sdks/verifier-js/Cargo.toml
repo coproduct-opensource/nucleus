@@ -23,6 +23,9 @@ nucleus-ifc = { path = "../../crates/nucleus-ifc", features = ["decision"] }
 # Proven clearing/settlement/commons kernels — lets the SDK RE-DERIVE the cleared
 # price (VCG + Pigou), the settlement split, and the externality→commons routing.
 nucleus-econ-kernels = { path = "../../crates/nucleus-econ-kernels" }
+# verify_receipt: re-derive every cleared number from a receipt's declared inputs
+# via the proven kernels, in-browser. The keystone recompute, callable by anyone.
+nucleus-recompute = { path = "../../crates/nucleus-recompute" }
 nucleus-externality = { path = "../../crates/nucleus-externality" }
 # Bonding: lets the SDK compute the recompute-slashed required bond from an
 # agent's defection exposure + its verified reputation (the proven
