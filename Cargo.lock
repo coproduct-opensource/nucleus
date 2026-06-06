@@ -6538,6 +6538,9 @@ dependencies = [
 name = "nucleus-creditworthiness"
 version = "1.0.0"
 dependencies = [
+ "hex",
+ "nucleus-econ-kernels",
+ "nucleus-recompute",
  "nucleus-witness-olog",
  "proptest",
  "serde",

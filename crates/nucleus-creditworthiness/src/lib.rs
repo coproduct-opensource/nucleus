@@ -55,6 +55,9 @@ use std::collections::BTreeMap;
 use nucleus_witness_olog::{deters, required_bond, AmountMicro};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "recompute")]
+pub mod mint;
+
 /// A dimension of creditworthiness. Each dimension is scored independently from
 /// recompute-verified events.
 ///
