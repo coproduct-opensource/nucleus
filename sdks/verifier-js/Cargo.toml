@@ -24,6 +24,10 @@ nucleus-ifc = { path = "../../crates/nucleus-ifc", features = ["decision"] }
 # price (VCG + Pigou), the settlement split, and the externality→commons routing.
 nucleus-econ-kernels = { path = "../../crates/nucleus-econ-kernels" }
 nucleus-externality = { path = "../../crates/nucleus-externality" }
+# Bonding: lets the SDK compute the recompute-slashed required bond from an
+# agent's defection exposure + its verified reputation (the proven
+# reputation↔capital substitution). No new trust — pure proven arithmetic.
+nucleus-witness-olog = { path = "../../crates/nucleus-witness-olog" }
 wasm-bindgen = "0.2"
 serde-wasm-bindgen = "0.6"
 serde = { version = "1", features = ["derive"] }

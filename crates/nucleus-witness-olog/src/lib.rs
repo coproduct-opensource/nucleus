@@ -26,8 +26,8 @@ pub mod manifest;
 
 pub use bond::{
     canonical_bond_bytes, canonical_ownership_bytes, canonical_root_attestation_bytes,
-    canonical_signed_recompute_bytes, canonical_witness_claim_bytes, forfeiture_amount,
-    forfeiture_on_fork, mint_bond, release_bond, sign_ownership, sign_recompute,
+    canonical_signed_recompute_bytes, canonical_witness_claim_bytes, deters, forfeiture_amount,
+    forfeiture_on_fork, mint_bond, release_bond, required_bond, sign_ownership, sign_recompute,
     sign_root_attestation, sign_witness_claim, slash, staying_is_rational,
     total_canonical_collateral, verify_bond, verify_ownership, verify_root_attestation,
     verify_signed_recompute, verify_witness_claim, AmountMicro, Bond, BondError, BondStanding,

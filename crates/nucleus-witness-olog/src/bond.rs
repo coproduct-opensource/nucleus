@@ -614,6 +614,39 @@ pub fn staying_is_rational(forfeiture: AmountMicro, max_defection_gain: AmountMi
     forfeiture.0 >= max_defection_gain.0
 }
 
+// ── Reputation ↔ capital substitution (the flywheel) ────────────────────────
+//
+// The deterrent against a one-shot defection is `bond + reputation_at_risk`
+// (future business forfeited if the defection is caught — and it is caught:
+// recompute is the fraud proof). So verifiable clean history substitutes for
+// posted collateral. PROVED sound + bounded in
+// `nucleus-econ-kernels/lean/Nucleus/ReputationCapital.lean` (`requiredBond_*`,
+// `[propext, Quot.sound]`-only); these functions are the value-identical mirror.
+
+/// Whether `bond` + `reputation_micro` (reputation value at risk) deters a
+/// one-shot defection worth `max_defection_gain_micro`. Mirrors Lean `deters`
+/// (`gain ≤ bond + rep`); `u128` sum avoids overflow.
+pub fn deters(bond: AmountMicro, reputation_micro: u64, max_defection_gain_micro: u64) -> bool {
+    u128::from(max_defection_gain_micro) <= u128::from(bond.0) + u128::from(reputation_micro)
+}
+
+/// The **minimum bond** a bonder must post to deter a one-shot defection worth
+/// `max_defection_gain_micro`, given `reputation_micro` already at risk: zero once
+/// reputation alone covers the gain, otherwise the shortfall. Mirrors Lean
+/// `requiredBond`.
+///
+/// Reputation substitutes for capital — but only down to this floor
+/// (`under_collateralized_not_deterred`), and a fresh identity (`reputation = 0`)
+/// pays the full bond (`sybil_no_discount`), so splitting into new identities buys
+/// no discount.
+pub fn required_bond(max_defection_gain_micro: u64, reputation_micro: u64) -> AmountMicro {
+    if max_defection_gain_micro <= reputation_micro {
+        AmountMicro::ZERO
+    } else {
+        AmountMicro(max_defection_gain_micro - reputation_micro)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -967,6 +1000,67 @@ mod tests {
             prop_assert_eq!(out.bond.slashed_micro.0 + out.returned_micro.0, amount);
             let routed: u64 = out.commons.iter().map(|a| a.amount_micro).sum();
             prop_assert_eq!(routed, out.slashed_this_event.0);
+        }
+    }
+
+    // ── Reputation ↔ capital substitution (parity with ReputationCapital.lean) ──
+
+    #[test]
+    fn required_bond_always_deters() {
+        // Lean `requiredBond_deters`: posting requiredBond + rep always deters.
+        for &(gain, rep) in &[(0u64, 0), (100, 0), (100, 40), (100, 100), (100, 250)] {
+            let rb = required_bond(gain, rep);
+            assert!(deters(rb, rep, gain), "must deter (gain={gain} rep={rep})");
+        }
+    }
+
+    #[test]
+    fn fresh_identity_pays_full_bond_no_sybil_discount() {
+        // Lean `sybil_no_discount`: rep=0 ⇒ full bond. Splitting buys nothing.
+        for &gain in &[0u64, 1, 100, u64::MAX] {
+            assert_eq!(required_bond(gain, 0).0, gain);
+        }
+    }
+
+    #[test]
+    fn reputation_substitutes_for_capital() {
+        // Lean `requiredBond_antitone` + `requiredBond_strict_saving`.
+        let gain = 1_000u64;
+        assert!(required_bond(gain, 600) <= required_bond(gain, 200));
+        assert!(required_bond(gain, 600) < required_bond(gain, 0)); // strict saving
+        assert_eq!(required_bond(gain, 200).0, 800);
+        assert_eq!(required_bond(gain, 1_000).0, 0); // reputation alone covers it
+    }
+
+    #[test]
+    fn required_bond_never_exceeds_gain() {
+        // Lean `requiredBond_le_gain`: reputation never increases required capital.
+        for &(gain, rep) in &[(0u64, 5), (100, 0), (100, 30), (100, 100), (100, 500)] {
+            assert!(required_bond(gain, rep).0 <= gain);
+        }
+    }
+
+    #[test]
+    fn cannot_under_collateralize() {
+        // Lean `under_collateralized_not_deterred`: below the floor, not deterred.
+        assert!(!deters(AmountMicro(300), 200, 1_000)); // 500 < 1000
+        assert!(deters(AmountMicro(800), 200, 1_000)); // 1000 >= 1000 (at the floor)
+    }
+
+    proptest! {
+        /// Parity with ReputationCapital.lean over the full range: requiredBond
+        /// always deters, never exceeds the gain, and is antitone in reputation.
+        #[test]
+        fn required_bond_parity(
+            gain in 0u64..u64::MAX,
+            rep in 0u64..u64::MAX,
+            more in 0u64..u64::MAX,
+        ) {
+            let rb = required_bond(gain, rep);
+            prop_assert!(deters(rb, rep, gain));
+            prop_assert!(rb.0 <= gain);
+            let rep2 = rep.saturating_add(more); // rep2 >= rep
+            prop_assert!(required_bond(gain, rep2) <= required_bond(gain, rep));
         }
     }
 }

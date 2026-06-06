@@ -181,3 +181,23 @@ export function recomputeAssuranceRung(
   overall_rung: AssuranceRung | null;
   dimensions: Array<{ dimension: string; rung: AssuranceRung }>;
 }>;
+
+/**
+ * Re-derive the minimum bond a counterparty should require, given an agent's
+ * one-shot defection exposure and its verified reputation value at risk. The
+ * reputation↔capital flywheel made actionable: more clean history ⇒ less bond.
+ * Runs the proven `required_bond` (antitone in reputation; fresh identity pays the
+ * full bond; floored so you cannot under-collateralize). Returns micro-units.
+ */
+export function recomputeRequiredBond(
+  maxDefectionGainMicro: number | bigint,
+  reputationMicro: number | bigint,
+): Promise<bigint>;
+
+/** Re-derive whether `bond + reputation` deters a defection of the given gain
+ *  (proven `deters`: `gain ≤ bond + rep`). */
+export function recomputeDeters(
+  bondMicro: number | bigint,
+  reputationMicro: number | bigint,
+  maxDefectionGainMicro: number | bigint,
+): Promise<boolean>;
