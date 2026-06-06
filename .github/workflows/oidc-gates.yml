@@ -38,7 +38,7 @@ jobs:
     name: Vendor-neutrality gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Run no-vendor-strings.sh
         id: gate
         run: |
@@ -75,7 +75,7 @@ jobs:
     name: Algorithm-pin gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Run alg-pin-check.sh
         id: gate
         run: |

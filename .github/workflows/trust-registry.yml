@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout PR head
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0   # need the base ref for the diff + incumbent compile.
 
@@ -87,4 +87,3 @@ jobs:
             --changed-paths-file changed_paths.txt \
             --oidc-token-file oidc_token.txt \
             --github-jwks-file github_jwks.json
-</content>
