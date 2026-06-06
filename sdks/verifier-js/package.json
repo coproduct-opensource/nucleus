@@ -40,8 +40,8 @@
   ],
   "scripts": {
     "build:wasm": "wasm-pack build --target web --release",
-    "test": "node --test \"test/**/*.test.mjs\"",
-    "test:smoke": "node --test \"test/**/*.test.mjs\""
+    "test": "node --test test/*.test.mjs",
+    "test:smoke": "node --test test/*.test.mjs"
   },
   "engines": {
     "node": ">=18"

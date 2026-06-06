@@ -89,7 +89,7 @@ jobs:
       - name: Set up Node.js for publish
         uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
       - name: Node smoke test (accept real + reject tampered)
