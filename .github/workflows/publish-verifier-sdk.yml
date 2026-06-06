@@ -10,8 +10,19 @@
 # dry_run toggle (default true) that builds + `npm pack --dry-run`s without
 # publishing.
 #
-# Required repository secrets:
-#   NPM_TOKEN  — npm automation token with publish access to @coproduct
+# AUTH: npm TRUSTED PUBLISHING via OIDC — NO long-lived NPM_TOKEN secret. The
+# `id-token: write` permission below lets the runner mint a short-lived OIDC
+# token that npm (>= 11.5.1) exchanges for a one-shot publish credential, and
+# provenance is generated automatically (so no `--provenance` flag either).
+#
+# ONE-TIME SETUP (operator, on npmjs.com): a trusted publisher can only be
+# configured for a package that ALREADY EXISTS. So the FIRST publish of
+# @coproduct/verify must be done once by a traditional method (a temporary token
+# or a local `npm publish` after `npm login`); then add the Trusted Publisher
+# (npmjs.com → package → Settings → Trusted Publisher → GitHub Actions →
+# repo `coproduct-opensource/nucleus`, workflow `publish-verifier-sdk.yml`).
+# Every publish after that is tokenless via this workflow.
+#
 # Required repository variable to actually publish:
 #   PUBLISH_VERIFY_SDK == "true"
 #
@@ -45,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write  # for npm provenance
+      id-token: write  # OIDC token for npm trusted publishing + auto-provenance
 
     steps:
       - uses: actions/checkout@v5
@@ -92,19 +103,29 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
+      # npm trusted publishing (OIDC) requires npm >= 11.5.1; Node 24 ships an
+      # older npm, so upgrade explicitly.
+      - name: Upgrade npm for OIDC trusted publishing
+        run: npm install -g npm@latest && npm --version
+
       - name: Node smoke test (accept real + reject tampered)
         working-directory: sdks/verifier-js
         run: npm test
 
-      - name: Publish @coproduct/verify to npm
+      - name: Publish @coproduct/verify to npm (OIDC trusted publishing)
         # Belt-and-braces gate: manual dispatch is required to reach this
         # workflow at all; the repo variable PUBLISH_VERIFY_SDK must ALSO be
         # "true", and dry_run must be off. Publishing stays the operator's call.
+        #
+        # No NODE_AUTH_TOKEN: auth is the OIDC token from `id-token: write`,
+        # exchanged by npm (>= 11.5.1) for a one-shot publish credential.
+        # Provenance is generated automatically under trusted publishing, so no
+        # `--provenance` flag. Requires the npmjs.com Trusted Publisher to be
+        # configured for @coproduct/verify (see header) — and a one-time
+        # bootstrap first publish, since OIDC can't create a brand-new package.
         if: ${{ inputs.dry_run == false && vars.PUBLISH_VERIFY_SDK == 'true' }}
         working-directory: sdks/verifier-js
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --provenance --access public --tag "${{ inputs.dist_tag }}"
+        run: npm publish --access public --tag "${{ inputs.dist_tag }}"
 
       - name: Dry-run (build + pack only, never publishes)
         if: ${{ inputs.dry_run == true || vars.PUBLISH_VERIFY_SDK != 'true' }}
