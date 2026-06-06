@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 # Dependency-duplication ceiling (gap G1) — a RATCHET, not a single-version claim.
 #
-# The workspace currently carries known duplicate versions of a few
-# security-critical crates. A naive "exactly one version" gate would be both
-# false (there are several) and impossible to satisfy without a risky dependency
-# unification (the ed25519-dalek 2→3 collapse, deliberately HELD for a careful
-# tested pass). So instead this caps the version count per watched crate at a
-# documented ceiling: NEW drift (a PR that introduces another version) fails CI,
-# while the existing debt is visible and paid down by *lowering* a ceiling when a
-# unification lands. Never raise a ceiling without recording why below.
+# The workspace carries known duplicate versions of a few security-critical
+# crates. A naive "exactly one version" gate would be impossible to satisfy while
+# transitive deps force multiple lines (e.g. sha2). So instead this caps the
+# version count per watched crate at a documented ceiling: NEW drift (a PR that
+# introduces another version) fails CI, while the existing debt is visible and
+# paid down by *lowering* a ceiling when a unification lands. ed25519-dalek is now
+# unified across ALL first-party crates (default builds resolve a single v3); the
+# ceiling stays 2 only because c2pa (provenance SDK) still pins v2 under
+# --all-features. Never raise a ceiling without recording why below.
 #
 # Honest framing for PROOFS.md / pitches: dependency hygiene here is RATCHETED,
 # not single-version. See docs/PROOFS.md.
 #
 # Why a count-ceiling script and not cargo-deny's native per-crate
 # `deny-multiple-versions` (EmbarkStudios/cargo-deny#365): that flag enforces
-# EXACTLY ONE version (would fail today, since the dalek collapse is held) and
+# EXACTLY ONE version (sha2 can't satisfy that — transitive deps force 3) and
 # needs exact-version `[[bans.skip]]` allowlists that break spuriously on a
 # transitive patch bump (=2.2.0 → =2.2.1). A count-ceiling is version-agnostic
 # within a line, AND it can enforce the ratchet *down* (fail when a crate drops
@@ -32,20 +33,22 @@ set -euo pipefail
 
 # watched-crate ceilings. Format: "<crate> <max-distinct-versions>".
 #
-# ed25519-dalek = 2
-#   v2.2.0        ← workspace default ("2"): econ-kernels, externality,
-#                   witness-olog, nucleus-node; + transitively via jsonwebtoken v10.
-#   v3.0.0-pre.7  ← pinned by envelope, lineage, oidc-*, verifier-service,
-#                   trust-registry, witness, control-plane-server; + via iroh.
-#   PLAN: collapse to 1 by moving the workspace default to v3 once a tested pass
-#         confirms jsonwebtoken + nucleus-node build on dalek 3 (HELD — risky).
+# ed25519-dalek = 2  (FIRST-PARTY UNIFIED — default builds resolve a SINGLE v3)
+#   v3.0.0-pre.7  ← the unified line: workspace default + envelope/lineage/oidc-*/
+#                   verifier/trust-registry/witness/node + iroh (pins it exactly).
+#                   jsonwebtoken no longer pulls v2 either (aws_lc_rs backend).
+#   v2.2.0        ← ONLY c2pa v0.85.2 (content-provenance SDK; direct dep), pulled
+#                   in by nucleus-envelope/audit's c2pa features. `cargo tree`
+#                   (default features) shows a single v3; this ceiling uses
+#                   --all-features, which surfaces c2pa's v2. Drops to 1 when c2pa
+#                   moves to dalek 3 (upstream) — not ours to force.
 #
 # sha2 = 3
-#   v0.9.9   ← drand-verify v0.6.2 (nucleus-client → cli/mcp/node/sdk/tool-proxy)
-#   v0.10.9  ← workspace default (econ-kernels, witness-olog, …)
-#   v0.11.0  ← ed25519-dalek v3.0.0-pre.7 / iroh path
-#   PLAN: drops to 2 when drand-verify passes sha2 0.9; to 1 when the dalek
-#         unification settles sha2 on one minor.
+#   v0.9.9   ← drand-verify v0.6.2 (nucleus-client → node/tool-proxy; dormant)
+#   v0.10.9  ← age (oidc-provider) + rust-embed-utils
+#   v0.11.0  ← workspace default + iroh + ed25519-dalek v3 path
+#   PLAN: drops to 2 when drand-verify is dropped/replaced (kills 0.9); to 1 when
+#         age + rust-embed-utils reach sha2 0.11. See the sha2-unification effort.
 CEILINGS=(
   "ed25519-dalek 2"
   "sha2 3"

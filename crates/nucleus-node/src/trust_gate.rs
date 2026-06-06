@@ -63,7 +63,7 @@ impl Default for TrustGateConfig {
             enforce: false,                   // Log-only by default
             default_bracket: "C".to_string(), // Adequate — tenant profile
             receipt_secret: None,
-            executor_signing_key: Arc::new(SigningKey::generate(&mut rand_core::OsRng)),
+            executor_signing_key: Arc::new(generate_signing_key()),
             executor_id: format!("nucleus-executor/{}", uuid_hex()),
         }
     }
@@ -86,6 +86,21 @@ fn uuid_hex() -> String {
 
 /// Filename (under `state_dir`) holding the persisted executor signing key.
 const EXECUTOR_KEY_FILE: &str = "executor_signing_key.der";
+
+/// Generate a fresh Ed25519 signing key from the OS CSPRNG.
+///
+/// Samples 32 raw bytes via `rand_core 0.6`'s `fill_bytes` and feeds
+/// `SigningKey::from_bytes` — equivalent to `SigningKey::generate(&mut rng)` but
+/// avoids the cross-version `CryptoRng`/`rand_core` trait-identity mismatch that
+/// breaks `generate` when multiple rand_core majors coexist (dalek 3 tracks a
+/// newer rand_core than the 0.6 we depend on). Mirrors the pattern in
+/// `nucleus-verifier-service::signing::VerifierSigner::random`.
+fn generate_signing_key() -> SigningKey {
+    use rand_core::RngCore as _;
+    let mut seed = [0u8; 32];
+    rand_core::OsRng.fill_bytes(&mut seed);
+    SigningKey::from_bytes(&seed)
+}
 
 /// Load the per-executor Ed25519 signing key from `state_dir`, creating and
 /// persisting a fresh one on first run.
@@ -124,7 +139,7 @@ pub fn load_or_create_signing_key(state_dir: &Path) -> SigningKey {
         }
     }
 
-    let key = SigningKey::generate(&mut rand_core::OsRng);
+    let key = generate_signing_key();
     match key.to_pkcs8_der() {
         Ok(der) => {
             if let Err(e) = write_key_file(&path, der.as_bytes()) {
