@@ -329,4 +329,55 @@ mod tests {
         // Unknown token fails closed.
         assert!(FlowDeclaration::from_tokens(["bogus"], false, false).is_none());
     }
+
+    // ── Safety monotonicity (property-based) ───────────────────────────
+
+    use proptest::prelude::*;
+
+    fn any_input() -> impl Strategy<Value = DeclaredInput> {
+        prop_oneof![
+            Just(DeclaredInput::UserPrompt),
+            Just(DeclaredInput::WebContent),
+            Just(DeclaredInput::ToolResponse),
+            Just(DeclaredInput::FileRead),
+            Just(DeclaredInput::EnvVar),
+            Just(DeclaredInput::Secret),
+            Just(DeclaredInput::DatabaseRow),
+            Just(DeclaredInput::MemoryRead),
+            Just(DeclaredInput::HttpResponse),
+        ]
+    }
+
+    proptest! {
+        /// **The gate is monotone-restrictive in its declared inputs.** Adding an
+        /// input can only make the verdict *more* restrictive (flip allow→deny),
+        /// never *less* (deny→allow): more declared sources mean the outbound sink
+        /// is at least as tainted, so the lethal-trifecta gate is at most as
+        /// permissive. Equivalently, if a SUPERSET of inputs is allowed, every
+        /// subset is too. This is the core safety property — a caller can't earn an
+        /// `allow` by *declaring more* exposure — and it held only on hand-picked
+        /// cases before; here it's checked over arbitrary declarations.
+        #[test]
+        fn adding_an_input_never_loosens_the_verdict(
+            inputs in proptest::collection::vec(any_input(), 0..6),
+            extra in any_input(),
+            requires_authority in any::<bool>(),
+            sink_public in any::<bool>(),
+        ) {
+            let mut base = FlowDeclaration::new(inputs.clone());
+            base.requires_authority = requires_authority;
+            base.sink_public = sink_public;
+
+            let mut more = base.clone();
+            more.inputs.push(extra);
+
+            if more.decide().is_allow() {
+                prop_assert!(
+                    base.decide().is_allow(),
+                    "adding {extra:?} loosened deny→allow (base inputs={inputs:?}, \
+                     sink_public={sink_public}, requires_authority={requires_authority})"
+                );
+            }
+        }
+    }
 }
