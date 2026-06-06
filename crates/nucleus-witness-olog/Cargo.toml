@@ -20,6 +20,11 @@ thiserror = { workspace = true }
 # AssuranceRung — the rung Gov must carry through WITHOUT upgrading (the
 # load-bearing honesty invariant).
 nucleus-externality = { path = "../nucleus-externality" }
+# route_to_commons — slashed collateral routes to the commons (no-skim
+# conservation), never to an operator. The bonding layer reuses this so the
+# no-skim guarantee is shared, not re-implemented.
+nucleus-econ-kernels = { path = "../nucleus-econ-kernels" }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+proptest = { workspace = true }
