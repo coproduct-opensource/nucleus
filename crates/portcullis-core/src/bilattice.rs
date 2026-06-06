@@ -515,6 +515,53 @@ mod tests {
         assert!(v.is_empty(), "Verdict lattice violations: {v:?}");
     }
 
+    #[test]
+    fn bilattice_law_battery_exhaustive() {
+        // The four-valued verdict is a BILATTICE (Belnap/Ginsberg): two
+        // interlocking lattices on the same carrier — the TRUTH lattice
+        // (`truth_meet` ⊓t / `truth_join` ⊔t) and the KNOWLEDGE lattice
+        // (`info_meet` ⊓k / `info_join` ⊔k). The tests above spot-check
+        // commutativity per op and `verdict_lattice_laws` covers the trait
+        // lattice; this proves BOTH named lattices satisfy ALL four defining laws
+        // — commutativity, associativity, idempotency, absorption — exhaustively
+        // over every one of the 4³ = 64 triples (the carrier is finite, so this is
+        // a total check, not a sample). Associativity + absorption had no prior
+        // coverage for these ops.
+        use Verdict::*;
+        let all = [Allow, Deny, Unknown, Conflict];
+        type Op = fn(Verdict, Verdict) -> Verdict;
+        let lattices: [(&str, Op, Op); 2] = [
+            ("truth", Verdict::truth_meet, Verdict::truth_join),
+            ("info", Verdict::info_meet, Verdict::info_join),
+        ];
+
+        for (name, meet, join) in lattices {
+            for a in all {
+                assert_eq!(meet(a, a), a, "{name} meet idempotent: {a}");
+                assert_eq!(join(a, a), a, "{name} join idempotent: {a}");
+                for b in all {
+                    assert_eq!(meet(a, b), meet(b, a), "{name} meet commutative: {a},{b}");
+                    assert_eq!(join(a, b), join(b, a), "{name} join commutative: {a},{b}");
+                    // Absorption — the two ops genuinely interlock into a lattice.
+                    assert_eq!(meet(a, join(a, b)), a, "{name} absorption a⊓(a⊔b): {a},{b}");
+                    assert_eq!(join(a, meet(a, b)), a, "{name} absorption a⊔(a⊓b): {a},{b}");
+                    for c in all {
+                        assert_eq!(
+                            meet(meet(a, b), c),
+                            meet(a, meet(b, c)),
+                            "{name} meet associative: {a},{b},{c}"
+                        );
+                        assert_eq!(
+                            join(join(a, b), c),
+                            join(a, join(b, c)),
+                            "{name} join associative: {a},{b},{c}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     // ── into_verdict tests ────────────────────────────────────────────
 
     #[test]
