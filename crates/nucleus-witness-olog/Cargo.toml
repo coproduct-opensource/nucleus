@@ -19,11 +19,11 @@ hex = { workspace = true }
 thiserror = { workspace = true }
 # AssuranceRung — the rung Gov must carry through WITHOUT upgrading (the
 # load-bearing honesty invariant).
-nucleus-externality = { path = "../nucleus-externality" }
+nucleus-externality = { path = "../nucleus-externality", version = "1.0.0" }
 # route_to_commons — slashed collateral routes to the commons (no-skim
 # conservation), never to an operator. The bonding layer reuses this so the
 # no-skim guarantee is shared, not re-implemented.
-nucleus-econ-kernels = { path = "../nucleus-econ-kernels" }
+nucleus-econ-kernels = { path = "../nucleus-econ-kernels", version = "1.0.0" }
 # RFC 6962 / RFC 9162-style Merkle inclusion + consistency VERIFICATION for the
 # relying-party trust-pinning layer (light client: verify a fact against a pinned
 # root, no full tree). Same crate nucleus-lineage uses; carries no signature dep
