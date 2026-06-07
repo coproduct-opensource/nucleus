@@ -58,6 +58,17 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "recompute")]
 pub mod mint;
 
+/// WASM-pure, append-only hash chain over an identity's [`CreditEvent`]s
+/// (always compiled — needs only `sha2`). The storage-independent core the
+/// durable [`store`] commits to and any client can re-verify.
+pub mod ledger;
+
+/// Durable, append-only, per-identity credit ledger backed by redb. Behind the
+/// off-by-default `persist` feature so the default + wasm32 builds never compile
+/// redb; the verifier service enables it.
+#[cfg(feature = "persist")]
+pub mod store;
+
 /// A dimension of creditworthiness. Each dimension is scored independently from
 /// recompute-verified events.
 ///

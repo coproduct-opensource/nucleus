@@ -18,6 +18,15 @@ path = "src/main.rs"
 nucleus-envelope = { path = "../nucleus-envelope" }
 nucleus-lineage = { path = "../nucleus-lineage" }
 nucleus-agent-card = { path = "../nucleus-agent-card" }
+# Creditworthiness: price an agent's bond from its receipts (POST /v1/credit).
+# `nucleus-recompute` supplies the ClearingReceipt request type; the credit file
+# folds them (recompute each, honest builds standing, a caught lie burns it) and
+# composes the proven required_bond. Stateless + recomputable client-side.
+nucleus-recompute = { path = "../nucleus-recompute" }
+# `persist`: the durable, append-only credit ledger (redb-backed store) powering
+# the stateful /v1/credit/{agent_id}/accrue + GET standing endpoints. The
+# stateless POST /v1/credit and the mint bridge stay on (default features kept).
+nucleus-creditworthiness = { path = "../nucleus-creditworthiness", features = ["persist"] }
 axum = { version = "0.8", features = ["macros", "json"] }
 tokio = { workspace = true, features = ["full"] }
 tower = { version = "0.5", features = ["util", "limit"] }
@@ -52,6 +61,12 @@ nucleus-control-plane = { path = "../nucleus-control-plane" }
 nucleus-agent-card = { path = "../nucleus-agent-card", features = ["sign"] }
 nucleus-identity = { path = "../nucleus-identity" }
 ring = { workspace = true }
+# Build genuinely-honest receipts in the /v1/credit test (so a Match is real,
+# not asserted) via the same proven kernels recompute checks against.
+nucleus-econ-kernels = { path = "../nucleus-econ-kernels" }
+# Temp paths for the durable-credit-ledger integration tests (open → accrue →
+# reopen at the same path → standing survives).
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

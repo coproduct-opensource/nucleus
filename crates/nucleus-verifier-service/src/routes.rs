@@ -754,6 +754,7 @@ pub async fn well_known_agent_card(
 pub async fn well_known_configuration(State(state): State<AppState>) -> Json<serde_json::Value> {
     let sth_signed = state.signer.is_some();
     let persistence_enabled = state.db.is_some();
+    let credit_ledger_enabled = state.credit_store.is_some();
     Json(serde_json::json!({
         "service": "nucleus-verifier",
         "service_version": env!("CARGO_PKG_VERSION"),
@@ -766,6 +767,26 @@ pub async fn well_known_configuration(State(state): State<AppState>) -> Json<ser
             "bundle_lookup": "/v1/bundles/{hash}/verify",
             "log_size": "/v1/log/size",
             "log_sth": "/v1/log/sth",
+            "credit_stateless": "/v1/credit",
+            "credit_accrue": "/v1/credit/{agent_id}/accrue",
+            "credit_standing": "/v1/credit/{agent_id}",
+        },
+        // The stateful credit endpoints. `accrue` is authenticated; `standing`
+        // is a public, recomputable read. SDKs learn the auth contract here
+        // without reading source.
+        "credit": {
+            "enabled": credit_ledger_enabled,
+            "accrue_auth": {
+                "scheme": "detached-ed25519",
+                "note": "Sign the EXACT request body bytes; this is a detached \
+                         Ed25519 signature, NOT an RFC-7515 JWS.",
+                "pubkey_header": crate::auth::PUBKEY_HEADER,
+                "signature_header": crate::auth::SIGNATURE_HEADER,
+                "pubkey_encoding": "lowercase-hex(32-byte Ed25519 verifying key)",
+                "signature_encoding": "base64-standard(64-byte Ed25519 signature)",
+                "identity": "agent_id == hex(verifying_key); a path mismatch is 403",
+            },
+            "standing_auth": "public (no signature required)",
         },
         "sth": {
             "signed": sth_signed,
@@ -867,4 +888,330 @@ pub async fn bundle_verify_lookup(
         error_kind: rec.error_kind,
         report,
     }))
+}
+
+// ── POST /v1/credit — price an agent's creditworthiness from its receipts ──────
+
+/// Request body for [`credit`].
+#[derive(Debug, Deserialize)]
+pub struct CreditRequest {
+    /// The agent's clearing receipts — any mix of settlement / commons / VCG.
+    pub receipts: Vec<nucleus_recompute::ClearingReceipt>,
+    /// The worst-case one-shot defection gain to deter, micro-USD.
+    pub max_defection_gain_micro: u64,
+}
+
+/// Response for [`credit`].
+#[derive(Debug, Serialize)]
+pub struct CreditResponse {
+    /// Bond-substituting reputation derived from the receipts (financial
+    /// dimension; the reserved Pigouvian dimension is dormant), micro-USD.
+    pub reputation_micro: u64,
+    /// How many receipts contributed an event (`Invalid` receipts are skipped).
+    pub event_count: u64,
+    /// The minimum bond the agent must post to deter `max_defection_gain_micro`,
+    /// given its reputation — the proven `required_bond`, in micro-USD.
+    pub required_bond_micro: u64,
+    /// The defection gain the bond was priced against (echoed for auditability).
+    pub max_defection_gain_micro: u64,
+}
+
+/// `POST /v1/credit` — derive an agent's creditworthiness from its receipts.
+///
+/// Recomputes each receipt against the proven kernels, folds the honest ones
+/// into a credit file (a Match builds standing, a Mismatch — a caught defection
+/// — burns it, an Invalid receipt is skipped), and returns its bond-substituting
+/// reputation plus the minimum bond for the declared defection gain.
+///
+/// **Honest scope:** stateless + a convenience. This endpoint trusts no number
+/// it does not itself recompute — and the SAME result is reproducible
+/// client-side with `@coproduct/verify`
+/// (`creditReputationFromReceipts` / `requiredBondFromReceipts`), so the service
+/// is never the trust root. Malformed JSON is rejected by the extractor (400).
+pub async fn credit(Json(req): Json<CreditRequest>) -> Json<CreditResponse> {
+    let file = nucleus_creditworthiness::mint::credit_file_from_receipts(&req.receipts);
+    Json(CreditResponse {
+        reputation_micro: file.reputation_micro(),
+        event_count: file.event_count(),
+        required_bond_micro: file.required_bond(req.max_defection_gain_micro).0,
+        max_defection_gain_micro: req.max_defection_gain_micro,
+    })
+}
+
+// ── Stateful credit ledger — POST /v1/credit/{agent_id}/accrue + GET standing ──
+//
+// These two endpoints are the durable counterpart of the stateless POST
+// /v1/credit: they persist an agent's recompute-verified history into an
+// append-only, hash-chained, per-identity ledger (redb) so standing survives a
+// restart. They are live ONLY when the service is started with --credit-db
+// (NUCLEUS_CREDIT_DB_PATH); otherwise both return 503 and the default,
+// stateless deployment is unchanged.
+//
+// Auth posture: `accrue` (the write that MINTS standing) is AUTHENTICATED — it
+// requires a detached Ed25519 signature over the body and keys the ledger by
+// the signer's derived identity `hex(vk)` (see `crate::auth`). `GET standing`
+// stays PUBLIC: standing is reputation — an append-only, verify_chain'd,
+// secret-free read meant to be recomputable by anyone; only the mint needs
+// identity binding. With authenticated accrual, the ledger id IS the agent's
+// pubkey hex, so a reader queries standing by that same hex id.
+
+/// Request body for [`credit_accrue`].
+#[derive(Debug, Deserialize)]
+pub struct CreditAccrueRequest {
+    /// The agent's clearing receipts to recompute and accrue — the same type
+    /// the stateless [`credit`] endpoint takes.
+    pub receipts: Vec<nucleus_recompute::ClearingReceipt>,
+    /// The worst-case one-shot defection gain to price the post-accrual bond
+    /// against, micro-USD.
+    pub max_defection_gain_micro: u64,
+}
+
+/// Response for [`credit_accrue`]: the post-accrual standing (the
+/// [`CreditResponse`] fields) plus how many events were newly appended and the
+/// identity's new portable head commitment.
+#[derive(Debug, Serialize)]
+pub struct CreditAccrueResponse {
+    /// Bond-substituting reputation after this accrual, micro-USD.
+    pub reputation_micro: u64,
+    /// Total events folded into the identity's persisted file.
+    pub event_count: u64,
+    /// Minimum bond to deter `max_defection_gain_micro` at this reputation —
+    /// the proven `required_bond`, micro-USD.
+    pub required_bond_micro: u64,
+    /// The defection gain the bond was priced against (echoed for auditability).
+    pub max_defection_gain_micro: u64,
+    /// How many submitted receipts minted a NEW ledger entry. Already-seen
+    /// receipt hashes are deduped (counted 0), so re-POSTing the same receipts
+    /// is idempotent.
+    pub appended: u64,
+    /// The identity's new head hash (hex) — the portable commitment a caller
+    /// retains to detect a later prefix rewrite (the append-extension check).
+    /// `None` only when the identity has no entries (all receipts Invalid).
+    pub head_hash_hex: Option<String>,
+}
+
+/// Query string for [`credit_standing`].
+#[derive(Debug, Deserialize)]
+pub struct StandingQuery {
+    /// The worst-case one-shot defection gain to price the bond against,
+    /// micro-USD.
+    pub max_defection_gain_micro: u64,
+}
+
+/// `POST /v1/credit/{agent_id}/accrue` — append an agent's recompute-verified
+/// receipts to its durable, hash-chained credit ledger and return its
+/// post-accrual standing.
+///
+/// Mints events with the SAME `mint::mint_events` the stateless endpoint uses
+/// (honest receipt → credit, caught defection → debit, Invalid → skipped),
+/// appends each to the per-identity chain (deduping already-seen receipt
+/// hashes), then re-folds the persisted events — the crate's proven commutative
+/// monoid — to price the bond. Re-POSTing the same receipts is idempotent
+/// (`appended == 0`, unchanged standing).
+///
+/// **Identity is AUTHENTICATED.** The caller MUST present a detached Ed25519
+/// signature over the EXACT request body bytes via two headers (see
+/// [`crate::auth`]):
+/// - `x-nucleus-agent-pubkey`: 64-char lowercase hex of the 32-byte Ed25519
+///   verifying key.
+/// - `x-nucleus-signature`: STANDARD base64 of the 64-byte signature over the
+///   body.
+///
+/// The signer's own key IS the identity: the ledger is keyed by the DERIVED
+/// `canonical_id = hex(vk)`, never by a caller-chosen string. The `{agent_id}`
+/// path segment is retained for a self-documenting route but MUST equal the
+/// derived id — a mismatch is the confused-deputy case and returns 403 with
+/// nothing written. Missing / malformed / forged signatures return 401 with
+/// nothing written (fail closed).
+///
+/// Because the id is derived from the verifying key (not chosen), an attacker
+/// can mint keys but CANNOT accrue under an identity it does not control, and
+/// cross-identity double-claim of a receipt is PREVENTED: re-pointing a
+/// captured signed envelope at another id requires re-signing (impossible
+/// without the key) and any path/id mismatch 403s. Replaying the signer's OWN
+/// envelope is a harmless no-op (per-identity `receipt_hash` dedup ⇒
+/// `appended == 0`). There is no nonce/expiry, so this is replay-safe-by-
+/// idempotence, not replay-prevented (see [`crate::auth`]).
+///
+/// This is a detached Ed25519 signature (the same primitive `/v1/witness/
+/// peer-sth` ships), NOT an RFC-7515 JWS, and adds no new dependency. Returns
+/// 503 when `--credit-db` is unset.
+///
+/// **Standing is NOT yet safe to price real money.** Authenticated identity
+/// closes the *spoofing* gap (you can only accrue under a key you hold), but it
+/// is necessary, not sufficient. A [`nucleus_recompute::ClearingReceipt`] carries
+/// no provenance: `verify_receipt` accepts any *internally self-consistent*
+/// receipt, so a key can fabricate arbitrary high-value receipts and farm
+/// standing without limit. And under this self-write binding the caught-defection
+/// debit is adversarially unreachable (only the key-holder writes its own ledger,
+/// so no counterparty can record its defection). Therefore `required_bond` from
+/// this endpoint MUST NOT price real funds until receipts are provenance-bound
+/// (counterparty-signed or transparency-log/settlement-anchored) and
+/// authenticated defection evidence can debit standing.
+pub async fn credit_accrue(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Json<CreditAccrueResponse>, VerifyApiError> {
+    let store = state.credit_store.as_ref().ok_or_else(|| {
+        VerifyApiError::PersistenceDisabled(
+            "credit accrual requires --credit-db (NUCLEUS_CREDIT_DB_PATH); service is stateless"
+                .into(),
+        )
+    })?;
+
+    // ── Authenticated identity binding (fail closed before any write) ──
+    // Require a detached Ed25519 signature over the EXACT body bytes; the
+    // signer's own key IS the identity.
+    let pubkey_hex = headers
+        .get(crate::auth::PUBKEY_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| {
+            VerifyApiError::Unauthorized(format!(
+                "missing or non-ASCII {} header",
+                crate::auth::PUBKEY_HEADER
+            ))
+        })?;
+    let sig_b64 = headers
+        .get(crate::auth::SIGNATURE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| {
+            VerifyApiError::Unauthorized(format!(
+                "missing or non-ASCII {} header",
+                crate::auth::SIGNATURE_HEADER
+            ))
+        })?;
+    // Verifies the signature over the body and returns the SAME key we then
+    // derive the identity from (any failure ⇒ 401, no write).
+    let vk = crate::auth::verify_detached_ed25519(pubkey_hex, sig_b64, &body)?;
+    let canonical_id = crate::auth::canonical_id(&vk);
+
+    // Confused-deputy guard: authenticated as key K, but the path names another
+    // identity. 403, write NOTHING. Equality is over public data — no
+    // constant-time compare needed.
+    if agent_id != canonical_id {
+        return Err(VerifyApiError::Forbidden(format!(
+            "path identity {agent_id:?} does not match the signing key's identity {canonical_id:?}"
+        )));
+    }
+
+    // Signature verified over these exact bytes — now parse the request body.
+    let req: CreditAccrueRequest = serde_json::from_slice(&body)
+        .map_err(|e| VerifyApiError::BadRequest(format!("invalid accrue body: {e}")))?;
+
+    // Reuse the proven mint bridge — no economic logic lives in the handler.
+    // The store key is the DERIVED, authenticated identity — never the raw path.
+    let events = nucleus_creditworthiness::mint::mint_events(&req.receipts);
+    let mut appended = 0u64;
+    for event in events {
+        if store
+            .append(&canonical_id, event)
+            .map_err(|e| VerifyApiError::Internal(format!("credit store append: {e}")))?
+            .is_some()
+        {
+            appended += 1;
+        }
+    }
+
+    // Re-fold the persisted chain (verify_chain runs inside) = post-accrual
+    // standing.
+    let file = store
+        .credit_file(&canonical_id)
+        .map_err(|e| VerifyApiError::Internal(format!("credit store read: {e}")))?;
+    let head_hash_hex = store
+        .head(&canonical_id)
+        .map_err(|e| VerifyApiError::Internal(format!("credit store head: {e}")))?
+        .map(|(_, h)| hex::encode(h));
+
+    Ok(Json(CreditAccrueResponse {
+        reputation_micro: file.reputation_micro(),
+        event_count: file.event_count(),
+        required_bond_micro: file.required_bond(req.max_defection_gain_micro).0,
+        max_defection_gain_micro: req.max_defection_gain_micro,
+        appended,
+        head_hash_hex,
+    }))
+}
+
+/// `GET /v1/credit/{agent_id}?max_defection_gain_micro=N` — an agent's persisted
+/// credit standing, re-folded from its durable ledger.
+///
+/// The ledger is `verify_chain`'d before folding, so a tampered chain is refused
+/// (500). Reuses [`CreditResponse`] verbatim — the durable standing is
+/// value-identical to the stateless POST /v1/credit result for the same events.
+///
+/// PUBLIC by design (no signature required): standing is reputation — a
+/// secret-free, recomputable read. Since authenticated accrual keys the ledger
+/// by `hex(vk)`, `{agent_id}` here is the agent's pubkey hex. Returns 503 when
+/// `--credit-db` is unset.
+pub async fn credit_standing(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Query(q): Query<StandingQuery>,
+) -> Result<Json<CreditResponse>, VerifyApiError> {
+    let store = state.credit_store.as_ref().ok_or_else(|| {
+        VerifyApiError::PersistenceDisabled(
+            "credit standing requires --credit-db (NUCLEUS_CREDIT_DB_PATH); service is stateless"
+                .into(),
+        )
+    })?;
+
+    let file = store
+        .credit_file(&agent_id)
+        .map_err(|e| VerifyApiError::Internal(format!("credit store read: {e}")))?;
+
+    Ok(Json(CreditResponse {
+        reputation_micro: file.reputation_micro(),
+        event_count: file.event_count(),
+        required_bond_micro: file.required_bond(q.max_defection_gain_micro).0,
+        max_defection_gain_micro: q.max_defection_gain_micro,
+    }))
+}
+
+#[cfg(test)]
+mod credit_tests {
+    use super::*;
+
+    fn honest_settlement(
+        price_micro: u64,
+        delivered_bps: u64,
+    ) -> nucleus_recompute::ClearingReceipt {
+        use nucleus_econ_kernels::{classify, refund, seller_gross};
+        nucleus_recompute::ClearingReceipt::Settlement(nucleus_recompute::SettlementClaim {
+            price_micro,
+            delivered_bps,
+            verdict: classify(delivered_bps),
+            seller_gross: seller_gross(price_micro, delivered_bps),
+            refund: refund(price_micro, delivered_bps),
+        })
+    }
+
+    #[tokio::test]
+    async fn credit_endpoint_prices_the_bond_from_history() {
+        let req = CreditRequest {
+            receipts: vec![
+                honest_settlement(400_000, 10_000),
+                honest_settlement(300_000, 10_000),
+            ],
+            max_defection_gain_micro: 1_000_000,
+        };
+        let Json(resp) = credit(Json(req)).await;
+        assert_eq!(resp.reputation_micro, 700_000);
+        assert_eq!(resp.event_count, 2);
+        // 1M gain − 700k verified reputation = 300k bond.
+        assert_eq!(resp.required_bond_micro, 300_000);
+        assert_eq!(resp.max_defection_gain_micro, 1_000_000);
+    }
+
+    #[tokio::test]
+    async fn a_fresh_agent_pays_the_full_bond() {
+        let req = CreditRequest {
+            receipts: vec![],
+            max_defection_gain_micro: 1_000_000,
+        };
+        let Json(resp) = credit(Json(req)).await;
+        assert_eq!(resp.reputation_micro, 0);
+        assert_eq!(resp.required_bond_micro, 1_000_000);
+    }
 }
