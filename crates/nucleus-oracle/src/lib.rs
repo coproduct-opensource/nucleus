@@ -83,6 +83,9 @@ use sha2::{Digest, Sha256};
 use nucleus_eval::EvalCase;
 use nucleus_rubric::{Criterion, Provenance};
 
+mod summary;
+pub use summary::{summarize, PortfolioSummary};
+
 /// Versioned, domain-separated tag prefixed to the canonical receipt bytes before
 /// hashing — the `RECEIPT_DOMAIN` discipline re-applied from `nucleus-eval` /
 /// `nucleus-recompute`. Bumping the `vN` suffix versions the receipt wire format.

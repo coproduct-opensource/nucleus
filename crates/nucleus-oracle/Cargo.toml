@@ -29,4 +29,10 @@ nucleus-eval = { path = "../nucleus-eval" }
 # PATH. Default features OFF keeps the closure lean + WASM-safe.
 nucleus-rubric = { path = "../nucleus-rubric" }
 # serde_json is a normal dependency (used by `canonical_bytes` for the receipt
-# hash), so tests + examples reuse it — no separate [dev-dependencies] entry.
+# hash), so tests + examples reuse it.
+
+[dev-dependencies]
+# The published credit ledger — used ONLY by the dogfood coalition-settlement
+# example to mint real CreditEvents from a verified GradeReceipt (the
+# proof→reputation flywheel, end to end). Not a runtime dependency of the crate.
+nucleus-creditworthiness = { path = "../nucleus-creditworthiness" }
