@@ -3,21 +3,40 @@
 This directory holds the **Charon + Aeneas extraction** of the self-contained
 monotonicity-gate core in `crates/ck-policy/src/extracted.rs`.
 
-`generated/Funs.lean` and `generated/Types.lean` are produced by the pipeline
-below and committed verbatim — **do not hand-edit them**. Regenerate with the
-exact toolchain (see "Provenance") and commit the result.
+`generated/CkPolicy/Funs.lean` and `generated/CkPolicy/Types.lean` are produced
+by the pipeline below and committed verbatim — **do not hand-edit them**.
+Regenerate with the exact toolchain (see "Provenance") and commit the result.
+(Aeneas emits `Funs.lean`/`Types.lean` FLAT; they are moved into the `CkPolicy/`
+subdir so the lakefile's `srcDir := "generated"` + `roots := [CkPolicy.Types,
+CkPolicy.Funs]` resolve them. The drift CI compares the flat regenerated files to
+the committed `generated/CkPolicy/*` ones.)
+
+The tier-1 SOUNDNESS PROOFS over this generated core live in
+`CkPolicyAeneas.lean` (built by `.github/workflows/ck-policy-aeneas.yml`); the
+tier-4 PARITY binding to production `check_monotonicity` is
+`crates/ck-policy/tests/policy_aeneas_parity.rs`.
 
 ## Pipeline
 
 ```
 crates/ck-policy/src/extracted.rs       (Aeneas-subset Rust: ints/bool/arrays/slices)
         │  charon cargo --preset aeneas --start-from 'ck_policy::extracted::passed_core'
+        │                               --dest-file /tmp/ck_policy.llbc
         ▼
         ck_policy.llbc                   (Charon MIR → LLBC)
-        │  aeneas -backend lean -split-files ck_policy.llbc -dest lean-aeneas/generated
+        │  aeneas -backend lean -split-files ck_policy.llbc -dest <tmp>
+        │  (then move Funs.lean / Types.lean into generated/CkPolicy/)
         ▼
-generated/{Funs,Types}.lean             (Aeneas Lean 4 model)
+generated/CkPolicy/{Funs,Types}.lean    (Aeneas Lean 4 model)
+        │  CkPolicyAeneas.lean proves soundness OVER these defs (tier-1)
+        ▼
+policy_aeneas_parity.rs binds the core to production check_monotonicity (tier-4)
 ```
+
+> Footgun: Charon only emits LLBC when the target crate actually RECOMPILES.
+> After a `cargo test`/`cargo build` warms the cache, `charon cargo …` finishes
+> in <1s and produces NO llbc (no error). Fix: `touch src/extracted.rs src/lib.rs`
+> (or `cargo clean -p ck-policy`) before extracting.
 
 `passed_core` and its callees (`subset_u32`, `dropped_u32`, `budget_within`,
 `rules_non_weakening`, the per-axis `*_violated`) translate cleanly — **no
@@ -41,6 +60,34 @@ faithfully mirrors the gate's verdict was extracted by Charon+Aeneas and (in the
 proof layer) is proven in Lean; that core is bound to production
 `check_monotonicity` by a parity proptest.* It is **not** "the literal
 `check_monotonicity` was verified."
+
+### The tier-1 theorems (`CkPolicyAeneas.lean`)
+
+Each is proved DIRECTLY over the generated defs; `#print axioms` on each is
+`[propext, Classical.choice, Quot.sound]` (no `sorryAx`, no `native_decide`):
+
+* `passed_core_decomp` — gate `ok true` ⇒ every generated safety scan returned
+  its safe value (cap/io/proofreq/budget `ok false`, `rules_non_weakening` `ok true`).
+* `budget_not_violated` — budget "not violated" ⇒ generated `budget_within` `ok true`.
+* `rules_non_weakening_sound` — generated `rules_non_weakening` `ok true` ⇒ child
+  disables no parent-enabled flag (FULL loop-free decode of the anti-coup conjunct).
+* `T1_extracted_gate_sound` — the combined soundness theorem (analogue of
+  `Ck.Policy.T1_gate_sound`, over the GENERATED `passed_core`).
+
+## Mathlib posture (HONEST)
+
+The Aeneas Lean STANDARD LIBRARY (`import Aeneas`) transitively `require`s Mathlib
+at the pinned commit, so building the generated/proof files pulls Mathlib —
+UNAVOIDABLE, identical to the `crates/portcullis-core/lean` precedent. The proofs
+in `CkPolicyAeneas.lean` are nonetheless "Mathlib-free" as a PROOF DISCIPLINE:
+they use only structural `cases`/`split_ifs`/`injection` + Aeneas Std bind lemmas,
+no Mathlib lemmas, no `native_decide`. The sibling HAND-WRITTEN model package
+(`crates/ck-policy/lean`) has no Aeneas dependency and is fully Mathlib-free.
+
+Build: `cd crates/ck-policy/lean-aeneas && lake exe cache get && lake build
+CkPolicyAeneas`. The Aeneas stdlib itself contains internal `sorry`s (in
+`Aeneas/Std/Slice.lean`, `String.lean`); these are IRRELEVANT to our claim —
+the `#print axioms` audit proves no soundness theorem depends on them.
 
 ## TCB caveat — verified Rust != verified binary
 
