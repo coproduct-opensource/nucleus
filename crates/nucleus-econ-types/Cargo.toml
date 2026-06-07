@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
+repository.workspace = true
 description = "Financially load-bearing newtypes (MicroUsd, AuctionId/AgentId/ProposalId) shared across the Nucleus economic surface. Zero-dependency beyond serde so every money/ID crate can depend on it without pulling in heavy transitive graphs. Wire shape is byte-identical to the bare primitive via serde(transparent)."
 
 [lints]

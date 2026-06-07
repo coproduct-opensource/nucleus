@@ -1,0 +1,70 @@
+name: Publish crates (trusted publishing)
+
+# KEYLESS publishing of the economic / credit crate closure to crates.io via
+# crates.io Trusted Publishing (GitHub OIDC) — NO stored CARGO_REGISTRY_TOKEN.
+# rust-lang/crates-io-auth-action exchanges this workflow's OIDC identity for a
+# short-lived token (auto-revoked at job end).
+#
+# PREREQUISITE (one-time, per crate, in the crates.io UI → crate → Settings →
+# Trusted Publishing): register repo `coproduct-opensource/nucleus`, workflow
+# `crates-publish.yml`. crates.io cannot do a NEW crate's FIRST publish via OIDC
+# (unlike PyPI pending publishers) — every crate below was first published
+# manually; this workflow handles all SUBSEQUENT releases keylessly.
+#
+# Only crates already on crates.io are listed. nucleus-node is NOT yet published,
+# so it cannot go keyless until its first manual publish (then add it here).
+#
+# Trigger: manual (workflow_dispatch) or pushing a `crates-v*` tag. The publish is
+# idempotent — a crate whose current version is already on crates.io is skipped,
+# so a re-run after a partial/rate-limited run is safe.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "crates-v*"
+
+permissions:
+  contents: read
+  id-token: write # required for the crates.io OIDC token exchange
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  publish:
+    name: cargo publish (keyless, dependency order)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          cache: true
+      - name: Mint short-lived crates.io token (OIDC, no stored secret)
+        uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
+        id: auth
+      - name: Publish in dependency order (idempotent)
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          set -uo pipefail
+          # Topological order: each crate's normal deps appear before it.
+          crates="nucleus-econ-types nucleus-externality nucleus-econ-kernels \
+                  nucleus-recompute nucleus-witness-olog nucleus-creditworthiness"
+          for c in $crates; do
+            echo "::group::publish $c"
+            if out=$(cargo publish -p "$c" --locked 2>&1); then
+              echo "$out"
+              echo "published $c"
+            else
+              echo "$out"
+              if echo "$out" | grep -qiE "already (uploaded|exists)|is already uploaded"; then
+                echo "skip $c — this version is already on crates.io"
+              else
+                echo "::error::publish failed for $c"
+                exit 1
+              fi
+            fi
+            echo "::endgroup::"
+          done

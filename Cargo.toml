@@ -77,6 +77,7 @@ edition = "2021"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 authors = ["Coproduct <hello@coproduct.dev>"]
+repository = "https://github.com/coproduct-opensource/nucleus"
 
 [workspace.lints.clippy]
 type_complexity = "allow"

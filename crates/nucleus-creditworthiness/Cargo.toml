@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
+repository.workspace = true
 description = "Agent credit file: aggregate recompute-verified history into bond-substituting reputation. A multi-dimensional, order-independent (recompute-stable) vector — financial-default dimension active, Pigouvian externality dimension reserved-but-dormant — composing the proven nucleus-witness-olog::required_bond kernel."
 
 [lints]
