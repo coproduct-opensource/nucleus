@@ -652,6 +652,52 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    // ── Parity bridge: BondedDeterrence.lean T1 ⇔ the real slashing schedule ──
+    //
+    // Lean `Nucleus.Cooperation.BondedDeterrence` proves, for the single-shot
+    // deterrence game `payoff Honest = 0`, `payoff Deviate = gain - B` (bond
+    // slashed under probability-1 recompute):
+    //
+    //     T1 (`honest_strictly_dominates`):  B > gain → 0 > gain - B
+    //
+    // The REAL slashing schedule in this crate is `deters(bond, rep, gain) =
+    // gain ≤ bond + rep`, specialised to the pure-bond case `rep = 0`:
+    // `deters(B, 0, gain) ↔ gain ≤ B`. This test binds T1's dominance condition
+    // to that real function: whenever the bond strictly covers the gain, (a) the
+    // schedule DETERS, and (b) the Lean `Deviate` payoff `gain - B` is strictly
+    // negative — i.e. Honest (payoff 0) strictly dominates. The schedule is the
+    // value-identical mirror of T1's precondition, so the proof has parity teeth.
+
+    /// The Lean `payoff … Deviate = gain - B`, in `i128` so a slashed bond nets
+    /// negative (mirrors the Lean `Int` codomain). Honest payoff is 0.
+    fn deviate_payoff(gain: u64, bond: u64) -> i128 {
+        i128::from(gain) - i128::from(bond)
+    }
+
+    proptest! {
+        /// **T1 parity.** `B > gain ⇒ Honest strictly dominates` is mirrored by
+        /// the real `deters(B, 0, gain)` schedule: a bond that strictly covers
+        /// the gain BOTH deters (schedule) AND makes the Lean `Deviate` payoff
+        /// strictly negative (`gain - B < 0 = Honest`). And the tightness side:
+        /// when `B ≤ gain` the schedule's deterrence is exactly `gain == B`
+        /// boundary and `Deviate` payoff is ≥ 0 (not strictly dominated) —
+        /// matching Lean `deviate_pays_when_underbonded`.
+        #[test]
+        fn bonded_deterrence_t1_parity(gain in 0u64..u64::MAX, bond in 0u64..u64::MAX) {
+            let honest_payoff: i128 = 0; // Lean `payoff … Honest = 0`
+            if bond > gain {
+                // T1 premise holds: schedule deters AND Honest strictly dominates.
+                prop_assert!(deters(AmountMicro(bond), 0, gain));
+                prop_assert!(honest_payoff > deviate_payoff(gain, bond));
+            } else {
+                // B ≤ gain: Deviate is NOT strictly dominated (weakly pays).
+                prop_assert!(deviate_payoff(gain, bond) >= honest_payoff);
+                // Schedule deters iff at-or-above the floor, i.e. exactly gain == bond.
+                prop_assert_eq!(deters(AmountMicro(bond), 0, gain), gain == bond);
+            }
+        }
+    }
+
     fn witness_sk() -> SigningKey {
         SigningKey::from_bytes(&[1u8; 32])
     }
