@@ -304,6 +304,108 @@ impl Default for StaticKeyResolver {
     }
 }
 
+/// **Pigouvian W2 — total Pigouvian micro-USD aggregator.**
+///
+/// Walks a chain of signed lineage edges and sums every
+/// `EdgeKind::WelfareRebate.micro_usd` value (negative — disbursement
+/// outflow) and every `EdgeKind::Externality` attr
+/// `pigou_charge_micro_usd` (positive — tax inflow). The net is what
+/// the substrate's externality layer charged minus what it rebated;
+/// `0` for a chain with no Pigouvian activity.
+///
+/// Verifier SDKs (browser, CLI, agent) call this AFTER `verify_chain`
+/// returns `Ok(())` so the sum is over CRYPTOGRAPHICALLY-VERIFIED
+/// edges only.
+pub fn total_pigouvian_micro_usd(edges: &[crate::LineageEdge]) -> i128 {
+    let mut net: i128 = 0;
+    for edge in edges {
+        match &edge.kind {
+            crate::EdgeKind::Externality { .. } => {
+                if let Some(s) = edge.attrs.get("pigou_charge_micro_usd") {
+                    if let Ok(v) = s.parse::<u64>() {
+                        net = net.saturating_add(i128::from(v));
+                    }
+                }
+            }
+            crate::EdgeKind::WelfareRebate { micro_usd, .. } => {
+                net = net.saturating_sub(i128::from(*micro_usd));
+            }
+            _ => {}
+        }
+    }
+    net
+}
+
+/// Tests for surface that does NOT depend on the demo signer — these run
+/// under default features (the `tests` module below is gated behind
+/// `insecure-local-issuer` because it needs `LocalIssuer`).
+#[cfg(test)]
+mod pigouvian_tests {
+    use crate::edge::{EdgeKind, LineageEdge};
+    use crate::id::CallSpiffeId;
+
+    fn pod() -> CallSpiffeId {
+        CallSpiffeId::pod("prod.example.com", "agents", "coder").unwrap()
+    }
+
+    /// **W2 — total_pigouvian_micro_usd aggregator.**
+    /// Walks a chain with 1 Externality charge (750) and 2
+    /// WelfareRebates (300 + 250). Net = +750 - 300 - 250 = +200.
+    #[test]
+    fn total_pigouvian_micro_usd_sums_charges_minus_rebates() {
+        let p = pod();
+        let ext = LineageEdge::from_parent(
+            p.derive_artifact(b"ext").unwrap(),
+            p.clone(),
+            EdgeKind::Externality {
+                resource: "gpu_s".to_string(),
+                oracle_kid: "k1".to_string(),
+            },
+        )
+        .with_attr("pigou_charge_micro_usd", "750");
+        let rebate1 = LineageEdge::from_parent(
+            p.derive_artifact(b"r1").unwrap(),
+            p.clone(),
+            EdgeKind::WelfareRebate {
+                recipient_kid: "w1".to_string(),
+                micro_usd: 300,
+                source_externality_edge_hash: "f".repeat(64),
+            },
+        );
+        let rebate2 = LineageEdge::from_parent(
+            p.derive_artifact(b"r2").unwrap(),
+            p,
+            EdgeKind::WelfareRebate {
+                recipient_kid: "w2".to_string(),
+                micro_usd: 250,
+                source_externality_edge_hash: "f".repeat(64),
+            },
+        );
+        assert_eq!(
+            super::total_pigouvian_micro_usd(&[ext, rebate1, rebate2]),
+            200
+        );
+    }
+
+    #[test]
+    fn total_pigouvian_micro_usd_zero_on_empty_chain() {
+        assert_eq!(super::total_pigouvian_micro_usd(&[]), 0);
+    }
+
+    #[test]
+    fn total_pigouvian_micro_usd_ignores_unrelated_edges() {
+        let p = pod();
+        let edge = LineageEdge::from_parent(
+            p.derive_artifact(b"x").unwrap(),
+            p,
+            EdgeKind::ToolCall {
+                tool: "Bash".to_string(),
+            },
+        );
+        assert_eq!(super::total_pigouvian_micro_usd(&[edge]), 0);
+    }
+}
+
 #[cfg(test)]
 #[cfg(feature = "insecure-local-issuer")]
 mod tests {
