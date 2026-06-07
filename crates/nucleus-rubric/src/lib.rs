@@ -419,6 +419,26 @@ pub fn winner(rubric: &Rubric, scorecards: &[Scorecard]) -> Option<usize> {
     ranked_order(rubric, scorecards).into_iter().next()
 }
 
+/// Validate-then-[`rank`]: rejects malformed scorecards (wrong grade count,
+/// out-of-range grade) before ranking, instead of relying on
+/// [`faithful_total`]'s defensive missing-grade-as-`0`. Use this on any path
+/// where the scorecards are untrusted; the infallible [`rank`] keeps the
+/// documented "validate first" contract for already-validated inputs.
+pub fn rank_checked(rubric: &Rubric, scorecards: &[Scorecard]) -> Result<Vec<Ranked>, RubricError> {
+    rubric.validate_all(scorecards)?;
+    Ok(rank(rubric, scorecards))
+}
+
+/// Validate-then-[`winner`]: same guarantee as [`rank_checked`]. Returns
+/// `Ok(None)` for an empty (but valid) slice.
+pub fn winner_checked(
+    rubric: &Rubric,
+    scorecards: &[Scorecard],
+) -> Result<Option<usize>, RubricError> {
+    rubric.validate_all(scorecards)?;
+    Ok(winner(rubric, scorecards))
+}
+
 /// The single-winner VCG-marginal: `winner_total - runner_up_total`, derived
 /// purely from the recorded integer RV scores. Requires `>= 2` artifacts (a
 /// marginal is a contribution *over the next-best*; with no runner-up it is
@@ -430,6 +450,12 @@ pub fn marginal(rubric: &Rubric, scorecards: &[Scorecard]) -> Result<u128, Rubri
             got: scorecards.len(),
         });
     }
+    // The marginal feeds the credit/money path (VCG-marginal → CreditEvent), so it
+    // must reject malformed scorecards rather than let `faithful_total`'s
+    // missing-grade-as-0 / out-of-range grades silently distort the total (and the
+    // minted credit). The infallible `rank`/`winner` keep the documented
+    // validate-first contract; `marginal` validates here because it is load-bearing.
+    rubric.validate_all(scorecards)?;
     let order = ranked_order(rubric, scorecards);
     let winner_total = faithful_total(rubric, &scorecards[order[0]]);
     let runner_up_total = faithful_total(rubric, &scorecards[order[1]]);
@@ -987,5 +1013,58 @@ mod tests {
         };
         // 2 of 3 cases actually pass on recompute — that's the grade.
         assert_eq!(grade_from_eval(&run), 2);
+    }
+
+    // ── Kernel hardening: validate the money path ─────────────────────────────
+
+    #[test]
+    fn marginal_rejects_out_of_range_grade() {
+        // An out-of-range RV grade would inflate faithful_total (and thus the
+        // VCG-marginal → minted credit) if left unvalidated. marginal must reject.
+        let r = fixed_rubric();
+        let good = sc("a", [10, 10, 10, 0, 0]);
+        let cheat = sc("b", [99, 0, 0, 0, 0]); // 99 > max_grade 10 on an RV column
+        assert!(matches!(
+            marginal(&r, &[good, cheat]),
+            Err(RubricError::GradeExceedsMax { .. })
+        ));
+    }
+
+    #[test]
+    fn marginal_rejects_wrong_grade_count() {
+        let r = fixed_rubric();
+        let good = sc("a", [1, 1, 1, 0, 0]);
+        let short = Scorecard {
+            artifact_id: "b".into(),
+            grades: vec![1, 2, 3], // wrong length
+        };
+        assert!(matches!(
+            marginal(&r, &[good, short]),
+            Err(RubricError::GradeCountMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn marginal_accepts_valid_and_matches_unchecked_path() {
+        let r = fixed_rubric();
+        let cards = [sc("a", [10, 10, 10, 0, 0]), sc("b", [1, 1, 1, 0, 0])];
+        // winner_total - runner_up = (5*10+3*10+2*10) - (5+3+2) = 100 - 10 = 90.
+        assert_eq!(marginal(&r, &cards).unwrap(), 90);
+    }
+
+    #[test]
+    fn rank_checked_and_winner_checked_reject_malformed() {
+        let r = fixed_rubric();
+        let cheat = sc("b", [99, 0, 0, 0, 0]);
+        assert!(rank_checked(&r, std::slice::from_ref(&cheat)).is_err());
+        assert!(winner_checked(&r, &[cheat]).is_err());
+    }
+
+    #[test]
+    fn checked_variants_agree_with_unchecked_on_valid_input() {
+        let r = fixed_rubric();
+        let cards = [sc("a", [10, 0, 0, 0, 0]), sc("b", [1, 1, 1, 0, 0])];
+        assert_eq!(rank_checked(&r, &cards).unwrap(), rank(&r, &cards));
+        assert_eq!(winner_checked(&r, &cards).unwrap(), winner(&r, &cards));
     }
 }

@@ -1,0 +1,76 @@
+name: WASM Pure Crates
+
+# Proves the pure, integer/byte-only economic + verification crates compile to
+# wasm32-unknown-unknown — the property their docs claim ("WASM-safe", no
+# ring/tokio/redb/native deps). A regression (e.g. a stray std-only or native
+# dependency creeping into the closure) breaks the build here instead of silently
+# invalidating the in-browser / edge story. Path-isolated; mirrors rubric-lean.yml.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "crates/nucleus-rubric/**"
+      - "crates/nucleus-rubric-olog/**"
+      - "crates/nucleus-eval/**"
+      - "crates/nucleus-oracle/**"
+      - "crates/nucleus-recompute/**"
+      - "crates/nucleus-creditworthiness/**"
+      - "crates/nucleus-witness-olog/**"
+      - "crates/nucleus-econ-kernels/**"
+      - "crates/nucleus-externality/**"
+      - "Cargo.lock"
+      - ".github/workflows/wasm-pure-crates.yml"
+  pull_request:
+    paths:
+      - "crates/nucleus-rubric/**"
+      - "crates/nucleus-rubric-olog/**"
+      - "crates/nucleus-eval/**"
+      - "crates/nucleus-oracle/**"
+      - "crates/nucleus-recompute/**"
+      - "crates/nucleus-creditworthiness/**"
+      - "crates/nucleus-witness-olog/**"
+      - "crates/nucleus-econ-kernels/**"
+      - "crates/nucleus-externality/**"
+      - "Cargo.lock"
+      - ".github/workflows/wasm-pure-crates.yml"
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  wasm-build:
+    name: cargo build --target wasm32-unknown-unknown (pure crates)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Add wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Cache cargo + target
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: wasm-pure-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            wasm-pure-${{ runner.os }}-
+
+      - name: Build pure crates for wasm32
+        run: |
+          cargo build --locked --target wasm32-unknown-unknown \
+            -p nucleus-rubric \
+            -p nucleus-rubric-olog \
+            -p nucleus-eval \
+            -p nucleus-oracle \
+            -p nucleus-recompute \
+            -p nucleus-creditworthiness
