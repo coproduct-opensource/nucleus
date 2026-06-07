@@ -68,6 +68,12 @@ pub mod mint;
 /// durable [`store`] commits to and any client can re-verify.
 pub mod ledger;
 
+/// WASM-pure airdrop-**optionality** math: a pure, deterministic, recomputable
+/// projection of recompute-verified [`ledger`] history into a HYPOTHETICAL
+/// basis-point allocation. NOT a token, NOT transferable, NOT a security, NOT
+/// for sale — it confers no right, claim, or promise. See the module docs.
+pub mod eligibility;
+
 /// Durable, append-only, per-identity credit ledger backed by redb. Behind the
 /// off-by-default `persist` feature so the default + wasm32 builds never compile
 /// redb; the verifier service enables it.
