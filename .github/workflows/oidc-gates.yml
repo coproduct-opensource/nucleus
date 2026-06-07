@@ -31,14 +31,16 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: write   # for the comment-on-failure step
 
 jobs:
   vendor-neutrality:
     name: Vendor-neutrality gate
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write   # for the comment-on-failure step
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - name: Run no-vendor-strings.sh
         id: gate
         run: |
@@ -49,7 +51,7 @@ jobs:
         continue-on-error: false
       - name: Surface failure as PR comment
         if: failure() && github.event_name == 'pull_request'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const fs = require('fs');
@@ -74,8 +76,11 @@ jobs:
   algorithm-pin:
     name: Algorithm-pin gate
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write   # for the comment-on-failure step
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - name: Run alg-pin-check.sh
         id: gate
         run: |
@@ -86,7 +91,7 @@ jobs:
         continue-on-error: false
       - name: Surface failure as PR comment
         if: failure() && github.event_name == 'pull_request'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const fs = require('fs');
