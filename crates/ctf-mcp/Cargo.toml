@@ -2,7 +2,7 @@
 name = "ctf-mcp"
 version = "1.0.0"
 edition = "2021"
-rust-version = "1.95"
+rust-version = "1.93"
 license = "MIT OR Apache-2.0"
 description = "MCP server for The Vault CTF — lets any AI agent play the security challenge"
 
