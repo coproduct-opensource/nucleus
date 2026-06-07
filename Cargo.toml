@@ -54,6 +54,7 @@ members = [
     "crates/nucleus-creditworthiness",      # Agent credit file: recompute-verified history → bond-substituting reputation (financial active, externality reserved)
     "crates/nucleus-eval",                  # Recompute-verified eval receipt → CreditEvent: deterministic pass-rate bounds the reward (a lie mints a debit, not a fat credit)
     "crates/nucleus-rubric",                # CT-disciplined cardinal scoring kernel: rank() is a faithful sub-functor over RecomputeVerified dims only (attested/judge carried but inert); Pareto front + scalarization + recomputable VCG-marginal → CreditEvent
+    "crates/nucleus-rubric-olog",           # Decidable type-gate: checks a PROPOSED translation between two rubric vocabularies is a valid honesty-preserving functor (Rubric→Schema; criterion-id object map; RV↦RV + max_grade-compat). Verifies a given map, does not synthesize one. Local minimal Schema/SchemaMorphism (no dep on the private olog repo).
 ]
 # nucleus-claude-hook moved to nucleus-code (private product repo)
 # exposure-web is WASM-only (wasm32-unknown-unknown); build with: cd crates/exposure-web && trunk build

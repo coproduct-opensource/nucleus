@@ -6956,6 +6956,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-rubric-olog"
+version = "1.0.0"
+dependencies = [
+ "nucleus-rubric",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nucleus-sdk"
 version = "1.0.0"
 dependencies = [
