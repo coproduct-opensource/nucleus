@@ -40,10 +40,18 @@ jobs:
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.kani
-          key: kani-toolchain-${{ runner.os }}-${{ hashFiles('.github/workflows/kani-nightly.yml') }}
+          # Key on the PINNED Kani version, NOT the workflow file: hashing the
+          # whole file re-downloaded the ~1 GB toolchain on every unrelated edit.
+          # Bump this suffix together with the `kani-version` input below when
+          # upgrading Kani.
+          key: kani-toolchain-${{ runner.os }}-kani-0.67.0
       - name: Run Kani (fast harnesses)
         uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
         with:
+          # Pin the verifier version for reproducible proofs (default is
+          # "latest", which silently changes what Kani checks) and to make the
+          # toolchain cache key above stable. Bump both together.
+          kani-version: "0.67.0"
           args: >-
             -p portcullis
             --solver cadical
@@ -96,10 +104,18 @@ jobs:
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.kani
-          key: kani-toolchain-${{ runner.os }}-${{ hashFiles('.github/workflows/kani-nightly.yml') }}
+          # Key on the PINNED Kani version, NOT the workflow file: hashing the
+          # whole file re-downloaded the ~1 GB toolchain on every unrelated edit.
+          # Bump this suffix together with the `kani-version` input below when
+          # upgrading Kani.
+          key: kani-toolchain-${{ runner.os }}-kani-0.67.0
       - name: Run Kani (constitutional kernel — fast tier)
         uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
         with:
+          # Pin the verifier version for reproducible proofs (default is
+          # "latest", which silently changes what Kani checks) and to make the
+          # toolchain cache key above stable. Bump both together.
+          kani-version: "0.67.0"
           args: >-
             -p ck-kernel
             --solver cadical
@@ -134,10 +150,18 @@ jobs:
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.kani
-          key: kani-toolchain-${{ runner.os }}-${{ hashFiles('.github/workflows/kani-nightly.yml') }}
+          # Key on the PINNED Kani version, NOT the workflow file: hashing the
+          # whole file re-downloaded the ~1 GB toolchain on every unrelated edit.
+          # Bump this suffix together with the `kani-version` input below when
+          # upgrading Kani.
+          key: kani-toolchain-${{ runner.os }}-kani-0.67.0
       - name: Run Kani (constitutional kernel — all harnesses)
         uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
         with:
+          # Pin the verifier version for reproducible proofs (default is
+          # "latest", which silently changes what Kani checks) and to make the
+          # toolchain cache key above stable. Bump both together.
+          kani-version: "0.67.0"
           args: "-p ck-kernel --solver cadical"
       - name: Summary
         if: always()
@@ -164,10 +188,18 @@ jobs:
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.kani
-          key: kani-toolchain-${{ runner.os }}-${{ hashFiles('.github/workflows/kani-nightly.yml') }}
+          # Key on the PINNED Kani version, NOT the workflow file: hashing the
+          # whole file re-downloaded the ~1 GB toolchain on every unrelated edit.
+          # Bump this suffix together with the `kani-version` input below when
+          # upgrading Kani.
+          key: kani-toolchain-${{ runner.os }}-kani-0.67.0
       - name: Run Kani (all harnesses)
         uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f # v1.1
         with:
+          # Pin the verifier version for reproducible proofs (default is
+          # "latest", which silently changes what Kani checks) and to make the
+          # toolchain cache key above stable. Bump both together.
+          kani-version: "0.67.0"
           args: "-p portcullis --solver cadical"
       - name: Proof count regression gate
         run: |
