@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
+repository.workspace = true
 description = "Phase 2 contract (P2.1): the Gov functor (admitted witness → olog fact) and the signed, transparency-loggable accumulation manifest. Types + the no-upgrade invariant only — wiring to the real olog/merge-gate archive is P2.2. See docs/rfcs/witness-olog-functor.md."
 
 [lints]

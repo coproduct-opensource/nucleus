@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
+repository.workspace = true
 description = "Integer-only economic kernels (VCG, Ring 0 budget, Lagrangian) lifted from sibling repos with per-file provenance comments. No f64 — see docs/ECON-PRECISION.md."
 
 [lints.rust]

@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
+repository.workspace = true
 description = "Coproduct Pigouvian externality layer: signed externality envelopes, OLAP rollup cube, and rate-setter glue between nucleus-econ-kernels VCG clearing and the witness-federation rebate path. SOTA-inspired by arXiv 2106.06060 + 2601.03451 + 2305.01477; ZK/TEE oracle envelopes per Verifiable Carbon Accounting."
 
 [lints]
