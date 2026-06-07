@@ -59,7 +59,7 @@ pub struct RejectionReason {
     pub message: String,
 }
 
-/// The five constitutional invariants.
+/// The constitutional invariants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConstitutionalInvariant {
@@ -68,4 +68,18 @@ pub enum ConstitutionalInvariant {
     ResourceBoundedness,
     GovernanceMonotonicity,
     BoundedTermination,
+    /// Anti-self-weakening / anti-coup invariant.
+    ///
+    /// An ordinary amendment may ENABLE a governance monotonicity flag in its
+    /// `amendment_rules`, but may never DISABLE one the parent had set. A flag is
+    /// "weakened" iff `parent = true && child = false`.
+    ///
+    /// This is enforced UNCONDITIONALLY — it is never gated on any flag. That
+    /// unconditionality is the crux: if the check were itself gated on a flag,
+    /// that gating flag could be disabled (a coup one level up), so the
+    /// two-step coup would simply recur. Without this invariant, a passing
+    /// amendment can silently disarm a monotonicity flag (this step is legal),
+    /// and the NEXT amendment then escalates freely under the relaxed flag — a
+    /// two-step constitutional coup that the other (flag-gated) checks miss.
+    AmendmentRulesMonotonicity,
 }

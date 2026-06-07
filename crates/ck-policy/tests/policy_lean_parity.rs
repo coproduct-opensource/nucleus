@@ -146,13 +146,27 @@ fn lean_proof_req_violated(p: &PolicyManifest, c: &PolicyManifest) -> bool {
     )
 }
 
-/// Mirror of Lean `passed p c`: the conjunction of the four "not violated"
-/// verdicts. The image of `check_monotonicity(parent=p, child=c).passed`.
+/// Mirror of Lean `rulesNonWeakening c p`: the child's governance flags are
+/// pointwise `≥` the parent's — you may ENABLE a flag but never DISABLE one
+/// (`parent_flag -> child_flag` on each axis). Checked UNCONDITIONALLY.
+fn lean_rules_non_weakening(p: &PolicyManifest, c: &PolicyManifest) -> bool {
+    let pr = &p.amendment_rules;
+    let cr = &c.amendment_rules;
+    (!pr.require_monotone_capabilities || cr.require_monotone_capabilities)
+        && (!pr.require_monotone_io || cr.require_monotone_io)
+        && (!pr.require_monotone_proofreq || cr.require_monotone_proofreq)
+}
+
+/// Mirror of the STRENGTHENED Lean `passed p c` (== the proven `checkPlus`):
+/// the conjunction of the four "not violated" verdicts AND the UNCONDITIONAL
+/// `rulesNonWeakening` conjunct. This is the image of the SHIPPED
+/// `check_monotonicity(parent=p, child=c).passed` after the T1/T4 fix.
 fn lean_passed(p: &PolicyManifest, c: &PolicyManifest) -> bool {
     !lean_cap_violated(p, c)
         && !lean_io_violated(p, c)
         && !lean_budget_violated(p, c)
         && !lean_proof_req_violated(p, c)
+        && lean_rules_non_weakening(p, c)
 }
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -251,11 +265,16 @@ proptest! {
         flag_cap in any::<bool>(),
         flag_io in any::<bool>(),
         flag_proof in any::<bool>(),
+        cflag_cap in any::<bool>(),
+        cflag_io in any::<bool>(),
+        cflag_proof in any::<bool>(),
     ) {
-        // Flags are read off the PARENT only; the child's flags are irrelevant to
-        // the plain gate (THIS is the meta-gap), so we hold them arbitrary-but-true.
+        // The parent's flags gate cap/io/proofreq; the child's flags now MATTER
+        // too — the SHIPPED gate checks `rulesNonWeakening` UNCONDITIONALLY, so
+        // we vary the child's flags in BOTH directions to exercise the anti-coup
+        // check (disabling a parent-enabled flag must now be rejected).
         let parent = manifest(&pc, &pio, &ppr, pbud, ppar, flag_cap, flag_io, flag_proof);
-        let child = manifest(&cc, &cio, &cpr, cbud, cpar, true, true, true);
+        let child = manifest(&cc, &cio, &cpr, cbud, cpar, cflag_cap, cflag_io, cflag_proof);
 
         let prod = check_monotonicity(&parent, &child).passed;
         let model = lean_passed(&parent, &child);
@@ -267,15 +286,18 @@ proptest! {
     }
 }
 
-// ── Fixed adversarial case: the `meta_gap` counterexample ─────────────────────
+// ── Fixed adversarial case: the `meta_gap` coup is now CLOSED ─────────────────
 
-/// The Rust image of the Lean `meta_gap` witness (`fullParent` / `disarmingChild`):
-/// a child IDENTICAL on every projection the gate reads (so `check_monotonicity`
-/// PASSES) that silently turns OFF the parent's `require_monotone_capabilities`
-/// flag — disarming the NEXT amendment. This is the T4 anti-self-weakening crux:
-/// the plain gate never inspects the child's amendment rules.
+/// The Rust image of the Lean `meta_gap` / `weak_gate_admits_coup` witness
+/// (`fullParent` / `disarmingChild`): a child IDENTICAL on every escalation
+/// projection the gate reads, that silently turns OFF the parent's
+/// `require_monotone_capabilities` flag — the disarming step of the two-step
+/// coup. The OLD (parent-flag-only) gate ADMITTED this. The SHIPPED gate now
+/// checks `rulesNonWeakening` UNCONDITIONALLY, so the disarming step is REJECTED
+/// at step ONE — the coup never gets a second move. This is the Rust image of
+/// the Lean `new_gate_rejects_coup` theorem.
 #[test]
-fn meta_gap_passing_amendment_disarms_future_enforcement() {
+fn meta_gap_coup_is_now_rejected() {
     let zero = [0u64; 8];
     // fullParent: every monotone flag ON, empty projections.
     let parent = manifest(&[], &[], &[], zero, 0, true, true, true);
@@ -283,38 +305,35 @@ fn meta_gap_passing_amendment_disarms_future_enforcement() {
     let mut child = parent.clone();
     child.amendment_rules.require_monotone_capabilities = false;
 
-    // The plain production gate PASSES this amendment (model agrees).
-    let prod = check_monotonicity(&parent, &child);
-    assert!(
-        prod.passed,
-        "meta_gap: plain gate should admit the disarming amendment: {:?}",
-        prod.diff
-    );
-    assert!(
-        lean_passed(&parent, &child),
-        "meta_gap: model should agree it passes"
-    );
-
-    // Yet the child has WEAKENED the amendment rules (turned a required-monotone
-    // flag off) — exactly what `check_monotonicity` fails to forbid (Lean
-    // `weakensRules`). The strengthened gate (`checkPlus`, see Ck/Policy.lean)
-    // would REJECT this step; that is the constructive fix the proof recommends.
+    // The child DID weaken the amendment rules (the precondition of the coup).
     assert!(
         parent.amendment_rules.require_monotone_capabilities
             && !child.amendment_rules.require_monotone_capabilities,
         "meta_gap: the child disabled a required-monotone flag"
     );
 
-    // The coup's SECOND step: under the now-relaxed child flag, a grandchild
-    // escalates capabilities freely and STILL passes the plain gate.
-    let mut grandchild = child.clone();
-    grandchild
-        .capabilities
-        .network_allow
-        .insert("evil.com".into());
-    let step2 = check_monotonicity(&child, &grandchild);
+    // THE FIX: the SHIPPED production gate now REJECTS the disarming step.
+    let prod = check_monotonicity(&parent, &child);
     assert!(
-        step2.passed,
-        "meta_gap: two-step coup — grandchild escalates freely after disarming"
+        !prod.passed,
+        "meta_gap CLOSED: shipped gate must REJECT the disarming amendment, got passed=true: {:?}",
+        prod.diff
     );
+    assert!(
+        prod.diff
+            .violated_invariants
+            .contains(&ck_types::ConstitutionalInvariant::AmendmentRulesMonotonicity),
+        "meta_gap: rejection must cite AmendmentRulesMonotonicity: {:?}",
+        prod.diff.violated_invariants
+    );
+
+    // The strengthened model AGREES the step is rejected (parity, both directions).
+    assert!(
+        !lean_passed(&parent, &child),
+        "meta_gap: strengthened model must agree the disarming step is rejected"
+    );
+
+    // Because step ONE is now rejected, the coup's intended SECOND step (a
+    // grandchild escalating capabilities freely under the relaxed flag) is never
+    // reachable on the ordinary path — the child never enters the lineage.
 }

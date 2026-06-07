@@ -295,13 +295,22 @@ pub struct PolicyDiffReport {
     pub io_escalations: Vec<String>,
     pub budget_escalations: Vec<String>,
     pub proof_requirement_drops: Vec<String>,
+    /// Governance monotonicity flags the child WEAKENED relative to the parent
+    /// (parent = true && child = false). Anti-self-weakening / anti-coup.
+    /// Populated unconditionally by `check_monotonicity`.
+    #[serde(default)]
+    pub amendment_rule_weakenings: Vec<String>,
     pub violated_invariants: Vec<ConstitutionalInvariant>,
 }
 
 impl PolicyDiffReport {
     /// True if no constitutional invariants were violated.
+    ///
+    /// Clean requires `violated_invariants` empty AND no amendment-rule
+    /// weakenings — the latter is tracked separately because it is enforced
+    /// unconditionally (anti-coup), independent of any flag.
     pub fn is_clean(&self) -> bool {
-        self.violated_invariants.is_empty()
+        self.violated_invariants.is_empty() && self.amendment_rule_weakenings.is_empty()
     }
 }
 
@@ -594,6 +603,7 @@ mod tests {
             io_escalations: vec![],
             budget_escalations: vec![],
             proof_requirement_drops: vec![],
+            amendment_rule_weakenings: vec![],
             violated_invariants: vec![],
         };
         assert!(diff.is_clean());
@@ -606,9 +616,53 @@ mod tests {
             io_escalations: vec![],
             budget_escalations: vec![],
             proof_requirement_drops: vec![],
+            amendment_rule_weakenings: vec![],
             violated_invariants: vec![ConstitutionalInvariant::CapabilityNonEscalation],
         };
         assert!(!diff.is_clean());
+    }
+
+    #[test]
+    fn test_policy_diff_amendment_weakening_is_dirty() {
+        // A diff with ONLY an amendment-rule weakening (no other violation) must
+        // still be reported dirty — this is the anti-coup channel.
+        let diff = PolicyDiffReport {
+            capability_escalations: vec![],
+            io_escalations: vec![],
+            budget_escalations: vec![],
+            proof_requirement_drops: vec![],
+            amendment_rule_weakenings: vec!["require_monotone_capabilities: true -> false".into()],
+            violated_invariants: vec![ConstitutionalInvariant::AmendmentRulesMonotonicity],
+        };
+        assert!(!diff.is_clean());
+    }
+
+    #[test]
+    fn test_amendment_rules_weakened_flags_over() {
+        let parent = AmendmentRules {
+            may_modify: BTreeSet::new(),
+            may_not_modify: BTreeSet::new(),
+            require_monotone_capabilities: true,
+            require_monotone_io: true,
+            require_monotone_proofreq: true,
+            constitutional_human_signatures: 2,
+        };
+        // Identical parent => no weakening.
+        assert!(parent.weakened_flags_over(&parent).is_empty());
+
+        // Disabling capabilities flag => weakened.
+        let mut child = parent.clone();
+        child.require_monotone_capabilities = false;
+        let w = child.weakened_flags_over(&parent);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].contains("require_monotone_capabilities"));
+
+        // Enabling a flag the parent didn't require => NOT a weakening.
+        let mut parent_loose = parent.clone();
+        parent_loose.require_monotone_io = false;
+        let mut child_strict = parent_loose.clone();
+        child_strict.require_monotone_io = true;
+        assert!(child_strict.weakened_flags_over(&parent_loose).is_empty());
     }
 
     fn sign_bundle(

@@ -77,7 +77,8 @@ jobs:
           import Ck.Policy
           open Ck.Policy
           #print axioms T1_gate_sound
-          #print axioms meta_gap
+          #print axioms weak_gate_admits_coup
+          #print axioms new_gate_rejects_coup
           #print axioms strengthened_gate_closes_it
           EOF
           # `lake env lean` type-checks against the already-built library.

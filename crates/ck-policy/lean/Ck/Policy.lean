@@ -13,9 +13,11 @@
   `crates/ck-policy/tests/policy_lean_parity.rs`.
 
   This discharges **T1** (monotonicity-gate soundness) of the guaranteed-safe-
-  recursion theorem programme, and surfaces the **T4** (anti-self-weakening) crux
-  as a sorry-free constructive counterexample (`meta_gap`) plus its fix
-  (`strengthened_gate_closes_it`).
+  recursion theorem programme, and discharges the **T4** (anti-self-weakening)
+  crux: the pre-fix hole as a sorry-free constructive counterexample
+  (`weak_gate_admits_coup`), the shipped fix on the same witness
+  (`new_gate_rejects_coup`), and transitive anti-coup soundness across a 2-step
+  chain (`strengthened_gate_closes_it`).
 
   # EXTRACTION-GAP CAVEAT
 
@@ -40,10 +42,17 @@
   `dropped_requirements(...).is_empty() == false` (an element of the PARENT not in
   the CHILD), and `budgetWithin` models `BudgetBounds::is_within` (pointwise `≤`).
 
-  `passed p c` models `check_monotonicity(parent=p, child=c).passed`: each of
+  `passedWeak p c` models the PRE-FIX `check_monotonicity`: each of
   cap / io / proofreq is gated on the PARENT's flag (`p.rules.*`); budget is
-  ALWAYS checked; `passed` is the conjunction of the four "clean" verdicts — the
-  exact image of `diff.is_clean()` (`violated_invariants.is_empty()`).
+  ALWAYS checked. This is the buggy gate that admitted the two-step coup
+  (`weak_gate_admits_coup`).
+
+  `passed p c` models the SHIPPED (post-fix) `check_monotonicity(parent=p,
+  child=c).passed`: `passedWeak` AND the UNCONDITIONAL `rulesNonWeakening`
+  conjunct (the child may not DISABLE any governance flag the parent set). This
+  is the exact image of the fixed `diff.is_clean()` and equals the proven
+  `checkPlus`. The `rulesNonWeakening` conjunct is NEVER gated on any flag —
+  that unconditionality is the fix (`new_gate_rejects_coup`).
 -/
 
 namespace Ck.Policy
@@ -141,11 +150,39 @@ def budgetViolated (p c : Manifest) : Bool :=
 def proofReqViolated (p c : Manifest) : Bool :=
   if p.rules.proofreq then dropsB c.proofReqs p.proofReqs else false
 
-/-- `passed p c` models `check_monotonicity(parent=p, child=c).passed`. The verdict
-    is `is_clean()` = no axis violated = the conjunction of the four "not
-    violated" verdicts. -/
-def passed (p c : Manifest) : Bool :=
+/-- `passedWeak p c` models the PRE-FIX `check_monotonicity`: the conjunction of
+    the four "not violated" verdicts, each cap/io/proofreq axis gated on the
+    PARENT flag, budget always checked. This is the BUGGY gate — it never
+    inspects the child's amendment rules, so it admits the two-step coup
+    (`weak_gate_admits_coup`). Kept as a documentary witness of the old logic. -/
+def passedWeak (p c : Manifest) : Bool :=
   !capViolated p c && !ioViolated p c && !budgetViolated p c && !proofReqViolated p c
+
+/-- `weakensRules c p`: the child turns OFF some monotone flag the parent had ON —
+    i.e. it weakens the amendment rules along at least one axis. This is exactly
+    what the PRE-FIX `check_monotonicity` does NOT inspect. -/
+def weakensRules (c p : Manifest) : Prop :=
+  (p.rules.cap = true ∧ c.rules.cap = false) ∨
+  (p.rules.io = true ∧ c.rules.io = false) ∨
+  (p.rules.proofreq = true ∧ c.rules.proofreq = false)
+
+/-- `rulesNonWeakening c p`: the child's flags are pointwise `≥` the parent's —
+    i.e. you can ENABLE a monotone flag but never DISABLE one. As a `Bool`:
+    `parent_flag → child_flag` on each axis. This is the boolean image of
+    `ck_types::manifest::AmendmentRules::weakened_flags_over(...).is_empty()`,
+    and it is checked UNCONDITIONALLY (no flag guard) by the shipped gate. -/
+def rulesNonWeakening (c p : Manifest) : Bool :=
+  (!p.rules.cap || c.rules.cap) &&
+  (!p.rules.io || c.rules.io) &&
+  (!p.rules.proofreq || c.rules.proofreq)
+
+/-- `passed p c` models the SHIPPED `check_monotonicity(parent=p, child=c).passed`.
+    The verdict is `is_clean()` = no axis violated AND no amendment-rule
+    weakening. It is `passedWeak` AND the UNCONDITIONAL `rulesNonWeakening`
+    conjunct — equal to the proven `checkPlus`. The `rulesNonWeakening` conjunct
+    has NO flag guard: that unconditionality is the anti-coup fix. -/
+def passed (p c : Manifest) : Bool :=
+  passedWeak p c && rulesNonWeakening c p
 
 /- ───────────────────────────────────────────────────────────────────────────
    The Prop-level escalation facts (what soundness rules OUT)
@@ -197,25 +234,30 @@ theorem dropsB_false_iff_subset (child parent : Names) :
    THEOREM T1 — conditional monotonicity-gate soundness (PROVED, 0 sorry)
    ─────────────────────────────────────────────────────────────────────────── -/
 
-/-- **THEOREM T1 (PROVED).** Conditional soundness of the monotonicity gate.
+/-- **THEOREM T1 (PROVED).** Soundness of the SHIPPED monotonicity gate.
 
-    If `check_monotonicity(parent=p, child=c)` PASSES, then for each axis whose
-    monotone flag is set on the PARENT, the corresponding escalation is ruled out;
-    and the budget is within bounds UNCONDITIONALLY (no flag gates it).
+    If the shipped `check_monotonicity(parent=p, child=c)` PASSES (`passed p c`),
+    then for each axis whose monotone flag is set on the PARENT, the corresponding
+    escalation is ruled out; the budget is within bounds UNCONDITIONALLY; AND —
+    this is the T4 fix — the child does NOT weaken the amendment rules
+    (`¬ weakensRules c p`), also UNCONDITIONALLY (no flag gates it).
 
-    This is exactly as strong as the Rust permits — and the conditional shape
-    (each guarantee predicated on `p.rules.*`) is itself the seed of the T4 gap:
-    the parent's own flags decide what is enforced. -/
+    The first three guarantees keep the conditional shape the parent flags impose;
+    the new fourth guarantee is unconditional, which is what carries the flags
+    forward across an amendment chain (`strengthened_gate_closes_it`) and closes
+    the two-step coup (`new_gate_rejects_coup`). -/
 theorem T1_gate_sound (p c : Manifest) (h : passed p c = true) :
     (p.rules.cap = true → ¬ capEscalates c p) ∧
     (p.rules.io = true → ¬ ioEscalates c p) ∧
     (budgetWithinP c p) ∧
-    (p.rules.proofreq = true → ¬ proofReqDrops c p) := by
-  -- Decompose the conjunctive verdict into the four per-axis "clean" facts.
-  unfold passed at h
+    (p.rules.proofreq = true → ¬ proofReqDrops c p) ∧
+    (¬ weakensRules c p) := by
+  -- Split the shipped verdict into the weak (four-axis) part and the
+  -- unconditional non-weakening part.
+  unfold passed passedWeak rulesNonWeakening at h
   simp only [Bool.and_eq_true, Bool.not_eq_true'] at h
-  obtain ⟨⟨⟨hcap, hio⟩, hbud⟩, hproof⟩ := h
-  refine ⟨?_, ?_, ?_, ?_⟩
+  obtain ⟨⟨⟨⟨hcap, hio⟩, hbud⟩, hproof⟩, ⟨⟨hrw_cap, hrw_io⟩, hrw_proof⟩⟩ := h
+  refine ⟨?_, ?_, ?_, ?_, ?_⟩
   · -- capability axis
     intro hflag
     unfold capViolated at hcap
@@ -241,18 +283,16 @@ theorem T1_gate_sound (p c : Manifest) (h : passed p c = true) :
     simp only [if_true] at hproof
     unfold proofReqDrops
     exact not_not_intro ((dropsB_false_iff_subset c.proofReqs p.proofReqs).mp hproof)
+  · -- amendment-rules non-weakening — UNCONDITIONAL (no flag guard)
+    intro hw
+    rcases hw with ⟨hp, hc⟩ | ⟨hp, hc⟩ | ⟨hp, hc⟩
+    · rw [hp, hc] at hrw_cap; simp at hrw_cap
+    · rw [hp, hc] at hrw_io; simp at hrw_io
+    · rw [hp, hc] at hrw_proof; simp at hrw_proof
 
 /- ───────────────────────────────────────────────────────────────────────────
-   THEOREM meta_gap — the anti-coup HOLE (PROVED, constructive, 0 sorry)
+   THE COUP: the OLD gate admits it; the NEW gate rejects it (PROVED, 0 sorry)
    ─────────────────────────────────────────────────────────────────────────── -/
-
-/-- `weakensRules c p`: the child turns OFF some monotone flag the parent had ON —
-    i.e. it weakens the amendment rules along at least one axis. This is exactly
-    what `check_monotonicity` does NOT inspect. -/
-def weakensRules (c p : Manifest) : Prop :=
-  (p.rules.cap = true ∧ c.rules.cap = false) ∨
-  (p.rules.io = true ∧ c.rules.io = false) ∨
-  (p.rules.proofreq = true ∧ c.rules.proofreq = false)
 
 /-- An empty budget (all zero): trivially within any budget, so the always-on
     budget check never fires for our witnesses. -/
@@ -266,95 +306,82 @@ def fullParent : Manifest :=
   , rules := { cap := true, io := true, proofreq := true } }
 
 /-- The malicious child: IDENTICAL projections (so every escalation/drop scan is
-    empty and the gate passes), but it silently turns OFF the capability monotone
-    flag — disarming the NEXT amendment. -/
+    empty), but it silently turns OFF the capability monotone flag — disarming
+    the NEXT amendment. The pre-fix gate admitted this; the shipped gate does not. -/
 def disarmingChild : Manifest :=
   { caps := [], ioSurface := [], proofReqs := []
   , budget := zeroBudget
   , rules := { cap := false, io := true, proofreq := true } }
 
-/-- **THEOREM meta_gap (PROVED).** The honest gap / T4 crux.
+/-- **THEOREM weak_gate_admits_coup (PROVED, documentary).** The PRE-FIX hole.
 
-    There exist a parent `p` and child `c` such that `check_monotonicity` PASSES
-    (`passed p c = true`) AND `c` weakens the amendment rules vs `p` — it disables
-    a required-monotone flag. The plain gate admits an amendment that disarms its
-    own future enforcement: a two-step coup (this step legal, the NEXT step then
-    escalates freely under the relaxed flag). `check_monotonicity` never checks
-    that the CHILD's amendment_rules are themselves non-weakening. -/
-theorem meta_gap : ∃ p c, passed p c = true ∧ weakensRules c p := by
+    There exist a parent `p` and child `c` such that the OLD gate `passedWeak`
+    PASSES AND `c` weakens the amendment rules vs `p` — it disables a
+    required-monotone flag. The pre-fix gate admitted an amendment that disarms
+    its own future enforcement: a two-step coup (this step legal, the NEXT step
+    then escalates freely under the relaxed flag). `passedWeak` never checks that
+    the CHILD's amendment_rules are themselves non-weakening — this theorem is
+    kept to document precisely the bug the fix closes. -/
+theorem weak_gate_admits_coup : ∃ p c, passedWeak p c = true ∧ weakensRules c p := by
   refine ⟨fullParent, disarmingChild, ?_, ?_⟩
   · decide
   · -- the capability flag was ON in the parent, OFF in the child
     left
     exact ⟨rfl, rfl⟩
 
-/- ───────────────────────────────────────────────────────────────────────────
-   THEOREM strengthened_gate_closes_it — the constructive FIX (PROVED, 0 sorry)
-   ─────────────────────────────────────────────────────────────────────────── -/
+/-- **THEOREM new_gate_rejects_coup (PROVED).** The fix, on the SAME witness.
 
-/-- `rulesNonWeakening c p`: the child's flags are pointwise `≥` the parent's —
-    i.e. you can ENABLE a monotone flag but never DISABLE one. As a `Bool`:
-    `parent_flag → child_flag` on each axis. -/
-def rulesNonWeakening (c p : Manifest) : Bool :=
-  (!p.rules.cap || c.rules.cap) &&
-  (!p.rules.io || c.rules.io) &&
-  (!p.rules.proofreq || c.rules.proofreq)
+    On the exact disarming amendment that `weak_gate_admits_coup` slips past the
+    pre-fix gate, the SHIPPED gate `passed` returns `false`. The unconditional
+    `rulesNonWeakening` conjunct rejects the disarming step at move ONE, so the
+    coup never reaches its second move. -/
+theorem new_gate_rejects_coup : passed fullParent disarmingChild = false := by
+  decide
 
-/-- `checkPlus p c`: the STRENGTHENED gate. It is the plain gate PLUS the missing
-    obligation — the child's amendment rules must be non-weakening. This is the
-    one-line fix the proof recommends for `check_monotonicity`. -/
-def checkPlus (p c : Manifest) : Bool :=
-  passed p c && rulesNonWeakening c p
-
-/-- `checkPlus` refines `passed`: anything the strengthened gate admits, the plain
-    gate also admits (the fix only ever REJECTS more). -/
-theorem checkPlus_refines_passed (p c : Manifest) (h : checkPlus p c = true) :
-    passed p c = true := by
-  unfold checkPlus at h
+/-- The shipped gate refines the pre-fix gate: anything `passed` admits,
+    `passedWeak` also admits (the fix only ever REJECTS more — STRICTLY
+    STRICTER, no new acceptances). -/
+theorem passed_refines_passedWeak (p c : Manifest) (h : passed p c = true) :
+    passedWeak p c = true := by
+  unfold passed at h
   simp only [Bool.and_eq_true] at h
   exact h.1
 
-/-- The strengthened gate forbids `weakensRules`: if `checkPlus p c` passes, the
-    child does NOT weaken the rules. This is precisely the obligation the plain
-    gate (`meta_gap`) omits. -/
-theorem checkPlus_no_weakening (p c : Manifest) (h : checkPlus p c = true) :
-    ¬ weakensRules c p := by
-  unfold checkPlus rulesNonWeakening at h
-  simp only [Bool.and_eq_true] at h
-  obtain ⟨_, ⟨⟨hcap, hio⟩, hproof⟩⟩ := h
-  intro hw
-  rcases hw with ⟨hp, hc⟩ | ⟨hp, hc⟩ | ⟨hp, hc⟩
-  · rw [hp, hc] at hcap; simp at hcap
-  · rw [hp, hc] at hio; simp at hio
-  · rw [hp, hc] at hproof; simp at hproof
+/-- The shipped gate forbids `weakensRules` directly (corollary of T1's new
+    conjunct): if `passed p c`, the child does NOT weaken the rules. -/
+theorem passed_no_weakening (p c : Manifest) (h : passed p c = true) :
+    ¬ weakensRules c p :=
+  (T1_gate_sound p c h).2.2.2.2
+
+/- ───────────────────────────────────────────────────────────────────────────
+   THEOREM strengthened_gate_closes_it — transitive anti-coup (PROVED, 0 sorry)
+   ─────────────────────────────────────────────────────────────────────────── -/
 
 /-- **THEOREM strengthened_gate_closes_it (PROVED).** The anti-coup invariant
-    holds across a TWO-amendment chain `p → c → g` under the strengthened gate,
-    exactly where the plain gate (`meta_gap`) fails.
+    holds across a TWO-amendment chain `p → c → g` under the SHIPPED gate,
+    exactly where the pre-fix gate (`weak_gate_admits_coup`) fails.
 
-    Hypotheses: both steps pass `checkPlus`. Conclusions: at the END of the chain
-    (`g` as child of `p`),
+    Hypotheses: both steps pass the shipped `passed`. Conclusions: at the END of
+    the chain (`g` as child of `p`),
       1. budget is still within `p`'s bound; and
       2. if `p` required capability monotonicity, then `g` does NOT escalate
          capabilities over `p` — the guarantee survives the intermediate step,
-         because `checkPlus` forbade `c` from disarming the flag.
+         because `passed` (via its unconditional `rulesNonWeakening` conjunct)
+         forbade `c` from disarming the flag.
 
-    Under the PLAIN gate this fails: `c` could set `c.rules.cap = false` (the
-    `meta_gap` witness), after which `g` escalates freely and `passed c g` still
-    holds. The strengthened gate carries the flag forward, restoring transitive
-    soundness — the T4 anti-self-weakening property. -/
+    Under the PRE-FIX gate this fails: `c` could set `c.rules.cap = false` (the
+    `weak_gate_admits_coup` witness), after which `g` escalates freely and
+    `passedWeak c g` still holds. The shipped gate carries the flag forward,
+    restoring transitive soundness — the T4 anti-self-weakening property. -/
 theorem strengthened_gate_closes_it
     (p c g : Manifest)
-    (h1 : checkPlus p c = true) (h2 : checkPlus c g = true) :
+    (h1 : passed p c = true) (h2 : passed c g = true) :
     budgetWithinP g p ∧
     (p.rules.cap = true → ¬ capEscalates g p) := by
-  -- Unpack the two strengthened verdicts into plain + non-weakening parts.
-  have hp1 : passed p c = true := checkPlus_refines_passed p c h1
-  have hp2 : passed c g = true := checkPlus_refines_passed c g h2
-  have hnw1 : ¬ weakensRules c p := checkPlus_no_weakening p c h1
-  -- Soundness of each step from T1.
-  have t1 := T1_gate_sound p c hp1
-  have t2 := T1_gate_sound c g hp2
+  -- Soundness of each step from T1 (now including the non-weakening conjunct).
+  have t1 := T1_gate_sound p c h1
+  have t2 := T1_gate_sound c g h2
+  have hnw1 : ¬ weakensRules c p := t1.2.2.2.2
   refine ⟨?_, ?_⟩
   · -- Budget: g ≤ c ≤ p, pointwise, transitively.
     have hgc : budgetWithin g.budget c.budget = true := t2.2.2.1
@@ -385,5 +412,17 @@ theorem strengthened_gate_closes_it
     apply hbad
     intro x hx
     exact hsub_cp x (hsub_gc x hx)
+
+/- ───────────────────────────────────────────────────────────────────────────
+   #print axioms — axiom-hygiene audit (kernel-checked, no proof holes,
+   no compiled-decision shortcuts)
+   ─────────────────────────────────────────────────────────────────────────── -/
+
+#print axioms T1_gate_sound
+#print axioms weak_gate_admits_coup
+#print axioms new_gate_rejects_coup
+#print axioms passed_refines_passedWeak
+#print axioms passed_no_weakening
+#print axioms strengthened_gate_closes_it
 
 end Ck.Policy
