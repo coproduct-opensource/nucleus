@@ -43,11 +43,32 @@ pub fn receipt_hash(receipt: &ClearingReceipt) -> [u8; 32] {
 
 /// Mint a [`CreditEvent`] from one receipt by recomputing it. Returns `None`
 /// for an [`RecomputeOutcome::Invalid`] receipt (nothing to attribute).
+///
+/// The receipt KIND chooses the creditworthiness dimension:
+/// * a `Commons` receipt is the Pigouvian / `route_to_commons` path (pinned to
+///   `Commons.lean`'s `routed_conserves`), so a recompute-**Match** is true-cost
+///   dues actually routed to the commons → an **externality credit**, and a
+///   **Mismatch** is a claimed-but-unrouted routing — an externality **dumped**
+///   on the commons → an externality **debit**;
+/// * a `Settlement` / `Vcg` receipt is the financial path → a financial credit on
+///   Match, a caught-defection debit on Mismatch.
+///
+/// Both dimensions are now load-bearing on reputation (see
+/// [`CreditDimension::is_active`]) — the substrate is regenerative by default:
+/// recompute-verified commons-routing builds standing, exactly as honest
+/// settlement does, and only ever from a receipt that already recomputed.
 pub fn mint_event(receipt: &ClearingReceipt) -> Option<CreditEvent> {
     let weight = economic_magnitude(receipt);
     let hash = receipt_hash(receipt);
+    let is_commons = matches!(receipt, ClearingReceipt::Commons(_));
     match verify_receipt(receipt) {
+        RecomputeOutcome::Match if is_commons => {
+            Some(CreditEvent::externality_internalized(weight, hash))
+        }
         RecomputeOutcome::Match => Some(CreditEvent::honest_settlement(weight, hash)),
+        RecomputeOutcome::Mismatch { .. } if is_commons => {
+            Some(CreditEvent::externality_dumped(weight, hash))
+        }
         RecomputeOutcome::Mismatch { .. } => Some(CreditEvent::caught_defection(weight, hash)),
         RecomputeOutcome::Invalid(_) => None,
     }
@@ -134,6 +155,40 @@ mod tests {
     }
 
     #[test]
+    fn an_honest_commons_receipt_mints_an_externality_credit() {
+        // The Pigouvian path: dues actually routed to the commons (recompute-Match)
+        // build standing on the EXTERNALITY dimension — regenerative by default.
+        let r = honest_commons(300_000);
+        let e = mint_event(&r).expect("honest commons mints an event");
+        assert_eq!(e.dimension, CreditDimension::Externality);
+        assert_eq!(e.polarity, crate::Polarity::Credit);
+        assert_eq!(e.weight_micro, 300_000); // pool_micro (declared input)
+                                             // It builds bond-substituting reputation now that externality is active.
+        let f = CreditFile::from_events(&[e]);
+        assert_eq!(f.reputation_micro(), 300_000);
+    }
+
+    #[test]
+    fn a_mismatched_commons_receipt_mints_an_externality_debit() {
+        // Claimed-but-unrouted dues: valid shares, tampered allocations →
+        // recompute (route_to_commons) catches it → an externality DUMPED debit.
+        let mut r = honest_commons(300_000);
+        if let ClearingReceipt::Commons(ref mut c) = r {
+            c.allocations[0].amount_micro += 1; // dumped, not actually routed
+        }
+        assert!(!verify_receipt(&r).is_match());
+        let e = mint_event(&r).expect("a caught dump still mints an event (a debit)");
+        assert_eq!(e.dimension, CreditDimension::Externality);
+        assert_eq!(e.polarity, crate::Polarity::Debit);
+        // Stacked on prior externality credit it lowers standing.
+        let f = CreditFile::from_events(&[
+            CreditEvent::externality_internalized(300_000, [0u8; 32]),
+            e,
+        ]);
+        assert_eq!(f.reputation_micro(), 0); // 300k credit − 300k debit
+    }
+
+    #[test]
     fn an_invalid_receipt_mints_nothing() {
         // Commons shares that don't sum to 10_000 → Invalid (no baseline).
         let bad = ClearingReceipt::Commons(CommonsClaim {
@@ -157,7 +212,8 @@ mod tests {
             honest_settlement(0, 5_000), // a low-delivery settlement, price 0
         ];
         let file = credit_file_from_receipts(&receipts);
-        // reputation = 400k (settle) + 300k (commons pool) + 0 = 700k.
+        // reputation sums BOTH active dimensions: 400k+0 financial (settlements)
+        // + 300k externality (commons pool) = 700k.
         assert_eq!(file.reputation_micro(), 700_000);
         // 700k of recompute-verified history covers 700k of a 1M defection gain.
         assert_eq!(file.required_bond(1_000_000), AmountMicro(300_000));
