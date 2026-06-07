@@ -698,6 +698,29 @@ mod tests {
         }
     }
 
+    /// Deterministic boundary cases the proptest above undersamples: random
+    /// `u64 × u64` draws essentially never hit `gain == bond`, so the floor of
+    /// the deterrence schedule (`deters ↔ gain ≤ bond`) is only weakly exercised.
+    /// These pin all three regimes around the floor, mirroring the Lean
+    /// `honest_strictly_dominates` (B > gain) and `deviate_pays_when_underbonded`
+    /// (B ≤ gain) tightness lemmas.
+    #[test]
+    fn bonded_deterrence_t1_boundary() {
+        // bond == gain (the floor): schedule deters, but Deviate payoff == Honest
+        // (0) — NOT strictly dominated (B > gain is load-bearing for strictness).
+        assert!(deters(AmountMicro(100), 0, 100));
+        assert_eq!(deviate_payoff(100, 100), 0);
+        // bond == gain + 1 (T1 premise just holds): deters AND Honest strictly dominates.
+        assert!(deters(AmountMicro(101), 0, 100));
+        assert!(0 > deviate_payoff(100, 101));
+        // bond == gain - 1 (underbonded): does NOT deter, Deviate strictly pays.
+        assert!(!deters(AmountMicro(99), 0, 100));
+        assert!(deviate_payoff(100, 99) > 0);
+        // zero edge: bond == gain == 0 is on the floor (deters, not strict).
+        assert!(deters(AmountMicro(0), 0, 0));
+        assert_eq!(deviate_payoff(0, 0), 0);
+    }
+
     fn witness_sk() -> SigningKey {
         SigningKey::from_bytes(&[1u8; 32])
     }
