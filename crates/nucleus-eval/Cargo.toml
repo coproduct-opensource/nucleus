@@ -1,0 +1,25 @@
+[package]
+name = "nucleus-eval"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Recompute-verified eval receipt → CreditEvent: a recorded agent eval run is turned into a nucleus_creditworthiness::CreditEvent whose magnitude is bounded by a RECOMPUTED deterministic pass-rate, so a lie cannot inflate its own reward. Deterministic dimension recompute-verified; cost/tokens/latency attested; llm_judge attestation-only."
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+# Domain-separated content hash of the receipt (the RECEIPT_DOMAIN discipline,
+# as in nucleus-recompute). WASM-safe, integer-only, no native deps.
+sha2 = { workspace = true }
+serde_json = { workspace = true }
+# The REAL credit economics: CreditEvent / CreditFile / required_bond. We COMPOSE
+# this crate by PATH — the minted event is the real type, never a local shadow.
+# Default features OFF keeps the closure lean + WASM-safe (no durable-store deps).
+nucleus-creditworthiness = { path = "../nucleus-creditworthiness", default-features = false }
+
+[dev-dependencies]
+serde_json = { workspace = true }

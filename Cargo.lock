@@ -6605,6 +6605,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-eval"
+version = "1.0.0"
+dependencies = [
+ "nucleus-creditworthiness",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "nucleus-externality"
 version = "1.0.0"
 dependencies = [
