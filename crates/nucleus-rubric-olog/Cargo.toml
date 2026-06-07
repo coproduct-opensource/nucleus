@@ -1,0 +1,23 @@
+[package]
+name = "nucleus-rubric-olog"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Decidable type-gate that checks a PROPOSED translation between two rubric vocabularies is a valid functor. Reimplements (locally, no cross-repo dep) the minimal Spivak Schema / SchemaMorphism / functor-validity scan from olog-spivak-ops: a Rubric becomes a Schema (criterion-id objects + grade arrows into an Artifact terminal object), a caller-supplied criterion-id object map becomes a SchemaMorphism, and check_translation DECIDABLY validates that map is a well-defined functor that ALSO preserves the eval-relevant honesty axis (RecomputeVerified must map to RecomputeVerified, max_grade compatible). Verifies a given translation; does NOT synthesize alignments, does NOT implement dinaturality, and is decidable only on the finitely-presented equational fragment. Integer-only, WASM-safe, depends only on nucleus-rubric (path) + serde."
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+# The Rubric / Criterion / Provenance the gate operates on. Composed by PATH
+# (same workspace). This is the ONLY non-serde dependency — the Schema /
+# SchemaMorphism / functor-validity check is reimplemented locally (see
+# README + module docs) so nucleus (PUBLIC) takes NO dependency on the PRIVATE
+# olog repo.
+nucleus-rubric = { path = "../nucleus-rubric" }
+
+[dev-dependencies]
+serde_json = { workspace = true }
