@@ -4,9 +4,19 @@
 //! local lookup, and a [`JsonlSink`] that appends to a file (one JSON object
 //! per line, no rewrites). Larger deployments will plug in a remote sink
 //! (S3, Tigris, etc.) — the trait is the integration point.
+//!
+//! **Wasm-compatibility note (Nucleus P0 nucleus-wasm)**: `JsonlSink` uses
+//! `std::fs::{File, OpenOptions}` which is unavailable on
+//! `wasm32-unknown-unknown`. It's gated behind the default-on `sink-io`
+//! feature. Build nucleus-lineage with `default-features = false` for wasm
+//! targets; `InMemorySink` + the `LineageSink` trait + `SinkError` remain
+//! available unconditionally.
 
+#[cfg(feature = "sink-io")]
 use std::fs::{File, OpenOptions};
+#[cfg(feature = "sink-io")]
 use std::io::{BufRead, BufReader, BufWriter, Write};
+#[cfg(feature = "sink-io")]
 use std::path::PathBuf;
 use std::sync::{Mutex, RwLock};
 
@@ -18,6 +28,10 @@ use crate::id::CallSpiffeId;
 /// Errors a sink may surface.
 #[derive(Debug, Error)]
 pub enum SinkError {
+    /// `std::io::Error` only reachable when the `sink-io` feature is on
+    /// (i.e. native targets that include the file-backed `JsonlSink`).
+    /// On wasm32 the variant is unconstructable.
+    #[cfg(feature = "sink-io")]
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("json error: {0}")]
@@ -87,18 +101,21 @@ impl LineageSink for InMemorySink {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// JsonlSink
+// JsonlSink — `std::fs`-bound, gated behind the `sink-io` feature so the
+// crate compiles to `wasm32-unknown-unknown` with `default-features = false`.
 
 /// Append-only sink writing one JSON object per line to a file.
 ///
 /// Open with `JsonlSink::open(path)`; the file is created if missing.
 /// Writes are serialized by an internal mutex; reads (`iter`) re-open the
 /// file fresh so they always see the latest contents.
+#[cfg(feature = "sink-io")]
 pub struct JsonlSink {
     path: PathBuf,
     writer: Mutex<BufWriter<File>>,
 }
 
+#[cfg(feature = "sink-io")]
 impl JsonlSink {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, SinkError> {
         let path = path.into();
@@ -114,6 +131,7 @@ impl JsonlSink {
     }
 }
 
+#[cfg(feature = "sink-io")]
 impl LineageSink for JsonlSink {
     fn emit(&self, edge: LineageEdge) -> Result<(), SinkError> {
         let line = serde_json::to_string(&edge)?;
@@ -197,6 +215,7 @@ mod tests {
         assert_eq!(sink.len().unwrap(), 32);
     }
 
+    #[cfg(feature = "sink-io")]
     #[test]
     fn jsonl_sink_appends_and_reads_back() {
         let dir = tempfile::tempdir().unwrap();
@@ -217,6 +236,7 @@ mod tests {
         assert_eq!(read_back[1].child, derived);
     }
 
+    #[cfg(feature = "sink-io")]
     #[test]
     fn jsonl_sink_re_open_sees_prior_writes() {
         let dir = tempfile::tempdir().unwrap();
@@ -232,6 +252,7 @@ mod tests {
         assert_eq!(edges[0].child, p);
     }
 
+    #[cfg(feature = "sink-io")]
     #[test]
     fn jsonl_sink_skips_blank_lines() {
         let dir = tempfile::tempdir().unwrap();

@@ -59,7 +59,7 @@ pub use checkpoint::{
 #[cfg(feature = "http")]
 pub use cosign::{C2spHttpWitnessClient, HttpWitnessClient};
 pub use cosign::{Cosignature, CosignatureKind, InProcessWitness, WitnessClient};
-pub use edge::{EdgeKind, LineageEdge, SourceClass};
+pub use edge::{EdgeKind, LineageEdge, SourceClass, VerifierAttestation};
 pub use id::{CallSpiffeId, IdError, MAX_URI_LEN};
 pub use issuer::{EdgeSigner, IdentityFetcher, IssuerError, SvidClaims};
 pub use merkle::{read_checkpoints, verify_log, MerkleConfig, MerkleError, MerkleSink};
@@ -71,8 +71,13 @@ pub use signed_note::{
     parse_signature_line, validate_key_name, validate_origin, ParsedSignatureLine, SignedNoteError,
     MAX_KEY_NAME_LEN, MAX_ORIGIN_LEN, SIG_LINE_PREFIX, SIG_TYPE_COSIGNATURE, SIG_TYPE_ED25519,
 };
-pub use sink::{InMemorySink, JsonlSink, LineageSink, SinkError};
-pub use verify::{verify_chain, verify_proof, Jwk, Jwks, StaticKeyResolver, VerifyError};
+#[cfg(feature = "sink-io")]
+pub use sink::JsonlSink;
+pub use sink::{InMemorySink, LineageSink, SinkError};
+pub use verify::{
+    total_pigouvian_micro_usd, verify_chain, verify_proof, Jwk, Jwks, StaticKeyResolver,
+    VerifyError,
+};
 
 #[cfg(feature = "insecure-local-issuer")]
 pub use local_issuer::LocalIssuer;

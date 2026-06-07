@@ -442,6 +442,38 @@ fn format_kind(edge: &LineageEdge) -> String {
             source_class,
             ..
         } => format!("[doc/{:?}/{}]", source_class, source_url),
+        nucleus_lineage::EdgeKind::Bid { market_id } => format!("[bid/{}]", market_id),
+        nucleus_lineage::EdgeKind::Allocation {
+            market_id,
+            mechanism,
+        } => format!("[alloc/{}/{}]", mechanism, market_id),
+        nucleus_lineage::EdgeKind::ContractEvaluation { contract_id, step } => {
+            format!("[contract/{}#{}]", contract_id, step)
+        }
+        nucleus_lineage::EdgeKind::Dispute { dispute_id, .. } => {
+            format!("[dispute/{}]", dispute_id)
+        }
+        nucleus_lineage::EdgeKind::MetricClaim {
+            metric_name,
+            window_id,
+        } => format!("[metric/{}/{}]", metric_name, window_id),
+        nucleus_lineage::EdgeKind::Settlement { tx_ref, rail } => {
+            format!("[settle/{}/{}]", rail, tx_ref)
+        }
+        nucleus_lineage::EdgeKind::Externality {
+            resource,
+            oracle_kid,
+        } => format!("[externality/{}/{}]", resource, oracle_kid),
+        nucleus_lineage::EdgeKind::PigouvianRateUpdate {
+            resource,
+            rate_micro_usd_per_unit,
+            ..
+        } => format!("[pigou_rate/{}/{}µ]", resource, rate_micro_usd_per_unit),
+        nucleus_lineage::EdgeKind::WelfareRebate {
+            recipient_kid,
+            micro_usd,
+            ..
+        } => format!("[rebate/{}/{}µ]", recipient_kid, micro_usd),
         nucleus_lineage::EdgeKind::Other { name } => format!("[{}]", name),
     }
 }
@@ -559,6 +591,7 @@ mod tests {
             ts: chrono::Utc::now(),
             attrs: Default::default(),
             proof: None,
+            verifier_attestation: None,
         };
         let edges = vec![LineageEdge::pod_admit(victim_pod), forged];
         let g = LineageGraph::build(&edges);
@@ -630,6 +663,7 @@ mod tests {
             ts: chrono::Utc::now(),
             attrs: Default::default(),
             proof: None,
+            verifier_attestation: None,
         };
         assert!(!is_structurally_consistent(&edge));
     }
@@ -647,6 +681,7 @@ mod tests {
             ts: chrono::Utc::now(),
             attrs: Default::default(),
             proof: None,
+            verifier_attestation: None,
         };
         assert!(!is_structurally_consistent(&edge_bad));
     }
@@ -667,6 +702,7 @@ mod tests {
             ts: chrono::Utc::now(),
             attrs: Default::default(),
             proof: None,
+            verifier_attestation: None,
         };
         assert!(is_structurally_consistent(&ok));
 
@@ -680,6 +716,7 @@ mod tests {
             ts: chrono::Utc::now(),
             attrs: Default::default(),
             proof: None,
+            verifier_attestation: None,
         };
         assert!(!is_structurally_consistent(&bad));
     }
@@ -698,6 +735,7 @@ mod tests {
             ts: chrono::Utc::now(),
             attrs: Default::default(),
             proof: None,
+            verifier_attestation: None,
         };
         let edges = vec![
             LineageEdge::pod_admit(p.clone()),
@@ -744,6 +782,7 @@ mod tests {
                 ts: chrono::Utc::now(),
                 attrs: Default::default(),
                 proof: None,
+                verifier_attestation: None,
             },
             LineageEdge {
                 child: y.clone(),
@@ -753,6 +792,7 @@ mod tests {
                 ts: chrono::Utc::now(),
                 attrs: Default::default(),
                 proof: None,
+                verifier_attestation: None,
             },
         ];
         let g = LineageGraph::build(&edges);

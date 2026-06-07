@@ -10,7 +10,14 @@ keywords = ["spiffe", "lineage", "provenance", "ifc", "agents"]
 categories = ["development-tools", "cryptography"]
 
 [features]
-default = []
+default = ["sink-io"]
+# **wasm-compatibility gate**: `sink-io` ships the file-backed `JsonlSink`
+# which depends on `std::fs::{File, OpenOptions}` (unavailable on
+# `wasm32-unknown-unknown`). Default-on so native consumers see no change;
+# disable via `default-features = false` for wasm targets. The `InMemorySink`
+# + `LineageSink` trait + `SinkError` (minus the `Io` variant) remain
+# available unconditionally.
+sink-io = []
 # Demo-only in-process Ed25519 JWT-SVID issuer + edge signer. NOT FOR
 # PRODUCTION USE. Production callers should write a SPIFFE-Workload-API-
 # backed `IdentityFetcher` impl and never enable this feature in release
