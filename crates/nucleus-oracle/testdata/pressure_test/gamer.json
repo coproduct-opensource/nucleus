@@ -1,0 +1,80 @@
+{
+  "submission_id": "gamer",
+  "held_out": {
+    "cases": [
+      {
+        "case_id": "c1",
+        "produced": "1 1 2 3 4 5 6 7 9 9",
+        "expected": "1 1 2 3 4 5 6 7 9 9"
+      },
+      {
+        "case_id": "c2",
+        "produced": "-10 -5 -1 0 3",
+        "expected": "-10 -5 -1 0 3"
+      },
+      {
+        "case_id": "c3",
+        "produced": "42",
+        "expected": "42"
+      },
+      {
+        "case_id": "c4",
+        "produced": "",
+        "expected": ""
+      },
+      {
+        "case_id": "c5",
+        "produced": "-100 -50 0 50 100",
+        "expected": "-100 -50 0 50 100"
+      },
+      {
+        "case_id": "c6",
+        "produced": "7 7 8 8 9 9",
+        "expected": "7 7 8 8 9 9"
+      }
+    ]
+  },
+  "metamorphic": [
+    {
+      "id": "rerun-c1",
+      "source_output": "1 1 2 3 4 5 6 7 9 9",
+      "perturbed_output": "1 1 2 3 4 5 6 7 9 9",
+      "relation": {
+        "relation": "equal"
+      }
+    },
+    {
+      "id": "rerun-c2",
+      "source_output": "-10 -5 -1 0 3",
+      "perturbed_output": "-10 -5 -1 0 3",
+      "relation": {
+        "relation": "equal"
+      }
+    }
+  ],
+  "determinism": {
+    "run_result_hashes": [
+      "cb734382b33f76573b85d273a5e9fb88e984ceeaee745a3488b5727d0abdaf47",
+      "cb734382b33f76573b85d273a5e9fb88e984ceeaee745a3488b5727d0abdaf47",
+      "cb734382b33f76573b85d273a5e9fb88e984ceeaee745a3488b5727d0abdaf47"
+    ],
+    "k": 2
+  },
+  "mutation": {
+    "mutants": [
+      {
+        "id": "m1",
+        "killed": true
+      },
+      {
+        "id": "m2",
+        "killed": true
+      },
+      {
+        "id": "m3",
+        "killed": true
+      }
+    ]
+  },
+  "held_out_expected_leaked": false
+}

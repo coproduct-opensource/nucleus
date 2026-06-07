@@ -1,0 +1,80 @@
+{
+  "submission_id": "nondet_fixture",
+  "held_out": {
+    "cases": [
+      {
+        "case_id": "c1",
+        "produced": "9 6 4 3 2 1 1 9 7 5",
+        "expected": "1 1 2 3 4 5 6 7 9 9"
+      },
+      {
+        "case_id": "c2",
+        "produced": "-5 -1 0 3 -10",
+        "expected": "-10 -5 -1 0 3"
+      },
+      {
+        "case_id": "c3",
+        "produced": "42",
+        "expected": "42"
+      },
+      {
+        "case_id": "c4",
+        "produced": "",
+        "expected": ""
+      },
+      {
+        "case_id": "c5",
+        "produced": "0 -50 50 -100 100",
+        "expected": "-100 -50 0 50 100"
+      },
+      {
+        "case_id": "c6",
+        "produced": "8 7 9 8 9 7",
+        "expected": "7 7 8 8 9 9"
+      }
+    ]
+  },
+  "metamorphic": [
+    {
+      "id": "rerun-c1",
+      "source_output": "9 6 4 3 2 1 1 9 7 5",
+      "perturbed_output": "3 5 4 9 6 9 1 1 2 7",
+      "relation": {
+        "relation": "equal"
+      }
+    },
+    {
+      "id": "rerun-c2",
+      "source_output": "-5 -1 0 3 -10",
+      "perturbed_output": "-10 3 0 -1 -5",
+      "relation": {
+        "relation": "equal"
+      }
+    }
+  ],
+  "determinism": {
+    "run_result_hashes": [
+      "b0d17db496b316a6d00a3563a7475f820a3f40ac704df0c125330109a58a4124",
+      "efd8447eecfd6b0196842607eb8093fe0832f80d516ffbe0ddb8ff0974d07c7a",
+      "f685d37060cf85419d9fd46bb12a449348374c025cbf66ac8dc3eacd9694b5df"
+    ],
+    "k": 2
+  },
+  "mutation": {
+    "mutants": [
+      {
+        "id": "m1",
+        "killed": true
+      },
+      {
+        "id": "m2",
+        "killed": true
+      },
+      {
+        "id": "m3",
+        "killed": true
+      }
+    ]
+  },
+  "held_out_expected_leaked": false
+}
