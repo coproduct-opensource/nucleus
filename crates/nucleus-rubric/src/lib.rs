@@ -682,7 +682,9 @@ mod tests {
     proptest! {
         /// ranks_at_least is reflexive, transitive AND total over arbitrary
         /// scorecards on a fixed rubric — stronger than ck-policy's preorder
-        /// (the integer scalar yields a TOTAL order).
+        /// (the integer scalar yields a TOTAL order). Binding Lean theorems:
+        /// `Nucleus.Rubric.ranksAtLeast_refl` / `ranksAtLeast_trans` /
+        /// `ranksAtLeast_total` (crates/nucleus-rubric/lean/Nucleus/Rubric.lean).
         #[test]
         fn ranks_at_least_is_total_order(
             a in arb_scorecard(fixed_rubric()),
@@ -707,7 +709,9 @@ mod tests {
         }
 
         /// Perturbations confined to NON-RV columns never change faithful_total —
-        /// proves rank factors through π_RV.
+        /// proves rank factors through π_RV. Binding Lean theorem:
+        /// `Nucleus.Rubric.faithfulTotal_inert_under_non_rv`
+        /// (crates/nucleus-rubric/lean/Nucleus/Rubric.lean).
         #[test]
         fn faithful_total_invariant_under_non_rv_perturbation(
             base in arb_scorecard(fixed_rubric()),
@@ -723,7 +727,10 @@ mod tests {
         }
 
         /// With strictly positive RV weights, the weighted-sum winner is always a
-        /// member of the Pareto front.
+        /// member of the Pareto front. Binding Lean theorem:
+        /// `Nucleus.Rubric.scalarized_winner_undominated` (+ its inductive core
+        /// `dominates_strengthens_total`) in
+        /// crates/nucleus-rubric/lean/Nucleus/Rubric.lean.
         #[test]
         fn scalarized_winner_is_in_pareto_front(
             cards in proptest::collection::vec(arb_scorecard(fixed_rubric()), 1..6),
