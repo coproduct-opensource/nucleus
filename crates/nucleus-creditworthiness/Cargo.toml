@@ -16,10 +16,10 @@ serde = { workspace = true }
 # substitutes for capital down to a Sybil-proof floor, value-identical to Lean
 # `requiredBond` (`[propext, Quot.sound]`-only). We COMPOSE it — the money path
 # never re-implements the proven function.
-nucleus-witness-olog = { path = "../nucleus-witness-olog" }
+nucleus-witness-olog = { path = "../nucleus-witness-olog", version = "1.0.0" }
 # `recompute` feature: mint CreditEvents straight from recompute-verified
 # clearing receipts (the receipt→recompute→CreditEvent→CreditFile→bond pipeline).
-nucleus-recompute = { path = "../nucleus-recompute", optional = true }
+nucleus-recompute = { path = "../nucleus-recompute", version = "1.0.0", optional = true }
 hex = { workspace = true, optional = true }
 # Hash chain for the append-only ledger (`ledger` module, ALWAYS compiled).
 # WASM-safe and already transitively in the default closure via
