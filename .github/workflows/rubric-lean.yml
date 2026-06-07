@@ -1,0 +1,94 @@
+name: Rubric Lean Proofs
+
+# Builds the Mathlib-free cardinal-scoring Lean tree that `nucleus-rubric` is
+# parity-pinned to (faithful inertness, total preorder, RV-grade monotonicity,
+# scalarized-winner Pareto-optimality) and bans `sorry` / `native_decide`, so the
+# four theorems cited by crates/nucleus-rubric/tests/rubric_lean_parity.rs cannot
+# rot. Dedicated workflow (path isolation), cloned from econ-lean.yml.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "crates/nucleus-rubric/lean/**"
+      - ".github/workflows/rubric-lean.yml"
+  pull_request:
+    paths:
+      - "crates/nucleus-rubric/lean/**"
+      - ".github/workflows/rubric-lean.yml"
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rubric-lean:
+    name: lake build Nucleus (rubric scoring proofs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      # Mathlib-free project: install elan directly (the repo's established
+      # pattern — see econ-lean.yml / aeneas.yml) and run `lake build`. No mathlib
+      # cache fetch needed; the whole tree builds in seconds.
+      - name: Install elan (Lean toolchain)
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --no-modify-path
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Cache Lake build artifacts
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: |
+            crates/nucleus-rubric/lean/.lake
+            ~/.elan
+          key: lean-rubric-${{ runner.os }}-${{ hashFiles('crates/nucleus-rubric/lean/lean-toolchain', 'crates/nucleus-rubric/lean/lakefile.lean') }}
+          restore-keys: |
+            lean-rubric-${{ runner.os }}-
+
+      - name: lake build Nucleus (rubric scoring proofs)
+        working-directory: crates/nucleus-rubric/lean
+        run: lake build
+
+      - name: Ban sorry / admit / native_decide / sorryAx in rubric Lean
+        run: |
+          # Match the tactic/term forms (`:= sorry`, `:= by sorry`, a lone `sorry`,
+          # a lone `admit` / `:= by admit`, `native_decide`, or the `sorryAx` axiom
+          # spelled out in source) — NOT the word "sorry" in "0 sorry" doc comments.
+          if grep -rnE \
+               '(:=[[:space:]]*by[[:space:]]+sorry|:=[[:space:]]*sorry|^[[:space:]]*sorry$|:=[[:space:]]*by[[:space:]]+admit|^[[:space:]]*admit$|native_decide|sorryAx)' \
+               --include='*.lean' crates/nucleus-rubric/lean/Nucleus; then
+            echo "ERROR: rubric Lean uses 'sorry'/'admit' (proof holes), 'native_decide', or 'sorryAx' (banned)."
+            exit 1
+          fi
+          echo "No sorry / admit / native_decide / sorryAx — rubric scoring proofs are complete and kernel-checked."
+
+      - name: Assert theorems are sorryAx-free (#print axioms)
+        working-directory: crates/nucleus-rubric/lean
+        run: |
+          # Ask the kernel which axioms each soundness theorem actually depends on.
+          # A `sorry` (or any hole) anywhere in a proof's dependency graph surfaces
+          # here as `sorryAx`, even if the source-level grep above missed it.
+          cat > PrintAxioms.lean <<'EOF'
+          import Nucleus.Rubric
+          open Nucleus.Rubric
+          #print axioms faithfulTotal_inert_under_non_rv
+          #print axioms ranksAtLeast_refl
+          #print axioms ranksAtLeast_trans
+          #print axioms ranksAtLeast_total
+          #print axioms faithfulTotal_mono_in_rv_grade
+          #print axioms dominates_strengthens_total
+          #print axioms scalarized_winner_undominated
+          EOF
+          # `lake env lean` type-checks against the already-built library.
+          AXIOMS="$(lake env lean PrintAxioms.lean)"
+          echo "$AXIOMS"
+          rm -f PrintAxioms.lean
+          if echo "$AXIOMS" | grep -q 'sorryAx'; then
+            echo "ERROR: a rubric theorem depends on 'sorryAx' (an unproven hole)."
+            exit 1
+          fi
+          echo "No theorem depends on sorryAx — proofs are kernel-complete."
