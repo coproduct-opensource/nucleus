@@ -110,6 +110,11 @@ jobs:
           # Force a recompile so Charon emits LLBC even on a warm cargo cache
           # (known footgun: a cached crate makes charon a <1s no-op).
           touch src/extracted.rs src/lib.rs
+          # IMPORTANT: the LLBC basename is load-bearing for the drift gate.
+          # Aeneas derives the generated Lean module name from this filename
+          # (`ck_policy.llbc` -> `import CkPolicy.Types`), so the committed
+          # generated/CkPolicy/* files only diff-match byte-for-byte when the
+          # basename stays `ck_policy`. Do NOT rename it without regenerating.
           charon cargo --preset aeneas --start-from "$EXTRACT_ROOT" \
             --dest-file /tmp/ck_policy.llbc
 

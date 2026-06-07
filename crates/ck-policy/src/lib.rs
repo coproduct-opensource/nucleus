@@ -17,7 +17,7 @@
 /// verdict (integer/bool/array-only — no `BTreeSet`/`String`/generics). Charon +
 /// Aeneas translate this module to Lean (`lean-aeneas/generated/`) for the
 /// tier-1 DEDUCTIVE bridge; it is bound to `check_monotonicity` by the parity
-/// proptest in `tests/extracted_core_parity.rs` (tier-4 STATISTICAL). See the
+/// proptest in `tests/policy_aeneas_parity.rs` (tier-4 STATISTICAL). See the
 /// module docs for the honesty-tier separation and TCB caveat.
 pub mod extracted;
 

@@ -24,7 +24,7 @@
 //!   model→Lean translation — not a hand transcription.
 //! * **STATISTICAL (tier-4, sampled).** The extracted CORE is bound to the
 //!   PRODUCTION `check_monotonicity` by parity proptests
-//!   (`tests/extracted_core_parity.rs`), which sample agreement over randomized
+//!   (`tests/policy_aeneas_parity.rs`), which sample agreement over randomized
 //!   manifests. A proptest is NOT a proof; it narrows the gap probabilistically.
 //!
 //! The honest end-to-end claim is therefore: *a self-contained, monomorphized
