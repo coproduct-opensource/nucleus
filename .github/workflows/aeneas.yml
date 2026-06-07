@@ -60,7 +60,7 @@ jobs:
       # The tarball is ~100 MB. Without caching, every run re-downloads it.
       - name: Cache Aeneas binary
         id: cache-aeneas-bin
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: /tmp/aeneas-bin
           key: aeneas-bin-${{ runner.os }}-${{ env.AENEAS_RELEASE }}
@@ -146,7 +146,7 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       - name: Cache Lake / Mathlib build artifacts
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
             crates/portcullis-core/lean/.lake

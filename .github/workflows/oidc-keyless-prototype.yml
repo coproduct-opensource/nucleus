@@ -21,12 +21,14 @@ on:
 
 permissions:
   contents: read       # checkout
-  id-token: write      # opt-in: lets the job FETCH+USE an OIDC token (not repo write)
 
 jobs:
   keyless-oidc-e2e:
     name: live keyless OIDC validate
     runs-on: ubuntu-latest
+    permissions:
+      contents: read       # checkout
+      id-token: write      # opt-in: lets the job FETCH+USE an OIDC token (not repo write)
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
