@@ -1,0 +1,33 @@
+[package]
+name = "nucleus-oracle"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Deterministic, sandboxed HELD-OUT grading oracle: grades a solver's RECORDED execution outputs against a grading bundle (no subprocess, no network, no LLM). Re-derives an exact held-out recompute pass-rate (the only load-bearing / RecomputeVerified dimension), carries metamorphic-relation coverage + mutation kill-score as STATISTICAL adequacy signals, pins determinism via k-of-n byte-identical re-runs (NOT consensus), and QUARANTINES submissions showing oracle-gaming signals via a conservative structural gate. Emits a tamper-evident, domain-separated GradeReceipt and mints honest nucleus-rubric provenance tags. Integer/byte-only, WASM-safe."
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Domain-separated content hash of the grade receipt — the RECEIPT_DOMAIN
+# discipline re-applied from nucleus-eval / nucleus-recompute. WASM-safe,
+# integer-only, no native deps.
+sha2 = { workspace = true }
+hex = { workspace = true }
+# Distinct, Display-able quarantine reason variants.
+thiserror = { workspace = true }
+# The deterministic held-out recompute mirrors nucleus-eval's DeterministicCheck
+# (EvalCase byte-equality). Composed by PATH — the recompute primitive is the
+# real one, never a local shadow.
+nucleus-eval = { path = "../nucleus-eval" }
+# The three-tier honesty boundary (Provenance::RecomputeVerified / Attested /
+# AttestationOnly) + Criterion / Rubric / Scorecard the mint emits. Composed by
+# PATH. Default features OFF keeps the closure lean + WASM-safe.
+nucleus-rubric = { path = "../nucleus-rubric" }
+
+[dev-dependencies]
+serde_json = { workspace = true }

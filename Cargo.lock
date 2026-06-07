@@ -6897,6 +6897,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-oracle"
+version = "1.0.0"
+dependencies = [
+ "hex",
+ "nucleus-eval",
+ "nucleus-rubric",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "nucleus-otel-bootstrap"
 version = "1.0.0"
 dependencies = [
