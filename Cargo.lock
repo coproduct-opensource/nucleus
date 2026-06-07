@@ -6901,6 +6901,7 @@ name = "nucleus-oracle"
 version = "1.0.0"
 dependencies = [
  "hex",
+ "nucleus-creditworthiness",
  "nucleus-eval",
  "nucleus-rubric",
  "serde",
