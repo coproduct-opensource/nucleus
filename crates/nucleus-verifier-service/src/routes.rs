@@ -917,6 +917,153 @@ pub async fn credit(Json(req): Json<CreditRequest>) -> Json<CreditResponse> {
     })
 }
 
+// ── Stateful credit ledger — POST /v1/credit/{agent_id}/accrue + GET standing ──
+//
+// These two endpoints are the durable counterpart of the stateless POST
+// /v1/credit: they persist an agent's recompute-verified history into an
+// append-only, hash-chained, per-identity ledger (redb) so standing survives a
+// restart. They are live ONLY when the service is started with --credit-db
+// (NUCLEUS_CREDIT_DB_PATH); otherwise both return 503 and the default,
+// stateless deployment is unchanged.
+
+/// Request body for [`credit_accrue`].
+#[derive(Debug, Deserialize)]
+pub struct CreditAccrueRequest {
+    /// The agent's clearing receipts to recompute and accrue — the same type
+    /// the stateless [`credit`] endpoint takes.
+    pub receipts: Vec<nucleus_recompute::ClearingReceipt>,
+    /// The worst-case one-shot defection gain to price the post-accrual bond
+    /// against, micro-USD.
+    pub max_defection_gain_micro: u64,
+}
+
+/// Response for [`credit_accrue`]: the post-accrual standing (the
+/// [`CreditResponse`] fields) plus how many events were newly appended and the
+/// identity's new portable head commitment.
+#[derive(Debug, Serialize)]
+pub struct CreditAccrueResponse {
+    /// Bond-substituting reputation after this accrual, micro-USD.
+    pub reputation_micro: u64,
+    /// Total events folded into the identity's persisted file.
+    pub event_count: u64,
+    /// Minimum bond to deter `max_defection_gain_micro` at this reputation —
+    /// the proven `required_bond`, micro-USD.
+    pub required_bond_micro: u64,
+    /// The defection gain the bond was priced against (echoed for auditability).
+    pub max_defection_gain_micro: u64,
+    /// How many submitted receipts minted a NEW ledger entry. Already-seen
+    /// receipt hashes are deduped (counted 0), so re-POSTing the same receipts
+    /// is idempotent.
+    pub appended: u64,
+    /// The identity's new head hash (hex) — the portable commitment a caller
+    /// retains to detect a later prefix rewrite (the append-extension check).
+    /// `None` only when the identity has no entries (all receipts Invalid).
+    pub head_hash_hex: Option<String>,
+}
+
+/// Query string for [`credit_standing`].
+#[derive(Debug, Deserialize)]
+pub struct StandingQuery {
+    /// The worst-case one-shot defection gain to price the bond against,
+    /// micro-USD.
+    pub max_defection_gain_micro: u64,
+}
+
+/// `POST /v1/credit/{agent_id}/accrue` — append an agent's recompute-verified
+/// receipts to its durable, hash-chained credit ledger and return its
+/// post-accrual standing.
+///
+/// Mints events with the SAME `mint::mint_events` the stateless endpoint uses
+/// (honest receipt → credit, caught defection → debit, Invalid → skipped),
+/// appends each to the per-identity chain (deduping already-seen receipt
+/// hashes), then re-folds the persisted events — the crate's proven commutative
+/// monoid — to price the bond. Re-POSTing the same receipts is idempotent
+/// (`appended == 0`, unchanged standing).
+///
+/// **Identity is self-asserted (interim).** `agent_id` is taken from the path
+/// with no authentication, matching the service's public/no-auth posture: anyone
+/// may POST honest receipts under any id, and the same receipts can be claimed
+/// under multiple ids (dedup is per-identity only). This standing MUST NOT feed
+/// real bond pricing until the SOUND follow-on binds accrual to an
+/// Ed25519/JWS-verified identity (a handler change only — the on-disk schema is
+/// already keyed by a caller-supplied `&str`). Returns 503 when `--credit-db`
+/// is unset.
+pub async fn credit_accrue(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Json(req): Json<CreditAccrueRequest>,
+) -> Result<Json<CreditAccrueResponse>, VerifyApiError> {
+    let store = state.credit_store.as_ref().ok_or_else(|| {
+        VerifyApiError::PersistenceDisabled(
+            "credit accrual requires --credit-db (NUCLEUS_CREDIT_DB_PATH); service is stateless"
+                .into(),
+        )
+    })?;
+
+    // Reuse the proven mint bridge — no economic logic lives in the handler.
+    let events = nucleus_creditworthiness::mint::mint_events(&req.receipts);
+    let mut appended = 0u64;
+    for event in events {
+        if store
+            .append(&agent_id, event)
+            .map_err(|e| VerifyApiError::Internal(format!("credit store append: {e}")))?
+            .is_some()
+        {
+            appended += 1;
+        }
+    }
+
+    // Re-fold the persisted chain (verify_chain runs inside) = post-accrual
+    // standing.
+    let file = store
+        .credit_file(&agent_id)
+        .map_err(|e| VerifyApiError::Internal(format!("credit store read: {e}")))?;
+    let head_hash_hex = store
+        .head(&agent_id)
+        .map_err(|e| VerifyApiError::Internal(format!("credit store head: {e}")))?
+        .map(|(_, h)| hex::encode(h));
+
+    Ok(Json(CreditAccrueResponse {
+        reputation_micro: file.reputation_micro(),
+        event_count: file.event_count(),
+        required_bond_micro: file.required_bond(req.max_defection_gain_micro).0,
+        max_defection_gain_micro: req.max_defection_gain_micro,
+        appended,
+        head_hash_hex,
+    }))
+}
+
+/// `GET /v1/credit/{agent_id}?max_defection_gain_micro=N` — an agent's persisted
+/// credit standing, re-folded from its durable ledger.
+///
+/// The ledger is `verify_chain`'d before folding, so a tampered chain is refused
+/// (500). Reuses [`CreditResponse`] verbatim — the durable standing is
+/// value-identical to the stateless POST /v1/credit result for the same events.
+/// Returns 503 when `--credit-db` is unset.
+pub async fn credit_standing(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Query(q): Query<StandingQuery>,
+) -> Result<Json<CreditResponse>, VerifyApiError> {
+    let store = state.credit_store.as_ref().ok_or_else(|| {
+        VerifyApiError::PersistenceDisabled(
+            "credit standing requires --credit-db (NUCLEUS_CREDIT_DB_PATH); service is stateless"
+                .into(),
+        )
+    })?;
+
+    let file = store
+        .credit_file(&agent_id)
+        .map_err(|e| VerifyApiError::Internal(format!("credit store read: {e}")))?;
+
+    Ok(Json(CreditResponse {
+        reputation_micro: file.reputation_micro(),
+        event_count: file.event_count(),
+        required_bond_micro: file.required_bond(q.max_defection_gain_micro).0,
+        max_defection_gain_micro: q.max_defection_gain_micro,
+    }))
+}
+
 #[cfg(test)]
 mod credit_tests {
     use super::*;

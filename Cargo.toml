@@ -126,6 +126,12 @@ hmac = "0.13"
 hex = "0.4"
 ring = "0.17"
 
+# Embedded key-value store (durable, append-only ledgers — e.g. the
+# creditworthiness credit ledger behind its `persist` feature). `4` floats to
+# 4.1.0, which is ALREADY resolved transitively (via the iroh-blobs/rcgen
+# neighborhood), so this unifies on the existing version with zero new crates.
+redb = "4"
+
 # TLS
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
 x509-parser = { version = "0.18", features = ["verify"] }

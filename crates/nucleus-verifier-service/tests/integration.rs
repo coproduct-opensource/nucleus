@@ -243,6 +243,7 @@ async fn fresh_db_state() -> AppState {
         merkle: None,
         witness: None,
         agent_card: None,
+        credit_store: None,
     }
 }
 
@@ -560,6 +561,7 @@ async fn signed_state() -> AppState {
         merkle: None,
         witness: None,
         agent_card: None,
+        credit_store: None,
     }
 }
 
@@ -720,6 +722,7 @@ async fn unsigned_sth_path_still_works_without_signer() {
         merkle: None,
         witness: None,
         agent_card: None,
+        credit_store: None,
     };
     let resp = build_app(state)
         .oneshot(
@@ -871,4 +874,271 @@ async fn well_known_configuration_reflects_stateless_mode() {
     assert_eq!(body["persistence"]["enabled"], false);
     assert_eq!(body["persistence"]["bundle_lookup_supported"], false);
     assert_eq!(body["persistence"]["transparency_log_supported"], false);
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Durable credit ledger: POST /v1/credit/{agent_id}/accrue + GET standing
+// ─────────────────────────────────────────────────────────────────
+
+/// A genuinely-honest settlement receipt, built with the SAME proven kernels
+/// recompute checks against (so a Match is real, not asserted).
+fn honest_settlement_receipt(
+    price_micro: u64,
+    delivered_bps: u64,
+) -> nucleus_recompute::ClearingReceipt {
+    use nucleus_econ_kernels::{classify, refund, seller_gross};
+    nucleus_recompute::ClearingReceipt::Settlement(nucleus_recompute::SettlementClaim {
+        price_micro,
+        delivered_bps,
+        verdict: classify(delivered_bps),
+        seller_gross: seller_gross(price_micro, delivered_bps),
+        refund: refund(price_micro, delivered_bps),
+    })
+}
+
+/// An `AppState` whose credit ledger is a fresh store opened at `path`.
+fn credit_state(path: &std::path::Path) -> AppState {
+    let store =
+        nucleus_creditworthiness::store::CreditLedgerStore::open(path).expect("open credit ledger");
+    AppState {
+        credit_store: Some(Arc::new(store)),
+        ..AppState::default()
+    }
+}
+
+#[tokio::test]
+async fn credit_accrue_then_standing_persists_across_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credit.redb");
+
+    // Instance #1: accrue honest receipts under agent-a.
+    let receipts = vec![
+        honest_settlement_receipt(400_000, 10_000),
+        honest_settlement_receipt(300_000, 10_000),
+    ];
+    let body = json!({ "receipts": receipts, "max_defection_gain_micro": 1_000_000 });
+    let resp = build_app(credit_state(&path))
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/credit/agent-a/accrue")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = read_json(resp.into_body()).await;
+    assert_eq!(j["reputation_micro"], 700_000);
+    assert_eq!(j["event_count"], 2);
+    assert_eq!(j["required_bond_micro"], 300_000);
+    assert_eq!(j["appended"], 2);
+    assert_eq!(j["head_hash_hex"].as_str().unwrap().len(), 64);
+    // Instance #1's router (and its store handle) is dropped at this `;`.
+
+    // Instance #2: a DIFFERENT store opened at the SAME path — the persisted
+    // standing comes back, proving the reopen survives (end-to-end durability).
+    let resp = build_app(credit_state(&path))
+        .oneshot(
+            Request::builder()
+                .uri("/v1/credit/agent-a?max_defection_gain_micro=1000000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = read_json(resp.into_body()).await;
+    assert_eq!(j["reputation_micro"], 700_000);
+    assert_eq!(j["event_count"], 2);
+    assert_eq!(j["required_bond_micro"], 300_000);
+    assert_eq!(j["max_defection_gain_micro"], 1_000_000);
+}
+
+#[tokio::test]
+async fn credit_endpoints_503_when_disabled_but_stateless_still_works() {
+    // accrue → 503 persistence_disabled
+    let body = json!({ "receipts": [], "max_defection_gain_micro": 1_000_000 });
+    let resp = build_app(AppState::default())
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/credit/agent-a/accrue")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let j = read_json(resp.into_body()).await;
+    assert_eq!(j["error"], "persistence_disabled");
+
+    // standing → 503 persistence_disabled
+    let resp = build_app(AppState::default())
+        .oneshot(
+            Request::builder()
+                .uri("/v1/credit/agent-a?max_defection_gain_micro=1000000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let j = read_json(resp.into_body()).await;
+    assert_eq!(j["error"], "persistence_disabled");
+
+    // The stateless POST /v1/credit is UNCHANGED — the required non-breaking
+    // default (no --credit-db => the only credit endpoint with behavior).
+    let receipts = vec![honest_settlement_receipt(500_000, 10_000)];
+    let body = json!({ "receipts": receipts, "max_defection_gain_micro": 1_000_000 });
+    let resp = build_app(AppState::default())
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/credit")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = read_json(resp.into_body()).await;
+    assert_eq!(j["reputation_micro"], 500_000);
+    assert_eq!(j["required_bond_micro"], 500_000);
+}
+
+#[tokio::test]
+async fn credit_accrue_is_idempotent_on_resubmit() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credit.redb");
+    let store = Arc::new(nucleus_creditworthiness::store::CreditLedgerStore::open(&path).unwrap());
+    let state = AppState {
+        credit_store: Some(store),
+        ..AppState::default()
+    };
+
+    let receipts = vec![honest_settlement_receipt(400_000, 10_000)];
+    let body = json!({ "receipts": receipts, "max_defection_gain_micro": 1_000_000 });
+
+    // First accrual: 1 new entry.
+    let resp = build_app(state.clone())
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/credit/agent-a/accrue")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j1 = read_json(resp.into_body()).await;
+    assert_eq!(j1["appended"], 1);
+    assert_eq!(j1["reputation_micro"], 400_000);
+    let head1 = j1["head_hash_hex"].as_str().unwrap().to_string();
+
+    // Re-POST the SAME receipts: deduped → 0 appended, standing + head stable.
+    let resp = build_app(state.clone())
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/credit/agent-a/accrue")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j2 = read_json(resp.into_body()).await;
+    assert_eq!(j2["appended"], 0);
+    assert_eq!(j2["reputation_micro"], 400_000);
+    assert_eq!(j2["event_count"], 1);
+    assert_eq!(j2["head_hash_hex"].as_str().unwrap(), head1);
+}
+
+#[tokio::test]
+async fn credit_standing_is_isolated_per_agent_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credit.redb");
+    let store = Arc::new(nucleus_creditworthiness::store::CreditLedgerStore::open(&path).unwrap());
+    let state = AppState {
+        credit_store: Some(store),
+        ..AppState::default()
+    };
+
+    // Accrue under agent-a only.
+    let receipts = vec![honest_settlement_receipt(600_000, 10_000)];
+    let body = json!({ "receipts": receipts, "max_defection_gain_micro": 1_000_000 });
+    let resp = build_app(state.clone())
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/credit/agent-a/accrue")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // agent-b never accrued: a fresh identity with zero standing → full bond.
+    // agent-a's accrual did not leak across identities.
+    let resp = build_app(state.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/v1/credit/agent-b?max_defection_gain_micro=1000000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = read_json(resp.into_body()).await;
+    assert_eq!(j["reputation_micro"], 0);
+    assert_eq!(j["event_count"], 0);
+    assert_eq!(j["required_bond_micro"], 1_000_000);
+}
+
+#[tokio::test]
+async fn credit_accrue_caught_defection_burns_standing_through_the_api() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credit.redb");
+    let store = Arc::new(nucleus_creditworthiness::store::CreditLedgerStore::open(&path).unwrap());
+    let state = AppState {
+        credit_store: Some(store),
+        ..AppState::default()
+    };
+
+    // One honest 1M settlement and one tampered settlement (seller_gross + 1)
+    // that recompute catches as a defection — the recompute IS the fraud proof.
+    let mut tampered = honest_settlement_receipt(1_000_000, 10_000);
+    if let nucleus_recompute::ClearingReceipt::Settlement(ref mut c) = tampered {
+        c.seller_gross += 1;
+    }
+    let receipts = vec![honest_settlement_receipt(1_000_000, 10_000), tampered];
+    let body = json!({ "receipts": receipts, "max_defection_gain_micro": 2_000_000 });
+    let resp = build_app(state)
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/credit/agent-a/accrue")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let j = read_json(resp.into_body()).await;
+    // 1,000,000 honest credit − 1,000,000 caught-defection debit = 0 standing;
+    // both receipts minted an event.
+    assert_eq!(j["reputation_micro"], 0);
+    assert_eq!(j["event_count"], 2);
+    assert_eq!(j["appended"], 2);
 }

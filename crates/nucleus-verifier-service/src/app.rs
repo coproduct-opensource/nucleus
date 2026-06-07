@@ -85,6 +85,15 @@ pub struct AppState {
     /// operator's out-of-band-resolved key). When `None`, the endpoint
     /// returns 404 — the service makes no identity claim.
     pub agent_card: Option<Arc<nucleus_agent_card::SignedAgentCard>>,
+    /// Durable, append-only, per-identity credit ledger (set via
+    /// `--credit-db` / `NUCLEUS_CREDIT_DB_PATH`). When `Some`, the stateful
+    /// credit endpoints — `POST /v1/credit/{agent_id}/accrue` and
+    /// `GET /v1/credit/{agent_id}` — persist and re-fold an agent's
+    /// recompute-verified history. When `None`, those endpoints return 503
+    /// (the default deployment is unchanged: only the stateless `POST
+    /// /v1/credit` has behavior). `redb::Database` is `Send + Sync` but not
+    /// `Clone`, so it is shared behind `Arc`.
+    pub credit_store: Option<Arc<nucleus_creditworthiness::store::CreditLedgerStore>>,
 }
 
 /// Max request body size in bytes. Provenance bundles are bounded by
@@ -155,6 +164,11 @@ pub fn build_app(state: AppState) -> Router {
         .route("/healthz", get(routes::healthz))
         .route("/v1/verify", post(routes::verify))
         .route("/v1/credit", post(routes::credit))
+        // Stateful credit ledger (503 unless --credit-db is set). `accrue`
+        // appends an agent's recompute-verified events to its durable,
+        // hash-chained ledger; the GET returns its persisted standing.
+        .route("/v1/credit/{agent_id}/accrue", post(routes::credit_accrue))
+        .route("/v1/credit/{agent_id}", get(routes::credit_standing))
         .route(
             "/v1/bundles/{hash}/verify",
             get(routes::bundle_verify_lookup),

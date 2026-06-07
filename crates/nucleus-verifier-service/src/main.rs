@@ -49,6 +49,20 @@ struct Cli {
     /// (`log_entries`) is never swept regardless of this setting.
     #[arg(long, env = "NUCLEUS_VERIFIER_RETENTION_DAYS")]
     retention_days: Option<i64>,
+    /// Path to the durable credit-ledger database (redb). When set, the
+    /// stateful credit endpoints are enabled:
+    /// `POST /v1/credit/{agent_id}/accrue` appends an agent's
+    /// recompute-verified events to its append-only, hash-chained,
+    /// per-identity ledger and `GET /v1/credit/{agent_id}` returns its
+    /// persisted standing — both survive restarts. When unset, those
+    /// endpoints return 503 and only the stateless `POST /v1/credit`
+    /// has behavior (the default deployment is unchanged). This is a
+    /// SEPARATE file from `--db` (the SQLite verification log).
+    ///
+    /// On Fly.io, point this at a path on the mounted volume, e.g.
+    /// `/data/credit.redb`.
+    #[arg(long, env = "NUCLEUS_CREDIT_DB_PATH")]
+    credit_db: Option<String>,
 }
 
 #[tokio::main]
@@ -116,6 +130,24 @@ async fn main() -> Result<()> {
         None
     };
 
+    // Open the durable credit ledger when a path is configured. Separate file
+    // from the SQLite verification log (--db); unset => None => the stateful
+    // credit endpoints 503 while stateless /v1/credit is unaffected.
+    let credit_store = match cli.credit_db.as_deref() {
+        Some(path) if !path.is_empty() => {
+            let store = nucleus_creditworthiness::store::CreditLedgerStore::open(path)
+                .with_context(|| format!("opening credit ledger DB at {path}"))?;
+            tracing::info!(credit_db = %path, "durable credit ledger enabled");
+            Some(Arc::new(store))
+        }
+        _ => {
+            tracing::info!(
+                "credit ledger disabled; pass --credit-db to enable /v1/credit/{{agent_id}} accrue + standing"
+            );
+            None
+        }
+    };
+
     let state = AppState {
         db: db.clone(),
         signer,
@@ -123,6 +155,7 @@ async fn main() -> Result<()> {
         merkle,
         witness: None,    // iter-1: configurable via CLI in iter-2
         agent_card: None, // configurable via CLI in a later iteration
+        credit_store,
     };
 
     // Retention sweeper — spawned only when persistence is enabled.
