@@ -2,7 +2,7 @@
 name = "nucleus-verifier-wasm"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.95"
+rust-version = "1.93"
 license = "MIT OR Apache-2.0"
 description = "WASM bindings for nucleus-envelope verification — runs in browser/Node, no trust in the verifier service"
 repository = "https://github.com/coproduct-opensource/nucleus"

@@ -74,7 +74,15 @@ resolver = "2"
 [workspace.package]
 version = "1.0.0"
 edition = "2021"
-rust-version = "1.95"
+# MSRV floor is pinned to the rustc that Kani's bundled toolchain ships
+# (kani-verifier 0.67.0 — latest as of 2026-06 — bundles nightly = rustc
+# 1.93). `cargo kani` has no `--ignore-rust-version`, so a workspace floor
+# above 1.93 makes the Kani BMC job (`-p portcullis`) refuse to compile with
+# "rustc 1.93.0-nightly is not supported … requires rustc 1.95". Nothing in
+# this workspace uses a 1.94/1.95 lang/std feature (edition is 2021/2024,
+# which only need ≤1.85), so 1.93 is the honest floor. Raise this only once
+# Kani's bundled nightly catches up, and bump it together with Kani.
+rust-version = "1.93"
 license = "MIT OR Apache-2.0"
 authors = ["Coproduct <hello@coproduct.dev>"]
 repository = "https://github.com/coproduct-opensource/nucleus"

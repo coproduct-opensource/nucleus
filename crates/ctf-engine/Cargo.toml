@@ -2,7 +2,7 @@
 name = "ctf-engine"
 version = "1.0.0"
 edition = "2021"
-rust-version = "1.95"
+rust-version = "1.93"
 license = "MIT OR Apache-2.0"
 description = "Browser-native CTF engine: can your AI agent exfiltrate from a formally verified sandbox?"
 
