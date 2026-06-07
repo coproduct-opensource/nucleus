@@ -146,3 +146,43 @@ defaults flipped to regenerative; the governed-commons steward + its public
 accounting; adoption as an open standard; the anti-aristocracy decay on standing.
 This RFC is **intent on the record**, so the commitment is legible before the
 incentives drift — not a claim that any of the aspirational items are done.
+
+## Decision (2026-06-07): Vision 2 — the regenerative agent-economy substrate
+
+**Operator decision.** `nucleus` is **the verifiable, regenerative agent-*economy*
+substrate** — not a domain-agnostic generic runtime that happens to host some
+economics. Economic + regenerative vocabulary (Pigouvian externality pricing,
+commons rebate, the economic lineage edge kinds, true-cost dues) is **first-class
+and canonical-public**, alongside the already-public `nucleus-econ-kernels` /
+`nucleus-externality` / `nucleus-creditworthiness`.
+
+**Rationale — the strongest iterated game.** A substrate whose *dominant strategy
+is regenerative + honest behavior* is the most defensible position there is: it is
+the regenerative-dominance conjecture turned into product identity (see
+`docs/rfcs/regenerative-dominance.md` when written). In the repeated game,
+externalizing and lying are meant to be strictly dominated; making that the
+substrate's *identity*, not a bolt-on, is what makes the equilibrium stick. Social
+good is not a feature here — it is the load-bearing incentive.
+
+**What this resolves (HD-2 → Option A).** The platform-vs-public fork of the
+economic vocabulary is resolved by upstreaming it into the public canonical
+crates: the economic `EdgeKind` variants (`Bid`, `Allocation`, `Settlement`,
+`Externality`, `WelfareRebate`, `PigouvianRateUpdate`, `Dispute`, `MetricClaim`,
+`ContractEvaluation`) + `VerifierAttestation` + the `sink-io` feature land in
+public `nucleus-lineage`; `cube` + `rebate` land in public `nucleus-externality`
+(which already carries `assurance`). The generic IFC/security primitives stay as
+clean as they can, but we accept — deliberately — that `nucleus-lineage` becomes
+the agent-*economy*'s lineage crate, because economics *is* the domain.
+
+**What it unblocks.** Once the economic vocabulary is canonical-public, the
+consolidation chain completes: `nucleus-lineage` + `nucleus-externality` reconcile
+(merge-both → publish) → `nucleus-econ-kernels` adopts published → the platform
+consumes published canonical → `ci/allowed-dups.txt` shrinks toward empty → the #3
+vendoring/adapter layer deletes itself. See
+`nucleus-platform/docs/CONSOLIDATION-PLAN.md` (HD-2 now decided).
+
+**Accepted tradeoff (honest).** Choosing Vision 2 forecloses the "tiny generic
+runtime reused for non-economic deployments" option: the core lineage crate now
+carries economic edge kinds a purely-generic consumer would not need. We take
+that cost knowingly — the bet is that the regenerative economy *is* the product,
+and one canonical, recompute-verifiable substrate beats a pristine-but-forked one.
