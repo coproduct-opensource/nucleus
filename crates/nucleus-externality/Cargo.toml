@@ -12,6 +12,7 @@ description = "Coproduct Pigouvian externality layer: signed externality envelop
 workspace = true
 
 [dependencies]
+nucleus-lineage = { path = "../nucleus-lineage" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
