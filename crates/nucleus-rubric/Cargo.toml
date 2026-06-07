@@ -1,0 +1,29 @@
+[package]
+name = "nucleus-rubric"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "CT-disciplined cardinal scoring kernel: applies nucleus-eval's three-tier honesty boundary (RecomputeVerified sets the load-bearing number; Attested/AttestationOnly carried but provably inert) to a fixed weighted multi-criterion rubric. rank() is a faithful sub-functor that forgets every non-RV dimension and ranks by >= on an integer weighted cardinal total (a total order, transitive by construction, no pairwise/LLM duels); a Pareto front over the RV product-poset plus weighted-sum scalarization picks the winner; the recomputable VCG-marginal (winner - runner_up) mints a real nucleus_creditworthiness::CreditEvent. Integer-only, WASM-safe, no cross-repo deps."
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+# Domain-separated content hash of the receipt — the RECEIPT_DOMAIN discipline,
+# re-applied from nucleus-eval. WASM-safe, integer-only, no native deps.
+sha2 = { workspace = true }
+serde_json = { workspace = true }
+# The three-tier Provenance honesty boundary + canonical_bytes/receipt_hash
+# discipline are re-applied from nucleus-eval (composed by PATH).
+nucleus-eval = { path = "../nucleus-eval" }
+# The REAL credit economics: CreditEvent / CreditFile. The VCG-marginal mints
+# honest_settlement — never a local shadow. Default features OFF keeps the
+# closure lean + WASM-safe (no durable-store deps).
+nucleus-creditworthiness = { path = "../nucleus-creditworthiness", default-features = false }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+proptest = { workspace = true }

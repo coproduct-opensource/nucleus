@@ -6944,6 +6944,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-rubric"
+version = "1.0.0"
+dependencies = [
+ "nucleus-creditworthiness",
+ "nucleus-eval",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "nucleus-sdk"
 version = "1.0.0"
 dependencies = [
