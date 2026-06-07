@@ -754,6 +754,7 @@ pub async fn well_known_agent_card(
 pub async fn well_known_configuration(State(state): State<AppState>) -> Json<serde_json::Value> {
     let sth_signed = state.signer.is_some();
     let persistence_enabled = state.db.is_some();
+    let credit_ledger_enabled = state.credit_store.is_some();
     Json(serde_json::json!({
         "service": "nucleus-verifier",
         "service_version": env!("CARGO_PKG_VERSION"),
@@ -766,6 +767,26 @@ pub async fn well_known_configuration(State(state): State<AppState>) -> Json<ser
             "bundle_lookup": "/v1/bundles/{hash}/verify",
             "log_size": "/v1/log/size",
             "log_sth": "/v1/log/sth",
+            "credit_stateless": "/v1/credit",
+            "credit_accrue": "/v1/credit/{agent_id}/accrue",
+            "credit_standing": "/v1/credit/{agent_id}",
+        },
+        // The stateful credit endpoints. `accrue` is authenticated; `standing`
+        // is a public, recomputable read. SDKs learn the auth contract here
+        // without reading source.
+        "credit": {
+            "enabled": credit_ledger_enabled,
+            "accrue_auth": {
+                "scheme": "detached-ed25519",
+                "note": "Sign the EXACT request body bytes; this is a detached \
+                         Ed25519 signature, NOT an RFC-7515 JWS.",
+                "pubkey_header": crate::auth::PUBKEY_HEADER,
+                "signature_header": crate::auth::SIGNATURE_HEADER,
+                "pubkey_encoding": "lowercase-hex(32-byte Ed25519 verifying key)",
+                "signature_encoding": "base64-standard(64-byte Ed25519 signature)",
+                "identity": "agent_id == hex(verifying_key); a path mismatch is 403",
+            },
+            "standing_auth": "public (no signature required)",
         },
         "sth": {
             "signed": sth_signed,
@@ -925,6 +946,14 @@ pub async fn credit(Json(req): Json<CreditRequest>) -> Json<CreditResponse> {
 // restart. They are live ONLY when the service is started with --credit-db
 // (NUCLEUS_CREDIT_DB_PATH); otherwise both return 503 and the default,
 // stateless deployment is unchanged.
+//
+// Auth posture: `accrue` (the write that MINTS standing) is AUTHENTICATED — it
+// requires a detached Ed25519 signature over the body and keys the ledger by
+// the signer's derived identity `hex(vk)` (see `crate::auth`). `GET standing`
+// stays PUBLIC: standing is reputation — an append-only, verify_chain'd,
+// secret-free read meant to be recomputable by anyone; only the mint needs
+// identity binding. With authenticated accrual, the ledger id IS the agent's
+// pubkey hex, so a reader queries standing by that same hex id.
 
 /// Request body for [`credit_accrue`].
 #[derive(Debug, Deserialize)]
@@ -980,18 +1009,50 @@ pub struct StandingQuery {
 /// monoid — to price the bond. Re-POSTing the same receipts is idempotent
 /// (`appended == 0`, unchanged standing).
 ///
-/// **Identity is self-asserted (interim).** `agent_id` is taken from the path
-/// with no authentication, matching the service's public/no-auth posture: anyone
-/// may POST honest receipts under any id, and the same receipts can be claimed
-/// under multiple ids (dedup is per-identity only). This standing MUST NOT feed
-/// real bond pricing until the SOUND follow-on binds accrual to an
-/// Ed25519/JWS-verified identity (a handler change only — the on-disk schema is
-/// already keyed by a caller-supplied `&str`). Returns 503 when `--credit-db`
-/// is unset.
+/// **Identity is AUTHENTICATED.** The caller MUST present a detached Ed25519
+/// signature over the EXACT request body bytes via two headers (see
+/// [`crate::auth`]):
+/// - `x-nucleus-agent-pubkey`: 64-char lowercase hex of the 32-byte Ed25519
+///   verifying key.
+/// - `x-nucleus-signature`: STANDARD base64 of the 64-byte signature over the
+///   body.
+///
+/// The signer's own key IS the identity: the ledger is keyed by the DERIVED
+/// `canonical_id = hex(vk)`, never by a caller-chosen string. The `{agent_id}`
+/// path segment is retained for a self-documenting route but MUST equal the
+/// derived id — a mismatch is the confused-deputy case and returns 403 with
+/// nothing written. Missing / malformed / forged signatures return 401 with
+/// nothing written (fail closed).
+///
+/// Because the id is derived from the verifying key (not chosen), an attacker
+/// can mint keys but CANNOT accrue under an identity it does not control, and
+/// cross-identity double-claim of a receipt is PREVENTED: re-pointing a
+/// captured signed envelope at another id requires re-signing (impossible
+/// without the key) and any path/id mismatch 403s. Replaying the signer's OWN
+/// envelope is a harmless no-op (per-identity `receipt_hash` dedup ⇒
+/// `appended == 0`). There is no nonce/expiry, so this is replay-safe-by-
+/// idempotence, not replay-prevented (see [`crate::auth`]).
+///
+/// This is a detached Ed25519 signature (the same primitive `/v1/witness/
+/// peer-sth` ships), NOT an RFC-7515 JWS, and adds no new dependency. Returns
+/// 503 when `--credit-db` is unset.
+///
+/// **Standing is NOT yet safe to price real money.** Authenticated identity
+/// closes the *spoofing* gap (you can only accrue under a key you hold), but it
+/// is necessary, not sufficient. A [`nucleus_recompute::ClearingReceipt`] carries
+/// no provenance: `verify_receipt` accepts any *internally self-consistent*
+/// receipt, so a key can fabricate arbitrary high-value receipts and farm
+/// standing without limit. And under this self-write binding the caught-defection
+/// debit is adversarially unreachable (only the key-holder writes its own ledger,
+/// so no counterparty can record its defection). Therefore `required_bond` from
+/// this endpoint MUST NOT price real funds until receipts are provenance-bound
+/// (counterparty-signed or transparency-log/settlement-anchored) and
+/// authenticated defection evidence can debit standing.
 pub async fn credit_accrue(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,
-    Json(req): Json<CreditAccrueRequest>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
 ) -> Result<Json<CreditAccrueResponse>, VerifyApiError> {
     let store = state.credit_store.as_ref().ok_or_else(|| {
         VerifyApiError::PersistenceDisabled(
@@ -1000,12 +1061,52 @@ pub async fn credit_accrue(
         )
     })?;
 
+    // ── Authenticated identity binding (fail closed before any write) ──
+    // Require a detached Ed25519 signature over the EXACT body bytes; the
+    // signer's own key IS the identity.
+    let pubkey_hex = headers
+        .get(crate::auth::PUBKEY_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| {
+            VerifyApiError::Unauthorized(format!(
+                "missing or non-ASCII {} header",
+                crate::auth::PUBKEY_HEADER
+            ))
+        })?;
+    let sig_b64 = headers
+        .get(crate::auth::SIGNATURE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| {
+            VerifyApiError::Unauthorized(format!(
+                "missing or non-ASCII {} header",
+                crate::auth::SIGNATURE_HEADER
+            ))
+        })?;
+    // Verifies the signature over the body and returns the SAME key we then
+    // derive the identity from (any failure ⇒ 401, no write).
+    let vk = crate::auth::verify_detached_ed25519(pubkey_hex, sig_b64, &body)?;
+    let canonical_id = crate::auth::canonical_id(&vk);
+
+    // Confused-deputy guard: authenticated as key K, but the path names another
+    // identity. 403, write NOTHING. Equality is over public data — no
+    // constant-time compare needed.
+    if agent_id != canonical_id {
+        return Err(VerifyApiError::Forbidden(format!(
+            "path identity {agent_id:?} does not match the signing key's identity {canonical_id:?}"
+        )));
+    }
+
+    // Signature verified over these exact bytes — now parse the request body.
+    let req: CreditAccrueRequest = serde_json::from_slice(&body)
+        .map_err(|e| VerifyApiError::BadRequest(format!("invalid accrue body: {e}")))?;
+
     // Reuse the proven mint bridge — no economic logic lives in the handler.
+    // The store key is the DERIVED, authenticated identity — never the raw path.
     let events = nucleus_creditworthiness::mint::mint_events(&req.receipts);
     let mut appended = 0u64;
     for event in events {
         if store
-            .append(&agent_id, event)
+            .append(&canonical_id, event)
             .map_err(|e| VerifyApiError::Internal(format!("credit store append: {e}")))?
             .is_some()
         {
@@ -1016,10 +1117,10 @@ pub async fn credit_accrue(
     // Re-fold the persisted chain (verify_chain runs inside) = post-accrual
     // standing.
     let file = store
-        .credit_file(&agent_id)
+        .credit_file(&canonical_id)
         .map_err(|e| VerifyApiError::Internal(format!("credit store read: {e}")))?;
     let head_hash_hex = store
-        .head(&agent_id)
+        .head(&canonical_id)
         .map_err(|e| VerifyApiError::Internal(format!("credit store head: {e}")))?
         .map(|(_, h)| hex::encode(h));
 
@@ -1039,7 +1140,11 @@ pub async fn credit_accrue(
 /// The ledger is `verify_chain`'d before folding, so a tampered chain is refused
 /// (500). Reuses [`CreditResponse`] verbatim — the durable standing is
 /// value-identical to the stateless POST /v1/credit result for the same events.
-/// Returns 503 when `--credit-db` is unset.
+///
+/// PUBLIC by design (no signature required): standing is reputation — a
+/// secret-free, recomputable read. Since authenticated accrual keys the ledger
+/// by `hex(vk)`, `{agent_id}` here is the agent's pubkey hex. Returns 503 when
+/// `--credit-db` is unset.
 pub async fn credit_standing(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,

@@ -42,11 +42,19 @@
 //! [`verify_chain`]. It is NOT a transparency log (no non-equivocation, no
 //! sublinear proofs, no third-party append-only guarantee) until each head is
 //! Merkle-anchored (`nucleus-lineage` `MerkleSink` / `SignedTreeHead`) and
-//! witness-cosigned (`nucleus-witness` C2SP server). The store key (`identity`)
-//! is supplied by the caller — none of [`CreditEvent`] / [`CreditFile`] /
-//! `ClearingReceipt` carries one — so in the interim, unauthenticated model,
-//! standing is self-asserted; gate real bond pricing on the authenticated
-//! (Ed25519/JWS-bound `identity`) follow-on.
+//! witness-cosigned (`nucleus-witness` C2SP server).
+//!
+//! The store key (`identity`) is a caller-supplied `&str` — none of
+//! [`CreditEvent`] / [`CreditFile`] / `ClearingReceipt` carries one. This crate
+//! stays identity-agnostic on purpose; binding the key to an authenticated
+//! principal is the caller's job. The HTTP front-end
+//! (`nucleus-verifier-service`) now does exactly that: `POST
+//! /v1/credit/{agent_id}/accrue` requires a detached Ed25519 signature over the
+//! request body and passes the DERIVED `hex(verifying_key)` as `identity`, so
+//! standing is no longer self-asserted and cross-identity double-claim of a
+//! receipt is prevented (an attacker can mint keys but cannot accrue under an
+//! identity it does not control). A different front-end MUST apply the same
+//! discipline before its standing can price real bonds.
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -300,9 +308,12 @@ mod tests {
             500_000
         );
 
-        // The SAME receipt_hash under a DIFFERENT identity is NOT deduped
-        // (dedup is per-identity; cross-identity double-claim is the documented
-        // interim soundness gap).
+        // The SAME receipt_hash under a DIFFERENT identity is NOT deduped:
+        // dedup is per-identity BY DESIGN (this crate is identity-agnostic; the
+        // store key is an opaque `&str`). Driving the store with a second
+        // identity is the caller's privilege — and the HTTP front-end now gates
+        // it behind a detached Ed25519 signature whose key IS the identity, so
+        // an attacker cannot reach this line under an id it does not control.
         let other = store.append("agent-b", ev).unwrap();
         assert!(other.is_some());
         assert_eq!(store.entries("agent-b").unwrap().len(), 1);

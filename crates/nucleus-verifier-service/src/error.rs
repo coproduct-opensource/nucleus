@@ -31,6 +31,19 @@ pub enum VerifyApiError {
     /// from "hash legitimately absent."
     #[error("persistence disabled: {0}")]
     PersistenceDisabled(String),
+    /// Authentication failed on a write that mints identity-bound state
+    /// (`POST /v1/credit/{agent_id}/accrue`): the request carried no detached
+    /// Ed25519 signature, a malformed/short/long pubkey or signature, a
+    /// non-point key, or a signature that did not verify over the request
+    /// body. Fail closed — nothing is appended.
+    #[error("unauthorized: {0}")]
+    Unauthorized(String),
+    /// Authenticated, but acting as another identity: the URL path id does not
+    /// equal the signing key's canonical id (`hex(vk)`). The confused-deputy
+    /// guard — you proved control of key K but tried to accrue as someone
+    /// else. Nothing is appended.
+    #[error("forbidden: {0}")]
+    Forbidden(String),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -56,6 +69,8 @@ impl IntoResponse for VerifyApiError {
             VerifyApiError::PersistenceDisabled(_) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "persistence_disabled")
             }
+            VerifyApiError::Unauthorized(_) => (StatusCode::UNAUTHORIZED, "unauthorized"),
+            VerifyApiError::Forbidden(_) => (StatusCode::FORBIDDEN, "forbidden"),
             VerifyApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         };
         let body = Body {

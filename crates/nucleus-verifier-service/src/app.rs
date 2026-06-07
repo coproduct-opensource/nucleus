@@ -145,7 +145,15 @@ pub fn build_app(state: AppState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-        .allow_headers([header::CONTENT_TYPE]);
+        // CONTENT_TYPE for every JSON body; the two `x-nucleus-*` headers carry
+        // the detached Ed25519 signature + signer pubkey that authenticate
+        // `POST /v1/credit/{agent_id}/accrue` (see `crate::auth`). Browser
+        // clients can't send them cross-origin unless they're allow-listed here.
+        .allow_headers([
+            header::CONTENT_TYPE,
+            axum::http::HeaderName::from_static(crate::auth::PUBKEY_HEADER),
+            axum::http::HeaderName::from_static(crate::auth::SIGNATURE_HEADER),
+        ]);
 
     Router::new()
         .route("/", get(routes::root))

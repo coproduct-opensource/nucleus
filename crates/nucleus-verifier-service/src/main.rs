@@ -59,6 +59,12 @@ struct Cli {
     /// has behavior (the default deployment is unchanged). This is a
     /// SEPARATE file from `--db` (the SQLite verification log).
     ///
+    /// Accrual is AUTHENTICATED: the caller must send a detached Ed25519
+    /// signature over the request body (`x-nucleus-agent-pubkey` +
+    /// `x-nucleus-signature`); the ledger is keyed by the signer's derived
+    /// identity `hex(verifying_key)`, so standing is not self-asserted. The GET
+    /// standing read stays public.
+    ///
     /// On Fly.io, point this at a path on the mounted volume, e.g.
     /// `/data/credit.redb`.
     #[arg(long, env = "NUCLEUS_CREDIT_DB_PATH")]
