@@ -287,6 +287,10 @@ impl Kernel {
                     ConstitutionalInvariant::BoundedTermination => {
                         "Bounded termination violated".into()
                     }
+                    ConstitutionalInvariant::AmendmentRulesMonotonicity => format!(
+                        "Amendment rules weakened (anti-coup): {:?}",
+                        verdict.diff.amendment_rule_weakenings
+                    ),
                 };
                 reasons.push(RejectionReason {
                     invariant: *invariant,
