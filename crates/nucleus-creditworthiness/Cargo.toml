@@ -6,7 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Agent credit file: aggregate recompute-verified history into bond-substituting reputation. A multi-dimensional, order-independent (recompute-stable) vector — financial-default dimension active, Pigouvian externality dimension reserved-but-dormant — composing the proven nucleus-witness-olog::required_bond kernel."
+description = "Agent credit file: aggregate recompute-verified history into bond-substituting reputation. A multi-dimensional, order-independent (recompute-stable) vector — both the financial-default and the Pigouvian externality dimensions active (regenerative by default) — composing the proven nucleus-witness-olog::required_bond kernel. Includes a recompute-verifiable commons-ledger accounting view."
 
 [lints]
 workspace = true
@@ -21,6 +21,11 @@ nucleus-witness-olog = { path = "../nucleus-witness-olog", version = "1.0.0" }
 # `recompute` feature: mint CreditEvents straight from recompute-verified
 # clearing receipts (the receipt→recompute→CreditEvent→CreditFile→bond pipeline).
 nucleus-recompute = { path = "../nucleus-recompute", version = "1.0.0", optional = true }
+# The proven `route_to_commons` kernel (pinned to Commons.lean's
+# `routed_conserves`): the recompute-verifiable commons-ledger view recomputes
+# the routed split from THIS kernel, never trusting a receipt's claimed
+# allocations. Gated on `recompute` (used only there + the mint bridge tests).
+nucleus-econ-kernels = { path = "../nucleus-econ-kernels", version = "1.0.0", optional = true }
 hex = { workspace = true, optional = true }
 # Hash chain for the append-only ledger (`ledger` module, ALWAYS compiled).
 # WASM-safe and already transitively in the default closure via
@@ -38,7 +43,7 @@ default = ["recompute"]
 # The `mint` bridge: derive CreditEvents from recompute-verified ClearingReceipts.
 # On by default (the pipeline is the point); opt out with `default-features =
 # false` for the lean core (e.g. a wasm consumer that supplies its own events).
-recompute = ["dep:nucleus-recompute", "dep:hex"]
+recompute = ["dep:nucleus-recompute", "dep:nucleus-econ-kernels", "dep:hex"]
 # The durable `store` module: redb-backed, append-only, per-identity credit
 # ledger. OFF by default (the WASM verify SDK must never pull redb). The
 # verifier service turns this on; the hash chain in `ledger` is compiled either

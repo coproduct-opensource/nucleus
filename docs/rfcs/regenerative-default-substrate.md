@@ -139,13 +139,35 @@ alignment-adjacent: verifiable claims about what an agent actually did.
 
 ## Honest scope
 
-Built today: recompute, held-out oracle, credit ledger, the externality crate +
-the *dormant* externality credit dimension, the commons-routing primitive,
-credible-clearing design, coalition settlement (dogfooded). **Aspirational:**
-defaults flipped to regenerative; the governed-commons steward + its public
-accounting; adoption as an open standard; the anti-aristocracy decay on standing.
-This RFC is **intent on the record**, so the commitment is legible before the
-incentives drift — not a claim that any of the aspirational items are done.
+**Wired today (in code, with tests):** recompute, held-out oracle, the credit
+ledger (append-only hash chain), the externality crate, the commons-routing
+primitive (`route_to_commons`, no-skim conservation, pinned to `Commons.lean`'s
+`routed_conserves`), credible-clearing design, coalition settlement (dogfooded).
+The `CreditDimension::Externality` credit dimension is **active and load-bearing**
+on the bond-substituting reputation: recompute-verified `Commons` receipts build
+standing exactly as honest settlement does, and a recompute-Mismatch (dues
+claimed but not routed) burns it (`nucleus-creditworthiness` `mint` + the
+`externality_credit_builds_debit_burns` property test). A
+**recompute-verifiable commons-ledger accounting view** now exists
+(`nucleus-creditworthiness::commons_view`): a pure, read-only projection over
+recompute-verified `Commons` receipts that re-derives, per destination + total,
+the externality dues actually routed to the commons — anyone replaying the same
+receipts recomputes the same totals ("watch the money fund the fix"). It re-runs
+`route_to_commons` and counts only receipts that recompute, so a dumped
+externality can never inflate the routed figure.
+
+**Still dormant / operator-gated (NOT done — do not read this list as shipped):**
+the *reference-default flip* of the deployed clearing config from extractive to
+regenerative (a deliberate, reviewable operator call — the "config flip, not a
+schema migration" seam); routing the substrate's own take to a governed commons
+(real money / custody — HARD-STOP, counsel-gated); the Pigouvian *rate-setting*
+process (what the dues *should* be — a governed, contestable process; rates stay
+inputs/params, never a baked-in constant); the governed-commons steward / PBC
+vessel; adoption as an open standard; the anti-aristocracy decay on standing; the
+last-mile attestation that a destination actually *performed* the remediation
+(an oracle problem). This RFC is **intent on the record**, so the commitment is
+legible before the incentives drift — not a claim that the operator-gated items
+are done.
 
 ## Decision (2026-06-07): Vision 2 — the regenerative agent-economy substrate
 
