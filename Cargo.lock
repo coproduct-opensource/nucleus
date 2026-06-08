@@ -2952,7 +2952,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.117",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -6519,7 +6519,7 @@ dependencies = [
  "nucleus-oidc-core",
  "nucleus-otel-bootstrap",
  "nucleus-proto",
- "prost 0.14.3",
+ "prost 0.14.4",
  "rand 0.10.1",
  "reqwest 0.13.4",
  "serde",
@@ -6686,7 +6686,7 @@ dependencies = [
  "pem",
  "portcullis-core",
  "proptest",
- "prost 0.14.3",
+ "prost 0.14.4",
  "rand 0.10.1",
  "rcgen",
  "reqwest 0.13.4",
@@ -6822,7 +6822,7 @@ dependencies = [
  "nucleus-spec",
  "oid-registry",
  "portcullis",
- "prost 0.14.3",
+ "prost 0.14.4",
  "prost-types",
  "rand_core 0.6.4",
  "reqwest 0.13.4",
@@ -6937,7 +6937,7 @@ dependencies = [
 name = "nucleus-proto"
 version = "1.0.0"
 dependencies = [
- "prost 0.14.3",
+ "prost 0.14.4",
  "prost-types",
  "protoc-bin-vendored",
  "tonic",
@@ -6987,7 +6987,7 @@ dependencies = [
  "nucleus-proto",
  "nucleus-spec",
  "portcullis",
- "prost 0.14.3",
+ "prost 0.14.4",
  "reqwest 0.13.4",
  "rustls 0.23.40",
  "serde",
@@ -7556,7 +7556,7 @@ dependencies = [
  "opentelemetry-http",
  "opentelemetry-proto",
  "opentelemetry_sdk",
- "prost 0.14.3",
+ "prost 0.14.4",
  "reqwest 0.13.4",
  "thiserror 2.0.18",
  "tokio",
@@ -7572,7 +7572,7 @@ checksum = "56d658ba1faf63f7b9c492cfbe6e0ec365440a16132d3270c1065f7b33f1b638"
 dependencies = [
  "opentelemetry",
  "opentelemetry_sdk",
- "prost 0.14.3",
+ "prost 0.14.4",
  "tonic",
  "tonic-prost",
 ]
@@ -8333,12 +8333,12 @@ dependencies = [
 
 [[package]]
 name = "prost"
-version = "0.14.3"
+version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2ea70524a2f82d518bce41317d0fae74151505651af45faf1ffbd6fd33f0568"
+checksum = "528ac67416ff8646872a3c02cad9cc4ee5dc9f9540c9b10771855c95cb2e5ae1"
 dependencies = [
  "bytes",
- "prost-derive 0.14.3",
+ "prost-derive 0.14.4",
 ]
 
 [[package]]
@@ -8353,7 +8353,7 @@ dependencies = [
  "multimap",
  "petgraph 0.8.3",
  "prettyplease",
- "prost 0.14.3",
+ "prost 0.14.4",
  "prost-types",
  "pulldown-cmark",
  "pulldown-cmark-to-cmark",
@@ -8377,9 +8377,9 @@ dependencies = [
 
 [[package]]
 name = "prost-derive"
-version = "0.14.3"
+version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
+checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
  "itertools 0.14.0",
@@ -8390,11 +8390,11 @@ dependencies = [
 
 [[package]]
 name = "prost-types"
-version = "0.14.3"
+version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8991c4cbdb8bc5b11f0b074ffe286c30e523de90fee5ba8132f1399f23cb3dd7"
+checksum = "f94967dc7688f3054c7fac87473ffae4cc4c3904800e2d9f5b857246d8963b0a"
 dependencies = [
- "prost 0.14.3",
+ "prost 0.14.4",
 ]
 
 [[package]]
@@ -10542,7 +10542,7 @@ dependencies = [
  "futures",
  "hyper-util",
  "pkcs8 0.10.2",
- "prost 0.14.3",
+ "prost 0.14.4",
  "prost-types",
  "thiserror 2.0.18",
  "tokio",
@@ -11476,7 +11476,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "50849f68853be452acf590cde0b146665b8d507b3b8af17261df47e02c209ea0"
 dependencies = [
  "bytes",
- "prost 0.14.3",
+ "prost 0.14.4",
  "tonic",
 ]
 
@@ -11502,7 +11502,7 @@ version = "0.14.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "73ab1b02061f83d519bba3caa167f88f261ef05720ab8ebc954ade70de3348e8"
 dependencies = [
- "prost 0.14.3",
+ "prost 0.14.4",
  "prost-types",
  "tonic",
 ]
