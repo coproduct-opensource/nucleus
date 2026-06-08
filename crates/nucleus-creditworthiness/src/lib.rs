@@ -63,6 +63,15 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "recompute")]
 pub mod mint;
 
+/// Recompute-verifiable commons-ledger accounting **view**: a pure, read-only
+/// projection over recompute-verified `Commons` receipts showing the externality
+/// dues actually routed to the commons (per destination + total), so anyone can
+/// re-derive — from the same receipts — how much reached each remediation
+/// destination. Behind the `recompute` feature (it re-verifies receipts). Purely
+/// additive: no behaviour change, no money moves.
+#[cfg(feature = "recompute")]
+pub mod commons_view;
+
 /// WASM-pure, append-only hash chain over an identity's [`CreditEvent`]s
 /// (always compiled — needs only `sha2`). The storage-independent core the
 /// durable [`store`] commits to and any client can re-verify.
@@ -307,8 +316,11 @@ impl CreditFile {
     }
 
     /// The bond-substituting reputation: the sum of net standing across the
-    /// **active** dimensions only (v1: financial). Dormant dimensions
-    /// ([`CreditDimension::Externality`]) are excluded until activated.
+    /// **active** dimensions. Both [`CreditDimension::FinancialDefault`] and
+    /// [`CreditDimension::Externality`] are active (regenerative by default), so
+    /// routing true-cost dues to the commons builds reputation exactly as honest
+    /// settlement does. The filter on [`CreditDimension::is_active`] is kept so a
+    /// future reserved-but-inactive dimension would be excluded until activated.
     /// Saturating into `u64`, the type the proven kernel consumes.
     pub fn reputation_micro(&self) -> u64 {
         self.dims
