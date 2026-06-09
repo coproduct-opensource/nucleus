@@ -23,13 +23,14 @@
 
 use std::path::{Path, PathBuf};
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info};
 
 use crate::identity::IdentityManager;
+use crate::workload_api_protocol::{parse_command, WorkloadApiCommand, MAX_COMMAND_LEN};
 
 /// Default port for the Workload API vsock server.
 #[allow(dead_code)]
@@ -176,28 +177,34 @@ async fn handle_connection(
 ) -> std::io::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
-    let mut line = String::new();
 
     loop {
-        line.clear();
-        let bytes_read = reader.read_line(&mut line).await?;
+        let frame = match read_command_frame(&mut reader).await? {
+            Some(frame) => frame,
+            // Clean EOF: the guest closed the connection.
+            None => break,
+        };
 
-        if bytes_read == 0 {
-            // Connection closed
-            break;
-        }
-
-        let command = line.trim();
-        debug!(
-            "workload API received command: {} for pod {}",
-            command, pod_id
-        );
-
-        let response = match command {
-            "FETCH_SVID" => handle_fetch_svid(&manager, pod_id).await,
-            "FETCH_BUNDLE" => handle_fetch_bundle(&manager),
-            "PING" => r#"{"status":"ok"}"#.to_string(),
-            _ => format!(r#"{{"error":"unknown command: {}"}}"#, command),
+        // ALL interpretation of guest-supplied bytes happens in the pure,
+        // fuzz- and property-tested `parse_command`. The host never branches on
+        // raw guest input directly.
+        let response = match parse_command(&frame) {
+            Ok(WorkloadApiCommand::FetchSvid) => {
+                debug!("workload API FETCH_SVID for pod {}", pod_id);
+                handle_fetch_svid(&manager, pod_id).await
+            }
+            Ok(WorkloadApiCommand::FetchBundle) => {
+                debug!("workload API FETCH_BUNDLE for pod {}", pod_id);
+                handle_fetch_bundle(&manager)
+            }
+            Ok(WorkloadApiCommand::Ping) => r#"{"status":"ok"}"#.to_string(),
+            Err(err) => {
+                debug!("workload API rejected command for pod {}: {err}", pod_id);
+                // Build the error response via serde so the (attacker-controlled)
+                // error text — e.g. an unknown-command token echoed back — is
+                // JSON-escaped and cannot inject into the response framing.
+                serde_json::json!({ "error": err.to_string() }).to_string()
+            }
         };
 
         writer.write_all(response.as_bytes()).await?;
@@ -206,6 +213,46 @@ async fn handle_connection(
     }
 
     Ok(())
+}
+
+/// Reads one newline-delimited command frame from the guest, bounding the
+/// buffered bytes to [`MAX_COMMAND_LEN`].
+///
+/// Unlike `read_line`/`read_until` (which buffer without limit), this refuses to
+/// grow past the cap, so a malicious guest that never sends a newline cannot
+/// drive unbounded host allocation (OOM). Returns:
+/// * `Ok(None)` on a clean EOF with no buffered bytes,
+/// * `Ok(Some(frame))` with the bytes up to and including the newline (or up to
+///   EOF) — interpretation is left to [`parse_command`],
+/// * `Err(InvalidData)` if the frame exceeds [`MAX_COMMAND_LEN`] without a
+///   newline (the over-long / DoS case).
+///
+/// `reader` is a [`BufReader`], so the byte-at-a-time reads hit its in-memory
+/// buffer rather than issuing a syscall per byte.
+async fn read_command_frame<R>(reader: &mut R) -> std::io::Result<Option<Vec<u8>>>
+where
+    R: AsyncReadExt + Unpin,
+{
+    let mut frame: Vec<u8> = Vec::with_capacity(16);
+    loop {
+        let mut byte = [0u8; 1];
+        let n = reader.read(&mut byte).await?;
+        if n == 0 {
+            // EOF. Surface any partial frame so the parser can reject it; an
+            // empty buffer means the connection simply closed.
+            return Ok(if frame.is_empty() { None } else { Some(frame) });
+        }
+        frame.push(byte[0]);
+        if byte[0] == b'\n' {
+            return Ok(Some(frame));
+        }
+        if frame.len() > MAX_COMMAND_LEN {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "workload API command exceeds maximum length",
+            ));
+        }
+    }
 }
 
 /// Handles FETCH_SVID command - returns the workload certificate and key.

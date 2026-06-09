@@ -6822,6 +6822,7 @@ dependencies = [
  "nucleus-spec",
  "oid-registry",
  "portcullis",
+ "proptest",
  "prost 0.14.3",
  "prost-types",
  "rand_core 0.6.4",
@@ -8037,6 +8038,7 @@ name = "portcullis-effects"
 version = "1.0.0"
 dependencies = [
  "portcullis-core",
+ "proptest",
  "regex",
  "shell-words",
  "tempfile",

@@ -73,6 +73,11 @@ uuid = { workspace = true, features = ["serde"] }
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
+# Property-based tests for the policy -> Firecracker VM-config lowering isolation
+# invariants (read-only rootfs, vsock CID distinctness, netns never omitted,
+# seccomp flags). The lowering seams are pure + platform-independent so these
+# run on every host, not only Linux.
+proptest = { workspace = true }
 
 [lints]
 workspace = true
