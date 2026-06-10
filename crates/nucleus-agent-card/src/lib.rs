@@ -53,7 +53,10 @@
 
 pub mod anchor;
 pub mod card;
+#[cfg(feature = "envelope")]
+pub mod envelope;
 pub mod jcs;
+pub mod jwk;
 pub mod verify;
 
 #[cfg(feature = "sign")]
@@ -62,11 +65,15 @@ pub mod sign;
 #[cfg(all(test, feature = "sign"))]
 mod sign_verify_tests;
 
+#[cfg(all(test, feature = "sign", feature = "envelope"))]
+mod envelope_e2e_tests;
+
 pub use anchor::trust_anchor_from_card;
 pub use card::{
     AgentCard, AgentCardSignature, EnforcementRule, RuntimeGuaranteeProfile, SignedAgentCard,
 };
 pub use jcs::canonicalize;
+pub use jwk::JsonWebKey;
 pub use verify::{verify_card, VerifiedCard};
 
 #[cfg(feature = "sign")]

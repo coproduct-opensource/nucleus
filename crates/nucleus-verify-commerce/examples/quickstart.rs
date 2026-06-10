@@ -17,9 +17,8 @@ use base64::Engine as _;
 use ring::rand::SystemRandom;
 use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
 
-use nucleus_agent_card::{sign_card, AgentCard};
+use nucleus_agent_card::{sign_card, AgentCard, JsonWebKey};
 use nucleus_envelope::{Bundle, TrustAnchor};
-use nucleus_identity::JsonWebKey;
 use nucleus_lineage::{CallSpiffeId, Jwks, LocalIssuer};
 use nucleus_verify_commerce::{
     serve_verified, verify_receipt_bundle, AgentCardVerifier, CallerClaims, CommerceRequest,

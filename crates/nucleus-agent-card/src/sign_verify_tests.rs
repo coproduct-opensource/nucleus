@@ -7,10 +7,9 @@ use base64::Engine as _;
 use ring::rand::SystemRandom;
 use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
 
-use nucleus_identity::JsonWebKey;
-
 use crate::card::AgentCard;
 use crate::jcs::canonicalize;
+use crate::jwk::JsonWebKey;
 use crate::sign::sign_card;
 use crate::verify::verify_card;
 
