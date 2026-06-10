@@ -6378,9 +6378,12 @@ name = "nucleus-agent-card"
 version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
+ "ed25519-dalek 3.0.0-pre.7",
  "nucleus-envelope",
  "nucleus-identity",
  "nucleus-lineage",
+ "nucleus-receipt",
+ "p256",
  "ring",
  "serde",
  "serde_jcs",
@@ -6965,8 +6968,10 @@ dependencies = [
 name = "nucleus-recompute"
 version = "1.0.0"
 dependencies = [
+ "ed25519-dalek 3.0.0-pre.7",
  "hex",
  "nucleus-econ-kernels",
+ "nucleus-receipt",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -7126,7 +7131,6 @@ dependencies = [
  "nucleus-creditworthiness",
  "nucleus-econ-kernels",
  "nucleus-envelope",
- "nucleus-identity",
  "nucleus-lineage",
  "nucleus-otel-bootstrap",
  "nucleus-recompute",
@@ -7155,7 +7159,6 @@ dependencies = [
  "base64 0.22.1",
  "nucleus-agent-card",
  "nucleus-envelope",
- "nucleus-identity",
  "nucleus-ifc",
  "nucleus-lineage",
  "portcullis-core",

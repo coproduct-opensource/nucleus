@@ -15,6 +15,25 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
 nucleus-econ-kernels = { path = "../nucleus-econ-kernels", version = "1.0.0" }
+# `envelope` feature only: lift a ClearingReceipt into nucleus-receipt's signed
+# colimit envelope (`Projection::Economic`) and narrow it back out. Optional so
+# the default build — the one the wasm-pure-crates gate compiles — keeps the
+# dependency closure exactly as before (no dalek/blake3/base64 in the default
+# wasm closure). nucleus-receipt itself is wasm-capable (the verifier-js WASM
+# SDK depends on it), so turning the feature on does not break wasm consumers.
+nucleus-receipt = { path = "../nucleus-receipt", version = "1.0.0", optional = true }
+
+[features]
+# Travel as a signed receipt: `to_economic_projection` / `clearing_from_projection`
+# bridge ClearingReceipt <-> nucleus-receipt's `Projection::Economic`, so one
+# envelope carries BOTH guarantees — Ed25519 signature (who emitted it) and
+# recompute (the numbers re-derive). OFF by default: pure recompute consumers
+# (and the wasm-pure default build) pay nothing for it.
+envelope = ["dep:nucleus-receipt"]
+
+[dev-dependencies]
+# Fixed-key signing in the envelope end-to-end + tamper tests.
+ed25519-dalek = { workspace = true }
 
 [lints]
 workspace = true
