@@ -6378,9 +6378,11 @@ name = "nucleus-agent-card"
 version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
+ "ed25519-dalek 3.0.0-pre.7",
  "nucleus-envelope",
  "nucleus-identity",
  "nucleus-lineage",
+ "nucleus-receipt",
  "p256",
  "ring",
  "serde",
