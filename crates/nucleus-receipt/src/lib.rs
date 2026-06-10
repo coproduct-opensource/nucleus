@@ -17,12 +17,16 @@
 //!
 //! ## Wire-format guarantee
 //!
-//! The canonical signing input is the sorted-key JSON of
-//! `{projections, session, version}` (see [`canonical_signing_bytes`]).
-//! This is **byte-stable**: tests pin the exact canonical string, so a
-//! dependency change that would alter the bytes (e.g. enabling
-//! `serde_json/preserve_order` anywhere in the graph) fails CI here
-//! rather than splitting signers from verifiers.
+//! The canonical signing input is the **RFC 8785 (JCS)** serialization
+//! of `{projections, session, version}` (see
+//! [`canonical_signing_bytes`]) — lexicographically sorted keys,
+//! canonical number formatting, independent of how `serde_json`'s
+//! features were unified in the enclosing build. Plain
+//! `serde_json::to_vec` would NOT be canonical: with
+//! `preserve_order` unified ON (cedar does this in full-workspace
+//! builds) the same envelope serializes with different key order than
+//! in a standalone build, silently splitting signers from verifiers.
+//! Tests pin the exact canonical string so any drift fails CI loudly.
 //!
 //! ## Quick example
 //!
@@ -189,13 +193,21 @@ impl Receipt {
 /// Canonical signing input for a receipt. Same function is called
 /// when *building* and when *verifying* — that's the entire trust
 /// surface for the colimit identity.
+///
+/// RFC 8785 (JCS): keys lexicographically sorted at every depth,
+/// canonical number formatting. Deterministic regardless of feature
+/// unification (`serde_json/preserve_order`) and of the insertion
+/// order of any `Value` map inside a projection body, so a receipt
+/// signed by one binary verifies in every other binary built from any
+/// subset of the workspace.
 pub fn canonical_signing_bytes(session: &Session, projections: &[Projection]) -> Vec<u8> {
     let envelope = serde_json::json!({
         "version": RECEIPT_VERSION,
         "session": session,
         "projections": projections,
     });
-    serde_json::to_vec(&envelope).expect("envelope serializes deterministically")
+    serde_json_canonicalizer::to_vec(&envelope)
+        .expect("envelope canonicalizes deterministically (Value cannot hold NaN/Inf)")
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -306,14 +318,16 @@ mod tests {
     }
 
     #[test]
-    fn canonical_bytes_are_pinned_sorted_key_json() {
-        // GOLDEN: receipts signed by nucleus-platform's
-        // nucleus-substrate-core and by this crate must produce the
-        // SAME canonical bytes, or signer and verifier split. Default
-        // serde_json sorts object keys (BTreeMap); enabling
-        // `preserve_order` anywhere in the dependency graph would
-        // change these bytes — this test makes that a loud CI failure
-        // instead of a silent wire break.
+    fn canonical_bytes_are_pinned_rfc8785_json() {
+        // GOLDEN: every binary that signs or verifies receipts must
+        // produce these exact bytes for this envelope, or signers and
+        // verifiers split. RFC 8785 (JCS) sorts keys at every depth —
+        // and unlike plain `serde_json::to_vec`, the result cannot
+        // flip with feature unification. (The first CI run of this
+        // crate caught exactly that: cedar-policy-core unifies
+        // `serde_json/preserve_order` ON in the full workspace, while
+        // a standalone `cargo test -p nucleus-receipt` resolves it
+        // OFF, so the pre-JCS bytes differed between the two builds.)
         let canonical = canonical_signing_bytes(&dummy_session(), &dummy_projections());
         let s = String::from_utf8(canonical).expect("canonical bytes are UTF-8 JSON");
         assert_eq!(
@@ -325,6 +339,29 @@ mod tests {
                 r#""session":{"issued_at_micros":1717000000000000,"issuer_kid":"kid-1","#,
                 r#""parent_chain":[],"session_id":"spiffe://test/agent"},"version":1}"#
             )
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_ignore_value_insertion_order() {
+        // Two logically-equal bodies built in opposite insertion
+        // order must canonicalize identically. Under
+        // `preserve_order` (ON in full-workspace builds via cedar)
+        // plain serialization would emit them differently; JCS must
+        // not. This is the regression test for the signer/verifier
+        // split the golden test caught in CI.
+        let mut ab = serde_json::Map::new();
+        ab.insert("alpha".into(), serde_json::json!(1));
+        ab.insert("beta".into(), serde_json::json!(2));
+        let mut ba = serde_json::Map::new();
+        ba.insert("beta".into(), serde_json::json!(2));
+        ba.insert("alpha".into(), serde_json::json!(1));
+
+        let p_ab = vec![Projection::Flow(serde_json::Value::Object(ab))];
+        let p_ba = vec![Projection::Flow(serde_json::Value::Object(ba))];
+        assert_eq!(
+            canonical_signing_bytes(&dummy_session(), &p_ab),
+            canonical_signing_bytes(&dummy_session(), &p_ba),
         );
     }
 }

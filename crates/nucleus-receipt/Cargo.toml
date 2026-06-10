@@ -22,3 +22,10 @@ base64 = "0.22"
 # signing + verification only, no key generation, so no rand features.
 ed25519-dalek = "=3.0.0-pre.7"
 blake3 = "1"
+# RFC 8785 (JCS) canonical JSON for the signing bytes. Plain
+# `serde_json::to_vec` is NOT canonical here: its key order flips with
+# the `preserve_order` feature, which cedar (via nucleus-trust-registry)
+# unifies ON in full-workspace builds but standalone builds leave OFF —
+# the same source would sign different bytes depending on what else is
+# in the build graph.
+serde_json_canonicalizer = "0.3"

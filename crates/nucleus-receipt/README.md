@@ -23,11 +23,15 @@ clearing) live downstream and instantiate the envelope.
 
 ## Wire-format stability
 
-`canonical_signing_bytes` is sorted-key JSON of
+`canonical_signing_bytes` is the **RFC 8785 (JCS)** serialization of
 `{projections, session, version}` and is **byte-pinned by a golden
-test**, so signer/verifier splits (e.g. a transitive dependency
-enabling `serde_json/preserve_order`) fail CI loudly instead of
-breaking verification silently.
+test**. JCS (rather than plain `serde_json::to_vec`) matters: key
+order under plain serialization flips with the `preserve_order`
+feature, which full-workspace builds unify ON (via cedar) while
+standalone builds leave OFF — the same source would sign different
+bytes depending on the build graph. With JCS, anyone can recompute
+the signing input from the receipt JSON with any RFC 8785
+implementation, in any language.
 
 This crate is the upstream home of the envelope formerly defined in
 `nucleus-substrate-core` (nucleus-platform), which now re-exports
