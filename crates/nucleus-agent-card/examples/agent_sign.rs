@@ -19,9 +19,8 @@ use ring::rand::SystemRandom;
 use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
 
 use nucleus_agent_card::{
-    sign_card, verify_card, AgentCard, EnforcementRule, RuntimeGuaranteeProfile,
+    sign_card, verify_card, AgentCard, EnforcementRule, JsonWebKey, RuntimeGuaranteeProfile,
 };
-use nucleus_identity::JsonWebKey;
 use nucleus_lineage::{Jwks, LocalIssuer};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

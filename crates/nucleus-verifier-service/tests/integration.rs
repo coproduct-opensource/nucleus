@@ -801,8 +801,7 @@ async fn well_known_agent_card_returns_404_without_card() {
 
 #[tokio::test]
 async fn well_known_agent_card_verifies_against_matching_key() {
-    use nucleus_agent_card::{sign_card, verify_card, AgentCard, SignedAgentCard};
-    use nucleus_identity::JsonWebKey;
+    use nucleus_agent_card::{sign_card, verify_card, AgentCard, JsonWebKey, SignedAgentCard};
     use ring::rand::SystemRandom;
     use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
     use std::sync::Arc;

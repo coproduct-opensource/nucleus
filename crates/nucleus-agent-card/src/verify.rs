@@ -15,10 +15,9 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 
-use nucleus_identity::JsonWebKey;
-
 use crate::card::{AgentCard, SignedAgentCard};
 use crate::jcs::canonicalize;
+use crate::jwk::JsonWebKey;
 use crate::{Error, Result};
 
 /// A card whose signature verified against the caller's out-of-band key.
@@ -50,7 +49,7 @@ impl VerifiedCard {
 /// 2. Recompute the JCS canonical bytes of `card` and the detached JWS
 ///    payload segment `base64url_nopad(JCS(card))`.
 /// 3. Reconstruct the compact JWS `protected.payload.signature` and verify
-///    it via [`nucleus_identity::did_crypto::jws_verify_es256`] against
+///    it via the wasm-clean ES256 verifier in [`crate::jwk`] against
 ///    `resolved_key`.
 /// 4. Assert the payload `jws_verify_es256` returns equals JCS(card) — so
 ///    the signature is bound to *this* card, not some other payload.
@@ -80,8 +79,9 @@ pub fn verify_card(signed: &SignedAgentCard, resolved_key: &JsonWebKey) -> Resul
     let compact = format!("{}.{}.{}", sig.protected, payload_b64, sig.signature);
 
     // 4) Verify against the OUT-OF-BAND-resolved key ONLY. Never the card's
-    //    own material. `jws_verify_es256` returns the decoded payload.
-    let recovered = nucleus_identity::did_crypto::jws_verify_es256(&compact, resolved_key)
+    //    own material. `jws_verify_es256` (wasm-clean, pure-Rust p256 —
+    //    see crate::jwk) returns the decoded payload.
+    let recovered = crate::jwk::jws_verify_es256(&compact, resolved_key)
         .map_err(|e| Error::Verify(format!("JWS verification failed: {e}")))?;
 
     // 5) Defense in depth: the recovered payload MUST equal the JCS we
