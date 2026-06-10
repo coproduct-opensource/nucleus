@@ -6946,6 +6946,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-receipt"
+version = "1.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "ed25519-dalek 3.0.0-pre.7",
+ "hex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "nucleus-recompute"
 version = "1.0.0"
 dependencies = [

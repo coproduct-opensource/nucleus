@@ -1,0 +1,24 @@
+[package]
+name = "nucleus-receipt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The colimit receipt envelope: Session (the agent action), Projection (one verifiable view per functor — identity, capability, flow, economic), and Receipt (the Ed25519/BLAKE3-signed colimit holding both)"
+repository = "https://github.com/coproduct-opensource/nucleus"
+keywords = ["receipt", "provenance", "verifiable", "agents", "ed25519"]
+categories = ["cryptography", "data-structures"]
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+base64 = "0.22"
+# Pinned to the single workspace-wide dalek line (see workspace Cargo.toml);
+# signing + verification only, no key generation, so no rand features.
+ed25519-dalek = "=3.0.0-pre.7"
+blake3 = "1"
