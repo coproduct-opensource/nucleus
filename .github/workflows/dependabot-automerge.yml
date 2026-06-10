@@ -8,7 +8,11 @@ permissions:
 jobs:
   dependabot:
     runs-on: ubuntu-latest
-    if: github.actor == 'dependabot[bot]'
+    # github.actor is spoofable (it reflects the last actor, not the PR author).
+    # Per https://docs.zizmor.sh/audits/#bot-conditions, check the PR author and
+    # require the head repo to be this repo (no forks). Trigger is `pull_request`
+    # (not `pull_request_target`), per GitHub's automation guidance.
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == github.event.pull_request.head.repo.full_name
     permissions:
       contents: write
       pull-requests: write
