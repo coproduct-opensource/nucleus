@@ -307,6 +307,52 @@ pub struct AmendmentRules {
     pub constitutional_human_signatures: u32,
 }
 
+impl AmendmentRules {
+    /// Returns the governance monotonicity flags that `self` (the CHILD) weakens
+    /// relative to `parent`.
+    ///
+    /// A flag is WEAKENED iff it was `true` on the parent and `false` on the
+    /// child (`parent = true && child = false`). Enabling a flag the parent did
+    /// not require is fine; only DISABLING a required flag is a weakening.
+    ///
+    /// This is the anti-self-weakening / anti-coup check: it is consulted
+    /// UNCONDITIONALLY by the kernel (never gated on any flag), because the
+    /// whole point is to stop an amendment from disarming the very flags that
+    /// would police the next amendment.
+    ///
+    /// SCOPE (honest): it enumerates exactly the three boolean governance
+    /// monotonicity flags — `require_monotone_{capabilities,io,proofreq}` — which
+    /// are precisely what the Lean model (`Ck.Policy.rulesNonWeakening`) and the
+    /// `policy_lean_parity` proptest are pinned to. It does NOT yet treat a LOWERED
+    /// `constitutional_human_signatures` threshold as a weakening; that numeric
+    /// monotonicity is a separate, deliberate FOLLOW-UP (it would need its own
+    /// model + parity), tracked so this stays parity-exact rather than overclaiming.
+    pub fn weakened_flags_over(&self, parent: &Self) -> Vec<String> {
+        let mut weakened = Vec::new();
+        let mut check = |name: &str, parent_flag: bool, child_flag: bool| {
+            if parent_flag && !child_flag {
+                weakened.push(format!("{}: true -> false", name));
+            }
+        };
+        check(
+            "require_monotone_capabilities",
+            parent.require_monotone_capabilities,
+            self.require_monotone_capabilities,
+        );
+        check(
+            "require_monotone_io",
+            parent.require_monotone_io,
+            self.require_monotone_io,
+        );
+        check(
+            "require_monotone_proofreq",
+            parent.require_monotone_proofreq,
+            self.require_monotone_proofreq,
+        );
+        weakened
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // TESTS
 // ═══════════════════════════════════════════════════════════════════════════

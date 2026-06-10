@@ -11,17 +11,21 @@
 //! with the EXACT proven function the enforcement path uses; it never
 //! re-implements the math.
 //!
-//! # The dimension vector (financial now, externality reserved)
+//! # The dimension vector (regenerative by default)
 //!
-//! Creditworthiness is behaviour over time priced into a number. v1 scores ONE
-//! active dimension — [`CreditDimension::FinancialDefault`] (honest settlement
-//! vs. caught defection). [`CreditDimension::Externality`] is a **first-class
-//! but dormant** dimension (Pigouvian: did the agent pay its true-cost dues to
-//! the commons, or dump them?). Its events are accumulated but excluded from the
-//! bond-substituting reputation while [`CreditDimension::is_active`] returns
-//! `false` — so lighting up externality accounting later (the kernels already
-//! exist in `nucleus-externality` + `nucleus-econ-kernels` commons routing) is a
-//! one-line flip, not a schema migration. Greed ignites; conscience compounds.
+//! Creditworthiness is behaviour over time priced into a number, over TWO active
+//! dimensions:
+//! * [`CreditDimension::FinancialDefault`] — honest settlement vs. caught
+//!   defection (recompute-verified Settlement/VCG receipts);
+//! * [`CreditDimension::Externality`] — Pigouvian: did the agent pay its
+//!   true-cost dues to the commons, or dump them? (recompute-verified `Commons` /
+//!   `route_to_commons` receipts).
+//!
+//! Both are load-bearing on the bond-substituting reputation
+//! ([`CreditDimension::is_active`]) — the substrate is **regenerative by
+//! default**: routing true-cost dues to the commons builds standing exactly as
+//! honest settlement does, and only ever from a receipt that already recomputed.
+//! Greed ignites; conscience compounds.
 //!
 //! # What is PROVEN here (property tests, not prose)
 //!
@@ -35,9 +39,10 @@
 //! * **Sybil-no-discount.** An empty file yields reputation `0` ⇒ the full bond
 //!   — minting fresh identities buys no discount (inherited from the composed
 //!   kernel's `requiredBond` floor).
-//! * **Externality is inert in v1.** While the dimension is dormant, externality
-//!   events never move the bond-substituting reputation — the socket exists but
-//!   is not wired.
+//! * **Provenance-gated, both dimensions.** An externality credit moves
+//!   reputation only when minted from a recompute-verified `Commons` receipt
+//!   (same discipline as the financial dimension) — activating externality does
+//!   not let an unverified claim move money-gating standing.
 //!
 //! # Honesty boundary
 //!
@@ -58,10 +63,25 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "recompute")]
 pub mod mint;
 
+/// Recompute-verifiable commons-ledger accounting **view**: a pure, read-only
+/// projection over recompute-verified `Commons` receipts showing the externality
+/// dues actually routed to the commons (per destination + total), so anyone can
+/// re-derive — from the same receipts — how much reached each remediation
+/// destination. Behind the `recompute` feature (it re-verifies receipts). Purely
+/// additive: no behaviour change, no money moves.
+#[cfg(feature = "recompute")]
+pub mod commons_view;
+
 /// WASM-pure, append-only hash chain over an identity's [`CreditEvent`]s
 /// (always compiled — needs only `sha2`). The storage-independent core the
 /// durable [`store`] commits to and any client can re-verify.
 pub mod ledger;
+
+/// WASM-pure airdrop-**optionality** math: a pure, deterministic, recomputable
+/// projection of recompute-verified [`ledger`] history into a HYPOTHETICAL
+/// basis-point allocation. NOT a token, NOT transferable, NOT a security, NOT
+/// for sale — it confers no right, claim, or promise. See the module docs.
+pub mod eligibility;
 
 /// Durable, append-only, per-identity credit ledger backed by redb. Behind the
 /// off-by-default `persist` feature so the default + wasm32 builds never compile
@@ -72,20 +92,21 @@ pub mod store;
 /// A dimension of creditworthiness. Each dimension is scored independently from
 /// recompute-verified events.
 ///
-/// v1 activates only [`CreditDimension::FinancialDefault`].
-/// [`CreditDimension::Externality`] is reserved (see crate docs): a first-class
-/// variant whose contribution to the bond-substituting reputation is gated off
-/// by [`CreditDimension::is_active`] until the Pigouvian accounting is wired in.
+/// Both [`CreditDimension::FinancialDefault`] and
+/// [`CreditDimension::Externality`] are active (see [`CreditDimension::is_active`])
+/// — the substrate is regenerative by default. Each contributes to the
+/// bond-substituting reputation only from recompute-verified events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum CreditDimension {
     /// Financial-default risk: honest, recompute-matched settlement (credit) vs.
-    /// a caught defection / recompute mismatch (debit). **Active in v1.**
+    /// a caught defection / recompute mismatch (debit). **Active.**
     FinancialDefault,
     /// Externality internalization (Pigouvian): paying true-cost dues to the
     /// commons (credit) vs. dumping uncompensated externalities (debit).
-    /// **Reserved — dormant in v1.**
+    /// **Active** — fed by recompute-verified `Commons` (`route_to_commons`)
+    /// receipts; regenerative by default.
     Externality,
 }
 
@@ -96,15 +117,25 @@ impl CreditDimension {
         CreditDimension::Externality,
     ];
 
-    /// Whether this dimension currently contributes to the bond-substituting
-    /// reputation. v1: only [`CreditDimension::FinancialDefault`].
+    /// Whether this dimension contributes to the bond-substituting reputation.
     ///
-    /// Flipping [`CreditDimension::Externality`] to active here lights up
-    /// Pigouvian accounting across the whole flywheel — the kernels it needs
-    /// already exist in `nucleus-externality` + `nucleus-econ-kernels`. This is
-    /// the deliberate "config flip, not a schema migration" seam.
+    /// **Both dimensions are active: the substrate is regenerative by default.**
+    /// `FinancialDefault` is fed by recompute-verified settlement/VCG receipts;
+    /// `Externality` is fed by recompute-verified `Commons` (`route_to_commons`)
+    /// receipts — paying true-cost dues to the commons builds standing exactly as
+    /// honest settlement does. Both move reputation ONLY from events minted off a
+    /// receipt that already recomputed (see [`crate::mint`]), so activating
+    /// externality does not let an unverified claim move money-gating standing.
+    ///
+    /// Note: this lights up commons-routing *accounting* (did the dues actually
+    /// reach the commons, verified). The Pigouvian *rate-setting* — what the dues
+    /// should be — remains a governed, contestable frontier (see
+    /// `docs/rfcs/regenerative-default-substrate.md` and `externality-oracle.md`).
     pub const fn is_active(self) -> bool {
-        matches!(self, CreditDimension::FinancialDefault)
+        matches!(
+            self,
+            CreditDimension::FinancialDefault | CreditDimension::Externality
+        )
     }
 }
 
@@ -161,7 +192,7 @@ impl CreditEvent {
     }
 
     /// Externality dues paid to the commons worth `weight_micro` — builds
-    /// standing on the **reserved** externality dimension (inert in v1).
+    /// standing on the **active** externality dimension (regenerative by default).
     pub fn externality_internalized(weight_micro: u64, receipt_hash: [u8; 32]) -> Self {
         Self {
             dimension: CreditDimension::Externality,
@@ -172,7 +203,7 @@ impl CreditEvent {
     }
 
     /// An uncompensated externality dumped on the commons worth `weight_micro` —
-    /// destroys standing on the **reserved** externality dimension (inert in v1).
+    /// destroys standing on the **active** externality dimension.
     pub fn externality_dumped(weight_micro: u64, receipt_hash: [u8; 32]) -> Self {
         Self {
             dimension: CreditDimension::Externality,
@@ -277,16 +308,19 @@ impl CreditFile {
         self.event_count
     }
 
-    /// Net standing on a single dimension (floored at 0), **including dormant
-    /// dimensions** — for inspection/forward-compat. This is NOT necessarily
-    /// what prices the bond; see [`CreditFile::reputation_micro`].
+    /// Net standing on a single dimension (floored at 0) — for per-dimension
+    /// inspection. The bond is priced by the sum over ACTIVE dimensions; see
+    /// [`CreditFile::reputation_micro`].
     pub fn dimension_micro(&self, dim: CreditDimension) -> u64 {
         self.dims.get(&dim).copied().unwrap_or_default().net_micro()
     }
 
     /// The bond-substituting reputation: the sum of net standing across the
-    /// **active** dimensions only (v1: financial). Dormant dimensions
-    /// ([`CreditDimension::Externality`]) are excluded until activated.
+    /// **active** dimensions. Both [`CreditDimension::FinancialDefault`] and
+    /// [`CreditDimension::Externality`] are active (regenerative by default), so
+    /// routing true-cost dues to the commons builds reputation exactly as honest
+    /// settlement does. The filter on [`CreditDimension::is_active`] is kept so a
+    /// future reserved-but-inactive dimension would be excluded until activated.
     /// Saturating into `u64`, the type the proven kernel consumes.
     pub fn reputation_micro(&self) -> u64 {
         self.dims
@@ -368,20 +402,31 @@ mod tests {
     }
 
     #[test]
-    fn externality_dimension_is_reserved_but_dormant() {
+    fn externality_dimension_is_active_regenerative_by_default() {
         // Externality events accumulate on their dimension...
         let f = CreditFile::from_events(&[
             CreditEvent::externality_internalized(1_000_000, h(1)),
             CreditEvent::externality_dumped(250_000, h(2)),
         ]);
         assert_eq!(f.dimension_micro(CreditDimension::Externality), 750_000);
-        // ...but contribute NOTHING to the bond-substituting reputation in v1.
-        assert_eq!(f.reputation_micro(), 0);
-        assert_eq!(f.required_bond(1_000_000), AmountMicro(1_000_000));
-        // The day CreditDimension::Externality::is_active() flips true, this
-        // same file prices a discount — config flip, no schema change.
-        assert!(!CreditDimension::Externality.is_active());
+        // ...and now CONTRIBUTE to the bond-substituting reputation: routing
+        // true-cost dues to the commons prices a discount, exactly as honest
+        // settlement does. Regenerative by default.
+        assert_eq!(f.reputation_micro(), 750_000);
+        assert_eq!(f.required_bond(1_000_000), AmountMicro(250_000));
+        assert!(CreditDimension::Externality.is_active());
         assert!(CreditDimension::FinancialDefault.is_active());
+    }
+
+    #[test]
+    fn both_dimensions_sum_into_reputation() {
+        // Financial + externality standing compose into one bond-substituting
+        // reputation — conscience and commerce pulling the same direction.
+        let f = CreditFile::from_events(&[
+            CreditEvent::honest_settlement(400_000, h(1)),
+            CreditEvent::externality_internalized(300_000, h(2)),
+        ]);
+        assert_eq!(f.reputation_micro(), 700_000);
     }
 
     #[test]
@@ -498,24 +543,29 @@ mod tests {
             prop_assert!(after.required_bond(gain).0 >= before.required_bond(gain).0);
         }
 
-        /// The reserved dimension is inert: externality events never change the
-        /// bond-substituting reputation while the dimension is dormant.
+        /// Regenerative monotonicity: an externality CREDIT (true-cost dues routed
+        /// to the commons) never LOWERS reputation; an externality DEBIT (dumped)
+        /// never RAISES it — the same one-way flywheel as the financial dimension,
+        /// now that externality is active.
         #[test]
-        fn externality_events_do_not_move_reputation(
+        fn externality_credit_builds_debit_burns(
             evs in events(),
             ext_weight in 0u64..2_000_000,
             ext_pol in any::<bool>(),
+            gain in 0u64..4_000_000,
             seed in any::<u8>(),
         ) {
             let before = CreditFile::from_events(&evs);
             let mut after = before.clone();
-            let ext = if ext_pol {
-                CreditEvent::externality_internalized(ext_weight, [seed; 32])
+            if ext_pol {
+                after.observe(&CreditEvent::externality_internalized(ext_weight, [seed; 32]));
+                prop_assert!(after.reputation_micro() >= before.reputation_micro());
+                prop_assert!(after.required_bond(gain).0 <= before.required_bond(gain).0);
             } else {
-                CreditEvent::externality_dumped(ext_weight, [seed; 32])
-            };
-            after.observe(&ext);
-            prop_assert_eq!(after.reputation_micro(), before.reputation_micro());
+                after.observe(&CreditEvent::externality_dumped(ext_weight, [seed; 32]));
+                prop_assert!(after.reputation_micro() <= before.reputation_micro());
+                prop_assert!(after.required_bond(gain).0 >= before.required_bond(gain).0);
+            }
         }
 
         /// Sybil-no-discount: a fresh (empty) identity always pays the full bond.

@@ -71,6 +71,7 @@
 pub mod agent_message;
 #[cfg(feature = "artifact")]
 pub mod artifact;
+pub mod attenuation;
 #[cfg(feature = "attestation")]
 pub mod attestation;
 pub mod autonomy;

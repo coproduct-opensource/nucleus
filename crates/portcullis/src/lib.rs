@@ -103,7 +103,6 @@ pub mod constraint;
 pub mod uninhabitable_state;
 
 /// Kernel decision engine — complete mediation with monotone session state.
-#[cfg(feature = "serde")]
 pub mod delegation;
 pub mod dropout;
 /// Bash command egress analysis — detect network exfiltration.
@@ -158,7 +157,6 @@ pub mod receipt_sign;
 pub use receipt_sign::{receipt_hash, sign_receipt, verify_receipt};
 #[cfg(feature = "remote-audit")]
 pub mod s3_audit_backend;
-#[cfg(feature = "serde")]
 pub mod token;
 #[cfg(feature = "crypto")]
 /// Ed25519 signing and verification for declassification tokens.

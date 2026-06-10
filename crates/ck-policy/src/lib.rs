@@ -3,11 +3,23 @@
 //! Pure function that decides whether an ordinary amendment preserves
 //! constitutional order. This is the core of the admission logic.
 //!
-//! The checker enforces four monotonicity invariants:
+//! The checker enforces five monotonicity invariants:
 //! 1. Capability non-escalation: `Cap(child) ⊆ Cap(parent)`
 //! 2. I/O confinement: `IO(child) ⊆ IO(parent)`
 //! 3. Resource boundedness: `Budget(child) ≤ Budget(parent)`
 //! 4. Governance monotonicity: `ProofReq(child) ⊇ ProofReq(parent)`
+//! 5. Amendment-rules monotonicity (anti-self-weakening / anti-coup):
+//!    the child may not DISABLE any governance flag the parent had ENABLED.
+//!    Checked UNCONDITIONALLY — never gated on any flag, because a gated check
+//!    could itself be disarmed one level up, letting the coup recur.
+
+/// Aeneas-extractable, self-contained CORE mirror of the monotonicity gate's
+/// verdict (integer/bool/array-only — no `BTreeSet`/`String`/generics). Charon +
+/// Aeneas translate this module to Lean (`lean-aeneas/generated/`) for the
+/// tier-1 DEDUCTIVE bridge; it is bound to `check_monotonicity` by the parity
+/// proptest in `tests/policy_aeneas_parity.rs` (tier-4 STATISTICAL). See the
+/// module docs for the honesty-tier separation and TCB caveat.
+pub mod extracted;
 
 use ck_types::manifest::PolicyManifest;
 use ck_types::witness::PolicyDiffReport;
@@ -71,11 +83,29 @@ pub fn check_monotonicity(parent: &PolicyManifest, child: &PolicyManifest) -> Mo
         vec![]
     };
 
+    // 5. Amendment-rules monotonicity (anti-self-weakening / anti-coup).
+    //
+    // UNCONDITIONAL: this check is NEVER gated on any flag (no
+    // `if parent.amendment_rules.* { ... }` guard). That unconditionality IS
+    // the fix. A passing amendment must not be allowed to DISABLE a governance
+    // flag the parent had set — otherwise this step is legal and the NEXT
+    // amendment escalates freely under the relaxed flag (a two-step coup). If
+    // the check were itself gated on a flag, that gating flag could be disabled
+    // first and the coup would simply recur one level up. So we always compare
+    // the child's amendment_rules against the parent's and reject any weakening.
+    let amendment_rule_weakenings = child
+        .amendment_rules
+        .weakened_flags_over(&parent.amendment_rules);
+    if !amendment_rule_weakenings.is_empty() {
+        violated.push(ConstitutionalInvariant::AmendmentRulesMonotonicity);
+    }
+
     let diff = PolicyDiffReport {
         capability_escalations: cap_escalations,
         io_escalations,
         budget_escalations,
         proof_requirement_drops: proof_req_drops,
+        amendment_rule_weakenings,
         violated_invariants: violated,
     };
 
@@ -260,6 +290,99 @@ mod tests {
         assert!(
             v.passed,
             "With monotonicity disabled, should pass: {:?}",
+            v.diff
+        );
+    }
+
+    // ── Anti-self-weakening / anti-coup (the T4 fix) ──────────────────────────
+
+    #[test]
+    fn test_disarming_amendment_now_rejected() {
+        // THE COUP (proven in T1 `meta_gap`): a child IDENTICAL on every
+        // projection the gate reads, that silently turns OFF a required-monotone
+        // flag — disarming the NEXT amendment. The OLD gate PASSED this. The
+        // strengthened gate must now REJECT it.
+        let parent = base_manifest();
+        let mut child = parent.clone();
+        child.amendment_rules.require_monotone_capabilities = false;
+
+        let v = check_monotonicity(&parent, &child);
+        assert!(
+            !v.passed,
+            "COUP: disarming amendment must now be REJECTED, got passed=true: {:?}",
+            v.diff
+        );
+        assert!(v
+            .diff
+            .violated_invariants
+            .contains(&ConstitutionalInvariant::AmendmentRulesMonotonicity));
+        assert!(v
+            .diff
+            .amendment_rule_weakenings
+            .iter()
+            .any(|w| w.contains("require_monotone_capabilities")));
+    }
+
+    #[test]
+    fn test_disarming_any_flag_rejected() {
+        // Each governance flag, disarmed independently, must be caught.
+        for disarm in ["cap", "io", "proofreq"] {
+            let parent = base_manifest();
+            let mut child = parent.clone();
+            match disarm {
+                "cap" => child.amendment_rules.require_monotone_capabilities = false,
+                "io" => child.amendment_rules.require_monotone_io = false,
+                "proofreq" => child.amendment_rules.require_monotone_proofreq = false,
+                _ => unreachable!(),
+            }
+            let v = check_monotonicity(&parent, &child);
+            assert!(
+                !v.passed,
+                "disarming {disarm} flag must be rejected: {:?}",
+                v.diff
+            );
+            assert!(v
+                .diff
+                .violated_invariants
+                .contains(&ConstitutionalInvariant::AmendmentRulesMonotonicity));
+        }
+    }
+
+    #[test]
+    fn test_anti_coup_check_is_unconditional() {
+        // Even when the PARENT has the very flag whose weakening we'd "gate" on
+        // turned OFF, a child weakening a DIFFERENT enabled flag is still caught.
+        // This demonstrates the check does not depend on any single gating flag.
+        let mut parent = base_manifest();
+        // Parent has cap monotonicity OFF, but io + proofreq still ON.
+        parent.amendment_rules.require_monotone_capabilities = false;
+        let mut child = parent.clone();
+        // Child disarms io — a weakening even though cap-gate is already off.
+        child.amendment_rules.require_monotone_io = false;
+        let v = check_monotonicity(&parent, &child);
+        assert!(
+            !v.passed,
+            "anti-coup is unconditional: weakening io must be caught regardless of cap flag: {:?}",
+            v.diff
+        );
+        assert!(v
+            .diff
+            .violated_invariants
+            .contains(&ConstitutionalInvariant::AmendmentRulesMonotonicity));
+    }
+
+    #[test]
+    fn test_enabling_a_flag_still_passes() {
+        // Strictly-stricter, not strictly-different: ENABLING a flag the parent
+        // did not require must STILL pass (we only ever reject WEAKENINGS).
+        let mut parent = base_manifest();
+        parent.amendment_rules.require_monotone_io = false;
+        let mut child = parent.clone();
+        child.amendment_rules.require_monotone_io = true; // strengthen
+        let v = check_monotonicity(&parent, &child);
+        assert!(
+            v.passed,
+            "enabling a flag is a strengthening, must pass: {:?}",
             v.diff
         );
     }

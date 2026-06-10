@@ -1,0 +1,92 @@
+name: CK Policy Lean Proofs
+
+# Builds the Mathlib-free Constitutional Kernel monotonicity-gate soundness Lean
+# tree that `ck-policy` is parity-pinned to (T1 conditional soundness, `meta_gap`
+# anti-coup hole, `strengthened_gate_closes_it` two-step fix) and bans `sorry` /
+# `admit` / `native_decide` / `sorryAx`, so the theorems cited by
+# crates/ck-policy/tests/policy_lean_parity.rs cannot rot. Dedicated workflow
+# (path isolation), cloned from rubric-lean.yml.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "crates/ck-policy/lean/**"
+      - ".github/workflows/ck-policy-lean.yml"
+  pull_request:
+    paths:
+      - "crates/ck-policy/lean/**"
+      - ".github/workflows/ck-policy-lean.yml"
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ck-policy-lean:
+    name: lake build Ck (monotonicity-gate soundness proofs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      # Mathlib-free project: install elan directly (the repo's established
+      # pattern — see rubric-lean.yml / econ-lean.yml) and run `lake build`. No
+      # mathlib cache fetch needed; the whole tree builds in seconds.
+      - name: Install elan (Lean toolchain)
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --no-modify-path
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Cache Lake build artifacts
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: |
+            crates/ck-policy/lean/.lake
+            ~/.elan
+          key: lean-ck-policy-${{ runner.os }}-${{ hashFiles('crates/ck-policy/lean/lean-toolchain', 'crates/ck-policy/lean/lakefile.lean') }}
+          restore-keys: |
+            lean-ck-policy-${{ runner.os }}-
+
+      - name: lake build Ck (monotonicity-gate soundness proofs)
+        working-directory: crates/ck-policy/lean
+        run: lake build
+
+      - name: Ban sorry / admit / native_decide / sorryAx in ck-policy Lean
+        run: |
+          # Match the tactic/term forms (`:= sorry`, `:= by sorry`, a lone `sorry`,
+          # a lone `admit` / `:= by admit`, `native_decide`, or the `sorryAx` axiom
+          # spelled out in source) — NOT the word "sorry" in "0 sorry" doc comments.
+          if grep -rnE \
+               '(:=[[:space:]]*by[[:space:]]+sorry|:=[[:space:]]*sorry|^[[:space:]]*sorry$|:=[[:space:]]*by[[:space:]]+admit|^[[:space:]]*admit$|native_decide|sorryAx)' \
+               --include='*.lean' crates/ck-policy/lean/Ck; then
+            echo "ERROR: ck-policy Lean uses 'sorry'/'admit' (proof holes), 'native_decide', or 'sorryAx' (banned)."
+            exit 1
+          fi
+          echo "No sorry / admit / native_decide / sorryAx — monotonicity-gate proofs are complete and kernel-checked."
+
+      - name: Assert theorems are sorryAx-free (#print axioms)
+        working-directory: crates/ck-policy/lean
+        run: |
+          # Ask the kernel which axioms each soundness theorem actually depends on.
+          # A `sorry` (or any hole) anywhere in a proof's dependency graph surfaces
+          # here as `sorryAx`, even if the source-level grep above missed it.
+          cat > PrintAxioms.lean <<'EOF'
+          import Ck.Policy
+          open Ck.Policy
+          #print axioms T1_gate_sound
+          #print axioms weak_gate_admits_coup
+          #print axioms new_gate_rejects_coup
+          #print axioms strengthened_gate_closes_it
+          EOF
+          # `lake env lean` type-checks against the already-built library.
+          AXIOMS="$(lake env lean PrintAxioms.lean)"
+          echo "$AXIOMS"
+          rm -f PrintAxioms.lean
+          if echo "$AXIOMS" | grep -q 'sorryAx'; then
+            echo "ERROR: a ck-policy theorem depends on 'sorryAx' (an unproven hole)."
+            exit 1
+          fi
+          echo "No theorem depends on sorryAx — proofs are kernel-complete."

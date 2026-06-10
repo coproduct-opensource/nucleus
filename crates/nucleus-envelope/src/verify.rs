@@ -1259,6 +1259,7 @@ mod tests {
             ts: chrono::Utc::now(),
             attrs: Default::default(),
             proof: None,
+            verifier_attestation: None,
         };
         sink.emit(bad_merge).unwrap();
 

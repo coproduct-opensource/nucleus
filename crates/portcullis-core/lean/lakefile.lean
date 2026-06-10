@@ -93,6 +93,11 @@ lean_lib «DelegationCategoryProofs» where
 lean_lib «GaloisConnectionProofs» where
   roots := #[`GaloisConnectionProofs]
 
+-- Generic attenuation algebra: deflationary+monotone closure, meet-cap
+-- collapse, chain order-independence (Lean side of src/attenuation.rs)
+lean_lib «AttenuationProofs» where
+  roots := #[`AttenuationProofs]
+
 -- Semantic IFC: Galois connection on propositions, channel model, soundness
 lean_lib «SemanticIFC» where
   roots := #[`SemanticIFC]

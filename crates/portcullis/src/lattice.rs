@@ -215,6 +215,7 @@ impl<'de> Deserialize<'de> for PermissionLattice {
     }
 }
 
+#[cfg(feature = "serde")]
 fn default_uninhabitable_constraint() -> bool {
     true
 }
