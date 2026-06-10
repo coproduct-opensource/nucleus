@@ -183,4 +183,10 @@ jobs:
             -m "chore(aeneas): regenerate decide_pure extraction (generated-decide/)" \
             -m "Scoped Charon --start-from extraction of portcullis_core::decide_pure and its dependency closure, translated to Lean 4 by Aeneas. Auto-generated; do not hand-edit." \
             -m "[skip ci]"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          # Branch protection (25 required contexts) rejects direct
+          # pushes to main (GH006 — observed run 27294505318), and a
+          # GITHUB_TOKEN-created PR would never trigger the required
+          # checks. So: push a bot branch and surface a notice; a human
+          # (or operator tooling with user credentials) opens the PR.
+          git push --force origin "HEAD:refs/heads/bot/decide-pure-extraction"
+          echo "::notice::decide_pure extraction drifted — pushed to bot/decide-pure-extraction; open a PR from that branch to land it (direct push to ${GITHUB_REF_NAME} is blocked by branch protection)."
