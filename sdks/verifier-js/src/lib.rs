@@ -268,6 +268,125 @@ pub fn verify_receipt_js(
     serde_wasm_bindgen::to_value(&verdict).map_err(|e| JsError::new(&e.to_string()))
 }
 
+// ── AGENT CARD: verify the counterparty's signed identity BEFORE acting ───────
+//
+// `verifyBundle` answers WHAT happened (provenance), `verifyReceipt` answers
+// what was SIGNED — `verifyAgentCard` answers WHO you are about to act with.
+// The SDK runs the EXACT `nucleus_agent_card::verify_card` every native
+// recipient runs (JCS re-canonicalization + detached ES256 JWS + advertised-
+// JWKS usability), against a key the caller resolved OUT-OF-BAND. The card's
+// own key material is never trusted — a card verified against an attacker-
+// supplied key is "verified garbage", by design.
+
+/// Summary of a verified card's declared runtime-guarantee (IFC) profile.
+/// Authentic + tamper-evident (covered by the card's JCS signature) — but
+/// **attestation, not enforcement**: it proves the agent issued this exact
+/// declaration, not that the rules are enforced.
+#[derive(Debug, Serialize)]
+struct RuntimeGuaranteeSummary {
+    profile_version: String,
+    tracked_sources: Vec<String>,
+    /// Names of the declared IFC enforcement rules.
+    enforcement_rules: Vec<String>,
+    attestation_reference: Option<String>,
+}
+
+/// Wire shape returned by `verifyAgentCard`. Same convention as
+/// `ReceiptVerdict`: a cryptographic rejection is an ordinary value the
+/// caller branches on (`outcome`) — only malformed *inputs* throw.
+#[derive(Debug, Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+enum CardVerdict {
+    /// The card's detached JWS verified against the resolved key and its
+    /// advertised JWKS is usable as a trust anchor.
+    Verified {
+        spiffe_id: String,
+        did: String,
+        supported_envelope_schema_versions: Vec<String>,
+        /// Key ids of the advertised (now trustworthy) bundle-signing JWKS.
+        trust_jwks_kids: Vec<String>,
+        /// The card's declared runtime-guarantee profile, if any.
+        runtime_guarantees: Option<RuntimeGuaranteeSummary>,
+    },
+    /// Structurally well-formed, but NOT verified: no signatures, signature
+    /// mismatch (wrong key / tampered card), or an unusable advertised JWKS.
+    Rejected { reason: String },
+}
+
+/// Pure core behind `verifyAgentCard` — no wasm types, so native `cargo test`
+/// exercises the exact logic the wasm export ships.
+fn agent_card_verdict(
+    signed_card_json: &str,
+    resolved_jwk_json: &str,
+) -> Result<CardVerdict, String> {
+    let signed: nucleus_agent_card::SignedAgentCard =
+        serde_json::from_str(signed_card_json).map_err(|e| format!("signed card JSON: {e}"))?;
+    let jwk: nucleus_agent_card::JsonWebKey =
+        serde_json::from_str(resolved_jwk_json).map_err(|e| format!("resolved JWK JSON: {e}"))?;
+    match nucleus_agent_card::verify_card(&signed, &jwk) {
+        Ok(verified) => Ok(CardVerdict::Verified {
+            spiffe_id: verified.card.spiffe_id.clone(),
+            did: verified.card.did.clone(),
+            supported_envelope_schema_versions: verified
+                .card
+                .supported_envelope_schema_versions
+                .clone(),
+            trust_jwks_kids: verified
+                .advertised_jwks()
+                .keys
+                .iter()
+                .map(|k| k.kid.clone())
+                .collect(),
+            runtime_guarantees: verified.card.runtime_guarantees.as_ref().map(|p| {
+                RuntimeGuaranteeSummary {
+                    profile_version: p.profile_version.clone(),
+                    tracked_sources: p.tracked_sources.clone(),
+                    enforcement_rules: p.enforcement_rules.iter().map(|r| r.name.clone()).collect(),
+                    attestation_reference: p.attestation_reference.clone(),
+                }
+            }),
+        }),
+        Err(e) => Ok(CardVerdict::Rejected {
+            reason: e.to_string(),
+        }),
+    }
+}
+
+/// Verify a **signed A2A Agent Card** against a key the caller resolved
+/// out-of-band (DID resolution, a pinned JWKS, an operator file). Runs the
+/// SAME `verify_card` every native recipient runs — verify-before-you-act,
+/// in the caller's browser/Node process, trusting no server.
+///
+/// # Arguments
+/// * `signed_card_json` — a `SignedAgentCard` serialized as JSON
+///   (`{card, signatures}`).
+/// * `resolved_jwk_json` — the out-of-band-resolved verification key as a
+///   JWK JSON (`{"kty":"EC","crv":"P-256","x":"...","y":"..."}`). NEVER
+///   taken from the card itself.
+///
+/// # Returns
+/// A structured verdict: `{ outcome: "verified", spiffe_id, did, ...,
+/// runtime_guarantees }` (the runtime-guarantee profile summary is authentic
+/// attestation, not enforcement) or `{ outcome: "rejected", reason }` (no
+/// signatures, signature mismatch, tampered card, or unusable advertised
+/// JWKS). Throws only on malformed input — distinct messages for malformed
+/// card JSON vs malformed JWK JSON.
+#[wasm_bindgen(js_name = verifyAgentCard)]
+pub fn verify_agent_card_js(
+    signed_card_json: &str,
+    resolved_jwk_json: &str,
+) -> Result<JsValue, JsError> {
+    set_panic_hook();
+    let verdict =
+        agent_card_verdict(signed_card_json, resolved_jwk_json).map_err(|e| JsError::new(&e))?;
+    // serialize_missing_as_null keeps the typed `runtime_guarantees:
+    // RuntimeGuaranteeSummary | null` contract (undefined otherwise).
+    let serializer = serde_wasm_bindgen::Serializer::new().serialize_missing_as_null(true);
+    verdict
+        .serialize(&serializer)
+        .map_err(|e| JsError::new(&e.to_string()))
+}
+
 // ── RECOMPUTE: re-derive the IFC verdict, don't just trust the signature ──────
 //
 // `verifyBundle` proves a receipt was *signed*; `recomputeVerdict` proves the
@@ -735,5 +854,184 @@ mod receipt_tests {
         let vk = signing_key().verifying_key().to_bytes();
         let json = serde_json::to_string(&receipt).unwrap();
         assert!(receipt_verdict(&json, &vk).is_err());
+    }
+}
+
+// ── Native tests for the agent-card verdict core ──────────────────────────────
+// Mint+sign a REAL card via nucleus-agent-card's `sign` feature (native-only
+// dev-dependency — its ring closure is exactly what verification was freed
+// of), then verify through the SDK path. Gated off wasm because the signing
+// dev-deps don't exist there; the JsValue boundary is pinned by tests/web.rs.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod agent_card_tests {
+    use super::*;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    use nucleus_agent_card::{
+        sign_card, AgentCard, EnforcementRule, RuntimeGuaranteeProfile, SignedAgentCard,
+    };
+    use ring::rand::SystemRandom;
+    use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+
+    /// Fresh P-256 keypair: (PKCS#8 DER, matching public JWK as JSON).
+    fn p256_keypair() -> (Vec<u8>, String) {
+        let rng = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
+        let der = pkcs8.as_ref().to_vec();
+        let kp = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &der, &rng).unwrap();
+        // public_key() is the uncompressed EC point: 0x04 || x[32] || y[32].
+        let pk = kp.public_key().as_ref();
+        let jwk = serde_json::json!({
+            "kty": "EC",
+            "crv": "P-256",
+            "x": URL_SAFE_NO_PAD.encode(&pk[1..33]),
+            "y": URL_SAFE_NO_PAD.encode(&pk[33..65]),
+        });
+        (der, jwk.to_string())
+    }
+
+    /// A usable advertised JWKS: a REAL Ed25519 verifying key (an arbitrary
+    /// 32-byte string would fail point decompression in the usability check).
+    fn usable_jwks() -> nucleus_lineage::Jwks {
+        let vk = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]).verifying_key();
+        nucleus_lineage::Jwks {
+            keys: vec![nucleus_lineage::Jwk {
+                kty: "OKP".to_string(),
+                crv: Some("Ed25519".to_string()),
+                kid: "issuer-k1".to_string(),
+                x: Some(URL_SAFE_NO_PAD.encode(vk.to_bytes())),
+                alg: Some("EdDSA".to_string()),
+                use_: Some("sig".to_string()),
+                not_before: None,
+                not_after: None,
+            }],
+        }
+    }
+
+    fn sample_card() -> AgentCard {
+        AgentCard {
+            spiffe_id: "spiffe://prod.example.com/ns/agents/sa/coder".to_string(),
+            did: "did:web:coder.prod.example.com".to_string(),
+            security_schemes: serde_json::json!({}),
+            supported_envelope_schema_versions: vec!["1".to_string(), "2".to_string()],
+            jwks_uri: None,
+            trust_jwks: usable_jwks(),
+            runtime_guarantees: Some(RuntimeGuaranteeProfile {
+                profile_version: "1.0".to_string(),
+                tracked_sources: vec!["web_content".to_string(), "secret".to_string()],
+                enforcement_rules: vec![EnforcementRule {
+                    name: "no_adversarial_to_outbound".to_string(),
+                    description: "deny outbound actions tainted by adversarial content".to_string(),
+                }],
+                attestation_reference: None,
+            }),
+        }
+    }
+
+    fn signed_card_json(der: &[u8]) -> String {
+        let signed = sign_card(sample_card(), der).unwrap();
+        serde_json::to_string(&signed).unwrap()
+    }
+
+    #[test]
+    fn round_trip_signed_card_is_verified_with_profile_summary() {
+        let (der, jwk_json) = p256_keypair();
+        let verdict =
+            agent_card_verdict(&signed_card_json(&der), &jwk_json).expect("well-formed input");
+        match verdict {
+            CardVerdict::Verified {
+                spiffe_id,
+                did,
+                supported_envelope_schema_versions,
+                trust_jwks_kids,
+                runtime_guarantees,
+            } => {
+                assert_eq!(spiffe_id, "spiffe://prod.example.com/ns/agents/sa/coder");
+                assert_eq!(did, "did:web:coder.prod.example.com");
+                assert_eq!(supported_envelope_schema_versions, vec!["1", "2"]);
+                assert_eq!(trust_jwks_kids, vec!["issuer-k1"]);
+                let prof = runtime_guarantees.expect("profile summary present");
+                assert_eq!(prof.profile_version, "1.0");
+                assert_eq!(prof.tracked_sources, vec!["web_content", "secret"]);
+                assert_eq!(prof.enforcement_rules, vec!["no_adversarial_to_outbound"]);
+                assert_eq!(prof.attestation_reference, None);
+            }
+            other => panic!("expected Verified, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn card_without_profile_verifies_with_none_summary() {
+        let (der, jwk_json) = p256_keypair();
+        let mut card = sample_card();
+        card.runtime_guarantees = None;
+        let signed = sign_card(card, &der).unwrap();
+        let json = serde_json::to_string(&signed).unwrap();
+        match agent_card_verdict(&json, &jwk_json).expect("well-formed input") {
+            CardVerdict::Verified {
+                runtime_guarantees, ..
+            } => assert!(runtime_guarantees.is_none()),
+            other => panic!("expected Verified, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tampered_card_is_rejected() {
+        let (der, jwk_json) = p256_keypair();
+        let mut signed: SignedAgentCard = serde_json::from_str(&signed_card_json(&der)).unwrap();
+        // Mutate the card AFTER signing — the detached JWS no longer matches.
+        signed.card.did = "did:web:attacker.example.com".to_string();
+        let json = serde_json::to_string(&signed).unwrap();
+        assert!(matches!(
+            agent_card_verdict(&json, &jwk_json).expect("well-formed input"),
+            CardVerdict::Rejected { .. }
+        ));
+    }
+
+    #[test]
+    fn wrong_key_is_rejected() {
+        let (der, _jwk_json) = p256_keypair();
+        let (_other_der, other_jwk_json) = p256_keypair();
+        // A perfectly valid signature by key A is worthless under key B.
+        assert!(matches!(
+            agent_card_verdict(&signed_card_json(&der), &other_jwk_json)
+                .expect("well-formed input"),
+            CardVerdict::Rejected { .. }
+        ));
+    }
+
+    #[test]
+    fn card_with_no_signatures_is_rejected() {
+        let (_der, jwk_json) = p256_keypair();
+        let unsigned = SignedAgentCard {
+            card: sample_card(),
+            signatures: vec![],
+        };
+        let json = serde_json::to_string(&unsigned).unwrap();
+        match agent_card_verdict(&json, &jwk_json).expect("well-formed input") {
+            CardVerdict::Rejected { reason } => {
+                assert!(reason.contains("no signatures"), "got: {reason}");
+            }
+            other => panic!("expected Rejected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn malformed_card_json_is_a_clean_input_error() {
+        let (_der, jwk_json) = p256_keypair();
+        let err = agent_card_verdict("not valid json", &jwk_json).unwrap_err();
+        assert!(err.starts_with("signed card JSON:"), "got: {err}");
+    }
+
+    #[test]
+    fn malformed_jwk_json_is_a_clean_input_error() {
+        let (der, _jwk_json) = p256_keypair();
+        let card_json = signed_card_json(&der);
+        // Not JSON at all.
+        let err = agent_card_verdict(&card_json, "not valid json").unwrap_err();
+        assert!(err.starts_with("resolved JWK JSON:"), "got: {err}");
+        // Valid JSON but not a JWK (missing required fields).
+        let err = agent_card_verdict(&card_json, "{}").unwrap_err();
+        assert!(err.starts_with("resolved JWK JSON:"), "got: {err}");
     }
 }

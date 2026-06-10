@@ -7,7 +7,8 @@
 //! these tests pin.
 
 use nucleus_verifier_wasm::{
-    sdk_version, supported_envelope_schema_version, verify_bundle_js, verify_receipt_js,
+    sdk_version, supported_envelope_schema_version, verify_agent_card_js, verify_bundle_js,
+    verify_receipt_js,
 };
 use wasm_bindgen_test::*;
 
@@ -116,6 +117,59 @@ fn verify_receipt_rejects_wrong_key_length() {
     assert!(
         verify_receipt_js(&json, &[0u8; 31]).is_err(),
         "a 31-byte key must surface as JsError"
+    );
+}
+
+// ── verifyAgentCard: the signed identity document across the wasm boundary ───
+// Signing is native-only (the `sign` feature never enters wasm builds), so the
+// wasm boundary tests pin the input-error and rejected-verdict paths; the full
+// sign→verify round-trip is pinned by the native tests in src/lib.rs.
+
+/// A structurally well-formed SignedAgentCard whose signature is garbage.
+fn garbage_signed_card_json() -> String {
+    let card = nucleus_agent_card::AgentCard {
+        spiffe_id: "spiffe://prod.example.com/ns/agents/sa/coder".to_string(),
+        did: "did:web:coder.prod.example.com".to_string(),
+        security_schemes: serde_json::json!({}),
+        supported_envelope_schema_versions: vec!["1".to_string()],
+        jwks_uri: None,
+        trust_jwks: nucleus_lineage::Jwks { keys: vec![] },
+        runtime_guarantees: None,
+    };
+    let signed = nucleus_agent_card::SignedAgentCard {
+        card,
+        signatures: vec![nucleus_agent_card::AgentCardSignature {
+            protected: "eyJhbGciOiJFUzI1NiJ9".to_string(),
+            signature: "bm90LWEtcmVhbC1zaWc".to_string(),
+            header: None,
+        }],
+    };
+    serde_json::to_string(&signed).unwrap()
+}
+
+/// A syntactically valid P-256 JWK (RFC 7515 A.3 test vector point).
+const RESOLVED_JWK: &str = r#"{"kty":"EC","crv":"P-256","x":"f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU","y":"x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0"}"#;
+
+#[wasm_bindgen_test]
+fn verify_agent_card_reports_bad_signature_as_rejected_verdict() {
+    let verdict =
+        verify_agent_card_js(&garbage_signed_card_json(), RESOLVED_JWK).expect("well-formed input");
+    assert_eq!(outcome_of(verdict), "rejected");
+}
+
+#[wasm_bindgen_test]
+fn verify_agent_card_rejects_malformed_card_json() {
+    assert!(
+        verify_agent_card_js("not valid json", RESOLVED_JWK).is_err(),
+        "malformed signed-card JSON must surface as JsError"
+    );
+}
+
+#[wasm_bindgen_test]
+fn verify_agent_card_rejects_malformed_jwk_json() {
+    assert!(
+        verify_agent_card_js(&garbage_signed_card_json(), "{}").is_err(),
+        "malformed resolved-JWK JSON must surface as JsError"
     );
 }
 

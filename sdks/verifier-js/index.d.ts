@@ -116,6 +116,55 @@ export function verifyReceipt(
   verifyingKey: string | Uint8Array,
 ): Promise<ReceiptVerdict>;
 
+// ── Signed A2A Agent Card (verify-before-you-act) ──────────────────────────────
+
+/**
+ * Summary of a verified card's declared runtime-guarantee (IFC) profile.
+ * Authentic + tamper-evident (covered by the card's JCS signature) — but
+ * attestation, NOT enforcement.
+ */
+export interface RuntimeGuaranteeSummary {
+  profile_version: string;
+  tracked_sources: string[];
+  /** Names of the declared IFC enforcement rules. */
+  enforcement_rules: string[];
+  attestation_reference: string | null;
+}
+
+/** Structured verdict from {@link verifyAgentCard} — mirrors the Rust `CardVerdict`. */
+export type AgentCardVerdict =
+  | {
+      outcome: "verified";
+      spiffe_id: string;
+      did: string;
+      supported_envelope_schema_versions: string[];
+      /** Key ids of the advertised (now trustworthy) bundle-signing JWKS. */
+      trust_jwks_kids: string[];
+      runtime_guarantees: RuntimeGuaranteeSummary | null;
+    }
+  | {
+      /** No signatures, wrong key / tampered card, or unusable advertised JWKS. */
+      outcome: "rejected";
+      reason: string;
+    };
+
+/**
+ * Verify a signed A2A Agent Card against a key YOU resolved out-of-band
+ * (DID resolution, a pinned JWKS, an operator file) — never the card's own
+ * key material. Runs the exact upstream `verify_card`: verify WHO you are
+ * about to act with, in your process, trusting no server.
+ *
+ * A cryptographic rejection is returned as a value (branch on `outcome`);
+ * throws only on malformed input (bad card JSON, bad JWK JSON).
+ *
+ * @param signedCard A `SignedAgentCard` — JSON string or parsed object.
+ * @param resolvedJwk The out-of-band-resolved key — JWK JSON string or object.
+ */
+export function verifyAgentCard(
+  signedCard: string | object,
+  resolvedJwk: string | object,
+): Promise<AgentCardVerdict>;
+
 /** The recomputed IFC verdict — mirrors the Rust `RecomputeReport`. */
 export interface RecomputeReport {
   /** Whether the action is permitted by the re-derived decision. */

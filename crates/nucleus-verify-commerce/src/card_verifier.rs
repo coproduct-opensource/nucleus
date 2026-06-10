@@ -1,8 +1,7 @@
 //! [`AgentCardVerifier`] — verify a signed A2A-style Agent Card.
 
 use async_trait::async_trait;
-use nucleus_agent_card::{verify_card, SignedAgentCard};
-use nucleus_identity::JsonWebKey;
+use nucleus_agent_card::{verify_card, JsonWebKey, SignedAgentCard};
 
 use crate::{CallerClaims, CallerVerifier, CommerceError, VerifiedCaller};
 
