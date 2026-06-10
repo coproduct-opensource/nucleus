@@ -69,6 +69,7 @@ exclude = [
     "sdks/verifier-js",           # WASM-only (wasm32-unknown-unknown); build with: wasm-pack build sdks/verifier-js
     "sdks/verifier-py",           # Python extension module; build with: maturin develop --release
     "tools/nucleus-guarantee-lint", # Dylint lint (own pinned nightly + rustc-dev); run with: cargo dylint --lib nucleus_guarantee_lint
+    "tools/trust-atlas",         # Standalone egglog spike (own workspace); build with: cd tools/trust-atlas && cargo build
 ]
 resolver = "2"
 

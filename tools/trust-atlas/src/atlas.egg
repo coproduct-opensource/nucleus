@@ -1,0 +1,55 @@
+;; trust-atlas core schema + rules (egglog 2.0)
+;;
+;; Maturity lattice (i64 ranks):
+;;   5 = KernelChecked  (Lean sorry-free in CI / Kani BMC)
+;;   4 = ParityPinned   (golden-bytes pin, exhaustive parity, extraction-freshness gate)
+;;   3 = PropertyTested (proptest parity)
+;;   2 = Attested       (cited file:line evidence; no machine check on the claim itself)
+;;   1 = Stated         (claimed in prose / unmerged PR)
+;;   0 = Unenforced     (absent edge, advisory-only gate)
+;;
+;; merge = (min old new): trust only TIGHTENS. This deliberately mirrors the
+;; repo's own attenuation algebra (crates/portcullis-core/src/attenuation.rs):
+;; the maturity of a composition is the MEET (weakest link), and a fact
+;; asserted twice at different ranks resolves to the weaker rank.
+
+(datatype Artifact (Art String))
+
+;; Node maturity. Min-merge = meet.
+(function maturity (Artifact) i64 :merge (min old new))
+
+;; Per-edge maturity (dependency / verifies / reexports edges).
+(function edge-maturity (Artifact Artifact) i64 :merge (min old new))
+
+;; End-to-end maturity: min ALONG a path, max ACROSS alternative paths
+;; (best-known route; each route is still only as strong as its weakest edge).
+(function path-maturity (Artifact Artifact) i64 :merge (max old new))
+
+;; CI gates: name + required flag (1 = required on main, 0 = advisory).
+(relation gate (String i64))
+(relation unenforced-gate (String))
+
+;; Equivalence side tables. The union is ALWAYS performed (transport is the
+;; point); fragment conditions are recorded here and reported, never used to
+;; skip the union.
+(relation equiv-fragment (String String))   ; equivalence name -> condition
+(relation provenance (String String))       ; fact key -> citation
+                                            ; (Rust keeps the authoritative
+                                            ;  map for printing; this keeps
+                                            ;  citations queryable in-engine)
+
+;; Rule (1): path maturity propagation — reachability with accumulated min.
+(rule ((= m (edge-maturity a b)))
+      ((set (path-maturity a b) m)))
+(rule ((= m1 (path-maturity a b))
+       (= m2 (edge-maturity b c)))
+      ((set (path-maturity a c) (min m1 m2))))
+
+;; Rule (2): a gate that exists but is not required is an unenforced gate.
+(rule ((gate name 0))
+      ((unenforced-gate name)))
+
+;; Rule (3): equivalence transport is NOT a rule here — it is (union lhs rhs)
+;; issued per recon equivalence; congruence then makes maturity facts asserted
+;; on one side queryable from the other, and min-merge resolves conflicts to
+;; the weaker rank.

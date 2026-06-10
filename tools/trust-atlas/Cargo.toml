@@ -1,0 +1,22 @@
+# trust-atlas: an egglog-backed trust/maturity atlas over the nucleus + nucleus-platform
+# verification surface. SPIKE — see README.md for honest scope (live vs fixture).
+#
+# Standalone workspace, explicitly NOT a member of the repo root workspace
+# (mirrors tools/nucleus-guarantee-lint; the root Cargo.toml `exclude` list has an entry).
+[package]
+name = "trust-atlas"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "egglog trust/maturity atlas: weakest-link chains + unenforced-gate findings with provenance"
+
+[dependencies]
+egglog = "2.0.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+
+# Self-contained workspace so this spike does not join the parent workspace.
+[workspace]
