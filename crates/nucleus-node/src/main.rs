@@ -33,6 +33,7 @@ mod firecracker_config;
 mod grpc_tls;
 mod identity;
 mod oidc;
+mod workload_api_protocol;
 mod workload_api_vsock;
 use auth::{AuthConfig, AuthError};
 mod cgroup;
@@ -1752,20 +1753,39 @@ async fn spawn_firecracker_pod(
         let mut netns_name: Option<String> = None;
         let mut dns_proxy: Option<net::DnsProxyState> = None;
 
-        if state.firecracker_netns {
+        // Decide the network isolation plan up front (pure + property-tested in
+        // net.rs: `netns_plan_never_omits_netns_or_default_deny`). The imperative
+        // path below performs the side effects in the order the security model
+        // requires — default-deny is applied BEFORE any workload process runs.
+        let netns_plan =
+            net::NetnsPlan::decide(state.firecracker_netns, spec.spec.network.as_ref());
+        if netns_plan.reject_unsupported_policy {
+            return Err(ApiError::Driver(
+                "network policy requires --firecracker-netns=true".to_string(),
+            ));
+        }
+        if netns_plan.create_netns {
             let name = net::netns_name(id);
             net::create_netns(&name).await?;
 
             // Apply default-deny iptables policy BEFORE any process spawns.
             // This closes the race window where a process could exfiltrate
-            // data before the full policy is applied.
-            if let Err(err) = net::apply_default_deny(&name).await {
-                let _ = net::cleanup_netns(&name).await;
-                return Err(err);
+            // data before the full policy is applied. `apply_default_deny` is
+            // guaranteed true whenever `create_netns` is (see NetnsPlan).
+            if netns_plan.apply_default_deny {
+                if let Err(err) = net::apply_default_deny(&name).await {
+                    let _ = net::cleanup_netns(&name).await;
+                    return Err(err);
+                }
             }
             netns_name = Some(name.clone());
 
-            if let Some(network) = spec.spec.network.as_ref() {
+            if netns_plan.allocate_net_plan {
+                let network = spec
+                    .spec
+                    .network
+                    .as_ref()
+                    .expect("allocate_net_plan implies a network policy is present");
                 if let Err(err) = net::validate_policy(network) {
                     let _ = net::cleanup_netns(&name).await;
                     return Err(err);
@@ -1799,10 +1819,6 @@ async fn spawn_firecracker_pod(
                 }
                 net_plan = Some(plan);
             }
-        } else if spec.spec.network.is_some() {
-            return Err(ApiError::Driver(
-                "network policy requires --firecracker-netns=true".to_string(),
-            ));
         }
 
         let log_path = pod_dir.join("firecracker.log");

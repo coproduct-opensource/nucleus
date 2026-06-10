@@ -140,6 +140,50 @@ pub fn netns_name(pod_id: Uuid) -> String {
     format!("nuc-{}", short_id(pod_id))
 }
 
+/// Pure decision describing the network isolation a Firecracker pod requires.
+///
+/// Pulled out of `spawn_firecracker_pod` so the security-critical invariant
+/// "a netns is never omitted and is never created without default-deny" is
+/// unit-/property-testable without spawning a VM or touching the OS. The
+/// imperative launch path consumes this and performs the side effects in the
+/// order the security model requires (default-deny BEFORE the workload starts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetnsPlan {
+    /// A dedicated network namespace must be created for the pod.
+    pub create_netns: bool,
+    /// Default-deny iptables policy must be applied to that netns. This is
+    /// ALWAYS true whenever `create_netns` is true: there is no path that
+    /// creates a namespace with an open default policy.
+    pub apply_default_deny: bool,
+    /// A `NetPlan` (veth/bridge/tap + allowlist) must be allocated. Only when a
+    /// network policy is present AND there is a netns to enforce it in.
+    pub allocate_net_plan: bool,
+    /// The spec requested a network policy but the node is not running pods in a
+    /// netns. This MUST be rejected — a policy with nowhere to be enforced is a
+    /// fail-open hazard, not a no-op.
+    pub reject_unsupported_policy: bool,
+}
+
+impl NetnsPlan {
+    /// Decide the isolation plan from the node's netns mode and the (optional)
+    /// network policy on the spec.
+    pub fn decide(firecracker_netns: bool, network: Option<&NetworkSpec>) -> Self {
+        let has_policy = network.is_some();
+        Self {
+            // Netns is created for EVERY Firecracker pod when netns mode is on,
+            // regardless of whether a network policy was supplied.
+            create_netns: firecracker_netns,
+            // ...and a created netns always gets the default-deny baseline.
+            apply_default_deny: firecracker_netns,
+            // A host-side NetPlan is only allocated when there is both a netns
+            // and an explicit network policy to enforce.
+            allocate_net_plan: firecracker_netns && has_policy,
+            // A policy without a netns to enforce it is rejected, never ignored.
+            reject_unsupported_policy: !firecracker_netns && has_policy,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RuleKind {
     Allow,
@@ -1162,5 +1206,58 @@ COMMIT
         assert!(output.contains("*filter"));
         assert!(output.contains(":INPUT DROP [0:0]"));
         assert!(output.contains("-A OUTPUT -j ACCEPT [0:0]"));
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        /// ISOLATION INVARIANT (3): a network namespace is NEVER omitted and is
+        /// NEVER created without a default-deny baseline, and a network policy
+        /// is never silently accepted when there is nowhere to enforce it.
+        #[test]
+        fn netns_plan_never_omits_netns_or_default_deny(
+            firecracker_netns in any::<bool>(),
+            has_policy in any::<bool>(),
+        ) {
+            let policy = has_policy.then(NetworkSpec::deny_all);
+            let plan = NetnsPlan::decide(firecracker_netns, policy.as_ref());
+
+            // A netns is created IFF the node runs in netns mode — independent
+            // of whether a policy was supplied (deny-by-default for every pod).
+            prop_assert_eq!(plan.create_netns, firecracker_netns);
+
+            // A created netns ALWAYS carries default-deny: no open-by-default
+            // namespace can exist.
+            prop_assert_eq!(plan.create_netns, plan.apply_default_deny);
+
+            // A host NetPlan (veth/bridge/tap) is only ever allocated inside a
+            // netns and only when a policy demands egress.
+            prop_assert!(!plan.allocate_net_plan || plan.create_netns);
+            prop_assert!(!plan.allocate_net_plan || has_policy);
+
+            // A policy with no netns to enforce it is rejected, never ignored.
+            if has_policy && !firecracker_netns {
+                prop_assert!(plan.reject_unsupported_policy);
+            }
+            // Rejection and netns-creation are mutually exclusive.
+            prop_assert!(!(plan.reject_unsupported_policy && plan.create_netns));
+        }
+
+        /// ISOLATION INVARIANT (2), network analog: N concurrently-allocated
+        /// pods receive DISTINCT pool indices and DISTINCT guest IPs — the
+        /// allocator never hands the same network slot to two live pods.
+        #[test]
+        fn allocator_gives_distinct_resources_to_live_pods(n in 1usize..16) {
+            let allocator = NetworkAllocator::new();
+            let mut indices = std::collections::HashSet::new();
+            let mut guest_ips = std::collections::HashSet::new();
+            for _ in 0..n {
+                let plan = allocator
+                    .allocate(Uuid::new_v4(), "nuc-test".to_string())
+                    .expect("pool not exhausted for small n");
+                prop_assert!(indices.insert(plan.index), "duplicate pool index");
+                prop_assert!(guest_ips.insert(plan.guest_ip), "duplicate guest IP");
+            }
+        }
     }
 }
