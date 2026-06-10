@@ -37,9 +37,9 @@ permissions:
 env:
   # Pin to the Aeneas prebuilt nightly that generated the committed generated/.
   # Update this AND regenerate generated/ together.
-  AENEAS_RELEASE: nightly-2026.05.30
+  AENEAS_RELEASE: nightly-2026.06.10
   # Charon needs a specific nightly for rustc-dev components.
-  CHARON_NIGHTLY: nightly-2026-02-07
+  CHARON_NIGHTLY: nightly-2026-06-01
   # The scoped extraction roots — name them exactly as Charon sees the paths.
   EXTRACT_ROOTS: "nucleus_github_oidc::extracted::oidc_spiffe::sanitize_bytes,nucleus_github_oidc::extracted::oidc_spiffe::derive_spiffe_bytes,nucleus_github_oidc::extracted::oidc_spiffe::is_spiffe_byte"
 

@@ -9,12 +9,12 @@ package «nucleusGithubOidc» where
   ]
 
 -- Aeneas standard library (Result monad, scalar types, Vec/Slice, loop combinator).
--- PINNED to the commit that backs the `nightly-2026.05.30` prebuilt aeneas
+-- PINNED to the commit that backs the `nightly-2026.06.10` prebuilt aeneas
 -- binary used to GENERATE generated/NucleusGithubOidc/{Types,Funs}.lean
--- (`gh api …/git/refs/tags/nightly-2026.05.30` → 2a12be13…). Same commit the
+-- (`gh api …/git/refs/tags/nightly-2026.06.10` → 2a12be13…). Same commit the
 -- sibling portcullis-core/lean lakefile pins.
 require aeneas from git
-  "https://github.com/AeneasVerif/aeneas.git" @ "2a12be13a5b29441f353bbcf00cbea3f864e68fb" / "backends" / "lean"
+  "https://github.com/AeneasVerif/aeneas.git" @ "5138c03bd39e870abe1ad3a572865cf8c15f43d6" / "backends" / "lean"
 
 -- Mathlib for omega/decide ergonomics; toolchain-matched (v4.30.0-rc2).
 require mathlib from git

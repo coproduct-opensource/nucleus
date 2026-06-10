@@ -49,9 +49,9 @@ permissions:
 env:
   # Pin to the Aeneas prebuilt nightly that does scoped extraction cleanly
   # (same pin the IFC scoped job uses). Update this AND regenerate together.
-  AENEAS_RELEASE: nightly-2026.06.02
+  AENEAS_RELEASE: nightly-2026.06.10
   # Charon needs a specific nightly for rustc-dev components.
-  CHARON_NIGHTLY: nightly-2026-02-07
+  CHARON_NIGHTLY: nightly-2026-06-01
   # Scoped extraction roots — name them exactly as Charon sees the paths.
   # `decide_pure` alone pulls its whole callee closure; the exposure free
   # functions are listed explicitly to document intent and harden against a

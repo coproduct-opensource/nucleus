@@ -29,11 +29,11 @@ package «ckPolicyAeneas» where
   ]
 
 -- Aeneas standard library (Result monad, scalar/array/slice types, loop combinator).
--- Pinned to the EXACT commit of the `nightly-2026.05.30` release whose bundled
+-- Pinned to the EXACT commit of the `nightly-2026.06.10` release whose bundled
 -- Charon+Aeneas generated `generated/{Funs,Types}.lean`. (Same commit the
 -- portcullis-core lean package pins.)
 require aeneas from git
-  "https://github.com/AeneasVerif/aeneas.git" @ "2a12be13a5b29441f353bbcf00cbea3f864e68fb" / "backends" / "lean"
+  "https://github.com/AeneasVerif/aeneas.git" @ "5138c03bd39e870abe1ad3a572865cf8c15f43d6" / "backends" / "lean"
 
 -- Mathlib pin must match the Aeneas Lean toolchain (v4.30.0-rc2). Aeneas Std
 -- transitively requires Mathlib; we pin it here so the lake-manifest is stable.

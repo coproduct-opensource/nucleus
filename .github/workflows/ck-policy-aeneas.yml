@@ -46,10 +46,10 @@ permissions:
 env:
   # Pin to the Aeneas release that generated the committed Lean code.
   # Update with the generated/ files when regenerating.
-  AENEAS_RELEASE: nightly-2026.05.30
+  AENEAS_RELEASE: nightly-2026.06.10
   # Charon (bundled in that release) needs this rustc nightly (from the tarball's
   # rust-toolchain file; components rustc-dev,llvm-tools-preview,rust-src).
-  CHARON_NIGHTLY: nightly-2026-02-22
+  CHARON_NIGHTLY: nightly-2026-06-01
   # Scope Charon to the extracted core root (whole-dep-graph walk chokes).
   EXTRACT_ROOT: "ck_policy::extracted::passed_core"
 

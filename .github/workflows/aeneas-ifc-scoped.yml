@@ -41,9 +41,9 @@ permissions:
 env:
   # Pin to the Aeneas prebuilt nightly that generated the committed generated-ifc/.
   # Update this AND regenerate generated-ifc/ together.
-  AENEAS_RELEASE: nightly-2026.06.02
+  AENEAS_RELEASE: nightly-2026.06.10
   # Charon needs a specific nightly for rustc-dev components.
-  CHARON_NIGHTLY: nightly-2026-02-07
+  CHARON_NIGHTLY: nightly-2026-06-01
   # The scoped extraction roots — name them exactly as Charon sees the paths.
   EXTRACT_ROOTS: "portcullis_core::extracted::ifc_integrity::iflows_to,portcullis_core::extracted::ifc_integrity::imeet,portcullis_core::extracted::ifc_integrity::irun_step"
 
