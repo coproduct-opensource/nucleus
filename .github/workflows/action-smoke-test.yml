@@ -179,12 +179,15 @@ jobs:
 
       - name: Summary
         if: always()
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue-number }}
+          PROFILE: ${{ inputs.profile }}
         run: |
           echo "## Action E2E Test — Live" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           if [ "${{ steps.gate.outputs.has_key }}" = "true" ]; then
-            echo "- **Issue:** #${{ inputs.issue-number }}" >> "$GITHUB_STEP_SUMMARY"
-            echo "- **Profile:** ${{ inputs.profile }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Issue:** #${ISSUE_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Profile:** ${PROFILE}" >> "$GITHUB_STEP_SUMMARY"
             echo "- **Status:** Completed" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "- **Status:** Skipped (no ANTHROPIC_API_KEY secret)" >> "$GITHUB_STEP_SUMMARY"

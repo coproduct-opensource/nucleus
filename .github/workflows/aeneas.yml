@@ -49,8 +49,10 @@ jobs:
       # --- Cache cargo registry + target for Charon's MIR extraction ---
       # Without this, Charon recompiles the portcullis_core crate and its
       # dependencies from scratch every run (~5-10 min).
+      # Cache-poisoning ignored: this workflow only checks formal proofs and
+      # publishes no artifacts (it merely also runs on `release published`).
       - name: Rust / cargo cache (Charon target dir)
-        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2.9.1
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2.9.1 # zizmor: ignore[cache-poisoning]
         with:
           workspaces: crates/portcullis-core
           key: charon-${{ env.CHARON_NIGHTLY }}-${{ env.AENEAS_RELEASE }}
@@ -58,9 +60,10 @@ jobs:
 
       # --- Cache the Aeneas pre-built binary tarball by release tag ---
       # The tarball is ~100 MB. Without caching, every run re-downloads it.
+      # Cache-poisoning ignored: formal-proof build only, no published artifacts.
       - name: Cache Aeneas binary
         id: cache-aeneas-bin
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5 # zizmor: ignore[cache-poisoning]
         with:
           path: /tmp/aeneas-bin
           key: aeneas-bin-${{ runner.os }}-${{ env.AENEAS_RELEASE }}
@@ -145,8 +148,9 @@ jobs:
             | sh -s -- -y --no-modify-path
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
+      # Cache-poisoning ignored: formal-proof build only, no published artifacts.
       - name: Cache Lake / Mathlib build artifacts
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5 # zizmor: ignore[cache-poisoning]
         with:
           path: |
             crates/portcullis-core/lean/.lake
