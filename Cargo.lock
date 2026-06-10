@@ -6623,6 +6623,7 @@ dependencies = [
  "ed25519-dalek 3.0.0-pre.7",
  "hex",
  "nucleus-econ-kernels",
+ "nucleus-lineage",
  "proptest",
  "serde",
  "serde_json",
