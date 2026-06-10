@@ -1,0 +1,182 @@
+name: Aeneas decide_pure (scoped extraction + auto-commit)
+
+# Scoped Charon→Aeneas extraction of the pure lattice/exposure decision
+# kernel `portcullis_core::decide_pure` and its dependency closure
+# (should_gate, project_exposure, classify_operation, is_exfil_operation,
+#  ExposureSet::{set,is_uninhabitable}, Operation, ExposureLabel,
+#  PureVerdict, CapabilityLevel).
+#
+# WHY A SEPARATE WORKFLOW (not aeneas.yml):
+#   aeneas.yml runs `charon cargo --preset aeneas` whole-crate, then
+#   `aeneas -backend lean` over the entire portcullis_core.llbc. Whole-crate
+#   Aeneas translation CRASHES on unrelated alloc-heavy bodies (String/Vec/
+#   HashMap in the flow-graph / delegation / derivation modules), emitting
+#   zero output. The standard Aeneas workflow for that is to SCOPE extraction
+#   to a dependency-free subgraph with `--start-from`, so Aeneas only
+#   translates the slice we will prove over. This job does exactly that, and
+#   keeps the committed lattice extraction (generated/) untouched.
+#
+# WHY AUTO-COMMIT (unlike aeneas-ifc-scoped.yml):
+#   The refinement proof for decide_pure does not exist yet (it lands in a
+#   follow-up that imports the generated defs). This round only needs the
+#   canonical Aeneas output committed under generated-decide/ so the proof
+#   can be written against the real extracted code, not a hand model. The
+#   commit carries [skip ci] to avoid a regenerate->push->regenerate loop.
+#
+# This job is LINUX-ONLY: the prebuilt Aeneas binaries are linux-x86_64 and
+# the macOS local aeneas build is broken (charon-ml skew), so extraction is
+# reproducible only on CI.
+
+on:
+  push:
+    branches: ["main", "feat/aeneas-decide-pure-extract"]
+    paths:
+      - "crates/portcullis-core/src/lib.rs"
+      - "crates/portcullis-core/lean/generated-decide/**"
+      - ".github/workflows/aeneas-decide-pure.yml"
+  pull_request:
+    paths:
+      - "crates/portcullis-core/src/lib.rs"
+      - "crates/portcullis-core/lean/generated-decide/**"
+      - ".github/workflows/aeneas-decide-pure.yml"
+  workflow_dispatch:
+
+# This job commits the regenerated Lean back to the branch, so it needs write.
+# (The top-level default elsewhere is read-only; we scope write to this job.)
+permissions:
+  contents: write
+
+env:
+  # Pin to the Aeneas prebuilt nightly that does scoped extraction cleanly
+  # (same pin the IFC scoped job uses). Update this AND regenerate together.
+  AENEAS_RELEASE: nightly-2026.06.02
+  # Charon needs a specific nightly for rustc-dev components.
+  CHARON_NIGHTLY: nightly-2026-02-07
+  # Scoped extraction roots — name them exactly as Charon sees the paths.
+  # `decide_pure` alone pulls its whole callee closure; the exposure free
+  # functions are listed explicitly to document intent and harden against a
+  # conservative reachability pass.
+  EXTRACT_ROOTS: "portcullis_core::decide_pure,portcullis_core::should_gate,portcullis_core::project_exposure,portcullis_core::classify_operation,portcullis_core::is_exfil_operation"
+
+jobs:
+  aeneas-decide-pure:
+    name: Scoped Aeneas (decide_pure) + auto-commit generated-decide/
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          # Full history + persisted credentials so we can push the regen back.
+          fetch-depth: 0
+
+      # --- Rust nightly for Charon MIR extraction ---
+      - name: Install Rust nightly for Charon
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: ${{ env.CHARON_NIGHTLY }}
+          components: rustc-dev,llvm-tools-preview,rust-src
+
+      - name: Rust / cargo cache (Charon target dir)
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2.9.1
+        with:
+          workspaces: crates/portcullis-core
+          key: charon-decide-${{ env.CHARON_NIGHTLY }}-${{ env.AENEAS_RELEASE }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # --- Aeneas prebuilt binaries (Charon + Aeneas, no OCaml build) ---
+      - name: Cache Aeneas binary
+        id: cache-aeneas-bin
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: /tmp/aeneas-bin
+          key: aeneas-bin-${{ runner.os }}-${{ env.AENEAS_RELEASE }}
+
+      - name: Download Aeneas pre-built binaries
+        if: steps.cache-aeneas-bin.outputs.cache-hit != 'true'
+        run: |
+          gh release download "$AENEAS_RELEASE" \
+            --repo AeneasVerif/aeneas \
+            --pattern "aeneas-linux-x86_64.tar.gz" \
+            --dir /tmp
+          mkdir -p /tmp/aeneas-bin
+          tar xzf /tmp/aeneas-linux-x86_64.tar.gz -C /tmp/aeneas-bin
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Add Aeneas to PATH
+        run: echo "/tmp/aeneas-bin" >> "$GITHUB_PATH"
+
+      - name: Verify tools
+        run: |
+          which charon && charon version
+          which aeneas && aeneas -version
+
+      # --- SCOPED Charon extraction: only the decide_pure subgraph ---
+      # --start-from each root walks ONLY the reachable callees, so the
+      # alloc-heavy unrelated function bodies are never translated by Aeneas.
+      - name: Charon scoped MIR extraction
+        working-directory: crates/portcullis-core
+        run: |
+          STARTS=""
+          IFS=',' read -ra ROOTS <<< "$EXTRACT_ROOTS"
+          for r in "${ROOTS[@]}"; do
+            STARTS="$STARTS --start-from $r"
+          done
+          echo "Charon scoped roots:$STARTS"
+          # shellcheck disable=SC2086
+          charon cargo --preset aeneas $STARTS
+
+      - name: Aeneas Lean 4 translation (scoped slice)
+        run: |
+          mkdir -p crates/portcullis-core/lean/ci-generated-decide
+          LLBC="$(find crates/portcullis-core . -maxdepth 2 -name 'portcullis_core.llbc' -print -quit)"
+          test -n "$LLBC" || { echo "ERROR: charon produced no .llbc"; exit 1; }
+          aeneas -backend lean -split-files "$LLBC" \
+            -dest crates/portcullis-core/lean/ci-generated-decide
+
+      # --- Canonicalize into generated-decide/ with a non-colliding namespace ---
+      # The fresh scoped slice IS the canonical Aeneas output of the pinned
+      # toolchain. Funs.lean imports `PortcullisCore.Types`; we retarget it to
+      # `PortcullisCoreDecide.Types` so this lib does not collide with the
+      # whole-crate «PortcullisCore» lib (same trick the IFC job uses).
+      - name: Canonicalize generated-decide from the fresh extraction
+        run: |
+          DST=crates/portcullis-core/lean/generated-decide/PortcullisCoreDecide
+          SRC=crates/portcullis-core/lean/ci-generated-decide
+          mkdir -p "$DST"
+          for f in Types.lean Funs.lean; do
+            if [ ! -f "$SRC/$f" ]; then
+              echo "ERROR: Aeneas did not emit $f (scoped extraction failed)"; exit 1
+            fi
+          done
+          cp "$SRC/Types.lean" "$DST/Types.lean"
+          sed 's/PortcullisCore\.Types/PortcullisCoreDecide.Types/' "$SRC/Funs.lean" > "$DST/Funs.lean"
+          echo "generated-decide/ canonicalized from the fresh extraction."
+
+      - name: Dump FULL canonical generated defs (to develop the proof against)
+        run: |
+          echo "CANONICAL-TYPES-START"
+          cat crates/portcullis-core/lean/generated-decide/PortcullisCoreDecide/Types.lean
+          echo "CANONICAL-TYPES-END"
+          echo "CANONICAL-FUNS-START"
+          cat crates/portcullis-core/lean/generated-decide/PortcullisCoreDecide/Funs.lean
+          echo "CANONICAL-FUNS-END"
+
+      # --- Auto-commit the regenerated Lean back to the branch ---
+      # [skip ci] prevents a regenerate->push->regenerate loop.
+      - name: Commit regenerated decide_pure extraction
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet crates/portcullis-core/lean/generated-decide/; then
+            echo "No changes to generated-decide/ — nothing to commit."
+            exit 0
+          fi
+          git add crates/portcullis-core/lean/generated-decide/PortcullisCoreDecide/Types.lean \
+                  crates/portcullis-core/lean/generated-decide/PortcullisCoreDecide/Funs.lean
+          git commit \
+            -m "chore(aeneas): regenerate decide_pure extraction (generated-decide/)" \
+            -m "Scoped Charon --start-from extraction of portcullis_core::decide_pure and its dependency closure, translated to Lean 4 by Aeneas. Auto-generated; do not hand-edit." \
+            -m "[skip ci]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
