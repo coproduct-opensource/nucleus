@@ -288,6 +288,50 @@ export async function verifyReceipt(receipt, verifyingKey) {
   );
 }
 
+// ── AGENT CARD: verify the counterparty's signed identity BEFORE acting ───────
+// `verify()` answers WHAT happened, `verifyReceipt()` what was SIGNED —
+// `verifyAgentCard()` answers WHO you are about to act with. The WASM runs the
+// SAME `verify_card` every native recipient runs (JCS re-canonicalization +
+// detached ES256 JWS + advertised-JWKS usability) against a key YOU resolved
+// out-of-band. The card's own key material is never trusted: a card verified
+// against an attacker-supplied key is "verified garbage", by design.
+
+/**
+ * Verify a signed A2A Agent Card against an out-of-band-resolved key.
+ *
+ * Returns a structured verdict the caller branches on: a cryptographic
+ * rejection (no signatures, wrong key, tampered card, unusable advertised
+ * JWKS) is a VALUE (`outcome: "rejected"`), not a thrown exception. Throws
+ * only on malformed input (bad card JSON, bad JWK JSON).
+ *
+ * On success the verdict includes the card's runtime-guarantee profile
+ * summary — authentic attestation (covered by the card's signature), NOT
+ * proof of enforcement.
+ *
+ * @param {string | object} signedCard
+ *   A `SignedAgentCard` — JSON string or parsed object (`{card, signatures}`).
+ * @param {string | object} resolvedJwk
+ *   The out-of-band-resolved verification key — JWK JSON string or object
+ *   (`{"kty":"EC","crv":"P-256","x":"...","y":"..."}`). NEVER from the card.
+ * @returns {Promise<
+ *   | { outcome: "verified", spiffe_id: string, did: string,
+ *       supported_envelope_schema_versions: string[],
+ *       trust_jwks_kids: string[],
+ *       runtime_guarantees: {
+ *         profile_version: string, tracked_sources: string[],
+ *         enforcement_rules: string[], attestation_reference: string | null,
+ *       } | null }
+ *   | { outcome: "rejected", reason: string }
+ * >}
+ */
+export async function verifyAgentCard(signedCard, resolvedJwk) {
+  const mod = await initWasm();
+  return mod.verifyAgentCard(
+    asJsonString(signedCard),
+    asJsonString(resolvedJwk),
+  );
+}
+
 // ── RECOMPUTE: re-derive the decision, don't just check the signature ─────────
 // `verify()` proves a receipt was *signed*; `recompute()` proves the in-bounds
 // IFC *decision* was correct by re-running the EXACT same gate function the

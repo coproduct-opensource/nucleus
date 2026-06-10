@@ -59,7 +59,6 @@ nucleus-lineage = { path = "../nucleus-lineage", features = ["insecure-local-iss
 nucleus-control-plane = { path = "../nucleus-control-plane" }
 # `sign` lets the route test mint a SignedAgentCard to seed AppState.
 nucleus-agent-card = { path = "../nucleus-agent-card", features = ["sign"] }
-nucleus-identity = { path = "../nucleus-identity" }
 ring = { workspace = true }
 # Build genuinely-honest receipts in the /v1/credit test (so a Match is real,
 # not asserted) via the same proven kernels recompute checks against.

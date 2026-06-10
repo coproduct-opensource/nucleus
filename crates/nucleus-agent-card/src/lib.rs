@@ -54,6 +54,7 @@
 pub mod anchor;
 pub mod card;
 pub mod jcs;
+pub mod jwk;
 pub mod verify;
 
 #[cfg(feature = "sign")]
@@ -67,6 +68,7 @@ pub use card::{
     AgentCard, AgentCardSignature, EnforcementRule, RuntimeGuaranteeProfile, SignedAgentCard,
 };
 pub use jcs::canonicalize;
+pub use jwk::JsonWebKey;
 pub use verify::{verify_card, VerifiedCard};
 
 #[cfg(feature = "sign")]

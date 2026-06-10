@@ -19,11 +19,17 @@ thiserror = { workspace = true }
 # RFC 8785 JSON Canonicalization Scheme. Pinned to the latest published
 # release (confirmed on crates.io 2026-06).
 serde_jcs = "0.2.0"
+# Pure-Rust ES256 (ECDSA P-256 + SHA-256) for the ALWAYS-ON verify path.
+# Chosen over ring so the verify closure compiles to wasm32-unknown-unknown
+# (the WASM verifier SDK consumes verify_card directly). Same version as the
+# rest of the workspace lock.
+p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 
-# Path deps. nucleus-identity supplies JsonWebKey + did_crypto::jws_*.
-# nucleus-lineage supplies the Jwks type the card advertises.
+# Path deps. nucleus-identity supplies did_crypto::jws_sign_es256 — SIGN
+# ONLY, optional, behind the `sign` feature (its ring/tokio closure is
+# native-only). nucleus-lineage supplies the Jwks type the card advertises.
 # nucleus-envelope supplies the TrustAnchor the verifier consumes.
-nucleus-identity = { path = "../nucleus-identity" }
+nucleus-identity = { path = "../nucleus-identity", optional = true }
 nucleus-lineage = { path = "../nucleus-lineage" }
 nucleus-envelope = { path = "../nucleus-envelope" }
 
@@ -32,7 +38,7 @@ default = []
 # Server/dev only: the card-signing path. Pulls in nucleus-identity's
 # signing primitive. NEVER enable in a WASM / browser build — verify is
 # always available without it and is secret-free.
-sign = []
+sign = ["dep:nucleus-identity"]
 
 # The `agent-sign` example calls sign_card, so it only builds with `sign`
 # (keeps default builds + CI free of the signing path).
