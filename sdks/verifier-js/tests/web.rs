@@ -125,26 +125,45 @@ fn verify_receipt_rejects_wrong_key_length() {
 // wasm boundary tests pin the input-error and rejected-verdict paths; the full
 // sign→verify round-trip is pinned by the native tests in src/lib.rs.
 
-/// A structurally well-formed SignedAgentCard whose signature is garbage.
+/// A structurally well-formed signed A2A v1.0 AgentCard whose signature
+/// is garbage.
 fn garbage_signed_card_json() -> String {
-    let card = nucleus_agent_card::AgentCard {
+    let mut card = nucleus_agent_card::AgentCard {
+        name: "Coder Agent".to_string(),
+        description: "wasm boundary tests".to_string(),
+        supported_interfaces: vec![nucleus_agent_card::AgentInterface {
+            url: "https://coder.prod.example.com/a2a/v1".to_string(),
+            protocol_binding: "JSONRPC".to_string(),
+            tenant: None,
+            protocol_version: nucleus_agent_card::A2A_PROTOCOL_VERSION.to_string(),
+        }],
+        provider: None,
+        version: "1.0.0".to_string(),
+        documentation_url: None,
+        capabilities: nucleus_agent_card::AgentCapabilities::default(),
+        security_schemes: serde_json::Map::new(),
+        security_requirements: vec![],
+        default_input_modes: vec!["application/json".to_string()],
+        default_output_modes: vec!["application/json".to_string()],
+        skills: vec![],
+        signatures: vec![],
+        icon_url: None,
+    }
+    .with_nucleus_claims(&nucleus_agent_card::NucleusClaims {
         spiffe_id: "spiffe://prod.example.com/ns/agents/sa/coder".to_string(),
         did: "did:web:coder.prod.example.com".to_string(),
-        security_schemes: serde_json::json!({}),
         supported_envelope_schema_versions: vec!["1".to_string()],
         jwks_uri: None,
         trust_jwks: nucleus_lineage::Jwks { keys: vec![] },
         runtime_guarantees: None,
-    };
-    let signed = nucleus_agent_card::SignedAgentCard {
-        card,
-        signatures: vec![nucleus_agent_card::AgentCardSignature {
-            protected: "eyJhbGciOiJFUzI1NiJ9".to_string(),
-            signature: "bm90LWEtcmVhbC1zaWc".to_string(),
-            header: None,
-        }],
-    };
-    serde_json::to_string(&signed).unwrap()
+    })
+    .unwrap();
+    card.signatures = vec![nucleus_agent_card::AgentCardSignature {
+        protected: "eyJhbGciOiJFUzI1NiJ9".to_string(),
+        signature: "bm90LWEtcmVhbC1zaWc".to_string(),
+        header: None,
+    }];
+    serde_json::to_string(&card).unwrap()
 }
 
 /// A syntactically valid P-256 JWK (RFC 7515 A.3 test vector point).

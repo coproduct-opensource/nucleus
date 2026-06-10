@@ -1,4 +1,5 @@
-//! Verify a [`SignedAgentCard`] against an OUT-OF-BAND-resolved key.
+//! Verify a signed [`AgentCard`] against an OUT-OF-BAND-resolved key
+//! (A2A v1.0 §8.4.3).
 //!
 //! This module is ALWAYS compiled (no feature gate) and is secret-free —
 //! a browser/WASM verifier can use it without ever touching a private key.
@@ -8,27 +9,35 @@
 //! The verification key comes ONLY from the caller's `resolved_key`
 //! argument — a key the caller obtained out-of-band (DID resolution, a
 //! pinned JWKS, an operator file). It is NEVER read from the card or from
-//! any `kid` the signature advertises. A card verified against a key the
+//! the `kid`/`jku` the signature's protected header advertises. §8.4.3
+//! permits resolving the key "from a trusted key store" — that is the only
+//! mode this verifier implements, because a card verified against a key the
 //! *attacker* supplied is "verified garbage": the math passes but it
 //! proves nothing about who the agent is.
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 
-use crate::card::{AgentCard, SignedAgentCard};
+use crate::card::{AgentCard, NucleusClaims};
 use crate::jcs::canonicalize;
 use crate::jwk::JsonWebKey;
 use crate::{Error, Result};
 
-/// A card whose signature verified against the caller's out-of-band key.
+/// A card whose signature verified against the caller's out-of-band key,
+/// together with its extracted [`NucleusClaims`].
 ///
 /// Holding a `VerifiedCard` is the proof obligation: you may only call
 /// [`Self::advertised_jwks`] (and thence build a TrustAnchor) once the
 /// card's authenticity has been established.
 #[derive(Debug, Clone)]
 pub struct VerifiedCard {
-    /// The verified identity document.
+    /// The verified identity document (v1.0 card, signatures included).
     pub card: AgentCard,
+
+    /// The nucleus claims extracted from the card's
+    /// [`NUCLEUS_EXTENSION_URI`](crate::card::NUCLEUS_EXTENSION_URI)
+    /// extension — covered by the verified signature.
+    pub claims: NucleusClaims,
 }
 
 impl VerifiedCard {
@@ -36,51 +45,60 @@ impl VerifiedCard {
     /// its provenance bundles. Feed this to
     /// [`crate::anchor::trust_anchor_from_card`].
     pub fn advertised_jwks(&self) -> &nucleus_lineage::Jwks {
-        &self.card.trust_jwks
+        &self.claims.trust_jwks
     }
 }
 
-/// Verify a [`SignedAgentCard`] using a key the caller resolved
-/// out-of-band.
+/// Verify a signed [`AgentCard`] using a key the caller resolved
+/// out-of-band, and extract its [`NucleusClaims`].
 ///
-/// Steps:
+/// Steps (§8.4.3, with the nucleus trust model on top):
 ///
-/// 1. Take the FIRST signature.
-/// 2. Recompute the JCS canonical bytes of `card` and the detached JWS
-///    payload segment `base64url_nopad(JCS(card))`.
+/// 1. Take the FIRST entry of the card's `signatures` array.
+/// 2. Recompute the §8.4.1 canonical payload — the JCS bytes of the card
+///    with `signatures` excluded — and the detached JWS payload segment
+///    `base64url_nopad(JCS)`.
 /// 3. Reconstruct the compact JWS `protected.payload.signature` and verify
 ///    it via the wasm-clean ES256 verifier in [`crate::jwk`] against
 ///    `resolved_key`.
-/// 4. Assert the payload `jws_verify_es256` returns equals JCS(card) — so
-///    the signature is bound to *this* card, not some other payload.
-/// 5. Reject if the card's advertised `trust_jwks` is empty or malformed
-///    (an advertised-but-unusable JWKS can't anchor anything downstream).
+/// 4. Assert the payload `jws_verify_es256` returns equals the canonical
+///    bytes — so the signature is bound to *this* card, not some other
+///    payload.
+/// 5. Extract the [`NucleusClaims`] from the card's nucleus extension —
+///    REQUIRED here: this verifier exists for the verify-before-you-act
+///    flow, and a card with no claims (or a malformed claim set) cannot
+///    anchor anything downstream.
+/// 6. Reject if the claimed `trust_jwks` is empty or malformed (an
+///    advertised-but-unusable JWKS can't anchor anything either).
 ///
 /// # Errors
 ///
 /// Returns [`Error`] on: no signatures, signature/JWS verification
-/// failure, payload mismatch, or empty/malformed `trust_jwks`.
-pub fn verify_card(signed: &SignedAgentCard, resolved_key: &JsonWebKey) -> Result<VerifiedCard> {
-    // 1) First signature. Multiple signatures are allowed on the wire, but
-    //    the trust decision is made against the caller's resolved key over
-    //    the first one — we never iterate looking for "a kid that matches"
-    //    because that would re-introduce card-controlled key selection.
-    let sig = signed
+/// failure, payload mismatch, missing/malformed nucleus extension, or
+/// empty/malformed `trust_jwks`.
+pub fn verify_card(card: &AgentCard, resolved_key: &JsonWebKey) -> Result<VerifiedCard> {
+    // 1) First signature. Multiple signatures are allowed on the wire
+    //    (§8.4.3, key rotation), but the trust decision is made against the
+    //    caller's resolved key over the first one — we never iterate
+    //    looking for "a kid that matches" because that would re-introduce
+    //    card-controlled key selection.
+    let sig = card
         .signatures
         .first()
-        .ok_or(Error::Verify("signed card has no signatures".to_string()))?;
+        .ok_or(Error::Verify("card has no signatures".to_string()))?;
 
-    // 2) Canonicalize the card and form the detached JWS payload segment.
-    let jcs_bytes = canonicalize(&signed.card)?;
+    // 2) Canonical payload (signatures excluded) + detached JWS segment.
+    let jcs_bytes = canonicalize(card)?;
     let payload_b64 = URL_SAFE_NO_PAD.encode(&jcs_bytes);
 
     // 3) Reconstruct the COMPACT JWS string the detached signature implies:
-    //    protected "." base64url(JCS(card)) "." signature.
+    //    protected "." base64url(JCS) "." signature.
     let compact = format!("{}.{}.{}", sig.protected, payload_b64, sig.signature);
 
     // 4) Verify against the OUT-OF-BAND-resolved key ONLY. Never the card's
-    //    own material. `jws_verify_es256` (wasm-clean, pure-Rust p256 —
-    //    see crate::jwk) returns the decoded payload.
+    //    own material, never the protected header's kid/jku.
+    //    `jws_verify_es256` (wasm-clean, pure-Rust p256 — see crate::jwk)
+    //    returns the decoded payload.
     let recovered = crate::jwk::jws_verify_es256(&compact, resolved_key)
         .map_err(|e| Error::Verify(format!("JWS verification failed: {e}")))?;
 
@@ -95,14 +113,23 @@ pub fn verify_card(signed: &SignedAgentCard, resolved_key: &JsonWebKey) -> Resul
         ));
     }
 
-    // 6) Reject an unusable advertised JWKS up front. An empty or malformed
+    // 6) Extract the nucleus claims — required for verify-before-you-act.
+    let claims = card.nucleus_claims()?.ok_or_else(|| {
+        Error::Verify(format!(
+            "card does not declare the nucleus extension ({}) — nothing to anchor on",
+            crate::card::NUCLEUS_EXTENSION_URI
+        ))
+    })?;
+
+    // 7) Reject an unusable advertised JWKS up front. An empty or malformed
     //    trust_jwks can't anchor any bundle, so a card carrying one is
     //    useless for verify-before-you-act — fail loudly here rather than
     //    let the caller build a TrustAnchor that rejects everything.
-    reject_unusable_jwks(&signed.card.trust_jwks)?;
+    reject_unusable_jwks(&claims.trust_jwks)?;
 
     Ok(VerifiedCard {
-        card: signed.card.clone(),
+        card: card.clone(),
+        claims,
     })
 }
 
@@ -132,7 +159,9 @@ fn reject_unusable_jwks(jwks: &nucleus_lineage::Jwks) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::card::{AgentCard, AgentCardSignature, SignedAgentCard};
+    use crate::card::{
+        AgentCapabilities, AgentCardSignature, AgentInterface, A2A_PROTOCOL_VERSION,
+    };
 
     fn ed25519_jwks() -> nucleus_lineage::Jwks {
         nucleus_lineage::Jwks {
@@ -151,43 +180,59 @@ mod tests {
 
     fn card_with(jwks: nucleus_lineage::Jwks) -> AgentCard {
         AgentCard {
+            name: "Coder Agent".to_string(),
+            description: "verify tests".to_string(),
+            supported_interfaces: vec![AgentInterface {
+                url: "https://coder.prod.example.com/a2a/v1".to_string(),
+                protocol_binding: "JSONRPC".to_string(),
+                tenant: None,
+                protocol_version: A2A_PROTOCOL_VERSION.to_string(),
+            }],
+            provider: None,
+            version: "1.0.0".to_string(),
+            documentation_url: None,
+            capabilities: AgentCapabilities::default(),
+            security_schemes: serde_json::Map::new(),
+            security_requirements: vec![],
+            default_input_modes: vec!["application/json".to_string()],
+            default_output_modes: vec!["application/json".to_string()],
+            skills: vec![],
+            signatures: vec![],
+            icon_url: None,
+        }
+        .with_nucleus_claims(&NucleusClaims {
             spiffe_id: "spiffe://prod.example.com/ns/agents/sa/coder".to_string(),
             did: "did:web:coder.prod.example.com".to_string(),
-            security_schemes: serde_json::json!({}),
             supported_envelope_schema_versions: vec!["1".to_string()],
             jwks_uri: None,
             trust_jwks: jwks,
             runtime_guarantees: None,
-        }
+        })
+        .unwrap()
     }
 
     #[test]
     fn no_signatures_is_rejected() {
-        let signed = SignedAgentCard {
-            card: card_with(ed25519_jwks()),
-            signatures: vec![],
-        };
+        let card = card_with(ed25519_jwks());
         let key = JsonWebKey::ec_p256("x", "y");
-        let err = verify_card(&signed, &key).unwrap_err();
+        let err = verify_card(&card, &key).unwrap_err();
         assert!(matches!(err, Error::Verify(_)));
     }
 
     #[test]
     fn garbage_signature_is_rejected() {
-        let signed = SignedAgentCard {
-            card: card_with(ed25519_jwks()),
-            signatures: vec![AgentCardSignature {
-                protected: "eyJhbGciOiJFUzI1NiJ9".to_string(),
-                signature: "bm90LWEtcmVhbC1zaWc".to_string(),
-                header: None,
-            }],
-        };
+        let mut card = card_with(ed25519_jwks());
+        card.signatures = vec![AgentCardSignature {
+            protected: "eyJhbGciOiJFUzI1NiJ9".to_string(),
+            signature: "bm90LWEtcmVhbC1zaWc".to_string(),
+            header: None,
+        }];
         // A syntactically-valid P-256 JWK that did not sign this card.
         let key = JsonWebKey::ec_p256(
             "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU",
             "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0",
         );
-        let err = verify_card(&signed, &key).unwrap_err();
+        let err = verify_card(&card, &key).unwrap_err();
         assert!(matches!(err, Error::Verify(_)));
     }
 }

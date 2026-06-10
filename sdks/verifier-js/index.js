@@ -309,7 +309,9 @@ export async function verifyReceipt(receipt, verifyingKey) {
  * proof of enforcement.
  *
  * @param {string | object} signedCard
- *   A `SignedAgentCard` — JSON string or parsed object (`{card, signatures}`).
+ *   A signed A2A v1.0 `AgentCard` — JSON string or parsed object (flat
+ *   card; JWS signatures embedded in its `signatures` field, nucleus
+ *   claims in its `capabilities.extensions`).
  * @param {string | object} resolvedJwk
  *   The out-of-band-resolved verification key — JWK JSON string or object
  *   (`{"kty":"EC","crv":"P-256","x":"...","y":"..."}`). NEVER from the card.

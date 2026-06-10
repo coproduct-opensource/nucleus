@@ -1,25 +1,50 @@
-//! RFC 8785 JSON Canonicalization Scheme (JCS) for [`AgentCard`].
+//! RFC 8785 JSON Canonicalization Scheme (JCS) for [`AgentCard`] —
+//! A2A v1.0 §8.4.1.
 //!
 //! Both the signer and the verifier MUST canonicalize the card the exact
 //! same way, or a valid signature would fail to verify. This module is the
 //! single source of that canonicalization, built on the [`serde_jcs`]
 //! crate (RFC 8785 compliant).
+//!
+//! Spec rules implemented here (§8.4.1):
+//!
+//! 1. **Presence**: unset optional fields and default-valued fields are
+//!    omitted — enforced by the serde `skip_serializing_if` attributes on
+//!    [`AgentCard`], so serialization already reflects field presence.
+//! 2. **RFC 8785**: lexicographic key order, canonical number/string
+//!    forms, no insignificant whitespace — `serde_jcs`.
+//! 3. **Signature exclusion**: the `signatures` field MUST be excluded
+//!    from the content being signed — removed here, structurally, for
+//!    both signer and verifier.
 
 use crate::card::AgentCard;
 use crate::{Error, Result};
 
-/// Canonicalize an [`AgentCard`] to RFC 8785 (JCS) bytes.
+/// Canonicalize an [`AgentCard`] to its A2A §8.4.1 signing payload: the
+/// RFC 8785 (JCS) bytes of the card **with the `signatures` field
+/// excluded**.
 ///
 /// The output is deterministic: lexicographically-sorted object keys,
 /// no insignificant whitespace, and canonical number/string formatting.
-/// These are exactly the bytes the JWS signature covers.
+/// These are exactly the bytes the JWS signature covers — for an unsigned
+/// and a signed copy of the same card they are identical, which is what
+/// makes the detached signature verifiable at all.
 pub fn canonicalize(card: &AgentCard) -> Result<Vec<u8>> {
-    serde_jcs::to_vec(card).map_err(|e| Error::Canonicalize(e.to_string()))
+    let mut value = serde_json::to_value(card).map_err(|e| Error::Canonicalize(e.to_string()))?;
+    if let Some(obj) = value.as_object_mut() {
+        // §8.4.1 rule 3: the signatures field itself MUST be excluded from
+        // the content being signed (avoids the circular dependency).
+        obj.remove("signatures");
+    }
+    serde_jcs::to_vec(&value).map_err(|e| Error::Canonicalize(e.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card::{
+        AgentCapabilities, AgentCardSignature, AgentInterface, A2A_PROTOCOL_VERSION,
+    };
 
     /// RFC 8785 Appendix B reference vector. Pins our JCS implementation
     /// against the spec's own example so a future dependency swap that
@@ -71,27 +96,63 @@ mod tests {
         assert_eq!(serde_jcs::to_string(&a).unwrap(), r#"{"a":2,"b":1,"c":3}"#);
     }
 
+    fn minimal_card() -> AgentCard {
+        AgentCard {
+            name: "Minimal Agent".to_string(),
+            description: "canonicalization test".to_string(),
+            supported_interfaces: vec![AgentInterface {
+                url: "https://min.example.com/a2a/v1".to_string(),
+                protocol_binding: "JSONRPC".to_string(),
+                tenant: None,
+                protocol_version: A2A_PROTOCOL_VERSION.to_string(),
+            }],
+            provider: None,
+            version: "0.1.0".to_string(),
+            documentation_url: None,
+            capabilities: AgentCapabilities::default(),
+            security_schemes: {
+                let mut m = serde_json::Map::new();
+                m.insert("b".to_string(), serde_json::json!(1));
+                m.insert("a".to_string(), serde_json::json!(2));
+                m
+            },
+            security_requirements: vec![],
+            default_input_modes: vec!["application/json".to_string()],
+            default_output_modes: vec!["application/json".to_string()],
+            skills: vec![],
+            signatures: vec![],
+            icon_url: None,
+        }
+    }
+
     /// `canonicalize(card)` is stable across clones and re-serialization —
     /// the property the whole sign/verify contract depends on.
     #[test]
     fn canonicalize_is_deterministic() {
-        let card = AgentCard {
-            spiffe_id: "spiffe://prod.example.com/ns/agents/sa/coder".to_string(),
-            did: "did:web:coder.prod.example.com".to_string(),
-            security_schemes: serde_json::json!({"b": 1, "a": 2}),
-            supported_envelope_schema_versions: vec!["1".to_string()],
-            jwks_uri: None,
-            trust_jwks: nucleus_lineage::Jwks { keys: vec![] },
-            runtime_guarantees: None,
-        };
+        let card = minimal_card();
         let first = canonicalize(&card).unwrap();
         let second = canonicalize(&card.clone()).unwrap();
         assert_eq!(first, second);
-        // Keys inside the nested object are sorted.
+        // Keys inside the nested securitySchemes map are sorted.
         let s = String::from_utf8(first).unwrap();
-        assert!(
-            s.contains(r#""security_schemes":{"a":2,"b":1}"#),
-            "got: {s}"
-        );
+        assert!(s.contains(r#""securitySchemes":{"a":2,"b":1}"#), "got: {s}");
+    }
+
+    /// §8.4.1 rule 3: the signatures field is excluded — an unsigned card
+    /// and the same card carrying signatures canonicalize to the SAME
+    /// bytes, which is what lets a verifier reconstruct the signed payload.
+    #[test]
+    fn signatures_field_is_excluded_from_canonical_bytes() {
+        let unsigned = minimal_card();
+        let mut signed = unsigned.clone();
+        signed.signatures = vec![AgentCardSignature {
+            protected: "eyJhbGciOiJFUzI1NiJ9".to_string(),
+            signature: "c2ln".to_string(),
+            header: None,
+        }];
+        let a = canonicalize(&unsigned).unwrap();
+        let b = canonicalize(&signed).unwrap();
+        assert_eq!(a, b, "signatures must not be part of the signed content");
+        assert!(!String::from_utf8(b).unwrap().contains("signatures"));
     }
 }

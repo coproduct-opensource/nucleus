@@ -42,7 +42,7 @@ that *prevents* (vs. detects) violations, and it is host-side.
 ## `just agent-sign` / `agent-ship` (next PR)
 
 ```text
-just agent-sign     # OIDC-keyless-sign a card (incl. its runtime_guarantees), → SignedAgentCard
+just agent-sign     # OIDC-keyless-sign an A2A v1.0 card (incl. its runtime-guarantee claims), → signed AgentCard
 just agent-ship     # publish the signed card to /.well-known + the transparency log
 ```
 

@@ -1,56 +1,80 @@
 {
-  "_generated_by": "nucleus-agent-card sign_card with an ephemeral ring P-256 key — a TEST key; the JWK is the matching public key a recipient would resolve out-of-band. wrong_jwk is a second, unrelated P-256 key.",
+  "_generated_by": "nucleus-agent-card print_verifier_js_fixture (sign_card with an ephemeral ring P-256 key — a TEST key; resolved_jwk is the matching public key a recipient would resolve out-of-band; wrong_jwk is a second, unrelated P-256 key). A2A v1.0 card shape.",
   "resolved_jwk": {
     "crv": "P-256",
     "kty": "EC",
-    "x": "9isxwtcA68nIOId1WnltnknPsbNq47QvmEBj0ft0-pQ",
-    "y": "mwrZCN6mpdyx0OGD2GbMdNvYmKXf2YzzOCgzXksH-ns"
+    "x": "5RrwLcssCbluBtmbvoVLn11nH_Qz65f9qWL0KXE9t5o",
+    "y": "3BFjxELxCEdDDOOmRF0FHbEZa4tYqyBLrfeky01Zwjs"
   },
   "signed_card": {
-    "card": {
-      "did": "did:web:coder.prod.example.com",
-      "runtime_guarantees": {
-        "enforcement_rules": [
-          {
-            "description": "deny outbound actions tainted by adversarial content",
-            "name": "no_adversarial_to_outbound"
-          }
-        ],
-        "profile_version": "1.0",
-        "tracked_sources": [
-          "web_content",
-          "secret"
-        ]
-      },
-      "security_schemes": {},
-      "spiffe_id": "spiffe://prod.example.com/ns/agents/sa/coder",
-      "supported_envelope_schema_versions": [
-        "1"
-      ],
-      "trust_jwks": {
-        "keys": [
-          {
-            "alg": "EdDSA",
-            "crv": "Ed25519",
-            "kid": "issuer-k1",
-            "kty": "OKP",
-            "use": "sig",
-            "x": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw"
-          }
-        ]
-      }
+    "capabilities": {
+      "extensions": [
+        {
+          "description": "nucleus verify-before-you-act claims: SPIFFE/DID identity, trust JWKS, envelope schema versions, runtime-guarantee profile",
+          "params": {
+            "did": "did:web:coder.prod.example.com",
+            "runtimeGuarantees": {
+              "enforcementRules": [
+                {
+                  "description": "deny outbound actions tainted by adversarial content",
+                  "name": "no_adversarial_to_outbound"
+                }
+              ],
+              "profileVersion": "1.0",
+              "trackedSources": [
+                "web_content",
+                "secret"
+              ]
+            },
+            "spiffeId": "spiffe://prod.example.com/ns/agents/sa/coder",
+            "supportedEnvelopeSchemaVersions": [
+              "1"
+            ],
+            "trustJwks": {
+              "keys": [
+                {
+                  "alg": "EdDSA",
+                  "crv": "Ed25519",
+                  "kid": "issuer-k1",
+                  "kty": "OKP",
+                  "use": "sig",
+                  "x": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw"
+                }
+              ]
+            }
+          },
+          "uri": "https://coproduct.one/a2a/ext/runtime-guarantees/v1"
+        }
+      ]
     },
+    "defaultInputModes": [
+      "application/json"
+    ],
+    "defaultOutputModes": [
+      "application/json"
+    ],
+    "description": "sign/verify round-trip tests",
+    "name": "Coder Agent",
     "signatures": [
       {
-        "protected": "eyJhbGciOiJFUzI1NiJ9",
-        "signature": "dv2aCw-aMUC6V1A0H2oQojdoh4z_ww6CanP1LSNDmwkipPZuGGx7BPVzuNzL0FeoYO81F7WSgkgBwXny5atD4A"
+        "protected": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImNhcmQta2V5LTEiLCJ0eXAiOiJKT1NFIn0",
+        "signature": "uzB49cF13g-oNBQ-hJ5687zai_VaGRaR0cJOYpiCb6X2Gm0TSTQpi-9jQgMACZw-sb16mkRJBsFa5dNLbB949Q"
       }
-    ]
+    ],
+    "skills": [],
+    "supportedInterfaces": [
+      {
+        "protocolBinding": "JSONRPC",
+        "protocolVersion": "1.0",
+        "url": "https://coder.prod.example.com/a2a/v1"
+      }
+    ],
+    "version": "1.0.0"
   },
   "wrong_jwk": {
     "crv": "P-256",
     "kty": "EC",
-    "x": "DBjbzVl6cou3QHISAVbbQWegaqqoE6If88z3ad8X6lU",
-    "y": "L9u1h0MG3N9x-1xl-pO9knyNcyWjUbgRIAvVNC_jNi8"
+    "x": "CxImsLlwCuxfgyUy08vzgyIVjH6jj-Wcv3_kEUScB-c",
+    "y": "4om1tjFHkOGWLTV1hwZI_PuLtHZmUwYDkLnSJebHmdM"
   }
 }

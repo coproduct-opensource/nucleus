@@ -18,7 +18,10 @@ use base64::Engine as _;
 use ring::rand::SystemRandom;
 use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
 
-use nucleus_agent_card::{sign_card, trust_anchor_from_card, verify_card, AgentCard, JsonWebKey};
+use nucleus_agent_card::{
+    sign_card, trust_anchor_from_card, verify_card, AgentCapabilities, AgentCard, AgentInterface,
+    JsonWebKey, NucleusClaims, A2A_PROTOCOL_VERSION,
+};
 use nucleus_envelope::{verify_bundle, Bundle, BundleBuilder};
 use nucleus_lineage::{
     edge_content_hash, CallSpiffeId, EdgeKind, EdgeSigner, InMemorySink, Jwks, LineageEdge,
@@ -99,18 +102,40 @@ fn build_bundle(issuer: &LocalIssuer) -> Bundle {
         .unwrap()
 }
 
-/// A card advertising `issuer`'s `publish_jwks()` as its trust anchor.
+/// A v1.0 card whose nucleus extension advertises `issuer`'s
+/// `publish_jwks()` as its trust anchor.
 fn card_for(issuer: &LocalIssuer) -> AgentCard {
     let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
     AgentCard {
+        name: "Summarizer Agent".to_string(),
+        description: "handshake integration test agent".to_string(),
+        supported_interfaces: vec![AgentInterface {
+            url: "https://summarizer.prod.example.com/a2a/v1".to_string(),
+            protocol_binding: "JSONRPC".to_string(),
+            tenant: None,
+            protocol_version: A2A_PROTOCOL_VERSION.to_string(),
+        }],
+        provider: None,
+        version: "1.0.0".to_string(),
+        documentation_url: None,
+        capabilities: AgentCapabilities::default(),
+        security_schemes: serde_json::Map::new(),
+        security_requirements: vec![],
+        default_input_modes: vec!["application/json".to_string()],
+        default_output_modes: vec!["application/json".to_string()],
+        skills: vec![],
+        signatures: vec![],
+        icon_url: None,
+    }
+    .with_nucleus_claims(&NucleusClaims {
         spiffe_id: "spiffe://prod.example.com/ns/agents/sa/summarizer".to_string(),
         did: "did:web:summarizer.prod.example.com".to_string(),
-        security_schemes: serde_json::json!({}),
         supported_envelope_schema_versions: vec!["1".to_string(), "2".to_string()],
         jwks_uri: Some("https://summarizer.prod.example.com/.well-known/jwks.json".to_string()),
         trust_jwks: jwks,
         runtime_guarantees: None,
-    }
+    })
+    .unwrap()
 }
 
 #[test]
@@ -123,7 +148,7 @@ fn headline_card_anchored_bundle_verifies() {
 
     // 1) Agent signs a card advertising issuer's JWKS.
     let card = card_for(&issuer);
-    let signed = sign_card(card, &card_der).unwrap();
+    let signed = sign_card(card, &card_der, "card-key-1").unwrap();
 
     // 2) Recipient verifies the card against the OUT-OF-BAND key.
     let verified = verify_card(&signed, &card_pub).expect("card must verify");
@@ -150,7 +175,7 @@ fn negative_mismatched_issuer_bundle_is_refused() {
 
     // The card advertises issuer A's JWKS and is validly signed.
     let card = card_for(&issuer_a);
-    let signed = sign_card(card, &card_der).unwrap();
+    let signed = sign_card(card, &card_der, "card-key-1").unwrap();
 
     // The card STILL VERIFIES — it is genuinely signed by the resolved key.
     let verified =

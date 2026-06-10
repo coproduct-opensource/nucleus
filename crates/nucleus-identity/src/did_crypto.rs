@@ -6,6 +6,7 @@
 //! - [`extract_ec_p256_jwk`] — Extract an EC P-256 public key from a certificate as a JWK
 //! - [`cert_fingerprint`] — SHA-256 fingerprint of a certificate in `SHA256:<base64url>` format
 //! - [`jws_sign_es256`] — Create a JWS compact serialization (ES256) over a payload
+//! - [`jws_sign_es256_with_protected_header`] — Same, with a caller-supplied protected header
 //! - [`jws_verify_es256`] — Verify a JWS compact serialization against a JWK
 //! - [`chain_to_base64url`] — Encode a certificate chain as base64url DER strings
 
@@ -102,9 +103,39 @@ pub fn cert_fingerprint(cert: &Certificate) -> String {
 ///
 /// Returns an error if the private key is invalid or signing fails.
 pub fn jws_sign_es256(payload: &[u8], private_key_pkcs8_der: &[u8]) -> Result<String> {
-    // Construct the protected header
-    let header = r#"{"alg":"ES256"}"#;
-    let header_b64 = URL_SAFE_NO_PAD.encode(header.as_bytes());
+    jws_sign_es256_with_protected_header(r#"{"alg":"ES256"}"#, payload, private_key_pkcs8_der)
+}
+
+/// Create a JWS compact serialization (ES256) over a payload with a
+/// caller-supplied protected header.
+///
+/// Like [`jws_sign_es256`] but the caller controls the protected-header
+/// JSON — needed by consumers whose specs mandate additional protected
+/// header parameters (e.g. the A2A v1.0 Agent Card §8.4.2 requires `alg`,
+/// `typ` and `kid`). The header is carried verbatim into the JWS.
+///
+/// # Errors
+///
+/// Returns an error if the header is not a JSON object declaring
+/// `"alg":"ES256"` (anything else would sign a JWS every ES256 verifier
+/// rejects), the private key is invalid, or signing fails.
+pub fn jws_sign_es256_with_protected_header(
+    protected_header_json: &str,
+    payload: &[u8],
+    private_key_pkcs8_der: &[u8],
+) -> Result<String> {
+    // Guard against signing a header the ES256 verifier will reject.
+    let header_declares_es256 = serde_json::from_str::<serde_json::Value>(protected_header_json)
+        .ok()
+        .and_then(|v| v.get("alg").and_then(|a| a.as_str().map(String::from)))
+        .is_some_and(|alg| alg == "ES256");
+    if !header_declares_es256 {
+        return Err(Error::Internal(
+            "protected header must be a JSON object with alg=ES256".to_string(),
+        ));
+    }
+
+    let header_b64 = URL_SAFE_NO_PAD.encode(protected_header_json.as_bytes());
     let payload_b64 = URL_SAFE_NO_PAD.encode(payload);
 
     // The signing input is: base64url(header) || '.' || base64url(payload)

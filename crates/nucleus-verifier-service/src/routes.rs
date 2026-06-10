@@ -724,14 +724,15 @@ pub async fn well_known_jwks(State(state): State<AppState>) -> Json<serde_json::
     })
 }
 
-/// `GET /.well-known/agent-card.json` — the service's own A2A-style
-/// signed Agent Card (verify-before-you-act identity document).
+/// `GET /.well-known/agent-card.json` — the service's own signed A2A
+/// v1.0 Agent Card (verify-before-you-act identity document).
 ///
-/// Returns the [`nucleus_agent_card::SignedAgentCard`] configured in
-/// [`AppState::agent_card`]. The card's detached RFC 7515 JWS-JSON
-/// signature verifies against the operator's out-of-band-resolved key —
-/// NEVER against a key embedded in the card. Returns 404 when no card is
-/// configured (the service makes no identity claim in that mode).
+/// Returns the [`nucleus_agent_card::AgentCard`] configured in
+/// [`AppState::agent_card`]. The card's detached RFC 7515 JWS (carried in
+/// the card's own `signatures` field per A2A §8.4) verifies against the
+/// operator's out-of-band-resolved key — NEVER against a key embedded in
+/// the card. Returns 404 when no card is configured (the service makes no
+/// identity claim in that mode).
 pub async fn well_known_agent_card(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, VerifyApiError> {

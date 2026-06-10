@@ -319,16 +319,16 @@ fn agent_card_verdict(
     signed_card_json: &str,
     resolved_jwk_json: &str,
 ) -> Result<CardVerdict, String> {
-    let signed: nucleus_agent_card::SignedAgentCard =
+    let signed: nucleus_agent_card::AgentCard =
         serde_json::from_str(signed_card_json).map_err(|e| format!("signed card JSON: {e}"))?;
     let jwk: nucleus_agent_card::JsonWebKey =
         serde_json::from_str(resolved_jwk_json).map_err(|e| format!("resolved JWK JSON: {e}"))?;
     match nucleus_agent_card::verify_card(&signed, &jwk) {
         Ok(verified) => Ok(CardVerdict::Verified {
-            spiffe_id: verified.card.spiffe_id.clone(),
-            did: verified.card.did.clone(),
+            spiffe_id: verified.claims.spiffe_id.clone(),
+            did: verified.claims.did.clone(),
             supported_envelope_schema_versions: verified
-                .card
+                .claims
                 .supported_envelope_schema_versions
                 .clone(),
             trust_jwks_kids: verified
@@ -337,7 +337,7 @@ fn agent_card_verdict(
                 .iter()
                 .map(|k| k.kid.clone())
                 .collect(),
-            runtime_guarantees: verified.card.runtime_guarantees.as_ref().map(|p| {
+            runtime_guarantees: verified.claims.runtime_guarantees.as_ref().map(|p| {
                 RuntimeGuaranteeSummary {
                     profile_version: p.profile_version.clone(),
                     tracked_sources: p.tracked_sources.clone(),
@@ -358,8 +358,9 @@ fn agent_card_verdict(
 /// in the caller's browser/Node process, trusting no server.
 ///
 /// # Arguments
-/// * `signed_card_json` — a `SignedAgentCard` serialized as JSON
-///   (`{card, signatures}`).
+/// * `signed_card_json` — a signed A2A v1.0 `AgentCard` serialized as JSON
+///   (flat card object; JWS signatures embedded in its `signatures` field,
+///   nucleus claims in its `capabilities.extensions`).
 /// * `resolved_jwk_json` — the out-of-band-resolved verification key as a
 ///   JWK JSON (`{"kty":"EC","crv":"P-256","x":"...","y":"..."}`). NEVER
 ///   taken from the card itself.
@@ -868,7 +869,8 @@ mod agent_card_tests {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine as _;
     use nucleus_agent_card::{
-        sign_card, AgentCard, EnforcementRule, RuntimeGuaranteeProfile, SignedAgentCard,
+        sign_card, AgentCapabilities, AgentCard, AgentInterface, EnforcementRule, NucleusClaims,
+        RuntimeGuaranteeProfile, A2A_PROTOCOL_VERSION,
     };
     use ring::rand::SystemRandom;
     use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
@@ -908,11 +910,10 @@ mod agent_card_tests {
         }
     }
 
-    fn sample_card() -> AgentCard {
-        AgentCard {
+    fn sample_claims() -> NucleusClaims {
+        NucleusClaims {
             spiffe_id: "spiffe://prod.example.com/ns/agents/sa/coder".to_string(),
             did: "did:web:coder.prod.example.com".to_string(),
-            security_schemes: serde_json::json!({}),
             supported_envelope_schema_versions: vec!["1".to_string(), "2".to_string()],
             jwks_uri: None,
             trust_jwks: usable_jwks(),
@@ -928,8 +929,34 @@ mod agent_card_tests {
         }
     }
 
+    fn sample_card() -> AgentCard {
+        AgentCard {
+            name: "Coder Agent".to_string(),
+            description: "SDK verdict-core tests".to_string(),
+            supported_interfaces: vec![AgentInterface {
+                url: "https://coder.prod.example.com/a2a/v1".to_string(),
+                protocol_binding: "JSONRPC".to_string(),
+                tenant: None,
+                protocol_version: A2A_PROTOCOL_VERSION.to_string(),
+            }],
+            provider: None,
+            version: "1.0.0".to_string(),
+            documentation_url: None,
+            capabilities: AgentCapabilities::default(),
+            security_schemes: serde_json::Map::new(),
+            security_requirements: vec![],
+            default_input_modes: vec!["application/json".to_string()],
+            default_output_modes: vec!["application/json".to_string()],
+            skills: vec![],
+            signatures: vec![],
+            icon_url: None,
+        }
+        .with_nucleus_claims(&sample_claims())
+        .unwrap()
+    }
+
     fn signed_card_json(der: &[u8]) -> String {
-        let signed = sign_card(sample_card(), der).unwrap();
+        let signed = sign_card(sample_card(), der, "card-key-1").unwrap();
         serde_json::to_string(&signed).unwrap()
     }
 
@@ -963,9 +990,10 @@ mod agent_card_tests {
     #[test]
     fn card_without_profile_verifies_with_none_summary() {
         let (der, jwk_json) = p256_keypair();
-        let mut card = sample_card();
-        card.runtime_guarantees = None;
-        let signed = sign_card(card, &der).unwrap();
+        let mut claims = sample_claims();
+        claims.runtime_guarantees = None;
+        let card = sample_card().with_nucleus_claims(&claims).unwrap();
+        let signed = sign_card(card, &der, "card-key-1").unwrap();
         let json = serde_json::to_string(&signed).unwrap();
         match agent_card_verdict(&json, &jwk_json).expect("well-formed input") {
             CardVerdict::Verified {
@@ -978,9 +1006,11 @@ mod agent_card_tests {
     #[test]
     fn tampered_card_is_rejected() {
         let (der, jwk_json) = p256_keypair();
-        let mut signed: SignedAgentCard = serde_json::from_str(&signed_card_json(&der)).unwrap();
-        // Mutate the card AFTER signing — the detached JWS no longer matches.
-        signed.card.did = "did:web:attacker.example.com".to_string();
+        let mut signed: AgentCard = serde_json::from_str(&signed_card_json(&der)).unwrap();
+        // Mutate the claims AFTER signing — the detached JWS no longer matches.
+        let mut claims = signed.nucleus_claims().unwrap().unwrap();
+        claims.did = "did:web:attacker.example.com".to_string();
+        signed = signed.with_nucleus_claims(&claims).unwrap();
         let json = serde_json::to_string(&signed).unwrap();
         assert!(matches!(
             agent_card_verdict(&json, &jwk_json).expect("well-formed input"),
@@ -1003,10 +1033,7 @@ mod agent_card_tests {
     #[test]
     fn card_with_no_signatures_is_rejected() {
         let (_der, jwk_json) = p256_keypair();
-        let unsigned = SignedAgentCard {
-            card: sample_card(),
-            signatures: vec![],
-        };
+        let unsigned = sample_card(); // signatures: []
         let json = serde_json::to_string(&unsigned).unwrap();
         match agent_card_verdict(&json, &jwk_json).expect("well-formed input") {
             CardVerdict::Rejected { reason } => {
