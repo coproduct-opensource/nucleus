@@ -157,7 +157,8 @@ export type AgentCardVerdict =
  * A cryptographic rejection is returned as a value (branch on `outcome`);
  * throws only on malformed input (bad card JSON, bad JWK JSON).
  *
- * @param signedCard A `SignedAgentCard` — JSON string or parsed object.
+ * @param signedCard A signed A2A v1.0 `AgentCard` — JSON string or parsed
+ *   object (flat card; JWS signatures embedded in its `signatures` field).
  * @param resolvedJwk The out-of-band-resolved key — JWK JSON string or object.
  */
 export function verifyAgentCard(

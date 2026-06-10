@@ -11,7 +11,10 @@ use base64::Engine as _;
 use ring::rand::SystemRandom;
 use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
 
-use crate::card::{AgentCard, EnforcementRule, RuntimeGuaranteeProfile};
+use crate::card::{
+    AgentCapabilities, AgentCard, AgentInterface, EnforcementRule, NucleusClaims,
+    RuntimeGuaranteeProfile, A2A_PROTOCOL_VERSION,
+};
 use crate::envelope::{card_claims_from_projection, to_capability_projection, CardClaims};
 use crate::jwk::JsonWebKey;
 use crate::sign::sign_card;
@@ -35,9 +38,29 @@ fn p256_keypair() -> (Vec<u8>, JsonWebKey) {
 fn sample_card() -> AgentCard {
     let issuer = nucleus_lineage::LocalIssuer::random().unwrap();
     AgentCard {
+        name: "Coder Agent".to_string(),
+        description: "envelope end-to-end tests".to_string(),
+        supported_interfaces: vec![AgentInterface {
+            url: "https://coder.prod.example.com/a2a/v1".to_string(),
+            protocol_binding: "JSONRPC".to_string(),
+            tenant: None,
+            protocol_version: A2A_PROTOCOL_VERSION.to_string(),
+        }],
+        provider: None,
+        version: "1.0.0".to_string(),
+        documentation_url: None,
+        capabilities: AgentCapabilities::default(),
+        security_schemes: serde_json::Map::new(),
+        security_requirements: vec![],
+        default_input_modes: vec!["application/json".to_string()],
+        default_output_modes: vec!["application/json".to_string()],
+        skills: vec![],
+        signatures: vec![],
+        icon_url: None,
+    }
+    .with_nucleus_claims(&NucleusClaims {
         spiffe_id: "spiffe://prod.example.com/ns/agents/sa/coder".to_string(),
         did: "did:web:coder.prod.example.com".to_string(),
-        security_schemes: serde_json::json!({"bearer": {"type": "http"}}),
         supported_envelope_schema_versions: vec!["1".to_string()],
         jwks_uri: None,
         trust_jwks: serde_json::from_value(issuer.publish_jwks()).unwrap(),
@@ -52,7 +75,8 @@ fn sample_card() -> AgentCard {
             }],
             attestation_reference: None,
         }),
-    }
+    })
+    .unwrap()
 }
 
 fn session() -> Session {
@@ -71,7 +95,7 @@ fn session() -> Session {
 fn verified_card_travels_inside_a_signed_receipt_end_to_end() {
     // Discovery time: a real signed card, verified against the out-of-band key.
     let (der, pub_jwk) = p256_keypair();
-    let signed_card = sign_card(sample_card(), &der).unwrap();
+    let signed_card = sign_card(sample_card(), &der, "card-key-1").unwrap();
     let verified = verify_card(&signed_card, &pub_jwk).expect("freshly-signed card verifies");
     let expected = CardClaims::from(&verified);
 
@@ -98,7 +122,7 @@ fn verified_card_travels_inside_a_signed_receipt_end_to_end() {
         back.runtime_guarantees.as_ref().unwrap().enforcement_rules[0].name,
         "no_adversarial_to_outbound"
     );
-    // The advertised kids are exactly the card's trust_jwks kids.
+    // The advertised kids are exactly the claimed trust_jwks kids.
     let kids: Vec<String> = verified
         .advertised_jwks()
         .keys
@@ -114,18 +138,19 @@ fn verified_card_travels_inside_a_signed_receipt_end_to_end() {
 #[test]
 fn tampered_guarantee_inside_signed_envelope_fails_root_hash() {
     let (der, pub_jwk) = p256_keypair();
-    let signed_card = sign_card(sample_card(), &der).unwrap();
+    let signed_card = sign_card(sample_card(), &der, "card-key-1").unwrap();
     let verified = verify_card(&signed_card, &pub_jwk).unwrap();
 
     let sk = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
     let vk: [u8; 32] = sk.verifying_key().to_bytes();
     let mut receipt = Receipt::sign(session(), vec![to_capability_projection(&verified)], &sk);
 
-    // Rewrite the declared enforcement rule inside the signed body.
+    // Rewrite the declared enforcement rule inside the signed body. (The
+    // profile serializes in its A2A camelCase wire form.)
     let Projection::Capability(body) = &mut receipt.projections[0] else {
         panic!("envelope holds a capability projection");
     };
-    body["card"]["runtime_guarantees"]["enforcement_rules"][0]["name"] =
+    body["card"]["runtime_guarantees"]["enforcementRules"][0]["name"] =
         serde_json::json!("allow_everything");
 
     // The envelope check fails FIRST: the re-canonicalized bytes no longer

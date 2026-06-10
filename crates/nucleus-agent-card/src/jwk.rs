@@ -21,7 +21,7 @@ use p256::ecdsa::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 /// A JSON Web Key carrying the out-of-band-resolved public key a caller
-/// verifies a [`crate::SignedAgentCard`] against.
+/// verifies a signed [`crate::AgentCard`] against.
 ///
 /// Wire-compatible with `nucleus_identity::JsonWebKey` — same field names
 /// and optionality — but defined here so the verify path stays wasm-clean.
@@ -67,10 +67,11 @@ impl JsonWebKey {
 /// against a P-256 [`JsonWebKey`], returning the decoded payload bytes.
 ///
 /// Semantics mirror `nucleus_identity::did_crypto::jws_verify_es256`
-/// exactly (same checks, same order): 3-part shape, `ES256` in the header,
-/// EC/P-256 key type, uncompressed-point reconstruction from `x`/`y`,
-/// fixed-width (r||s) signature, ECDSA-P256-SHA256 over
-/// `header_b64.payload_b64`.
+/// (same checks, same order): 3-part shape, `alg: "ES256"` in the header
+/// (parsed as JSON here, so additional A2A §8.4.2 protected-header members
+/// like `typ`/`kid`/`jku` are accepted and ignored), EC/P-256 key type,
+/// uncompressed-point reconstruction from `x`/`y`, fixed-width (r||s)
+/// signature, ECDSA-P256-SHA256 over `header_b64.payload_b64`.
 pub(crate) fn jws_verify_es256(jws: &str, public_key: &JsonWebKey) -> Result<Vec<u8>, String> {
     // Split the compact JWS into its three parts.
     let parts: Vec<&str> = jws.splitn(3, '.').collect();
@@ -79,14 +80,17 @@ pub(crate) fn jws_verify_es256(jws: &str, public_key: &JsonWebKey) -> Result<Vec
     }
     let [header_b64, payload_b64, sig_b64] = [parts[0], parts[1], parts[2]];
 
-    // Validate the header declares ES256.
+    // Validate the header declares alg=ES256. Parsed as JSON (not a
+    // substring scan) so extra protected-header members — the A2A v1.0
+    // §8.4.2 `typ`/`kid`/`jku` — can never be confused for the algorithm.
     let header_bytes = URL_SAFE_NO_PAD
         .decode(header_b64)
         .map_err(|e| format!("invalid base64url header: {e}"))?;
-    let header_str = std::str::from_utf8(&header_bytes)
-        .map_err(|e| format!("header is not valid UTF-8: {e}"))?;
-    if !header_str.contains("\"ES256\"") {
-        return Err(format!("unsupported JWS algorithm: {header_str}"));
+    let header: serde_json::Value = serde_json::from_slice(&header_bytes)
+        .map_err(|e| format!("protected header is not valid JSON: {e}"))?;
+    match header.get("alg").and_then(serde_json::Value::as_str) {
+        Some("ES256") => {}
+        other => return Err(format!("unsupported JWS algorithm: {other:?}")),
     }
 
     // Reconstruct the public key from the JWK coordinates.

@@ -1,14 +1,21 @@
 # nucleus-agent-card
 
 Verify-before-you-act identity layer for nucleus agents — sign/verify an
-A2A-style signed Agent Card and derive a `TrustAnchor` for the bundle verifier.
+**A2A protocol v1.0** Agent Card and derive a `TrustAnchor` for the bundle
+verifier.
 
 [![docs.rs](https://img.shields.io/docsrs/nucleus-agent-card)](https://docs.rs/nucleus-agent-card)
 
-An `AgentCard` is the [A2A](https://a2a-protocol.org/)-style document an agent
-publishes to say **who** it is and which JWKS its provenance bundles are signed
-under. This crate signs (`sign_card`, feature `sign`) and verifies
-(`verify_card`) a `SignedAgentCard`, then derives a
+An `AgentCard` is the [A2A v1.0](https://a2a-protocol.org/) manifest an agent
+publishes to say **who** it is. Nucleus claims — SPIFFE/DID identity, envelope
+schema versions, and the JWKS its provenance bundles are signed under — travel
+inside the spec's extension mechanism (`capabilities.extensions[]`) as the
+registered extension `https://coproduct.one/a2a/ext/runtime-guarantees/v1`
+(`NucleusClaims`). This crate signs (`sign_card`, feature `sign`) and verifies
+(`verify_card`) cards per spec §8.4 — a detached RFC 7515 JWS over the RFC 8785
+(JCS) canonicalization of the card with its `signatures` field excluded,
+protected header `{alg, typ: "JOSE", kid}`, carried in the card's own
+`signatures` array — then derives a
 [`nucleus_envelope::TrustAnchor`](../nucleus-envelope) (`trust_anchor_from_card`)
 so the existing bundle verifier can decide whether to **act** on a bundle.
 
@@ -21,8 +28,10 @@ so the existing bundle verifier can decide whether to **act** on a bundle.
 - **Never trust a key embedded in the card.** `verify_card` reads its
   verification key *only* from the caller's out-of-band-resolved `resolved_key`
   argument (DID resolution, a pinned JWKS, an operator file). It does not read
-  any key — or `kid` — from the card or signature. The card's `jwks_uri` is a
-  *hint* for where to resolve the key, not the key itself.
+  any key — or the protected header's `kid`/`jku` — from the card or signature.
+  The claims' `jwks_uri` is a *hint* for where to resolve the key, not the key
+  itself. (A2A §8.4.3 permits resolving "from a trusted key store"; that is the
+  only mode implemented here.)
 - **This is the WHO-layer, not the WHAT-layer.** Verifying a card establishes
   identity and the claimed JWKS. It does **not** verify any payload or bundle —
   that's `nucleus_envelope::verify_bundle`'s job, anchored by the `TrustAnchor`
@@ -36,17 +45,19 @@ so the existing bundle verifier can decide whether to **act** on a bundle.
 
 ```rust,ignore
 // server side (feature = "sign"):
-let signed = sign_card(card, &pkcs8_der)?;
+let card   = base_card.with_nucleus_claims(&claims)?;
+let signed = sign_card(card, &pkcs8_der, "card-key-1")?;
 
 // recipient side (secret-free):
-let resolved = resolve_key_out_of_band(&signed.card.did)?; // YOUR job
+let resolved = resolve_key_out_of_band(did)?; // YOUR job
 let verified = verify_card(&signed, &resolved)?;
 let anchor   = trust_anchor_from_card(&verified);
 let report   = nucleus_envelope::verify_bundle(&bundle, &anchor)?; // ACT only if this succeeds
 ```
 
-Cards are canonicalized with JCS (`canonicalize`) before signing/verifying so the
-signature is over a deterministic byte representation.
+Cards are canonicalized with RFC 8785 JCS (`canonicalize`, `signatures`
+excluded per A2A §8.4.1) before signing/verifying so the signature is over a
+deterministic byte representation.
 
 ## Feature flags
 

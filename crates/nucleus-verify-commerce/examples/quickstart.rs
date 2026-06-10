@@ -17,7 +17,10 @@ use base64::Engine as _;
 use ring::rand::SystemRandom;
 use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
 
-use nucleus_agent_card::{sign_card, AgentCard, JsonWebKey};
+use nucleus_agent_card::{
+    sign_card, AgentCapabilities, AgentCard, AgentInterface, JsonWebKey, NucleusClaims,
+    A2A_PROTOCOL_VERSION,
+};
 use nucleus_envelope::{Bundle, TrustAnchor};
 use nucleus_lineage::{CallSpiffeId, Jwks, LocalIssuer};
 use nucleus_verify_commerce::{
@@ -41,16 +44,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let buyer_trust_jwks: Jwks = serde_json::from_value(LocalIssuer::random()?.publish_jwks())?;
+    // A2A v1.0 card; the nucleus claims travel in the registered extension.
     let buyer_card = AgentCard {
+        name: "Shopper Agent".to_string(),
+        description: "Buys summaries and verifies the receipts.".to_string(),
+        supported_interfaces: vec![AgentInterface {
+            url: "https://shopper.buyer.example.com/a2a/v1".to_string(),
+            protocol_binding: "JSONRPC".to_string(),
+            tenant: None,
+            protocol_version: A2A_PROTOCOL_VERSION.to_string(),
+        }],
+        provider: None,
+        version: "1.0.0".to_string(),
+        documentation_url: None,
+        capabilities: AgentCapabilities::default(),
+        security_schemes: serde_json::Map::new(),
+        security_requirements: vec![],
+        default_input_modes: vec!["application/json".to_string()],
+        default_output_modes: vec!["application/json".to_string()],
+        skills: vec![],
+        signatures: vec![],
+        icon_url: None,
+    }
+    .with_nucleus_claims(&NucleusClaims {
         spiffe_id: "spiffe://buyer.example.com/ns/agents/sa/shopper".to_string(),
         did: "did:web:shopper.buyer.example.com".to_string(),
-        security_schemes: serde_json::json!({}),
         supported_envelope_schema_versions: vec!["1".to_string()],
         jwks_uri: None,
         trust_jwks: buyer_trust_jwks,
         runtime_guarantees: None,
-    };
-    let signed_card = sign_card(buyer_card, pkcs8.as_ref())?;
+    })?;
+    let signed_card = sign_card(buyer_card, pkcs8.as_ref(), "buyer-card-key-1")?;
 
     // ── Seller side: signing identity + published JWKS (production: real signer)
     let seller_signer = LocalIssuer::random()?;

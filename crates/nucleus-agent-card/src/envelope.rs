@@ -5,7 +5,10 @@
 //! (`spiffe_id`, `did`), what it speaks
 //! (`supported_envelope_schema_versions`), which keys it claims sign its
 //! provenance (`trust_jwks` kids), and — the load-bearing part — its declared
-//! [`RuntimeGuaranteeProfile`](crate::RuntimeGuaranteeProfile). Putting those
+//! [`RuntimeGuaranteeProfile`](crate::RuntimeGuaranteeProfile). On the A2A
+//! v1.0 card those claims travel as the
+//! [`NucleusClaims`](crate::NucleusClaims) extension; here the verified
+//! subset is lifted into the receipt envelope. Putting those
 //! claims into [`Projection::Capability`] means the guarantees a counterparty
 //! checked at discovery time ride along, signed, inside every
 //! [`Receipt`](nucleus_receipt::Receipt) the agent later emits — the receipt's
@@ -14,8 +17,8 @@
 //! ## Verify before you project (type-enforced)
 //!
 //! [`to_capability_projection`] takes a [`VerifiedCard`] — the output of
-//! [`verify_card`](crate::verify_card) — and deliberately NOT a raw
-//! [`SignedAgentCard`](crate::SignedAgentCard). A raw signed card is an
+//! [`verify_card`](crate::verify_card) — and deliberately NOT a raw signed
+//! [`AgentCard`](crate::AgentCard). A raw signed card is an
 //! unverified blob: lifting it would let an agent embed claims nobody ever
 //! checked against an out-of-band key. Requiring the `VerifiedCard` witness
 //! makes "this card verified" a precondition the type system discharges —
@@ -77,7 +80,8 @@ pub struct CardClaims {
 
     /// The declared runtime IFC guarantee profile, if any — the discovery-time
     /// guarantee that now rides along with every receipt. Attestation, not
-    /// enforcement (see [`RuntimeGuaranteeProfile`]).
+    /// enforcement (see [`RuntimeGuaranteeProfile`]). Serializes in the
+    /// profile's A2A camelCase wire form (`profileVersion`, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_guarantees: Option<RuntimeGuaranteeProfile>,
 
@@ -91,13 +95,13 @@ pub struct CardClaims {
 impl From<&VerifiedCard> for CardClaims {
     fn from(verified: &VerifiedCard) -> Self {
         CardClaims {
-            spiffe_id: verified.card.spiffe_id.clone(),
-            did: verified.card.did.clone(),
+            spiffe_id: verified.claims.spiffe_id.clone(),
+            did: verified.claims.did.clone(),
             supported_envelope_schema_versions: verified
-                .card
+                .claims
                 .supported_envelope_schema_versions
                 .clone(),
-            runtime_guarantees: verified.card.runtime_guarantees.clone(),
+            runtime_guarantees: verified.claims.runtime_guarantees.clone(),
             advertised_jwks_kids: verified
                 .advertised_jwks()
                 .keys
@@ -185,7 +189,10 @@ pub fn card_claims_from_projection(projection: &Projection) -> Result<CardClaims
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::card::{AgentCard, EnforcementRule};
+    use crate::card::{
+        AgentCapabilities, AgentCard, AgentInterface, EnforcementRule, NucleusClaims,
+        A2A_PROTOCOL_VERSION,
+    };
 
     fn sample_profile() -> RuntimeGuaranteeProfile {
         RuntimeGuaranteeProfile {
@@ -201,11 +208,10 @@ mod tests {
         }
     }
 
-    fn sample_card() -> AgentCard {
-        AgentCard {
+    fn sample_claims() -> NucleusClaims {
+        NucleusClaims {
             spiffe_id: "spiffe://prod.example.com/ns/agents/sa/coder".to_string(),
             did: "did:web:coder.prod.example.com".to_string(),
-            security_schemes: serde_json::json!({"bearer": {"type": "http"}}),
             supported_envelope_schema_versions: vec!["1".to_string(), "2".to_string()],
             jwks_uri: None,
             trust_jwks: nucleus_lineage::Jwks {
@@ -224,12 +230,39 @@ mod tests {
         }
     }
 
-    /// In-crate test shortcut: `VerifiedCard`'s field is public within the
-    /// crate's API, but the END-TO-END test (sign_verify path, feature
+    fn sample_card() -> AgentCard {
+        AgentCard {
+            name: "Coder Agent".to_string(),
+            description: "lift/narrow tests".to_string(),
+            supported_interfaces: vec![AgentInterface {
+                url: "https://coder.prod.example.com/a2a/v1".to_string(),
+                protocol_binding: "JSONRPC".to_string(),
+                tenant: None,
+                protocol_version: A2A_PROTOCOL_VERSION.to_string(),
+            }],
+            provider: None,
+            version: "1.0.0".to_string(),
+            documentation_url: None,
+            capabilities: AgentCapabilities::default(),
+            security_schemes: serde_json::Map::new(),
+            security_requirements: vec![],
+            default_input_modes: vec!["application/json".to_string()],
+            default_output_modes: vec!["application/json".to_string()],
+            skills: vec![],
+            signatures: vec![],
+            icon_url: None,
+        }
+        .with_nucleus_claims(&sample_claims())
+        .unwrap()
+    }
+
+    /// In-crate test shortcut: `VerifiedCard`'s fields are public within
+    /// the crate's API, but the END-TO-END test (sign_verify path, feature
     /// `sign`) is the one that goes through `verify_card` for real.
     fn verified() -> VerifiedCard {
         VerifiedCard {
             card: sample_card(),
+            claims: sample_claims(),
         }
     }
 
@@ -269,7 +302,7 @@ mod tests {
     #[test]
     fn absent_profile_is_omitted_from_the_wire() {
         let mut v = verified();
-        v.card.runtime_guarantees = None;
+        v.claims.runtime_guarantees = None;
         let Projection::Capability(body) = to_capability_projection(&v) else {
             panic!("lift must produce a capability projection");
         };
