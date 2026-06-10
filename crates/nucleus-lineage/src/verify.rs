@@ -48,15 +48,15 @@ pub struct Jwks {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Jwk {
     pub kty: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crv: Option<String>,
     pub kid: String,
     /// Base64url-encoded public-key bytes (32 bytes for Ed25519).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub x: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alg: Option<String>,
-    #[serde(default, rename = "use")]
+    #[serde(default, rename = "use", skip_serializing_if = "Option::is_none")]
     pub use_: Option<String>,
     /// Optional validity-window start. If present, an edge signed before this
     /// instant is rejected for this key. Non-standard per RFC 7517 but
