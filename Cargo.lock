@@ -6965,8 +6965,10 @@ dependencies = [
 name = "nucleus-recompute"
 version = "1.0.0"
 dependencies = [
+ "ed25519-dalek 3.0.0-pre.7",
  "hex",
  "nucleus-econ-kernels",
+ "nucleus-receipt",
  "serde",
  "serde_json",
  "sha2 0.11.0",
