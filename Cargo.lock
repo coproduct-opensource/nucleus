@@ -8037,6 +8037,8 @@ name = "portcullis-core"
 version = "1.0.0"
 dependencies = [
  "c2pa",
+ "ck-policy",
+ "ck-types",
  "risc0-zkvm",
  "serde",
  "serde_json",
