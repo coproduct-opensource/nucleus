@@ -895,12 +895,18 @@ impl Kernel {
         if let portcullis_core::flow::FlowVerdict::Deny(reason) = flow_decision.verdict {
             let receipt_str = graph
                 .build_receipt_for(flow_decision.node_id, now)
-                .map(|mut r| {
-                    // Sign the receipt if a signing key is available
+                .map(|r| {
+                    // Sign the receipt if a signing key is available.
+                    // (Rebound inside the cfg block so the non-crypto
+                    // build has no unused `mut` under -D warnings.)
                     #[cfg(feature = "crypto")]
-                    if let Some(ref key) = self.signing_key {
-                        crate::receipt_sign::sign_receipt(&mut r, key);
-                    }
+                    let r = {
+                        let mut r = r;
+                        if let Some(ref key) = self.signing_key {
+                            crate::receipt_sign::sign_receipt(&mut r, key);
+                        }
+                        r
+                    };
                     r.display_chain()
                 });
             let pre_hash = self.effective.checksum();

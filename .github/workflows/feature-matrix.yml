@@ -58,5 +58,9 @@ jobs:
           # Must match [workspace.package] rust-version — the Kani
           # floor (cargo kani has no --ignore-rust-version escape).
           toolchain: "1.93"
+      # nucleus-verifier-service include_str!s the wasm-pack artifact
+      # (sdks/verifier-js/pkg/) that only the Tests job builds first;
+      # it is excluded here so the MSRV floor checks source, not
+      # generated-artifact presence.
       - name: Check workspace on the MSRV toolchain
-        run: cargo +1.93 check --workspace --all-features --locked
+        run: cargo +1.93 check --workspace --all-features --locked --exclude nucleus-verifier-service
