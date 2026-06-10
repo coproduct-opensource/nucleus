@@ -71,6 +71,9 @@ pub mod sign;
 #[cfg(all(test, feature = "sign"))]
 mod sign_verify_tests;
 
+#[cfg(all(test, feature = "sign"))]
+mod conformance_tests;
+
 #[cfg(all(test, feature = "sign", feature = "envelope"))]
 mod envelope_e2e_tests;
 

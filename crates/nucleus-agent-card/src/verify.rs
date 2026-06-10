@@ -73,9 +73,9 @@ impl VerifiedCard {
 ///
 /// # Errors
 ///
-/// Returns [`Error`] on: no signatures, signature/JWS verification
-/// failure, payload mismatch, missing/malformed nucleus extension, or
-/// empty/malformed `trust_jwks`.
+/// Returns [`Error`] on: no signatures, a protected header missing `kid`
+/// (§8.4.2), signature/JWS verification failure, payload mismatch,
+/// missing/malformed nucleus extension, or empty/malformed `trust_jwks`.
 pub fn verify_card(card: &AgentCard, resolved_key: &JsonWebKey) -> Result<VerifiedCard> {
     // 1) First signature. Multiple signatures are allowed on the wire
     //    (§8.4.3, key rotation), but the trust decision is made against the
@@ -86,6 +86,13 @@ pub fn verify_card(card: &AgentCard, resolved_key: &JsonWebKey) -> Result<Verifi
         .signatures
         .first()
         .ok_or(Error::Verify("card has no signatures".to_string()))?;
+
+    // 1b) §8.4.2 format conformance: the protected header MUST carry `kid`
+    //     (and `alg`, which jws_verify_es256 pins to ES256 below). We
+    //     REQUIRE kid's presence without ever using its value for key
+    //     selection — the verification key stays the caller's
+    //     out-of-band-resolved one.
+    require_kid(&sig.protected)?;
 
     // 2) Canonical payload (signatures excluded) + detached JWS segment.
     let jcs_bytes = canonicalize(card)?;
@@ -131,6 +138,26 @@ pub fn verify_card(card: &AgentCard, resolved_key: &JsonWebKey) -> Result<Verifi
         card: card.clone(),
         claims,
     })
+}
+
+/// §8.4.2: the JWS protected header MUST include `kid`. Presence-only —
+/// the value is never used to resolve a key (see the trust model note on
+/// [`verify_card`]).
+fn require_kid(protected_b64: &str) -> Result<()> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(protected_b64)
+        .map_err(|e| Error::Verify(format!("protected header is not valid base64url: {e}")))?;
+    let header: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|e| Error::Verify(format!("protected header is not valid JSON: {e}")))?;
+    match header.get("kid").and_then(serde_json::Value::as_str) {
+        Some(kid) if !kid.is_empty() => Ok(()),
+        Some(_) => Err(Error::Verify(
+            "protected header carries an empty kid (\u{a7}8.4.2 requires a key id)".to_string(),
+        )),
+        None => Err(Error::Verify(
+            "protected header is missing kid (\u{a7}8.4.2 requires it)".to_string(),
+        )),
+    }
 }
 
 /// Reject an empty or malformed advertised JWKS.
