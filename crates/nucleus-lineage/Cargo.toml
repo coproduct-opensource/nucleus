@@ -77,3 +77,12 @@ required-features = ["insecure-local-issuer"]
 
 [lints]
 workspace = true
+
+# wasm32 needs an explicit randomness source for Uuid::new_v4 (the
+# v4 feature alone does not compile on wasm32-unknown-unknown). The
+# `js` feature routes through wasm-bindgen/getrandom for wasm builds
+# ONLY — native builds are unchanged. This keeps the downstream
+# wasm-pure-crates gate green now that nucleus-externality (and via it
+# nucleus-econ-kernels) consume this crate.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { workspace = true, features = ["js"] }
