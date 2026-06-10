@@ -15,7 +15,7 @@ package «portcullisCore» where
 -- Aeneas standard library (provides Result monad, scalar types, etc.)
 -- Pinned to the same commit used to generate PortcullisCore.lean
 require aeneas from git
-  "https://github.com/AeneasVerif/aeneas.git" @ "2a12be13a5b29441f353bbcf00cbea3f864e68fb" / "backends" / "lean"
+  "https://github.com/AeneasVerif/aeneas.git" @ "5138c03bd39e870abe1ad3a572865cf8c15f43d6" / "backends" / "lean"
 
 -- Mathlib for HeytingAlgebra typeclass
 -- Version must be compatible with Aeneas's Lean toolchain (v4.30.0-rc2)
