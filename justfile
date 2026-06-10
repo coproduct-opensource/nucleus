@@ -133,3 +133,13 @@ test:
 check:
     cargo fmt --all -- --check
     cargo clippy --all-targets --all-features -- -D warnings
+
+# CI-faithful preflight: `check` plus the Feature Matrix gate, under the SAME
+# env CI uses (actions-rust-lang/setup-rust-toolchain exports
+# RUSTFLAGS=-D warnings by default — a local run without it misses promoted
+# warnings and only finds out in CI). Crate list mirrors
+# .github/workflows/feature-matrix.yml; keep the two in sync.
+preflight: check
+    RUSTFLAGS="-D warnings" cargo hack check --each-feature --no-dev-deps \
+        -p portcullis -p portcullis-core -p nucleus-lineage -p nucleus-tool-proxy \
+        -p nucleus-ifc -p nucleus-envelope -p nucleus-identity -p nucleus-creditworthiness

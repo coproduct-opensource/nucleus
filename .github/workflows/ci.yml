@@ -101,3 +101,4 @@ jobs:
           cargo fuzz run command_can_execute -- -max_total_time=30
           cargo fuzz run path_can_access -- -max_total_time=30
           cargo fuzz run permission_serde -- -max_total_time=30
+          cargo fuzz run workload_api_command -- -max_total_time=30

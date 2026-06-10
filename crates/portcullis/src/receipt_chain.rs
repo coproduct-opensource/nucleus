@@ -1370,4 +1370,204 @@ mod tests {
         // derivation_class should not be present when None
         assert!(receipts[0].get("derivation_class").is_none());
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Append-only / monotonic-prefix property tests (#427)
+    // ═══════════════════════════════════════════════════════════════════
+    //
+    // These assert the security invariant the chain exists to enforce: an
+    // append-only, hash-linked log where the chain after n appends is a
+    // strict PREFIX of the chain after every later append, every link binds
+    // `prev_hash`, and any rewrite / reorder / insertion / middle-deletion
+    // breaks `verify()`. Property tests (not examples) so the test FAILS for
+    // *any* counterexample to the isolation invariant, not just hand-picked
+    // shapes.
+    //
+    // NOTE: there is currently no Lean model of *this* hash-linked,
+    // tamper-evident log. The one Lean type named `ReceiptChain`
+    // (portcullis-core/lean/SemanticIFC.lean) is a different abstraction: a
+    // cons-list of *distillation* receipts carrying an `all_allowed` IFC
+    // soundness invariant — it has no `prev_hash`, no SHA-256 linkage and no
+    // prefix-immutability claim, so it says nothing about the append-only
+    // property proven here. The append-only/prefix invariant is therefore
+    // proven here at the executable level only.
+    // TODO(vkvm): author a Lean model structurally corresponding to
+    // `receipt_chain.rs` (hash-linked entries binding `prev_hash`) + an
+    // append_only/prefix theorem (`append l ⟹ l <+: l'`, plus link-soundness
+    // of `verify`) and wire it as a new `lean_lib` so the structural invariant
+    // is machine-checked in CI alongside the proptests below. This needs a
+    // Mathlib hash-injectivity assumption, which is why it is deferred.
+    mod append_only_props {
+        use crate::receipt_chain::{ReceiptChain, VerdictReceipt};
+        use portcullis_core::flow::{FlowDenyReason, FlowVerdict};
+        use portcullis_core::IFCLabel;
+        use proptest::prelude::*;
+
+        fn label(now: u64) -> IFCLabel {
+            IFCLabel::user_prompt(now)
+        }
+
+        fn arb_verdict() -> impl Strategy<Value = FlowVerdict> {
+            prop_oneof![
+                Just(FlowVerdict::Allow),
+                Just(FlowVerdict::Deny(FlowDenyReason::Exfiltration)),
+                Just(FlowVerdict::Deny(FlowDenyReason::AuthorityEscalation)),
+                Just(FlowVerdict::Deny(FlowDenyReason::IntegrityViolation)),
+            ]
+        }
+
+        /// Build a valid chain of `len` receipts with strictly increasing
+        /// timestamps. Every append must succeed by construction.
+        fn valid_chain(len: usize) -> ReceiptChain {
+            let mut chain = ReceiptChain::new();
+            for i in 0..len {
+                let ts = 1000 + i as u64;
+                let l = label(ts);
+                let verdict = if i % 2 == 0 {
+                    FlowVerdict::Allow
+                } else {
+                    FlowVerdict::Deny(FlowDenyReason::Exfiltration)
+                };
+                let r = VerdictReceipt::from_verdict(
+                    verdict,
+                    format!("op{i}"),
+                    "agent",
+                    l,
+                    l,
+                    vec![1, 2],
+                    ts,
+                    *chain.head_hash(),
+                );
+                chain.append(r).expect("valid append must succeed");
+            }
+            chain
+        }
+
+        proptest! {
+            /// Append-only: the chain after n appends is exactly the prefix of
+            /// the chain after every later append — committed entries are never
+            /// rewritten or reordered, each link binds `prev_hash`, and
+            /// `head_hash` advances to the newest receipt's hash.
+            #[test]
+            fn append_is_strict_prefix(
+                specs in proptest::collection::vec((arb_verdict(), "[a-z_]{1,10}"), 1..12)
+            ) {
+                let mut chain = ReceiptChain::new();
+                let mut snapshots: Vec<Vec<VerdictReceipt>> = Vec::new();
+                let mut prev_head = *chain.head_hash();
+
+                for (i, (verdict, op)) in specs.iter().enumerate() {
+                    let ts = 1000 + i as u64;
+                    let l = label(ts);
+                    let r = VerdictReceipt::from_verdict(
+                        *verdict,
+                        op.clone(),
+                        "agent",
+                        l,
+                        l,
+                        vec![1, 2],
+                        ts,
+                        prev_head,
+                    );
+                    prop_assert!(chain.append(r).is_ok());
+
+                    // length grows by exactly one
+                    prop_assert_eq!(chain.len(), i + 1);
+                    // the whole chain re-verifies after every append
+                    prop_assert!(chain.verify().is_ok());
+
+                    let last = chain.receipts().last().unwrap();
+                    // each link binds the prior head
+                    prop_assert_eq!(last.prev_hash, prev_head);
+                    // head_hash advances to this receipt's content hash
+                    prop_assert_eq!(chain.head_hash(), &last.receipt_hash);
+
+                    prev_head = *chain.head_hash();
+                    snapshots.push(chain.receipts().to_vec());
+                }
+
+                // Every earlier snapshot is a strict prefix of the final chain:
+                // no committed receipt was rewritten, reordered, or dropped.
+                let final_receipts = chain.receipts();
+                for (n, snap) in snapshots.iter().enumerate() {
+                    prop_assert_eq!(snap.as_slice(), &final_receipts[..n + 1]);
+                }
+            }
+
+            /// A tampered / reordered / inserted / middle-deleted entry must
+            /// break `verify()`. We mutate the private `receipts` vec directly
+            /// (this is a descendant module of `receipt_chain`) to simulate an
+            /// attacker rewriting a persisted log out from under the chain.
+            #[test]
+            fn middle_tamper_breaks_verify(
+                len in 3usize..9,
+                tamper in 0u8..6,
+                seed in any::<u64>(),
+            ) {
+                let mut chain = valid_chain(len);
+                prop_assert!(chain.verify().is_ok());
+
+                // a strictly-interior index: neither first nor last
+                let mid = 1 + (seed as usize % (len - 2));
+
+                match tamper {
+                    // content change without recomputing receipt_hash → InvalidHash
+                    0 => {
+                        chain.receipts[mid].operation =
+                            format!("{}-x", chain.receipts[mid].operation);
+                    }
+                    // rewrite the back-link → BrokenLink
+                    1 => chain.receipts[mid].prev_hash = [0xAB; 32],
+                    // corrupt the stored content hash → InvalidHash
+                    2 => chain.receipts[mid].receipt_hash = [0xCD; 32],
+                    // delete a middle entry → following link breaks
+                    3 => {
+                        chain.receipts.remove(mid);
+                    }
+                    // reorder two adjacent entries → link breaks
+                    4 => chain.receipts.swap(mid, mid - 1),
+                    // splice in a foreign (genesis-linked) entry → link breaks
+                    5 => {
+                        let foreign = chain.receipts[0].clone();
+                        chain.receipts.insert(mid, foreign);
+                    }
+                    _ => unreachable!(),
+                }
+
+                prop_assert!(
+                    chain.verify().is_err(),
+                    "tamper kind {} at index {} (len {}) must break verify",
+                    tamper,
+                    mid,
+                    len
+                );
+            }
+
+            /// Tail truncation yields a structurally-VALID prefix (`verify()`
+            /// passes) — so completeness against a dropped tail is detectable
+            /// only via an external commitment to `head_hash`, which this
+            /// asserts changes. This honestly documents that `verify()` alone
+            /// cannot catch a truncated tail; the `head_hash` commitment can.
+            #[test]
+            fn tail_truncation_is_valid_prefix_but_changes_head(
+                len in 2usize..9,
+                seed in any::<u64>(),
+            ) {
+                let full = valid_chain(len);
+                let full_head = *full.head_hash();
+
+                let cut = 1 + (seed as usize % (len - 1)); // 1 <= cut < len
+                let mut trunc = ReceiptChain::new();
+                for r in &full.receipts()[..cut] {
+                    trunc.append(r.clone()).expect("a prefix replays cleanly");
+                }
+
+                // a truncated prefix is internally valid …
+                prop_assert!(trunc.verify().is_ok());
+                prop_assert_eq!(trunc.receipts(), &full.receipts()[..cut]);
+                // … but its head differs, so a head_hash commitment detects it.
+                prop_assert_ne!(trunc.head_hash(), &full_head);
+            }
+        }
+    }
 }

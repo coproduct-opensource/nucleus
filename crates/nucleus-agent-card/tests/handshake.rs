@@ -18,9 +18,8 @@ use base64::Engine as _;
 use ring::rand::SystemRandom;
 use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
 
-use nucleus_agent_card::{sign_card, trust_anchor_from_card, verify_card, AgentCard};
+use nucleus_agent_card::{sign_card, trust_anchor_from_card, verify_card, AgentCard, JsonWebKey};
 use nucleus_envelope::{verify_bundle, Bundle, BundleBuilder};
-use nucleus_identity::JsonWebKey;
 use nucleus_lineage::{
     edge_content_hash, CallSpiffeId, EdgeKind, EdgeSigner, InMemorySink, Jwks, LineageEdge,
     LineageSink, LocalIssuer, Proof,

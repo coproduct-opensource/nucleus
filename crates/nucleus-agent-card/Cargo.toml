@@ -19,20 +19,41 @@ thiserror = { workspace = true }
 # RFC 8785 JSON Canonicalization Scheme. Pinned to the latest published
 # release (confirmed on crates.io 2026-06).
 serde_jcs = "0.2.0"
+# Pure-Rust ES256 (ECDSA P-256 + SHA-256) for the ALWAYS-ON verify path.
+# Chosen over ring so the verify closure compiles to wasm32-unknown-unknown
+# (the WASM verifier SDK consumes verify_card directly). Same version as the
+# rest of the workspace lock.
+p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 
-# Path deps. nucleus-identity supplies JsonWebKey + did_crypto::jws_*.
-# nucleus-lineage supplies the Jwks type the card advertises.
+# Path deps. nucleus-identity supplies did_crypto::jws_sign_es256 — SIGN
+# ONLY, optional, behind the `sign` feature (its ring/tokio closure is
+# native-only). nucleus-lineage supplies the Jwks type the card advertises.
 # nucleus-envelope supplies the TrustAnchor the verifier consumes.
-nucleus-identity = { path = "../nucleus-identity" }
+nucleus-identity = { path = "../nucleus-identity", optional = true }
 nucleus-lineage = { path = "../nucleus-lineage" }
 nucleus-envelope = { path = "../nucleus-envelope" }
+# `envelope` feature only: lift a VERIFIED card's claims into nucleus-receipt's
+# signed colimit envelope (`Projection::Capability`) and narrow them back out.
+# Optional so the default build keeps the dependency closure exactly as before
+# (no dalek/blake3 in the default closure). nucleus-receipt itself is
+# wasm-clean, so turning the feature on does not break wasm consumers of the
+# always-on verify path.
+nucleus-receipt = { path = "../nucleus-receipt", optional = true }
 
 [features]
 default = []
 # Server/dev only: the card-signing path. Pulls in nucleus-identity's
 # signing primitive. NEVER enable in a WASM / browser build — verify is
 # always available without it and is secret-free.
-sign = []
+sign = ["dep:nucleus-identity"]
+
+# Travel as a signed receipt: `to_capability_projection` /
+# `card_claims_from_projection` bridge VerifiedCard claims <->
+# nucleus-receipt's `Projection::Capability`, so a counterparty's
+# discovery-time guarantees (RuntimeGuaranteeProfile et al.) ride along,
+# signed, with every receipt the agent later emits. Only a VerifiedCard can
+# be lifted — verify-before-you-project is type-enforced. OFF by default.
+envelope = ["dep:nucleus-receipt"]
 
 # The `agent-sign` example calls sign_card, so it only builds with `sign`
 # (keeps default builds + CI free of the signing path).
@@ -46,6 +67,8 @@ required-features = ["sign"]
 nucleus-lineage = { path = "../nucleus-lineage", features = ["insecure-local-issuer"] }
 # P-256 keypair generation for the sign/verify unit + integration tests.
 ring = { workspace = true }
+# Fixed-key signing of the receipt envelope in the end-to-end + tamper tests.
+ed25519-dalek = { workspace = true }
 
 [lints]
 workspace = true

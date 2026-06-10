@@ -36,6 +36,13 @@ nucleus-witness-olog = { path = "../../crates/nucleus-witness-olog" }
 # whole receipt→recompute→credit-file→bond flywheel, in-browser. Default
 # features include the `recompute` mint bridge.
 nucleus-creditworthiness = { path = "../../crates/nucleus-creditworthiness" }
+# The colimit receipt envelope (Session + Projection[] + Ed25519/BLAKE3 over
+# RFC 8785 canonical bytes). verifyReceipt runs the SAME Receipt::verify the
+# rest of the stack runs — one verifier code path for every receipt kind.
+nucleus-receipt = { path = "../../crates/nucleus-receipt" }
+# Signed A2A Agent Card verification (verify-before-you-act). Default
+# features only — `sign` stays server-side; verify_card is secret-free.
+nucleus-agent-card = { path = "../../crates/nucleus-agent-card" }
 wasm-bindgen = "0.2"
 serde-wasm-bindgen = "0.6"
 serde = { version = "1", features = ["derive"] }
@@ -61,3 +68,17 @@ default = ["console_error_panic_hook"]
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
+# Test-only signing for receipt round-trips. Pinned to the single
+# workspace-wide dalek line so the test signer and the SDK verifier
+# share one ed25519 implementation.
+ed25519-dalek = "=3.0.0-pre.7"
+
+# Native-only test deps: minting+signing an Agent Card (the `sign` feature
+# pulls ring-backed nucleus-identity, which does NOT compile to wasm32 —
+# exactly why verification was made wasm-clean). ring generates the P-256
+# keypair. Neither may enter wasm test builds, hence the target gate.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+nucleus-agent-card = { path = "../../crates/nucleus-agent-card", features = ["sign"] }
+ring = "0.17"
+# base64url-encodes the generated key coordinates into the JWK.
+base64 = "0.22"

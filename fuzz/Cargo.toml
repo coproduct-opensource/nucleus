@@ -12,6 +12,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 serde_json = "1.0"
+arbitrary = { version = "1", features = ["derive"] }
 
 [dependencies.portcullis]
 path = "../crates/portcullis"
@@ -32,5 +33,14 @@ doc = false
 [[bin]]
 name = "permission_serde"
 path = "fuzz_targets/permission_serde.rs"
+test = false
+doc = false
+
+# Host-side Workload API vsock command parser — the trusted guest->host edge.
+# Pulls in crates/nucleus-node/src/workload_api_protocol.rs via `#[path]`; no
+# crate dependency needed because that module is std-only.
+[[bin]]
+name = "workload_api_command"
+path = "fuzz_targets/workload_api_command.rs"
 test = false
 doc = false

@@ -13,7 +13,7 @@ use crate::GradeReceipt;
 /// `mean_pass_permille` is `floor(1000 * exact_matched / exact_total)` computed
 /// over the non-quarantined receipts using a `u128` intermediate to avoid
 /// overflow, and is `0` when `exact_total == 0`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PortfolioSummary {
     pub submissions: usize,
     pub quarantined: usize,
@@ -61,5 +61,26 @@ pub fn summarize(receipts: &[GradeReceipt]) -> PortfolioSummary {
         exact_matched,
         exact_total,
         mean_pass_permille,
+    }
+}
+
+impl PortfolioSummary {
+    /// Combine two summaries as if both batches had been summarized together.
+    pub fn merge(&self, other: &PortfolioSummary) -> PortfolioSummary {
+        let exact_matched = self.exact_matched.saturating_add(other.exact_matched);
+        let exact_total = self.exact_total.saturating_add(other.exact_total);
+        let mean_pass_permille = if exact_total == 0 {
+            0
+        } else {
+            ((1000u128 * exact_matched as u128) / exact_total as u128) as u32
+        };
+        PortfolioSummary {
+            submissions: self.submissions.saturating_add(other.submissions),
+            quarantined: self.quarantined.saturating_add(other.quarantined),
+            load_bearing: self.load_bearing.saturating_add(other.load_bearing),
+            exact_matched,
+            exact_total,
+            mean_pass_permille,
+        }
     }
 }

@@ -6378,9 +6378,12 @@ name = "nucleus-agent-card"
 version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
+ "ed25519-dalek 3.0.0-pre.7",
  "nucleus-envelope",
  "nucleus-identity",
  "nucleus-lineage",
+ "nucleus-receipt",
+ "p256",
  "ring",
  "serde",
  "serde_jcs",
@@ -6623,6 +6626,7 @@ dependencies = [
  "ed25519-dalek 3.0.0-pre.7",
  "hex",
  "nucleus-econ-kernels",
+ "nucleus-lineage",
  "proptest",
  "serde",
  "serde_json",
@@ -6822,6 +6826,7 @@ dependencies = [
  "nucleus-spec",
  "oid-registry",
  "portcullis",
+ "proptest",
  "prost 0.14.3",
  "prost-types",
  "rand_core 0.6.4",
@@ -6946,11 +6951,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-receipt"
+version = "1.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "ed25519-dalek 3.0.0-pre.7",
+ "hex",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "nucleus-recompute"
 version = "1.0.0"
 dependencies = [
+ "ed25519-dalek 3.0.0-pre.7",
  "hex",
  "nucleus-econ-kernels",
+ "nucleus-receipt",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -7110,7 +7131,6 @@ dependencies = [
  "nucleus-creditworthiness",
  "nucleus-econ-kernels",
  "nucleus-envelope",
- "nucleus-identity",
  "nucleus-lineage",
  "nucleus-otel-bootstrap",
  "nucleus-recompute",
@@ -7139,7 +7159,6 @@ dependencies = [
  "base64 0.22.1",
  "nucleus-agent-card",
  "nucleus-envelope",
- "nucleus-identity",
  "nucleus-ifc",
  "nucleus-lineage",
  "portcullis-core",
@@ -8023,6 +8042,8 @@ name = "portcullis-core"
 version = "1.0.0"
 dependencies = [
  "c2pa",
+ "ck-policy",
+ "ck-types",
  "risc0-zkvm",
  "serde",
  "serde_json",
@@ -8037,6 +8058,7 @@ name = "portcullis-effects"
 version = "1.0.0"
 dependencies = [
  "portcullis-core",
+ "proptest",
  "regex",
  "shell-words",
  "tempfile",
@@ -9821,6 +9843,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6518fc26bced4d53678a22d6e423e9d8716377def84545fe328236e3af070e7f"
 
 [[package]]
+name = "ryu-js"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd29631678d6fb0903b69223673e122c32e9ae559d0960a38d574695ebc0ea15"
+
+[[package]]
 name = "rzup"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10107,7 +10135,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3a60f3fda61525e439ef6d67422118f11e986566997d9021c56867ad814a0aa"
 dependencies = [
- "ryu-js",
+ "ryu-js 0.2.2",
  "serde",
  "serde_json",
 ]
@@ -10124,6 +10152,17 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "serde_json_canonicalizer"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe52319a927259afbfa5180c5157cd8167edfd3e8c254f9558c7fef44c5649f2"
+dependencies = [
+ "ryu-js 1.0.2",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

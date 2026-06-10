@@ -489,16 +489,39 @@ impl NucleusRuntime {
         &self.allowed_write_paths
     }
 
+    /// Preflight unmediated access — discharge obligations for the escape hatch (#1248).
+    ///
+    /// Returns the [`DischargedBundle`] required by [`unmediated_effects`].
+    /// Because a raw bundle can perform **any** effect the policy permits —
+    /// including external egress — this discharges against the strictest sink
+    /// ([`SinkClass::HTTPEgress`], the canonical exfiltration vector with a
+    /// minimum integrity of `Untrusted`). If the session has observed
+    /// adversarial-integrity data (e.g. web content), discharge **fails**, so a
+    /// tainted session cannot obtain raw effects.
+    pub fn preflight_unmediated(&self) -> Result<DischargedBundle, RuntimeError> {
+        let term = self.build_term(Operation::WebFetch, SinkClass::HTTPEgress);
+        self.discharge(&term)
+    }
+
     /// Raw policy-enforced effect bundle — **advanced use only** (#1248).
     ///
-    /// Returns an effect bundle that checks **capability levels** but does
-    /// **NOT** run obligation discharge, path allowlist checks, or FlowTracker
-    /// updates. For the full safety pipeline, use the mediated methods instead:
-    /// [`read_file`], [`write_file`], [`fetch_url`], [`run_shell`], etc.
+    /// The escape hatch checks **capability levels** on every call. Previously
+    /// it returned a raw bundle with no obligation discharge and no FlowTracker
+    /// update — a mediation hole. That hole is now closed: obtaining the bundle
+    /// requires
     ///
-    /// This escape hatch exists for performance-critical paths or callers
-    /// that manage discharge and IFC tracking externally. Most code should
-    /// use the mediated methods.
+    /// 1. an [`UnmediatedAccess`] token (builder opt-in, auditable),
+    /// 2. a [`DischargedBundle`] from [`preflight_unmediated`] — proof that all
+    ///    five policy obligations passed for the strictest egress sink, and
+    /// 3. a FlowTracker observation: the grant is recorded as an
+    ///    [`NodeKind::OutboundAction`] node, so the IFC graph reflects that an
+    ///    unmediated bundle was issued (`flow_tracker().node_count()` advances).
+    ///
+    /// Operations performed *through* the returned bundle are the caller's
+    /// responsibility to track — that is the inherent contract of an escape
+    /// hatch — but the bundle can no longer be acquired without discharging
+    /// obligations and leaving an IFC trail. Most code should use the mediated
+    /// methods ([`read_file`], [`write_file`], [`fetch_url`], [`run_shell`]).
     ///
     /// ```rust
     /// use portcullis_effects::runtime::{NucleusRuntime, PolicyProfile};
@@ -507,17 +530,35 @@ impl NucleusRuntime {
     /// let (builder, token) = NucleusRuntime::builder()
     ///     .profile(PolicyProfile::Codegen)
     ///     .allow_unmediated_access();
-    /// let rt = builder.build();
+    /// let mut rt = builder.build();
     ///
-    /// // Prefer: rt.read_file(path) — runs discharge + IFC
-    /// // Only use this when you manage discharge externally:
-    /// let fx = rt.unmediated_effects(&token);
+    /// // Prefer: rt.read_file(path) — runs discharge + IFC.
+    /// // The escape hatch now requires a discharged proof and records the grant:
+    /// let proof = rt.preflight_unmediated().unwrap();
+    /// let fx = rt.unmediated_effects(&token, proof).unwrap();
+    /// assert_eq!(rt.flow_tracker().node_count(), 1); // grant recorded
     /// ```
+    ///
+    // TODO(vkvm): per-operation IFC tracking *inside* the returned raw bundle is
+    // not possible without re-wrapping every effect call — that is exactly what
+    // the mediated methods do. The escape hatch records only the grant; callers
+    // who need per-effect flow tracking must use the mediated path.
     pub fn unmediated_effects(
-        &self,
+        &mut self,
         _token: &UnmediatedAccess,
-    ) -> impl FileEffect + WebEffect + ShellEffect + GitEffect + AgentSpawnEffect + '_ {
-        production_effects(self.policy.clone()) // unmediated: fresh instance for isolation
+        _proof: DischargedBundle,
+    ) -> Result<
+        impl FileEffect + WebEffect + ShellEffect + GitEffect + AgentSpawnEffect,
+        RuntimeError,
+    > {
+        // FlowTracker update: record the unmediated grant in the causal DAG.
+        // Without this observe(), node_count would not advance and the grant
+        // would be invisible to audit — the hole this fix closes.
+        self.flow_tracker
+            .observe(NodeKind::OutboundAction)
+            .map_err(|e| RuntimeError::Io(e.to_string()))?;
+        // unmediated: fresh instance for isolation.
+        Ok(production_effects(self.policy.clone()))
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -1239,12 +1280,100 @@ mod tests {
         let (builder, token) = NucleusRuntime::builder()
             .profile(PolicyProfile::ReadOnly)
             .allow_unmediated_access();
-        let rt = builder.build();
-        let fx = rt.unmediated_effects(&token);
+        let mut rt = builder.build();
+        let proof = rt.preflight_unmediated().unwrap();
+        let fx = rt.unmediated_effects(&token, proof).unwrap();
 
-        // Read should be policy-allowed (may fail on I/O, but not on policy)
+        // Write should be policy-denied (capability levels still enforced)
         let result = fx.write(std::path::Path::new("/tmp/test"), b"data");
         assert!(result.is_err()); // WriteFiles is Never in ReadOnly
+    }
+
+    // ── Mediation hole closed: unmediated_effects discharges + flow-tracks (#1248)
+
+    /// The escape hatch must record the grant in the FlowTracker. Before #1248
+    /// the bundle was handed out with no IFC trace — `node_count` stayed 0.
+    #[test]
+    fn unmediated_effects_advances_flow_tracker() {
+        let (builder, token) = NucleusRuntime::builder()
+            .profile(PolicyProfile::Codegen)
+            .allow_unmediated_access();
+        let mut rt = builder.build();
+        assert_eq!(rt.flow_tracker().node_count(), 0);
+
+        let proof = rt.preflight_unmediated().unwrap();
+        let _fx = rt.unmediated_effects(&token, proof).unwrap();
+
+        // The grant left an IFC trail — the hole ("no FlowTracker update") is closed.
+        assert_eq!(
+            rt.flow_tracker().node_count(),
+            1,
+            "unmediated_effects must record the grant in the FlowTracker"
+        );
+    }
+
+    /// A session tainted with adversarial data cannot obtain raw effects: the
+    /// discharge (against the strictest egress sink) fails, so no proof exists
+    /// to pass to `unmediated_effects`. This proves obligations are *actually*
+    /// evaluated, not rubber-stamped.
+    #[test]
+    fn unmediated_preflight_denies_adversarial_session() {
+        let mut rt = NucleusRuntime::builder()
+            .profile(PolicyProfile::Permissive)
+            .build();
+        // Observe adversarial web content — raises session taint.
+        rt.flow_tracker_mut().observe(NodeKind::WebContent).unwrap();
+
+        let result = rt.preflight_unmediated();
+        assert!(
+            matches!(result, Err(RuntimeError::Denied { .. })),
+            "adversarial session must be denied raw effects, got {result:?}"
+        );
+    }
+
+    proptest::proptest! {
+        /// Property (the isolation invariant #1248): for **every** profile, the
+        /// only way to obtain unmediated effects is through the discharging path,
+        /// and doing so *always* advances the FlowTracker by exactly one node.
+        /// An undischarged obligation after `unmediated_effects()` is therefore
+        /// impossible — the `DischargedBundle` argument is required at the type
+        /// level (no bundle = compile error) and the observe() is unconditional.
+        ///
+        /// If a future refactor drops the `observe()` call, this test fails
+        /// (node_count stays 0). If it drops the discharge, `preflight_unmediated`
+        /// would no longer gate the proof and the type requirement would vanish.
+        #[test]
+        fn prop_unmediated_effects_always_discharges_and_flow_tracks(
+            profile_idx in 0usize..6,
+        ) {
+            let profile = [
+                PolicyProfile::ReadOnly,
+                PolicyProfile::Research,
+                PolicyProfile::Codegen,
+                PolicyProfile::Review,
+                PolicyProfile::Strict,
+                PolicyProfile::Permissive,
+            ][profile_idx];
+
+            let (builder, token) = NucleusRuntime::builder()
+                .profile(profile)
+                .allow_unmediated_access();
+            let mut rt = builder.build();
+
+            let before = rt.flow_tracker().node_count();
+            // Fresh (untainted) session → discharge succeeds for every profile.
+            let proof = rt.preflight_unmediated().expect("fresh session discharges");
+            // `proof: DischargedBundle` is consumed here — there is no path to
+            // the raw bundle that skips the discharged proof.
+            let _fx = rt.unmediated_effects(&token, proof).expect("grant succeeds");
+            let after = rt.flow_tracker().node_count();
+
+            proptest::prop_assert_eq!(
+                after,
+                before + 1,
+                "every unmediated grant must advance the FlowTracker exactly once"
+            );
+        }
     }
 
     // ── Debug / Display ─────────────────────────────────────────────────
