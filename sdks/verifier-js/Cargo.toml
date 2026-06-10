@@ -36,6 +36,10 @@ nucleus-witness-olog = { path = "../../crates/nucleus-witness-olog" }
 # whole receipt→recompute→credit-file→bond flywheel, in-browser. Default
 # features include the `recompute` mint bridge.
 nucleus-creditworthiness = { path = "../../crates/nucleus-creditworthiness" }
+# The colimit receipt envelope (Session + Projection[] + Ed25519/BLAKE3 over
+# RFC 8785 canonical bytes). verifyReceipt runs the SAME Receipt::verify the
+# rest of the stack runs — one verifier code path for every receipt kind.
+nucleus-receipt = { path = "../../crates/nucleus-receipt" }
 wasm-bindgen = "0.2"
 serde-wasm-bindgen = "0.6"
 serde = { version = "1", features = ["derive"] }
@@ -61,3 +65,7 @@ default = ["console_error_panic_hook"]
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
+# Test-only signing for receipt round-trips. Pinned to the single
+# workspace-wide dalek line so the test signer and the SDK verifier
+# share one ed25519 implementation.
+ed25519-dalek = "=3.0.0-pre.7"

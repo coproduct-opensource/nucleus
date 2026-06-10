@@ -1,0 +1,29 @@
+{
+  "_generated_by": "nucleus-receipt Receipt::sign with SigningKey::from_bytes([7u8; 32]) — a TEST key; the same deterministic envelope the crate's own doc example signs",
+  "receipt": {
+    "projections": [
+      {
+        "body": {
+          "sub": "spiffe://test/agent-x"
+        },
+        "kind": "identity"
+      },
+      {
+        "body": {
+          "price_micro_usd": 1250000
+        },
+        "kind": "economic"
+      }
+    ],
+    "root_hash_hex": "e6f9f04a975afd938ec043058f049b027268e666725fb88fdfec647a1916804a",
+    "session": {
+      "issued_at_micros": 1717000000000000,
+      "issuer_kid": "test-kid",
+      "parent_chain": [],
+      "session_id": "spiffe://test/agent-x"
+    },
+    "signature_b64": "sjWkPAWbo4QoiqasWEpeyZZKNXVSpbNIBpg8FmCxeeogEHROAMqct5emWHsFSq8/k6m2s+2vp0huVq3m64BhCQ==",
+    "version": 1
+  },
+  "verifying_key_hex": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+}

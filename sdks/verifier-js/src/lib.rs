@@ -172,6 +172,102 @@ pub fn sdk_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+// ── COLIMIT RECEIPT: verify the nucleus-receipt envelope ──────────────────────
+//
+// `verifyBundle` covers the lineage envelope; this covers the OTHER signed
+// artifact — the colimit receipt (`nucleus-receipt`: Session + Projection[]
+// signed Ed25519 over BLAKE3 of the RFC 8785 canonical bytes). The SDK runs the
+// EXACT `Receipt::verify` everything upstream runs, so there is one verifier
+// code path for every receipt kind: a receipt signed by any nucleus binary
+// verifies byte-for-byte identically in the caller's browser/Node process.
+
+/// Wire shape returned by `verifyReceipt`. A *structured verdict*: a
+/// cryptographic rejection is an ordinary value the caller branches on
+/// (`outcome`), not a thrown exception — only malformed *inputs* throw.
+#[derive(Debug, Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+enum ReceiptVerdict {
+    /// Signature + root hash verified against the supplied key.
+    Verified {
+        version: u32,
+        session_id: String,
+        issuer_kid: String,
+        /// Wire `kind` of every projection the signature covers, in order.
+        projection_kinds: Vec<&'static str>,
+        /// BLAKE3 of the canonical signing bytes (independently recomputed).
+        root_hash_hex: String,
+    },
+    /// The envelope content does not hash to its claimed `root_hash_hex` —
+    /// the session or a projection was tampered after signing.
+    RootHashMismatch { expected: String, actual: String },
+    /// Content is self-consistent but the Ed25519 signature does not verify
+    /// under the supplied key — wrong issuer key or forged signature.
+    SignatureMismatch { reason: String },
+}
+
+/// Pure core behind `verifyReceipt` — no wasm types, so native `cargo test`
+/// exercises the exact logic the wasm export ships.
+fn receipt_verdict(
+    receipt_json: &str,
+    verifying_key_bytes: &[u8],
+) -> Result<ReceiptVerdict, String> {
+    let receipt: nucleus_receipt::Receipt =
+        serde_json::from_str(receipt_json).map_err(|e| format!("receipt JSON: {e}"))?;
+    let key: [u8; 32] = verifying_key_bytes.try_into().map_err(|_| {
+        format!(
+            "verifying key must be 32 bytes, got {}",
+            verifying_key_bytes.len()
+        )
+    })?;
+    match receipt.verify(&key) {
+        Ok(()) => Ok(ReceiptVerdict::Verified {
+            version: receipt.version,
+            session_id: receipt.session.session_id.clone(),
+            issuer_kid: receipt.session.issuer_kid.clone(),
+            projection_kinds: receipt.projections.iter().map(|p| p.kind()).collect(),
+            root_hash_hex: receipt.root_hash_hex.clone(),
+        }),
+        Err(nucleus_receipt::ReceiptError::RootHashMismatch { expected, actual }) => {
+            Ok(ReceiptVerdict::RootHashMismatch { expected, actual })
+        }
+        Err(nucleus_receipt::ReceiptError::SignatureMismatch(reason)) => {
+            Ok(ReceiptVerdict::SignatureMismatch { reason })
+        }
+        // InvalidKey / InvalidSignatureEncoding (+ any future variant of the
+        // non_exhaustive error): structurally unusable input → input error.
+        Err(other) => Err(other.to_string()),
+    }
+}
+
+/// Verify a **colimit receipt** (`nucleus-receipt` envelope) against the
+/// issuer's 32-byte Ed25519 verifying key. Runs the SAME `Receipt::verify`
+/// every upstream signer/verifier runs: re-canonicalizes (RFC 8785),
+/// recomputes the BLAKE3 root hash, and re-verifies the signature — in the
+/// caller's process, trusting no server.
+///
+/// # Arguments
+/// * `receipt_json` — a `Receipt` serialized as JSON
+///   (`{version, session, projections, root_hash_hex, signature_b64}`).
+/// * `verifying_key_bytes` — the issuer's raw 32-byte Ed25519 public key
+///   (as found in the issuer's JWKS `x` field, decoded).
+///
+/// # Returns
+/// A structured verdict: `{ outcome: "verified", ... }`,
+/// `{ outcome: "root_hash_mismatch", expected, actual }` (content tampered
+/// after signing), or `{ outcome: "signature_mismatch", reason }` (wrong key
+/// or forged signature). Throws only on malformed input (bad JSON, wrong key
+/// length, undecodable signature encoding).
+#[wasm_bindgen(js_name = verifyReceipt)]
+pub fn verify_receipt_js(
+    receipt_json: &str,
+    verifying_key_bytes: &[u8],
+) -> Result<JsValue, JsError> {
+    set_panic_hook();
+    let verdict =
+        receipt_verdict(receipt_json, verifying_key_bytes).map_err(|e| JsError::new(&e))?;
+    serde_wasm_bindgen::to_value(&verdict).map_err(|e| JsError::new(&e.to_string()))
+}
+
 // ── RECOMPUTE: re-derive the IFC verdict, don't just trust the signature ──────
 //
 // `verifyBundle` proves a receipt was *signed*; `recomputeVerdict` proves the
@@ -535,4 +631,109 @@ pub fn required_bond_from_receipts_js(
             .required_bond(max_defection_gain_micro)
             .0,
     )
+}
+
+// ── Native tests for the receipt-verdict core ─────────────────────────────────
+// The crate is also an rlib, so the wasm-free `receipt_verdict` core runs under
+// plain `cargo test` on the host — sign with the real `nucleus-receipt` crate,
+// verify through the SDK path. (The JsValue boundary is pinned separately by
+// tests/web.rs + the Node tests against the built pkg.)
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+    use nucleus_receipt::{Projection, Receipt, Session};
+
+    fn signing_key() -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[7u8; 32])
+    }
+
+    fn signed_receipt() -> Receipt {
+        let session = Session {
+            session_id: "spiffe://test/agent-x".into(),
+            issuer_kid: "test-kid".into(),
+            issued_at_micros: 1_717_000_000_000_000,
+            parent_chain: vec![],
+        };
+        let projections = vec![
+            Projection::Identity(serde_json::json!({"sub": "spiffe://test/agent-x"})),
+            Projection::Economic(serde_json::json!({"price_micro_usd": 1_250_000})),
+        ];
+        Receipt::sign(session, projections, &signing_key())
+    }
+
+    #[test]
+    fn round_trip_signed_receipt_is_verified() {
+        let receipt = signed_receipt();
+        let vk = signing_key().verifying_key().to_bytes();
+        let json = serde_json::to_string(&receipt).unwrap();
+        match receipt_verdict(&json, &vk).expect("well-formed input") {
+            ReceiptVerdict::Verified {
+                version,
+                session_id,
+                issuer_kid,
+                projection_kinds,
+                root_hash_hex,
+            } => {
+                assert_eq!(version, nucleus_receipt::RECEIPT_VERSION);
+                assert_eq!(session_id, "spiffe://test/agent-x");
+                assert_eq!(issuer_kid, "test-kid");
+                assert_eq!(projection_kinds, vec!["identity", "economic"]);
+                assert_eq!(root_hash_hex, receipt.root_hash_hex);
+            }
+            other => panic!("expected Verified, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tampered_projection_is_root_hash_mismatch() {
+        let mut receipt = signed_receipt();
+        // Inflate the claimed price after signing — the classic tamper.
+        receipt.projections[1] =
+            Projection::Economic(serde_json::json!({"price_micro_usd": 9_999_999}));
+        let vk = signing_key().verifying_key().to_bytes();
+        let json = serde_json::to_string(&receipt).unwrap();
+        assert!(matches!(
+            receipt_verdict(&json, &vk).expect("well-formed input"),
+            ReceiptVerdict::RootHashMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn wrong_key_is_signature_mismatch() {
+        let receipt = signed_receipt();
+        let wrong_vk = ed25519_dalek::SigningKey::from_bytes(&[8u8; 32])
+            .verifying_key()
+            .to_bytes();
+        let json = serde_json::to_string(&receipt).unwrap();
+        assert!(matches!(
+            receipt_verdict(&json, &wrong_vk).expect("well-formed input"),
+            ReceiptVerdict::SignatureMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn malformed_json_is_a_clean_input_error() {
+        let vk = signing_key().verifying_key().to_bytes();
+        let err = receipt_verdict("not valid json", &vk).unwrap_err();
+        assert!(err.starts_with("receipt JSON:"), "got: {err}");
+    }
+
+    #[test]
+    fn wrong_key_length_is_a_clean_input_error() {
+        let receipt = signed_receipt();
+        let json = serde_json::to_string(&receipt).unwrap();
+        let err = receipt_verdict(&json, &[0u8; 31]).unwrap_err();
+        assert!(err.contains("32 bytes"), "got: {err}");
+        let err = receipt_verdict(&json, &[0u8; 33]).unwrap_err();
+        assert!(err.contains("32 bytes"), "got: {err}");
+    }
+
+    #[test]
+    fn undecodable_signature_encoding_is_an_input_error_not_a_verdict() {
+        let mut receipt = signed_receipt();
+        receipt.signature_b64 = "%%% not base64 %%%".into();
+        let vk = signing_key().verifying_key().to_bytes();
+        let json = serde_json::to_string(&receipt).unwrap();
+        assert!(receipt_verdict(&json, &vk).is_err());
+    }
 }

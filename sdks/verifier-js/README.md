@@ -44,6 +44,34 @@ can never drift from enforcement. Fails closed on an unknown input token.
 **Scope (honest):** model-level over the **declared** inputs (coverage-limited,
 per-call) — the same boundary as the gate itself.
 
+### `verifyReceipt()` — the colimit receipt envelope
+
+`verify()` covers the lineage **bundle**; `verifyReceipt()` covers the other
+signed artifact — the **colimit receipt** (`nucleus-receipt`: a `Session` +
+its `Projection[]`, Ed25519-signed over the BLAKE3 hash of the RFC 8785
+canonical bytes). The WASM runs the *same* `Receipt::verify` every upstream
+signer and verifier runs, so there is **one verifier code path for every
+receipt kind**: a receipt signed by any nucleus binary verifies
+byte-for-byte identically in your process.
+
+```ts
+import { verifyReceipt } from "@coproduct/verify";
+
+const v = await verifyReceipt(receipt, issuerVerifyingKeyHex); // hex or Uint8Array
+switch (v.outcome) {
+  case "verified":            /* v.session_id, v.projection_kinds, v.root_hash_hex */ break;
+  case "root_hash_mismatch":  /* content tampered AFTER signing */ break;
+  case "signature_mismatch":  /* wrong issuer key or forged signature */ break;
+}
+```
+
+A cryptographic rejection is a **value** you branch on — and it tells you
+*which* property failed: `root_hash_mismatch` (the session or a projection was
+altered after signing) vs `signature_mismatch` (intact content, wrong/forged
+key). Only malformed *input* throws (bad JSON, wrong key length, a key that is
+not a curve point). The verifying key is yours to pin — typically the issuer's
+JWKS `x` field, decoded.
+
 ### What it checks
 
 A receipt is a portable **bundle** of an agent's execution lineage. `verify()`
