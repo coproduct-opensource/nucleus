@@ -73,6 +73,49 @@ export function verifierVersion(): Promise<string>;
 /** Envelope-schema version this build can verify. Auto-inits. */
 export function supportedSchemaVersion(): Promise<number>;
 
+// ── Colimit receipt (nucleus-receipt envelope) ─────────────────────────────────
+
+/** Structured verdict from {@link verifyReceipt} — mirrors the Rust `ReceiptVerdict`. */
+export type ReceiptVerdict =
+  | {
+      outcome: "verified";
+      version: number;
+      session_id: string;
+      issuer_kid: string;
+      /** Wire `kind` of every projection the signature covers, in order. */
+      projection_kinds: string[];
+      /** BLAKE3 of the canonical signing bytes (independently recomputed). */
+      root_hash_hex: string;
+    }
+  | {
+      /** Content tampered after signing — does not hash to `root_hash_hex`. */
+      outcome: "root_hash_mismatch";
+      expected: string;
+      actual: string;
+    }
+  | {
+      /** Content self-consistent, but the signature fails under this key. */
+      outcome: "signature_mismatch";
+      reason: string;
+    };
+
+/**
+ * Verify a colimit receipt (`nucleus-receipt`: Session + Projection[] signed
+ * Ed25519 over BLAKE3 of the RFC 8785 canonical bytes) against the issuer's
+ * 32-byte verifying key. Runs the exact upstream `Receipt::verify` — one
+ * verifier code path for every receipt kind, no server trust.
+ *
+ * A cryptographic rejection is returned as a value (branch on `outcome`);
+ * throws only on malformed input (bad JSON, wrong key length).
+ *
+ * @param receipt A `Receipt` — JSON string or parsed object.
+ * @param verifyingKey The issuer's raw 32-byte Ed25519 public key — hex or bytes.
+ */
+export function verifyReceipt(
+  receipt: string | object,
+  verifyingKey: string | Uint8Array,
+): Promise<ReceiptVerdict>;
+
 /** The recomputed IFC verdict — mirrors the Rust `RecomputeReport`. */
 export interface RecomputeReport {
   /** Whether the action is permitted by the re-derived decision. */

@@ -231,6 +231,63 @@ export async function supportedSchemaVersion() {
   return mod.supportedEnvelopeSchemaVersion();
 }
 
+// ── COLIMIT RECEIPT: verify the nucleus-receipt envelope ──────────────────────
+// `verify()` covers the lineage bundle; `verifyReceipt()` covers the OTHER
+// signed artifact — the colimit receipt (Session + Projection[] signed Ed25519
+// over BLAKE3 of the RFC 8785 canonical bytes). The WASM runs the SAME
+// `Receipt::verify` everything upstream runs: one verifier code path for every
+// receipt kind, in your process, trusting no server.
+
+/**
+ * Decode a hex string into bytes for the 32-byte Ed25519 key input.
+ * @param {string} hex
+ * @returns {Uint8Array}
+ */
+function hexToBytes(hex) {
+  const clean = hex.trim();
+  if (clean.length % 2 !== 0 || /[^0-9a-fA-F]/.test(clean)) {
+    throw new VerifyError("INPUT", `verifying key hex is malformed: "${hex}"`);
+  }
+  const out = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(clean.slice(2 * i, 2 * i + 2), 16);
+  }
+  return out;
+}
+
+/**
+ * Verify a colimit receipt (`nucleus-receipt` envelope) against the issuer's
+ * 32-byte Ed25519 verifying key. Re-canonicalizes (RFC 8785), recomputes the
+ * BLAKE3 root hash, and re-verifies the signature — the exact upstream
+ * `Receipt::verify`, compiled to this WASM.
+ *
+ * Returns a structured verdict the caller branches on: a cryptographic
+ * rejection is a VALUE (`outcome`), distinguishing content tampered after
+ * signing (`root_hash_mismatch`) from a wrong/forged key (`signature_mismatch`).
+ * Throws only on malformed input (bad JSON, wrong key length).
+ *
+ * @param {string | object} receipt
+ *   A `Receipt` — JSON string or parsed object
+ *   (`{version, session, projections, root_hash_hex, signature_b64}`).
+ * @param {string | Uint8Array} verifyingKey
+ *   The issuer's raw 32-byte Ed25519 public key — hex string or bytes.
+ * @returns {Promise<
+ *   | { outcome: "verified", version: number, session_id: string,
+ *       issuer_kid: string, projection_kinds: string[], root_hash_hex: string }
+ *   | { outcome: "root_hash_mismatch", expected: string, actual: string }
+ *   | { outcome: "signature_mismatch", reason: string }
+ * >}
+ */
+export async function verifyReceipt(receipt, verifyingKey) {
+  const mod = await initWasm();
+  const keyBytes =
+    typeof verifyingKey === "string" ? hexToBytes(verifyingKey) : verifyingKey;
+  return mod.verifyReceipt(
+    typeof receipt === "string" ? receipt : JSON.stringify(receipt),
+    keyBytes,
+  );
+}
+
 // ── RECOMPUTE: re-derive the decision, don't just check the signature ─────────
 // `verify()` proves a receipt was *signed*; `recompute()` proves the in-bounds
 // IFC *decision* was correct by re-running the EXACT same gate function the
