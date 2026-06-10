@@ -67,8 +67,9 @@ jobs:
           echo "Ratcheting: $CEILING -> $NEW_CEILING (file: $ACTUAL lines, target: $TARGET)"
           sed -i "s/^ceiling = $CEILING/ceiling = $NEW_CEILING/" "$RATCHET_FILE"
 
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "$RATCHET_FILE"
-          git commit -m "chore: ratchet line ceiling $CEILING -> $NEW_CEILING [skip ci]"
-          git push
+          # Direct pushes to main are rejected (GH006) under the
+          # 25-required-context branch protection, and a bot push can't
+          # go through the merge queue. The ENFORCING job is "Check
+          # line ceiling" on PRs; this job now only PROPOSES the
+          # decrement — land ceiling updates via an ordinary PR.
+          echo "::notice::Ratchet decrement available: $CEILING -> $NEW_CEILING (file at $ACTUAL lines). Land it via a PR editing $RATCHET_FILE."
