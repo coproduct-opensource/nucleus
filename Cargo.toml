@@ -67,6 +67,7 @@ exclude = [
     "crates/portcullis-python",  # Python bindings (requires maturin)
     "crates/portcullis-zkvm-guest", # RISC-V zkVM guest (compiled separately by risc0-build)
     "sdks/verifier-js",           # WASM-only (wasm32-unknown-unknown); build with: wasm-pack build sdks/verifier-js
+    "examples/a2a-server",        # A2A SDK example server (own workspace); build/test inside examples/a2a-server
     "sdks/verifier-py",           # Python extension module; build with: maturin develop --release
     "tools/nucleus-guarantee-lint", # Dylint lint (own pinned nightly + rustc-dev); run with: cargo dylint --lib nucleus_guarantee_lint
 ]
