@@ -74,6 +74,9 @@
 //! assert_eq!(verified.chain_depth, 1);
 //! ```
 
+// chrono is only consumed by the crypto-gated verify path (and unit
+// tests, which exercise it); the token DATA type itself is time-free.
+#[cfg(any(test, feature = "crypto"))]
 use chrono::{DateTime, Utc};
 
 #[cfg(feature = "serde")]
@@ -83,9 +86,11 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "crypto")]
 use crate::certificate::verify_certificate;
-use crate::certificate::{
-    CertificateError, LatticeCertificate, VerifiedPermissions, DEFAULT_MAX_CHAIN_DEPTH,
-};
+use crate::certificate::{CertificateError, LatticeCertificate};
+// Sealed verification output + chain-depth default exist only on the
+// crypto-gated verify path.
+#[cfg(feature = "crypto")]
+use crate::certificate::{VerifiedPermissions, DEFAULT_MAX_CHAIN_DEPTH};
 
 /// A compact, self-contained attenuation token for wire transport.
 ///

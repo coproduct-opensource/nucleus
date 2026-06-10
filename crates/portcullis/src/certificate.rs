@@ -488,6 +488,7 @@ pub fn canonical_permissions_hash(perms: &PermissionLattice) -> Vec<u8> {
 
 impl AuthorityBlock {
     /// Compute the canonical payload for signing.
+    #[cfg(feature = "crypto")]
     fn signing_payload(&self) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(b"lattice-cert-authority-v1:");
@@ -500,6 +501,7 @@ impl AuthorityBlock {
     }
 
     /// Compute the SHA-256 hash of this block (including the signature).
+    #[cfg(feature = "crypto")]
     fn block_hash(&self) -> Vec<u8> {
         let mut hasher = Sha256::new();
         hasher.update(self.signing_payload());
@@ -510,6 +512,7 @@ impl AuthorityBlock {
 
 impl DelegationBlock {
     /// Compute the canonical payload for signing.
+    #[cfg(feature = "crypto")]
     fn signing_payload(&self) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(b"lattice-cert-delegation-v2:");
@@ -542,6 +545,7 @@ impl DelegationBlock {
     }
 
     /// Compute the SHA-256 hash of this block (including the signature).
+    #[cfg(feature = "crypto")]
     fn block_hash(&self) -> Vec<u8> {
         let mut hasher = Sha256::new();
         hasher.update(self.signing_payload());
@@ -798,6 +802,7 @@ impl LatticeCertificate {
     }
 
     /// Compute the proof-of-possession payload from a block hash.
+    #[cfg(feature = "crypto")]
     fn pop_payload_for_block_hash(block_hash: &[u8]) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(b"lattice-cert-pop-v1:");
