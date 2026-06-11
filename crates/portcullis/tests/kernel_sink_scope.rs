@@ -14,15 +14,18 @@ use portcullis::{
 /// uninhabitable constraint — purely for testing sink scope checks
 /// without RequiresApproval noise.
 fn permissive_no_obligations() -> PermissionLattice {
-    PermissionLattice {
-        capabilities: CapabilityLattice::permissive(),
-        obligations: Obligations::default(),
-        budget: BudgetLattice {
-            max_cost_usd: rust_decimal::Decimal::from(100),
-            ..Default::default()
-        },
-        ..PermissionLattice::permissive().as_ceiling()
-    }
+    // Start from the permissive ceiling (which fixes the private
+    // `uninhabitable_constraint`), then overwrite the public fields. Struct-
+    // literal syntax can't be used here: `uninhabitable_constraint` is private,
+    // which is illegal even with `..base` outside the defining crate (E0451).
+    let mut lattice = PermissionLattice::permissive().as_ceiling();
+    lattice.capabilities = CapabilityLattice::permissive();
+    lattice.obligations = Obligations::default();
+    lattice.budget = BudgetLattice {
+        max_cost_usd: rust_decimal::Decimal::from(100),
+        ..Default::default()
+    };
+    lattice
 }
 
 /// Helper: create a VerifiedPermissions with the given SinkScope.
