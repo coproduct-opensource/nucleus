@@ -315,15 +315,24 @@ enum CardVerdict {
 
 /// Pure core behind `verifyAgentCard` — no wasm types, so native `cargo test`
 /// exercises the exact logic the wasm export ships.
+///
+/// The caller hands us the card as RAW JSON, so verification goes through
+/// `verify_card_json` — A2A §8.4.3 over *the received document*: a member
+/// injected after signing is rejected even when the typed card does not
+/// model it, and a card signed by a newer producer over an unmodeled
+/// member still verifies.
 fn agent_card_verdict(
     signed_card_json: &str,
     resolved_jwk_json: &str,
 ) -> Result<CardVerdict, String> {
-    let signed: nucleus_agent_card::AgentCard =
+    // Input validation up front: malformed JSON (or JSON that is not an
+    // AgentCard shape) is an input ERROR the caller must fix, not a
+    // cryptographic verdict.
+    let _shape_check: nucleus_agent_card::AgentCard =
         serde_json::from_str(signed_card_json).map_err(|e| format!("signed card JSON: {e}"))?;
     let jwk: nucleus_agent_card::JsonWebKey =
         serde_json::from_str(resolved_jwk_json).map_err(|e| format!("resolved JWK JSON: {e}"))?;
-    match nucleus_agent_card::verify_card(&signed, &jwk) {
+    match nucleus_agent_card::verify_card_json(signed_card_json, &jwk) {
         Ok(verified) => Ok(CardVerdict::Verified {
             spiffe_id: verified.claims.spiffe_id.clone(),
             did: verified.claims.did.clone(),
@@ -386,6 +395,77 @@ pub fn verify_agent_card_js(
     verdict
         .serialize(&serializer)
         .map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Wire shape returned by `verifyAgentCardSignature`. Same convention as
+/// `CardVerdict`: a cryptographic rejection is a value (`outcome`), not a
+/// thrown exception — only malformed *inputs* throw.
+#[derive(Debug, Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+enum CardSignatureVerdict {
+    /// At least one of the card's detached JWS signatures verified against
+    /// the resolved key, over the document exactly as received.
+    Verified,
+    /// No signatures, or no signature that both conforms to A2A §8.4.2
+    /// (non-empty `kid`) and verifies against the resolved key.
+    Rejected { reason: String },
+}
+
+/// Pure core behind `verifyAgentCardSignature` — no wasm types, so native
+/// `cargo test` exercises the exact logic the wasm export ships.
+fn agent_card_signature_verdict(
+    signed_card_json: &str,
+    resolved_jwk_json: &str,
+) -> Result<CardSignatureVerdict, String> {
+    let received: serde_json::Value =
+        serde_json::from_str(signed_card_json).map_err(|e| format!("signed card JSON: {e}"))?;
+    let jwk: nucleus_agent_card::JsonWebKey =
+        serde_json::from_str(resolved_jwk_json).map_err(|e| format!("resolved JWK JSON: {e}"))?;
+    match nucleus_agent_card::verify_card_signature_json(&received, &jwk) {
+        Ok(()) => Ok(CardSignatureVerdict::Verified),
+        Err(e) => Ok(CardSignatureVerdict::Rejected {
+            reason: e.to_string(),
+        }),
+    }
+}
+
+/// Verify ONLY the **A2A v1.0 §8.4.3 signature** of an Agent Card against a
+/// key the caller resolved out-of-band — no nucleus claims policy. This is
+/// the interop entry point: a validly signed *plain* A2A card (no nucleus
+/// extension, e.g. one published by any other A2A implementation) verifies
+/// here, while `verifyAgentCard` additionally requires the nucleus claims
+/// and would reject it as a policy matter.
+///
+/// Verification runs over the card document exactly as received (§8.4.3
+/// steps 3–6 operate on "the received Agent Card"): the `signatures`
+/// member is removed, every other member — including members this build
+/// does not model — stays in the JCS canonical payload, and EVERY entry of
+/// the `signatures` array is checked against the resolved key (§8.4.3
+/// allows multiple signatures for key rotation; any one verifying
+/// suffices). Same pure-Rust p256 core as `verifyAgentCard`; the card's
+/// own key material (and the protected header's `kid`/`jku`) is never used
+/// to select a key.
+///
+/// # Arguments
+/// * `signed_card_json` — the signed A2A v1.0 Agent Card as received
+///   (JSON; JWS signatures embedded in its `signatures` field).
+/// * `resolved_jwk_json` — the out-of-band-resolved verification key as a
+///   JWK JSON (`{"kty":"EC","crv":"P-256","x":"...","y":"..."}`). NEVER
+///   taken from the card itself.
+///
+/// # Returns
+/// A structured verdict: `{ outcome: "verified" }` or
+/// `{ outcome: "rejected", reason }`. Throws only on malformed input —
+/// distinct messages for malformed card JSON vs malformed JWK JSON.
+#[wasm_bindgen(js_name = verifyAgentCardSignature)]
+pub fn verify_agent_card_signature_js(
+    signed_card_json: &str,
+    resolved_jwk_json: &str,
+) -> Result<JsValue, JsError> {
+    set_panic_hook();
+    let verdict = agent_card_signature_verdict(signed_card_json, resolved_jwk_json)
+        .map_err(|e| JsError::new(&e))?;
+    serde_wasm_bindgen::to_value(&verdict).map_err(|e| JsError::new(&e.to_string()))
 }
 
 // ── RECOMPUTE: re-derive the IFC verdict, don't just trust the signature ──────
@@ -1059,6 +1139,79 @@ mod agent_card_tests {
         assert!(err.starts_with("resolved JWK JSON:"), "got: {err}");
         // Valid JSON but not a JWK (missing required fields).
         let err = agent_card_verdict(&card_json, "{}").unwrap_err();
+        assert!(err.starts_with("resolved JWK JSON:"), "got: {err}");
+    }
+
+    /// A plain extension-free A2A card (signed exactly as any non-nucleus
+    /// implementation would): the pure §8.4.3 path accepts it; the
+    /// policy-layered path rejects it AS POLICY, not as a bad signature.
+    fn plain_signed_card_json(der: &[u8]) -> String {
+        let mut card = sample_card();
+        card.capabilities.extensions.clear();
+        let signed = sign_card(card, der, "plain-card-key-1").unwrap();
+        serde_json::to_string(&signed).unwrap()
+    }
+
+    #[test]
+    fn plain_card_signature_verifies_but_policy_path_rejects_it() {
+        let (der, jwk_json) = p256_keypair();
+        let json = plain_signed_card_json(&der);
+
+        assert!(matches!(
+            agent_card_signature_verdict(&json, &jwk_json).expect("well-formed input"),
+            CardSignatureVerdict::Verified
+        ));
+        match agent_card_verdict(&json, &jwk_json).expect("well-formed input") {
+            CardVerdict::Rejected { reason } => {
+                assert!(reason.contains("nucleus claims policy"), "got: {reason}");
+            }
+            other => panic!("expected Rejected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plain_card_under_the_wrong_key_is_a_signature_rejection() {
+        let (der, _jwk_json) = p256_keypair();
+        let (_other_der, other_jwk_json) = p256_keypair();
+        let json = plain_signed_card_json(&der);
+        match agent_card_signature_verdict(&json, &other_jwk_json).expect("well-formed input") {
+            CardSignatureVerdict::Rejected { reason } => {
+                assert!(reason.contains("JWS verification failed"), "got: {reason}");
+            }
+            other => panic!("expected Rejected, got {other:?}"),
+        }
+    }
+
+    /// §8.4.3 operates on the RECEIVED document: a member injected into the
+    /// card JSON after signing is rejected by both card paths, even though
+    /// the typed AgentCard does not model the member.
+    #[test]
+    fn injected_unsigned_member_is_rejected_on_both_paths() {
+        let (der, jwk_json) = p256_keypair();
+        let mut doc: serde_json::Value = serde_json::from_str(&signed_card_json(&der)).unwrap();
+        doc.as_object_mut().unwrap().insert(
+            "injectedByAttacker".to_string(),
+            serde_json::json!("not covered by the signature"),
+        );
+        let tampered = doc.to_string();
+
+        assert!(matches!(
+            agent_card_signature_verdict(&tampered, &jwk_json).expect("well-formed input"),
+            CardSignatureVerdict::Rejected { .. }
+        ));
+        assert!(matches!(
+            agent_card_verdict(&tampered, &jwk_json).expect("well-formed input"),
+            CardVerdict::Rejected { .. }
+        ));
+    }
+
+    #[test]
+    fn signature_path_malformed_inputs_are_clean_input_errors() {
+        let (der, jwk_json) = p256_keypair();
+        let err = agent_card_signature_verdict("not valid json", &jwk_json).unwrap_err();
+        assert!(err.starts_with("signed card JSON:"), "got: {err}");
+        let card_json = signed_card_json(&der);
+        let err = agent_card_signature_verdict(&card_json, "{}").unwrap_err();
         assert!(err.starts_with("resolved JWK JSON:"), "got: {err}");
     }
 }

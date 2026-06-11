@@ -20,10 +20,10 @@ use crate::card::{
     OAuth2SecurityScheme, OAuthFlows, OpenIdConnectSecurityScheme, PasswordOAuthFlow,
     SecurityScheme, A2A_PROTOCOL_VERSION,
 };
-use crate::jcs::canonicalize;
+use crate::jcs::{canonicalize, canonicalize_received};
 use crate::jwk::JsonWebKey;
 use crate::sign::sign_card;
-use crate::verify::verify_card;
+use crate::verify::{verify_card, verify_card_json, verify_card_signature};
 
 fn p256_keypair() -> (Vec<u8>, JsonWebKey) {
     let rng = SystemRandom::new();
@@ -390,8 +390,176 @@ fn signatures_are_excluded_and_append_only() {
     assert_eq!(before, canonicalize(&signed_once).unwrap());
     let signed_twice = sign_card(signed_once, &der2, "key-2").unwrap();
     assert_eq!(before, canonicalize(&signed_twice).unwrap());
-    // verify_card checks the FIRST signature — still key-1's.
+    // verify_card checks EVERY signature against the caller's key (§8.4.3
+    // allows multiple for rotation) — key-1's, at index 0, still verifies.
     verify_card(&signed_twice, &jwk1).expect("first signature survives co-signing");
+}
+
+/// §8.4.3 "Multiple signatures MAY be present to support key rotation":
+/// a card co-signed old-key-then-new-key must verify for a holder of
+/// EITHER key. The new-key holder's valid signature sits at index 1 — a
+/// verifier that only ever checked `signatures[0]` would wrongly reject it.
+#[test]
+fn rotation_co_signed_card_verifies_under_either_key() {
+    let (der_old, jwk_old) = p256_keypair();
+    let (der_new, jwk_new) = p256_keypair();
+    let card = spec_example_card()
+        .with_nucleus_claims(&fixed_claims())
+        .unwrap();
+    let co_signed = sign_card(
+        sign_card(card, &der_old, "key-old").unwrap(),
+        &der_new,
+        "key-new",
+    )
+    .unwrap();
+    assert_eq!(co_signed.signatures.len(), 2);
+    verify_card(&co_signed, &jwk_old).expect("old-key holder verifies (signature at index 0)");
+    verify_card(&co_signed, &jwk_new).expect("new-key holder verifies (signature at index 1)");
+}
+
+/// A failing entry at index 0 must not mask a valid signature at index 1 —
+/// and when NO entry verifies, the card is still rejected. Iteration is
+/// bounded by the array and the key is always the caller's resolved one
+/// (no card-controlled key selection).
+#[test]
+fn valid_signature_at_index_1_verifies() {
+    let (der, jwk) = p256_keypair();
+    let signed = sign_card(
+        spec_example_card()
+            .with_nucleus_claims(&fixed_claims())
+            .unwrap(),
+        &der,
+        "key-1",
+    )
+    .unwrap();
+
+    // Prepend a structurally-plausible but cryptographically-garbage entry.
+    let mut shuffled = signed.clone();
+    shuffled.signatures.insert(
+        0,
+        AgentCardSignature {
+            protected: signed.signatures[0].protected.clone(),
+            signature: "bm90LWEtcmVhbC1zaWc".to_string(),
+            header: None,
+        },
+    );
+    verify_card(&shuffled, &jwk).expect("the valid entry at index 1 must be found");
+
+    // Under an unrelated key, neither entry verifies — still rejected.
+    let (_other_der, other_jwk) = p256_keypair();
+    assert!(verify_card(&shuffled, &other_jwk).is_err());
+}
+
+/// §8.4.3 steps 3–6 operate on "the received Agent Card": a signed card
+/// whose received document carries an attacker-INJECTED unknown member
+/// must NOT verify through the received-document path — the signature
+/// does not cover what was received.
+#[test]
+fn injected_unknown_member_is_rejected_on_the_received_document() {
+    let (der, jwk) = p256_keypair();
+    let signed = sign_card(
+        spec_example_card()
+            .with_nucleus_claims(&fixed_claims())
+            .unwrap(),
+        &der,
+        "key-1",
+    )
+    .unwrap();
+
+    // Baseline: the untampered received document verifies.
+    let genuine = serde_json::to_string(&signed).unwrap();
+    verify_card_json(&genuine, &jwk).expect("untampered received document verifies");
+
+    // Inject a member the signature never covered.
+    let mut doc = serde_json::to_value(&signed).unwrap();
+    doc.as_object_mut().unwrap().insert(
+        "injectedByAttacker".to_string(),
+        serde_json::json!("not covered by the signature"),
+    );
+    let tampered = serde_json::to_string(&doc).unwrap();
+    let err = verify_card_json(&tampered, &jwk).unwrap_err();
+    assert!(matches!(err, crate::Error::Verify(_)), "got {err:?}");
+
+    // Contrast (and the reason the JSON path exists): re-typing the
+    // tampered document DROPS the unknown member, so the struct path can
+    // only attest to the fields it models and would accept it. A caller
+    // holding the raw received document must therefore verify through
+    // verify_card_json, never through parse-then-verify_card.
+    let retyped: AgentCard = serde_json::from_str(&tampered).unwrap();
+    verify_card(&retyped, &jwk)
+        .expect("the struct path attests the modeled fields only — by construction");
+}
+
+/// Forward-compat per the crate's own documentation: a card legitimately
+/// signed by a NEWER implementation over a member this version does not
+/// model must still verify through the received-document path (the §8.4.1
+/// canonical payload includes every received member; an older verifier
+/// re-serializing its typed struct would wrongly drop it and fail).
+#[test]
+fn unmodeled_member_signed_by_a_newer_producer_verifies_via_the_json_path() {
+    let (der, jwk) = p256_keypair();
+
+    // The "newer producer": this version's card plus an unmodeled member,
+    // assembled as a raw document.
+    let card = spec_example_card()
+        .with_nucleus_claims(&fixed_claims())
+        .unwrap();
+    let mut doc = serde_json::to_value(&card).unwrap();
+    doc.as_object_mut().unwrap().insert(
+        "futureField".to_string(),
+        serde_json::json!({"introducedIn": "a later A2A revision"}),
+    );
+
+    // Sign the received-document canonical bytes with the SAME JWS
+    // primitive sign_card uses (detached ES256 over §8.4.1 JCS).
+    let canonical = canonicalize_received(&doc).unwrap();
+    let compact = nucleus_identity::did_crypto::jws_sign_es256_with_protected_header(
+        r#"{"alg":"ES256","typ":"JOSE","kid":"future-key-1"}"#,
+        &canonical,
+        &der,
+    )
+    .unwrap();
+    let parts: Vec<&str> = compact.splitn(3, '.').collect();
+    doc.as_object_mut().unwrap().insert(
+        "signatures".to_string(),
+        serde_json::json!([{"protected": parts[0], "signature": parts[2]}]),
+    );
+
+    let raw = serde_json::to_string(&doc).unwrap();
+    let verified =
+        verify_card_json(&raw, &jwk).expect("unmodeled member must not break verification");
+    assert_eq!(
+        verified.claims.did,
+        "did:web:golden.conformance.example.com"
+    );
+
+    // The typed struct path can never verify this card: re-serialization
+    // drops `futureField`, so the reconstructed payload differs from the
+    // one signed — the exact fail-closed defect the JSON path fixes.
+    let retyped: AgentCard = serde_json::from_str(&raw).unwrap();
+    assert!(verify_card(&retyped, &jwk).is_err());
+}
+
+/// The §8.4.3 signature layer and the nucleus claims policy are separate:
+/// a validly signed PLAIN A2A card (no nucleus extension, as any
+/// non-nucleus implementation would publish) passes pure signature
+/// verification, and is then rejected by `verify_card` with an error that
+/// names the policy — never a signature failure.
+#[test]
+fn plain_a2a_card_passes_signature_verification_and_fails_only_policy() {
+    let (der, jwk) = p256_keypair();
+    let plain = sign_card(spec_example_card(), &der, "key-1").unwrap();
+
+    // Layer 1 (§8.4.3) accepts it — struct and received-document paths.
+    verify_card_signature(&plain, &jwk).expect("\u{a7}8.4.3 accepts a signed plain card");
+    crate::verify::verify_card_signature_json(&serde_json::to_value(&plain).unwrap(), &jwk)
+        .expect("received-document path agrees");
+
+    // Layer 2 (nucleus policy) rejects it, saying it is policy.
+    let err = verify_card(&plain, &jwk).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("nucleus claims policy"), "{msg}");
+    assert!(msg.contains("not a signature failure"), "{msg}");
 }
 
 /// §8.4.2: a protected header missing `kid` (or carrying an empty one) is

@@ -1,20 +1,28 @@
 //! [`AgentCardVerifier`] — verify a signed A2A v1.0 Agent Card.
 
 use async_trait::async_trait;
-use nucleus_agent_card::{verify_card, AgentCard, JsonWebKey};
+use nucleus_agent_card::{verify_card_json, JsonWebKey};
 
 use crate::{CallerClaims, CallerVerifier, CommerceError, VerifiedCaller};
 
 /// A [`CallerVerifier`] that treats the caller's credential as a JSON
-/// signed [`AgentCard`] (A2A v1.0: the JWS signatures ride in the card's
+/// signed Agent Card (A2A v1.0: the JWS signatures ride in the card's
 /// own `signatures` field) and verifies it against an
 /// **out-of-band-resolved** key.
 ///
+/// The credential arrives as the RAW JSON document the caller sent, so it
+/// is verified through [`nucleus_agent_card::verify_card_json`] — A2A
+/// §8.4.3 over *the received document*, not a re-serialized struct. A
+/// member injected into the credential after signing changes the
+/// canonical payload and is rejected, even when this version's card type
+/// does not model that member.
+///
 /// The one rule that makes this safe (inherited from
-/// [`nucleus_agent_card::verify_card`]): the verification key comes ONLY from
-/// `resolved_key`, configured here by the seller out-of-band (DID resolution, a
-/// pinned JWKS, an operator file). It is never read from the card. A card
-/// verified against an attacker-supplied key is "verified garbage".
+/// [`nucleus_agent_card::verify_card_json`]): the verification key comes ONLY
+/// from `resolved_key`, configured here by the seller out-of-band (DID
+/// resolution, a pinned JWKS, an operator file). It is never read from the
+/// card. A card verified against an attacker-supplied key is "verified
+/// garbage".
 ///
 /// On success the verified caller's identity is the `spiffe_id` from the
 /// card's nucleus extension claims — the verified truth, not the
@@ -33,10 +41,11 @@ impl AgentCardVerifier {
 #[async_trait]
 impl CallerVerifier for AgentCardVerifier {
     async fn verify(&self, claims: &CallerClaims) -> Result<VerifiedCaller, CommerceError> {
-        let signed: AgentCard = serde_json::from_str(&claims.credential)
-            .map_err(|e| CommerceError::Unverified(format!("malformed signed agent card: {e}")))?;
-
-        let verified = verify_card(&signed, &self.resolved_key)
+        // Verify the credential AS RECEIVED (A2A §8.4.3 operates on "the
+        // received Agent Card") — JSON parsing, canonicalization minus the
+        // signatures member, and JWS verification all happen over the raw
+        // document inside verify_card_json.
+        let verified = verify_card_json(&claims.credential, &self.resolved_key)
             .map_err(|e| CommerceError::Unverified(format!("agent card did not verify: {e}")))?;
 
         Ok(VerifiedCaller {
@@ -51,7 +60,8 @@ mod tests {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine as _;
     use nucleus_agent_card::{
-        sign_card, AgentCapabilities, AgentInterface, NucleusClaims, A2A_PROTOCOL_VERSION,
+        sign_card, AgentCapabilities, AgentCard, AgentInterface, NucleusClaims,
+        A2A_PROTOCOL_VERSION,
     };
     use ring::rand::SystemRandom;
     use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
@@ -137,6 +147,30 @@ mod tests {
 
         let err = verifier.verify(&claims_for(&signed)).await.unwrap_err();
         assert!(matches!(err, CommerceError::Unverified(_)));
+    }
+
+    #[tokio::test]
+    async fn rejects_a_credential_with_an_injected_unsigned_member() {
+        // The credential is the RECEIVED document: a member injected after
+        // signing is not covered by the signature and must be rejected —
+        // even though the typed AgentCard does not model it (a
+        // parse-then-verify flow would silently drop it and accept).
+        let (der, pub_jwk) = p256_keypair();
+        let signed = sign_card(sample_card(), &der, "card-key-1").unwrap();
+        let mut doc = serde_json::to_value(&signed).unwrap();
+        doc.as_object_mut().unwrap().insert(
+            "injectedByAttacker".to_string(),
+            serde_json::json!("not covered by the signature"),
+        );
+        let claims = CallerClaims {
+            agent_id: "did:web:buyer.prod.example.com".into(),
+            credential: doc.to_string(),
+        };
+        let verifier = AgentCardVerifier::new(pub_jwk);
+        assert!(matches!(
+            verifier.verify(&claims).await.unwrap_err(),
+            CommerceError::Unverified(_)
+        ));
     }
 
     #[tokio::test]

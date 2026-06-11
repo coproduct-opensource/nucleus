@@ -124,14 +124,15 @@ fn sign_and_verify_canonicalize_identically() {
 fn second_signature_keeps_the_first_valid() {
     // §8.4.3: multiple signatures MAY be present (key rotation). Because
     // the canonical payload excludes ALL signatures, appending a second
-    // one must not invalidate the first — which is the one verify_card
-    // checks.
+    // one must not invalidate the first — and verify_card checks every
+    // entry against the caller's key, so a holder of EITHER key verifies.
     let (der_a, pub_a) = p256_keypair();
-    let (der_b, _pub_b) = p256_keypair();
+    let (der_b, pub_b) = p256_keypair();
     let signed_once = sign_card(sample_card(), &der_a, "key-a").unwrap();
     let signed_twice = sign_card(signed_once, &der_b, "key-b").unwrap();
     assert_eq!(signed_twice.signatures.len(), 2);
     verify_card(&signed_twice, &pub_a).expect("first signature still verifies");
+    verify_card(&signed_twice, &pub_b).expect("second signature (index 1) verifies too");
 }
 
 #[test]
@@ -172,11 +173,17 @@ fn card_signed_by_key_a_fails_under_key_b() {
 #[test]
 fn card_without_nucleus_extension_is_rejected() {
     // A validly signed plain A2A card with no nucleus claims cannot anchor
-    // anything — verify_card refuses it.
+    // anything — verify_card refuses it, as a POLICY decision: the §8.4.3
+    // signature itself is valid (crate::verify::verify_card_signature
+    // accepts it; pinned in conformance_tests).
     let (der, pub_jwk) = p256_keypair();
     let signed = sign_card(base_card(), &der, "card-key-1").unwrap();
     let err = verify_card(&signed, &pub_jwk).unwrap_err();
     assert!(matches!(err, crate::Error::Verify(_)), "got {err:?}");
+    assert!(
+        format!("{err}").contains("nucleus claims policy"),
+        "got {err}"
+    );
 }
 
 #[test]
@@ -309,6 +316,43 @@ fn print_verifier_js_fixture() {
 
     let fixture = serde_json::json!({
         "_generated_by": "nucleus-agent-card print_verifier_js_fixture (sign_card with an ephemeral ring P-256 key — a TEST key; resolved_jwk is the matching public key a recipient would resolve out-of-band; wrong_jwk is a second, unrelated P-256 key). A2A v1.0 card shape.",
+        "resolved_jwk": pub_jwk,
+        "signed_card": signed,
+        "wrong_jwk": wrong_jwk,
+    });
+    println!("BEGIN-FIXTURE");
+    println!("{}", serde_json::to_string_pretty(&fixture).unwrap());
+    println!("END-FIXTURE");
+}
+
+/// Regenerates `sdks/verifier-js/test/fixtures/plain-agent-card.json` — a
+/// validly signed PLAIN A2A v1.0 card (no nucleus extension), as any
+/// non-nucleus A2A implementation would publish. The pure §8.4.3 path
+/// (`verifyAgentCardSignature`) accepts it; the policy-layered
+/// `verifyAgentCard` rejects it.
+///
+/// Run manually after any wire-shape change:
+///
+/// ```bash
+/// cargo test -p nucleus-agent-card --features sign \
+///   print_verifier_js_plain_fixture -- --ignored --nocapture
+/// ```
+///
+/// and paste the JSON between the BEGIN/END markers into the fixture.
+#[test]
+#[ignore = "fixture generator — run with --ignored --nocapture to regenerate"]
+fn print_verifier_js_plain_fixture() {
+    let (der, pub_jwk) = p256_keypair();
+    let (_other_der, wrong_jwk) = p256_keypair();
+
+    let signed = sign_card(base_card(), &der, "plain-card-key-1").unwrap();
+    crate::verify::verify_card_signature(&signed, &pub_jwk)
+        .expect("fixture card's \u{a7}8.4.3 signature must verify before shipping");
+    verify_card(&signed, &pub_jwk)
+        .expect_err("fixture card must NOT pass the nucleus claims policy");
+
+    let fixture = serde_json::json!({
+        "_generated_by": "nucleus-agent-card print_verifier_js_plain_fixture (sign_card with an ephemeral ring P-256 key — a TEST key; the card carries NO nucleus extension, like any plain A2A v1.0 producer's; resolved_jwk is the matching public key a recipient would resolve out-of-band; wrong_jwk is a second, unrelated P-256 key).",
         "resolved_jwk": pub_jwk,
         "signed_card": signed,
         "wrong_jwk": wrong_jwk,

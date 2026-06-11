@@ -151,8 +151,11 @@ export type AgentCardVerdict =
 /**
  * Verify a signed A2A Agent Card against a key YOU resolved out-of-band
  * (DID resolution, a pinned JWKS, an operator file) — never the card's own
- * key material. Runs the exact upstream `verify_card`: verify WHO you are
- * about to act with, in your process, trusting no server.
+ * key material. Runs the exact upstream verifier over the card document AS
+ * RECEIVED (A2A §8.4.3) plus the nucleus claims policy: verify WHO you are
+ * about to act with, in your process, trusting no server. For the pure
+ * §8.4.3 signature check (plain cards, no nucleus policy) see
+ * {@link verifyAgentCardSignature}.
  *
  * A cryptographic rejection is returned as a value (branch on `outcome`);
  * throws only on malformed input (bad card JSON, bad JWK JSON).
@@ -165,6 +168,38 @@ export function verifyAgentCard(
   signedCard: string | object,
   resolvedJwk: string | object,
 ): Promise<AgentCardVerdict>;
+
+/** Structured verdict from {@link verifyAgentCardSignature} — mirrors the Rust `CardSignatureVerdict`. */
+export type AgentCardSignatureVerdict =
+  | {
+      /** At least one signature verified against the resolved key, over the document as received. */
+      outcome: "verified";
+    }
+  | {
+      /** No signatures, or none that conforms to §8.4.2 (`kid`) AND verifies under the resolved key. */
+      outcome: "rejected";
+      reason: string;
+    };
+
+/**
+ * Verify ONLY the A2A v1.0 §8.4.3 signature of an Agent Card against a key
+ * YOU resolved out-of-band — no nucleus claims policy, so a validly signed
+ * plain A2A card (no nucleus extension) verifies. Runs over the document
+ * exactly as received (unknown members stay in the canonical payload) and
+ * checks EVERY entry of the `signatures` array (§8.4.3 key rotation); any
+ * one verifying suffices.
+ *
+ * A cryptographic rejection is returned as a value (branch on `outcome`);
+ * throws only on malformed input (bad card JSON, bad JWK JSON).
+ *
+ * @param signedCard The signed A2A v1.0 `AgentCard` as received — JSON
+ *   string or parsed object.
+ * @param resolvedJwk The out-of-band-resolved key — JWK JSON string or object.
+ */
+export function verifyAgentCardSignature(
+  signedCard: string | object,
+  resolvedJwk: string | object,
+): Promise<AgentCardSignatureVerdict>;
 
 /** The recomputed IFC verdict — mirrors the Rust `RecomputeReport`. */
 export interface RecomputeReport {

@@ -1,0 +1,41 @@
+{
+  "_generated_by": "nucleus-agent-card print_verifier_js_plain_fixture (sign_card with an ephemeral ring P-256 key — a TEST key; the card carries NO nucleus extension, like any plain A2A v1.0 producer's; resolved_jwk is the matching public key a recipient would resolve out-of-band; wrong_jwk is a second, unrelated P-256 key).",
+  "resolved_jwk": {
+    "crv": "P-256",
+    "kty": "EC",
+    "x": "EXreqDvvnRN-zvGVUWInT_5z_b87R9W3aNktA9tc-H0",
+    "y": "j6vU-VTxlUYT824N7u_n7K3U4R5Vt7axvoIdOMTjZJ8"
+  },
+  "signed_card": {
+    "capabilities": {},
+    "defaultInputModes": [
+      "application/json"
+    ],
+    "defaultOutputModes": [
+      "application/json"
+    ],
+    "description": "sign/verify round-trip tests",
+    "name": "Coder Agent",
+    "signatures": [
+      {
+        "protected": "eyJhbGciOiJFUzI1NiIsImtpZCI6InBsYWluLWNhcmQta2V5LTEiLCJ0eXAiOiJKT1NFIn0",
+        "signature": "pJ4lpNaAj-zGPn8cnbCbfsUSM5xZ84eC1-xhxffqnieG3uYmiyqnD7-apN3rCQkbdklL6zzdtkpVR_v5D584-g"
+      }
+    ],
+    "skills": [],
+    "supportedInterfaces": [
+      {
+        "protocolBinding": "JSONRPC",
+        "protocolVersion": "1.0",
+        "url": "https://coder.prod.example.com/a2a/v1"
+      }
+    ],
+    "version": "1.0.0"
+  },
+  "wrong_jwk": {
+    "crv": "P-256",
+    "kty": "EC",
+    "x": "zN3E2Ep2Uo04QN6J4A4yxzg3_D-HRtEDfe3e5PMR-X4",
+    "y": "49MRujVNWbwC9ox8Hrf3WuHPlA10UDxhstl1OjuPym8"
+  }
+}

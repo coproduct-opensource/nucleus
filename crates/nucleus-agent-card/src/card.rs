@@ -23,8 +23,12 @@
 //! None of these structs use `deny_unknown_fields`. A newer producer may
 //! add fields this verifier doesn't know about; unknown fields are
 //! ignored on parse so an older verifier still works against a newer
-//! card. The canonicalization in [`crate::jcs`] covers exactly the
-//! fields defined here — what we sign is what we know.
+//! card. [`crate::jcs::canonicalize`] (the signer's path) covers exactly
+//! the fields defined here — what we sign is what we know. On receive,
+//! [`crate::jcs::canonicalize_received`] canonicalizes the document AS
+//! RECEIVED, so a signature a newer producer made over fields this
+//! version does not model still verifies through
+//! [`crate::verify::verify_card_json`].
 
 use std::collections::BTreeMap;
 
