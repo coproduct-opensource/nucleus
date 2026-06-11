@@ -183,15 +183,41 @@ impl ConfAtMost<Public> for Public {}
 /// assert_eq!(data.inner(), "hello");
 /// ```
 ///
-/// ## Flow constraints
+/// ## Flow constraints (compile-time enforced, checked by `cargo test --doc`)
 ///
+/// Each rejection is paired with a near-identical *accepting* case so the
+/// `compile_fail` is attributable to the label — a bare `compile_fail` block
+/// otherwise passes if the code fails to compile for any reason (typo, bad
+/// import), which would silently stop testing the constraint.
+///
+/// Integrity floor — trusted data is accepted:
+/// ```
+/// use portcullis_core::labeled::{Labeled, Trusted, Public, IntegAtLeast};
+/// fn requires_trusted<I: IntegAtLeast<Trusted>>(_v: Labeled<String, I, Public>) {}
+/// let clean: Labeled<String, Trusted, Public> = Labeled::new("clean".to_string());
+/// requires_trusted(clean); // OK: Trusted satisfies IntegAtLeast<Trusted>
+/// ```
+/// …but adversarial (e.g. web) data is rejected:
 /// ```compile_fail
 /// use portcullis_core::labeled::{Labeled, Adversarial, Trusted, Public, IntegAtLeast};
+/// fn requires_trusted<I: IntegAtLeast<Trusted>>(_v: Labeled<String, I, Public>) {}
+/// let web: Labeled<String, Adversarial, Public> = Labeled::new("evil".to_string());
+/// requires_trusted(web); // ERROR: Adversarial does not implement IntegAtLeast<Trusted>
+/// ```
 ///
-/// fn requires_trusted<I: IntegAtLeast<Trusted>>(val: Labeled<String, I, Public>) {}
-///
-/// let web_data: Labeled<String, Adversarial, Public> = Labeled::new("evil".to_string());
-/// requires_trusted(web_data); // ERROR: Adversarial does not implement IntegAtLeast<Trusted>
+/// Confidentiality ceiling — public data may flow to a public sink:
+/// ```
+/// use portcullis_core::labeled::{Labeled, Trusted, Public, ConfAtMost};
+/// fn publish<C: ConfAtMost<Public>>(_v: Labeled<String, Trusted, C>) {}
+/// let release: Labeled<String, Trusted, Public> = Labeled::new("press release".to_string());
+/// publish(release); // OK: Public satisfies ConfAtMost<Public>
+/// ```
+/// …but secret data cannot:
+/// ```compile_fail
+/// use portcullis_core::labeled::{Labeled, Trusted, Secret, Public, ConfAtMost};
+/// fn publish<C: ConfAtMost<Public>>(_v: Labeled<String, Trusted, C>) {}
+/// let key: Labeled<String, Trusted, Secret> = Labeled::new("api-key".to_string());
+/// publish(key); // ERROR: Secret does not implement ConfAtMost<Public>
 /// ```
 pub struct Labeled<T, I: IntegTag, C: ConfTag> {
     value: T,
