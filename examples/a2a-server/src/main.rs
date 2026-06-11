@@ -8,11 +8,14 @@
 //! you can exercise the gate with curl:
 //!
 //! ```bash
-//! curl -s http://localhost:3000/.well-known/agent-card.json | jq .signatures
+//! curl -s http://localhost:3000/.well-known/agent-card.json | jq .securitySchemes
 //! curl -si http://localhost:3000/jsonrpc -H "content-type: application/json" \
+//!   -H "A2A-Version: 1.0" \
 //!   -H "X-Agent-Card: <printed value>" \
 //!   -d '{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"role":"ROLE_USER","messageId":"m1","parts":[{"text":"Agents need receipts. Trust needs proofs."}]}}}'
-//! # → X-Nucleus-Receipt header: base64url bundle, offline-verifiable
+//! # → X-Nucleus-Receipt header (base64url bundle) AND the same bundle in
+//! #   result.task.metadata["https://coproduct.one/a2a/ext/receipt/v1"];
+//! #   omit A2A-Version to see the §3.6 -32009 VersionNotSupportedError
 //! ```
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -39,8 +42,8 @@ async fn main() -> anyhow::Result<()> {
 
     println!("Summarizer Agent (nucleus-guarded) on {base}");
     println!("  card:      {base}/.well-known/agent-card.json");
-    println!("  JSON-RPC:  {base}/jsonrpc   (requires X-Agent-Card)");
-    println!("  REST:      {base}/rest      (requires X-Agent-Card)");
+    println!("  JSON-RPC:  {base}/jsonrpc   (requires X-Agent-Card + A2A-Version: 1.0)");
+    println!("  REST:      {base}/rest      (requires X-Agent-Card + A2A-Version: 1.0)");
     println!();
     println!("receipts verify offline against this JWKS:");
     println!("  {receipt_jwks}");

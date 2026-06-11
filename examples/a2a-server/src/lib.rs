@@ -1,24 +1,35 @@
 //! An A2A v1.0 server on the **official Rust SDK** (`a2a-lf`), guarded by
 //! nucleus *verify-before-you-act* and emitting a **signed provenance
-//! receipt for every response**.
+//! receipt for every response — streaming included**.
 //!
 //! Wire path:
 //!
 //! ```text
-//! caller ──(A2A JSON-RPC / REST  +  X-Agent-Card header)──▶ axum
+//! caller ──(A2A JSON-RPC / REST  +  X-Agent-Card  +  A2A-Version: 1.0)──▶ axum
 //!   1. gate: verify the caller's SIGNED A2A v1.0 Agent Card against a key
 //!      resolved OUT-OF-BAND (never the card's own material) — §8.4.3
-//!      trusted-key-store mode, nucleus trust model
-//!   2. official SDK routers serve the task (DefaultRequestHandler)
-//!   3. gate: sign a nucleus-envelope receipt binding
-//!      caller ⨯ resource ⨯ sha256(response bytes), attach it as the
-//!      `X-Nucleus-Receipt` response header (base64url of the bundle JSON)
+//!      trusted-key-store mode, nucleus trust model. The scheme is
+//!      DECLARED in the served card's `securitySchemes` (§7.3), and 401s
+//!      carry a `WWW-Authenticate` hint pointing back at it (§7.4).
+//!   2. negotiate `A2A-Version` (§3.6): this interface speaks 1.0 only;
+//!      anything else — including the absent-header 0.3 default — gets
+//!      `VersionNotSupportedError` (-32009 / HTTP 400, §5.4).
+//!   3. official SDK routers serve the task (DefaultRequestHandler)
+//!   4. gate: sign a nucleus-envelope receipt binding caller ⨯ resource ⨯
+//!      sha256(payload pre-image) and carry it BOTH ways:
+//!        - in the response object's `metadata` under the extension URI
+//!          `https://coproduct.one/a2a/ext/receipt/v1` (§4.6.2 — the
+//!          spec's own extension-data carriage), per SSE event when
+//!          streaming;
+//!        - as the `X-Nucleus-Receipt` response header (base64url of the
+//!          bundle JSON) for curl ergonomics on non-streaming responses.
 //! ```
 //!
 //! The receipt verifies OFFLINE against the server's published JWKS
-//! (`verify_receipt_bundle`, or `verify_receipt_js` in a browser). Streaming
-//! (SSE) responses are verified but not receipted — a live stream has no
-//! final byte string to bind; the header says `skipped-streaming`.
+//! (`verify_receipt_bundle`, or `verify_receipt_js` in a browser). The
+//! exact bytes a receipt binds are defined in [`receipt`] (a receipt
+//! cannot bind bytes that contain itself); see
+//! `docs/a2a-receipt-extension.md`.
 //!
 //! Everything secret here is demo-grade on purpose: the receipt signer is
 //! the TEST-ONLY `insecure-local-issuer` and keys are generated per run. A
@@ -38,23 +49,38 @@ use ring::rand::SystemRandom;
 use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
 
 use nucleus_agent_card::{
-    sign_card, AgentCapabilities, AgentCard, AgentInterface, AgentSkill, EnforcementRule,
-    JsonWebKey, NucleusClaims, RuntimeGuaranteeProfile, A2A_PROTOCOL_VERSION,
+    sign_card, AgentCapabilities, AgentCard, AgentExtension, AgentInterface, AgentSkill,
+    EnforcementRule, JsonWebKey, NucleusClaims, RuntimeGuaranteeProfile, SecurityRequirement,
+    StringList, A2A_PROTOCOL_VERSION,
 };
 use nucleus_lineage::{CallSpiffeId, Jwks, LocalIssuer};
 use nucleus_verify_commerce::{
     AgentCardVerifier, CallerClaims, CallerVerifier as _, CommerceRequest, EnvelopeReceiptIssuer,
-    PaymentProof, ReceiptContext, ReceiptIssuer as _,
+    PaymentProof, ReceiptContext, ReceiptIssuer as _, VerifiedCaller,
 };
 
 mod executor;
+pub mod receipt;
+pub mod version;
+
 pub use executor::SummarizeExecutor;
+pub use receipt::{receipt_preimage, RECEIPT_EXTENSION_URI};
+pub use version::{A2A_VERSION_HEADER, VERSION_NOT_SUPPORTED};
 
 /// Largest response body the gate will buffer to receipt (16 MiB).
 const RECEIPT_BODY_LIMIT: usize = 16 * 1024 * 1024;
 
-/// The caller-facing receipt header.
+/// The caller-facing receipt header (curl ergonomics; the spec-idiomatic
+/// carriage is the §4.6.2 metadata entry under [`RECEIPT_EXTENSION_URI`]).
 pub const RECEIPT_HEADER: &str = "x-nucleus-receipt";
+
+/// The request header carrying the caller's signed A2A v1.0 AgentCard —
+/// declared in the served card's `securitySchemes` under
+/// [`SECURITY_SCHEME_NAME`] so clients discover it per §7.3 step 1.
+pub const AGENT_CARD_HEADER: &str = "x-agent-card";
+
+/// Name of the security scheme in the card's `securitySchemes` map.
+pub const SECURITY_SCHEME_NAME: &str = "signedAgentCard";
 
 /// This server's identity: a signed A2A v1.0 Agent Card (nucleus claims in
 /// the registered extension) plus the receipt-signing materials.
@@ -95,6 +121,40 @@ impl ServerIdentity {
         let session_root = CallSpiffeId::pod("summarizer.example.com", "agents", "summarizer")
             .map_err(|e| anyhow::anyhow!("session root: {e}"))?;
 
+        // §7.3 step 1: DECLARE the authentication the gate enforces, so a
+        // client that only reads the card knows where the credential goes.
+        // `security_schemes` is an opaque ProtoJSON map for now (a typed
+        // model is coming separately), so the proto's
+        // `APIKeySecurityScheme` oneof variant is built as raw JSON here:
+        // oneof key `apiKeySecurityScheme`, fields per `a2a.proto`.
+        let mut security_schemes = serde_json::Map::new();
+        security_schemes.insert(
+            SECURITY_SCHEME_NAME.to_string(),
+            serde_json::json!({
+                "apiKeySecurityScheme": {
+                    "description": "The value is the caller's SIGNED A2A v1.0 AgentCard JSON \
+                                    (detached JWS per §8.4). It is verified against a key the \
+                                    operator resolved out-of-band — never the card's own material.",
+                    "location": "header",
+                    "name": "X-Agent-Card",
+                }
+            }),
+        );
+        // The matching requirement (§7.3): this scheme on every request.
+        // "verified-caller" is a role name (OpenAPI 3.2 allows role names
+        // for non-OAuth schemes): the gate grants exactly one role —
+        // being a caller whose signed card verified.
+        let security_requirements = vec![SecurityRequirement {
+            schemes: [(
+                SECURITY_SCHEME_NAME.to_string(),
+                StringList {
+                    list: vec!["verified-caller".to_string()],
+                },
+            )]
+            .into_iter()
+            .collect(),
+        }];
+
         let card = AgentCard {
             name: "Summarizer Agent (nucleus-guarded)".to_string(),
             description: "Summarizes text over A2A; every response carries an offline-verifiable signed receipt.".to_string(),
@@ -118,11 +178,26 @@ impl ServerIdentity {
             capabilities: AgentCapabilities {
                 streaming: Some(true),
                 push_notifications: Some(false),
-                extensions: vec![],
+                // §4.6.1 declaration: receipts are an ordinary, optional
+                // A2A extension — clients that ignore it interoperate
+                // untouched. The nucleus runtime-guarantees extension is
+                // added below by `with_nucleus_claims`.
+                extensions: vec![AgentExtension {
+                    uri: receipt::RECEIPT_EXTENSION_URI.to_string(),
+                    description: "Signed provenance receipts: each response object's metadata \
+                                  carries a nucleus-envelope bundle (per SSE event when \
+                                  streaming) binding caller, resource, and payload bytes; \
+                                  verifies offline against the card's trustJwks."
+                        .to_string(),
+                    required: false,
+                    params: Some(serde_json::json!({
+                        "responseHeader": "X-Nucleus-Receipt",
+                    })),
+                }],
                 extended_agent_card: None,
             },
-            security_schemes: serde_json::Map::new(),
-            security_requirements: vec![],
+            security_schemes,
+            security_requirements,
             default_input_modes: vec!["text/plain".to_string()],
             default_output_modes: vec!["text/plain".to_string()],
             skills: vec![AgentSkill {
@@ -173,61 +248,75 @@ pub struct Gate {
     session_root: CallSpiffeId,
 }
 
+/// §7.4: authentication rejections SHOULD carry challenge information —
+/// point the caller back at the card's `securitySchemes` (§7.3 step 1).
+fn unauthorized(message: String) -> Response {
+    let mut resp = (StatusCode::UNAUTHORIZED, message).into_response();
+    resp.headers_mut().insert(
+        http::header::WWW_AUTHENTICATE,
+        HeaderValue::from_static(
+            "SignedAgentCard header=\"X-Agent-Card\", \
+             schemes=\"/.well-known/agent-card.json#/securitySchemes/signedAgentCard\"",
+        ),
+    );
+    resp
+}
+
 /// Verify the caller's signed card, let the SDK serve, then sign a receipt
-/// over the response bytes. Mirrors `nucleus_verify_commerce::serve_verified`
-/// at the transport layer (the manual split exists so verified SSE streams
-/// can pass through without being buffered into a receipt).
+/// over the response payload — per SSE event for streams, whole body
+/// otherwise — carried in the §4.6.2 extension metadata (and, for
+/// non-streaming, the [`RECEIPT_HEADER`] too).
 async fn guard(State(gate): State<Arc<Gate>>, req: Request, next: Next) -> Response {
     // 1) Verify-before-you-act: the signed A2A v1.0 card travels in a
     //    header; the verification key is the gate's, resolved out-of-band.
     let Some(card_json) = req
         .headers()
-        .get("x-agent-card")
+        .get(AGENT_CARD_HEADER)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned)
     else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            "missing X-Agent-Card: present your signed A2A v1.0 agent card\n",
-        )
-            .into_response();
+        return unauthorized(
+            "missing X-Agent-Card: present your signed A2A v1.0 agent card \
+             (see the card's securitySchemes.signedAgentCard)\n"
+                .to_string(),
+        );
     };
     let claims = CallerClaims {
-        agent_id: "x-agent-card".to_string(),
+        agent_id: AGENT_CARD_HEADER.to_string(),
         credential: card_json,
     };
     let caller = match gate.verifier.verify(&claims).await {
         Ok(c) => c,
-        Err(e) => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                format!("agent card verification failed: {e}\n"),
-            )
-                .into_response()
-        }
+        Err(e) => return unauthorized(format!("agent card verification failed: {e}\n")),
     };
     let resource = req.uri().path().to_string();
 
-    // 2) Serve via the official SDK routers.
+    // 2) Serve via the official SDK routers (the version middleware runs
+    //    between this gate and the SDK; its -32009 envelopes get
+    //    receipted like any other response).
     let resp = next.run(req).await;
     let (mut parts, body) = resp.into_parts();
 
-    // SSE: verified, but a live stream has no final byte string to bind.
+    // 3a) SSE: a live stream has no final byte string, so each event is
+    //     receipted individually in its own §4.6.2 metadata.
     let is_stream = parts
         .headers
         .get(http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|ct| ct.starts_with("text/event-stream"));
     if is_stream {
-        parts.headers.insert(
-            RECEIPT_HEADER,
-            HeaderValue::from_static("skipped-streaming"),
-        );
-        return Response::from_parts(parts, body);
+        parts
+            .headers
+            .insert(RECEIPT_HEADER, HeaderValue::from_static("per-event"));
+        let issue = sse_issuer(gate, caller, claims, resource);
+        return Response::from_parts(parts, receipt::per_event_receipts(body, issue));
     }
 
-    // 3) Receipt: sign caller ⨯ resource ⨯ sha256(body) into an envelope
-    //    bundle anyone can verify offline against the published JWKS.
+    // 3b) Non-streaming: receipt the whole payload. The signed pre-image
+    //     is the JCS form of the body with the receipt entry excluded
+    //     (`receipt::receipt_preimage`) — a receipt cannot bind bytes
+    //     that contain itself — then the bundle rides both in the
+    //     response object's metadata (§4.6.2) and the header.
     let bytes = match axum::body::to_bytes(body, RECEIPT_BODY_LIMIT).await {
         Ok(b) => b,
         Err(e) => {
@@ -237,6 +326,22 @@ async fn guard(State(gate): State<Arc<Gate>>, req: Request, next: Next) -> Respo
             )
                 .into_response()
         }
+    };
+    // These routes only produce JSON; a non-JSON body (defensive) gets a
+    // raw-bytes header-only receipt.
+    let parsed: Option<serde_json::Value> = serde_json::from_slice(&bytes).ok();
+    let preimage: Vec<u8> = match &parsed {
+        Some(payload) => match receipt::receipt_preimage(payload) {
+            Ok(p) => p,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("receipt pre-image failed: {e}\n"),
+                )
+                    .into_response()
+            }
+        },
+        None => bytes.to_vec(),
     };
     let commerce_req = CommerceRequest::new(
         resource,
@@ -251,7 +356,7 @@ async fn guard(State(gate): State<Arc<Gate>>, req: Request, next: Next) -> Respo
     let receipt = match issuer.issue(&ReceiptContext {
         caller: &caller,
         request: &commerce_req,
-        body: &bytes,
+        body: &preimage,
         ifc_verdict: None,
     }) {
         Ok(r) => r,
@@ -283,11 +388,69 @@ async fn guard(State(gate): State<Arc<Gate>>, req: Request, next: Next) -> Respo
                 .into_response()
         }
     }
-    Response::from_parts(parts, Body::from(bytes))
+    // §4.6.2 carriage: the same bundle in the response object's metadata.
+    // Payloads with no carrier (error envelopes, lists) keep header-only.
+    let final_bytes: Vec<u8> = match parsed {
+        Some(mut payload) => {
+            if receipt::inject_receipt(&mut payload, &bundle) {
+                match serde_json::to_vec(&payload) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("receipt injection re-serialization failed: {e}\n"),
+                        )
+                            .into_response()
+                    }
+                }
+            } else {
+                bytes.to_vec()
+            }
+        }
+        None => bytes.to_vec(),
+    };
+    // The body may have grown; let hyper restate the length.
+    parts.headers.remove(http::header::CONTENT_LENGTH);
+    Response::from_parts(parts, Body::from(final_bytes))
+}
+
+/// Build the per-event receipt issuer for a verified SSE response: each
+/// event's receipt binds caller ⨯ `"<path>#sse-<n>"` ⨯ that event's
+/// pre-image bytes.
+fn sse_issuer(
+    gate: Arc<Gate>,
+    caller: VerifiedCaller,
+    claims: CallerClaims,
+    resource: String,
+) -> Arc<receipt::IssueReceipt> {
+    Arc::new(move |preimage: &[u8], index: u64| {
+        let request = CommerceRequest::new(
+            format!("{resource}#sse-{index}"),
+            claims.clone(),
+            PaymentProof {
+                scheme: "none".to_string(),
+                reference: "a2a-demo".to_string(),
+            },
+        );
+        let issuer =
+            EnvelopeReceiptIssuer::new(gate.session_root.clone(), &gate.signer, gate.jwks.clone());
+        let receipt = issuer
+            .issue(&ReceiptContext {
+                caller: &caller,
+                request: &request,
+                body: preimage,
+                ifc_verdict: None,
+            })
+            .map_err(|e| anyhow::anyhow!("receipt issuance: {e}"))?;
+        receipt
+            .bundle
+            .ok_or_else(|| anyhow::anyhow!("receipt issuer returned no bundle"))
+    })
 }
 
 /// Build the full router: well-known signed card (public) + SDK transports
-/// (JSON-RPC + REST) behind the verify→serve→receipt gate.
+/// (JSON-RPC + REST) behind verify (§7) → version negotiation (§3.6) →
+/// serve → receipt (§4.6.2).
 ///
 /// `caller_verify_jwk` is the public key callers' cards must verify against
 /// — the out-of-band trust decision, made by the operator, not the wire.
@@ -305,12 +468,16 @@ pub fn build_app(identity: ServerIdentity, caller_verify_jwk: JsonWebKey) -> axu
         session_root: identity.session_root,
     });
 
+    // Layer order (outermost first): authenticate (§7.4 says EVERY
+    // request) → negotiate A2A-Version (§3.6) → SDK. Responses flow back
+    // through the gate, which receipts them — version errors included.
     let protected = axum::Router::new()
         .nest(
             "/jsonrpc",
             a2a_server::jsonrpc::jsonrpc_router(handler.clone()),
         )
         .nest("/rest", a2a_server::rest::rest_router(handler))
+        .layer(axum::middleware::from_fn(version::negotiate))
         .layer(axum::middleware::from_fn_with_state(gate, guard));
 
     let card = identity.signed_card;
