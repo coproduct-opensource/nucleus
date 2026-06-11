@@ -25,7 +25,7 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       # No cache restore here: this job publishes release binaries, so it must
       # build from scratch to avoid cache-poisoning of trust-bearing artifacts.
       - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
@@ -67,7 +67,7 @@ jobs:
           - arch: x86_64
             target: x86_64-unknown-linux-musl
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       # No cache restore here: this job publishes release binaries/rootfs, so it
       # must build from scratch to avoid cache-poisoning of trust-bearing artifacts.
       - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
@@ -130,7 +130,7 @@ jobs:
             target: x86_64-unknown-linux-musl
             debian_image: debian:bookworm-slim
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - name: Download guest binaries
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -168,7 +168,7 @@ jobs:
     name: Upload Lima Templates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - name: Package Lima templates
         run: |
           TAG="${GITHUB_REF_NAME}"
@@ -205,7 +205,7 @@ jobs:
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
           subject-path: release/*
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - name: Publish GitHub release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v2
         with:
@@ -231,7 +231,7 @@ jobs:
           fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         if: ${{ steps.publish_gate.outputs.enabled == 'true' }}
       # No cache restore here: this job publishes to crates.io, so it must
       # build from scratch to avoid cache-poisoning of trust-bearing artifacts.
@@ -287,7 +287,7 @@ jobs:
           echo "mac_arm_sha=$(sha256sum release/${MAC_ARM} | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
       - name: Checkout tap
         if: ${{ steps.brew_gate.outputs.enabled == 'true' }}
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           repository: ${{ secrets.HOMEBREW_TAP }}
           token: ${{ secrets.HOMEBREW_TOKEN }}
