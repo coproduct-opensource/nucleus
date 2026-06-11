@@ -59,7 +59,7 @@ fn caller() -> Caller {
         version: "0.0.1".to_string(),
         documentation_url: None,
         capabilities: AgentCapabilities::default(),
-        security_schemes: serde_json::Map::new(),
+        security_schemes: std::collections::BTreeMap::new(),
         security_requirements: vec![],
         default_input_modes: vec!["text/plain".to_string()],
         default_output_modes: vec!["text/plain".to_string()],
