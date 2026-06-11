@@ -80,8 +80,11 @@ mod envelope_e2e_tests;
 pub use anchor::trust_anchor_from_card;
 pub use card::{
     AgentCapabilities, AgentCard, AgentCardSignature, AgentExtension, AgentInterface,
-    AgentProvider, AgentSkill, EnforcementRule, NucleusClaims, RuntimeGuaranteeProfile,
-    SecurityRequirement, StringList, A2A_PROTOCOL_VERSION, NUCLEUS_EXTENSION_URI,
+    AgentProvider, AgentSkill, ApiKeySecurityScheme, AuthorizationCodeOAuthFlow,
+    ClientCredentialsOAuthFlow, DeviceCodeOAuthFlow, EnforcementRule, HttpAuthSecurityScheme,
+    ImplicitOAuthFlow, MutualTlsSecurityScheme, NucleusClaims, OAuth2SecurityScheme, OAuthFlows,
+    OpenIdConnectSecurityScheme, PasswordOAuthFlow, RuntimeGuaranteeProfile, SecurityRequirement,
+    SecurityScheme, StringList, A2A_PROTOCOL_VERSION, NUCLEUS_EXTENSION_URI,
 };
 pub use jcs::canonicalize;
 pub use jwk::JsonWebKey;

@@ -56,7 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         version: "1.0.0".to_string(),
         documentation_url: None,
         capabilities: AgentCapabilities::default(),
-        security_schemes: serde_json::Map::new(),
+        security_schemes: Default::default(),
         security_requirements: vec![],
         default_input_modes: vec!["application/json".to_string()],
         default_output_modes: vec!["application/json".to_string()],

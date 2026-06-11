@@ -42,8 +42,11 @@ pub fn canonicalize(card: &AgentCard) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
     use crate::card::{
-        AgentCapabilities, AgentCardSignature, AgentInterface, A2A_PROTOCOL_VERSION,
+        AgentCapabilities, AgentCardSignature, AgentInterface, MutualTlsSecurityScheme,
+        SecurityScheme, A2A_PROTOCOL_VERSION,
     };
 
     /// RFC 8785 Appendix B reference vector. Pins our JCS implementation
@@ -110,12 +113,18 @@ mod tests {
             version: "0.1.0".to_string(),
             documentation_url: None,
             capabilities: AgentCapabilities::default(),
-            security_schemes: {
-                let mut m = serde_json::Map::new();
-                m.insert("b".to_string(), serde_json::json!(1));
-                m.insert("a".to_string(), serde_json::json!(2));
-                m
-            },
+            security_schemes: BTreeMap::from([
+                (
+                    "b".to_string(),
+                    SecurityScheme::MutualTls(MutualTlsSecurityScheme {
+                        description: "first inserted".to_string(),
+                    }),
+                ),
+                (
+                    "a".to_string(),
+                    SecurityScheme::MutualTls(MutualTlsSecurityScheme::default()),
+                ),
+            ]),
             security_requirements: vec![],
             default_input_modes: vec!["application/json".to_string()],
             default_output_modes: vec!["application/json".to_string()],
@@ -133,9 +142,15 @@ mod tests {
         let first = canonicalize(&card).unwrap();
         let second = canonicalize(&card.clone()).unwrap();
         assert_eq!(first, second);
-        // Keys inside the nested securitySchemes map are sorted.
+        // Keys inside the nested securitySchemes map are sorted ("a"
+        // before "b" despite "b" being listed first above).
         let s = String::from_utf8(first).unwrap();
-        assert!(s.contains(r#""securitySchemes":{"a":2,"b":1}"#), "got: {s}");
+        assert!(
+            s.contains(
+                r#""securitySchemes":{"a":{"mtlsSecurityScheme":{}},"b":{"mtlsSecurityScheme":{"description":"first inserted"}}}"#
+            ),
+            "got: {s}"
+        );
     }
 
     /// §8.4.1 rule 3: the signatures field is excluded — an unsigned card
