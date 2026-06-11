@@ -11,9 +11,14 @@ use base64::Engine as _;
 use ring::rand::SystemRandom;
 use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
 
+use std::collections::BTreeMap;
+
 use crate::card::{
-    AgentCapabilities, AgentCard, AgentCardSignature, AgentInterface, NucleusClaims,
-    A2A_PROTOCOL_VERSION,
+    AgentCapabilities, AgentCard, AgentCardSignature, AgentInterface, ApiKeySecurityScheme,
+    AuthorizationCodeOAuthFlow, ClientCredentialsOAuthFlow, DeviceCodeOAuthFlow,
+    HttpAuthSecurityScheme, ImplicitOAuthFlow, MutualTlsSecurityScheme, NucleusClaims,
+    OAuth2SecurityScheme, OAuthFlows, OpenIdConnectSecurityScheme, PasswordOAuthFlow,
+    SecurityScheme, A2A_PROTOCOL_VERSION,
 };
 use crate::jcs::canonicalize;
 use crate::jwk::JsonWebKey;
@@ -82,7 +87,7 @@ fn spec_example_card() -> AgentCard {
             extensions: vec![],
             extended_agent_card: None,
         },
-        security_schemes: serde_json::Map::new(),
+        security_schemes: Default::default(),
         security_requirements: vec![],
         default_input_modes: vec!["application/json".to_string()],
         default_output_modes: vec!["application/json".to_string()],
@@ -147,6 +152,169 @@ fn golden_canonical_bytes_are_pinned() {
         r#""skills":[],"supportedInterfaces":[{"protocolBinding":"JSONRPC","protocolVersion":"1.0","url":"https://agent.example.com/a2a/v1"}],"version":"1.0.0"}"#
     );
     assert_eq!(canon, expected);
+}
+
+/// A fully deterministic `securitySchemes` map covering all five
+/// `SecurityScheme` oneof variants AND all five `OAuthFlows` oneof
+/// variants (one oauth2 scheme per flow).
+fn populated_security_schemes() -> BTreeMap<String, SecurityScheme> {
+    let entries = [
+        (
+            "api-key",
+            SecurityScheme::ApiKey(ApiKeySecurityScheme {
+                description: String::new(),
+                location: "header".to_string(),
+                name: "X-Api-Key".to_string(),
+            }),
+        ),
+        (
+            "bearer",
+            SecurityScheme::HttpAuth(HttpAuthSecurityScheme {
+                description: String::new(),
+                scheme: "Bearer".to_string(),
+                bearer_format: "JWT".to_string(),
+            }),
+        ),
+        (
+            "mtls",
+            SecurityScheme::MutualTls(MutualTlsSecurityScheme::default()),
+        ),
+        (
+            "oauth-ac",
+            SecurityScheme::OAuth2(OAuth2SecurityScheme {
+                description: String::new(),
+                flows: OAuthFlows::AuthorizationCode(AuthorizationCodeOAuthFlow {
+                    authorization_url: "https://auth.example.com/authorize".to_string(),
+                    token_url: "https://auth.example.com/token".to_string(),
+                    refresh_url: String::new(),
+                    scopes: BTreeMap::from([("read".to_string(), "Read access".to_string())]),
+                    pkce_required: true,
+                }),
+                oauth2_metadata_url:
+                    "https://auth.example.com/.well-known/oauth-authorization-server".to_string(),
+            }),
+        ),
+        (
+            "oauth-cc",
+            SecurityScheme::OAuth2(OAuth2SecurityScheme {
+                description: String::new(),
+                flows: OAuthFlows::ClientCredentials(ClientCredentialsOAuthFlow {
+                    token_url: "https://auth.example.com/token".to_string(),
+                    refresh_url: String::new(),
+                    scopes: BTreeMap::new(),
+                }),
+                oauth2_metadata_url: String::new(),
+            }),
+        ),
+        (
+            "oauth-dc",
+            SecurityScheme::OAuth2(OAuth2SecurityScheme {
+                description: String::new(),
+                flows: OAuthFlows::DeviceCode(DeviceCodeOAuthFlow {
+                    device_authorization_url: "https://auth.example.com/device".to_string(),
+                    token_url: "https://auth.example.com/token".to_string(),
+                    refresh_url: String::new(),
+                    scopes: BTreeMap::new(),
+                }),
+                oauth2_metadata_url: String::new(),
+            }),
+        ),
+        (
+            "oauth-implicit",
+            SecurityScheme::OAuth2(OAuth2SecurityScheme {
+                description: String::new(),
+                flows: OAuthFlows::Implicit(ImplicitOAuthFlow {
+                    authorization_url: "https://auth.example.com/authorize".to_string(),
+                    ..Default::default()
+                }),
+                oauth2_metadata_url: String::new(),
+            }),
+        ),
+        (
+            "oauth-password",
+            SecurityScheme::OAuth2(OAuth2SecurityScheme {
+                description: String::new(),
+                flows: OAuthFlows::Password(PasswordOAuthFlow {
+                    token_url: "https://auth.example.com/token".to_string(),
+                    ..Default::default()
+                }),
+                oauth2_metadata_url: String::new(),
+            }),
+        ),
+        (
+            "oidc",
+            SecurityScheme::OpenIdConnect(OpenIdConnectSecurityScheme {
+                description: String::new(),
+                open_id_connect_url:
+                    "https://accounts.example.com/.well-known/openid-configuration".to_string(),
+            }),
+        ),
+    ];
+    entries
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect()
+}
+
+/// GOLDEN PIN, populated `securitySchemes`: the exact canonical bytes the
+/// typed model signs for every scheme variant and every OAuth flow
+/// variant. The oneof wrapper objects (`{"mtlsSecurityScheme":{}}`, …) are
+/// the ProtoJSON encoding the normative `a2a.proto` prescribes — the same
+/// shape as the spec's §8.5 sample card entry
+/// `{"google":{"openIdConnectSecurityScheme":{...}}}`. Presence decisions
+/// pinned here: REQUIRED `scopes` stays on the wire even when empty;
+/// optional empty strings (`refreshUrl`, `description`,
+/// `oauth2MetadataUrl`) and default `pkceRequired:false` are omitted.
+#[test]
+fn golden_canonical_bytes_with_populated_security_schemes_are_pinned() {
+    let mut card = spec_example_card()
+        .with_nucleus_claims(&fixed_claims())
+        .unwrap();
+    card.security_schemes = populated_security_schemes();
+    let canon = String::from_utf8(canonicalize(&card).unwrap()).unwrap();
+    let expected = concat!(
+        r#"{"capabilities":{"extensions":[{"description":"nucleus verify-before-you-act claims: SPIFFE/DID identity, trust JWKS, envelope schema versions, runtime-guarantee profile","params":{"did":"did:web:golden.conformance.example.com","spiffeId":"spiffe://conformance.example.com/ns/agents/sa/golden","supportedEnvelopeSchemaVersions":["1"],"trustJwks":{"keys":[{"alg":"EdDSA","crv":"Ed25519","kid":"conformance-k1","kty":"OKP","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}]}},"uri":"https://coproduct.one/a2a/ext/runtime-guarantees/v1"}],"pushNotifications":false,"streaming":false},"#,
+        r#""defaultInputModes":["application/json"],"defaultOutputModes":["application/json"],"description":"","name":"Example Agent","#,
+        r#""securitySchemes":{"#,
+        r#""api-key":{"apiKeySecurityScheme":{"location":"header","name":"X-Api-Key"}},"#,
+        r#""bearer":{"httpAuthSecurityScheme":{"bearerFormat":"JWT","scheme":"Bearer"}},"#,
+        r#""mtls":{"mtlsSecurityScheme":{}},"#,
+        r#""oauth-ac":{"oauth2SecurityScheme":{"flows":{"authorizationCode":{"authorizationUrl":"https://auth.example.com/authorize","pkceRequired":true,"scopes":{"read":"Read access"},"tokenUrl":"https://auth.example.com/token"}},"oauth2MetadataUrl":"https://auth.example.com/.well-known/oauth-authorization-server"}},"#,
+        r#""oauth-cc":{"oauth2SecurityScheme":{"flows":{"clientCredentials":{"scopes":{},"tokenUrl":"https://auth.example.com/token"}}}},"#,
+        r#""oauth-dc":{"oauth2SecurityScheme":{"flows":{"deviceCode":{"deviceAuthorizationUrl":"https://auth.example.com/device","scopes":{},"tokenUrl":"https://auth.example.com/token"}}}},"#,
+        r#""oauth-implicit":{"oauth2SecurityScheme":{"flows":{"implicit":{"authorizationUrl":"https://auth.example.com/authorize"}}}},"#,
+        r#""oauth-password":{"oauth2SecurityScheme":{"flows":{"password":{"tokenUrl":"https://auth.example.com/token"}}}},"#,
+        r#""oidc":{"openIdConnectSecurityScheme":{"openIdConnectUrl":"https://accounts.example.com/.well-known/openid-configuration"}}},"#,
+        r#""skills":[],"supportedInterfaces":[{"protocolBinding":"JSONRPC","protocolVersion":"1.0","url":"https://agent.example.com/a2a/v1"}],"version":"1.0.0"}"#
+    );
+    assert_eq!(canon, expected);
+}
+
+/// The schemes are inside the signed content: a card signed with a
+/// populated map verifies after a wire round-trip, and ANY post-signing
+/// mutation of a scheme — even just requiring PKCE — breaks the signature.
+#[test]
+fn security_schemes_are_signature_covered() {
+    let (der, jwk) = p256_keypair();
+    let mut card = spec_example_card()
+        .with_nucleus_claims(&fixed_claims())
+        .unwrap();
+    card.security_schemes = populated_security_schemes();
+    let signed = sign_card(card, &der, "key-1").unwrap();
+
+    let wire = serde_json::to_string(&signed).unwrap();
+    let reconstructed: AgentCard = serde_json::from_str(&wire).unwrap();
+    verify_card(&reconstructed, &jwk).expect("populated card verifies after round-trip");
+
+    let mut tampered = reconstructed;
+    let Some(SecurityScheme::OAuth2(scheme)) = tampered.security_schemes.get_mut("oauth-ac") else {
+        panic!("oauth-ac entry present");
+    };
+    let OAuthFlows::AuthorizationCode(flow) = &mut scheme.flows else {
+        panic!("authorization-code flow present");
+    };
+    flow.pkce_required = false;
+    assert!(verify_card(&tampered, &jwk).is_err());
 }
 
 /// §8.4.2: the protected header is exactly `{alg, typ, kid}` with the

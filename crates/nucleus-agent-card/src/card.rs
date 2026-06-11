@@ -94,10 +94,14 @@ pub struct AgentCard {
     pub capabilities: AgentCapabilities,
 
     /// Security scheme details for authenticating with this agent
-    /// (`map<string, SecurityScheme>` in the proto). Opaque JSON — this
-    /// crate does not interpret it.
-    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
-    pub security_schemes: serde_json::Map<String, serde_json::Value>,
+    /// (`map<string, SecurityScheme>` in the proto), keyed by the scheme
+    /// name that [`SecurityRequirement`]s reference. Typed per the
+    /// normative `a2a.proto` so §7.3 client discovery ("the client
+    /// discovers the server's required authentication schemes via the
+    /// `securitySchemes` field") can match on the variant instead of
+    /// poking at opaque JSON.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub security_schemes: BTreeMap<String, SecurityScheme>,
 
     /// Security requirements for contacting the agent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -289,6 +293,301 @@ pub struct StringList {
     /// The individual string values.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub list: Vec<String>,
+}
+
+/// A security scheme that can be used to secure an agent's endpoints
+/// (`a2a.proto` `message SecurityScheme`) — a discriminated union based on
+/// the OpenAPI 3.2 Security Scheme Object.
+///
+/// # Wire shape (ProtoJSON oneof)
+///
+/// The proto models this message as a single `oneof scheme { ... }`. Under
+/// ProtoJSON, exactly one of a oneof's fields appears, **as a regular field
+/// of the containing message** — i.e. the variant is carried as the field
+/// NAME inside the `SecurityScheme` wrapper object, exactly like the spec's
+/// §8.5 sample card:
+///
+/// ```json
+/// "securitySchemes": {
+///   "google": {
+///     "openIdConnectSecurityScheme": {
+///       "openIdConnectUrl": "https://accounts.google.com/.well-known/openid-configuration"
+///     }
+///   }
+/// }
+/// ```
+///
+/// Serde's *externally tagged* enum representation reproduces that
+/// encoding bit-for-bit (an object with exactly one key naming the set
+/// variant). An *untagged* enum would be WRONG here: it would accept
+/// payloads without the variant key and could not round-trip the wrapper
+/// object protoc/pbjson emit.
+///
+/// The single-key requirement is also load-bearing on parse: an entry
+/// claiming TWO variants at once (illegal for a oneof) or a stale A2A v0.x
+/// `{"type": "oauth2", ...}` discriminator fails deserialization instead
+/// of silently riding along as opaque JSON. Unknown fields *inside* a
+/// variant's payload remain tolerated, matching this crate's
+/// forward-compat posture for ordinary message fields.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SecurityScheme {
+    /// API key-based authentication
+    /// (`api_key_security_scheme`, oneof field 1).
+    #[serde(rename = "apiKeySecurityScheme")]
+    ApiKey(ApiKeySecurityScheme),
+
+    /// HTTP authentication — Basic, Bearer, etc.
+    /// (`http_auth_security_scheme`, oneof field 2).
+    #[serde(rename = "httpAuthSecurityScheme")]
+    HttpAuth(HttpAuthSecurityScheme),
+
+    /// OAuth 2.0 authentication
+    /// (`oauth2_security_scheme`, oneof field 3).
+    #[serde(rename = "oauth2SecurityScheme")]
+    OAuth2(OAuth2SecurityScheme),
+
+    /// OpenID Connect authentication
+    /// (`open_id_connect_security_scheme`, oneof field 4).
+    #[serde(rename = "openIdConnectSecurityScheme")]
+    OpenIdConnect(OpenIdConnectSecurityScheme),
+
+    /// Mutual TLS authentication (`mtls_security_scheme`, oneof field 5).
+    /// ProtoJSON derives the wire name from the proto FIELD name, so this
+    /// is `mtlsSecurityScheme` — not the message name
+    /// `MutualTlsSecurityScheme`.
+    #[serde(rename = "mtlsSecurityScheme")]
+    MutualTls(MutualTlsSecurityScheme),
+}
+
+/// A security scheme using an API key
+/// (`a2a.proto` `message APIKeySecurityScheme`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiKeySecurityScheme {
+    /// An optional description for the security scheme.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+
+    /// The location of the API key (REQUIRED). Valid values are
+    /// `"query"`, `"header"`, or `"cookie"`.
+    pub location: String,
+
+    /// The name of the header, query, or cookie parameter to be used
+    /// (REQUIRED).
+    pub name: String,
+}
+
+/// A security scheme using HTTP authentication
+/// (`a2a.proto` `message HTTPAuthSecurityScheme`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpAuthSecurityScheme {
+    /// An optional description for the security scheme.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+
+    /// The HTTP Authentication scheme used in the `Authorization` header,
+    /// as defined in RFC 7235 — e.g. `"Bearer"` (REQUIRED). Should be a
+    /// value registered in the IANA Authentication Scheme registry.
+    pub scheme: String,
+
+    /// A hint to the client for how the bearer token is formatted
+    /// (e.g. `"JWT"`). Documentation only.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bearer_format: String,
+}
+
+/// A security scheme using OAuth 2.0
+/// (`a2a.proto` `message OAuth2SecurityScheme`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OAuth2SecurityScheme {
+    /// An optional description for the security scheme.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+
+    /// Configuration for the supported OAuth 2.0 flow (REQUIRED). An
+    /// oauth2 scheme that does not say which flow to run is unusable, so
+    /// absence is a parse error, not a default.
+    pub flows: OAuthFlows,
+
+    /// URL to the OAuth2 authorization server metadata (RFC 8414).
+    /// TLS is required.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub oauth2_metadata_url: String,
+}
+
+/// A security scheme using OpenID Connect
+/// (`a2a.proto` `message OpenIdConnectSecurityScheme`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenIdConnectSecurityScheme {
+    /// An optional description for the security scheme.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+
+    /// The OpenID Connect Discovery URL for the OIDC provider's metadata
+    /// (REQUIRED).
+    pub open_id_connect_url: String,
+}
+
+/// A security scheme using mutual TLS authentication
+/// (`a2a.proto` `message MutualTlsSecurityScheme`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MutualTlsSecurityScheme {
+    /// An optional description for the security scheme.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
+/// Configuration of the supported OAuth 2.0 flow
+/// (`a2a.proto` `message OAuthFlows`).
+///
+/// Like [`SecurityScheme`], the proto models this as a single
+/// `oneof flow { ... }`, so the ProtoJSON wrapper object carries exactly
+/// one key naming the configured flow — e.g.
+/// `{"clientCredentials": {"tokenUrl": "...", "scopes": {}}}` — and serde's
+/// externally tagged representation matches it exactly. (Note this is
+/// narrower than the OpenAPI object it descends from, which allows several
+/// flows side by side; the normative proto allows exactly one.)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum OAuthFlows {
+    /// The OAuth 2.0 Authorization Code flow
+    /// (`authorization_code`, oneof field 1).
+    #[serde(rename = "authorizationCode")]
+    AuthorizationCode(AuthorizationCodeOAuthFlow),
+
+    /// The OAuth 2.0 Client Credentials flow
+    /// (`client_credentials`, oneof field 2).
+    #[serde(rename = "clientCredentials")]
+    ClientCredentials(ClientCredentialsOAuthFlow),
+
+    /// The OAuth 2.0 Implicit flow (`implicit`, oneof field 3). The proto
+    /// marks this flow deprecated — producers should use Authorization
+    /// Code + PKCE instead — but conformant cards may still carry it, so a
+    /// verifier must keep parsing it.
+    #[serde(rename = "implicit")]
+    Implicit(ImplicitOAuthFlow),
+
+    /// The OAuth 2.0 Resource Owner Password flow
+    /// (`password`, oneof field 4). Deprecated in the proto — use
+    /// Authorization Code + PKCE or Device Code — but still parsed, as for
+    /// [`OAuthFlows::Implicit`].
+    #[serde(rename = "password")]
+    Password(PasswordOAuthFlow),
+
+    /// The OAuth 2.0 Device Code flow, RFC 8628
+    /// (`device_code`, oneof field 5).
+    #[serde(rename = "deviceCode")]
+    DeviceCode(DeviceCodeOAuthFlow),
+}
+
+/// Configuration of the OAuth 2.0 Authorization Code flow
+/// (`a2a.proto` `message AuthorizationCodeOAuthFlow`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthorizationCodeOAuthFlow {
+    /// The authorization URL to be used for this flow (REQUIRED).
+    pub authorization_url: String,
+
+    /// The token URL to be used for this flow (REQUIRED).
+    pub token_url: String,
+
+    /// The URL to be used for obtaining refresh tokens.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub refresh_url: String,
+
+    /// The available scopes for the OAuth2 security scheme: scope name →
+    /// short description (REQUIRED; may be empty).
+    pub scopes: BTreeMap<String, String>,
+
+    /// Whether PKCE (RFC 7636) is required for this flow. PKCE should
+    /// always be used for public clients and is recommended for all
+    /// clients.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pkce_required: bool,
+}
+
+/// Configuration of the OAuth 2.0 Client Credentials flow
+/// (`a2a.proto` `message ClientCredentialsOAuthFlow`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientCredentialsOAuthFlow {
+    /// The token URL to be used for this flow (REQUIRED).
+    pub token_url: String,
+
+    /// The URL to be used for obtaining refresh tokens.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub refresh_url: String,
+
+    /// The available scopes for the OAuth2 security scheme: scope name →
+    /// short description (REQUIRED; may be empty).
+    pub scopes: BTreeMap<String, String>,
+}
+
+/// Configuration of the deprecated OAuth 2.0 Implicit flow
+/// (`a2a.proto` `message ImplicitOAuthFlow`). Every field is optional in
+/// the proto (no REQUIRED annotations on the deprecated flows).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImplicitOAuthFlow {
+    /// The authorization URL to be used for this flow. The OAuth2
+    /// standard requires the use of TLS.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub authorization_url: String,
+
+    /// The URL to be used for obtaining refresh tokens.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub refresh_url: String,
+
+    /// The available scopes for the OAuth2 security scheme: scope name →
+    /// short description. MAY be empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub scopes: BTreeMap<String, String>,
+}
+
+/// Configuration of the deprecated OAuth 2.0 Resource Owner Password flow
+/// (`a2a.proto` `message PasswordOAuthFlow`). Every field is optional in
+/// the proto (no REQUIRED annotations on the deprecated flows).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PasswordOAuthFlow {
+    /// The token URL to be used for this flow. The OAuth2 standard
+    /// requires the use of TLS.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub token_url: String,
+
+    /// The URL to be used for obtaining refresh tokens.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub refresh_url: String,
+
+    /// The available scopes for the OAuth2 security scheme: scope name →
+    /// short description. MAY be empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub scopes: BTreeMap<String, String>,
+}
+
+/// Configuration of the OAuth 2.0 Device Code flow, RFC 8628
+/// (`a2a.proto` `message DeviceCodeOAuthFlow`) — for input-constrained
+/// devices (IoT, CLI tools) where the user authenticates on a separate
+/// device.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceCodeOAuthFlow {
+    /// The device authorization endpoint URL (REQUIRED).
+    pub device_authorization_url: String,
+
+    /// The token URL to be used for this flow (REQUIRED).
+    pub token_url: String,
+
+    /// The URL to be used for obtaining refresh tokens.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub refresh_url: String,
+
+    /// The available scopes for the OAuth2 security scheme: scope name →
+    /// short description (REQUIRED; may be empty).
+    pub scopes: BTreeMap<String, String>,
 }
 
 /// A distinct capability or function an agent can perform
@@ -483,7 +782,7 @@ mod tests {
             version: "1.0.0".to_string(),
             documentation_url: None,
             capabilities: AgentCapabilities::default(),
-            security_schemes: serde_json::Map::new(),
+            security_schemes: BTreeMap::new(),
             security_requirements: vec![],
             default_input_modes: vec!["application/json".to_string()],
             default_output_modes: vec!["application/json".to_string()],
@@ -649,6 +948,255 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&req).unwrap(),
             serde_json::json!({"schemes": {"oauth": {"list": ["openid"]}}})
+        );
+    }
+
+    /// One instance of every `SecurityScheme` oneof variant, exercising
+    /// every REQUIRED subfield plus the optional ones.
+    fn one_of_each_scheme() -> Vec<(&'static str, SecurityScheme)> {
+        vec![
+            (
+                "apiKey",
+                SecurityScheme::ApiKey(ApiKeySecurityScheme {
+                    description: "internal service key".to_string(),
+                    location: "header".to_string(),
+                    name: "X-Api-Key".to_string(),
+                }),
+            ),
+            (
+                "bearer",
+                SecurityScheme::HttpAuth(HttpAuthSecurityScheme {
+                    description: String::new(),
+                    scheme: "Bearer".to_string(),
+                    bearer_format: "JWT".to_string(),
+                }),
+            ),
+            (
+                "oauth",
+                SecurityScheme::OAuth2(OAuth2SecurityScheme {
+                    description: String::new(),
+                    flows: OAuthFlows::AuthorizationCode(AuthorizationCodeOAuthFlow {
+                        authorization_url: "https://auth.example.com/authorize".to_string(),
+                        token_url: "https://auth.example.com/token".to_string(),
+                        refresh_url: String::new(),
+                        scopes: BTreeMap::from([("read".to_string(), "Read access".to_string())]),
+                        pkce_required: true,
+                    }),
+                    oauth2_metadata_url: String::new(),
+                }),
+            ),
+            (
+                "oidc",
+                SecurityScheme::OpenIdConnect(OpenIdConnectSecurityScheme {
+                    description: String::new(),
+                    open_id_connect_url:
+                        "https://accounts.example.com/.well-known/openid-configuration".to_string(),
+                }),
+            ),
+            (
+                "mtls",
+                SecurityScheme::MutualTls(MutualTlsSecurityScheme {
+                    description: "client certificate".to_string(),
+                }),
+            ),
+        ]
+    }
+
+    #[test]
+    fn each_security_scheme_variant_round_trips() {
+        for (name, scheme) in one_of_each_scheme() {
+            let json = serde_json::to_value(&scheme).unwrap();
+            // ProtoJSON oneof wrapper: exactly ONE key, naming the variant.
+            assert_eq!(
+                json.as_object().unwrap().len(),
+                1,
+                "{name}: oneof wrapper must carry exactly one variant: {json}"
+            );
+            let back: SecurityScheme = serde_json::from_value(json).unwrap();
+            assert_eq!(scheme, back, "{name} did not round-trip");
+        }
+    }
+
+    #[test]
+    fn security_scheme_wire_names_match_a2a_proto_oneof() {
+        // The wire key is the proto FIELD name in lowerCamelCase — pinned
+        // per variant so a rename never silently breaks interop.
+        let expected = [
+            "apiKeySecurityScheme",
+            "httpAuthSecurityScheme",
+            "oauth2SecurityScheme",
+            "openIdConnectSecurityScheme",
+            "mtlsSecurityScheme",
+        ];
+        for ((name, scheme), key) in one_of_each_scheme().into_iter().zip(expected) {
+            let json = serde_json::to_value(&scheme).unwrap();
+            assert!(json.get(key).is_some(), "{name}: expected `{key}`: {json}");
+        }
+        // Spot-check nested ProtoJSON field names (§8.5 sample card shape).
+        let oidc = serde_json::to_value(&one_of_each_scheme()[3].1).unwrap();
+        assert!(oidc["openIdConnectSecurityScheme"]["openIdConnectUrl"].is_string());
+        let oauth = serde_json::to_value(&one_of_each_scheme()[2].1).unwrap();
+        let flow = &oauth["oauth2SecurityScheme"]["flows"]["authorizationCode"];
+        assert!(flow["authorizationUrl"].is_string());
+        assert!(flow["tokenUrl"].is_string());
+        assert_eq!(flow["pkceRequired"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn each_oauth_flow_variant_round_trips() {
+        let flows = vec![
+            OAuthFlows::AuthorizationCode(AuthorizationCodeOAuthFlow {
+                authorization_url: "https://auth.example.com/authorize".to_string(),
+                token_url: "https://auth.example.com/token".to_string(),
+                refresh_url: "https://auth.example.com/refresh".to_string(),
+                scopes: BTreeMap::new(),
+                pkce_required: false,
+            }),
+            OAuthFlows::ClientCredentials(ClientCredentialsOAuthFlow {
+                token_url: "https://auth.example.com/token".to_string(),
+                refresh_url: String::new(),
+                scopes: BTreeMap::from([("act".to_string(), "Act".to_string())]),
+            }),
+            OAuthFlows::Implicit(ImplicitOAuthFlow {
+                authorization_url: "https://auth.example.com/authorize".to_string(),
+                ..Default::default()
+            }),
+            OAuthFlows::Password(PasswordOAuthFlow {
+                token_url: "https://auth.example.com/token".to_string(),
+                ..Default::default()
+            }),
+            OAuthFlows::DeviceCode(DeviceCodeOAuthFlow {
+                device_authorization_url: "https://auth.example.com/device".to_string(),
+                token_url: "https://auth.example.com/token".to_string(),
+                refresh_url: String::new(),
+                scopes: BTreeMap::new(),
+            }),
+        ];
+        for flow in flows {
+            let json = serde_json::to_value(&flow).unwrap();
+            assert_eq!(json.as_object().unwrap().len(), 1, "{json}");
+            let back: OAuthFlows = serde_json::from_value(json).unwrap();
+            assert_eq!(flow, back);
+        }
+    }
+
+    #[test]
+    fn two_variant_security_scheme_entry_is_rejected() {
+        // A oneof carries AT MOST one field — an entry claiming to be both
+        // an API key scheme and an mTLS scheme is malformed and must not
+        // parse (previously it rode along as opaque JSON and got signed).
+        let json = serde_json::json!({
+            "apiKeySecurityScheme": {"location": "header", "name": "X-Api-Key"},
+            "mtlsSecurityScheme": {}
+        });
+        assert!(serde_json::from_value::<SecurityScheme>(json).is_err());
+    }
+
+    #[test]
+    fn v0_type_discriminated_scheme_is_rejected() {
+        // A2A v0.x used an OpenAPI-style `"type"` discriminator. v1.0's
+        // ProtoJSON carries the variant as the wrapper's field name
+        // instead, so the stale shape must fail to parse.
+        for stale in [
+            serde_json::json!({"type": "oauth2"}),
+            serde_json::json!({"type": "apiKey", "in": "header", "name": "X-Api-Key"}),
+            serde_json::json!({"type": "openIdConnect", "openIdConnectUrl": "https://x"}),
+        ] {
+            assert!(
+                serde_json::from_value::<SecurityScheme>(stale.clone()).is_err(),
+                "v0.x shape must be rejected: {stale}"
+            );
+        }
+    }
+
+    #[test]
+    fn oauth2_scheme_missing_required_flows_is_rejected() {
+        // `flows` is REQUIRED on OAuth2SecurityScheme — an oauth2 scheme
+        // that does not say which flow to run is undiscoverable per §7.3.
+        let json = serde_json::json!({
+            "oauth2SecurityScheme": {"description": "no flows declared"}
+        });
+        let err = serde_json::from_value::<SecurityScheme>(json).unwrap_err();
+        assert!(err.to_string().contains("flows"), "{err}");
+    }
+
+    #[test]
+    fn required_scheme_subfields_are_presence_checked() {
+        // One missing REQUIRED subfield per variant that has any.
+        for (name, bad) in [
+            (
+                "apiKey missing name",
+                serde_json::json!({"apiKeySecurityScheme": {"location": "header"}}),
+            ),
+            (
+                "apiKey missing location",
+                serde_json::json!({"apiKeySecurityScheme": {"name": "X-Api-Key"}}),
+            ),
+            (
+                "http missing scheme",
+                serde_json::json!({"httpAuthSecurityScheme": {"bearerFormat": "JWT"}}),
+            ),
+            (
+                "oidc missing url",
+                serde_json::json!({"openIdConnectSecurityScheme": {"description": "x"}}),
+            ),
+            (
+                "authorizationCode flow missing tokenUrl",
+                serde_json::json!({"oauth2SecurityScheme": {"flows": {"authorizationCode": {
+                    "authorizationUrl": "https://a", "scopes": {}
+                }}}}),
+            ),
+            (
+                "deviceCode flow missing deviceAuthorizationUrl",
+                serde_json::json!({"oauth2SecurityScheme": {"flows": {"deviceCode": {
+                    "tokenUrl": "https://t", "scopes": {}
+                }}}}),
+            ),
+            (
+                "clientCredentials flow missing scopes",
+                serde_json::json!({"oauth2SecurityScheme": {"flows": {"clientCredentials": {
+                    "tokenUrl": "https://t"
+                }}}}),
+            ),
+        ] {
+            assert!(
+                serde_json::from_value::<SecurityScheme>(bad.clone()).is_err(),
+                "{name} must be rejected: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_fields_inside_a_variant_are_tolerated() {
+        // Forward-compat: a newer producer may add fields to a scheme
+        // MESSAGE (allowed by proto evolution); the oneof WRAPPER itself
+        // stays single-key. Same posture as the card-level test below.
+        let json = serde_json::json!({
+            "apiKeySecurityScheme": {
+                "location": "header",
+                "name": "X-Api-Key",
+                "futureFieldWeDontKnow": true
+            }
+        });
+        let scheme: SecurityScheme = serde_json::from_value(json).unwrap();
+        assert!(matches!(scheme, SecurityScheme::ApiKey(ref s) if s.name == "X-Api-Key"));
+    }
+
+    #[test]
+    fn populated_security_schemes_round_trip_on_the_card() {
+        let mut card = sample_card();
+        card.security_schemes = one_of_each_scheme()
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        let json = serde_json::to_string(&card).unwrap();
+        let back: AgentCard = serde_json::from_str(&json).unwrap();
+        assert_eq!(card.security_schemes, back.security_schemes);
+        // §8.5 sample-card shape: map key → single-variant wrapper object.
+        let value = serde_json::to_value(&card).unwrap();
+        assert!(
+            value["securitySchemes"]["oidc"]["openIdConnectSecurityScheme"]["openIdConnectUrl"]
+                .is_string()
         );
     }
 
