@@ -334,6 +334,43 @@ export async function verifyAgentCard(signedCard, resolvedJwk) {
   );
 }
 
+/**
+ * Verify ONLY the A2A v1.0 §8.4.3 signature of an Agent Card against an
+ * out-of-band-resolved key — no nucleus claims policy. The interop entry
+ * point: a validly signed *plain* A2A card (no nucleus extension, e.g. one
+ * published by any other A2A implementation) verifies here, while
+ * `verifyAgentCard()` additionally requires the nucleus claims.
+ *
+ * Verification runs over the card document exactly as received (§8.4.3
+ * steps 3-6 operate on "the received Agent Card"): the `signatures` member
+ * is removed, everything else — including members this build does not
+ * model — stays in the RFC 8785 canonical payload, and EVERY entry of the
+ * `signatures` array is checked against the resolved key (§8.4.3 allows
+ * multiple signatures for key rotation; any one verifying suffices). The
+ * card's own key material is never trusted.
+ *
+ * Returns a structured verdict (branch on `outcome`); throws only on
+ * malformed input (bad card JSON, bad JWK JSON).
+ *
+ * @param {string | object} signedCard
+ *   The signed A2A v1.0 `AgentCard` as received — JSON string or parsed
+ *   object (JWS signatures embedded in its `signatures` field).
+ * @param {string | object} resolvedJwk
+ *   The out-of-band-resolved verification key — JWK JSON string or object
+ *   (`{"kty":"EC","crv":"P-256","x":"...","y":"..."}`). NEVER from the card.
+ * @returns {Promise<
+ *   | { outcome: "verified" }
+ *   | { outcome: "rejected", reason: string }
+ * >}
+ */
+export async function verifyAgentCardSignature(signedCard, resolvedJwk) {
+  const mod = await initWasm();
+  return mod.verifyAgentCardSignature(
+    asJsonString(signedCard),
+    asJsonString(resolvedJwk),
+  );
+}
+
 // ── RECOMPUTE: re-derive the decision, don't just check the signature ─────────
 // `verify()` proves a receipt was *signed*; `recompute()` proves the in-bounds
 // IFC *decision* was correct by re-running the EXACT same gate function the

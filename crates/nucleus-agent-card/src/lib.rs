@@ -10,6 +10,24 @@
 //! [`nucleus_envelope::TrustAnchor`] ([`trust_anchor_from_card`]) so the
 //! EXISTING bundle verifier can decide whether to ACT on a bundle.
 //!
+//! # Verification surface — pick the right entry point
+//!
+//! - [`verify_card_signature`] / [`verify_card_signature_json`] — PURE A2A
+//!   §8.4.3 signature verification, no nucleus policy. A validly signed
+//!   plain A2A card (no nucleus extension — e.g. from a non-nucleus
+//!   implementation) verifies here.
+//! - [`verify_card`] / [`verify_card_json`] — the §8.4.3 check PLUS the
+//!   nucleus claims policy (extension required, usable `trust_jwks`),
+//!   yielding a [`VerifiedCard`] for the verify-before-you-act flow.
+//!   Policy rejections are labelled as policy, never as signature
+//!   failures.
+//! - The `*_json` variants verify **the received document** (§8.4.3 steps
+//!   3–6 operate on "the received Agent Card"): canonicalization keeps
+//!   every received member, so injected unknown members are rejected and
+//!   cards signed by newer implementations over unmodeled members still
+//!   verify. Prefer them whenever the card reached you as raw JSON; the
+//!   struct variants cover exactly the fields this version models.
+//!
 //! # Trust model — read this before using
 //!
 //! - **Verify needs no secret.** [`verify_card`] is always compiled and is
@@ -83,9 +101,11 @@ pub use card::{
     AgentProvider, AgentSkill, EnforcementRule, NucleusClaims, RuntimeGuaranteeProfile,
     SecurityRequirement, StringList, A2A_PROTOCOL_VERSION, NUCLEUS_EXTENSION_URI,
 };
-pub use jcs::canonicalize;
+pub use jcs::{canonicalize, canonicalize_received};
 pub use jwk::JsonWebKey;
-pub use verify::{verify_card, VerifiedCard};
+pub use verify::{
+    verify_card, verify_card_json, verify_card_signature, verify_card_signature_json, VerifiedCard,
+};
 
 #[cfg(feature = "sign")]
 pub use sign::sign_card;
@@ -100,8 +120,11 @@ pub enum Error {
     #[error("agent-card canonicalization failed: {0}")]
     Canonicalize(String),
 
-    /// Card verification failed (no signatures, bad signature, payload
-    /// mismatch, missing nucleus extension, or unusable advertised JWKS).
+    /// Card verification failed — either at the A2A §8.4.3 signature
+    /// layer (no signatures, bad signature, payload mismatch) or at the
+    /// nucleus claims policy layer (missing nucleus extension, unusable
+    /// advertised JWKS); policy messages say "nucleus claims policy"
+    /// explicitly so the two are never confused.
     #[error("agent-card verification failed: {0}")]
     Verify(String),
 

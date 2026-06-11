@@ -19,6 +19,26 @@ protected header `{alg, typ: "JOSE", kid}`, carried in the card's own
 [`nucleus_envelope::TrustAnchor`](../nucleus-envelope) (`trust_anchor_from_card`)
 so the existing bundle verifier can decide whether to **act** on a bundle.
 
+## Verification surface — pick the right entry point
+
+- `verify_card_signature` / `verify_card_signature_json` — **pure A2A §8.4.3
+  signature verification**, no nucleus policy. A validly signed *plain* A2A
+  card (no nucleus extension — e.g. one published by any other A2A
+  implementation) verifies here.
+- `verify_card` / `verify_card_json` — the §8.4.3 check **plus the nucleus
+  claims policy** (extension required, usable `trust_jwks`), yielding a
+  `VerifiedCard` for the verify-before-you-act flow. Policy rejections are
+  labelled as policy, never as signature failures.
+- The `*_json` variants verify **the received document** (§8.4.3 steps 3–6
+  operate on "the received Agent Card"): canonicalization keeps every received
+  member, so an injected unknown member is rejected and a card signed by a
+  newer implementation over an unmodeled member still verifies. Prefer them
+  whenever the card reached you as raw JSON.
+- Every entry of the `signatures` array is checked against the caller's
+  resolved key (§8.4.3 allows multiple signatures for key rotation); any one
+  verifying suffices, and the key is always the caller's — iterating entries
+  introduces no card-controlled key selection.
+
 ## Trust model — read this before using
 
 - **Verify needs no secret.** `verify_card` is always compiled and secret-free;

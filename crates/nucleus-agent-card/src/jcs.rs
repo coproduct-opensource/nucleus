@@ -29,14 +29,71 @@ use crate::{Error, Result};
 /// These are exactly the bytes the JWS signature covers — for an unsigned
 /// and a signed copy of the same card they are identical, which is what
 /// makes the detached signature verifiable at all.
+///
+/// This is the SIGNER's path (and the verify path for callers who only
+/// hold a typed struct): it covers exactly the fields [`AgentCard`]
+/// models. A verifier that received the card as raw JSON should
+/// canonicalize the received document instead — see
+/// [`canonicalize_received`] — so the signature is checked over what was
+/// actually received, unknown members included.
 pub fn canonicalize(card: &AgentCard) -> Result<Vec<u8>> {
-    let mut value = serde_json::to_value(card).map_err(|e| Error::Canonicalize(e.to_string()))?;
-    if let Some(obj) = value.as_object_mut() {
-        // §8.4.1 rule 3: the signatures field itself MUST be excluded from
-        // the content being signed (avoids the circular dependency).
-        obj.remove("signatures");
-    }
-    serde_jcs::to_vec(&value).map_err(|e| Error::Canonicalize(e.to_string()))
+    let value = serde_json::to_value(card).map_err(|e| Error::Canonicalize(e.to_string()))?;
+    canonicalize_received(&value)
+}
+
+/// Canonicalize a RECEIVED Agent Card document (raw JSON) to its A2A
+/// §8.4.3 verification payload: remove the `signatures` member (§8.4.1
+/// rule 3), keep **every other member exactly as received**, and RFC 8785
+/// (JCS)-canonicalize the result.
+///
+/// # Why "keep everything as received" satisfies §8.4.1's presence rules
+///
+/// §8.4.3 steps 3–6 operate on "the received Agent Card", and step 3 says
+/// to "remove properties with default values". Read against §8.4.1 rule 1,
+/// that removal is schema-directed: it distinguishes `optional` fields
+/// (explicit presence — include when present, even at a default value)
+/// from non-`optional`, non-`REQUIRED` fields (implicit presence — omit at
+/// the default value). The §8.4.1 worked example shows both:
+/// `capabilities.streaming: false` is *kept* ("optional field, present in
+/// JSON (explicitly set)") while `capabilities.extensions: []` is
+/// *omitted* ("repeated field (not REQUIRED) with empty array").
+///
+/// A verifier of a raw received document cannot apply that distinction to
+/// members it does not model — it has no schema for them. But it does not
+/// need to, because of how conformant producers serialize (A2A ADR-001,
+/// ProtoJSON): an implicit-presence field at its default value is *never
+/// emitted on the wire* in the first place, and the §8.4.2 signing
+/// procedure strips the same members before signing. So for a conformantly
+/// serialized card, presence in the received JSON IS the §8.4.1 rule-1
+/// signal: every member present was either `REQUIRED`, an explicitly-set
+/// `optional`, or non-default — all of which the canonical form INCLUDES —
+/// and every member the canonical form would omit is already absent.
+/// "Remove `signatures`, keep the rest, JCS" therefore computes exactly
+/// the §8.4.1 canonical payload, without needing a schema for unknown
+/// members — which is what makes verifying a card signed by a newer
+/// implementation (over members this version does not model) possible at
+/// all.
+///
+/// For a NON-conformant document that materializes an implicit-presence
+/// default (e.g. a literal `"extensions": []` a conformant signer would
+/// have stripped), this canonicalization yields different bytes than the
+/// signer's and verification fails. That is the fail-closed direction: we
+/// never accept a signature over bytes that differ from what was received.
+///
+/// # Errors
+///
+/// [`Error::Canonicalize`] if the document is not a JSON object or JCS
+/// serialization fails.
+pub fn canonicalize_received(received: &serde_json::Value) -> Result<Vec<u8>> {
+    let obj = received.as_object().ok_or_else(|| {
+        Error::Canonicalize("received Agent Card document is not a JSON object".to_string())
+    })?;
+    let mut stripped = obj.clone();
+    // §8.4.1 rule 3: the signatures member itself MUST be excluded from
+    // the content being signed (avoids the circular dependency).
+    stripped.remove("signatures");
+    serde_jcs::to_vec(&serde_json::Value::Object(stripped))
+        .map_err(|e| Error::Canonicalize(e.to_string()))
 }
 
 #[cfg(test)]
@@ -154,5 +211,52 @@ mod tests {
         let b = canonicalize(&signed).unwrap();
         assert_eq!(a, b, "signatures must not be part of the signed content");
         assert!(!String::from_utf8(b).unwrap().contains("signatures"));
+    }
+
+    /// The typed path and the received-document path agree byte-for-byte
+    /// on a card this version fully models — the equivalence that lets
+    /// `verify_card` (struct) and `verify_card_json` (raw document)
+    /// accept the same signatures.
+    #[test]
+    fn received_document_canonicalization_matches_the_struct_path() {
+        let card = minimal_card();
+        let doc = serde_json::to_value(&card).unwrap();
+        assert_eq!(
+            canonicalize(&card).unwrap(),
+            canonicalize_received(&doc).unwrap()
+        );
+    }
+
+    /// A member present in the received document — modeled or not — is
+    /// part of the canonical payload. This is the §8.4.1 rule-1 reading
+    /// (presence in the received JSON is the explicitly-set signal): an
+    /// unknown member must CHANGE the bytes, so a signature that did not
+    /// cover it cannot verify, and one that did cover it can.
+    #[test]
+    fn received_document_keeps_unknown_members() {
+        let mut doc = serde_json::to_value(minimal_card()).unwrap();
+        let baseline = canonicalize_received(&doc).unwrap();
+        doc.as_object_mut()
+            .unwrap()
+            .insert("futureField".to_string(), serde_json::json!("v1.1"));
+        let with_unknown = canonicalize_received(&doc).unwrap();
+        assert_ne!(baseline, with_unknown);
+        assert!(String::from_utf8(with_unknown)
+            .unwrap()
+            .contains(r#""futureField":"v1.1""#));
+    }
+
+    #[test]
+    fn received_document_must_be_a_json_object() {
+        for not_a_card in [
+            serde_json::json!([1, 2, 3]),
+            serde_json::json!("string"),
+            serde_json::json!(null),
+        ] {
+            assert!(matches!(
+                canonicalize_received(&not_a_card),
+                Err(Error::Canonicalize(_))
+            ));
+        }
     }
 }

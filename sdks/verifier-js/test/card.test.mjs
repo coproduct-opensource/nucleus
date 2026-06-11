@@ -18,13 +18,23 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-import { verifyAgentCard } from "../index.js";
+import { verifyAgentCard, verifyAgentCardSignature } from "../index.js";
 
 const fixtureUrl = new URL("./fixtures/agent-card.json", import.meta.url);
+// A validly signed PLAIN A2A v1.0 card — NO nucleus extension, exactly what
+// any non-nucleus A2A implementation publishes (see its `_generated_by`).
+const plainFixtureUrl = new URL(
+  "./fixtures/plain-agent-card.json",
+  import.meta.url,
+);
+
+async function readFixtureAt(url) {
+  const text = await readFile(fileURLToPath(url), "utf8");
+  return JSON.parse(text);
+}
 
 async function readFixture() {
-  const text = await readFile(fileURLToPath(fixtureUrl), "utf8");
-  return JSON.parse(text);
+  return readFixtureAt(fixtureUrl);
 }
 
 const NUCLEUS_EXT_URI = "https://coproduct.one/a2a/ext/runtime-guarantees/v1";
@@ -108,6 +118,71 @@ test("malformed JWK JSON throws (input error, not a verdict)", async () => {
   const { signed_card } = await readFixture();
   await assert.rejects(
     () => verifyAgentCard(signed_card, "{}"),
+    /resolved JWK JSON/,
+  );
+});
+
+// ── §8.4.3 over the RECEIVED document ──────────────────────────────────────────
+
+test("a member injected into the received card after signing is rejected", async () => {
+  // The injected member is unknown to the typed card — a verifier that
+  // re-serialized its struct would silently drop it and (wrongly) verify.
+  // §8.4.3 steps 3-6 operate on the received Agent Card: rejected.
+  const { signed_card, resolved_jwk } = await readFixture();
+  signed_card.injectedByAttacker = "not covered by the signature";
+  const v = await verifyAgentCard(signed_card, resolved_jwk);
+  assert.equal(v.outcome, "rejected");
+  const s = await verifyAgentCardSignature(signed_card, resolved_jwk);
+  assert.equal(s.outcome, "rejected");
+});
+
+// ── verifyAgentCardSignature: the pure §8.4.3 layer ────────────────────────────
+
+test("a plain (extension-free) signed A2A card verifies on the signature path", async () => {
+  const { signed_card, resolved_jwk } = await readFixtureAt(plainFixtureUrl);
+  const v = await verifyAgentCardSignature(signed_card, resolved_jwk);
+  assert.equal(v.outcome, "verified");
+});
+
+test("the same plain card is rejected by verifyAgentCard — as policy, not signature", async () => {
+  const { signed_card, resolved_jwk } = await readFixtureAt(plainFixtureUrl);
+  const v = await verifyAgentCard(signed_card, resolved_jwk);
+  assert.equal(v.outcome, "rejected");
+  assert.match(v.reason, /nucleus claims policy/);
+  assert.match(v.reason, /not a signature failure/);
+});
+
+test("the plain card under the wrong key is a signature rejection", async () => {
+  const { signed_card, wrong_jwk } = await readFixtureAt(plainFixtureUrl);
+  const v = await verifyAgentCardSignature(signed_card, wrong_jwk);
+  assert.equal(v.outcome, "rejected");
+  assert.match(v.reason, /JWS verification failed/);
+});
+
+test("tampering the plain card after signing is rejected on the signature path", async () => {
+  const { signed_card, resolved_jwk } = await readFixtureAt(plainFixtureUrl);
+  signed_card.name = "Imposter Agent";
+  const v = await verifyAgentCardSignature(signed_card, resolved_jwk);
+  assert.equal(v.outcome, "rejected");
+});
+
+test("signature path accepts JSON-string inputs identically", async () => {
+  const { signed_card, resolved_jwk } = await readFixtureAt(plainFixtureUrl);
+  const v = await verifyAgentCardSignature(
+    JSON.stringify(signed_card),
+    JSON.stringify(resolved_jwk),
+  );
+  assert.equal(v.outcome, "verified");
+});
+
+test("signature path: malformed inputs throw (input error, not a verdict)", async () => {
+  const { signed_card, resolved_jwk } = await readFixtureAt(plainFixtureUrl);
+  await assert.rejects(
+    () => verifyAgentCardSignature("not valid json", resolved_jwk),
+    /signed card JSON/,
+  );
+  await assert.rejects(
+    () => verifyAgentCardSignature(signed_card, "{}"),
     /resolved JWK JSON/,
   );
 });
