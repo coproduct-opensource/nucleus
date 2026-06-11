@@ -65,6 +65,33 @@ jobs:
         working-directory: sdks/verifier-js
         run: npm test
 
+  a2a-example:
+    name: A2A example server (examples/a2a-server)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # examples/a2a-server is its own workspace (root Cargo.toml `exclude`), so
+    # the root-level fmt/clippy/test jobs never touch it. This job is NOT
+    # path-filtered on purpose: the example path-depends on
+    # crates/nucleus-{agent-card,verify-commerce,envelope,lineage}, so a change
+    # anywhere in those crates can break the example's receipt pre-image and
+    # version-negotiation invariants without touching examples/**.
+    defaults:
+      run:
+        working-directory: examples/a2a-server
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          components: rustfmt, clippy
+          cache: true
+          cache-workspaces: examples/a2a-server
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: cargo test
+        run: cargo test --all-features
+
   owasp-gauntlet:
     name: OWASP LLM Security Gauntlet
     runs-on: ubuntu-latest
