@@ -21,6 +21,8 @@ tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 chrono = "0.4"
 serde_json = "1"
+# RFC 8785 canonicalization — the receipt pre-image (see src/receipt.rs).
+serde_jcs = "0.2"
 base64 = "0.22"
 ring = "0.17"
 anyhow = "1"
@@ -34,6 +36,7 @@ nucleus-lineage = { path = "../../crates/nucleus-lineage", features = ["insecure
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
+http-body-util = "0.1"
 
 # Self-contained workspace so this example does not join the parent workspace.
 [workspace]

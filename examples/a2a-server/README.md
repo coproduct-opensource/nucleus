@@ -8,27 +8,47 @@ protocol's Signed Agent Cards:
    card (detached JWS per §8.4) carrying nucleus claims in the registered
    extension `https://coproduct.one/a2a/ext/runtime-guarantees/v1`
    (see `docs/a2a-runtime-guarantees-extension.md`).
-2. **Verify-before-you-act** — every task request must present the
-   caller's signed card (`X-Agent-Card` header); it is verified against a
-   key the operator resolved **out-of-band** before the SDK ever sees the
-   request. No card, bad signature, or tampered field → 401.
-3. **Receipts** — every non-streaming response carries
-   `X-Nucleus-Receipt`: a base64url `nucleus-envelope` bundle whose signed
-   content hash binds *caller × resource × sha256(response bytes)*. It
-   verifies **offline** against the server's published JWKS
-   (`verify_receipt_bundle` in Rust, `verify_receipt_js` in a browser).
-   SSE streams are verified but not receipted (`skipped-streaming`) — a
-   live stream has no final byte string to bind.
+2. **Declared auth (§7.3)** — the card's `securitySchemes` declares the
+   gate's credential as an API-key-style scheme (`signedAgentCard`):
+   header `X-Agent-Card`, value = the caller's *signed* A2A v1.0
+   AgentCard JSON. A client needs nothing out-of-band beyond the trust
+   key — the card itself says where the credential goes.
+   `securityRequirements` requires the scheme on every request, and 401s
+   carry a `WWW-Authenticate` hint pointing back at it (§7.4).
+3. **Verify-before-you-act** — every task request's card is verified
+   against a key the operator resolved **out-of-band** before the SDK
+   ever sees the request. No card, bad signature, or tampered field → 401.
+4. **Version negotiation (§3.6)** — requests must speak `A2A-Version:
+   1.0` (header or query parameter; a numeric patch suffix is ignored per
+   §3.6). Absent/empty means 0.3 (§3.6.2), which this interface does not
+   serve → `VersionNotSupportedError`: JSON-RPC `-32009` envelope on
+   `/jsonrpc`, HTTP 400 `google.rpc.Status` on `/rest` (§5.4, §9.5,
+   §11.6).
+5. **Receipts as a spec extension (§4.6.2)** — every response carries a
+   signed `nucleus-envelope` bundle binding *caller × resource ×
+   sha256(payload pre-image)*, riding in the response object's `metadata`
+   under `https://coproduct.one/a2a/ext/receipt/v1` (declared in the
+   card's `capabilities.extensions`, optional). Non-streaming responses
+   *also* carry it base64url'd in the `X-Nucleus-Receipt` header for curl
+   ergonomics. **SSE streams are receipted per event**: each event's
+   receipt rides in that event's metadata and attests its position in the
+   stream (`resource: "<path>#sse-<n>"`). Receipts verify **offline**
+   against the server's published JWKS (`verify_receipt_bundle` in Rust,
+   `verify_receipt_js` in a browser). The exact bytes a receipt binds —
+   and what a receipt does *not* prove — are specified in
+   `docs/a2a-receipt-extension.md`.
 
 ```bash
 cd examples/a2a-server
-cargo test          # e2e: discover → gate (401s) → serve → verify receipt
+cargo test          # unit + e2e: discover → gate (401s) → negotiate → serve → verify receipts
 cargo run           # interactive server on :3000 with a demo caller card
 ```
 
 The e2e suite also pins **shape interop**: a nucleus-signed card
-round-trips through the official SDK's own `AgentCard` type and the
-signature still verifies on the other side.
+round-trips through the official SDK's own `AgentCard` type with exactly
+one pinned deviation (the SDK re-serializes `securityRequirements` as the
+flat OpenAPI map instead of the normative ProtoJSON shape) — the
+signature still verifies once that field is restored.
 
 Demo-grade on purpose: keys are generated per run and the receipt signer
 is the TEST-ONLY `insecure-local-issuer`. A production deployment injects
