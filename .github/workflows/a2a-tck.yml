@@ -1,0 +1,124 @@
+# External-conformance harness: runs the A2A Technology Compatibility Kit
+# (https://github.com/a2aproject/a2a-tck, pinned) against the example
+# server's transport-conformance target (`tck-target` in
+# examples/a2a-server — same SDK routers and executor as the demo server,
+# without the X-Agent-Card gate the TCK cannot satisfy; the gate keeps its
+# own coverage in the example's e2e suite).
+#
+# Transports: jsonrpc + http_json only — the example does not serve gRPC.
+# Level: --level must (RFC 2119 MUST requirements; the TCK exit code is
+# nonzero on any MUST violation).
+name: A2A TCK
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "examples/a2a-server/**"
+      - "crates/nucleus-agent-card/**"
+      - "crates/nucleus-verify-commerce/**"
+      - "crates/nucleus-envelope/**"
+      - "crates/nucleus-lineage/**"
+      - ".github/workflows/a2a-tck.yml"
+  schedule:
+    # Weekly: the SDK crates resolve from crates.io, so conformance can
+    # drift without any change landing in this repo.
+    - cron: "23 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: a2a-tck-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  # ADVISORY (continue-on-error): the harness currently surfaces four MUST
+  # violations that live in the upstream a2a-server-lf DefaultRequestHandler,
+  # not in this repo's code:
+  #   CORE-ERR-002   malformed request must return an error
+  #   CORE-MULTI-004 missing TaskNotFoundError for unknown task ids
+  #   CORE-SEND-002  SendMessage to a terminal task must error
+  #   CORE-MULTI-006 mismatched contextId must error
+  # The job stays green so the signal is visible without blocking; flip to
+  # blocking once the upstream fixes land and these four pass.
+  tck:
+    continue-on-error: true
+    name: a2a-tck --level must (jsonrpc + http_json)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # ADVISORY — the target does not pass --level must yet (79.5% MUST at
+    # a2a-tck@29063fe; full breakdown in the uploaded compatibility report).
+    # Failing requirements by cause:
+    #   * TCK scenario-SUT contract (the demo executor does not implement
+    #     the TCK's canned behaviors: input-required pauses, artifact
+    #     emission, Message-typed replies): CORE-CANCEL-001, CORE-HIST-002,
+    #     CORE-MULTI-005, DM-ART-001, DM-MSG-001, STREAM-ORDER-002,
+    #     STREAM-ORDER-003, STREAM-ORDER-004, STREAM-SUB-001, STREAM-SUB-002
+    #   * SDK (a2a-server-lf DefaultRequestHandler) task semantics:
+    #     CORE-ERR-002, CORE-MULTI-004, CORE-MULTI-006, CORE-SEND-002
+    #   * SDK serialization: DM-SERIAL-003 (timestamps emit "+00:00"; the
+    #     TCK requires the "Z" suffix)
+    # The run step below is continue-on-error so the JOB (and the PR check)
+    # stays green while the signal lands in the step summary + artifacts;
+    # make the step blocking once these pass.
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          cache: true
+          cache-workspaces: examples/a2a-server
+      - name: Build the transport-conformance target
+        working-directory: examples/a2a-server
+        run: cargo build --bin tck-target
+      - name: Start the target on :9999
+        working-directory: examples/a2a-server
+        run: |
+          ./target/debug/tck-target > tck-target.log 2>&1 &
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:9999/.well-known/agent-card.json > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "tck-target did not come up:"
+          cat tck-target.log
+          exit 1
+      - name: Check out the A2A TCK (pinned)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: a2aproject/a2a-tck
+          ref: 29063fe95e903cddac5d8ff811ab94df1ad6ef86
+          path: a2a-tck
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      - name: Run the TCK (MUST level)
+        id: tck
+        continue-on-error: true
+        working-directory: a2a-tck
+        run: |
+          uv venv
+          uv pip install -e .
+          uv run ./run_tck.py --sut-host http://127.0.0.1:9999 \
+            --level must --transport jsonrpc,http_json
+      - name: Surface TCK outcome (advisory)
+        run: |
+          if [ "${{ steps.tck.outcome }}" = "failure" ]; then
+            echo "::warning::a2a-tck MUST level not fully passing (known triage in this workflow's header comment); see the a2a-tck-reports artifact"
+            echo "## a2a-tck: MUST level FAILING (advisory)" >> "$GITHUB_STEP_SUMMARY"
+            echo "Known-failure triage lives in the header comment of this workflow; full report in the a2a-tck-reports artifact." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## a2a-tck: MUST level PASSING" >> "$GITHUB_STEP_SUMMARY"
+            echo "Make the TCK run step blocking (remove continue-on-error) to lock this in." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload conformance reports (JUnit XML + compatibility JSON/HTML)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: a2a-tck-reports
+          path: a2a-tck/reports/
+      - name: Target log
+        if: always()
+        working-directory: examples/a2a-server
+        run: cat tck-target.log

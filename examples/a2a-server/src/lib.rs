@@ -50,8 +50,8 @@ use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
 
 use nucleus_agent_card::{
     sign_card, AgentCapabilities, AgentCard, AgentExtension, AgentInterface, AgentSkill,
-    EnforcementRule, JsonWebKey, NucleusClaims, RuntimeGuaranteeProfile, SecurityRequirement,
-    StringList, A2A_PROTOCOL_VERSION,
+    ApiKeySecurityScheme, EnforcementRule, JsonWebKey, NucleusClaims, RuntimeGuaranteeProfile,
+    SecurityRequirement, SecurityScheme, StringList, A2A_PROTOCOL_VERSION,
 };
 use nucleus_lineage::{CallSpiffeId, Jwks, LocalIssuer};
 use nucleus_verify_commerce::{
@@ -122,22 +122,18 @@ impl ServerIdentity {
             .map_err(|e| anyhow::anyhow!("session root: {e}"))?;
 
         // §7.3 step 1: DECLARE the authentication the gate enforces, so a
-        // client that only reads the card knows where the credential goes.
-        // `security_schemes` is an opaque ProtoJSON map for now (a typed
-        // model is coming separately), so the proto's
-        // `APIKeySecurityScheme` oneof variant is built as raw JSON here:
-        // oneof key `apiKeySecurityScheme`, fields per `a2a.proto`.
-        let mut security_schemes = serde_json::Map::new();
+        // client that only reads the card knows where the credential goes —
+        // the proto's `APIKeySecurityScheme` oneof variant, typed.
+        let mut security_schemes = std::collections::BTreeMap::new();
         security_schemes.insert(
             SECURITY_SCHEME_NAME.to_string(),
-            serde_json::json!({
-                "apiKeySecurityScheme": {
-                    "description": "The value is the caller's SIGNED A2A v1.0 AgentCard JSON \
-                                    (detached JWS per §8.4). It is verified against a key the \
-                                    operator resolved out-of-band — never the card's own material.",
-                    "location": "header",
-                    "name": "X-Agent-Card",
-                }
+            SecurityScheme::ApiKey(ApiKeySecurityScheme {
+                description: "The value is the caller's SIGNED A2A v1.0 AgentCard JSON \
+                              (detached JWS per §8.4). It is verified against a key the \
+                              operator resolved out-of-band — never the card's own material."
+                    .to_string(),
+                location: "header".to_string(),
+                name: "X-Agent-Card".to_string(),
             }),
         );
         // The matching requirement (§7.3): this scheme on every request.
@@ -455,12 +451,6 @@ fn sse_issuer(
 /// `caller_verify_jwk` is the public key callers' cards must verify against
 /// — the out-of-band trust decision, made by the operator, not the wire.
 pub fn build_app(identity: ServerIdentity, caller_verify_jwk: JsonWebKey) -> axum::Router {
-    use a2a_server::{DefaultRequestHandler, InMemoryTaskStore};
-
-    let handler = Arc::new(DefaultRequestHandler::new(
-        SummarizeExecutor,
-        InMemoryTaskStore::new(),
-    ));
     let gate = Arc::new(Gate {
         verifier: AgentCardVerifier::new(caller_verify_jwk),
         signer: identity.receipt_signer,
@@ -471,23 +461,146 @@ pub fn build_app(identity: ServerIdentity, caller_verify_jwk: JsonWebKey) -> axu
     // Layer order (outermost first): authenticate (§7.4 says EVERY
     // request) → negotiate A2A-Version (§3.6) → SDK. Responses flow back
     // through the gate, which receipts them — version errors included.
-    let protected = axum::Router::new()
+    let protected = sdk_transport_router()
+        .layer(axum::middleware::from_fn(version::negotiate))
+        .layer(axum::middleware::from_fn_with_state(gate, guard));
+
+    card_route(identity.signed_card).merge(protected)
+}
+
+/// The SAME SDK transports and executor as [`build_app`], but WITHOUT the
+/// verify→serve→receipt gate (and therefore without receipts — receipts
+/// are issued by the gate), and WITHOUT §3.6 version negotiation — the
+/// TCK does not send the `A2A-Version` header, and a §3.6.1-strict server
+/// would -32009 every TCK request. Strict negotiation is enforced by the
+/// real server ([`build_app`]) and pinned by the e2e negative tests.
+///
+/// This exists solely so external transport-conformance tooling (e.g. the
+/// [A2A TCK](https://github.com/a2aproject/a2a-tck)) can exercise the A2A
+/// protocol bindings (§9 JSON-RPC, §11 HTTP+JSON): such tools speak pure
+/// A2A and cannot present a signed `X-Agent-Card`. The gate itself is
+/// covered by the e2e suite (`tests/e2e.rs`). **This is not a deployment
+/// mode** — the demo server (`cargo run`) always gates, and there is no
+/// flag to disable its gate.
+pub fn build_transport_conformance_app(identity: ServerIdentity) -> axum::Router {
+    card_route(identity.signed_card)
+        .merge(sdk_transport_router().layer(axum::middleware::from_fn(conformance_version_check)))
+}
+
+/// Reject requests whose `A2A-Version` service parameter names a version
+/// this interface does not serve.
+///
+/// §3.6.2: "Agents MUST process requests using the semantics of the
+/// requested `A2A-Version` (matching `Major.Minor`). If the version is not
+/// supported by the interface, agents MUST return a
+/// `VersionNotSupportedError`." Both declared interfaces here are v1.0, so
+/// anything other than `1.0` is rejected with the §5.4 mapping:
+/// JSON-RPC code `-32009`, HTTP+JSON `400` / `FAILED_PRECONDITION`.
+///
+/// The parameter travels as the `A2A-Version` header, or — clients MAY,
+/// §3.6.1 — as an `A2A-Version` query parameter.
+///
+/// CONFORMANCE-TARGET DEVIATION from §3.6.1: requests with NO version
+/// parameter are SERVED rather than treated as 0.3-and-rejected — the A2A
+/// TCK does not send the header, and rejecting absence would -32009 every
+/// TCK request. The real server (`build_app` → `version::negotiate`) is
+/// strict; its behavior is pinned by the e2e negative tests.
+async fn conformance_version_check(req: Request, next: Next) -> Response {
+    let requested = req
+        .headers()
+        .get("a2a-version")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+        .or_else(|| {
+            req.uri().query().and_then(|q| {
+                q.split('&')
+                    .find_map(|kv| kv.strip_prefix("A2A-Version=").map(str::to_owned))
+            })
+        });
+    let Some(requested) = requested else {
+        return next.run(req).await;
+    };
+    if requested.trim() == nucleus_agent_card::A2A_PROTOCOL_VERSION {
+        return next.run(req).await;
+    }
+
+    let message = format!(
+        "A2A-Version {requested} is not supported by this interface (supported: {})",
+        nucleus_agent_card::A2A_PROTOCOL_VERSION
+    );
+    if req.uri().path().starts_with("/jsonrpc") {
+        // JSON-RPC envelope error; echo the request id when the body is
+        // parseable, else null (the request was never dispatched).
+        let id = axum::body::to_bytes(req.into_body(), RECEIPT_BODY_LIMIT)
+            .await
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .and_then(|v| v.get("id").cloned())
+            .unwrap_or(serde_json::Value::Null);
+        axum::Json(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": { "code": -32009, "message": message }
+        }))
+        .into_response()
+    } else {
+        // HTTP+JSON: AIP-193 error shape.
+        (
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({
+                "error": {
+                    "code": 400,
+                    "status": "FAILED_PRECONDITION",
+                    "message": message,
+                }
+            })),
+        )
+            .into_response()
+    }
+}
+
+/// Official SDK routers (JSON-RPC + REST) over the demo executor. Version
+/// negotiation and the gate are layered by the callers.
+fn sdk_transport_router() -> axum::Router {
+    use a2a_server::{DefaultRequestHandler, InMemoryTaskStore};
+
+    let handler = Arc::new(DefaultRequestHandler::new(
+        SummarizeExecutor,
+        InMemoryTaskStore::new(),
+    ));
+    axum::Router::new()
         .nest(
             "/jsonrpc",
             a2a_server::jsonrpc::jsonrpc_router(handler.clone()),
         )
         .nest("/rest", a2a_server::rest::rest_router(handler))
-        .layer(axum::middleware::from_fn(version::negotiate))
-        .layer(axum::middleware::from_fn_with_state(gate, guard));
+}
 
-    let card = identity.signed_card;
-    axum::Router::new()
-        .route(
-            "/.well-known/agent-card.json",
-            axum::routing::get(move || {
-                let card = card.clone();
-                async move { axum::Json(card) }
-            }),
-        )
-        .merge(protected)
+/// Serve `router` on `listener`, normalizing trailing slashes BEFORE
+/// routing so `<interface-url>/` reaches the binding too. Clients that
+/// treat the agent card's interface URL as a *base* URL (httpx-style RFC
+/// 3986 joins — the A2A TCK, the official Python client) request the
+/// trailing-slash spelling; without normalization those requests 404
+/// before any A2A handler runs.
+pub async fn serve_normalized(
+    listener: tokio::net::TcpListener,
+    router: axum::Router,
+) -> std::io::Result<()> {
+    use axum::ServiceExt;
+    use tower::Layer as _;
+    use tower_http::normalize_path::NormalizePathLayer;
+
+    let app = NormalizePathLayer::trim_trailing_slash().layer(router);
+    axum::serve(listener, ServiceExt::<Request>::into_make_service(app)).await
+}
+
+/// The public discovery route: the signed card, served unauthenticated.
+fn card_route(card: serde_json::Value) -> axum::Router {
+    axum::Router::new().route(
+        "/.well-known/agent-card.json",
+        axum::routing::get(move || {
+            let card = card.clone();
+            async move { axum::Json(card) }
+        }),
+    )
 }

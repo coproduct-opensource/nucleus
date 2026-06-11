@@ -8,6 +8,10 @@
 name = "nucleus-a2a-server-example"
 version = "0.1.0"
 edition = "2021"
+# Plain `cargo run` stays the gated demo server; the ungated
+# transport-conformance target must be asked for by name
+# (`cargo run --bin tck-target`).
+default-run = "nucleus-a2a-server-example"
 publish = false
 license = "MIT OR Apache-2.0"
 description = "A2A v1.0 server (official Rust SDK) with nucleus card verification and per-response signed receipts"
@@ -16,6 +20,11 @@ description = "A2A v1.0 server (official Rust SDK) with nucleus card verificatio
 a2a = { package = "a2a-lf", version = "0.3" }
 a2a-server = { package = "a2a-server-lf", version = "0.4" }
 axum = "0.8"
+# Trailing-slash normalization: clients that treat the agent card's
+# interface URL as a BASE url (httpx-style join, e.g. the A2A TCK) request
+# `<url>/`; normalize before routing so both spellings hit the binding.
+tower = "0.5"
+tower-http = { version = "0.6", features = ["normalize-path"] }
 http = "1"
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"

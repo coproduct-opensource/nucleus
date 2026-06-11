@@ -44,6 +44,28 @@ cargo test          # unit + e2e: discover → gate (401s) → negotiate → ser
 cargo run           # interactive server on :3000 with a demo caller card
 ```
 
+## External conformance (A2A TCK)
+
+`cargo run --bin tck-target` serves the **same SDK routers and executor
+without the verification gate**, on port 9999. It exists so external
+transport-conformance tooling (the [A2A TCK]) can exercise the protocol
+bindings — the TCK speaks pure A2A and cannot attach the signed
+`X-Agent-Card` header, so the gated server 401s it before any binding is
+reached. It is **not a deployment mode**: the demo server always gates and
+has no flag to disable its gate; the gate itself is covered by `tests/e2e.rs`.
+CI runs the TCK against this target weekly and on changes here (advisory
+`a2a-tck` workflow):
+
+```bash
+cargo run --bin tck-target &
+git clone https://github.com/a2aproject/a2a-tck && cd a2a-tck
+uv venv && uv pip install -e .
+uv run ./run_tck.py --sut-host http://localhost:9999 \
+  --level must --transport jsonrpc,http_json   # no gRPC: not served here
+```
+
+[A2A TCK]: https://github.com/a2aproject/a2a-tck
+
 The e2e suite also pins **shape interop**: a nucleus-signed card
 round-trips through the official SDK's own `AgentCard` type with exactly
 one pinned deviation (the SDK re-serializes `securityRequirements` as the
