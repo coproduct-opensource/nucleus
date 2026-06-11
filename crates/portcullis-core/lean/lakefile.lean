@@ -211,3 +211,16 @@ lean_lib «PersistentAlignment» where
 -- Lipschitz-equivariance: certified robustness radius from rank H¹.
 lean_lib «LipschitzEquivariance» where
   roots := #[`LipschitzEquivariance]
+
+-- Monoidal structure on permission composition (meet/join commutative monoids,
+-- distributive lattice). Imported by ConstructiveSecurity as the capability-
+-- lattice instance Φ. Mathlib-free; pure Lean core.
+lean_lib «MonoidalPermissionProofs» where
+  roots := #[`MonoidalPermissionProofs]
+
+-- Constructive cryptography (Maurer TOSCA 2011): cryptographic algebra +
+-- compatible pseudo-metric, the construction relation R --(π,ε)--> S, and the
+-- composition theorem (serial/parallel/identity). Mathlib-free; pure Lean core.
+-- Instantiates Φ with the permission lattice (imports MonoidalPermissionProofs).
+lean_lib «ConstructiveSecurity» where
+  roots := #[`ConstructiveSecurity]
