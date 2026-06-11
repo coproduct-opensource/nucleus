@@ -23,7 +23,7 @@ use base64::Engine as _;
 use ring::rand::SystemRandom;
 use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
 
-use nucleus_a2a_server_example::{build_app, ServerIdentity};
+use nucleus_a2a_server_example::{build_app, serve_normalized, ServerIdentity};
 use nucleus_agent_card::{
     sign_card, AgentCapabilities, AgentCard, AgentInterface, JsonWebKey, NucleusClaims,
     A2A_PROTOCOL_VERSION,
@@ -53,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = build_app(identity, caller_verify_jwk);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
-    axum::serve(listener, app).await?;
+    serve_normalized(listener, app).await?;
     Ok(())
 }
 

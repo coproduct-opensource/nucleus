@@ -455,12 +455,6 @@ fn sse_issuer(
 /// `caller_verify_jwk` is the public key callers' cards must verify against
 /// — the out-of-band trust decision, made by the operator, not the wire.
 pub fn build_app(identity: ServerIdentity, caller_verify_jwk: JsonWebKey) -> axum::Router {
-    use a2a_server::{DefaultRequestHandler, InMemoryTaskStore};
-
-    let handler = Arc::new(DefaultRequestHandler::new(
-        SummarizeExecutor,
-        InMemoryTaskStore::new(),
-    ));
     let gate = Arc::new(Gate {
         verifier: AgentCardVerifier::new(caller_verify_jwk),
         signer: identity.receipt_signer,
@@ -471,23 +465,52 @@ pub fn build_app(identity: ServerIdentity, caller_verify_jwk: JsonWebKey) -> axu
     // Layer order (outermost first): authenticate (§7.4 says EVERY
     // request) → negotiate A2A-Version (§3.6) → SDK. Responses flow back
     // through the gate, which receipts them — version errors included.
-    let protected = axum::Router::new()
+    let protected =
+        sdk_transport_router().layer(axum::middleware::from_fn_with_state(gate, guard));
+
+    card_route(identity.signed_card).merge(protected)
+}
+
+/// The SAME SDK transports and executor as [`build_app`], but WITHOUT the
+/// verify→serve→receipt gate (and therefore without receipts — receipts
+/// are issued by the gate). A2A-Version negotiation stays on.
+///
+/// This exists solely so external transport-conformance tooling (e.g. the
+/// [A2A TCK](https://github.com/a2aproject/a2a-tck)) can exercise the A2A
+/// protocol bindings (§9 JSON-RPC, §11 HTTP+JSON): such tools speak pure
+/// A2A and cannot present a signed `X-Agent-Card`. The gate itself is
+/// covered by the e2e suite (`tests/e2e.rs`). **This is not a deployment
+/// mode** — the demo server (`cargo run`) always gates, and there is no
+/// flag to disable its gate.
+pub fn build_transport_conformance_app(identity: ServerIdentity) -> axum::Router {
+    card_route(identity.signed_card).merge(sdk_transport_router())
+}
+
+/// Official SDK routers (JSON-RPC + REST) over the demo executor, behind
+/// the `A2A-Version` service-parameter check (§3.6).
+fn sdk_transport_router() -> axum::Router {
+    use a2a_server::{DefaultRequestHandler, InMemoryTaskStore};
+
+    let handler = Arc::new(DefaultRequestHandler::new(
+        SummarizeExecutor,
+        InMemoryTaskStore::new(),
+    ));
+    axum::Router::new()
         .nest(
             "/jsonrpc",
             a2a_server::jsonrpc::jsonrpc_router(handler.clone()),
         )
         .nest("/rest", a2a_server::rest::rest_router(handler))
         .layer(axum::middleware::from_fn(version::negotiate))
-        .layer(axum::middleware::from_fn_with_state(gate, guard));
+}
 
-    let card = identity.signed_card;
-    axum::Router::new()
-        .route(
-            "/.well-known/agent-card.json",
-            axum::routing::get(move || {
-                let card = card.clone();
-                async move { axum::Json(card) }
-            }),
-        )
-        .merge(protected)
+/// The public discovery route: the signed card, served unauthenticated.
+fn card_route(card: serde_json::Value) -> axum::Router {
+    axum::Router::new().route(
+        "/.well-known/agent-card.json",
+        axum::routing::get(move || {
+            let card = card.clone();
+            async move { axum::Json(card) }
+        }),
+    )
 }
