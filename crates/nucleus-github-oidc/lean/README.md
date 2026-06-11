@@ -67,5 +67,5 @@ aeneas -backend lean -split-files nucleus_github_oidc.llbc -dest lean/generated/
 cd lean && lake exe cache get && lake build NucleusGithubOidc OidcSpiffeProofs
 ```
 
-Pins: aeneas `nightly-2026.05.30` (commit `2a12be13…`), Charon nightly
+Pins: aeneas `nightly-2026.06.10` (commit `2a12be13…`), Charon nightly
 `nightly-2026-02-07`, Lean `v4.30.0-rc2` + mathlib `v4.30.0-rc2`.

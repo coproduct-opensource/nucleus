@@ -1,0 +1,66 @@
+name: Feature Matrix
+
+# Feature unification is a verified-claims hazard, not a style issue:
+# a crate that only ever builds inside the full workspace inherits
+# whatever features its neighbors unify ON (cedar flips
+# serde_json/preserve_order, jsonwebtoken pulls dalek pkcs8/alloc, …),
+# so "works in CI" says nothing about the standalone build a downstream
+# consumer gets. nucleus-receipt's canonical-bytes split (PR #1826) is
+# the canonical incident. This gate builds each security-load-bearing
+# crate per-feature so narrow builds are a tested property.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: feature-matrix-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  each-feature:
+    name: cargo hack --each-feature
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+      - uses: taiki-e/install-action@0631aa6515c7d545823c67cfae7ef4fc7f490154 # v2.81.8
+        with:
+          tool: cargo-hack
+      # --each-feature = default, no-default-features, and each feature
+      # individually; --no-dev-deps keeps it a consumer's-eye build.
+      - name: Each-feature check (security-load-bearing crates)
+        run: |
+          cargo hack check --each-feature --no-dev-deps \
+            -p portcullis \
+            -p portcullis-core \
+            -p nucleus-lineage \
+            -p nucleus-tool-proxy \
+            -p nucleus-ifc \
+            -p nucleus-envelope \
+            -p nucleus-identity \
+            -p nucleus-creditworthiness
+
+  msrv:
+    name: MSRV floor (workspace rust-version)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          # Must match [workspace.package] rust-version — the Kani
+          # floor (cargo kani has no --ignore-rust-version escape).
+          toolchain: "1.93"
+      # nucleus-verifier-service include_str!s the wasm-pack artifact
+      # (sdks/verifier-js/pkg/) that only the Tests job builds first;
+      # it is excluded here so the MSRV floor checks source, not
+      # generated-artifact presence.
+      - name: Check workspace on the MSRV toolchain
+        run: cargo +1.93 check --workspace --all-features --locked --exclude nucleus-verifier-service

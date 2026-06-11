@@ -43,14 +43,17 @@
 
 mod assurance;
 mod claim;
+mod cube;
 mod dim;
 mod oracle;
 mod profile;
+mod rebate;
 
 pub use assurance::{assess_rung, AssuranceRung};
 pub use claim::{
     canonical_claim_bytes, sign_claim, verify_claim, ClaimError, SignedExternalityClaim,
 };
+pub use cube::{AggregateBucket, ExternalityCube, PullbackError, WindowId};
 pub use dim::{ResourceDim, RESOURCE_DIM_DOMAIN};
 pub use oracle::{
     verify_vca_claim, verify_vca_claim_rung, OracleError, OracleRegistry, TeeAttestation,
@@ -58,4 +61,7 @@ pub use oracle::{
 };
 pub use profile::{
     canonical_externality_bytes, externality_digest, ExternalityProfile, PROFILE_DOMAIN,
+};
+pub use rebate::{
+    emit_rebates, RebateError, WitnessFederation, WitnessShare, TOTAL_SHARE_BASIS_POINTS,
 };

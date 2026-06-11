@@ -1,0 +1,39 @@
+# Example A2A v1.0 server on the official Rust SDK, guarded by nucleus
+# verify-before-you-act + per-response signed receipts.
+#
+# Standalone workspace (root Cargo.toml `exclude` has an entry): the official
+# SDK and axum stay out of the main workspace's dependency graph. Build/test
+# inside examples/a2a-server.
+[package]
+name = "nucleus-a2a-server-example"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "A2A v1.0 server (official Rust SDK) with nucleus card verification and per-response signed receipts"
+
+[dependencies]
+a2a = { package = "a2a-lf", version = "0.3" }
+a2a-server = { package = "a2a-server-lf", version = "0.4" }
+axum = "0.8"
+http = "1"
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+chrono = "0.4"
+serde_json = "1"
+base64 = "0.22"
+ring = "0.17"
+anyhow = "1"
+
+nucleus-agent-card = { path = "../../crates/nucleus-agent-card", features = ["sign"] }
+nucleus-verify-commerce = { path = "../../crates/nucleus-verify-commerce" }
+nucleus-envelope = { path = "../../crates/nucleus-envelope" }
+# `insecure-local-issuer` is the TEST-ONLY in-process receipt signer — named
+# so the footgun is visible. A production server injects a real EdgeSigner.
+nucleus-lineage = { path = "../../crates/nucleus-lineage", features = ["insecure-local-issuer"] }
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+
+# Self-contained workspace so this example does not join the parent workspace.
+[workspace]

@@ -12,6 +12,10 @@ description = "Coproduct Pigouvian externality layer: signed externality envelop
 workspace = true
 
 [dependencies]
+# default-features = false: the wasm-pure-crates gate builds this crate for
+# wasm32, and lineage's default sink-io (std::fs) + uuid-without-js only
+# compile natively — exactly the consumption mode lineage's own docs call for.
+nucleus-lineage = { path = "../nucleus-lineage", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -29,6 +29,7 @@ members = [
     "crates/ck-kernel",                 # Constitutional Kernel: admission engine + lineage
     "crates/nucleus-lineage",            # Per-call SPIFFE-derived data lineage
     "crates/nucleus-envelope",           # Portable provenance bundle: payload + IFC envelope
+    "crates/nucleus-receipt",            # Colimit receipt envelope: Session + Projection[] + Ed25519/BLAKE3 Receipt (upstream home of platform's substrate-core envelope)
     "crates/nucleus-bundle-cas",         # Content-addressed bundle transport: BLAKE3 root + iroh-blobs
     "crates/nucleus-envelope-adversarial-corpus", # Adversarial bundles every verifier must reject — CI-gated security promise
     "crates/nucleus-otel-bootstrap",     # Shared OpenTelemetry OTLP bootstrap for server binaries
@@ -66,6 +67,7 @@ exclude = [
     "crates/portcullis-python",  # Python bindings (requires maturin)
     "crates/portcullis-zkvm-guest", # RISC-V zkVM guest (compiled separately by risc0-build)
     "sdks/verifier-js",           # WASM-only (wasm32-unknown-unknown); build with: wasm-pack build sdks/verifier-js
+    "examples/a2a-server",        # A2A SDK example server (own workspace); build/test inside examples/a2a-server
     "sdks/verifier-py",           # Python extension module; build with: maturin develop --release
     "tools/nucleus-guarantee-lint", # Dylint lint (own pinned nightly + rustc-dev); run with: cargo dylint --lib nucleus_guarantee_lint
 ]
@@ -98,7 +100,7 @@ serde_yaml = "0.9"
 toml = "1.1"
 
 # Content provenance (EU AI Act)
-c2pa = "0.85"
+c2pa = "0.86"
 
 # Error handling
 thiserror = "2.0"

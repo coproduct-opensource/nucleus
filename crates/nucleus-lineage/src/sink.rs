@@ -18,7 +18,11 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 #[cfg(feature = "sink-io")]
 use std::path::PathBuf;
-use std::sync::{Mutex, RwLock};
+// Mutex guards the sink-io JsonlSink's writer; without that feature
+// only the RwLock-backed InMemorySink remains.
+#[cfg(feature = "sink-io")]
+use std::sync::Mutex;
+use std::sync::RwLock;
 
 use thiserror::Error;
 

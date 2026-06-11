@@ -1,0 +1,30 @@
+name: Econ Lean Proofs + Golden Seal
+
+# NO-OP TWIN of econ-lean.yml, so its job can be a REQUIRED status check.
+# Branch protection evaluates required contexts on the PR itself; the real
+# workflow is path-filtered on pull_request, so a PR not touching its paths
+# would never report the context and block forever. This twin has the SAME
+# workflow name and SAME job name, with `paths-ignore` exactly mirroring the
+# original's `paths`: exactly one of the twins reports the context on every
+# PR. (merge_group is NOT twinned — the real workflow already runs
+# unconditionally there.)
+
+on:
+  pull_request:
+    paths-ignore:
+      - "crates/nucleus-econ-kernels/lean/**"
+      - "crates/nucleus-econ-kernels/tests/golden/**"
+      - "scripts/gen-golden-lean.sh"
+      - ".github/workflows/econ-lean.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  econ-lean:
+    name: lake build Nucleus (econ proofs + golden seal)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: No-op (paths not touched)
+        run: echo "no relevant paths changed — gate vacuously green"

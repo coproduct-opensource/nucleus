@@ -81,10 +81,11 @@ pub struct AppState {
     pub witness: Option<crate::witness::WitnessFederation>,
     /// Signed Agent Card published at `/.well-known/agent-card.json`. When
     /// `Some`, the service serves its own verify-before-you-act identity
-    /// document (an A2A-style card whose detached JWS verifies against the
-    /// operator's out-of-band-resolved key). When `None`, the endpoint
-    /// returns 404 — the service makes no identity claim.
-    pub agent_card: Option<Arc<nucleus_agent_card::SignedAgentCard>>,
+    /// document (an A2A v1.0 card whose detached JWS — embedded in the
+    /// card's `signatures` field — verifies against the operator's
+    /// out-of-band-resolved key). When `None`, the endpoint returns 404 —
+    /// the service makes no identity claim.
+    pub agent_card: Option<Arc<nucleus_agent_card::AgentCard>>,
     /// Durable, append-only, per-identity credit ledger (set via
     /// `--credit-db` / `NUCLEUS_CREDIT_DB_PATH`). When `Some`, the stateful
     /// credit endpoints — `POST /v1/credit/{agent_id}/accrue` and

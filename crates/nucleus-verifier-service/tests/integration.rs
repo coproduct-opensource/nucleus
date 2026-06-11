@@ -801,8 +801,10 @@ async fn well_known_agent_card_returns_404_without_card() {
 
 #[tokio::test]
 async fn well_known_agent_card_verifies_against_matching_key() {
-    use nucleus_agent_card::{sign_card, verify_card, AgentCard, SignedAgentCard};
-    use nucleus_identity::JsonWebKey;
+    use nucleus_agent_card::{
+        sign_card, verify_card, AgentCapabilities, AgentCard, AgentInterface, JsonWebKey,
+        NucleusClaims, A2A_PROTOCOL_VERSION,
+    };
     use ring::rand::SystemRandom;
     use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
     use std::sync::Arc;
@@ -823,15 +825,36 @@ async fn well_known_agent_card_verifies_against_matching_key() {
     let advertised: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
 
     let card = AgentCard {
+        name: "Nucleus Verifier".to_string(),
+        description: "verifier-service integration test card".to_string(),
+        supported_interfaces: vec![AgentInterface {
+            url: "https://verifier.test.nucleus.local/a2a/v1".to_string(),
+            protocol_binding: "HTTP+JSON".to_string(),
+            tenant: None,
+            protocol_version: A2A_PROTOCOL_VERSION.to_string(),
+        }],
+        provider: None,
+        version: "1.0.0".to_string(),
+        documentation_url: None,
+        capabilities: AgentCapabilities::default(),
+        security_schemes: Default::default(),
+        security_requirements: vec![],
+        default_input_modes: vec!["application/json".to_string()],
+        default_output_modes: vec!["application/json".to_string()],
+        skills: vec![],
+        signatures: vec![],
+        icon_url: None,
+    }
+    .with_nucleus_claims(&NucleusClaims {
         spiffe_id: "spiffe://test.nucleus.local/ns/verifier/sa/svc".to_string(),
         did: "did:web:verifier.test.nucleus.local".to_string(),
-        security_schemes: json!({}),
         supported_envelope_schema_versions: vec!["1".to_string()],
         jwks_uri: None,
         trust_jwks: advertised,
         runtime_guarantees: None,
-    };
-    let signed = sign_card(card, &der).unwrap();
+    })
+    .unwrap();
+    let signed = sign_card(card, &der, "verifier-card-key-1").unwrap();
 
     let state = AppState {
         agent_card: Some(Arc::new(signed)),
@@ -851,10 +874,10 @@ async fn well_known_agent_card_verifies_against_matching_key() {
 
     // The returned card MUST verify against the matching resolved key.
     let body = read_json(resp.into_body()).await;
-    let returned: SignedAgentCard = serde_json::from_value(body).unwrap();
+    let returned: AgentCard = serde_json::from_value(body).unwrap();
     let verified = verify_card(&returned, &resolved_key)
         .expect("served agent card must verify against the matching out-of-band key");
-    assert_eq!(verified.card.did, "did:web:verifier.test.nucleus.local");
+    assert_eq!(verified.claims.did, "did:web:verifier.test.nucleus.local");
 }
 
 #[tokio::test]

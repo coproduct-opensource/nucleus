@@ -8,9 +8,18 @@ the verdict (Allow / DenyCapability / RequiresApproval / GateExfil).
 
 ## Model correspondence
 
-Hand-written Lean model mirroring `portcullis-core/src/lib.rs:959`.
-NOT Aeneas-generated — Aeneas cannot translate `==` on enums or the
-`should_gate` function (which uses `bool` fields and `Option` returns).
+Hand-written Lean model mirroring `decide_pure` in `portcullis-core/src/lib.rs`.
+This is a hand-written model used for proof convenience — NOT the Aeneas-extracted
+function. Contrary to an earlier note here, enum `==` *does* translate cleanly:
+see `generated/Funs.lean`'s `CapabilityLevel.Insts.CoreCmpPartialEqCapabilityLevel.eq`,
+which lowers `==` to `read_discriminant self = read_discriminant other`. The model
+exists instead because (a) `decide_pure` and its exposure dependencies (`should_gate`,
+`project_exposure`, `ExposureSet`, `classify_exfil`) were left OUTSIDE the Charon
+extraction scope (extraction currently covers the `CapabilityLevel` /
+`CapabilityLattice` algebra only), and (b) proving over Aeneas's `Result`-monadic
+`==` is more verbose than over a `DecidableEq` inductive. The plan to make the
+proven function the *extracted* function is in
+`docs/handoffs/aeneas-decide-pure-extraction.md`.
 
 ## What's proved (all kernel-checked, no proof holes)
 

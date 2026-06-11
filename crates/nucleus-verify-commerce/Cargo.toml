@@ -23,9 +23,10 @@ sha2 = { workspace = true }
 thiserror = { workspace = true }
 
 # Verifiable core (already shipped) that this middleware composes.
+# (JsonWebKey now comes from nucleus-agent-card's wasm-clean jwk module,
+# so no direct nucleus-identity dependency remains here.)
 nucleus-agent-card = { path = "../nucleus-agent-card" }
 nucleus-envelope = { path = "../nucleus-envelope" }
-nucleus-identity = { path = "../nucleus-identity" }
 nucleus-lineage = { path = "../nucleus-lineage" }
 # IFC gate: the model-level information-flow decision over declared inputs.
 # The `decision` feature homes FlowDeclaration/IfcVerdict in nucleus-ifc (wasm-safe,

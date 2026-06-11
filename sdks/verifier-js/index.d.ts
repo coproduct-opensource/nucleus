@@ -73,6 +73,134 @@ export function verifierVersion(): Promise<string>;
 /** Envelope-schema version this build can verify. Auto-inits. */
 export function supportedSchemaVersion(): Promise<number>;
 
+// ── Colimit receipt (nucleus-receipt envelope) ─────────────────────────────────
+
+/** Structured verdict from {@link verifyReceipt} — mirrors the Rust `ReceiptVerdict`. */
+export type ReceiptVerdict =
+  | {
+      outcome: "verified";
+      version: number;
+      session_id: string;
+      issuer_kid: string;
+      /** Wire `kind` of every projection the signature covers, in order. */
+      projection_kinds: string[];
+      /** BLAKE3 of the canonical signing bytes (independently recomputed). */
+      root_hash_hex: string;
+    }
+  | {
+      /** Content tampered after signing — does not hash to `root_hash_hex`. */
+      outcome: "root_hash_mismatch";
+      expected: string;
+      actual: string;
+    }
+  | {
+      /** Content self-consistent, but the signature fails under this key. */
+      outcome: "signature_mismatch";
+      reason: string;
+    };
+
+/**
+ * Verify a colimit receipt (`nucleus-receipt`: Session + Projection[] signed
+ * Ed25519 over BLAKE3 of the RFC 8785 canonical bytes) against the issuer's
+ * 32-byte verifying key. Runs the exact upstream `Receipt::verify` — one
+ * verifier code path for every receipt kind, no server trust.
+ *
+ * A cryptographic rejection is returned as a value (branch on `outcome`);
+ * throws only on malformed input (bad JSON, wrong key length).
+ *
+ * @param receipt A `Receipt` — JSON string or parsed object.
+ * @param verifyingKey The issuer's raw 32-byte Ed25519 public key — hex or bytes.
+ */
+export function verifyReceipt(
+  receipt: string | object,
+  verifyingKey: string | Uint8Array,
+): Promise<ReceiptVerdict>;
+
+// ── Signed A2A Agent Card (verify-before-you-act) ──────────────────────────────
+
+/**
+ * Summary of a verified card's declared runtime-guarantee (IFC) profile.
+ * Authentic + tamper-evident (covered by the card's JCS signature) — but
+ * attestation, NOT enforcement.
+ */
+export interface RuntimeGuaranteeSummary {
+  profile_version: string;
+  tracked_sources: string[];
+  /** Names of the declared IFC enforcement rules. */
+  enforcement_rules: string[];
+  attestation_reference: string | null;
+}
+
+/** Structured verdict from {@link verifyAgentCard} — mirrors the Rust `CardVerdict`. */
+export type AgentCardVerdict =
+  | {
+      outcome: "verified";
+      spiffe_id: string;
+      did: string;
+      supported_envelope_schema_versions: string[];
+      /** Key ids of the advertised (now trustworthy) bundle-signing JWKS. */
+      trust_jwks_kids: string[];
+      runtime_guarantees: RuntimeGuaranteeSummary | null;
+    }
+  | {
+      /** No signatures, wrong key / tampered card, or unusable advertised JWKS. */
+      outcome: "rejected";
+      reason: string;
+    };
+
+/**
+ * Verify a signed A2A Agent Card against a key YOU resolved out-of-band
+ * (DID resolution, a pinned JWKS, an operator file) — never the card's own
+ * key material. Runs the exact upstream verifier over the card document AS
+ * RECEIVED (A2A §8.4.3) plus the nucleus claims policy: verify WHO you are
+ * about to act with, in your process, trusting no server. For the pure
+ * §8.4.3 signature check (plain cards, no nucleus policy) see
+ * {@link verifyAgentCardSignature}.
+ *
+ * A cryptographic rejection is returned as a value (branch on `outcome`);
+ * throws only on malformed input (bad card JSON, bad JWK JSON).
+ *
+ * @param signedCard A signed A2A v1.0 `AgentCard` — JSON string or parsed
+ *   object (flat card; JWS signatures embedded in its `signatures` field).
+ * @param resolvedJwk The out-of-band-resolved key — JWK JSON string or object.
+ */
+export function verifyAgentCard(
+  signedCard: string | object,
+  resolvedJwk: string | object,
+): Promise<AgentCardVerdict>;
+
+/** Structured verdict from {@link verifyAgentCardSignature} — mirrors the Rust `CardSignatureVerdict`. */
+export type AgentCardSignatureVerdict =
+  | {
+      /** At least one signature verified against the resolved key, over the document as received. */
+      outcome: "verified";
+    }
+  | {
+      /** No signatures, or none that conforms to §8.4.2 (`kid`) AND verifies under the resolved key. */
+      outcome: "rejected";
+      reason: string;
+    };
+
+/**
+ * Verify ONLY the A2A v1.0 §8.4.3 signature of an Agent Card against a key
+ * YOU resolved out-of-band — no nucleus claims policy, so a validly signed
+ * plain A2A card (no nucleus extension) verifies. Runs over the document
+ * exactly as received (unknown members stay in the canonical payload) and
+ * checks EVERY entry of the `signatures` array (§8.4.3 key rotation); any
+ * one verifying suffices.
+ *
+ * A cryptographic rejection is returned as a value (branch on `outcome`);
+ * throws only on malformed input (bad card JSON, bad JWK JSON).
+ *
+ * @param signedCard The signed A2A v1.0 `AgentCard` as received — JSON
+ *   string or parsed object.
+ * @param resolvedJwk The out-of-band-resolved key — JWK JSON string or object.
+ */
+export function verifyAgentCardSignature(
+  signedCard: string | object,
+  resolvedJwk: string | object,
+): Promise<AgentCardSignatureVerdict>;
+
 /** The recomputed IFC verdict — mirrors the Rust `RecomputeReport`. */
 export interface RecomputeReport {
   /** Whether the action is permitted by the re-derived decision. */

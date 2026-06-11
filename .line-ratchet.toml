@@ -1,7 +1,7 @@
 # Line-count ratchet — soft ceiling that decreases by 1 on every merge to main.
 
 [ratchet]
-ceiling = 3900
+ceiling = 2479
 target = 2500
 step = 1
 
@@ -9,18 +9,18 @@ step = 1
 
 [[files]]
 path = "crates/portcullis/src/kernel.rs"
-ceiling = 3900
+ceiling = 2479
 target = 2500
 step = 1
 
 [[files]]
 path = "crates/nucleus-tool-proxy/src/main.rs"
-ceiling = 4443
+ceiling = 4118
 target = 2500
 step = 1
 
 [[files]]
 path = "crates/nucleus-node/src/main.rs"
-ceiling = 3304
+ceiling = 3252
 target = 2000
 step = 1

@@ -1,5 +1,6 @@
-//! `agent-sign` — sign an Agent Card that declares an IFC runtime-guarantee
-//! profile, then verify it (incl. tamper-detection of the profile).
+//! `agent-sign` — sign an A2A v1.0 Agent Card whose nucleus extension
+//! declares an IFC runtime-guarantee profile, then verify it (incl.
+//! tamper-detection of the profile).
 //!
 //! Run with:
 //!
@@ -19,9 +20,10 @@ use ring::rand::SystemRandom;
 use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
 
 use nucleus_agent_card::{
-    sign_card, verify_card, AgentCard, EnforcementRule, RuntimeGuaranteeProfile,
+    sign_card, verify_card, AgentCapabilities, AgentCard, AgentInterface, EnforcementRule,
+    JsonWebKey, NucleusClaims, RuntimeGuaranteeProfile, A2A_PROTOCOL_VERSION,
+    NUCLEUS_EXTENSION_URI,
 };
-use nucleus_identity::JsonWebKey;
 use nucleus_lineage::{Jwks, LocalIssuer};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -37,12 +39,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         URL_SAFE_NO_PAD.encode(&pk[33..65]),
     );
 
-    // The agent's card, declaring the IFC guarantee it enforces at runtime.
+    // The agent's A2A v1.0 card. Nucleus claims (identity, trust JWKS, and
+    // the IFC guarantee the agent declares it enforces at runtime) travel
+    // in the registered extension NUCLEUS_EXTENSION_URI.
     let trust_jwks: Jwks = serde_json::from_value(LocalIssuer::random()?.publish_jwks())?;
-    let card = AgentCard {
+    let base_card = AgentCard {
+        name: "Summarizer Agent".to_string(),
+        description: "Summarizes documents and emits provenance receipts.".to_string(),
+        supported_interfaces: vec![AgentInterface {
+            url: "https://summarizer.prod.example.com/a2a/v1".to_string(),
+            protocol_binding: "JSONRPC".to_string(),
+            tenant: None,
+            protocol_version: A2A_PROTOCOL_VERSION.to_string(),
+        }],
+        provider: None,
+        version: "1.0.0".to_string(),
+        documentation_url: None,
+        capabilities: AgentCapabilities::default(),
+        security_schemes: Default::default(),
+        security_requirements: vec![],
+        default_input_modes: vec!["application/json".to_string()],
+        default_output_modes: vec!["application/json".to_string()],
+        skills: vec![],
+        signatures: vec![],
+        icon_url: None,
+    };
+    let card = base_card.with_nucleus_claims(&NucleusClaims {
         spiffe_id: "spiffe://prod.example.com/ns/agents/sa/summarizer".to_string(),
         did: "did:web:summarizer.prod.example.com".to_string(),
-        security_schemes: serde_json::json!({}),
         supported_envelope_schema_versions: vec!["1".to_string()],
         jwks_uri: None,
         trust_jwks,
@@ -69,10 +93,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Advisory: point at an external policy (e.g. an MS ACS policy id).
             attestation_reference: None,
         }),
-    };
+    })?;
 
-    // Sign → verify.
-    let signed = sign_card(card, pkcs8.as_ref())?;
+    // Sign → verify. The §8.4.2 protected header carries alg/typ/kid.
+    let signed = sign_card(card, pkcs8.as_ref(), "card-key-1")?;
     println!(
         "signed agent card:\n{}",
         serde_json::to_string_pretty(&signed)?
@@ -80,26 +104,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let verified = verify_card(&signed, &resolved_key)?;
     let profile = verified
-        .card
+        .claims
         .runtime_guarantees
         .as_ref()
         .expect("the verified card carries its IFC profile");
     println!("\nverified ✓  — IFC profile is authentic + untampered:");
-    println!("  spiffe_id        = {}", verified.card.spiffe_id);
+    println!("  spiffe_id        = {}", verified.claims.spiffe_id);
     println!("  tracked_sources  = {:?}", profile.tracked_sources);
     for rule in &profile.enforcement_rules {
         println!("  rule             = {} — {}", rule.name, rule.description);
     }
 
-    // Tamper-detection: flip a declared rule after signing → verify must fail.
+    // Tamper-detection: flip a declared rule (inside the signed extension
+    // params) after signing → verify must fail.
     let mut tampered = signed;
-    tampered
-        .card
-        .runtime_guarantees
-        .as_mut()
-        .unwrap()
-        .enforcement_rules[0]
-        .name = "allow_everything".to_string();
+    let ext = tampered
+        .capabilities
+        .extensions
+        .iter_mut()
+        .find(|e| e.uri == NUCLEUS_EXTENSION_URI)
+        .expect("nucleus extension present");
+    ext.params.as_mut().unwrap()["runtimeGuarantees"]["enforcementRules"][0]["name"] =
+        serde_json::json!("allow_everything");
     match verify_card(&tampered, &resolved_key) {
         Err(_) => println!("\ntamper check ✓  — flipping a declared rule breaks the signature"),
         Ok(_) => panic!("BUG: a tampered profile must not verify"),

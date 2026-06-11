@@ -231,6 +231,146 @@ export async function supportedSchemaVersion() {
   return mod.supportedEnvelopeSchemaVersion();
 }
 
+// ── COLIMIT RECEIPT: verify the nucleus-receipt envelope ──────────────────────
+// `verify()` covers the lineage bundle; `verifyReceipt()` covers the OTHER
+// signed artifact — the colimit receipt (Session + Projection[] signed Ed25519
+// over BLAKE3 of the RFC 8785 canonical bytes). The WASM runs the SAME
+// `Receipt::verify` everything upstream runs: one verifier code path for every
+// receipt kind, in your process, trusting no server.
+
+/**
+ * Decode a hex string into bytes for the 32-byte Ed25519 key input.
+ * @param {string} hex
+ * @returns {Uint8Array}
+ */
+function hexToBytes(hex) {
+  const clean = hex.trim();
+  if (clean.length % 2 !== 0 || /[^0-9a-fA-F]/.test(clean)) {
+    throw new VerifyError("INPUT", `verifying key hex is malformed: "${hex}"`);
+  }
+  const out = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(clean.slice(2 * i, 2 * i + 2), 16);
+  }
+  return out;
+}
+
+/**
+ * Verify a colimit receipt (`nucleus-receipt` envelope) against the issuer's
+ * 32-byte Ed25519 verifying key. Re-canonicalizes (RFC 8785), recomputes the
+ * BLAKE3 root hash, and re-verifies the signature — the exact upstream
+ * `Receipt::verify`, compiled to this WASM.
+ *
+ * Returns a structured verdict the caller branches on: a cryptographic
+ * rejection is a VALUE (`outcome`), distinguishing content tampered after
+ * signing (`root_hash_mismatch`) from a wrong/forged key (`signature_mismatch`).
+ * Throws only on malformed input (bad JSON, wrong key length).
+ *
+ * @param {string | object} receipt
+ *   A `Receipt` — JSON string or parsed object
+ *   (`{version, session, projections, root_hash_hex, signature_b64}`).
+ * @param {string | Uint8Array} verifyingKey
+ *   The issuer's raw 32-byte Ed25519 public key — hex string or bytes.
+ * @returns {Promise<
+ *   | { outcome: "verified", version: number, session_id: string,
+ *       issuer_kid: string, projection_kinds: string[], root_hash_hex: string }
+ *   | { outcome: "root_hash_mismatch", expected: string, actual: string }
+ *   | { outcome: "signature_mismatch", reason: string }
+ * >}
+ */
+export async function verifyReceipt(receipt, verifyingKey) {
+  const mod = await initWasm();
+  const keyBytes =
+    typeof verifyingKey === "string" ? hexToBytes(verifyingKey) : verifyingKey;
+  return mod.verifyReceipt(
+    typeof receipt === "string" ? receipt : JSON.stringify(receipt),
+    keyBytes,
+  );
+}
+
+// ── AGENT CARD: verify the counterparty's signed identity BEFORE acting ───────
+// `verify()` answers WHAT happened, `verifyReceipt()` what was SIGNED —
+// `verifyAgentCard()` answers WHO you are about to act with. The WASM runs the
+// SAME `verify_card` every native recipient runs (JCS re-canonicalization +
+// detached ES256 JWS + advertised-JWKS usability) against a key YOU resolved
+// out-of-band. The card's own key material is never trusted: a card verified
+// against an attacker-supplied key is "verified garbage", by design.
+
+/**
+ * Verify a signed A2A Agent Card against an out-of-band-resolved key.
+ *
+ * Returns a structured verdict the caller branches on: a cryptographic
+ * rejection (no signatures, wrong key, tampered card, unusable advertised
+ * JWKS) is a VALUE (`outcome: "rejected"`), not a thrown exception. Throws
+ * only on malformed input (bad card JSON, bad JWK JSON).
+ *
+ * On success the verdict includes the card's runtime-guarantee profile
+ * summary — authentic attestation (covered by the card's signature), NOT
+ * proof of enforcement.
+ *
+ * @param {string | object} signedCard
+ *   A signed A2A v1.0 `AgentCard` — JSON string or parsed object (flat
+ *   card; JWS signatures embedded in its `signatures` field, nucleus
+ *   claims in its `capabilities.extensions`).
+ * @param {string | object} resolvedJwk
+ *   The out-of-band-resolved verification key — JWK JSON string or object
+ *   (`{"kty":"EC","crv":"P-256","x":"...","y":"..."}`). NEVER from the card.
+ * @returns {Promise<
+ *   | { outcome: "verified", spiffe_id: string, did: string,
+ *       supported_envelope_schema_versions: string[],
+ *       trust_jwks_kids: string[],
+ *       runtime_guarantees: {
+ *         profile_version: string, tracked_sources: string[],
+ *         enforcement_rules: string[], attestation_reference: string | null,
+ *       } | null }
+ *   | { outcome: "rejected", reason: string }
+ * >}
+ */
+export async function verifyAgentCard(signedCard, resolvedJwk) {
+  const mod = await initWasm();
+  return mod.verifyAgentCard(
+    asJsonString(signedCard),
+    asJsonString(resolvedJwk),
+  );
+}
+
+/**
+ * Verify ONLY the A2A v1.0 §8.4.3 signature of an Agent Card against an
+ * out-of-band-resolved key — no nucleus claims policy. The interop entry
+ * point: a validly signed *plain* A2A card (no nucleus extension, e.g. one
+ * published by any other A2A implementation) verifies here, while
+ * `verifyAgentCard()` additionally requires the nucleus claims.
+ *
+ * Verification runs over the card document exactly as received (§8.4.3
+ * steps 3-6 operate on "the received Agent Card"): the `signatures` member
+ * is removed, everything else — including members this build does not
+ * model — stays in the RFC 8785 canonical payload, and EVERY entry of the
+ * `signatures` array is checked against the resolved key (§8.4.3 allows
+ * multiple signatures for key rotation; any one verifying suffices). The
+ * card's own key material is never trusted.
+ *
+ * Returns a structured verdict (branch on `outcome`); throws only on
+ * malformed input (bad card JSON, bad JWK JSON).
+ *
+ * @param {string | object} signedCard
+ *   The signed A2A v1.0 `AgentCard` as received — JSON string or parsed
+ *   object (JWS signatures embedded in its `signatures` field).
+ * @param {string | object} resolvedJwk
+ *   The out-of-band-resolved verification key — JWK JSON string or object
+ *   (`{"kty":"EC","crv":"P-256","x":"...","y":"..."}`). NEVER from the card.
+ * @returns {Promise<
+ *   | { outcome: "verified" }
+ *   | { outcome: "rejected", reason: string }
+ * >}
+ */
+export async function verifyAgentCardSignature(signedCard, resolvedJwk) {
+  const mod = await initWasm();
+  return mod.verifyAgentCardSignature(
+    asJsonString(signedCard),
+    asJsonString(resolvedJwk),
+  );
+}
+
 // ── RECOMPUTE: re-derive the decision, don't just check the signature ─────────
 // `verify()` proves a receipt was *signed*; `recompute()` proves the in-bounds
 // IFC *decision* was correct by re-running the EXACT same gate function the

@@ -23,7 +23,7 @@
 //!
 //! - [`AllowlistVerifier`] / [`HashingReceiptIssuer`] — in-memory, dependency-
 //!   light; for tests, local dev, and minimal deployments.
-//! - [`AgentCardVerifier`] — verifies a signed [A2A-style Agent
+//! - [`AgentCardVerifier`] — verifies a signed [A2A v1.0 Agent
 //!   Card](nucleus_agent_card) against an **out-of-band-resolved** key.
 //! - [`EnvelopeReceiptIssuer`] — emits a real [`nucleus_envelope`] provenance
 //!   `Bundle` (signed by a seller-provided [`EdgeSigner`](nucleus_lineage::EdgeSigner))

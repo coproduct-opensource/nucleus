@@ -196,6 +196,122 @@ pub fn content_hash_hex(receipt: &ClearingReceipt) -> String {
     hex::encode(h.finalize())
 }
 
+/// Lift/narrow between [`ClearingReceipt`] and `nucleus-receipt`'s signed
+/// colimit envelope (feature `envelope`, off by default).
+///
+/// A [`ClearingReceipt`] on its own is *unsigned*: its verification is pure
+/// recomputation, so it says "these numbers re-derive" but not "who emitted
+/// them". `nucleus-receipt`'s [`Receipt`](nucleus_receipt::Receipt) is the
+/// Ed25519/BLAKE3 envelope that says who — and its
+/// [`Projection::Economic`](nucleus_receipt::Projection::Economic) variant
+/// was designed to carry exactly this body. This module wires the two, so a
+/// clearing travels as one signed object carrying BOTH guarantees:
+///
+/// 1. **Signature** — [`Receipt::verify`](nucleus_receipt::Receipt::verify)
+///    proves the issuer emitted these bytes (any tamper fails here first);
+/// 2. **Recompute** — [`clearing_from_projection`] narrows the body back to a
+///    typed [`ClearingReceipt`], and [`verify_receipt`](crate::verify_receipt)
+///    re-derives every cleared number from the proven kernels.
+///
+/// ## Wire shape (stable)
+///
+/// The `Projection::Economic` body produced by [`to_economic_projection`] is:
+///
+/// ```json
+/// { "kind": "clearing", "receipt": { "kind": "settlement", ... } }
+/// ```
+///
+/// - outer `"kind"` is always [`ECONOMIC_CLEARING_KIND`] (`"clearing"`) — the
+///   discriminant *within* the economic projection, so other economic bodies
+///   (e.g. bid+match records) can coexist under the same projection kind;
+/// - `"receipt"` is the internally-tagged [`ClearingReceipt`] JSON
+///   (`"kind": "settlement" | "commons" | "vcg"`), unchanged from this
+///   crate's existing wire format — [`content_hash_hex`](crate::content_hash_hex)
+///   of the narrowed value therefore still matches any lineage edge that
+///   committed to the bare receipt.
+#[cfg(feature = "envelope")]
+pub mod envelope {
+    use crate::ClearingReceipt;
+
+    pub use nucleus_receipt::Projection;
+
+    /// The `"kind"` discriminant inside a `Projection::Economic` body that
+    /// marks it as a clearing receipt. Stable wire constant.
+    pub const ECONOMIC_CLEARING_KIND: &str = "clearing";
+
+    /// Why a [`Projection`] could not be narrowed to a [`ClearingReceipt`].
+    #[derive(Debug, thiserror::Error, PartialEq, Eq)]
+    #[non_exhaustive]
+    pub enum NarrowError {
+        /// The projection is not `Projection::Economic` at all.
+        #[error("projection kind is `{found}`, expected `economic`")]
+        NotEconomic {
+            /// The wire discriminant of the projection that was supplied.
+            found: &'static str,
+        },
+        /// The economic body's `kind` is not `"clearing"` (or is missing) —
+        /// some other economic record travels under this projection.
+        #[error("economic body kind is `{found}`, expected `clearing`")]
+        NotClearing {
+            /// The inner `kind` found, or `<missing>`.
+            found: String,
+        },
+        /// The body claimed to be a clearing but its `receipt` field is
+        /// absent or does not deserialize as a [`ClearingReceipt`].
+        #[error("economic clearing body is malformed: {0}")]
+        MalformedBody(String),
+    }
+
+    /// Lift a [`ClearingReceipt`] into the [`Projection::Economic`] body it
+    /// travels as inside a signed [`Receipt`](nucleus_receipt::Receipt).
+    /// See the module docs for the stable inner shape.
+    pub fn to_economic_projection(receipt: &ClearingReceipt) -> Projection {
+        Projection::Economic(serde_json::json!({
+            "kind": ECONOMIC_CLEARING_KIND,
+            "receipt": receipt,
+        }))
+    }
+
+    /// Narrow a [`Projection`] back to the typed [`ClearingReceipt`].
+    ///
+    /// Rejects, with distinct errors: non-`Economic` projections
+    /// ([`NarrowError::NotEconomic`]), economic bodies that are not clearings
+    /// ([`NarrowError::NotClearing`]), and clearing bodies whose `receipt`
+    /// is missing or malformed ([`NarrowError::MalformedBody`]).
+    ///
+    /// Narrowing does NOT verify anything: call
+    /// [`Receipt::verify`](nucleus_receipt::Receipt::verify) on the envelope
+    /// *before* narrowing, and [`verify_receipt`](crate::verify_receipt) on
+    /// the narrowed value after.
+    pub fn clearing_from_projection(
+        projection: &Projection,
+    ) -> Result<ClearingReceipt, NarrowError> {
+        let Projection::Economic(body) = projection else {
+            return Err(NarrowError::NotEconomic {
+                found: projection.kind(),
+            });
+        };
+        match body.get("kind").and_then(serde_json::Value::as_str) {
+            Some(ECONOMIC_CLEARING_KIND) => {}
+            Some(other) => {
+                return Err(NarrowError::NotClearing {
+                    found: other.to_string(),
+                })
+            }
+            None => {
+                return Err(NarrowError::NotClearing {
+                    found: "<missing>".to_string(),
+                })
+            }
+        }
+        let receipt = body
+            .get("receipt")
+            .ok_or_else(|| NarrowError::MalformedBody("missing `receipt` field".to_string()))?;
+        serde_json::from_value(receipt.clone())
+            .map_err(|e| NarrowError::MalformedBody(e.to_string()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -402,6 +518,173 @@ mod tests {
             let back: ClearingReceipt = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(r, back);
             assert!(verify_receipt(&back).is_match());
+        }
+    }
+
+    // ── Signed Economic projection (feature `envelope`) ───────────────────────
+
+    #[cfg(feature = "envelope")]
+    mod envelope_tests {
+        use super::*;
+        use crate::envelope::{
+            clearing_from_projection, to_economic_projection, NarrowError, ECONOMIC_CLEARING_KIND,
+        };
+        use nucleus_receipt::{Projection, Receipt, ReceiptError, Session};
+
+        fn session() -> Session {
+            Session {
+                session_id: "spiffe://test/clearing-agent".into(),
+                issuer_kid: "test-kid".into(),
+                issued_at_micros: 1_717_000_000_000_000,
+                parent_chain: vec![],
+            }
+        }
+
+        /// The round-trip law: narrow ∘ lift = id, for every receipt variant.
+        #[test]
+        fn lift_then_narrow_is_identity() {
+            for r in [
+                honest_settlement(1_000_000, 2_500),
+                honest_commons(7),
+                honest_vcg(),
+            ] {
+                let p = to_economic_projection(&r);
+                assert_eq!(p.kind(), "economic");
+                let back = clearing_from_projection(&p).expect("lifted projection narrows back");
+                assert_eq!(back, r);
+            }
+        }
+
+        #[test]
+        fn economic_body_shape_is_stable() {
+            // Wire pin: {"kind": "clearing", "receipt": {...}} — downstream
+            // consumers dispatch on the inner kind, so drift fails here.
+            let Projection::Economic(body) = to_economic_projection(&honest_settlement(10, 2_500))
+            else {
+                panic!("lift must produce an economic projection");
+            };
+            assert_eq!(body["kind"], ECONOMIC_CLEARING_KIND);
+            assert_eq!(body["receipt"]["kind"], "settlement");
+        }
+
+        #[test]
+        fn narrowing_rejects_non_economic_projection() {
+            let p = Projection::Identity(serde_json::json!({"sub": "spiffe://test/agent"}));
+            assert_eq!(
+                clearing_from_projection(&p),
+                Err(NarrowError::NotEconomic { found: "identity" })
+            );
+        }
+
+        #[test]
+        fn narrowing_rejects_other_economic_bodies() {
+            // A different economic record under the same projection kind.
+            let p = Projection::Economic(serde_json::json!({
+                "kind": "bid_match",
+                "receipt": {"anything": true},
+            }));
+            assert_eq!(
+                clearing_from_projection(&p),
+                Err(NarrowError::NotClearing {
+                    found: "bid_match".into()
+                })
+            );
+            // Missing inner kind entirely.
+            let p = Projection::Economic(serde_json::json!({"receipt": {}}));
+            assert_eq!(
+                clearing_from_projection(&p),
+                Err(NarrowError::NotClearing {
+                    found: "<missing>".into()
+                })
+            );
+        }
+
+        #[test]
+        fn narrowing_rejects_malformed_clearing_bodies() {
+            // `receipt` field absent.
+            let p = Projection::Economic(serde_json::json!({"kind": "clearing"}));
+            assert!(matches!(
+                clearing_from_projection(&p),
+                Err(NarrowError::MalformedBody(_))
+            ));
+            // `receipt` present but not a ClearingReceipt.
+            let p = Projection::Economic(serde_json::json!({
+                "kind": "clearing",
+                "receipt": {"kind": "settlement", "price_micro": "not-a-number"},
+            }));
+            assert!(matches!(
+                clearing_from_projection(&p),
+                Err(NarrowError::MalformedBody(_))
+            ));
+        }
+
+        /// The full both-guarantees path: lift → sign → verify (signature:
+        /// who emitted it) → narrow → recompute (the numbers re-derive).
+        #[test]
+        fn signed_envelope_carries_both_guarantees_end_to_end() {
+            let sk = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+            let vk: [u8; 32] = sk.verifying_key().to_bytes();
+
+            for r in [
+                honest_settlement(1_000_000, 2_500),
+                honest_commons(1_000_000),
+                honest_vcg(),
+            ] {
+                let signed = Receipt::sign(session(), vec![to_economic_projection(&r)], &sk);
+
+                // Guarantee 1: the signature binds the issuer to these bytes.
+                signed
+                    .verify(&vk)
+                    .expect("freshly signed envelope verifies");
+
+                // Narrow the projection back to the typed receipt…
+                let back = clearing_from_projection(&signed.projections[0])
+                    .expect("signed economic projection narrows back");
+                assert_eq!(back, r);
+
+                // Guarantee 2: every cleared number re-derives from the
+                // proven kernels on the narrowed value.
+                assert!(verify_receipt(&back).is_match());
+            }
+        }
+
+        /// Tampering with one cleared number inside the signed envelope is
+        /// caught by the SIGNATURE check — before recompute is even consulted.
+        #[test]
+        fn tampered_cleared_number_fails_signature_before_recompute() {
+            let sk = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+            let vk: [u8; 32] = sk.verifying_key().to_bytes();
+
+            let mut signed = Receipt::sign(
+                session(),
+                vec![to_economic_projection(&honest_settlement(1_000_000, 2_500))],
+                &sk,
+            );
+
+            // Skim 1 micro-USD off the seller's gross inside the signed body.
+            let Projection::Economic(body) = &mut signed.projections[0] else {
+                panic!("envelope holds an economic projection");
+            };
+            let claimed = body["receipt"]["seller_gross"].as_u64().unwrap();
+            body["receipt"]["seller_gross"] = serde_json::json!(claimed + 1);
+
+            // The envelope check fails FIRST — no recompute needed: the
+            // re-canonicalized bytes no longer match the signed root hash.
+            assert!(matches!(
+                signed.verify(&vk),
+                Err(ReceiptError::RootHashMismatch { .. })
+            ));
+
+            // (And even if a consumer skipped the signature, the recompute
+            // layer independently catches the skim on the narrowed value.)
+            let back = clearing_from_projection(&signed.projections[0]).unwrap();
+            assert!(matches!(
+                verify_receipt(&back),
+                RecomputeOutcome::Mismatch {
+                    field: "seller_gross",
+                    ..
+                }
+            ));
         }
     }
 }
