@@ -40,7 +40,7 @@ jobs:
       contents: read
       pull-requests: write   # for the comment-on-failure step
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Run no-vendor-strings.sh
         id: gate
         run: |
@@ -80,7 +80,7 @@ jobs:
       contents: read
       pull-requests: write   # for the comment-on-failure step
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Run alg-pin-check.sh
         id: gate
         run: |
