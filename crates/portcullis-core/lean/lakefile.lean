@@ -229,3 +229,16 @@ lean_lib «MonoidalPermissionProofs» where
 -- Instantiates Φ with the permission lattice (imports MonoidalPermissionProofs).
 lean_lib «ConstructiveSecurity» where
   roots := #[`ConstructiveSecurity]
+
+-- WASI 0.3.0 world functor: capability lattice → component import world.
+-- φ : CapabilityLevel → WasiGrant is a lattice homomorphism (meet/join/bounds
+-- preserved), so "most-restrictive-wins compiles to import intersection".
+-- Mirrors crates/portcullis-wasi/src/lib.rs. Mathlib-free; pure Lean core.
+lean_lib «WasiWorldFunctor» where
+  roots := #[`WasiWorldFunctor]
+
+-- Soundness of the WASI IFC boundary monitor: the floating label admits a sink
+-- iff every source read admits it (monitor_sound). The formal backing FIDES
+-- lacks. Mirrors crates/portcullis-wasi/src/ifc.rs (+ host.rs enforcement).
+lean_lib «WasiIfcBoundary» where
+  roots := #[`WasiIfcBoundary]

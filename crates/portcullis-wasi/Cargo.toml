@@ -1,0 +1,34 @@
+[package]
+name = "portcullis-wasi"
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+description = "WASI 0.3.0 world functor — compiles a capability lattice into a component import world"
+repository = "https://github.com/coproduct-opensource/nucleus"
+
+# This crate is the Rust side of the `WasiWorldFunctor` Lean proof
+# (crates/portcullis-core/lean/WasiWorldFunctor.lean). It defines the functor
+#
+#     world_of : CapabilityLattice → WasiWorld
+#
+# whose per-interface core `WasiGrant::from(CapabilityLevel)` is a lattice
+# isomorphism of 3-chains. The property tests below mirror, 1:1, the
+# `decide`-closed theorems in WasiWorldFunctor.lean (phi_meet / phi_join /
+# presence projection). Keep them in sync: if you change the folding in
+# `world_of`, update `filesystemGrant_mono` and friends on the Lean side.
+
+[features]
+default = []
+serde = ["dep:serde", "portcullis-core/serde"]
+# `host` makes the functor *executable*: a wasmtime host whose import set and
+# grant enforcement are derived from `world_of(cap)`. Heavy (pulls in wasmtime +
+# cranelift), so it is opt-in; the pure functor + Lean-mirrored proofs stay
+# dependency-light by default. Pinned to wasmtime 45 to match portcullis-core's
+# `wasm-sandbox` feature (workspace dep convergence).
+host = ["dep:wasmtime", "dep:anyhow"]
+
+[dependencies]
+portcullis-core = { path = "../portcullis-core" }
+serde = { workspace = true, optional = true }
+wasmtime = { version = "45", optional = true }
+anyhow = { workspace = true, optional = true }

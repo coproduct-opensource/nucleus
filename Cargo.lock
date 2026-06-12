@@ -8072,6 +8072,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "portcullis-wasi"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "portcullis-core",
+ "serde",
+ "wasmtime",
+]
+
+[[package]]
 name = "portmapper"
 version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
