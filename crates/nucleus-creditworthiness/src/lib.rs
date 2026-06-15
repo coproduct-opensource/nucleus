@@ -63,6 +63,18 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "recompute")]
 pub mod mint;
 
+/// Conflict-free replicated set of recompute-verified [`CreditEvent`]s: a
+/// set-backed, **idempotent** join-semilattice (`ReputationSet`) that lets the
+/// credit ledger survive multi-writer, out-of-order, duplicating gossip
+/// replication with strong eventual consistency. Where [`CreditFile::merge`] is
+/// a commutative monoid (and so DOUBLE-COUNTS a re-delivered event),
+/// [`crdt::ReputationSet::join`] keys events by `receipt_hash` so re-delivery is
+/// idempotent; reputation is a deterministic fold reusing [`CreditFile`]
+/// verbatim. Admission is fail-closed: events join only through a recompute
+/// gate. Always compiled (wasm-safe); the iroh-docs carrier that gossips these
+/// sets is a later, separate slice.
+pub mod crdt;
+
 /// Recompute-verifiable commons-ledger accounting **view**: a pure, read-only
 /// projection over recompute-verified `Commons` receipts showing the externality
 /// dues actually routed to the commons (per destination + total), so anyone can
