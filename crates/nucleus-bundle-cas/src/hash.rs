@@ -46,7 +46,22 @@ use crate::BundleHash;
 /// case as an empty input rather than panicking.
 pub fn blake3_bundle_hash(bundle: &Bundle) -> BundleHash {
     let bytes = serde_json::to_vec(bundle).unwrap_or_default();
-    let digest = blake3::hash(&bytes);
+    // Delegate to the generic byte hasher: the bundle path is just one caller
+    // of the generic artifact CAS. No algorithm change.
+    blake3_hash(&bytes)
+}
+
+/// Compute the BLAKE3-256 digest of arbitrary bytes (transport addressing only).
+///
+/// This is the low-level hash shared by [`blake3_bundle_hash`] and the generic
+/// [`crate::publish::publish_bytes`]. Deterministic: the same bytes always
+/// yield the same hash, and a single-byte change changes the hash.
+///
+/// Like [`blake3_bundle_hash`], the result is a bare BLAKE3-256 digest — a
+/// TRANSPORT id, **NOT** [`nucleus_envelope::canonical_bundle_hash`] (SHA-256
+/// over selected fields) and **NOT** a CID.
+pub fn blake3_hash(data: &[u8]) -> BundleHash {
+    let digest = blake3::hash(data);
     BundleHash(*digest.as_bytes())
 }
 
@@ -108,5 +123,54 @@ mod tests {
         let transport = blake3_bundle_hash(&b);
         let canonical = nucleus_envelope::canonical_bundle_hash(&b);
         assert_ne!(transport.as_bytes(), &canonical);
+    }
+
+    #[test]
+    fn three_distinct_ids_invariant_blake3_vs_sha256() {
+        // Load-bearing invariant: BLAKE3-256 (transport) and SHA-256
+        // (canonical) are computed independently via distinct algorithms and
+        // never conflated. This encodes the "three distinct ids" discipline:
+        //   1. BLAKE3-256 transport hash (over the FULL serialized bytes, here)
+        //   2. SHA-256 canonical hash (over selected fields, nucleus-envelope)
+        //   3. No CID (no multihash/multicodec/multibase framing)
+        //
+        // Consequence: if either algorithm is mutated or wrongly shared, this
+        // test catches the divergence. Byte-integrity != provenance.
+        let bundle = fixture_bundle("three_ids");
+
+        // (1) BLAKE3 transport hash over the full serialized bytes.
+        let transport_blake3 = blake3_bundle_hash(&bundle);
+
+        // (2) SHA-256 canonical hash over selected fields (excludes attestation).
+        let canonical_sha256 = nucleus_envelope::canonical_bundle_hash(&bundle);
+
+        // Independently computed => the byte sequences differ.
+        assert_ne!(
+            transport_blake3.as_bytes().as_slice(),
+            canonical_sha256.as_slice(),
+            "BLAKE3 transport hash (full bytes) must differ from \
+             SHA-256 canonical hash (selected fields)"
+        );
+
+        // Both are 32 bytes, but from different algorithms over different inputs.
+        assert_eq!(transport_blake3.as_bytes().len(), 32);
+        assert_eq!(canonical_sha256.len(), 32);
+
+        // (3) BundleHash is NOT a CID — no multihash, multicodec, or multibase.
+        let hex = transport_blake3.to_hex();
+        assert_eq!(hex.len(), 64, "raw 32-byte BLAKE3 -> 64 hex chars");
+        assert!(
+            !hex.starts_with('z'),
+            "BundleHash must not be multibase-encoded"
+        );
+    }
+
+    #[test]
+    fn blake3_hash_matches_bundle_hash_over_same_bytes() {
+        // The generic byte hasher and the bundle hasher agree byte-for-byte
+        // (the bundle path is a thin caller). No algorithm divergence.
+        let b = fixture_bundle("hi");
+        let bytes = serde_json::to_vec(&b).unwrap();
+        assert_eq!(blake3_hash(&bytes), blake3_bundle_hash(&b));
     }
 }

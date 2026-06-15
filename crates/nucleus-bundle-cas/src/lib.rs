@@ -81,9 +81,9 @@ pub mod fetch;
 pub mod hash;
 pub mod publish;
 
-pub use fetch::{fetch_bundle, FetchError};
-pub use hash::blake3_bundle_hash;
-pub use publish::{publish_bundle, PublishError};
+pub use fetch::{fetch_bundle, fetch_bytes, FetchBytesError, FetchError};
+pub use hash::{blake3_bundle_hash, blake3_hash};
+pub use publish::{publish_bundle, publish_bytes, PublishBytesError, PublishError};
 
 /// Length, in bytes, of a [`BundleHash`] (BLAKE3-256 digest).
 pub const BUNDLE_HASH_LEN: usize = 32;
