@@ -7195,6 +7195,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-witness-gossip"
+version = "1.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek 3.0.0-pre.7",
+ "nucleus-lineage",
+ "nucleus-witness",
+ "serde",
+]
+
+[[package]]
 name = "nucleus-witness-olog"
 version = "1.0.0"
 dependencies = [
