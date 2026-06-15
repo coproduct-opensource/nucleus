@@ -17,7 +17,7 @@ path = "src/main.rs"
 nucleus-lineage = { path = "../nucleus-lineage" }
 axum = { version = "0.8", features = ["macros"] }
 tokio = { workspace = true, features = ["full"] }
-tower-http = { version = "0.6", features = ["trace", "timeout", "limit"] }
+tower-http = { version = "0.7", features = ["trace", "timeout", "limit"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
