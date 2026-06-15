@@ -54,6 +54,14 @@ ignore = [
   # No untrusted .wasm execution path is wired in production today.
   # Sunset: bump to wasmtime 44+ (tracked in dependabot PR #1600).
   "RUSTSEC-2026-0114",
+
+  # bincode 1.x is unmaintained (RUSTSEC-2025-0141) — informational, NOT a
+  # vulnerability. bincode 1.3.3 is pulled TRANSITIVELY via risc0-zkvm 3.0.5 →
+  # portcullis-core (behind the `zkvm` feature, surfaced under deny's
+  # `--all-features` scan); not removable without dropping risc0. Our own code
+  # does NOT depend on it — the nucleus-witness-gossip wire codec uses the
+  # maintained `postcard`. Sunset: drops when risc0-zkvm moves off bincode 1.
+  "RUSTSEC-2025-0141",
 ]
 # These are informational; scope to workspace dependencies.
 unmaintained = "workspace"

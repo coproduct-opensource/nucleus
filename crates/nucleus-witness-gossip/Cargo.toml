@@ -15,7 +15,7 @@ categories = ["cryptography", "network-programming"]
 # so downstream, the wasm/default build, and the default `cargo hack`
 # variant all see a pure crate. `cargo hack --each-feature` compiles this
 # variant in CI (catching API misuse against iroh-gossip 0.100.0).
-transport = ["dep:iroh", "dep:iroh-gossip", "dep:n0-future", "dep:blake3", "dep:bincode"]
+transport = ["dep:iroh", "dep:iroh-gossip", "dep:n0-future", "dep:blake3", "dep:postcard"]
 
 [dependencies]
 # Reuse the EXACT cosignature/v1 message framing — we never re-invent it.
@@ -39,9 +39,10 @@ iroh-gossip = { version = "=0.100.0", optional = true }
 n0-future = { version = "0.3", optional = true }
 # Deterministic topic id over the origin string. Matches the in-workspace pin.
 blake3 = { version = "1.8.5", optional = true }
-# Wire codec for SignedWitnessHead. Pinned to the in-workspace bincode 1 line
-# (no second bincode version / 2.x API churn).
-bincode = { version = "1", optional = true }
+# Wire codec for SignedWitnessHead. `postcard` is a maintained, compact serde
+# binary codec; chosen over `bincode 1`, which is unmaintained (RUSTSEC-2025-0141)
+# and would trip the workspace `unmaintained = "workspace"` deny gate.
+postcard = { version = "1", default-features = false, features = ["use-std"], optional = true }
 
 [dev-dependencies]
 # Tests parse the witness's real cosignature line payload back out.

@@ -48,7 +48,7 @@ use crate::SignedWitnessHead;
 /// [`next_head`] / [`head_from_event`] return `None` rather than erroring.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransportError {
-    /// `bincode` serialization of a head failed before broadcast.
+    /// `postcard` serialization of a head failed before broadcast.
     SerializationError(String),
     /// The gossip broadcast call failed (network / swarm error).
     PublishError(String),
@@ -80,12 +80,14 @@ pub fn topic_for(origin: &str) -> TopicId {
     TopicId::from_bytes(*hash.as_bytes())
 }
 
-/// Serialize a head to its gossip wire bytes (`bincode`).
+/// Serialize a head to its gossip wire bytes (`postcard`).
 ///
 /// This is the exact codec used by [`publish_head`]; exposed so the wire
-/// round-trip is unit-testable without any networking.
+/// round-trip is unit-testable without any networking. (`postcard` is a
+/// maintained, compact serde binary codec — chosen over `bincode 1`, which
+/// is unmaintained per RUSTSEC-2025-0141.)
 pub fn encode_head(head: &SignedWitnessHead) -> TransportResult<Vec<u8>> {
-    bincode::serialize(head).map_err(|e| TransportError::SerializationError(e.to_string()))
+    postcard::to_allocvec(head).map_err(|e| TransportError::SerializationError(e.to_string()))
 }
 
 /// Decode a head from gossip wire bytes, or `None` if the bytes are not a
@@ -97,12 +99,12 @@ pub fn encode_head(head: &SignedWitnessHead) -> TransportResult<Vec<u8>> {
 /// trusting it. A decode failure yields `None` (best-effort gossip: a
 /// corrupt datagram is dropped, never fatal).
 pub fn decode_head(bytes: &[u8]) -> Option<SignedWitnessHead> {
-    bincode::deserialize(bytes).ok()
+    postcard::from_bytes(bytes).ok()
 }
 
 /// Publish a signed witness head to the gossip topic for its `origin`.
 ///
-/// Serializes the head with `bincode` and broadcasts the bytes via
+/// Serializes the head with `postcard` and broadcasts the bytes via
 /// [`iroh_gossip::api::GossipSender::broadcast`]. The `sender` is obtained
 /// from `gossip.subscribe(`[`topic_for`]`(origin), ..).await?.split()`,
 /// so the caller is responsible for subscribing to the matching topic.
