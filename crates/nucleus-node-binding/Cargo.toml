@@ -1,0 +1,20 @@
+[package]
+name = "nucleus-node-binding"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Signed binding layer unifying an agent's transport identity (NodeId) with its passport principal — domain-separated ed25519 verification, pure and iroh-free"
+repository = "https://github.com/coproduct-opensource/nucleus"
+keywords = ["node-binding", "identity", "ed25519", "transport", "cryptography"]
+categories = ["cryptography"]
+
+[dependencies]
+serde = { workspace = true }
+ed25519-dalek = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
