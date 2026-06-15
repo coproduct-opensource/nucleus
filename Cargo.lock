@@ -6894,6 +6894,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-node-binding"
+version = "1.0.0"
+dependencies = [
+ "ed25519-dalek 3.0.0-pre.7",
+ "hex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "nucleus-oidc-core"
 version = "1.0.0"
 dependencies = [
