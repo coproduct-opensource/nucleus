@@ -38,6 +38,7 @@ members = [
     "crates/nucleus-verifier-service",   # Public verifier-as-a-service for provenance bundles
     "crates/nucleus-witness",            # C2SP tlog-witness server: mints cosignatures with the spec status matrix
     "crates/nucleus-witness-gossip",     # Slice 1: best-effort gossip message layer + fail-closed head verification (no iroh; transport is slice 2)
+    "crates/nucleus-node-binding",       # Signed transport-identity binding (NodeId <-> passport principal); domain-separated ed25519, no iroh (conversions are a later slice)
     "crates/nucleus-oidc-provider",      # OIDC OP: JWT-SVID issuance + RFC 8693 token exchange
     "crates/nucleus-oidc-core",          # Provider-agnostic OIDC primitives (JWKS, JtiCache, federation)
     "crates/nucleus-fly-oidc",           # Per-provider validator: Fly.io machine OIDC → SPIFFE
