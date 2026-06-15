@@ -1,0 +1,26 @@
+[package]
+name = "nucleus-witness-gossip"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Best-effort gossip layer for cosignature dissemination — verifies witness heads (fail-closed) before quorum evaluation"
+repository = "https://github.com/coproduct-opensource/nucleus"
+keywords = ["witness", "cosignature", "gossip", "c2sp", "federation"]
+categories = ["cryptography", "network-programming"]
+
+[dependencies]
+# Reuse the EXACT cosignature/v1 message framing — we never re-invent it.
+nucleus-witness = { path = "../nucleus-witness" }
+# The unchanged k-of-n quorum evaluator (Policy::is_satisfied) lives here.
+nucleus-lineage = { path = "../nucleus-lineage" }
+serde = { workspace = true }
+# Single workspace-pinned Ed25519; no second dalek line, no QUIC.
+ed25519-dalek = { workspace = true }
+
+[dev-dependencies]
+# Tests parse the witness's real cosignature line payload back out.
+base64 = "0.22"
+
+[lints]
+workspace = true
