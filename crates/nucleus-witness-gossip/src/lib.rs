@@ -28,8 +28,13 @@
 //!    NEVER a pubkey carried in the gossip message. A [`SignedWitnessHead`]
 //!    deliberately carries no pubkey field, so a malicious gossiper
 //!    cannot supply a key that "verifies" its own forgery.
-//! 3. **Pure.** No iroh / iroh-gossip / QUIC dependency. Transport is
-//!    slice 2. This slice is crypto + name-collection only.
+//! 3. **Pure by default.** With default features there is no
+//!    iroh / iroh-gossip / QUIC dependency: this is crypto +
+//!    name-collection only. The optional, **default-OFF** `transport`
+//!    feature (slice 2) adds the [`transport`] iroh-gossip carrier for
+//!    these exact messages. Even under `transport`, bytes off the wire
+//!    are UNVERIFIED until the consumer runs [`verify_head`] against its
+//!    own trusted key — the fail-closed boundary is unchanged.
 //!
 //! # Crypto reuse
 //!
@@ -44,6 +49,14 @@ use std::collections::{HashMap, HashSet};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use nucleus_witness::WitnessKey;
 use serde::{Deserialize, Serialize};
+
+/// Best-effort iroh-gossip carrier for [`SignedWitnessHead`] (slice 2).
+///
+/// Gated behind the **default-OFF** `transport` feature: with default
+/// features this module does not exist and the crate has zero
+/// iroh / iroh-gossip / QUIC dependencies.
+#[cfg(feature = "transport")]
+pub mod transport;
 
 /// A witness cosignature over a checkpoint, ready for gossip
 /// dissemination.

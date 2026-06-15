@@ -3807,6 +3807,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "futures-concurrency"
+version = "7.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "175cd8cca9e1d45b87f18ffa75088f2099e3c4fe5e2f83e42de112560bea8ea6"
+dependencies = [
+ "fixedbitset 0.5.7",
+ "futures-core",
+ "futures-lite",
+ "pin-project",
+ "smallvec",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5150,6 +5163,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "iroh-gossip"
+version = "0.100.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f5cada641f84a2ff3d1acbd43e16490cf3b2a4f675e580c5c2caa5d68ee63b5"
+dependencies = [
+ "blake3",
+ "bytes",
+ "constant_time_eq",
+ "data-encoding",
+ "derive_more",
+ "ed25519-dalek 3.0.0-pre.7",
+ "futures-concurrency",
+ "hex",
+ "indexmap 2.14.0",
+ "iroh",
+ "iroh-base",
+ "iroh-metrics",
+ "irpc",
+ "n0-error",
+ "n0-future",
+ "postcard",
+ "rand 0.10.1",
+ "serde",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "iroh-io"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6020,6 +6062,7 @@ version = "1.0.0-rc.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "223e946a84aa91644507a6b7865cfebbb9a231ace499041c747ab0fd30408212"
 dependencies = [
+ "anyhow",
  "n0-error-macros",
  "spez",
 ]
@@ -7199,10 +7242,16 @@ name = "nucleus-witness-gossip"
 version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
+ "bincode",
+ "blake3",
  "ed25519-dalek 3.0.0-pre.7",
+ "iroh",
+ "iroh-gossip",
+ "n0-future",
  "nucleus-lineage",
  "nucleus-witness",
  "serde",
+ "tokio",
 ]
 
 [[package]]
