@@ -1,0 +1,66 @@
+name: Constitutional Gate (in-repo)
+
+# Runs the constitutional kernel's admission path (`cargo xtask policy-gate`) on
+# PRs that touch the constitution (PolicyManifest.toml) or its `may_not_modify`
+# protected files. A non-monotone amendment (capability/IO/budget/proof-req
+# escalation, anti-coup) or a change to a protected file fails the build.
+#
+# This is the IN-REPO replacement for the external closed "Constitutional Gate"
+# app: ck-kernel is now actually invoked (most-paranoid #5). Preflight mode
+# (monotonicity + may_not_modify, signatures skipped) runs unconditionally;
+# Admit mode (signed witness + trust roots) is a roadmap follow-up.
+#
+# A no-op twin (ck-admit-noop.yml) reports the SAME context on PRs that do NOT
+# touch these paths, so this job can be a REQUIRED status check.
+
+on:
+  pull_request:
+    paths:
+      - "PolicyManifest.toml"
+      - "LICENSE"
+      - "SECURITY.md"
+      - "crates/ck-kernel/**"
+      - "crates/ck-policy/**"
+      - "crates/ck-types/**"
+      - "crates/xtask/**"
+      - ".github/workflows/ck-admit.yml"
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  admit:
+    name: Constitutional Gate (in-repo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0 # need the base ref to diff PolicyManifest.toml
+      - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
+        with:
+          cache: true
+      - name: Extract base manifest + changed files
+        run: |
+          set -euo pipefail
+          # merge_group has no base_ref; in that case base == HEAD~ is irrelevant
+          # (the queue already evaluated the PR), so fall back to the current file.
+          if [ -n "${{ github.base_ref }}" ]; then
+            git show "origin/${{ github.base_ref }}:PolicyManifest.toml" > before.toml \
+              || cp PolicyManifest.toml before.toml
+            git diff --name-only "origin/${{ github.base_ref }}...HEAD" > changed.txt
+          else
+            cp PolicyManifest.toml before.toml
+            : > changed.txt
+          fi
+      - name: Gate PolicyManifest amendment (preflight)
+        run: |
+          set -euo pipefail
+          cargo run -q -p xtask -- policy-gate \
+            --base before.toml \
+            --candidate PolicyManifest.toml \
+            --changed-files changed.txt

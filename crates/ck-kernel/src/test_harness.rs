@@ -38,8 +38,8 @@ impl TestSigner {
     /// Create a signer with a deterministic keypair derived from the name.
     pub fn new(name: &str) -> Self {
         let seed_hash = ring::digest::digest(&ring::digest::SHA256, name.as_bytes());
-        let keypair = Ed25519KeyPair::from_seed_unchecked(seed_hash.as_ref())
-            .expect("valid Ed25519 seed");
+        let keypair =
+            Ed25519KeyPair::from_seed_unchecked(seed_hash.as_ref()).expect("valid Ed25519 seed");
         Self {
             name: name.to_string(),
             keypair,
@@ -72,8 +72,7 @@ impl TestSigner {
         BundleSignature {
             signer: self.name.clone(),
             algorithm: "ed25519".to_string(),
-            signature: base64::engine::general_purpose::STANDARD
-                .encode(sig.as_ref()),
+            signature: base64::engine::general_purpose::STANDARD.encode(sig.as_ref()),
             role,
         }
     }
@@ -164,7 +163,7 @@ impl TestKeyring {
         self.signers
             .iter()
             .zip(roles.iter())
-            .map(|(signer, role)| signer.sign_bundle_with_role(bundle, Some(role.clone())))
+            .map(|(signer, role)| signer.sign_bundle_with_role(bundle, Some(*role)))
             .collect()
     }
 
@@ -209,10 +208,8 @@ mod tests {
         let sig = signer.sign_bytes(data);
 
         // Verify with ring directly
-        let pub_key = ring::signature::UnparsedPublicKey::new(
-            &ring::signature::ED25519,
-            signer.public_key(),
-        );
+        let pub_key =
+            ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, signer.public_key());
         assert!(pub_key.verify(data, &sig).is_ok());
     }
 

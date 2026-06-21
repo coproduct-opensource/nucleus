@@ -10,11 +10,18 @@
 //!    Constitutional kernel rejects it — rejection reason shows
 //!    `CapabilityNonEscalation: +evil.com`.
 //!
-//! Run with: `cargo test -p ck-kernel --test demo_two_amendments -- --nocapture`
+//! Run with: `cargo test -p ck-kernel --features test-harness --test demo_two_amendments`
+//!
+//! Needs the `test-harness` feature (TestKeyring) to produce real signatures —
+//! the kernel default is now fail-closed `Enforced` outside cfg(test) builds
+//! (most-paranoid #5), so witnesses must be genuinely signed. Without the
+//! feature this file compiles to an empty test binary.
+#![cfg(feature = "test-harness")]
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::Utc;
+use ck_kernel::test_harness::TestKeyring;
 use ck_kernel::{CandidateAmendment, Kernel};
 use ck_types::manifest::*;
 use ck_types::witness::*;
@@ -104,7 +111,7 @@ fn make_witness(
     policy_after: &PolicyManifest,
     kani: Option<bool>,
 ) -> ck_types::WitnessBundle {
-    ck_types::WitnessBundle {
+    let mut bundle = ck_types::WitnessBundle {
         bundle_version: 1,
         parent_digest: parent.clone(),
         candidate_digest: candidate.clone(),
@@ -146,17 +153,24 @@ fn make_witness(
             sandbox: None,
             artifact_digests: BTreeMap::new(),
         },
-        signatures: vec![BundleSignature {
-            signer: "kernel-ci".into(),
-            algorithm: "ed25519".into(),
-            signature: "demo-signature-would-be-real-in-production".into(),
-            role: None,
-        }],
+        // Real signatures attached below (kernel default is now fail-closed).
+        signatures: Vec::new(),
         source_tree_digest: None,
         build_container_digest: None,
         manifest_digest_before: None,
         manifest_digest_after: None,
-    }
+    };
+    // Sign with the deterministic CI keyring; each test's kernel installs the
+    // matching verifier via `demo_keyring().verifier()`.
+    bundle.signatures = demo_keyring().sign_all(&bundle);
+    bundle
+}
+
+/// Deterministic keyring shared by `make_witness` (signing) and each test's
+/// kernel (verification). Keys are derived from the signer name, so independent
+/// `TestKeyring::new` calls produce matching key material.
+fn demo_keyring() -> TestKeyring {
+    TestKeyring::new(&["kernel-ci"])
 }
 
 fn print_lineage(kernel: &Kernel) {
@@ -196,7 +210,8 @@ fn demo_valid_amendment_admitted() {
 
     let policy = genesis_policy();
     let genesis = ArtifactDigest::from_bytes(b"controller-v1.0");
-    let mut kernel = Kernel::new(genesis.clone());
+    let mut kernel =
+        Kernel::new(genesis.clone()).with_signature_verifier(demo_keyring().verifier());
 
     eprintln!("\n  Genesis: {}", genesis);
     eprintln!("  Policy digest: {}", policy.digest());
@@ -263,7 +278,8 @@ fn demo_malicious_amendment_rejected() {
 
     let policy = genesis_policy();
     let genesis = ArtifactDigest::from_bytes(b"controller-v1.0");
-    let mut kernel = Kernel::new(genesis.clone());
+    let mut kernel =
+        Kernel::new(genesis.clone()).with_signature_verifier(demo_keyring().verifier());
 
     // Agent proposes: same scheduler change BUT sneaks in a new network domain
     let mut escalated_policy = policy.clone();
@@ -332,7 +348,8 @@ fn demo_full_lineage_sequence() {
 
     let policy = genesis_policy();
     let genesis = ArtifactDigest::from_bytes(b"controller-v1.0");
-    let mut kernel = Kernel::new(genesis.clone());
+    let mut kernel =
+        Kernel::new(genesis.clone()).with_signature_verifier(demo_keyring().verifier());
 
     // v1.1: tighter retry config (Config class, no Kani needed)
     let v1_1 = ArtifactDigest::from_bytes(b"v1.1-retry-config");

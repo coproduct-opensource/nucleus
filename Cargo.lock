@@ -2118,6 +2118,7 @@ dependencies = [
 name = "ck-kernel"
 version = "1.0.0"
 dependencies = [
+ "base64 0.22.1",
  "blake3",
  "chrono",
  "ck-policy",
@@ -13524,6 +13525,8 @@ name = "xtask"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "ck-kernel",
+ "ck-types",
  "clap",
  "serde_json",
 ]

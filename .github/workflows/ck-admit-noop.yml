@@ -1,0 +1,34 @@
+name: Constitutional Gate (in-repo)
+
+# NO-OP TWIN of ck-admit.yml, so its job can be a REQUIRED status check.
+# Branch protection evaluates required contexts on the PR itself; the real
+# workflow is path-filtered on pull_request, so a PR not touching its paths
+# would never report the context and block forever. This twin has the SAME
+# workflow name and SAME job name, with `paths-ignore` exactly mirroring the
+# original's `paths`: exactly one of the twins reports the context on every PR.
+# (merge_group is NOT twinned — the real workflow already runs unconditionally
+# there.)
+
+on:
+  pull_request:
+    paths-ignore:
+      - "PolicyManifest.toml"
+      - "LICENSE"
+      - "SECURITY.md"
+      - "crates/ck-kernel/**"
+      - "crates/ck-policy/**"
+      - "crates/ck-types/**"
+      - "crates/xtask/**"
+      - ".github/workflows/ck-admit.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  admit:
+    name: Constitutional Gate (in-repo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: No-op (constitution paths not touched)
+        run: echo "no constitution/protected paths changed — gate vacuously green"

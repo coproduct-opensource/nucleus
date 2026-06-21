@@ -15,9 +15,18 @@ ring = "0.17"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
+# Only pulled in by the test-harness feature (keeps the kernel TCB minimal).
+base64 = { version = "0.22", optional = true }
+
+[features]
+# Exposes `test_harness` (TestKeyring) for signing witnesses in integration
+# tests and the gate's Admit-mode tests. Not for production builds.
+test-harness = ["dep:base64"]
 
 [lints.rust]
 unexpected_cfgs = { level = "allow", check-cfg = ['cfg(kani)'] }
 
 [dev-dependencies]
 pretty_assertions = "1"
+# cfg(test) builds use the harness directly (e.g. gate.rs unit tests).
+base64 = "0.22"

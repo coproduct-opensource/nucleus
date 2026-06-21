@@ -16,3 +16,6 @@ workspace = true
 anyhow = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
+# Constitutional gate: run ck-kernel admission on PolicyManifest amendments.
+ck-kernel = { path = "../ck-kernel" }
+ck-types = { path = "../ck-types" }

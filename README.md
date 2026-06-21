@@ -133,9 +133,10 @@ Documented adversarial defenses pass with tests: patch laundering, witness repla
 | `ck-kernel` admission engine + lineage | Validates parent/witness/signatures/monotonicity, appends signed lineage; constitutional path needs multi-sig human approval | Working (tested) |
 | Ed25519 witness signatures | Real `ring` verification, fail-closed when no trusted keys configured | Working; enforcement **opt-in** (defaults to test-skip mode) |
 | Kani proofs of the contract | 17 symbolic harnesses proving escalations are always rejected | Working; full run nightly, per-PR runs a count-regression gate |
-| Runtime / PR-gate integration | Enforce admitted policy on live execution / every PR | **Roadmap** — library not yet wired in |
+| PR-gate integration | Enforce monotonicity on every PR touching the constitution | **Working** — in-repo `ck-admit.yml` runs `ck-kernel::admit` (Preflight) |
+| Runtime integration | Enforce an admitted policy on live execution | **Roadmap** — gate is CI-side only |
 
-> **Status:** ~75 passing unit/integration tests; 17 Kani harnesses. **This is a well-tested library, not yet wired into the runtime** — no non-`ck` crate depends on it, and the sandbox enforces policy via the separate `portcullis` kernel. Signature verification defaults to `SkipForTesting`; you must opt in via `.with_signature_verifier()`. The PR-gating "Constitutional Gate" service described in `PolicyManifest.toml` is an external/closed component, **not** something this open-source repo demonstrates — treat it as roadmap.
+> **Status:** ~75 passing unit/integration tests; 17 Kani harnesses. The kernel is now **invoked by an in-repo PR gate** (`cargo xtask policy-gate`, workflow `ck-admit.yml`): every PR touching `PolicyManifest.toml` or a `may_not_modify` protected file is run through `ck-kernel::admit`, and a non-monotone amendment fails the build — replacing reliance on the external/closed "Constitutional Gate" app. Signature verification now **defaults to fail-closed** outside test builds (an empty `Enforced` verifier rejects every witness until you install trusted keys via `.with_signature_verifier()`). Still roadmap: full *Admit* mode with real signed witnesses + committed trust roots (the CI gate currently runs *Preflight* — authoritative on monotonicity + `may_not_modify`, signatures skipped), and live-runtime (non-CI) enforcement of an admitted policy.
 
 ### 2. Verifiable Identity & Trust Federation — keyless, vendor-neutral
 

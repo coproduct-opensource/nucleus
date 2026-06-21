@@ -9,10 +9,17 @@
 //!
 //! The kernel does NOT know about prompts, LLM reasoning, or task semantics.
 
+mod gate;
 mod kani;
 mod lineage;
 
-use ck_policy::check_monotonicity;
+#[cfg(any(test, feature = "test-harness"))]
+pub mod test_harness;
+
+pub use gate::{gate_manifest_amendment, GateMode, GateOutcome};
+// Re-export the pure monotonicity engine for fast preflight callers.
+pub use ck_policy::check_monotonicity;
+
 use ck_types::witness::LineageRecord;
 use ck_types::{
     AdmissionDecision, ArtifactDigest, ConstitutionalInvariant, PatchClass, RejectionReason,
@@ -71,9 +78,27 @@ impl Kernel {
         lineage.admit_genesis(genesis_digest, git_commit_sha);
         Self {
             lineage,
-            signature_policy: SignaturePolicy::SkipForTesting,
+            // Fail-closed default (most-paranoid #5): outside test/kani builds the
+            // kernel rejects every witness until the caller installs trusted keys
+            // via `with_signature_verifier` — an empty `Enforced` verifier returns
+            // "No trusted keys configured — rejecting". Unit/kani builds keep
+            // `SkipForTesting` so the in-crate monotonicity-logic tests stay green
+            // (the only non-test consumers are the gate/loader, which choose a mode
+            // explicitly).
+            signature_policy: if cfg!(any(test, kani)) {
+                SignaturePolicy::SkipForTesting
+            } else {
+                SignaturePolicy::Enforced(ck_types::witness::SignatureVerifier::new(Vec::new()))
+            },
             admitted_policies: std::collections::HashMap::new(),
         }
+    }
+
+    /// Force `SkipForTesting` on this kernel (used by the gate's `Preflight` mode,
+    /// which deliberately checks monotonicity/anti-forgery without key material).
+    pub(crate) fn with_skip_for_testing(mut self) -> Self {
+        self.signature_policy = SignaturePolicy::SkipForTesting;
+        self
     }
 
     /// Create a new kernel with an empty lineage (no git SHA on genesis).

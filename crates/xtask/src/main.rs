@@ -45,12 +45,84 @@ enum Command {
     /// This is the bug class that hid the `nucleus-fly-oidc` missing-`json`
     /// reqwest feature and the `portcullis` `default-features = false` break.
     CheckIsolation,
+    /// Constitutional gate (most-paranoid #5): run ck-kernel admission on a
+    /// PolicyManifest amendment. Exits non-zero if the candidate is non-monotone
+    /// (capability/IO/budget/proof-req escalation, anti-coup) or touches a
+    /// `may_not_modify` path. This is the in-repo replacement for the external
+    /// closed "Constitutional Gate" — the kernel is now actually invoked.
+    PolicyGate {
+        /// Path to the base (parent) PolicyManifest.toml.
+        #[arg(long)]
+        base: String,
+        /// Path to the candidate (head) PolicyManifest.toml.
+        #[arg(long)]
+        candidate: String,
+        /// Optional path to a newline-delimited list of changed repo files
+        /// (checked against the parent's `may_not_modify` rules).
+        #[arg(long)]
+        changed_files: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Scripts => scripts(),
         Command::CheckIsolation => check_isolation(),
+        Command::PolicyGate {
+            base,
+            candidate,
+            changed_files,
+        } => policy_gate(&base, &candidate, changed_files.as_deref()),
+    }
+}
+
+/// Gate a PolicyManifest amendment through the constitutional kernel (Preflight
+/// mode: monotonicity + `may_not_modify`, signatures skipped). Exits the process
+/// with code 1 on rejection so CI fails the PR.
+fn policy_gate(base: &str, candidate: &str, changed_files: Option<&str>) -> Result<()> {
+    use ck_kernel::{gate_manifest_amendment, GateMode};
+    use ck_types::{AdmissionDecision, PolicyManifest};
+
+    let base_src =
+        std::fs::read_to_string(base).with_context(|| format!("reading base manifest {base}"))?;
+    let cand_src = std::fs::read_to_string(candidate)
+        .with_context(|| format!("reading candidate manifest {candidate}"))?;
+    let parent = PolicyManifest::from_toml(&base_src)
+        .map_err(|e| anyhow!("parsing base manifest {base}: {e}"))?;
+    let cand = PolicyManifest::from_toml(&cand_src)
+        .map_err(|e| anyhow!("parsing candidate manifest {candidate}: {e}"))?;
+
+    let files: Vec<String> = match changed_files {
+        Some(path) => std::fs::read_to_string(path)
+            .with_context(|| format!("reading changed-files list {path}"))?
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
+        None => Vec::new(),
+    };
+
+    let outcome = gate_manifest_amendment(&parent, &cand, &files, GateMode::Preflight);
+    match outcome.decision {
+        AdmissionDecision::Accepted { .. } => {
+            println!(
+                "constitutional gate: PolicyManifest amendment ACCEPTED \
+                 (monotone; may_not_modify respected)"
+            );
+            Ok(())
+        }
+        AdmissionDecision::Rejected { reasons } => {
+            eprintln!("constitutional gate: PolicyManifest amendment REJECTED");
+            for r in &reasons {
+                eprintln!("  - {:?}: {}", r.invariant, r.message);
+            }
+            std::process::exit(1);
+        }
+        other => {
+            // Quarantined / Expired — not an acceptance; fail the gate.
+            eprintln!("constitutional gate: amendment NOT accepted: {other:?}");
+            std::process::exit(1);
+        }
     }
 }
 
