@@ -945,6 +945,11 @@ impl IntoResponse for ApiError {
             ApiError::Nucleus(NucleusError::InsufficientCapability { .. }) => {
                 (StatusCode::FORBIDDEN, "insufficient_capability", None, None)
             }
+            ApiError::Nucleus(NucleusError::IsolationNotConfigured)
+            | ApiError::Nucleus(NucleusError::IsolationInsufficient { .. })
+            | ApiError::Nucleus(NucleusError::HardeningUnavailable { .. }) => {
+                (StatusCode::FORBIDDEN, "isolation_denied", None, None)
+            }
             ApiError::Nucleus(NucleusError::InvalidApproval { operation }) => (
                 StatusCode::FORBIDDEN,
                 "invalid_approval",

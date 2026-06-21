@@ -19,8 +19,11 @@ use crate::sandbox::Sandbox;
 use crate::time::MonotonicGuard;
 use portcullis::kernel::DecisionToken;
 use portcullis::{
-    CapabilityLattice, CapabilityLevel, CommandLattice, Obligations, Operation, PermissionLattice,
+    CapabilityLattice, CapabilityLevel, CommandLattice, IsolationLattice, Obligations, Operation,
+    PermissionLattice,
 };
+
+use crate::hardening::HostSandbox;
 
 const MIN_EXEC_COST_USD: f64 = 0.000001;
 
@@ -40,6 +43,38 @@ impl Default for BudgetModel {
             cost_per_second_usd: 0.0001,
         }
     }
+}
+
+/// How the Executor confines the subprocesses it spawns (most-paranoid #2).
+///
+/// The Executor refuses to spawn anything until a containment mode is declared
+/// (the default is [`ContainmentMode::Unconfigured`], which fails closed). Each
+/// mode maps to the isolation it can honestly *attest*, and a spawn is permitted
+/// only when that attested isolation meets the policy's `minimum_isolation`.
+///
+/// This makes "silently run untrusted code as a normal host process" impossible:
+/// the caller must consciously choose its posture, and an under-provisioned
+/// posture is rejected rather than silently downgraded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ContainmentMode {
+    /// No posture declared. Every spawn refuses with `IsolationNotConfigured`.
+    /// This is the fail-closed default.
+    #[default]
+    Unconfigured,
+    /// Explicit developer opt-in to bare host execution (Tier-1 `--local`).
+    /// Attests only `localhost()` isolation; emits an audit warning on use.
+    /// A policy that requires anything stronger will fail closed.
+    Unsandboxed,
+    /// Linux host hardening via a `pre_exec` hook (no-new-privs + rlimits today;
+    /// seccomp/landlock are a tracked follow-up). Attests a strengthened *file*
+    /// dimension only; on non-Linux this mode fails closed with
+    /// `HardeningUnavailable`. Cannot satisfy `sandboxed()`/`microvm()` policies.
+    HostHardened,
+    /// The Executor is itself running inside a managed microVM guest (the VM is
+    /// the boundary). Attests `microvm()`. Must only be declared when the process
+    /// is provably inside the sandbox (e.g. the tool-proxy's enforced
+    /// `SandboxProof` at startup). No in-process hardening is applied.
+    MicroVM,
 }
 
 /// Command executor with policy enforcement.
@@ -72,6 +107,11 @@ pub struct Executor<'a> {
     /// Environment variables to pass to spawned processes.
     /// Parent environment is cleared; only these vars are available.
     allowed_env: BTreeMap<String, String>,
+    /// Isolation the policy demands (`effective_minimum_isolation`); the achieved
+    /// containment must meet this or the spawn is refused (most-paranoid #2).
+    required_isolation: IsolationLattice,
+    /// The declared containment posture. Default fails closed.
+    containment: ContainmentMode,
 }
 
 impl<'a> Executor<'a> {
@@ -85,6 +125,9 @@ impl<'a> Executor<'a> {
         budget: &'a AtomicBudget,
     ) -> Self {
         let normalized = policy.clone().normalize();
+        // The required isolation is the policy's declared minimum; absent any
+        // requirement it resolves to the weakest level (localhost = "no requirement").
+        let required_isolation = normalized.effective_minimum_isolation();
         Self {
             capabilities: normalized.capabilities,
             obligations: normalized.obligations,
@@ -95,7 +138,97 @@ impl<'a> Executor<'a> {
             time_guard: None,
             approver: None,
             allowed_env: BTreeMap::new(),
+            required_isolation,
+            containment: ContainmentMode::Unconfigured,
         }
+    }
+
+    /// Explicitly opt into bare host execution (Tier-1 `nucleus run --local`).
+    ///
+    /// This is the conscious, audited downgrade: the spawned process is a normal
+    /// host child with only env/cwd scoping. It attests `localhost()` isolation,
+    /// so any policy requiring stronger isolation will still fail closed.
+    #[must_use]
+    pub fn allow_unsandboxed_local(mut self) -> Self {
+        self.containment = ContainmentMode::Unsandboxed;
+        self
+    }
+
+    /// Request Linux host hardening (no-new-privs + rlimits via `pre_exec`).
+    /// Fails closed on non-Linux platforms.
+    #[must_use]
+    pub fn with_host_hardening(mut self) -> Self {
+        self.containment = ContainmentMode::HostHardened;
+        self
+    }
+
+    /// Declare that this Executor runs inside a managed microVM guest (the VM is
+    /// the boundary). Only sound when the process is provably inside the sandbox.
+    #[must_use]
+    pub fn in_microvm(mut self) -> Self {
+        self.containment = ContainmentMode::MicroVM;
+        self
+    }
+
+    /// Set the containment posture directly (used by `PodRuntime` to plumb the
+    /// pod's declared mode). Equivalent to the matching builder method.
+    #[must_use]
+    pub fn with_containment(mut self, mode: ContainmentMode) -> Self {
+        self.containment = mode;
+        self
+    }
+
+    /// The isolation the current containment mode can honestly attest.
+    ///
+    /// Fails closed for [`ContainmentMode::Unconfigured`] (no posture declared)
+    /// and for [`ContainmentMode::HostHardened`] on non-Linux platforms.
+    fn attest_containment(&self) -> Result<IsolationLattice> {
+        match self.containment {
+            ContainmentMode::Unconfigured => Err(NucleusError::IsolationNotConfigured),
+            ContainmentMode::Unsandboxed => Ok(IsolationLattice::localhost()),
+            ContainmentMode::MicroVM => Ok(IsolationLattice::microvm()),
+            ContainmentMode::HostHardened => {
+                #[cfg(target_os = "linux")]
+                {
+                    // Host hardening strengthens the *file* dimension (and reduces
+                    // syscall surface, not representable here) but does NOT add
+                    // process/network namespaces — so it honestly reports Shared
+                    // process + Host network. Policies demanding `sandboxed()` or
+                    // `microvm()` therefore fail closed against this mode.
+                    Ok(IsolationLattice {
+                        process: portcullis::ProcessIsolation::Shared,
+                        file: portcullis::FileIsolation::Sandboxed,
+                        network: portcullis::NetworkIsolation::Host,
+                    })
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    Err(NucleusError::HardeningUnavailable {
+                        platform: std::env::consts::OS.to_string(),
+                    })
+                }
+            }
+        }
+    }
+
+    /// Fail-closed isolation gate, called at the top of every spawn path. Refuses
+    /// unless the attested containment meets the policy's required isolation, and
+    /// never silently downgrades (most-paranoid #2).
+    fn enforce_isolation(&self) -> Result<()> {
+        let achieved = self.attest_containment()?;
+        if self.containment == ContainmentMode::Unsandboxed {
+            tracing::warn!(
+                required = %self.required_isolation,
+                "AUDIT: executor spawning UNSANDBOXED (Tier-1 local opt-in) — bare host process"
+            );
+        }
+        if !achieved.at_least(&self.required_isolation) {
+            return Err(NucleusError::IsolationInsufficient {
+                required: self.required_isolation.to_string(),
+                achieved: achieved.to_string(),
+            });
+        }
+        Ok(())
     }
 
     /// Set a time guard for temporal enforcement.
@@ -177,6 +310,9 @@ impl<'a> Executor<'a> {
             Operation::RunBash,
             "DecisionToken operation mismatch"
         );
+        // Fail-closed isolation gate: refuse unless containment is declared and
+        // meets the policy's required isolation (most-paranoid #2).
+        self.enforce_isolation()?;
         // Check temporal constraints
         if let Some(guard) = self.time_guard {
             guard.check()?;
@@ -212,15 +348,18 @@ impl<'a> Executor<'a> {
         // Build and execute the command
         let (program, program_args) = args.split_first().unwrap();
 
-        let output = Command::new(program)
-            .args(program_args)
+        let mut cmd = Command::new(program);
+        cmd.args(program_args)
             .current_dir(self.sandbox.root_path())
             .env_clear() // Security: prevent secret leakage from parent
             .envs(&self.allowed_env) // Only explicitly allowed vars
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()?;
+            .stderr(Stdio::piped());
+        if self.containment == ContainmentMode::HostHardened {
+            HostSandbox::harden_std(&mut cmd);
+        }
+        let output = cmd.output()?;
 
         Ok(output)
     }
@@ -275,6 +414,8 @@ impl<'a> Executor<'a> {
         directory: Option<&str>,
         approval: Option<&ApprovalToken>,
     ) -> Result<Output> {
+        // Fail-closed isolation gate (most-paranoid #2).
+        self.enforce_isolation()?;
         // Check temporal constraints
         if let Some(guard) = self.time_guard {
             guard.check()?;
@@ -351,6 +492,10 @@ impl<'a> Executor<'a> {
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
+        if self.containment == ContainmentMode::HostHardened {
+            HostSandbox::harden_std(&mut cmd);
+        }
+
         // Spawn and handle stdin if needed
         if let Some(input) = stdin_data {
             let mut child = cmd.spawn()?;
@@ -376,6 +521,8 @@ impl<'a> Executor<'a> {
             Operation::RunBash,
             "DecisionToken operation mismatch"
         );
+        // Fail-closed isolation gate (most-paranoid #2).
+        self.enforce_isolation()?;
         // Check temporal constraints
         if let Some(guard) = self.time_guard {
             guard.check()?;
@@ -411,15 +558,18 @@ impl<'a> Executor<'a> {
         // Build and execute the command
         let (program, program_args) = args.split_first().unwrap();
 
-        let output = Command::new(program)
-            .args(program_args)
+        let mut cmd = Command::new(program);
+        cmd.args(program_args)
             .current_dir(self.sandbox.root_path())
             .env_clear() // Security: prevent secret leakage from parent
             .envs(&self.allowed_env) // Only explicitly allowed vars
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()?;
+            .stderr(Stdio::piped());
+        if self.containment == ContainmentMode::HostHardened {
+            HostSandbox::harden_std(&mut cmd);
+        }
+        let output = cmd.output()?;
 
         Ok(output)
     }
@@ -437,6 +587,8 @@ impl<'a> Executor<'a> {
             Operation::RunBash,
             "DecisionToken operation mismatch"
         );
+        // Fail-closed isolation gate (most-paranoid #2).
+        self.enforce_isolation()?;
         // Check temporal constraints
         if let Some(guard) = self.time_guard {
             guard.check()?;
@@ -472,16 +624,19 @@ impl<'a> Executor<'a> {
         // Build and execute with timeout
         let (program, program_args) = args.split_first().unwrap();
 
-        let child = tokio::process::Command::new(program)
-            .args(program_args)
+        let mut cmd = tokio::process::Command::new(program);
+        cmd.args(program_args)
             .current_dir(self.sandbox.root_path())
             .env_clear() // Security: prevent secret leakage from parent
             .envs(&self.allowed_env) // Only explicitly allowed vars
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()?;
+            .kill_on_drop(true);
+        if self.containment == ContainmentMode::HostHardened {
+            HostSandbox::harden_tokio(&mut cmd);
+        }
+        let child = cmd.spawn()?;
 
         match tokio::time::timeout(timeout, child.wait_with_output()).await {
             Ok(result) => result.map_err(Into::into),
@@ -505,6 +660,8 @@ impl<'a> Executor<'a> {
             Operation::RunBash,
             "DecisionToken operation mismatch"
         );
+        // Fail-closed isolation gate (most-paranoid #2).
+        self.enforce_isolation()?;
         // Check temporal constraints
         if let Some(guard) = self.time_guard {
             guard.check()?;
@@ -540,16 +697,19 @@ impl<'a> Executor<'a> {
         // Build and execute with timeout
         let (program, program_args) = args.split_first().unwrap();
 
-        let child = tokio::process::Command::new(program)
-            .args(program_args)
+        let mut cmd = tokio::process::Command::new(program);
+        cmd.args(program_args)
             .current_dir(self.sandbox.root_path())
             .env_clear() // Security: prevent secret leakage from parent
             .envs(&self.allowed_env) // Only explicitly allowed vars
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()?;
+            .kill_on_drop(true);
+        if self.containment == ContainmentMode::HostHardened {
+            HostSandbox::harden_tokio(&mut cmd);
+        }
+        let child = cmd.spawn()?;
 
         match tokio::time::timeout(timeout, child.wait_with_output()).await {
             Ok(result) => result.map_err(Into::into),
@@ -699,7 +859,9 @@ mod tests {
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
-        let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard)
+            .allow_unsandboxed_local();
 
         let dt = run_token(&mut kernel, "echo hello");
         let output = executor.run("echo hello", &dt).unwrap();
@@ -717,7 +879,9 @@ mod tests {
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
-        let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard)
+            .allow_unsandboxed_local();
 
         let dt = run_token(&mut kernel, "echo hello");
         let result = executor.run("echo hello", &dt);
@@ -735,7 +899,9 @@ mod tests {
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
-        let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard)
+            .allow_unsandboxed_local();
 
         // rm -rf should be blocked by executor's command policy.
         // Kernel also blocks it (CommandBlocked), so force a token to test the executor layer.
@@ -759,7 +925,9 @@ mod tests {
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
-        let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard)
+            .allow_unsandboxed_local();
 
         // Kernel will deny — no token. Use issue_approved_token to force a token for test.
         let (_d, tok) = kernel.decide(Operation::RunBash, "echo hello");
@@ -784,7 +952,9 @@ mod tests {
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
-        let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard)
+            .allow_unsandboxed_local();
 
         // Kernel requires approval — force a token via issue_approved_token to test executor layer
         let forced = kernel.issue_approved_token(Operation::RunBash, "test: force token");
@@ -805,7 +975,8 @@ mod tests {
         let guard = MonotonicGuard::seconds(10);
         let executor = Executor::new(&policy, &sandbox, &budget)
             .with_time_guard(&guard)
-            .with_approval_callback(|_| true); // Always approve
+            .with_approval_callback(|_| true)
+            .allow_unsandboxed_local(); // Always approve
 
         // Grant approval in kernel, then get a token
         kernel.grant_approval(Operation::RunBash, 1);
@@ -832,7 +1003,9 @@ mod tests {
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
-        let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard)
+            .allow_unsandboxed_local();
 
         // curl is an exfiltration vector, uninhabitable_state should require approval
         // Force a token to test the executor-level check
@@ -856,7 +1029,9 @@ mod tests {
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
-        let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard)
+            .allow_unsandboxed_local();
 
         let forced =
             kernel.issue_approved_token(Operation::RunBash, "test: force for interpreter check");
@@ -874,7 +1049,9 @@ mod tests {
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
-        let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard)
+            .allow_unsandboxed_local();
 
         let args = vec!["echo".to_string(), "hello".to_string(), "world".to_string()];
         let dt = run_token(&mut kernel, "echo hello world");
@@ -893,7 +1070,9 @@ mod tests {
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
-        let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard)
+            .allow_unsandboxed_local();
 
         // With array form, shell metacharacters are passed literally
         let args = vec!["echo".to_string(), "$(whoami)".to_string()];
@@ -913,7 +1092,9 @@ mod tests {
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
-        let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard)
+            .allow_unsandboxed_local();
 
         let args = vec!["cat".to_string()];
         let dt = run_token(&mut kernel, "cat");
@@ -934,7 +1115,9 @@ mod tests {
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
-        let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard)
+            .allow_unsandboxed_local();
 
         let args: Vec<String> = vec![];
         // Kernel also blocks empty commands, so force a token to test executor layer
@@ -953,7 +1136,9 @@ mod tests {
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
-        let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard)
+            .allow_unsandboxed_local();
 
         let args = vec!["pwd".to_string()];
         let dt = run_token(&mut kernel, "pwd");
@@ -975,7 +1160,9 @@ mod tests {
         let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
         let budget = AtomicBudget::new(&budget_policy);
         let guard = MonotonicGuard::seconds(10);
-        let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard)
+            .allow_unsandboxed_local();
 
         // Try to access the parent env var - should NOT be visible
         let dt = run_token(&mut kernel, "printenv TEST_PARENT_SECRET");
@@ -1003,7 +1190,8 @@ mod tests {
         // Explicitly allow a specific env var
         let executor = Executor::new(&policy, &sandbox, &budget)
             .with_time_guard(&guard)
-            .with_env_var("ALLOWED_TOKEN", "test-value-123");
+            .with_env_var("ALLOWED_TOKEN", "test-value-123")
+            .allow_unsandboxed_local();
 
         // The allowed var should be visible
         let dt = run_token(&mut kernel, "printenv ALLOWED_TOKEN");
@@ -1029,7 +1217,8 @@ mod tests {
 
         let executor = Executor::new(&policy, &sandbox, &budget)
             .with_time_guard(&guard)
-            .with_env(env);
+            .with_env(env)
+            .allow_unsandboxed_local();
 
         // Both vars should be visible
         let dt_a = run_token(&mut kernel, "printenv VAR_A");
@@ -1058,7 +1247,8 @@ mod tests {
         let guard = MonotonicGuard::seconds(10);
         let executor = Executor::new(&policy, &sandbox, &budget)
             .with_time_guard(&guard)
-            .with_env_var("ALLOWED_VAR", "allowed-value");
+            .with_env_var("ALLOWED_VAR", "allowed-value")
+            .allow_unsandboxed_local();
 
         // Parent env should not be visible
         let args = vec!["printenv".to_string(), "TEST_RUN_ARGS_SECRET".to_string()];
@@ -1078,5 +1268,168 @@ mod tests {
 
         // Clean up
         std::env::remove_var("TEST_RUN_ARGS_SECRET");
+    }
+
+    // ───────────────────────────────────────────────────────────────────────
+    // Fail-closed isolation gate (most-paranoid #2)
+    // ───────────────────────────────────────────────────────────────────────
+    mod isolation_gate {
+        use super::*;
+
+        /// Default `Unconfigured` containment refuses to spawn — the hard-flip
+        /// fail-closed default that closes "silently run as a bare host process".
+        #[test]
+        fn unconfigured_default_refuses_spawn() {
+            let tmp = tempdir().unwrap();
+            let policy = test_policy();
+            let mut kernel = Kernel::new(policy.clone());
+            let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+            let budget = AtomicBudget::new(&test_budget());
+            let guard = MonotonicGuard::seconds(10);
+            // NOTE: no containment builder called — stays Unconfigured.
+            let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
+
+            let dt = run_token(&mut kernel, "echo hi");
+            let err = executor.run("echo hi", &dt).unwrap_err();
+            assert!(
+                matches!(err, NucleusError::IsolationNotConfigured),
+                "expected IsolationNotConfigured, got {err:?}"
+            );
+        }
+
+        /// `run_args` is gated too (not just `run`).
+        #[test]
+        fn unconfigured_refuses_run_args() {
+            let tmp = tempdir().unwrap();
+            let policy = test_policy();
+            let mut kernel = Kernel::new(policy.clone());
+            let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+            let budget = AtomicBudget::new(&test_budget());
+            let guard = MonotonicGuard::seconds(10);
+            let executor = Executor::new(&policy, &sandbox, &budget).with_time_guard(&guard);
+
+            let args = vec!["echo".to_string(), "hi".to_string()];
+            let dt = run_token(&mut kernel, "echo hi");
+            let err = executor.run_args(&args, None, None, &dt).unwrap_err();
+            assert!(
+                matches!(err, NucleusError::IsolationNotConfigured),
+                "got {err:?}"
+            );
+        }
+
+        /// Explicit Tier-1 opt-in to unsandboxed execution allows spawn when the
+        /// policy demands no stronger isolation.
+        #[test]
+        fn unsandboxed_opt_in_allows_spawn() {
+            let tmp = tempdir().unwrap();
+            let policy = test_policy();
+            let mut kernel = Kernel::new(policy.clone());
+            let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+            let budget = AtomicBudget::new(&test_budget());
+            let guard = MonotonicGuard::seconds(10);
+            let executor = Executor::new(&policy, &sandbox, &budget)
+                .with_time_guard(&guard)
+                .allow_unsandboxed_local();
+
+            let dt = run_token(&mut kernel, "echo hi");
+            let output = executor.run("echo hi", &dt).unwrap();
+            assert!(output.status.success());
+        }
+
+        /// A policy requiring a microVM is refused — never silently downgraded —
+        /// when the Executor can only attest unsandboxed host execution. This is
+        /// the fail-closed-without-a-VM property (the "not contained" state is
+        /// simulated purely via the declared containment mode; no KVM needed).
+        #[test]
+        fn microvm_required_but_unsandboxed_refuses() {
+            let tmp = tempdir().unwrap();
+            let policy = test_policy().with_minimum_isolation(IsolationLattice::microvm());
+            // Kernel built WITH microvm isolation so it still mints a token; the
+            // Executor gate is what must refuse.
+            let mut kernel = Kernel::with_isolation(policy.clone(), IsolationLattice::microvm());
+            let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+            let budget = AtomicBudget::new(&test_budget());
+            let guard = MonotonicGuard::seconds(10);
+            let executor = Executor::new(&policy, &sandbox, &budget)
+                .with_time_guard(&guard)
+                .allow_unsandboxed_local();
+
+            let dt = run_token(&mut kernel, "echo hi");
+            let err = executor.run("echo hi", &dt).unwrap_err();
+            assert!(
+                matches!(err, NucleusError::IsolationInsufficient { .. }),
+                "expected IsolationInsufficient, got {err:?}"
+            );
+        }
+
+        /// When the Executor attests it is inside a microVM, a microVM-requiring
+        /// policy passes the gate.
+        #[test]
+        fn microvm_required_and_in_microvm_allows() {
+            let tmp = tempdir().unwrap();
+            let policy = test_policy().with_minimum_isolation(IsolationLattice::microvm());
+            let mut kernel = Kernel::with_isolation(policy.clone(), IsolationLattice::microvm());
+            let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+            let budget = AtomicBudget::new(&test_budget());
+            let guard = MonotonicGuard::seconds(10);
+            let executor = Executor::new(&policy, &sandbox, &budget)
+                .with_time_guard(&guard)
+                .in_microvm();
+
+            let dt = run_token(&mut kernel, "echo hi");
+            let output = executor.run("echo hi", &dt).unwrap();
+            assert!(output.status.success());
+        }
+
+        /// On non-Linux hosts, requesting host hardening fails CLOSED rather than
+        /// silently running unhardened. (On Linux this path attests a strengthened
+        /// file dimension instead; see the Linux smoke test.)
+        #[cfg(not(target_os = "linux"))]
+        #[test]
+        fn host_hardening_fails_closed_off_linux() {
+            let tmp = tempdir().unwrap();
+            let policy = test_policy();
+            let mut kernel = Kernel::new(policy.clone());
+            let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+            let budget = AtomicBudget::new(&test_budget());
+            let guard = MonotonicGuard::seconds(10);
+            let executor = Executor::new(&policy, &sandbox, &budget)
+                .with_time_guard(&guard)
+                .with_host_hardening();
+
+            let dt = run_token(&mut kernel, "echo hi");
+            let err = executor.run("echo hi", &dt).unwrap_err();
+            assert!(
+                matches!(err, NucleusError::HardeningUnavailable { .. }),
+                "expected HardeningUnavailable off-Linux, got {err:?}"
+            );
+        }
+
+        /// Linux smoke test: a host-hardened child actually has seccomp/no-new-privs
+        /// posture. Marked ignore — needs a Linux host; validated in Linux CI.
+        #[cfg(target_os = "linux")]
+        #[test]
+        #[ignore = "requires Linux host; run in linux CI (NoNewPrivs check)"]
+        fn host_hardened_child_has_no_new_privs() {
+            let tmp = tempdir().unwrap();
+            let policy = test_policy();
+            let mut kernel = Kernel::new(policy.clone());
+            let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+            let budget = AtomicBudget::new(&test_budget());
+            let guard = MonotonicGuard::seconds(10);
+            let executor = Executor::new(&policy, &sandbox, &budget)
+                .with_time_guard(&guard)
+                .with_host_hardening();
+
+            let dt = run_token(&mut kernel, "cat /proc/self/status");
+            let output = executor.run("cat /proc/self/status", &dt).unwrap();
+            let status = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                status
+                    .lines()
+                    .any(|l| l.starts_with("NoNewPrivs:") && l.contains('1')),
+                "hardened child should have NoNewPrivs:1, got:\n{status}"
+            );
+        }
     }
 }

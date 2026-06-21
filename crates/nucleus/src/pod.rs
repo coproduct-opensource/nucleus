@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::approval::Approver;
 use crate::budget::AtomicBudget;
-use crate::command::{BudgetModel, Executor};
+use crate::command::{BudgetModel, ContainmentMode, Executor};
 use crate::error::Result;
 use crate::sandbox::Sandbox;
 use crate::time::MonotonicGuard;
@@ -23,17 +23,35 @@ pub struct PodSpec {
     pub timeout: Duration,
     /// Budget model for command execution.
     pub budget_model: BudgetModel,
+    /// How the pod's Executor confines spawned subprocesses (most-paranoid #2).
+    ///
+    /// Fail-closed default: [`ContainmentMode::Unconfigured`] — the Executor
+    /// refuses to spawn until the caller declares a posture (e.g. the tool-proxy
+    /// sets [`ContainmentMode::MicroVM`] once its `SandboxProof` is verified, or
+    /// a Tier-1 `--local` run opts into [`ContainmentMode::Unsandboxed`]).
+    pub containment: ContainmentMode,
 }
 
 impl PodSpec {
     /// Create a pod spec with defaults for budget model.
+    ///
+    /// The containment mode defaults to [`ContainmentMode::Unconfigured`]
+    /// (fail-closed); callers must declare a posture via [`Self::with_containment`].
     pub fn new(policy: PermissionLattice, work_dir: PathBuf, timeout: Duration) -> Self {
         Self {
             policy: policy.normalize(),
             work_dir,
             timeout,
             budget_model: BudgetModel::default(),
+            containment: ContainmentMode::Unconfigured,
         }
+    }
+
+    /// Declare the containment posture for this pod's subprocess execution.
+    #[must_use]
+    pub fn with_containment(mut self, mode: ContainmentMode) -> Self {
+        self.containment = mode;
+        self
     }
 }
 
@@ -95,7 +113,8 @@ impl PodRuntime {
     pub fn executor(&self) -> Executor<'_> {
         let mut executor = Executor::new(&self.spec.policy, &self.sandbox, &self.budget)
             .with_time_guard(&self.time_guard)
-            .with_budget_model(self.spec.budget_model);
+            .with_budget_model(self.spec.budget_model)
+            .with_containment(self.spec.containment);
 
         if let Some(ref approver) = self.approver {
             executor = executor.with_approver(approver.clone());
