@@ -1346,21 +1346,25 @@ impl ExposureSet {
 
 /// Classify an operation's exposure contribution.
 ///
-/// Returns the exposure label that this operation contributes to the
-/// session's accumulated exposure, or None for neutral operations.
+/// Returns the exposure label that this operation contributes to the session's
+/// accumulated exposure. Every operation contributes a leg (most-paranoid #4):
+/// local sinks (WriteFiles/EditFiles/GitCommit/ManagePods) are exfiltration
+/// vectors too, since a tainted secret written or committed locally is an
+/// exfiltration channel.
 pub fn classify_operation(op: Operation) -> Option<ExposureLabel> {
     match op {
         Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch => {
             Some(ExposureLabel::PrivateData)
         }
         Operation::WebFetch | Operation::WebSearch => Some(ExposureLabel::UntrustedContent),
-        Operation::RunBash | Operation::GitPush | Operation::CreatePr | Operation::SpawnAgent => {
-            Some(ExposureLabel::ExfilVector)
-        }
-        Operation::WriteFiles
+        Operation::RunBash
+        | Operation::GitPush
+        | Operation::CreatePr
+        | Operation::SpawnAgent
+        | Operation::WriteFiles
         | Operation::EditFiles
         | Operation::GitCommit
-        | Operation::ManagePods => None,
+        | Operation::ManagePods => Some(ExposureLabel::ExfilVector),
     }
 }
 
@@ -2984,17 +2988,18 @@ mod tests {
     fn classify_operation_coverage() {
         let expected = [
             (Operation::ReadFiles, Some(ExposureLabel::PrivateData)),
-            (Operation::WriteFiles, None),
-            (Operation::EditFiles, None),
+            // Local sinks are exfil legs now (most-paranoid #4).
+            (Operation::WriteFiles, Some(ExposureLabel::ExfilVector)),
+            (Operation::EditFiles, Some(ExposureLabel::ExfilVector)),
             (Operation::RunBash, Some(ExposureLabel::ExfilVector)),
             (Operation::GlobSearch, Some(ExposureLabel::PrivateData)),
             (Operation::GrepSearch, Some(ExposureLabel::PrivateData)),
             (Operation::WebSearch, Some(ExposureLabel::UntrustedContent)),
             (Operation::WebFetch, Some(ExposureLabel::UntrustedContent)),
-            (Operation::GitCommit, None),
+            (Operation::GitCommit, Some(ExposureLabel::ExfilVector)),
             (Operation::GitPush, Some(ExposureLabel::ExfilVector)),
             (Operation::CreatePr, Some(ExposureLabel::ExfilVector)),
-            (Operation::ManagePods, None),
+            (Operation::ManagePods, Some(ExposureLabel::ExfilVector)),
         ];
         for (op, exp) in expected {
             assert_eq!(classify_operation(op), exp, "mismatch for {:?}", op);
@@ -3011,10 +3016,12 @@ mod tests {
     }
 
     #[test]
-    fn project_exposure_neutral_op_unchanged() {
+    fn project_exposure_local_sink_adds_exfil() {
+        // WriteFiles is an exfil leg now (most-paranoid #4).
         let s = ExposureSet::singleton(ExposureLabel::PrivateData);
         let projected = project_exposure(&s, Operation::WriteFiles);
-        assert_eq!(projected, s);
+        assert!(projected.contains(ExposureLabel::PrivateData));
+        assert!(projected.contains(ExposureLabel::ExfilVector));
     }
 
     #[test]
@@ -3024,7 +3031,9 @@ mod tests {
         assert!(is_exfil_operation(Operation::CreatePr));
         assert!(!is_exfil_operation(Operation::ReadFiles));
         assert!(!is_exfil_operation(Operation::WebFetch));
-        assert!(!is_exfil_operation(Operation::WriteFiles));
+        // Local sinks are exfil vectors now (most-paranoid #4).
+        assert!(is_exfil_operation(Operation::WriteFiles));
+        assert!(is_exfil_operation(Operation::GitCommit));
     }
 
     #[test]
@@ -3036,8 +3045,8 @@ mod tests {
         assert!(should_gate(&exposure, Operation::GitPush));
         // ReadFiles doesn't complete it (already has PrivateData) → not gated
         assert!(!should_gate(&exposure, Operation::ReadFiles));
-        // WriteFiles is neutral → not gated
-        assert!(!should_gate(&exposure, Operation::WriteFiles));
+        // WriteFiles is an exfil leg now → completes the trifecta → gated.
+        assert!(should_gate(&exposure, Operation::WriteFiles));
     }
 
     #[test]

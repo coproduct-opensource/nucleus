@@ -69,7 +69,9 @@ def ExposureSet.is_uninhabitable (s : ExposureSet) : Bool :=
 
 def classify_exfil (op : Operation) : Bool :=
   match op with
-  | .RunBash | .GitPush | .CreatePr | .SpawnAgent => true
+  -- Local sinks are exfil legs too (most-paranoid #4).
+  | .RunBash | .GitPush | .CreatePr | .SpawnAgent
+  | .WriteFiles | .EditFiles | .GitCommit | .ManagePods => true
   | _ => false
 
 def project_exposure (current : ExposureSet) (op : Operation) : ExposureSet :=
@@ -78,9 +80,9 @@ def project_exposure (current : ExposureSet) (op : Operation) : ExposureSet :=
     { current with private_data := true }
   | .WebFetch | .WebSearch =>
     { current with untrusted_content := true }
-  | .RunBash | .GitPush | .CreatePr | .SpawnAgent =>
+  | .RunBash | .GitPush | .CreatePr | .SpawnAgent
+  | .WriteFiles | .EditFiles | .GitCommit | .ManagePods =>
     { current with exfil_vector := true }
-  | _ => current
 
 def should_gate (current : ExposureSet) (op : Operation) : Bool :=
   let projected := project_exposure current op
@@ -191,11 +193,11 @@ theorem empty_exposure_no_gate (level : CapabilityLevel) (op : Operation) :
     ExposureSet.is_uninhabitable, classify_exfil]
   cases op <;> decide
 
-/-- Non-exfil operations never trigger the gate, regardless of exposure. -/
+/-- Non-exfil operations never trigger the gate, regardless of exposure.
+    (WriteFiles is no longer a witness — it is an exfil leg now, most-paranoid #4.) -/
 theorem non_exfil_no_gate (level : CapabilityLevel) (exposure : ExposureSet) :
     decide_pure level exposure .ReadFiles ≠ .GateExfil ∧
-    decide_pure level exposure .WebFetch ≠ .GateExfil ∧
-    decide_pure level exposure .WriteFiles ≠ .GateExfil := by
+    decide_pure level exposure .WebFetch ≠ .GateExfil := by
   cases level <;> simp [decide_pure, should_gate, project_exposure,
     ExposureSet.is_uninhabitable, classify_exfil]
   all_goals (cases exposure with | mk pd uc ev => cases pd <;> cases uc <;> cases ev <;> decide)

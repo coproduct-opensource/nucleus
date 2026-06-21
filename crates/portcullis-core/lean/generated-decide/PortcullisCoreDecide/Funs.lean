@@ -51,17 +51,17 @@ def ExposureSet.is_uninhabitable (self : ExposureSet) : Result Bool := do
 def classify_operation (op : Operation) : Result (Option ExposureLabel) := do
   match op with
   | Operation.ReadFiles => ok (some ExposureLabel.PrivateData)
-  | Operation.WriteFiles => ok none
-  | Operation.EditFiles => ok none
+  | Operation.WriteFiles => ok (some ExposureLabel.ExfilVector)
+  | Operation.EditFiles => ok (some ExposureLabel.ExfilVector)
   | Operation.RunBash => ok (some ExposureLabel.ExfilVector)
   | Operation.GlobSearch => ok (some ExposureLabel.PrivateData)
   | Operation.GrepSearch => ok (some ExposureLabel.PrivateData)
   | Operation.WebSearch => ok (some ExposureLabel.UntrustedContent)
   | Operation.WebFetch => ok (some ExposureLabel.UntrustedContent)
-  | Operation.GitCommit => ok none
+  | Operation.GitCommit => ok (some ExposureLabel.ExfilVector)
   | Operation.GitPush => ok (some ExposureLabel.ExfilVector)
   | Operation.CreatePr => ok (some ExposureLabel.ExfilVector)
-  | Operation.ManagePods => ok none
+  | Operation.ManagePods => ok (some ExposureLabel.ExfilVector)
   | Operation.SpawnAgent => ok (some ExposureLabel.ExfilVector)
 
 /-- [portcullis_core::project_exposure]:

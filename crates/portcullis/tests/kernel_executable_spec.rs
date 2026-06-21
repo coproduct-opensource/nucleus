@@ -44,13 +44,15 @@ fn spec_classify(op: Operation) -> Option<ExposureLabel> {
             Some(ExposureLabel::PrivateData)
         }
         Operation::WebFetch | Operation::WebSearch => Some(ExposureLabel::UntrustedContent),
-        Operation::RunBash | Operation::GitPush | Operation::CreatePr | Operation::SpawnAgent => {
-            Some(ExposureLabel::ExfilVector)
-        }
-        Operation::WriteFiles
+        // Local sinks are exfil legs too (most-paranoid #4).
+        Operation::RunBash
+        | Operation::GitPush
+        | Operation::CreatePr
+        | Operation::SpawnAgent
+        | Operation::WriteFiles
         | Operation::EditFiles
         | Operation::GitCommit
-        | Operation::ManagePods => None,
+        | Operation::ManagePods => Some(ExposureLabel::ExfilVector),
     }
 }
 
@@ -650,9 +652,11 @@ fn spec_pre_approval_consumed_exactly() {
     );
 }
 
-/// Spec: neutral operations don't trigger dynamic gate even at high exposure.
+/// Spec: local-sink operations are exfil legs and DO trigger the dynamic gate at
+/// high exposure (most-paranoid #4) — writing/committing tainted secrets is an
+/// exfiltration channel that completes the uninhabitable trifecta.
 #[test]
-fn spec_neutral_ops_unaffected_by_exposure() {
+fn spec_local_sinks_gated_at_high_exposure() {
     let mut perms = PermissionLattice::builder()
         .description("neutral-test")
         .capabilities(CapabilityLattice {
@@ -683,24 +687,25 @@ fn spec_neutral_ops_unaffected_by_exposure() {
     kernel.decide(Operation::WebFetch, "https://docs.example.com");
     assert_eq!(kernel.exposure().count(), 2);
 
-    // Neutral operations should be allowed regardless of exposure
-    let neutral_ops = [
+    // Local-sink operations are exfil legs now: each completes the uninhabitable
+    // trifecta (private data + untrusted content + exfil vector) and is gated.
+    let exfil_local_ops = [
         Operation::WriteFiles,
         Operation::EditFiles,
         Operation::GitCommit,
         Operation::ManagePods,
     ];
-    for op in neutral_ops {
+    for op in exfil_local_ops {
         let (d, _token) = kernel.decide(op, "test-subject");
         assert!(
-            d.verdict.is_allowed(),
-            "neutral op {:?} should be allowed at exposure count 2, got {:?}",
+            !d.verdict.is_allowed(),
+            "local-sink exfil op {:?} should be gated at exposure count 2, got {:?}",
             op,
             d.verdict,
         );
         assert!(
-            !d.exposure_transition.dynamic_gate_applied,
-            "neutral op {:?} should not trigger dynamic gate",
+            d.exposure_transition.dynamic_gate_applied,
+            "local-sink exfil op {:?} should trigger the dynamic gate",
             op,
         );
     }

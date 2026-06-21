@@ -449,10 +449,9 @@ impl WeakeningCostConfig {
 
     /// Check if an operation is an exfiltration vector.
     fn is_exfil_operation(op: Operation) -> bool {
-        matches!(
-            op,
-            Operation::GitPush | Operation::CreatePr | Operation::RunBash
-        )
+        // Single source of truth (most-paranoid #4): includes the local-sink exfil
+        // legs (WriteFiles/EditFiles/GitCommit/ManagePods) and SpawnAgent.
+        crate::exposure_core::is_exfil_operation(op)
     }
 
     /// Compute the uninhabitable_state multiplier.

@@ -458,22 +458,23 @@ fn proof_operation_exposure_completeness() {
             assert!(matches!(op, Operation::WebFetch | Operation::WebSearch));
         }
         Some(ExposureLabel::ExfilVector) => {
+            // Local sinks are exfil legs too now (most-paranoid #4).
             assert!(matches!(
                 op,
                 Operation::RunBash
                     | Operation::GitPush
                     | Operation::CreatePr
                     | Operation::SpawnAgent
-            ));
-        }
-        None => {
-            assert!(matches!(
-                op,
-                Operation::WriteFiles
+                    | Operation::WriteFiles
                     | Operation::EditFiles
                     | Operation::GitCommit
                     | Operation::ManagePods
             ));
+        }
+        None => {
+            // Totality (most-paranoid #4): every operation now contributes an
+            // exposure leg, so this arm is unreachable. Kani verifies it.
+            unreachable!("no operation is neutral after most-paranoid #4");
         }
     }
 }
@@ -497,7 +498,8 @@ fn proof_projected_exposure_correctness() {
     if current.contains(ExposureLabel::ExfilVector) {
         assert!(projected.contains(ExposureLabel::ExfilVector));
     }
-    // 2. Neutral ops don't change exposure
+    // 2. No neutral ops remain after most-paranoid #4 (every op contributes a
+    //    leg); this branch is now vacuous but kept for structural symmetry.
     if operation_exposure(op).is_none() && op != Operation::RunBash {
         assert!(projected == current, "Neutral op changed exposure");
     }

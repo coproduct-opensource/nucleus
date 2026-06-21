@@ -1759,11 +1759,13 @@ mod tests {
 
     #[test]
     #[allow(deprecated)] // Migration to decide_term tracked in #1194
-    fn test_kernel_neutral_ops_dont_add_exposure() {
+    fn test_kernel_local_sink_adds_exfil_leg() {
+        // Local sinks are exfil legs now (most-paranoid #4). A single WriteFiles
+        // on a fresh session adds the ExfilVector leg but is not yet uninhabitable.
         let mut kernel = Kernel::new(permissive_no_static_obligations());
         let (d, _token) = kernel.decide(Operation::WriteFiles, "out.txt");
         assert!(matches!(d.verdict, Verdict::Allow));
-        assert_eq!(d.exposure_transition.post_count, 0);
+        assert_eq!(d.exposure_transition.post_count, 1);
     }
 
     #[test]
@@ -1782,17 +1784,20 @@ mod tests {
 
     #[test]
     #[allow(deprecated)] // Migration to decide_term tracked in #1194
-    fn test_kernel_uninhabitable_allows_non_exfil_after_read_and_fetch() {
+    fn test_kernel_local_sink_gated_after_read_and_fetch() {
         // Use capability_only to test the exposure subsystem in isolation,
         // without flow control tainting writes after web fetch.
         let mut kernel = Kernel::capability_only(permissive_no_static_obligations());
         kernel.decide(Operation::ReadFiles, "data.txt");
         kernel.decide(Operation::WebFetch, "https://example.com");
-        // Non-exfil ops are allowed even with full exposure (capability-only)
+        // A non-exfil read is still allowed (doesn't complete the trifecta).
         let (d, _token) = kernel.decide(Operation::ReadFiles, "more.txt");
         assert!(matches!(d.verdict, Verdict::Allow));
+        // WriteFiles is an exfil leg now (most-paranoid #4) → completes the
+        // uninhabitable trifecta → the dynamic exposure gate fires.
         let (d, _token) = kernel.decide(Operation::WriteFiles, "out.txt");
-        assert!(matches!(d.verdict, Verdict::Allow));
+        assert!(matches!(d.verdict, Verdict::RequiresApproval));
+        assert!(d.exposure_transition.dynamic_gate_applied);
     }
 
     #[test]
