@@ -342,6 +342,55 @@ fn test_decide_term_with_flow_denies_everything_when_poisoned() {
 }
 
 #[test]
+fn secret_session_blocks_egress_pure_confidentiality() {
+    // most-paranoid #4: a session that observed Secret data (an env-var) but is
+    // NOT integrity-tainted must still be blocked from an egress sink — pure
+    // secret-exfiltration, which the old integrity-only gate allowed.
+    use portcullis_core::flow::NodeKind;
+    use portcullis_core::ifc_api::FlowTracker;
+
+    let mut secret = FlowTracker::new();
+    secret.observe(NodeKind::EnvVar).expect("observe env var");
+    assert!(
+        !secret.is_tainted(),
+        "env-var is Trusted integrity, not tainted"
+    );
+
+    let mut kernel = Kernel::new(PermissionLattice::permissive());
+    let term = crate::ActionTerm::from_operation(Operation::GitPush, "origin main");
+    let (decision, token) = kernel.decide_term_with_flow(term, Some(&secret));
+    assert!(
+        matches!(
+            decision.verdict,
+            Verdict::Deny(DenyReason::IfcUnsafe { .. })
+        ),
+        "secret session must be denied egress (confidentiality), got {:?}",
+        decision.verdict
+    );
+    assert!(token.is_none());
+}
+
+#[test]
+fn secret_session_allows_local_edit() {
+    // The confidentiality block is egress-scoped, not blanket: a secret-bearing
+    // session may still write/edit locally (local sinks cap at Secret).
+    use portcullis_core::flow::NodeKind;
+    use portcullis_core::ifc_api::FlowTracker;
+
+    let mut secret = FlowTracker::new();
+    secret.observe(NodeKind::EnvVar).expect("observe env var");
+
+    let mut kernel = Kernel::new(PermissionLattice::permissive());
+    let term = crate::ActionTerm::from_operation(Operation::EditFiles, "src/main.rs");
+    let (decision, _token) = kernel.decide_term_with_flow(term, Some(&secret));
+    assert!(
+        decision.verdict.is_allowed(),
+        "secret session should still allow a local edit, got {:?}",
+        decision.verdict
+    );
+}
+
+#[test]
 fn test_decide_term_with_flow_none_matches_decide_term() {
     // `flow == None` must behave exactly like `decide_term`.
     let term = crate::ActionTerm::run_command(
@@ -854,7 +903,7 @@ fn test_dynamic_exposure_gate_with_pre_approval() {
 }
 
 #[test]
-fn test_dynamic_exposure_gate_does_not_affect_non_exfil() {
+fn test_dynamic_exposure_gate_now_gates_local_sinks() {
     use crate::capability::CapabilityLattice;
     let mut perms = PermissionLattice::builder()
         .description("everything-allowed")
@@ -881,19 +930,21 @@ fn test_dynamic_exposure_gate_does_not_affect_non_exfil() {
     // Use capability_only() to isolate the exposure gating subsystem.
     let mut kernel = Kernel::capability_only(perms);
 
-    // Accumulate two legs
+    // Accumulate the first two legs of the uninhabitable trifecta.
     kernel.decide(Operation::ReadFiles, "/etc/passwd");
     kernel.decide(Operation::WebFetch, "https://evil.com");
 
-    // Neutral ops should still be allowed even with high exposure
+    // Local sinks are now exfil legs (most-paranoid #4): WriteFiles completes the
+    // trifecta (private data + untrusted content + exfil vector), so the dynamic
+    // exposure gate fires — writing tainted secrets locally is an exfil channel.
     let (d, _token) = kernel.decide(Operation::WriteFiles, "/workspace/out.txt");
-    assert!(d.verdict.is_allowed());
-    assert!(!d.exposure_transition.dynamic_gate_applied);
+    assert!(!d.verdict.is_allowed(), "WriteFiles should now be gated");
+    assert!(d.exposure_transition.dynamic_gate_applied);
 
-    // git_commit is not an exfil op — should be allowed
+    // GitCommit is likewise an exfil leg now and is gated.
     let (d, _token) = kernel.decide(Operation::GitCommit, "fix: stuff");
-    assert!(d.verdict.is_allowed());
-    assert!(!d.exposure_transition.dynamic_gate_applied);
+    assert!(!d.verdict.is_allowed(), "GitCommit should now be gated");
+    assert!(d.exposure_transition.dynamic_gate_applied);
 }
 
 #[test]

@@ -81,8 +81,9 @@ def classify_operation (op : Operation) : Option ExposureLabel :=
   match op with
   | .ReadFiles | .GlobSearch | .GrepSearch => some .PrivateData
   | .WebFetch | .WebSearch => some .UntrustedContent
+  -- Local sinks are exfil legs too (most-paranoid #4).
   | .RunBash | .GitPush | .CreatePr | .SpawnAgent => some .ExfilVector
-  | .WriteFiles | .EditFiles | .GitCommit | .ManagePods => none
+  | .WriteFiles | .EditFiles | .GitCommit | .ManagePods => some .ExfilVector
 
 def project_exposure (current : ExposureSet) (op : Operation) : ExposureSet :=
   match classify_operation op with
@@ -163,11 +164,12 @@ theorem classify_exfil_vector :
     classify_operation .CreatePr = some .ExfilVector ∧
     classify_operation .SpawnAgent = some .ExfilVector := by decide
 
-theorem classify_neutral :
-    classify_operation .WriteFiles = none ∧
-    classify_operation .EditFiles = none ∧
-    classify_operation .GitCommit = none ∧
-    classify_operation .ManagePods = none := by decide
+-- Local sinks are exfil legs too now (most-paranoid #4); formerly `classify_neutral`.
+theorem classify_local_sinks_exfil :
+    classify_operation .WriteFiles = some .ExfilVector ∧
+    classify_operation .EditFiles = some .ExfilVector ∧
+    classify_operation .GitCommit = some .ExfilVector ∧
+    classify_operation .ManagePods = some .ExfilVector := by decide
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- should_gate correctness
@@ -190,11 +192,11 @@ theorem should_gate_all_exfil_when_uninhabitable :
     should_gate full .GitPush = true ∧
     should_gate full .CreatePr = true := by decide
 
-/-- Non-exfil ops are never gated, even when uninhabitable. -/
+/-- Non-exfil ops are never gated, even when uninhabitable. (WriteFiles is no
+    longer a witness here — it is an exfil leg now, most-paranoid #4.) -/
 theorem should_gate_non_exfil_never_gated (s : ExposureSet) :
     should_gate s .ReadFiles = false ∧
-    should_gate s .WebFetch = false ∧
-    should_gate s .WriteFiles = false := by
+    should_gate s .WebFetch = false := by
   cases s with | mk pd uc ev =>
   cases pd <;> cases uc <;> cases ev <;> decide
 

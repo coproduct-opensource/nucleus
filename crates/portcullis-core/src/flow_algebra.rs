@@ -12,7 +12,7 @@
 //! ```
 
 use crate::{
-    AuthorityLevel, IFCLabel, IntegLevel, Operation, SinkClass,
+    AuthorityLevel, ConfLevel, IFCLabel, IntegLevel, Operation, SinkClass,
     flow::{NodeKind, intrinsic_label},
 };
 
@@ -63,11 +63,28 @@ impl FlowState {
     // ── Primitive 2: flows_to ───────────────────────────────────────
 
     /// Can the current state flow to this sink? THE fundamental check.
+    ///
+    /// Enforces ALL three static axes (most-paranoid #4): integrity and authority
+    /// (must be high enough for the sink) AND confidentiality downflow (the
+    /// state's confidentiality must not exceed what the sink may emit — a Secret
+    /// state cannot flow to a public-egress sink). Previously confidentiality was
+    /// silently dropped, so secret→public exfiltration passed this check.
+    /// Freshness is wall-clock-dependent and is checked separately via
+    /// [`Self::flows_to_at`] to preserve recompute determinism.
     pub fn flows_to(&self, sink: SinkClass) -> bool {
         let req_integ = sink_required_integrity(sink);
         let req_auth = sink_required_authority(sink);
 
-        self.label.integrity >= req_integ && self.label.authority >= req_auth
+        self.label.integrity >= req_integ
+            && self.label.authority >= req_auth
+            && self.label.confidentiality <= sink_max_confidentiality(sink)
+    }
+
+    /// [`Self::flows_to`] plus a freshness check against the supplied wall-clock
+    /// `now` (most-paranoid #4). `now` is injected by the caller so the bare
+    /// `flows_to` stays clock-free and deterministically recomputable.
+    pub fn flows_to_at(&self, sink: SinkClass, now: u64) -> bool {
+        self.flows_to(sink) && !self.label.freshness.is_expired_at(now)
     }
 
     // ── Derived operations (all built from join + flows_to) ─────────
@@ -170,6 +187,29 @@ fn sink_required_authority(sink: SinkClass) -> AuthorityLevel {
         SinkClass::WorkspaceWrite => AuthorityLevel::Suggestive,
         SinkClass::BashExec | SinkClass::HTTPEgress => AuthorityLevel::Suggestive,
         _ => AuthorityLevel::NoAuthority,
+    }
+}
+
+/// The maximum confidentiality a sink may emit (most-paranoid #4).
+///
+/// Publish/egress sinks (data leaves the trust boundary) cap at `Internal`, so a
+/// `Secret`-confidentiality session cannot flow to them. Local sinks (the data
+/// stays inside the sandbox) cap at `Secret` — they impose no confidentiality
+/// restriction. This is the confidentiality (BLP "no read up → no write down")
+/// dimension the `flows_to` check previously dropped.
+fn sink_max_confidentiality(sink: SinkClass) -> ConfLevel {
+    match sink {
+        // True egress: data crosses the boundary. Block Secret.
+        SinkClass::HTTPEgress
+        | SinkClass::GitPush
+        | SinkClass::PRCommentWrite
+        | SinkClass::EmailSend
+        | SinkClass::MCPWrite
+        | SinkClass::CloudMutation
+        | SinkClass::AgentSpawn
+        | SinkClass::SearchIndexWrite => ConfLevel::Internal,
+        // Local sinks: data stays in the sandbox — no confidentiality restriction.
+        _ => ConfLevel::Secret,
     }
 }
 

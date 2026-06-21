@@ -262,10 +262,12 @@ fn test_uninhabitable_blocks_exfiltration_sequence() {
     // Risk stays at Medium (no exfil was recorded)
     assert_eq!(guard.accumulated_risk(), StateRisk::Medium);
 
-    // But neutral operations are still fine
-    assert!(guard.check(Operation::WriteFiles).is_ok());
-    assert!(guard.check(Operation::EditFiles).is_ok());
-    assert!(guard.check(Operation::GitCommit).is_ok());
+    // Local sinks are exfil legs too now (most-paranoid #4): writing/editing/
+    // committing a tainted secret is an exfiltration channel, so they are ALSO
+    // blocked once the private-data + untrusted-content legs are present.
+    assert!(guard.check(Operation::WriteFiles).is_err());
+    assert!(guard.check(Operation::EditFiles).is_err());
+    assert!(guard.check(Operation::GitCommit).is_err());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

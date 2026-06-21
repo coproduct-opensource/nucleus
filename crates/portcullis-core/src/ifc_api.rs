@@ -604,6 +604,22 @@ impl FlowTracker {
         SafetyCheck::Safe
     }
 
+    /// Session-level confidentiality exfiltration check (most-paranoid #4).
+    ///
+    /// Node-independent: denies when the session's confidentiality ceiling
+    /// exceeds what the sink may emit (e.g. the session observed a `Secret`
+    /// env-var and is now attempting an egress sink capped at `Internal`). This
+    /// is the clause the live kernel gate consults for outbound operations.
+    pub fn session_exfiltration_check(&self, sink_max_conf: ConfLevel) -> SafetyCheck {
+        if self.session_conf_ceiling > sink_max_conf {
+            return SafetyCheck::ConfidentialityViolation {
+                data_conf: self.session_conf_ceiling,
+                sink_max_conf,
+            };
+        }
+        SafetyCheck::Safe
+    }
+
     /// Reset the session taint ceiling to the given value (#1233).
     ///
     /// Requires a [`SessionCleanseToken`] — proof of human authorization.

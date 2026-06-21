@@ -7,10 +7,10 @@
 //! - **Poison gate (#3):** if an upstream `observe()` dropped a node, the
 //!   session's taint state is unprovable, so EVERY operation is denied until a
 //!   human-authorized cleanse.
-//! - **Tainted-outbound gate (#1633):** once adversarial (web) content is in the
-//!   session, outbound actions are denied to prevent exfiltration.
+//! - **Egress gate (#1633 / #4):** once adversarial (web) content is in the
+//!   session, OR the session's confidentiality ceiling exceeds what a sink may
+//!   emit, outbound actions are denied to prevent exfiltration.
 
-use portcullis_core::flow::NodeKind;
 use portcullis_core::ifc_api::FlowTracker;
 
 use super::{Decision, DecisionToken, DenyReason, Kernel, Verdict};
@@ -47,18 +47,17 @@ impl Kernel {
             );
         }
 
-        // Tainted-outbound gate (#1633): adversarial content in-session blocks
-        // outbound actions before any side effect.
-        if flow.is_tainted() && Kernel::node_kind_for(operation) == NodeKind::OutboundAction {
+        // Egress gate (#1633 / most-paranoid #4): deny outbound operations when
+        // the session is integrity-tainted OR its confidentiality ceiling exceeds
+        // what the sink may emit (secret exfiltration). The combined
+        // integrity+confidentiality check lives in `exposure_core`.
+        let kind = Kernel::node_kind_for(operation);
+        if let Some(detail) = exposure_core::ifc_egress_denial(flow, operation, kind) {
             tracing::warn!(
                 ?operation,
                 subject = term.subject(),
-                "IFC denied outbound action: session is taint-adversarial"
-            );
-            let detail = format!(
-                "session carries adversarial integrity (untrusted/web content was \
-                 observed); outbound operation {operation:?} blocked to prevent \
-                 exfiltration of, or action on, injected content"
+                %detail,
+                "IFC denied outbound action"
             );
             return Some(self.ifc_deny(term.clone(), detail));
         }

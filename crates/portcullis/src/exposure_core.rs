@@ -21,6 +21,9 @@
 
 use crate::capability::Operation;
 use crate::guard::{ExposureLabel, ExposureSet};
+use portcullis_core::flow::NodeKind;
+use portcullis_core::ifc_api::FlowTracker;
+use portcullis_core::ConfLevel;
 
 /// Classify an operation into its exposure label.
 ///
@@ -38,16 +41,75 @@ pub fn classify_operation(op: Operation) -> Option<ExposureLabel> {
         }
         // Leg 2: Untrusted content ingestion
         Operation::WebFetch | Operation::WebSearch => Some(ExposureLabel::UntrustedContent),
-        // Leg 3: Exfiltration vectors
-        Operation::RunBash | Operation::GitPush | Operation::CreatePr | Operation::SpawnAgent => {
-            Some(ExposureLabel::ExfilVector)
-        }
-        // Neutral operations (no exposure contribution)
-        Operation::WriteFiles
+        // Leg 3: Exfiltration vectors. Local sinks (WriteFiles/EditFiles/
+        // GitCommit/ManagePods) ARE exfil legs (most-paranoid #4): a tainted
+        // secret written to a file or committed is an exfiltration channel, so
+        // they complete the uninhabitable trifecta rather than being "neutral".
+        Operation::RunBash
+        | Operation::GitPush
+        | Operation::CreatePr
+        | Operation::SpawnAgent
+        | Operation::WriteFiles
         | Operation::EditFiles
         | Operation::GitCommit
-        | Operation::ManagePods => None,
+        | Operation::ManagePods => Some(ExposureLabel::ExfilVector),
     }
+}
+
+/// Whether an operation is an exfiltration vector (single source of truth).
+///
+/// Mirrors the `ExfilVector` arm of [`classify_operation`]; used by the kernel
+/// uninhabitable-state gate (most-paranoid #4).
+#[inline]
+pub fn is_exfil_operation(op: Operation) -> bool {
+    matches!(classify_operation(op), Some(ExposureLabel::ExfilVector))
+}
+
+/// The maximum confidentiality an operation's sink may emit (most-paranoid #4).
+///
+/// True egress operations (data crosses the trust boundary) cap at `Internal`,
+/// so a `Secret`-confidentiality session is blocked from them. Local operations
+/// cap at `Secret` (data stays in the sandbox — no confidentiality restriction).
+/// Calibrated so that, since env-vars/secrets carry `Secret` confidentiality, a
+/// secret-bearing session can still write/edit/commit locally but cannot push,
+/// open a PR, spawn an agent, or manage pods.
+#[inline]
+pub fn sink_max_conf_for(op: Operation) -> ConfLevel {
+    match op {
+        Operation::GitPush
+        | Operation::CreatePr
+        | Operation::SpawnAgent
+        | Operation::ManagePods => ConfLevel::Internal,
+        _ => ConfLevel::Secret,
+    }
+}
+
+/// Clock-free IFC egress denial check for the live kernel gate (most-paranoid
+/// #1/#4). Returns `Some(detail)` when an outbound operation must be denied:
+/// either the session is integrity-tainted (adversarial content observed) or its
+/// confidentiality ceiling exceeds what the sink may emit (secret exfiltration).
+/// `None` ⇒ the gate falls through to the normal decision path.
+pub fn ifc_egress_denial(flow: &FlowTracker, op: Operation, kind: NodeKind) -> Option<String> {
+    if kind != NodeKind::OutboundAction {
+        return None;
+    }
+    if flow.is_tainted() {
+        return Some(format!(
+            "session carries adversarial integrity (untrusted/web content was \
+             observed); outbound operation {op:?} blocked to prevent exfiltration \
+             of, or action on, injected content"
+        ));
+    }
+    if flow
+        .session_exfiltration_check(sink_max_conf_for(op))
+        .is_denied()
+    {
+        return Some(format!(
+            "session confidentiality ceiling exceeds what {op:?} may emit; \
+             outbound operation blocked to prevent secret exfiltration"
+        ));
+    }
+    None
 }
 
 /// Project what the exposure set WOULD be if this operation executes.
@@ -143,17 +205,18 @@ mod tests {
         // Every operation variant maps to something
         let ops = [
             (Operation::ReadFiles, Some(ExposureLabel::PrivateData)),
-            (Operation::WriteFiles, None),
-            (Operation::EditFiles, None),
+            // Local sinks are now exfil legs (most-paranoid #4).
+            (Operation::WriteFiles, Some(ExposureLabel::ExfilVector)),
+            (Operation::EditFiles, Some(ExposureLabel::ExfilVector)),
             (Operation::RunBash, Some(ExposureLabel::ExfilVector)),
             (Operation::GlobSearch, Some(ExposureLabel::PrivateData)),
             (Operation::GrepSearch, Some(ExposureLabel::PrivateData)),
             (Operation::WebSearch, Some(ExposureLabel::UntrustedContent)),
             (Operation::WebFetch, Some(ExposureLabel::UntrustedContent)),
-            (Operation::GitCommit, None),
+            (Operation::GitCommit, Some(ExposureLabel::ExfilVector)),
             (Operation::GitPush, Some(ExposureLabel::ExfilVector)),
             (Operation::CreatePr, Some(ExposureLabel::ExfilVector)),
-            (Operation::ManagePods, None),
+            (Operation::ManagePods, Some(ExposureLabel::ExfilVector)),
             (Operation::SpawnAgent, Some(ExposureLabel::ExfilVector)),
         ];
         for (op, expected) in ops {
@@ -180,10 +243,13 @@ mod tests {
     }
 
     #[test]
-    fn test_project_exposure_neutral_op() {
+    fn test_project_exposure_write_is_exfil() {
+        // WriteFiles is now an exfil leg (most-paranoid #4): projecting it onto a
+        // PrivateData session adds ExfilVector.
         let exposure = ExposureSet::singleton(ExposureLabel::PrivateData);
         let projected = project_exposure(&exposure, Operation::WriteFiles);
-        assert_eq!(projected, exposure);
+        assert!(projected.contains(ExposureLabel::PrivateData));
+        assert!(projected.contains(ExposureLabel::ExfilVector));
     }
 
     #[test]
@@ -220,10 +286,12 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_record_neutral() {
+    fn test_apply_record_write_is_exfil() {
+        // WriteFiles records an ExfilVector leg now (most-paranoid #4).
         let exposure = ExposureSet::singleton(ExposureLabel::PrivateData);
         let recorded = apply_record(&exposure, Operation::WriteFiles);
-        assert_eq!(recorded, exposure);
+        assert!(recorded.contains(ExposureLabel::PrivateData));
+        assert!(recorded.contains(ExposureLabel::ExfilVector));
     }
 
     // ════════════════════════════════════════════════════════════════════

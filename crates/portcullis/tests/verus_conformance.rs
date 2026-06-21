@@ -1206,19 +1206,20 @@ proptest! {
         prop_assert!(after.count() >= before.count(), "count decreased");
     }
 
-    /// CONFORMANCE J4: Neutral operations produce no exposure label.
+    /// CONFORMANCE J4: Local-sink operations are exfil legs (most-paranoid #4).
     ///
-    /// Mirrors Verus proof_neutral_ops_no_exposure.
+    /// Mirrors Verus proof_local_sinks_are_exfil. (Formerly asserted these were
+    /// neutral; they now contribute the ExfilVector leg.)
     #[test]
-    fn conformance_neutral_ops_no_exposure(op in prop_oneof![
+    fn conformance_local_sinks_are_exfil(op in prop_oneof![
         Just(Operation::WriteFiles),
         Just(Operation::EditFiles),
         Just(Operation::GitCommit),
         Just(Operation::ManagePods),
     ]) {
         prop_assert_eq!(
-            operation_exposure(op), None,
-            "neutral op {:?} should produce no exposure", op
+            operation_exposure(op), Some(ExposureLabel::ExfilVector),
+            "local-sink op {:?} should be an exfil vector", op
         );
     }
 
@@ -1352,11 +1353,12 @@ proptest! {
         prop_assert_eq!(after, before, "failed event changed exposure for {:?}", op);
     }
 
-    /// CONFORMANCE M5: Neutral ops don't change exposure.
+    /// CONFORMANCE M5: Local-sink ops add the ExfilVector leg (most-paranoid #4).
     ///
-    /// Mirrors Verus proof_neutral_op_preserves_exposure.
+    /// Mirrors Verus proof_local_sink_adds_exfil. (Formerly asserted these ops
+    /// preserved exposure; they now contribute ExfilVector on success.)
     #[test]
-    fn conformance_neutral_op_preserves(
+    fn conformance_local_sink_adds_exfil(
         before in arb_exposure_set(),
         op in prop_oneof![
             Just(Operation::WriteFiles),
@@ -1365,9 +1367,10 @@ proptest! {
             Just(Operation::ManagePods),
         ],
     ) {
-        // Even if succeeded, neutral ops don't add exposure
         let after = apply_event(&before, op, true);
-        prop_assert_eq!(after, before, "neutral op {:?} changed exposure", op);
+        // Monotone: exposure never shrinks, and now includes ExfilVector.
+        prop_assert!(after.contains(ExposureLabel::ExfilVector),
+            "local-sink op {:?} should add ExfilVector", op);
     }
 
     /// CONFORMANCE M6:  UninhabitableState irreversibility — once latched, always latched.
@@ -1785,10 +1788,12 @@ mod structural_bisimulation {
             0 // PrivateData
         } else if op == 6 || op == 7 {
             1 // UntrustedContent
-        } else if op == 3 || op == 9 || op == 10 {
-            2 // ExfilVector
+        } else if op == 3 || op == 9 || op == 10 || op == 1 || op == 2 || op == 8 || op == 11 {
+            // ExfilVector — local sinks (WriteFiles=1, EditFiles=2, GitCommit=8,
+            // ManagePods=11) are exfil legs too now (most-paranoid #4).
+            2
         } else {
-            3 // Neutral
+            3 // Neutral (no op in ALL_OPS maps here after #4)
         }
     }
 
@@ -2762,16 +2767,32 @@ mod enforcement_monotonicity {
             "RunBash should be denied with ReadFiles + WebFetch exposure"
         );
 
-        // Record more neutral operations
+        // Grow exposure further with NON-exfil ops (more private-data / untrusted
+        // reads). Local sinks (Write/Edit/Commit) are now exfil legs themselves
+        // and would be DENIED here (they'd complete the trifecta), so we can no
+        // longer use them to "grow exposure" — they're asserted denied below.
         for &op in &[
-            Operation::WriteFiles,
-            Operation::EditFiles,
-            Operation::GitCommit,
+            Operation::GlobSearch,
+            Operation::GrepSearch,
+            Operation::WebSearch,
         ] {
             let proof = guard.check(op).unwrap();
             guard
                 .execute_and_record(proof, || Ok::<_, String>(()))
                 .unwrap();
+        }
+
+        // The local-sink exfil ops are denied now (most-paranoid #4).
+        for &op in &[
+            Operation::WriteFiles,
+            Operation::EditFiles,
+            Operation::GitCommit,
+        ] {
+            assert!(
+                guard.check(op).is_err(),
+                "local-sink exfil op {:?} should be denied at uninhabitable exposure",
+                op
+            );
         }
 
         // RunBash should STILL be denied (exposure only grew)

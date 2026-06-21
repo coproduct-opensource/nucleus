@@ -1653,7 +1653,8 @@ impl Kernel {
         term: ActionTerm,
         flow: Option<&portcullis_core::ifc_api::FlowTracker>,
     ) -> (Decision, Option<DecisionToken>) {
-        // IFC flow gate (poison + tainted-outbound), extracted to `kernel::ifc`.
+        // IFC flow gate (poison + tainted-outbound + confidentiality egress),
+        // extracted to `kernel::ifc` (most-paranoid #1/#3/#4).
         if let Some(denied) = self.ifc_flow_gate(&term, flow) {
             return denied;
         }
@@ -2166,10 +2167,9 @@ fn is_network_operation(op: Operation) -> bool {
 
 /// Check if an operation is an exfiltration vector.
 fn is_exfil_operation(op: Operation) -> bool {
-    matches!(
-        op,
-        Operation::RunBash | Operation::GitPush | Operation::CreatePr | Operation::SpawnAgent
-    )
+    // Single source of truth (most-paranoid #4): includes the local-sink exfil
+    // legs (WriteFiles/EditFiles/GitCommit/ManagePods).
+    exposure_core::is_exfil_operation(op)
 }
 
 /// Check if an operation is a write-class file operation (sink scope: paths).

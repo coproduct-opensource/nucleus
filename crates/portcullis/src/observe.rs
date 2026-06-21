@@ -34,10 +34,13 @@
 //! let yaml = profile.to_yaml().unwrap();
 //! println!("{}", yaml);
 //!
-//! // Exposure analysis is included in the summary
+//! // Exposure analysis is included in the summary. Note (most-paranoid #4):
+//! // EditFiles and GitCommit are now exfiltration legs (a tainted secret
+//! // written/committed locally is an exfil channel), so observing
+//! // read + web + edit + commit reveals the full uninhabitable trifecta.
 //! let summary = session.summary();
-//! assert_eq!(summary.exposure_count, 2); // PrivateData + UntrustedContent
-//! assert!(!summary.state_uninhabitable);
+//! assert_eq!(summary.exposure_count, 3); // PrivateData + UntrustedContent + ExfilVector
+//! assert!(summary.state_uninhabitable);
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};

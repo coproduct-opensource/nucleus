@@ -1603,11 +1603,23 @@ mod tests {
             Some(ExposureLabel::ExfilVector)
         );
 
-        // Neutral operations
-        assert_eq!(operation_exposure(Operation::WriteFiles), None);
-        assert_eq!(operation_exposure(Operation::EditFiles), None);
-        assert_eq!(operation_exposure(Operation::GitCommit), None);
-        assert_eq!(operation_exposure(Operation::ManagePods), None);
+        // Local sinks are exfil legs too (most-paranoid #4).
+        assert_eq!(
+            operation_exposure(Operation::WriteFiles),
+            Some(ExposureLabel::ExfilVector)
+        );
+        assert_eq!(
+            operation_exposure(Operation::EditFiles),
+            Some(ExposureLabel::ExfilVector)
+        );
+        assert_eq!(
+            operation_exposure(Operation::GitCommit),
+            Some(ExposureLabel::ExfilVector)
+        );
+        assert_eq!(
+            operation_exposure(Operation::ManagePods),
+            Some(ExposureLabel::ExfilVector)
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1656,16 +1668,16 @@ mod tests {
     }
 
     #[test]
-    fn test_graded_exposure_guard_neutral_ops_no_exposure() {
+    fn test_graded_exposure_guard_local_sinks_are_exfil() {
         let guard = GradedExposureGuard::new(uninhabitable_perms(), "[]");
 
+        // Local sinks now contribute the ExfilVector leg (most-paranoid #4):
+        // writing/editing/committing is an exfiltration channel.
         check_and_record(&guard, Operation::WriteFiles);
+        assert!(guard.exposure().contains(ExposureLabel::ExfilVector));
         check_and_record(&guard, Operation::EditFiles);
         check_and_record(&guard, Operation::GitCommit);
-
-        // Neutral ops don't contribute to exposure
-        assert_eq!(guard.exposure(), ExposureSet::empty());
-        assert_eq!(guard.accumulated_risk(), StateRisk::Safe);
+        assert!(guard.exposure().contains(ExposureLabel::ExfilVector));
     }
 
     #[test]
