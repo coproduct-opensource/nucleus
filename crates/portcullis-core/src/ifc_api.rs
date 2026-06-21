@@ -126,6 +126,14 @@ pub struct FlowTracker {
     /// the ceiling stays at `Secret` — any output sink with `max_conf < Secret`
     /// triggers a [`SafetyCheck::ConfidentialityViolation`].
     session_conf_ceiling: ConfLevel,
+    /// Fail-closed poison flag (most-paranoid #3).
+    ///
+    /// Set when an upstream `observe()` failed and a data-ingest node was
+    /// therefore *dropped*: the session's taint state is no longer provable, so
+    /// continuing would fail open. Once poisoned, the kernel denies every
+    /// operation. Cleared only by the human-authorized [`reset_session_ceiling`]
+    /// cleanse path.
+    poisoned: bool,
 }
 
 /// Error from flow tracking operations.
@@ -250,6 +258,7 @@ impl FlowTracker {
             next_id: 1, // 0 reserved as sentinel
             session_taint_ceiling: DerivationClass::Deterministic, // bottom
             session_conf_ceiling: ConfLevel::Public, // bottom
+            poisoned: false,
         }
     }
 
@@ -609,11 +618,26 @@ impl FlowTracker {
         _token: &SessionCleanseToken,
     ) {
         self.session_taint_ceiling = new_ceiling;
+        // The human-authorized cleanse is also the only way to clear the
+        // fail-closed poison flag (most-paranoid #3).
+        self.poisoned = false;
     }
 
     /// Number of tracked nodes.
     pub fn node_count(&self) -> usize {
         self.nodes.len()
+    }
+
+    /// Mark the session poisoned (fail-closed): an `observe()` dropped a node,
+    /// so taint state is unprovable and the kernel must deny everything until a
+    /// human-authorized cleanse (most-paranoid #3).
+    pub fn poison(&mut self) {
+        self.poisoned = true;
+    }
+
+    /// Whether the session is poisoned (an observation was dropped).
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned
     }
 
     /// Check if any node in the tracker has adversarial integrity.
@@ -984,6 +1008,31 @@ mod tests {
         t.reset_session_ceiling(DerivationClass::Deterministic, &token);
         assert_eq!(t.session_taint_ceiling(), DerivationClass::Deterministic);
         assert!(!t.is_session_tainted());
+    }
+
+    #[test]
+    fn poison_flag_defaults_false_and_sets() {
+        let mut t = FlowTracker::new();
+        assert!(!t.is_poisoned(), "fresh tracker must not be poisoned");
+        t.poison();
+        assert!(
+            t.is_poisoned(),
+            "poison() must set the flag (fail-closed #3)"
+        );
+    }
+
+    #[test]
+    fn poison_cleared_only_by_authorized_cleanse() {
+        let mut t = FlowTracker::new();
+        t.poison();
+        assert!(t.is_poisoned());
+
+        // The human-authorized cleanse path is the only way to un-poison.
+        let bundle = crate::discharge::test_helpers::allowed_bundle();
+        let token =
+            SessionCleanseToken::authorize("test: cleanse after dropped observation", &bundle);
+        t.reset_session_ceiling(DerivationClass::Deterministic, &token);
+        assert!(!t.is_poisoned(), "authorized cleanse must clear poison");
     }
 
     #[test]
