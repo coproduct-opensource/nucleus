@@ -12,11 +12,12 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{middleware, Json, Router};
 use clap::Parser;
+use nucleus::portcullis::action_term::ActionTerm;
 use nucleus::portcullis::escalation::{
     EscalationError, EscalationGrant, EscalationRequest, SpiffeTraceChain, SpiffeTraceLink,
 };
-use nucleus::portcullis::kernel::{Kernel, Verdict};
-use nucleus::portcullis::{CapabilityLevel, Operation, PermissionLattice};
+use nucleus::portcullis::kernel::{DecisionToken, DenyReason, Kernel, Verdict};
+use nucleus::portcullis::{CapabilityLevel, FlowTracker, NodeKind, Operation, PermissionLattice};
 use nucleus::{ApprovalRequest, CallbackApprover, NucleusError, PodRuntime};
 use nucleus_permission_market::{PermissionBid, PermissionGrant, PermissionMarket};
 use nucleus_spec::PodSpec;
@@ -304,6 +305,15 @@ pub(crate) struct AppState {
     pub(crate) verdict_sink: Arc<dyn portcullis::verdict_sink::VerdictSink>,
     /// Kernel decision engine for complete mediation (HTTP path).
     pub(crate) kernel: Arc<tokio::sync::Mutex<Kernel>>,
+    /// Session-scoped information-flow tracker for the lethal-trifecta guard on
+    /// the HTTP path (#1633). Process-wide, mirroring the kernel above and the
+    /// MCP server's per-session tracker: the tool-proxy is a per-pod sidecar
+    /// (one pod = one session = one process), so a single shared tracker has the
+    /// same semantics as the single shared kernel. Under any hypothetical
+    /// multi-session-per-process hosting it fails *closed* (taint from any actor
+    /// blocks outbound for all); true multi-tenancy would require keying the
+    /// kernel AND tracker together — out of scope here.
+    pub(crate) flow_tracker: Arc<tokio::sync::Mutex<FlowTracker>>,
 }
 
 /// OR-semantics: locked if EITHER signal file OR gRPC stream says locked.
@@ -890,6 +900,12 @@ enum ApiError {
     Validation(#[from] validation::ValidationError),
     #[error("permission bid denied: insufficient value")]
     PermissionDenied(#[allow(unused)] nucleus_spec::PaymentRequiredInfo),
+    /// Operation denied by the information-flow control monitor: the session has
+    /// ingested adversarial (untrusted/web) content and this is an outbound
+    /// action that could exfiltrate or act on it (the lethal-trifecta guard,
+    /// #1633). Wired into the HTTP path so it has parity with the MCP server.
+    #[error("ifc denied: {0}")]
+    IfcDenied(String),
 }
 
 impl IntoResponse for ApiError {
@@ -973,6 +989,7 @@ impl IntoResponse for ApiError {
                 None,
                 Some(info.clone()),
             ),
+            ApiError::IfcDenied(_) => (StatusCode::FORBIDDEN, "ifc_denied", None, None),
         };
 
         // Sanitize error message to prevent information disclosure
@@ -1245,6 +1262,8 @@ async fn main() -> Result<(), ApiError> {
         runtime.policy().clone(),
     )));
 
+    let flow_tracker = Arc::new(tokio::sync::Mutex::new(FlowTracker::new()));
+
     let state = AppState {
         runtime: Arc::new(runtime),
         approvals,
@@ -1276,6 +1295,7 @@ async fn main() -> Result<(), ApiError> {
         session_id,
         verdict_sink,
         kernel,
+        flow_tracker,
     };
 
     if let Err(err) = emit_boot_report(&state).await {
@@ -2006,7 +2026,78 @@ fn check_identity_policy(
     !requires_approval
 }
 
-#[allow(deprecated)] // Migration to decide_term tracked in #1194
+/// Pure reference monitor for the HTTP path: kernel decision + information-flow
+/// consult, mapped to the HTTP error surface. Split out from [`http_kernel_decide`]
+/// so it is unit-testable with a bare [`Kernel`] + [`FlowTracker`] (no `AppState`).
+///
+/// This is the single source of truth for HTTP mediation (#1194, #1633): it
+/// routes through [`Kernel::decide_term_with_flow`] — the same taint-aware path
+/// the MCP server uses — so once the session has ingested adversarial (web)
+/// content, outbound operations are denied with [`DenyReason::IfcUnsafe`] before
+/// any side effect. The deprecated capability-only `Kernel::decide()` is no
+/// longer reachable from the HTTP handlers.
+fn decide_with_flow_mapped(
+    kernel: &mut Kernel,
+    flow: &FlowTracker,
+    operation: Operation,
+    subject: &str,
+) -> Result<DecisionToken, ApiError> {
+    let term = ActionTerm::from_operation(operation, subject);
+    let (decision, token) = kernel.decide_term_with_flow(term, Some(flow));
+    match decision.verdict {
+        Verdict::Allow => Ok(token.expect("Allow verdict always produces token")),
+        Verdict::Deny(DenyReason::IfcUnsafe { detail }) => {
+            warn!(?operation, subject, %detail, "HTTP IFC denied outbound action (lethal trifecta)");
+            Err(ApiError::IfcDenied(detail))
+        }
+        Verdict::Deny(reason) => {
+            warn!(?operation, subject, ?reason, "HTTP kernel denied operation");
+            Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+                capability: format!("{operation:?}"),
+                actual: CapabilityLevel::Never,
+                required: CapabilityLevel::LowRisk,
+            }))
+        }
+        Verdict::RequiresApproval => {
+            info!(
+                ?operation,
+                subject,
+                exposure = decision.exposure_transition.post_count,
+                "HTTP kernel requires approval (no auto-approve channel)"
+            );
+            Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
+                capability: format!("{operation:?}"),
+                actual: CapabilityLevel::Never,
+                required: CapabilityLevel::LowRisk,
+            }))
+        }
+    }
+}
+
+/// HTTP enforcement chokepoint: locks the kernel THEN the flow tracker (same
+/// order as the MCP server) and runs the reference monitor. Both guards are
+/// dropped before the caller performs any sandbox/executor I/O.
+async fn http_kernel_decide(
+    state: &AppState,
+    operation: Operation,
+    subject: &str,
+) -> Result<DecisionToken, ApiError> {
+    let mut kernel = state.kernel.lock().await;
+    let flow = state.flow_tracker.lock().await;
+    decide_with_flow_mapped(&mut kernel, &flow, operation, subject)
+}
+
+/// Observe a data-ingest node in the session flow tracker after a *successful*
+/// read/fetch (#1633), mirroring the MCP server. `WebContent` is an adversarial
+/// taint source; `FileRead` contributes to the confidentiality ceiling. Must be
+/// called only on success paths so a denied/failed op never leaks taint.
+async fn http_observe_flow(state: &AppState, kind: NodeKind) {
+    let mut flow = state.flow_tracker.lock().await;
+    if let Err(e) = flow.observe(kind) {
+        warn!(?kind, error = %e, "flow-tracker observe failed");
+    }
+}
+
 async fn read_file(
     State(state): State<AppState>,
     _headers: HeaderMap,
@@ -2035,34 +2126,8 @@ async fn read_file(
         return Err(ApiError::Validation(e));
     }
 
-    // Kernel mediation — obtain DecisionToken for sandbox I/O
-    let decision_token = {
-        let mut kernel = state.kernel.lock().await;
-        let (decision, token) = kernel.decide(operation, &req.path);
-        match decision.verdict {
-            Verdict::Allow => token.expect("Allow verdict always produces token"),
-            Verdict::Deny(_) => {
-                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
-                    capability: format!("{operation:?}"),
-                    actual: CapabilityLevel::Never,
-                    required: CapabilityLevel::LowRisk,
-                }));
-            }
-            Verdict::RequiresApproval => {
-                info!(
-                    ?operation,
-                    subject = %req.path,
-                    exposure = decision.exposure_transition.post_count,
-                    "kernel requires approval"
-                );
-                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
-                    capability: format!("{operation:?}"),
-                    actual: CapabilityLevel::Never,
-                    required: CapabilityLevel::LowRisk,
-                }));
-            }
-        }
-    };
+    // Kernel mediation + IFC flow consult — obtain DecisionToken for sandbox I/O
+    let decision_token = http_kernel_decide(&state, operation, &req.path).await?;
 
     let path = req.path.clone();
 
@@ -2131,10 +2196,11 @@ async fn read_file(
     }) {
         warn!(error = %e, "verdict recording failed -- audit gap");
     }
+    // IFC: a successful file read brings data into the session (#1633).
+    http_observe_flow(&state, NodeKind::FileRead).await;
     Ok(Json(ReadResponse { contents }))
 }
 
-#[allow(deprecated)] // Migration to decide_term tracked in #1194
 async fn write_file(
     State(state): State<AppState>,
     _headers: HeaderMap,
@@ -2163,34 +2229,10 @@ async fn write_file(
         return Err(ApiError::Validation(e));
     }
 
-    // Kernel mediation — obtain DecisionToken for sandbox I/O
-    let decision_token = {
-        let mut kernel = state.kernel.lock().await;
-        let (decision, token) = kernel.decide(operation, &req.path);
-        match decision.verdict {
-            Verdict::Allow => token.expect("Allow verdict always produces token"),
-            Verdict::Deny(_) => {
-                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
-                    capability: format!("{operation:?}"),
-                    actual: CapabilityLevel::Never,
-                    required: CapabilityLevel::LowRisk,
-                }));
-            }
-            Verdict::RequiresApproval => {
-                info!(
-                    ?operation,
-                    subject = %req.path,
-                    exposure = decision.exposure_transition.post_count,
-                    "kernel requires approval"
-                );
-                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
-                    capability: format!("{operation:?}"),
-                    actual: CapabilityLevel::Never,
-                    required: CapabilityLevel::LowRisk,
-                }));
-            }
-        }
-    };
+    // Kernel mediation + IFC flow consult — obtain DecisionToken for sandbox I/O.
+    // WriteFiles is an OutboundAction: denied with IfcUnsafe once the session is
+    // tainted by web content (lethal-trifecta guard, #1633).
+    let decision_token = http_kernel_decide(&state, operation, &req.path).await?;
 
     let path = req.path.clone();
     let contents = req.contents.clone();
@@ -2265,7 +2307,6 @@ async fn write_file(
     Ok(Json(WriteResponse { ok: true }))
 }
 
-#[allow(deprecated)] // Migration to decide_term tracked in #1194
 async fn run_command(
     State(state): State<AppState>,
     _headers: HeaderMap,
@@ -2329,34 +2370,10 @@ async fn run_command(
         }
     }
 
-    // Kernel mediation — obtain DecisionToken for executor I/O
-    let decision_token = {
-        let mut kernel = state.kernel.lock().await;
-        let (decision, token) = kernel.decide(operation, &display_command);
-        match decision.verdict {
-            Verdict::Allow => token.expect("Allow verdict always produces token"),
-            Verdict::Deny(_) => {
-                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
-                    capability: format!("{operation:?}"),
-                    actual: CapabilityLevel::Never,
-                    required: CapabilityLevel::LowRisk,
-                }));
-            }
-            Verdict::RequiresApproval => {
-                info!(
-                    ?operation,
-                    subject = %display_command,
-                    exposure = decision.exposure_transition.post_count,
-                    "kernel requires approval"
-                );
-                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
-                    capability: format!("{operation:?}"),
-                    actual: CapabilityLevel::Never,
-                    required: CapabilityLevel::LowRisk,
-                }));
-            }
-        }
-    };
+    // Kernel mediation + IFC flow consult — obtain DecisionToken for executor I/O.
+    // RunBash is an OutboundAction: denied with IfcUnsafe once the session is
+    // tainted by web content (lethal-trifecta guard, #1633).
+    let decision_token = http_kernel_decide(&state, operation, &display_command).await?;
 
     let executor = state.runtime.executor();
 
@@ -2442,7 +2459,6 @@ async fn run_command(
     }))
 }
 
-#[allow(deprecated)] // Migration to decide_term tracked in #1194
 async fn web_fetch(
     State(state): State<AppState>,
     _headers: HeaderMap,
@@ -2472,34 +2488,9 @@ async fn web_fetch(
         return Err(ApiError::Validation(e));
     }
 
-    // Kernel mediation
-    {
-        let mut kernel = state.kernel.lock().await;
-        let (decision, _decision_token) = kernel.decide(operation, &url_str);
-        match decision.verdict {
-            Verdict::Allow => {}
-            Verdict::Deny(_) => {
-                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
-                    capability: format!("{operation:?}"),
-                    actual: CapabilityLevel::Never,
-                    required: CapabilityLevel::LowRisk,
-                }));
-            }
-            Verdict::RequiresApproval => {
-                info!(
-                    ?operation,
-                    subject = %url_str,
-                    exposure = decision.exposure_transition.post_count,
-                    "kernel requires approval"
-                );
-                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
-                    capability: format!("{operation:?}"),
-                    actual: CapabilityLevel::Never,
-                    required: CapabilityLevel::LowRisk,
-                }));
-            }
-        }
-    }
+    // Kernel mediation + IFC flow consult. WebFetch is itself a taint source
+    // (observed below on success); the consult still runs for capability/exposure.
+    let _ = http_kernel_decide(&state, operation, &url_str).await?;
 
     // Check web_fetch capability
     let policy = state.runtime.policy();
@@ -2658,6 +2649,9 @@ async fn web_fetch(
     }) {
         warn!(error = %e, "verdict recording failed -- audit gap");
     }
+    // IFC: web content is an adversarial taint source — taint the session so
+    // subsequent outbound actions are denied with IfcUnsafe (lethal trifecta, #1633).
+    http_observe_flow(&state, NodeKind::WebContent).await;
     Ok(Json(WebFetchResponse {
         status,
         headers: response_headers,
@@ -2667,7 +2661,6 @@ async fn web_fetch(
 }
 
 /// Glob pattern search within the sandbox.
-#[allow(deprecated)] // Migration to decide_term tracked in #1194
 async fn glob_search(
     State(state): State<AppState>,
     _headers: HeaderMap,
@@ -2685,34 +2678,9 @@ async fn glob_search(
         validation::validate_path(dir).map_err(ApiError::Validation)?;
     }
 
-    // Kernel mediation
-    {
-        let mut kernel = state.kernel.lock().await;
-        let (decision, _decision_token) = kernel.decide(operation, &req.pattern);
-        match decision.verdict {
-            Verdict::Allow => {}
-            Verdict::Deny(_) => {
-                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
-                    capability: format!("{operation:?}"),
-                    actual: CapabilityLevel::Never,
-                    required: CapabilityLevel::LowRisk,
-                }));
-            }
-            Verdict::RequiresApproval => {
-                info!(
-                    ?operation,
-                    subject = %req.pattern,
-                    exposure = decision.exposure_transition.post_count,
-                    "kernel requires approval"
-                );
-                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
-                    capability: format!("{operation:?}"),
-                    actual: CapabilityLevel::Never,
-                    required: CapabilityLevel::LowRisk,
-                }));
-            }
-        }
-    }
+    // Kernel mediation + IFC flow consult. GlobSearch is a FileRead (observed
+    // below on success); not an outbound action, so never IFC-denied.
+    let _ = http_kernel_decide(&state, operation, &req.pattern).await?;
 
     // Check glob_search capability
     let policy = state.runtime.policy();
@@ -2837,6 +2805,8 @@ async fn glob_search(
     }) {
         warn!(error = %e, "verdict recording failed -- audit gap");
     }
+    // IFC: a successful glob brings file data into the session (#1633).
+    http_observe_flow(&state, NodeKind::FileRead).await;
     Ok(Json(GlobResponse {
         matches,
         truncated: if truncated { Some(true) } else { None },
@@ -2844,7 +2814,6 @@ async fn glob_search(
 }
 
 /// Grep (regex content search) within the sandbox.
-#[allow(deprecated)] // Migration to decide_term tracked in #1194
 async fn grep_search(
     State(state): State<AppState>,
     _headers: HeaderMap,
@@ -2869,34 +2838,9 @@ async fn grep_search(
         validation::validate_pattern(glob_pattern).map_err(ApiError::Validation)?;
     }
 
-    // Kernel mediation
-    {
-        let mut kernel = state.kernel.lock().await;
-        let (decision, _decision_token) = kernel.decide(operation, &req.pattern);
-        match decision.verdict {
-            Verdict::Allow => {}
-            Verdict::Deny(_) => {
-                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
-                    capability: format!("{operation:?}"),
-                    actual: CapabilityLevel::Never,
-                    required: CapabilityLevel::LowRisk,
-                }));
-            }
-            Verdict::RequiresApproval => {
-                info!(
-                    ?operation,
-                    subject = %req.pattern,
-                    exposure = decision.exposure_transition.post_count,
-                    "kernel requires approval"
-                );
-                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
-                    capability: format!("{operation:?}"),
-                    actual: CapabilityLevel::Never,
-                    required: CapabilityLevel::LowRisk,
-                }));
-            }
-        }
-    }
+    // Kernel mediation + IFC flow consult. GrepSearch is a FileRead (observed
+    // below on success); not an outbound action, so never IFC-denied.
+    let _ = http_kernel_decide(&state, operation, &req.pattern).await?;
 
     // Check grep_search capability
     let policy = state.runtime.policy();
@@ -3072,6 +3016,8 @@ async fn grep_search(
     }) {
         warn!(error = %e, "verdict recording failed -- audit gap");
     }
+    // IFC: a successful grep brings file data into the session (#1633).
+    http_observe_flow(&state, NodeKind::FileRead).await;
     Ok(Json(GrepResponse {
         matches,
         truncated: if truncated { Some(true) } else { None },
@@ -3079,7 +3025,6 @@ async fn grep_search(
 }
 
 /// Web search using configured backend.
-#[allow(deprecated)] // Migration to decide_term tracked in #1194
 async fn web_search(
     State(state): State<AppState>,
     _headers: HeaderMap,
@@ -3094,34 +3039,9 @@ async fn web_search(
     // Validate inputs before any processing
     validation::validate_query(&req.query).map_err(ApiError::Validation)?;
 
-    // Kernel mediation
-    {
-        let mut kernel = state.kernel.lock().await;
-        let (decision, _decision_token) = kernel.decide(operation, &req.query);
-        match decision.verdict {
-            Verdict::Allow => {}
-            Verdict::Deny(_) => {
-                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
-                    capability: format!("{operation:?}"),
-                    actual: CapabilityLevel::Never,
-                    required: CapabilityLevel::LowRisk,
-                }));
-            }
-            Verdict::RequiresApproval => {
-                info!(
-                    ?operation,
-                    subject = %req.query,
-                    exposure = decision.exposure_transition.post_count,
-                    "kernel requires approval"
-                );
-                return Err(ApiError::Nucleus(NucleusError::InsufficientCapability {
-                    capability: format!("{operation:?}"),
-                    actual: CapabilityLevel::Never,
-                    required: CapabilityLevel::LowRisk,
-                }));
-            }
-        }
-    }
+    // Kernel mediation + IFC flow consult. WebSearch is a taint source
+    // (observed below on success); the consult still runs for capability/exposure.
+    let _ = http_kernel_decide(&state, operation, &req.query).await?;
 
     // Check web_search capability
     let policy = state.runtime.policy();
@@ -3259,6 +3179,8 @@ async fn web_search(
     }) {
         warn!(error = %e, "verdict recording failed -- audit gap");
     }
+    // IFC: web search results are an adversarial taint source (#1633).
+    http_observe_flow(&state, NodeKind::WebContent).await;
     Ok(Json(WebSearchResponse { results }))
 }
 

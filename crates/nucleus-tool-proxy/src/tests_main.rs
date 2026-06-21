@@ -324,3 +324,116 @@ fn test_lockdown_blocks_unknown_paths() {
         "empty path should be blocked during lockdown"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// IFC enforcement on the HTTP path (#1194, #1633)
+//
+// These exercise the pure reference monitor `decide_with_flow_mapped` against a
+// bare Kernel + FlowTracker (no AppState), proving the HTTP path now has the
+// same taint-aware lethal-trifecta guard the MCP server has: once the session
+// ingests web content, outbound actions are denied with `ApiError::IfcDenied`
+// — before any side effect.
+// ═══════════════════════════════════════════════════════════════════════════
+mod ifc_http_enforcement {
+    use super::*;
+
+    fn permissive_kernel() -> Kernel {
+        Kernel::new(PermissionLattice::permissive())
+    }
+
+    fn tainted_tracker() -> FlowTracker {
+        let mut flow = FlowTracker::new();
+        flow.observe(NodeKind::WebContent)
+            .expect("observe web content");
+        flow
+    }
+
+    #[test]
+    fn clean_session_allows_outbound_write() {
+        let mut kernel = permissive_kernel();
+        let flow = FlowTracker::new();
+        let r = decide_with_flow_mapped(&mut kernel, &flow, Operation::WriteFiles, "out.txt");
+        assert!(r.is_ok(), "clean session should allow write, got {r:?}");
+    }
+
+    #[test]
+    fn tainted_session_denies_write() {
+        let mut kernel = permissive_kernel();
+        let flow = tainted_tracker();
+        let err = decide_with_flow_mapped(&mut kernel, &flow, Operation::WriteFiles, "out.txt")
+            .expect_err("tainted write must be denied");
+        assert!(
+            matches!(err, ApiError::IfcDenied(_)),
+            "expected IfcDenied, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn tainted_session_denies_run() {
+        let mut kernel = permissive_kernel();
+        let flow = tainted_tracker();
+        let err = decide_with_flow_mapped(&mut kernel, &flow, Operation::RunBash, "echo hi")
+            .expect_err("tainted run must be denied");
+        assert!(
+            matches!(err, ApiError::IfcDenied(_)),
+            "expected IfcDenied, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn tainted_session_allows_read() {
+        let mut kernel = permissive_kernel();
+        let flow = tainted_tracker();
+        // FileRead is not an OutboundAction, so taint does not block it.
+        let r = decide_with_flow_mapped(&mut kernel, &flow, Operation::ReadFiles, "in.txt");
+        assert!(r.is_ok(), "tainted read should still be allowed, got {r:?}");
+    }
+
+    #[test]
+    fn tainted_session_allows_web_fetch() {
+        let mut kernel = permissive_kernel();
+        let flow = tainted_tracker();
+        // WebFetch is a taint *source* (WebContent), not an OutboundAction.
+        let r = decide_with_flow_mapped(&mut kernel, &flow, Operation::WebFetch, "https://x.test");
+        assert!(r.is_ok(), "tainted web_fetch should be allowed, got {r:?}");
+    }
+
+    #[test]
+    fn trifecta_ordering_blocks_exfil_after_web() {
+        let mut kernel = permissive_kernel();
+        let mut flow = FlowTracker::new();
+        // 1. Clean session: web fetch allowed.
+        assert!(
+            decide_with_flow_mapped(&mut kernel, &flow, Operation::WebFetch, "https://x.test")
+                .is_ok(),
+            "clean web_fetch should be allowed"
+        );
+        // 2. Web content enters the session.
+        flow.observe(NodeKind::WebContent).expect("observe");
+        // 3. The exfiltration sink (write) is now denied — the lethal trifecta.
+        let err = decide_with_flow_mapped(&mut kernel, &flow, Operation::WriteFiles, "out.txt")
+            .expect_err("post-web write must be denied");
+        assert!(
+            matches!(err, ApiError::IfcDenied(_)),
+            "expected IfcDenied after web ingest, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn capability_deny_maps_to_insufficient_not_ifc() {
+        // read_only policy forbids writes; a clean session denial must surface as
+        // a capability error, NOT an IFC error (proves the two error classes are
+        // kept distinct).
+        let mut kernel = Kernel::new(PermissionLattice::read_only());
+        let flow = FlowTracker::new();
+        let err = decide_with_flow_mapped(&mut kernel, &flow, Operation::WriteFiles, "out.txt")
+            .expect_err("read_only write must be denied");
+        assert!(
+            matches!(
+                err,
+                ApiError::Nucleus(NucleusError::InsufficientCapability { .. })
+            ),
+            "expected InsufficientCapability, got {err:?}"
+        );
+    }
+}
