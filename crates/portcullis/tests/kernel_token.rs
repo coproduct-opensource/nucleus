@@ -137,8 +137,11 @@ fn wrong_key_token_rejected() {
 }
 
 #[test]
-fn backward_compat_no_keys_allows_unsigned() {
-    // No trusted keys configured — unsigned tokens should work
+fn no_keys_refuses_unsigned() {
+    // Fail-closed (most-paranoid #3): with NO trusted keys configured there is no
+    // authority to verify against, so declassification must be REFUSED — not
+    // applied unsigned. (Previously this returned Ok(Applied); that fail-open
+    // backward-compat path was removed.)
     let mut kernel = make_kernel_with_graph();
 
     let node_id = kernel.observe(NodeKind::WebContent, &[]).unwrap();
@@ -146,11 +149,18 @@ fn backward_compat_no_keys_allows_unsigned() {
     let token = make_token(node_id);
     assert!(!token.is_signed());
 
-    // Apply without keys — backward compatible, should succeed
     let result = kernel.apply_declassification_token(&token);
     match result {
-        Ok(TokenApplyResult::Applied { .. }) => {} // expected
-        other => panic!("expected Applied (backward compat), got {:?}", other),
+        Err(DenyReason::InvalidDeclassification { detail }) => {
+            assert!(
+                detail.contains("no trusted public keys"),
+                "expected no-keys refusal detail, got: {detail}"
+            );
+        }
+        other => panic!(
+            "expected InvalidDeclassification (fail-closed), got {:?}",
+            other
+        ),
     }
 }
 

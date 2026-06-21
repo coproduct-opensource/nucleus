@@ -316,6 +316,32 @@ fn test_decide_term_with_flow_denies_outbound_when_tainted() {
 }
 
 #[test]
+fn test_decide_term_with_flow_denies_everything_when_poisoned() {
+    use portcullis_core::ifc_api::FlowTracker;
+
+    // A poisoned session (an observation was dropped) must deny EVERY operation,
+    // including non-outbound ones like a read — proving the fail-closed gate is
+    // broader than the taint/outbound gate (most-paranoid #3).
+    let mut kernel = Kernel::new(PermissionLattice::safe_pr_fixer());
+    let mut poisoned = FlowTracker::new();
+    poisoned.poison();
+    assert!(poisoned.is_poisoned());
+
+    // A read is normally allowed and is NOT an outbound action.
+    let term = crate::ActionTerm::from_operation(Operation::ReadFiles, "README.md");
+    let (decision, token) = kernel.decide_term_with_flow(term, Some(&poisoned));
+    assert!(
+        matches!(
+            decision.verdict,
+            Verdict::Deny(DenyReason::IfcUnsafe { .. })
+        ),
+        "poisoned session must deny even a non-outbound read, got {:?}",
+        decision.verdict
+    );
+    assert!(token.is_none());
+}
+
+#[test]
 fn test_decide_term_with_flow_none_matches_decide_term() {
     // `flow == None` must behave exactly like `decide_term`.
     let term = crate::ActionTerm::run_command(

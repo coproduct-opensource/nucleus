@@ -103,6 +103,19 @@ struct Args {
     #[arg(long, env = "NUCLEUS_FIRECRACKER_MAX_PODS", default_value_t = 15)]
     firecracker_max_pods: usize,
 
+    /// Require verified-active seccomp on launched Firecracker VMs (most-paranoid #3).
+    ///
+    /// Fail-closed default (`true`): if the launched VMM's seccomp filter cannot
+    /// be confirmed active, the pod launch is aborted rather than proceeding
+    /// unconfined. Set to `false` ONLY in environments where `/proc/<pid>/status`
+    /// is legitimately unreadable and the risk is accepted (logs an UNSAFE warning).
+    #[arg(
+        long,
+        env = "NUCLEUS_FIRECRACKER_SECCOMP_VERIFY",
+        default_value_t = true
+    )]
+    firecracker_seccomp_verify: bool,
+
     // Container driver configuration
     /// Container image for pod execution (container driver).
     #[arg(
@@ -237,6 +250,9 @@ struct NodeState {
     firecracker_netns_drift_check: bool,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     firecracker_netns_drift_interval: Duration,
+    /// Fail-closed seccomp verification on Firecracker launch (most-paranoid #3).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    firecracker_seccomp_verify: bool,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     network_allocator: Arc<net::NetworkAllocator>,
     auth: AuthConfig,
@@ -543,6 +559,7 @@ async fn main() -> Result<(), ApiError> {
         firecracker_netns_drift_interval: Duration::from_secs(
             args.firecracker_netns_drift_interval_secs,
         ),
+        firecracker_seccomp_verify: args.firecracker_seccomp_verify,
         network_allocator: Arc::new(net::NetworkAllocator::new()),
         auth: AuthConfig::new(
             args.auth_secret.as_bytes(),
@@ -1908,19 +1925,45 @@ async fn spawn_firecracker_pod(
 
         // Verify seccomp is active on the Firecracker process (unless explicitly disabled).
         // Seccomp mode 2 = SECCOMP_MODE_FILTER (BPF filter active).
+        //
+        // FAIL-CLOSED (most-paranoid #3): when `firecracker_seccomp_verify` is set
+        // (the default), a process whose seccomp filter cannot be confirmed active
+        // is killed and the launch is aborted rather than left running unconfined.
+        // The previous behavior only logged a warning and continued (fail-open).
         if !matches!(spec.spec.seccomp, Some(nucleus_spec::SeccompSpec::Disabled)) {
-            if let Some(fc_pid) = pid {
-                match firecracker_config::verify_seccomp_active(fc_pid) {
+            let verified = match pid {
+                Some(fc_pid) => match firecracker_config::verify_seccomp_active(fc_pid) {
                     Ok(()) => {
                         tracing::info!(
                             pid = fc_pid,
                             "seccomp filter verified active on firecracker process"
                         );
+                        Ok(())
                     }
-                    Err(e) => {
-                        tracing::warn!(pid = fc_pid, error = %e, "seccomp verification failed (may not be readable in some environments)");
-                    }
+                    Err(e) => Err(format!("seccomp verification failed for pid {fc_pid}: {e}")),
+                },
+                None => Err("firecracker pid unavailable; cannot verify seccomp".to_string()),
+            };
+            if let Err(reason) = verified {
+                if state.firecracker_seccomp_verify {
+                    let _ = child.kill().await;
+                    cleanup_net_resources(
+                        &state.network_allocator,
+                        &mut net_plan,
+                        &mut netns_name,
+                        &mut dns_proxy,
+                    )
+                    .await;
+                    return Err(ApiError::Driver(format!(
+                        "{reason} — aborting launch (fail-closed). Set \
+                         NUCLEUS_FIRECRACKER_SECCOMP_VERIFY=false only if this environment \
+                         legitimately cannot read /proc and the risk is accepted."
+                    )));
                 }
+                tracing::warn!(
+                    %reason,
+                    "seccomp verification failed but firecracker_seccomp_verify=false; continuing (UNSAFE)"
+                );
             }
         }
 

@@ -306,7 +306,7 @@ impl Default for AuthorizationPolicy {
     fn default() -> Self {
         Self {
             trust_domain: "nucleus.local".to_string(),
-            allow_hmac: true, // Allow HMAC during migration period
+            allow_hmac: false, // Fail-closed: mTLS-only by default; opt in explicitly via .allow_hmac()
             orchestrator_prefixes: vec![
                 "spiffe://nucleus.local/ns/default/sa/".to_string(),
                 "spiffe://nucleus.local/ns/workstream-kg/sa/".to_string(),
@@ -333,8 +333,19 @@ impl AuthorizationPolicy {
     }
 
     /// Disable HMAC authentication (require mTLS only).
+    ///
+    /// This is now the default; retained for explicitness at call sites.
     pub fn require_mtls(mut self) -> Self {
         self.allow_hmac = false;
+        self
+    }
+
+    /// Explicitly allow legacy HMAC shared-secret authentication.
+    ///
+    /// HMAC is disabled by default (fail-closed). Callers that still need the
+    /// deprecated shared-secret fallback during migration must opt in here.
+    pub fn allow_hmac(mut self) -> Self {
+        self.allow_hmac = true;
         self
     }
 
@@ -661,11 +672,24 @@ mod tests {
     }
 
     #[test]
-    fn test_authorization_policy_hmac_allowed_by_default() {
+    fn test_authorization_policy_hmac_denied_by_default() {
         let policy = AuthorizationPolicy::new("nucleus.local");
         let ctx = AuthContext::from_hmac(Some("worker".to_string()), 12345);
 
-        // HMAC should be allowed during migration period
+        // Fail-closed: HMAC is denied unless explicitly enabled.
+        let result = policy.authorize(&ctx, Operation::CreatePod);
+        assert!(matches!(
+            result.unwrap_err(),
+            AuthorizationError::HmacNotAllowed
+        ));
+    }
+
+    #[test]
+    fn test_authorization_policy_hmac_allowed_when_opted_in() {
+        let policy = AuthorizationPolicy::new("nucleus.local").allow_hmac();
+        let ctx = AuthContext::from_hmac(Some("worker".to_string()), 12345);
+
+        // HMAC is allowed only after explicit opt-in.
         assert!(policy.authorize(&ctx, Operation::CreatePod).is_ok());
     }
 

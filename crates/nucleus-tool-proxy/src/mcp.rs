@@ -176,13 +176,15 @@ impl NucleusMcpServer {
     ///
     /// Called by input tool entry points after a successful fetch/read so the
     /// kernel's `decide_term_with_flow` consult sees the taint on subsequent
-    /// outbound actions. Best-effort: observation failure is logged, never
-    /// fatal (a missed observation fails *open* for that one node, but the
-    /// session ceiling from other nodes still applies).
+    /// outbound actions. FAIL-CLOSED (most-paranoid #3): if the observation
+    /// fails, the data-ingest node would be silently dropped — leaving taint
+    /// untracked — so we poison the session instead, causing every subsequent
+    /// kernel decision to deny until a human-authorized cleanse.
     async fn observe_flow(&self, kind: NodeKind) {
         let mut flow = self.flow_tracker.lock().await;
         if let Err(e) = flow.observe(kind) {
-            warn!(?kind, error = %e, "flow-tracker observe failed");
+            flow.poison();
+            warn!(?kind, error = %e, "flow-tracker observe failed — session poisoned (fail-closed)");
         }
     }
 

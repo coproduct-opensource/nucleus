@@ -81,6 +81,9 @@ use crate::receipt_chain::{ReceiptChain, VerdictReceipt};
 use crate::token::SessionProvenance;
 use crate::{ActionTerm, PreflightContext, PreflightResult, PreflightVerdict};
 
+/// IFC flow gate (poison + tainted-outbound denial) — extends `impl Kernel`.
+mod ifc;
+
 /// A single decision made by the kernel.
 ///
 /// Captures the operation, subject, verdict, and a snapshot of the
@@ -747,31 +750,37 @@ impl Kernel {
 
         let now = chrono::Utc::now().timestamp() as u64;
 
+        // Fail-closed (most-paranoid #3): declassification weakens information-flow
+        // labels, so it MUST be cryptographically authorized. With no trusted keys
+        // configured there is no authority to verify against, so refuse outright
+        // rather than applying the token unsigned.
         if self.trusted_public_keys.is_empty() {
             tracing::warn!(
                 target_node = token.target_node_id,
-                "applying declassification token without signature verification — \
-                 no trusted keys configured"
+                "declassification refused: no trusted public keys configured (fail-closed)"
             );
-            Ok(graph.apply_token(token, now))
-        } else {
-            let key_refs: Vec<&[u8]> = self
-                .trusted_public_keys
-                .iter()
-                .map(|k| k.as_slice())
-                .collect();
-            let result = graph.apply_token_verified(token, &key_refs, now);
-            if matches!(
-                result,
-                portcullis_core::declassify::TokenApplyResult::InvalidSignature
-            ) {
-                return Err(DenyReason::InvalidDeclassification {
-                    detail: "token signature verification failed — not signed by any trusted key"
-                        .to_string(),
-                });
-            }
-            Ok(result)
+            return Err(DenyReason::InvalidDeclassification {
+                detail: "no trusted public keys configured — declassification refused \
+                         (fail-closed); configure trusted keys and sign the token"
+                    .to_string(),
+            });
         }
+        let key_refs: Vec<&[u8]> = self
+            .trusted_public_keys
+            .iter()
+            .map(|k| k.as_slice())
+            .collect();
+        let result = graph.apply_token_verified(token, &key_refs, now);
+        if matches!(
+            result,
+            portcullis_core::declassify::TokenApplyResult::InvalidSignature
+        ) {
+            return Err(DenyReason::InvalidDeclassification {
+                detail: "token signature verification failed — not signed by any trusted key"
+                    .to_string(),
+            });
+        }
+        Ok(result)
     }
 
     /// Set the Ed25519 signing key for receipt signing.
@@ -1644,42 +1653,15 @@ impl Kernel {
         term: ActionTerm,
         flow: Option<&portcullis_core::ifc_api::FlowTracker>,
     ) -> (Decision, Option<DecisionToken>) {
-        use portcullis_core::flow::NodeKind;
-
-        let operation = term.operation();
-        if let Some(flow) = flow {
-            if flow.is_tainted() && Self::node_kind_for(operation) == NodeKind::OutboundAction {
-                let subject = term.subject().to_string();
-                let pre_hash = self.effective.checksum();
-                let pre_exposure_count = self.exposure.count();
-                let contributed_label = exposure_core::classify_operation(operation);
-                let detail = format!(
-                    "session carries adversarial integrity (untrusted/web content was \
-                     observed); outbound operation {operation:?} blocked to prevent \
-                     exfiltration of, or action on, injected content"
-                );
-                tracing::warn!(
-                    ?operation,
-                    subject,
-                    "IFC denied outbound action: session is taint-adversarial"
-                );
-                let (mut decision, token) = self.record_with_exposure(
-                    operation,
-                    &subject,
-                    Verdict::Deny(DenyReason::IfcUnsafe { detail }),
-                    &pre_hash,
-                    pre_exposure_count,
-                    contributed_label,
-                    false,
-                    false,
-                );
-                decision.action_term = Some(term.clone());
-                if let Some(last) = self.trace.last_mut() {
-                    last.action_term = Some(term);
-                }
-                return (decision, token);
-            }
+        // IFC flow gate (poison + tainted-outbound), extracted to `kernel::ifc`.
+        if let Some(denied) = self.ifc_flow_gate(&term, flow) {
+            return denied;
         }
+
+        // Only the Cedar consult below uses `operation`; bind it under the same
+        // cfg so non-cedar feature combos don't trip `-D unused-variables`.
+        #[cfg(feature = "cedar")]
+        let operation = term.operation();
 
         // Cedar policy consult (#1634): after the IFC check, if a Cedar policy is
         // loaded, deny any operation Cedar does not `permit`. Uses the session's
