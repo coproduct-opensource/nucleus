@@ -1658,6 +1658,9 @@ impl Kernel {
             return denied;
         }
 
+        // Only the Cedar consult below uses `operation`; bind it under the same
+        // cfg so non-cedar feature combos don't trip `-D unused-variables`.
+        #[cfg(feature = "cedar")]
         let operation = term.operation();
 
         // Cedar policy consult (#1634): after the IFC check, if a Cedar policy is
