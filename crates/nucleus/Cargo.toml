@@ -39,11 +39,19 @@ cap-tempfile = "4"     # Secure temp files
 # Error handling
 thiserror = { workspace = true }
 
+# Structured audit logging (isolation downgrade warnings, most-paranoid #2)
+tracing = { workspace = true }
+
 # Optional: async support
 tokio = { workspace = true, features = ["process", "fs", "io-util"], optional = true }
 
 # Shell parsing for command validation
 shell-words = { workspace = true }
+
+# Linux-only guest hardening: no-new-privs + rlimits via pre_exec (most-paranoid #2).
+# (seccomp-bpf / Landlock are a tracked follow-up requiring Linux CI validation.)
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = { workspace = true }

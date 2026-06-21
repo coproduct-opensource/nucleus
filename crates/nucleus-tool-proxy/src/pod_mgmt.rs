@@ -270,7 +270,18 @@ pub(crate) fn build_runtime(spec: &PodSpec) -> Result<PodRuntime, ApiError> {
         .resolve_policy()
         .map_err(|e| ApiError::Spec(e.to_string()))?;
     let timeout = std::time::Duration::from_secs(spec.spec.timeout_seconds);
-    let mut runtime_spec = nucleus::PodSpec::new(policy, spec.spec.work_dir.clone(), timeout);
+    let mut runtime_spec = nucleus::PodSpec::new(policy, spec.spec.work_dir.clone(), timeout)
+        // Containment posture (most-paranoid #2). We declare the *honest* minimum:
+        // `Unsandboxed`. The proxy only starts inside a verified managed sandbox
+        // (it exits 78 without a `SandboxProof`), but a SPIFFE-tier proof does not
+        // by itself prove a microVM boundary — so we do NOT over-claim `MicroVM`.
+        // Consequence (fail-closed, by design): a policy that sets
+        // `minimum_isolation = microvm()` will REFUSE to execute here until real
+        // VM attestation (the SandboxProof DICE/Tier-1 launch measurement) is
+        // threaded in to upgrade this to `ContainmentMode::MicroVM`.
+        // TODO(most-paranoid #2 follow-up): derive containment from the verified
+        // SandboxProof tier (Attested/DICE => MicroVM) instead of this constant.
+        .with_containment(nucleus::ContainmentMode::Unsandboxed);
     if let Some(model) = spec.spec.budget_model.as_ref() {
         runtime_spec.budget_model = map_budget_model(model);
     }

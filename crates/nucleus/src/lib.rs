@@ -65,13 +65,14 @@ mod approval;
 mod budget;
 mod command;
 mod error;
+mod hardening;
 mod pod;
 mod sandbox;
 mod time;
 
 pub use approval::{ApprovalRequest, ApprovalToken, Approver, CallbackApprover};
 pub use budget::AtomicBudget;
-pub use command::{BudgetModel, Executor};
+pub use command::{BudgetModel, ContainmentMode, Executor};
 pub use error::{NucleusError, Result};
 pub use pod::{PodRuntime, PodSpec};
 pub use sandbox::Sandbox;

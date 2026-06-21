@@ -91,6 +91,35 @@ pub enum NucleusError {
         required: portcullis::CapabilityLevel,
     },
 
+    /// Subprocess execution refused because the Executor's containment mode was
+    /// never declared. Fail-closed default: the caller must explicitly choose an
+    /// isolation posture (`.allow_unsandboxed_local()`, `.with_host_hardening()`,
+    /// or `.in_microvm()`) before any subprocess may spawn (most-paranoid #2).
+    #[error(
+        "isolation not configured: subprocess execution refused — declare a containment mode \
+         (allow_unsandboxed_local / with_host_hardening / in_microvm) before spawning"
+    )]
+    IsolationNotConfigured,
+
+    /// Subprocess execution refused because the achieved isolation is weaker than
+    /// the policy's required minimum. Never silently downgrade (most-paranoid #2).
+    #[error("isolation insufficient: policy requires [{required}] but the spawn path provides only [{achieved}]")]
+    IsolationInsufficient {
+        /// The isolation the policy demands (`effective_minimum_isolation`).
+        required: String,
+        /// The isolation the chosen containment mode can actually attest.
+        achieved: String,
+    },
+
+    /// Host-level guest hardening (seccomp/rlimits/no-new-privs) was requested but
+    /// is unavailable on this platform. Fail-closed: never silently run unhardened
+    /// — use a microVM boundary instead (most-paranoid #2).
+    #[error("host hardening unavailable on platform '{platform}'; use a microVM boundary instead")]
+    HardeningUnavailable {
+        /// The OS that lacks the hardening primitives (e.g. "macos").
+        platform: String,
+    },
+
     /// IO error from underlying operation.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

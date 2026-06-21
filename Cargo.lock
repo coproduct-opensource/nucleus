@@ -6404,6 +6404,7 @@ dependencies = [
  "cap-tempfile",
  "hex",
  "hmac 0.13.0",
+ "libc",
  "parking_lot",
  "portcullis",
  "quanta",
@@ -6413,6 +6414,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
  "uuid",
 ]
 
