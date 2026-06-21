@@ -9,12 +9,35 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+#[cfg(feature = "insecure-dev")]
 use nucleus_control_plane::MockJobRunner;
 use nucleus_control_plane_server::{
-    build_app, registry::RunnerRegistry, resolve_spiffe_auth, state::build_demo_state,
+    build_app, registry::RunnerRegistry, resolve_spiffe_auth, state::build_state,
 };
-use nucleus_lineage::{Ed25519Witness, JsonlSink, MerkleConfig, MerkleSink, TreeWitness};
+use nucleus_lineage::{
+    Ed25519Witness, EdgeSigner, JsonlSink, MerkleConfig, MerkleSink, SigningProvider, TreeWitness,
+};
 use nucleus_oidc_core::Jwks;
+
+/// Load the production lineage signer from the environment, if configured.
+///
+/// `NUCLEUS_LINEAGE_KEY_PEM` (path to a PKCS#8 PEM file) takes precedence over
+/// `NUCLEUS_LINEAGE_KEY` (base64-encoded PKCS#8 DER). Returns `None` when
+/// neither is set (the caller then fails closed, or falls back under
+/// `insecure-dev`). Most-paranoid #6.
+fn load_production_signer(
+) -> Option<Result<nucleus_lineage::Pkcs8FileSigner, nucleus_lineage::IssuerError>> {
+    use nucleus_lineage::Pkcs8FileSigner;
+    if let Ok(path) = std::env::var("NUCLEUS_LINEAGE_KEY_PEM") {
+        return Some(Pkcs8FileSigner::from_pkcs8_pem_file(std::path::Path::new(
+            &path,
+        )));
+    }
+    if std::env::var("NUCLEUS_LINEAGE_KEY").is_ok() {
+        return Some(Pkcs8FileSigner::from_env("NUCLEUS_LINEAGE_KEY"));
+    }
+    None
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "nucleus-control-plane-server", version)]
@@ -145,20 +168,50 @@ async fn main() -> Result<()> {
             .with_context(|| "opening MerkleSink — check checkpoint_dir permissions")?,
     );
 
-    // Register the mock driver. Real drivers (claude-code, openhands)
-    // register themselves from downstream crates that depend on this
-    // one — keeping nucleus vendor-neutral.
-    let runners = RunnerRegistry::new().register("mock", Box::new(MockJobRunner));
+    // Fail-closed signer selection (most-paranoid #6). Production requires an
+    // operator-managed Ed25519 key; only `--features insecure-dev` may fall back
+    // to a random in-process LocalIssuer. No silent unsigned/demo path.
+    let issuer: Arc<dyn SigningProvider> = match load_production_signer() {
+        Some(Ok(s)) => {
+            tracing::info!(kid = %s.kid(), "lineage signer: production Pkcs8FileSigner");
+            Arc::new(s)
+        }
+        Some(Err(e)) => anyhow::bail!("FATAL: failed to load lineage signing key: {e}"),
+        None => {
+            #[cfg(feature = "insecure-dev")]
+            {
+                tracing::error!(
+                    "no production signing key (NUCLEUS_LINEAGE_KEY_PEM / NUCLEUS_LINEAGE_KEY) — \
+                     using INSECURE-DEV random LocalIssuer; DO NOT use in production"
+                );
+                Arc::new(nucleus_lineage::LocalIssuer::random()?)
+            }
+            #[cfg(not(feature = "insecure-dev"))]
+            anyhow::bail!(
+                "FATAL: no lineage signing key configured (set NUCLEUS_LINEAGE_KEY_PEM=<pkcs8 pem \
+                 path> or NUCLEUS_LINEAGE_KEY=<base64 pkcs8 der>) and `insecure-dev` is not \
+                 enabled — refusing to start fail-closed (most-paranoid #6)"
+            )
+        }
+    };
 
-    // Build the basic state via the demo factory, then plug in the
-    // Merkle-aware sink + prover.
-    let mut state = build_demo_state(
+    // Register agent drivers. Real drivers (claude-code, openhands) register
+    // themselves from downstream crates — keeping nucleus vendor-neutral. The
+    // mock driver is dev/test only; a production registry is empty and every job
+    // fails closed with "unknown agent driver" until a real driver registers.
+    let runners = RunnerRegistry::new();
+    #[cfg(feature = "insecure-dev")]
+    let runners = runners.register("mock", Box::new(MockJobRunner));
+
+    // Build state with the chosen signer, then plug in the Merkle-aware sink + prover.
+    let mut state = build_state(
         runners,
         merkle_sink.clone(),
+        issuer,
         cli.trust_domain.clone(),
         cli.namespace.clone(),
         cli.service_account.clone(),
-    )?;
+    );
     state.merkle_prover = Some(merkle_sink.clone());
     state.witness_pubkey = Some(witness_pubkey);
 

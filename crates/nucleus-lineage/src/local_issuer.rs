@@ -206,6 +206,12 @@ impl EdgeSigner for LocalIssuer {
     }
 }
 
+impl crate::issuer::SigningProvider for LocalIssuer {
+    fn publish_jwks(&self) -> serde_json::Value {
+        LocalIssuer::publish_jwks(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

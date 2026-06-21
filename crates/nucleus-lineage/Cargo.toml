@@ -27,7 +27,7 @@ sink-io = []
 # `[dependencies]` line (the old ergonomic name `dev` invited "just for tests"
 # enablement that could ship). `dev` is kept as a transitional alias for one
 # release — see CHANGELOG; remove after downstreams migrate.
-insecure-local-issuer = ["dep:jsonwebtoken", "dep:rand", "ed25519-dalek/alloc", "ed25519-dalek/pkcs8", "ed25519-dalek/rand_core"]
+insecure-local-issuer = ["dep:jsonwebtoken", "dep:rand", "ed25519-dalek/rand_core"]
 # DEPRECATED alias for `insecure-local-issuer`. Remove next release.
 dev = ["insecure-local-issuer"]
 # HTTP-backed WitnessClient (nucleus-native cosign protocol + C2SP
@@ -48,10 +48,10 @@ tracing = { workspace = true }
 # bytes; not gated.
 base64 = "0.22"
 # ed25519-dalek is default-on for VERIFICATION (the walker validates `Proof`
-# signatures). The `dev` feature additionally enables `pkcs8` + `rand_core`
-# for the in-process LocalIssuer signer. Production code that only verifies
-# pulls a small surface.
-ed25519-dalek = "=3.0.0-pre.7"
+# signatures) and for the production `Pkcs8FileSigner` (decode-only: `pkcs8` +
+# `alloc` + `pem`, no CSPRNG). The `insecure-local-issuer` feature additionally
+# enables `rand_core` for the in-process key-GENERATING LocalIssuer.
+ed25519-dalek = { version = "=3.0.0-pre.7", features = ["pkcs8", "alloc", "pem"] }
 # RFC 6962 / RFC 9162-style Merkle tree for the `MerkleSink` checkpointing
 # layer (transparency-log style append-only integrity). serde feature lets
 # us snapshot the tree if a sink ever needs to persist its state.

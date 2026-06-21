@@ -35,6 +35,7 @@
 pub mod checkpoint;
 pub mod cosign;
 pub mod edge;
+pub mod file_signer;
 pub mod id;
 pub mod issuer;
 pub mod merkle;
@@ -60,8 +61,9 @@ pub use checkpoint::{
 pub use cosign::{C2spHttpWitnessClient, HttpWitnessClient};
 pub use cosign::{Cosignature, CosignatureKind, InProcessWitness, WitnessClient};
 pub use edge::{EdgeKind, LineageEdge, SourceClass, VerifierAttestation};
+pub use file_signer::Pkcs8FileSigner;
 pub use id::{CallSpiffeId, IdError, MAX_URI_LEN};
-pub use issuer::{EdgeSigner, IdentityFetcher, IssuerError, SvidClaims};
+pub use issuer::{EdgeSigner, IdentityFetcher, IssuerError, SigningProvider, SvidClaims};
 pub use merkle::{read_checkpoints, verify_log, MerkleConfig, MerkleError, MerkleSink};
 pub use policy::{Group, Log, Policy, PolicyError, Threshold, Witness};
 pub use proof::{canonical_edge_bytes, edge_content_hash, Proof};
