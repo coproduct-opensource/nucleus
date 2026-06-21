@@ -171,7 +171,7 @@ DoD (guarantees)
 - Machine-checked proofs for ν laws.
 - CI gate that fails if proofs no longer check.
 Status
-- Done: 297 Verus SMT proofs (E1-E7: exposure monotonicity, trace monotonicity, denial monotonicity, auth boundary, capability coverage, budget monotonicity, delegation ceiling) + 14 Kani BMC harnesses. Both Verus and Kani are required merge checks on main. See `crates/portcullis-verified/src/lib.rs`, `.github/workflows/verus.yml`, `.github/workflows/kani-nightly.yml`.
+- Done: ν-law guarantees (E1-E7: exposure monotonicity, trace monotonicity, denial monotonicity, auth boundary, capability coverage, budget monotonicity, delegation ceiling) are carried by Lean 4 kernel-checked proofs + Kani BMC harnesses (114 repo-wide). **Verus was removed** — there is no `crates/portcullis-verified` and no `.github/workflows/verus.yml`; the surviving artifact is the `verus_conformance.rs` proptest suite. CI proof gates: `kani-nightly.yml` (Kani) and `portcullis-core-proven-lean.yml` (Lean proven-tier `lake build` + `sorry`-ban; fails if proofs no longer check). See `crates/portcullis/tests/verus_conformance.rs`, `.github/workflows/kani-nightly.yml`, `.github/workflows/portcullis-core-proven-lean.yml`.
 
 ## 10) Fuzzing coverage gaps
 

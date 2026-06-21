@@ -242,3 +242,23 @@ lean_lib «WasiWorldFunctor» where
 -- lacks. Mirrors crates/portcullis-wasi/src/ifc.rs (+ host.rs enforcement).
 lean_lib «WasiIfcBoundary» where
   roots := #[`WasiIfcBoundary]
+
+-- Previously-orphaned PROVEN libs: sorry-free and kernel-checked but never
+-- registered as build targets, so `lake build` / CI never compiled them even
+-- though README cites the Belnap bilattice as "kernel-checked". Registering
+-- them puts the cited claims under the proven-tier CI gate. Both verified to
+-- compile clean against the pinned toolchain (2026-06-21).
+lean_lib «BelnapDecisionProofs» where
+  roots := #[`BelnapDecisionProofs]
+
+lean_lib «RepairAlgebraProofs» where
+  roots := #[`RepairAlgebraProofs]
+
+-- NOTE: LabeledTypeProofs.lean and CategoryProofs.lean are NOT registered /
+-- gated here because they do NOT currently compile against the pinned toolchain
+-- (LabeledTypeProofs uses unbound auto-implicits under `autoImplicit := false`;
+-- CategoryProofs is missing a `Min CapabilityLevel` instance after a Mathlib
+-- order refactor). They were orphaned/ungated and silently rotted. Tracked as
+-- Tier 3 (STALE) in CONJECTURES.md — do not cite them as proven until repaired.
+-- CategoryProofs remains a lean_lib target above (pre-existing) but is excluded
+-- from the proven-tier build list in portcullis-core-proven-lean.yml.

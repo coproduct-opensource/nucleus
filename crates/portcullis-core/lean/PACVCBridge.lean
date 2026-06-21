@@ -1,3 +1,15 @@
+/-
+████████████████████████████████████████████████████████████████████████████
+  RESEARCH-TIER CONJECTURE — NOT A PROVEN THEOREM (open proof holes: 2 `sorry`)
+
+  Nothing in this file is kernel-checked or formally verified. Do NOT cite any
+  result here as "proven", "verified", or "kernel-checked". This file is part of
+  the alignment-tax / Cech-cohomology / braid research cluster.
+
+  Status + full manifest: crates/portcullis-core/lean/CONJECTURES.md (Tier 2).
+  The PROVEN, CI-gated enforcement core is a SEPARATE set of libraries.
+████████████████████████████████████████████████████████████████████████████
+-/
 import AlignmentSampleComplexity
 
 /-! # PAC / VC-dimension ↔ rank H¹: the learning-theory bridge

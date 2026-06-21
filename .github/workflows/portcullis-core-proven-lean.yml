@@ -1,0 +1,188 @@
+name: Portcullis-Core Proven Lean
+
+# Regression gate for the PROVEN tier of crates/portcullis-core/lean.
+#
+# WHY THIS EXISTS, beyond the per-file aeneas*.yml gates: those build only ~11
+# named libraries. ~13 other kernel-checked, sorry-free libraries (the IFC
+# semilattice, categorical, Galois, attenuation, constructive-security, WASI,
+# Belnap/labeled-type/repair algebra) had NO gate, so a real proof could
+# silently acquire a `sorry` and regress unnoticed. This gate:
+#
+#   1. `lake build`s the full PROVEN target list (catches type-level breakage),
+#   2. scans the WHOLE tree (comment-aware) for proof-hole `sorry`/`admit` and
+#      fails if any appears in a file NOT listed as research-tier in
+#      crates/portcullis-core/lean/CONJECTURES.md — so a proven lib cannot rot,
+#      and a research hole cannot escape quarantine, and
+#   3. runs a `#print axioms` audit on the enforcement core to catch any
+#      `sorryAx` that a textual grep would miss via the proof dependency graph.
+#
+# `native_decide` is NOT banned here (unlike the Mathlib-free ck-policy/rubric/
+# econ trees): it is load-bearing in FlowGraphProofs.lean. It is instead
+# DISCLOSED — the #print axioms step surfaces `Lean.ofReduceBool` (native-
+# compiler TCB) so the trust boundary is visible, not hidden.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "crates/portcullis-core/lean/**"
+      - ".github/workflows/portcullis-core-proven-lean.yml"
+  pull_request:
+    paths:
+      - "crates/portcullis-core/lean/**"
+      - ".github/workflows/portcullis-core-proven-lean.yml"
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  portcullis-core-proven-lean:
+    name: lake build + sorry-ban (proven tier)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install elan (Lean toolchain)
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --no-modify-path
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      # Cache-poisoning ignored: formal-proof build only, no published artifacts.
+      - name: Cache Lake / Mathlib build artifacts
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5 # zizmor: ignore[cache-poisoning]
+        with:
+          path: |
+            crates/portcullis-core/lean/.lake
+            ~/.elan
+            ~/.cache/mathlib
+          key: lean-aeneas-${{ runner.os }}-${{ hashFiles('crates/portcullis-core/lean/lean-toolchain', 'crates/portcullis-core/lean/lakefile.lean', 'crates/portcullis-core/lean/lake-manifest.json') }}
+          restore-keys: |
+            lean-aeneas-${{ runner.os }}-
+
+      # Prebuilt Mathlib oleans from Azure: ~5 min vs ~1 h cold compile.
+      - name: Fetch Mathlib cache (prebuilt oleans)
+        working-directory: crates/portcullis-core/lean
+        run: lake exe cache get || true
+
+      - name: lake build (proven tier — type-check all kernel-checked libs)
+        working-directory: crates/portcullis-core/lean
+        run: |
+          lake build \
+            PortcullisCoreBridge \
+            PortcullisCoreIFC \
+            IntegrityNoninterferenceExtracted \
+            ExposureProofs \
+            FlowProofs \
+            FlowGraphProofs \
+            DecidePureProofs \
+            DeclassifyProofs \
+            CompartmentProofs \
+            DelegationProofs \
+            DerivationProofs \
+            IFCSemilatticeProofs \
+            DelegationCategoryProofs \
+            GaloisConnectionProofs \
+            AttenuationProofs \
+            SemanticIFC \
+            MonoidalPermissionProofs \
+            ConstructiveSecurity \
+            WasiWorldFunctor \
+            WasiIfcBoundary \
+            BelnapDecisionProofs \
+            RepairAlgebraProofs
+          # NOTE: CategoryProofs and LabeledTypeProofs are intentionally EXCLUDED
+          # — they do not currently compile (Mathlib order-refactor drift /
+          # unbound auto-implicits). Tracked as Tier 3 (STALE) in CONJECTURES.md.
+          # Re-add them here once repaired so they cannot regress again.
+
+      - name: Proof-hole scan (no sorry/admit outside the research manifest)
+        working-directory: crates/portcullis-core/lean
+        run: |
+          # Comment-aware sorry/admit counter: strips /- -/ block comments and
+          # -- line comments, then counts `sorry`/`admit` used as a term token.
+          # Matches the local-verification logic in CONJECTURES.md.
+          cat > /tmp/count_holes.awk <<'AWK'
+          BEGIN{depth=0}
+          {
+            line=$0; out=""; i=1; L=length(line)
+            while(i<=L){
+              two=substr(line,i,2)
+              if(depth>0){
+                if(two=="-/"){depth--; i+=2; continue}
+                if(two=="/-"){depth++; i+=2; continue}
+                i++; continue
+              } else {
+                if(two=="/-"){depth++; i+=2; continue}
+                if(two=="--"){break}
+                out=out substr(line,i,1); i++
+              }
+            }
+            total+=gsub(/(^|[^A-Za-z0-9._'])(sorry|admit)([^A-Za-z0-9_']|$)/,"&",out)
+          }
+          END{print total+0}
+          AWK
+
+          # Research-tier allowlist == the exact file list between the
+          # GATE-ALLOWLIST markers in CONJECTURES.md. Parsing keeps the manifest
+          # the single source of truth; if it drifts from reality, this gate fails.
+          ALLOW="$(awk '/GATE-ALLOWLIST:BEGIN/{f=1; next} /GATE-ALLOWLIST:END/{f=0} f' CONJECTURES.md \
+                   | grep -vE '^```' | grep -oE '[A-Za-z]+' | sort -u)"
+          if [ -z "$ALLOW" ]; then
+            echo "::error::could not parse GATE-ALLOWLIST from CONJECTURES.md"; exit 1
+          fi
+          echo "Research-tier allowlist (may contain sorry):"
+          echo "$ALLOW" | sed 's/^/  /'
+
+          fail=0
+          while IFS= read -r f; do
+            base="$(basename "$f" .lean)"
+            n="$(awk -f /tmp/count_holes.awk "$f")"
+            if [ "$n" != "0" ]; then
+              if echo "$ALLOW" | grep -qx "$base"; then
+                echo "  research-tier (allowed): $f has $n hole(s)"
+              else
+                echo "::error file=$f::PROVEN-tier file has $n proof hole(s) (sorry/admit) — not allowed. Discharge it, or move it to the research tier in CONJECTURES.md."
+                fail=1
+              fi
+            fi
+          done < <(find . -name '*.lean' -not -path './.lake/*')
+
+          if [ "$fail" != "0" ]; then
+            echo "FAIL: a proven-tier Lean file regressed into a proof hole."
+            exit 1
+          fi
+          echo "OK: every proof hole is confined to the research tier declared in CONJECTURES.md."
+
+      - name: Assert enforcement core is sorryAx-free (#print axioms)
+        working-directory: crates/portcullis-core/lean
+        run: |
+          # The kernel reports which axioms each theorem actually depends on.
+          # A hole anywhere in the dependency graph surfaces as `sorryAx` even
+          # if the textual scan missed it. `Lean.ofReduceBool` (native_decide)
+          # is expected/disclosed and is NOT a failure.
+          cat > PrintAxioms.lean <<'EOF'
+          import FlowProofs
+          import DeclassifyProofs
+          import DecidePureProofs
+          import CompartmentProofs
+          import DelegationProofs
+          import ExposureProofs
+          import IntegrityNoninterferenceExtracted
+          #print axioms FlowProofs.authority_confinement_left
+          #print axioms IntegrityNoninterferenceExtracted.web_tainted_never_git_pushes
+          EOF
+          AXIOMS="$(lake env lean PrintAxioms.lean 2>&1 || true)"
+          echo "$AXIOMS"
+          rm -f PrintAxioms.lean
+          if echo "$AXIOMS" | grep -q 'sorryAx'; then
+            echo "::error::an enforcement-core theorem depends on sorryAx (an unproven hole)."
+            exit 1
+          fi
+          if echo "$AXIOMS" | grep -q 'ofReduceBool'; then
+            echo "NOTE: native_decide (Lean.ofReduceBool) is in the TCB of the audited theorems — disclosed, see CONJECTURES.md."
+          fi
+          echo "OK: audited enforcement-core theorems are sorryAx-free."
