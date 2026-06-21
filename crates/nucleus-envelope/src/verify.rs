@@ -661,6 +661,21 @@ pub fn verify_bundle(
     // out-of-band witness pubkey are the ones who actually exercise
     // the anchor — and they must use `TrustAnchor::from_jwks(...)` +
     // `with_witness_pubkey(...)`.
+    //
+    // FAIL-CLOSED (most-paranoid #7): a configured cosignature threshold MUST
+    // NOT be bypassable by simply omitting the Merkle anchor. The threshold gate
+    // lives inside `verify_merkle_anchor`, which only runs when an anchor is
+    // present; without this guard an anchor-less bundle would slip past a
+    // k-of-n witness requirement with zero cosignatures. Self-check mode is
+    // exempt (it trusts the producer's own claim by design).
+    if !trust.is_self_check_only() && trust.cosignature_threshold > 0 && env.merkle_anchor.is_none()
+    {
+        return Err(VerifyBundleError::InsufficientCosignatures {
+            verified: 0,
+            required: trust.cosignature_threshold,
+        });
+    }
+
     let (
         merkle_verified,
         cosignatures_verified,

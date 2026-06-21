@@ -614,18 +614,100 @@ pub async fn auto_detect_ca(fallback_trust_domain: &str) -> Result<Box<dyn CaCli
         }
     }
 
-    // Fall back to self-signed CA
+    // Fall back to self-signed CA — DEV-ONLY. This mints a fresh per-node root
+    // with no cross-node trust anchor; production must use `auto_detect_ca_strict`.
     info!(
         trust_domain = fallback_trust_domain,
-        "No SPIRE agent available, falling back to self-signed CA (development mode)"
+        "No SPIRE agent available — DEV-ONLY self-signed CA fallback (use \
+         auto_detect_ca_strict in production to fail closed)"
     );
     let self_signed = crate::ca::SelfSignedCa::new(fallback_trust_domain)?;
     Ok(Box::new(self_signed))
 }
 
+/// Strict variant of [`auto_detect_ca`] (most-paranoid #7): fail closed.
+///
+/// Probes the SPIRE Workload API exactly like [`auto_detect_ca`], but if none is
+/// reachable it returns `Err` instead of silently falling back to a self-signed
+/// dev CA. Production identity wiring calls this so a missing/unreachable SPIRE
+/// agent refuses to start, rather than minting an isolated per-node trust root
+/// that no other node can validate against.
+pub async fn auto_detect_ca_strict() -> Result<Box<dyn CaClient>> {
+    if std::env::var(SPIFFE_ENDPOINT_ENV).is_ok() {
+        match SpireCaClient::connect_env().await {
+            Ok(client) => {
+                info!("Using SPIRE CA client via {}", SPIFFE_ENDPOINT_ENV);
+                return Ok(Box::new(client));
+            }
+            Err(e) => {
+                return Err(Error::Internal(format!(
+                    "strict mode: SPIRE Workload API ({SPIFFE_ENDPOINT_ENV}) unreachable ({e}); \
+                     refusing to fall back to a self-signed CA"
+                )));
+            }
+        }
+    }
+
+    let default_socket = std::path::Path::new(DEFAULT_SPIRE_SOCKET);
+    if default_socket.exists() {
+        match SpireCaClient::connect_default().await {
+            Ok(client) => {
+                info!("Using SPIRE CA client via default socket");
+                return Ok(Box::new(client));
+            }
+            Err(e) => {
+                return Err(Error::Internal(format!(
+                    "strict mode: SPIRE default socket {DEFAULT_SPIRE_SOCKET} present but \
+                     unreachable ({e}); refusing to fall back to a self-signed CA"
+                )));
+            }
+        }
+    }
+
+    Err(Error::Internal(format!(
+        "strict mode: no SPIRE Workload API reachable (set {SPIFFE_ENDPOINT_ENV}); refusing to \
+         fall back to a self-signed CA (most-paranoid #7)"
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// most-paranoid #7: strict CA detection fails closed instead of falling
+    /// back to a self-signed dev CA. Both env scenarios are exercised in ONE
+    /// sequential test so the process-global `SPIFFE_ENDPOINT_SOCKET` mutation
+    /// can't race a sibling test (no lock held across `.await`).
+    #[tokio::test]
+    async fn auto_detect_ca_strict_fails_closed_without_spire() {
+        let prev = std::env::var(SPIFFE_ENDPOINT_ENV).ok();
+
+        // (1) Configured socket unreachable ⇒ refuse (not self-sign).
+        std::env::set_var(
+            SPIFFE_ENDPOINT_ENV,
+            "unix:///nonexistent/nucleus-spire.sock",
+        );
+        let bogus = auto_detect_ca_strict().await;
+        assert!(
+            bogus.is_err(),
+            "strict mode must refuse when the configured SPIRE socket is unreachable"
+        );
+
+        // (2) No env configured + (on a dev/CI host) no default socket ⇒ refuse.
+        std::env::remove_var(SPIFFE_ENDPOINT_ENV);
+        let none = auto_detect_ca_strict().await;
+        if !std::path::Path::new(DEFAULT_SPIRE_SOCKET).exists() {
+            assert!(
+                none.is_err(),
+                "strict mode must refuse when no SPIRE agent is reachable"
+            );
+        }
+
+        match prev {
+            Some(v) => std::env::set_var(SPIFFE_ENDPOINT_ENV, v),
+            None => std::env::remove_var(SPIFFE_ENDPOINT_ENV),
+        }
+    }
 
     #[test]
     fn test_parse_trust_domain() {

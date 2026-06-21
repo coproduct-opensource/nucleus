@@ -68,6 +68,48 @@ fn trusted_anchor(issuer: &LocalIssuer) -> TrustAnchor {
     TrustAnchor::from_jwks(jwks)
 }
 
+/// most-paranoid #7: a configured k-of-n cosignature threshold must NOT be
+/// bypassable by a bundle that simply omits the Merkle anchor. The threshold
+/// gate lives inside `verify_merkle_anchor` (only reached WITH an anchor), so
+/// without the fail-closed guard an anchor-less bundle would slip past a
+/// witness quorum with zero cosignatures.
+#[test]
+fn witness_threshold_not_bypassable_by_missing_anchor() {
+    let issuer = LocalIssuer::random().unwrap();
+    let sink = InMemorySink::new();
+    populate_session(&sink, &issuer);
+    let jwks: Jwks = serde_json::from_value(issuer.publish_jwks()).unwrap();
+
+    // A fully-signed bundle with NO merkle anchor (no merkle prover wired).
+    let bundle = BundleBuilder::new(pod())
+        .payload(serde_json::json!({ "summary": "ok" }))
+        .sink(&sink)
+        .jwks(jwks)
+        .require_signed()
+        .build()
+        .unwrap();
+    assert!(bundle.envelope.merkle_anchor.is_none());
+
+    // Sanity: with no threshold configured it verifies (chain-only is allowed).
+    verify_bundle(&bundle, &trusted_anchor(&issuer))
+        .expect("anchor-less bundle verifies when no quorum is required");
+
+    // But a configured threshold cannot be evaded by omitting the anchor.
+    let anchor = trusted_anchor(&issuer).cosignature_threshold(2);
+    let err = verify_bundle(&bundle, &anchor)
+        .expect_err("missing anchor with threshold>0 must fail closed");
+    assert!(
+        matches!(
+            err,
+            VerifyBundleError::InsufficientCosignatures {
+                verified: 0,
+                required: 2
+            }
+        ),
+        "expected InsufficientCosignatures, got {err:?}"
+    );
+}
+
 #[test]
 fn end_to_end_signed_bundle_verifies_after_json_round_trip() {
     let issuer = LocalIssuer::random().unwrap();
