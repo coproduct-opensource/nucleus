@@ -30,6 +30,11 @@
 pub(crate) struct HostSandbox;
 
 #[cfg(target_os = "linux")]
+// The crate denies `unsafe_code` globally; this module is the single, audited
+// exception. OS-level guest hardening is intrinsically `unsafe` FFI: it calls
+// `prctl`/`setrlimit` and installs a `pre_exec` hook (which must be
+// async-signal-safe). Every `unsafe` block below carries a SAFETY justification.
+#[allow(unsafe_code)]
 mod imp {
     use std::io;
     use std::os::unix::process::CommandExt;
