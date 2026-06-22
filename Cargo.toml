@@ -29,6 +29,7 @@ members = [
     "crates/ck-policy",                 # Constitutional Kernel: monotonicity checker
     "crates/ck-kernel",                 # Constitutional Kernel: admission engine + lineage
     "crates/nucleus-lineage",            # Per-call SPIFFE-derived data lineage
+    "crates/nucleus-provenance-memory",  # Provenance-backed, taint-labeled, recompute-verified, CRDT-mergeable agent memory
     "crates/nucleus-envelope",           # Portable provenance bundle: payload + IFC envelope
     "crates/nucleus-receipt",            # Colimit receipt envelope: Session + Projection[] + Ed25519/BLAKE3 Receipt (upstream home of platform's substrate-core envelope)
     "crates/nucleus-bundle-cas",         # Content-addressed bundle transport: BLAKE3 root + iroh-blobs

@@ -136,7 +136,7 @@ impl Default for MemorySourceProvenance {
 /// (#1220). Older serialized entries without this field default to `Deterministic`
 /// for backward compatibility; new entries should set derivation explicitly via
 /// [`MemoryLabel::from_levels_with_derivation`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryLabel {
     /// Confidentiality level (public, internal, secret).
     pub confidentiality: ConfLevel,

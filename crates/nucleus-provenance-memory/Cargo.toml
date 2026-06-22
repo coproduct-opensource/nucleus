@@ -1,0 +1,25 @@
+[package]
+name = "nucleus-provenance-memory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Provenance-backed, taint-labeled, recompute-verified, CRDT-mergeable persistent memory for AI agents"
+repository = "https://github.com/coproduct-opensource/nucleus"
+keywords = ["ai", "security", "memory", "provenance", "ifc"]
+categories = ["development-tools"]
+
+[dependencies]
+portcullis-core = { version = "1.0.0", path = "../portcullis-core", features = ["serde"] }
+nucleus-lineage = { path = "../nucleus-lineage" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+ed25519-dalek = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
