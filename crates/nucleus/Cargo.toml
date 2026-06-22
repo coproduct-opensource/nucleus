@@ -17,6 +17,7 @@ default = []
 async = ["tokio"]
 
 [dependencies]
+nucleus-provenance = { path = "../nucleus-provenance" }
 # Policy layer - the quotient lattice
 portcullis = { path = "../portcullis" }
 

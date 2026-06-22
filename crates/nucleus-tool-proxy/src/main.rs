@@ -984,6 +984,9 @@ impl IntoResponse for ApiError {
             | ApiError::Nucleus(NucleusError::HardeningUnavailable { .. }) => {
                 (StatusCode::FORBIDDEN, "isolation_denied", None, None)
             }
+            ApiError::Nucleus(NucleusError::ProvenanceUnverified { .. }) => {
+                (StatusCode::FORBIDDEN, "provenance_unverified", None, None)
+            }
             ApiError::Nucleus(NucleusError::InvalidApproval { operation }) => (
                 StatusCode::FORBIDDEN,
                 "invalid_approval",

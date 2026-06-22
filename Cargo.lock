@@ -6405,6 +6405,7 @@ dependencies = [
  "hex",
  "hmac 0.13.0",
  "libc",
+ "nucleus-provenance",
  "parking_lot",
  "portcullis",
  "quanta",
@@ -7004,6 +7005,18 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+]
+
+[[package]]
+name = "nucleus-provenance"
+version = "1.0.0"
+dependencies = [
+ "ed25519-dalek 3.0.0-pre.7",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
