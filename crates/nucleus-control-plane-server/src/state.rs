@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use nucleus_lineage::{CallSpiffeId, LineageSink, LocalIssuer, MerkleProver};
+use nucleus_lineage::{CallSpiffeId, LineageSink, MerkleProver, SigningProvider};
 use tokio::sync::Semaphore;
 
 use crate::auth::SpiffeAuthConfig;
@@ -36,9 +36,11 @@ pub struct AppState {
     /// fine for v1 because every edge is namespaced by its session's
     /// pod SPIFFE id — session subgraph extraction filters by URI prefix.
     pub sink: Arc<dyn LineageSink>,
-    /// Signer used for every emitted lineage edge. The bundle's
-    /// embedded JWKS is whatever this issuer publishes.
-    pub issuer: Arc<LocalIssuer>,
+    /// Signer used for every emitted lineage edge. The bundle's embedded JWKS is
+    /// whatever this signer publishes. Held as `dyn` so production uses an
+    /// operator-managed `Pkcs8FileSigner` and only `--features insecure-dev`
+    /// builds may substitute the random in-process `LocalIssuer` (most-paranoid #6).
+    pub issuer: Arc<dyn SigningProvider>,
     /// Trust domain authority used when minting fresh pod SPIFFE ids
     /// for new sessions (e.g. `"prod.example.com"`).
     pub trust_domain: String,
@@ -101,21 +103,23 @@ impl AppState {
     }
 }
 
-/// Construct an [`AppState`] with the in-memory registry, a fresh
-/// random demo issuer, and a caller-supplied sink. Convenience wrapper
-/// used by tests and the binary.
-pub fn build_demo_state(
+/// Construct an [`AppState`] with the in-memory registry, a caller-supplied
+/// signer, and a caller-supplied sink. This is the production-capable builder:
+/// the signer is injected (no insecure default), so a real deployment passes a
+/// [`Pkcs8FileSigner`](nucleus_lineage::Pkcs8FileSigner).
+pub fn build_state(
     runners: RunnerRegistry,
     sink: Arc<dyn LineageSink>,
+    issuer: Arc<dyn SigningProvider>,
     trust_domain: impl Into<String>,
     namespace: impl Into<String>,
     service_account: impl Into<String>,
-) -> Result<AppState, anyhow::Error> {
-    Ok(AppState {
+) -> AppState {
+    AppState {
         jobs: Arc::new(InMemoryRegistry::new()),
         runners: Arc::new(runners),
         sink,
-        issuer: Arc::new(LocalIssuer::random()?),
+        issuer,
         trust_domain: trust_domain.into(),
         namespace: namespace.into(),
         service_account: service_account.into(),
@@ -124,5 +128,28 @@ pub fn build_demo_state(
         witness_pubkey: None,
         job_slots: Arc::new(Semaphore::new(MAX_INFLIGHT_JOBS)),
         spiffe_auth: None,
-    })
+    }
+}
+
+/// Construct an [`AppState`] with a fresh **random** in-process `LocalIssuer`.
+///
+/// INSECURE — for tests/dev only; gated behind `insecure-dev`. Production must
+/// use [`build_state`] with a real [`Pkcs8FileSigner`](nucleus_lineage::Pkcs8FileSigner).
+#[cfg(feature = "insecure-dev")]
+pub fn build_demo_state(
+    runners: RunnerRegistry,
+    sink: Arc<dyn LineageSink>,
+    trust_domain: impl Into<String>,
+    namespace: impl Into<String>,
+    service_account: impl Into<String>,
+) -> Result<AppState, anyhow::Error> {
+    let issuer = Arc::new(nucleus_lineage::LocalIssuer::random()?);
+    Ok(build_state(
+        runners,
+        sink,
+        issuer,
+        trust_domain,
+        namespace,
+        service_account,
+    ))
 }

@@ -1,6 +1,12 @@
 //! End-to-end tests that drive the axum app via `tower::ServiceExt::oneshot`
 //! — no TCP socket, no real bind. The MockJobRunner runs synchronously
 //! so polling typically lands a `Completed` state on the very next call.
+//!
+//! Requires `--features insecure-dev` (MockJobRunner + the random LocalIssuer
+//! via `build_demo_state`). Production builds (default features) refuse the mock
+//! runner and the demo issuer (most-paranoid #6); without the feature this file
+//! compiles to an empty test binary.
+#![cfg(feature = "insecure-dev")]
 
 use std::sync::Arc;
 

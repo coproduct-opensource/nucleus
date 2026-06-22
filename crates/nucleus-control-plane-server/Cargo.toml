@@ -14,8 +14,15 @@ categories = ["web-programming::http-server"]
 name = "nucleus-control-plane-server"
 path = "src/main.rs"
 
+[features]
+default = []
+# Dev/test only (most-paranoid #6): enables the random in-process LocalIssuer
+# and registers the MockJobRunner. A production build (default features) refuses
+# to boot without a real signing key and registers no mock runner.
+insecure-dev = ["nucleus-lineage/insecure-local-issuer"]
+
 [dependencies]
-nucleus-lineage = { path = "../nucleus-lineage", features = ["insecure-local-issuer"] }
+nucleus-lineage = { path = "../nucleus-lineage" }
 nucleus-envelope = { path = "../nucleus-envelope" }
 nucleus-control-plane = { path = "../nucleus-control-plane" }
 nucleus-oidc-core = { path = "../nucleus-oidc-core" }

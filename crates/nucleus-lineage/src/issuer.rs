@@ -88,3 +88,15 @@ pub trait EdgeSigner: Send + Sync {
     /// Sign the given canonical bytes. Returns the raw signature bytes.
     fn sign(&self, canonical_bytes: &[u8]) -> Result<Vec<u8>, IssuerError>;
 }
+
+/// An [`EdgeSigner`] that can also publish its verifying key as a JWKS, so a
+/// stateless verifier (any process) can re-check the chain it signed.
+///
+/// Lets a host store `Arc<dyn SigningProvider>` and remain agnostic to whether
+/// the concrete signer is the production [`Pkcs8FileSigner`](crate::Pkcs8FileSigner)
+/// or the dev-only `LocalIssuer` (most-paranoid #6).
+pub trait SigningProvider: EdgeSigner {
+    /// Publish a single-key JWKS (RFC 7517 + RFC 8037 Ed25519 OKP) for the
+    /// verifying key, keyed by [`EdgeSigner::kid`].
+    fn publish_jwks(&self) -> serde_json::Value;
+}
