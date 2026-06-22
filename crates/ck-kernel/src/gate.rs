@@ -199,13 +199,10 @@ mod tests {
     #[test]
     fn modifying_protected_file_is_rejected() {
         let m = base();
-        // PolicyManifest.toml is in the root manifest's may_not_modify set.
-        let out = gate_manifest_amendment(
-            &m,
-            &m,
-            &["PolicyManifest.toml".to_string()],
-            GateMode::Preflight,
-        );
+        // LICENSE is in the root manifest's may_not_modify set. (PolicyManifest.toml
+        // itself is intentionally NOT — it is the amendable constitution, governed
+        // by the monotonicity check rather than a blanket freeze.)
+        let out = gate_manifest_amendment(&m, &m, &["LICENSE".to_string()], GateMode::Preflight);
         assert!(
             !out.accepted(),
             "touching a may_not_modify path must be rejected, got {:?}",
