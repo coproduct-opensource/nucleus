@@ -31,7 +31,7 @@ base64 = "0.22"
 axum = { version = "0.8", features = ["macros", "json"] }
 tokio = { workspace = true, features = ["full"] }
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["trace", "timeout", "limit"] }
+tower-http = { version = "0.7", features = ["trace", "timeout", "limit"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
