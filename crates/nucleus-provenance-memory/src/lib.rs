@@ -74,13 +74,23 @@
 pub mod crdt;
 pub mod declassify;
 pub mod hash;
+pub mod ifc;
 pub mod lineage;
 pub mod recompute;
 pub mod record;
 
 pub use crdt::ProvenanceMemorySet;
-pub use declassify::{DeclassifyError, DeclassifyWitness, SignedDeclassify};
+pub use declassify::{declassify, DeclassifyError, DeclassifyWitness, SignedDeclassify};
 pub use hash::ContentHash;
+pub use ifc::memory_ifc_label;
 pub use lineage::memory_lineage_edge;
 pub use recompute::{RecomputeMemory, RecomputeVerdict, TransformRegistry};
 pub use record::{MemoryDerivation, MemoryRecord, TransformId};
+
+// Re-export the portcullis-core memory types this crate's API surfaces, so
+// consumers (e.g. the tool-proxy memory endpoints) get one import home.
+pub use portcullis_core::memory::{MemoryAuthority, MemoryLabel, SchemaType};
+// The lattice level types that appear in `MemoryLabel`'s constructors/accessors.
+pub use portcullis_core::{ConfLevel, DerivationClass, IntegLevel};
+// `SourceClass` is part of `MemoryDerivation::RawIngest`'s public surface.
+pub use nucleus_lineage::SourceClass;

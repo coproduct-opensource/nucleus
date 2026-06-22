@@ -269,6 +269,55 @@ impl FlowTracker {
         self.observe_with_parents(kind, &[])
     }
 
+    /// Observe a node carrying a **caller-supplied** label instead of the fixed
+    /// [`intrinsic_label`] for `kind`.
+    ///
+    /// This exists for recalled provenance-memory records: a record's
+    /// recomputed/declassified `MemoryLabel` (projected to an [`IFCLabel`]) must
+    /// drive the flow decision, NOT `intrinsic_label(MemoryRead)` — which would
+    /// LAUNDER an adversarial record down to the fixed `memory_entry` label
+    /// (Internal/Untrusted/Informational) and let poisoned memory inform a sink.
+    ///
+    /// The supplied label is still joined with parent labels (monotone) and the
+    /// session ceilings are raised identically to [`Self::observe_with_parents`],
+    /// so the result can never be LESS restrictive than its ancestry.
+    pub fn observe_with_label(
+        &mut self,
+        kind: NodeKind,
+        label: IFCLabel,
+        parents: &[u64],
+    ) -> Result<u64, FlowError> {
+        if parents.len() > 8 {
+            return Err(FlowError::TooManyParents(parents.len()));
+        }
+        for &pid in parents {
+            if pid == 0 || pid >= self.next_id {
+                return Err(FlowError::ParentNotFound(pid));
+            }
+        }
+
+        // Start from the caller's label (NOT intrinsic_label) and join parents.
+        let mut label = label;
+        for &pid in parents {
+            if let Some((_, parent_label, _)) = self.node_entry(pid) {
+                label = label.join(*parent_label);
+            }
+        }
+
+        let id = self.next_id;
+        self.next_id = self
+            .next_id
+            .checked_add(1)
+            .ok_or(FlowError::IdSpaceExhausted)?;
+        // Raise the session ceilings: join/max are monotone (never decrease).
+        self.session_taint_ceiling = self.session_taint_ceiling.join(label.derivation);
+        if label.confidentiality > self.session_conf_ceiling {
+            self.session_conf_ceiling = label.confidentiality;
+        }
+        self.nodes.push((kind, label, parents.to_vec()));
+        Ok(id)
+    }
+
     /// Observe a new node with explicit causal parents.
     ///
     /// The node's label is computed by joining parent labels with the
