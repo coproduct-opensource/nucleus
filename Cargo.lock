@@ -7007,6 +7007,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-provenance-memory"
+version = "1.0.0"
+dependencies = [
+ "chrono",
+ "ed25519-dalek 3.0.0-pre.7",
+ "hex",
+ "nucleus-lineage",
+ "portcullis-core",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "nucleus-receipt"
 version = "1.0.0"
 dependencies = [
