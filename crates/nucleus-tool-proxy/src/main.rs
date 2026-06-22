@@ -36,6 +36,7 @@ mod identity_fusion;
 mod lockdown_client;
 #[cfg(feature = "mcp")]
 mod mcp;
+mod memory;
 mod mtls;
 mod node_client;
 mod pod_mgmt;
@@ -314,6 +315,23 @@ pub(crate) struct AppState {
     /// blocks outbound for all); true multi-tenancy would require keying the
     /// kernel AND tracker together — out of scope here.
     pub(crate) flow_tracker: Arc<tokio::sync::Mutex<FlowTracker>>,
+    /// Provenance-verified, taint-labeled agent memory (next-bet #1). A write
+    /// goes through `verified_admit`; a recall observes the record's own label
+    /// into `flow_tracker` so the IFC gate governs whether it may inform an
+    /// action. Process-wide, same per-pod-session rationale as `flow_tracker`.
+    pub(crate) provenance_memory:
+        Arc<tokio::sync::Mutex<nucleus_provenance_memory::ProvenanceMemorySet>>,
+    /// Deterministic transforms used to recompute-verify `Deterministic` memory
+    /// records. Empty by default ⇒ deterministic records fail closed (`Invalid`).
+    pub(crate) memory_transforms: Arc<nucleus_provenance_memory::TransformRegistry>,
+    /// Trusted Ed25519 verifying keys (32-byte) that may cosign a memory
+    /// declassification. From `NUCLEUS_DECLASSIFY_TRUSTED_KEYS`; empty ⇒ every
+    /// declassify fails closed (no quorum possible).
+    pub(crate) declassify_trusted_keys: Arc<Vec<[u8; 32]>>,
+    /// k-of-n threshold for memory declassification. From
+    /// `NUCLEUS_DECLASSIFY_THRESHOLD` (default 1); with empty trusted keys this
+    /// is unsatisfiable, so declassification is fail-closed until configured.
+    pub(crate) declassify_threshold: usize,
 }
 
 /// OR-semantics: locked if EITHER signal file OR gRPC stream says locked.
@@ -1269,6 +1287,22 @@ async fn main() -> Result<(), ApiError> {
 
     let flow_tracker = Arc::new(tokio::sync::Mutex::new(FlowTracker::new()));
 
+    // Provenance-memory state (next-bet #1). Trusted declassify keys + threshold
+    // come from env; absent ⇒ empty/1 ⇒ declassification is fail-closed.
+    let provenance_memory = Arc::new(tokio::sync::Mutex::new(
+        nucleus_provenance_memory::ProvenanceMemorySet::new(),
+    ));
+    let memory_transforms = Arc::new(nucleus_provenance_memory::TransformRegistry::new());
+    let declassify_trusted_keys = Arc::new(memory::parse_trusted_keys_env(
+        std::env::var("NUCLEUS_DECLASSIFY_TRUSTED_KEYS")
+            .ok()
+            .as_deref(),
+    ));
+    let declassify_threshold = std::env::var("NUCLEUS_DECLASSIFY_THRESHOLD")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(1);
+
     let state = AppState {
         runtime: Arc::new(runtime),
         approvals,
@@ -1301,6 +1335,10 @@ async fn main() -> Result<(), ApiError> {
         verdict_sink,
         kernel,
         flow_tracker,
+        provenance_memory,
+        memory_transforms,
+        declassify_trusted_keys,
+        declassify_threshold,
     };
 
     if let Err(err) = emit_boot_report(&state).await {
@@ -1395,6 +1433,8 @@ async fn main() -> Result<(), ApiError> {
         .route("/v1/glob", post(glob_search))
         .route("/v1/grep", post(grep_search))
         .route("/v1/web_search", post(web_search))
+        .route("/v1/memory/write", post(memory_write))
+        .route("/v1/memory/recall", post(memory_recall))
         .route("/v1/approve", post(approve_operation))
         .route("/v1/escalate", post(escalate_permissions));
 
@@ -2082,6 +2122,52 @@ fn decide_with_flow_mapped(
 /// HTTP enforcement chokepoint: locks the kernel THEN the flow tracker (same
 /// order as the MCP server) and runs the reference monitor. Both guards are
 /// dropped before the caller performs any sandbox/executor I/O.
+/// POST `/v1/memory/write` — provenance-verified memory admission (next-bet #1).
+/// A write maps to `WriteFiles` (so it is itself subject to the egress gate),
+/// then goes through `verified_admit`: a forged label is rejected; an honest
+/// web-ingest record is admitted-but-quarantined.
+async fn memory_write(
+    State(state): State<AppState>,
+    _auth: Option<axum::Extension<auth::AuthContext>>,
+    Json(req): Json<memory::MemoryWriteReq>,
+) -> Result<Json<memory::MemoryWriteResp>, ApiError> {
+    let _dt = http_kernel_decide(&state, Operation::WriteFiles, "memory://write").await?;
+    let mut set = state.provenance_memory.lock().await;
+    Ok(Json(memory::memory_write_core(
+        &mut set,
+        state.memory_transforms.as_ref(),
+        req,
+    )))
+}
+
+/// POST `/v1/memory/recall` — taint-labeled recall gated through the IFC flow
+/// tracker (next-bet #1). Recall maps to `ReadFiles` (a read, never an outbound
+/// action) so it always runs and injects the recalled record's own label into
+/// the session: an un-declassified adversarial record taints the session, so the
+/// agent's NEXT privileged tool call is denied by the existing egress gate.
+async fn memory_recall(
+    State(state): State<AppState>,
+    _auth: Option<axum::Extension<auth::AuthContext>>,
+    Json(req): Json<memory::MemoryRecallReq>,
+) -> Result<Json<memory::MemoryRecallResp>, ApiError> {
+    let _dt = http_kernel_decide(&state, Operation::ReadFiles, "memory://recall").await?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let set = state.provenance_memory.lock().await;
+    let mut flow = state.flow_tracker.lock().await;
+    let resp = memory::memory_recall_core(
+        &set,
+        &mut flow,
+        state.declassify_trusted_keys.as_ref(),
+        state.declassify_threshold,
+        now,
+        req,
+    )?;
+    Ok(Json(resp))
+}
+
 async fn http_kernel_decide(
     state: &AppState,
     operation: Operation,

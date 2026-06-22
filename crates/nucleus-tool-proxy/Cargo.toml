@@ -55,6 +55,7 @@ nucleus-client = { path = "../nucleus-client", features = ["async-drand"] }
 nucleus-proto = { path = "../nucleus-proto" }
 portcullis = { path = "../portcullis", features = ["serde", "spec", "crypto"] }
 nucleus-permission-market = { path = "../nucleus-permission-market" }
+nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
 
 tonic = { workspace = true }
 tokio-stream = "0.1"
@@ -92,6 +93,7 @@ tokio-vsock = "0.7"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+ed25519-dalek = { workspace = true }
 
 [lints]
 workspace = true
